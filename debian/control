@@ -10,9 +10,9 @@ Build-Depends:
  perl,
  zlib1g-dev,
 Standards-Version: 4.6.2
-Homepage: https://github.com/DineroLabs/Dinero-Coin
-Vcs-Git: https://github.com/DineroLabs/Dinero-Coin.git
-Vcs-Browser: https://github.com/DineroLabs/Dinero-Coin
+Homepage: https://github.com/DineroLabs/dinero-v8
+Vcs-Git: https://github.com/DineroLabs/dinero-v8.git
+Vcs-Browser: https://github.com/DineroLabs/dinero-v8
 Rules-Requires-Root: binary-targets
 
 Package: dinero-core

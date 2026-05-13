@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: dinero
 Upstream-Contact: Trucker2827 <Trucker2827@gmail.com>
-Source: https://github.com/DineroLabs/Dinero-Coin
+Source: https://github.com/DineroLabs/dinero-v8
 
 Files: *
 Copyright: 2024-2026 Dinero Labs / project contributors

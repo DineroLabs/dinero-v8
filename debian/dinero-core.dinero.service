@@ -10,7 +10,7 @@
 # variant (different ExecStart path, different datadir).
 
 Description=Dinero Core daemon
-Documentation=https://github.com/DineroLabs/Dinero-Coin
+Documentation=https://github.com/DineroLabs/dinero-v8
 After=network-online.target
 Wants=network-online.target
 
