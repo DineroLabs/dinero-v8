@@ -604,7 +604,34 @@ elseif(WIN32)
   # (Dinero.png 1024x1024) regenerated at standard Windows sizes
   # (16/24/32/48/64/128/256).
   enable_language(RC)
-  add_executable(dinero-qt WIN32 ${GUI_SOURCES} icons/dinero-qt.rc)
+
+  # Resolve the rc tag (e.g. "8.0.0-rc2") for the user-visible string fields
+  # of VS_VERSION_INFO. The top-level CMakeLists.txt sets DINERO_RELEASE_TAG
+  # as a CACHE var; if this qt subdir is being built standalone, fall back
+  # to PROJECT_VERSION so we never embed an empty string.
+  if(NOT DEFINED DINERO_RELEASE_TAG OR "${DINERO_RELEASE_TAG}" STREQUAL "")
+    set(DINERO_RELEASE_TAG "${PROJECT_VERSION}")
+  endif()
+  set(DINERO_VI_FILEVERSION
+      "${PROJECT_VERSION_MAJOR},${PROJECT_VERSION_MINOR},${PROJECT_VERSION_PATCH},0")
+  set(DINERO_VI_PRODUCTVERSION "${DINERO_VI_FILEVERSION}")
+  set(DINERO_VI_VERSION_STRING "${DINERO_RELEASE_TAG}")
+  # The .rc ICON directive needs a path relative to the .rc file's location
+  # (or absolute). Since we configure into CMAKE_CURRENT_BINARY_DIR but the
+  # .ico still lives in the source tree, pass an absolute path with forward
+  # slashes (rc.exe / windres both accept those on Windows).
+  file(TO_CMAKE_PATH
+       "${CMAKE_CURRENT_SOURCE_DIR}/icons/dinero-qt.ico"
+       DINERO_QT_ICO_PATH)
+
+  set(_dinero_qt_rc "${CMAKE_CURRENT_BINARY_DIR}/dinero-qt.rc")
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/icons/dinero-qt.rc.in"
+    "${_dinero_qt_rc}"
+    @ONLY
+  )
+
+  add_executable(dinero-qt WIN32 ${GUI_SOURCES} "${_dinero_qt_rc}")
 else()
   add_executable(dinero-qt ${GUI_SOURCES})
 endif()

@@ -309,6 +309,13 @@ if(BUILD_CLI)
         DINERO_SOLO_MINER_GIT_FULL="${DINERO_SOLO_MINER_GIT_FULL}"
         DINERO_SOLO_MINER_BUILD_TIME="${DINERO_SOLO_MINER_BUILD_TIME}"
     )
+    # In v8 monorepo mode, the top-level CMakeLists.txt defines the
+    # dinero_attach_win32_versioninfo() helper. Skip cleanly when the
+    # miner subtree is built standalone (helper undefined).
+    if(WIN32 AND COMMAND dinero_attach_win32_versioninfo)
+        dinero_attach_win32_versioninfo(dinero-solo-miner-cli
+            "Dinero solo miner (mines against a local dinerod)")
+    endif()
 endif()
 
 # Tests

@@ -102,7 +102,55 @@ if(WIN32)
   # Windows CRT includes threading — no separate pthread library needed.
   # Create an empty interface target so all target_link_libraries(... pthread) calls resolve.
   add_library(pthread INTERFACE)
+
+  # Enable the .rc compiler at root scope so any target (daemon binaries
+  # here, dinero-qt under qt/) can attach a VS_VERSION_INFO resource via
+  # dinero_attach_win32_versioninfo() below.
+  enable_language(RC)
 endif()
+
+# Release tag for Windows file-properties / About dialog metadata.
+# PROJECT_VERSION carries semver only ("8.0.0"); rc/preview suffixes live
+# in this variable. Override per cut at configure time:
+#   cmake -S . -B build -DDINERO_RELEASE_TAG=8.0.0-rc2 ...
+# Defaults to PROJECT_VERSION so unflagged dev builds never embed an
+# empty string. Promoted to CACHE here so qt/ and daemon targets see the
+# same value.
+if(NOT DEFINED DINERO_RELEASE_TAG OR "${DINERO_RELEASE_TAG}" STREQUAL "")
+  set(DINERO_RELEASE_TAG "${PROJECT_VERSION}"
+      CACHE STRING "User-visible release tag (e.g. 8.0.0-rc2)")
+endif()
+
+# Helper: attach a VS_VERSION_INFO resource to a Windows executable so
+# Explorer Properties -> Details shows version/company/component fields.
+# No-op on non-Windows. Pass a human description for the FileDescription
+# field (shown in Task Manager and right-click Properties).
+function(dinero_attach_win32_versioninfo target description)
+  if(NOT WIN32)
+    return()
+  endif()
+  # Respect set_target_properties(... OUTPUT_NAME ...) so InternalName and
+  # OriginalFilename match the actual .exe on disk (e.g. dinero-solo-miner-cli
+  # ships as dinero-solo-miner.exe).
+  get_target_property(_outname ${target} OUTPUT_NAME)
+  if(NOT _outname OR "${_outname}" STREQUAL "_outname-NOTFOUND")
+    set(_outname "${target}")
+  endif()
+  set(DINERO_VI_FILEVERSION
+      "${PROJECT_VERSION_MAJOR},${PROJECT_VERSION_MINOR},${PROJECT_VERSION_PATCH},0")
+  set(DINERO_VI_PRODUCTVERSION "${DINERO_VI_FILEVERSION}")
+  set(DINERO_VI_VERSION_STRING "${DINERO_RELEASE_TAG}")
+  set(DINERO_VI_DESCRIPTION    "${description}")
+  set(DINERO_VI_INTERNAL_NAME  "${_outname}")
+  set(DINERO_VI_ORIGINAL_FILENAME "${_outname}.exe")
+  set(_gen "${CMAKE_CURRENT_BINARY_DIR}/${target}_version_info.rc")
+  configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/dinero_version_info.rc.in"
+    "${_gen}"
+    @ONLY
+  )
+  target_sources(${target} PRIVATE "${_gen}")
+endfunction()
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Build options - simplified and focused
@@ -3524,6 +3572,17 @@ target_include_directories(dinero-wallet-cli PRIVATE
   ${CMAKE_SOURCE_DIR}/external
   /opt/homebrew/include
 )
+
+# Embed VS_VERSION_INFO into each daemon binary so Explorer Properties
+# -> Details shows the right version/company/component rather than an
+# empty dialog. No-op outside Windows. See dinero_attach_win32_versioninfo()
+# definition near the top of this file.
+dinero_attach_win32_versioninfo(dinerod               "Dinero full node daemon")
+dinero_attach_win32_versioninfo(dinero-cli            "Dinero RPC CLI client")
+dinero_attach_win32_versioninfo(dinero-miner          "Dinero CPU miner")
+dinero_attach_win32_versioninfo(dinero-stratum-worker "Dinero Stratum worker client")
+dinero_attach_win32_versioninfo(dinero-gpu-miner      "Dinero GPU miner (CUDA/OpenCL)")
+dinero_attach_win32_versioninfo(dinero-wallet-cli     "Dinero reference wallet CLI")
 
 # Reference Wallet Test Suite
 # PURE OFFLINE TESTS: No RPC calls in tests, but wallet.cpp includes optional sync method

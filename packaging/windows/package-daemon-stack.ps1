@@ -132,7 +132,7 @@ $readmeLines = @(
     "Build:      Microsoft Visual Studio 2022 (MSVC 14.44), x86_64",
     "Built UTC:  $builtOn",
     "Linkage:    Vendored OpenSSL 3.3.2 (static, no-shared)",
-    "Source:     https://github.com/DineroLabs/Dinero-Coin",
+    "Source:     https://github.com/DineroLabs/dinero-v8",
     "",
     "Included binaries (bin/):",
     "  dinerod.exe                Full node daemon",
@@ -203,4 +203,4 @@ Write-Host "  Size:   $zipSize bytes ($zipMB MB)"
 Write-Host "  SHA256: $zipHash"
 Write-Host ''
 Write-Host 'Upload to a GitHub release:' -ForegroundColor Cyan
-Write-Host "  gh release upload v$Version `"$ZipPath`" --repo DineroLabs/Dinero-Coin" -ForegroundColor Cyan
+Write-Host "  gh release upload v$Version `"$ZipPath`" --repo DineroLabs/dinero-v8" -ForegroundColor Cyan

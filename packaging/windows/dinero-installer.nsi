@@ -4,11 +4,11 @@
 ; and the Qt runtime DLLs into C:\Program Files\Dinero\.
 ;
 ; Build with:
-;   makensis /DVERSION=2.2.6-rc4 dinero-installer.nsi
+;   makensis /DVERSION=8.0.0-rc2 dinero-installer.nsi
 ;
 ; Layout in installer-stage/:
 ;   dinero-qt.exe             main GUI
-;   dinerod.exe ... etc       6 daemon binaries
+;   dinerod.exe ... etc       daemon binaries
 ;   Qt6Core.dll, Qt6Gui.dll, Qt6Widgets.dll, Qt6Network.dll, ...
 ;   platforms/qwindows.dll    Qt platform plugin (required at runtime)
 ;   imageformats/, styles/, tls/, networkinformation/
@@ -21,7 +21,7 @@
 !define APP_NAME       "Dinero"
 !define APP_VERSION    "${VERSION}"
 !define APP_PUBLISHER  "DineroLabs"
-!define APP_URL        "https://github.com/DineroLabs/dinero-releases"
+!define APP_URL        "https://github.com/DineroLabs/dinero-v8"
 !define APP_EXE        "dinero-qt.exe"
 !define APP_REGKEY     "Software\${APP_NAME}"
 !define APP_UNINSTKEY  "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
@@ -49,8 +49,8 @@ Unicode true
 ; metadata is embedded.
 ;
 ; VIProductVersion requires X.Y.Z.W numeric format (no -rc suffix).
-VIProductVersion "2.2.6.0"
-VIFileVersion    "2.2.6.0"
+VIProductVersion "8.0.0.0"
+VIFileVersion    "8.0.0.0"
 VIAddVersionKey "ProductName"      "${APP_NAME}"
 VIAddVersionKey "CompanyName"      "${APP_PUBLISHER}"
 VIAddVersionKey "LegalCopyright"   "Copyright (C) 2026 ${APP_PUBLISHER}"
