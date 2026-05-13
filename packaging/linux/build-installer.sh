@@ -132,7 +132,11 @@ if [[ $SKIP_DEB -eq 0 ]]; then
 
     # dpkg drops the .deb next to the source tree's parent. Move it
     # into our dist/ for collection.
-    local_arch_deb=$(ls "$(dirname "$PROJECT_ROOT")"/dinero-core_*"_${ARCH}.deb" 2>/dev/null | head -1 || true)
+    deb_version=$(dpkg-parsechangelog -S Version)
+    local_arch_deb="$(dirname "$PROJECT_ROOT")/dinero-core_${deb_version}_${ARCH}.deb"
+    if [[ ! -f "$local_arch_deb" ]]; then
+        local_arch_deb=$(ls -t "$(dirname "$PROJECT_ROOT")"/dinero-core_*"_${ARCH}.deb" 2>/dev/null | head -1 || true)
+    fi
     if [[ -n "$local_arch_deb" && -f "$local_arch_deb" ]]; then
         cp "$local_arch_deb" "$DIST_DIR/"
         deb_name=$(basename "$local_arch_deb")
