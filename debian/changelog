@@ -1,3 +1,13 @@
+dinero-core (8.0.0~rc2-1) unstable; urgency=medium
+
+  * RC2 Linux package rebuild from public dinero-v8 commit 8156a8ad.
+  * Carry Linux portability fixes for the unified v8 source tree.
+  * Keep the packaged-service contract unchanged: dinerod + dinero-cli only,
+    with gRPC, Qt, GPU mining, and hardware-wallet HID support excluded from
+    the .deb runtime surface.
+
+ -- Trucker2827 <trucker2827@gmail.com>  Wed, 13 May 2026 17:55:00 +0000
+
 dinero-core (8.0.0~rc1-1) unstable; urgency=medium
 
   * First unified release from the DineroLabs/dinero monorepo (formerly

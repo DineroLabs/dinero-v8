@@ -118,8 +118,7 @@ fi
 [[ -x "$BUILD_DIR/dinero-stratum-worker" ]]  && pack_binary "dinero-stratum-worker"  "$BUILD_DIR/dinero-stratum-worker"
 
 # .deb (Ubuntu 24.04+ packaged-service Core). The version in
-# debian/changelog drives the .deb filename — already updated to
-# 8.0.0~rc1-1 in this monorepo's tree.
+# debian/changelog drives the .deb filename.
 if [[ $SKIP_DEB -eq 0 ]]; then
     echo ""
     echo "Building .deb via dpkg-buildpackage..."
@@ -136,8 +135,8 @@ if [[ $SKIP_DEB -eq 0 ]]; then
     local_arch_deb=$(ls "$(dirname "$PROJECT_ROOT")"/dinero-core_*"_${ARCH}.deb" 2>/dev/null | head -1 || true)
     if [[ -n "$local_arch_deb" && -f "$local_arch_deb" ]]; then
         cp "$local_arch_deb" "$DIST_DIR/"
-        local deb_name; deb_name=$(basename "$local_arch_deb")
-        local deb_hash; deb_hash=$(sha256sum "$DIST_DIR/$deb_name" | awk '{print $1}')
+        deb_name=$(basename "$local_arch_deb")
+        deb_hash=$(sha256sum "$DIST_DIR/$deb_name" | awk '{print $1}')
         echo "  $deb_name"
         echo "    SHA256: $deb_hash"
     else
