@@ -82,8 +82,12 @@ endif()
 # Add cmake modules directory to module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
-# Modern CMake policies
-cmake_policy(SET CMP0144 NEW)  # Use upper-case <PACKAGENAME>_ROOT variables
+# Modern CMake policies. CMP0144 (upper-case <PACKAGENAME>_ROOT variables)
+# was added in CMake 3.27; Ubuntu 22.04 ships 3.22, so guard the SET behind
+# a POLICY-exists check or older systems hard-fail at configure time.
+if(POLICY CMP0144)
+  cmake_policy(SET CMP0144 NEW)  # Use upper-case <PACKAGENAME>_ROOT variables
+endif()
 
 # C++ standard (C++17 baseline for std::optional, std::string_view, std::variant)
 set(CMAKE_CXX_STANDARD 20)

@@ -123,6 +123,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 #ifdef __cplusplus
 
+#include <cstddef>  // offsetof — gcc/clang require an explicit include
 #include <cstdint>
 #include <cstring>
 
