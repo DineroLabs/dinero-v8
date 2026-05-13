@@ -1,0 +1,233 @@
+#include "daemon/rpc_v2.h"
+#if DIN_ENABLE_LEGACY_RPC
+#include "daemon/rpc_server.h"
+#endif
+#include "daemon/rpc/mining_rpc_handlers.h"
+#include "daemon/rpc/wallet_rpc_handlers.h"
+#include "daemon/rpc/wallet_rpc_extras.h"
+#include "daemon/rpc/wallet_stage3_handlers.h"
+#include "common/logger.h"
+#include "compat/jsoncpp_compat.h"
+#include "rpc/rpc_adapters.h"
+
+// Include production RPC handlers
+extern Json::Value rpc_wallet_create(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_wallet_load(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_wallet_encrypt(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_wallet_lock(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_wallet_unlock(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_wallet_change_passphrase(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_wallet_balance(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_wallet_addresses(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_wallet_utxos(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_wallet_history(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_wallet_label(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_tx_send(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_mining_info(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_mining_start(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_mining_stop(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_node_info(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_rpc_methods(dinero::RPCServer&, const Json::Value&);
+// Phase 2 mining template RPC handlers
+extern Json::Value rpc_getblocktemplate(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_submitblock(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_getmininginfo(dinero::RPCServer&, const Json::Value&);
+extern Json::Value rpc_estimatefee(dinero::RPCServer&, const Json::Value&);
+
+namespace dinero {
+namespace rpcv2 {
+
+void RegisterV2RPC(RPCServer& server, const Context& ctx) {
+    // Register existing wallet RPC methods
+    server.registerMethod("wallet.getnewaddress", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return wallet_getnewaddress(params, server.getWalletManager());
+    }));
+    
+    server.registerMethod("wallet.validateaddress", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return wallet_validateaddress(params, server.getWalletManager());
+    }));
+    
+    // Register production wallet lifecycle methods
+    server.registerMethod("wallet.create", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_create(server, params);
+    }));
+    
+    server.registerMethod("wallet.load", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_load(server, params);
+    }));
+    
+    server.registerMethod("wallet.encrypt", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_encrypt(server, params);
+    }));
+    
+    server.registerMethod("wallet.lock", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_lock(server, params);
+    }));
+    
+    server.registerMethod("wallet.unlock", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_unlock(server, params);
+    }));
+    
+    server.registerMethod("wallet.change_passphrase", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_change_passphrase(server, params);
+    }));
+    
+    // Register wallet information methods
+    server.registerMethod("wallet.balance", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_balance(server, params);
+    }));
+    
+    server.registerMethod("wallet.addresses", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_addresses(server, params);
+    }));
+    
+    server.registerMethod("wallet.utxos", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_utxos(server, params);
+    }));
+    
+    server.registerMethod("wallet.history", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_history(server, params);
+    }));
+    
+    server.registerMethod("wallet.label", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_label(server, params);
+    }));
+    
+    // Register transaction methods
+    server.registerMethod("tx.send", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_tx_send(server, params);
+    }));
+    
+    // Register existing mining RPC methods
+    server.registerMethod("mining.setaddress", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return mining_setaddress(params);
+    }));
+    
+    server.registerMethod("mining.getaddress", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return mining_getaddress(params);
+    }));
+    
+    server.registerMethod("mining.generatetoaddress", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return mining_generatetoaddress(params);
+    }));
+    
+    // Register production mining control methods
+    server.registerMethod("mining.info", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_mining_info(server, params);
+    }));
+    
+    server.registerMethod("mining.start", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_mining_start(server, params);
+    }));
+    
+    server.registerMethod("mining.stop", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_mining_stop(server, params);
+    }));
+    
+    // Register Phase 2 mining template methods
+    server.registerMethod("getblocktemplate", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_getblocktemplate(server, params);
+    }));
+    
+    server.registerMethod("submitblock", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_submitblock(server, params);
+    }));
+    
+    server.registerMethod("getmininginfo", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_getmininginfo(server, params);
+    }));
+    
+    server.registerMethod("estimatefee", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_estimatefee(server, params);
+    }));
+    
+    // Register diagnostics methods
+    server.registerMethod("node.info", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_node_info(server, params);
+    }));
+    
+    server.registerMethod("rpc.methods", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_rpc_methods(server, params);
+    }));
+    
+    // Register legacy aliases for backward compatibility
+    server.registerMethod("getnewaddress", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return wallet_getnewaddress(params, server.getWalletManager());
+    }));
+    
+    server.registerMethod("validateaddress", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return wallet_validateaddress(params, server.getWalletManager());
+    }));
+    
+    server.registerMethod("getbalance", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_balance(server, params);
+    }));
+    
+    server.registerMethod("listtransactions", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_history(server, params);
+    }));
+    
+    server.registerMethod("listunspent", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_wallet_utxos(server, params);
+    }));
+    
+    server.registerMethod("sendtoaddress", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_tx_send(server, params);
+    }));
+    
+    server.registerMethod("setminingaddress", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return mining_setaddress(params);
+    }));
+    
+    server.registerMethod("getminingaddress", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return mining_getaddress(params);
+    }));
+    
+    server.registerMethod("getmininginfo", rpc::adaptJsonToLegacy([&server](const Json::Value& params) {
+        return rpc_mining_info(server, params);
+    }));
+    
+    server.registerMethod("generatetoaddress", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return mining_generatetoaddress(params);
+    }));
+    
+    // Register Stage 3 wallet RPCs for two-node testing
+    server.registerMethod("getwalletinfo", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return wallet_getwalletinfo_stage3(params);
+    }));
+    
+    server.registerMethod("getaddressinfo", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return wallet_getaddressinfo_stage3(params);
+    }));
+    
+    server.registerMethod("createrawtransaction", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return wallet_createrawtransaction_stage3(params);
+    }));
+    
+    server.registerMethod("fundrawtransaction", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return wallet_fundrawtransaction_stage3(params);
+    }));
+    
+    server.registerMethod("signrawtransactionwithwallet", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return wallet_signrawtransactionwithwallet_stage3(params);
+    }));
+    
+    // Override existing methods with Stage 3 versions for better regtest support
+    server.registerMethod("getnewaddress", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return wallet_getnewaddress_stage3(params);
+    }));
+    
+    server.registerMethod("listunspent", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return wallet_listunspent_stage3(params);
+    }));
+    
+    server.registerMethod("generatetoaddress", rpc::adaptJsonToLegacy([](const Json::Value& params) {
+        return wallet_generatetoaddress_stage3(params);
+    }));
+    
+    dinero::g_logger.info("Registered production RPC methods: wallet lifecycle, mining control, diagnostics");
+    dinero::g_logger.info("Registered Stage 3 wallet RPCs: getnewaddress, getwalletinfo, listunspent, createrawtransaction, fundrawtransaction, signrawtransactionwithwallet, generatetoaddress");
+}
+
+} // namespace rpcv2
+} // namespace dinero

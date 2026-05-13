@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wallet.unlock",
+  "description": "Unlock encrypted wallet for specified duration and purpose",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "wallet.unlock"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Wallet passphrase"
+        },
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "description": "Unlock duration in seconds (max 1 hour)"
+        },
+        {
+          "type": "string",
+          "enum": ["send", "sign", "all"],
+          "description": "Unlock purpose (default: all)"
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 3
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "unlocked": {
+          "type": "boolean",
+          "description": "Whether wallet is now unlocked"
+        },
+        "unlocked_until": {
+          "type": "integer",
+          "description": "Timestamp when wallet will auto-lock"
+        },
+        "purpose": {
+          "type": "string",
+          "enum": ["send", "sign", "all"],
+          "description": "Unlock purpose granted"
+        },
+        "remaining_seconds": {
+          "type": "integer",
+          "description": "Seconds until auto-lock"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Security warnings"
+        }
+      },
+      "required": ["unlocked", "unlocked_until", "purpose"]
+    }
+  }
+}

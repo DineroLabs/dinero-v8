@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "Canonical serialization test vectors for DineroCoin. All implementations (Rust DPI, C++ daemon, Swift wallet) MUST produce identical results for these inputs.",
+  "invariants": [
+    "decode(encode(x)) == x (round-trip)",
+    "encode(decode(bytes)) == bytes (canonical form)",
+    "Same object always produces same bytes",
+    "Same bytes always produce same object",
+    "txid excludes witness data (BIP141)",
+    "wtxid includes witness data (BIP141)",
+    "All hashes are double SHA256, displayed in reverse byte order"
+  ],
+  "transactions": [
+    {
+      "name": "minimal_p2tr_zero_value",
+      "description": "Minimal SegWit P2TR transaction with zero value output. Baseline vector for hash computation.",
+      "tx_hex": "0200000000010100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff010000000000000000225120000000000000000000000000000000000000000000000000000000000000000001400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "txid": "912fc44adbac16c00a2ca6a087ced32bb12bdfce187e7222119d8252f74fac27",
+      "wtxid": "a2d324778aa31f4b7967b15789fb97e4d818f8d810422ef066eadb78b71a5bcf",
+      "weight": 444,
+      "vbytes": 111,
+      "version": 2,
+      "locktime": 0,
+      "input_count": 1,
+      "output_count": 1,
+      "has_witness": true,
+      "components": {
+        "version_hex": "02000000",
+        "marker_flag_hex": "0001",
+        "locktime_hex": "00000000"
+      }
+    },
+    {
+      "name": "p2tr_single_input_single_output_1din",
+      "description": "P2TR transaction sending 1 DIN (100_000_000 una). Standard payment pattern.",
+      "tx_hex": "0200000000010100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0100e1f50500000000225120000000000000000000000000000000000000000000000000000000000000000001400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "txid": "152a31558fb9fbabbcc6140125acd493bba20a927482deb0d7f4916a4c185362",
+      "wtxid": "fab6741b50de4b16f4eebd29db505c716ef6ab46e2e88e32eded3049db899e73",
+      "weight": 444,
+      "vbytes": 111,
+      "version": 2,
+      "locktime": 0,
+      "input_count": 1,
+      "output_count": 1,
+      "has_witness": true,
+      "value_una": 100000000
+    },
+    {
+      "name": "p2tr_two_inputs_two_outputs",
+      "description": "P2TR transaction with 2 inputs and 2 outputs. Common spend-with-change pattern.",
+      "tx_hex": "0200000000010211111111111111111111111111111111111111111111111111111111111111110000000000ffffffff22222222222222222222222222222222222222222222222222222222222222220100000000feffffff0280969800000000002251203333333333333333333333333333333333333333333333333333333333333333404b4c000000000022512044444444444444444444444444444444444444444444444444444444444444440140aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0140bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb64000000",
+      "txid": "45ff5f97acd617ff40a690178f3c072cdf50b9891904e0a8ab3ce5f0dc7288d2",
+      "wtxid": "f81c5d2c6deca580f462477b2526498df58915b13e9e69efd19d94ad386f471c",
+      "weight": 846,
+      "vbytes": 212,
+      "version": 2,
+      "locktime": 100,
+      "input_count": 2,
+      "output_count": 2,
+      "has_witness": true,
+      "values_una": [10000000, 5000000]
+    },
+    {
+      "name": "p2tr_rbf_enabled",
+      "description": "P2TR transaction with RBF signaling (sequence < 0xFFFFFFFE).",
+      "tx_hex": "0200000000010100000000000000000000000000000000000000000000000000000000000000000000000000fdffffff010000000000000000225120000000000000000000000000000000000000000000000000000000000000000001400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "txid": "fc041c0bdc7c87dd1be8cb0b833f9fbc359f6682b1295ae62676a2b2c1fd1a3f",
+      "wtxid": "b599e9a8d4e0d2c6b64549d9036e0ef820ef29ae07b4dd3e0feb2d70fc0faeb3",
+      "weight": 444,
+      "vbytes": 111,
+      "version": 2,
+      "locktime": 0,
+      "input_count": 1,
+      "output_count": 1,
+      "has_witness": true,
+      "signals_rbf": true,
+      "sequence": 4294967293
+    },
+    {
+      "name": "p2tr_max_locktime",
+      "description": "P2TR transaction with maximum locktime value.",
+      "tx_hex": "0200000000010100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0100000000000000002251200000000000000000000000000000000000000000000000000000000000000000014000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffff",
+      "txid": "67cb9bddd1d3285b0bb33487ff465a765f39e1373f76ab8fb3521bcbab85b469",
+      "wtxid": "3dfdc205734acc4806139ecaf05c387a34ad9fc05a5421d723bfecdb85286cd3",
+      "weight": 444,
+      "vbytes": 111,
+      "version": 2,
+      "locktime": 4294967295,
+      "input_count": 1,
+      "output_count": 1,
+      "has_witness": true
+    }
+  ],
+  "weight_calculations": [
+    {
+      "name": "weight_1_input_1_output",
+      "description": "Minimal P2TR transaction: 1 input, 1 output",
+      "p2tr_inputs": 1,
+      "p2wpkh_inputs": 0,
+      "p2tr_outputs": 1,
+      "p2wpkh_outputs": 0,
+      "has_op_return": false,
+      "expected_weight": 444,
+      "expected_vbytes": 111,
+      "breakdown": {
+        "overhead": 42,
+        "inputs": 230,
+        "outputs": 172
+      }
+    },
+    {
+      "name": "weight_1_input_2_outputs",
+      "description": "Standard payment with change: 1 input, 2 outputs",
+      "p2tr_inputs": 1,
+      "p2wpkh_inputs": 0,
+      "p2tr_outputs": 2,
+      "p2wpkh_outputs": 0,
+      "has_op_return": false,
+      "expected_weight": 616,
+      "expected_vbytes": 154,
+      "breakdown": {
+        "overhead": 42,
+        "inputs": 230,
+        "outputs": 344
+      }
+    },
+    {
+      "name": "weight_2_inputs_2_outputs",
+      "description": "Consolidation spend: 2 inputs, 2 outputs",
+      "p2tr_inputs": 2,
+      "p2wpkh_inputs": 0,
+      "p2tr_outputs": 2,
+      "p2wpkh_outputs": 0,
+      "has_op_return": false,
+      "expected_weight": 846,
+      "expected_vbytes": 212,
+      "breakdown": {
+        "overhead": 42,
+        "inputs": 460,
+        "outputs": 344
+      }
+    },
+    {
+      "name": "weight_3_inputs_1_output",
+      "description": "Full consolidation: 3 inputs, 1 output",
+      "p2tr_inputs": 3,
+      "p2wpkh_inputs": 0,
+      "p2tr_outputs": 1,
+      "p2wpkh_outputs": 0,
+      "has_op_return": false,
+      "expected_weight": 904,
+      "expected_vbytes": 226,
+      "breakdown": {
+        "overhead": 42,
+        "inputs": 690,
+        "outputs": 172
+      }
+    },
+    {
+      "name": "weight_mixed_outputs",
+      "description": "Mixed output types: 1 P2TR input, 1 P2TR output, 1 P2WPKH output",
+      "p2tr_inputs": 1,
+      "p2wpkh_inputs": 0,
+      "p2tr_outputs": 1,
+      "p2wpkh_outputs": 1,
+      "has_op_return": false,
+      "expected_weight": 568,
+      "expected_vbytes": 142,
+      "breakdown": {
+        "overhead": 42,
+        "inputs": 230,
+        "outputs_p2tr": 172,
+        "outputs_p2wpkh": 124
+      }
+    },
+    {
+      "name": "weight_with_op_return",
+      "description": "Transaction with OP_RETURN data (20 bytes)",
+      "p2tr_inputs": 1,
+      "p2wpkh_inputs": 0,
+      "p2tr_outputs": 1,
+      "p2wpkh_outputs": 0,
+      "has_op_return": true,
+      "op_return_size": 20,
+      "expected_weight": 564,
+      "expected_vbytes": 141,
+      "breakdown": {
+        "overhead": 42,
+        "inputs": 230,
+        "outputs": 172,
+        "op_return_base": 40,
+        "op_return_data": 80
+      }
+    }
+  ],
+  "weight_constants": {
+    "TX_OVERHEAD_WEIGHT": 42,
+    "P2TR_INPUT_WEIGHT": 230,
+    "P2WPKH_INPUT_WEIGHT": 271,
+    "P2TR_OUTPUT_WEIGHT": 172,
+    "P2WPKH_OUTPUT_WEIGHT": 124,
+    "OP_RETURN_BASE_WEIGHT": 40,
+    "description": "All values in weight units (WU). vbytes = ceil(WU / 4)"
+  },
+  "varint_encoding": [
+    {
+      "value": 0,
+      "encoded_hex": "00",
+      "bytes": 1
+    },
+    {
+      "value": 252,
+      "encoded_hex": "fc",
+      "bytes": 1
+    },
+    {
+      "value": 253,
+      "encoded_hex": "fdfd00",
+      "bytes": 3
+    },
+    {
+      "value": 65535,
+      "encoded_hex": "fdffff",
+      "bytes": 3
+    },
+    {
+      "value": 65536,
+      "encoded_hex": "fe00000100",
+      "bytes": 5
+    },
+    {
+      "value": 4294967295,
+      "encoded_hex": "feffffffff",
+      "bytes": 5
+    },
+    {
+      "value": 4294967296,
+      "encoded_hex": "ff0000000001000000",
+      "bytes": 9
+    }
+  ],
+  "block_header": {
+    "size_bytes": 128,
+    "format": [
+      {"field": "version", "offset": 0, "size": 4, "encoding": "u32 LE"},
+      {"field": "prev_block_hash", "offset": 4, "size": 32, "encoding": "bytes"},
+      {"field": "merkle_root", "offset": 36, "size": 32, "encoding": "bytes"},
+      {"field": "timestamp", "offset": 68, "size": 8, "encoding": "u64 LE"},
+      {"field": "difficulty_target", "offset": 76, "size": 4, "encoding": "u32 LE compact"},
+      {"field": "nonce", "offset": 80, "size": 4, "encoding": "u32 LE"},
+      {"field": "utreexo_commitment", "offset": 84, "size": 32, "encoding": "bytes"},
+      {"field": "reserved", "offset": 116, "size": 12, "encoding": "bytes (zeros)"}
+    ]
+  },
+  "notes": {
+    "endianness": "All multi-byte integers are little-endian (LE) in wire format. Hashes (txid, wtxid, block hash) are displayed in reverse byte order.",
+    "segwit_format": "All transactions use SegWit format (marker=0x00, flag=0x01). Non-SegWit transactions are not supported.",
+    "hash_algorithm": "Double SHA256: SHA256(SHA256(data)). Result is reversed for display.",
+    "p2tr_scripts": "P2TR output scripts: OP_1 (0x51) + PUSH32 (0x20) + 32-byte x-only pubkey",
+    "witness_data": "Schnorr signatures are 64 bytes (no sighash byte) for SIGHASH_DEFAULT, or 65 bytes with explicit sighash type.",
+    "verification": "Run 'cargo test --test compute_vectors -- --nocapture' in crates/dpi to regenerate these values."
+  }
+}

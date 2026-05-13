@@ -1,0 +1,23 @@
+#!/bin/bash
+#
+# Git Pre-Commit Hook - Ring 7 Enforcement
+#
+# This hook prevents commits that violate Ring 7 semantic immutability.
+#
+# Installation:
+#   cp scripts/pre-commit.hook .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+#
+# To bypass (DANGEROUS - use only for non-consensus changes):
+#   git commit --no-verify
+#
+# IMPORTANT: Bypassing this hook for consensus changes is a protocol violation.
+
+# Get the project root (2 levels up from .git/hooks)
+PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# Run Ring 7 enforcement script
+"$PROJECT_ROOT/scripts/ring7-enforce.sh"
+
+# Exit with the enforcement script's exit code
+exit $?

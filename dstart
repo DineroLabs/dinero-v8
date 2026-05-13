@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Tunables (env overrides supported) ---
+: "${NET:=mainnet}"                 # mainnet | testnet | regtest
+: "${RPCBIND:=127.0.0.1}"
+
+case "${NET}" in
+  mainnet)
+    DEFAULT_RPCPORT=20998
+    DEFAULT_P2P_PORT=20999
+    DEFAULT_DATADIR="${HOME}/.dinero"
+    ;;
+  testnet)
+    DEFAULT_RPCPORT=20998
+    DEFAULT_P2P_PORT=21000
+    DEFAULT_DATADIR="${HOME}/.dinero/testnet"
+    ;;
+  regtest)
+    DEFAULT_RPCPORT=20996
+    DEFAULT_P2P_PORT=21001
+    DEFAULT_DATADIR="${HOME}/.dinero/regtest"
+    ;;
+  *) echo "Unknown NET='${NET}'"; exit 2 ;;
+esac
+
+: "${RPCPORT:=${DEFAULT_RPCPORT}}"
+: "${P2P_PORT:=${DEFAULT_P2P_PORT}}"
+: "${DATADIR:=${DINERO_DATADIR:-${DEFAULT_DATADIR}}}"
+
+# Try to find dinerod
+CANDIDATES=(
+  "./build/dinerod"
+  "./build/bin/dinerod"
+  "./build-qt/bin/dinerod"
+  "./bin/dinerod"
+  "./bin/daemon-test-qt6.app/Contents/MacOS/dinerod"
+  "./build-test/bin/dinerod"
+)
+DINEROD=""
+for d in "${CANDIDATES[@]}"; do [[ -x "$d" ]] && DINEROD="$d" && break; done
+[[ -z "$DINEROD" ]] && { echo "❌ dinerod not found."; printf 'Tried:\n - %s\n' "${CANDIDATES[@]}"; exit 1; }
+
+mkdir -p "${DATADIR}" "${DATADIR}/logs" "${DATADIR}/run"
+LOG="${DATADIR}/logs/dinerod.log"
+
+# Network flags
+NETFLAGS=()
+[[ "${NET}" == "testnet"  ]] && NETFLAGS+=( -testnet=1 )
+[[ "${NET}" == "regtest"  ]] && NETFLAGS+=( -regtest=1 )
+
+echo "▶️  Starting dinerod (${NET}) → datadir=${DATADIR}, rpc=${RPCBIND}:${RPCPORT}"
+set -x
+nohup "${DINEROD}" \
+  -datadir="${DATADIR}" \
+  -server=1 \
+  -rpcbind="${RPCBIND}" \
+  -rpcallowip="${RPCBIND}" \
+  -rpcport="${RPCPORT}" \
+  -listen=1 \
+  -port="${P2P_PORT}" \
+  ${NETFLAGS[@]+"${NETFLAGS[@]}"} \
+  >> "${LOG}" 2>&1 &
+PID=$!
+set +x
+echo "${PID}" > "${DATADIR}/run/dstart.pid"
+echo "📝 Log: ${LOG}"
+echo "🆔 PID: ${PID}"
+
+# Wait for RPC by polling cookie + height
+COOKIE="${DATADIR}/.cookie"
+for i in {1..60}; do
+  if [[ -f "${COOKIE}" ]]; then
+    CREDS="$(cat "${COOKIE}")"
+    if curl -s --fail --user "${CREDS}" \
+         -H 'content-type: application/json' \
+         --data '{"jsonrpc":"2.0","id":1,"method":"getblockcount","params":[]}' \
+         "http://${RPCBIND}:${RPCPORT}" >/dev/null; then
+      echo "✅ RPC is up at http://${RPCBIND}:${RPCPORT} (cookie: ${COOKIE})"
+      exit 0
+    fi
+  fi
+  sleep 0.5
+done
+
+echo "⚠️  RPC not ready yet. Tail logs with: tail -f '${LOG}'"
+exit 0

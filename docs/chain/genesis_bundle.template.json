@@ -1,0 +1,35 @@
+{
+  "_comment": "Dinero genesis bundle template. After mining, fill all fields and verify with: verify_genesis_bundle <this_file>",
+  "format_version": "1.0",
+  "consensus_snapshot": "docs/consensus/CONSENSUS-SNAPSHOT-v1.md",
+  "genesis": {
+    "height": 0,
+    "version": 1,
+    "prev_block_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "merkle_root": "FILL_AFTER_COMPUTING_COINBASE_TXID",
+    "utreexo_root": "FILL_V2_EMPTY_FOREST_COMMITMENT",
+    "timestamp": 1772496000,
+    "difficulty": "1d31ffce",
+    "nonce": 0,
+    "block_hash": "FILL_AFTER_MINING",
+    "coinbase_hex": "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff230044696e65726f3a205265616c204d6f6e657920466f7220467265652050656f706c65ffffffff0100e40b5402000000246a2244696e65726f3a205265616c204d6f6e657920466f7220467265652050656f706c6500000000",
+    "motto": "Dinero: Real Money For Free People"
+  },
+  "premine": {
+    "height": 1,
+    "version": 1,
+    "prev_block_hash": "FILL_EQUALS_GENESIS_BLOCK_HASH",
+    "merkle_root": "0000000000000000000000000000000000000000000000000000000000000000",
+    "utreexo_root": "0000000000000000000000000000000000000000000000000000000000000000",
+    "timestamp": 0,
+    "difficulty": "1d31ffce",
+    "nonce": 0,
+    "block_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "coinbase_hex": "00",
+    "amount_una": 0,
+    "amount_din": 0,
+    "address": "",
+    "scriptPubKey_hex": "00",
+    "derivation": ""
+  }
+}

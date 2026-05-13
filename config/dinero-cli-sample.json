@@ -1,0 +1,11 @@
+{
+  "network": "regtest",
+  "transport": "auto",
+  "default_wallet": null,
+  "datadir": null,
+  "timeout": 10,
+  "retries": 3,
+  "pretty_json": true,
+  "color_output": true,
+  "format": "table"
+}

@@ -1,0 +1,137 @@
+#compdef dinero-cli
+
+# Zsh completion for dinero-cli
+
+_dinero_cli() {
+    local context state line
+    typeset -A opt_args
+
+    _arguments -C \
+        '--network[Select network]:network:(mainnet testnet regtest)' \
+        '--regtest[Use regtest network]' \
+        '--testnet[Use testnet network]' \
+        '--mainnet[Use mainnet network]' \
+        '(-w --wallet)'{-w,--wallet}'[Target wallet]:wallet:' \
+        '--transport[Transport protocol]:transport:(auto http ws)' \
+        '--http-only[Force HTTP transport]' \
+        '--datadir[Network datadir root]:directory:_directories' \
+        '--nodeinfo[Override nodeinfo.json path]:file:_files' \
+        '--rpc-url[Override RPC URL]:url:' \
+        '--cookie-file[Override cookie file path]:file:_files' \
+        '--format[Output format]:format:(table json plain)' \
+        '--json[JSON output]' \
+        '--json-schema[JSON contract tag]:schema:' \
+        '--pretty[Pretty JSON formatting]' \
+        '--no-pretty[Disable pretty JSON]' \
+        '--color[Color output]' \
+        '--no-color[Disable color output]' \
+        '--timeout[RPC timeout in seconds]:seconds:' \
+        '--retries[Retry attempts]:count:' \
+        '--wait-ready[Wait for daemon ready]' \
+        '--dry-run[Show what would be done]' \
+        '--curl[Show equivalent curl command]' \
+        '(-v --verbose)'{-v,--verbose}'[Show connection details]' \
+        '--version[Show version information]' \
+        '--limit[Page size]:limit:' \
+        '--offset[Start offset]:offset:' \
+        '--cursor[Pagination cursor]:cursor:' \
+        '--filter[Filter pattern]:pattern:' \
+        '--since[Filter by time/height]:time:' \
+        '--until[Filter by time/height]:time:' \
+        '--all[Bypass limits (JSON only)]' \
+        '--min-conf[Minimum confirmations]:count:' \
+        '--address[Filter by address]:address:' \
+        '--type[Filter by transaction type]:type:' \
+        '--label[Filter by label]:label:' \
+        '--min-amount[Minimum amount]:amount:' \
+        '--max-amount[Maximum amount]:amount:' \
+        '--confirmed-only[Confirmed UTXOs only]' \
+        '--state[Peer connection state]:state:' \
+        '--min-version[Minimum peer version]:version:' \
+        '--min-fee-rate[Minimum fee rate]:rate:' \
+        '--txid[Specific transaction ID]:txid:' \
+        '--profile[Use profile]:profile:_dinero_cli_profiles' \
+        '--accept-insecure-cookie[Bypass cookie checks]' \
+        '--connect-timeout-ms[Connect timeout]:milliseconds:' \
+        '--read-timeout-ms[Read timeout]:milliseconds:' \
+        '1: :_dinero_cli_commands' \
+        '*:: :->args'
+
+    case $state in
+        args)
+            case $words[1] in
+                chain)
+                    _arguments \
+                        '1: :(tip info count getblockhash getblock)' \
+                        '*:: :_default'
+                    ;;
+                net)
+                    _arguments \
+                        '1: :(info peers connections)' \
+                        '*:: :_default'
+                    ;;
+                mempool)
+                    _arguments \
+                        '1: :(info raw list)' \
+                        '*:: :_default'
+                    ;;
+                tx)
+                    _arguments \
+                        '1: :(get decode)' \
+                        '*:: :_default'
+                    ;;
+                wallet)
+                    _arguments \
+                        '1: :(create load info balance history utxos addresses newaddress encrypt lock unlock change-passphrase backup export)' \
+                        '*:: :_default'
+                    ;;
+                addr)
+                    _arguments \
+                        '1: :(validate)' \
+                        '*:: :_default'
+                    ;;
+                mining)
+                    _arguments \
+                        '1: :(info setaddress getaddress start stop setthreads generatetoaddress)' \
+                        '*:: :_default'
+                    ;;
+                profile)
+                    _arguments \
+                        '1: :(list show set-default)' \
+                        '*:: :_default'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_dinero_cli_commands() {
+    local commands
+    commands=(
+        'status:Node health and status'
+        'nodeinfo:Show nodeinfo details'
+        'doctor:Comprehensive diagnostics'
+        'chain:Chain information commands'
+        'net:Network status and peers'
+        'mempool:Memory pool information'
+        'tx:Transaction commands'
+        'wallet:Wallet operations'
+        'addr:Address validation'
+        'send:Send transactions'
+        'mining:Mining operations'
+        'rpc:Raw RPC calls'
+        'rpc-parity:RPC compatibility testing'
+        'profile:Profile management'
+    )
+    _describe 'commands' commands
+}
+
+_dinero_cli_profiles() {
+    local profiles
+    if [[ -f ~/.dinero-cli/profiles.json ]]; then
+        profiles=(${(f)"$(jq -r '.profiles | keys[]' ~/.dinero-cli/profiles.json 2>/dev/null)"})
+        _describe 'profiles' profiles
+    fi
+}
+
+_dinero_cli "$@"

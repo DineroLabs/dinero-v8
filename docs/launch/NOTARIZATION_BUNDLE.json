@@ -1,0 +1,44 @@
+{
+  "version": "v0.1.0-consensus-lock",
+  "network": "mainnet",
+  "timestamp_utc": "2025-11-01T19:32:00Z",
+  "checksum_consensus": "ff279196e33c326f61191c368726f924c6728e5d36c227844195e653650ef430",
+  "files": {
+    "README_MAINNET.md": {
+      "sha256": "65ee7b4480ceb43ad3f3145aecf5f487205991fd7b0e8b18abe502388d03a83f",
+      "size_bytes": 1869,
+      "verified": true
+    },
+    "manifest.json": {
+      "sha256": "adfbb5eaf4dcb6b782d148fe1e2be01cebf400a50b63b8747eb5523d4ef90053",
+      "size_bytes": 772,
+      "verified": true
+    },
+    "verify_consensus.sh": {
+      "sha256": "bcdd3b2083622dfcb5ed3d5ecccf3b5c80192de70a678d40692f518577687828",
+      "size_bytes": 474,
+      "verified": true
+    },
+    "node_setup_checklist.md": {
+      "sha256": "e8f21daa62712c57fb5cea218494e4bf79e57cdafcc382d1a5e1fd89647590fc",
+      "size_bytes": 902,
+      "verified": true
+    },
+    "verify_bundle.py": {
+      "sha256": "c515f8f6f7934a66088eadc7dc179b4e391ed4a1e53ae55f2945486d537d3f7c",
+      "size_bytes": 6247,
+      "verified": true
+    }
+  },
+  "signatures": {
+    "sha256_bundle": "7ad18627268897ca8e5a741798ed0d6f2168e3151219e802355d00eec8a3e50c",
+    "pseudonymous_author": "DineroCore Team (M.H.)"
+  },
+  "instructions": {
+    "verify_all": [
+      "cd docs/launch",
+      "sha256sum -c NOTARIZATION_BUNDLE.json --ignore-missing"
+    ],
+    "note": "All hashes must match exactly; any mismatch invalidates mainnet authenticity."
+  }
+}

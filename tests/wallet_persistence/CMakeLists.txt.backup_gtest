@@ -1,0 +1,945 @@
+# Phase F.6: Wallet State & Persistence Certification Tests
+#
+# Tests wallet persistence invariants W.1–W.7
+# Certification criteria: 10/10 P0 tests passing
+
+message(STATUS "Configuring Phase F.6 wallet persistence tests...")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Integration Tests (T1, T2, T3, T5, T10, T11)
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(test_wallet_persistence_f6
+    test_wallet_persistence_f6.cpp
+)
+
+target_link_libraries(test_wallet_persistence_f6 PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    ${ROCKSDB_LIBRARY}
+    secp256k1
+    sqlite3
+    argon2
+    jsoncpp_static
+    gtest
+    gtest_main
+)
+
+target_include_directories(test_wallet_persistence_f6 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(test_wallet_persistence_f6 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(test_wallet_persistence_f6 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register integration tests with CTest
+add_test(NAME WalletPersistence_T1_BalanceDeterminismRestart COMMAND test_wallet_persistence_f6 --gtest_filter=WalletPersistenceTest.T1_BalanceDeterminismAfterRestart)
+add_test(NAME WalletPersistence_T2_BalanceDeterminismRescan COMMAND test_wallet_persistence_f6 --gtest_filter=WalletPersistenceTest.T2_BalanceDeterminismAfterRescan)
+add_test(NAME WalletPersistence_T3_RestartUnchangedChain COMMAND test_wallet_persistence_f6 --gtest_filter=WalletPersistenceTest.T3_RestartWithUnchangedChain)
+add_test(NAME WalletPersistence_T5_ChainReorgDepth1 COMMAND test_wallet_persistence_f6 --gtest_filter=WalletPersistenceTest.T5_ChainReorgDepth1)
+add_test(NAME WalletPersistence_T10_RescanIdempotency COMMAND test_wallet_persistence_f6 --gtest_filter=WalletPersistenceTest.T10_RescanIdempotency)
+add_test(NAME WalletPersistence_T11_MempoolNotPersisted COMMAND test_wallet_persistence_f6 --gtest_filter=WalletPersistenceTest.T11_MempoolTxNotPersisted)
+
+set_tests_properties(
+    WalletPersistence_T1_BalanceDeterminismRestart
+    WalletPersistence_T2_BalanceDeterminismRescan
+    WalletPersistence_T3_RestartUnchangedChain
+    WalletPersistence_T5_ChainReorgDepth1
+    WalletPersistence_T10_RescanIdempotency
+    WalletPersistence_T11_MempoolNotPersisted
+    PROPERTIES
+    LABELS "f6;wallet;persistence;integration"
+    TIMEOUT 60
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# E2E Tests (T7, T8, T9) - Mining Rewards
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(test_wallet_mining_rewards_e2e_f6
+    test_wallet_mining_rewards_e2e_f6.cpp
+)
+
+target_link_libraries(test_wallet_mining_rewards_e2e_f6 PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    dinero_core  # For MiningManager v2
+    ${ROCKSDB_LIBRARY}
+    secp256k1
+    sqlite3
+    argon2
+    jsoncpp_static
+    gtest
+    gtest_main
+)
+
+target_include_directories(test_wallet_mining_rewards_e2e_f6 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(test_wallet_mining_rewards_e2e_f6 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(test_wallet_mining_rewards_e2e_f6 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register E2E tests with CTest
+add_test(NAME WalletPersistence_T7_MiningRewardAppears COMMAND test_wallet_mining_rewards_e2e_f6 --gtest_filter=WalletMiningRewardsE2E.T7_MiningRewardAppearsInWallet)
+add_test(NAME WalletPersistence_T8_MiningRewardMatures COMMAND test_wallet_mining_rewards_e2e_f6 --gtest_filter=WalletMiningRewardsE2E.T8_MiningRewardMaturesCorrectly)
+add_test(NAME WalletPersistence_T9_OrphanedRewardDisappears COMMAND test_wallet_mining_rewards_e2e_f6 --gtest_filter=WalletMiningRewardsE2E.T9_OrphanedMiningRewardDisappears)
+
+set_tests_properties(
+    WalletPersistence_T7_MiningRewardAppears
+    WalletPersistence_T8_MiningRewardMatures
+    WalletPersistence_T9_OrphanedRewardDisappears
+    PROPERTIES
+    LABELS "f6;wallet;persistence;mining;e2e"
+    TIMEOUT 120
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Standalone Manual Test for T1 (GoogleTest workaround)
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(standalone_test_t1
+    standalone_test_t1.cpp
+)
+
+target_link_libraries(standalone_test_t1 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+)
+
+target_include_directories(standalone_test_t1 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(standalone_test_t1 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(standalone_test_t1 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T1 as a test
+add_test(NAME WalletPersistence_T1_Standalone COMMAND standalone_test_t1)
+set_tests_properties(WalletPersistence_T1_Standalone
+    PROPERTIES
+    LABELS "f6;wallet;persistence;manual"
+    TIMEOUT 30
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Standalone Manual Test for T3 (Restart with unchanged chain)
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(standalone_test_t3
+    standalone_test_t3.cpp
+)
+
+target_link_libraries(standalone_test_t3 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+)
+
+target_include_directories(standalone_test_t3 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(standalone_test_t3 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(standalone_test_t3 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T3 as a test
+add_test(NAME WalletPersistence_T3_Standalone COMMAND standalone_test_t3)
+set_tests_properties(WalletPersistence_T3_Standalone
+    PROPERTIES
+    LABELS "f6;wallet;persistence;manual;restart"
+    TIMEOUT 30
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Standalone Manual Test for T2 (Rescan determinism)
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(standalone_test_t2
+    standalone_test_t2.cpp
+)
+
+target_link_libraries(standalone_test_t2 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+)
+
+target_include_directories(standalone_test_t2 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(standalone_test_t2 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(standalone_test_t2 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T2 as a test
+add_test(NAME WalletPersistence_T2_Standalone COMMAND standalone_test_t2)
+set_tests_properties(WalletPersistence_T2_Standalone
+    PROPERTIES
+    LABELS "f6;wallet;persistence;manual;rescan"
+    TIMEOUT 30
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Standalone Manual Test for T10 (Rescan idempotency)
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(standalone_test_t10
+    standalone_test_t10.cpp
+)
+
+target_link_libraries(standalone_test_t10 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+)
+
+target_include_directories(standalone_test_t10 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(standalone_test_t10 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(standalone_test_t10 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T10 as a test
+add_test(NAME WalletPersistence_T10_Standalone COMMAND standalone_test_t10)
+set_tests_properties(WalletPersistence_T10_Standalone
+    PROPERTIES
+    LABELS "f6;wallet;persistence;manual;rescan;idempotency"
+    TIMEOUT 30
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Standalone Manual Test for T11 (Mempool scope limitation)
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(standalone_test_t11
+    standalone_test_t11.cpp
+)
+
+target_link_libraries(standalone_test_t11 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+)
+
+target_include_directories(standalone_test_t11 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(standalone_test_t11 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(standalone_test_t11 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T11 as a test
+add_test(NAME WalletPersistence_T11_Standalone COMMAND standalone_test_t11)
+set_tests_properties(WalletPersistence_T11_Standalone
+    PROPERTIES
+    LABELS "f6;wallet;persistence;manual;mempool;scope"
+    TIMEOUT 30
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Standalone Manual Test for T5 (Chain reorg safety)
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(standalone_test_t5
+    standalone_test_t5.cpp
+)
+
+target_link_libraries(standalone_test_t5 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+)
+
+target_include_directories(standalone_test_t5 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(standalone_test_t5 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(standalone_test_t5 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T5 as a test
+add_test(NAME WalletPersistence_T5_Standalone COMMAND standalone_test_t5)
+set_tests_properties(WalletPersistence_T5_Standalone
+    PROPERTIES
+    LABELS "f6;wallet;persistence;manual;reorg;safety"
+    TIMEOUT 30
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Standalone Manual Test for T7 (Mining reward appears)
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(standalone_test_t7
+    standalone_test_t7.cpp
+)
+
+target_link_libraries(standalone_test_t7 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+    sqlite3
+)
+
+target_include_directories(standalone_test_t7 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(standalone_test_t7 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(standalone_test_t7 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T7 as a test
+add_test(NAME WalletPersistence_T7_Standalone COMMAND standalone_test_t7)
+set_tests_properties(WalletPersistence_T7_Standalone
+    PROPERTIES
+    LABELS "f6;wallet;persistence;manual;mining;rewards"
+    TIMEOUT 30
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Standalone Manual Test for T8 (Mining reward matures)
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(standalone_test_t8
+    standalone_test_t8.cpp
+)
+
+target_link_libraries(standalone_test_t8 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+    sqlite3
+)
+
+target_include_directories(standalone_test_t8 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(standalone_test_t8 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(standalone_test_t8 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T8 as a test
+add_test(NAME WalletPersistence_T8_Standalone COMMAND standalone_test_t8)
+set_tests_properties(WalletPersistence_T8_Standalone
+    PROPERTIES
+    LABELS "f6;wallet;persistence;manual;mining;maturity"
+    TIMEOUT 60
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Standalone Manual Test for T9 (Orphaned mining reward)
+# ═══════════════════════════════════════════════════════════════════════════
+
+add_executable(standalone_test_t9
+    standalone_test_t9.cpp
+)
+
+target_link_libraries(standalone_test_t9 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+    sqlite3
+)
+
+target_include_directories(standalone_test_t9 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(standalone_test_t9 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(standalone_test_t9 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T9 as a test
+add_test(NAME WalletPersistence_T9_Standalone COMMAND standalone_test_t9)
+set_tests_properties(WalletPersistence_T9_Standalone
+    PROPERTIES
+    LABELS "f6;wallet;persistence;manual;mining;reorg"
+    TIMEOUT 30
+)
+
+#
+# ============================================================================
+# Phase F.8: Wallet Spending Rules Tests
+# ============================================================================
+#
+# T14: Spendable Balance Calculation (S.3)
+# Validates: getBalance() correctly segregates immature coinbase
+#
+
+# Standalone Test T14: Spendable Balance Calculation
+add_executable(standalone_test_t14
+    standalone_test_t14.cpp
+)
+
+# Link libraries for T14 (following T8 pattern)
+target_link_libraries(standalone_test_t14 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+    sqlite3
+)
+
+# Include directories for T14
+target_include_directories(standalone_test_t14 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+# Compile definitions for T14
+target_compile_definitions(standalone_test_t14 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Platform-specific settings for T14
+if(APPLE)
+    target_link_libraries(standalone_test_t14 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T14 as a test
+add_test(NAME WalletSpending_T14_Standalone COMMAND standalone_test_t14)
+set_tests_properties(WalletSpending_T14_Standalone
+    PROPERTIES
+    LABELS "f8;wallet;spending;balance;maturity"
+    TIMEOUT 30
+)
+
+#
+# T12: Immature Coinbase Rejection (S.1)
+# Validates: Wallet refuses to spend immature coinbase
+#
+
+# Standalone Test T12: Immature Coinbase Rejection
+add_executable(standalone_test_t12
+    standalone_test_t12.cpp
+)
+
+# Link libraries for T12 (following T14 pattern)
+target_link_libraries(standalone_test_t12 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+    sqlite3
+)
+
+# Include directories for T12
+target_include_directories(standalone_test_t12 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+# Compile definitions for T12
+target_compile_definitions(standalone_test_t12 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Platform-specific settings for T12
+if(APPLE)
+    target_link_libraries(standalone_test_t12 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T12 as a test
+add_test(NAME WalletSpending_T12_Standalone COMMAND standalone_test_t12)
+set_tests_properties(WalletSpending_T12_Standalone
+    PROPERTIES
+    LABELS "f8;wallet;spending;immature;rejection"
+    TIMEOUT 30
+)
+
+#
+# T13: Mature Coinbase Spending (S.2)
+# Validates: Wallet allows spending mature coinbase
+#
+
+# Standalone Test T13: Mature Coinbase Spending
+add_executable(standalone_test_t13
+    standalone_test_t13.cpp
+)
+
+# Link libraries for T13 (following T12 pattern)
+target_link_libraries(standalone_test_t13 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+    sqlite3
+)
+
+# Include directories for T13
+target_include_directories(standalone_test_t13 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+# Compile definitions for T13
+target_compile_definitions(standalone_test_t13 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Platform-specific settings for T13
+if(APPLE)
+    target_link_libraries(standalone_test_t13 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T13 as a test
+add_test(NAME WalletSpending_T13_Standalone COMMAND standalone_test_t13)
+set_tests_properties(WalletSpending_T13_Standalone
+    PROPERTIES
+    LABELS "f8;wallet;spending;mature;acceptance"
+    TIMEOUT 30
+)
+
+# ============================================================================
+# Standalone Test T15: Mempool Rejects Immature Spend (S.3)
+# ============================================================================
+
+add_executable(standalone_test_t15
+    standalone_test_t15.cpp
+    ${CMAKE_SOURCE_DIR}/src/mempool/mempool.cpp
+    ${CMAKE_SOURCE_DIR}/src/mempool/invalid_tx_cache.cpp
+    ${CMAKE_SOURCE_DIR}/src/mempool/coins_view_mempool.cpp
+)
+
+# Link libraries for T15 (including mempool dependencies)
+target_link_libraries(standalone_test_t15 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    dinero_consensus  # For tx_validation and CoinsDB
+    argon2
+    jsoncpp_static
+    sqlite3
+    OpenSSL::Crypto
+)
+
+# Include directories for T15
+target_include_directories(standalone_test_t15 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+# Compile definitions for T15
+target_compile_definitions(standalone_test_t15 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Platform-specific settings for T15
+if(APPLE)
+    target_link_libraries(standalone_test_t15 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T15 as a test
+add_test(NAME WalletSpending_T15_Standalone COMMAND standalone_test_t15)
+set_tests_properties(WalletSpending_T15_Standalone
+    PROPERTIES
+    LABELS "f8;wallet;spending;mempool;consensus"
+    TIMEOUT 30
+)
+
+# ============================================================================
+# Standalone Test T16: Reorg Impact on Spendability (S.4)
+# ============================================================================
+
+add_executable(standalone_test_t16
+    standalone_test_t16.cpp
+)
+
+# Link libraries for T16 (following T12/T13 pattern)
+target_link_libraries(standalone_test_t16 PRIVATE
+    dinero_core  # Includes dinero_wallet + lightning_stubs
+    argon2
+    jsoncpp_static
+    sqlite3
+)
+
+# Include directories for T16
+target_include_directories(standalone_test_t16 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+# Compile definitions for T16
+target_compile_definitions(standalone_test_t16 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Platform-specific settings for T16
+if(APPLE)
+    target_link_libraries(standalone_test_t16 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T16 as a test
+add_test(NAME WalletSpending_T16_Standalone COMMAND standalone_test_t16)
+set_tests_properties(WalletSpending_T16_Standalone
+    PROPERTIES
+    LABELS "f8;wallet;spending;reorg;dynamic"
+    TIMEOUT 30
+)
+
+# ============================================================================
+# Standalone Test T17: Wallet → Mempool Successful Spend Path (I.9.1)
+# ============================================================================
+
+add_executable(standalone_test_t17
+    standalone_test_t17.cpp
+    ${CMAKE_SOURCE_DIR}/src/mempool/mempool.cpp
+    ${CMAKE_SOURCE_DIR}/src/mempool/invalid_tx_cache.cpp
+    ${CMAKE_SOURCE_DIR}/src/mempool/coins_view_mempool.cpp
+)
+
+# Link libraries for T17 (wallet + mempool + consensus)
+target_link_libraries(standalone_test_t17 PRIVATE
+    dinero_core       # Includes dinero_wallet
+    dinero_consensus  # For tx_validation
+    argon2
+    jsoncpp_static
+    sqlite3
+    OpenSSL::Crypto   # For crypto functions
+)
+
+# Include directories for T17
+target_include_directories(standalone_test_t17 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+# Compile definitions for T17
+target_compile_definitions(standalone_test_t17 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Platform-specific settings for T17
+if(APPLE)
+    target_link_libraries(standalone_test_t17 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T17 as a test
+add_test(NAME WalletMempool_T17_Standalone COMMAND standalone_test_t17)
+set_tests_properties(WalletMempool_T17_Standalone
+    PROPERTIES
+    LABELS "f9;wallet;mempool;spending;integration"
+    TIMEOUT 30
+)
+
+# ============================================================================
+# Standalone Test T18: Consensus Rejection at Wallet Layer (I.9.2)
+# ============================================================================
+
+add_executable(standalone_test_t18
+    standalone_test_t18.cpp
+)
+
+# Link libraries for T18
+target_link_libraries(standalone_test_t18 PRIVATE
+    dinero_core
+    argon2
+    jsoncpp_static
+    sqlite3
+)
+
+# Include directories for T18
+target_include_directories(standalone_test_t18 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+# Compile definitions for T18
+target_compile_definitions(standalone_test_t18 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Platform-specific settings for T18
+if(APPLE)
+    target_link_libraries(standalone_test_t18 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T18 as a test
+add_test(NAME WalletMempool_T18_Standalone COMMAND standalone_test_t18)
+set_tests_properties(WalletMempool_T18_Standalone
+    PROPERTIES
+    LABELS "f9;wallet;consensus;rejection;defense"
+    TIMEOUT 30
+)
+
+# ============================================================================
+# Standalone Test T19: Policy Rejection - Insufficient Fee (I.9.3, I.9.4)
+# ============================================================================
+
+add_executable(standalone_test_t19
+    standalone_test_t19.cpp
+    ${CMAKE_SOURCE_DIR}/src/mempool/mempool.cpp
+    ${CMAKE_SOURCE_DIR}/src/mempool/invalid_tx_cache.cpp
+    ${CMAKE_SOURCE_DIR}/src/mempool/coins_view_mempool.cpp
+)
+
+# Link libraries for T19 (wallet + mempool + consensus)
+target_link_libraries(standalone_test_t19 PRIVATE
+    dinero_core       # Includes dinero_wallet
+    dinero_consensus  # For tx_validation
+    argon2
+    jsoncpp_static
+    sqlite3
+    OpenSSL::Crypto   # For crypto functions
+)
+
+# Include directories for T19
+target_include_directories(standalone_test_t19 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+# Compile definitions for T19
+target_compile_definitions(standalone_test_t19 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Platform-specific settings for T19
+if(APPLE)
+    target_link_libraries(standalone_test_t19 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register standalone T19 as a test
+add_test(NAME WalletMempool_T19_Standalone COMMAND standalone_test_t19)
+set_tests_properties(WalletMempool_T19_Standalone
+    PROPERTIES
+    LABELS "f9;wallet;mempool;policy;rejection"
+    TIMEOUT 30
+)
+
+message(STATUS "✅ Phase F.6 wallet persistence tests configured")
+message(STATUS "   Integration tests: 6 (T1, T2, T3, T5, T10, T11)")
+message(STATUS "   E2E tests: 3 (T7, T8, T9)")
+message(STATUS "   Total P0 tests: 9/10 (T4 deferred)")
+message(STATUS "✅ Phase F.8 wallet spending tests configured")
+message(STATUS "   Foundation test: T14 (Spendable Balance Calculation)")
+message(STATUS "   Spending tests: T12 (Immature Rejection), T13 (Mature Acceptance), T15 (Mempool Rejection), T16 (Reorg Impact)")

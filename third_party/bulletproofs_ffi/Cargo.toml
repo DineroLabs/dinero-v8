@@ -1,0 +1,52 @@
+[package]
+name = "bulletproofs-ffi"
+version = "1.0.0"
+edition = "2021"
+authors = ["DineroCoin Core Team"]
+description = "C FFI bindings for Dalek Bulletproofs"
+license = "MIT"
+
+[lib]
+name = "bulletproofs_ffi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+# Dalek Bulletproofs - v4.0 (stable, production-tested)
+# Note: Batch verification API in v4.0 requires curve25519-dalek-ng fork
+bulletproofs = { version = "4.0" }
+
+# Curve25519 backend - ng fork for bulletproofs 4.0 compatibility
+curve25519-dalek-ng = { version = "4" }
+
+# Merlin transcript (Fiat-Shamir transform)
+merlin = "3.0"
+
+# Random number generation
+rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
+rand = "0.8"
+
+# Constant-time operations
+subtle = { version = "2.5", default-features = false }
+
+# Digest for hashing
+digest = "0.10"
+sha2 = "0.10"
+
+# Secure memory zeroization
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+
+# For vendoring: cargo vendor --versioned-dirs
+[patch.crates-io]
+# Uncomment if you want to use local vendored versions
+# bulletproofs = { path = "../dalek_bulletproofs" }
+# curve25519-dalek = { path = "../dalek_curve25519" }
+# merlin = { path = "../dalek_merlin" }

@@ -1,0 +1,12 @@
+diff --git a/third_party/rocksdb/db/write_thread.h b/third_party/rocksdb/db/write_thread.h
+index 1 1
+--- a/third_party/rocksdb/db/write_thread.h
++++ b/third_party/rocksdb/db/write_thread.h
+@@ -11,6 +11,7 @@
+ #include <stdint.h>
+ #include <atomic>
+ #include <chrono>
++#include <mutex>
+ #include <condition_variable>
+ #include <deque>
+ #include <functional>

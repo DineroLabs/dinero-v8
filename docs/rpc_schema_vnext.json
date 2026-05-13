@@ -1,0 +1,1015 @@
+{
+  "count" : 138,
+  "methods" : 
+  [
+    {
+      "category" : "telemetry",
+      "description" : "Returns node health status for monitoring (Prometheus, Grafana, etc.)",
+      "name" : "gethealth",
+      "returns" : 
+      {
+        "description" : "Health status: ok (healthy), degraded (issues), error (critical)",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "mining_extras",
+      "description" : "Returns block template for external miners",
+      "name" : "getblocktemplate",
+      "returns" : 
+      {
+        "description" : "Block template with transactions, difficulty, and metadata",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "mempool",
+      "description" : "Returns memory pool information",
+      "name" : "getmempoolinfo",
+      "returns" : 
+      {
+        "description" : "Mempool statistics including size and memory usage",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "network",
+      "description" : "Returns the number of active peer connections",
+      "help" : "Examples:\n  getconnectioncount\n",
+      "name" : "getconnectioncount",
+      "returns" : 
+      {
+        "description" : "Number of active connections",
+        "type" : "number"
+      }
+    },
+    {
+      "category" : "network",
+      "description" : "Add, remove, or attempt connection to a specific node",
+      "help" : "Examples:\n  addnode \"192.168.1.100:20999\" \"add\"\n  addnode \"seed.dinero-coin.com:20999\" \"onetry\"\n",
+      "name" : "addnode",
+      "parameters" : 
+      [
+        {
+          "description" : "Node address (host:port)",
+          "name" : "node",
+          "required" : true,
+          "type" : "string"
+        },
+        {
+          "description" : "Command: add, remove, or onetry",
+          "name" : "command",
+          "required" : true,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Operation result",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "network",
+      "description" : "Returns data about each connected network peer",
+      "help" : "Examples:\n  getpeerinfo\n",
+      "name" : "getpeerinfo",
+      "returns" : 
+      {
+        "description" : "Array of peer objects with connection details and statistics",
+        "type" : "array"
+      }
+    },
+    {
+      "category" : "network",
+      "description" : "Returns server runtime information and configuration",
+      "help" : "Examples:\n  getserverinfo\n",
+      "name" : "getserverinfo",
+      "returns" : 
+      {
+        "description" : "Server info including uptime, version, and WebSocket status",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "mining",
+      "description" : "Set the mining payout address",
+      "help" : "Examples:\n  mining.setaddress \"din1q...\"\n",
+      "name" : "mining.setaddress",
+      "parameters" : 
+      [
+        {
+          "description" : "Dinero address to receive mining rewards",
+          "name" : "address",
+          "required" : true,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Address set confirmation",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "mining",
+      "description" : "Stop mining operations",
+      "help" : "Examples:\n  mining.stop\n",
+      "name" : "mining.stop",
+      "returns" : 
+      {
+        "description" : "Mining stop confirmation",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "mining",
+      "description" : "Returns current mining status, hashrate, and statistics",
+      "help" : "Examples:\n  mining.info\n",
+      "name" : "mining.info",
+      "returns" : 
+      {
+        "description" : "Mining info including enabled status, thread count, hashrate, and blocks found",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "websocket",
+      "name" : "ws_unsubscribe"
+    },
+    {
+      "category" : "multiasset",
+      "name" : "multiasset.stats"
+    },
+    {
+      "category" : "multiasset",
+      "name" : "multiasset.estimateconversion"
+    },
+    {
+      "category" : "multiasset",
+      "name" : "multiasset.listcontracts"
+    },
+    {
+      "category" : "multiasset",
+      "name" : "multiasset.getcontract"
+    },
+    {
+      "category" : "multiasset",
+      "name" : "multiasset.refundescrow"
+    },
+    {
+      "category" : "multiasset",
+      "name" : "multiasset.getconversionroutes"
+    },
+    {
+      "category" : "multiasset",
+      "name" : "multiasset.createescrow"
+    },
+    {
+      "category" : "contract",
+      "name" : "contract.getsighash"
+    },
+    {
+      "category" : "contract",
+      "name" : "contract.setlocktx"
+    },
+    {
+      "category" : "contract",
+      "name" : "contract.broadcastrelease"
+    },
+    {
+      "category" : "contract",
+      "name" : "contract.refund"
+    },
+    {
+      "category" : "contract",
+      "name" : "contract.release"
+    },
+    {
+      "category" : "contract",
+      "name" : "contract.list"
+    },
+    {
+      "category" : "contract",
+      "name" : "contract.status"
+    },
+    {
+      "category" : "mining",
+      "description" : "Start mining with specified number of threads",
+      "help" : "Examples:\n  mining.start\n  mining.start 4\n",
+      "name" : "mining.start",
+      "parameters" : 
+      [
+        {
+          "description" : "Number of mining threads (default: 1)",
+          "name" : "threads",
+          "required" : false,
+          "type" : "number"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Mining start confirmation with thread count and address",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "contract",
+      "name" : "contract.createescrow"
+    },
+    {
+      "category" : "p2p",
+      "name" : "p2p.releaseescrow"
+    },
+    {
+      "category" : "p2p",
+      "name" : "p2p.escrowinfo"
+    },
+    {
+      "category" : "p2p",
+      "name" : "p2p.bestoffers"
+    },
+    {
+      "category" : "p2p",
+      "name" : "p2p.getoffer"
+    },
+    {
+      "category" : "p2p",
+      "name" : "p2p.completeoffer"
+    },
+    {
+      "category" : "wallet",
+      "name" : "walletrescan"
+    },
+    {
+      "category" : "p2p",
+      "name" : "p2p.verifyoffer"
+    },
+    {
+      "category" : "p2p",
+      "name" : "p2p.listoffers"
+    },
+    {
+      "category" : "blockchain",
+      "name" : "setarp"
+    },
+    {
+      "category" : "bridge",
+      "name" : "bridge.routes"
+    },
+    {
+      "category" : "multiasset",
+      "name" : "multiasset.releaseescrow"
+    },
+    {
+      "category" : "economics",
+      "description" : "Returns mining statistics and difficulty metrics",
+      "help" : "Examples:\n  getminerstats\n",
+      "name" : "getminerstats",
+      "returns" : 
+      {
+        "description" : "Mining stats including difficulty, hashrate estimates, and block time averages",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "bridge",
+      "name" : "bridge.status"
+    },
+    {
+      "category" : "wallet",
+      "name" : "decoderawtransaction"
+    },
+    {
+      "category" : "wallet",
+      "name" : "getbalance"
+    },
+    {
+      "category" : "auth",
+      "description" : "List all active sessions (connected devices)",
+      "name" : "auth.sessions.list",
+      "returns" : 
+      {
+        "description" : "List of active sessions with device names, IPs, and timestamps",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "bridge",
+      "name" : "bridge.providers"
+    },
+    {
+      "category" : "bridge",
+      "name" : "bridge.getrate"
+    },
+    {
+      "category" : "payment",
+      "name" : "payment.unwatch"
+    },
+    {
+      "category" : "blockchain",
+      "description" : "Returns the hash of the best (tip) block",
+      "name" : "getbestblockhash",
+      "returns" : 
+      {
+        "description" : "Block hash as hex string",
+        "type" : "string"
+      }
+    },
+    {
+      "category" : "auth",
+      "description" : "Rename a session (change device name)",
+      "name" : "auth.sessions.rename",
+      "parameters" : 
+      [
+        {
+          "description" : "Session ID to rename",
+          "name" : "session_id",
+          "required" : true,
+          "type" : "string"
+        },
+        {
+          "description" : "New device name",
+          "name" : "device_name",
+          "required" : true,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Success status and message",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "bridge",
+      "name" : "bridge.convert"
+    },
+    {
+      "category" : "wallet",
+      "name" : "getwalletstatus"
+    },
+    {
+      "category" : "auth",
+      "description" : "Revoke a session (disconnect device)",
+      "name" : "auth.sessions.revoke",
+      "parameters" : 
+      [
+        {
+          "description" : "Session ID to revoke",
+          "name" : "session_id",
+          "required" : true,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Success status and message",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "blockchain_legacy",
+      "description" : "Returns block data for given hash. Utreexo commitment fields use display-order hex for compatibility; use utreexocommitment_raw for semantic equality with header bytes, proof bundles, or blockchain.getutreexocommitment.",
+      "name" : "getblock",
+      "parameters" : 
+      [
+        {
+          "description" : "Block hash",
+          "name" : "hash",
+          "required" : false,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Block information",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "payment",
+      "name" : "payment.analyze"
+    },
+    {
+      "category" : "auth",
+      "description" : "Get token statistics",
+      "name" : "auth.stats",
+      "returns" : 
+      {
+        "description" : "Token counts by scope and type",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "auth",
+      "description" : "Get current client information",
+      "name" : "auth.whoami",
+      "returns" : 
+      {
+        "description" : "Client identity and connection info",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "p2p",
+      "name" : "p2p.canceloffer"
+    },
+    {
+      "category" : "auth",
+      "description" : "Manually refresh token lifetime",
+      "name" : "auth.refreshtoken",
+      "parameters" : 
+      [
+        {
+          "description" : "Token to refresh",
+          "name" : "token",
+          "required" : true,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Refreshed token information",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "hardware_wallet",
+      "name" : "enumeratehwdevices"
+    },
+    {
+      "category" : "auth",
+      "description" : "Generate a new access token for RPC authentication",
+      "name" : "auth.requesttoken",
+      "parameters" : 
+      [
+        {
+          "description" : "Access scope: wallet, mining, read, admin (default: wallet)",
+          "name" : "scope",
+          "required" : false,
+          "type" : "string"
+        },
+        {
+          "description" : "Auto-extend lifetime on use (default: true)",
+          "name" : "auto_refresh",
+          "required" : false,
+          "type" : "boolean"
+        },
+        {
+          "description" : "Never expires (default: false)",
+          "name" : "persistent",
+          "required" : false,
+          "type" : "boolean"
+        },
+        {
+          "description" : "Token lifetime in seconds (default: 3600, min: 60, max: 86400)",
+          "name" : "lifetime",
+          "required" : false,
+          "type" : "number"
+        },
+        {
+          "description" : "Device name for session tracking (e.g., 'Desktop Wallet', 'Trading Bot')",
+          "name" : "device_name",
+          "required" : false,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Token information including token string, session_id, expiry, and features",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "rpc",
+      "description" : "Returns list of all available RPC methods",
+      "help" : "Examples:\n  rpc.listmethods\n",
+      "name" : "rpc.listmethods",
+      "returns" : 
+      {
+        "description" : "Array of method names",
+        "type" : "array"
+      }
+    },
+    {
+      "category" : "consensus",
+      "description" : "Validates database consistency and consensus rules",
+      "help" : "Examples:\n  consensus.checkdb\n  consensus.checkdb 2\n",
+      "name" : "consensus.checkdb",
+      "parameters" : 
+      [
+        {
+          "description" : "Check level: 0=quick, 1=standard, 2=deep (default: 1)",
+          "name" : "level",
+          "required" : false,
+          "type" : "number"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Validation results with errors found and recommendations",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "mempool",
+      "description" : "Returns all transaction ids in memory pool",
+      "name" : "getrawmempool",
+      "parameters" : 
+      [
+        {
+          "description" : "Return detailed information (default: false)",
+          "name" : "verbose",
+          "required" : true,
+          "type" : "bool"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Array of transaction ids or detailed object if verbose=true",
+        "type" : "array/object"
+      }
+    },
+    {
+      "category" : "telemetry",
+      "description" : "Returns block verification status summary",
+      "help" : "Examples:\n  getverificationsummary\n",
+      "name" : "getverificationsummary",
+      "returns" : 
+      {
+        "description" : "Verification summary including verified, pending, and failed block counts",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "hardware_wallet",
+      "name" : "importpsbtfromfile"
+    },
+    {
+      "category" : "rpc",
+      "description" : "Returns RPC API version information",
+      "help" : "Examples:\n  rpc.version\n",
+      "name" : "rpc.version",
+      "returns" : 
+      {
+        "description" : "RPC version with major, minor, and patch numbers",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "economics",
+      "description" : "Returns comprehensive economic and monetary policy information",
+      "help" : "Examples:\n  geteconomics\n",
+      "name" : "geteconomics",
+      "returns" : 
+      {
+        "description" : "Economic policy including emission schedule, halving epochs, and monetary rules",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "network",
+      "description" : "Returns network status and connection information",
+      "help" : "Examples:\n  getnetworkinfo\n",
+      "name" : "getnetworkinfo",
+      "returns" : 
+      {
+        "description" : "Network information including connections, protocol version, and network activity",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "blockchain_legacy",
+      "description" : "Marks a block as invalid (admin tool)",
+      "name" : "invalidateblock",
+      "parameters" : 
+      [
+        {
+          "description" : "Block hash",
+          "name" : "hash",
+          "required" : false,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Invalidation result",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "wallet",
+      "name" : "walletunlock"
+    },
+    {
+      "category" : "blockchain_legacy",
+      "description" : "Submits a mined block to the network",
+      "name" : "submitblock",
+      "parameters" : 
+      [
+        {
+          "description" : "Block data in hex",
+          "name" : "hexdata",
+          "required" : false,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Submission result",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "blockchain_legacy",
+      "description" : "Returns mining statistics and network hashrate",
+      "name" : "getmininginfo",
+      "returns" : 
+      {
+        "description" : "Mining information including difficulty, hashrate, epoch",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "blockchain",
+      "description" : "Returns the number of blocks in the blockchain",
+      "name" : "getblockcount",
+      "returns" : 
+      {
+        "description" : "Current block height",
+        "type" : "number"
+      }
+    },
+    {
+      "category" : "discovery",
+      "name" : "rpc.discover"
+    },
+    {
+      "category" : "discovery",
+      "name" : "rpc.info"
+    },
+    {
+      "category" : "wallet",
+      "name" : "settxfee"
+    },
+    {
+      "category" : "wallet",
+      "name" : "sendrawtransaction"
+    },
+    {
+      "category" : "telemetry",
+      "description" : "Returns metrics in Prometheus text format for scraping",
+      "name" : "getmetrics",
+      "returns" : 
+      {
+        "description" : "Prometheus/OpenMetrics compatible metrics",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "payment",
+      "name" : "payment.status"
+    },
+    {
+      "category" : "wallet",
+      "name" : "sendtoaddress"
+    },
+    {
+      "category" : "wallet",
+      "name" : "createhdwallet"
+    },
+    {
+      "category" : "wallet",
+      "name" : "combinepsbt"
+    },
+    {
+      "category" : "economics",
+      "description" : "Returns detailed supply statistics including hard cap, premine, and PoW issuance",
+      "help" : "Examples:\n  getsupply\n",
+      "name" : "getsupply",
+      "returns" : 
+      {
+        "description" : "Supply info with hard_cap, premine, pow_issued, circulating_supply, and emission schedule",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "websocket",
+      "name" : "ws_subscribe"
+    },
+    {
+      "category" : "wallet",
+      "name" : "getlabel"
+    },
+    {
+      "category" : "wallet",
+      "name" : "setlabel"
+    },
+    {
+      "category" : "wallet",
+      "name" : "listaddresseswithbalances"
+    },
+    {
+      "category" : "wallet",
+      "name" : "dumpwallet"
+    },
+    {
+      "category" : "wallet",
+      "name" : "generateqrcode"
+    },
+    {
+      "category" : "hardware_wallet",
+      "name" : "analyzepsbt"
+    },
+    {
+      "category" : "payment",
+      "name" : "payment.watch"
+    },
+    {
+      "category" : "wallet",
+      "name" : "importprivkey"
+    },
+    {
+      "category" : "wallet",
+      "name" : "finalizepsbt"
+    },
+    {
+      "category" : "mining_extras",
+      "description" : "Mine blocks to specified address (regtest only)",
+      "name" : "generatetoaddress",
+      "parameters" : 
+      [
+        {
+          "description" : "Number of blocks to mine (1-1000)",
+          "name" : "nblocks",
+          "required" : false,
+          "type" : "int"
+        },
+        {
+          "description" : "Bech32 address for coinbase rewards",
+          "name" : "address",
+          "required" : false,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Array of block hashes generated",
+        "type" : "array"
+      }
+    },
+    {
+      "category" : "wallet",
+      "name" : "getsyncstate"
+    },
+    {
+      "category" : "wallet",
+      "name" : "walletlock"
+    },
+    {
+      "category" : "wallet",
+      "name" : "walletpassphrasechange"
+    },
+    {
+      "category" : "wallet",
+      "name" : "scanutxos"
+    },
+    {
+      "category" : "wallet",
+      "name" : "walletcreatefundedpsbt"
+    },
+    {
+      "category" : "telemetry",
+      "description" : "Returns node identity info for cross-region debugging",
+      "name" : "getnodeidentity",
+      "returns" : 
+      {
+        "description" : "Node identity including region, version, and P2P info",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "wallet",
+      "name" : "backupwallet"
+    },
+    {
+      "category" : "bridge",
+      "name" : "bridge.findroute"
+    },
+    {
+      "category" : "blockchain",
+      "description" : "Returns the current network difficulty",
+      "name" : "getdifficulty",
+      "returns" : 
+      {
+        "description" : "Current mining difficulty (1.0 minimum)",
+        "type" : "number"
+      }
+    },
+    {
+      "category" : "wallet",
+      "name" : "dumpprivkey"
+    },
+    {
+      "category" : "wallet",
+      "name" : "encryptwallet"
+    },
+    {
+      "category" : "multiasset",
+      "name" : "multiasset.supportedassets"
+    },
+    {
+      "category" : "wallet",
+      "name" : "getnewaddress"
+    },
+    {
+      "category" : "auth",
+      "description" : "Revoke (delete) a token",
+      "name" : "auth.revoketoken",
+      "parameters" : 
+      [
+        {
+          "description" : "Token to revoke",
+          "name" : "token",
+          "required" : true,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Revocation status",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "wallet",
+      "name" : "listtransactions"
+    },
+    {
+      "category" : "wallet",
+      "name" : "restorewallet"
+    },
+    {
+      "category" : "websocket",
+      "name" : "ws_list_subscriptions"
+    },
+    {
+      "category" : "websocket",
+      "name" : "wsReplay"
+    },
+    {
+      "category" : "websocket",
+      "name" : "wsGetStatus"
+    },
+    {
+      "category" : "wallet",
+      "name" : "deriveaddress"
+    },
+    {
+      "category" : "websocket",
+      "name" : "ws_event_types"
+    },
+    {
+      "category" : "contract",
+      "name" : "contract.broadcastrefund"
+    },
+    {
+      "category" : "wallet",
+      "name" : "validateaddress"
+    },
+    {
+      "category" : "wallet",
+      "name" : "exportcsv"
+    },
+    {
+      "category" : "wallet",
+      "name" : "getwalletinfo"
+    },
+    {
+      "category" : "wallet",
+      "name" : "listunspent"
+    },
+    {
+      "category" : "wallet",
+      "name" : "listaddresses"
+    },
+    {
+      "category" : "mining",
+      "description" : "Get the current mining payout address",
+      "help" : "Examples:\n  mining.getaddress\n",
+      "name" : "mining.getaddress",
+      "returns" : 
+      {
+        "description" : "Current mining address",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "websocket",
+      "name" : "wsSubscribe"
+    },
+    {
+      "category" : "blockchain_legacy",
+      "description" : "Returns blockchain state information",
+      "name" : "getblockchaininfo",
+      "returns" : 
+      {
+        "description" : "Blockchain state including chain, height, difficulty",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "websocket",
+      "name" : "wsGetTopicStats"
+    },
+    {
+      "category" : "p2p",
+      "name" : "p2p.acceptoffer"
+    },
+    {
+      "category" : "p2p",
+      "name" : "p2p.createoffer"
+    },
+    {
+      "category" : "websocket",
+      "name" : "wsGetConnections"
+    },
+    {
+      "category" : "blockchain",
+      "name" : "getarp"
+    },
+    {
+      "category" : "wallet",
+      "name" : "notarizebackup"
+    },
+    {
+      "category" : "blockchain_legacy",
+      "description" : "Returns hash of block at given height",
+      "name" : "getblockhash",
+      "parameters" : 
+      [
+        {
+          "description" : "Block height",
+          "name" : "height",
+          "required" : false,
+          "type" : "int"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Block hash",
+        "type" : "string"
+      }
+    },
+    {
+      "category" : "wallet",
+      "name" : "createrawtransaction"
+    },
+    {
+      "category" : "wallet",
+      "name" : "getrawtransaction"
+    },
+    {
+      "category" : "blockchain",
+      "description" : "Returns block header information by hash. utreexo_root is display-order hex for compatibility; use utreexo_root_raw for semantic equality with header bytes, proof bundles, or blockchain.getutreexocommitment.",
+      "name" : "getblockheader",
+      "parameters" : 
+      [
+        {
+          "description" : "Block hash (64-character hex string)",
+          "name" : "hash",
+          "required" : true,
+          "type" : "string"
+        }
+      ],
+      "returns" : 
+      {
+        "description" : "Block header information",
+        "type" : "object"
+      }
+    },
+    {
+      "category" : "wallet",
+      "name" : "importwallet"
+    },
+    {
+      "category" : "wallet",
+      "name" : "signrawtransactionwithwallet"
+    },
+    {
+      "category" : "bridge",
+      "name" : "bridge.refresh"
+    },
+    {
+      "category" : "wallet",
+      "name" : "walletprocesspsbt"
+    },
+    {
+      "category" : "hardware_wallet",
+      "name" : "exportpsbttofile"
+    }
+  ],
+  "rpc_schema" : "din.discovery.v2",
+  "version" : "2.0"
+}

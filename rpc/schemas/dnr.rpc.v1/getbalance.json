@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getbalance",
+  "description": "Get wallet balance",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "getbalance"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "description": "Optional account name (deprecated)"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum confirmations (default: 1)"
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "balance_una": {
+          "type": "integer",
+          "description": "Total balance in una"
+        },
+        "balance_din": {
+          "type": "string",
+          "description": "Total balance in DIN (formatted)"
+        },
+        "unconfirmed_una": {
+          "type": "integer",
+          "description": "Unconfirmed balance in una"
+        },
+        "unconfirmed_din": {
+          "type": "string",
+          "description": "Unconfirmed balance in DIN (formatted)"
+        },
+        "immature_una": {
+          "type": "integer",
+          "description": "Immature coinbase balance in una"
+        },
+        "immature_din": {
+          "type": "string",
+          "description": "Immature coinbase balance in DIN (formatted)"
+        }
+      },
+      "required": ["balance_una", "balance_din"]
+    }
+  }
+}

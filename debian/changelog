@@ -1,0 +1,77 @@
+dinero-core (8.0.0~rc1-1) unstable; urgency=medium
+
+  * First unified release from the DineroLabs/dinero monorepo (formerly
+    DineroLabs/Dinero-Coin + DineroLabs/dinero-qt + DineroLabs/dinero-solo-miner).
+    One source tree, one tag, one version string — daemon, CLI, Qt GUI, solo
+    miner all derive from the same commit.
+  * Mining backend stack: dinero-solo-miner gains a MinerBackend enum with
+    --backend <auto|cpu|metal|cuda|opencl> CLI selection. CUDA + Metal +
+    OpenCL backends use runtime kernel compilation (NVRTC / clBuildProgram /
+    MTLLibrary newLibraryWithSource) — no nvcc at build time, sidestepping
+    the CUDA 12.2 + MSVC 14.44 toolchain mismatch. CPU-verify-before-submit
+    catches any GPU-backend hash divergence at runtime.
+  * Peer discovery: full propagation stack now wired end-to-end. handle_addr
+    forwards new addresses to 2 random outbound peers (Bitcoin Core fanout);
+    keepalive_loop re-sends getaddr every 24h; peers.dat write is atomic
+    (.tmp + fsync + rename) with periodic + on-shutdown saves; per-release
+    fixed-seeds generator (contrib/seeds/generate-seeds.py) produces
+    include/consensus/chainparamsseeds.h from a curated input; new
+    dinero-seeder binary auto-curates seeds_main.txt candidates from
+    observed network reachability.
+  * .deb contract unchanged: dinero-core ships dinerod + dinero-cli only,
+    no GPU mining, no hardware-wallet HID stack, no gRPC runtime surface,
+    no auto-enable or auto-start in postinst. Operators wanting GPU mining
+    or the Qt GUI install separate packages.
+
+ -- Trucker2827 <trucker2827@gmail.com>  Tue, 12 May 2026 23:50:00 +0000
+
+dinero-core (2.2.6~rc1-1) unstable; urgency=medium
+
+  * Rebuild packaged-service .deb from the unified v2.2.6-rc1 source line.
+  * Carry the cross-platform release fixes used by the macOS, Windows, and
+    portable Linux artifacts.
+  * Keep the .deb contract unchanged: dinerod + dinero-cli only, no GPU
+    mining, no hardware-wallet HID stack, no gRPC runtime surface, and no
+    auto-enable or auto-start in postinst.
+
+ -- Trucker2827 <trucker2827@gmail.com>  Sat, 09 May 2026 10:30:00 +0000
+
+dinero-core (2.2.5-3) unstable; urgency=medium
+
+  * Add the height-13000 Dinero v1 trust anchor.
+  * Pin the height-13000 AssumeUTXO snapshot hash for fast bootstrap.
+  * Ship the matching UTXO+Utreexo snapshot as a release asset.
+
+ -- Trucker2827 <Trucker2827@gmail.com>  Sun, 03 May 2026 21:40:00 +0000
+
+dinero-core (2.2.5-2) unstable; urgency=medium
+
+  * Rebuild packaged-service release candidate from commit 07d3c09ba.
+  * Includes the ConnectTip undo metadata hardening that surgically
+    persists BLOCK_HAVE_UNDO plus undo_file/undo_pos/undo_size without
+    wholesale header-status overwrites.
+  * Supersedes v2.2.5-rc1 for Phase F fleet migration.
+
+ -- Trucker2827 <Trucker2827@gmail.com>  Sun, 03 May 2026 01:15:00 +0000
+
+dinero-core (2.2.5-1) unstable; urgency=medium
+
+  * Initial .deb skeleton (Phase E.1 of Dinero Core 1.0).
+  * Ships dinerod, dinero-cli, dinero-backup, dinero-prepare-upgrade
+    and the auxiliary mining binaries to /usr/bin/.
+  * Ships dinero.conf example, dinero.service example, and a
+    journald retention drop-in example at /usr/share/doc/dinero/.
+  * Ships the active systemd unit at /lib/systemd/system/dinero.service
+    (NOT auto-enabled — operator runs `systemctl enable --now dinero`).
+  * Postinst creates the `dinero` system user and the
+    /var/lib/dinero/ datadir at mode 0750.
+  * Postrm on `purge` removes /var/lib/dinero/, /etc/dinero/, and
+    the dinero user. On `remove` (non-purge) preserves them so
+    chain data and wallet seeds are not lost on a routine package
+    removal.
+  * Dependency surface is system-linked. Phase E.3 bundles
+    librocksdb / libgrpc / libprotobuf / libabsl etc. under
+    /usr/lib/dinero/ via DT_RUNPATH, narrowing Depends: to
+    base-system libraries only.
+
+ -- Trucker2827 <Trucker2827@gmail.com>  Sat, 02 May 2026 12:00:00 +0000

@@ -1,0 +1,21 @@
+[package]
+name = "bulletproofs-ffi"
+version = "1.0.0"
+edition = "2021"
+authors = ["DineroCoin Team"]
+
+[lib]
+name = "bulletproofs_ffi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+# Dalek Bulletproofs - Gold standard implementation
+bulletproofs = "4.0"
+curve25519-dalek = "4.1"
+merlin = "3.0"
+rand = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

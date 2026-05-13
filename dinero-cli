@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Simple dinero-cli wrapper using curl
+set -euo pipefail
+
+NETWORK="mainnet"
+DATADIR=""
+RPC_PORT=""
+EXPECT_NETWORK=""
+EXPECT_DAEMON_ID=""
+REQUIRE_CONTEXT=""
+EXPLICIT_DATADIR=0
+EXPLICIT_RPC_PORT=0
+PRINT_USAGE=0
+
+usage() {
+    cat <<'EOF'
+Usage: dinero-cli [options] <method> [params...]
+
+Options:
+  -regtest                      Connect to regtest daemon
+  -testnet                      Connect to testnet daemon
+  -datadir=<dir>                Data directory path
+  -rpcport=<port>               RPC server port
+  -expect-network=<network>     Verify daemon network (mainnet/testnet/regtest)
+  -expect-daemon-id=<id>        Verify daemon instance ID
+  --require-context=<network>   Shortcut: verify network + auto-read daemon_id
+  --help, -h                    Show this help
+EOF
+}
+
+# Parse flags
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            PRINT_USAGE=1
+            shift
+            ;;
+        -regtest)
+            NETWORK="regtest"
+            shift
+            ;;
+        -testnet)
+            NETWORK="testnet"
+            shift
+            ;;
+        -datadir=*)
+            DATADIR="${1#*=}"
+            EXPLICIT_DATADIR=1
+            shift
+            ;;
+        -rpcport=*)
+            RPC_PORT="${1#*=}"
+            EXPLICIT_RPC_PORT=1
+            shift
+            ;;
+        -expect-network=*)
+            EXPECT_NETWORK="${1#*=}"
+            shift
+            ;;
+        -expect-daemon-id=*)
+            EXPECT_DAEMON_ID="${1#*=}"
+            shift
+            ;;
+        --require-context=*)
+            REQUIRE_CONTEXT="${1#*=}"
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+case "$NETWORK" in
+    mainnet)
+        DEFAULT_DATADIR="$HOME/.dinero"
+        DEFAULT_RPC_PORT=20998
+        ;;
+    testnet)
+        DEFAULT_DATADIR="$HOME/.dinero/testnet"
+        DEFAULT_RPC_PORT=20998
+        ;;
+    regtest)
+        DEFAULT_DATADIR="$HOME/.dinero/regtest"
+        DEFAULT_RPC_PORT=20996
+        ;;
+    *)
+        echo "Error: Unknown network '$NETWORK'" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$EXPLICIT_DATADIR" -eq 0 ]; then
+    DATADIR="${DINERO_DATADIR:-$DEFAULT_DATADIR}"
+fi
+if [ "$EXPLICIT_RPC_PORT" -eq 0 ]; then
+    RPC_PORT="${DINERO_RPCPORT:-$DEFAULT_RPC_PORT}"
+fi
+
+if [ "$PRINT_USAGE" -eq 1 ]; then
+    usage
+    exit 0
+fi
+
+# Expand --require-context shortcut
+if [ -n "$REQUIRE_CONTEXT" ]; then
+    # Set network expectation
+    EXPECT_NETWORK="$REQUIRE_CONTEXT"
+
+    # Try to read daemon_id from <datadir>/.daemon_id
+    DAEMON_ID_FILE="$DATADIR/.daemon_id"
+    if [ -f "$DAEMON_ID_FILE" ]; then
+        EXPECT_DAEMON_ID=$(cat "$DAEMON_ID_FILE" | tr -d '\n')
+    fi
+fi
+
+# Get cookie
+COOKIE_FILE="$DATADIR/.cookie"
+if [ ! -f "$COOKIE_FILE" ]; then
+    echo "Error: Cookie file not found: $COOKIE_FILE" >&2
+    exit 1
+fi
+
+COOKIE=$(cat "$COOKIE_FILE")
+
+# Helper function to make RPC calls
+rpc_call() {
+    local method="$1"
+    local params="${2:-[]}"
+    local payload="{\"jsonrpc\":\"1.0\",\"id\":\"cli\",\"method\":\"$method\",\"params\":$params}"
+
+    curl -s --user "$COOKIE" \
+        --data-binary "$payload" \
+        -H 'content-type:text/plain;' \
+        "http://127.0.0.1:$RPC_PORT/"
+}
+
+# AUTHENTICATION CONTRACT (Layer 2): Verify daemon identity
+if [ -n "$EXPECT_NETWORK" ] || [ -n "$EXPECT_DAEMON_ID" ]; then
+    CONTEXT_RESULT=$(rpc_call "rpc.getcontext")
+
+    # Check for error
+    if echo "$CONTEXT_RESULT" | jq -e '.error != null' >/dev/null 2>&1; then
+        echo "Error: Failed to verify daemon context" >&2
+        echo "$CONTEXT_RESULT" | jq -r '.error.message' >&2
+        exit 1
+    fi
+
+    ACTUAL_NETWORK=$(echo "$CONTEXT_RESULT" | jq -r '.result.network')
+    ACTUAL_DAEMON_ID=$(echo "$CONTEXT_RESULT" | jq -r '.result.daemon_id')
+
+    # Verify network expectation
+    if [ -n "$EXPECT_NETWORK" ] && [ "$ACTUAL_NETWORK" != "$EXPECT_NETWORK" ]; then
+        echo "Error: Wrong daemon network!" >&2
+        echo "  Expected: $EXPECT_NETWORK" >&2
+        echo "  Actual:   $ACTUAL_NETWORK" >&2
+        echo "  Daemon:   $ACTUAL_DAEMON_ID" >&2
+        exit 1
+    fi
+
+    # Verify daemon_id expectation
+    if [ -n "$EXPECT_DAEMON_ID" ] && [ "$ACTUAL_DAEMON_ID" != "$EXPECT_DAEMON_ID" ]; then
+        echo "Error: Wrong daemon instance!" >&2
+        echo "  Expected: $EXPECT_DAEMON_ID" >&2
+        echo "  Actual:   $ACTUAL_DAEMON_ID" >&2
+        echo "  Network:  $ACTUAL_NETWORK" >&2
+        exit 1
+    fi
+fi
+
+# Get method and params
+METHOD="${1:-}"
+if [ -z "$METHOD" ]; then
+    usage >&2
+    exit 1
+fi
+shift
+
+# Build params array
+PARAMS="[]"
+if [ $# -gt 0 ]; then
+    PARAMS="["
+    for arg in "$@"; do
+        # Simple escaping - quote strings, pass numbers as-is
+        if [[ "$arg" =~ ^[0-9]+$ ]]; then
+            PARAMS="$PARAMS$arg,"
+        else
+            PARAMS="$PARAMS\"$arg\","
+        fi
+    done
+    PARAMS="${PARAMS%,}]"  # Remove trailing comma
+fi
+
+# Make RPC call
+RESULT=$(rpc_call "$METHOD" "$PARAMS")
+
+# Check for error
+if echo "$RESULT" | jq -e '.error != null' >/dev/null 2>&1; then
+    echo "$RESULT" | jq -r '.error.message' >&2
+    exit 1
+fi
+
+# Output result
+echo "$RESULT" | jq -r '.result'

@@ -1,0 +1,158 @@
+name: RPC Conformance Tests
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  rpc-compliance:
+    name: RPC Standards Compliance
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Ubuntu environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake libssl-dev libboost-all-dev
+        
+    - name: Build Dinero
+      run: |
+        mkdir -p build-ci
+        cd build-ci
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc)
+        
+    - name: Start Dinero daemon
+      run: |
+        mkdir -p /tmp/ci-datadir/mainnet
+        cd build-ci
+        ./bin/dinerod -datadir=/tmp/ci-datadir -daemon
+        sleep 10  # Wait for daemon to start
+        
+    - name: Wait for daemon to be ready
+      run: |
+        timeout 60 bash -c 'until curl -s --user "Dinero_1835:5431cfe6e2b435637ec89dc2a85324c3" -H "content-type: application/json" --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getblockcount\",\"params\":[]}" http://127.0.0.1:20998 >/dev/null 2>&1; do sleep 2; done'
+        
+    - name: Run RPC test suite
+      run: |
+        cd build-ci
+        chmod +x ../dinero-cli.sh
+        DINERO_DATADIR=/tmp/ci-datadir DINERO_RPC=http://127.0.0.1:20998 ./dinero-cli.sh test-suite
+        
+    - name: Test individual requirements
+      run: |
+        cd build-ci
+        DINERO_DATADIR=/tmp/ci-datadir DINERO_RPC=http://127.0.0.1:20998
+        
+        # Test 1: Custom header
+        echo "Testing custom header..."
+        if curl -sD - -o /dev/null --user "Dinero_1835:5431cfe6e2b435637ec89dc2a85324c3" \
+            -H 'content-type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"getblockcount","params":[]}' \
+            http://127.0.0.1:20998 | tr -d '\r' | grep -iq '^x-dinero-rpc-engine: v2'; then
+          echo "✅ Custom header test passed"
+        else
+          echo "❌ Custom header test failed"
+          exit 1
+        fi
+        
+        # Test 2: nextblockhash omission
+        echo "Testing nextblockhash omission..."
+        H=$(curl -s --user "Dinero_1835:5431cfe6e2b435637ec89dc2a85324c3" -H 'content-type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"getblockcount","params":[]}' http://127.0.0.1:20998 | jq -r '.result')
+        BH=$(curl -s --user "Dinero_1835:5431cfe6e2b435637ec89dc2a85324c3" -H 'content-type: application/json' \
+            --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getblockhash\",\"params\":[${H}]}" http://127.0.0.1:20998 | jq -r '.result')
+        if curl -s --user "Dinero_1835:5431cfe6e2b435637ec89dc2a85324c3" -H 'content-type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"getblock","params":["'"$BH"'",true]}' http://127.0.0.1:20998 \
+            | jq -e '.result | has("nextblockhash") | not' >/dev/null; then
+          echo "✅ nextblockhash omission test passed"
+        else
+          echo "❌ nextblockhash omission test failed"
+          exit 1
+        fi
+        
+        # Test 3: Clean JSON-RPC
+        echo "Testing clean JSON-RPC..."
+        if curl -s --user "Dinero_1835:5431cfe6e2b435637ec89dc2a85324c3" -H 'content-type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"getblockcount","params":[]}' http://127.0.0.1:20998 \
+            | jq -e 'has("error") | not' >/dev/null; then
+          echo "✅ Clean JSON-RPC test passed"
+        else
+          echo "❌ Clean JSON-RPC test failed"
+          exit 1
+        fi
+        
+    - name: Test response headers
+      run: |
+        cd build-ci
+        echo "Testing response headers..."
+        DINERO_DATADIR=/tmp/ci-datadir DINERO_RPC=http://127.0.0.1:20998 ./dinero-cli.sh headers
+        
+    - name: Cleanup
+      if: always()
+      run: |
+        pkill -f dinerod || true
+        rm -rf /tmp/ci-datadir
+        
+    - name: RPC Compliance Summary
+      if: success()
+      run: |
+        echo "🎉 All RPC conformance tests passed!"
+        echo "✅ Custom header: X-Dinero-RPC-Engine: v2"
+        echo "✅ nextblockhash omission at chain tip"
+        echo "✅ Clean JSON-RPC responses (no error: null)"
+        echo "✅ JSON-RPC 2.0 compliance"
+        echo ""
+        echo "RPC Standards v1.0.0 compliance: PASSED"
+        
+  build-matrix:
+    name: Cross-Platform Build Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup build environment
+      run: |
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          # Windows setup
+          echo "Setting up Windows build environment..."
+        elif [ "$RUNNER_OS" = "macOS" ]; then
+          # macOS setup
+          brew install cmake boost openssl
+        else
+          # Linux setup
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libssl-dev libboost-all-dev
+        fi
+        
+    - name: Build Dinero
+      run: |
+        mkdir -p build-${{ matrix.os }}
+        cd build-${{ matrix.os }}
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc) || cmake --build . --config Release
+        
+    - name: Verify binary
+      run: |
+        cd build-${{ matrix.os }}
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          ls -la bin/*.exe || echo "No .exe files found"
+        else
+          ls -la bin/
+        fi
+        
+    - name: Build Summary
+      run: |
+        echo "✅ Build completed successfully on ${{ matrix.os }}"
+        echo "Platform: ${{ matrix.os }}"
+        echo "Status: PASSED"

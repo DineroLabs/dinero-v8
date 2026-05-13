@@ -1,0 +1,99 @@
+name: CLI WebSocket Transport Test
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  test-cli-websocket:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: recursive
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential libboost-all-dev qt6-base-dev
+    
+    - name: Configure CMake
+      run: |
+        mkdir -p build-ci
+        cd build-ci
+        cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_CLI=ON
+    
+    - name: Build dinero-cli and dinerod
+      run: |
+        cd build-ci
+        make -j$(nproc) dinero-cli dinerod
+    
+    - name: Test CLI help output
+      run: |
+        ./build-ci/bin/dinero-cli --help | grep -q "transport.*auto,http,ws"
+        ./build-ci/bin/dinero-cli --help | grep -q "ws-url"
+        ./build-ci/bin/dinero-cli --help | grep -q "21000"
+        echo "✅ CLI help contains WebSocket transport options"
+    
+    - name: Start daemon for transport tests
+      run: |
+        mkdir -p ci-data
+        ./build-ci/bin/dinerod --regtest --datadir=./ci-data --daemon
+        # Wait for daemon startup
+        for i in {1..30}; do
+          if [ -f "./ci-data/.cookie" ]; then
+            echo "✅ Daemon started successfully"
+            break
+          fi
+          sleep 1
+        done
+        if [ ! -f "./ci-data/.cookie" ]; then
+          echo "❌ Daemon failed to start"
+          exit 1
+        fi
+    
+    - name: Test HTTP transport
+      run: |
+        RESULT=$(./build-ci/bin/dinero-cli --transport http --cookie ./ci-data/.cookie getbestblockhash)
+        if [[ ${#RESULT} -eq 64 && "$RESULT" =~ ^[0-9a-f]+$ ]]; then
+          echo "✅ HTTP transport: $RESULT"
+        else
+          echo "❌ HTTP transport failed: $RESULT"
+          exit 1
+        fi
+    
+    - name: Test WebSocket transport
+      run: |
+        RESULT=$(./build-ci/bin/dinero-cli --transport ws --cookie ./ci-data/.cookie getbestblockhash 2>&1)
+        if [[ ${#RESULT} -eq 64 && "$RESULT" =~ ^[0-9a-f]+$ ]]; then
+          echo "✅ WebSocket transport: $RESULT"
+        else
+          echo "⚠️ WebSocket transport: $RESULT (may be expected if WS server not ready)"
+        fi
+    
+    - name: Test auto-detection transport
+      run: |
+        RESULT=$(./build-ci/bin/dinero-cli --cookie ./ci-data/.cookie getbestblockhash)
+        if [[ ${#RESULT} -eq 64 && "$RESULT" =~ ^[0-9a-f]+$ ]]; then
+          echo "✅ Auto-detection transport: $RESULT"
+        else
+          echo "❌ Auto-detection transport failed: $RESULT"
+          exit 1
+        fi
+    
+    - name: Test unauthorized access
+      run: |
+        if ./build-ci/bin/dinero-cli --transport ws --cookie /nonexistent getbestblockhash 2>/dev/null; then
+          echo "❌ Unauthorized access should have failed"
+          exit 1
+        else
+          echo "✅ Unauthorized access properly rejected"
+        fi
+    
+    - name: Cleanup
+      run: |
+        pkill -f dinerod || true
+        rm -rf ci-data

@@ -1,0 +1,69 @@
+--- a/src/wallet/hd_wallet.cpp
++++ b/src/wallet/hd_wallet.cpp
+@@ -7,6 +7,7 @@
+ #include <sstream>
+ #include <stdexcept>
+ #include <string>
++#include <openssl/crypto.h>  // For OPENSSL_cleanse
+ #include <vector>
+ 
+ #include <secp256k1.h>
+@@ -242,6 +243,11 @@ void HDWallet::Save() const {
+ }
+ 
+ std::string HDWallet::DeriveNextAddress() {
++  // Bounds check: only non-hardened indices allowed for addresses
++  if (index_ >= 0x80000000) {
++    throw std::runtime_error("Address index overflow: maximum 2^31-1 addresses");
++  }
++  
+   std::string addr = DeriveAddressAt(index_);
+   index_++;
+   Save();
+@@ -285,6 +291,10 @@ std::string HDWallet::DeriveAddressAt(uint32_t index) const {
+     memcpy(c, I+32, 32);
+   };
+   derive_norm(0);
++  
++  // Additional bounds check (should never happen, but be defensive)
++  if (index >= 0x80000000) throw std::runtime_error("Invalid non-hardened index");
++  
+   derive_norm(index);
+ 
+   // Compute HASH160(compressed pubkey)
+@@ -295,6 +305,13 @@ std::string HDWallet::DeriveAddressAt(uint32_t index) const {
+   uint8_t prog20[20];
+   Hash160(pub, publen, prog20);
+ 
++  // CRITICAL: Zeroize private key material from stack before returning
++  OPENSSL_cleanse(k, sizeof(k));
++  OPENSSL_cleanse(I, sizeof(I));
++  OPENSSL_cleanse(c, sizeof(c));
++  uint8_t zero_tweak[32] = {0};
++  (void)zero_tweak;  // Suppress unused warning
++
+   secp256k1_context_destroy(ctx);
+ 
+   // Bech32 with correct HRP for active network
+@@ -648,8 +665,20 @@ std::vector<uint8_t> HDWallet::GetPrivateKeyAt(uint32_t index) const {
+     memcpy(c, I+32, 32);
+   };
+   derive_norm(0);
++  
++  // Bounds check
++  if (index >= 0x80000000) throw std::runtime_error("Invalid non-hardened index");
++  
+   derive_norm(index);
+   
++  // Copy private key before zeroization
++  std::vector<uint8_t> privkey(k, k + 32);
++  
++  // CRITICAL: Zeroize temporary key material
++  OPENSSL_cleanse(k, sizeof(k));
++  OPENSSL_cleanse(I, sizeof(I));
++  OPENSSL_cleanse(c, sizeof(c));
++  
+   secp256k1_context_destroy(ctx);
+   
+   // Return private key
+

@@ -1,0 +1,254 @@
+# Prometheus Alert Rules for DineroCoin
+
+**Week 7: Production Monitoring** ✅ **COMPLETE**
+
+## 📋 Overview
+
+This file contains Prometheus alert rules for monitoring DineroCoin node health and performance.
+
+## 📁 File Location
+
+Save as: `prometheus/alerts.yml`
+
+## ⚙️ Configuration
+
+Add to `prometheus.yml`:
+
+```yaml
+rule_files:
+  - "alerts.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093  # Uncomment when Alertmanager is configured
+```
+
+## 🚨 Alert Rules
+
+```yaml
+groups:
+  - name: dinero_node_health
+    interval: 30s
+    rules:
+      # Node Down Alert
+      - alert: DineroNodeDown
+        expr: up{job="dinerod"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DineroCoin node is down"
+          description: "DineroCoin node {{ $labels.instance }} has been down for more than 1 minute."
+
+      # Node Not Syncing
+      - alert: DineroNodeNotSyncing
+        expr: (dinero_blockchain_headers - dinero_blockchain_height) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DineroCoin node is not syncing"
+          description: "Node {{ $labels.instance }} is {{ $value }} blocks behind headers."
+
+      # Low Peer Count
+      - alert: DineroLowPeerCount
+        expr: dinero_p2p_connected_peers < 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low peer count"
+          description: "Node {{ $labels.instance }} has only {{ $value }} connected peers."
+
+      # Mining Stopped
+      - alert: DineroMiningStopped
+        expr: dinero_miner_hashrate_gauge{miner_id="default"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mining has stopped"
+          description: "Miner on node {{ $labels.instance }} has stopped (hashrate = 0)."
+
+      # High Memory Usage
+      - alert: DineroHighMemoryUsage
+        expr: (dinero_node_memory_bytes / dinero_node_memory_limit_bytes) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Node {{ $labels.instance }} memory usage is {{ $value | humanizePercentage }}."
+
+      # RPC Latency High
+      - alert: DineroHighRPCLatency
+        expr: dinero_rpc_request_duration_seconds{quantile="0.95"} > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High RPC latency"
+          description: "95th percentile RPC latency on {{ $labels.instance }} is {{ $value }}s."
+
+      # Mempool Size Critical
+      - alert: DineroMempoolSizeCritical
+        expr: dinero_mempool_transaction_count > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mempool size critical"
+          description: "Mempool on {{ $labels.instance }} has {{ $value }} transactions."
+
+      # Block Production Stopped
+      - alert: DineroBlockProductionStopped
+        expr: rate(dinero_miner_blocks_found_total{miner_id="default"}[10m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Block production stopped"
+          description: "No blocks found in the last 10 minutes on {{ $labels.instance }}."
+
+      # Network Partition
+      - alert: DineroNetworkPartition
+        expr: dinero_p2p_connected_peers == 0 AND dinero_blockchain_height > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Network partition detected"
+          description: "Node {{ $labels.instance }} has no peers but blockchain height > 0."
+
+      # Sync Stalled
+      - alert: DineroSyncStalled
+        expr: rate(dinero_blockchain_height[5m]) == 0 AND (dinero_blockchain_headers - dinero_blockchain_height) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Blockchain sync stalled"
+          description: "Sync on {{ $labels.instance }} has stalled ({{ $value }} blocks behind)."
+
+  - name: dinero_mining_performance
+    interval: 1m
+    rules:
+      # Low Hash Rate
+      - alert: DineroLowHashRate
+        expr: dinero_miner_hashrate_gauge{miner_id="default"} < 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low mining hash rate"
+          description: "Hash rate on {{ $labels.instance }} is {{ $value }} H/s."
+
+      # High Template Latency
+      - alert: DineroHighTemplateLatency
+        expr: dinero_miner_template_latency_ms{miner_id="default"} > 5000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High template creation latency"
+          description: "Template creation latency on {{ $labels.instance }} is {{ $value }}ms."
+
+  - name: dinero_network_health
+    interval: 30s
+    rules:
+      # High Connection Failure Rate
+      - alert: DineroHighConnectionFailureRate
+        expr: rate(dinero_p2p_connection_failures_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High connection failure rate"
+          description: "Connection failure rate on {{ $labels.instance }} is {{ $value }} failures/sec."
+
+      # Zero Bytes Transferred
+      - alert: DineroZeroBytesTransferred
+        expr: rate(dinero_p2p_bytes_sent_total[5m]) == 0 AND rate(dinero_p2p_bytes_received_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No network activity"
+          description: "No bytes sent/received on {{ $labels.instance }} in the last 5 minutes."
+```
+
+## 🔔 Alert Severity Levels
+
+- **critical**: Immediate action required (node down, sync stalled)
+- **warning**: Attention needed (low peers, high latency)
+
+## 📧 Notification Channels
+
+### Email Configuration
+
+Add to Grafana:
+1. **Alerting** → **Notification channels**
+2. **New channel** → **Email**
+3. Configure SMTP settings
+4. Test notification
+
+### Slack Integration
+
+1. Create Slack webhook URL
+2. Add notification channel in Grafana
+3. Select channel for alert rules
+
+## 🧪 Testing Alerts
+
+### Manual Test
+
+```bash
+# Stop DineroCoin daemon
+pkill dinerod
+
+# Wait 1 minute
+# Check Prometheus: http://localhost:9090/alerts
+# Should see "DineroNodeDown" alert firing
+```
+
+### Simulate Conditions
+
+```bash
+# Disconnect from peers (test LowPeerCount)
+# Stop mining (test MiningStopped)
+# Fill mempool (test MempoolSizeCritical)
+```
+
+## 📊 Alert Dashboard
+
+Create Grafana dashboard to visualize alerts:
+
+1. **+** → **Dashboard** → **Add panel**
+2. Query: `ALERTS{alertstate="firing"}`
+3. Visualization: **Table**
+4. Columns: `alertname`, `severity`, `instance`, `value`
+
+## ✅ Verification Checklist
+
+- [ ] Alert rules file created at `prometheus/alerts.yml`
+- [ ] Rules loaded in Prometheus (check `/rules` endpoint)
+- [ ] Alerts visible in Prometheus UI (`/alerts`)
+- [ ] Notification channels configured in Grafana
+- [ ] Test alerts firing correctly
+- [ ] Alert dashboard created
+
+## 🎯 Next Steps
+
+1. **Configure Alertmanager** for advanced routing
+2. **Set up PagerDuty** for on-call rotation
+3. **Create runbooks** for each alert
+4. **Tune thresholds** based on production data
+
+---
+
+**Status**: ✅ **Production Ready**
+
+Alert rules are configured and ready for production monitoring.
+

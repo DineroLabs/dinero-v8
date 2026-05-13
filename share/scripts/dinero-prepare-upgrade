@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# dinero-prepare-upgrade — Phase D.3 of Dinero Core 1.0
+#
+# Captures the currently-running dinerod binary to
+# <datadir>/binaries/dinerod.live-pre-<commit>-<ts> so the operator
+# has a guaranteed-good rollback target before installing a new
+# version.
+#
+# Spec: docs/specs/dinero-core-1.0.md Standard 9.
+# Plan: docs/operations/core-discipline-plan.md §3 Phase D.3.
+#
+# Design intent:
+#   * Operator-invoked, NOT wired to systemd. ExecStartPre would let
+#     a capture failure block daemon startup; that turns the rollback
+#     hook itself into a fragility risk. Per the locked spec, "capture
+#     failure must NOT block restart."
+#   * Best-effort by design: capture failure (dinerod not running,
+#     /proc unreadable, etc.) prints a warning and EXITS 0. The next
+#     phase of the upgrade (apt install / make install) proceeds.
+#     Operators who want to gate the upgrade on a successful capture
+#     can wrap this in their own check.
+#   * Linux-only. /proc/<pid>/exe is the canonical capture mechanism;
+#     macOS has no /proc. macOS operators run manual-user mode where
+#     rollback is operator-managed (spec §1.2 row 9).
+#   * Binary only. Wallet/shielded backup is Phase D.2's dinero-backup,
+#     a separate command. Chaindb is replay-able from peers and is
+#     never captured by upgrade hooks.
+#
+# Usage:
+#   dinero-prepare-upgrade --datadir=<path>
+#   dinero-prepare-upgrade --datadir=<path> --pid=<pid>
+#   dinero-prepare-upgrade --datadir=<path> --exe=<path>
+#   dinero-prepare-upgrade --datadir=<path> --dry-run
+#   dinero-prepare-upgrade --help
+#
+# Exit codes:
+#   0  capture succeeded, OR capture skipped non-fatally
+#      (best-effort contract — exit 0 even when nothing was captured)
+#   1  argument validation failed (bad/missing flags, unsafe paths)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+DATADIR=""
+PID_OVERRIDE=""
+EXE_OVERRIDE=""
+DRY_RUN=0
+SCRIPT_NAME="$(basename "$0")"
+
+usage() {
+    cat <<EOF
+${SCRIPT_NAME} — Dinero Core 1.0 pre-upgrade rollback capture
+
+Usage:
+    ${SCRIPT_NAME} --datadir=<path> [--pid=<pid> | --exe=<path>]
+                            [--dry-run]
+
+Arguments:
+    --datadir=<path>    Path to the dinerod data directory. Must be
+                        absolute and exist. The captured binary lands
+                        at <datadir>/binaries/dinerod.live-pre-<commit>-<ts>.
+    --pid=<pid>         Use this PID's /proc/<pid>/exe instead of
+                        auto-discovering via pidof. Useful when
+                        multiple dinerod processes exist.
+    --exe=<path>        Capture this binary directly. Overrides --pid.
+                        Useful when /proc isn't accessible or when
+                        capturing a stopped binary's on-disk copy.
+    --dry-run           Print plan, take no action.
+    --help              Print this message and exit.
+
+Behavior contract:
+    * Capture failure is non-fatal: this command exits 0 even if the
+      daemon isn't running. The intent is "best-effort rollback
+      target before the operator runs the next upgrade step." If
+      there's nothing running to capture, that's still a clean state.
+    * Linux-only. On non-Linux, this command prints a warning and
+      exits 0; the operator handles rollback manually.
+    * Stale backups in <datadir>/binaries/ are NEVER touched. Only
+      the currently-running binary is copied.
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+    usage >&2
+    exit 1
+fi
+
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h) usage; exit 0 ;;
+        --datadir=*) DATADIR="${arg#*=}" ;;
+        --pid=*)     PID_OVERRIDE="${arg#*=}" ;;
+        --exe=*)     EXE_OVERRIDE="${arg#*=}" ;;
+        --dry-run)   DRY_RUN=1 ;;
+        *) echo "[FATAL] unknown argument: $arg" >&2
+           usage >&2
+           exit 1 ;;
+    esac
+done
+
+# ─────────────────────────────────────────────────────────────────
+# Refuse unsafe --datadir (same gate as dinero-backup).
+# ─────────────────────────────────────────────────────────────────
+
+if [[ -z "${DATADIR}" ]]; then
+    echo "[FATAL] --datadir is required" >&2
+    exit 1
+fi
+if [[ "${DATADIR}" == "/" ]]; then
+    echo "[FATAL] refusing to treat / as a datadir" >&2
+    exit 1
+fi
+if [[ "${DATADIR}" != /* && "${DATADIR}" != ~* ]]; then
+    echo "[FATAL] --datadir must be an absolute path, got: ${DATADIR}" >&2
+    exit 1
+fi
+if [[ ! -d "${DATADIR}" ]]; then
+    echo "[FATAL] --datadir does not exist or is not a directory: ${DATADIR}" >&2
+    exit 1
+fi
+DATADIR="$(cd "${DATADIR}" && pwd -P)"
+
+# ─────────────────────────────────────────────────────────────────
+# Linux gate. macOS / BSD operators take the manual-user-mode path
+# (spec §1.2 row 9) — we exit 0 cleanly without doing anything.
+#
+# DINERO_PREPARE_UPGRADE_FORCE_LINUX_PATH=1 bypasses this gate so
+# the cross-platform test fixture can exercise the capture code on
+# macOS dev boxes. The override is intentional: it has no effect on
+# production behavior because no operator on Linux ever sets it,
+# and the variable name advertises its test-only purpose.
+# ─────────────────────────────────────────────────────────────────
+
+if [[ "$(uname -s)" != "Linux" && "${DINERO_PREPARE_UPGRADE_FORCE_LINUX_PATH:-0}" != "1" ]]; then
+    echo "[INFO] $(uname -s) is not Linux; pre-upgrade capture not available." >&2
+    echo "[INFO] Manual-user mode operators: copy the running binary to" >&2
+    echo "[INFO]     ${DATADIR}/binaries/dinerod.live-pre-<commit>-<ts>" >&2
+    echo "[INFO] before running 'make install' for a new version." >&2
+    exit 0
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# Resolve the source binary path.
+#   1. --exe=<path>  → use directly
+#   2. --pid=<pid>   → /proc/<pid>/exe
+#   3. otherwise     → pidof dinerod | head -1, then /proc/.../exe
+# Each step that fails is non-fatal: we warn and exit 0.
+# ─────────────────────────────────────────────────────────────────
+
+SOURCE_EXE=""
+if [[ -n "${EXE_OVERRIDE}" ]]; then
+    if [[ ! -f "${EXE_OVERRIDE}" ]]; then
+        echo "[WARN] --exe path does not exist: ${EXE_OVERRIDE}" >&2
+        echo "[WARN] nothing to capture; exiting 0 (non-fatal by design)" >&2
+        exit 0
+    fi
+    SOURCE_EXE="${EXE_OVERRIDE}"
+else
+    pid="${PID_OVERRIDE}"
+    if [[ -z "${pid}" ]]; then
+        # Try `pidof dinerod` first (common, fast), then `pgrep -x` as
+        # a fallback for systems without `pidof`.
+        if command -v pidof >/dev/null 2>&1; then
+            pid="$(pidof dinerod 2>/dev/null | tr ' ' '\n' | head -1 || true)"
+        fi
+        if [[ -z "${pid}" ]] && command -v pgrep >/dev/null 2>&1; then
+            pid="$(pgrep -x dinerod 2>/dev/null | head -1 || true)"
+        fi
+    fi
+    if [[ -z "${pid}" ]]; then
+        echo "[WARN] dinerod is not running (no PID found via pidof/pgrep)" >&2
+        echo "[WARN] nothing to capture; exiting 0 (non-fatal by design)" >&2
+        echo "[INFO] If dinerod IS running, pass --pid=<pid> explicitly." >&2
+        exit 0
+    fi
+    if [[ ! -e "/proc/${pid}/exe" ]]; then
+        echo "[WARN] /proc/${pid}/exe does not exist (race or wrong PID)" >&2
+        echo "[WARN] nothing to capture; exiting 0 (non-fatal by design)" >&2
+        exit 0
+    fi
+    SOURCE_EXE="/proc/${pid}/exe"
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# Extract the build commit. `dinerod --version` first line is
+# `dinerod <short-commit>`; we parse with awk. If the binary doesn't
+# respond to --version (corrupt, wrong arch, etc.), fall back to
+# "unknown" rather than failing — capture-with-unknown-commit is
+# better than no-capture-at-all.
+# ─────────────────────────────────────────────────────────────────
+
+COMMIT="unknown"
+# Run --version with a small timeout so a hung binary can't hang the
+# capture. `timeout` is GNU coreutils on Linux (always present).
+if command -v timeout >/dev/null 2>&1; then
+    version_out="$(timeout 5 "${SOURCE_EXE}" --version 2>&1 || true)"
+else
+    version_out="$("${SOURCE_EXE}" --version 2>&1 || true)"
+fi
+parsed="$(echo "${version_out}" | awk '/^dinerod /{print $2; exit}')"
+if [[ -n "${parsed}" && "${parsed}" =~ ^[a-f0-9]+$ ]]; then
+    COMMIT="${parsed}"
+fi
+
+TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+BIN_DIR="${DATADIR}/binaries"
+BASE="dinerod.live-pre-${COMMIT}-${TIMESTAMP}"
+TARGET="${BIN_DIR}/${BASE}"
+
+# Collision guard: two captures in the same second would otherwise
+# write the same target. Append a small random suffix if needed.
+suffix=""
+attempts=0
+while [[ -e "${TARGET}${suffix}" ]]; do
+    suffix="-${RANDOM}"
+    attempts=$((attempts + 1))
+    if [[ ${attempts} -gt 8 ]]; then
+        echo "[WARN] could not find unique target in ${BIN_DIR}; aborting capture" >&2
+        echo "[WARN] (8 collision attempts on ${BASE}); exiting 0 non-fatally" >&2
+        exit 0
+    fi
+done
+TARGET="${TARGET}${suffix}"
+
+# ─────────────────────────────────────────────────────────────────
+# Dry-run: print plan, no action.
+# ─────────────────────────────────────────────────────────────────
+
+if [[ ${DRY_RUN} -eq 1 ]]; then
+    echo "Dry-run: would capture"
+    echo "    source: ${SOURCE_EXE}"
+    echo "    target: ${TARGET}"
+    echo "    commit: ${COMMIT}"
+    echo "    ts:     ${TIMESTAMP}"
+    echo "Dry-run complete. No files written."
+    exit 0
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# Capture: ensure binaries/ exists, write to .tmp, atomic rename.
+# All failures from here on are non-fatal — we warn and exit 0.
+# ─────────────────────────────────────────────────────────────────
+
+mkdir -p "${BIN_DIR}" 2>/dev/null || {
+    echo "[WARN] could not create ${BIN_DIR}; exiting 0 non-fatally" >&2
+    exit 0
+}
+chmod 0750 "${BIN_DIR}" 2>/dev/null || true
+
+tmp="${TARGET}.tmp"
+if ! cp "${SOURCE_EXE}" "${tmp}" 2>/dev/null; then
+    echo "[WARN] failed to copy ${SOURCE_EXE} → ${tmp}" >&2
+    echo "[WARN] (permissions / disk-full / read error); exiting 0 non-fatally" >&2
+    rm -f "${tmp}" 2>/dev/null || true
+    exit 0
+fi
+
+# Tighten permissions before rename. Mode 0750 = owner rwx + group rx;
+# matches the binaries/ dir mode and prevents world-read of the
+# operator's possibly-sensitive build.
+chmod 0750 "${tmp}" 2>/dev/null || true
+
+# Atomic rename — the rollback target only appears at its final name
+# after the copy completes.
+if ! mv "${tmp}" "${TARGET}" 2>/dev/null; then
+    echo "[WARN] failed to rename ${tmp} → ${TARGET}" >&2
+    rm -f "${tmp}" 2>/dev/null || true
+    exit 0
+fi
+
+size="$(wc -c < "${TARGET}" | tr -d ' ')"
+echo "✅ rollback binary captured: ${TARGET}"
+echo "   commit: ${COMMIT}"
+echo "   size:   ${size} bytes"
+echo "   mode:   0750"
+echo
+echo "To roll back later:"
+echo "    sudo systemctl stop dinero    # or your supervisor's stop command"
+echo "    sudo cp ${TARGET} <install-path>/dinerod"
+echo "    sudo systemctl start dinero"
+exit 0

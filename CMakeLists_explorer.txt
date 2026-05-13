@@ -1,0 +1,164 @@
+# Explorer API v1 - CMake Integration
+# Add this to your main CMakeLists.txt
+
+# Explorer API library
+add_library(dinero_explorer
+    # Core implementation files
+    src/explorer/explorer_index.cpp
+    src/explorer/explorer_api.cpp
+    src/explorer/explorer_integration.cpp
+    src/explorer/explorer_handlers.cpp
+    
+    # Header files (for IDE support)
+    include/explorer/explorer_index.h
+    include/explorer/explorer_api.h
+    include/explorer/explorer_integration.h
+    include/explorer/explorer_contracts.h
+)
+
+# Include directories
+target_include_directories(dinero_explorer PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+# Required dependencies
+target_link_libraries(dinero_explorer PUBLIC
+    # SQLite for fast indexing
+    sqlite3
+    
+    # JSON handling
+    jsoncpp_static
+    
+    # Crypto for scripthash calculation
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    
+    # Your existing common library (adjust name as needed)
+    dinero_common
+)
+
+# Compiler features
+target_compile_features(dinero_explorer PUBLIC cxx_std_17)
+
+# Link Explorer API to your daemon
+target_link_libraries(dinerod PRIVATE dinero_explorer)
+
+# Optional: Tests
+if(BUILD_TESTING)
+    add_executable(test_explorer_api
+        tests/test_explorer_api.cpp
+    )
+    
+    target_link_libraries(test_explorer_api PRIVATE 
+        dinero_explorer
+        gtest 
+        gtest_main
+    )
+    
+    target_include_directories(test_explorer_api PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+    )
+    
+    add_test(NAME ExplorerAPITest COMMAND test_explorer_api)
+    
+    # Integration test executable
+    add_executable(test_explorer_integration
+        tests/test_explorer_integration.cpp
+    )
+    
+    target_link_libraries(test_explorer_integration PRIVATE
+        dinero_explorer
+        gtest
+        gtest_main
+    )
+    
+    add_test(NAME ExplorerIntegrationTest COMMAND test_explorer_integration)
+endif()
+
+# Optional: Benchmarks
+if(BUILD_BENCHMARKS)
+    add_executable(bench_explorer_api
+        benchmarks/bench_explorer_api.cpp
+    )
+    
+    target_link_libraries(bench_explorer_api PRIVATE
+        dinero_explorer
+        benchmark::benchmark
+    )
+endif()
+
+# Install rules (optional)
+if(INSTALL_EXPLORER_API)
+    install(TARGETS dinero_explorer
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib
+        RUNTIME DESTINATION bin
+    )
+    
+    install(DIRECTORY include/explorer/
+        DESTINATION include/explorer
+        FILES_MATCHING PATTERN "*.h"
+    )
+endif()
+
+# Compiler-specific optimizations
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_options(dinero_explorer PRIVATE
+        -Wall -Wextra -Wpedantic
+        -O3  # Optimize for speed
+        -DNDEBUG  # Disable asserts in release
+    )
+endif()
+
+# Platform-specific settings
+if(APPLE)
+    # macOS specific settings
+    target_compile_definitions(dinero_explorer PRIVATE
+        _DARWIN_C_SOURCE
+    )
+elseif(UNIX)
+    # Linux specific settings
+    target_compile_definitions(dinero_explorer PRIVATE
+        _GNU_SOURCE
+    )
+    
+    # Link pthread for SQLite
+    target_link_libraries(dinero_explorer PUBLIC pthread)
+endif()
+
+# Debug vs Release configurations
+target_compile_definitions(dinero_explorer PRIVATE
+    $<$<CONFIG:Debug>:EXPLORER_DEBUG>
+    $<$<CONFIG:Release>:EXPLORER_RELEASE>
+)
+
+# Print configuration info
+message(STATUS "Explorer API v1 configuration:")
+message(STATUS "  - SQLite support: ${SQLite3_FOUND}")
+message(STATUS "  - OpenSSL support: ${OPENSSL_FOUND}")
+message(STATUS "  - JsonCpp support: ${jsoncpp_FOUND}")
+message(STATUS "  - Testing enabled: ${BUILD_TESTING}")
+
+# Validation checks
+if(NOT TARGET sqlite3)
+    message(FATAL_ERROR "SQLite3 is required for Explorer API")
+endif()
+
+if(NOT TARGET jsoncpp_static)
+    message(FATAL_ERROR "JsonCpp is required for Explorer API")
+endif()
+
+if(NOT TARGET OpenSSL::SSL)
+    message(FATAL_ERROR "OpenSSL is required for Explorer API")
+endif()
+
+# Optional: Create a combined target for easy linking
+add_library(dinero_with_explorer INTERFACE)
+target_link_libraries(dinero_with_explorer INTERFACE
+    dinero_common
+    dinero_explorer
+)
+
+# Usage example:
+# target_link_libraries(your_daemon PRIVATE dinero_with_explorer)

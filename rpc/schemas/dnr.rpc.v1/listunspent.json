@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "listunspent",
+  "description": "List unspent transaction outputs for coin control",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "listunspent"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum confirmations (default: 1)"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum confirmations (default: 9999999)"
+        },
+        {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Optional address filter"
+        },
+        {
+          "type": "boolean",
+          "description": "Include unsafe outputs (default: true)"
+        },
+        {
+          "type": "object",
+          "description": "Query options",
+          "properties": {
+            "minimumAmount": {"type": "number"},
+            "maximumAmount": {"type": "number"},
+            "maximumCount": {"type": "integer"},
+            "minimumSumAmount": {"type": "number"}
+          }
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 5
+    },
+    "result": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "txid": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "Transaction ID"
+          },
+          "vout": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Output index"
+          },
+          "address": {
+            "type": "string",
+            "description": "Receiving address"
+          },
+          "label": {
+            "type": "string",
+            "description": "Address label"
+          },
+          "scriptPubKey": {
+            "type": "string",
+            "description": "Script public key (hex)"
+          },
+          "amount_una": {
+            "type": "integer",
+            "description": "Output value in una"
+          },
+          "amount_din": {
+            "type": "string",
+            "description": "Output value in DIN (formatted)"
+          },
+          "confirmations": {
+            "type": "integer",
+            "description": "Number of confirmations"
+          },
+          "redeemScript": {
+            "type": "string",
+            "description": "Redeem script (if applicable)"
+          },
+          "witnessScript": {
+            "type": "string",
+            "description": "Witness script (if applicable)"
+          },
+          "spendable": {
+            "type": "boolean",
+            "description": "Whether output is spendable"
+          },
+          "solvable": {
+            "type": "boolean",
+            "description": "Whether output is solvable"
+          },
+          "safe": {
+            "type": "boolean",
+            "description": "Whether output is safe to spend"
+          },
+          "desc": {
+            "type": "string",
+            "description": "Output descriptor"
+          }
+        },
+        "required": ["txid", "vout", "address", "amount_una", "amount_din", "confirmations", "spendable"]
+      }
+    }
+  }
+}

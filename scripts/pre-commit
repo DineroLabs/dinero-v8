@@ -1,0 +1,29 @@
+#!/bin/bash
+# Phase M.0 Pre-Commit Hook (One-Liner Edition)
+# The single command that keeps M.0 clean forever
+
+echo ""
+echo "🔒 Phase M.0: Checking for presentation in logic..."
+echo ""
+
+# The one-liner: if this finds anything, someone tried to smuggle presentation into logic
+# Pattern catches: .GetHex() == x  or  x == .GetHex()  (but not ternary operators)
+if grep -rn "\.GetHex()\s*[!=]=\|[!=]=\s*[^?]*\.GetHex()" src/consensus src/daemon 2>/dev/null; then
+    echo ""
+    echo "❌ COMMIT REJECTED: .GetHex() found in comparison logic"
+    echo ""
+    echo "Rule: uint256 is identity, .GetHex() is presentation"
+    echo ""
+    echo "Fix: Use direct uint256 comparison instead"
+    echo "  ❌ if (hash.GetHex() == other.GetHex())"
+    echo "  ✅ if (hash == other)"
+    echo ""
+    echo "To bypass (NOT recommended): git commit --no-verify"
+    echo ""
+    exit 1
+fi
+
+echo "✅ Phase M.0: CLEAN"
+echo "No presentation in logic - all comparisons use uint256"
+echo ""
+exit 0

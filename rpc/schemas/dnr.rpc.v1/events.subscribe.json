@@ -1,0 +1,124 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "events.subscribe",
+  "description": "Subscribe to real-time events via WebSocket",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "events.subscribe"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "array",
+          "description": "Event topics to subscribe to",
+          "items": {
+            "type": "string",
+            "enum": [
+              "new_block",
+              "mempool_tx", 
+              "wallet_tx",
+              "mining_update",
+              "peer_connect",
+              "peer_disconnect",
+              "reorg",
+              "fee_estimate",
+              "health_change"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        {
+          "type": "object",
+          "description": "Subscription options",
+          "properties": {
+            "include_details": {
+              "type": "boolean",
+              "description": "Include detailed event data (default: true)"
+            },
+            "filter": {
+              "type": "object",
+              "description": "Event filtering options",
+              "properties": {
+                "addresses": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "description": "Filter wallet_tx events by addresses"
+                },
+                "min_confirmations": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Minimum confirmations for tx events"
+                },
+                "min_fee_rate": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Minimum fee rate for mempool_tx events (una/kvB)"
+                }
+              }
+            },
+            "rate_limit": {
+              "type": "object",
+              "properties": {
+                "max_events_per_second": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100,
+                  "description": "Maximum events per second (default: 10)"
+                },
+                "burst_size": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Burst capacity (default: 20)"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "subscription_id": {
+          "type": "string",
+          "description": "Unique subscription identifier"
+        },
+        "subscribed_topics": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Successfully subscribed topics"
+        },
+        "failed_topics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "topic": {"type": "string"},
+              "error": {"type": "string"}
+            }
+          },
+          "description": "Topics that failed to subscribe"
+        },
+        "websocket_url": {
+          "type": "string",
+          "description": "WebSocket URL for receiving events"
+        },
+        "heartbeat_interval": {
+          "type": "integer",
+          "description": "Heartbeat interval in seconds"
+        },
+        "max_reconnect_attempts": {
+          "type": "integer",
+          "description": "Maximum reconnection attempts"
+        }
+      },
+      "required": ["subscription_id", "subscribed_topics"]
+    }
+  }
+}

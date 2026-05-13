@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================================
+# Pre-Push Hook: Release Policy Enforcement
+# ============================================================================
+# Purpose: Enforce tag discipline on release branch only
+#
+# Policy:
+#   - stable → MUST be tagged (release-only)
+#   - main → integration branch (no tags required)
+#   - fix/*, feature/*, refactor/* → development branches (no tags required)
+#
+# See: RELEASE_POLICY.md for full workflow documentation
+# ============================================================================
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
+# Only stable branch requires tags
+if [[ "$BRANCH" == "stable" ]]; then
+  if ! git describe --exact-match --tags >/dev/null 2>&1; then
+    echo "❌ Push rejected: commits on 'stable' must be tagged"
+    echo ""
+    echo "Did you mean to:"
+    echo "  1. Tag this release:   git tag -a v2.2.X -m 'Release notes'"
+    echo "  2. Merge to main first: git checkout main && git merge stable"
+    echo ""
+    echo "See RELEASE_POLICY.md for release workflow."
+    exit 1
+  fi
+  echo "✅ Pushing to stable with tag: $(git describe --exact-match --tags)"
+else
+  echo "✅ Pushing to '$BRANCH' (no tag required)"
+fi
+
+# Skip build check in pre-push hook
+# Hermetic builds should be run manually via: ./scripts/hermetic-build.sh <target>
+# This ensures proper SOURCE_DATE_EPOCH, sealed environment, and deterministic builds
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  echo "ℹ️  Skipping build check in git hook"
+  echo "   Use './scripts/hermetic-build.sh <target>' for hermetic builds"
+  exit 0
+fi
+
+# If SOURCE_DATE_EPOCH is set, we're in a hermetic environment, proceed with build check
+# Guard build: NO tests, NO Snappy tests; build only the shipping binary.
+cmake -S . -B build-test \
+  -DBUILD_TESTING=OFF \
+  -DSNAPPY_BUILD_TESTS=OFF \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DUSE_SYSTEM_OPENSSL=ON
+cmake --build build-test --target dinerod -j4

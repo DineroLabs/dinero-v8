@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "utxo.listlocks",
+  "description": "List all currently locked UTXOs",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "utxo.listlocks"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "txid": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "Transaction ID"
+          },
+          "vout": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Output index"
+          },
+          "amount_una": {
+            "type": "integer",
+            "description": "UTXO value in una"
+          },
+          "amount_din": {
+            "type": "string",
+            "description": "UTXO value in DIN (formatted)"
+          },
+          "address": {
+            "type": "string",
+            "description": "UTXO address"
+          },
+          "locked_at": {
+            "type": "integer",
+            "description": "Timestamp when UTXO was locked"
+          },
+          "locked_by": {
+            "type": "string",
+            "description": "Operation that locked this UTXO"
+          },
+          "confirmations": {
+            "type": "integer",
+            "description": "Number of confirmations"
+          },
+          "spendable": {
+            "type": "boolean",
+            "description": "Whether UTXO is spendable (always false for locked)"
+          }
+        },
+        "required": ["txid", "vout", "amount_una", "amount_din", "address", "locked_at"]
+      }
+    }
+  }
+}

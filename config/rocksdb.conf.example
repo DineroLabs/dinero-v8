@@ -1,0 +1,150 @@
+# DineroCoin RocksDB Configuration (Phase 6A)
+# Copy this file to rocksdb.conf and customize for your deployment
+
+# ========== Memory Configuration ==========
+
+[memory]
+# Block cache size in MB (default: auto-detect, 25% of RAM, max 2GB)
+# Recommended: 512-2048 for mainnet, 128-256 for regtest
+block_cache_mb = 1024
+
+# Write buffer size in MB per memtable (default: 128MB)
+# Larger = better write throughput, more memory usage
+write_buffer_mb = 128
+
+# Number of write buffers (default: 4)
+# Allows write pipelining: one active, others flushing/compacting
+max_write_buffer_number = 4
+
+# Minimum write buffers to merge before flush (default: 2)
+min_write_buffer_number_to_merge = 2
+
+# ========== File Management ==========
+
+[files]
+# Max open files (-1 = unlimited, 0 = auto-detect, N = limit)
+# Unlimited can cause issues on systems with low ulimit
+max_open_files = 0
+
+# Target SST file size in MB (default: 128MB)
+# Larger files = fewer files, less overhead
+target_file_size_mb = 128
+
+# Max bytes for Level 1 in MB (default: 512MB)
+max_bytes_for_level_base_mb = 512
+
+# ========== Compression Strategy ==========
+
+[compression]
+# Compression algorithm: none, snappy, lz4, zstd
+# lz4: Fast, good compression ratio (recommended)
+# zstd: Slower, better ratio (for cold storage)
+# none: No compression (fastest, largest DB)
+compression_type = lz4
+
+# Use tiered compression (different algorithms per level)
+# L0-L1: none (hot data), L2-L4: lz4, L5+: zstd (cold data)
+use_tiered_compression = true
+
+# ZSTD compression level (1-22, default: 3)
+# Higher = better compression, slower writes
+zstd_compression_level = 3
+
+# ========== Level-0 Flush & Compaction ==========
+
+[level0]
+# L0 file count trigger for compaction (default: 4)
+# Lower = more frequent compaction, less read amplification
+compaction_trigger = 4
+
+# L0 file count trigger for write slowdown (default: 20)
+# Slows writes to give compaction time to catch up
+slowdown_trigger = 20
+
+# L0 file count trigger for write stop (default: 36)
+# Stops writes entirely until compaction reduces L0 files
+stop_trigger = 36
+
+# ========== Parallelism ==========
+
+[parallelism]
+# Total background jobs (default: auto, based on CPU cores)
+# 0 = auto-detect (recommended)
+max_background_jobs = 0
+
+# Background flush threads (default: 2)
+max_background_flushes = 2
+
+# Background compaction threads (default: auto)
+# Leave empty to auto-calculate from max_background_jobs
+# max_background_compactions = 4
+
+# ========== I/O Optimization ==========
+
+[io]
+# Use Direct I/O for reads (bypasses OS page cache)
+# Linux: true (recommended), macOS: false (not supported well)
+use_direct_reads = false
+
+# Use Direct I/O for flush and compaction
+# Can reduce memory usage but may hurt latency
+use_direct_io_for_flush_and_compaction = false
+
+# Background sync interval in MB (default: 1MB)
+# Lower = more frequent fsync, safer but slower
+bytes_per_sync_mb = 1
+
+# WAL sync interval in MB (default: 1MB)
+wal_bytes_per_sync_mb = 1
+
+# Compaction readahead size in MB (default: 2MB)
+# Larger = better sequential compaction performance
+compaction_readahead_size_mb = 2
+
+# ========== Block Table Options ==========
+
+[block_table]
+# Block size in KB (default: 16KB)
+# Smaller = more precise caching, higher overhead
+# Larger = less overhead, less precise caching
+block_size_kb = 16
+
+# Cache index and filter blocks in block cache
+# true: Uses block cache, better memory control
+# false: Separate memory, faster but less predictable
+cache_index_and_filter_blocks = true
+
+# Pin L0 index/filter blocks in cache
+# Keeps tip data hot for fast access
+pin_l0_filter_and_index_blocks = true
+
+# Bloom filter bits per key (default: 10)
+# 10 bits ≈ 1% false positive rate
+# Higher = more accurate, more memory
+bloom_filter_bits_per_key = 10
+
+# ========== Monitoring & Statistics ==========
+
+[monitoring]
+# Enable statistics collection
+# Provides detailed metrics but has small overhead (~1-2%)
+enable_statistics = true
+
+# Statistics dump interval in seconds (default: 600 = 10 min)
+# Logs stats to console/log file
+stats_dump_period_sec = 600
+
+# ========== Workload Hints ==========
+# Uncomment one of these presets to override individual settings:
+
+# For initial block download (high write throughput):
+# workload = ibd
+
+# For normal mainnet operation (balanced):
+# workload = normal
+
+# For UTXO-heavy applications (optimized reads):
+# workload = utxo_heavy
+
+# For memory-constrained systems (<2GB RAM):
+# workload = memory_constrained

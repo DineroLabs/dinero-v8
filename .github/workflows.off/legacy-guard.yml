@@ -1,0 +1,78 @@
+name: Legacy Code Guard
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  check-legacy-includes:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install ripgrep
+      run: sudo apt-get update && sudo apt-get install -y ripgrep
+    
+    - name: Check for forbidden legacy includes
+      run: |
+        echo "🔍 Checking for forbidden legacy builder includes..."
+        
+        # Fail if any RPC/wallet code includes legacy builder
+        if rg -n 'legacy/tx_builder|tx_builder_legacy_adapter' src/{rpc,wallet} include/ --type cpp --type h; then
+          echo "❌ FORBIDDEN: Legacy builder includes found in RPC/wallet code!"
+          echo "Use clean interfaces (ITxBuilder) instead of legacy adapters."
+          exit 1
+        fi
+        
+        # Fail if any new code includes the legacy adapter directly
+        if rg -n '#include.*tx_builder_legacy_adapter' src/ include/ --type cpp --type h; then
+          echo "❌ FORBIDDEN: Direct legacy adapter includes found!"
+          echo "Legacy adapter should only be used during migration."
+          exit 1
+        fi
+        
+        echo "✅ No forbidden legacy includes found"
+    
+    - name: Check for TODO/FIXME patterns
+      run: |
+        echo "🔍 Checking TODO/FIXME patterns in critical components..."
+        
+        # Count critical TODOs in core components
+        CRITICAL_TODOS=$(rg -n --hidden --no-ignore -S \
+          -g '!**/{.git,build,third_party,vendor,node_modules}/**' \
+          -e '\b(TODO|FIXME|XXX|HACK|STUB|UNIMPLEMENTED|TBD)\b' \
+          src/{wallet,rpc,consensus,mining} | wc -l)
+        
+        echo "Critical component TODOs: $CRITICAL_TODOS"
+        
+        # Fail if critical components have too many TODOs (threshold: 20)
+        if [ "$CRITICAL_TODOS" -gt 20 ]; then
+          echo "❌ Too many TODOs in critical components: $CRITICAL_TODOS > 20"
+          echo "Clean up TODOs before merging to main."
+          exit 1
+        fi
+        
+        echo "✅ Critical component TODO count acceptable: $CRITICAL_TODOS"
+    
+    - name: Check for dangerous patterns
+      run: |
+        echo "🔍 Checking for dangerous patterns..."
+        
+        # Check for assert(0) and similar
+        CRITICAL_ISSUES=$(rg -n --hidden --no-ignore -S \
+          -g '!**/{.git,build,third_party,vendor,node_modules}/**' \
+          -e '\b(assert\s*\(\s*0\s*\)|abort\s*\(|__builtin_unreachable|UNREACHABLE)\b' \
+          . | wc -l)
+        
+        echo "Critical issues found: $CRITICAL_ISSUES"
+        
+        # Warn but don't fail for critical issues (they might be intentional)
+        if [ "$CRITICAL_ISSUES" -gt 0 ]; then
+          echo "⚠️  Found $CRITICAL_ISSUES critical issue patterns"
+          echo "Review these carefully to ensure they're intentional."
+        else
+          echo "✅ No critical issue patterns found"
+        fi

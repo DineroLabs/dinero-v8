@@ -1,0 +1,233 @@
+name: Dinero Release (Linux amd64/arm64 + Windows + macOS)
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  # =======================
+  # LINUX (amd64 + arm64)
+  # =======================
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: docker/setup-qemu-action@v3
+        with: { platforms: all }
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Write Dockerfile.linux
+        run: |
+          cat > Dockerfile.linux <<'EOF'
+          FROM ubuntu:24.04
+          ARG DEBIAN_FRONTEND=noninteractive
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+              build-essential cmake ninja-build pkg-config git \
+              zlib1g-dev libbz2-dev libsqlite3-dev libevent-dev ca-certificates curl xz-utils \
+            && rm -rf /var/lib/apt/lists/*
+          WORKDIR /src
+          COPY . .
+          RUN cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DENABLE_SANITIZERS=OFF \
+                -DROCKSDB_BUILD_SHARED=OFF -DROCKSDB_BUILD_STATIC=ON \
+                -DWITH_ZLIB=ON -DWITH_BZ2=ON -DWITH_LZ4=OFF -DWITH_SNAPPY=OFF -DWITH_ZSTD=OFF \
+                -DCMAKE_IGNORE_PREFIX_PATH="/usr/local;/opt/homebrew" \
+            && cmake --build build -j --target dinerod dinero-cli \
+            && strip build/bin/dinerod build/bin/dinero-cli || true \
+            && mkdir -p /opt/out && cp -v build/bin/dinerod build/bin/dinero-cli /opt/out/
+          EOF
+
+      - name: Build (${{ matrix.arch }})
+        id: build
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            PLATFORM="linux/arm64"; OUT="Dinero-linux-arm64.tar.gz"
+          else
+            PLATFORM="linux/amd64"; OUT="Dinero-linux-amd64.tar.gz"
+          fi
+          docker buildx build --platform "$PLATFORM" -f Dockerfile.linux -t dinero-rel:${{ matrix.arch }} --load .
+          cid=$(docker create dinero-rel:${{ matrix.arch }})
+          mkdir -p out && docker cp "$cid":/opt/out/. ./out && docker rm "$cid"
+          tar -C out -czf "$OUT" dinerod dinero-cli
+          echo "artifact=$OUT" >> $GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.artifact }}
+          path: ${{ steps.build.outputs.artifact }}
+
+  # =======================
+  # WINDOWS (x86_64)
+  # =======================
+  windows:
+    name: Windows x86_64
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-sqlite3
+            mingw-w64-x86_64-libevent
+            mingw-w64-x86_64-boost
+
+      - name: Configure (Release)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_SANITIZERS=OFF
+
+      - name: Build dinerod + dinero-cli
+        run: cmake --build build -j --target dinerod dinero-cli
+
+      - name: Package (zip)
+        run: |
+          mkdir -p out
+          x86_64-w64-mingw32-strip build/bin/dinerod.exe build/bin/dinero-cli.exe || true
+          cp -v build/bin/dinerod.exe build/bin/dinero-cli.exe out/
+          cd out && 7z a -tzip ../Dinero-windows-x86_64.zip dinerod.exe dinero-cli.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dinero-windows-x86_64.zip
+          path: Dinero-windows-x86_64.zip
+
+  # =======================
+  # macOS (Intel x86_64)
+  # =======================
+  macos-intel:
+    name: macOS x86_64
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Configure (Release)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DENABLE_SANITIZERS=OFF \
+            -DROCKSDB_BUILD_SHARED=OFF -DROCKSDB_BUILD_STATIC=ON \
+            -DWITH_ZLIB=ON -DWITH_BZ2=ON -DWITH_LZ4=OFF -DWITH_SNAPPY=OFF -DWITH_ZSTD=OFF \
+            -DCMAKE_IGNORE_PREFIX_PATH="/opt/homebrew;/usr/local"
+
+      - name: Build dinerod + dinero-cli
+        run: cmake --build build -j --target dinerod dinero-cli
+
+      - name: Package (tar.gz)
+        run: |
+          mkdir -p out
+          strip -S -x build/bin/dinerod build/bin/dinero-cli || true
+          cp -v build/bin/dinerod build/bin/dinero-cli out/
+          tar -C out -czf Dinero-macos-x86_64.tar.gz dinerod dinero-cli
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dinero-macos-x86_64.tar.gz
+          path: Dinero-macos-x86_64.tar.gz
+
+  # =======================
+  # macOS (Apple Silicon)
+  # =======================
+  macos-arm:
+    name: macOS arm64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Configure (Release)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DENABLE_SANITIZERS=OFF \
+            -DROCKSDB_BUILD_SHARED=OFF -DROCKSDB_BUILD_STATIC=ON \
+            -DWITH_ZLIB=ON -DWITH_BZ2=ON -DWITH_LZ4=OFF -DWITH_SNAPPY=OFF -DWITH_ZSTD=OFF \
+            -DCMAKE_IGNORE_PREFIX_PATH="/opt/homebrew;/usr/local"
+
+      - name: Build dinerod + dinero-cli
+        run: cmake --build build -j --target dinerod dinero-cli
+
+      - name: Package (tar.gz)
+        run: |
+          mkdir -p out
+          strip -S -x build/bin/dinerod build/bin/dinero-cli || true
+          cp -v build/bin/dinerod build/bin/dinero-cli out/
+          tar -C out -czf Dinero-macos-arm64.tar.gz dinerod dinero-cli
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dinero-macos-arm64.tar.gz
+          path: Dinero-macos-arm64.tar.gz
+
+  # =======================
+  # CHECKSUMS
+  # =======================
+  checksums:
+    name: SHA256SUMS
+    runs-on: ubuntu-24.04
+    needs: [linux, windows, macos-intel, macos-arm]
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist }
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          find . -type f \( -name 'Dinero-linux-*.tar.gz' -o -name 'Dinero-windows-*.zip' -o -name 'Dinero-macos-*.tar.gz' \) -print0 \
+            | sort -z | xargs -0 shasum -a 256 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: dist/SHA256SUMS.txt
+
+  # =======================
+  # RELEASE (on tag)
+  # =======================
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    needs: [linux, windows, macos-intel, macos-arm, checksums]
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist }
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/**/Dinero-linux-*.tar.gz
+            dist/**/Dinero-windows-*.zip
+            dist/**/Dinero-macos-*.tar.gz
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

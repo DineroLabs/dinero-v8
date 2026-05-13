@@ -1,0 +1,41 @@
+name: Phase M.0 - Simple Enforcement
+
+# The one-liner that keeps M.0 clean forever:
+# grep -rn "GetHex()" src/consensus src/daemon | grep -E "(==|!=)" && exit 1
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  m0-check:
+    name: Phase M.0 Protection
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for .GetHex() in comparisons
+        run: |
+          echo "🔒 Phase M.0: Checking for presentation in logic..."
+          echo ""
+
+          # The one-liner: if this finds anything, someone tried to smuggle presentation into logic
+          # Pattern catches: .GetHex() == x  or  x == .GetHex()  (but not ternary operators)
+          if grep -rn "\.GetHex()\s*[!=]=\|[!=]=\s*[^?]*\.GetHex()" src/consensus src/daemon 2>/dev/null; then
+            echo ""
+            echo "❌ VIOLATION: .GetHex() found in comparison logic"
+            echo ""
+            echo "Rule: uint256 is identity, .GetHex() is presentation"
+            echo ""
+            echo "Fix: Use direct uint256 comparison instead"
+            echo "  ❌ if (hash.GetHex() == other.GetHex())"
+            echo "  ✅ if (hash == other)"
+            exit 1
+          fi
+
+          echo "✅ Phase M.0: CLEAN"
+          echo "No presentation in logic - all comparisons use uint256"

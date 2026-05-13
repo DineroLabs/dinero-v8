@@ -1,0 +1,49 @@
+:root {
+  --din-symbol-url: url("./dinero-symbol.svg");
+  --din-symbol-url-small: url("./dinero-symbol-small.svg");
+  --din-symbol-glyph: "\\e900";
+  --din-symbol-glyph-small: "\\e901";
+}
+
+/* SVG/mask mode: ready immediately, no custom font required */
+.din-symbol-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em;
+  background-color: currentColor;
+  -webkit-mask: var(--din-symbol-url) center / contain no-repeat;
+  mask: var(--din-symbol-url) center / contain no-repeat;
+}
+
+.din-symbol-icon.small {
+  -webkit-mask-image: var(--din-symbol-url-small);
+  mask-image: var(--din-symbol-url-small);
+}
+
+/* Icon-font mode: drop in DineroSymbol.woff2/woff/ttf to use typed glyphs */
+@font-face {
+  font-family: "DineroSymbol";
+  src: url("./DineroSymbol.woff2") format("woff2"),
+       url("./DineroSymbol.woff") format("woff"),
+       url("./DineroSymbol.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+.din-symbol-font {
+  font-family: "DineroSymbol", sans-serif;
+  font-style: normal;
+  font-weight: normal;
+  line-height: 1;
+  speak: none;
+}
+
+.din-symbol-font::before {
+  content: var(--din-symbol-glyph);
+}
+
+.din-symbol-font.small::before {
+  content: var(--din-symbol-glyph-small);
+}

@@ -1,0 +1,130 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "psbt.fund",
+  "description": "Add UTXOs, change output, and calculate fees for PSBT",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "psbt.fund"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "description": "Base64-encoded PSBT to fund"
+        },
+        {
+          "type": "object",
+          "description": "Funding options",
+          "properties": {
+            "fee_rate": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Fee rate in una/kvB (default: estimate)"
+            },
+            "subtract_fee_from_outputs": {
+              "type": "array",
+              "items": {"type": "integer"},
+              "description": "Output indices to subtract fee from"
+            },
+            "replaceable": {
+              "type": "boolean",
+              "description": "Whether transaction is BIP125 replaceable (default: false)"
+            },
+            "conf_target": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Confirmation target for fee estimation"
+            },
+            "estimate_mode": {
+              "type": "string",
+              "enum": ["UNSET", "ECONOMICAL", "CONSERVATIVE"],
+              "description": "Fee estimation mode"
+            },
+            "change_address": {
+              "type": "string",
+              "description": "Custom change address (default: auto-generate)"
+            },
+            "change_position": {
+              "type": "integer",
+              "description": "Position to insert change output"
+            },
+            "include_watching": {
+              "type": "boolean",
+              "description": "Include watch-only UTXOs (default: true if no spendable)"
+            },
+            "lock_unspents": {
+              "type": "boolean",
+              "description": "Lock selected UTXOs (default: false)"
+            },
+            "min_conf": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Minimum confirmations for UTXOs (default: 1)"
+            },
+            "max_conf": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Maximum confirmations for UTXOs (default: 9999999)"
+            }
+          }
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "psbt": {
+          "type": "string",
+          "description": "Funded PSBT (base64)"
+        },
+        "fee_una": {
+          "type": "integer",
+          "description": "Transaction fee in una"
+        },
+        "fee_din": {
+          "type": "string",
+          "description": "Transaction fee in DIN (formatted)"
+        },
+        "fee_rate": {
+          "type": "number",
+          "description": "Actual fee rate in una/kvB"
+        },
+        "changepos": {
+          "type": "integer",
+          "description": "Position of change output (-1 if none)"
+        },
+        "change_amount_una": {
+          "type": "integer",
+          "description": "Change output amount in una"
+        },
+        "change_amount_din": {
+          "type": "string",
+          "description": "Change output amount in DIN (formatted)"
+        },
+        "inputs_added": {
+          "type": "integer",
+          "description": "Number of inputs added"
+        },
+        "total_input_una": {
+          "type": "integer",
+          "description": "Total input value in una"
+        },
+        "total_input_din": {
+          "type": "string",
+          "description": "Total input value in DIN (formatted)"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Funding warnings"
+        }
+      },
+      "required": ["psbt", "fee_una", "fee_din", "changepos"]
+    }
+  }
+}

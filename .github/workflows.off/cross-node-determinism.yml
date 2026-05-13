@@ -1,0 +1,76 @@
+name: Cross-Node Utreexo Determinism
+
+# =============================================================================
+# REQUIRED CHECK - DO NOT SKIP
+# This test proves Utreexo commitment is deterministic ACROSS PROCESSES.
+# Failure indicates nodes will diverge - this is a consensus-critical bug.
+# =============================================================================
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+concurrency:
+  group: cross-node-determinism-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  cross-node-determinism:
+    name: Cross-Node Utreexo Determinism (REQUIRED)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: false
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Cache build
+      uses: actions/cache@v4
+      with:
+        path: |
+          build/
+          secp-prefix/
+        key: ${{ runner.os }}-build-${{ hashFiles('CMakeLists.txt', 'src/**/*.cpp') }}
+        restore-keys: |
+          ${{ runner.os }}-build-
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake ninja-build
+        sudo apt-get install -y libcurl4-openssl-dev pkg-config
+        sudo apt-get install -y python3 curl
+
+    - name: Build dinerod
+      run: |
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_TESTING=ON
+        cmake --build build --target dinerod -j$(nproc)
+
+    - name: Run Cross-Node Determinism Test
+      run: |
+        python3 tests/integration/test_cross_node_determinism.py \
+          --dinerod ./build/dinerod \
+          --datadir ./data-cross-node-test
+
+    - name: Collect logs on failure
+      if: failure()
+      run: |
+        mkdir -p artifacts
+        cp -r ./data-cross-node-test/*/regtest/debug.log artifacts/ 2>/dev/null || true
+        cp -r ./data-cross-node-test/*/*.log artifacts/ 2>/dev/null || true
+        # List what's in datadirs
+        find ./data-cross-node-test -name "*.log" -o -name "debug.log" 2>/dev/null | head -20
+
+    - name: Upload artifacts
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: cross-node-determinism-logs
+        path: artifacts/
+        retention-days: 7

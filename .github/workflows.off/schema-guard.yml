@@ -1,0 +1,108 @@
+name: NodeInfo Schema Guard
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  schema-validation:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install jq
+      run: sudo apt-get update && sudo apt-get install -y jq
+      
+    - name: Install ajv-cli for JSON Schema validation
+      run: npm install -g ajv-cli
+      
+    - name: Start daemon and generate nodeinfo.json
+      run: |
+        # Build daemon
+        mkdir build && cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc) dinerod
+        
+        # Start daemon with ephemeral ports
+        ./dinerod -regtest -rpcport=0 -wsport=0 -port=0 -daemon=false &
+        DAEMON_PID=$!
+        
+        # Wait for nodeinfo.json
+        timeout=30
+        while [ $timeout -gt 0 ] && [ ! -f ~/.dinero/regtest/nodeinfo.json ]; do
+          sleep 1
+          timeout=$((timeout - 1))
+        done
+        
+        if [ ! -f ~/.dinero/regtest/nodeinfo.json ]; then
+          echo "❌ nodeinfo.json not generated"
+          kill $DAEMON_PID 2>/dev/null || true
+          exit 1
+        fi
+        
+        # Stop daemon
+        kill $DAEMON_PID 2>/dev/null || true
+        
+        # Copy nodeinfo.json for validation
+        cp ~/.dinero/regtest/nodeinfo.json ./nodeinfo-test.json
+        
+    - name: Validate nodeinfo.json against schema
+      run: |
+        echo "📋 Validating nodeinfo.json against schema..."
+        ajv validate -s schemas/nodeinfo-v1.json -d nodeinfo-test.json
+        
+        echo "✅ Schema validation passed"
+        
+    - name: Check required fields
+      run: |
+        echo "🔍 Checking required fields..."
+        
+        # Check required fields exist
+        jq -e '.rpc.url' nodeinfo-test.json > /dev/null
+        jq -e '.ws.url' nodeinfo-test.json > /dev/null  
+        jq -e '.cookie' nodeinfo-test.json > /dev/null
+        jq -e '.datadir' nodeinfo-test.json > /dev/null
+        jq -e '.network' nodeinfo-test.json > /dev/null
+        
+        # Check URL formats
+        rpc_url=$(jq -r '.rpc.url' nodeinfo-test.json)
+        ws_url=$(jq -r '.ws.url' nodeinfo-test.json)
+        
+        if [[ ! $rpc_url =~ ^http://127\.0\.0\.1:[0-9]+$ ]]; then
+          echo "❌ Invalid RPC URL format: $rpc_url"
+          exit 1
+        fi
+        
+        if [[ ! $ws_url =~ ^ws://127\.0\.0\.1:[0-9]+/ws$ ]]; then
+          echo "❌ Invalid WebSocket URL format: $ws_url"
+          exit 1
+        fi
+        
+        # Check network value
+        network=$(jq -r '.network' nodeinfo-test.json)
+        if [[ "$network" != "regtest" ]]; then
+          echo "❌ Expected network=regtest, got: $network"
+          exit 1
+        fi
+        
+        echo "✅ All required fields validated"
+        
+    - name: Check no extra fields
+      run: |
+        echo "🔒 Checking for unexpected fields..."
+        
+        # Get all top-level keys
+        keys=$(jq -r 'keys[]' nodeinfo-test.json)
+        allowed_keys="cookie datadir mining_address network rpc ws"
+        
+        for key in $keys; do
+          if [[ ! " $allowed_keys " =~ " $key " ]]; then
+            echo "❌ Unexpected field in nodeinfo.json: $key"
+            exit 1
+          fi
+        done
+        
+        echo "✅ No unexpected fields found"

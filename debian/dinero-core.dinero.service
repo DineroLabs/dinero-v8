@@ -1,0 +1,70 @@
+[Unit]
+# Dinero Core systemd unit — packaged-service mode (Dinero Core 1.0
+# spec §1.1). Shipped to /lib/systemd/system/dinero.service by
+# debhelper. NOT auto-enabled — operators run
+#   sudo systemctl enable --now dinero
+# after the package installs.
+#
+# This file is the canonical packaged-mode unit. The example at
+# /usr/share/doc/dinero/dinero.service.example is the manual-mode
+# variant (different ExecStart path, different datadir).
+
+Description=Dinero Core daemon
+Documentation=https://github.com/DineroLabs/Dinero-Coin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Identity — created by postinst.
+User=dinero
+Group=dinero
+
+# dinerod auto-discovers <datadir>/dinero.conf when run with no
+# --conf flag. We pass --datadir explicitly so the location is
+# unambiguous in the unit file (and in journalctl output).
+ExecStart=/usr/bin/dinerod --datadir=/var/lib/dinero
+
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+# Logging via journald. Operators inspect with `journalctl -u dinero`.
+# The retention policy ships at /etc/systemd/journald.conf.d/dinero.conf
+# (postinst installs the drop-in example with the .example suffix
+# stripped). For a file-copy of the log on top of the journal, set
+# debug.log_file = /path/to/log in /etc/dinero/dinero.conf.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dinero
+
+# Security hardening. These are the safe defaults for a packaged
+# daemon that has no business writing outside its own datadir.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/dinero
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Resource limits. Tune for your hardware.
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Environment.
+Environment=MALLOC_ARENA_MAX=4
+
+[Install]
+WantedBy=multi-user.target

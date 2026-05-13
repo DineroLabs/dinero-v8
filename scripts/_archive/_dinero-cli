@@ -1,0 +1,131 @@
+#compdef halalcoin-cli
+
+# HalalCoin CLI Zsh Completion
+
+_halalcoin_cli() {
+    local context state line
+    typeset -A opt_args
+
+    _arguments -C \
+        '--rpc-url[RPC URL]:url:' \
+        '--rpc-user[RPC username]:user:' \
+        '--rpc-pass[RPC password]:password:' \
+        '--wallet[Wallet name]:wallet:' \
+        '--datadir[Data directory]:directory:_directories' \
+        '(-j --json)'{-j,--json}'[JSON output]' \
+        '(-v --verbose)'{-v,--verbose}'[Verbose output]' \
+        '(-h --help)'{-h,--help}'[Show help]' \
+        '1: :_halalcoin_cli_commands' \
+        '*:: :->args' && return 0
+
+    case $state in
+        args)
+            case $words[1] in
+                blockchain)
+                    _arguments \
+                        '1: :(height getblockhash listunspent stop)' \
+                        '2:: :_halalcoin_cli_blockchain_args'
+                    ;;
+                miner)
+                    _arguments \
+                        '1: :(start stop status)' \
+                        '2:: :_halalcoin_cli_miner_args'
+                    ;;
+                wallet)
+                    _arguments \
+                        '1: :(create list load lock passphrase balance)' \
+                        '2:: :_halalcoin_cli_wallet_args'
+                    ;;
+                addr)
+                    _arguments \
+                        '1: :(new validate)' \
+                        '2:: :_halalcoin_cli_addr_args'
+                    ;;
+                tx)
+                    _arguments \
+                        '1: :(send list raw)' \
+                        '2:: :_halalcoin_cli_tx_args'
+                    ;;
+                getblockhash)
+                    _arguments '1: :_message "block height"'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_halalcoin_cli_commands() {
+    local commands
+    commands=(
+        'blockchain:Blockchain operations'
+        'miner:Mining operations'
+        'wallet:Wallet operations'
+        'addr:Address tools'
+        'tx:Transactions'
+        'height:Quick blockchain height'
+        'besthash:Best block hash'
+        'stop:Stop daemon'
+        'version:Show version'
+        'help:Show help'
+    )
+    _describe 'commands' commands
+}
+
+_halalcoin_cli_blockchain_args() {
+    case $words[1] in
+        getblockhash)
+            _message "block height"
+            ;;
+    esac
+}
+
+_halalcoin_cli_miner_args() {
+    case $words[1] in
+        start)
+            _arguments '--threads[Number of threads]:threads:(1 2 4 8 12 16)'
+            ;;
+    esac
+}
+
+_halalcoin_cli_wallet_args() {
+    case $words[1] in
+        create|load)
+            _message "wallet name"
+            ;;
+        passphrase)
+            _arguments \
+                '--timeout[Timeout in seconds]:timeout:(60 300 600 1800 3600)' \
+                '--stdin[Read from stdin]'
+            ;;
+    esac
+}
+
+_halalcoin_cli_addr_args() {
+    case $words[1] in
+        new)
+            _arguments '--type[Address type]:type:(bech32 p2pkh)'
+            ;;
+        validate)
+            _message "address"
+            ;;
+    esac
+}
+
+_halalcoin_cli_tx_args() {
+    case $words[1] in
+        send)
+            _arguments \
+                '1: :_message "destination address"' \
+                '2: :_message "amount"' \
+                '--subtractfee[Subtract fee from amount]'
+            ;;
+        list)
+            _arguments '--count[Number of transactions]:count:(10 25 50 100)'
+            ;;
+        raw)
+            _arguments '1: :(create send)'
+            ;;
+    esac
+}
+
+_halalcoin_cli "$@"

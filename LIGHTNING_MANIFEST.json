@@ -1,0 +1,191 @@
+{
+  "manifest_version": "1.0.0",
+  "manifest_generated": "2025-11-15T21:59:30Z",
+  "dinero_version": "0.1.0-lightning",
+  "description": "DineroCoin Lightning Network Vendor Integrity Manifest",
+  "purpose": "Cryptographic provenance and audit trail for all vendored Lightning Network dependencies",
+  "compliance": [
+    "BOLT #2 (Channel Protocol)",
+    "BOLT #3 (Commitment Transactions)",
+    "BOLT #8 (Encrypted Transport)",
+    "BOLT #11 (Invoice Encoding)",
+    "BOLT #12 (Offers with MuSig2)",
+    "BIP174 (PSBT)"
+  ],
+  "libraries": [
+    {
+      "name": "libwally-core",
+      "priority": "P0",
+      "classification": "CRITICAL",
+      "purpose": "PSBT and BOLT #3 commitment transaction primitives",
+      "upstream_url": "https://github.com/ElementsProject/libwally-core",
+      "version": "release_1.3.0",
+      "commit": {
+        "sha1": "11e1bf6",
+        "timestamp": "2024-07-19T16:59:02+12:00"
+      },
+      "binary": {
+        "path": "third_party/libwally-core/src/.libs/libwallycore.a",
+        "size_bytes": 2010808,
+        "size_human": "1.9M",
+        "sha256": "1d517946de536afb7fc51c8c260dcfb483697c9c15e559231137e1754f68345a",
+        "build_timestamp": "2025-11-15T16:43:30Z",
+        "linkage": "static",
+        "features": [
+          "PSBT (BIP174)",
+          "BOLT #3 commitment transactions",
+          "BIP32 HD wallet derivation",
+          "BIP39 mnemonic codes",
+          "BIP85 deterministic entropy",
+          "Bech32 address encoding",
+          "Script construction utilities",
+          "Elements/Liquid compatibility"
+        ]
+      },
+      "license": {
+        "spdx": "MIT",
+        "file": "third_party/libwally-core/COPYING"
+      },
+      "vendor_script": "scripts/vendor-libwally.sh",
+      "verification_status": "VERIFIED"
+    },
+    {
+      "name": "secp256k1-zkp",
+      "priority": "P1",
+      "classification": "ADVANCED",
+      "purpose": "MuSig2 aggregation, BOLT #12 offers, Taproot channel support",
+      "upstream_url": "https://github.com/ElementsProject/secp256k1-zkp",
+      "version": "master",
+      "commit": {
+        "sha1": "42e75b6",
+        "timestamp": "2025-09-19T17:58:29+02:00"
+      },
+      "binary": {
+        "path": "third_party/secp256k1-zkp/.libs/libsecp256k1.a",
+        "size_bytes": 2502144,
+        "size_human": "2.4M",
+        "sha256": "e1342f264663d476e05fcff8daa68cfb3c63f5cd2ad04ba5497db6e7a2ad2767",
+        "build_timestamp": "2025-11-15T16:43:59Z",
+        "linkage": "static",
+        "modules_enabled": [
+          "ecdh",
+          "recovery",
+          "extrakeys",
+          "schnorrsig",
+          "ellswift",
+          "generator",
+          "rangeproof",
+          "surjectionproof",
+          "whitelist",
+          "musig"
+        ],
+        "features": [
+          "MuSig2 multi-signature aggregation",
+          "Schnorr signatures (BIP340)",
+          "ECDH key exchange",
+          "Adaptor signatures",
+          "Range proofs",
+          "Taproot support"
+        ]
+      },
+      "license": {
+        "spdx": "MIT",
+        "file": "third_party/secp256k1-zkp/COPYING"
+      },
+      "vendor_script": "scripts/vendor-secp256k1-zkp.sh",
+      "verification_status": "VERIFIED"
+    },
+    {
+      "name": "blake3",
+      "priority": "P2",
+      "classification": "PERFORMANCE",
+      "purpose": "Fast channel hashing - 10x speedup over SHA256",
+      "upstream_url": "https://github.com/BLAKE3-team/BLAKE3",
+      "version": "1.8.2",
+      "commit": {
+        "sha1": "eae9bf3",
+        "timestamp": "2025-11-12T08:35:11-08:00"
+      },
+      "binary": {
+        "path": "third_party/blake3/c/build/libblake3.a",
+        "size_bytes": 26504,
+        "size_human": "26K",
+        "sha256": "621b4d82371ae929159e5bddfb65d5bde0528f5de35c7d57cbcec6ffc71a3a77",
+        "build_timestamp": "2025-11-15T16:44:10Z",
+        "linkage": "static",
+        "features": [
+          "10x faster hashing",
+          "SIMD optimization",
+          "Parallelizable",
+          "Incremental updates"
+        ]
+      },
+      "license": {
+        "spdx": "Apache-2.0 OR CC0-1.0",
+        "file": "third_party/blake3/LICENSE"
+      },
+      "vendor_script": "scripts/vendor-blake3.sh",
+      "verification_status": "VERIFIED"
+    }
+  ],
+  "build_environment": {
+    "platform": "darwin",
+    "os_version": "Darwin 24.6.0",
+    "architecture": "arm64",
+    "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+    "cmake_version": "4.0.3",
+    "build_type": "Release",
+    "optimization_level": "-O2"
+  },
+  "verification": {
+    "method": "SHA256 checksums",
+    "script": "scripts/verify-lightning-checksums.sh",
+    "last_verified": "2025-11-15T21:59:30Z",
+    "status": "GENERATED"
+  },
+  "integration": {
+    "cmake_target": "lightning_core_static",
+    "cmake_file": "third_party/lightning_core/CMakeLists.txt",
+    "feature_detection": [
+      "HAVE_LIGHTNING_PSBT",
+      "HAVE_LIGHTNING_BOLT3",
+      "HAVE_LIGHTNING_BIP174",
+      "HAVE_LIGHTNING_MuSig2",
+      "HAVE_LIGHTNING_BOLT12",
+      "HAVE_LIGHTNING_Taproot",
+      "HAVE_LIGHTNING_BLAKE3_HASHING"
+    ]
+  },
+  "bolt_compliance": {
+    "bolt_2": {
+      "name": "Channel Protocol",
+      "status": "READY",
+      "library": "secp256k1-zkp"
+    },
+    "bolt_3": {
+      "name": "Commitment Transactions",
+      "status": "READY",
+      "library": "libwally-core"
+    },
+    "bolt_8": {
+      "name": "Encrypted Transport",
+      "status": "READY",
+      "library": "secp256k1-zkp"
+    },
+    "bolt_11": {
+      "name": "Invoice Encoding",
+      "status": "READY",
+      "library": "libwally-core"
+    },
+    "bolt_12": {
+      "name": "Offers (MuSig2)",
+      "status": "READY",
+      "library": "secp256k1-zkp"
+    }
+  },
+  "rpc_integration": {
+    "command": "getlightninginfo",
+    "description": "Query Lightning Network library status and compliance",
+    "example": "dinero-cli getlightninginfo"
+  }
+}

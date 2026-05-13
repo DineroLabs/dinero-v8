@@ -1,0 +1,63 @@
+// Provider abstraction for KYC providers
+// wallet-core/ffi/wallet_ffi_kyc_provider.h
+
+#pragma once
+
+#include "wallet_ffi.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * KYC Provider Types
+ */
+typedef enum {
+    KYC_PROVIDER_OPENKYC = 0,  // Self-hosted OpenKYC
+    KYC_PROVIDER_SUMSUB = 1,   // Commercial Sumsub
+    KYC_PROVIDER_ONFIDO = 2,   // Commercial Onfido
+    KYC_PROVIDER_CUSTOM = 99   // Custom provider
+} KYCProviderType;
+
+/**
+ * Set active KYC provider
+ * @param provider Provider type
+ * @return 0 on success, non-zero on error
+ */
+int dinero_wallet_set_kyc_provider(KYCProviderType provider);
+
+/**
+ * Get active KYC provider
+ * @param provider_out Output provider type
+ * @return 0 on success, non-zero on error
+ */
+int dinero_wallet_get_kyc_provider(KYCProviderType* provider_out);
+
+/**
+ * Configure OpenKYC provider
+ * @param api_url OpenKYC API base URL
+ * @param api_key API key (optional)
+ * @return 0 on success, non-zero on error
+ */
+int dinero_wallet_configure_openkyc(
+    const char* api_url,
+    const char* api_key
+);
+
+/**
+ * Configure Sumsub provider
+ * @param api_url Sumsub API URL
+ * @param app_token Application token
+ * @param secret_key Secret key
+ * @return 0 on success, non-zero on error
+ */
+int dinero_wallet_configure_sumsub(
+    const char* api_url,
+    const char* app_token,
+    const char* secret_key
+);
+
+#ifdef __cplusplus
+}
+#endif
+

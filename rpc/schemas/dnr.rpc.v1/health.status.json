@@ -1,0 +1,124 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "health.status",
+  "description": "Get comprehensive node health status (mirrors /healthz endpoint)",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "health.status"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["healthy", "degraded", "unhealthy"],
+          "description": "Overall health status"
+        },
+        "timestamp": {
+          "type": "integer",
+          "description": "Health check timestamp"
+        },
+        "uptime": {
+          "type": "integer",
+          "description": "Node uptime in seconds"
+        },
+        "version": {
+          "type": "string",
+          "description": "Node software version"
+        },
+        "network": {
+          "type": "string",
+          "enum": ["mainnet", "testnet", "regtest"],
+          "description": "Network identifier"
+        },
+        "sync": {
+          "type": "object",
+          "properties": {
+            "synced": {"type": "boolean"},
+            "progress": {"type": "number", "minimum": 0, "maximum": 1},
+            "blocks": {"type": "integer"},
+            "headers": {"type": "integer"},
+            "behind": {"type": "integer"}
+          },
+          "required": ["synced", "progress", "blocks", "headers"]
+        },
+        "peers": {
+          "type": "object",
+          "properties": {
+            "connected": {"type": "integer"},
+            "inbound": {"type": "integer"},
+            "outbound": {"type": "integer"},
+            "healthy_threshold": {"type": "integer"}
+          },
+          "required": ["connected", "inbound", "outbound"]
+        },
+        "mempool": {
+          "type": "object",
+          "properties": {
+            "size": {"type": "integer"},
+            "bytes": {"type": "integer"},
+            "usage": {"type": "integer"},
+            "max_usage": {"type": "integer"}
+          },
+          "required": ["size", "bytes", "usage"]
+        },
+        "storage": {
+          "type": "object",
+          "properties": {
+            "datadir_size": {"type": "integer"},
+            "blockchain_size": {"type": "integer"},
+            "free_space": {"type": "integer"},
+            "disk_usage_percent": {"type": "number"}
+          }
+        },
+        "rpc": {
+          "type": "object",
+          "properties": {
+            "active_connections": {"type": "integer"},
+            "requests_per_minute": {"type": "number"},
+            "average_response_time": {"type": "number"},
+            "error_rate": {"type": "number"}
+          }
+        },
+        "mining": {
+          "type": "object",
+          "properties": {
+            "active": {"type": "boolean"},
+            "threads": {"type": "integer"},
+            "hashrate": {"type": "number"},
+            "last_block": {"type": "integer"}
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Health warnings"
+        },
+        "errors": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Health errors"
+        },
+        "checks": {
+          "type": "object",
+          "description": "Individual health check results",
+          "properties": {
+            "disk_space": {"type": "string", "enum": ["pass", "warn", "fail"]},
+            "peer_connectivity": {"type": "string", "enum": ["pass", "warn", "fail"]},
+            "blockchain_sync": {"type": "string", "enum": ["pass", "warn", "fail"]},
+            "mempool_health": {"type": "string", "enum": ["pass", "warn", "fail"]},
+            "rpc_responsiveness": {"type": "string", "enum": ["pass", "warn", "fail"]}
+          }
+        }
+      },
+      "required": ["status", "timestamp", "uptime", "version", "network", "sync", "peers"]
+    }
+  }
+}

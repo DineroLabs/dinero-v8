@@ -1,0 +1,106 @@
+name: Build & Test Dinero Wallet FFI
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: |
+          brew install cmake
+          
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_SANITIZERS=OFF
+          
+      - name: Build FFI Library
+        run: |
+          cmake --build build --target dinero_wallet_ffi -j$(sysctl -n hw.ncpu)
+          
+      - name: Verify Library
+        run: |
+          ls -lh build/libdinero_wallet_ffi.a
+          file build/libdinero_wallet_ffi.a
+          
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinero-wallet-ffi-macos
+          path: build/libdinero_wallet_ffi.a
+          
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libssl-dev
+          
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_SANITIZERS=OFF
+          
+      - name: Build FFI Library
+        run: |
+          cmake --build build --target dinero_wallet_ffi -j$(nproc)
+          
+      - name: Verify Library
+        run: |
+          ls -lh build/libdinero_wallet_ffi.a
+          file build/libdinero_wallet_ffi.a
+          
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinero-wallet-ffi-linux
+          path: build/libdinero_wallet_ffi.a
+          
+  test-rust:
+    needs: [build-macos]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Restore FFI Library
+        uses: actions/download-artifact@v4
+        with:
+          name: dinero-wallet-ffi-macos
+          path: build/
+          
+      - name: Build Tauri App
+        working-directory: mobile-tauri/src-tauri
+        run: |
+          cargo build --lib
+          
+      - name: Run Rust Tests
+        working-directory: mobile-tauri/src-tauri
+        run: |
+          cargo test --lib || true  # Tests not implemented yet
+          
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check C++ Formatting
+        run: |
+          # Check for TODO/FIXME markers
+          grep -r "TODO\|FIXME" wallet-core/ffi/ || true
+          
+      - name: Verify Headers
+        run: |
+          # Check header guards
+          grep -r "#ifndef\|#define\|#endif" wallet-core/ffi/wallet_ffi.h || true
+

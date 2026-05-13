@@ -1,0 +1,526 @@
+name: Cold-Start Consensus Validation
+
+# CONSENSUS-CRITICAL: This workflow is a REQUIRED CI gate.
+# Any failure is stop-the-line. No exceptions.
+#
+# DineroCoin consensus includes Utreexo from genesis.
+# Both Tier-1 and Tier-2 are consensus gates - the separation
+# is for signal isolation (diagnosability), not optionality.
+#
+# Tier-1 (Base Consensus):
+# - P2P header sync, block sync, tip convergence
+# - Chainwork consistency, restart persistence, reindex equivalence
+#
+# Tier-2 (Accumulator Consensus):
+# - Utreexo root equality across nodes
+# - Accumulator persistence and reindex stability
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+env:
+  # Quick test for PR gates (20 blocks)
+  BLOCKS_QUICK: 20
+  # Extended test for nightly (110 blocks, past coinbase maturity)
+  BLOCKS_EXTENDED: 110
+  TIMEOUT: 120
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════
+  # REQUIRED GATE: Frozen Parameter Guard
+  # Fails if any consensus-frozen file is modified without explicit override
+  # ═══════════════════════════════════════════════════════════════════════
+  frozen-parameter-guard:
+    name: "Frozen Parameter Guard"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for diff
+
+      - name: Check for frozen file modifications
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "🔒 FROZEN PARAMETER GUARD"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "Checking if any consensus-frozen files were modified..."
+          echo ""
+
+          # List of frozen consensus parameter files
+          FROZEN_FILES=(
+            "src/consensus/chainparams_impl.cpp"
+            "include/consensus/subsidy.h"
+            "src/consensus/consensus.hpp"
+            "include/mining/header_layout.h"
+            "include/consensus/utreexo_activation.h"
+            "include/dinero/core/consensus/coinbase_maturity.h"
+            "docs/CONSENSUS_PARAMETERS_MAINNET.md"
+          )
+
+          # Get list of changed files in PR
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+
+          VIOLATIONS=""
+          for frozen in "${FROZEN_FILES[@]}"; do
+            if echo "$CHANGED_FILES" | grep -q "^${frozen}$"; then
+              VIOLATIONS="${VIOLATIONS}  - ${frozen}\n"
+            fi
+          done
+
+          if [[ -n "$VIOLATIONS" ]]; then
+            echo "❌ FROZEN FILE VIOLATION DETECTED"
+            echo ""
+            echo "The following consensus-frozen files were modified:"
+            echo -e "$VIOLATIONS"
+            echo ""
+            echo "════════════════════════════════════════════════════════════════"
+            echo "These files are FROZEN for mainnet consensus stability."
+            echo ""
+            echo "If this change is intentional (hard fork), you must:"
+            echo "  1. Add '[CONSENSUS-CHANGE]' to the PR title"
+            echo "  2. Update docs/CONSENSUS_PARAMETERS_MAINNET.md"
+            echo "  3. Get explicit approval from consensus maintainers"
+            echo "════════════════════════════════════════════════════════════════"
+
+            # Check for explicit override in PR title
+            PR_TITLE="${{ github.event.pull_request.title }}"
+            if [[ "$PR_TITLE" == *"[CONSENSUS-CHANGE]"* ]]; then
+              echo ""
+              echo "⚠️  [CONSENSUS-CHANGE] override detected in PR title"
+              echo "Allowing modification with explicit acknowledgment"
+              exit 0
+            fi
+
+            exit 1
+          fi
+
+          echo "✅ No frozen files modified"
+          echo ""
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # REQUIRED GATE: Quick cold-start test (20 blocks)
+  # Runs on every push/PR - must pass before merge
+  # ═══════════════════════════════════════════════════════════════════════
+  cold-start-quick:
+    name: Cold-Start Consensus (Quick)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true  # Stop immediately on first failure
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            libssl-dev \
+            libsqlite3-dev \
+            libjsoncpp-dev \
+            libgtest-dev \
+            librocksdb-dev \
+            pkg-config \
+            autoconf \
+            automake \
+            libtool \
+            curl
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install \
+            cmake \
+            ninja \
+            openssl \
+            sqlite \
+            jsoncpp \
+            googletest \
+            rocksdb \
+            autoconf \
+            automake \
+            libtool \
+            curl
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof --enable-module-recovery --enable-module-ecdh --enable-module-musig --enable-module-ecdsa-adaptor --enable-experimental --enable-module-schnorrsig
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          cd ../..
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_TESTING=ON
+
+      - name: Build dinerod
+        run: cmake --build build --target dinerod --parallel
+
+      - name: Run Cold-Start Consensus Test (Quick - 20 blocks)
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "🧊 COLD-START CONSENSUS VALIDATION (REQUIRED GATE)"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "This test validates consensus-critical behavior:"
+          echo "  • P2P header sync (FindHeadersToSend)"
+          echo "  • Block sync and tip convergence"
+          echo "  • Chainwork consistency across 3 nodes"
+          echo "  • Restart persistence"
+          echo "  • Reindex equivalence"
+          echo ""
+          BLOCKS=${{ env.BLOCKS_QUICK }} TIMEOUT=${{ env.TIMEOUT }} \
+            ./tests/integration/cold_start_test.sh
+          echo ""
+          echo "✅ Cold-start consensus validation PASSED"
+
+      - name: Upload daemon logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cold-start-logs-${{ matrix.os }}
+          path: /tmp/dinero_coldstart_*/daemon.log
+          retention-days: 7
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # REQUIRED GATE: bad-diffbits negative test
+  # Proves blocks with invalid difficulty are ALWAYS rejected
+  # ═══════════════════════════════════════════════════════════════════════
+  bad-diffbits:
+    name: bad-diffbits Rejection Test
+    runs-on: ubuntu-latest
+    needs: cold-start-quick  # Run after cold-start passes
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build libssl-dev libsqlite3-dev \
+            libjsoncpp-dev libgtest-dev librocksdb-dev \
+            pkg-config autoconf automake libtool curl
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof --enable-module-recovery --enable-module-ecdh --enable-module-musig --enable-module-ecdsa-adaptor --enable-experimental --enable-module-schnorrsig
+          make -j$(nproc)
+          cd ../..
+
+      - name: Configure and Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTING=ON
+          cmake --build build --target dinerod --parallel
+
+      - name: Run bad-diffbits Test
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "🔒 bad-diffbits NEGATIVE TEST (REQUIRED)"
+          echo "════════════════════════════════════════════════════════════════"
+          ./tests/functional/test_bad_diffbits.sh
+          echo "✅ bad-diffbits test PASSED - difficulty validation is enforced"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # REQUIRED GATE: Tier-2 Accumulator Consensus (Utreexo)
+  # Utreexo is consensus-critical in DineroCoin from genesis.
+  # This is NOT optional - it validates accumulator invariants.
+  # ═══════════════════════════════════════════════════════════════════════
+  cold-start-utreexo:
+    name: "Tier-2: Accumulator Consensus (Utreexo)"
+    runs-on: ubuntu-latest
+    needs: cold-start-quick  # Run after Tier-1 passes (signal isolation)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build libssl-dev libsqlite3-dev \
+            libjsoncpp-dev libgtest-dev librocksdb-dev \
+            pkg-config autoconf automake libtool curl
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof --enable-module-recovery --enable-module-ecdh --enable-module-musig --enable-module-ecdsa-adaptor --enable-experimental --enable-module-schnorrsig
+          make -j$(nproc)
+          cd ../..
+
+      - name: Configure and Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTING=ON
+          cmake --build build --target dinerod --parallel
+
+      - name: Run Utreexo Cold-Start Test (Tier-2)
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "🌳 TIER-2: ACCUMULATOR CONSENSUS GATE (Utreexo)"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "Utreexo is consensus-critical in DineroCoin from genesis."
+          echo "This validates accumulator invariants:"
+          echo "  • Root equality across nodes"
+          echo "  • Persistence after restart"
+          echo "  • Stability after reindex"
+          echo ""
+          BLOCKS=30 TIMEOUT=120 ./tests/integration/cold_start_utreexo.sh
+          echo ""
+          echo "✅ Tier-2 Accumulator consensus validation PASSED"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: utreexo-cold-start-logs
+          path: /tmp/dinero_utreexo_*/daemon.log
+          retention-days: 7
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # NIGHTLY: Extended cold-start test (110 blocks)
+  # Runs on schedule and manual dispatch only
+  # ═══════════════════════════════════════════════════════════════════════
+  cold-start-extended:
+    name: Cold-Start Consensus (Extended - Nightly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            libssl-dev \
+            libsqlite3-dev \
+            libjsoncpp-dev \
+            libgtest-dev \
+            librocksdb-dev \
+            pkg-config \
+            autoconf \
+            automake \
+            libtool \
+            curl
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof --enable-module-recovery --enable-module-ecdh --enable-module-musig --enable-module-ecdsa-adaptor --enable-experimental --enable-module-schnorrsig
+          make -j$(nproc)
+          cd ../..
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_TESTING=ON
+
+      - name: Build dinerod
+        run: cmake --build build --target dinerod --parallel
+
+      - name: Run Cold-Start Consensus Test (Extended - 110 blocks)
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "🧊 COLD-START CONSENSUS VALIDATION (EXTENDED - NIGHTLY)"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "Extended test with ${{ env.BLOCKS_EXTENDED }} blocks"
+          echo "(includes coinbase maturity validation)"
+          echo ""
+          BLOCKS=${{ env.BLOCKS_EXTENDED }} TIMEOUT=180 \
+            ./tests/integration/cold_start_test.sh
+          echo ""
+          echo "✅ Extended cold-start consensus validation PASSED"
+
+      - name: Upload daemon logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cold-start-extended-logs
+          path: /tmp/dinero_coldstart_*/daemon.log
+          retention-days: 7
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # REQUIRED GATE: Tier-3 Adversarial Utreexo Tests
+  # Proves consensus cannot be bypassed under adversarial conditions
+  # ═══════════════════════════════════════════════════════════════════════
+  tier3-adversarial:
+    name: "Tier-3: Adversarial Utreexo Tests"
+    runs-on: ubuntu-latest
+    needs: cold-start-utreexo  # Run after Tier-2 passes
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build libssl-dev libsqlite3-dev \
+            libjsoncpp-dev libgtest-dev librocksdb-dev \
+            pkg-config autoconf automake libtool curl
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof --enable-module-recovery --enable-module-ecdh --enable-module-musig --enable-module-ecdsa-adaptor --enable-experimental --enable-module-schnorrsig
+          make -j$(nproc)
+          cd ../..
+
+      - name: Configure and Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTING=ON
+          cmake --build build --target dinerod --parallel
+
+      - name: Run Tier-3 Adversarial Tests
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "🔴 TIER-3: ADVERSARIAL UTREEXO TESTS (REQUIRED)"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "These tests prove consensus cannot be bypassed:"
+          echo "  • Missing proofs are rejected (Tier-3.1)"
+          echo "  • Stale proofs cannot be replayed (Tier-3.3)"
+          echo "  • Wrong Utreexo roots are rejected (Tier-3.4)"
+          echo ""
+          ./tests/adversarial/utreexo/run_all.sh
+          echo ""
+          echo "✅ Tier-3 Adversarial tests PASSED"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier3-adversarial-logs
+          path: /tmp/dinero_tier3_*/daemon.log
+          retention-days: 7
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # REQUIRED GATE: Wallet Restore E2E Test
+  # Validates wallet restore + rescan produces correct balance
+  # ═══════════════════════════════════════════════════════════════════════
+  wallet-restore-e2e:
+    name: "Wallet Restore E2E Test"
+    runs-on: ubuntu-latest
+    needs: cold-start-quick  # Run after basic consensus passes
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build libssl-dev libsqlite3-dev \
+            libjsoncpp-dev libgtest-dev librocksdb-dev \
+            pkg-config autoconf automake libtool curl bc
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof --enable-module-recovery --enable-module-ecdh --enable-module-musig --enable-module-ecdsa-adaptor --enable-experimental --enable-module-schnorrsig
+          make -j$(nproc)
+          cd ../..
+
+      - name: Configure and Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTING=ON
+          cmake --build build --target dinerod --parallel
+
+      - name: Run Wallet Restore E2E Test
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "💰 WALLET RESTORE E2E TEST (REQUIRED)"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "This test validates wallet restore + rescan:"
+          echo "  • Create wallet, receive coins"
+          echo "  • Delete wallet database"
+          echo "  • Restore from mnemonic"
+          echo "  • Rescan blockchain"
+          echo "  • Verify balance matches"
+          echo ""
+          ./tests/integration/test_wallet_restore_rescan.sh
+          echo ""
+          echo "✅ Wallet Restore E2E test PASSED"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallet-restore-logs
+          path: /tmp/dinero_wallet_restore_*/daemon.log
+          retention-days: 7

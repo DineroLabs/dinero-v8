@@ -1,0 +1,104 @@
+name: Consistency Auto-Heal
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  consistency-autoheal:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        network: [regtest, testnet]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libsqlite3-dev jq curl
+
+      - name: Build dinerod
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j2 --target dinerod
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/fix_chainwork_bulk.sh scripts/smoke_consistency.sh scripts/cicd_preflight.sh || true
+
+      - name: Run auto-heal (hardened bulk fixer)
+        run: |
+          echo "🔧 Running hardened bulk fixer (first-class networks only)..."
+          ./scripts/fix_chainwork_bulk.sh
+
+      - name: Run CI/CD preflight (advisory)
+        run: |
+          echo "🔍 Running CI/CD preflight check..."
+          ./scripts/cicd_preflight.sh || true
+
+      - name: Run consistency smoke test (enforced)
+        env:
+          REPO: ${{ github.workspace }}
+          NET: ${{ matrix.network }}
+        run: |
+          echo "🧪 Running consistency smoke test for ${{ matrix.network }}..."
+          timeout 300 ./scripts/smoke_consistency.sh
+
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinero-diagnostics-${{ matrix.network }}-${{ github.run_id }}
+          path: |
+            data/**
+            build/**/*.log
+            **/*.txt
+            *.log
+
+  makefile-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libsqlite3-dev jq curl make
+
+      - name: Test Makefile autoheal target
+        run: |
+          echo "🎯 Testing 'make autoheal' integration..."
+          make autoheal
+
+      - name: Verify all scripts are executable
+        run: |
+          ls -la scripts/ | grep -E "(fix_chainwork|smoke_consistency|cicd_preflight)"
+
+  nightly-consistency:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libsqlite3-dev jq curl make
+
+      - name: Run comprehensive nightly sweep
+        run: |
+          echo "🌙 Nightly consistency sweep starting..."
+          make autoheal
+          echo "✅ Nightly sweep completed successfully"
+
+      - name: Notify on failure (optional)
+        if: failure()
+        run: |
+          echo "❌ Nightly consistency sweep failed - check logs"

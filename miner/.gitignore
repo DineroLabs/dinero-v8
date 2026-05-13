@@ -1,0 +1,16 @@
+# OS files
+.DS_Store
+**/.DS_Store
+
+# Build artifacts
+build/
+build-*/
+CMakeFiles/
+CMakeCache.txt
+Testing/
+cmake_install.cmake
+Makefile
+
+# Local caches/logs
+.cache/
+*.log

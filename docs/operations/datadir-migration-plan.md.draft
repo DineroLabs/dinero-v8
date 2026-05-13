@@ -1,0 +1,326 @@
+# Fleet Datadir Migration Plan
+
+**Status:** DRAFT — not yet executed
+**Author drafted:** 2026-05-01
+**Scope:** Migrate LA/VA/MO/CN from `/root/Dinero-Coin/data-main/` to `/root/.dinero/` (Dell already at `~/.dinero/` — no change)
+**Out of scope:** Default `dinero.conf` loader, .deb packaging, fresh-VPS install script. Those are separate Core-discipline tasks; this document only covers the datadir cutover.
+
+---
+
+## 1. Why this migration
+
+The current fleet has datadir path inconsistency:
+
+| Server | Datadir | Service |
+|---|---|---|
+| LA | `/root/Dinero-Coin/data-main/` | systemd |
+| VA | `/root/Dinero-Coin/data-main/` | systemd |
+| MO | `/root/Dinero-Coin/data-main/` | systemd |
+| CN | `/root/Dinero-Coin/data-main/` | systemd |
+| Dell | `/home/tower/.dinero/` | nohup |
+
+The `/root/Dinero-Coin/data-main/` path ties the datadir to the source-tree path — a build-time accident, not a deliberate operational choice. It conflicts with:
+
+- `dinerod`'s own default (`~/.dinero/`, see `daemon_app.cpp:1030`)
+- `dinero-cli`'s default datadir resolution
+- The convention every other cryptocurrency uses (`~/.bitcoin/`, `~/.litecoin/`, `~/.monero/`)
+- Future `apt install dinero-core` packaging (which would not put data inside `/root/Dinero-Coin/`)
+
+Standardizing to `~/.dinero/` removes 4 servers' worth of `--datadir` flags, recovery scripts that hardcode the path, and the cognitive tax of remembering "which path on which server."
+
+## 2. Why NOT now (deferred decisions)
+
+Things that are *related* but explicitly out of scope:
+
+- **Default config file (`~/.dinero/dinero.conf`).** No code path loads it today. Adding one is a separate Core-discipline change.
+- **systemd unit refactor to use config file instead of CLI flags.** Same — depends on config loader.
+- **Removing MO's `--rpcuser/--rpcpassword`.** These augment cookie auth for DineroDPI iOS; they're a feature, not a bug. Keep them on MO; do not propagate to other servers.
+- **Reproducible builds / deterministic releases.** A v2 of the release process. Does not block this migration.
+- **Auth migration.** Cookie auth is already universal in code. No change.
+
+This document's only commitment: "the datadir lives at `/root/.dinero/`" on every Linux server.
+
+## 3. Pre-flight: what `/root/Dinero-Coin/data-main/` currently contains
+
+Per inspection of MO/Dell on 2026-05-01:
+
+```
+~/.dinero/
+├── banlist.dat                  # P2P ban list
+├── blockchain/                  # 5.4 GB chaindb + shielded files
+│   ├── chaindb/                 # RocksDB
+│   ├── chaindb.pre-rebuild-swap-1777620257/   # rollback artifact (MO)
+│   ├── shielded_anchor_history.bin
+│   ├── shielded_frontier.bin
+│   └── shielded_nullifiers.db
+├── blocks/                      # 93 MB blk*.dat + rev*.dat
+│   ├── blk00000.dat
+│   ├── rev00000.dat
+│   └── rev00000.dat.pre-rebuild-swap-1777620257   # rollback artifact (MO)
+├── chainstate_recovery.marker   # per-restart marker
+├── .cookie                      # RPC auth cookie (regenerated each restart)
+├── .daemon_id                   # node identity
+├── dinerod.lock                 # process lock
+├── hd_wallet/                   # wallet seed material
+├── headers/                     # header sync state
+├── mempool.dat                  # persisted mempool
+├── peers.dat                    # known peer list
+├── wallets/                     # wallet databases
+└── wallet_registry.db           # wallet metadata
+```
+
+**Total per server:** ~18 GB (live), plus 5.4-12 GB of pre-rebuild-swap rollback artifacts on MO/LA/VA from yesterday's hole-repair pass.
+
+## 4. The migration plan, server-by-server
+
+### 4.1 Pre-migration (one-time, no fleet impact)
+
+Done before touching any server:
+
+- [ ] Read this entire document end-to-end with the operator.
+- [ ] Confirm rollback target binary exists per server: `/root/dinerod.live-pre-<commit>`.
+- [ ] Confirm 30+ GB free on every target server (`df -h /`). If below: clean up old `chaindb.pre-reindex-*` and `chaindb.post-recovery-failed-*` dirs. None of these are load-bearing.
+- [ ] Snapshot the systemd unit content of each server: `systemctl cat dinerod > /tmp/dinerod-systemd-pre-migration-<server>.txt`.
+- [ ] Confirm fleet tip is consistent (all 4 servers at the same height + bestblockhash). If split: STOP, diagnose split first.
+- [ ] **Pick a window with no expected fleet activity.** Don't migrate during mining peaks or known-busy hours.
+
+### 4.2 Per-server migration (CN first, then LA, then VA, then MO)
+
+**Order rationale:**
+- **CN first** — already a canary by precedent (was rebuild-pass canary), and it has no static-creds attached so the migration is a pure path swap.
+- **LA second** — same shape as CN (cookie-only auth).
+- **VA third** — same shape.
+- **MO last** — has `--rpcuser/--rpcpassword` flags that DineroDPI iOS uses; treat with extra care.
+
+For each server, in sequence with ≥1h soak between:
+
+#### Step 1: Capture pre-migration state
+
+```bash
+# on the target server
+date > /tmp/migration-log.txt
+systemctl is-active dinerod >> /tmp/migration-log.txt
+systemctl cat dinerod >> /tmp/migration-log.txt
+ls -la /root/Dinero-Coin/data-main/ | head -20 >> /tmp/migration-log.txt
+du -sh /root/Dinero-Coin/data-main >> /tmp/migration-log.txt
+df -h / >> /tmp/migration-log.txt
+# RPC tip + best hash for verification later
+curl -s -u "$(cat /root/Dinero-Coin/data-main/.cookie)" \
+  -d '{"method":"getblockcount","params":[]}' \
+  http://127.0.0.1:20998/ >> /tmp/migration-log.txt
+```
+
+**Artifact**: `/tmp/migration-log.txt` — keeps the pre-migration snapshot for comparison.
+
+#### Step 2: Stop daemon (verified)
+
+```bash
+systemctl stop dinerod
+# Wait for actual exit — pgrep -f's gotcha: it matches its own command line.
+# Use pidof instead, or pgrep -x with the binary name.
+for i in $(seq 1 60); do
+  if ! pidof dinerod >/dev/null; then
+    echo "  daemon dead after ${i}s"
+    break
+  fi
+  sleep 1
+done
+pidof dinerod && { echo "STILL ALIVE — abort"; exit 1; }
+```
+
+**Verify**: `pidof dinerod` returns empty.
+
+#### Step 3: Move datadir (atomic rename)
+
+```bash
+# Pre-flight: target must not already exist
+[[ -d /root/.dinero ]] && { echo "/root/.dinero already exists — abort"; exit 1; }
+
+# Atomic rename within the same filesystem
+mv /root/Dinero-Coin/data-main /root/.dinero
+ls -la /root/.dinero/ | head -5
+```
+
+**Why `mv` is safe**: it's atomic on the same filesystem (no copy, no temporary state where data exists in both places or neither). Takes <1 second regardless of size.
+
+**Why we don't `cp -a` then `rm`**: that doubles disk usage temporarily and creates a window where chaindb appears in two places — a recipe for restart-on-the-wrong-path mistakes.
+
+**If the migration aborts after this step but before Step 5 succeeds**: the rollback is a single command — `mv /root/.dinero /root/Dinero-Coin/data-main`.
+
+#### Step 4: Update systemd unit
+
+For LA/VA/CN (cookie-only auth):
+
+```bash
+# /etc/systemd/system/dinerod.service
+[Unit]
+Description=Dinero Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStartPre=/bin/rm -f /root/.dinero/blockchain/chaindb/LOCK
+ExecStopPost=/bin/rm -f /root/.dinero/blockchain/chaindb/LOCK
+ExecStart=/root/Dinero-Coin/build/dinerod \
+    --datadir=/root/.dinero \
+    --listen \
+    --port 20999 \
+    --rpc \
+    --rpcport 20998 \
+    --rpcbind=0.0.0.0 \
+    --utreexo-bridge=1
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=300
+
+[Install]
+WantedBy=multi-user.target
+```
+
+For MO (cookie + static-credentials for DineroDPI iOS):
+
+```bash
+# Same as above PLUS:
+    --rpcuser=dinero \
+    --rpcpassword=dinerodpi2026 \
+```
+
+```bash
+systemctl daemon-reload
+```
+
+**Note**: We KEEP the explicit `--datadir` flag even though `~/.dinero/` is the default. Reason: explicit > implicit on production; survives any future change to default-datadir code. The flag value just changes from `/root/Dinero-Coin/data-main` to `/root/.dinero`.
+
+#### Step 5: Start and verify
+
+```bash
+systemctl start dinerod
+sleep 5
+systemctl is-active dinerod   # expect: active
+
+# Wait for utreexo forest replay (3-5 min) before RPC opens
+COOKIE=""
+for i in $(seq 1 60); do
+  COOKIE=$(cat /root/.dinero/.cookie 2>/dev/null)
+  [[ -n "$COOKIE" ]] && break
+  sleep 5
+done
+[[ -z "$COOKIE" ]] && { echo "cookie never appeared — abort"; exit 1; }
+
+TIP=$(curl -s -u "$COOKIE" \
+  -d '{"method":"getblockcount","params":[]}' \
+  http://127.0.0.1:20998/ | jq -r .result)
+echo "tip=$TIP"
+```
+
+**Pass criteria**:
+- `systemctl is-active` = `active`
+- `tip` matches the pre-migration snapshot
+- `getbestblockhash` matches the pre-migration snapshot
+- `safemode.status` shows `active=false`
+- 0 ERROR/FATAL in `journalctl -u dinerod --since "5 minutes ago"` (excluding the harmless `Health check failed: database not initialized` line that always fires during startup)
+
+If any criterion fails: ROLLBACK (Section 5).
+
+#### Step 6: Soak ≥1h
+
+Same standard the rebuild pass used. Don't proceed to the next server until:
+
+- Process uptime > 1h
+- Tip still matches fleet
+- Peer count ≥ 3
+- 0 errors
+
+#### Step 7: Update memory + docs after each server
+
+After each successful soak, update `MEMORY.md`'s Server Deployment section with the new datadir for that server. Don't batch — update incrementally so a session interruption never leaves the memory inconsistent.
+
+## 5. Rollback (per-server)
+
+If any post-migration check fails, before the soak completes:
+
+```bash
+systemctl stop dinerod
+# Wait for actual exit
+for i in $(seq 1 60); do pidof dinerod >/dev/null || break; sleep 1; done
+
+# Reverse the rename
+mv /root/.dinero /root/Dinero-Coin/data-main
+
+# Restore old systemd unit
+cp /tmp/dinerod-systemd-pre-migration-<server>.txt /etc/systemd/system/dinerod.service
+systemctl daemon-reload
+systemctl start dinerod
+
+# Verify back to pre-migration state
+sleep 5
+systemctl is-active dinerod
+```
+
+Rollback time budget: ~2 minutes per server, including utreexo forest replay.
+
+## 6. Risks and what we explicitly accept
+
+| Risk | Mitigation | Accepted? |
+|---|---|---|
+| `mv` fails mid-rename | Same filesystem ensures atomicity | Yes — Linux POSIX guarantee |
+| Daemon restart fails post-migration | Rollback in Section 5 | Yes |
+| Fleet split during cutover | Sequential migration with ≥1h soak between | Yes — one server can lag without splitting; 4 simultaneous can split |
+| RPC clients (DineroDPI iOS, dinero-qt) hardcode old path | None apply — clients connect via `127.0.0.1:20998` not by path | Yes |
+| Old `chaindb.pre-rebuild-swap-*` rollback artifacts orphaned | They move with `mv` to `/root/.dinero/` automatically | No risk |
+| Recovery scripts on each server reference old path | Inventory + sed-replace as part of Step 7 | Yes — small per-server cleanup |
+| Memory references go stale | Updated incrementally per Step 7 | Yes |
+| Migration during mining ramp | Done in low-activity window | Yes |
+| User wallet path changes break dinero-qt | dinero-qt is on Mac, unaffected | No risk |
+| Two operators try to migrate simultaneously | Single operator policy | Yes — operator discipline |
+
+## 7. What "done" looks like
+
+- All 5 nodes have datadir at `~/.dinero/` (Dell stays at `/home/tower/.dinero/` since its user is `tower`)
+- All systemd units have uniform shape (per Section 4.2 Step 4)
+- All recovery scripts on each server reference `/root/.dinero/`
+- `MEMORY.md` Server Deployment section reflects the new state
+- One spot-check run: `dinero-cli getblockcount` works on each server with NO `-datadir` flag (proves default-datadir resolution works correctly)
+
+## 8. What's NOT in this migration (explicit non-goals)
+
+- Default `dinero.conf` loader
+- Removing MO's static credentials
+- .deb packaging
+- AppImage / flatpak
+- Reproducible build pipeline
+- Fresh-VPS install script
+- Migrating Dell (already at `~/.dinero/`)
+- Updating macOS Qt app bundle paths
+
+Each of these is a separate, independent piece of work. Mixing them into this migration is exactly the scope-creep the previous plan-vs-execute discussion warned against.
+
+## 9. Pre-execution checklist
+
+Before any server is touched:
+
+- [ ] Operator has read this doc fully
+- [ ] Operator has at least 4 hours of attended availability for the cutover window (1h × 4 servers + buffer)
+- [ ] Fleet is healthy (no in-progress soaks, no pending repairs)
+- [ ] The doc's Step 5 verification commands are tested locally first against the operator's preferred shell to catch any quoting issues
+- [ ] Rollback procedure is rehearsed mentally
+- [ ] Time of day chosen accounts for soak windows fitting before next obligation
+- [ ] User explicitly says "go" — not "should we?" or "I think so"
+
+## 10. Open questions for the operator
+
+- Do you want to keep MO's static `dinerod:dinerodpi2026` credentials in plaintext in the systemd unit? Long-term, those should move to a config file with restrictive permissions.
+- Do you want this migration to also rotate the MO static-credentials password? (Cookie auth is unaffected; iOS would need a config update if the password changes.)
+- Do you want a parallel `chaindb.pre-migration-<ts>` symlink kept in `/root/Dinero-Coin/` for safety, or is the move-and-go approach acceptable?
+- Should Dell stay on `nohup` or move to a systemd unit too? (Out of scope of this doc but worth a decision.)
+
+---
+
+**Sign-off space:**
+
+- Plan reviewed by operator: ____________________  Date: __________
+- Migration window starts: __________
+- Migration window ends: __________
+- Final outcome: ____________________

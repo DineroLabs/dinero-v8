@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getnetworkinfo",
+  "description": "Returns network status and peer information",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "getnetworkinfo"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "description": "Node version"
+        },
+        "subversion": {
+          "type": "string",
+          "description": "Node user agent string"
+        },
+        "protocolversion": {
+          "type": "integer",
+          "description": "Protocol version"
+        },
+        "connections": {
+          "type": "integer",
+          "description": "Number of connected peers"
+        },
+        "networks": {
+          "type": "array",
+          "description": "Network interfaces",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "limited": {"type": "boolean"},
+              "reachable": {"type": "boolean"},
+              "proxy": {"type": "string"},
+              "proxy_randomize_credentials": {"type": "boolean"}
+            }
+          }
+        },
+        "relayfee": {
+          "type": "integer",
+          "description": "Minimum relay fee in una"
+        },
+        "localaddresses": {
+          "type": "array",
+          "description": "Local node addresses",
+          "items": {
+            "type": "object",
+            "properties": {
+              "address": {"type": "string"},
+              "port": {"type": "integer"},
+              "score": {"type": "integer"}
+            }
+          }
+        }
+      },
+      "required": ["version", "connections"]
+    }
+  }
+}

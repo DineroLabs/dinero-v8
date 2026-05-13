@@ -1,0 +1,165 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getblock",
+  "description": "Get block information with configurable verbosity",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "getblock"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Block hash"
+        },
+        {
+          "type": "integer",
+          "enum": [0, 1, 2],
+          "description": "Verbosity: 0=hex, 1=basic info, 2=with transactions"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "result": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Raw block data (verbosity=0)"
+        },
+        {
+          "type": "object",
+          "description": "Block information (verbosity=1,2)",
+          "properties": {
+            "hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$",
+              "description": "Block hash"
+            },
+            "confirmations": {
+              "type": "integer",
+              "description": "Number of confirmations"
+            },
+            "height": {
+              "type": "integer",
+              "description": "Block height"
+            },
+            "version": {
+              "type": "integer",
+              "description": "Block version"
+            },
+            "versionHex": {
+              "type": "string",
+              "description": "Block version (hex)"
+            },
+            "merkleroot": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$",
+              "description": "Merkle root hash"
+            },
+            "time": {
+              "type": "integer",
+              "description": "Block timestamp"
+            },
+            "mediantime": {
+              "type": "integer",
+              "description": "Median time past"
+            },
+            "nonce": {
+              "type": "integer",
+              "description": "Block nonce"
+            },
+            "bits": {
+              "type": "string",
+              "description": "Difficulty bits"
+            },
+            "difficulty": {
+              "type": "number",
+              "description": "Block difficulty"
+            },
+            "chainwork": {
+              "type": "string",
+              "description": "Cumulative chainwork (hex)"
+            },
+            "nTx": {
+              "type": "integer",
+              "description": "Number of transactions"
+            },
+            "previousblockhash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$",
+              "description": "Previous block hash"
+            },
+            "nextblockhash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$",
+              "description": "Next block hash (if available)"
+            },
+            "strippedsize": {
+              "type": "integer",
+              "description": "Block size without witness data"
+            },
+            "size": {
+              "type": "integer",
+              "description": "Block size with witness data"
+            },
+            "weight": {
+              "type": "integer",
+              "description": "Block weight"
+            },
+            "tx": {
+              "type": "array",
+              "description": "Transaction list (verbosity=1: txids, verbosity=2: full tx objects)",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$",
+                    "description": "Transaction ID (verbosity=1)"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Full transaction object (verbosity=2)",
+                    "properties": {
+                      "txid": {"type": "string"},
+                      "hash": {"type": "string"},
+                      "version": {"type": "integer"},
+                      "size": {"type": "integer"},
+                      "vsize": {"type": "integer"},
+                      "weight": {"type": "integer"},
+                      "locktime": {"type": "integer"},
+                      "vin": {"type": "array"},
+                      "vout": {"type": "array"},
+                      "hex": {"type": "string"}
+                    }
+                  }
+                ]
+              }
+            },
+            "coinbase_reward_una": {
+              "type": "integer",
+              "description": "Coinbase reward in una"
+            },
+            "coinbase_reward_din": {
+              "type": "string",
+              "description": "Coinbase reward in DIN (formatted)"
+            },
+            "total_fees_una": {
+              "type": "integer",
+              "description": "Total transaction fees in una"
+            },
+            "total_fees_din": {
+              "type": "string",
+              "description": "Total transaction fees in DIN (formatted)"
+            }
+          },
+          "required": ["hash", "height", "version", "merkleroot", "time", "nonce", "bits", "difficulty", "nTx"]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "tx.bumpfee",
+  "description": "Bump fee of unconfirmed transaction using RBF",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "tx.bumpfee"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Transaction ID to bump"
+        },
+        {
+          "type": "object",
+          "description": "Fee bump options",
+          "properties": {
+            "fee_rate": {
+              "type": "number",
+              "minimum": 0,
+              "description": "New fee rate in una/kvB"
+            },
+            "total_fee": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Total fee in una (alternative to fee_rate)"
+            },
+            "replaceable": {
+              "type": "boolean",
+              "description": "Make replacement transaction RBF-able (default: true)"
+            },
+            "estimate_mode": {
+              "type": "string",
+              "enum": ["UNSET", "ECONOMICAL", "CONSERVATIVE"],
+              "description": "Fee estimation mode"
+            },
+            "conf_target": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Confirmation target for fee estimation"
+            }
+          }
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "txid": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "New transaction ID"
+        },
+        "origfee_una": {
+          "type": "integer",
+          "description": "Original fee in una"
+        },
+        "origfee_din": {
+          "type": "string",
+          "description": "Original fee in DIN (formatted)"
+        },
+        "fee_una": {
+          "type": "integer",
+          "description": "New fee in una"
+        },
+        "fee_din": {
+          "type": "string",
+          "description": "New fee in DIN (formatted)"
+        },
+        "fee_rate": {
+          "type": "number",
+          "description": "New fee rate in una/kvB"
+        },
+        "fee_increase_una": {
+          "type": "integer",
+          "description": "Fee increase in una"
+        },
+        "fee_increase_din": {
+          "type": "string",
+          "description": "Fee increase in DIN (formatted)"
+        },
+        "errors": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Fee bump errors"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Fee bump warnings"
+        }
+      },
+      "required": ["txid", "origfee_una", "origfee_din", "fee_una", "fee_din"]
+    }
+  }
+}

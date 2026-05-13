@@ -1,0 +1,70 @@
+#!/bin/sh
+# Dinero Core postrm — runs on package removal/purge.
+# Phase E.1 of Dinero Core 1.0.
+#
+# Per spec §1.1 row 1 + Phase E rationale:
+#   * `remove` (non-purge): preserve /var/lib/dinero/ and /etc/dinero/.
+#     Chain data + wallet seeds are not garbage to lose on routine
+#     uninstall. The operator can reinstall the package and pick up
+#     where they left off.
+#   * `purge`: remove /var/lib/dinero/, /etc/dinero/, and the dinero
+#     user. Standard Debian convention — operators who `apt purge`
+#     are explicitly asking for "wipe everything." Operators who
+#     care about wallet seeds run `dinero-backup` first (Phase D.2).
+
+set -e
+
+#DEBHELPER#
+
+case "$1" in
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        # No-op on routine removal/upgrade. Data persists.
+        ;;
+
+    purge)
+        # Stop and disable the unit if systemd is active (best-effort;
+        # may be a no-op in container/chroot installs).
+        if command -v systemctl >/dev/null 2>&1 && \
+           [ -d /run/systemd/system ]; then
+            systemctl stop dinero >/dev/null 2>&1 || true
+            systemctl disable dinero >/dev/null 2>&1 || true
+        fi
+
+        # Remove operator state. Chain data is replay-able; wallet
+        # seeds are not. The user explicitly asked for purge — any
+        # uncaptured backup is on them.
+        if [ -d /var/lib/dinero ]; then
+            rm -rf /var/lib/dinero
+        fi
+        if [ -d /etc/dinero ]; then
+            rm -rf /etc/dinero
+        fi
+
+        # Remove the journald drop-in we installed.
+        if [ -f /etc/systemd/journald.conf.d/dinero.conf ]; then
+            rm -f /etc/systemd/journald.conf.d/dinero.conf
+            if command -v systemctl >/dev/null 2>&1 && \
+               [ -d /run/systemd/system ]; then
+                systemctl restart systemd-journald >/dev/null 2>&1 || true
+            fi
+        fi
+
+        # Remove the dinero system user (and matching group).
+        if getent passwd dinero >/dev/null 2>&1; then
+            deluser --quiet --system dinero >/dev/null 2>&1 || true
+        fi
+
+        # daemon-reload so systemd forgets the unit.
+        if command -v systemctl >/dev/null 2>&1 && \
+           [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        ;;
+
+    *)
+        echo "postrm called with unknown argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

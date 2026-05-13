@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Dinero Updates</title>
+    <link>https://dinero-coin.com/</link>
+    <description>Dinero Wallet App Updates</description>
+    <language>en</language>
+
+    <!-- Future Update Example (v0.1.1) -->
+    <!--
+    <item>
+      <title>Version 0.1.1</title>
+      <sparkle:releaseNotesLink>
+        https://dinero-coin.com/releases/0.1.1.html
+      </sparkle:releaseNotesLink>
+      <pubDate>Wed, 30 Oct 2025 14:00:00 +0000</pubDate>
+      <enclosure
+        url="https://updates.dinero-coin.com/Dinero-0.1.1-macOS.zip"
+        sparkle:version="0.1.1"
+        sparkle:shortVersionString="0.1.1"
+        sparkle:edSignature="SIGN_WITH_SPARKLE_sign_update_TOOL"
+        length="70000000"
+        type="application/zip" />
+      <sparkle:minimumSystemVersion>10.15</sparkle:minimumSystemVersion>
+    </item>
+    -->
+
+    <!-- Current Release (v0.1.0) -->
+    <item>
+      <title>Version 0.1.0</title>
+      <description><![CDATA[
+        <h2>Dinero v0.1.0 - Initial Release</h2>
+        <h3>Features</h3>
+        <ul>
+          <li><strong>Full Node Wallet</strong> - Complete blockchain validation</li>
+          <li><strong>Built-in Miner</strong> - CPU mining integrated</li>
+          <li><strong>Self-Contained</strong> - All dependencies bundled</li>
+          <li><strong>P2P Networking</strong> - Direct peer connections</li>
+          <li><strong>Mainnet Ready</strong> - Production blockchain</li>
+        </ul>
+        <h3>Network Info</h3>
+        <ul>
+          <li>Seed Nodes: California & Virginia</li>
+          <li>P2P Port: 19003</li>
+          <li>Genesis Block: 0000039bbb179350...</li>
+        </ul>
+      ]]></description>
+      <pubDate>Mon, 21 Oct 2025 10:00:00 +0000</pubDate>
+      <enclosure
+        url="https://updates.dinero-coin.com/Dinero-0.1.0-macOS.zip"
+        sparkle:version="0.1.0"
+        sparkle:shortVersionString="0.1.0"
+        length="67000000"
+        type="application/zip" />
+      <sparkle:minimumSystemVersion>10.15</sparkle:minimumSystemVersion>
+    </item>
+
+  </channel>
+</rss>

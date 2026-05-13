@@ -1,0 +1,40 @@
+name: Phase M.0 Enforcement
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  m0-enforcement:
+    name: Check Phase M.0 Compliance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Phase M.0 violation check
+        run: |
+          chmod +x scripts/check_m0_violations.sh
+          ./scripts/check_m0_violations.sh
+
+      - name: Report success
+        if: success()
+        run: |
+          echo "✅ Phase M.0: CLEAN"
+          echo "No violations found - codebase is M.0 compliant"
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "❌ Phase M.0: VIOLATIONS DETECTED"
+          echo ""
+          echo "This PR introduces Phase M.0 violations."
+          echo "Please fix before merging."
+          echo ""
+          echo "Rule: uint256 is identity, .GetHex() is presentation"
+          echo ""
+          echo "See PHASE_M0_UINT256_INTEGRITY_LOCK.md for guidelines"
+          exit 1

@@ -1,0 +1,205 @@
+name: Cross-Language Vector Tests
+
+# These tests are CONSENSUS-ADJACENT
+# All implementations MUST produce identical results from identical inputs
+# Failure here means wallet-corrupting bugs - do NOT skip or retry
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  rust-vectors:
+    name: Rust DPI Vector Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Run Cross-Language Vector Tests
+        working-directory: crates/dpi
+        run: |
+          echo "Running cross-language vector tests..."
+          echo "These tests validate BIP32/BIP86 derivation against canonical vectors."
+          echo "Failure here indicates wallet-corrupting bugs."
+          echo ""
+          cargo test --test cross_language_vectors -- --nocapture
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Verify All 24 Tests Pass
+        working-directory: crates/dpi
+        run: |
+          # Run tests and capture output
+          OUTPUT=$(cargo test --test cross_language_vectors 2>&1)
+          echo "$OUTPUT"
+
+          # Check for "24 passed"
+          if echo "$OUTPUT" | grep -q "24 passed"; then
+            echo "✅ All 24 cross-language vector tests passed"
+          else
+            echo "❌ Expected 24 passed tests"
+            exit 1
+          fi
+
+          # Check for zero failures
+          if echo "$OUTPUT" | grep -q "0 failed"; then
+            echo "✅ Zero failures confirmed"
+          else
+            echo "❌ Test failures detected"
+            exit 1
+          fi
+
+  swift-vectors:
+    name: Swift Wallet Vector Tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build libdpi for Swift FFI
+        working-directory: crates/dpi
+        run: |
+          # Install Rust
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+
+          # Build static library for macOS
+          cargo build --release --features ffi
+
+          # Copy to expected location for Swift
+          mkdir -p ../../apps/DineroDPI/DineroDPI/libs
+          cp target/release/libdpi.a ../../apps/DineroDPI/DineroDPI/libs/ || true
+
+      - name: Run Swift Vector Tests
+        working-directory: apps/DineroDPI/DineroDPI
+        run: |
+          echo "Running Swift cross-language vector tests..."
+          echo "These tests validate Swift BIP32/BIP86 matches Rust implementation."
+          echo ""
+
+          # Build and test
+          xcodebuild test \
+            -scheme DineroDPI \
+            -destination 'platform=macOS' \
+            -only-testing:DineroDPITests/DescriptorVectorTests \
+            -only-testing:DineroDPITests/CoinSelectionVectorTests \
+            -only-testing:DineroDPITests/FeeVectorTests \
+            -only-testing:DineroDPITests/SerializationVectorTests \
+            2>&1 | tee test_output.log
+
+          # Check for success
+          if grep -q "TEST SUCCEEDED" test_output.log; then
+            echo "✅ Swift vector tests passed"
+          else
+            echo "❌ Swift vector tests failed"
+            cat test_output.log
+            exit 1
+          fi
+
+  verify-vectors-unchanged:
+    name: Verify Vector Files Unchanged
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Vector File Integrity
+        run: |
+          echo "Verifying test vector files are properly committed..."
+
+          # List all vector files
+          echo "Vector files:"
+          ls -la test-cross-language-vectors/v1/*.json
+
+          # Verify JSON validity
+          for f in test-cross-language-vectors/v1/*.json; do
+            echo "Validating $f..."
+            python3 -m json.tool "$f" > /dev/null || {
+              echo "❌ Invalid JSON: $f"
+              exit 1
+            }
+          done
+
+          echo "✅ All vector files are valid JSON"
+
+      - name: Check Required Vector Files Exist
+        run: |
+          REQUIRED_FILES=(
+            "test-cross-language-vectors/v1/descriptors.json"
+            "test-cross-language-vectors/v1/scanner.json"
+            "test-cross-language-vectors/v1/fees.json"
+            "test-cross-language-vectors/v1/coin_selection.json"
+            "test-cross-language-vectors/v1/serialization.json"
+          )
+
+          for f in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "❌ Missing required vector file: $f"
+              exit 1
+            fi
+            echo "✅ Found: $f"
+          done
+
+  cpp-vectors:
+    name: C++ Daemon Vector Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev
+
+      - name: Configure CMake
+        run: |
+          mkdir -p build
+          cd build
+          cmake ..
+
+      - name: Build Cross-Language Vector Tests
+        working-directory: build
+        run: |
+          echo "Building C++ cross-language vector tests..."
+          make test_cross_language_vectors -j$(nproc)
+
+      - name: Run C++ Vector Tests
+        run: |
+          echo "Running C++ cross-language vector tests..."
+          echo "These tests validate C++ BIP32/BIP86 derivation matches Rust and Swift."
+          echo ""
+          ./build/tests/consensus/test_cross_language_vectors
+
+      - name: Verify All 7 Tests Pass
+        run: |
+          # Run tests and capture output
+          OUTPUT=$(./build/tests/consensus/test_cross_language_vectors 2>&1)
+          echo "$OUTPUT"
+
+          # Check for "7 tests"
+          if echo "$OUTPUT" | grep -q "7 tests"; then
+            echo "✅ All 7 C++ cross-language vector tests ran"
+          else
+            echo "❌ Expected 7 tests to run"
+            exit 1
+          fi
+
+          # Check for all passed
+          if echo "$OUTPUT" | grep -q "\[  PASSED  \] 7 tests"; then
+            echo "✅ All tests passed"
+          else
+            echo "❌ Test failures detected"
+            exit 1
+          fi

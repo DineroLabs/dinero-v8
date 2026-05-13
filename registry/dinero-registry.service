@@ -1,0 +1,48 @@
+[Unit]
+Description=Dinero Global Node Registry
+Documentation=https://docs.dinero-coin.com/registry
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dinero
+Group=dinero
+WorkingDirectory=/opt/dinero/registry
+
+# Standard version
+ExecStart=/usr/bin/python3 /opt/dinero/registry/dinero_registry.py \
+    --port 8080 \
+    --interval 60 \
+    --timeout 5
+
+# Extended version with registration (commented)
+# ExecStart=/usr/bin/python3 /opt/dinero/registry/dinero_registry_extended.py \
+#     --port 8080 \
+#     --interval 60 \
+#     --timeout 5 \
+#     --max-nodes 100 \
+#     --secret YOUR_HMAC_SECRET
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/dinero/registry
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dinero-registry
+
+# Resource limits
+LimitNOFILE=8192
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

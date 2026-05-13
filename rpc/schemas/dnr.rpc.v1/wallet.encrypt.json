@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wallet.encrypt",
+  "description": "Encrypt wallet with passphrase (first-time setup)",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "wallet.encrypt"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "minLength": 8,
+          "description": "Wallet encryption passphrase (minimum 8 characters)"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "encrypted": {
+          "type": "boolean",
+          "description": "Whether wallet is now encrypted"
+        },
+        "unlocked_until": {
+          "type": "integer",
+          "description": "Timestamp when wallet will auto-lock (0 = locked)"
+        },
+        "backup_required": {
+          "type": "boolean",
+          "description": "Whether wallet backup is strongly recommended"
+        },
+        "warning": {
+          "type": "string",
+          "description": "Important security warning about passphrase loss"
+        }
+      },
+      "required": ["encrypted", "unlocked_until", "backup_required"]
+    }
+  }
+}

@@ -1,0 +1,16 @@
+// Auto-generated at CMake configure time. Do not edit.
+// Source of truth: shaders/sha256d.cl
+//
+// Embedded as a raw C-string literal so the OpenCL backend can call
+// clBuildProgram() at runtime without needing the .cl file shipped alongside
+// the binary.
+
+namespace dinero::solo::gpu {
+
+extern const char* SHA256D_CL_SRC;
+
+const char* SHA256D_CL_SRC = R"DINERO_KERNEL(
+@MINER_OPENCL_KERNEL_SRC@
+)DINERO_KERNEL";
+
+} // namespace dinero::solo::gpu

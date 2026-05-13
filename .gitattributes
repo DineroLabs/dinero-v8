@@ -1,0 +1,2 @@
+packaging/linux/build-installer.sh text eol=lf
+packaging/mac/build-installer.sh text eol=lf

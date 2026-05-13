@@ -1,0 +1,18 @@
+{
+  "name": "Dinero Symbol Map",
+  "version": "1.0.0",
+  "fontFamily": "DineroSymbol",
+  "unicodeRange": "U+E900-U+E901",
+  "glyphs": {
+    "dinero_sign": {
+      "codepoint_hex": "E900",
+      "char": "\ue900",
+      "source_svg": "dinero-symbol.svg"
+    },
+    "dinero_sign_small": {
+      "codepoint_hex": "E901",
+      "char": "\ue901",
+      "source_svg": "dinero-symbol-small.svg"
+    }
+  }
+}

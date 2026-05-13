@@ -1,0 +1,12 @@
+{
+  "bits" : 553713663,
+  "hash" : "genesis_hash_placeholder",
+  "height" : 0,
+  "nonce" : 0,
+  "prev_hash" : "0000000000000000000000000000000000000000000000000000000000000000",
+  "timestamp" : 1696118400,
+  "transactions" : 
+  [
+    "genesis_coinbase:burned:10000000000000"
+  ]
+}

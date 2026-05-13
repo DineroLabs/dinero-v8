@@ -1,0 +1,305 @@
+name: Universal Build (Vendored Dependencies)
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  # macOS builds with vendored dependencies (reproducible universal binary)
+  build-macos:
+    runs-on: macos-latest
+    
+    strategy:
+      matrix:
+        config: [Release, Debug]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install build tools only (no dependencies)
+      run: |
+        # Install only build tools, not dependencies
+        brew update
+        brew install cmake ninja nasm perl || true
+        # Explicitly unlink any existing dependencies to ensure vendoring
+        brew unlink rocksdb openssl || true
+    
+    - name: Configure with vendored dependencies (reproducible)
+      run: |
+        mkdir build
+        cd build
+        SOURCE_DATE_EPOCH=1692576000 cmake .. \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+          -DDINERO_VENDOR_ROCKSDB=ON \
+          -DDINERO_WITH_SNAPPY=ON \
+          -DDINERO_WITH_LZ4=ON \
+          -DDINERO_WITH_ZSTD=ON \
+          -DDINERO_WITH_VULKAN=OFF \
+          -DBUILD_SHARED_LIBS=OFF
+      env:
+        SOURCE_DATE_EPOCH: 1692576000
+    
+    - name: Build
+      run: |
+        cd build
+        cmake --build . --parallel
+    
+    - name: Verify no Homebrew dependencies
+      run: |
+        echo "=== Checking dinerod dependencies ==="
+        otool -L build/bin/dinerod | grep -v /usr/lib | grep -v /System || echo "✅ No external dependencies"
+        echo ""
+        echo "=== Ensuring no RocksDB dylib ==="
+        ! otool -L build/bin/dinerod | grep -i rocksdb\.dylib
+        echo "✅ No RocksDB dylib found"
+    
+    - name: Basic smoke test
+      run: |
+        cd build
+        echo "=== Testing version ==="
+        ./bin/dinerod -version
+        echo ""
+        echo "=== Quick regtest ==="
+        ./bin/dinerod -regtest -datadir=/tmp/dinero-smoke -server=1 -daemon
+        sleep 3
+        ./bin/dinero-cli -regtest -datadir=/tmp/dinero-smoke getblockcount || echo "RPC test failed"
+        ./bin/dinero-cli -regtest -datadir=/tmp/dinero-smoke stop || echo "Stop failed"
+      continue-on-error: true
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dinero-macos-${{ matrix.config }}
+        path: |
+          build/bin/dinerod
+          build/bin/dinero-cli
+        retention-days: 7
+
+  # Linux builds with vendored dependencies (no system packages)
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        config: [Release, Debug]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install build tools only (no RocksDB/OpenSSL)
+      run: |
+        sudo apt-get update
+        # Install only build tools, not librocksdb-dev or libssl-dev
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          perl \
+          nasm \
+          pkg-config \
+          libcurl4-openssl-dev
+        # Ensure no system RocksDB is installed
+        sudo apt-get remove -y librocksdb-dev || true
+    
+    - name: Configure with vendored dependencies
+      run: |
+        mkdir build
+        cd build
+        cmake .. \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+          -DDINERO_VENDOR_ROCKSDB=ON \
+          -DDINERO_WITH_SNAPPY=ON \
+          -DDINERO_WITH_LZ4=ON \
+          -DDINERO_WITH_ZSTD=ON \
+          -DBUILD_SHARED_LIBS=OFF
+    
+    - name: Build
+      run: |
+        cd build
+        cmake --build . --parallel
+    
+    - name: Verify no system dependencies
+      run: |
+        echo "=== Checking dinerod dependencies ==="
+        ldd build/bin/dinerod || echo "Static binary (good)"
+        echo ""
+        echo "=== Ensuring no external database/compression .so ==="
+        ! ldd build/bin/dinerod | grep -iE "(rocksdb|snappy|lz4|zstd)"
+        echo "✅ No external database/compression .so found"
+    
+    - name: Basic smoke test
+      run: |
+        cd build
+        echo "=== Testing version ==="
+        ./bin/dinerod -version
+        echo ""
+        echo "=== Quick regtest ==="
+        ./bin/dinerod -regtest -datadir=/tmp/dinero-smoke -server=1 -daemon
+        sleep 3
+        ./bin/dinero-cli -regtest -datadir=/tmp/dinero-smoke getblockcount || echo "RPC test failed"
+        ./bin/dinero-cli -regtest -datadir=/tmp/dinero-smoke stop || echo "Stop failed"
+      continue-on-error: true
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dinero-linux-${{ matrix.config }}
+        path: |
+          build/bin/dinerod
+          build/bin/dinero-cli
+        retention-days: 7
+
+  # Windows builds with vendored dependencies
+  build-windows:
+    runs-on: windows-2022
+    
+    strategy:
+      matrix:
+        arch: [x64]
+        config: [Release, Debug]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install build dependencies
+      run: |
+        choco install strawberryperl nasm -y
+        refreshenv
+      shell: powershell
+    
+    - name: Setup MSVC Developer Environment
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.arch }}
+    
+    - name: Configure with vendored dependencies
+      run: |
+        mkdir build
+        cd build
+        cmake .. -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=${{ matrix.config }} -DDINERO_VENDOR_ROCKSDB=ON -DDINERO_WITH_SNAPPY=ON -DDINERO_WITH_LZ4=ON -DDINERO_WITH_ZSTD=ON
+      shell: cmd
+    
+    - name: Build
+      run: |
+        cd build
+        nmake
+      shell: cmd
+    
+    - name: Verify no external dependencies
+      run: |
+        echo === Checking dinerod.exe dependencies ===
+        dumpbin /dependents build\bin\dinerod.exe
+        echo.
+        echo === Ensuring no external database/compression DLLs ===
+        dumpbin /dependents build\bin\dinerod.exe | findstr /i "rocksdb snappy lz4 zstd" && exit 1 || echo ✅ No external database/compression DLLs found
+      shell: cmd
+    
+    - name: Basic smoke test
+      run: |
+        cd build
+        echo === Testing version ===
+        bin\dinerod.exe -version
+        echo.
+        echo === Quick regtest ===
+        bin\dinerod.exe -regtest -datadir=%TEMP%\dinero-smoke -server=1 -daemon
+        timeout 3
+        bin\dinero-cli.exe -regtest -datadir=%TEMP%\dinero-smoke getblockcount || echo RPC test failed
+        bin\dinero-cli.exe -regtest -datadir=%TEMP%\dinero-smoke stop || echo Stop failed
+      shell: cmd
+      continue-on-error: true
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dinero-windows-${{ matrix.arch }}-${{ matrix.config }}
+        path: |
+          build/bin/dinerod.exe
+          build/bin/dinero-cli.exe
+        retention-days: 7
+
+  # Verification job to ensure all builds succeeded
+  verify-universal-builds:
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+    
+    - name: Verify artifacts exist
+      run: |
+        echo "=== Verifying all platform builds ==="
+        ls -la
+        
+        echo ""
+        echo "=== macOS artifacts ==="
+        ls -la dinero-macos-*/
+        
+        echo ""
+        echo "=== Linux artifacts ==="
+        ls -la dinero-linux-*/
+        
+        echo ""
+        echo "=== Windows artifacts ==="
+        ls -la dinero-windows-*/
+        
+        echo ""
+        echo "✅ Universal build verification complete!"
+
+  # Create release package (only on main branch, Release builds)
+  create-release-package:
+    if: github.ref == 'refs/heads/main'
+    needs: [verify-universal-builds]
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download Release artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: "*-Release"
+        merge-multiple: true
+    
+    - name: Create universal release package
+      run: |
+        mkdir -p dinero-universal-release/{macos,linux,windows}
+        
+        # Organize by platform
+        cp dinero-macos-Release/* dinero-universal-release/macos/ 2>/dev/null || true
+        cp dinero-linux-Release/* dinero-universal-release/linux/ 2>/dev/null || true
+        cp dinero-windows-x64-Release/* dinero-universal-release/windows/ 2>/dev/null || true
+        
+        # Create platform-specific archives
+        tar -czf dinero-macos-release.tar.gz -C dinero-universal-release macos/
+        tar -czf dinero-linux-release.tar.gz -C dinero-universal-release linux/
+        zip -r dinero-windows-release.zip dinero-universal-release/windows/
+        
+        # Generate checksums
+        sha256sum *.tar.gz *.zip > SHA256SUMS
+        
+        echo "=== Release package contents ==="
+        ls -la
+        cat SHA256SUMS
+    
+    - name: Upload release package
+      uses: actions/upload-artifact@v4
+      with:
+        name: dinero-universal-release-package
+        path: |
+          *.tar.gz
+          *.zip
+          SHA256SUMS
+        retention-days: 90

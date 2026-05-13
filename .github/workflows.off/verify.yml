@@ -1,0 +1,169 @@
+name: Dinero Verification Suite
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release, Debug]
+        include:
+          - os: ubuntu-latest
+            build_type: Release
+            sanitizer: true
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          
+      - name: Install dependencies (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq cmake build-essential ninja-build
+          sudo apt-get install -y clang-15 libc++-15-dev libc++abi-15-dev
+          
+      - name: Install dependencies (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew install jq cmake ninja
+          
+      - name: Configure build (with sanitizers)
+        if: matrix.sanitizer
+        run: |
+          cmake -S . -B build-test -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_C_COMPILER=clang-15 \
+            -DCMAKE_CXX_COMPILER=clang++-15 \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+            
+      - name: Configure build (standard)
+        if: '!matrix.sanitizer'
+        run: |
+          cmake -S . -B build-test -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+            
+      - name: Build
+        run: |
+          cmake --build build-test -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          
+      - name: Verify all (with timeout protection)
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          mkdir -p build/verify
+          
+          # Run with retry on timeout (flake guard)
+          for attempt in 1 2; do
+            if timeout 900 make verify-all-ci; then
+              echo "✅ Verification passed on attempt $attempt"
+              break
+            elif [ $attempt -eq 1 ]; then
+              echo "⚠️ Verification timed out on attempt 1, retrying..."
+              sleep 5
+            else
+              echo "❌ Verification failed after 2 attempts"
+              exit 1
+            fi
+          done
+          
+      - name: Upload verify artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-${{ matrix.os }}-${{ matrix.build_type }}${{ matrix.sanitizer && '-sanitized' || '' }}
+          path: |
+            build/verify/*.log
+            build/verify/*.json
+            artifacts/v0.1.0-ci-green/*
+            
+      - name: Upload daemon logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-logs-${{ matrix.os }}-${{ matrix.build_type }}
+          path: |
+            /tmp/verify-*/*.log
+            /tmp/verify-*/daemon.log
+            
+      - name: Validate JSON artifacts
+        if: success()
+        run: |
+          echo "🔍 Validating JSON artifacts..."
+          
+          # Verify witness mining JSON
+          jq -e '.ok==true and .checks.witness_coinbase.found>0' build/verify/verify.json
+          echo "✅ Witness mining validation passed"
+          
+          # Verify spend test JSON  
+          jq -e '.ok==true and .spend.txstore_persistent==true' build/verify/spend.json
+          echo "✅ Spend test validation passed"
+          
+          # Extract key metrics for summary
+          BLOCKS_MINED=$(jq -r '.checks.blocks_mined' build/verify/verify.json)
+          COINBASE_SCRIPT=$(jq -r '.spend.coinbase_script' build/verify/spend.json)
+          SPEND_TXID=$(jq -r '.spend.txid' build/verify/spend.json)
+          
+          echo "📊 Test Summary:"
+          echo "   Blocks mined: $BLOCKS_MINED"
+          echo "   Coinbase script: $COINBASE_SCRIPT"
+          echo "   Spend txid: $SPEND_TXID"
+
+  # Nightly sanitized builds
+  nightly-sanitized:
+    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[sanitize]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          
+      - name: Install sanitizer tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-15 libc++-15-dev libc++abi-15-dev
+          sudo apt-get install -y jq cmake build-essential ninja-build
+          
+      - name: Build with all sanitizers
+        run: |
+          cmake -S . -B build-sanitized -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang-15 \
+            -DCMAKE_CXX_COMPILER=clang++-15 \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined,thread -fno-omit-frame-pointer -g" \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined,thread -fno-omit-frame-pointer -g"
+          cmake --build build-sanitized -j$(nproc)
+          
+      - name: Run sanitized verification
+        timeout-minutes: 30
+        run: |
+          export ASAN_OPTIONS="detect_leaks=1:abort_on_error=1"
+          export UBSAN_OPTIONS="abort_on_error=1"
+          export TSAN_OPTIONS="abort_on_error=1"
+          
+          # Use sanitized binary
+          ln -sf build-sanitized/bin/dinerod build-test/bin/dinerod
+          make verify-all-ci
+          
+      - name: Upload sanitizer artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitized-verification
+          path: |
+            build/verify/*.log
+            build/verify/*.json
+
+# Schedule nightly runs
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 2 AM UTC daily

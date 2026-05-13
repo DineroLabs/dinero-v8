@@ -1,0 +1,53 @@
+[Unit]
+Description=Dinero Cryptocurrency Daemon (Production)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/root/Dinero-Coin/data-main
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Dinero-Coin
+
+# Main executable — matches current production flags
+ExecStart=/root/Dinero-Coin/build/dinerod \
+    --datadir /root/Dinero-Coin/data-main \
+    --listen \
+    --port 20999 \
+    --rpc \
+    --rpcport 20998
+
+# Restart policy: auto-restart on crash, max 5 restarts per 5 minutes
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Security hardening (compatible with running as root in /root)
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+
+# Network: allow P2P from internet + RPC on loopback
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Process management
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+# Logging (stdout/stderr to journal, dinerod also logs to its own files)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dinerod
+
+[Install]
+WantedBy=multi-user.target

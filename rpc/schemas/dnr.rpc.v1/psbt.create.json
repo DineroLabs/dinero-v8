@@ -1,0 +1,107 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "psbt.create",
+  "description": "Create a new PSBT with specified inputs and outputs",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "psbt.create"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "array",
+          "description": "Transaction inputs",
+          "items": {
+            "type": "object",
+            "properties": {
+              "txid": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$",
+                "description": "Input transaction ID"
+              },
+              "vout": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Input output index"
+              },
+              "sequence": {
+                "type": "integer",
+                "description": "Input sequence number (default: 0xfffffffe)"
+              }
+            },
+            "required": ["txid", "vout"]
+          }
+        },
+        {
+          "type": "array",
+          "description": "Transaction outputs",
+          "items": {
+            "type": "object",
+            "properties": {
+              "address": {
+                "type": "string",
+                "description": "Recipient address"
+              },
+              "amount_una": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Output amount in una"
+              },
+              "amount_din": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Output amount in DIN (alternative to amount_una)"
+              }
+            },
+            "required": ["address"],
+            "oneOf": [
+              {"required": ["amount_una"]},
+              {"required": ["amount_din"]}
+            ]
+          }
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Transaction locktime (default: 0)"
+        },
+        {
+          "type": "boolean",
+          "description": "Whether inputs can be replaced by fee (BIP125, default: false)"
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 4
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "psbt": {
+          "type": "string",
+          "description": "Base64-encoded PSBT"
+        },
+        "fee_una": {
+          "type": "integer",
+          "description": "Estimated fee in una (0 if not calculable)"
+        },
+        "fee_din": {
+          "type": "string",
+          "description": "Estimated fee in DIN (formatted)"
+        },
+        "changepos": {
+          "type": "integer",
+          "description": "Position of change output (-1 if none)"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Creation warnings"
+        }
+      },
+      "required": ["psbt"]
+    }
+  }
+}

@@ -1,0 +1,411 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "Dinero Cryptocurrency Dashboard",
+    "tags": ["dinero", "cryptocurrency", "blockchain"],
+    "style": "dark",
+    "timezone": "browser",
+    "refresh": "30s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Network Overview",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "active_chain_height",
+            "legendFormat": "Block Height"
+          },
+          {
+            "expr": "peers_active",
+            "legendFormat": "Active Peers"
+          },
+          {
+            "expr": "mempool_size_mb",
+            "legendFormat": "Mempool (MB)"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "unit": "short"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "title": "Chain Work Progress",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "active_chain_work",
+            "legendFormat": "Chainwork"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "barAlignment": 0,
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            },
+            "unit": "short"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 0
+        }
+      },
+      {
+        "id": 3,
+        "title": "Block Production Rate",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(blocks_processed_total[5m]) * 60",
+            "legendFormat": "Blocks per minute"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "unit": "short",
+            "min": 0,
+            "max": 2
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 8
+        }
+      },
+      {
+        "id": 4,
+        "title": "Reorganization Activity",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "reorgs_total",
+            "legendFormat": "Total Reorgs"
+          },
+          {
+            "expr": "reorg_depth_max",
+            "legendFormat": "Max Depth"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "unit": "short"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 8
+        }
+      },
+      {
+        "id": 5,
+        "title": "Safe Mode Status",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "safemode",
+            "legendFormat": "Safe Mode"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "red",
+                  "value": 1
+                }
+              ]
+            },
+            "mappings": [
+              {
+                "options": {
+                  "0": {
+                    "text": "NORMAL"
+                  },
+                  "1": {
+                    "text": "SAFE MODE"
+                  }
+                },
+                "type": "value"
+              }
+            ],
+            "unit": "short"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 8
+        }
+      },
+      {
+        "id": 6,
+        "title": "RPC Performance",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(rpc_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "95th percentile"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(rpc_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "50th percentile"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "unit": "s"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 16
+        }
+      },
+      {
+        "id": 7,
+        "title": "Memory Pool Status",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "mempool_size_mb",
+            "legendFormat": "Size (MB)"
+          },
+          {
+            "expr": "mempool_transactions",
+            "legendFormat": "Transaction Count"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "unit": "short"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 16
+        }
+      },
+      {
+        "id": 8,
+        "title": "Network Connectivity",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "peers_active",
+            "legendFormat": "Active Peers"
+          },
+          {
+            "expr": "peers_inbound",
+            "legendFormat": "Inbound"
+          },
+          {
+            "expr": "peers_outbound",
+            "legendFormat": "Outbound"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "unit": "short"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 24
+        }
+      },
+      {
+        "id": 9,
+        "title": "Mining Activity",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "blocks_mined_total",
+            "legendFormat": "Blocks Mined"
+          },
+          {
+            "expr": "rate(mining_hashes_total[1m])",
+            "legendFormat": "Hash Rate (H/s)"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "unit": "short"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 24
+        }
+      },
+      {
+        "id": 10,
+        "title": "System Resources",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "process_cpu_seconds_total",
+            "legendFormat": "CPU Usage"
+          },
+          {
+            "expr": "process_resident_memory_bytes / 1024 / 1024",
+            "legendFormat": "Memory (MB)"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "unit": "short"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 24
+        }
+      },
+      {
+        "id": 11,
+        "title": "Recent Alerts",
+        "type": "logs",
+        "targets": [
+          {
+            "expr": "{job=\"dinerod\"} |= \"ERROR\" or |= \"WARN\" or |= \"REORG\" or |= \"SAFE\"",
+            "legendFormat": ""
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 24,
+          "x": 0,
+          "y": 32
+        }
+      }
+    ],
+    "templating": {
+      "list": [
+        {
+          "name": "instance",
+          "type": "query",
+          "query": "label_values(up{job=\"dinerod\"}, instance)",
+          "current": {
+            "value": "All",
+            "text": "All"
+          },
+          "includeAll": true,
+          "multi": true
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "name": "Reorgs",
+          "datasource": "Prometheus",
+          "expr": "changes(reorgs_total[1m]) > 0",
+          "titleFormat": "Blockchain Reorganization",
+          "textFormat": "{{ $value }} block reorg detected",
+          "iconColor": "red"
+        },
+        {
+          "name": "Safe Mode",
+          "datasource": "Prometheus", 
+          "expr": "changes(safemode[1m]) > 0",
+          "titleFormat": "Safe Mode Activated",
+          "textFormat": "Node entered safe mode",
+          "iconColor": "orange"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,345 @@
+# ☸️ Dinero Production Kubernetes Deployment
+# Enterprise-grade security, monitoring, and reliability
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dinerod
+  namespace: dinero
+  labels:
+    app: dinerod
+    version: v1.0.0
+    component: cryptocurrency-node
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: dinerod
+  template:
+    metadata:
+      labels:
+        app: dinerod
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "20998"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Security context for the pod
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+        sysctls:
+        - name: net.core.somaxconn
+          value: "1024"
+      
+      # Service account with minimal permissions
+      serviceAccountName: dinerod
+      automountServiceAccountToken: false
+      
+      containers:
+      - name: dinerod
+        image: ghcr.io/dinero/dinerod:v1.0.0
+        imagePullPolicy: IfNotPresent
+        
+        args:
+        - -datadir=/data
+        - -printtoconsole=1
+        - -rpcbind=0.0.0.0
+        - -rpcport=20998
+        - -wsport=21001
+        - -listen=0
+        - -dnsseed=0
+        - -upnp=0
+        - -gen=0
+        
+        ports:
+        - name: rpc
+          containerPort: 20998
+          protocol: TCP
+        - name: websocket
+          containerPort: 21001
+          protocol: TCP
+        
+        # Readiness probe - can serve traffic
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: rpc
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        
+        # Liveness probe - container is healthy
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: rpc
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        
+        # Startup probe - initial startup can take time
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: rpc
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 30  # Allow 5 minutes for startup
+        
+        # Resource limits and requests
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+            ephemeral-storage: "1Gi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+            ephemeral-storage: "5Gi"
+        
+        # Security context for the container
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+        
+        # Environment variables
+        env:
+        - name: DINERO_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: DINERO_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: DINERO_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        
+        # Volume mounts
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /app/cache
+      
+      # Volumes
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: dinerod-data
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 100Mi
+      - name: cache
+        emptyDir:
+          medium: Memory
+          sizeLimit: 50Mi
+      
+      # Node selection and affinity
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      
+      affinity:
+        # Prefer to spread pods across nodes
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - dinerod
+              topologyKey: kubernetes.io/hostname
+      
+      # Tolerations for dedicated nodes (optional)
+      tolerations:
+      - key: "dinero.io/dedicated"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      
+      # DNS configuration
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+        - name: ndots
+          value: "2"
+        - name: edns0
+
+---
+# Service for internal communication
+apiVersion: v1
+kind: Service
+metadata:
+  name: dinerod
+  namespace: dinero
+  labels:
+    app: dinerod
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "20998"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: dinerod
+  ports:
+  - name: rpc
+    port: 20998
+    targetPort: rpc
+    protocol: TCP
+  - name: websocket
+    port: 21001
+    targetPort: websocket
+    protocol: TCP
+
+---
+# Headless service for StatefulSet-like behavior
+apiVersion: v1
+kind: Service
+metadata:
+  name: dinerod-headless
+  namespace: dinero
+  labels:
+    app: dinerod
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: dinerod
+  ports:
+  - name: rpc
+    port: 20998
+    targetPort: rpc
+  - name: websocket
+    port: 21001
+    targetPort: websocket
+
+---
+# Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: dinerod-pdb
+  namespace: dinero
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: dinerod
+
+---
+# Persistent Volume Claim for data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dinerod-data
+  namespace: dinero
+  labels:
+    app: dinerod
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: fast-ssd  # Adjust based on your cluster
+
+---
+# Service Account with minimal permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dinerod
+  namespace: dinero
+  labels:
+    app: dinerod
+automountServiceAccountToken: false
+
+---
+# Network Policy for security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dinerod-netpol
+  namespace: dinero
+spec:
+  podSelector:
+    matchLabels:
+      app: dinerod
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow RPC from nginx/ingress
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: nginx-ingress
+    ports:
+    - protocol: TCP
+      port: 20998
+  # Allow WebSocket from nginx/ingress
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: nginx-ingress
+    ports:
+    - protocol: TCP
+      port: 21001
+  # Allow monitoring from prometheus
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 20998
+  egress:
+  # Allow DNS
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow HTTPS for potential updates (optional)
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443

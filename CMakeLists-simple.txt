@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.16)
+project(SQLiteBasicTest)
+
+# Set C++ standard
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Include our SQLite module
+include(../cmake/StaticSQLite.cmake)
+
+# Create test executable
+add_executable(test-sqlite-simple test-sqlite-simple.cpp)
+
+# Link with SQLite
+target_link_libraries(test-sqlite-simple PRIVATE sqlite3)
+
+# Print configuration
+message(STATUS "Basic SQLite Test Configuration:")
+message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Platform: ${CMAKE_SYSTEM_NAME}")

@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getnewaddress",
+  "description": "Generate a new receiving address",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "getnewaddress"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "description": "Optional address label"
+        },
+        {
+          "type": "string",
+          "enum": ["legacy", "p2sh-segwit", "bech32"],
+          "description": "Address type (default: bech32)"
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "string",
+      "pattern": "^din1[a-z0-9]{39,59}$",
+      "description": "New bech32 address (din1...)"
+    }
+  }
+}

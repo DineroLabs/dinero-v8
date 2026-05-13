@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "search",
+  "description": "Universal search for txid, block hash, or address (GUI search box)",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "search"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Search query (txid, block hash, address, or partial)"
+        },
+        {
+          "type": "object",
+          "description": "Search options",
+          "properties": {
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "description": "Maximum results to return (default: 10)"
+            },
+            "include_mempool": {
+              "type": "boolean",
+              "description": "Include mempool transactions (default: true)"
+            },
+            "fuzzy": {
+              "type": "boolean",
+              "description": "Enable fuzzy matching for partial queries (default: false)"
+            }
+          }
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Original search query"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["transaction", "block", "address"],
+                "description": "Result type"
+              },
+              "id": {
+                "type": "string",
+                "description": "Transaction ID, block hash, or address"
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Match confidence (0-1)"
+              },
+              "confirmed": {
+                "type": "boolean",
+                "description": "Whether result is confirmed on blockchain"
+              },
+              "height": {
+                "type": "integer",
+                "description": "Block height (for blocks and confirmed transactions)"
+              },
+              "timestamp": {
+                "type": "integer",
+                "description": "Block timestamp or mempool entry time"
+              },
+              "summary": {
+                "type": "object",
+                "description": "Type-specific summary information",
+                "properties": {
+                  "amount_una": {"type": "integer"},
+                  "amount_din": {"type": "string"},
+                  "fee_una": {"type": "integer"},
+                  "fee_din": {"type": "string"},
+                  "inputs": {"type": "integer"},
+                  "outputs": {"type": "integer"},
+                  "transactions": {"type": "integer"},
+                  "confirmations": {"type": "integer"},
+                  "balance_una": {"type": "integer"},
+                  "balance_din": {"type": "string"}
+                }
+              }
+            },
+            "required": ["type", "id", "confidence", "confirmed"]
+          }
+        },
+        "total_results": {
+          "type": "integer",
+          "description": "Total number of results found"
+        },
+        "search_time": {
+          "type": "number",
+          "description": "Search execution time in seconds"
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Search suggestions for partial matches"
+        }
+      },
+      "required": ["query", "results", "total_results"]
+    }
+  }
+}

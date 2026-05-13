@@ -1,0 +1,38 @@
+✅ Merkle root assertion passed: abcf15b08679499b542d4f33660205e53d9f4d64355d48a94664498a114855c7
+
+=== DINERO GENESIS CONSTANTS ===
+Genesis Hash: 0527307a952837a2bef8f1f709803506a8c00ad4ce817646a67b2f9bd8d0c76b
+Merkle Root:  abcf15b08679499b542d4f33660205e53d9f4d64355d48a94664498a114855c7
+Coinbase TxID: abcf15b08679499b542d4f33660205e53d9f4d64355d48a94664498a114855c7
+Block Version: 1
+Block Time:    1700000000
+Block Bits:    0x1f00ffff
+Block Nonce:   0
+
+=== PREMINE VERIFICATION ===
+Premine Address: din1q9enz7p5zjt2hd9t522fe29dcgd0lfv4f8n374k
+Expected Script: 00142e662f068292d576957452939515b8435ff4b2a9
+Outputs Count:   4
+Output 0: 500000.000000 DIN (500000000000 una)
+  Script: 00142e662f068292d576957452939515b8435ff4b2a9
+Output 1: 500000.000000 DIN (500000000000 una)
+  Script: 00142e662f068292d576957452939515b8435ff4b2a9
+Output 2: 500000.000000 DIN (500000000000 una)
+  Script: 00142e662f068292d576957452939515b8435ff4b2a9
+Output 3: 500000.000000 DIN (500000000000 una)
+  Script: 00142e662f068292d576957452939515b8435ff4b2a9
+Total Premine: 2000000.000000 DIN
+
+=== CHAINPARAMS CODE ===
+p.genesis.genesisHashHex = "0527307a952837a2bef8f1f709803506a8c00ad4ce817646a67b2f9bd8d0c76b";
+p.genesis.merkleRootHex  = "abcf15b08679499b542d4f33660205e53d9f4d64355d48a94664498a114855c7";
+
+=== ASSERT STATEMENTS ===
+assert(consensus.hashGenesisBlock == "0527307a952837a2bef8f1f709803506a8c00ad4ce817646a67b2f9bd8d0c76b");
+assert(genesis.merkleRoot == "abcf15b08679499b542d4f33660205e53d9f4d64355d48a94664498a114855c7");
+
+=== CHECKPOINT BYTES ===
+std::vector<uint8_t> regtestGenesisHash = {
+    0x05, 0x27, 0x30, 0x7a, 0x95, 0x28, 0x37, 0xa2, 0xbe, 0xf8, 0xf1, 0xf7, 0x09, 0x80, 0x35, 0x06, 
+    0xa8, 0xc0, 0x0a, 0xd4, 0xce, 0x81, 0x76, 0x46, 0xa6, 0x7b, 0x2f, 0x9b, 0xd8, 0xd0, 0xc7, 0x6b
+};

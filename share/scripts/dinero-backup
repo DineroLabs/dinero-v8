@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+# dinero-backup — Phase D.2 of Dinero Core 1.0
+#
+# Backs up the irrecoverable wallet/seed/shielded material from a
+# Dinero datadir into a single .tar.gz archive with an integrity
+# manifest. Refuses to back up replay-able chain data — that's
+# precisely what this script does NOT do, by design.
+#
+# Spec: docs/specs/dinero-core-1.0.md Standard 8.
+#
+# What gets backed up (the irrecoverable include list):
+#   <datadir>/wallets/                           directory
+#   <datadir>/hd_wallet/                         directory
+#   <datadir>/blockchain/shielded_frontier.bin   file
+#   <datadir>/blockchain/shielded_anchor_history.bin   file
+#   <datadir>/blockchain/shielded_nullifiers.db/  RocksDB directory
+#
+# What is EXPLICITLY excluded (replay-able from peers; backing this
+# up would give false confidence and waste bytes):
+#   <datadir>/blockchain/chaindb/   RocksDB chainstate
+#   <datadir>/blockchain/utxo/      derived UTXO index
+#   <datadir>/blocks/               blk*.dat + rev*.dat
+#   <datadir>/headers/              header sync state
+#   <datadir>/{peers,mempool,banlist}.dat
+#   <datadir>/.cookie, .daemon_id, dinerod.lock, debug.log, *.log
+#
+# Usage:
+#   dinero-backup --datadir=<path> --output=<file.tar.gz>
+#   dinero-backup --datadir=<path> --output=<file.tar.gz> --dry-run
+#   dinero-backup --help
+#
+# Exit codes:
+#   0  success (or dry-run completed)
+#   1  argument validation failed (bad/missing flags, unsafe paths)
+#   2  no irrecoverable material found in the datadir (nothing to back up)
+#   3  I/O error during staging, archiving, or rename
+#   4  archive integrity check failed (sha256 mismatch on read-back)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# ─────────────────────────────────────────────────────────────────
+# CLI parsing — explicit, no implicit defaults
+# ─────────────────────────────────────────────────────────────────
+
+DATADIR=""
+OUTPUT=""
+DRY_RUN=0
+SCRIPT_NAME="$(basename "$0")"
+
+usage() {
+    cat <<EOF
+${SCRIPT_NAME} — Dinero Core 1.0 wallet/shielded backup tool
+
+Usage:
+    ${SCRIPT_NAME} --datadir=<path> --output=<file.tar.gz> [--dry-run]
+    ${SCRIPT_NAME} --help
+
+Arguments:
+    --datadir=<path>    Path to the dinerod data directory
+                        (e.g. /var/lib/dinero, ~/.dinero). Must exist
+                        and be a directory. The script refuses bare
+                        / and empty values.
+    --output=<file>     Where to write the .tar.gz archive. The file
+                        must NOT already exist; this prevents accidental
+                        overwrites of an existing good backup.
+    --dry-run           Print what would be backed up. Make no changes.
+    --help              Print this message and exit 0.
+
+Backed up:
+    <datadir>/wallets/, <datadir>/hd_wallet/,
+    <datadir>/blockchain/shielded_frontier.bin,
+    <datadir>/blockchain/shielded_anchor_history.bin,
+    <datadir>/blockchain/shielded_nullifiers.db/
+
+NOT backed up (replay-able from peers — backing up gives false confidence):
+    chaindb, blocks/, headers/, mempool, peer state, logs, locks.
+
+The archive contains a manifest.txt with sha256s for every file. To
+verify a backup, extract it and confirm sha256sum -c against the
+manifest.
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+    usage >&2
+    exit 1
+fi
+
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h) usage; exit 0 ;;
+        --datadir=*) DATADIR="${arg#*=}" ;;
+        --output=*)  OUTPUT="${arg#*=}" ;;
+        --dry-run)   DRY_RUN=1 ;;
+        *) echo "[FATAL] unknown argument: $arg" >&2
+           usage >&2
+           exit 1 ;;
+    esac
+done
+
+# ─────────────────────────────────────────────────────────────────
+# Refuse unsafe paths — recovery tooling cannot trust callers
+# ─────────────────────────────────────────────────────────────────
+
+if [[ -z "${DATADIR}" ]]; then
+    echo "[FATAL] --datadir is required" >&2
+    exit 1
+fi
+if [[ "${DATADIR}" == "/" ]]; then
+    echo "[FATAL] refusing to treat / as a datadir" >&2
+    exit 1
+fi
+if [[ "${DATADIR}" != /* && "${DATADIR}" != ~* ]]; then
+    # Require absolute path; relative paths are operator footguns
+    # (where exactly is "data/" relative to?). Tilde is fine — shell
+    # expands before we see it.
+    echo "[FATAL] --datadir must be an absolute path, got: ${DATADIR}" >&2
+    exit 1
+fi
+if [[ ! -d "${DATADIR}" ]]; then
+    echo "[FATAL] --datadir does not exist or is not a directory: ${DATADIR}" >&2
+    exit 1
+fi
+
+# Resolve to canonical path for the manifest. Use a portable form
+# (readlink -f isn't on macOS by default; cd && pwd is universal).
+DATADIR="$(cd "${DATADIR}" && pwd -P)"
+
+if [[ ${DRY_RUN} -eq 0 ]]; then
+    if [[ -z "${OUTPUT}" ]]; then
+        echo "[FATAL] --output is required (use --dry-run to skip writing)" >&2
+        exit 1
+    fi
+    if [[ -e "${OUTPUT}" ]]; then
+        echo "[FATAL] --output exists: ${OUTPUT}" >&2
+        echo "        refusing to overwrite an existing file. Move/delete it" >&2
+        echo "        explicitly and re-run." >&2
+        exit 1
+    fi
+    output_dir="$(dirname "${OUTPUT}")"
+    if [[ ! -d "${output_dir}" ]]; then
+        echo "[FATAL] output directory does not exist: ${output_dir}" >&2
+        exit 1
+    fi
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# Build the include list — declared targets only, no glob discovery
+# ─────────────────────────────────────────────────────────────────
+#
+# Each entry is a path relative to DATADIR. The script never adds
+# anything else to the archive — even if the datadir contains other
+# files. This is the recovery-grade contract: backups contain exactly
+# what was promised.
+
+REQUIRED_ANY=(
+    # At least ONE of these must be present, else there is no
+    # irrecoverable material and the backup is meaningless.
+    "wallets"
+    "hd_wallet"
+)
+
+OPTIONAL=(
+    # Missing is OK (not every node runs the shielded pool yet);
+    # warn but proceed.
+    "blockchain/shielded_frontier.bin"
+    "blockchain/shielded_anchor_history.bin"
+    "blockchain/shielded_nullifiers.db"
+)
+
+# Classify present / missing. We use parallel arrays to preserve
+# bash 3.x compatibility (macOS default).
+present_paths=()
+missing_paths=()
+
+for rel in "${REQUIRED_ANY[@]}" "${OPTIONAL[@]}"; do
+    full="${DATADIR}/${rel}"
+    if [[ -e "${full}" ]]; then
+        present_paths+=("${rel}")
+    else
+        missing_paths+=("${rel}")
+    fi
+done
+
+# Did at least ONE required-any slot land?
+required_present=0
+for rel in "${REQUIRED_ANY[@]}"; do
+    if [[ -e "${DATADIR}/${rel}" ]]; then
+        required_present=1
+        break
+    fi
+done
+
+if [[ ${required_present} -eq 0 ]]; then
+    echo "[FATAL] no irrecoverable wallet material found in ${DATADIR}" >&2
+    echo "        expected at least one of: ${REQUIRED_ANY[*]}" >&2
+    echo "        nothing to back up — refusing to create a misleading archive." >&2
+    exit 2
+fi
+
+# Warn about missing optionals (operator should know).
+for rel in "${OPTIONAL[@]}"; do
+    if [[ ! -e "${DATADIR}/${rel}" ]]; then
+        echo "[WARN]  optional target absent (will not be backed up): ${rel}" >&2
+    fi
+done
+
+# ─────────────────────────────────────────────────────────────────
+# Dry-run: print plan, no writes
+# ─────────────────────────────────────────────────────────────────
+
+if [[ ${DRY_RUN} -eq 1 ]]; then
+    echo "Dry-run: would back up the following from ${DATADIR}:"
+    for rel in "${present_paths[@]}"; do
+        full="${DATADIR}/${rel}"
+        if [[ -d "${full}" ]]; then
+            count=$(find "${full}" -type f | wc -l | tr -d ' ')
+            echo "    ${rel}/  (directory, ${count} files)"
+        else
+            size=$(wc -c < "${full}" | tr -d ' ')
+            echo "    ${rel}      (file, ${size} bytes)"
+        fi
+    done
+    if [[ ${#missing_paths[@]} -gt 0 ]]; then
+        echo "Would skip (not present in datadir):"
+        for rel in "${missing_paths[@]}"; do
+            echo "    ${rel}"
+        done
+    fi
+    echo "Dry-run complete. No files written."
+    exit 0
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# Pick a sha256 binary that works on both Linux (sha256sum) and
+# macOS (shasum -a 256). Bail if neither is present.
+# ─────────────────────────────────────────────────────────────────
+
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256_cmd() { sha256sum "$@" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+    sha256_cmd() { shasum -a 256 "$@" | awk '{print $1}'; }
+else
+    echo "[FATAL] neither sha256sum nor shasum is available" >&2
+    exit 3
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# Stage and write the archive
+# ─────────────────────────────────────────────────────────────────
+
+STAGING=$(mktemp -d -t dinero-backup-stage.XXXXXX)
+cleanup() {
+    if [[ -n "${STAGING:-}" && -d "${STAGING}" ]]; then
+        rm -rf "${STAGING}"
+    fi
+}
+trap cleanup EXIT
+
+# Build the manifest. One line per file (recursively expanding
+# directories). Format:
+#   <relpath>\t<size_bytes>\t<sha256>
+manifest="${STAGING}/manifest.txt"
+
+emit_manifest_header() {
+    {
+        echo "# Dinero Core 1.0 wallet backup manifest"
+        echo "schema_version=1"
+        echo "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "hostname=$(hostname)"
+        echo "datadir=${DATADIR}"
+        echo "[files]"
+    } > "${manifest}"
+}
+
+emit_manifest_file() {
+    local rel="$1"     # relative to DATADIR
+    local full="${DATADIR}/${rel}"
+    if [[ -f "${full}" ]]; then
+        local size sha
+        size=$(wc -c < "${full}" | tr -d ' ')
+        sha=$(sha256_cmd "${full}")
+        printf '%s\t%s\t%s\n' "${rel}" "${size}" "${sha}" >> "${manifest}"
+    elif [[ -d "${full}" ]]; then
+        # Recurse into the directory; record every regular file under it.
+        local f
+        while IFS= read -r f; do
+            local sub="${f#${DATADIR}/}"
+            local fsize fsha
+            fsize=$(wc -c < "${f}" | tr -d ' ')
+            fsha=$(sha256_cmd "${f}")
+            printf '%s\t%s\t%s\n' "${sub}" "${fsize}" "${fsha}" >> "${manifest}"
+        done < <(find "${full}" -type f | sort)
+    fi
+}
+
+emit_manifest_header
+for rel in "${present_paths[@]}"; do
+    emit_manifest_file "${rel}"
+done
+echo "[/files]" >> "${manifest}"
+
+# Build the archive layout under staging using symlinks so we can tar
+# from a single root and avoid GNU/BSD tar `-C ... -T` portability
+# issues. `tar -h` follows symlinks; the symlinks themselves never
+# end up in the archive — only the dereferenced regular files do.
+archive_tmp="${STAGING}/$(basename "${OUTPUT}").tmp"
+archive_root="${STAGING}/archive_root"
+mkdir -p "${archive_root}"
+
+# Manifest lives at the archive root.
+cp "${manifest}" "${archive_root}/manifest.txt"
+
+# Symlink each include path under archive_root so tar -h dereferences
+# into the real datadir contents at the right relative location.
+for rel in "${present_paths[@]}"; do
+    target_dir="${archive_root}/$(dirname "${rel}")"
+    [[ "${target_dir}" == "${archive_root}/." ]] && target_dir="${archive_root}"
+    mkdir -p "${target_dir}"
+    ln -s "${DATADIR}/${rel}" "${archive_root}/${rel}"
+done
+
+# Tar the manifest + each include path explicitly so archive entries
+# come out as `manifest.txt`, `wallets/...`, `hd_wallet/...` etc.
+# without a `./` prefix. (Using `-C dir .` would prefix every entry
+# with `./` on bsdtar; explicit entries avoid that and let the
+# round-trip integrity check compare paths against manifest entries
+# byte-for-byte.) `tar -h` dereferences the symlinks under
+# archive_root into the real datadir contents.
+(
+    cd "${archive_root}"
+    tar -czhf "${archive_tmp}" manifest.txt "${present_paths[@]}"
+)
+
+# ─────────────────────────────────────────────────────────────────
+# Verify integrity by reading the archive back and recomputing
+# sha256s of every entry against the manifest. A backup that
+# silently corrupts on write is worse than no backup.
+# ─────────────────────────────────────────────────────────────────
+
+verify_dir="${STAGING}/verify"
+mkdir -p "${verify_dir}"
+tar -xzf "${archive_tmp}" -C "${verify_dir}"
+
+if [[ ! -f "${verify_dir}/manifest.txt" ]]; then
+    echo "[FATAL] integrity check: manifest.txt missing from archive" >&2
+    exit 4
+fi
+
+# Walk the manifest's [files] block; for each line, recompute sha256
+# from the extracted copy and compare.
+in_files=0
+mismatch=0
+while IFS=$'\t' read -r rel size sha; do
+    case "${rel}" in
+        "[files]")  in_files=1; continue ;;
+        "[/files]") in_files=0; continue ;;
+    esac
+    [[ ${in_files} -eq 1 ]] || continue
+    [[ -z "${rel}" ]] && continue
+
+    extracted="${verify_dir}/${rel}"
+    if [[ ! -f "${extracted}" ]]; then
+        echo "[FATAL] integrity check: ${rel} listed in manifest but missing from archive" >&2
+        mismatch=1
+        continue
+    fi
+    extracted_sha=$(sha256_cmd "${extracted}")
+    if [[ "${extracted_sha}" != "${sha}" ]]; then
+        echo "[FATAL] integrity check: sha256 mismatch for ${rel}" >&2
+        echo "        manifest:  ${sha}"  >&2
+        echo "        extracted: ${extracted_sha}" >&2
+        mismatch=1
+    fi
+done < "${verify_dir}/manifest.txt"
+
+if [[ ${mismatch} -ne 0 ]]; then
+    echo "[FATAL] archive integrity check failed; archive NOT promoted" >&2
+    exit 4
+fi
+
+# Tighten permissions before publishing. Wallet seeds and shielded
+# spend authorization material must NOT be world-readable.
+chmod 0600 "${archive_tmp}"
+
+# Atomic rename — the archive only appears at OUTPUT after every
+# integrity check above passed. A partial backup never gets the
+# final name.
+mv "${archive_tmp}" "${OUTPUT}"
+
+# Print summary to stdout.
+file_count=$(grep -c $'\t' "${manifest}" | tr -d ' ' || true)
+archive_size=$(wc -c < "${OUTPUT}" | tr -d ' ')
+echo "✅ backup written: ${OUTPUT}"
+echo "   files archived: ${file_count}"
+echo "   archive size:   ${archive_size} bytes"
+echo "   permissions:    0600"
+echo "   verify with:    tar -xzf ${OUTPUT} -C <dir> && sha256sum -c <(awk -F'\t' '/^[^[#]/ {print \$3\"  \"\$1}' <dir>/manifest.txt)"

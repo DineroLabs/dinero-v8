@@ -1,0 +1,31 @@
+[Unit]
+Description=Dinero WebSocket Server
+After=network-online.target dinerod.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dinero
+Group=dinero
+ExecStart=/usr/local/bin/wsd 21001
+Environment=DINERO_COOKIE_FILE=/var/lib/dinero/.cookie
+Environment=DINERO_WS_PORT=21001
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dinero-ws
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dinero
+
+[Install]
+WantedBy=multi-user.target

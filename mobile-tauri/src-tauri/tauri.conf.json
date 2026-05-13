@@ -1,0 +1,71 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "Dinero Mobile",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "all": false,
+        "open": true
+      },
+      "fs": {
+        "all": false,
+        "readFile": true,
+        "writeFile": true,
+        "readDir": true,
+        "createDir": true,
+        "scope": ["$APPDATA/*", "$DOCUMENT/*"]
+      },
+      "camera": {
+        "all": true
+      },
+      "biometric": {
+        "all": true
+      },
+      "notification": {
+        "all": true
+      },
+      "secureStore": {
+        "all": true
+      },
+      "path": {
+        "all": true
+      },
+      "dialog": {
+        "all": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.dinero.mobile",
+      "ios": {
+        "deploymentTarget": "13.0"
+      },
+      "android": {
+        "minSdkVersion": 24
+      }
+    },
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "title": "Dinero Mobile Wallet",
+        "width": 375,
+        "height": 812,
+        "resizable": false,
+        "fullscreen": false
+      }
+    ]
+  }
+}
+

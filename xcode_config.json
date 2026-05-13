@@ -1,0 +1,48 @@
+{
+  "project_root": "/Users/haydarevich/Documents/DineroiOS",
+  "ffi_path": "$(SRCROOT)/Dinero/Dinero/FFI",
+  "other_linker_flags": [
+    "-force_load $(SRCROOT)/Dinero/Dinero/FFI/libdinero_wallet_ffi.a",
+    "-force_load $(SRCROOT)/Dinero/Dinero/FFI/libjsoncpp.a",
+    "-lc++",
+    "-lz",
+    "-lsqlite3",
+    "-ObjC"
+  ],
+  "link_binary_with_libraries": [
+    {
+      "name": "libdinero_wallet_ffi.a",
+      "path": "$(SRCROOT)/Dinero/Dinero/FFI/libdinero_wallet_ffi.a",
+      "embed": false,
+      "size_bytes": 152704,
+      "size_mb": 0.15
+    },
+    {
+      "name": "libjsoncpp.a",
+      "path": "$(SRCROOT)/Dinero/Dinero/FFI/libjsoncpp.a",
+      "embed": false,
+      "size_bytes": 348264,
+      "size_mb": 0.33
+    },
+    {
+      "name": "libdinero_wallet.a",
+      "path": "$(SRCROOT)/Dinero/Dinero/FFI/libdinero_wallet.a",
+      "embed": false,
+      "size_bytes": 1008336,
+      "size_mb": 0.96
+    },
+    {
+      "name": "libdinero_crypto.a",
+      "path": "$(SRCROOT)/Dinero/Dinero/FFI/libdinero_crypto.a",
+      "embed": false,
+      "size_bytes": 251592,
+      "size_mb": 0.24
+    }
+  ],
+  "library_search_paths": [
+    "$(SRCROOT)/Dinero/Dinero/FFI"
+  ],
+  "header_search_paths": [
+    "$(SRCROOT)/Dinero/Dinero/FFI"
+  ]
+}

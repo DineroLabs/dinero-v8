@@ -1,0 +1,58 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+//  DineroCoin BlockHeader v1 (128 bytes) - FROZEN
+//  OpenCL Kernel Compatible Version
+//
+//  AUTO-SYNCED with: include/mining/header_layout.h
+//  DO NOT EDIT MANUALLY - values must match C++ header exactly
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Header Field Offsets (in bytes)
+// ─────────────────────────────────────────────────────────────────────────────
+#define DINERO_HEADER_VERSION_OFFSET         0     // 4 bytes  - Block version
+#define DINERO_HEADER_PREVHASH_OFFSET        4     // 32 bytes - Previous block hash
+#define DINERO_HEADER_MERKLEROOT_OFFSET      36    // 32 bytes - Merkle root
+#define DINERO_HEADER_UTREEXO_OFFSET         68    // 32 bytes - Utreexo root
+#define DINERO_HEADER_TIMESTAMP_OFFSET       100   // 8 bytes  - Unix timestamp
+#define DINERO_HEADER_DIFFICULTY_OFFSET      108   // 4 bytes  - Difficulty target
+#define DINERO_HEADER_NONCE_OFFSET           112   // 4 bytes  - Mining nonce
+#define DINERO_HEADER_RESERVED_OFFSET        116   // 12 bytes - Reserved (MUST be zero)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Total Header Size - CONSENSUS-FINAL
+// ─────────────────────────────────────────────────────────────────────────────
+#define DINERO_HEADER_SIZE_BYTES             128   // CONSENSUS-FINAL
+#define DINERO_HEADER_SIZE_WORDS             32    // 128 / 4 = 32 uint words
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Word Offsets (index into uint array)
+// ─────────────────────────────────────────────────────────────────────────────
+#define DINERO_HEADER_VERSION_WORD           0     // Word 0
+#define DINERO_HEADER_PREVHASH_WORD          1     // Words 1-8 (32 bytes)
+#define DINERO_HEADER_MERKLEROOT_WORD        9     // Words 9-16 (32 bytes)
+#define DINERO_HEADER_UTREEXO_WORD           17    // Words 17-24 (32 bytes)
+#define DINERO_HEADER_TIMESTAMP_WORD         25    // Words 25-26 (8 bytes)
+#define DINERO_HEADER_DIFFICULTY_WORD        27    // Word 27
+#define DINERO_HEADER_NONCE_WORD             28    // Word 28 <- MINERS MODIFY THIS
+#define DINERO_HEADER_RESERVED_WORD          29    // Words 29-31 (12 bytes)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHA-256 Block Layout for Double-SHA256 (SHA256d)
+// ─────────────────────────────────────────────────────────────────────────────
+// SHA-256 processes 64-byte (512-bit) blocks.
+// 128-byte header requires 2 SHA-256 blocks:
+//
+//   Block 1: bytes 0-63   (words 0-15)  - First 64 bytes of header
+//   Block 2: bytes 64-127 (words 16-31) - Remaining 64 bytes
+//
+// Nonce position:
+//   - Header offset 112 (0x70), which is byte 48 of block 2
+//   - Block 2 word index: 12 (since 112 - 64 = 48, 48 / 4 = 12)
+
+#define DINERO_SHA256_BLOCK_SIZE             64    // SHA-256 block size in bytes
+#define DINERO_SHA256_BLOCK1_SIZE            64    // First block: bytes 0-63
+#define DINERO_SHA256_BLOCK2_SIZE            64    // Second block: bytes 64-127
+#define DINERO_SHA256_BLOCK2_PAYLOAD         64    // Full 64 bytes for 128-byte header
+#define DINERO_SHA256_TOTAL_BITS             1024  // 128 * 8 = 1024 bits
+
+#define DINERO_SHA256_BLOCK2_NONCE_WORD      12    // Nonce is word 12 in block 2

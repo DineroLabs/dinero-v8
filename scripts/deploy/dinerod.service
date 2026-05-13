@@ -1,0 +1,62 @@
+[Unit]
+Description=Dinero Daemon - CPU-friendly cryptocurrency node
+Documentation=https://github.com/dinerocoin/dinero
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=dinerod
+Group=dinerod
+WorkingDirectory=/var/lib/dinerod
+
+# Main command - production configuration
+ExecStart=/usr/local/bin/dinerod \
+  --datadir=/var/lib/dinerod \
+  --nodeinfo=/etc/dinero/nodeinfo.json \
+  --network=mainnet \
+  --p2p \
+  --printtoconsole
+
+# Restart behavior
+Restart=on-failure
+RestartSec=5s
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+MemoryMax=2G
+CPUQuota=200%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# Writable directories
+ReadWritePaths=/var/lib/dinerod
+ReadWritePaths=/var/log/dinerod
+ReadOnlyPaths=/etc/dinero
+
+# Network access
+IPAddressDeny=any
+IPAddressAllow=localhost
+IPAddressAllow=10.0.0.0/8
+IPAddressAllow=172.16.0.0/12  
+IPAddressAllow=192.168.0.0/16
+
+# Environment
+Environment=DINERO_NETWORK=mainnet
+Environment=DINERO_DATA_DIR=/var/lib/dinerod
+
+[Install]
+WantedBy=multi-user.target

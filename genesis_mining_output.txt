@@ -1,0 +1,9 @@
+Usage:
+  ./build/genesis_miner --time <unix> --bits <0xNNNNNNNN> [--version 1]
+                 [--coinbase-hex <hex>]
+                 [--message "Dinero Genesis..."] [--burn 100000] [--units 100000000]
+                 [--threads <N>] [--start 0] [--end 0xffffffff]
+
+Notes:
+  • Provide EITHER --coinbase-hex (preferred) OR --message/--burn to have the tool build a coinbase.
+  • Genesis prevhash is all zeroes. Header = version|prev|merkle|time|bits|nonce.

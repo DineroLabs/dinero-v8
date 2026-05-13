@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "JSON-RPC Envelope",
+  "description": "Standard envelope for all Dinero RPC requests and responses",
+  "type": "object",
+  "properties": {
+    "jsonrpc": {
+      "type": "string",
+      "const": "2.0",
+      "description": "JSON-RPC version"
+    },
+    "id": {
+      "oneOf": [
+        {"type": "string"},
+        {"type": "number"},
+        {"type": "null"}
+      ],
+      "description": "Request identifier"
+    },
+    "method": {
+      "type": "string",
+      "description": "RPC method name (request only)"
+    },
+    "params": {
+      "oneOf": [
+        {"type": "array"},
+        {"type": "object"}
+      ],
+      "description": "Method parameters (request only)"
+    },
+    "result": {
+      "description": "Method result (response only, mutually exclusive with error)"
+    },
+    "error": {
+      "type": "object",
+      "description": "Error object (response only, mutually exclusive with result)",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "description": "Error code"
+        },
+        "message": {
+          "type": "string",
+          "description": "Error message"
+        },
+        "data": {
+          "description": "Additional error data"
+        }
+      },
+      "required": ["code", "message"]
+    },
+    "rpc_schema": {
+      "type": "string",
+      "const": "din.rpc.v1",
+      "description": "Dinero RPC schema version"
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "Optional request tracing ID"
+    },
+    "timestamp": {
+      "type": "integer",
+      "description": "Response timestamp (Unix seconds)"
+    },
+    "node_version": {
+      "type": "string",
+      "description": "Node software version"
+    },
+    "network": {
+      "type": "string",
+      "enum": ["mainnet", "testnet", "regtest"],
+      "description": "Network identifier"
+    }
+  },
+  "required": ["jsonrpc", "id"],
+  "oneOf": [
+    {
+      "description": "Request envelope",
+      "required": ["method"],
+      "not": {
+        "anyOf": [
+          {"required": ["result"]},
+          {"required": ["error"]}
+        ]
+      }
+    },
+    {
+      "description": "Success response envelope",
+      "required": ["result"],
+      "not": {
+        "anyOf": [
+          {"required": ["method"]},
+          {"required": ["params"]},
+          {"required": ["error"]}
+        ]
+      }
+    },
+    {
+      "description": "Error response envelope",
+      "required": ["error"],
+      "not": {
+        "anyOf": [
+          {"required": ["method"]},
+          {"required": ["params"]},
+          {"required": ["result"]}
+        ]
+      }
+    }
+  ]
+}

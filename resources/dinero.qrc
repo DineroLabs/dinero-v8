@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="icons/Dinero-Coin.png">icons/Dinero-Coin.png</file>
+        <file alias="icons/Dinero-Coin.icns">icons/Dinero-Coin.icns</file>
+    </qresource>
+</RCC>

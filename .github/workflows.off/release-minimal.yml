@@ -1,0 +1,72 @@
+name: release-minimal
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  build-min:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, macos-14]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install deps (Ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build libboost-all-dev libssl-dev
+
+      - name: Install deps (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew update
+          brew install cmake ninja boost openssl@3
+
+      - name: Configure (minimal)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDIN_BUILD_GUI=OFF \
+            -DDIN_BUILD_TESTS=OFF \
+            -DDIN_BUILD_QT_TESTS=OFF \
+            -DDIN_BUILD_LEGACY_TESTS=OFF \
+            -DDIN_BUILD_SANDBOX=OFF
+
+      - name: Build daemon and CLI
+        run: cmake --build build --target dinerod dinero-cli -j $(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp build/bin/dinerod dist/ || true
+          cp build/bin/dinero-cli dist/ || true
+          cp LICENSE dist/ || true
+          cp README.md dist/ || true
+          tar -C dist -czf dinerocoin-${{ runner.os }}-${{ github.ref_name }}.tar.gz .
+
+      - name: Checksums
+        run: |
+          if command -v shasum >/dev/null; then 
+            shasum -a 256 *.tar.gz > SHA256SUMS.txt
+          else 
+            sha256sum *.tar.gz > SHA256SUMS.txt
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            *.tar.gz
+            SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

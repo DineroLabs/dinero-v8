@@ -1,0 +1,179 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getpeerinfo",
+  "description": "Get information about connected peers",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "getpeerinfo"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Peer ID"
+          },
+          "addr": {
+            "type": "string",
+            "description": "Peer IP address and port"
+          },
+          "addrbind": {
+            "type": "string",
+            "description": "Local address and port bound to peer"
+          },
+          "addrlocal": {
+            "type": "string",
+            "description": "Local address as seen by peer"
+          },
+          "network": {
+            "type": "string",
+            "enum": ["ipv4", "ipv6", "onion", "i2p", "cjdns"],
+            "description": "Network type"
+          },
+          "mapped_as": {
+            "type": "integer",
+            "description": "Mapped AS (Autonomous System) number"
+          },
+          "services": {
+            "type": "string",
+            "description": "Services offered by peer (hex)"
+          },
+          "servicesnames": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Human-readable service names"
+          },
+          "relaytxes": {
+            "type": "boolean",
+            "description": "Whether peer relays transactions"
+          },
+          "lastsend": {
+            "type": "integer",
+            "description": "Last message send timestamp"
+          },
+          "lastrecv": {
+            "type": "integer",
+            "description": "Last message receive timestamp"
+          },
+          "last_transaction": {
+            "type": "integer",
+            "description": "Last transaction timestamp"
+          },
+          "last_block": {
+            "type": "integer",
+            "description": "Last block timestamp"
+          },
+          "bytessent": {
+            "type": "integer",
+            "description": "Total bytes sent to peer"
+          },
+          "bytesrecv": {
+            "type": "integer",
+            "description": "Total bytes received from peer"
+          },
+          "conntime": {
+            "type": "integer",
+            "description": "Connection establishment timestamp"
+          },
+          "timeoffset": {
+            "type": "integer",
+            "description": "Time offset from peer in seconds"
+          },
+          "pingtime": {
+            "type": "number",
+            "description": "Ping time in seconds"
+          },
+          "minping": {
+            "type": "number",
+            "description": "Minimum observed ping time"
+          },
+          "pingwait": {
+            "type": "number",
+            "description": "Ping wait time"
+          },
+          "version": {
+            "type": "integer",
+            "description": "Peer protocol version"
+          },
+          "subver": {
+            "type": "string",
+            "description": "Peer user agent string"
+          },
+          "inbound": {
+            "type": "boolean",
+            "description": "Whether connection is inbound"
+          },
+          "bip152_hb_to": {
+            "type": "boolean",
+            "description": "BIP152 high-bandwidth mode to peer"
+          },
+          "bip152_hb_from": {
+            "type": "boolean",
+            "description": "BIP152 high-bandwidth mode from peer"
+          },
+          "startingheight": {
+            "type": "integer",
+            "description": "Peer's starting block height"
+          },
+          "synced_headers": {
+            "type": "integer",
+            "description": "Last synced header height"
+          },
+          "synced_blocks": {
+            "type": "integer",
+            "description": "Last synced block height"
+          },
+          "inflight": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "Block heights being downloaded from peer"
+          },
+          "addr_relay_enabled": {
+            "type": "boolean",
+            "description": "Whether address relay is enabled"
+          },
+          "addr_processed": {
+            "type": "integer",
+            "description": "Number of addresses processed"
+          },
+          "addr_rate_limited": {
+            "type": "integer",
+            "description": "Number of addresses rate limited"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Peer permissions"
+          },
+          "minfeefilter": {
+            "type": "integer",
+            "description": "Peer's minimum fee filter (una/kvB)"
+          },
+          "bytessent_per_msg": {
+            "type": "object",
+            "description": "Bytes sent per message type"
+          },
+          "bytesrecv_per_msg": {
+            "type": "object",
+            "description": "Bytes received per message type"
+          },
+          "connection_type": {
+            "type": "string",
+            "enum": ["outbound-full-relay", "inbound", "manual", "feeler", "block-relay-only", "addr-fetch"],
+            "description": "Connection type"
+          }
+        },
+        "required": ["id", "addr", "services", "lastsend", "lastrecv", "bytessent", "bytesrecv", "conntime", "version", "subver", "inbound"]
+      }
+    }
+  }
+}

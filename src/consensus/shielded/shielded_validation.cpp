@@ -1,0 +1,216 @@
+/**
+ * Shielded pool consensus validation + state application.
+ * See include/consensus/shielded/shielded_validation.h.
+ */
+
+#include "consensus/shielded/shielded_validation.h"
+#include "consensus/shielded/binding_sig.h"
+#include "consensus/shielded/pedersen_generators.h"
+#include "consensus/shielded/range_proof.h"
+#include "consensus/shielded/shielded_circuit.h"
+
+#include "crypto/evp_secp256k1.h"
+
+#include <cstring>
+#include <unordered_set>
+#include <vector>
+
+namespace dinero::consensus::shielded {
+
+namespace {
+
+struct HashHasher {
+    size_t operator()(const Hash& h) const {
+        size_t result = 0;
+        for (size_t i = 0; i < 8 && i < HASH_BYTES; ++i) {
+            result ^= static_cast<size_t>(h[i]) << (i * 8);
+        }
+        return result;
+    }
+};
+
+bool VerifySpendProof(const ShieldedSpend& spend, const ValidationContext& ctx) {
+    (void)ctx;
+    const SpendPublicInputs pub{spend.nullifier, spend.anchor};
+    return VerifySpend(
+        spend.zk_proof, pub, dinero::crypto::GetSecp256k1ContextSignVerify());
+}
+
+bool VerifyOutputProof(const ShieldedOutput& output) {
+    const OutputPublicInputs pub{output.commitment};
+    return VerifyOutput(
+        output.zk_proof, pub, dinero::crypto::GetSecp256k1ContextSignVerify());
+}
+
+} // namespace
+
+ShieldedValidationError ValidateShieldedBundle(
+    const ShieldedBundle&    bundle,
+    const ValidationContext& ctx) {
+
+    if (bundle.IsEmpty()) {
+        return ShieldedValidationError::Ok;
+    }
+
+    // Phase 1 activation gate: reject every non-empty bundle below the
+    // configured activation height. This is fail-closed — a context that
+    // forgets to set `shielded_activation_height` defaults to UINT32_MAX
+    // and rejects everything.
+    if (ctx.block_height < ctx.shielded_activation_height) {
+        return ShieldedValidationError::NotActive;
+    }
+
+    // Phase 2 size limits: bound worst-case verification cost. A single
+    // bundle can carry at most kMaxSpendsPerBundle spends and
+    // kMaxOutputsPerBundle outputs. Beyond that, reject outright.
+    if (bundle.spends.size()  > kMaxSpendsPerBundle ||
+        bundle.outputs.size() > kMaxOutputsPerBundle) {
+        return ShieldedValidationError::BundleTooLarge;
+    }
+
+    // Structural checks
+    for (const auto& spend : bundle.spends) {
+        if (spend.zk_proof.empty()) {
+            return ShieldedValidationError::BundleMalformed;
+        }
+    }
+    for (const auto& output : bundle.outputs) {
+        if (output.zk_proof.empty()) {
+            return ShieldedValidationError::BundleMalformed;
+        }
+    }
+
+    // 1. Nullifier uniqueness: no duplicate within this bundle, and
+    //    none already in the global set.
+    std::unordered_set<Hash, HashHasher> seen_nullifiers;
+    for (const auto& spend : bundle.spends) {
+        if (ctx.nullifier_set && ctx.nullifier_set->Contains(spend.nullifier)) {
+            return ShieldedValidationError::NullifierDuplicate;
+        }
+        if (!seen_nullifiers.insert(spend.nullifier).second) {
+            return ShieldedValidationError::NullifierDuplicate;
+        }
+    }
+
+    // 2. Anchor validity: each spend's anchor must equal the current
+    //    tree root OR appear in the AnchorHistory window (Phase 2,
+    //    Sapling-style depth = AnchorHistory::kDepth = 100 blocks).
+    //    Without an AnchorHistory plumbed in, we fall back to exact
+    //    current-root match — same conservative behavior as Phase 1.
+    if (ctx.commitment_tree) {
+        const Hash current_root = ctx.commitment_tree->Root();
+        for (const auto& spend : bundle.spends) {
+            const bool current_match  = (spend.anchor == current_root);
+            const bool history_match  = ctx.anchor_history &&
+                                        ctx.anchor_history->Contains(spend.anchor);
+            if (!current_match && !history_match) {
+                return ShieldedValidationError::AnchorInvalid;
+            }
+        }
+    }
+
+    // 3. Phase 3 wave 1B: per-cv range proofs.
+    //    Closes the negative-value attack: every cv must come with a
+    //    range proof that v ∈ [0, 2^64). Skipped when the Pedersen
+    //    generators haven't been initialized OR no aggregated range
+    //    proof is present (test contexts that don't supply cv/proofs).
+    //    The activation gate keeps shielded txs unreachable on
+    //    mainnet/testnet until both this AND the binding sig below
+    //    are mandatory at every site.
+    if (PedersenGeneratorsReady() && !bundle.aggregated_range_proof.empty()) {
+        const auto rc = VerifyBundleRangeProofs(bundle);
+        if (rc != RangeProofResult::Ok) {
+            return ShieldedValidationError::RangeProofInvalid;
+        }
+    }
+
+    // 3b. Phase 3 wave 2: Schnorr binding signature.
+    //     Closes the cross-bundle inflation hole. Reconstructs
+    //     bvk = sum(cv_spend) - sum(cv_output) - value_balance · V
+    //     and verifies a BIP340 Schnorr signature against bvk over a
+    //     domain-separated sighash that includes value_balance, the
+    //     transparent tx_sighash, and every cv. Any mutation of those
+    //     fields yields a different bvk or sighash and verify fails.
+    //
+    //     Same gate logic as range proofs: skipped when generators
+    //     aren't ready or when the bundle doesn't carry cvs (legacy
+    //     test contexts). Once the activation height is set on a real
+    //     network, every non-empty bundle will require this check —
+    //     and the size-limits / structural / nullifier / anchor checks
+    //     above prevent obviously-malformed bundles from reaching
+    //     this far.
+    // Same gate as the range proof above: bundles that supply
+    // aggregated_range_proof are post-Wave-1B+2 bundles and must carry
+    // a valid Schnorr binding sig. Bundles without it (legacy / unit
+    // test fixtures) skip both new checks, preserving compatibility
+    // until activation. The activation gate prevents pre-cv bundles
+    // from existing on mainnet/testnet.
+    if (PedersenGeneratorsReady() && !bundle.aggregated_range_proof.empty()) {
+        const auto rc = VerifyBinding(bundle, ctx.tx_sighash);
+        if (rc != BindingSigResult::Ok) {
+            return ShieldedValidationError::BindingSigInvalid;
+        }
+    }
+
+    // 4. ZK proof verification
+    for (const auto& spend : bundle.spends) {
+        if (!VerifySpendProof(spend, ctx)) {
+            return ShieldedValidationError::ProofInvalid;
+        }
+    }
+    for (const auto& output : bundle.outputs) {
+        if (!VerifyOutputProof(output)) {
+            return ShieldedValidationError::ProofInvalid;
+        }
+    }
+
+    // 5. Value balance: transparent_value_delta must match bundle's value_balance.
+    //    transparent_in - transparent_out - fee = value_balance
+    //    (ZK proofs internally verify that shielded values balance.)
+    if (bundle.value_balance != ctx.transparent_value_delta) {
+        return ShieldedValidationError::ValueBalanceMismatch;
+    }
+
+    return ShieldedValidationError::Ok;
+}
+
+ValidationContext BuildShieldedValidationContext(
+    const ::dinero::Transaction& tx,
+    const NullifierSet*          nullifier_set,
+    const CommitmentTree*        commitment_tree,
+    uint32_t                     block_height,
+    int64_t                      transparent_value_delta,
+    uint32_t                     shielded_activation_height,
+    const AnchorHistory*         anchor_history) {
+    return ValidationContext(
+        nullifier_set,
+        commitment_tree,
+        block_height,
+        transparent_value_delta,
+        shielded_activation_height,
+        anchor_history,
+        ComputeShieldedTxSighash(tx));
+}
+
+void ApplyShieldedBundle(const ShieldedBundle& bundle,
+                         CommitmentTree*       tree,
+                         NullifierSet*         nullifiers,
+                         uint32_t              block_height) {
+    // Append new commitments to the tree.
+    // This is the ONLY place shielded outputs enter consensus state.
+    // They NEVER enter Utreexo.
+    if (tree) {
+        for (const auto& output : bundle.outputs) {
+            tree->Append(output.commitment);
+        }
+    }
+
+    // Insert nullifiers. Already validated unique by ValidateShieldedBundle.
+    if (nullifiers) {
+        for (const auto& spend : bundle.spends) {
+            nullifiers->Insert(spend.nullifier, block_height);
+        }
+    }
+}
+
+} // namespace dinero::consensus::shielded

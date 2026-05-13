@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getblockchaininfo",
+  "description": "Returns blockchain status and statistics",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "getblockchaininfo"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "chain": {
+          "type": "string",
+          "description": "Network name (main, test, regtest)"
+        },
+        "blocks": {
+          "type": "integer",
+          "description": "Current block height"
+        },
+        "headers": {
+          "type": "integer", 
+          "description": "Current header height"
+        },
+        "bestblockhash": {
+          "type": "string",
+          "description": "Hash of the best block"
+        },
+        "difficulty": {
+          "type": "number",
+          "description": "Current difficulty"
+        },
+        "chainwork": {
+          "type": "string",
+          "description": "Total accumulated work (hex)"
+        },
+        "total_supply_una": {
+          "type": "integer",
+          "description": "Total coins mined in una"
+        },
+        "total_supply_din": {
+          "type": "string",
+          "description": "Total coins mined in DIN (formatted)"
+        },
+        "phase": {
+          "type": "string",
+          "enum": ["developer_fund", "cpu_friendly", "halving"],
+          "description": "Current mining phase"
+        }
+      },
+      "required": ["chain", "blocks", "headers", "bestblockhash", "difficulty"]
+    }
+  }
+}

@@ -1,0 +1,127 @@
+#include "consensus/assume_utxo.h"
+#include "crypto/sha256.h"
+#include "common/logger.h"
+#include "consensus/chainwork.h"
+#include <fstream>
+#include <filesystem>
+
+namespace dinero {
+namespace consensus {
+
+//=============================================================================
+// AssumeUTXOSnapshot Implementation
+//=============================================================================
+
+AssumeUTXOSnapshot::AssumeUTXOSnapshot(
+    const std::string& snapshot_hash_hex,
+    const std::string& block_hash_hex,
+    uint32_t h,
+    const std::string& chainwork_hex,
+    uint64_t utxos,
+    const std::string& desc
+)
+    : snapshot_hash(uint256::FromHexUnsafe(snapshot_hash_hex))  // Phase M.0
+    , block_hash(uint256::FromHexUnsafe(block_hash_hex))  // Phase M.0
+    , height(h)
+    , chainwork(ChainworkFromHex(chainwork_hex))  // Use ChainworkFromHex helper
+    , utxo_count(utxos)
+    , description(desc)
+{
+}
+
+//=============================================================================
+// AssumeUTXORegistry Implementation
+//=============================================================================
+
+const std::vector<AssumeUTXOSnapshot> AssumeUTXORegistry::snapshots_ = {
+    // Mainnet height 13000 v1 trust anchor (generated 2026-05-03 from LA copy)
+    // Format: v3 UTXO snapshot with embedded serialized Utreexo forest.
+    // Snapshot file: utxo-snapshot-13000.dat (4,775,358 bytes)
+    // Utreexo root: eca67bc825cadefab2561f48e82a00342016d1f3ad905bb277283d38de0bd54c
+    AssumeUTXOSnapshot(
+        "04afcb937b07ccab469dd6ade5151cd06431b30111d813c4392303cc7b1b2426",
+        "0000006f34bdfd52f0d61556175a3ccec56fc57428a1b04f7e012ee7e245c8a3",
+        13000,
+        "0x000000000000000000000000000000000000000000000000000001198ed06efa",
+        38700,
+        "Mainnet height 13000 v1 trust anchor"
+    ),
+};
+
+std::optional<AssumeUTXOSnapshot> AssumeUTXORegistry::GetSnapshot(uint32_t height) {
+    for (const auto& snapshot : snapshots_) {
+        if (snapshot.height == height) {
+            return snapshot;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<AssumeUTXOSnapshot> AssumeUTXORegistry::GetAllSnapshots() {
+    return snapshots_;
+}
+
+bool AssumeUTXORegistry::VerifySnapshotHash(const std::filesystem::path& snapshot_path, uint32_t expected_height) {
+    // Get expected snapshot metadata
+    auto snapshot_opt = GetSnapshot(expected_height);
+    if (!snapshot_opt.has_value()) {
+        dinero::g_logger.error("VerifySnapshotHash: No snapshot registered for height " + std::to_string(expected_height));
+        return false;
+    }
+
+    const auto& expected_snapshot = snapshot_opt.value();
+
+    dinero::g_logger.info("VerifySnapshotHash: Verifying snapshot at height " + std::to_string(expected_height));
+    dinero::g_logger.info("  Expected hash: " + expected_snapshot.snapshot_hash.GetHex().substr(0, 16) + "...");
+
+    // Open snapshot file
+    std::ifstream file(snapshot_path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        dinero::g_logger.error("VerifySnapshotHash: Failed to open file: " + snapshot_path.string());
+        return false;
+    }
+
+    // Get file size
+    std::streamsize file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    dinero::g_logger.info("  File size: " + std::to_string(file_size) + " bytes");
+
+    // Read entire file into memory
+    // (For very large snapshots, could stream hash instead)
+    std::vector<uint8_t> file_data(file_size);
+    if (!file.read(reinterpret_cast<char*>(file_data.data()), file_size)) {
+        dinero::g_logger.error("VerifySnapshotHash: Failed to read file");
+        return false;
+    }
+
+    file.close();
+
+    // Compute SHA256 of entire file
+    dinero::crypto::CSHA256 hasher;
+    hasher.Write(file_data.data(), file_data.size());
+    uint256 computed_hash;
+    hasher.Finalize(computed_hash.begin());
+
+    dinero::g_logger.info("  Computed hash: " + computed_hash.GetHex().substr(0, 16) + "...");
+
+    // Compare hashes
+    if (computed_hash != expected_snapshot.snapshot_hash) {
+        dinero::g_logger.error("VerifySnapshotHash: HASH MISMATCH!");
+        dinero::g_logger.error("  Expected: " + expected_snapshot.snapshot_hash.GetHex());
+        dinero::g_logger.error("  Computed: " + computed_hash.GetHex());
+        dinero::g_logger.error("SNAPSHOT VERIFICATION FAILED - refusing to load");
+        return false;
+    }
+
+    dinero::g_logger.info("VerifySnapshotHash: ✓ Hash verified - snapshot is authentic");
+    dinero::g_logger.info("  Block hash: " + expected_snapshot.block_hash.GetHex().substr(0, 16) + "...");
+    dinero::g_logger.info("  Height: " + std::to_string(expected_snapshot.height));
+    dinero::g_logger.info("  UTXO count: " + std::to_string(expected_snapshot.utxo_count));
+    dinero::g_logger.info("  Description: " + expected_snapshot.description);
+
+    return true;
+}
+
+} // namespace consensus
+} // namespace dinero

@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "psbt.sign",
+  "description": "Sign PSBT with wallet keys",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "psbt.sign"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "description": "Base64-encoded PSBT to sign"
+        },
+        {
+          "type": "boolean",
+          "description": "Whether to sign with all available keys (default: true)"
+        },
+        {
+          "type": "string",
+          "enum": ["ALL", "NONE", "SINGLE", "ALL|ANYONECANPAY", "NONE|ANYONECANPAY", "SINGLE|ANYONECANPAY"],
+          "description": "Signature hash type (default: ALL)"
+        },
+        {
+          "type": "boolean",
+          "description": "Whether to use BIP32 derivation in signing (default: true)"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 4
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "psbt": {
+          "type": "string",
+          "description": "Signed PSBT (base64)"
+        },
+        "complete": {
+          "type": "boolean",
+          "description": "Whether PSBT is completely signed"
+        },
+        "hex": {
+          "type": "string",
+          "description": "Final transaction hex (if complete)"
+        },
+        "signatures_added": {
+          "type": "integer",
+          "description": "Number of signatures added"
+        },
+        "inputs_signed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "input_index": {"type": "integer"},
+              "signed": {"type": "boolean"},
+              "signatures": {"type": "integer"},
+              "error": {"type": "string"}
+            }
+          },
+          "description": "Per-input signing results"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Signing warnings"
+        },
+        "errors": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Signing errors"
+        }
+      },
+      "required": ["psbt", "complete"]
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wallet.abortrescan",
+  "description": "Abort currently running wallet rescan",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "wallet.abortrescan"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "aborted": {
+          "type": "boolean",
+          "description": "Whether rescan was successfully aborted"
+        },
+        "was_running": {
+          "type": "boolean",
+          "description": "Whether a rescan was actually running"
+        },
+        "progress_when_aborted": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Rescan progress when aborted (0-1)"
+        },
+        "blocks_scanned": {
+          "type": "integer",
+          "description": "Number of blocks scanned before abort"
+        },
+        "transactions_found": {
+          "type": "integer",
+          "description": "Number of transactions found before abort"
+        },
+        "duration": {
+          "type": "integer",
+          "description": "Rescan duration in seconds before abort"
+        }
+      },
+      "required": ["aborted", "was_running"]
+    }
+  }
+}

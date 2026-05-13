@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Error - Dinero Explorer{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card border-danger">
+            <div class="card-header bg-danger text-white">
+                <h5 class="mb-0">Error</h5>
+            </div>
+            <div class="card-body">
+                <h6 class="card-title">{{ error }}</h6>
+                {% if message %}
+                <p class="card-text text-muted">{{ message }}</p>
+                {% endif %}
+
+                <hr>
+
+                <a href="{{ url_for('index') }}" class="btn btn-primary">
+                    Go to Home
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

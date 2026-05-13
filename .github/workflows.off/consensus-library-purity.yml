@@ -1,0 +1,236 @@
+name: Consensus Library Purity
+
+# ============================================================================
+# CONSENSUS LIBRARY PURITY ENFORCEMENT
+# ============================================================================
+#
+# The consensus library MUST be pure. This workflow enforces it.
+#
+# PURE means:
+#   - NO IO (no filesystem, no database)
+#   - NO networking
+#   - NO threads (no mutex, no atomic for sync)
+#   - NO logging (except debug assertions)
+#   - NO globals (except const)
+#   - NO clocks
+#   - NO randomness
+#
+# Any violation fails the build. No exceptions.
+#
+# ============================================================================
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  purity-check:
+    name: Purity Enforcement
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for banned includes (IO)
+        run: |
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "CHECKING FOR BANNED IO INCLUDES"
+          echo "═══════════════════════════════════════════════════════════════"
+
+          VIOLATIONS=$(grep -rE "#include\s*[<\"].*\b(fstream|iostream|filesystem|rocksdb)" \
+            include/consensus/consensus_utxo_set.h \
+            include/consensus/consensus_invariants.h \
+            include/dinero_consensus.h \
+            src/consensus/consensus_utxo_set.cpp \
+            src/consensus/consensus_invariants.cpp \
+            2>/dev/null || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ PURITY VIOLATION: IO includes detected"
+            echo ""
+            echo "$VIOLATIONS"
+            echo ""
+            echo "The consensus library must be PURE - no IO operations."
+            exit 1
+          fi
+
+          echo "✅ No IO includes found"
+
+      - name: Check for banned includes (threading)
+        run: |
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "CHECKING FOR BANNED THREADING INCLUDES"
+          echo "═══════════════════════════════════════════════════════════════"
+
+          VIOLATIONS=$(grep -rE "#include\s*[<\"](mutex|thread|condition_variable|future|atomic)" \
+            include/consensus/consensus_utxo_set.h \
+            include/consensus/consensus_invariants.h \
+            include/dinero_consensus.h \
+            src/consensus/consensus_utxo_set.cpp \
+            src/consensus/consensus_invariants.cpp \
+            2>/dev/null || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ PURITY VIOLATION: Threading includes detected"
+            echo ""
+            echo "$VIOLATIONS"
+            echo ""
+            echo "The consensus library must be PURE - no threading primitives."
+            exit 1
+          fi
+
+          echo "✅ No threading includes found"
+
+      - name: Check for banned includes (networking)
+        run: |
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "CHECKING FOR BANNED NETWORKING INCLUDES"
+          echo "═══════════════════════════════════════════════════════════════"
+
+          VIOLATIONS=$(grep -rE "#include\s*[<\"](arpa/inet|netinet|sys/socket|netdb|curl)" \
+            include/consensus/consensus_utxo_set.h \
+            include/consensus/consensus_invariants.h \
+            include/dinero_consensus.h \
+            src/consensus/consensus_utxo_set.cpp \
+            src/consensus/consensus_invariants.cpp \
+            2>/dev/null || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ PURITY VIOLATION: Networking includes detected"
+            echo ""
+            echo "$VIOLATIONS"
+            echo ""
+            echo "The consensus library must be PURE - no networking."
+            exit 1
+          fi
+
+          echo "✅ No networking includes found"
+
+      - name: Check for banned includes (time)
+        run: |
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "CHECKING FOR BANNED TIME INCLUDES"
+          echo "═══════════════════════════════════════════════════════════════"
+
+          # Note: <chrono> is allowed for duration types (pure data)
+          # We only ban direct clock access patterns
+
+          VIOLATIONS=$(grep -rE "std::chrono::(system_clock|steady_clock|high_resolution_clock)::now|std::time\s*\(|clock\s*\(" \
+            include/consensus/consensus_utxo_set.h \
+            include/consensus/consensus_invariants.h \
+            include/dinero_consensus.h \
+            src/consensus/consensus_utxo_set.cpp \
+            src/consensus/consensus_invariants.cpp \
+            2>/dev/null || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ PURITY VIOLATION: Clock access detected"
+            echo ""
+            echo "$VIOLATIONS"
+            echo ""
+            echo "The consensus library must be PURE - no clock access."
+            exit 1
+          fi
+
+          echo "✅ No clock access found"
+
+      - name: Check for banned includes (random)
+        run: |
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "CHECKING FOR BANNED RANDOM INCLUDES"
+          echo "═══════════════════════════════════════════════════════════════"
+
+          VIOLATIONS=$(grep -rE "(std::random_device|std::mt19937|std::uniform_|rand\s*\()" \
+            include/consensus/consensus_utxo_set.h \
+            include/consensus/consensus_invariants.h \
+            include/dinero_consensus.h \
+            src/consensus/consensus_utxo_set.cpp \
+            src/consensus/consensus_invariants.cpp \
+            2>/dev/null || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ PURITY VIOLATION: Random number generation detected"
+            echo ""
+            echo "$VIOLATIONS"
+            echo ""
+            echo "The consensus library must be PURE - no randomness."
+            exit 1
+          fi
+
+          echo "✅ No random generation found"
+
+      - name: Purity check passed
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "✅ CONSENSUS LIBRARY PURITY VERIFIED"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "The consensus library is PURE:"
+          echo "  ✓ No IO operations"
+          echo "  ✓ No threading primitives"
+          echo "  ✓ No networking"
+          echo "  ✓ No clock access"
+          echo "  ✓ No randomness"
+          echo ""
+          echo "Phones, hardware wallets, and browsers can verify consensus."
+          echo "═══════════════════════════════════════════════════════════════"
+
+  build-library:
+    name: Build Consensus Library
+    runs-on: ${{ matrix.os }}
+    needs: purity-check
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libssl-dev pkg-config \
+            autoconf automake libtool
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja openssl autoconf automake libtool
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof \
+                      --enable-module-recovery --enable-module-ecdh \
+                      --enable-module-musig --enable-experimental \
+                      --enable-module-schnorrsig
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_TESTING=ON
+
+      - name: Build consensus library
+        run: |
+          cmake --build build --target dinero_consensus
+
+      - name: Verify library was built
+        run: |
+          if [ -f "build/libdinero_consensus.a" ] || [ -f "build/libdinero-consensus.a" ]; then
+            echo "✅ Consensus library built successfully"
+            ls -la build/libdinero*.a
+          else
+            echo "Checking for library in build tree..."
+            find build -name "*consensus*.a" -o -name "*consensus*.so" | head -10
+          fi

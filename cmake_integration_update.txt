@@ -1,0 +1,64 @@
+# Add these sources to your CMakeLists.txt dinero_common or gui-desktop target:
+
+# Styling system
+src/gui-desktop/styling/integrated_theme_manager.cpp
+
+# Modern widgets (already added in previous phase)
+src/gui-desktop/widgets/blockchain_widgets.cpp
+src/gui-desktop/animations/smooth_transitions.cpp
+
+# Integration components
+src/gui-desktop/integration/modern_widget_rpc_bridge.cpp
+
+# Enhanced main window
+src/gui-desktop/main/enhanced_main_window_integration.cpp
+src/gui-desktop/main/theme_integration.cpp
+
+# Add these headers to include directories:
+include/gui-desktop/styling/
+include/gui-desktop/widgets/
+include/gui-desktop/animations/
+include/gui-desktop/integration/
+include/gui-desktop/performance/
+include/gui-desktop/accessibility/
+include/gui-desktop/responsive/
+include/gui-desktop/branding/
+
+# Example CMakeLists.txt addition:
+target_sources(dinero_gui_desktop PRIVATE
+    # Existing sources...
+    
+    # Integration phase sources
+    src/gui-desktop/styling/integrated_theme_manager.cpp
+    src/gui-desktop/integration/modern_widget_rpc_bridge.cpp
+    src/gui-desktop/main/enhanced_main_window_integration.cpp
+    src/gui-desktop/main/theme_integration.cpp
+    
+    # Modern UI components (if not already added)
+    src/gui-desktop/widgets/blockchain_widgets.cpp
+    src/gui-desktop/animations/smooth_transitions.cpp
+)
+
+target_include_directories(dinero_gui_desktop PRIVATE
+    # Existing includes...
+    
+    # Integration phase includes
+    ${CMAKE_SOURCE_DIR}/include/gui-desktop/styling
+    ${CMAKE_SOURCE_DIR}/include/gui-desktop/widgets
+    ${CMAKE_SOURCE_DIR}/include/gui-desktop/animations
+    ${CMAKE_SOURCE_DIR}/include/gui-desktop/integration
+    ${CMAKE_SOURCE_DIR}/include/gui-desktop/performance
+    ${CMAKE_SOURCE_DIR}/include/gui-desktop/accessibility
+    ${CMAKE_SOURCE_DIR}/include/gui-desktop/responsive
+    ${CMAKE_SOURCE_DIR}/include/gui-desktop/branding
+)
+
+# Link Qt6 components (if not already linked)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network WebSockets Svg)
+target_link_libraries(dinero_gui_desktop 
+    Qt6::Core 
+    Qt6::Widgets 
+    Qt6::Network 
+    Qt6::WebSockets
+    Qt6::Svg
+)

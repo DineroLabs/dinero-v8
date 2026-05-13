@@ -1,0 +1,27 @@
+{
+  "version": "v0.1.0-consensus-lock",
+  "network": "mainnet",
+  "checksum": "ff279196e33c326f61191c368726f924c6728e5d36c227844195e653650ef430",
+  "genesis": {
+    "height": 0,
+    "hash": "173fe6da2ccc8a671380c8845a2c15e70cc8b84132fa2ab61108425c85412a33",
+    "timestamp": 1760472333
+  },
+  "premine": {
+    "height": 1,
+    "hash": "0000002bd3fa677b43cc4efcb82078db53131f191ad72afb9d463ddd33c7f79a",
+    "merkle": "2501ed56dda21d4f23bc510f0447f3674dd42ca1d1d8b244aa2bf1c988786640",
+    "timestamp": 1760472513,
+    "nonce": 512998,
+    "bits": "0x1f002710",
+    "amount_una": 262790000000000,
+    "amount_din": 2627900.0
+  },
+  "verification": {
+    "genesis_passed": true,
+    "premine_passed": true,
+    "checksum_verified": true,
+    "timestamp_valid": true
+  }
+}
+

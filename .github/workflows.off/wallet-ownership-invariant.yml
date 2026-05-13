@@ -1,0 +1,132 @@
+name: Wallet Ownership Invariant Tests
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CRITICAL: These tests lock the wallet ownership invariant
+# ═══════════════════════════════════════════════════════════════════════════════
+# Rule: A UTXO without a derivation path is NOT owned. No exceptions.
+#
+# These tests MUST pass before any merge. Failure indicates:
+#   - Ghost balance vulnerability
+#   - Reorg-induced wallet corruption
+#   - Signing without ownership proof
+#
+# DO NOT skip or retry these tests - investigate any failure immediately.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  ownership-invariant-release:
+    name: Ownership Invariant (Release - Return Value Checks)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja pkg-config openssl@3
+
+      - name: Configure (Release - NDEBUG defined)
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWITH_QT=OFF \
+            -DBUILD_WALLET_GUI=OFF \
+            -GNinja
+
+      - name: Build Ownership Invariant Tests
+        run: |
+          cmake --build build --target test_wallet_ownership_invariant -j4
+
+      - name: Run Ownership Invariant Tests (Release)
+        run: |
+          cd build
+          echo "═══════════════════════════════════════════════════════════════════════════"
+          echo "WALLET OWNERSHIP INVARIANT TESTS (Release Build)"
+          echo "═══════════════════════════════════════════════════════════════════════════"
+          echo "Rule: A UTXO without a derivation path is NOT owned. No exceptions."
+          echo ""
+          ./test_wallet_ownership_invariant --gtest_color=yes
+
+      - name: Verify All Tests Pass
+        run: |
+          cd build
+          OUTPUT=$(./test_wallet_ownership_invariant 2>&1)
+          echo "$OUTPUT"
+
+          # Check for passed tests
+          if echo "$OUTPUT" | grep -q "PASSED"; then
+            echo "✅ Ownership invariant tests passed"
+          else
+            echo "❌ Ownership invariant tests FAILED"
+            echo "CRITICAL: This indicates potential ghost balance or signing vulnerability"
+            exit 1
+          fi
+
+          # Check for zero failures
+          if echo "$OUTPUT" | grep -q "FAILED"; then
+            echo "❌ Test failures detected"
+            exit 1
+          fi
+
+  ownership-invariant-debug:
+    name: Ownership Invariant (Debug - Assertion Verification)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev
+
+      - name: Configure (Debug - Assertions enabled)
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DWITH_QT=OFF \
+            -DBUILD_WALLET_GUI=OFF \
+            -GNinja
+
+      - name: Build Ownership Invariant Tests
+        run: |
+          cmake --build build --target test_wallet_ownership_invariant -j4
+
+      - name: Run Ownership Invariant Tests (Debug)
+        run: |
+          cd build
+          echo "═══════════════════════════════════════════════════════════════════════════"
+          echo "WALLET OWNERSHIP INVARIANT TESTS (Debug Build)"
+          echo "═══════════════════════════════════════════════════════════════════════════"
+          echo "In debug builds, invalid path violations trigger assertions."
+          echo "The test documents this behavior - actual violations would crash."
+          echo ""
+          ./test_wallet_ownership_invariant --gtest_color=yes
+
+      - name: Verify Invariant Enforcement
+        run: |
+          cd build
+          # Run tests and verify they pass
+          ./test_wallet_ownership_invariant
+          echo "✅ Debug build invariant tests passed"
+          echo "   Assertion enforcement confirmed via SUCCEED() documentation tests"

@@ -1,0 +1,197 @@
+name: Regression & Fuzz Testing
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  regression-tests:
+    name: Regression Test Suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Debug, Release]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            libssl-dev \
+            libsqlite3-dev \
+            libjsoncpp-dev \
+            libsecp256k1-dev \
+            libgtest-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install \
+            cmake \
+            ninja \
+            openssl \
+            sqlite \
+            jsoncpp \
+            secp256k1 \
+            googletest
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DENABLE_TESTING=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run Wallet Recovery Tests
+        run: build/tests/regression/test_wallet_recovery || true
+
+      - name: Run Deep Reorg Tests
+        run: build/tests/regression/test_deep_reorg || true
+
+      - name: Run Mempool Stress Tests
+        run: build/tests/stress/test_mempool_stress || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.build_type }}
+          path: build/test-results/
+
+  fuzzing-tests:
+    name: Fuzzing Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            libssl-dev \
+            libsqlite3-dev \
+            libjsoncpp-dev \
+            libsecp256k1-dev
+
+      - name: Configure with fuzzing
+        run: |
+          cmake -B build-fuzz -G Ninja \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DENABLE_FUZZING=ON
+
+      - name: Build fuzzers
+        run: cmake --build build-fuzz --parallel
+
+      - name: Cache fuzzer corpus
+        uses: actions/cache@v3
+        with:
+          path: build-fuzz/tests/fuzz/corpus_*
+          key: fuzzer-corpus-${{ github.sha }}
+          restore-keys: |
+            fuzzer-corpus-
+
+      - name: Run block validation fuzzer
+        run: |
+          cd build-fuzz/tests/fuzz
+          timeout 1800 ./fuzz_block_validation corpus_block -max_total_time=1800 || true
+
+      - name: Run transaction fuzzer
+        run: |
+          cd build-fuzz/tests/fuzz
+          timeout 1800 ./fuzz_transaction corpus_transaction -max_total_time=1800 || true
+
+      - name: Run script fuzzer
+        run: |
+          cd build-fuzz/tests/fuzz
+          timeout 1800 ./fuzz_script corpus_script -max_total_time=1800 || true
+
+      - name: Run deserialization fuzzer
+        run: |
+          cd build-fuzz/tests/fuzz
+          timeout 1800 ./fuzz_deserialize corpus_deserialize -max_total_time=1800 || true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if ls build-fuzz/tests/fuzz/crash-* 1> /dev/null 2>&1; then
+            echo "crashes_found=true" >> $GITHUB_OUTPUT
+            echo "::error::Fuzzer found crashes!"
+          else
+            echo "crashes_found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload crashes
+        if: steps.check_crashes.outputs.crashes_found == 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: fuzzer-crashes
+          path: |
+            build-fuzz/tests/fuzz/crash-*
+            build-fuzz/tests/fuzz/leak-*
+            build-fuzz/tests/fuzz/timeout-*
+
+      - name: Fail if crashes found
+        if: steps.check_crashes.outputs.crashes_found == 'true'
+        run: exit 1
+
+  sanitizer-tests:
+    name: AddressSanitizer & UBSan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            libssl-dev \
+            libsqlite3-dev \
+            libjsoncpp-dev \
+            libsecp256k1-dev \
+            libgtest-dev
+
+      - name: Configure with sanitizers
+        run: |
+          cmake -B build-sanitizers -G Ninja \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DENABLE_SANITIZERS=ON
+
+      - name: Build
+        run: cmake --build build-sanitizers --parallel
+
+      - name: Run tests with sanitizers
+        run: |
+          cd build-sanitizers
+          ctest --output-on-failure --parallel 4

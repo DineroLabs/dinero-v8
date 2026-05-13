@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLI="${DINERO_CLI:-${SCRIPT_DIR}/dinero-cli}"
+
+ARGS=("$@")
+case "${NET:-mainnet}" in
+  mainnet) ;;
+  testnet) ARGS=(-testnet "$@") ;;
+  regtest) ARGS=(-regtest "$@") ;;
+  *) echo "Unknown NET='${NET}'" >&2; exit 2 ;;
+esac
+
+exec "${CLI}" "${ARGS[@]}"

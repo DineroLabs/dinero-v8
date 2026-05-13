@@ -1,0 +1,45 @@
+--- a/util/crc32c_arm64.cc
++++ b/util/crc32c_arm64.cc
+@@ -185,19 +185,31 @@ uint32_t crc32c_arm64(uint32_t crc, unsigned char const *data, size_t len) {
+     length -= 1024;
+   }
+ 
++  // UBSan-safe unaligned load helpers
++  static inline uint64_t load_u64(const uint8_t* p) {
++    uint64_t v;
++    __builtin_memcpy(&v, p, sizeof(v));
++    return v;
++  }
++  static inline uint32_t load_u32(const uint8_t* p) {
++    uint32_t v;
++    __builtin_memcpy(&v, p, sizeof(v));
++    return v;
++  }
++  static inline uint16_t load_u16(const uint8_t* p) {
++    uint16_t v;
++    __builtin_memcpy(&v, p, sizeof(v));
++    return v;
++  }
++
+   buf8 = (const uint8_t *)buf64;
+   while (length >= 8) {
+-    crc = crc32c_u64(crc, *(const uint64_t *)buf8);
++    crc = crc32c_u64(crc, load_u64(buf8));
+     buf8 += 8;
+     length -= 8;
+   }
+ 
+-  /* The following is more efficient than the straight loop */
+   if (length >= 4) {
+-    crc = crc32c_u32(crc, *(const uint32_t *)buf8);
++    crc = crc32c_u32(crc, load_u32(buf8));
+     buf8 += 4;
+     length -= 4;
+   }
+ 
+   if (length >= 2) {
+-    crc = crc32c_u16(crc, *(const uint16_t *)buf8);
++    crc = crc32c_u16(crc, load_u16(buf8));
+     buf8 += 2;
+     length -= 2;
+   }

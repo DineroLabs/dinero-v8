@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# dnc — Speak English, get the right curl RPC call to Dinero.
+set -euo pipefail
+
+# ---------- Config ----------
+NET=${NET:-regtest}             # main | test | regtest
+HOST=${HOST:-127.0.0.1}
+RPCPORT_DEFAULT_MAIN=20998
+RPCPORT_DEFAULT_TEST=21898
+RPCPORT_DEFAULT_REG=22998
+DATADIR=${DATADIR:-$HOME/.dinero}
+
+case "$NET" in
+  main)    COOKIE="$DATADIR/.cookie";          RPCPORT=${RPCPORT:-$RPCPORT_DEFAULT_MAIN};;
+  test)    COOKIE="$DATADIR/testnet/.cookie";  RPCPORT=${RPCPORT:-$RPCPORT_DEFAULT_TEST};;
+  regtest) COOKIE="$DATADIR/regtest/.cookie";  RPCPORT=${RPCPORT:-$RPCPORT_DEFAULT_REG};;
+  *) echo "Unknown NET=$NET (use main|test|regtest)"; exit 1;;
+esac
+
+JQ=${JQ:-jq}
+DRY=${DRY:-0}
+
+# ---------- Helpers ----------
+have() { command -v "$1" >/dev/null 2>&1; }
+lower() { tr '[:upper:]' '[:lower:]'; }
+trim() { awk '{$1=$1; print}'; }
+die() { echo "Error: $*" >&2; exit 1; }
+wait_cookie() { until [ -f "$COOKIE" ]; do sleep 0.1; done; }
+
+json_array_join() {
+  local out=""; for a in "$@"; do
+    if [[ "$a" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] || [[ "$a" =~ ^(true|false|null)$ ]]; then out+="$a,"
+    else out+="\"$a\","; fi
+  done; printf '%s' "${out%,}"
+}
+
+rpc() {
+  local method="$1"; shift
+  local params; params=$(json_array_join "$@")
+  wait_cookie
+  local data="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$method\",\"params\":[${params}]}"
+  local url="http://$HOST:$RPCPORT/"
+  if [ "$DRY" = "1" ]; then
+    echo "curl -s --user \"\$(cat $COOKIE)\" -H 'content-type: application/json' --data '$data' $url"; return 0
+  fi
+  local raw
+  raw=$(curl -s --user "$(cat "$COOKIE")" -H 'content-type: application/json' --data "$data" "$url")
+  if have "$JQ"; then
+    if printf '%s' "$raw" | $JQ -e '.error and .error != null' >/dev/null 2>&1; then
+      echo "RPC error:" >&2; printf '%s\n' "$(printf '%s' "$raw" | $JQ -r '.error')" >&2; return 1
+    fi
+    # Print scalar cleanly; else pretty-print result
+    if printf '%s' "$raw" | $JQ -e '.result|type=="string" or type=="number" or type=="boolean"' >/dev/null 2>&1; then
+      printf '%s\n' "$(printf '%s' "$raw" | $JQ -r '.result')"
+    else
+      printf '%s\n' "$(printf '%s' "$raw" | $JQ -r '.result')"
+    fi
+  else
+    printf '%s\n' "$raw"
+  fi
+}
+
+to_din_number() { # "2500 si" -> 0.00002500
+  local amt="$1" unit="${2:-din}"
+  case "$(printf '%s' "$unit" | lower)" in
+    din|"") printf '%s' "$amt" ;;
+    si)     awk -v a="$amt" 'BEGIN{printf "%.8f", a/100000000}' ;;
+    *)      die "Unknown unit: $unit (use din or si)";;
+  esac
+}
+
+# ---------- Router ----------
+say() {
+  local text="$(printf '%s' "$*" | lower | trim)"
+
+  # start mining [N]
+  if [[ "$text" =~ ^start[[:space:]]+mining ]]; then
+    local threads=$(awk '{for(i=NF;i>0;i--) if ($i ~ /^[0-9]+$/){print $i; exit}}' <<<"$text"); threads=${threads:-1}
+    rpc setgenerate true "$threads" >/dev/null
+    echo "✅ Mining started ($threads thread(s))"; exit 0
+  fi
+
+  # stop mining
+  if [[ "$text" =~ ^stop[[:space:]]+mining ]]; then
+    rpc setgenerate false >/dev/null
+    echo "🛑 Mining stopped"; exit 0
+  fi
+
+  # stop daemon / deamon / shutdown / quit / exit
+  if [[ "$text" =~ ^(stop[[:space:]]+dea?mon|shutdown|quit|exit)$ ]]; then
+    if [ ! -f "$COOKIE" ]; then echo "No daemon cookie at $COOKIE — is dinerod running?"; exit 1; fi
+    rpc stop "Requested by dnc" >/dev/null || true
+    echo "🛑 Daemon is stopping…"
+    for i in $(seq 1 50); do [ -f "$COOKIE" ] && sleep 0.1 || break; done
+    if [ -f "$COOKIE" ]; then echo "Note: shutdown in progress."; else echo "✅ Daemon stopped."; fi
+    exit 0
+  fi
+
+  # blockheight
+  if [[ "$text" =~ ^(blockheight|block[[:space:]]+height|height)$ ]]; then
+    echo -n "Block height: "; rpc getblockcount; exit 0
+  fi
+
+  # new address [bech32|bech32m|legacy]
+  if [[ "$text" =~ ^new[[:space:]]+address ]]; then
+    local t="bech32"; [[ "$text" == *"bech32m"* ]] && t="bech32m"; [[ "$text" == *"legacy"* ]] && t=""
+    echo -n "Address: "
+    if [ -n "$t" ]; then rpc getnewaddress "" "$t"; else rpc getnewaddress; fi
+    exit 0
+  fi
+
+  # mine N to ADDRESS [tries T]
+  if [[ "$text" =~ ^mine[[:space:]]+[0-9]+[[:space:]]+to[[:space:]]+[a-z0-9]+ ]]; then
+    local n=$(sed -E 's/.*mine[[:space:]]+([0-9]+).*/\1/' <<<"$text")
+    local addr=$(sed -E 's/.*to[[:space:]]+([a-z0-9]+).*/\1/' <<<"$text")
+    local tries=$(sed -E 's/.*tries[[:space:]]+([0-9]+).*/\1/' <<<"$text"); tries=${tries:-10000000}
+    echo "⛏️  Mining $n block(s) to $addr (tries=$tries)…"
+    rpc generatetoaddress "$n" "$addr" "$tries"; exit 0
+  fi
+
+  # send X [din|si] to ADDRESS
+  if [[ "$text" =~ ^send[[:space:]]+([0-9]+(\.[0-9]+)?) ]]; then
+    local amt=$(sed -E 's/^send[[:space:]]+([0-9]+(\.[0-9]+)?).*/\1/' <<<"$text")
+    local unit="din"; [[ "$text" == *" si"* ]] && unit="si"
+    local addr=$(sed -E 's/.*to[[:space:]]+([a-z0-9]+).*/\1/' <<<"$text")
+    [ -z "${addr:-}" ] && die "Usage: send <amount> [din|si] to <bech32-address>"
+    local din; din=$(to_din_number "$amt" "$unit")
+    echo "💸 Sending $din DIN to $addr…"; rpc sendtoaddress "$addr" "$din"; exit 0
+  fi
+
+  # balance
+  if [[ "$text" =~ ^balance$ ]]; then echo -n "Balance: "; rpc getbalance; exit 0; fi
+
+  # tx <TXID>
+  if [[ "$text" =~ ^tx[[:space:]]+([0-9a-f]{64})$ ]]; then local txid=$(awk '{print $2}'<<<"$text"); rpc getrawtransaction "$txid" true; exit 0; fi
+
+  # blockhash <height>
+  if [[ "$text" =~ ^blockhash[[:space:]]+[0-9]+$ ]]; then local h=$(awk '{print $2}'<<<"$text"); echo -n "Block hash: "; rpc getblockhash "$h"; exit 0; fi
+
+  # block <hash|height>
+  if [[ "$text" =~ ^block[[:space:]]+([0-9a-f]{64}|[0-9]+)$ ]]; then
+    local arg=$(awk '{print $2}'<<<"$text")
+    if [[ "$arg" =~ ^[0-9]+$ ]]; then local bh; bh=$(rpc getblockhash "$arg"); rpc getblock "$bh" 1; else rpc getblock "$arg" 1; fi
+    exit 0
+  fi
+
+  # mempool
+  if [[ "$text" =~ ^mempool($|[[:space:]]+info$) ]]; then rpc getmempoolinfo; exit 0; fi
+
+  # estimate fee N
+  if [[ "$text" =~ ^estimate[[:space:]]+fee[[:space:]]+[0-9]+$ ]]; then local n=$(awk '{print $3}'<<<"$text"); rpc estimatesmartfee "$n"; exit 0; fi
+
+  # address info <addr>
+  if [[ "$text" =~ ^address[[:space:]]+info[[:space:]]+[a-z0-9]+$ ]]; then local addr=$(awk '{print $3}'<<<"$text"); rpc getaddressinfo "$addr"; exit 0; fi
+
+  echo "Don't understand: \"$*\""
+  cat <<EOF
+Examples:
+  dnc "start mining 4"        dnc "stop mining"
+  dnc "blockheight"           dnc "new address bech32"
+  dnc "mine 1 to rdin1q..."   dnc "send 0.5 din to din1q..."
+  dnc "send 2500 si to ..."   dnc "tx <txid>"
+  dnc "blockhash 100"         dnc "block 100"
+  dnc "mempool"               dnc "estimate fee 6"
+  dnc "address info din1q..." dnc "stop daemon"
+Tips: set NET=regtest|test|main, DATADIR=/path, DRY=1 to preview curl.
+EOF
+  exit 1
+}
+
+[ $# -eq 0 ] && { echo "Usage: dnc \"your command in English\""; exit 1; }
+say "$*"

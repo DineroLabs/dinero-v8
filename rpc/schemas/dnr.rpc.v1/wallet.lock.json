@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wallet.lock",
+  "description": "Immediately lock encrypted wallet",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "wallet.lock"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "locked": {
+          "type": "boolean",
+          "description": "Whether wallet is now locked"
+        },
+        "unlocked_until": {
+          "type": "integer",
+          "const": 0,
+          "description": "Timestamp when wallet will auto-lock (always 0 after lock)"
+        },
+        "operations_cancelled": {
+          "type": "integer",
+          "description": "Number of pending operations cancelled by lock"
+        }
+      },
+      "required": ["locked", "unlocked_until"]
+    }
+  }
+}

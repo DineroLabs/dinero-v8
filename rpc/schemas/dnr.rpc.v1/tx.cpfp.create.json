@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "tx.cpfp.create",
+  "description": "Create child-pays-for-parent transaction to accelerate stuck parent",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "tx.cpfp.create"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Parent transaction ID to accelerate"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Parent output index to spend"
+        },
+        {
+          "type": "object",
+          "description": "CPFP options",
+          "properties": {
+            "target_fee_rate": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Target combined fee rate for parent+child (una/kvB)"
+            },
+            "child_fee_rate": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Fee rate for child transaction (una/kvB)"
+            },
+            "recipient_address": {
+              "type": "string",
+              "description": "Address for child output (default: change address)"
+            },
+            "conf_target": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Confirmation target for fee estimation"
+            },
+            "estimate_mode": {
+              "type": "string",
+              "enum": ["UNSET", "ECONOMICAL", "CONSERVATIVE"],
+              "description": "Fee estimation mode"
+            }
+          }
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 3
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "psbt": {
+          "type": "string",
+          "description": "CPFP transaction as PSBT (base64)"
+        },
+        "txid": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Child transaction ID"
+        },
+        "parent_txid": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Parent transaction ID"
+        },
+        "parent_fee_una": {
+          "type": "integer",
+          "description": "Parent transaction fee in una"
+        },
+        "parent_fee_din": {
+          "type": "string",
+          "description": "Parent transaction fee in DIN (formatted)"
+        },
+        "child_fee_una": {
+          "type": "integer",
+          "description": "Child transaction fee in una"
+        },
+        "child_fee_din": {
+          "type": "string",
+          "description": "Child transaction fee in DIN (formatted)"
+        },
+        "combined_fee_rate": {
+          "type": "number",
+          "description": "Combined parent+child fee rate (una/kvB)"
+        },
+        "parent_size": {
+          "type": "integer",
+          "description": "Parent transaction size in bytes"
+        },
+        "child_size": {
+          "type": "integer",
+          "description": "Child transaction size in bytes"
+        },
+        "output_amount_una": {
+          "type": "integer",
+          "description": "Child output amount in una"
+        },
+        "output_amount_din": {
+          "type": "string",
+          "description": "Child output amount in DIN (formatted)"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "CPFP creation warnings"
+        }
+      },
+      "required": ["psbt", "txid", "parent_txid", "child_fee_una", "child_fee_din", "combined_fee_rate"]
+    }
+  }
+}

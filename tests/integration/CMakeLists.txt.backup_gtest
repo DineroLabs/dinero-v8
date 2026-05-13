@@ -1,0 +1,99 @@
+# Phase E.3: Integration & Testing
+# Wallet Lifecycle + Fee Estimation + Transaction Assembly + Security Regression
+
+message(STATUS "Configuring Phase E.3 integration tests...")
+
+# Test 1: Wallet Lifecycle (E.3.1)
+add_executable(test_wallet_lifecycle_e3
+    test_wallet_lifecycle_e3.cpp
+)
+
+target_link_libraries(test_wallet_lifecycle_e3 PRIVATE
+    dinero_consensus
+    dinero_chainstate
+    dinero_wallet
+    dinero_crypto
+    lightning_core_static
+    bulletproofs_ffi
+    ${ROCKSDB_LIBRARY}
+    secp256k1
+    sqlite3
+    argon2
+    jsoncpp_static
+    GTest::gtest
+    GTest::gtest_main
+)
+
+target_include_directories(test_wallet_lifecycle_e3 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
+)
+
+target_compile_definitions(test_wallet_lifecycle_e3 PRIVATE
+    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+# Add Apple frameworks if on macOS
+if(APPLE)
+    target_link_libraries(test_wallet_lifecycle_e3 PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+# Register test with CTest
+add_test(NAME WalletLifecycleE3 COMMAND test_wallet_lifecycle_e3)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase F.5: End-to-End Mining Policy Integration Tests
+# ═══════════════════════════════════════════════════════════════════════
+
+message(STATUS "Configuring Phase F.5 end-to-end tests...")
+
+# E2E Test Harness Library
+add_library(e2e_test_harness STATIC
+    e2e_test_harness.cpp
+)
+
+target_link_libraries(e2e_test_harness PUBLIC
+    jsoncpp_static
+    curl
+)
+
+target_include_directories(e2e_test_harness PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+)
+
+# Mining Policy E2E Tests
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_mining_policy_e2e.cpp)
+    add_executable(test_mining_policy_e2e
+        test_mining_policy_e2e.cpp
+    )
+
+    target_link_libraries(test_mining_policy_e2e PRIVATE
+        e2e_test_harness
+        jsoncpp_static
+        curl
+        GTest::gtest
+        GTest::gtest_main
+    )
+
+    target_include_directories(test_mining_policy_e2e PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    )
+
+    add_test(NAME MiningPolicyE2E COMMAND test_mining_policy_e2e)
+    set_tests_properties(MiningPolicyE2E PROPERTIES
+        LABELS "e2e;mining;policy;f5"
+        TIMEOUT 120
+    )
+endif()

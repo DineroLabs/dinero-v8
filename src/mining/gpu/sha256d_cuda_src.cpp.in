@@ -1,0 +1,18 @@
+// Auto-generated at CMake configure time. Do not edit.
+// Source of truth: miner/shaders/sha256d.cu — the same kernel solo-miner uses
+// for IGpuBackend::dispatch. Mirroring it here keeps the daemon's
+// IComputeBackend CUDA path and the solo-miner's IGpuBackend CUDA path on a
+// single kernel codebase.
+//
+// Embedded as a raw C-string literal so NVRTC can compile the kernel at
+// runtime without needing the .cu file shipped alongside the binary.
+
+namespace dinero::gpu {
+
+extern const char* SHA256D_CUDA_SRC;
+
+const char* SHA256D_CUDA_SRC = R"DINERO_KERNEL(
+@DINERO_CUDA_KERNEL_SRC@
+)DINERO_KERNEL";
+
+} // namespace dinero::gpu

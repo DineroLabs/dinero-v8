@@ -1,0 +1,62 @@
+name: Phase M.2 Boundary Check
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  check-boundaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Check for GetHex() in consensus layer
+        run: |
+          # Phase M.2: .GetHex() is presentation-only
+          # Allowed in: rpc/, logging/, tests/
+          # Forbidden in: consensus/, mining/, chainstate/
+
+          VIOLATIONS=$(grep -r '\.GetHex()' \
+            src/consensus/ \
+            src/mining/ \
+            src/chainstate/ \
+            --include="*.cpp" \
+            --include="*.h" \
+            --exclude="*_test.cpp" \
+            --exclude="*test*.cpp" \
+            | grep -v "// Phase M.0: GetHex() for logging" \
+            | grep -v "// Phase M.0: GetHex() for error messages" \
+            | grep -v "// Phase M.0: RPC boundary" \
+            || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ Phase M.2 Violation: .GetHex() found in consensus code"
+            echo "$VIOLATIONS"
+            echo ""
+            echo "Allowed only in presentation layers (rpc/, logging/, tests/)"
+            echo "Use FormatHash() from presentation/hash_format.h instead"
+            exit 1
+          fi
+
+          echo "✅ No boundary violations found"
+
+      - name: Check for string-based hash identity
+        run: |
+          # Phase M.2: Hashes are uint256, not strings
+          # Narrowed grep to specific hash terms to avoid false positives
+          VIOLATIONS=$(grep -rn 'std::string.*(txid|hash|wtxid|block_hash)' \
+            src/consensus/block_validation.cpp \
+            src/consensus/tx_validation.cpp \
+            | grep -E '(==|!=|insert|find)' \
+            | grep -v '//' \
+            || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ Phase M.2 Violation: String-based hash identity"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+
+          echo "✅ No string-based identity violations"

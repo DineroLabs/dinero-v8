@@ -1,0 +1,46 @@
+name: Utreexo Consensus Tests
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  utreexo-tests:
+    name: Utreexo Accumulator Consensus
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build build-essential \
+            libssl-dev libsqlite3-dev libsecp256k1-dev \
+            jq curl
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --target dinerod dinero-cli -j $(nproc)
+
+      - name: Run Utreexo Consensus Tests
+        run: |
+          chmod +x ./tests/test_utreexo_consensus.sh
+          ./tests/test_utreexo_consensus.sh
+        env:
+          CI: true
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: utreexo-test-logs
+          path: /tmp/utreexo_test_*/
+          retention-days: 7

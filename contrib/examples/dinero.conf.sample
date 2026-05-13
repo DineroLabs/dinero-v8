@@ -1,0 +1,134 @@
+# Dinero Configuration File
+# Copy this to ~/.dinero/dinero.conf (Linux/macOS) or %APPDATA%\Dinero\dinero.conf (Windows)
+
+##
+## Network Settings
+##
+
+# Enable server mode (required for RPC)
+server=1
+
+# P2P port (default: 20999 for mainnet, 21000 for testnet, 21001 for regtest)
+# port=20999
+
+# Maximum number of connections
+# maxconnections=125
+
+##
+## RPC Settings
+##
+
+# RPC bind address (default: 127.0.0.1 - local only for security)
+rpcbind=127.0.0.1
+
+# RPC port (default: 20998 for mainnet, 20998 for testnet, 20996 for regtest)
+# rpcport=20998
+
+# RPC authentication (choose ONE method):
+
+# Method 1: Cookie authentication (recommended for local use)
+# Cookie file will be created automatically in datadir
+
+# Method 2: Username/password (for remote access)
+# Generate with: python3 -c "import secrets,hashlib,base64; s=secrets.token_hex(16); h=hashlib.sha256(('dinero'+s).encode()).hexdigest(); print(f'rpcauth=dinero:{s}${h}')"
+# rpcauth=dinero:<salt>$<hash>
+
+# Allow RPC connections from specific IPs (default: 127.0.0.1 only)
+# rpcallowip=127.0.0.1
+# rpcallowip=192.168.1.0/24
+
+##
+## Wallet Settings
+##
+
+# Create wallet on startup
+# createwallet=default
+
+# Wallet encryption (recommended)
+# encryptwallet=<passphrase>
+
+##
+## Mining Settings
+##
+
+# Enable mining
+# mine=1
+
+# Mining address (required if mining is enabled)
+# miningaddress=din1qxglfyhqlvzhziicmsarioozlrthiai
+
+# Mining threads (default: number of CPU cores)
+# miningthreads=4
+
+##
+## Network Specific Settings
+##
+
+# Testnet mode
+# testnet=1
+
+# Regtest mode (for development)
+# regtest=1
+
+##
+## Logging
+##
+
+# Debug logging categories (comma-separated)
+# debug=net,rpc,wallet,mining
+
+# Log file location (default: datadir/debug.log)
+# debuglogfile=/path/to/dinero-debug.log
+
+##
+## Performance
+##
+
+# Database cache size in MB (default: 300)
+# dbcache=300
+
+# Maximum memory pool size in MB (default: 300)
+# maxmempool=300
+
+##
+## Security
+##
+
+# Minimum relay fee (una per byte)
+minrelaytxfee=1000
+
+# Dust threshold (una)
+dustthreshold=546
+
+# Reject transactions with fees below this amount
+# blockmintxfee=1000
+
+##
+## Seed Nodes (for initial peer discovery)
+##
+
+# Add trusted nodes
+# addnode=seed1.dinero-coin.com:20999
+# addnode=seed2.dinero-coin.com:20999
+
+# Connect only to specific nodes
+# connect=trusted.node.example.com:20999
+
+##
+## Advanced Settings
+##
+
+# Prune blockchain to save disk space (in MB, 0 = no pruning)
+# prune=10000
+
+# Enable transaction indexing (required for some RPC calls)
+# txindex=1
+
+# Enable address indexing (required for address-based queries)
+# addressindex=1
+
+# Maximum block size (bytes)
+# blockmaxsize=4000000
+
+# Maximum transaction size (bytes)
+# blockmaxweight=4000000

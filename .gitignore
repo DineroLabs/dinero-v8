@@ -1,0 +1,207 @@
+build-*/
+build*/
+CMakeFiles/
+__pycache__/
+*.pyc
+*.o
+*.so
+*.a
+*.dylib
+.dinero-build-meta
+
+# Release vendored OpenSSL prebuilts are intentional source artifacts.
+!third_party/openssl-3.3.2/prebuilt/
+!third_party/openssl-3.3.2/prebuilt/macos-arm64/
+!third_party/openssl-3.3.2/prebuilt/macos-arm64/.dinero-build-meta
+!third_party/openssl-3.3.2/prebuilt/macos-arm64/libcrypto.a
+!third_party/openssl-3.3.2/prebuilt/macos-arm64/libssl.a
+secp-prefix/
+_deps/
+
+# CMake auto-generated files (machine-specific paths, NEVER commit)
+CMakeCache.txt
+**/CMakeCache.txt
+compile_commands.json
+CTestTestfile.cmake
+**/CTestTestfile.cmake
+cmake_install.cmake
+**/cmake_install.cmake
+Makefile
+**/Makefile
+Testing/
+**/Testing/
+
+# Qt auto-generated deployment files (machine-specific paths)
+*.qmlc
+*.jsc
+
+# runtime data
+/data/
+*.db
+*.sqlite
+nodeinfo.json
+ws-test-nodeinfo.json
+**/nodeinfo.json
+**/auth/auth.json
+**/.cic
+.itest/
+
+# Test data directories
+test-data/
+data-fresh/
+data-main/
+data-*/
+e2e-A/
+node-mainnet/
+test-ephemeral/
+stress_test_*/
+tmp/
+PROJECT_SCAN.csv
+PROJECT_PLACEHOLDERS.csv
+artifacts/
+
+# CI test artifacts (runtime data, should never be committed)
+ci_datadir/
+ci_test_*/
+
+# Secrets — NEVER commit private keys or auth cookies
+*.pem
+*-key
+.*-key
+.server-key
+.server2-key
+.cookie
+**/.cookie
+tools/treasury_decrypt_seed
+tools/treasury_recover_key
+tools/sweep_destination_key.txt
+nodeA/.cookie
+nodeB/.cookie
+
+# binaries
+/bin/
+
+# Accidental root-level build/test executables
+/bench-*
+/compute_checksum
+/crypto_demo
+/debug_*
+/dinero-miner
+/dinerod-new
+/genesis_miner_*
+/mine_*
+/simple_p2p_listener
+/test-*
+/test_*
+/torture_*
+!/test-cross-language-vectors/
+!/test_*.cpp
+!/test_*.py
+!/test_*.sh
+
+# OS cruft
+.DS_Store
+**/.DS_Store
+
+# Build artifacts
+build/
+releases/
+release-*/
+gui/*_autogen/
+*.SHA256SUMS
+*.dmg
+*.app
+*.log
+data-regtest/
+daemon.log
+ws-final.log
+
+# SQLite artifacts
+*.db
+*.db-shm
+*.db-wal
+
+# SQLite artifacts
+*.db
+*.db-shm
+*.db-wal
+
+# Editor backups (NEVER commit these - they pollute architecture)
+*.bak
+*.bak2
+*.bak3
+*.bak4
+*.minerbak
+*.orig
+*~
+*.rej
+*.swp
+*.swo
+*.swx
+.*.swp
+.*.swo
+CMakeLists.txt.bak*
+
+# builds & toolchains
+/build*/
+/out/
+/dist/
+/releases/
+/node_modules/
+packaging/*/dist/
+packaging/*/output/
+
+# local/ephemeral
+*.log
+*.pid
+*.db
+*.db-*
+*.sqlite*
+*.dmg
+*.exe
+*.run
+*.tar.gz
+test-data/**/regtest
+test-data/**/.cookie
+logs/
+
+# test artifacts
+test-*/
+!test-cross-language-vectors/
+test_*/
+ci_test_*/
+ci_datadir/
+blockchain_data*/
+dinero_support_*/
+
+# large files
+*.tar.gz
+DineroCoin-*.tar.gz
+dinero-*.tar.gz
+qt-online-installer-*.run
+
+# Strategic planning docs (private, not for public repo)
+AI_ROADMAP.md
+
+# IDE/editor
+.vscode/
+.cursor/
+.claude/
+.qt/
+PREMINE_KEYS_SECURE.md*
+WALLET_CLAUDE1.txt
+CLAUDE.md
+
+# Fuzz build artifacts
+fuzz/fuzz_*[!.cpp]
+fuzz/*.dSYM/
+*.dSYM/
+
+# Rust build artifacts
+crates/*/target/
+third_party/*/target/
+
+# Xcode user-specific files
+*.xcuserstate
+xcuserdata/
+*.xcuserdatad/

@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wallet.rescan",
+  "description": "Rescan blockchain for wallet transactions",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "wallet.rescan"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Start height for rescan (default: 0)"
+        },
+        {
+          "type": "integer",
+          "description": "End height for rescan (default: current tip)"
+        },
+        {
+          "type": "integer",
+          "description": "Start timestamp for rescan (alternative to height)"
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 3
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "started": {
+          "type": "boolean",
+          "description": "Whether rescan was started successfully"
+        },
+        "start_height": {
+          "type": "integer",
+          "description": "Height rescan started from"
+        },
+        "stop_height": {
+          "type": "integer",
+          "description": "Height rescan will stop at"
+        },
+        "start_time": {
+          "type": "integer",
+          "description": "Timestamp when rescan started"
+        },
+        "estimated_duration": {
+          "type": "integer",
+          "description": "Estimated rescan duration in seconds"
+        },
+        "blocks_to_scan": {
+          "type": "integer",
+          "description": "Number of blocks to scan"
+        },
+        "progress": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Initial rescan progress (0-1)"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Rescan warnings"
+        }
+      },
+      "required": ["started", "start_height", "stop_height", "start_time"]
+    }
+  }
+}

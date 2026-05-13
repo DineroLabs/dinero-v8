@@ -1,0 +1,224 @@
+#=============================================================================
+# Ring 8: Evolution & Compatibility Governance Test Suite
+#=============================================================================
+
+message(STATUS "")
+message(STATUS "Configuring Ring 8 Phase 8a: Backward Compatibility Enforcement...")
+
+#=============================================================================
+# Phase 8a: Backward Compatibility Enforcement (BC1-BC4)
+#=============================================================================
+
+# Phase 8a Test Executable
+add_executable(test_backward_compatibility
+    test_backward_compatibility.cpp
+)
+
+target_include_directories(test_backward_compatibility PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+# Link against Ring 7 execution framework (BC tests verify Ring 7 immutability)
+target_link_libraries(test_backward_compatibility PRIVATE
+    execution_test_framework
+    dinero_crypto
+    dinero_consensus
+    GTest::gtest
+    GTest::gtest_main
+)
+
+# Platform-specific settings
+if(APPLE)
+    target_link_libraries(test_backward_compatibility PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+add_test(
+    NAME Ring8_BackwardCompatibility_BC1-BC4
+    COMMAND test_backward_compatibility
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+set_tests_properties(Ring8_BackwardCompatibility_BC1-BC4 PROPERTIES
+    LABELS "ring8;phase8a;backward-compatibility;governance"
+    TIMEOUT 30
+)
+
+message(STATUS "✅ Ring 8 Phase 8a backward compatibility tests configured:")
+message(STATUS "   • Ring8_BackwardCompatibility_BC1-BC4 (13 tests)")
+message(STATUS "   Properties:")
+message(STATUS "     - BC1: Ring 7 Regression Invariance")
+message(STATUS "     - BC2: Opcode Semantic Immutability")
+message(STATUS "     - BC3: Script Version Immutability")
+message(STATUS "     - BC4: Cross-Ring Compatibility")
+message(STATUS "")
+message(STATUS "Ring 8 Phase 8a Configuration Complete!")
+message(STATUS "Build: cd build && cmake .. && make test_backward_compatibility")
+message(STATUS "Test:  ctest -R Ring8_BackwardCompatibility --verbose")
+message(STATUS "")
+message(STATUS "🔒 Ring 7 semantics are now MECHANICALLY IMMUTABLE")
+message(STATUS "")
+
+#=============================================================================
+# Phase 8b: Extension Gating & Activation (EG1-EG3)
+#=============================================================================
+
+message(STATUS "Configuring Ring 8 Phase 8b: Extension Gating & Activation...")
+
+# Phase 8b Extension Framework Library
+add_library(extension_gating_framework STATIC
+    framework/extension_types.h
+    framework/extension_registry.h
+    framework/extension_registry.cpp
+    framework/script_version_dispatcher.h
+    framework/script_version_dispatcher.cpp
+    framework/opcode_namespace_manager.h
+    framework/opcode_namespace_manager.cpp
+)
+
+target_include_directories(extension_gating_framework PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(extension_gating_framework PUBLIC
+    execution_test_framework
+    dinero_crypto
+    dinero_consensus
+)
+
+# Phase 8b Test Executable
+add_executable(test_extension_gating
+    test_extension_gating.cpp
+)
+
+target_include_directories(test_extension_gating PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_extension_gating PRIVATE
+    extension_gating_framework
+    execution_test_framework
+    dinero_crypto
+    dinero_consensus
+    GTest::gtest
+    GTest::gtest_main
+)
+
+# Platform-specific settings
+if(APPLE)
+    target_link_libraries(test_extension_gating PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+add_test(
+    NAME Ring8_ExtensionGating_EG1-EG3
+    COMMAND test_extension_gating
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+set_tests_properties(Ring8_ExtensionGating_EG1-EG3 PROPERTIES
+    LABELS "ring8;phase8b;extension-gating;governance"
+    TIMEOUT 30
+)
+
+message(STATUS "✅ Ring 8 Phase 8b extension gating tests configured:")
+message(STATUS "   • Ring8_ExtensionGating_EG1-EG3 (18 tests)")
+message(STATUS "   Properties:")
+message(STATUS "     - EG1: Namespace Isolation")
+message(STATUS "     - EG2: Version Isolation")
+message(STATUS "     - EG3: Activation Safety")
+message(STATUS "")
+message(STATUS "Ring 8 Phase 8b Configuration Complete!")
+message(STATUS "Build: cd build && cmake .. && make test_extension_gating")
+message(STATUS "Test:  ctest -R Ring8_ExtensionGating --verbose")
+message(STATUS "")
+message(STATUS "🔓 Safe evolution enabled while Ring 7 remains FROZEN")
+message(STATUS "")
+
+#=============================================================================
+# Phase 8c: Change Legitimacy & Audit Discipline (CL1-CL3)
+#=============================================================================
+
+message(STATUS "Configuring Ring 8 Phase 8c: Change Legitimacy & Audit Discipline...")
+
+# Phase 8c Change Audit Framework Library
+add_library(change_audit_framework STATIC
+    framework/change_types.h
+    framework/change_audit_log.h
+    framework/change_audit_log.cpp
+    framework/review_checklist_manager.h
+    framework/review_checklist_manager.cpp
+)
+
+target_include_directories(change_audit_framework PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(change_audit_framework PUBLIC
+    dinero_crypto
+    dinero_consensus
+)
+
+# Phase 8c Test Executable
+add_executable(test_change_legitimacy
+    test_change_legitimacy.cpp
+)
+
+target_include_directories(test_change_legitimacy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+target_link_libraries(test_change_legitimacy PRIVATE
+    change_audit_framework
+    dinero_crypto
+    dinero_consensus
+    GTest::gtest
+    GTest::gtest_main
+)
+
+# Platform-specific settings
+if(APPLE)
+    target_link_libraries(test_change_legitimacy PRIVATE
+        "-framework Security"
+        "-framework CoreFoundation"
+    )
+endif()
+
+add_test(
+    NAME Ring8_ChangeLegitimacy_CL1-CL3
+    COMMAND test_change_legitimacy
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+set_tests_properties(Ring8_ChangeLegitimacy_CL1-CL3 PROPERTIES
+    LABELS "ring8;phase8c;change-legitimacy;governance"
+    TIMEOUT 30
+)
+
+message(STATUS "✅ Ring 8 Phase 8c change legitimacy tests configured:")
+message(STATUS "   • Ring8_ChangeLegitimacy_CL1-CL3 (20 tests)")
+message(STATUS "   Properties:")
+message(STATUS "     - CL1: Change Documentation")
+message(STATUS "     - CL2: Rationale Traceability")
+message(STATUS "     - CL3: Audit Trail")
+message(STATUS "")
+message(STATUS "Ring 8 Phase 8c Configuration Complete!")
+message(STATUS "Build: cd build && cmake .. && make test_change_legitimacy")
+message(STATUS "Test:  ctest -R Ring8_ChangeLegitimacy --verbose")
+message(STATUS "")
+message(STATUS "📝 Change accountability and governance discipline enforced")
+message(STATUS "")

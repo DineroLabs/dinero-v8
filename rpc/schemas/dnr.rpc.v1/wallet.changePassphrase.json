@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wallet.changePassphrase",
+  "description": "Change wallet encryption passphrase",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "wallet.changePassphrase"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Current passphrase"
+        },
+        {
+          "type": "string",
+          "minLength": 8,
+          "description": "New passphrase (minimum 8 characters)"
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean",
+          "description": "Whether passphrase was changed successfully"
+        },
+        "unlocked_until": {
+          "type": "integer",
+          "description": "Timestamp when wallet will auto-lock"
+        },
+        "backup_recommended": {
+          "type": "boolean",
+          "description": "Whether new backup is recommended"
+        },
+        "warning": {
+          "type": "string",
+          "description": "Security warning about new passphrase"
+        }
+      },
+      "required": ["success", "unlocked_until"]
+    }
+  }
+}

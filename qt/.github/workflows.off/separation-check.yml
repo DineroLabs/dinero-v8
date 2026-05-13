@@ -1,0 +1,66 @@
+name: Process Separation Check
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  separation-invariants:
+    name: Verify GUI Isolation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for consensus code (FORBIDDEN)
+        run: |
+          echo "Checking for consensus code in GUI..."
+          if grep -rE "(BlockValidator|AcceptBlock|ConnectBlock|CheckBlock)" src/; then
+            echo "::error::FORBIDDEN: Consensus code found in GUI"
+            echo "GUI must use RPC, not embed consensus logic"
+            exit 1
+          fi
+          echo "No consensus code found"
+
+      - name: Check for direct chain access (FORBIDDEN)
+        run: |
+          echo "Checking for direct chain database access..."
+          if grep -rE "(ChainDB|rocksdb|leveldb)" src/; then
+            echo "::error::FORBIDDEN: Direct chain database access found"
+            echo "GUI must access chain data via RPC only"
+            exit 1
+          fi
+          echo "No direct chain access found"
+
+      - name: Check for P2P code (FORBIDDEN)
+        run: |
+          echo "Checking for P2P networking code..."
+          if grep -rE "(P2PManager|PeerManager|class Peer)" src/; then
+            echo "::error::FORBIDDEN: P2P code found in GUI"
+            echo "P2P belongs in dinerod, not GUI"
+            exit 1
+          fi
+          echo "No P2P code found"
+
+      - name: Verify RPC-only architecture
+        run: |
+          echo "Verifying RPC client exists..."
+          if [ ! -f "src/rpcclient.cpp" ] && [ ! -f "src/rpcclient.h" ]; then
+            echo "::warning::No RPC client found - GUI should communicate via RPC"
+          fi
+          echo "Architecture check complete"
+
+      - name: Summary
+        run: |
+          echo "======================================"
+          echo "GUI Isolation Check: PASSED"
+          echo "======================================"
+          echo ""
+          echo "dinero-qt contains NO:"
+          echo "  - Consensus validation code"
+          echo "  - Direct chain database access"
+          echo "  - P2P networking code"
+          echo ""
+          echo "All chain data accessed via RPC only."

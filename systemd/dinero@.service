@@ -1,0 +1,35 @@
+# /etc/systemd/system/dinero@.service
+[Unit]
+Description=Dinero daemon (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dinero
+Group=dinero
+RuntimeDirectory=dinero
+RuntimeDirectoryMode=0750
+Environment=DATADIR=/var/lib/dinero
+WorkingDirectory=/opt/dinero
+
+# Hardened preflight: auto-heal chainwork consistency (silent when OK)
+ExecStartPre=/usr/bin/env bash -c 'cd /opt/dinero && ./scripts/cicd_preflight.sh || true'
+
+# Daemon start
+# Operational safety: never delete datadir lock/PID files here.
+# dinerod acquires and validates its own datadir guard at startup.
+ExecStart=/usr/local/bin/dinerod -%i -datadir=/var/lib/dinero
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dinero /run/dinero
+
+[Install]
+WantedBy=multi-user.target

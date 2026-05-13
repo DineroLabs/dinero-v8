@@ -1,0 +1,73 @@
+#!/usr/bin/make -f
+# Dinero Core debian/rules — Phase E.1 skeleton.
+#
+# Standard dh-cmake invocation. The cmake install rules in
+# CMakeLists.txt (lines 3199-3260) already produce the complete
+# /usr layout we need; this file just delegates to them.
+#
+# DH_VERBOSE=1 enables verbose output; useful for diagnosing build
+# failures in CI. Comment out for release builds.
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+DEB_VERSION_UPSTREAM := $(shell dpkg-parsechangelog -S Version | sed 's/-[^-]*$$//' | sed 's/~/-/g')
+
+# Reduce parallelism if needed to keep build memory under control on
+# small CI runners. Default lets debhelper detect cores.
+# export DEB_BUILD_OPTIONS = parallel=4
+
+%:
+	dh $@ --buildsystem=cmake
+
+# Phase E.3 — vendored static OpenSSL.
+#
+# The default build uses USE_SYSTEM_OPENSSL=OFF and expects
+# third_party/openssl-3.3.2/libcrypto.a (+ libssl.a) to exist before
+# cmake configure runs. scripts/build-openssl-vendored.sh produces
+# them. Run it as a configure prerequisite — it's idempotent (skips
+# rebuild if both archives are already present).
+#
+# This keeps the .deb build hermetic against system libssl-dev and
+# closes the spec §1.4 violation where the fleet binary had system
+# libcrypto.so.3 / libssl.so.3 in NEEDED via gRPC's transitive link.
+# (gRPC itself remains system-linked for now; full bundling is
+# tracked as a Phase E.3 follow-up.)
+override_dh_auto_configure:
+	@echo "→ Building vendored OpenSSL 3.3.2 (idempotent)"
+	./scripts/build-openssl-vendored.sh
+	dh_auto_configure -- \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DDINERO_PACKAGED_BUILD=ON \
+		-DDINERO_PACKAGE_VERSION=$(DEB_VERSION_UPSTREAM) \
+		-DUSE_SYSTEM_OPENSSL=OFF \
+		-DBUILD_LIGHTNINGD=OFF
+
+# Build only the targets the .deb actually installs.
+#
+# Phase E.3: the packaged artifact ships dinerod + dinero-cli only
+# (spec §1.1 row 1). Miner / bench / lightning binaries are not
+# part of the dinero-core .deb. Skipping them here cuts build time,
+# avoids pulling in OpenCL ICD loader + libudev for the GPU miner
+# target (which would re-introduce the libOpenCL/libudev NEEDED
+# entries even with DINERO_PACKAGED_BUILD=ON if those binaries
+# linked successfully into the staging dir), and keeps the package
+# contract honest.
+override_dh_auto_build:
+	dh_auto_build -- dinerod dinero-cli
+
+# Skip ctest during package build. The full test suite requires a
+# clean datadir + dinerod startup which is fragile inside the
+# debian/ build sandbox. CI runs ctest separately against the same
+# build tree.
+override_dh_auto_test:
+	@echo "dh_auto_test: ctest skipped during .deb build (run separately in CI)"
+
+# The locked spec (§1.1 row 5) names the systemd unit `dinero.service`,
+# not `dinero-core.service`. The package itself is `dinero-core` (matches
+# Bitcoin Core convention), so debhelper would default the unit to the
+# package name. Override with --name=dinero so the file at
+# debian/dinero-core.dinero.service installs as
+# /lib/systemd/system/dinero.service.
+override_dh_installsystemd:
+	dh_installsystemd --name=dinero --no-enable --no-start

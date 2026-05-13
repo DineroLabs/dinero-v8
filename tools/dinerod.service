@@ -1,0 +1,50 @@
+[Unit]
+Description=DineroCoin Daemon (Mainnet)
+Documentation=https://github.com/Trucker2827/Dinero-Coin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=tower
+Group=tower
+
+# Working directory
+WorkingDirectory=/home/tower/Dinero-Coin
+
+# Daemon binary and data directory
+# Operational safety: do not delete datadir lock or PID files in systemd hooks.
+# dinerod now guards its own datadir and writes dinerod.pid itself.
+ExecStart=/home/tower/Dinero-Coin/build/dinerod -daemon -conf=/home/tower/.dinero/dinero.conf -datadir=/home/tower/.dinero
+ExecStop=/home/tower/Dinero-Coin/build/dinero-cli stop
+
+# PID file for tracking
+PIDFile=/home/tower/.dinero/dinerod.pid
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=200
+StartLimitBurst=5
+
+# Timeout settings
+TimeoutStartSec=60
+TimeoutStopSec=300
+
+# Resource limits (adjust as needed)
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Security hardening (optional, adjust as needed)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dinerod
+
+[Install]
+WantedBy=multi-user.target

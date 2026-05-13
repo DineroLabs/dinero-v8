@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "events.unsubscribe",
+  "description": "Unsubscribe from real-time events",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "events.unsubscribe"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "description": "Subscription ID to unsubscribe"
+        },
+        {
+          "type": "array",
+          "description": "Specific topics to unsubscribe (optional, unsubscribes all if omitted)",
+          "items": {
+            "type": "string",
+            "enum": [
+              "new_block",
+              "mempool_tx",
+              "wallet_tx", 
+              "mining_update",
+              "peer_connect",
+              "peer_disconnect",
+              "reorg",
+              "fee_estimate",
+              "health_change"
+            ]
+          },
+          "uniqueItems": true
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "subscription_id": {
+          "type": "string",
+          "description": "Subscription ID that was modified"
+        },
+        "unsubscribed_topics": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Topics successfully unsubscribed"
+        },
+        "remaining_topics": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Topics still subscribed"
+        },
+        "subscription_cancelled": {
+          "type": "boolean",
+          "description": "Whether entire subscription was cancelled"
+        }
+      },
+      "required": ["subscription_id", "unsubscribed_topics", "subscription_cancelled"]
+    }
+  }
+}

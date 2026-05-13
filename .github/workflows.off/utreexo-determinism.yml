@@ -1,0 +1,137 @@
+name: Utreexo Determinism Invariant
+
+# =============================================================================
+# REQUIRED CHECK - DO NOT SKIP
+# This test is consensus-critical. If it fails, the release MUST stop.
+# Failure indicates nondeterminism in Utreexo accumulator (thread race, bug).
+# =============================================================================
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+# Prevent concurrent runs that could mask race conditions
+concurrency:
+  group: utreexo-determinism-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  utreexo-determinism:
+    name: Utreexo Commitment Determinism (REQUIRED)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # This job must never be skipped or allowed to fail silently
+    continue-on-error: false
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Cache build
+      uses: actions/cache@v4
+      with:
+        path: |
+          build/
+          secp-prefix/
+        key: ${{ runner.os }}-build-${{ hashFiles('CMakeLists.txt', 'src/**/*.cpp') }}
+        restore-keys: |
+          ${{ runner.os }}-build-
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake ninja-build
+        sudo apt-get install -y libcurl4-openssl-dev pkg-config
+        sudo apt-get install -y python3 curl
+
+    - name: Build dinerod
+      run: |
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_TESTING=ON
+        cmake --build build --target dinerod -j$(nproc)
+
+    - name: Start daemon (regtest)
+      run: |
+        mkdir -p ~/.dinero
+        cat > ~/.dinero/dinero.conf << EOF
+        regtest=1
+        server=1
+        daemon=1
+        rpcport=18332
+        port=18333
+        fallbackfee=0.00001
+        txindex=1
+        EOF
+
+        ./build/dinerod -regtest -daemon
+        sleep 5
+
+        # Wait for RPC to be ready
+        for i in {1..30}; do
+          if curl -s -u $(cat ~/.dinero/.cookie) \
+             -d '{"method":"getinfo","params":[],"id":1}' \
+             http://127.0.0.1:18332 | grep -q blocks; then
+            echo "Daemon ready"
+            break
+          fi
+          echo "Waiting for daemon... ($i)"
+          sleep 1
+        done
+
+    - name: Mine to height 2+ (Utreexo activation)
+      run: |
+        COOKIE=$(cat ~/.dinero/.cookie)
+        ADDR="rdin1p86vgfwjzv8wdk8wyfvyfafhkk02vkjutd4sqygqurqyfkktthhxqxpc8nz"
+
+        # Mine 3 blocks to ensure height >= 2 (Utreexo active)
+        for i in 1 2 3; do
+          curl -s -u "$COOKIE" \
+            -d "{\"method\":\"generatetoaddress\",\"params\":[1,\"$ADDR\"],\"id\":$i}" \
+            http://127.0.0.1:18332
+          sleep 1
+        done
+
+        # Verify height
+        HEIGHT=$(curl -s -u "$COOKIE" \
+          -d '{"method":"getblockcount","params":[],"id":1}' \
+          http://127.0.0.1:18332 | grep -o '"result":[0-9]*' | cut -d: -f2)
+
+        echo "Current height: $HEIGHT"
+        if [ "$HEIGHT" -lt 2 ]; then
+          echo "ERROR: Height must be >= 2 for Utreexo activation"
+          exit 1
+        fi
+
+    - name: Run Utreexo Determinism Test
+      run: |
+        python3 tests/integration/test_utreexo_determinism.py \
+          --rpc-url http://127.0.0.1:18332 \
+          --cookie ~/.dinero/.cookie \
+          --iterations 10 \
+          --parallel \
+          --ci
+
+    - name: Stop daemon
+      if: always()
+      run: |
+        pkill -f dinerod || true
+        sleep 2
+
+    - name: Collect logs on failure
+      if: failure()
+      run: |
+        mkdir -p artifacts
+        cp ~/.dinero/regtest/debug.log artifacts/ || true
+        cp ~/.dinero/*.log artifacts/ || true
+
+    - name: Upload artifacts
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: utreexo-determinism-logs
+        path: artifacts/
+        retention-days: 7

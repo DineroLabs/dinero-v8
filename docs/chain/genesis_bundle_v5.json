@@ -1,0 +1,35 @@
+{
+  "format_version": "1.0",
+  "consensus_snapshot": "docs/consensus/CONSENSUS-SNAPSHOT-v1.md",
+  "mined_date": "2026-04-11",
+  "genesis": {
+    "height": 0,
+    "version": 1,
+    "prev_block_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "merkle_root": "75a44849c1c0e42be21373de3c427e9cd5f6a11678dfb053a9767309dc4800fc",
+    "utreexo_root": "566203e44f300cfdb9e47dddc722b66ae2c68fce00f80b800a5caac16d69fed5",
+    "timestamp": 1775865600,
+    "difficulty": "1d31ffce",
+    "nonce": 37344927,
+    "block_hash": "0000002d6b0abbf955fbf81faa4df1d0349a91c22d92ed9dd31cb4d79390b3d2",
+    "coinbase_hex": "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff340044696e65726f3a205265616c204d6f6e65792c20466f7220467265652050656f706c652e20417072696c20313120323032362effffffff0100e40b5402000000356a3344696e65726f3a205265616c204d6f6e65792c20466f7220467265652050656f706c652e20417072696c20313120323032362e00000000",
+    "motto": "Dinero: Real Money, For Free People. April 11 2026."
+  },
+  "premine": {
+    "height": 1,
+    "version": 1,
+    "prev_block_hash": "0000002d6b0abbf955fbf81faa4df1d0349a91c22d92ed9dd31cb4d79390b3d2",
+    "merkle_root": "0000000000000000000000000000000000000000000000000000000000000000",
+    "utreexo_root": "0000000000000000000000000000000000000000000000000000000000000000",
+    "timestamp": 0,
+    "difficulty": "1d31ffce",
+    "nonce": 0,
+    "block_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "coinbase_hex": "00",
+    "amount_una": 0,
+    "amount_din": 0,
+    "address": "",
+    "scriptPubKey_hex": "00",
+    "derivation": ""
+  }
+}

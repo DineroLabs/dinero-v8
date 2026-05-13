@@ -1,0 +1,93 @@
+#!/bin/sh
+# Dinero Core postinst — runs after dpkg unpacks the package files.
+# Phase E.1 of Dinero Core 1.0.
+#
+# Responsibilities (per spec §1.1 row 1, row 2, row 5):
+#   1. Create the `dinero` system user + group.
+#   2. Create /var/lib/dinero/ at mode 0750, owned dinero:dinero.
+#   3. Create /etc/dinero/ and seed dinero.conf from the example
+#      (only if the operator hasn't placed one already).
+#   4. Install the journald retention drop-in.
+#   5. Reload systemd so the new unit is visible.
+#   6. Do NOT auto-enable or auto-start the unit. The operator runs
+#      `systemctl enable --now dinero` explicitly.
+
+set -e
+
+# debhelper provides this; included only if --with systemd was used.
+# We don't require it, but it's harmless to include.
+#DEBHELPER#
+
+case "$1" in
+    configure)
+        # ── 1. dinero system user ────────────────────────────────
+        if ! getent passwd dinero >/dev/null 2>&1; then
+            adduser --system --group --no-create-home \
+                    --home /var/lib/dinero \
+                    --shell /usr/sbin/nologin \
+                    --gecos "Dinero Core daemon" \
+                    dinero >/dev/null
+        fi
+
+        # ── 2. /var/lib/dinero/ at mode 0750 ─────────────────────
+        if [ ! -d /var/lib/dinero ]; then
+            mkdir -p /var/lib/dinero
+        fi
+        chown dinero:dinero /var/lib/dinero
+        chmod 0750 /var/lib/dinero
+
+        # ── 3. /etc/dinero/ + seed dinero.conf ───────────────────
+        if [ ! -d /etc/dinero ]; then
+            mkdir -p /etc/dinero
+        fi
+        if [ ! -f /etc/dinero/dinero.conf ] && \
+           [ -f /usr/share/doc/dinero/dinero.conf.example ]; then
+            cp /usr/share/doc/dinero/dinero.conf.example \
+               /etc/dinero/dinero.conf
+            chown root:dinero /etc/dinero/dinero.conf
+            chmod 0640 /etc/dinero/dinero.conf
+        fi
+
+        # ── 4. journald drop-in ──────────────────────────────────
+        if [ -f /usr/share/doc/dinero/journald-dinero.conf.example ] && \
+           [ ! -f /etc/systemd/journald.conf.d/dinero.conf ]; then
+            mkdir -p /etc/systemd/journald.conf.d
+            cp /usr/share/doc/dinero/journald-dinero.conf.example \
+               /etc/systemd/journald.conf.d/dinero.conf
+            chmod 0644 /etc/systemd/journald.conf.d/dinero.conf
+            # Reload journald so the retention policy takes effect.
+            # If systemctl isn't present (chroot, container), skip.
+            if command -v systemctl >/dev/null 2>&1 && \
+               [ -d /run/systemd/system ]; then
+                systemctl restart systemd-journald >/dev/null 2>&1 || true
+            fi
+        fi
+
+        # ── 5. systemd daemon-reload ─────────────────────────────
+        if command -v systemctl >/dev/null 2>&1 && \
+           [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+
+        # ── 6. Operator hint (NOT auto-enable) ───────────────────
+        echo ""
+        echo "Dinero Core installed. To start the service:"
+        echo ""
+        echo "    sudo usermod -a -G dinero \$USER   # one-time, log out and back in for CLI access"
+        echo "    sudo systemctl enable --now dinero"
+        echo ""
+        echo "Edit /etc/dinero/dinero.conf to customize. See"
+        echo "/usr/share/doc/dinero/dinero.conf.example for the full key list."
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        # Nothing to undo; configure is the only path that mutates state.
+        ;;
+
+    *)
+        echo "postinst called with unknown argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

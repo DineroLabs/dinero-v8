@@ -1,0 +1,65 @@
+# Prometheus configuration for Dinero monitoring
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'dinero-monitor'
+
+# Rules for alerting
+rule_files:
+  - "dinero_alerts.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Dinero daemon metrics
+  - job_name: 'dinerod'
+    static_configs:
+      - targets: ['127.0.0.1:22001']
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    metrics_path: '/metrics'
+    scheme: http
+    
+    # Custom labels for identification
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'dinerod-main'
+      - target_label: network
+        replacement: 'mainnet'
+      - target_label: service
+        replacement: 'dinerod'
+
+  # System metrics (if node_exporter is running)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['127.0.0.1:9100']
+    scrape_interval: 30s
+    
+  # Optional: Additional Dinero nodes
+  - job_name: 'dinerod-seeds'
+    static_configs:
+      - targets: 
+        - 'seed1.dinero-coin.com:22001'
+        - 'seed2.dinero-coin.com:22001'
+        - 'seed3.dinero-coin.com:22001'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    
+    # Mark as seed nodes
+    relabel_configs:
+      - target_label: node_type
+        replacement: 'seed'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - 'localhost:9093'
+
+# Storage retention
+storage:
+  tsdb:
+    retention.time: 30d
+    retention.size: 10GB

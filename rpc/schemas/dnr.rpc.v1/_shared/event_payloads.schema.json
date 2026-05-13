@@ -1,0 +1,193 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Event Payload Schemas",
+  "description": "Schema definitions for WebSocket event payloads",
+  "definitions": {
+    "EventEnvelope": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "string",
+          "enum": [
+            "new_block",
+            "mempool_tx",
+            "wallet_tx", 
+            "mining_update",
+            "peer_connect",
+            "peer_disconnect",
+            "reorg",
+            "fee_estimate",
+            "health_change"
+          ]
+        },
+        "subscription_id": {"type": "string"},
+        "timestamp": {"type": "integer"},
+        "sequence": {"type": "integer"},
+        "rpc_schema": {"type": "string", "const": "din.rpc.v1"},
+        "data": {"type": "object"}
+      },
+      "required": ["event", "subscription_id", "timestamp", "data"]
+    },
+    "NewBlockEvent": {
+      "type": "object",
+      "properties": {
+        "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "height": {"type": "integer"},
+        "timestamp": {"type": "integer"},
+        "transactions": {"type": "integer"},
+        "size": {"type": "integer"},
+        "weight": {"type": "integer"},
+        "difficulty": {"type": "number"},
+        "chainwork": {"type": "string"},
+        "previous_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "merkle_root": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "coinbase_reward_una": {"type": "integer"},
+        "coinbase_reward_din": {"type": "string"},
+        "total_fees_una": {"type": "integer"},
+        "total_fees_din": {"type": "string"}
+      },
+      "required": ["hash", "height", "timestamp", "transactions"]
+    },
+    "MempoolTxEvent": {
+      "type": "object", 
+      "properties": {
+        "txid": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "wtxid": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "size": {"type": "integer"},
+        "vsize": {"type": "integer"},
+        "weight": {"type": "integer"},
+        "fee_una": {"type": "integer"},
+        "fee_din": {"type": "string"},
+        "fee_rate": {"type": "number"},
+        "inputs": {"type": "integer"},
+        "outputs": {"type": "integer"},
+        "rbf": {"type": "boolean"},
+        "entry_time": {"type": "integer"}
+      },
+      "required": ["txid", "size", "vsize", "fee_una", "fee_din", "fee_rate"]
+    },
+    "WalletTxEvent": {
+      "type": "object",
+      "properties": {
+        "txid": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "category": {
+          "type": "string", 
+          "enum": ["send", "receive", "generate", "immature"]
+        },
+        "amount_una": {"type": "integer"},
+        "amount_din": {"type": "string"},
+        "fee_una": {"type": "integer"},
+        "fee_din": {"type": "string"},
+        "confirmations": {"type": "integer"},
+        "address": {"type": "string"},
+        "label": {"type": "string"},
+        "trusted": {"type": "boolean"},
+        "block_hash": {"type": "string"},
+        "block_height": {"type": "integer"},
+        "block_time": {"type": "integer"}
+      },
+      "required": ["txid", "category", "amount_una", "amount_din", "confirmations"]
+    },
+    "MiningUpdateEvent": {
+      "type": "object",
+      "properties": {
+        "active": {"type": "boolean"},
+        "threads": {"type": "integer"},
+        "hashrate": {"type": "number"},
+        "hashrate_avg": {"type": "number"},
+        "difficulty": {"type": "number"},
+        "target_bits": {"type": "string"},
+        "blocks_found": {"type": "integer"},
+        "session_duration": {"type": "number"},
+        "estimated_time_remaining": {"type": "number"},
+        "reward_una": {"type": "integer"},
+        "reward_din": {"type": "string"}
+      },
+      "required": ["active", "threads", "hashrate", "difficulty"]
+    },
+    "PeerConnectEvent": {
+      "type": "object",
+      "properties": {
+        "peer_id": {"type": "integer"},
+        "address": {"type": "string"},
+        "inbound": {"type": "boolean"},
+        "version": {"type": "integer"},
+        "subversion": {"type": "string"},
+        "services": {"type": "string"},
+        "starting_height": {"type": "integer"}
+      },
+      "required": ["peer_id", "address", "inbound"]
+    },
+    "PeerDisconnectEvent": {
+      "type": "object",
+      "properties": {
+        "peer_id": {"type": "integer"},
+        "address": {"type": "string"},
+        "reason": {"type": "string"},
+        "connection_duration": {"type": "integer"},
+        "bytes_sent": {"type": "integer"},
+        "bytes_received": {"type": "integer"}
+      },
+      "required": ["peer_id", "address", "reason"]
+    },
+    "ReorgEvent": {
+      "type": "object",
+      "properties": {
+        "old_tip": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "new_tip": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "fork_height": {"type": "integer"},
+        "blocks_disconnected": {"type": "integer"},
+        "blocks_connected": {"type": "integer"},
+        "depth": {"type": "integer"}
+      },
+      "required": ["old_tip", "new_tip", "fork_height", "depth"]
+    },
+    "FeeEstimateEvent": {
+      "type": "object",
+      "properties": {
+        "estimates": {
+          "type": "object",
+          "properties": {
+            "economical": {
+              "type": "object",
+              "additionalProperties": {"type": "number"}
+            },
+            "conservative": {
+              "type": "object", 
+              "additionalProperties": {"type": "number"}
+            }
+          }
+        },
+        "mempool_size": {"type": "integer"},
+        "mempool_bytes": {"type": "integer"}
+      },
+      "required": ["estimates"]
+    },
+    "HealthChangeEvent": {
+      "type": "object",
+      "properties": {
+        "old_status": {
+          "type": "string",
+          "enum": ["healthy", "degraded", "unhealthy"]
+        },
+        "new_status": {
+          "type": "string", 
+          "enum": ["healthy", "degraded", "unhealthy"]
+        },
+        "changed_checks": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "errors": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "required": ["old_status", "new_status", "changed_checks"]
+    }
+  }
+}

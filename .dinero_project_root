@@ -1,0 +1,10 @@
+{
+  "project": "DineroCoin",
+  "canonical": true,
+  "created": "2025-12-05",
+  "path": "/Users/haydarevich/Documents/DineroCoin",
+  "git_remote_origin": "git@github.com:Trucker2827/Dinero-Coin.git",
+  "git_remote_dinerolabs": "git@github.com:DineroLabs/Dinero.git",
+  "description": "This marker file identifies the canonical DineroCoin repository. DO NOT copy this directory. If you see this file in multiple locations, you have duplicate repositories and should consolidate immediately.",
+  "validation_command": "test -f .dinero_project_root && git remote get-url origin | grep -q 'Trucker2827/Dinero-Coin'"
+}

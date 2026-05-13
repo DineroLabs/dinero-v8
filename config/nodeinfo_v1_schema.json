@@ -1,0 +1,157 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DineroCoin Node Info v1",
+  "description": "Configuration and runtime information for DineroCoin daemon",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version"
+    },
+    "daemon": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Daemon version string"
+        },
+        "datadir": {
+          "type": "string",
+          "description": "Absolute path to data directory"
+        },
+        "network": {
+          "type": "string",
+          "enum": ["mainnet", "testnet", "regtest"],
+          "description": "Active network"
+        }
+      },
+      "required": ["version", "datadir", "network"]
+    },
+    "rpc": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "host": {
+          "type": "string",
+          "default": "127.0.0.1"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "cookie_file": {
+          "type": "string",
+          "description": "Relative or absolute path to cookie file"
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "cert_file": {
+              "type": "string"
+            },
+            "key_file": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": ["enabled", "host", "port"]
+    },
+    "p2p": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 21000
+        },
+        "max_inbound": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "default": 60
+        },
+        "max_outbound": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 8
+        },
+        "seeds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^:]+:[0-9]+$"
+          },
+          "description": "Array of seed nodes in host:port format"
+        },
+        "compact_blocks": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "preferred": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        }
+      },
+      "required": ["enabled", "port"]
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "host": {
+          "type": "string",
+          "default": "127.0.0.1"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["trace", "debug", "info", "warn", "error"],
+          "default": "info"
+        },
+        "format": {
+          "type": "string",
+          "enum": ["json", "text"],
+          "default": "json"
+        },
+        "file": {
+          "type": "string",
+          "description": "Log file path (optional)"
+        }
+      }
+    }
+  },
+  "required": ["version", "daemon", "rpc", "p2p"]
+}

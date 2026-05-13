@@ -1,0 +1,109 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "psbt.submit",
+  "description": "Broadcast fully signed PSBT to network",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "psbt.submit"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "description": "Base64-encoded signed PSBT"
+        },
+        {
+          "type": "object",
+          "description": "Submission options",
+          "properties": {
+            "force": {
+              "type": "boolean",
+              "description": "Force submission even on mainnet (DANGEROUS, default: false)"
+            },
+            "max_fee_rate": {
+              "type": "number",
+              "description": "Maximum acceptable fee rate in una/kvB (safety check)"
+            },
+            "dry_run": {
+              "type": "boolean",
+              "description": "Validate transaction but don't broadcast (default: false)"
+            }
+          }
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "txid": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Transaction ID (if submitted)"
+        },
+        "hex": {
+          "type": "string",
+          "description": "Final transaction hex"
+        },
+        "submitted": {
+          "type": "boolean",
+          "description": "Whether transaction was actually submitted"
+        },
+        "fee_una": {
+          "type": "integer",
+          "description": "Transaction fee in una"
+        },
+        "fee_din": {
+          "type": "string",
+          "description": "Transaction fee in DIN (formatted)"
+        },
+        "fee_rate": {
+          "type": "number",
+          "description": "Fee rate in una/kvB"
+        },
+        "vsize": {
+          "type": "integer",
+          "description": "Virtual transaction size"
+        },
+        "weight": {
+          "type": "integer",
+          "description": "Transaction weight"
+        },
+        "network_checks": {
+          "type": "object",
+          "description": "Network validation results",
+          "properties": {
+            "valid": {"type": "boolean"},
+            "reason": {"type": "string"},
+            "mempool_conflicts": {"type": "array", "items": {"type": "string"}},
+            "double_spend_check": {"type": "boolean"}
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Submission warnings"
+        },
+        "errors": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Submission errors"
+        },
+        "mainnet_guard": {
+          "type": "object",
+          "description": "Mainnet safety checks",
+          "properties": {
+            "network": {"type": "string"},
+            "force_required": {"type": "boolean"},
+            "confirmation_required": {"type": "string"}
+          }
+        }
+      },
+      "required": ["submitted", "fee_una", "fee_din"]
+    }
+  }
+}

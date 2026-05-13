@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getrawmempool",
+  "description": "Get mempool transactions with optional verbose details",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "getrawmempool"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "boolean",
+          "description": "Whether to return verbose transaction details (default: false)"
+        },
+        {
+          "type": "boolean",
+          "description": "Whether to include mempool sequence info (default: false)"
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 2
+    },
+    "result": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "description": "Array of transaction IDs (verbose=false)"
+        },
+        {
+          "type": "object",
+          "description": "Verbose mempool info (verbose=true)",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "vsize": {
+                "type": "integer",
+                "description": "Virtual transaction size"
+              },
+              "weight": {
+                "type": "integer",
+                "description": "Transaction weight"
+              },
+              "fee_una": {
+                "type": "integer",
+                "description": "Transaction fee in una"
+              },
+              "fee_din": {
+                "type": "string",
+                "description": "Transaction fee in DIN (formatted)"
+              },
+              "modifiedfee_una": {
+                "type": "integer",
+                "description": "Modified fee including descendants (una)"
+              },
+              "time": {
+                "type": "integer",
+                "description": "Time transaction entered mempool"
+              },
+              "height": {
+                "type": "integer",
+                "description": "Block height when transaction entered mempool"
+              },
+              "descendantcount": {
+                "type": "integer",
+                "description": "Number of descendant transactions"
+              },
+              "descendantsize": {
+                "type": "integer",
+                "description": "Size of descendant transactions"
+              },
+              "descendantfees_una": {
+                "type": "integer",
+                "description": "Fees of descendant transactions (una)"
+              },
+              "ancestorcount": {
+                "type": "integer",
+                "description": "Number of ancestor transactions"
+              },
+              "ancestorsize": {
+                "type": "integer",
+                "description": "Size of ancestor transactions"
+              },
+              "ancestorfees_una": {
+                "type": "integer",
+                "description": "Fees of ancestor transactions (una)"
+              },
+              "wtxid": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$",
+                "description": "Witness transaction ID"
+              },
+              "fees": {
+                "type": "object",
+                "properties": {
+                  "base_una": {"type": "integer"},
+                  "modified_una": {"type": "integer"},
+                  "ancestor_una": {"type": "integer"},
+                  "descendant_una": {"type": "integer"}
+                }
+              },
+              "depends": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Parent transaction IDs"
+              },
+              "spentby": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Child transaction IDs"
+              },
+              "bip125_replaceable": {
+                "type": "boolean",
+                "description": "Whether transaction is BIP125 replaceable"
+              },
+              "unbroadcast": {
+                "type": "boolean",
+                "description": "Whether transaction has been broadcast"
+              }
+            },
+            "required": ["vsize", "weight", "fee_una", "time", "height"]
+          }
+        }
+      ]
+    }
+  }
+}

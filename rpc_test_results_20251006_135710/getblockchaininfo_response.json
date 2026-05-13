@@ -1,0 +1,21 @@
+{
+	"error" : null,
+	"id" : null,
+	"jsonrpc" : "2.0",
+	"result" : 
+	{
+		"bestblockhash" : "8816772a45b50f57cb0c65ae14f5481d1842ecb73cbd497aa65dcb882a1fabad",
+		"blocks" : 111,
+		"chain" : "main",
+		"chainwork" : "0x0000000000000000000000000000000000000000000000000000000000000001",
+		"difficulty" : 553713663,
+		"headers" : 111,
+		"initialblockdownload" : false,
+		"mediantime" : 1759773738,
+		"moneysupply" : "1011000",
+		"phase" : "cpu_friendly",
+		"pruned" : false,
+		"size_on_disk" : 0,
+		"verificationprogress" : 1.0
+	}
+}

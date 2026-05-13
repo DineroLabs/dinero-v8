@@ -1,0 +1,201 @@
+// Example: OpenKYC Provider Implementation
+// wallet-core/ffi/wallet_ffi_kyc_openkyc.cpp.example
+
+#include "wallet_ffi.h"
+#include "wallet_ffi_kyc_provider.h"
+#include <string>
+#include <curl/curl.h>  // For HTTP requests
+#include <json/json.h>   // For JSON parsing
+
+namespace {
+    // OpenKYC configuration
+    std::string g_openkyc_api_url;
+    std::string g_openkyc_api_key;
+    
+    // HTTP helper
+    size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* data) {
+        data->append((char*)contents, size * nmemb);
+        return size * nmemb;
+    }
+    
+    std::string HttpPost(const std::string& url, const std::string& json_data) {
+        CURL* curl = curl_easy_init();
+        std::string response;
+        
+        if (curl) {
+            struct curl_slist* headers = nullptr;
+            headers = curl_slist_append(headers, "Content-Type: application/json");
+            
+            if (!g_openkyc_api_key.empty()) {
+                std::string auth_header = "Authorization: Bearer " + g_openkyc_api_key;
+                headers = curl_slist_append(headers, auth_header.c_str());
+            }
+            
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_data.c_str());
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+            
+            curl_easy_perform(curl);
+            curl_easy_cleanup(curl);
+            curl_slist_free_all(headers);
+        }
+        
+        return response;
+    }
+    
+    std::string HttpGet(const std::string& url) {
+        CURL* curl = curl_easy_init();
+        std::string response;
+        
+        if (curl) {
+            struct curl_slist* headers = nullptr;
+            
+            if (!g_openkyc_api_key.empty()) {
+                std::string auth_header = "Authorization: Bearer " + g_openkyc_api_key;
+                headers = curl_slist_append(headers, auth_header.c_str());
+            }
+            
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+            
+            curl_easy_perform(curl);
+            curl_easy_cleanup(curl);
+            curl_slist_free_all(headers);
+        }
+        
+        return response;
+    }
+}
+
+extern "C" {
+
+int dinero_wallet_configure_openkyc(
+    const char* api_url,
+    const char* api_key
+) {
+    if (!api_url) {
+        return -1;
+    }
+    
+    g_openkyc_api_url = api_url;
+    if (api_key) {
+        g_openkyc_api_key = api_key;
+    }
+    
+    return 0;
+}
+
+int dinero_wallet_start_kyc_verification_openkyc(
+    const char* level,
+    const char* country,
+    char** verification_url_out
+) {
+    if (!level || !country || !verification_url_out) {
+        return -1;
+    }
+    
+    if (g_openkyc_api_url.empty()) {
+        return -1;  // Not configured
+    }
+    
+    try {
+        // Create verification session via OpenKYC API
+        Json::Value request;
+        request["level"] = level;
+        request["country"] = country;
+        request["callback_url"] = "dinero://kyc-callback";  // Deep link back to app
+        
+        Json::StreamWriterBuilder builder;
+        std::string json_request = Json::writeString(builder, request);
+        
+        std::string url = g_openkyc_api_url + "/api/v1/sessions";
+        std::string response = HttpPost(url, json_request);
+        
+        // Parse response
+        Json::Value root;
+        Json::Reader reader;
+        if (!reader.parse(response, root)) {
+            return -1;
+        }
+        
+        if (!root.isMember("session_id") || !root.isMember("verification_url")) {
+            return -1;
+        }
+        
+        std::string verification_url = root["verification_url"].asString();
+        
+        // Allocate output string
+        char* url_str = static_cast<char*>(malloc(verification_url.size() + 1));
+        if (!url_str) {
+            return -1;
+        }
+        strcpy(url_str, verification_url.c_str());
+        *verification_url_out = url_str;
+        
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+int dinero_wallet_get_kyc_status_openkyc(
+    const char* session_id,
+    FFI_KYCStatus* status_out
+) {
+    if (!session_id || !status_out) {
+        return -1;
+    }
+    
+    if (g_openkyc_api_url.empty()) {
+        return -1;  // Not configured
+    }
+    
+    try {
+        std::string url = g_openkyc_api_url + "/api/v1/sessions/" + session_id;
+        std::string response = HttpGet(url);
+        
+        // Parse response
+        Json::Value root;
+        Json::Reader reader;
+        if (!reader.parse(response, root)) {
+            return -1;
+        }
+        
+        // Map OpenKYC response to FFI_KYCStatus
+        memset(status_out, 0, sizeof(FFI_KYCStatus));
+        
+        status_out->is_verified = root.get("status", "pending").asString() == "approved";
+        
+        std::string level = root.get("level", "none").asString();
+        strncpy(status_out->verification_level, level.c_str(), 31);
+        status_out->verification_level[31] = '\0';
+        
+        strncpy(status_out->provider, "OpenKYC", 31);
+        status_out->provider[31] = '\0';
+        
+        if (root.isMember("verified_at")) {
+            status_out->verified_at = root["verified_at"].asInt64();
+        }
+        
+        if (root.isMember("expires_at")) {
+            status_out->expires_at = root["expires_at"].asInt64();
+        }
+        
+        if (root.isMember("country")) {
+            std::string country = root["country"].asString();
+            strncpy(status_out->country, country.c_str(), 2);
+            status_out->country[2] = '\0';
+        }
+        
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+} // extern "C"
+

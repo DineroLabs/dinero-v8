@@ -1,0 +1,175 @@
+# DineroCoin v1.0 Configuration File Example
+# Copy this file to ~/.dinero/dinero.conf and customize for your needs
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Configuration Version
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+config_version=1
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Data Directory
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Directory for blockchain data, wallet, and logs
+# Default: ~/.dinero
+#datadir=~/.dinero
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# RPC Server (Required for dinero-cli)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# RPC authentication (REQUIRED)
+# SECURITY: Use strong, unique username and password
+rpcuser=your_username_here
+rpcpassword=your_strong_password_here
+
+# RPC listen port
+# Default: 20998 (mainnet), 20998 (testnet), 20996 (regtest)
+#rpcport=20998
+
+# RPC bind address
+# Default: 127.0.0.1 (localhost only - recommended)
+# WARNING: 0.0.0.0 exposes RPC to network (use rpcallowip whitelist)
+#rpcbind=127.0.0.1
+
+# RPC IP whitelist (required if rpcbind=0.0.0.0)
+# Default: 127.0.0.1
+#rpcallowip=127.0.0.1
+#rpcallowip=192.168.1.0/24
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# P2P Network
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# P2P listen port
+# Default: 20999 (mainnet), 21000 (testnet), 21001 (regtest)
+#port=20999
+
+# Accept incoming connections
+# Default: true
+#listen=true
+
+# Maximum total connections
+# Default: 125 (recommended: 125-200 for public nodes)
+#maxconnections=125
+
+# Add seed nodes (optional)
+# Useful for bootstrapping or private networks
+#addnode=seed1.dinero.com:20999
+#addnode=seed2.dinero.com:20999
+
+# Connect ONLY to specified nodes (disables seed discovery)
+# Use for isolated/private networks
+#connect=192.168.1.100:20999
+
+# Whitelist trusted peers (never banned)
+# Use for mining pools, exchanges, trusted nodes
+#whitelist=192.168.1.0/24
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Network Selection
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Mainnet (default - production)
+#mainnet=true
+
+# Testnet (for testing)
+# Mutually exclusive with mainnet and regtest
+#testnet=false
+
+# Regression test mode (for local development)
+# Mutually exclusive with mainnet and testnet
+#regtest=false
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Mining (Built-in CPU Mining)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Enable CPU mining
+# Default: false (WARNING: CPU mining is inefficient, use for testing only)
+#gen=false
+
+# Number of mining threads
+# Default: 1 (recommended: leave 1-2 cores for node operation)
+#genproclimit=1
+
+# Mining reward address (REQUIRED if gen=true)
+# Must be valid DIN address matching network (mainnet/testnet/regtest)
+#miningaddress=DIN1A2B3C4D5E6F7G8H9I0J1K2L3M4N5O6P7Q8R
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Stratum Mining Server
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Enable Stratum server (for pool operators, GPU mining)
+# Default: true
+#stratum=true
+
+# Stratum listen port
+# Default: 3333 (conventional)
+#stratumport=3333
+
+# Maximum Stratum miner connections
+# Default: 100
+#stratummaxconnections=100
+
+# Enable SSL/TLS for Stratum (EXPERIMENTAL)
+# Default: false
+#stratum-ssl=false
+#stratum-ssl-cert=/path/to/cert.pem
+#stratum-ssl-key=/path/to/key.pem
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Advanced Options
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Enable full transaction index (required for blockchain explorers)
+# Default: false
+# WARNING: Enabling requires full reindex (-reindex flag)
+#txindex=false
+
+# Enable block pruning (reduces disk usage)
+# Default: 0 (disabled)
+# Minimum: 550 MB
+# WARNING: Cannot enable if txindex=true
+#prune=0
+
+# Logging level
+# Options: trace, debug, info, warn, error, fatal
+# Default: info
+#loglevel=info
+
+# Log to console (useful for systemd, Docker)
+# Default: false
+#printtoconsole=false
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Security Notes
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# 1. RPC Security:
+#    - Use strong rpcuser and rpcpassword (32+ characters)
+#    - Bind to 127.0.0.1 for local-only access
+#    - Use rpcallowip whitelist if binding to 0.0.0.0
+#    - Never commit passwords to version control
+
+# 2. File Permissions:
+#    chmod 600 ~/.dinero/dinero.conf  # Config file
+#    chmod 700 ~/.dinero              # Data directory
+
+# 3. Firewall:
+#    - Block RPC port (20998) from internet
+#    - Allow P2P port (20999) for inbound connections
+
+# 4. Backups:
+#    - Backup wallet.dat regularly
+#    - Backup dinero.conf (contains passwords)
+#    - Consider offsite backups
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# For More Information
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# See docs/CONFIGURATION.md for complete configuration reference
+# See docs/CONFIG_MIGRATION.md for upgrade/migration guides

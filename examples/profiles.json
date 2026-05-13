@@ -1,0 +1,27 @@
+{
+  "default": "dev",
+  "profiles": {
+    "dev": {
+      "network": "regtest",
+      "rpc_url": "http://127.0.0.1:18443",
+      "datadir": "/tmp/din-dev",
+      "wallet": "dev",
+      "read_timeout_ms": 5000
+    },
+    "testnet": {
+      "network": "testnet",
+      "rpc_url": "http://127.0.0.1:18332",
+      "datadir": "~/.dinero/testnet3",
+      "wallet": "test",
+      "read_timeout_ms": 15000
+    },
+    "prod": {
+      "network": "main",
+      "rpc_url": "https://node1.example.com:20998",
+      "datadir": "~/.dinero/main",
+      "wallet": "exchange",
+      "read_timeout_ms": 30000,
+      "retries": 5
+    }
+  }
+}

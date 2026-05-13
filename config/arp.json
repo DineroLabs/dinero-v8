@@ -1,0 +1,14 @@
+{
+  "reference_price_usd": 0.10,
+  "last_updated": "2025-11-03T00:00:00Z",
+  "source": "manual_launch_price",
+  "confidence": 0.0,
+  "notes": "Anchor Reference Price (ARP) for DineroCoin launch",
+  "economic_strategy": "Soft price anchor during early market phase. Will blend with real market data as exchanges list DIN.",
+  "blending_schedule": {
+    "day_0": "100% ARP ($0.10 USD/DIN)",
+    "day_1": "70% ARP + 30% Market",
+    "day_5": "40% ARP + 60% Market",
+    "week_2+": "100% Market (confidence = 1.0)"
+  }
+}

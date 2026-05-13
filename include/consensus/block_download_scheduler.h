@@ -1,0 +1,549 @@
+/**
+ * Phase N.4: Blocks-after-Headers Download Scheduler
+ *
+ * Purpose: Download block bodies for validated headers.
+ *
+ * Responsibilities:
+ * - Identify missing blocks (headers without bodies)
+ * - Schedule sequential block downloads (one at a time)
+ * - Validate blocks against headers
+ * - Store blocks (but NOT activate chainstate)
+ *
+ * Constraints (Locked):
+ * ❌ NO ActivateBestChain
+ * ❌ NO UTXO mutation
+ * ❌ NO parallelism (one at a time)
+ * ❌ NO reorg logic
+ * ✅ Download + verify only
+ * ✅ Single-threaded, deterministic order
+ *
+ * Architecture:
+ * - Scheduler decides intent (which blocks to fetch)
+ * - P2P layer executes (sends getdata messages)
+ * - Callbacks translate intent → action (like Phase N.3)
+ */
+
+#pragma once
+
+#include "primitives/uint256.h"
+#include "primitives/block.h"
+#include "storage/block_storage.h"         // For FilePosition
+#include "p2p/block_download_scheduler.h"  // For SyncPhase enum (Phase W.2.6 Enhancement #3)
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <cstdint>
+
+namespace dinero {
+
+// Forward declaration for block storage
+class BlockStorage;
+
+namespace consensus {
+
+// Forward declarations
+class HeaderChainSelector;
+
+// ============================================================================
+// Block Fetch State
+// ============================================================================
+
+enum class FetchStatus {
+    MISSING,     // Header exists, body not downloaded
+    REQUESTED,   // getdata sent, waiting for response
+    RECEIVED,    // Block downloaded and verified (stored to flat file)
+    CONNECTED,   // Block connected to chainstate (chain tip advanced)
+    INVALID      // Block failed connection validation (permanent stop)
+};
+
+struct BlockFetchState {
+    uint256 block_hash;
+    uint32_t height;
+    FetchStatus status;
+    FilePosition stored_pos;  // Set when status becomes RECEIVED
+    std::chrono::steady_clock::time_point request_time;  // When REQUESTED was set
+
+    BlockFetchState(const uint256& hash, uint32_t h)
+        : block_hash(hash), height(h), status(FetchStatus::MISSING) {}
+};
+
+// Result classification for scheduler-driven chainstate connection.
+// This is richer than a bool so TryConnectStoredBlocks can make deterministic
+// recovery decisions without re-request loops.
+enum class ConnectBlockResult {
+    CONNECTED,           // Block is now on the active chain
+    ACCEPTED_NOT_ACTIVE, // Block accepted/indexed but not active at this height yet
+    INVALID,             // Invalid block (do not re-request this child)
+    MISSING_PARENT,      // Parent block/header not present yet
+    WAITING_PARENT,      // Parent is known/queued but not connected yet
+    DUPLICATE,           // Already connected/known
+    TEMPORARY_FAIL       // Retry same child later
+};
+
+// ============================================================================
+// Block Download Scheduler
+// ============================================================================
+
+class BlockDownloadScheduler {
+public:
+    /**
+     * Construct block download scheduler.
+     *
+     * @param header_chain Header chain to observe for missing blocks
+     * @param block_storage Block storage for persisting downloaded blocks (optional)
+     */
+    explicit BlockDownloadScheduler(HeaderChainSelector* header_chain,
+                                    dinero::BlockStorage* block_storage = nullptr);
+
+    ~BlockDownloadScheduler();
+
+    // ========================================================================
+    // Core Methods
+    // ========================================================================
+
+    /**
+     * Called when headers are processed.
+     * Identifies new headers without bodies and queues them for download.
+     */
+    void OnHeadersProcessed();
+
+    /** True after OnHeadersProcessed() has been called at least once. */
+    bool HeadersSynced() const { return headers_processed_.load(); }
+
+    /**
+     * Called when a peer returns NOTFOUND for a block we requested.
+     * Clears the hash from in-flight tracking and triggers a rate-limited
+     * rescan from the actual chainstate tip, dropping stale-branch entries
+     * that will never be served.
+     *
+     * @param hash Hash of the block the peer doesn't have
+     */
+    void OnBlockNotFound(const uint256& hash);
+
+    /**
+     * Called when a block is received from a peer.
+     * Validates block against header and stores if valid.
+     *
+     * @param block The received block
+     * @return true if block is valid and stored
+     */
+    bool OnBlockReceived(const Block& block);
+
+    /**
+     * Main tick - drives download scheduler.
+     * Should be called periodically (e.g., every second).
+     *
+     * Decides when to request the next block.
+     */
+    void Tick();
+
+    // ========================================================================
+    // Status Queries
+    // ========================================================================
+
+    /**
+     * Check if all blocks for current header chain are downloaded.
+     */
+    bool IsFullySynchronized() const;
+
+    /**
+     * Check if a block hash is in the scheduler queue (missing/requested/received).
+     * This spans the full queued range and is broader than in-flight.
+     */
+    bool IsBlockExpected(const uint256& hash) const;
+
+    /**
+     * Check if a block hash was explicitly requested and is currently in-flight.
+     * Use this for strict unsolicited-block gating during IBD.
+     */
+    bool IsBlockInFlight(const uint256& hash) const;
+
+    /**
+     * Check if a block is either in-flight or expected (atomic query).
+     * Thread-safe: holds mutex for the entire check, avoiding TOCTOU races
+     * when ScanForMissingBlocks clears and rebuilds in_flight_blocks_.
+     */
+    bool IsBlockKnown(const uint256& hash) const;
+
+    /**
+     * Check if a block was received and stored by this scheduler.
+     */
+    bool HasReceivedBlock(const uint256& hash) const;
+
+    /**
+     * Get number of blocks still missing.
+     */
+    size_t GetMissingBlockCount() const;
+
+    /**
+     * Get number of blocks currently in flight.
+     */
+    size_t GetInFlightCount() const;
+
+    /**
+     * Get number of queued blocks not yet marked as received.
+     * Includes both MISSING and REQUESTED states.
+     */
+    size_t GetQueuedBlockCount() const;
+
+    /**
+     * Get maximum window size (for buffer capacity checks).
+     */
+    uint32_t GetMaxInFlight() const { return max_in_flight_; }
+
+    /**
+     * True once the P2P send callback is wired and the scheduler can issue
+     * real getdata requests instead of queueing inert in-flight entries.
+     */
+    bool HasSendGetDataCallback() const { return static_cast<bool>(send_getdata_callback_); }
+
+    /**
+     * Re-request a block that failed validation.
+     * Resets the block's status from REQUESTED/RECEIVED back to MISSING
+     * so the next Tick() will request it again.
+     *
+     * @param block_hash Hash of the block to re-request
+     * @return true if the block was found and reset
+     */
+    bool ReRequestBlock(const uint256& block_hash);
+
+    /**
+     * Mark a queued block permanently invalid.
+     * Clears any in-flight/received bookkeeping so Tick() stops re-requesting it.
+     *
+     * @param block_hash Hash of the block to mark invalid
+     * @return true if the block was found and marked invalid
+     */
+    bool MarkBlockInvalid(const uint256& block_hash);
+
+    /**
+     * Mark a queued block as consumed by the ordered validation path.
+     *
+     * In stateless CSN mode, proof validation happens outside the scheduler,
+     * so a block can be fully validated before the active chain switches to it.
+     * Marking it CONNECTED here prevents duplicate frontier retries and allows
+     * the scheduler to advance to the next competing-branch block.
+     *
+     * @param block_hash Hash of the block to mark connected/consumed
+     * @return true if the block was found and updated
+     */
+    bool MarkBlockConnected(const uint256& block_hash);
+
+    /**
+     * Check whether a queued block has already been marked CONNECTED.
+     */
+    bool IsBlockConnected(const uint256& hash) const;
+
+    // ========================================================================
+    // Phase W.2.6 Enhancement #3: Sync Phase Detection
+    // ========================================================================
+
+    /**
+     * Get current sync phase (Phase W.2.6 RPC integration)
+     *
+     * Determines sync phase based on download state:
+     * - IBD: Significant number of blocks missing (> 5% of chain)
+     * - CATCHING_UP: Some blocks missing (1-5% of chain)
+     * - STEADY_STATE: Fully synchronized (no missing blocks)
+     *
+     * @return Current sync phase
+     */
+    dinero::SyncPhase GetCurrentPhase() const;
+
+    // ========================================================================
+    // Callbacks (P2P Layer Registers These)
+    // ========================================================================
+
+    /**
+     * Callback type for sending getdata message.
+     *
+     * Parameters:
+     *   - block_hash: Hash of block to request
+     */
+    using SendGetDataCallback = std::function<void(const uint256& block_hash)>;
+
+    /**
+     * Callback type for disconnecting peer (on invalid block).
+     *
+     * Parameters:
+     *   - peer_id: Peer that sent invalid block
+     *   - reason: Why we're disconnecting
+     */
+    using DisconnectPeerCallback = std::function<void(uint64_t peer_id, const std::string& reason)>;
+
+    /**
+     * Set callback for sending getdata.
+     */
+    void SetSendGetDataCallback(SendGetDataCallback callback) {
+        send_getdata_callback_ = callback;
+    }
+
+    /**
+     * Callback type for connecting a stored block to chainstate.
+     *
+     * Parameters:
+     *   - block: The block to connect
+     *   - source: Source identifier for logging
+     * Returns: classified result used by the drain policy
+     */
+    using ConnectBlockCallback = std::function<ConnectBlockResult(const Block& block, const std::string& source)>;
+
+    /**
+     * Callback type for querying the actual chainstate tip height.
+     * Used by TryConnectStoredBlocks to enforce strict tip+1 ordering.
+     */
+    using GetTipHeightCallback = std::function<uint32_t()>;
+
+    /**
+     * Callback type for querying the chainstate block hash at a given height.
+     * Used by ScanForMissingBlocks to detect chain forks and find the
+     * divergence point so that reorg blocks are correctly queued.
+     *
+     * @param height  Block height to query
+     * @param out_hash  Output: block hash at that height in the active chain
+     * @return true if the chainstate has a block at that height
+     */
+    using GetBlockHashAtHeightCallback = std::function<bool(uint32_t height, uint256& out_hash)>;
+
+    /**
+     * Callback type for external backpressure (e.g., CSN pending reorder buffer).
+     *
+     * Return value should represent the number of additional outstanding blocks
+     * currently held outside scheduler in-flight tracking. Tick() will account
+     * for this when deciding whether to request more blocks.
+     */
+    using ExternalBackpressureCallback = std::function<size_t()>;
+
+    /**
+     * Set callback for connecting stored blocks to chainstate.
+     * Called by TryConnectStoredBlocks() for each block in height order.
+     */
+    void SetConnectBlockCallback(ConnectBlockCallback callback) {
+        connect_block_callback_ = callback;
+    }
+
+    /**
+     * Set callback for querying the actual chainstate tip height.
+     */
+    void SetGetTipHeightCallback(GetTipHeightCallback callback) {
+        get_tip_height_callback_ = callback;
+    }
+
+    /**
+     * Set callback for querying the chainstate block hash at a given height.
+     */
+    void SetGetBlockHashAtHeightCallback(GetBlockHashAtHeightCallback callback) {
+        get_block_hash_at_height_callback_ = callback;
+    }
+
+    /**
+     * Set callback for external backpressure accounting.
+     * Pass empty/null callback to disable.
+     */
+    void SetExternalBackpressureCallback(ExternalBackpressureCallback callback) {
+        external_backpressure_callback_ = callback;
+    }
+
+    /**
+     * Enable/disable stateless CSN mode.
+     * In stateless mode, ordered proof validation drives activation and the
+     * scheduler must not connect flat-file blocks directly.
+     */
+    void SetStatelessMode(bool enabled) {
+        stateless_mode_ = enabled;
+    }
+
+    /**
+     * Try to connect stored blocks to chainstate in strict height order.
+     *
+     * Queries actual chainstate tip, then only connects block at tip+1.
+     * If missing_blocks_ has a gap (doesn't cover tip+1), rescans the
+     * header chain from the actual tip to fill the gap.
+     *
+     * On connection failure (missing parent), requests the PARENT hash
+     * via SendGetData — never re-requests the same child block.
+     *
+     * @param max_blocks Maximum blocks to connect per call (0 = unlimited)
+     * @return Number of blocks successfully connected
+     */
+    size_t TryConnectStoredBlocks(size_t max_blocks = 32);
+
+    /**
+     * Set callback for disconnecting peer.
+     */
+    void SetDisconnectPeerCallback(DisconnectPeerCallback callback) {
+        disconnect_peer_callback_ = callback;
+    }
+
+    /**
+     * Get the expected block hash at a given height from the header chain.
+     * Used by reorder buffer to reject poisoned blocks.
+     *
+     * @param height Block height to query
+     * @param out_hash Output: expected hash at that height
+     * @return true if header exists at that height
+     */
+    bool GetExpectedHashAtHeight(uint32_t height, uint256& out_hash) const;
+
+    /**
+     * Set the local chainstate tip height.
+     * Blocks at or below this height are considered already synced.
+     * @param height The current local tip height
+     */
+    void SetLocalTipHeight(uint32_t height) {
+        local_tip_height_ = height;
+    }
+
+    /**
+     * Get the local chainstate tip height.
+     */
+    uint32_t GetLocalTipHeight() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return local_tip_height_;
+    }
+
+private:
+    struct StatelessFrontier {
+        size_t idx;
+        bool reorg_barrier;
+    };
+
+    // Header chain to observe
+    HeaderChainSelector* header_chain_;
+
+    // Block storage for persisting downloaded blocks (Phase N.4.4)
+    dinero::BlockStorage* block_storage_;
+
+    // Queue of blocks to fetch (ordered by height)
+    std::vector<BlockFetchState> missing_blocks_;
+
+    // Currently in-flight blocks (windowed download)
+    std::unordered_set<uint256> in_flight_blocks_;
+
+    // O(1) lookup for expected blocks (mirrors missing_blocks_ hashes)
+    std::unordered_set<uint256> expected_blocks_;
+
+    // Maximum blocks in flight simultaneously (window size)
+    uint32_t max_in_flight_ = 16;
+
+    // Cursor: index into missing_blocks_ for next MISSING scan (amortized O(n))
+    size_t next_missing_idx_ = 0;
+
+    // Local chainstate tip height (blocks at or below are already synced).
+    // Mutable: IsFullySynchronized() refreshes from callback to prevent stale-tip stalls.
+    mutable uint32_t local_tip_height_ = 0;
+
+    // True after OnHeadersProcessed() has been called at least once.
+    // Before this, the scheduler hasn't populated missing_blocks_ yet,
+    // so empty missing_blocks_ does NOT mean "synced".
+    std::atomic<bool> headers_processed_{false};
+
+    // CSN/stateless mode uses the ordered OnUtxoBlock path for activation.
+    bool stateless_mode_ = false;
+
+    // Guards all mutable scheduler state (missing_blocks_, in_flight_blocks_,
+    // expected_blocks_, etc.) against concurrent access from P2P handler
+    // threads calling OnHeadersProcessed/OnBlockReceived/Tick simultaneously.
+    mutable std::mutex mutex_;
+
+    // Blocks that have been received and stored (for parent-known checks).
+    // Allows BlockAcceptor to distinguish "parent received but not connected"
+    // from "parent truly unknown".
+    std::unordered_set<uint256> received_blocks_;
+
+    // P2P callbacks
+    SendGetDataCallback send_getdata_callback_;
+    DisconnectPeerCallback disconnect_peer_callback_;
+    ConnectBlockCallback connect_block_callback_;
+    GetTipHeightCallback get_tip_height_callback_;
+    GetBlockHashAtHeightCallback get_block_hash_at_height_callback_;
+    ExternalBackpressureCallback external_backpressure_callback_;
+
+    // Parent request throttling to avoid spamming repeated getdata for the same
+    // missing parent while waiting for network delivery.
+    std::unordered_map<uint256, std::chrono::steady_clock::time_point> parent_request_times_;
+    static constexpr uint32_t parent_request_cooldown_seconds_ = 2;
+
+    // Stale in-flight timeout: if a REQUESTED block hasn't been received after
+    // this many seconds, reset it to MISSING so the next Tick() re-requests it
+    // (potentially to different/newer peers that actually have the block).
+    static constexpr uint32_t stale_request_timeout_seconds_ = 30;
+
+    // NOTFOUND rescan rate-limit: at most one RescanFromActualTip per this
+    // many seconds when NOTFOUND responses arrive in bursts.
+    std::chrono::steady_clock::time_point last_notfound_rescan_{};
+    static constexpr uint32_t notfound_rescan_cooldown_seconds_ = 5;
+
+    // ========================================================================
+    // Private Helpers
+    // ========================================================================
+
+    /**
+     * Scan header chain for missing blocks.
+     * Updates missing_blocks_ queue.
+     */
+    void ScanForMissingBlocks();
+
+    /**
+     * Request next block from queue.
+     * @return true if a block was requested, false if no MISSING blocks remain
+     */
+    bool RequestNextBlock();
+
+    /**
+     * Validate block against header.
+     *
+     * @param block Block to validate
+     * @return true if block matches header
+     */
+    bool ValidateBlockAgainstHeader(const Block& block);
+
+    /**
+     * Store block to disk.
+     * Does NOT activate chainstate.
+     *
+     * @param block Block to store
+     * @param out_pos Output: file position where block was stored
+     * @return true if stored successfully
+     */
+    bool StoreBlock(const Block& block, FilePosition& out_pos);
+
+    /**
+     * Rescan header chain from the actual chainstate tip.
+     * Preserves RECEIVED/CONNECTED status for already-downloaded blocks.
+     * Called when the drain detects a gap between chainstate tip and
+     * the first block in missing_blocks_.
+     */
+    void RescanFromActualTip(uint32_t actual_tip);
+
+    /**
+     * In stateless mode, find the earliest queued block that must be
+     * validated against the current active-chain pre-state before any later
+     * descendants can safely be requested.
+     *
+     * Blocks below or at the current tip that already match the active chain
+     * are auto-marked CONNECTED and skipped. If the first unresolved block is
+     * at or below the tip, it becomes a reorg barrier and descendants must
+     * wait for it to activate before more requests are issued.
+     */
+    std::optional<StatelessFrontier> FindStatelessFrontierLocked(uint32_t actual_tip);
+
+    // Non-locking helpers for use within methods that already hold mutex_.
+    // The public IsBlockInFlight/IsBlockExpected/etc. acquire mutex_ and
+    // must NOT be called from Tick() or TryConnectStoredBlocks() which
+    // already hold it (std::mutex is non-recursive → deadlock).
+    bool isBlockInFlightLocked(const uint256& hash) const {
+        return in_flight_blocks_.count(hash) > 0;
+    }
+    bool isBlockExpectedLocked(const uint256& hash) const {
+        return expected_blocks_.count(hash) > 0;
+    }
+};
+
+} // namespace consensus
+} // namespace dinero

@@ -1,0 +1,78 @@
+{
+  "network": "mainnet",
+  "data_dir": "/var/lib/dinerod",
+  "log_level": "info",
+  "log_file": "/var/log/dinerod/dinerod.log",
+  
+  "rpc": {
+    "enabled": true,
+    "bind_address": "127.0.0.1",
+    "port": 20999,
+    "cookie_file": "/var/lib/dinerod/mainnet/.cookie",
+    "request_timeout_seconds": 30,
+    "max_connections": 100,
+    "allow_cors": false,
+    "require_auth": true
+  },
+  
+  "http": {
+    "enabled": true,
+    "bind_address": "127.0.0.1", 
+    "port": 22001,
+    "health_endpoint": true,
+    "metrics_endpoint": true,
+    "threads": 4,
+    "max_request_size": 1048576,
+    "request_timeout_seconds": 30
+  },
+  
+  "p2p": {
+    "enabled": true,
+    "bind_address": "0.0.0.0",
+    "port": 40999,
+    "max_peers": 64,
+    "max_inbound": 32,
+    "max_outbound": 32,
+    "connect_timeout_seconds": 10,
+    "peer_discovery": true,
+    "upnp": false
+  },
+  
+  "consensus": {
+    "deep_reorg_threshold": 30,
+    "allow_deep_reorg": false,
+    "safe_mode_on_deep_reorg": true,
+    "checkpoint_verification": true
+  },
+  
+  "mining": {
+    "enabled": false,
+    "address": "",
+    "threads": 0,
+    "extra_nonce_start": 0
+  },
+  
+  "mempool": {
+    "max_size_mb": 128,
+    "max_ancestors": 25,
+    "max_descendants": 25,
+    "min_fee_rate": 1000,
+    "replace_by_fee": true
+  },
+  
+  "storage": {
+    "backend": "rocksdb",
+    "cache_size_mb": 512,
+    "write_buffer_mb": 128,
+    "max_open_files": 2000,
+    "sync_mode": "full",
+    "compression": "snappy"
+  },
+  
+  "security": {
+    "cookie_permissions": "0600",
+    "disable_wallet_rpc_in_safe_mode": true,
+    "rate_limit_rpc": true,
+    "max_rpc_requests_per_minute": 1000
+  }
+}

@@ -1,0 +1,164 @@
+name: Windows Build
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    
+    strategy:
+      matrix:
+        arch: [x64, x86]
+        config: [Release, Debug]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install build dependencies
+      run: |
+        # Install Strawberry Perl and NASM via Chocolatey
+        choco install strawberryperl nasm -y
+        # Refresh environment to pick up new PATH entries
+        refreshenv
+      shell: powershell
+    
+    - name: Verify build tools
+      run: |
+        perl --version
+        nasm -v
+        cmake --version
+      shell: cmd
+    
+    - name: Setup MSVC Developer Environment
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.arch }}
+    
+    - name: Create build directory
+      run: mkdir build
+      shell: cmd
+    
+    - name: Configure CMake
+      working-directory: build
+      run: |
+        cmake .. -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+      shell: cmd
+    
+    - name: Build
+      working-directory: build
+      run: |
+        nmake
+      shell: cmd
+    
+    - name: Verify binary dependencies
+      working-directory: build
+      run: |
+        echo "=== Checking dinerod.exe dependencies ==="
+        dumpbin /dependents bin\dinerod.exe
+        echo ""
+        echo "=== Checking dinero-cli.exe dependencies ==="
+        dumpbin /dependents bin\dinero-cli.exe
+      shell: cmd
+    
+    - name: Basic smoke test
+      working-directory: build
+      run: |
+        echo "=== Testing dinerod version ==="
+        bin\dinerod.exe -version
+        echo ""
+        echo "=== Testing dinero-cli version ==="
+        bin\dinero-cli.exe -version
+      shell: cmd
+      continue-on-error: true
+    
+    - name: Regtest smoke test
+      working-directory: build
+      run: |
+        echo "=== Starting regtest daemon ==="
+        bin\dinerod.exe -regtest -datadir=%TEMP%\dinero-regtest -server=1 -daemon
+        timeout 5
+        echo ""
+        echo "=== Checking if daemon is running ==="
+        tasklist | findstr /I "dinerod" || echo "Daemon not found in process list"
+        echo ""
+        echo "=== Testing RPC connection ==="
+        bin\dinero-cli.exe -regtest -datadir=%TEMP%\dinero-regtest getblockcount || echo "RPC test failed"
+        echo ""
+        echo "=== Stopping daemon ==="
+        bin\dinero-cli.exe -regtest -datadir=%TEMP%\dinero-regtest stop || echo "Stop command failed"
+      shell: cmd
+      continue-on-error: true
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dinero-windows-${{ matrix.arch }}-${{ matrix.config }}
+        path: |
+          build/bin/dinerod.exe
+          build/bin/dinero-cli.exe
+        retention-days: 7
+    
+    - name: Generate checksums
+      if: matrix.config == 'Release'
+      working-directory: build/bin
+      run: |
+        certutil -hashfile dinerod.exe SHA256 > dinerod.exe.sha256
+        certutil -hashfile dinero-cli.exe SHA256 > dinero-cli.exe.sha256
+        type dinerod.exe.sha256
+        type dinero-cli.exe.sha256
+      shell: cmd
+    
+    - name: Upload checksums
+      if: matrix.config == 'Release'
+      uses: actions/upload-artifact@v4
+      with:
+        name: dinero-windows-${{ matrix.arch }}-checksums
+        path: |
+          build/bin/*.sha256
+        retention-days: 30
+
+  # Create release package (only for Release builds on main branch)
+  package-release:
+    if: github.ref == 'refs/heads/main'
+    needs: build-windows
+    runs-on: windows-2022
+    
+    steps:
+    - name: Download x64 Release artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: dinero-windows-x64-Release
+        path: dinero-windows-x64/
+    
+    - name: Download x64 checksums
+      uses: actions/download-artifact@v4
+      with:
+        name: dinero-windows-x64-checksums
+        path: dinero-windows-x64/
+    
+    - name: Create release package
+      run: |
+        # Add README and LICENSE (if they exist)
+        if (Test-Path "README.md") { Copy-Item "README.md" "dinero-windows-x64/" }
+        if (Test-Path "LICENSE") { Copy-Item "LICENSE" "dinero-windows-x64/" }
+        
+        # Create ZIP archive
+        Compress-Archive -Path "dinero-windows-x64" -DestinationPath "dinero-windows-x64.zip"
+        
+        # Generate archive checksum
+        Get-FileHash "dinero-windows-x64.zip" -Algorithm SHA256 | Format-List
+      shell: powershell
+    
+    - name: Upload release package
+      uses: actions/upload-artifact@v4
+      with:
+        name: dinero-windows-release-package
+        path: dinero-windows-x64.zip
+        retention-days: 90

@@ -1,0 +1,452 @@
+// ============================================================================
+// CONSENSUS LAYER - PURE IN-MEMORY UTXO SET IMPLEMENTATION
+// ============================================================================
+//
+// Phase 2: Pure Consensus Architecture
+//
+// This file implements ConsensusUTXOSet - pure in-memory UTXO state.
+// NO database, NO mutex, NO filesystem operations.
+//
+// ============================================================================
+
+#include "consensus/consensus_utxo_set.h"
+#include "consensus/utreexo_canonical_roots_activation.h"  // Apr 13 2026 Stage 3 fork
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include <algorithm>
+#include <iostream>
+#include <sstream>
+#include <iomanip>
+#include <iostream>
+
+namespace dinero {
+namespace consensus {
+
+namespace {
+
+uint64_t GetUtreexoLeafAmount(const UTXOEntry& utxo) {
+    return utxo.is_confidential ? 0 : utxo.value.GetUna();
+}
+
+uint64_t GetUtreexoLeafAmount(const TxOutput& output) {
+    return output.is_confidential ? 0 : output.value.GetUna();
+}
+
+}  // namespace
+
+ConsensusUTXOSet::ConsensusUTXOSet() = default;
+
+// =============================================================================
+// Core UTXO Operations
+// =============================================================================
+
+bool ConsensusUTXOSet::AddCoin(const OutPoint& outpoint, const UTXOEntry& coin) {
+    // Check if already exists
+    if (utxos_.find(outpoint) != utxos_.end()) {
+        return false;
+    }
+
+    utxos_[outpoint] = coin;
+    return true;
+}
+
+std::unique_ptr<UTXOEntry> ConsensusUTXOSet::SpendCoin(const OutPoint& outpoint) {
+    auto it = utxos_.find(outpoint);
+    if (it == utxos_.end()) {
+        return nullptr;
+    }
+
+    auto coin = std::make_unique<UTXOEntry>(it->second);
+    utxos_.erase(it);
+    return coin;
+}
+
+const UTXOEntry* ConsensusUTXOSet::GetCoin(const OutPoint& outpoint) const {
+    auto it = utxos_.find(outpoint);
+    if (it == utxos_.end()) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
+bool ConsensusUTXOSet::HaveCoin(const OutPoint& outpoint) const {
+    return utxos_.find(outpoint) != utxos_.end();
+}
+
+bool ConsensusUTXOSet::DeleteCoin(const OutPoint& outpoint) {
+    // Idempotent: return true even if not found
+    utxos_.erase(outpoint);
+    return true;
+}
+
+// =============================================================================
+// Block Operations
+// =============================================================================
+
+bool ConsensusUTXOSet::ApplyBlock(const Block& block, uint32_t height,
+                                  const uint256& block_hash, BlockUndo& undo,
+                                  UtreexoHash& computed_utreexo_root,
+                                  std::string& error) {
+    // Initialize undo data
+    undo = BlockUndo(height, block_hash);
+    UtreexoDelta utreexo_delta;
+    utreexo_delta.numLeavesBefore = forest_.getNumLeaves();
+
+    // Process all transactions in order
+    for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+        const Transaction& tx = block.vtx[tx_idx];
+        bool is_coinbase = (tx_idx == 0);
+
+        if (!ProcessTransaction(tx, height, is_coinbase, undo, utreexo_delta, error)) {
+            return false;
+        }
+    }
+
+    // Store Utreexo delta for undo
+    undo.utreexo_delta = std::move(utreexo_delta);
+
+    // Compute final Utreexo root
+    computed_utreexo_root = forest_.getCommitment();
+
+    // Update state
+    height_ = height;
+    best_block_ = block_hash;
+
+    return true;
+}
+
+bool ConsensusUTXOSet::ProcessTransaction(const Transaction& tx, uint32_t height,
+                                          bool is_coinbase, BlockUndo& undo,
+                                          UtreexoDelta& utreexo_delta,
+                                          std::string& error) {
+    // Compute txid for output creation
+    TxId txid = tx.GetTxid();
+
+    // 1. Spend inputs (skip for coinbase)
+    if (!is_coinbase) {
+        for (const TxInput& input : tx.vin) {
+            // Convert TxOutPoint to OutPoint
+            OutPoint outpoint(input.prevout.txid, input.prevout.vout);
+
+            // Get and spend the UTXO
+            auto spent_coin = SpendCoin(outpoint);
+            if (!spent_coin) {
+                error = "Missing input: " + input.prevout.txid.AsUint256().GetHex() +
+                       ":" + std::to_string(input.prevout.vout);
+                return false;
+            }
+
+            // Record in undo data
+            undo.AddSpentCoin(input.prevout.txid.AsUint256(), input.prevout.vout, *spent_coin);
+
+            // Compute leaf hash for Utreexo
+            UtreexoHash leaf_hash = HashUTXO(
+                input.prevout.txid.AsUint256(),
+                input.prevout.vout,
+                GetUtreexoLeafAmount(*spent_coin),
+                spent_coin->scriptPubKey
+            );
+
+            // Generate proof and remove from Utreexo
+            // Note: For simplicity, we track the deletion position
+            // Full implementation would verify proof first
+            auto position = forest_.findLeafPosition(leaf_hash);
+            if (position) {
+                utreexo_delta.recordDelete(*position, leaf_hash);
+                auto proof = forest_.prove(*position);
+                if (proof) {
+                    forest_.remove(leaf_hash, *proof);
+                }
+            }
+        }
+    }
+
+    // 2. Create outputs
+    for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+        const TxOutput& output = tx.vout[vout];
+
+        // Skip OP_RETURN outputs (they're not spendable)
+        if (!output.scriptPubKey.empty() && output.scriptPubKey[0] == 0x6a) {
+            continue;
+        }
+
+        // Create UTXO entry
+        OutPoint outpoint(txid, vout);
+        UTXOEntry entry(
+            output.value,
+            output.scriptPubKey,
+            height,
+            is_coinbase,
+            output.is_confidential,
+            output.commitment
+        );
+
+        // Add to UTXO set
+        if (!AddCoin(outpoint, entry)) {
+            error = "Duplicate output: " + txid.AsUint256().GetHex() + ":" + std::to_string(vout);
+            return false;
+        }
+
+        // Add to Utreexo
+        UtreexoHash leaf_hash = HashUTXO(
+            txid.AsUint256(),
+            vout,
+            GetUtreexoLeafAmount(output),
+            output.scriptPubKey
+        );
+        {
+            std::ostringstream lh;
+            for (size_t b = 0; b < std::min(leaf_hash.size(), size_t(8)); b++)
+                lh << std::hex << std::setfill('0') << std::setw(2) << (int)leaf_hash[b];
+            std::cout << "   [CUTXO] Adding output " << vout << ": "
+                      << "value=" << GetUtreexoLeafAmount(output)
+                      << ", spk_size=" << output.scriptPubKey.size()
+                      << ", is_ct=" << output.is_confidential
+                      << ", txid=" << txid.AsUint256().GetHex().substr(0, 16)
+                      << ", leaf=" << lh.str()
+                      << std::endl;
+        }
+        uint64_t position = forest_.add(leaf_hash);
+        if (position == UINT64_MAX) {
+            error = "Utreexo add failed: duplicate leaf hash or forest capacity reached";
+            return false;
+        }
+        utreexo_delta.recordAdd(leaf_hash, position);
+    }
+
+    return true;
+}
+
+bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
+                                 const BlockUndo& undo, std::string& error) {
+    // Verify height matches
+    if (undo.height != height) {
+        error = "Undo height mismatch";
+        return false;
+    }
+
+    // Process transactions in reverse order
+    size_t spent_index = undo.spent_coins.size();
+
+    for (size_t tx_idx = block.vtx.size(); tx_idx > 0; --tx_idx) {
+        const Transaction& tx = block.vtx[tx_idx - 1];
+        bool is_coinbase = (tx_idx == 1);
+
+        // Get txid
+        TxId txid = tx.GetTxid();
+
+        // 1. Remove created outputs (in reverse order)
+        for (uint32_t vout = tx.vout.size(); vout > 0; --vout) {
+            const TxOutput& output = tx.vout[vout - 1];
+
+            // Skip OP_RETURN outputs
+            if (!output.scriptPubKey.empty() && output.scriptPubKey[0] == 0x6a) {
+                continue;
+            }
+
+            OutPoint outpoint(txid, vout - 1);
+            DeleteCoin(outpoint);
+        }
+
+        // 2. Restore spent inputs (skip for coinbase)
+        if (!is_coinbase) {
+            // Walk backward through inputs
+            for (size_t i = tx.vin.size(); i > 0; --i) {
+                if (spent_index == 0) {
+                    error = "Undo data exhausted";
+                    return false;
+                }
+                --spent_index;
+
+                const UndoEntry& undo_entry = undo.spent_coins[spent_index];
+                OutPoint outpoint(TxId(undo_entry.txid), undo_entry.vout);
+                AddCoin(outpoint, undo_entry.coin);
+            }
+        }
+    }
+
+    // Restore Utreexo state using delta
+    if (undo.utreexo_delta) {
+        const UtreexoDelta& delta = *undo.utreexo_delta;
+
+        // Remove added leaves (reverse order)
+        if (!delta.addedLeaves.empty()) {
+            if (!forest_.removeLastNLeaves(delta.addedLeaves.size())) {
+                error = "utreexo-delta-undo-remove-failed";
+                return false;
+            }
+        }
+
+        // Restore deleted leaves (reverse order)
+        for (auto it = delta.deletedLeaves.rbegin(); it != delta.deletedLeaves.rend(); ++it) {
+            if (!forest_.restoreDeletedLeaf(it->position, it->leafHash)) {
+                error = "utreexo-delta-undo-restore-failed";
+                return false;
+            }
+        }
+    }
+
+    // Update state (go back one block)
+    if (height > 0) {
+        height_ = height - 1;
+    }
+    // Note: best_block_ will be set by caller after successful undo
+
+    return true;
+}
+
+// =============================================================================
+// Snapshot Operations
+// =============================================================================
+
+UTXOSnapshot ConsensusUTXOSet::Snapshot() const {
+    UTXOSnapshot snapshot;
+    snapshot.height = height_;
+    snapshot.block_hash = best_block_;
+    snapshot.utreexo_root = forest_.getCommitment();
+    snapshot.utxos = utxos_;  // Deep copy
+    snapshot.utreexo_num_leaves = forest_.getNumLeaves();
+    snapshot.utreexo_forest_state = forest_.serialize();
+    return snapshot;
+}
+
+void ConsensusUTXOSet::Restore(const UTXOSnapshot& snapshot) {
+    height_ = snapshot.height;
+    best_block_ = snapshot.block_hash;
+    utxos_ = snapshot.utxos;  // Deep copy
+
+    if (!snapshot.utreexo_forest_state.empty()) {
+        forest_ = UtreexoForest::deserialize(snapshot.utreexo_forest_state);
+    } else if (snapshot.utreexo_num_leaves == 0 && snapshot.utxos.empty()) {
+        forest_ = UtreexoForest();
+    } else {
+        // Backward-compat fallback for snapshots that predate serialized forest
+        // state. This is slower but preserves full-state restore semantics.
+        forest_ = UtreexoForest();
+        std::vector<OutPoint> sorted_outpoints;
+        sorted_outpoints.reserve(utxos_.size());
+        for (const auto& [outpoint, entry] : utxos_) {
+            sorted_outpoints.push_back(outpoint);
+        }
+        std::sort(sorted_outpoints.begin(), sorted_outpoints.end());
+
+        for (const OutPoint& outpoint : sorted_outpoints) {
+            const UTXOEntry& entry = utxos_.at(outpoint);
+            UtreexoHash leaf_hash = HashUTXO(
+                outpoint.txid.AsUint256(),
+                outpoint.vout,
+                GetUtreexoLeafAmount(entry),
+                entry.scriptPubKey
+            );
+            if (forest_.add(leaf_hash) == UINT64_MAX) {
+                std::cerr << "ERROR [Restore]: Failed to rebuild Utreexo forest from snapshot UTXOs" << std::endl;
+                forest_ = UtreexoForest();
+                break;
+            }
+        }
+    }
+
+    if (forest_.getNumLeaves() != snapshot.utreexo_num_leaves) {
+        std::cerr << "WARNING [Restore]: Forest numLeaves (" << forest_.getNumLeaves()
+                  << ") != snapshot numLeaves (" << snapshot.utreexo_num_leaves << ")" << std::endl;
+    }
+    if (forest_.getCommitment() != snapshot.utreexo_root) {
+        std::cerr << "WARNING [Restore]: Forest root mismatch after restore" << std::endl;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // Apr 13 2026 Stage 3 — symmetric canonical-roots fork activation on Restore.
+    //
+    // The bug we're fixing: ConnectBlockInternal's activation hook flipped
+    // `canonical_empty_roots_` and called rebuildRoots() at the activation
+    // block, but UtreexoForest::serialize/deserialize doesn't carry the flag,
+    // and there was no symmetric un-flip on disconnect/restore. Result: any
+    // restore() across the activation boundary left the forest in an
+    // inconsistent state (deserialized flag=false, but roots_ shape may be
+    // post-fork canonical or pre-fork ghost form depending on when the
+    // snapshot was taken). That made block 2870 un-disconnectable on
+    // mainnet on Apr 13 2026, causing the chain split that required
+    // rebuilding MO + Mac.
+    //
+    // Fix: derive the correct flag from the height being restored TO, set
+    // it on the freshly-deserialized forest, and call rebuildRoots() if the
+    // flag transitioned. After this, the forest is internally consistent
+    // and any subsequent operation (mining, connecting, disconnecting) sees
+    // the right semantics for the new tip height.
+    // ═════════════════════════════════════════════════════════════════════════
+    {
+        const bool expected_flag =
+            consensus::IsUtreexoCanonicalRootsActive(static_cast<uint32_t>(snapshot.height));
+        if (forest_.isCanonicalEmptyRoots() != expected_flag) {
+            forest_.setCanonicalEmptyRoots(expected_flag);
+            forest_.rebuildRoots();  // re-canonicalize roots_ to match the new flag
+        }
+    }
+}
+
+// =============================================================================
+// State Accessors
+// =============================================================================
+
+UtreexoHash ConsensusUTXOSet::GetUtreexoRoot() const {
+    return forest_.getCommitment();
+}
+
+size_t ConsensusUTXOSet::GetMemoryUsage() const {
+    size_t usage = sizeof(ConsensusUTXOSet);
+
+    for (const auto& [outpoint, entry] : utxos_) {
+        usage += sizeof(OutPoint);
+        usage += sizeof(UTXOEntry);
+        usage += entry.scriptPubKey.size();
+        usage += entry.commitment.size();
+    }
+
+    // Approximate forest memory (nodes + roots + maps)
+    usage += forest_.getNumLeaves() * 40;  // ~40 bytes per leaf average
+
+    return usage;
+}
+
+void ConsensusUTXOSet::Clear() {
+    utxos_.clear();
+    forest_ = UtreexoForest();
+    height_ = 0;
+    best_block_ = uint256();
+}
+
+bool ConsensusUTXOSet::BulkLoad(const std::unordered_map<OutPoint, UTXOEntry>& utxos,
+                                uint32_t height, const uint256& best_block) {
+    Clear();
+    utxos_ = utxos;
+    height_ = height;
+    best_block_ = best_block;
+
+    // Rebuild Utreexo forest from UTXOs
+    // Process in deterministic order (sorted by outpoint)
+    std::vector<OutPoint> sorted_outpoints;
+    sorted_outpoints.reserve(utxos.size());
+    for (const auto& [outpoint, entry] : utxos) {
+        sorted_outpoints.push_back(outpoint);
+    }
+    std::sort(sorted_outpoints.begin(), sorted_outpoints.end());
+
+    for (const OutPoint& outpoint : sorted_outpoints) {
+        const UTXOEntry& entry = utxos.at(outpoint);
+        UtreexoHash leaf_hash = HashUTXO(
+            outpoint.txid.AsUint256(),
+            outpoint.vout,
+            GetUtreexoLeafAmount(entry),
+            entry.scriptPubKey
+        );
+        if (forest_.add(leaf_hash) == UINT64_MAX) {
+            std::cerr << "ERROR: BulkLoad failed (duplicate Utreexo leaf hash or forest full)" << std::endl;
+            return false;
+        }
+    }
+
+    return true;
+}
+
+} // namespace consensus
+} // namespace dinero

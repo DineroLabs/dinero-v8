@@ -1,0 +1,97 @@
+# Dinero Network Monitoring Configuration
+# Prometheus configuration for monitoring seed nodes and network health
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    network: 'dinero-mainnet'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - "dinero_alerts.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Seed nodes monitoring
+  - job_name: 'dinero-seed-nodes'
+    static_configs:
+      - targets:
+        - 'seed1.dinero.org:9100'  # node_exporter
+        - 'seed2.dinero.org:9100'
+        - 'seed3.dinero.org:9100'
+        - 'seed4.dinero.org:9100'
+        - 'seed5.dinero.org:9100'
+        - 'seed6.dinero.org:9100'
+        - 'seed7.dinero.org:9100'
+        - 'seed8.dinero.org:9100'
+    scrape_interval: 30s
+    metrics_path: /metrics
+    
+  # Dinero daemon metrics (custom exporter)
+  - job_name: 'dinero-daemon'
+    static_configs:
+      - targets:
+        - 'seed1.dinero.org:9332'  # dinero_exporter
+        - 'seed2.dinero.org:9332'
+        - 'seed3.dinero.org:9332'
+        - 'seed4.dinero.org:9332'
+        - 'seed5.dinero.org:9332'
+        - 'seed6.dinero.org:9332'
+        - 'seed7.dinero.org:9332'
+        - 'seed8.dinero.org:9332'
+    scrape_interval: 30s
+    metrics_path: /metrics
+    
+  # DNS seeder monitoring
+  - job_name: 'dinero-dns-seeder'
+    static_configs:
+      - targets:
+        - 'ns1.seed.dinero.org:9100'
+        - 'ns2.seed.dinero.org:9100'
+    scrape_interval: 60s
+    
+  # Blackbox monitoring (external connectivity)
+  - job_name: 'dinero-blackbox'
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+        - 'seed1.dinero.org:20999'
+        - 'seed2.dinero.org:20999'
+        - 'seed3.dinero.org:20999'
+        - 'seed4.dinero.org:20999'
+        - 'seed5.dinero.org:20999'
+        - 'seed6.dinero.org:20999'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+        
+  # DNS seeder functionality check
+  - job_name: 'dinero-dns-check'
+    metrics_path: /probe
+    params:
+      module: [dns_dinero_seed]
+    static_configs:
+      - targets:
+        - 'seed.dinero.org'
+        - 'dnsseed.dinero.org'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

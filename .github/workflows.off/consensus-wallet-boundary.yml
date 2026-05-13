@@ -1,0 +1,200 @@
+name: Consensus/Wallet Boundary Guard
+
+# Enforces strict separation between consensus and wallet layers.
+# Consensus answers "is this valid?" Wallet answers "is this mine?"
+# These questions must never cross layers.
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  check-boundaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for wallet includes in consensus code
+        run: |
+          echo "Checking for wallet includes in consensus code..."
+
+          # Consensus code must NEVER include wallet headers
+          # Direction of trust: Wallet depends on Consensus, not the reverse
+          #
+          # EXCEPTIONS:
+          # - consensus/adapters/ - Bridge layer that explicitly connects wallet to consensus
+          # - Comments mentioning wallet types (documentation)
+          #
+          # v2.3.0: BIP143 sighash moved to consensus/crypto/sighash_bip143.h
+          VIOLATIONS=$(grep -rn "wallet/" \
+            src/consensus/ \
+            include/consensus/ \
+            --include="*.cpp" \
+            --include="*.h" \
+            | grep -v "consensus/adapters" \
+            | grep -v "// " \
+            || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ Consensus code must not include wallet headers"
+            echo ""
+            echo "Violations found:"
+            echo "$VIOLATIONS"
+            echo ""
+            echo "Consensus layer must use only consensus types (OutPoint, UTXOEntry)."
+            echo "Use adapters (e.g., WalletUTXOAdapter) to bridge wallet to consensus."
+            echo ""
+            echo "Exceptions:"
+            echo "  - consensus/adapters/ (bridge layer)"
+            exit 1
+          fi
+
+          echo "✅ No wallet includes in consensus code"
+
+      - name: Check for IsOurScript outside wallet layer
+        run: |
+          echo "Checking for IsOurScript usage outside wallet..."
+
+          # IsOurScript is wallet-specific - determines if output belongs to wallet
+          # Consensus must restore ALL UTXOs unconditionally during reorgs
+          #
+          # EXCEPTIONS:
+          # - consensus/adapters/ - Bridge layer provides delegating wrapper
+          VIOLATIONS=$(grep -rn "IsOurScript" \
+            src/ include/ \
+            --include="*.cpp" \
+            --include="*.h" \
+            | grep -v "wallet/" \
+            | grep -v "src/wallet" \
+            | grep -v "include/wallet" \
+            | grep -v "consensus/adapters" \
+            || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ IsOurScript leaked outside wallet layer"
+            echo ""
+            echo "Violations found:"
+            echo "$VIOLATIONS"
+            echo ""
+            echo "IsOurScript is wallet-specific. Consensus code must:"
+            echo "  - Never check output ownership"
+            echo "  - Restore ALL UTXOs during DisconnectBlock"
+            echo "  - Let wallet handle ownership via rescanBlockchain()"
+            exit 1
+          fi
+
+          echo "✅ IsOurScript contained within wallet layer"
+
+      - name: Check for WalletUTXO in consensus layer
+        run: |
+          echo "Checking for WalletUTXO usage in consensus code..."
+
+          # WalletUTXO extends UTXOEntry with wallet-specific fields (derivation path, etc.)
+          # Consensus must only use UTXOEntry
+          #
+          # EXCEPTIONS:
+          # - consensus/adapters/ - Bridge layer must convert between types
+          # - WalletUTXOAdapter - Instantiating the bridge is allowed
+          # - Comments/documentation
+          VIOLATIONS=$(grep -rn "WalletUTXO" \
+            src/consensus/ \
+            include/consensus/ \
+            --include="*.cpp" \
+            --include="*.h" \
+            | grep -v "consensus/adapters" \
+            | grep -v "WalletUTXOAdapter" \
+            | grep -v "// " \
+            | grep -v "\* " \
+            || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ WalletUTXO found in consensus layer"
+            echo ""
+            echo "Violations found:"
+            echo "$VIOLATIONS"
+            echo ""
+            echo "Use UTXOEntry (consensus type) instead of WalletUTXO (wallet type)."
+            echo "Use WalletUTXOAdapter to bridge wallet types to consensus interface."
+            exit 1
+          fi
+
+          echo "✅ No WalletUTXO in consensus layer"
+
+      - name: Check IUTXOProvider interface purity
+        run: |
+          echo "Checking IUTXOProvider uses only consensus types..."
+
+          # IUTXOProvider interface must not reference wallet types
+          VIOLATIONS=$(grep -n "wallet/" \
+            include/consensus/interfaces/iutxo_provider.h \
+            || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ IUTXOProvider includes wallet headers"
+            echo ""
+            echo "Violations found:"
+            echo "$VIOLATIONS"
+            echo ""
+            echo "IUTXOProvider is a consensus interface. It must use only:"
+            echo "  - OutPoint (txid + vout)"
+            echo "  - UTXOEntry (value, scriptPubKey, height, coinbase)"
+            exit 1
+          fi
+
+          echo "✅ IUTXOProvider interface is pure consensus"
+
+      - name: Check ConsensusUTXOSet purity
+        run: |
+          echo "Checking ConsensusUTXOSet is pure (no IO, no threading)..."
+
+          # Phase 2: ConsensusUTXOSet must be pure in-memory
+          # NO database, NO mutex, NO filesystem operations
+          #
+          # This ensures:
+          # - Consensus correctness is independent of persistence correctness
+          # - Unit tests don't need a database
+          # - Trivial reorgs via Snapshot()/Restore()
+          #
+          # Check for actual #include statements (not comments)
+          VIOLATIONS=$(grep -rE "^#include.*(<rocksdb|<filesystem>|<mutex>|<thread>)" \
+            include/consensus/consensus_utxo_set.h \
+            src/consensus/consensus_utxo_set.cpp \
+            2>/dev/null || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ ConsensusUTXOSet is not pure"
+            echo ""
+            echo "Violations found:"
+            echo "$VIOLATIONS"
+            echo ""
+            echo "ConsensusUTXOSet must be pure in-memory. It cannot include:"
+            echo "  - <rocksdb/*> headers (database)"
+            echo "  - <filesystem> header (IO)"
+            echo "  - <mutex> or <thread> headers (threading)"
+            echo ""
+            echo "Move persistence concerns to PersistentUTXOAdapter (storage layer)."
+            exit 1
+          fi
+
+          echo "✅ ConsensusUTXOSet is pure (no IO, no threading)"
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "✅ Consensus/Wallet Boundary: SEALED"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "Layer separation verified:"
+          echo "  • Consensus code has no wallet dependencies"
+          echo "  • IsOurScript is contained within wallet layer"
+          echo "  • IUTXOProvider interface uses only consensus types"
+          echo "  • ConsensusUTXOSet is pure (no IO, no threading)"
+          echo "  • Direction of trust: Wallet → Consensus (not reverse)"
+          echo ""
+          echo "Phase 2 Architecture:"
+          echo "  • ConsensusUTXOSet: Pure in-memory UTXO + Utreexo"
+          echo "  • PersistentUTXOAdapter: Bridges to ChainDB"
+          echo "  • Trivial reorgs via Snapshot()/Restore()"

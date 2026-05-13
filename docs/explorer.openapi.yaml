@@ -1,0 +1,495 @@
+openapi: 3.0.3
+info:
+  title: Dinero Explorer API
+  version: "1.0.0"
+  description: |
+    Fast, read-only blockchain explorer API for Dinero cryptocurrency.
+    
+    Features:
+    - Real-time chain data with smart caching
+    - Address/UTXO lookups with pagination
+    - Mempool monitoring
+    - WebSocket streaming for live updates
+    
+    Base URL: `/api/v1`
+    
+servers:
+  - url: /api/v1
+    description: Explorer API v1
+
+paths:
+  /chain/tip:
+    get:
+      summary: Current blockchain tip
+      description: Get the latest block height, hash, and timestamp
+      responses:
+        "200":
+          description: Current tip information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  height:
+                    type: integer
+                    example: 12345
+                  hash:
+                    type: string
+                    example: "a1b2c3d4e5f6..."
+                  time:
+                    type: integer
+                    format: int64
+                    example: 1693123456
+
+  /block/{hash}:
+    get:
+      summary: Block by hash
+      parameters:
+        - in: path
+          name: hash
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+          example: "a1b2c3d4e5f6789..."
+        - in: query
+          name: verbosity
+          schema:
+            type: integer
+            enum: [0, 1, 2]
+            default: 1
+          description: |
+            - 0: Raw hex block
+            - 1: Block with transaction IDs
+            - 2: Block with full transaction details
+      responses:
+        "200":
+          description: Block data
+        "400":
+          description: Invalid block hash
+        "404":
+          description: Block not found
+
+  /block/height/{height}:
+    get:
+      summary: Block by height
+      parameters:
+        - in: path
+          name: height
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+          example: 12345
+        - in: query
+          name: verbosity
+          schema:
+            type: integer
+            enum: [0, 1, 2]
+            default: 1
+      responses:
+        "200":
+          description: Block data
+        "400":
+          description: Invalid height
+        "404":
+          description: Block not found
+
+  /blocks:
+    get:
+      summary: Block list with pagination
+      parameters:
+        - in: query
+          name: from_height
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+      responses:
+        "200":
+          description: Array of block summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    height:
+                      type: integer
+                    hash:
+                      type: string
+                    time:
+                      type: integer
+                      format: int64
+                    tx_count:
+                      type: integer
+
+  /tx/{txid}:
+    get:
+      summary: Transaction by ID
+      parameters:
+        - in: path
+          name: txid
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+      responses:
+        "200":
+          description: Decoded transaction
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  txid:
+                    type: string
+                  size:
+                    type: integer
+                  vsize:
+                    type: integer
+                  vin:
+                    type: array
+                    items:
+                      type: object
+                  vout:
+                    type: array
+                    items:
+                      type: object
+                  locktime:
+                    type: integer
+        "404":
+          description: Transaction not found
+
+  /tx/{txid}/hex:
+    get:
+      summary: Transaction raw hex
+      parameters:
+        - in: path
+          name: txid
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+      responses:
+        "200":
+          description: Raw transaction hex
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hex:
+                    type: string
+
+  /address/{address}:
+    get:
+      summary: Address summary
+      parameters:
+        - in: path
+          name: address
+          required: true
+          schema:
+            type: string
+            pattern: "^din1[0-9a-zA-Z]+$"
+          example: "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k..."
+      responses:
+        "200":
+          description: Address statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  address:
+                    type: string
+                  scripthash:
+                    type: string
+                  received:
+                    type: string
+                    example: "123.456789"
+                  sent:
+                    type: string
+                    example: "23.456789"
+                  balance:
+                    type: string
+                    example: "100.000000"
+                  tx_count:
+                    type: integer
+
+  /address/{address}/utxos:
+    get:
+      summary: Address UTXOs with pagination
+      parameters:
+        - in: path
+          name: address
+          required: true
+          schema:
+            type: string
+            pattern: "^din1[0-9a-zA-Z]+$"
+        - in: query
+          name: minconf
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - in: query
+          name: cursor
+          schema:
+            type: string
+          description: Base64-encoded pagination cursor
+      responses:
+        "200":
+          description: UTXO list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        txid:
+                          type: string
+                        vout:
+                          type: integer
+                        value:
+                          type: string
+                        height:
+                          type: integer
+                        spk_hex:
+                          type: string
+                  next_cursor:
+                    type: string
+                    description: Cursor for next page (if more results)
+
+  /address/{address}/txs:
+    get:
+      summary: Address transaction history
+      parameters:
+        - in: path
+          name: address
+          required: true
+          schema:
+            type: string
+            pattern: "^din1[0-9a-zA-Z]+$"
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - in: query
+          name: cursor
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction history (newest first)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        txid:
+                          type: string
+                        height:
+                          type: integer
+                        confirmations:
+                          type: integer
+                        delta:
+                          type: integer
+                          format: int64
+                          description: Net change for this address
+                        inputs:
+                          type: array
+                          items:
+                            type: string
+                        outputs:
+                          type: array
+                          items:
+                            type: string
+                  next_cursor:
+                    type: string
+
+  /mempool:
+    get:
+      summary: Mempool summary
+      responses:
+        "200":
+          description: Mempool statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tx_count:
+                    type: integer
+                  total_bytes:
+                    type: integer
+                    format: int64
+                  min_fee_rate:
+                    type: number
+                    format: double
+                  histogram:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        fee_rate:
+                          type: number
+                        count:
+                          type: integer
+
+  /mempool/txids:
+    get:
+      summary: Mempool transaction IDs
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+            default: 1000
+      responses:
+        "200":
+          description: Array of transaction IDs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  /stats/supply:
+    get:
+      summary: Supply statistics
+      responses:
+        "200":
+          description: Current supply info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  height:
+                    type: integer
+                  subsidy:
+                    type: string
+                    description: Current block reward
+                  cumulative_issued:
+                    type: string
+                    description: Total coins issued
+                  circulating:
+                    type: string
+                    description: Circulating supply
+
+  /stats/difficulty:
+    get:
+      summary: Difficulty statistics
+      responses:
+        "200":
+          description: Current difficulty
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  height:
+                    type: integer
+                  bits:
+                    type: string
+                    example: "0x1d00ffff"
+                  difficulty:
+                    type: number
+
+  /search:
+    get:
+      summary: Search blocks, transactions, or addresses
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+          description: Search query (block hash, height, txid, or address)
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: ["block", "tx", "address", "not_found"]
+                  result:
+                    type: object
+                    description: Result data (varies by type)
+
+  /health:
+    get:
+      summary: API health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  height:
+                    type: integer
+                  db:
+                    type: string
+                    example: "ok"
+                  mempool_index:
+                    type: string
+                    example: "ok"
+        "503":
+          description: Service unavailable
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+
+# WebSocket endpoints (documented separately)
+# Path: /ws/explorer
+# Messages:
+# - {"type":"newBlock","height":123,"hash":"...","time":...}
+# - {"type":"newTx","txid":"...","fee_rate":123.4}
+# - {"type":"reorg","from":12345,"to":12344,"detached":["..."],"attached":["..."]}
+# - {"type":"txConfirmed","txid":"...","height":...}

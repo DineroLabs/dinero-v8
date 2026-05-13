@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${NET:=mainnet}"
+case "${NET}" in
+  mainnet) DEFAULT_RPCPORT=20998; DEFAULT_DATADIR="${HOME}/.dinero" ;;
+  testnet) DEFAULT_RPCPORT=20998; DEFAULT_DATADIR="${HOME}/.dinero/testnet" ;;
+  regtest) DEFAULT_RPCPORT=20996; DEFAULT_DATADIR="${HOME}/.dinero/regtest" ;;
+  *) echo "Unknown NET='${NET}'"; exit 2 ;;
+esac
+: "${RPCPORT:=${DEFAULT_RPCPORT}}"
+: "${DATADIR:=${DINERO_DATADIR:-${DEFAULT_DATADIR}}}"
+COOKIE="${DATADIR}/.cookie"
+
+if [[ -f "${COOKIE}" ]]; then
+  CREDS="$(cat "${COOKIE}")"
+  echo "⏹  Stopping via RPC…"
+  curl -s --fail --user "${CREDS}" -H 'content-type: application/json' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"stop","params":[]}' \
+    "http://127.0.0.1:${RPCPORT}" >/dev/null || true
+fi
+
+for PIDFILE in "${DATADIR}/run/dstart.pid" "${DATADIR}/dinerod.pid"; do
+  if [[ -f "${PIDFILE}" ]]; then
+    PID="$(cat "${PIDFILE}")"
+    if ps -p "${PID}" >/dev/null 2>&1; then
+      echo "⌛ Waiting for PID ${PID}…"
+      for _ in {1..60}; do
+        ps -p "${PID}" >/dev/null 2>&1 || break
+        sleep 0.5
+      done
+      if ps -p "${PID}" >/dev/null 2>&1; then
+        echo "⚠️  PID ${PID} still running; sending TERM"
+        kill "${PID}" 2>/dev/null || true
+      fi
+    fi
+    rm -f "${PIDFILE}"
+  fi
+done
+echo "✅ Stopped (or not running)."

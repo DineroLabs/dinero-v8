@@ -1,0 +1,95 @@
+# Dinero Core systemd unit example
+# =================================
+# This file is shipped by `cmake --install` as
+#   ${CMAKE_INSTALL_PREFIX}/share/doc/dinero/dinero.service.example
+#
+# It is NOT installed automatically as an active systemd unit.
+#
+# To use it manually:
+#   1. Copy to /etc/systemd/system/dinero.service
+#      (or, if running under a different supervisor, adapt to that)
+#   2. Edit User=, Group=, ExecStart=, paths to match your install
+#   3. systemctl daemon-reload && systemctl enable --now dinero
+#
+# Phase E (`.deb` packaging) of the Dinero Core 1.0 plan will install
+# the packaged-mode variant of this file directly at
+# /lib/systemd/system/dinero.service. See docs/specs/dinero-core-1.0.md
+# §1.1 for the locked packaged-mode contract.
+#
+# This example reflects MANUAL-USER mode (spec §1.2):
+#   - Daemon at /usr/local/bin/dinerod
+#   - Datadir at ~/.dinero/ (i.e. the invoking user's home)
+#   - Config at ~/.dinero/dinero.conf (auto-discovered; no flag needed)
+#
+# To convert to PACKAGED-SERVICE mode (spec §1.1) flip:
+#   ExecStart=/usr/local/bin/dinerod  →  /usr/bin/dinerod
+#   User=<your-user>                  →  dinero
+#   Group=<your-group>                →  dinero
+#   --datadir=...                     →  remove (default ~dinero/.dinero/
+#                                       resolved by the config loader)
+# OR set explicit datadir=/var/lib/dinero in /etc/dinero/dinero.conf.
+
+[Unit]
+Description=Dinero Core daemon
+Documentation=https://github.com/DineroLabs/Dinero-Coin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# === Identity (manual mode) ===
+# Edit to match the user that owns ~/.dinero/.
+User=dinero
+Group=dinero
+
+# === Paths ===
+# dinerod auto-discovers <datadir>/dinero.conf. No --conf flag is needed
+# unless you want a non-default config path.
+ExecStart=/usr/local/bin/dinerod --datadir=/var/lib/dinero
+
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+# === Logging ===
+# Default is the systemd journal. To inspect: `journalctl -u dinero`.
+# For an additional file copy, set debug.log_file in dinero.conf.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dinero
+
+# === Security hardening ===
+# These are the safe defaults for a packaged daemon. If running under
+# an alternative supervisor (Docker, runit, s6) most of these become
+# the supervisor's responsibility instead.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/dinero
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# === Resource limits ===
+LimitNOFILE=65536
+LimitNPROC=4096
+# Tune for your hardware; default leaves it to the kernel.
+# MemoryMax=8G
+# CPUQuota=400%
+
+# === Environment ===
+Environment=MALLOC_ARENA_MAX=4
+
+[Install]
+WantedBy=multi-user.target

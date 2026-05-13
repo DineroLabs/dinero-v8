@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dinero Symbol Preview</title>
+  <link rel="stylesheet" href="./dinero-symbol.css" />
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 40px; color: #111; }
+    .row { display: flex; align-items: center; gap: 16px; margin: 16px 0; }
+    .s16 { font-size: 16px; }
+    .s24 { font-size: 24px; }
+    .s40 { font-size: 40px; }
+    .muted { color: #6b7280; }
+  </style>
+</head>
+<body>
+  <h1>Dinero Symbol Preview</h1>
+  <div class="row s16"><span class="din-symbol-icon"></span><span>Primary symbol (16px)</span></div>
+  <div class="row s24"><span class="din-symbol-icon"></span><span>Primary symbol (24px)</span></div>
+  <div class="row s40"><span class="din-symbol-icon"></span><span>Primary symbol (40px)</span></div>
+  <div class="row s16"><span class="din-symbol-icon small"></span><span>Small symbol (16px)</span></div>
+  <div class="row s24"><span class="din-symbol-icon small"></span><span>Small symbol (24px)</span></div>
+  <p class="muted">Icon-font mode also wired in CSS using codepoints E900/E901.</p>
+</body>
+</html>

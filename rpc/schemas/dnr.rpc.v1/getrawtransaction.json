@@ -1,0 +1,167 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getrawtransaction",
+  "description": "Get raw transaction data with optional decoding",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "getrawtransaction"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Transaction ID"
+        },
+        {
+          "type": "boolean",
+          "description": "Whether to decode transaction (default: false)"
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Block hash hint for faster lookup"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 3
+    },
+    "result": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Raw transaction hex (decode=false)"
+        },
+        {
+          "type": "object",
+          "description": "Decoded transaction (decode=true)",
+          "properties": {
+            "txid": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$",
+              "description": "Transaction ID"
+            },
+            "hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$",
+              "description": "Transaction hash (differs from txid for witness transactions)"
+            },
+            "version": {
+              "type": "integer",
+              "description": "Transaction version"
+            },
+            "size": {
+              "type": "integer",
+              "description": "Transaction size in bytes"
+            },
+            "vsize": {
+              "type": "integer",
+              "description": "Virtual transaction size"
+            },
+            "weight": {
+              "type": "integer",
+              "description": "Transaction weight"
+            },
+            "locktime": {
+              "type": "integer",
+              "description": "Transaction locktime"
+            },
+            "vin": {
+              "type": "array",
+              "description": "Transaction inputs",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "txid": {"type": "string"},
+                  "vout": {"type": "integer"},
+                  "scriptSig": {
+                    "type": "object",
+                    "properties": {
+                      "asm": {"type": "string"},
+                      "hex": {"type": "string"}
+                    }
+                  },
+                  "txinwitness": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  },
+                  "sequence": {"type": "integer"},
+                  "coinbase": {"type": "string"}
+                }
+              }
+            },
+            "vout": {
+              "type": "array",
+              "description": "Transaction outputs",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "value_una": {
+                    "type": "integer",
+                    "description": "Output value in una"
+                  },
+                  "value_din": {
+                    "type": "string",
+                    "description": "Output value in DIN (formatted)"
+                  },
+                  "n": {
+                    "type": "integer",
+                    "description": "Output index"
+                  },
+                  "scriptPubKey": {
+                    "type": "object",
+                    "properties": {
+                      "asm": {"type": "string"},
+                      "hex": {"type": "string"},
+                      "reqSigs": {"type": "integer"},
+                      "type": {"type": "string"},
+                      "addresses": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                      },
+                      "address": {"type": "string"}
+                    }
+                  }
+                },
+                "required": ["value_una", "value_din", "n", "scriptPubKey"]
+              }
+            },
+            "hex": {
+              "type": "string",
+              "description": "Raw transaction hex"
+            },
+            "blockhash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$",
+              "description": "Block hash (if confirmed)"
+            },
+            "confirmations": {
+              "type": "integer",
+              "description": "Number of confirmations"
+            },
+            "blocktime": {
+              "type": "integer",
+              "description": "Block timestamp"
+            },
+            "time": {
+              "type": "integer",
+              "description": "Transaction timestamp"
+            },
+            "fee_una": {
+              "type": "integer",
+              "description": "Transaction fee in una"
+            },
+            "fee_din": {
+              "type": "string",
+              "description": "Transaction fee in DIN (formatted)"
+            }
+          },
+          "required": ["txid", "hash", "version", "size", "vsize", "weight", "locktime", "vin", "vout", "hex"]
+        }
+      ]
+    }
+  }
+}

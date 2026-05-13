@@ -1,0 +1,191 @@
+# Dinero Configuration File
+# ===========================
+# This is an example configuration file for Dinero (DIN) mainnet nodes.
+# Copy this file to ~/.dinero/dinero.conf (Linux/Mac) or %APPDATA%\Dinero\dinero.conf (Windows)
+# and customize for your setup.
+#
+# IMPORTANT: This configuration is for MAINNET. For testnet or regtest, use different settings.
+
+# ============================================================================
+# NETWORK SETTINGS
+# ============================================================================
+
+# Network selection (uncomment ONE of these):
+# mainnet (default - no flag needed)
+# testnet=1    # Use testnet instead of mainnet
+# regtest=1    # Use regression test mode (local testing only)
+
+# P2P Port (default: 20999 for mainnet, 21000 for testnet, 21001 for regtest)
+# port=20999
+
+# Maximum number of inbound+outbound connections (default: 125)
+# maxconnections=125
+
+# ============================================================================
+# SEED NODES - MAINNET OFFICIAL SERVERS
+# ============================================================================
+# These are the official Dinero mainnet seed nodes.
+# The daemon will automatically connect to these to discover peers.
+
+addnode=172.93.160.131:20999  # California (us-west)
+addnode=173.249.195.59:20999  # Virginia (us-east)
+
+# ============================================================================
+# RPC SERVER SETTINGS
+# ============================================================================
+# The RPC server allows wallet, mining, and blockchain queries.
+# SECURITY WARNING: Anyone with RPC access can control your funds!
+
+# RPC server enabled by default (required for wallet operations and mining)
+# server=1
+
+# RPC port (default: 20998 for mainnet and testnet, 20996 for regtest)
+# rpcport=20998
+
+# RPC bind address (default: 127.0.0.1 - localhost only)
+# SECURITY: Only use 0.0.0.0 if you have proper firewall rules!
+# rpcbind=127.0.0.1
+
+# RPC authentication (REQUIRED for security)
+# Generate a strong password: `openssl rand -hex 32`
+# rpcuser=your_username_here
+# rpcpassword=your_strong_password_here
+
+# RPC allowed IPs (default: localhost only)
+# SECURITY: Only add trusted IPs! Format: IP/netmask
+# rpcallowip=127.0.0.1
+# rpcallowip=192.168.1.0/24  # Example: Allow entire local network
+
+# ============================================================================
+# WEBSOCKET SERVER SETTINGS (GUI/Mobile Notifications)
+# ============================================================================
+# WebSocket server provides real-time blockchain events for GUI and mobile apps.
+
+# WebSocket port (default: 21001 for mainnet, 18081 for testnet, 18881 for regtest)
+# wsport=21001
+
+# WebSocket bind address (default: 127.0.0.1)
+# wsbind=127.0.0.1
+
+# ============================================================================
+# MINING SETTINGS
+# ============================================================================
+# Mining settings for block generation (CPU mining)
+
+# Mining threads (default: 0 = auto-detect CPU cores)
+# gen=1              # Enable mining (0=disabled, 1=enabled)
+# genproclimit=4     # Number of threads to use for mining
+
+# Mining payout address (REQUIRED if mining is enabled)
+# Must be a valid mainnet address starting with 'din1'
+# miningaddress=din1qyouraddresshere
+
+# ============================================================================
+# WALLET SETTINGS
+# ============================================================================
+
+# Disable wallet (for non-wallet nodes that only validate blocks)
+# disablewallet=1
+
+# Transaction fee settings (in una per KB)
+# mintxfee=1000      # Minimum relay fee (default: 1000 sat/kB)
+# paytxfee=1000      # Default transaction fee (default: 1000 sat/kB)
+
+# ============================================================================
+# LOGGING AND DEBUG
+# ============================================================================
+
+# Log verbosity (0=quiet, 1=normal, 2=verbose, 3=debug)
+# debug=1
+
+# Log specific categories (comma-separated)
+# Available: net, tor, mempool, http, bench, zmq, db, rpc, estimatefee, addrman,
+#            selectcoins, reindex, cmpctblock, rand, prune, proxy, mempoolrej,
+#            libevent, coindb, qt, leveldb, validation
+# debug=net,rpc,validation
+
+# ============================================================================
+# PERFORMANCE TUNING
+# ============================================================================
+
+# Database cache size in MB (default: 450)
+# dbcache=1024
+
+# Maximum mempool size in MB (default: 300)
+# maxmempool=300
+
+# ============================================================================
+# SECURITY AND PRIVACY
+# ============================================================================
+
+# External IP address (for nodes behind NAT)
+# Use this if you want to accept inbound connections but are behind NAT/firewall
+# externalip=your.public.ip.address
+
+# Onion proxy for Tor connections (for privacy)
+# proxy=127.0.0.1:9050
+# listen=1
+# listenonion=1
+
+# Ban misbehaving peers automatically (default: 1)
+# banscore=100       # Threshold for banning (default: 100)
+# bantime=86400      # Ban duration in seconds (default: 24 hours)
+
+# ============================================================================
+# ADVANCED SETTINGS
+# ============================================================================
+
+# Prune mode (reduce disk usage by deleting old blocks)
+# WARNING: Pruned nodes cannot serve historical blocks to peers
+# prune=550          # Keep only last 550 MB of blocks (minimum)
+
+# Reindex blockchain on startup (slow - only for database corruption recovery)
+# reindex=1
+
+# ============================================================================
+# EXAMPLE CONFIGURATIONS
+# ============================================================================
+
+# --- Full Node (validates and relays all transactions) ---
+# addnode=172.93.160.131:20999
+# addnode=173.249.195.59:20999
+# maxconnections=125
+# dbcache=1024
+
+# --- Mining Node (CPU mining enabled) ---
+# gen=1
+# genproclimit=4
+# miningaddress=din1qyouraddresshere
+# addnode=172.93.160.131:20999
+# addnode=173.249.195.59:20999
+
+# --- Pruned Node (low disk space) ---
+# prune=550
+# addnode=172.93.160.131:20999
+# addnode=173.249.195.59:20999
+
+# --- Private Node (Tor-only connections) ---
+# proxy=127.0.0.1:9050
+# listen=1
+# listenonion=1
+# onlynet=onion
+
+# ============================================================================
+# PRODUCTION DEPLOYMENT RECOMMENDATIONS
+# ============================================================================
+# For production mainnet nodes, we recommend:
+# 1. Strong RPC authentication (32+ character random password)
+# 2. Firewall rules to restrict RPC access (rpcallowip)
+# 3. Bind RPC to localhost only unless you have VPN/firewall
+# 4. Regular backups of wallet.dat (if using wallet features)
+# 5. Monitor logs for network health and peer connections
+# 6. Use external-ip if accepting inbound connections behind NAT
+# 7. Keep software updated for security patches and consensus changes
+#
+# For mining operations:
+# 1. Ensure you're connected to at least 2 peers before mining
+# 2. Use a dedicated mining address (not your main wallet)
+# 3. Monitor block submission success rate
+# 4. Consider using external miner (dinero-miner) instead of built-in gen=1
+#
+# ============================================================================

@@ -1,0 +1,71 @@
+name: Phase M.1 Enforcement
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  m1-enforcement:
+    name: Check Phase M.1 Compliance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: Gate 1 - ChainStateView Abstraction (ENFORCED)
+        run: |
+          chmod +x scripts/check_mempool_dependencies.sh
+          ./scripts/check_mempool_dependencies.sh
+
+      - name: Gate 2 - txid Type Safety (INFORMATIONAL)
+        continue-on-error: true
+        run: |
+          chmod +x scripts/check_txid_types.sh
+          echo "ℹ️  Running txid type check (informational only)"
+          echo "This gate will become enforced after Phase M.0-pre cleanup is complete"
+          echo ""
+          if ! ./scripts/check_txid_types.sh; then
+            echo ""
+            echo "⚠️  WARNING: std::string txid violations detected"
+            echo "This is expected - Phase M.0-pre cleanup is pending"
+            echo "See PHASE_M0_IMPLEMENTATION_GUIDE.md for migration plan"
+            echo ""
+            echo "Gate status: INFORMATIONAL (not blocking)"
+            exit 0
+          fi
+
+      - name: Report success
+        if: success()
+        run: |
+          echo "✅ Phase M.1: ChainStateView abstraction enforced"
+          echo ""
+          echo "Core achievements protected:"
+          echo "  ✅ Mempool decoupled from CoinsDB"
+          echo "  ✅ ChainStateView abstraction in place"
+          echo "  ✅ Consensus/mempool boundary clean"
+          echo ""
+          echo "Pending work (tracked separately):"
+          echo "  ⏸ Phase M.0-pre txid type cleanup"
+          echo "  ⏸ Wallet UTXO unification (Post-M.1)"
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "❌ Phase M.1: VIOLATIONS DETECTED"
+          echo ""
+          echo "This PR violates Phase M.1 architectural boundaries."
+          echo ""
+          echo "Rules:"
+          echo "  1. Mempool MUST use ChainStateView (not CoinsDB directly)"
+          echo "  2. No tight coupling between mempool and storage layer"
+          echo ""
+          echo "See docs/architecture/PHASE_M1_PLAN.md for details"
+          exit 1

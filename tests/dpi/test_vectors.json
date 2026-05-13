@@ -1,0 +1,435 @@
+{
+  "version": "0.1",
+  "description": "DPI v0.1 Test Vectors",
+  "vectors": [
+    {
+      "id": "TV_001",
+      "name": "Happy path - complete payment",
+      "description": "Standard payment flow from INIT to SETTLED",
+      "category": "happy_path",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440001",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "description": "Test payment",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "sender_utxos": [
+          {
+            "txid": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "vout": 0,
+            "amount_una": 200000000
+          }
+        ],
+        "current_time": 1700000100,
+        "utreexo_root_height": 800000
+      },
+      "expected": {
+        "final_state": "SETTLED",
+        "verification_result": "ACCEPTED_TIER_1",
+        "error_code": null
+      }
+    },
+    {
+      "id": "TV_002",
+      "name": "Expired request",
+      "description": "Payment request has expired before processing",
+      "category": "failure_req",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440002",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000060
+        },
+        "current_time": 1700000120
+      },
+      "expected": {
+        "final_state": "EXPIRED",
+        "verification_result": null,
+        "error_code": "ERR_REQ_001_EXPIRED"
+      }
+    },
+    {
+      "id": "TV_003",
+      "name": "Invalid signature",
+      "description": "Transaction signature verification fails",
+      "category": "failure_int",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440003",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "payment_intent": {
+          "signature": "invalid_signature_bytes"
+        },
+        "current_time": 1700000100
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "REJECTED",
+        "error_code": "ERR_INT_005_SIGNATURE_INVALID",
+        "failed_at_stage": "V_INT"
+      }
+    },
+    {
+      "id": "TV_004",
+      "name": "Stale Utreexo root",
+      "description": "Utreexo proof uses root older than tolerance",
+      "category": "failure_utx",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440004",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "payment_intent": {
+          "utreexo_proof": {
+            "root_height": 799990
+          }
+        },
+        "receiver_config": {
+          "current_height": 800000,
+          "root_height_tolerance": 6
+        },
+        "current_time": 1700000100
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "REJECTED",
+        "error_code": "ERR_UTX_003_ROOT_TOO_STALE",
+        "failed_at_stage": "V_UTX"
+      }
+    },
+    {
+      "id": "TV_005",
+      "name": "CT amount mismatch",
+      "description": "Pedersen commitment does not match claimed amount",
+      "category": "failure_ct",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440005",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "payment_intent": {
+          "blinding_factors": ["wrong_blinding_factor"],
+          "receiver_output_index": 0
+        },
+        "current_time": 1700000100
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "REJECTED",
+        "error_code": "ERR_CT_001_COMMITMENT_MISMATCH",
+        "failed_at_stage": "V_CT"
+      }
+    },
+    {
+      "id": "TV_006",
+      "name": "RBF transaction rejected",
+      "description": "Transaction signals RBF which is forbidden",
+      "category": "failure_int",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440006",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "payment_intent": {
+          "transaction": {
+            "inputs": [
+              {
+                "sequence": 4294967293,
+                "note": "sequence < 0xFFFFFFFE signals RBF"
+              }
+            ]
+          }
+        },
+        "current_time": 1700000100
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "REJECTED",
+        "error_code": "ERR_INT_008_RBF_FORBIDDEN",
+        "failed_at_stage": "V_INT"
+      }
+    },
+    {
+      "id": "TV_007",
+      "name": "Broadcast failure",
+      "description": "Transaction broadcast fails at Tier 1 to Tier 2 transition",
+      "category": "failure_net",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440007",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "network_conditions": {
+          "peers_available": 0,
+          "broadcast_result": "failed"
+        },
+        "current_time": 1700000100
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "ACCEPTED_TIER_1",
+        "error_code": "ERR_NET_001_BROADCAST_FAILED",
+        "failed_at_transition": "TIER_1 -> TIER_2"
+      }
+    },
+    {
+      "id": "TV_008",
+      "name": "Double-spend detected",
+      "description": "Conflicting transaction detected in mempool",
+      "category": "failure_net",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440008",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "network_conditions": {
+          "conflicting_tx_detected": true,
+          "conflict_txid": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+        },
+        "current_time": 1700000100
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "ACCEPTED_TIER_1",
+        "error_code": "ERR_NET_002_CONFLICT_DETECTED",
+        "failed_at_transition": "TIER_1 -> TIER_2"
+      }
+    },
+    {
+      "id": "TV_009",
+      "name": "Low propagation",
+      "description": "Insufficient peer acknowledgments for Tier 2",
+      "category": "failure_net",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440009",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "receiver_config": {
+          "min_peers": 8
+        },
+        "network_conditions": {
+          "peer_acks": 3
+        },
+        "current_time": 1700000100
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "ACCEPTED_TIER_1",
+        "error_code": "ERR_NET_003_INSUFFICIENT_PROPAGATION",
+        "failed_at_transition": "TIER_1 -> TIER_2"
+      }
+    },
+    {
+      "id": "TV_010",
+      "name": "Late conflict at Tier 2",
+      "description": "Conflict detected after reaching Tier 2 (rare)",
+      "category": "failure_net",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440010",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "timeline": {
+          "tier_2_reached_at": 1700000110,
+          "conflict_detected_at": 1700000115
+        },
+        "current_time": 1700000115
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "ACCEPTED_TIER_2",
+        "error_code": "ERR_NET_002_CONFLICT_DETECTED",
+        "failed_at_state": "ACCEPTED_TIER_2"
+      }
+    },
+    {
+      "id": "TV_011",
+      "name": "Reorg during confirmation",
+      "description": "Chain reorg eliminates confirmed transaction",
+      "category": "failure_net",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440011",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "blockchain_events": {
+          "initial_confirmations": 2,
+          "reorg_depth": 3,
+          "tx_in_new_chain": false
+        },
+        "current_time": 1700001000
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "ACCEPTED_TIER_2",
+        "error_code": "ERR_NET_006_REORG_DETECTED",
+        "failed_at_state": "CONFIRMING"
+      }
+    },
+    {
+      "id": "TV_012",
+      "name": "Duplicate request_id",
+      "description": "Request ID has already been fulfilled",
+      "category": "failure_req",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440012",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 100000000,
+          "currency": "DIN",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "receiver_state": {
+          "fulfilled_request_ids": ["550e8400-e29b-41d4-a716-446655440012"]
+        },
+        "current_time": 1700000100
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "REJECTED",
+        "error_code": "ERR_REQ_006_DUPLICATE_REQUEST_ID",
+        "failed_at_stage": "V_REQ"
+      }
+    },
+    {
+      "id": "TV_013",
+      "name": "Amount exceeds tier limit",
+      "description": "Amount too high for Tier 2 acceptance",
+      "category": "failure_pol",
+      "input": {
+        "payment_request": {
+          "version": 1,
+          "request_id": "550e8400-e29b-41d4-a716-446655440013",
+          "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+          "amount_una": 1000000000000,
+          "currency": "DIN",
+          "description": "10,000 DIN payment",
+          "created_at": 1700000000,
+          "expires_at": 1700000300
+        },
+        "receiver_config": {
+          "tier_2_max_una": 100000000000
+        },
+        "current_time": 1700000100
+      },
+      "expected": {
+        "final_state": "REJECTED",
+        "verification_result": "REJECTED",
+        "error_code": "ERR_POL_001_AMOUNT_EXCEEDS_TIER",
+        "failed_at_stage": "V_POL",
+        "note": "Receiver requires Tier 3 (confirmation) for this amount"
+      }
+    },
+    {
+      "id": "TV_014",
+      "name": "Retry after rejection",
+      "description": "New payment attempt after previous rejection",
+      "category": "recovery",
+      "input": {
+        "previous_attempt": {
+          "request_id": "550e8400-e29b-41d4-a716-446655440014",
+          "final_state": "REJECTED",
+          "error_code": "ERR_UTX_003_ROOT_TOO_STALE"
+        },
+        "new_attempt": {
+          "payment_request": {
+            "version": 1,
+            "request_id": "550e8400-e29b-41d4-a716-446655440015",
+            "receiver_address": "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k...",
+            "amount_una": 100000000,
+            "currency": "DIN",
+            "created_at": 1700000200,
+            "expires_at": 1700000500
+          },
+          "utreexo_proof": {
+            "root_height": 800000
+          }
+        },
+        "receiver_config": {
+          "current_height": 800000,
+          "root_height_tolerance": 6
+        },
+        "current_time": 1700000250
+      },
+      "expected": {
+        "final_state": "SETTLED",
+        "verification_result": "ACCEPTED_TIER_1",
+        "error_code": null,
+        "note": "New request_id required; fresh Utreexo proof generated"
+      }
+    }
+  ],
+  "verification_order": [
+    "V_REQ: validate_request()",
+    "V_INT: validate_intent()",
+    "V_UTX: verify_utreexo()",
+    "V_CT: verify_ct()",
+    "V_POL: check_policy()"
+  ],
+  "test_constants": {
+    "una_per_din": 100000000,
+    "default_expiry_seconds": 300,
+    "default_grace_seconds": 60,
+    "default_root_tolerance_blocks": 6,
+    "default_min_peers": 8,
+    "default_conflict_window_seconds": 5
+  }
+}

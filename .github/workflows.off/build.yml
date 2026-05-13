@@ -1,0 +1,55 @@
+name: Cross-Platform Build
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, macos-13, windows-2022]
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Dependencies
+        run: |
+          case "${{ runner.os }}" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y cmake ninja-build libssl-dev libboost-all-dev libsqlite3-dev libcurl4-openssl-dev
+              ;;
+            macOS)
+              brew install cmake ninja openssl@3 boost
+              ;;
+            Windows)
+              choco install cmake ninja openssl.light -y
+              ;;
+          esac
+      
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDIN_WITH_ROCKSDB=OFF -DDIN_BUILD_GUI=OFF
+      
+      - name: Audit Qt Leakage
+        run: bash scripts/audit_no_qt.sh
+      
+      - name: Build Daemon
+        run: cmake --build build --target dinerod -j 4
+
+      - name: Run Genesis Invariant Tests (CRITICAL)
+        run: |
+          cd build
+          ctest -R GenesisInvariants --output-on-failure
+        shell: bash
+
+      - name: Test Build
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./build/dinerod.exe --help
+          else
+            ./build/dinerod --help
+          fi

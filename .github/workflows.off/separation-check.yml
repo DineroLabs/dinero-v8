@@ -1,0 +1,73 @@
+name: Process Separation Check
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  separation-invariants:
+    name: Verify Process Separation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for Qt in dinerod linked sources (FORBIDDEN)
+        run: |
+          echo "Checking dinerod linked sources for Qt..."
+          # Check only files that are in CMakeLists.txt for dinerod
+          # Legacy files in src/daemon/p2p/ are NOT linked
+          LINKED_FILES=$(grep -E "\.cpp" CMakeLists.txt | grep -v "#" | grep -oE "src/daemon/[^/]+\.cpp" | sort -u)
+          for f in $LINKED_FILES; do
+            if [ -f "$f" ] && grep -qE "#include <Q" "$f" 2>/dev/null; then
+              echo "::error::FORBIDDEN: Qt include found in linked file: $f"
+              exit 1
+            fi
+          done
+          echo "No Qt dependencies in linked daemon sources"
+
+      - name: Check for Stratum dependencies (FORBIDDEN)
+        run: |
+          echo "Checking for Stratum code in consensus..."
+          if grep -rE "class StratumServer|StratumServer::" src/; then
+            echo "::error::FORBIDDEN: Stratum server code found in consensus daemon"
+            echo "Stratum belongs in stratum repository, not dinerod"
+            exit 1
+          fi
+          echo "No Stratum dependencies found"
+
+      - name: Check for embedded GUI (FORBIDDEN)
+        run: |
+          echo "Checking for embedded GUI code..."
+          if grep -rE "(QDialog|QLabel|QPushButton|QLineEdit)" src/; then
+            echo "::error::FORBIDDEN: GUI widgets found in consensus daemon"
+            exit 1
+          fi
+          echo "No embedded GUI found"
+
+      - name: Verify architecture documentation exists
+        run: |
+          if [ ! -f "docs/ARCHITECTURE.md" ]; then
+            echo "::error::Missing docs/ARCHITECTURE.md"
+            exit 1
+          fi
+          if ! grep -q "Process Separation" docs/ARCHITECTURE.md; then
+            echo "::error::ARCHITECTURE.md missing Process Separation section"
+            exit 1
+          fi
+          echo "Architecture documentation verified"
+
+      - name: Summary
+        run: |
+          echo "======================================"
+          echo "Process Separation Check: PASSED"
+          echo "======================================"
+          echo ""
+          echo "dinerod contains NO:"
+          echo "  - Qt/GUI code"
+          echo "  - Stratum server code"
+          echo "  - Embedded auxiliary services"
+          echo ""
+          echo "All non-consensus features must use RPC."

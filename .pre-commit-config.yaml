@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: vnext-legacy-scan
+        name: vNext Legacy Symbol Scan
+        entry: bash -c 'if command -v rg >/dev/null 2>&1; then if rg -n "RPCServer|g_rpc_server|din_ws" src/ --glob "!**/CMakeFiles/**" --glob "!**/.git/**"; then echo "❌ Found forbidden legacy symbols! Use #if DIN_ENABLE_LEGACY_RPC guards."; exit 1; fi; else echo "⚠️ ripgrep not found, skipping legacy symbol scan"; fi'
+        language: system
+        files: \.(cpp|h|hpp)$
+        pass_filenames: false
+        always_run: false
+        
+      - id: vnext-cmake-check
+        name: vNext CMake Configuration Check
+        entry: bash -c 'if [ -f CMakeLists.txt ]; then if grep -q "DIN_ENABLE_LEGACY_RPC.*ON" CMakeLists.txt; then echo "⚠️ Legacy RPC enabled in CMakeLists.txt - ensure this is intentional"; fi; else echo "⚠️ CMakeLists.txt not found"; fi'
+        language: system
+        files: CMakeLists\.txt$
+        pass_filenames: false
+        always_run: false

@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "validateaddress",
+  "description": "Validate address format and ownership (send guardrails)",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "validateaddress"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "description": "Address to validate"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "isvalid": {
+          "type": "boolean",
+          "description": "Whether address is valid"
+        },
+        "address": {
+          "type": "string",
+          "description": "Validated address (normalized)"
+        },
+        "scriptPubKey": {
+          "type": "string",
+          "description": "Script public key (hex)"
+        },
+        "isscript": {
+          "type": "boolean",
+          "description": "Whether address is a script"
+        },
+        "iswitness": {
+          "type": "boolean",
+          "description": "Whether address is a witness address"
+        },
+        "witness_version": {
+          "type": "integer",
+          "description": "Witness version (if applicable)"
+        },
+        "witness_program": {
+          "type": "string",
+          "description": "Witness program (hex, if applicable)"
+        },
+        "ismine": {
+          "type": "boolean",
+          "description": "Whether address belongs to wallet"
+        },
+        "iswatchonly": {
+          "type": "boolean",
+          "description": "Whether address is watch-only"
+        },
+        "solvable": {
+          "type": "boolean",
+          "description": "Whether address is solvable"
+        },
+        "desc": {
+          "type": "string",
+          "description": "Output descriptor"
+        },
+        "parent_desc": {
+          "type": "string",
+          "description": "Parent descriptor"
+        },
+        "ischange": {
+          "type": "boolean",
+          "description": "Whether address is a change address"
+        },
+        "timestamp": {
+          "type": "integer",
+          "description": "Address creation timestamp"
+        },
+        "hdkeypath": {
+          "type": "string",
+          "description": "HD key derivation path"
+        },
+        "hdseedid": {
+          "type": "string",
+          "description": "HD seed ID"
+        },
+        "hdmasterfingerprint": {
+          "type": "string",
+          "description": "HD master key fingerprint"
+        },
+        "labels": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Address labels"
+        },
+        "error": {
+          "type": "string",
+          "description": "Error message (if invalid)"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Validation warnings"
+        }
+      },
+      "required": ["isvalid"]
+    }
+  }
+}

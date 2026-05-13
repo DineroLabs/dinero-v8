@@ -1,0 +1,179 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Dinero Common Types",
+  "description": "Reusable type definitions for Dinero RPC schemas",
+  "definitions": {
+    "Una": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Amount in una (smallest unit, 1 DIN = 1,000,000 una)"
+    },
+    "DINAmount": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d{6}$",
+      "description": "Amount in DIN with exactly 6 decimal places"
+    },
+    "TxId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Transaction ID (64-character hex string)"
+    },
+    "BlockHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Block hash (64-character hex string)"
+    },
+    "Address": {
+      "type": "string",
+      "pattern": "^[rt]?din1[a-z0-9]{39,59}$",
+      "description": "Dinero address (bech32 format: din1..., tdin1..., rdin1...)"
+    },
+    "ScriptPubKey": {
+      "type": "string",
+      "pattern": "^[a-f0-9]*$",
+      "description": "Script public key (hex string)"
+    },
+    "Network": {
+      "type": "string",
+      "enum": ["mainnet", "testnet", "regtest"],
+      "description": "Network identifier"
+    },
+    "Timestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix timestamp in seconds"
+    },
+    "FeeRate": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Fee rate in una per kilovbyte"
+    },
+    "Difficulty": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Mining difficulty"
+    },
+    "ChainWork": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Cumulative chain work (64-character hex string)"
+    },
+    "Bits": {
+      "type": "string",
+      "pattern": "^0x[a-f0-9]{8}$",
+      "description": "Difficulty target bits (hex format)"
+    },
+    "Nonce": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Block nonce (32-bit unsigned integer)"
+    },
+    "BlockHeight": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Block height (genesis = 0)"
+    },
+    "Confirmations": {
+      "type": "integer",
+      "minimum": -1,
+      "description": "Number of confirmations (-1 for conflicted)"
+    },
+    "MiningPhase": {
+      "type": "string",
+      "enum": ["developer_fund", "cpu_friendly", "halving"],
+      "description": "Current Dinero mining phase"
+    },
+    "TransactionCategory": {
+      "type": "string",
+      "enum": ["send", "receive", "generate", "immature", "orphan"],
+      "description": "Wallet transaction category"
+    },
+    "AddressType": {
+      "type": "string",
+      "enum": ["legacy", "p2sh-segwit", "bech32"],
+      "description": "Address format type"
+    },
+    "EstimationMode": {
+      "type": "string",
+      "enum": ["UNSET", "ECONOMICAL", "CONSERVATIVE"],
+      "description": "Fee estimation mode"
+    },
+    "SigHashType": {
+      "type": "string",
+      "enum": ["ALL", "NONE", "SINGLE", "ALL|ANYONECANPAY", "NONE|ANYONECANPAY", "SINGLE|ANYONECANPAY"],
+      "description": "Signature hash type"
+    },
+    "PSBT": {
+      "type": "string",
+      "description": "Base64-encoded Partially Signed Bitcoin Transaction"
+    },
+    "HexData": {
+      "type": "string",
+      "pattern": "^[a-f0-9]*$",
+      "description": "Hexadecimal data string"
+    },
+    "Version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Protocol or transaction version"
+    },
+    "VSize": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Virtual transaction size in bytes"
+    },
+    "Weight": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Transaction weight units"
+    },
+    "Sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Input sequence number"
+    },
+    "LockTime": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Transaction lock time"
+    },
+    "OutputIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Transaction output index (vout)"
+    },
+    "ThreadCount": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 256,
+      "description": "Number of mining threads"
+    },
+    "HashRate": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Hash rate in hashes per second"
+    },
+    "PeerCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of connected peers"
+    },
+    "MemoryUsage": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Memory usage in bytes"
+    },
+    "ErrorCode": {
+      "type": "integer",
+      "description": "RPC error code"
+    },
+    "Label": {
+      "type": "string",
+      "maxLength": 255,
+      "description": "Address or transaction label"
+    }
+  }
+}

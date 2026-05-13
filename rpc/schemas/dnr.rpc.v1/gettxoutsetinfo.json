@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "gettxoutsetinfo",
+  "description": "Get statistics about the UTXO set and total supply",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "gettxoutsetinfo"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "enum": ["none", "muhash"],
+          "description": "Hash type for UTXO set hash (default: muhash)"
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Hash of block to compute statistics for (default: tip)"
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "integer",
+          "description": "Block height of statistics"
+        },
+        "bestblock": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Hash of block statistics are for"
+        },
+        "transactions": {
+          "type": "integer",
+          "description": "Number of transactions with unspent outputs"
+        },
+        "txouts": {
+          "type": "integer",
+          "description": "Number of unspent transaction outputs"
+        },
+        "bogosize": {
+          "type": "integer",
+          "description": "Database size estimate"
+        },
+        "hash_serialized_2": {
+          "type": "string",
+          "description": "Serialized hash of UTXO set"
+        },
+        "muhash": {
+          "type": "string",
+          "description": "MuHash of UTXO set"
+        },
+        "disk_size": {
+          "type": "integer",
+          "description": "Estimated size of UTXO set on disk"
+        },
+        "total_amount_una": {
+          "type": "integer",
+          "description": "Total amount in all UTXOs (una)"
+        },
+        "total_amount_din": {
+          "type": "string",
+          "description": "Total amount in all UTXOs (DIN, formatted)"
+        },
+        "total_unspendable_amount_una": {
+          "type": "integer",
+          "description": "Total unspendable amount (una)"
+        },
+        "total_unspendable_amount_din": {
+          "type": "string",
+          "description": "Total unspendable amount (DIN, formatted)"
+        },
+        "block_info": {
+          "type": "object",
+          "description": "Information about the block",
+          "properties": {
+            "prevout_spent": {"type": "integer"},
+            "coinbase": {"type": "integer"},
+            "new_outputs_ex_coinbase": {"type": "integer"},
+            "unspendable": {"type": "integer"},
+            "unspendables": {
+              "type": "object",
+              "properties": {
+                "genesis_block": {"type": "integer"},
+                "bip30": {"type": "integer"},
+                "scripts": {"type": "integer"},
+                "unclaimed_rewards": {"type": "integer"}
+              }
+            }
+          }
+        },
+        "supply_stats": {
+          "type": "object",
+          "description": "Dinero-specific supply statistics",
+          "properties": {
+            "phase": {
+              "type": "string",
+              "enum": ["developer_fund", "cpu_friendly", "halving"]
+            },
+            "coins_mined_una": {"type": "integer"},
+            "coins_mined_din": {"type": "string"},
+            "remaining_coins_una": {"type": "integer"},
+            "remaining_coins_din": {"type": "string"},
+            "inflation_rate": {"type": "number"}
+          }
+        }
+      },
+      "required": ["height", "bestblock", "transactions", "txouts", "total_amount_una", "total_amount_din"]
+    }
+  }
+}

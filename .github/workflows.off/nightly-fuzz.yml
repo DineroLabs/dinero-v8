@@ -1,0 +1,224 @@
+name: Nightly Fuzzing
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  # ==========================================================================
+  # Consensus Fuzzer - Rotating Random Seeds (Exploratory)
+  # ==========================================================================
+  consensus-fuzzer-exploratory:
+    name: Consensus Fuzzer (Random Seeds)
+    runs-on: ubuntu-22.04
+    env:
+      LC_ALL: C.UTF-8
+      TZ: UTC
+      # High iteration count for nightly exploration
+      FUZZ_ITERATIONS: 10000
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libssl-dev pkg-config \
+            autoconf automake libtool
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof \
+                      --enable-module-recovery --enable-module-ecdh \
+                      --enable-module-musig --enable-experimental \
+                      --enable-module-schnorrsig
+          make -j$(nproc)
+
+      - name: Build consensus fuzzer
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target consensus_fuzzer
+
+      - name: Run with random seeds
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "NIGHTLY CONSENSUS FUZZER - EXPLORATORY RANDOM SEEDS"
+          echo "════════════════════════════════════════════════════════════════"
+          echo "Iterations per seed: $FUZZ_ITERATIONS"
+          echo ""
+
+          # Generate 10 random seeds based on current timestamp
+          SEEDS=""
+          for i in $(seq 1 10); do
+            SEED=$(($(date +%s) + $i * 12345 + $RANDOM))
+            SEEDS="$SEEDS $SEED"
+          done
+
+          echo "Generated seeds: $SEEDS"
+          echo ""
+
+          for SEED in $SEEDS; do
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Running with random seed: $SEED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+            if ! ./build/tests/consensus/consensus_fuzzer $SEED $FUZZ_ITERATIONS; then
+              echo ""
+              echo "❌ BUG FOUND with seed $SEED"
+              echo "To reproduce: ./build/tests/consensus/consensus_fuzzer $SEED $FUZZ_ITERATIONS"
+              echo ""
+              # Save the failing seed
+              echo "$SEED" >> failing_seeds.txt
+            else
+              echo "✅ Passed with seed $SEED"
+            fi
+            echo ""
+          done
+
+          if [ -f failing_seeds.txt ]; then
+            echo "════════════════════════════════════════════════════════════════"
+            echo "❌ BUGS FOUND - SEE FAILING SEEDS ABOVE"
+            echo "════════════════════════════════════════════════════════════════"
+            exit 1
+          fi
+
+          echo "════════════════════════════════════════════════════════════════"
+          echo "✅ ALL RANDOM SEED RUNS PASSED"
+          echo "════════════════════════════════════════════════════════════════"
+
+      - name: Upload failing seeds
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consensus-failing-seeds-${{ github.run_id }}
+          path: failing_seeds.txt
+          retention-days: 90
+
+  # ==========================================================================
+  # Economic Property Testing (Exploratory with Random Seeds)
+  # ==========================================================================
+  economic-property-exploratory:
+    name: Economic Property (Random Seeds)
+    runs-on: ubuntu-22.04
+    env:
+      LC_ALL: C.UTF-8
+      TZ: UTC
+      ECONOMIC_STEPS: 1000
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libssl-dev pkg-config \
+            autoconf automake libtool
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof \
+                      --enable-module-recovery --enable-module-ecdh \
+                      --enable-module-musig --enable-experimental \
+                      --enable-module-schnorrsig
+          make -j$(nproc)
+
+      - name: Build economic property test
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target economic_property_test
+
+      - name: Run with random seeds
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "NIGHTLY ECONOMIC PROPERTY TESTING - EXPLORATORY RANDOM SEEDS"
+          echo "════════════════════════════════════════════════════════════════"
+          echo "Steps per seed: $ECONOMIC_STEPS"
+          echo ""
+
+          # Generate 5 random seeds
+          SEEDS=""
+          for i in $(seq 1 5); do
+            SEED=$(($(date +%s) + $i * 54321 + $RANDOM))
+            SEEDS="$SEEDS $SEED"
+          done
+
+          echo "Generated seeds: $SEEDS"
+          echo ""
+
+          for SEED in $SEEDS; do
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Running economic property test with seed: $SEED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+            if ! ./build/tests/consensus/economic_property_test $SEED $ECONOMIC_STEPS; then
+              echo ""
+              echo "❌ ECONOMIC INVARIANT VIOLATION with seed $SEED"
+              echo "To reproduce: ./build/tests/consensus/economic_property_test $SEED $ECONOMIC_STEPS"
+              echo ""
+              echo "$SEED" >> failing_economic_seeds.txt
+            else
+              echo "✅ Passed with seed $SEED"
+            fi
+            echo ""
+          done
+
+          if [ -f failing_economic_seeds.txt ]; then
+            echo "════════════════════════════════════════════════════════════════"
+            echo "❌ ECONOMIC INVARIANT VIOLATIONS FOUND - SEE SEEDS ABOVE"
+            echo "════════════════════════════════════════════════════════════════"
+            exit 1
+          fi
+
+          echo "════════════════════════════════════════════════════════════════"
+          echo "✅ ALL ECONOMIC PROPERTY TESTS PASSED"
+          echo "════════════════════════════════════════════════════════════════"
+
+      - name: Upload failing seeds
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: economic-failing-seeds-${{ github.run_id }}
+          path: failing_economic_seeds.txt
+          retention-days: 90
+
+  # ==========================================================================
+  # Original fuzzing smoke tests
+  # ==========================================================================
+  fuzz-smoke:
+    name: Fuzzing Smoke Tests
+    runs-on: ubuntu-22.04
+    env:
+      LC_ALL: C.UTF-8
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake clang build-essential python3 pkg-config
+      - name: Configure
+        run: cmake -S . -B build-fuzz -DENABLE_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
+      - name: Build
+        run: cmake --build build-fuzz -j 3
+      - name: Fuzz bech32 decode (10s)
+        run: ./build-fuzz/fuzz_bech32 -runs=0 -max_total_time=10
+      - name: Fuzz BIP39 parse (10s)
+        run: ./build-fuzz/fuzz_bip39 -runs=0 -max_total_time=10
+      - name: Upload fuzzing logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-logs-${{ github.run_id }}
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+          retention-days: 30

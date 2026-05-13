@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+#
+# dinero-sign-release — Phase E.4/E.6 signing helper.
+#
+# Generates SHA256SUMS over a release-artifact directory and signs
+# it with the Dinero Core Release Signing subkey. Reads the
+# expected primary fingerprint from
+# `contrib/keys/RELEASE-KEY-FINGERPRINT.txt`.
+#
+# Modes:
+#   dry-run  — fingerprint file still contains the placeholder; the
+#              script writes SHA256SUMS to stdout and emits a clear
+#              warning that no signature was produced. Useful for
+#              CI/laptop validation before key generation.
+#   live     — fingerprint file contains a real 40-char hex string;
+#              the script invokes `gpg --local-user <FP>
+#              --detach-sign --armor` and verifies its own output
+#              before declaring success.
+#
+# Usage:
+#   share/scripts/dinero-sign-release <artifact-dir>
+#   share/scripts/dinero-sign-release --check <artifact-dir>   # verify-only
+#
+# Exit codes:
+#   0  — signing produced (or dry-run completed) successfully
+#   1  — signing failed / verify mismatch / invalid input
+#   2  — usage error
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+FP_FILE="$REPO_ROOT/contrib/keys/RELEASE-KEY-FINGERPRINT.txt"
+KEY_FILE="$REPO_ROOT/contrib/keys/dinero-core-release.asc"
+
+usage() {
+  cat <<EOF
+Usage: dinero-sign-release [--check] <artifact-dir>
+
+Reads the primary key fingerprint from:
+  $FP_FILE
+
+If the fingerprint is a placeholder, runs in dry-run mode (no signing).
+If real, generates SHA256SUMS + SHA256SUMS.asc in <artifact-dir>.
+
+--check   Verify an existing SHA256SUMS.asc against SHA256SUMS in
+          <artifact-dir>. No signing.
+EOF
+  exit 2
+}
+
+check_only=0
+artifact_dir=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check) check_only=1; shift ;;
+    -h|--help) usage ;;
+    -*) usage ;;
+    *) [[ -n "$artifact_dir" ]] && usage; artifact_dir="$1"; shift ;;
+  esac
+done
+[[ -z "$artifact_dir" ]] && usage
+[[ -d "$artifact_dir" ]] || { echo "ERROR: not a directory: $artifact_dir" >&2; exit 1; }
+
+# Resolve the fingerprint. The file is one line, 40 hex chars,
+# uppercase, no spaces. The placeholder file starts with the word
+# "PLACEHOLDER" — detect that and switch modes.
+if [[ ! -f "$FP_FILE" ]]; then
+  echo "ERROR: fingerprint file missing: $FP_FILE" >&2
+  exit 1
+fi
+fp_raw=$(head -n 1 "$FP_FILE" | tr -d '[:space:]')
+if [[ "$fp_raw" == "PLACEHOLDER" ]] || [[ ${#fp_raw} -ne 40 ]]; then
+  mode="dry-run"
+  fp=""
+else
+  if [[ ! "$fp_raw" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+    echo "ERROR: fingerprint at $FP_FILE is not 40 hex chars: '$fp_raw'" >&2
+    exit 1
+  fi
+  mode="live"
+  fp=$(tr '[:lower:]' '[:upper:]' <<<"$fp_raw")
+fi
+
+# --check mode: require live key + signed material; no fresh signing.
+if [[ $check_only -eq 1 ]]; then
+  cd "$artifact_dir"
+  if [[ ! -f SHA256SUMS || ! -f SHA256SUMS.asc ]]; then
+    echo "ERROR: SHA256SUMS / SHA256SUMS.asc missing in $artifact_dir" >&2
+    exit 1
+  fi
+  if ! command -v gpg >/dev/null 2>&1; then
+    echo "ERROR: gpg not installed; cannot verify signature" >&2
+    exit 1
+  fi
+  if [[ "$mode" == "dry-run" ]]; then
+    echo "ERROR: --check requires a live fingerprint; current state is dry-run" >&2
+    exit 1
+  fi
+  # Import the public key from the repo if not already in keyring.
+  if ! gpg --list-keys "$fp" >/dev/null 2>&1; then
+    if [[ -f "$KEY_FILE" ]] && ! grep -q '^PLACEHOLDER' "$KEY_FILE"; then
+      gpg --import "$KEY_FILE" >/dev/null 2>&1 || true
+    fi
+  fi
+  echo "Verifying signature against fingerprint $fp"
+  gpg --verify SHA256SUMS.asc SHA256SUMS
+  echo "Verifying checksums"
+  sha256sum -c SHA256SUMS
+  echo "PASS: signed-checksum verification clean."
+  exit 0
+fi
+
+# Build the SHA256SUMS body. Sort by relative path (NUL-separated)
+# for reproducibility. Skip pre-existing SHA256SUMS{,.asc} so we
+# don't checksum our own output if re-run.
+cd "$artifact_dir"
+sums_tmp=$(mktemp)
+trap 'rm -f "$sums_tmp"' EXIT
+find . -maxdepth 1 -type f \
+  ! -name SHA256SUMS \
+  ! -name SHA256SUMS.asc \
+  -print0 \
+  | sort -z \
+  | xargs -0 sha256sum \
+  > "$sums_tmp"
+
+if [[ ! -s "$sums_tmp" ]]; then
+  echo "ERROR: no files to checksum in $artifact_dir" >&2
+  exit 1
+fi
+
+if [[ "$mode" == "dry-run" ]]; then
+  echo "════════════════════════════════════════════════════════════════"
+  echo "DRY-RUN: release signing key not yet generated."
+  echo "  fingerprint file: $FP_FILE  (placeholder)"
+  echo "  see docs/security/release-signing.md"
+  echo "════════════════════════════════════════════════════════════════"
+  echo
+  echo "Would sign the following SHA256SUMS:"
+  echo "----------------------------------------------------------------"
+  cat "$sums_tmp"
+  echo "----------------------------------------------------------------"
+  echo
+  echo "Once the key is generated and contrib/keys/RELEASE-KEY-FINGERPRINT.txt"
+  echo "contains a real 40-char hex fingerprint, re-run this script and it"
+  echo "will produce SHA256SUMS + SHA256SUMS.asc in $artifact_dir."
+  exit 0
+fi
+
+# Live mode.
+if ! command -v gpg >/dev/null 2>&1; then
+  echo "ERROR: gpg not installed (required in live mode)" >&2
+  exit 1
+fi
+if ! gpg --list-secret-keys "$fp" >/dev/null 2>&1; then
+  echo "ERROR: signing key $fp not in this host's keyring" >&2
+  echo "  Run on the dedicated signing host. See" >&2
+  echo "  docs/security/release-signing.md § \"Signing flow\"." >&2
+  exit 1
+fi
+
+mv "$sums_tmp" SHA256SUMS
+trap '' EXIT  # we moved the tempfile; no longer cleanup target
+
+echo "Signing SHA256SUMS with $fp"
+gpg --batch --yes \
+    --local-user "$fp" \
+    --detach-sign --armor \
+    --output SHA256SUMS.asc \
+    SHA256SUMS
+
+echo "Verifying just-produced signature"
+gpg --verify SHA256SUMS.asc SHA256SUMS
+
+echo "PASS: signed checksums produced in $artifact_dir/"
+echo "  - SHA256SUMS"
+echo "  - SHA256SUMS.asc  (signed by $fp)"

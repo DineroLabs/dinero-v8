@@ -1,0 +1,72 @@
+// OpenKYC Provider Test Example
+// wallet-core/ffi/test_openkyc_provider.cpp.example
+
+#include "wallet_ffi.h"
+#include <iostream>
+#include <cstring>
+
+int main() {
+    // Initialize wallet
+    dinero_wallet_init("/tmp/test_wallet");
+    
+    // Initialize OpenKYC provider
+    std::cout << "Initializing OpenKYC provider..." << std::endl;
+    int result = dinero_wallet_init_kyc_provider(
+        "openkyc",
+        "api_url=http://localhost:8080"  // Change to your OpenKYC server
+    );
+    
+    if (result != 0) {
+        std::cerr << "Failed to initialize OpenKYC provider" << std::endl;
+        return 1;
+    }
+    
+    // Check provider name
+    char* provider_name = nullptr;
+    dinero_wallet_get_kyc_provider_name(&provider_name);
+    std::cout << "Active provider: " << provider_name << std::endl;
+    dinero_wallet_free_string(provider_name);
+    
+    // Start verification
+    std::cout << "\nStarting KYC verification..." << std::endl;
+    char* verification_url = nullptr;
+    result = dinero_wallet_start_kyc_verification("basic", "US", &verification_url);
+    
+    if (result != 0) {
+        std::cerr << "Failed to start verification" << std::endl;
+        return 1;
+    }
+    
+    std::cout << "Verification URL: " << verification_url << std::endl;
+    std::cout << "Open this URL in your browser to complete verification" << std::endl;
+    dinero_wallet_free_string(verification_url);
+    
+    // Wait for user to complete verification
+    std::cout << "\nPress Enter after completing verification..." << std::endl;
+    std::cin.get();
+    
+    // Check status
+    std::cout << "\nChecking verification status..." << std::endl;
+    FFI_KYCStatus status;
+    result = dinero_wallet_get_kyc_status(&status);
+    
+    if (result != 0) {
+        std::cerr << "Failed to get status" << std::endl;
+        return 1;
+    }
+    
+    std::cout << "Verification Status:" << std::endl;
+    std::cout << "  Verified: " << (status.is_verified ? "Yes" : "No") << std::endl;
+    std::cout << "  Level: " << status.verification_level << std::endl;
+    std::cout << "  Provider: " << status.provider << std::endl;
+    std::cout << "  Country: " << status.country << std::endl;
+    
+    if (status.is_verified) {
+        std::cout << "\n✅ Verification successful!" << std::endl;
+    } else {
+        std::cout << "\n⏳ Verification pending..." << std::endl;
+    }
+    
+    return 0;
+}
+

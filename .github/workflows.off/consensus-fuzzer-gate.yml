@@ -1,0 +1,387 @@
+name: Consensus Fuzzer Gate
+
+# ============================================================================
+# CONSENSUS FUZZER & INVARIANTS - HARD GATE
+# ============================================================================
+#
+# This workflow is NON-OPTIONAL. All PRs must pass.
+#
+# What it tests:
+#   - Deterministic consensus fuzzer with fixed seeds (reproducible)
+#   - Formal invariant verification
+#   - Stateless block verification
+#   - Snapshot/restore exactness
+#   - Reorg round-trip identity
+#
+# Any failure here means a consensus regression.
+# These tests exist because Phase 2 made consensus pure and testable.
+#
+# ============================================================================
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+env:
+  # Fixed seeds for reproducible CI runs
+  # Add new seeds here to expand coverage
+  FUZZ_SEEDS: "12345 67890 11111 22222 33333"
+  FUZZ_ITERATIONS: ${{ github.event.inputs.fuzz_iterations || '1000' }}
+
+jobs:
+  # ==========================================================================
+  # Build consensus test binaries
+  # ==========================================================================
+  build:
+    name: Build Consensus Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release, Debug]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build libssl-dev libsqlite3-dev \
+            pkg-config autoconf automake libtool
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja openssl sqlite autoconf automake libtool
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof \
+                      --enable-module-recovery --enable-module-ecdh \
+                      --enable-module-musig --enable-module-ecdsa-adaptor \
+                      --enable-experimental --enable-module-schnorrsig
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DENABLE_TESTING=ON
+
+      - name: Build consensus tests
+        run: |
+          cmake --build build --target consensus_fuzzer
+          cmake --build build --target test_formal_invariants
+          cmake --build build --target test_stateless_verification
+          cmake --build build --target test_consensus_invariants
+          cmake --build build --target test_consensus_utxo_set
+          cmake --build build --target economic_property_test
+
+      - name: Upload test binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: consensus-tests-${{ matrix.os }}-${{ matrix.build_type }}
+          path: |
+            build/tests/consensus/consensus_fuzzer
+            build/tests/consensus/test_formal_invariants
+            build/tests/consensus/test_stateless_verification
+            build/tests/consensus/test_consensus_invariants
+            build/tests/consensus/test_consensus_utxo_set
+            build/tests/consensus/economic_property_test
+
+  # ==========================================================================
+  # Deterministic fuzzer with fixed seeds (MUST PASS)
+  # ==========================================================================
+  fuzzer-fixed-seeds:
+    name: Fuzzer (Fixed Seeds)
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true  # Stop immediately on any failure
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release]
+
+    steps:
+      - name: Download test binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: consensus-tests-${{ matrix.os }}-${{ matrix.build_type }}
+          path: build/tests/consensus/
+
+      - name: Make binaries executable
+        run: chmod +x build/tests/consensus/*
+
+      - name: Run fuzzer with fixed seeds
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "CONSENSUS FUZZER - FIXED SEED DETERMINISTIC RUNS"
+          echo "════════════════════════════════════════════════════════════════"
+          echo "Seeds: $FUZZ_SEEDS"
+          echo "Iterations per seed: $FUZZ_ITERATIONS"
+          echo ""
+
+          FAILED=0
+          for SEED in $FUZZ_SEEDS; do
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Running with seed: $SEED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+            if ! ./build/tests/consensus/consensus_fuzzer $SEED $FUZZ_ITERATIONS; then
+              echo "❌ FAILED with seed $SEED"
+              FAILED=1
+              break
+            fi
+            echo "✅ Passed with seed $SEED"
+            echo ""
+          done
+
+          if [ $FAILED -eq 1 ]; then
+            echo ""
+            echo "════════════════════════════════════════════════════════════════"
+            echo "❌ CONSENSUS FUZZER FAILED - REGRESSION DETECTED"
+            echo "════════════════════════════════════════════════════════════════"
+            echo "To reproduce locally:"
+            echo "  ./build/tests/consensus/consensus_fuzzer $SEED $FUZZ_ITERATIONS"
+            echo ""
+            exit 1
+          fi
+
+          echo "════════════════════════════════════════════════════════════════"
+          echo "✅ ALL FIXED SEED RUNS PASSED"
+          echo "════════════════════════════════════════════════════════════════"
+
+  # ==========================================================================
+  # Formal invariants (MUST PASS)
+  # ==========================================================================
+  formal-invariants:
+    name: Formal Invariants
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release]
+
+    steps:
+      - name: Download test binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: consensus-tests-${{ matrix.os }}-${{ matrix.build_type }}
+          path: build/tests/consensus/
+
+      - name: Make binaries executable
+        run: chmod +x build/tests/consensus/*
+
+      - name: Run formal invariants test
+        run: |
+          echo "Running formal invariants verification..."
+          ./build/tests/consensus/test_formal_invariants
+          echo "✅ Formal invariants passed"
+
+  # ==========================================================================
+  # Stateless verification (MUST PASS)
+  # ==========================================================================
+  stateless-verification:
+    name: Stateless Block Verification
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release]
+
+    steps:
+      - name: Download test binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: consensus-tests-${{ matrix.os }}-${{ matrix.build_type }}
+          path: build/tests/consensus/
+
+      - name: Make binaries executable
+        run: chmod +x build/tests/consensus/*
+
+      - name: Run stateless verification tests
+        run: |
+          echo "Running stateless block verification tests..."
+          ./build/tests/consensus/test_stateless_verification
+          echo "✅ Stateless verification passed"
+
+  # ==========================================================================
+  # Consensus invariants (MUST PASS)
+  # ==========================================================================
+  consensus-invariants:
+    name: Consensus Invariants
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release]
+
+    steps:
+      - name: Download test binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: consensus-tests-${{ matrix.os }}-${{ matrix.build_type }}
+          path: build/tests/consensus/
+
+      - name: Make binaries executable
+        run: chmod +x build/tests/consensus/*
+
+      - name: Run consensus invariants tests
+        run: |
+          echo "Running consensus invariants tests..."
+          ./build/tests/consensus/test_consensus_invariants
+          echo "✅ Consensus invariants passed"
+
+  # ==========================================================================
+  # UTXO set tests (MUST PASS)
+  # ==========================================================================
+  utxo-set:
+    name: ConsensusUTXOSet Tests
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release]
+
+    steps:
+      - name: Download test binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: consensus-tests-${{ matrix.os }}-${{ matrix.build_type }}
+          path: build/tests/consensus/
+
+      - name: Make binaries executable
+        run: chmod +x build/tests/consensus/*
+
+      - name: Run UTXO set tests
+        run: |
+          echo "Running ConsensusUTXOSet tests..."
+          ./build/tests/consensus/test_consensus_utxo_set
+          echo "✅ UTXO set tests passed"
+
+  # ==========================================================================
+  # Economic Property Testing (MUST PASS)
+  # ==========================================================================
+  economic-properties:
+    name: Economic Property Test
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release]
+
+    steps:
+      - name: Download test binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: consensus-tests-${{ matrix.os }}-${{ matrix.build_type }}
+          path: build/tests/consensus/
+
+      - name: Make binaries executable
+        run: chmod +x build/tests/consensus/*
+
+      - name: Run economic property tests
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "ECONOMIC PROPERTY TESTING - FUZZING THE ECONOMY"
+          echo "════════════════════════════════════════════════════════════════"
+          echo "Seeds: $FUZZ_SEEDS"
+          echo "Steps per seed: 200"
+          echo ""
+
+          for SEED in $FUZZ_SEEDS; do
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Running economic property test with seed: $SEED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+            if ! ./build/tests/consensus/economic_property_test $SEED 200; then
+              echo "❌ ECONOMIC INVARIANT VIOLATION with seed $SEED"
+              exit 1
+            fi
+            echo "✅ Passed with seed $SEED"
+            echo ""
+          done
+
+          echo "════════════════════════════════════════════════════════════════"
+          echo "✅ ALL ECONOMIC PROPERTY TESTS PASSED"
+          echo "════════════════════════════════════════════════════════════════"
+
+  # ==========================================================================
+  # Debug build with paranoid mode (catches extra issues)
+  # ==========================================================================
+  paranoid-mode:
+    name: Paranoid Mode (Debug)
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download test binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: consensus-tests-ubuntu-latest-Debug
+          path: build/tests/consensus/
+
+      - name: Make binaries executable
+        run: chmod +x build/tests/consensus/*
+
+      - name: Run with paranoid mode enabled
+        env:
+          DINERO_CONSENSUS_PARANOID: "1"
+        run: |
+          echo "Running with DINERO_CONSENSUS_PARANOID=1..."
+          ./build/tests/consensus/consensus_fuzzer 99999 500
+          ./build/tests/consensus/test_consensus_invariants
+          echo "✅ Paranoid mode tests passed"
+
+  # ==========================================================================
+  # Final gate - all must pass
+  # ==========================================================================
+  consensus-gate:
+    name: Consensus Gate (MUST PASS)
+    needs:
+      - fuzzer-fixed-seeds
+      - formal-invariants
+      - stateless-verification
+      - consensus-invariants
+      - utxo-set
+      - economic-properties
+      - paranoid-mode
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: All consensus tests passed
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "✅ CONSENSUS GATE PASSED"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "All consensus tests passed:"
+          echo "  ✓ Deterministic fuzzer (5 fixed seeds × $FUZZ_ITERATIONS iterations)"
+          echo "  ✓ Formal invariants"
+          echo "  ✓ Stateless block verification"
+          echo "  ✓ Consensus invariants"
+          echo "  ✓ UTXO set operations"
+          echo "  ✓ Economic property testing"
+          echo "  ✓ Paranoid mode (debug build)"
+          echo ""
+          echo "Consensus is frozen. No regressions detected."
+          echo "════════════════════════════════════════════════════════════════"

@@ -1,0 +1,83 @@
+[Unit]
+Description=Dinero Cryptocurrency Daemon
+Documentation=https://github.com/your-org/DineroCoin
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/dinero
+
+[Service]
+Type=notify
+User=dinero
+Group=dinero
+WorkingDirectory=/var/lib/dinero
+
+# Main executable
+ExecStart=/usr/local/bin/dinerod \
+    -datadir=/var/lib/dinero \
+    -rpcbind=127.0.0.1 \
+    -rpcport=20998 \
+    -wsport=21001 \
+    -daemon=0 \
+    -server=1 \
+    -printtoconsole=0 \
+    -logfile=/var/log/dinero/daemon.log
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+LimitCORE=0
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+RestrictNamespaces=yes
+
+# Filesystem access
+ReadWritePaths=/var/lib/dinero /var/log/dinero
+ReadOnlyPaths=/usr/local/bin/dinerod
+
+# Network restrictions
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/8
+IPAddressAllow=::1/128
+
+# System call filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@debug @mount @cpu-emulation @obsolete @privileged @reboot @swap @raw-io
+
+# Capabilities
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Memory protection
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+
+# Process management
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dinerod
+
+[Install]
+WantedBy=multi-user.target

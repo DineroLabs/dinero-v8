@@ -1,0 +1,52 @@
+{
+  "generated_at": 1769386955,
+  "generator": "dinero_test_utils",
+  "version": "1.0.0",
+  "vectors": {
+    "description": "Merkle root computation test vectors",
+    "test_cases": [
+      {
+        "name": "single_tx",
+        "txids": [
+          "e523b27112f14b4f23337f7ce11941a99113bde76875af44026932cd21496a85"
+        ],
+        "expected_root": "e523b27112f14b4f23337f7ce11941a99113bde76875af44026932cd21496a85",
+        "note": "Single tx: root == txid"
+      },
+      {
+        "name": "two_txs",
+        "txids": [
+          "e523b27112f14b4f23337f7ce11941a99113bde76875af44026932cd21496a85",
+          "fd8d631a21ccc3c219572354cda462d1b4927bc0bf1905830b6d4d1d4d3a0479"
+        ],
+        "expected_root": "5be74e714e4a248341be35308bcf098e4ac65f449a754ca0c3b8cab63e6cc789"
+      },
+      {
+        "name": "three_txs_odd",
+        "txids": [
+          "e523b27112f14b4f23337f7ce11941a99113bde76875af44026932cd21496a85",
+          "fd8d631a21ccc3c219572354cda462d1b4927bc0bf1905830b6d4d1d4d3a0479",
+          "33026e312aa8c7803d00c26baa6574cc266d67291b79bd49922206d2319c72ef"
+        ],
+        "expected_root": "41d0c44b3a812ce3573d27bda75fa9ce3385cc64d9a18b4c0ba98f5d7366bef4",
+        "note": "Odd count: last txid duplicated"
+      },
+      {
+        "name": "four_txs",
+        "txids": [
+          "e523b27112f14b4f23337f7ce11941a99113bde76875af44026932cd21496a85",
+          "fd8d631a21ccc3c219572354cda462d1b4927bc0bf1905830b6d4d1d4d3a0479",
+          "33026e312aa8c7803d00c26baa6574cc266d67291b79bd49922206d2319c72ef",
+          "4ea719ae79e59cc247ab4cc0ef2692f2e2a0c494037145fa6974f9169cdc4647"
+        ],
+        "expected_root": "aec6b680d925b3e5d116019e9581e1fd824a87ef1202b8f60a7f2a0762d458ef"
+      },
+      {
+        "name": "empty",
+        "txids": [],
+        "expected_root": "0000000000000000000000000000000000000000000000000000000000000000",
+        "note": "Empty list returns 32 zero bytes"
+      }
+    ]
+  }
+}

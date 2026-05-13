@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "mining.start",
+  "description": "Start mining with specified threads",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "mining.start"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256,
+          "description": "Number of threads (0 = auto-detect)"
+        },
+        {
+          "type": "string",
+          "pattern": "^din1[a-z0-9]{39,59}$",
+          "description": "Optional mining address override"
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["started", "already_running"],
+          "description": "Mining start status"
+        },
+        "threads": {
+          "type": "integer",
+          "description": "Number of mining threads started"
+        },
+        "address": {
+          "type": "string",
+          "description": "Mining reward address"
+        },
+        "difficulty": {
+          "type": "number",
+          "description": "Current mining difficulty"
+        },
+        "target_bits": {
+          "type": "string",
+          "description": "Current target bits (hex)"
+        }
+      },
+      "required": ["status", "threads", "address"]
+    }
+  }
+}

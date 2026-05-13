@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getmempoolinfo",
+  "description": "Returns mempool statistics and fee information",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "getmempoolinfo"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "loaded": {
+          "type": "boolean",
+          "description": "Whether mempool is loaded"
+        },
+        "size": {
+          "type": "integer",
+          "description": "Number of transactions in mempool"
+        },
+        "bytes": {
+          "type": "integer",
+          "description": "Total size of mempool in bytes"
+        },
+        "usage": {
+          "type": "integer",
+          "description": "Memory usage of mempool in bytes"
+        },
+        "maxmempool": {
+          "type": "integer",
+          "description": "Maximum memory usage allowed"
+        },
+        "mempoolminfee": {
+          "type": "integer",
+          "description": "Minimum fee rate in una/kvB"
+        },
+        "minrelaytxfee": {
+          "type": "integer",
+          "description": "Minimum relay fee rate in una/kvB"
+        },
+        "unbroadcastcount": {
+          "type": "integer",
+          "description": "Number of unbroadcast transactions"
+        },
+        "fees": {
+          "type": "object",
+          "description": "Fee rate percentiles",
+          "properties": {
+            "base": {"type": "integer", "description": "Base fee rate (una/kvB)"},
+            "modified": {"type": "integer", "description": "Modified fee rate (una/kvB)"},
+            "ancestor": {"type": "integer", "description": "Ancestor fee rate (una/kvB)"},
+            "descendant": {"type": "integer", "description": "Descendant fee rate (una/kvB)"}
+          }
+        }
+      },
+      "required": ["loaded", "size", "bytes", "usage", "mempoolminfee"]
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getconnectioncount",
+  "description": "Get number of connections to other nodes",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "getconnectioncount"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of peer connections"
+    }
+  }
+}

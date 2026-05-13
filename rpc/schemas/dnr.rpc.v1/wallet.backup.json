@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wallet.backup",
+  "description": "Create encrypted wallet backup",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "wallet.backup"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "description": "Backup file path (optional, returns blob if omitted)"
+        },
+        {
+          "type": "object",
+          "description": "Backup options",
+          "properties": {
+            "include_descriptors": {
+              "type": "boolean",
+              "description": "Include output descriptors (default: true)"
+            },
+            "include_labels": {
+              "type": "boolean", 
+              "description": "Include address labels (default: true)"
+            },
+            "include_transactions": {
+              "type": "boolean",
+              "description": "Include transaction history (default: false)"
+            },
+            "compress": {
+              "type": "boolean",
+              "description": "Compress backup (default: true)"
+            }
+          }
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean",
+          "description": "Whether backup was created successfully"
+        },
+        "backup_path": {
+          "type": "string",
+          "description": "Path to backup file (if file path provided)"
+        },
+        "backup_blob": {
+          "type": "string",
+          "description": "Base64-encoded backup data (if no path provided)"
+        },
+        "backup_size": {
+          "type": "integer",
+          "description": "Backup size in bytes"
+        },
+        "backup_hash": {
+          "type": "string",
+          "description": "SHA256 hash of backup for verification"
+        },
+        "created_at": {
+          "type": "integer",
+          "description": "Backup creation timestamp"
+        },
+        "wallet_version": {
+          "type": "integer",
+          "description": "Wallet version backed up"
+        },
+        "descriptors_count": {
+          "type": "integer",
+          "description": "Number of descriptors backed up"
+        },
+        "addresses_count": {
+          "type": "integer",
+          "description": "Number of addresses backed up"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Backup warnings"
+        }
+      },
+      "required": ["success", "backup_size", "backup_hash", "created_at"]
+    }
+  }
+}

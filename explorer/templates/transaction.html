@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+
+{% block title %}Transaction {{ tx.txid | shorthash }} - Dinero Explorer{% endblock %}
+
+{% block content %}
+<!-- Transaction Summary -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Transaction Details</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <dl class="row">
+                    {% if tx.blockhash %}
+                    <dt class="col-sm-4">Block:</dt>
+                    <dd class="col-sm-8">
+                        <a href="{{ url_for('block_detail', height_or_hash=tx.blockheight) }}"
+                           class="link-hash">
+                            #{{ tx.blockheight }}
+                        </a>
+                    </dd>
+                    {% endif %}
+
+                    <dt class="col-sm-4">Confirmations:</dt>
+                    <dd class="col-sm-8">
+                        <span class="badge badge-confirmed">{{ tx.confirmations }}</span>
+                    </dd>
+
+                    <dt class="col-sm-4">Status:</dt>
+                    <dd class="col-sm-8">
+                        <span class="badge bg-success">{{ tx.status | upper }}</span>
+                    </dd>
+
+                    <dt class="col-sm-4">Type:</dt>
+                    <dd class="col-sm-8">
+                        {% if tx.is_coinbase %}
+                        <span class="badge badge-coinbase">Coinbase</span>
+                        {% else %}
+                        <span class="badge bg-secondary">Regular</span>
+                        {% endif %}
+                    </dd>
+                </dl>
+            </div>
+            <div class="col-md-6">
+                <dl class="row">
+                    <dt class="col-sm-4">Version:</dt>
+                    <dd class="col-sm-8">{{ tx.version }}</dd>
+
+                    <dt class="col-sm-4">Locktime:</dt>
+                    <dd class="col-sm-8">{{ tx.locktime }}</dd>
+
+                    <dt class="col-sm-4">Witness:</dt>
+                    <dd class="col-sm-8">
+                        {% if tx.witness_version == 'taproot' %}
+                        <span class="badge badge-taproot">Taproot</span>
+                        {% elif tx.witness_version == 'segwit_v0' %}
+                        <span class="badge badge-segwit">SegWit v0</span>
+                        {% else %}
+                        <span class="badge bg-secondary">{{ tx.witness_version }}</span>
+                        {% endif %}
+                    </dd>
+                </dl>
+            </div>
+        </div>
+
+        <hr>
+
+        <dl class="row">
+            <dt class="col-sm-2">Transaction ID:</dt>
+            <dd class="col-sm-10">
+                <code class="hash-text">{{ tx.txid }}</code>
+            </dd>
+        </dl>
+    </div>
+</div>
+
+<!-- Value Summary -->
+{% if not tx.is_coinbase %}
+<div class="row mt-4">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body text-center">
+                <h6 class="text-muted">Total Input</h6>
+                <h4 class="mb-0">{{ tx.total_input | din }} DIN</h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body text-center">
+                <h6 class="text-muted">Total Output</h6>
+                <h4 class="mb-0">{{ tx.total_output | din }} DIN</h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card {% if tx.fee > 0 %}bg-success text-white{% endif %}">
+            <div class="card-body text-center">
+                <h6 {% if tx.fee > 0 %}class="text-white-50"{% else %}class="text-muted"{% endif %}>
+                    Transaction Fee
+                </h6>
+                <h4 class="mb-0">
+                    {% if tx.fee > 0 %}
+                    {{ tx.fee | din }} DIN
+                    {% else %}
+                    N/A
+                    {% endif %}
+                </h4>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Inputs -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="mb-0">Inputs ({{ tx.inputs | length }})</h5>
+    </div>
+    <div class="card-body p-0">
+        {% if tx.is_coinbase %}
+        <div class="p-3 text-center text-muted">
+            <em>Coinbase transaction (no inputs)</em>
+        </div>
+        {% else %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Previous Transaction</th>
+                        <th class="text-center">Output Index</th>
+                        <th class="text-end">Amount</th>
+                        <th class="text-end">Script</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for input in tx.inputs %}
+                    <tr>
+                        <td>
+                            <a href="{{ url_for('transaction_detail', txid=input.prevout_txid) }}"
+                               class="link-hash hash-text">
+                                {{ input.prevout_txid | shorthash }}
+                            </a>
+                        </td>
+                        <td class="text-center">
+                            <span class="badge bg-secondary">{{ input.prevout_vout }}</span>
+                        </td>
+                        <td class="text-end">
+                            {% if 'value_din' in input %}
+                            <span class="text-success fw-bold">
+                                {{ input.value_din | din }} DIN
+                            </span>
+                            {% else %}
+                            <span class="text-muted">Unknown</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            {% if 'prevout_scriptPubKey' in input %}
+                            <code class="hash-text small">
+                                {{ input.prevout_scriptPubKey | shorthash }}
+                            </code>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Outputs -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="mb-0">Outputs ({{ tx.outputs | length }})</h5>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th class="text-center">Index</th>
+                        <th>Type</th>
+                        <th class="text-end">Amount</th>
+                        <th>Script</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for output in tx.outputs %}
+                    <tr>
+                        <td class="text-center">
+                            <span class="badge bg-secondary">{{ output.vout }}</span>
+                        </td>
+                        <td>
+                            {% if output.type == 'taproot' %}
+                            <span class="badge badge-taproot">Taproot</span>
+                            {% elif output.type == 'segwit_v0' %}
+                            <span class="badge badge-segwit">SegWit v0</span>
+                            {% elif output.type == 'witness' %}
+                            <span class="badge bg-info">Witness</span>
+                            {% else %}
+                            <span class="badge bg-secondary">{{ output.type }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            <span class="fw-bold">{{ output.value_din | din }} DIN</span>
+                        </td>
+                        <td>
+                            <code class="hash-text small">{{ output.scriptPubKey | shorthash }}</code>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Back Button -->
+<div class="mt-4">
+    {% if tx.blockhash %}
+    <a href="{{ url_for('block_detail', height_or_hash=tx.blockheight) }}"
+       class="btn btn-secondary">
+        ← Back to Block #{{ tx.blockheight }}
+    </a>
+    {% endif %}
+</div>
+{% endblock %}

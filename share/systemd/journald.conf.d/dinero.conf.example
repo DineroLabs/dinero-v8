@@ -1,0 +1,43 @@
+# Dinero Core systemd-journald retention policy
+# ==============================================
+# This file is shipped by `cmake --install` as
+#   ${CMAKE_INSTALL_PREFIX}/share/doc/dinero/journald-dinero.conf.example
+#
+# Phase E (`.deb` packaging) will drop this (without the `.example`
+# suffix) to /etc/systemd/journald.conf.d/dinero.conf so the journal
+# rotation policy applies to the dinero.service unit's logs.
+#
+# Manual operators who want the same retention behavior can copy:
+#   sudo cp <this-file> /etc/systemd/journald.conf.d/dinero.conf
+#   sudo systemctl restart systemd-journald
+#
+# Why we ship this:
+# A daemon that talks to the network 24/7 produces a steady stream of
+# journal entries. Without a retention cap, a long-running node's
+# journal can grow into the multi-gigabyte range. The Apr 30 2026
+# fleet incident response on MO surfaced an 11 GB /var/log when the
+# default retention was unbounded; locking the cap here prevents that
+# class of disk-pressure incident.
+#
+# These values match Dinero Core 1.0 spec §1.1 row 6: 7-day retention,
+# 1 GiB cap. Operators with stricter/looser retention requirements can
+# override these in their own /etc/systemd/journald.conf.d/ drop-in
+# (later drop-ins win).
+
+[Journal]
+# Hard cap on retention period. After 7 days, older entries are
+# discarded regardless of size.
+MaxRetentionSec=7day
+
+# Hard cap on disk usage by the journal. Once 1 GiB is reached, the
+# oldest entries are discarded to make room.
+SystemMaxUse=1G
+
+# Reserve a chunk of free space on the journal volume so the journal
+# never fills the disk completely.
+SystemKeepFree=1G
+
+# Per-file rotation: journal segments are rotated when they reach
+# this size. Smaller segments mean more granular cleanup at the cost
+# of more files.
+SystemMaxFileSize=64M

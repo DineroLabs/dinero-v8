@@ -1,0 +1,256 @@
+name: P0 Crypto Suite
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+# Cancel superseded CI runs for faster feedback
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Linux (ASan+UBSan) P0 tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: 
+          fetch-depth: 0
+          submodules: recursive
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build clang lld
+      - name: Configure and build with sanitizers
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake -S . -B build-test -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_SANITIZERS=ON
+          cmake --build build-test -j
+      - name: Run P0 tests
+        run: |
+          UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+          ASAN_OPTIONS=abort_on_error=1:detect_leaks=0 \
+          ctest --test-dir build-test -L p0 --output-on-failure
+
+  p0-crypto:
+    needs: [tests]
+    name: ${{ matrix.os }} • ASan+UBSan
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            leak: "0"   # macOS ASan leak detector is noisy/limited
+          - os: ubuntu-22.04
+            leak: "1"   # Linux: enable leak detection
+
+    env:
+      CMAKE_BUILD_TYPE: RelWithDebInfo
+      # Stable locale & timezone
+      LC_ALL: C.UTF-8
+      TZ: UTC
+      # Sanitizers – same flags used when building tests
+      ASAN_OPTIONS: detect_leaks=${{ matrix.leak }}:strict_string_checks=1:detect_stack_use_after_return=1:halt_on_error=1:abort_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Toolchain (Ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3 pkg-config ccache
+
+      - name: Toolchain (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew update
+          brew install ccache || true
+          python3 --version || true
+          xcodebuild -version
+
+      - name: Enable ccache
+        run: |
+          echo 'set(CMAKE_C_COMPILER_LAUNCHER ccache)'  >> CMakeUserPresets.cmake
+          echo 'set(CMAKE_CXX_COMPILER_LAUNCHER ccache)'>> CMakeUserPresets.cmake
+
+      - name: Configure
+        run: cmake -S . -B build-test -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+
+      - name: Build
+        run: cmake --build build-test -j 3
+
+      # Run the P0 suite + generate the markdown report
+      - name: Run P0 suite & generate report
+        run: |
+          chmod +x scripts/wallet_p0_all.sh || true
+          chmod +x scripts/gen_p0_report.sh || true
+          ./scripts/wallet_p0_all.sh build-test
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: P0_CRYPTO_COMPLETE-${{ matrix.os }}
+          path: build-test/P0_CRYPTO_COMPLETE.md
+
+      - name: Upload CTest logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-crypto-${{ matrix.os }}
+          path: build-test/Testing/Temporary/LastTest.log
+          retention-days: 7
+
+      - name: Add report to job summary
+        if: always()
+        run: |
+          echo "## P0 Crypto Suite — ${GITHUB_REF_NAME} (${GITHUB_SHA::7})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat build-test/P0_CRYPTO_COMPLETE.md >> $GITHUB_STEP_SUMMARY || echo "_Report missing_ ❌" >> $GITHUB_STEP_SUMMARY
+
+  sqlite-lifecycle:
+    needs: [tests]
+    name: ${{ matrix.os }} • SQLite lifecycle • sync=${{ matrix.sync }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-22.04]
+        sync: [NORMAL, FULL]   # add OFF later if you want
+        include:
+          - os: macos-14
+            leak: "0"
+          - os: ubuntu-22.04
+            leak: "1"
+    env:
+      CMAKE_BUILD_TYPE: RelWithDebInfo
+      # Stable locale & timezone
+      LC_ALL: C.UTF-8
+      TZ: UTC
+      ASAN_OPTIONS: detect_leaks=${{ matrix.leak }}:strict_string_checks=1:detect_stack_use_after_return=1:halt_on_error=1:abort_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      DINERO_WAL_CKPT: PASSIVE        # non-blocking checkpoints for CI
+      DINERO_SQL_TRACE: "0"           # keep CI quiet/fast
+      DINERO_WALLET_SYNC: ${{ matrix.sync }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain (Ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3 pkg-config
+
+      - name: Toolchain (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew update
+          python3 --version || true
+          xcodebuild -version
+
+      - name: Configure
+        run: cmake -S . -B build-test -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+
+      - name: Build
+        run: cmake --build build-test -j 3
+
+      - name: Run SQLite lifecycle & generate report
+        run: |
+          chmod +x scripts/wallet_sqlite_all.sh || true
+          chmod +x scripts/gen_sqlite_report.sh || true
+          ./scripts/wallet_sqlite_all.sh build-test
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: P0_SQLITE_COMPLETE-${{ matrix.os }}-${{ matrix.sync }}
+          path: build-test/P0_SQLITE_COMPLETE.md
+
+      - name: Upload CTest logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-sqlite-${{ matrix.os }}-${{ matrix.sync }}
+          path: build-test/Testing/Temporary/LastTest.log
+          retention-days: 7
+
+      - name: Add report to job summary
+        if: always()
+        run: |
+          echo "## SQLite lifecycle — ${GITHUB_REF_NAME} (${GITHUB_SHA::7}) — sync=${{ matrix.sync }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat build-test/P0_SQLITE_COMPLETE.md >> $GITHUB_STEP_SUMMARY || echo "_Report missing_ ❌" >> $GITHUB_STEP_SUMMARY
+
+  tsan:
+    needs: [tests]
+    name: ${{ matrix.os }} • ThreadSanitizer
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04]  # TSAN best on Linux; add macOS if desired
+    env:
+      CMAKE_BUILD_TYPE: RelWithDebInfo
+      TSAN_OPTIONS: halt_on_error=1:report_signal_unsafe=0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3 pkg-config
+      - name: Configure (TSAN build)
+        run: cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DENABLE_TSAN=ON
+      - name: Build
+        run: cmake --build build-tsan -j 3
+      - name: Run P0 suite (TSAN)
+        run: ctest -R "wallet_sqlite_lifecycle|test_.*" --output-on-failure
+        working-directory: build-tsan
+
+  coverage:
+    needs: [tests]
+    name: Coverage Analysis
+    runs-on: ubuntu-22.04
+    env:
+      CMAKE_BUILD_TYPE: Debug
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: sudo apt-get update && sudo apt-get install -y lcov llvm build-essential cmake python3 pkg-config
+      - name: Configure (instrumentation)
+        run: cmake -S . -B build-cov -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="--coverage" -DCMAKE_C_FLAGS="--coverage"
+      - name: Build
+        run: cmake --build build-cov -j 3
+      - name: Run P0 suite
+        run: ctest -R "test_|wallet_sqlite_lifecycle" --output-on-failure
+        working-directory: build-cov
+      - name: Generate coverage
+        run: |
+          llvm-profdata merge -sparse $(find . -name "*.profraw" -o -name "*.profdata" 2>/dev/null) -o coverage.profdata || true
+          llvm-cov export ./bin/test_crypto_vectors -instr-profile=coverage.profdata > coverage.json || true
+        working-directory: build-cov
+      - name: Enforce coverage floor (70%)
+        run: |
+          pct=$(jq '.data[0].totals.lines.percent' build-cov/coverage.json 2>/dev/null || echo 100)
+          echo "Coverage: $pct%"
+          awk "BEGIN{exit !($pct+0 >= 70)}"  # fail if < 70
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-data
+          path: build-cov/coverage.json

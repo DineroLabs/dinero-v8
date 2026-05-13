@@ -1,0 +1,9 @@
+/var/log/dinero-health.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}

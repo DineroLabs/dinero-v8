@@ -1,0 +1,30 @@
+# DineroCoin Code Ownership
+
+# WebSocket RPC Infrastructure - Critical for production stability
+/src/daemon/ws/**                    @core-team
+/include/daemon/ws/**                @core-team
+/WEBSOCKET_RPC_GUIDE.md             @core-team
+
+# Build System - CMake changes affect all builds
+/CMakeLists.txt                     @core-team @build-team
+/cmake/**                           @build-team
+
+# RPC Server Core - Authentication and dispatch
+/src/daemon/rpc_server.cpp          @core-team
+/include/daemon/rpc_server.h        @core-team
+
+# Network Configuration - Port and service management
+/src/daemon/main.cpp                @core-team
+
+# Documentation - User-facing guides
+/CHANGELOG.md                       @core-team @docs-team
+/README.md                          @docs-team
+/docs/**                            @docs-team
+
+# CI/CD Pipeline
+/.github/workflows/**               @build-team
+/scripts/ci/**                      @build-team
+
+# Security-Critical Components
+/src/daemon/cookie_auth.cpp         @security-team @core-team
+/src/crypto/**                      @security-team @core-team

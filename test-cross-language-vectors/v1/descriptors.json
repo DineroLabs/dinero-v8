@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "BIP86 P2TR descriptor test vectors for DineroCoin. All implementations MUST derive identical addresses from the same seed.",
+  "derivation": {
+    "standard": "BIP86",
+    "purpose": 86,
+    "coin_type": 1448,
+    "path_template": "m/86'/1448'/account'/role/index",
+    "description": "Coin type 1448 is the official registered coin type for DineroCoin (v7)"
+  },
+  "networks": {
+    "mainnet": {
+      "hrp": "din",
+      "description": "Mainnet Bech32m human-readable part"
+    },
+    "testnet": {
+      "hrp": "tdin",
+      "description": "Testnet Bech32m human-readable part"
+    },
+    "regtest": {
+      "hrp": "rdin",
+      "description": "Regtest Bech32m human-readable part"
+    }
+  },
+  "test_seed": {
+    "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "length_bytes": 64,
+    "description": "Deterministic 64-byte seed for testing (NOT for production use)"
+  },
+  "address_derivation": [
+    {
+      "name": "mainnet_external",
+      "description": "Mainnet external (receiving) addresses: m/86'/1448'/0'/0/*",
+      "network": "mainnet",
+      "account": 0,
+      "role": "external",
+      "role_index": 0,
+      "addresses": [
+        {
+          "index": 0,
+          "path": "m/86'/1448'/0'/0/0",
+          "address": "din1pxfv5dg9j9ehe5fd6th929p0vts7m6gf750kjzztu2thpfflhpt7q8jd250",
+          "x_only_pubkey": "325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc",
+          "script_pubkey": "5120325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc"
+        },
+        {
+          "index": 1,
+          "path": "m/86'/1448'/0'/0/1",
+          "address": "din1pghcxjh56zlxctlgww93l0nt5rntmt808y2483g089l644y2hxdvq70xte9",
+          "x_only_pubkey": "45f0695e9a17cd85fd0e7163f7cd741cd7b59de722aa78a1e72ff55a91573358",
+          "script_pubkey": "512045f0695e9a17cd85fd0e7163f7cd741cd7b59de722aa78a1e72ff55a91573358"
+        },
+        {
+          "index": 2,
+          "path": "m/86'/1448'/0'/0/2",
+          "address": "din1pvqh6xjl72dlpn8hhz6epe7uj4467akmyu7x7pxfq6larf38v3k7q58k6dm",
+          "x_only_pubkey": "602fa34bfe537e199ef716b21cfb92ad75eedb64e78de09920d7fa34c4ec8dbc",
+          "script_pubkey": "5120602fa34bfe537e199ef716b21cfb92ad75eedb64e78de09920d7fa34c4ec8dbc"
+        },
+        {
+          "index": 3,
+          "path": "m/86'/1448'/0'/0/3",
+          "address": "din1pxc7mry3yrxv844cpgllg2caxfg4q4qeaxha4asdllwmy5s5qfc3ql56yq5",
+          "x_only_pubkey": "363db1922419987ad70147fe8563a64a2a0a833d35fb5ec1bffbb64a42804e22",
+          "script_pubkey": "5120363db1922419987ad70147fe8563a64a2a0a833d35fb5ec1bffbb64a42804e22"
+        },
+        {
+          "index": 4,
+          "path": "m/86'/1448'/0'/0/4",
+          "address": "din1pdlw8x7skx02wngpwt36m5cr4dgq0kr7kclwlw582u7ad9wuq289sgmlg9g",
+          "x_only_pubkey": "6fdc737a1633d4e9a02e5c75ba60756a00fb0fd6c7ddf750eae7bad2bb8051cb",
+          "script_pubkey": "51206fdc737a1633d4e9a02e5c75ba60756a00fb0fd6c7ddf750eae7bad2bb8051cb"
+        }
+      ]
+    },
+    {
+      "name": "mainnet_internal",
+      "description": "Mainnet internal (change) addresses: m/86'/1448'/0'/1/*",
+      "network": "mainnet",
+      "account": 0,
+      "role": "internal",
+      "role_index": 1,
+      "addresses": [
+        {
+          "index": 0,
+          "path": "m/86'/1448'/0'/1/0",
+          "address": "din1pqmrhp599qat0gp6hwh2fhrggyrftxsu8p459lqctdtm3hwhrfuks808urz",
+          "x_only_pubkey": "06c770d0a50756f4075775d49b8d0820d2b343870d685f830b6af71bbae34f2d"
+        },
+        {
+          "index": 1,
+          "path": "m/86'/1448'/0'/1/1",
+          "address": "din1p0t9emw5qmfsmxzmedmkmfy27sn8j28pun9yklma4d6jpayf0225q4a302f",
+          "x_only_pubkey": "7acb9dba80da61b30b796eedb4915e84cf251c3c99496fefb56ea41e912f52a8"
+        },
+        {
+          "index": 2,
+          "path": "m/86'/1448'/0'/1/2",
+          "address": "din1puar89ael5nflvm5fk9kesk5fp5zffcmzjlanal054z5cactwc46s9vvj8x",
+          "x_only_pubkey": "e74672f73fa4d3f66e89b16d985a890d0494e36297fb3efdf4a8a98ee16ec575"
+        }
+      ]
+    },
+    {
+      "name": "testnet_external",
+      "description": "Testnet external addresses: m/86'/1448'/0'/0/*",
+      "network": "testnet",
+      "account": 0,
+      "role": "external",
+      "role_index": 0,
+      "addresses": [
+        {
+          "index": 0,
+          "path": "m/86'/1448'/0'/0/0",
+          "address": "tdin1pxfv5dg9j9ehe5fd6th929p0vts7m6gf750kjzztu2thpfflhpt7qvaf5t6"
+        },
+        {
+          "index": 1,
+          "path": "m/86'/1448'/0'/0/1",
+          "address": "tdin1pghcxjh56zlxctlgww93l0nt5rntmt808y2483g089l644y2hxdvq4qz4xs"
+        },
+        {
+          "index": 2,
+          "path": "m/86'/1448'/0'/0/2",
+          "address": "tdin1pvqh6xjl72dlpn8hhz6epe7uj4467akmyu7x7pxfq6larf38v3k7qlgjyjw"
+        }
+      ]
+    },
+    {
+      "name": "regtest_external",
+      "description": "Regtest external addresses: m/86'/1448'/0'/0/*",
+      "network": "regtest",
+      "account": 0,
+      "role": "external",
+      "role_index": 0,
+      "addresses": [
+        {
+          "index": 0,
+          "path": "m/86'/1448'/0'/0/0",
+          "address": "rdin1pxfv5dg9j9ehe5fd6th929p0vts7m6gf750kjzztu2thpfflhpt7qky4vwj"
+        },
+        {
+          "index": 1,
+          "path": "m/86'/1448'/0'/0/1",
+          "address": "rdin1pghcxjh56zlxctlgww93l0nt5rntmt808y2483g089l644y2hxdvq0e7drc"
+        },
+        {
+          "index": 2,
+          "path": "m/86'/1448'/0'/0/2",
+          "address": "rdin1pvqh6xjl72dlpn8hhz6epe7uj4467akmyu7x7pxfq6larf38v3k7q93wuhx"
+        }
+      ]
+    },
+    {
+      "name": "account_1_external",
+      "description": "Account 1 external addresses: m/86'/1448'/1'/0/*",
+      "network": "mainnet",
+      "account": 1,
+      "role": "external",
+      "role_index": 0,
+      "addresses": [
+        {
+          "index": 0,
+          "path": "m/86'/1448'/1'/0/0",
+          "address": "din1pdzzxnq50nfrdcvaxjyrs4wrwsjxxxdnm3u5tmwd7u0j9jmtth4ssq5xd5t"
+        },
+        {
+          "index": 1,
+          "path": "m/86'/1448'/1'/0/1",
+          "address": "din1pg9qcm7u7nxl3purt4f9lfn8ld29t44nt35fg0ry9xcmnv0qu57psufafns"
+        },
+        {
+          "index": 2,
+          "path": "m/86'/1448'/1'/0/2",
+          "address": "din1p05ktexv0n9l6e9pszlwezz2ausmdp52eus8l3w4ejhc4czgw0w5qg2w2f8"
+        }
+      ]
+    }
+  ],
+  "address_decode": [
+    {
+      "name": "mainnet_decode",
+      "address": "din1pxfv5dg9j9ehe5fd6th929p0vts7m6gf750kjzztu2thpfflhpt7q8jd250",
+      "expected_network": "mainnet",
+      "expected_x_only_pubkey": "325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc"
+    },
+    {
+      "name": "testnet_decode",
+      "address": "tdin1pxfv5dg9j9ehe5fd6th929p0vts7m6gf750kjzztu2thpfflhpt7qvaf5t6",
+      "expected_network": "testnet",
+      "expected_x_only_pubkey": "325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc"
+    },
+    {
+      "name": "regtest_decode",
+      "address": "rdin1pxfv5dg9j9ehe5fd6th929p0vts7m6gf750kjzztu2thpfflhpt7qky4vwj",
+      "expected_network": "regtest",
+      "expected_x_only_pubkey": "325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc"
+    }
+  ],
+  "script_pubkey_format": {
+    "description": "P2TR output script format: OP_1 (0x51) + PUSH32 (0x20) + 32-byte x-only pubkey",
+    "example": {
+      "x_only_pubkey": "325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc",
+      "script_pubkey": "5120325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc",
+      "breakdown": {
+        "op_1": "51",
+        "push_32": "20",
+        "pubkey": "325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc"
+      }
+    }
+  },
+  "derivation_path_parsing": [
+    {
+      "input": "m/86'/1448'/0'/0/0",
+      "expected_components": [2147483734, 2147485096, 2147483648, 0, 0],
+      "expected_display": "m/86'/1448'/0'/0/0"
+    },
+    {
+      "input": "86'/1448'/0'/0/0",
+      "expected_components": [2147483734, 2147485096, 2147483648, 0, 0],
+      "expected_display": "m/86'/1448'/0'/0/0",
+      "note": "Without 'm/' prefix should normalize to same path"
+    },
+    {
+      "input": "m/86'/1448'/0'/1/0",
+      "expected_components": [2147483734, 2147485096, 2147483648, 1, 0],
+      "expected_display": "m/86'/1448'/0'/1/0",
+      "note": "Internal (change) path"
+    },
+    {
+      "input": "m/86'/1448'/1'/0/0",
+      "expected_components": [2147483734, 2147485096, 2147483649, 0, 0],
+      "expected_display": "m/86'/1448'/1'/0/0",
+      "note": "Account 1"
+    }
+  ],
+  "constants": {
+    "HARDENED_OFFSET": 2147483648,
+    "HARDENED_OFFSET_HEX": "0x80000000",
+    "PURPOSE_HARDENED": 2147483734,
+    "COIN_TYPE_HARDENED": 2147485096,
+    "description": "Hardened indices have bit 31 set. 86 | 0x80000000 = 2147483734, 1448 | 0x80000000 = 2147485096"
+  },
+  "notes": {
+    "bip86": "BIP86 defines single-key P2TR (Taproot) wallets with key-path-only spending. The output key is tweaked: output = internal + H_TapTweak(internal)*G",
+    "coin_type": "1448 is the official registered coin type for DineroCoin (v7) in SLIP-0044.",
+    "bech32m": "All P2TR addresses use Bech32m encoding (BIP350) with witness version 1.",
+    "x_only_pubkey": "Taproot uses 32-byte x-only public keys (BIP340). The y-coordinate parity is implicit.",
+    "taproot_tweak": "For key-path-only BIP86, the tweak is H_TapTweak(internal_key) with no script tree.",
+    "verification": "Run 'cargo test --test cross_language_vectors' in crates/dpi to validate these vectors."
+  }
+}

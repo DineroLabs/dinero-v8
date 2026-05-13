@@ -1,0 +1,155 @@
+// Example Exchange UI Component
+// mobile-tauri/src/components/ExchangeScreen.tsx
+
+import React, { useState } from 'react';
+import { useExchange, useExchangeRates, useSwapStatus } from '../hooks/useExchange';
+import { useWallet } from '../hooks/useWallet';
+import QRCode from 'qrcode.react';
+
+export function ExchangeScreen() {
+  const { getRate, createSwap, loading, error } = useExchange();
+  const { getNewAddress } = useWallet();
+  
+  const [fromSymbol, setFromSymbol] = useState('DIN');
+  const [toSymbol, setToSymbol] = useState('BTC');
+  const [amount, setAmount] = useState<number>(0);
+  const [rate, setRate] = useState<any>(null);
+  const [swap, setSwap] = useState<any>(null);
+  const [toAddress, setToAddress] = useState('');
+
+  // Auto-refresh rates for common pairs
+  const rates = useExchangeRates([
+    { from: 'DIN', to: 'BTC', amount: 100 },
+    { from: 'DIN', to: 'USD', amount: 100 },
+    { from: 'DIN', to: 'ETH', amount: 100 },
+  ]);
+
+  const handleGetRate = async () => {
+    try {
+      const rateData = await getRate(fromSymbol, toSymbol, amount);
+      setRate(rateData);
+    } catch (err) {
+      console.error('Failed to get rate:', err);
+    }
+  };
+
+  const handleCreateSwap = async () => {
+    try {
+      const swapData = await createSwap(toAddress, amount, fromSymbol, toSymbol);
+      setSwap(swapData);
+    } catch (err) {
+      console.error('Failed to create swap:', err);
+    }
+  };
+
+  return (
+    <div className="exchange-screen">
+      <h1>Exchange Dinero</h1>
+      
+      {/* Rate Display */}
+      <div className="rate-display">
+        <h2>Current Rates</h2>
+        {Array.from(rates.entries()).map(([key, rate]) => (
+          <div key={key}>
+            {rate.from_symbol} → {rate.to_symbol}: {rate.rate.toFixed(8)}
+            <span className="provider">via {rate.provider}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Swap Form */}
+      <div className="swap-form">
+        <h2>Create Swap</h2>
+        
+        <div className="form-group">
+          <label>From</label>
+          <select value={fromSymbol} onChange={e => setFromSymbol(e.target.value)}>
+            <option value="DIN">DIN</option>
+            <option value="BTC">BTC</option>
+            <option value="ETH">ETH</option>
+            <option value="USDT">USDT</option>
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>To</label>
+          <select value={toSymbol} onChange={e => setToSymbol(e.target.value)}>
+            <option value="BTC">BTC</option>
+            <option value="ETH">ETH</option>
+            <option value="USDT">USDT</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>Amount</label>
+          <input
+            type="number"
+            value={amount || ''}
+            onChange={e => setAmount(parseFloat(e.target.value) || 0)}
+            placeholder="0.00"
+          />
+        </div>
+
+        <button onClick={handleGetRate} disabled={loading || amount <= 0}>
+          Get Rate
+        </button>
+
+        {rate && (
+          <div className="rate-preview">
+            <p>
+              {amount} {rate.from_symbol} = {rate.to_amount.toFixed(8)} {rate.to_symbol}
+            </p>
+            <p className="fee">Fee: {rate.to_amount * 0.01} {rate.to_symbol}</p>
+            <p className="min-max">
+              Min: {rate.min_amount} | Max: {rate.max_amount}
+            </p>
+          </div>
+        )}
+
+        {rate && (
+          <>
+            <div className="form-group">
+              <label>Recipient Address ({toSymbol})</label>
+              <input
+                type="text"
+                value={toAddress}
+                onChange={e => setToAddress(e.target.value)}
+                placeholder={`Enter ${toSymbol} address`}
+              />
+            </div>
+
+            <button onClick={handleCreateSwap} disabled={loading || !toAddress}>
+              Create Swap
+            </button>
+          </>
+        )}
+
+        {error && <div className="error">{error}</div>}
+      </div>
+
+      {/* Swap Status */}
+      {swap && <SwapStatusDisplay swapId={swap.txid} />}
+    </div>
+  );
+}
+
+function SwapStatusDisplay({ swapId }: { swapId: string }) {
+  const { swap, loading } = useSwapStatus(swapId);
+
+  if (!swap) return null;
+
+  return (
+    <div className="swap-status">
+      <h3>Swap Status</h3>
+      <p>TXID: {swap.txid}</p>
+      <p>Status: {swap.status}</p>
+      <p>
+        {swap.from_amount} {swap.from_symbol} → {swap.to_amount} {swap.to_symbol}
+      </p>
+      <p>Fee: {swap.fee} {swap.from_symbol}</p>
+      {loading && <p>Updating...</p>}
+    </div>
+  );
+}
+

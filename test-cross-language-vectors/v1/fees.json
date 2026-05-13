@@ -1,0 +1,403 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "Fee calculation test vectors for DineroCoin. All implementations MUST produce identical fee estimates for these inputs.",
+  "formulas": {
+    "vbytes_from_weight": "vbytes = ceil(weight / 4) = (weight + 3) / 4",
+    "fee_from_vbytes": "fee = vbytes * fee_rate",
+    "fee_from_weight": "fee = ceil(weight * fee_rate / 4) = (weight * fee_rate + 3) / 4",
+    "weight_calculation": "weight = TX_OVERHEAD + sum(input_weights) + sum(output_weights) + op_return_weight"
+  },
+  "constants": {
+    "TX_OVERHEAD_WEIGHT": 42,
+    "P2TR_INPUT_WEIGHT": 230,
+    "P2WPKH_INPUT_WEIGHT": 271,
+    "P2TR_OUTPUT_WEIGHT": 172,
+    "P2WPKH_OUTPUT_WEIGHT": 124,
+    "OP_RETURN_BASE_WEIGHT": 40,
+    "P2TR_DUST_THRESHOLD": 546,
+    "P2WPKH_DUST_THRESHOLD": 546,
+    "MIN_RELAY_FEE_RATE": 1,
+    "description": "Weight in WU, dust/fee in una, fee_rate in una/vB"
+  },
+  "fee_estimates": [
+    {
+      "name": "simple_payment_1_sat_vb",
+      "description": "Standard P2TR payment: 1 input, 2 outputs (payment + change) at 1 una/vB",
+      "template": {
+        "p2tr_inputs": 1,
+        "p2wpkh_inputs": 0,
+        "p2tr_outputs": 2,
+        "p2wpkh_outputs": 0,
+        "has_op_return": false,
+        "op_return_size": 0
+      },
+      "fee_rate_una_per_vb": 1,
+      "expected_weight": 616,
+      "expected_vbytes": 154,
+      "expected_fee": 154,
+      "weight_breakdown": {
+        "overhead": 42,
+        "inputs": 230,
+        "outputs": 344,
+        "total": 616
+      }
+    },
+    {
+      "name": "simple_payment_5_sat_vb",
+      "description": "Standard P2TR payment at 5 una/vB (medium priority)",
+      "template": {
+        "p2tr_inputs": 1,
+        "p2wpkh_inputs": 0,
+        "p2tr_outputs": 2,
+        "p2wpkh_outputs": 0,
+        "has_op_return": false,
+        "op_return_size": 0
+      },
+      "fee_rate_una_per_vb": 5,
+      "expected_weight": 616,
+      "expected_vbytes": 154,
+      "expected_fee": 770
+    },
+    {
+      "name": "simple_payment_10_sat_vb",
+      "description": "Standard P2TR payment at 10 una/vB (high priority)",
+      "template": {
+        "p2tr_inputs": 1,
+        "p2wpkh_inputs": 0,
+        "p2tr_outputs": 2,
+        "p2wpkh_outputs": 0,
+        "has_op_return": false,
+        "op_return_size": 0
+      },
+      "fee_rate_una_per_vb": 10,
+      "expected_weight": 616,
+      "expected_vbytes": 154,
+      "expected_fee": 1540
+    },
+    {
+      "name": "consolidation_3_inputs",
+      "description": "Consolidation: 3 P2TR inputs to 1 output",
+      "template": {
+        "p2tr_inputs": 3,
+        "p2wpkh_inputs": 0,
+        "p2tr_outputs": 1,
+        "p2wpkh_outputs": 0,
+        "has_op_return": false,
+        "op_return_size": 0
+      },
+      "fee_rate_una_per_vb": 1,
+      "expected_weight": 904,
+      "expected_vbytes": 226,
+      "expected_fee": 226,
+      "weight_breakdown": {
+        "overhead": 42,
+        "inputs": 690,
+        "outputs": 172,
+        "total": 904
+      }
+    },
+    {
+      "name": "mixed_outputs",
+      "description": "Mixed output types: 3 P2TR inputs, 1 P2TR + 1 P2WPKH outputs",
+      "template": {
+        "p2tr_inputs": 3,
+        "p2wpkh_inputs": 0,
+        "p2tr_outputs": 1,
+        "p2wpkh_outputs": 1,
+        "has_op_return": false,
+        "op_return_size": 0
+      },
+      "fee_rate_una_per_vb": 2,
+      "expected_weight": 1028,
+      "expected_vbytes": 257,
+      "expected_fee": 514,
+      "weight_breakdown": {
+        "overhead": 42,
+        "inputs": 690,
+        "p2tr_outputs": 172,
+        "p2wpkh_outputs": 124,
+        "total": 1028
+      }
+    },
+    {
+      "name": "with_op_return",
+      "description": "Transaction with OP_RETURN data (20 bytes)",
+      "template": {
+        "p2tr_inputs": 1,
+        "p2wpkh_inputs": 0,
+        "p2tr_outputs": 1,
+        "p2wpkh_outputs": 0,
+        "has_op_return": true,
+        "op_return_size": 20
+      },
+      "fee_rate_una_per_vb": 1,
+      "expected_weight": 564,
+      "expected_vbytes": 141,
+      "expected_fee": 141,
+      "weight_breakdown": {
+        "overhead": 42,
+        "inputs": 230,
+        "outputs": 172,
+        "op_return_base": 40,
+        "op_return_data": 80,
+        "total": 564
+      }
+    },
+    {
+      "name": "minimal_tx",
+      "description": "Minimal transaction: 1 input, 1 output",
+      "template": {
+        "p2tr_inputs": 1,
+        "p2wpkh_inputs": 0,
+        "p2tr_outputs": 1,
+        "p2wpkh_outputs": 0,
+        "has_op_return": false,
+        "op_return_size": 0
+      },
+      "fee_rate_una_per_vb": 1,
+      "expected_weight": 444,
+      "expected_vbytes": 111,
+      "expected_fee": 111
+    },
+    {
+      "name": "large_consolidation",
+      "description": "Large consolidation: 10 P2TR inputs to 1 output",
+      "template": {
+        "p2tr_inputs": 10,
+        "p2wpkh_inputs": 0,
+        "p2tr_outputs": 1,
+        "p2wpkh_outputs": 0,
+        "has_op_return": false,
+        "op_return_size": 0
+      },
+      "fee_rate_una_per_vb": 2,
+      "expected_weight": 2514,
+      "expected_vbytes": 629,
+      "expected_fee": 1258,
+      "weight_breakdown": {
+        "overhead": 42,
+        "inputs": 2300,
+        "outputs": 172,
+        "total": 2514
+      }
+    },
+    {
+      "name": "mixed_inputs",
+      "description": "Mixed input types: 2 P2TR + 1 P2WPKH inputs, 2 outputs",
+      "template": {
+        "p2tr_inputs": 2,
+        "p2wpkh_inputs": 1,
+        "p2tr_outputs": 2,
+        "p2wpkh_outputs": 0,
+        "has_op_return": false,
+        "op_return_size": 0
+      },
+      "fee_rate_una_per_vb": 3,
+      "expected_weight": 1117,
+      "expected_vbytes": 280,
+      "expected_fee": 840,
+      "weight_breakdown": {
+        "overhead": 42,
+        "p2tr_inputs": 460,
+        "p2wpkh_inputs": 271,
+        "outputs": 344,
+        "total": 1117
+      }
+    }
+  ],
+  "marginal_fees": [
+    {
+      "name": "marginal_p2tr_input_1_sat",
+      "description": "Cost to add one P2TR input at 1 una/vB",
+      "fee_rate_una_per_vb": 1,
+      "input_weight": 230,
+      "expected_fee": 58,
+      "formula": "ceil(230 * 1 / 4) = ceil(57.5) = 58"
+    },
+    {
+      "name": "marginal_p2tr_input_5_sat",
+      "description": "Cost to add one P2TR input at 5 una/vB",
+      "fee_rate_una_per_vb": 5,
+      "input_weight": 230,
+      "expected_fee": 288,
+      "formula": "ceil(230 * 5 / 4) = ceil(287.5) = 288"
+    },
+    {
+      "name": "marginal_p2tr_input_10_sat",
+      "description": "Cost to add one P2TR input at 10 una/vB",
+      "fee_rate_una_per_vb": 10,
+      "input_weight": 230,
+      "expected_fee": 575,
+      "formula": "ceil(230 * 10 / 4) = ceil(575) = 575"
+    },
+    {
+      "name": "marginal_p2tr_output_1_sat",
+      "description": "Cost to add one P2TR output at 1 una/vB",
+      "fee_rate_una_per_vb": 1,
+      "output_weight": 172,
+      "expected_fee": 43,
+      "formula": "ceil(172 * 1 / 4) = ceil(43) = 43"
+    },
+    {
+      "name": "marginal_p2tr_output_5_sat",
+      "description": "Cost to add one P2TR output at 5 una/vB",
+      "fee_rate_una_per_vb": 5,
+      "output_weight": 172,
+      "expected_fee": 215,
+      "formula": "ceil(172 * 5 / 4) = ceil(215) = 215"
+    },
+    {
+      "name": "marginal_p2wpkh_input_1_sat",
+      "description": "Cost to add one P2WPKH input at 1 una/vB",
+      "fee_rate_una_per_vb": 1,
+      "input_weight": 271,
+      "expected_fee": 68,
+      "formula": "ceil(271 * 1 / 4) = ceil(67.75) = 68"
+    },
+    {
+      "name": "marginal_p2wpkh_output_1_sat",
+      "description": "Cost to add one P2WPKH output at 1 una/vB",
+      "fee_rate_una_per_vb": 1,
+      "output_weight": 124,
+      "expected_fee": 31,
+      "formula": "ceil(124 * 1 / 4) = ceil(31) = 31"
+    }
+  ],
+  "effective_value": [
+    {
+      "name": "10k_utxo_1_sat",
+      "description": "Effective value of 10,000 una UTXO at 1 una/vB",
+      "utxo_amount": 10000,
+      "fee_rate_una_per_vb": 1,
+      "spend_cost": 58,
+      "expected_effective_value": 9942,
+      "is_economical": true
+    },
+    {
+      "name": "1k_utxo_1_sat",
+      "description": "Effective value of 1,000 una UTXO at 1 una/vB",
+      "utxo_amount": 1000,
+      "fee_rate_una_per_vb": 1,
+      "spend_cost": 58,
+      "expected_effective_value": 942,
+      "is_economical": true
+    },
+    {
+      "name": "100_utxo_10_sat",
+      "description": "Effective value of 100 una UTXO at 10 una/vB (uneconomical)",
+      "utxo_amount": 100,
+      "fee_rate_una_per_vb": 10,
+      "spend_cost": 575,
+      "expected_effective_value": -475,
+      "is_economical": false
+    },
+    {
+      "name": "dust_threshold_utxo",
+      "description": "Effective value of dust threshold UTXO (546 una) at 1 una/vB",
+      "utxo_amount": 546,
+      "fee_rate_una_per_vb": 1,
+      "spend_cost": 58,
+      "expected_effective_value": 488,
+      "is_economical": true
+    },
+    {
+      "name": "breakeven_at_10_sat",
+      "description": "UTXO that breaks even at 10 una/vB (575 una)",
+      "utxo_amount": 575,
+      "fee_rate_una_per_vb": 10,
+      "spend_cost": 575,
+      "expected_effective_value": 0,
+      "is_economical": false
+    }
+  ],
+  "dust_thresholds": [
+    {
+      "name": "p2tr_dust_below",
+      "amount": 545,
+      "output_type": "P2TR",
+      "is_dust": true
+    },
+    {
+      "name": "p2tr_dust_at_threshold",
+      "amount": 546,
+      "output_type": "P2TR",
+      "is_dust": false
+    },
+    {
+      "name": "p2tr_dust_above",
+      "amount": 1000,
+      "output_type": "P2TR",
+      "is_dust": false
+    },
+    {
+      "name": "p2wpkh_dust_below",
+      "amount": 545,
+      "output_type": "P2WPKH",
+      "is_dust": true
+    },
+    {
+      "name": "p2wpkh_dust_at_threshold",
+      "amount": 546,
+      "output_type": "P2WPKH",
+      "is_dust": false
+    }
+  ],
+  "min_relay_fee": [
+    {
+      "name": "100_vbytes",
+      "vbytes": 100,
+      "expected_min_fee": 100,
+      "description": "Min relay = vbytes * 1 una/vB"
+    },
+    {
+      "name": "154_vbytes",
+      "vbytes": 154,
+      "expected_min_fee": 154
+    },
+    {
+      "name": "257_vbytes",
+      "vbytes": 257,
+      "expected_min_fee": 257
+    }
+  ],
+  "fee_rate_tiers": {
+    "description": "Default fee rate tiers for urgency levels",
+    "default_tiers": {
+      "high_una_per_vb": 10,
+      "medium_una_per_vb": 5,
+      "low_una_per_vb": 2,
+      "economy_una_per_vb": 1
+    },
+    "from_base_rate": [
+      {
+        "base_rate": 10,
+        "expected_high": 20,
+        "expected_medium": 10,
+        "expected_low": 5,
+        "expected_economy": 1
+      },
+      {
+        "base_rate": 4,
+        "expected_high": 8,
+        "expected_medium": 4,
+        "expected_low": 2,
+        "expected_economy": 1
+      },
+      {
+        "base_rate": 1,
+        "expected_high": 2,
+        "expected_medium": 1,
+        "expected_low": 1,
+        "expected_economy": 1,
+        "note": "low is max(base/2, 1) = max(0, 1) = 1"
+      }
+    ]
+  },
+  "notes": {
+    "rounding": "All fee calculations round UP (ceiling). Formula: ceil(x) = (x + divisor - 1) / divisor for integers.",
+    "saturation": "All arithmetic uses saturating operations to prevent overflow.",
+    "units": "una = smallest unit. 1 DIN = 100,000,000 una. Fee rates in una per virtual byte.",
+    "verification": "Run 'cargo test fee' in crates/dpi to validate these vectors against the implementation."
+  }
+}

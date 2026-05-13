@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file>MinerPane.qml</file>
+    </qresource>
+</RCC>
+

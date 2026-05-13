@@ -1,0 +1,20 @@
+# Phase 30: Reorg Torture Tests
+
+add_executable(test_deep_reorg test_deep_reorg.cpp)
+
+target_link_libraries(test_deep_reorg
+    dinero_consensus
+    dinero_chainstate
+    dinero_wallet
+    dinero_mining_core
+    dinero_common
+    dinero_crypto
+    rocksdb
+    jsoncpp_static
+)
+
+target_include_directories(test_deep_reorg PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+)

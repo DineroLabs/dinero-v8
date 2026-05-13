@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+
+{% block title %}Block #{{ block.height }} - Miner View - Dinero{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <!-- Block Header -->
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="/">Dashboard</a></li>
+                    <li class="breadcrumb-item active">Block #{{ block.height }}</li>
+                </ol>
+            </nav>
+            <h1 class="display-4">
+                <i class="bi bi-box-seam"></i> Block #{{ block.height }}
+            </h1>
+            <p class="lead text-muted">
+                <code>{{ block.hash }}</code>
+            </p>
+        </div>
+    </div>
+
+    <!-- Block Stats -->
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header bg-dark text-white">
+                    <h5 class="mb-0"><i class="bi bi-info-circle"></i> Block Information</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <dl class="row">
+                                <dt class="col-sm-4">Height:</dt>
+                                <dd class="col-sm-8"><span class="badge bg-primary">#{{ block.height }}</span></dd>
+
+                                <dt class="col-sm-4">Timestamp:</dt>
+                                <dd class="col-sm-8">{{ block.time | timestamp }}</dd>
+
+                                <dt class="col-sm-4">Transactions:</dt>
+                                <dd class="col-sm-8"><span class="badge bg-secondary">{{ block.tx_count }}</span></dd>
+
+                                <dt class="col-sm-4">Difficulty:</dt>
+                                <dd class="col-sm-8"><code>{{ block.difficulty }}</code></dd>
+                            </dl>
+                        </div>
+                        <div class="col-md-6">
+                            <dl class="row">
+                                <dt class="col-sm-4">Nonce:</dt>
+                                <dd class="col-sm-8"><code>{{ block.nonce }}</code></dd>
+
+                                <dt class="col-sm-4">Block Hash:</dt>
+                                <dd class="col-sm-8"><code class="small">{{ block.hash | shorthash(16) }}</code></dd>
+                            </dl>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reward Breakdown -->
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card border-success">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0"><i class="bi bi-currency-dollar"></i> Mining Reward Breakdown</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <h6 class="text-muted">Coinbase Amount</h6>
+                            <h3 class="text-success">{{ block.coinbase_amount | din }} DIN</h3>
+                            <p class="text-muted small">Base block reward</p>
+                        </div>
+                        <div class="col-md-4">
+                            <h6 class="text-muted">Transaction Fees</h6>
+                            <h3 class="text-info">{{ block.total_fees | din }} DIN</h3>
+                            <p class="text-muted small">From {{ block.tx_count - 1 }} transactions</p>
+                        </div>
+                        <div class="col-md-4">
+                            <h6 class="text-muted">Expected Total</h6>
+                            <h3 class="text-primary">{{ block.expected_reward | din }} DIN</h3>
+                            <p class="text-muted small">Coinbase should equal this</p>
+                        </div>
+                    </div>
+                    <hr>
+                    <div class="alert alert-info mb-0">
+                        <strong>Verification:</strong>
+                        {% if (block.coinbase_amount - block.expected_reward) | abs < 0.00000001 %}
+                        <span class="text-success"><i class="bi bi-check-circle-fill"></i> Reward is correct</span>
+                        {% else %}
+                        <span class="text-warning"><i class="bi bi-exclamation-triangle-fill"></i> Reward mismatch detected</span>
+                        (Difference: {{ (block.coinbase_amount - block.expected_reward) | din }} DIN)
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Coinbase Outputs -->
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header bg-dark text-white">
+                    <h5 class="mb-0"><i class="bi bi-coin"></i> Coinbase Outputs</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Index</th>
+                                    <th class="text-end">Amount</th>
+                                    <th>ScriptPubKey</th>
+                                    <th>Type</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for output in block.coinbase_outputs %}
+                                <tr>
+                                    <td><span class="badge bg-secondary">{{ loop.index0 }}</span></td>
+                                    <td class="text-end">
+                                        <strong>{{ output.value_din }}</strong>
+                                    </td>
+                                    <td>
+                                        <code class="small">{{ output.scriptpubkey_hex | shorthash(32) }}</code>
+                                    </td>
+                                    <td>
+                                        {% if output.output_type == 'Taproot' %}
+                                        <span class="badge bg-success">{{ output.output_type }}</span>
+                                        {% elif output.output_type == 'SegWit v0' %}
+                                        <span class="badge bg-info">{{ output.output_type }}</span>
+                                        {% else %}
+                                        <span class="badge bg-secondary">{{ output.output_type }}</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- All Transactions -->
+    <div class="row">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header bg-dark text-white">
+                    <h5 class="mb-0"><i class="bi bi-receipt"></i> All Transactions ({{ block.tx_count }})</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>TXID</th>
+                                    <th>Type</th>
+                                    <th class="text-end">Fee</th>
+                                    <th class="text-center">Outputs</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for tx in block.transactions %}
+                                <tr>
+                                    <td>
+                                        <code class="small">{{ tx.txid | shorthash(16) }}</code>
+                                    </td>
+                                    <td>
+                                        {% if tx.is_coinbase %}
+                                        <span class="badge bg-warning">Coinbase</span>
+                                        {% else %}
+                                        <span class="badge bg-secondary">Regular</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-end">
+                                        {% if tx.is_coinbase %}
+                                        <span class="text-muted">-</span>
+                                        {% else %}
+                                        <span class="text-info">{{ tx.fee | din }} DIN</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-center">
+                                        <span class="badge bg-secondary">{{ tx.outputs }}</span>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                            <tfoot class="table-light">
+                                <tr>
+                                    <td colspan="2"><strong>Total Fees</strong></td>
+                                    <td class="text-end"><strong>{{ block.total_fees | din }} DIN</strong></td>
+                                    <td></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Navigation -->
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <a href="/" class="btn btn-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}

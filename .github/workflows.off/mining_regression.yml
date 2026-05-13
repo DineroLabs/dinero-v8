@@ -1,0 +1,100 @@
+name: Mining Regression Tests
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  mining-regression:
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Dependencies
+      run: |
+        brew install cmake qt@6 sqlite3
+        
+    - name: Build Daemon
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)"
+        cmake --build build --target dinerod --parallel
+        
+    - name: Happy Path Test (Regtest Mining)
+      run: |
+        echo "🧪 Testing happy path: mining should advance blockchain height"
+        
+        # Start daemon
+        ./build/dinerod -regtest -datadir="$(pwd)/ci-test" > daemon.log 2>&1 &
+        DAEMON_PID=$!
+        sleep 5
+        
+        # Get initial height
+        INITIAL_HEIGHT=$(curl -s --user "$(cat ci-test/regtest/.cookie)" \
+          -d '{"method":"getblockcount","id":1}' http://127.0.0.1:20999/ | jq -r '.result')
+        echo "Initial height: $INITIAL_HEIGHT"
+        
+        # Start mining
+        ADDR=$(curl -s --user "$(cat ci-test/regtest/.cookie)" \
+          -d '{"method":"getnewaddress","id":1}' http://127.0.0.1:20999/ | jq -r '.result.address')
+        curl -s --user "$(cat ci-test/regtest/.cookie)" \
+          -d '{"method":"mining.start","params":[{"address":"'$ADDR'","threads":1,"throttle":0.9}],"id":1}' \
+          http://127.0.0.1:20999/ > /dev/null
+        
+        # Wait for mining
+        sleep 8
+        
+        # Check results
+        FINAL_HEIGHT=$(curl -s --user "$(cat ci-test/regtest/.cookie)" \
+          -d '{"method":"getblockcount","id":1}' http://127.0.0.1:20999/ | jq -r '.result')
+        ACCEPTED=$(curl -s --user "$(cat ci-test/regtest/.cookie)" \
+          -d '{"method":"mining.status","id":1}' http://127.0.0.1:20999/ | jq -r '.result.submit_accepted')
+        
+        echo "Final height: $FINAL_HEIGHT"
+        echo "Blocks accepted: $ACCEPTED"
+        
+        # Cleanup
+        curl -s --user "$(cat ci-test/regtest/.cookie)" \
+          -d '{"method":"mining.stop","id":1}' http://127.0.0.1:20999/ > /dev/null
+        kill $DAEMON_PID
+        
+        # Assert success
+        if [ "$FINAL_HEIGHT" -gt "$INITIAL_HEIGHT" ] && [ "$ACCEPTED" -gt 0 ]; then
+          echo "✅ Happy path test PASSED: Height advanced and blocks accepted"
+        else
+          echo "❌ Happy path test FAILED: Height=$FINAL_HEIGHT (was $INITIAL_HEIGHT), Accepted=$ACCEPTED"
+          exit 1
+        fi
+        
+    - name: Regtest Bits Validation
+      run: |
+        echo "🧪 Testing regtest uses easy difficulty bits"
+        
+        ./build/dinerod -regtest -datadir="$(pwd)/ci-test-2" > daemon2.log 2>&1 &
+        DAEMON_PID=$!
+        sleep 3
+        
+        BITS=$(curl -s --user "$(cat ci-test-2/regtest/.cookie)" \
+          -d '{"method":"getblocktemplate","id":1}' http://127.0.0.1:20999/ | jq -r '.result.bits')
+        
+        kill $DAEMON_PID
+        
+        if [ "$BITS" = "207fffff" ]; then
+          echo "✅ Regtest bits test PASSED: Using powLimit ($BITS)"
+        else
+          echo "❌ Regtest bits test FAILED: Expected 207fffff, got $BITS"
+          exit 1
+        fi
+        
+    - name: Upload Logs on Failure
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: mining-test-logs
+        path: |
+          daemon.log
+          daemon2.log
+          ci-test/
+          ci-test-2/

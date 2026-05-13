@@ -1,0 +1,80 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                    DINERO POST-UTREEXO GENESIS BLOCK                      ║
+║                          November 25, 2025 Launch                         ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+CRITICAL CONSENSUS PARAMETERS - NEVER MODIFY AFTER LAUNCH
+═══════════════════════════════════════════════════════════
+
+Genesis Hash (LE):
+    000008e4d5db35fe272f1d53fc64d51d2e507eeb4d0d175120e2a3e30daf7d7a
+
+Merkle Root:
+    8c109896fc86ed4246051b620b9958d56dba39c00a38b321f32f96a71a555511
+
+Utreexo Root (Genesis):
+    0000000000000000000000000000000000000000000000000000000000000000
+
+BLOCK HEADER (112 bytes)
+═══════════════════════
+Version:        1
+Timestamp:      1772496000 (2026-03-03 00:00:00 UTC)
+nBits:          0x1e0ffff0
+Nonce:          1073803870
+
+Header Hex (112 bytes):
+0100000000000000000000000000000000000000000000000000000000000000000000001155551aa7962ff321b3380ac039ba6dd558990b621b054642ed86fc9698108c80f12469f0ff0f1e5ef200400000000000000000000000000000000000000000000000000000000000000000
+
+COINBASE TRANSACTION
+════════════════════
+Type:           OP_RETURN burn (NO PREMINE)
+Amount:         100 DIN (10,000,000,000 una)
+Motto:          "Dinero: Real Money For Free People"
+Size:           136 bytes
+
+Coinbase Hex:
+01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff370044696e65726f3a205265616c204d6f6e657920466f7220467265652050656f706c65202d204e6f76656d6265722032352c2032303235ffffffff0100e40b5402000000156a1344696e65726f2047656e65736973204275726e00000000
+
+VERIFICATION
+════════════
+Mining Time:    1.31 seconds (24 threads)
+Target Diff:    ~20 leading zero bits (easy genesis difficulty)
+Mined Date:     December 12, 2024
+
+CRITICAL BUG FIXES IN compact_to_target()
+═══════════════════════════════════════════
+Two bugs were discovered and fixed in genesis_miner_v2.cpp:
+
+1. Mantissa mask (line 229):
+   WRONG: uint32_t mant = bits & 0x007fffff;
+   RIGHT: uint32_t mant = bits & 0x00ffffff;
+
+2. Index calculation (line 238):
+   WRONG: int idx = 32 - (exp - 3);
+   RIGHT: int idx = 32 - exp;
+
+These fixes ensure correct target calculation from nBits compact format.
+
+INTEGRATION CHECKLIST
+══════════════════════
+[ ] Update src/chainparams.cpp with genesis hash, merkle root, and block
+[ ] Update all genesis references in codebase
+[ ] Verify header size is 112 bytes (post-Utreexo format)
+[ ] Test genesis block validation
+[ ] Verify ASERT difficulty adjustment starts from nBits 0x1e0ffff0
+[ ] Reset chainstate and wallet databases
+[ ] Remove all old genesis references
+
+BACKUP LOCATIONS
+════════════════
+Primary:   /Users/haydarevich/Documents/DineroCoin/genesis_post_utreexo.json
+Backup:    /Users/haydarevich/Documents/DineroCoin/docs/launch/GENESIS_V2_FINAL.json
+Docs:      This file
+
+PROTOCOL VERSION: 2.0.0
+NETWORK: mainnet
+LAUNCH: November 25, 2025 00:00:00 UTC
+
+═══════════════════════════════════════════════════════════════════════════
+                         LOCK THIS FILE AFTER LAUNCH
+═══════════════════════════════════════════════════════════════════════════

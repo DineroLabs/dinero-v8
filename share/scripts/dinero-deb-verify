@@ -1,0 +1,830 @@
+#!/usr/bin/env bash
+#
+# dinero-deb-verify — Phase E.3 release-time gate (Dinero Core 1.0).
+#
+# Verifies that a built .deb (or an unpacked /usr layout) honors the
+# spec §1.4 dependency contract and the §"Release-time gates" checks.
+# Run by CI on every tag; failure fails the release.
+#
+# Usage:
+#   dinero-deb-verify [--static] <path-to-.deb>          # static: package contract
+#   dinero-deb-verify [--static] --staging <path>        # static: against unpacked staging
+#   dinero-deb-verify --installed                        # live: against a dpkg-installed system
+#
+# Two distinct modes — neither subsumes the other; both must pass
+# before E.3/E.6 is declared complete:
+#
+#   --static     — package contract: layout, modes, postinst, unit,
+#                  ldd, RUNPATH, Depends. Runs offline against a
+#                  .deb or its staging tree. Default mode.
+#   --installed  — live runtime contract: bundled-libs JSON (when D.4
+#                  lands), `dinero-cli health` exit-code matrix.
+#                  Runs against /usr/bin/dinerod et al on a clean
+#                  Linux box where `dpkg -i dinero-core_*.deb` and
+#                  `systemctl enable --now dinero` have completed.
+#
+# In --static, runtime checks SKIP (not warn) — the gate stays honest.
+# In --installed, those SKIPs become hard checks. Anything that genuinely
+# does not exist yet (e.g. bundled-libs JSON pre-Phase-D.4) SKIPs in
+# both modes with a marker pointing at the unblocking work.
+#
+# Checks (all must pass — contract verification, not just "it installs"):
+#   1. ldd surface — only base-system libs + bundled .so files under
+#      /usr/lib/dinero/. No libssl, libboost, librocksdb, etc.
+#   2. RUNPATH discipline — DT_RUNPATH=/usr/lib/dinero, never DT_RPATH.
+#   3. Depends honesty — dpkg -I shows no vendored leak.
+#   4. Resolution test — every NEEDED .so actually resolves to an
+#      allowlisted path; catches "tag set but lib missing" failures.
+#   5. Install layout — files at the spec'd paths (binaries in /usr/bin,
+#      systemd unit in /lib/systemd/system, examples in
+#      /usr/share/doc/dinero, journald drop-in shipped).
+#   6. File modes — binaries 0755, conf examples 0644, scripts 0755.
+#   7. Postinst sanity — adduser --system dinero, chown/chmod /var/lib/dinero
+#      to dinero:dinero / 0750, systemd-daemon-reload, no auto-enable.
+#   8. Service unit sanity — dinero.service has User=dinero, ExecStart
+#      points at /usr/bin/dinerod, no auto-enable per spec §1.1 row 5.
+#   9. Bundled-libs JSON [STUB — TODO Phase D.4] — once the version-info
+#      command name lands, run it and validate the bundled_libs schema.
+#  10. Health behavior [STUB — needs live install] — `dinero-cli health`
+#      exit-code contract (0 OK, 1 DEGRADED, 2 FAILING) per spec §"Standard 10".
+#      Verifier emits a warning if invoked against staging only.
+#
+# Exit codes:
+#   0  — all hard checks passed (release may proceed)
+#   1  — one or more contract violations (release MUST fail)
+#   2  — usage / setup error
+#
+# Spec: docs/specs/dinero-core-1.0.md §1.1, §1.4, §"Release-time gates"
+
+set -euo pipefail
+
+# ─────────────────────────────────────────────────────────────────
+# Honest base-system NEEDED allowlist (spec §1.4):
+#   libc6, libstdc++6, libgcc-s1, libz1, plus the dynamic linker
+#   itself (ld-linux-x86-64.so.2) and the vDSO.
+#
+# Any NEEDED entry NOT in this list MUST resolve under /usr/lib/dinero/.
+# Anything resolving outside /lib/x86_64-linux-gnu/, /lib64/, or
+# /usr/lib/dinero/ is a contract violation.
+# ─────────────────────────────────────────────────────────────────
+ALLOWED_SYSTEM_NEEDED=(
+  "linux-vdso.so.1"
+  "ld-linux-x86-64.so.2"
+  "libc.so.6"
+  "libdl.so.2"
+  "libpthread.so.0"
+  "libm.so.6"
+  "libstdc++.so.6"
+  "libgcc_s.so.1"
+  "libz.so.1"
+)
+ALLOWED_SYSTEM_PATHS_RE='^(/lib/x86_64-linux-gnu/|/lib64/|/usr/lib/dinero/)'
+EXPECTED_RUNPATH="/usr/lib/dinero"
+
+usage() {
+  echo "Usage: dinero-deb-verify [--static] <path-to-.deb>"
+  echo "       dinero-deb-verify [--static] --staging <unpacked-dir>"
+  echo "       dinero-deb-verify --installed"
+  exit 2
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+fi
+
+# Mode + source resolution.
+#   verify_mode := "static" | "installed"
+#   source_kind := "deb" | "staging" | "live"  (determines where bins are)
+verify_mode="static"
+source_kind=""
+target=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --static)    verify_mode="static"; shift ;;
+    --installed) verify_mode="installed"; source_kind="live"; shift ;;
+    --staging)   source_kind="staging"; target="${2:-}"; shift 2 ;;
+    -*)          usage ;;
+    *)           source_kind="deb"; target="$1"; shift ;;
+  esac
+done
+if [[ "$verify_mode" == "static" && -z "$source_kind" ]]; then
+  usage
+fi
+if [[ "$source_kind" == "deb" && ! -f "$target" ]]; then
+  echo "ERROR: deb file not found: $target" >&2
+  exit 2
+fi
+if [[ "$source_kind" == "staging" && ! -d "$target" ]]; then
+  echo "ERROR: staging dir not found: $target" >&2
+  exit 2
+fi
+
+# Resolve $staging — the directory where /usr/bin, /lib/systemd, etc.
+# live for inspection. For .deb, unpack to a tempdir. For staging,
+# use the path directly. For --installed, $staging is the host root.
+work=""
+cleanup() {
+  [[ -n "$work" ]] && rm -rf "$work"
+  return 0
+}
+trap cleanup EXIT
+
+case "$source_kind" in
+  deb)
+    work=$(mktemp -d)
+    dpkg-deb -x "$target" "$work"
+    staging="$work"
+    ;;
+  staging) staging="$target" ;;
+  live)    staging="" ;;
+esac
+
+if [[ "$source_kind" == "live" ]]; then
+  dinerod_bin="/usr/bin/dinerod"
+  dinero_cli_bin="/usr/bin/dinero-cli"
+else
+  dinerod_bin="$staging/usr/bin/dinerod"
+  dinero_cli_bin="$staging/usr/bin/dinero-cli"
+fi
+
+if [[ ! -x "$dinerod_bin" ]]; then
+  echo "ERROR: dinerod missing at $dinerod_bin" >&2
+  exit 1
+fi
+if [[ ! -x "$dinero_cli_bin" ]]; then
+  echo "ERROR: dinero-cli missing at $dinero_cli_bin" >&2
+  exit 1
+fi
+
+fail=0
+skipped=0
+note() { printf "  %s\n" "$*"; }
+ok()   { printf "  ✓ %s\n" "$*"; }
+bad()  { printf "  ✗ %s\n" "$*"; fail=1; }
+skip() { printf "  ⏭ SKIP: %s\n" "$*"; skipped=$((skipped+1)); }
+
+# ─────────────────────────────────────────────────────────────────
+# Check 1+4: ldd surface — only allowlisted system libs +
+# /usr/lib/dinero/* allowed; every NEEDED entry must resolve.
+# ─────────────────────────────────────────────────────────────────
+echo "[1/8] ldd surface"
+for bin in "$dinerod_bin" "$dinero_cli_bin"; do
+  printf "  %s\n" "$(basename "$bin")"
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    soname=$(awk '{print $1}' <<<"$line")
+    # The dynamic linker line in ldd output has no `=>` and looks like
+    # `/lib64/ld-linux-x86-64.so.2 (0x...)`. Reduce to basename so it
+    # matches the allowlist; otherwise the script flags it unresolved.
+    [[ "$soname" == /* ]] && soname=$(basename "$soname")
+    arrow=$(grep -oE '=>[[:space:]]+[^ ]+' <<<"$line" || true)
+    resolved=""
+    if [[ -n "$arrow" ]]; then
+      resolved=$(awk '{print $2}' <<<"$arrow")
+    fi
+    case " ${ALLOWED_SYSTEM_NEEDED[*]} " in
+      *" $soname "*) ok "[allowed-system] $soname"; continue ;;
+    esac
+    if [[ -z "$resolved" || "$resolved" == "not" ]]; then
+      bad "[unresolved] $soname"
+      continue
+    fi
+    if [[ "$resolved" =~ $ALLOWED_SYSTEM_PATHS_RE ]]; then
+      if [[ "$resolved" == /usr/lib/dinero/* ]]; then
+        ok "[bundled] $soname → $resolved"
+      else
+        bad "[non-allowlisted system NEEDED] $soname → $resolved"
+      fi
+    else
+      bad "[forbidden path] $soname → $resolved"
+    fi
+  done < <(LD_LIBRARY_PATH="$staging/usr/lib/dinero" ldd "$bin" 2>&1)
+done
+
+# ─────────────────────────────────────────────────────────────────
+# Check 2: DT_RUNPATH discipline (must be RUNPATH, never RPATH;
+# value must include /usr/lib/dinero).
+# ─────────────────────────────────────────────────────────────────
+echo "[2/8] DT_RUNPATH discipline"
+if ! command -v readelf >/dev/null 2>&1; then
+  skip "readelf not available — install 'binutils' to enable RUNPATH check"
+else
+for bin in "$dinerod_bin" "$dinero_cli_bin"; do
+  printf "  %s\n" "$(basename "$bin")"
+  rp=$(readelf -d "$bin" | grep -E 'RPATH|RUNPATH' || true)
+  if [[ -z "$rp" ]]; then
+    bad "no RUNPATH set"
+    continue
+  fi
+  if grep -q '(RPATH)' <<<"$rp"; then
+    bad "DT_RPATH found (must be DT_RUNPATH); add -Wl,--enable-new-dtags"
+    note "$rp"
+    continue
+  fi
+  if ! grep -q '(RUNPATH)' <<<"$rp"; then
+    bad "neither RPATH nor RUNPATH parsed correctly"
+    note "$rp"
+    continue
+  fi
+  if ! grep -q "$EXPECTED_RUNPATH" <<<"$rp"; then
+    bad "RUNPATH does not include $EXPECTED_RUNPATH"
+    note "$rp"
+    continue
+  fi
+  ok "RUNPATH=$EXPECTED_RUNPATH"
+done
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# Check 3: dpkg -I Depends honesty.
+# Spec §1.4: Depends must be a SUBSET of an explicit allowlist.
+# We use an allowlist (not a denylist) because anything outside
+# {base system + adduser} indicates either a vendored-lib leak,
+# a transitive system link we forgot to vendor, or a
+# documentation/policy drift. All three need surfacing.
+# ─────────────────────────────────────────────────────────────────
+echo "[3/8] dpkg -I Depends honesty (allowlist)"
+#
+# Allowed Depends — base names, version-pin/arch-suffix tolerant.
+# The check matches each Depends entry against this list with
+# substring or prefix-style equality on the bare package name.
+ALLOWED_DEPENDS=(
+  libc6
+  libstdc++6
+  libgcc-s1
+  libz1                # zlib runtime — declared honestly even when
+                       # zstd is vendored static (zlib still appears
+                       # via gRPC + protobuf transitive linkage).
+  systemd
+  adduser
+  debconf              # debconf-2.0 alternative; harmless metadata dep.
+  dpkg
+  base-passwd
+  passwd
+  base-files
+)
+# Convenience denylist used for an INFORMATIONAL warning when the
+# allowlist denial is ambiguous. (Allowlist denial is the hard gate.)
+FORBIDDEN_DEPENDS_HINT=(
+  libssl libcrypto libboost librocksdb libsecp256k1 libcryptopp
+  libabsl libgrpc libprotobuf libcares libre2 libudev libcap
+)
+# Verify a Depends: string against the allowlist. Hard-fails on
+# any entry whose base name (everything before whitespace, parens,
+# or version operators) is not on the allowlist.
+verify_depends() {
+  local depends_line="$1"
+  note "$depends_line"
+  # Strip the leading "Depends:" label and split on commas.
+  local body="${depends_line#*:}"
+  local outside=()
+  local hint_hits=()
+  IFS=',' read -ra entries <<< "$body"
+  for entry in "${entries[@]}"; do
+    # Strip whitespace, version constraints `(>= ...)`, alternatives `| foo`.
+    local base="${entry%%(*}"; base="${base%%|*}"
+    base="${base#"${base%%[![:space:]]*}"}"
+    base="${base%"${base##*[![:space:]]}"}"
+    [[ -z "$base" ]] && continue
+    local match="" allowed=""
+    # Tolerate version-pinned package names (libgrpc++1.51t64,
+    # libprotobuf32t64) by stripping trailing digits/+t64 suffixes
+    # and re-checking. The bare allowlist names (libc6, libstdc++6)
+    # already include their soversion suffix where intended.
+    local probe="$base"
+    for needle in "${ALLOWED_DEPENDS[@]}"; do
+      if [[ "$probe" == "$needle" ]]; then
+        allowed=1; match="$needle"; break
+      fi
+    done
+    if [[ -z "$allowed" ]]; then
+      outside+=("$base")
+      for hint in "${FORBIDDEN_DEPENDS_HINT[@]}"; do
+        if [[ "$base" == "$hint"* ]]; then
+          hint_hits+=("$base→$hint")
+          break
+        fi
+      done
+    fi
+  done
+  if [[ ${#outside[@]} -gt 0 ]]; then
+    bad "Depends contains entries outside the allowlist: ${outside[*]}"
+    if [[ ${#hint_hits[@]} -gt 0 ]]; then
+      note "  matches known leak families: ${hint_hits[*]}"
+    fi
+  else
+    ok "all Depends entries on the allowlist"
+  fi
+}
+
+case "$source_kind" in
+  deb)
+    depends=$(dpkg -I "$target" | grep -E '^[[:space:]]*Depends:' || true)
+    if [[ -z "$depends" ]]; then
+      bad "no Depends: line in .deb control"
+    else
+      verify_depends "$depends"
+    fi
+    ;;
+  staging) skip "Depends honesty needs a .deb (rerun with the .deb file, not --staging)" ;;
+  live)
+    pkg_depends=$(dpkg -s dinero-core 2>/dev/null | grep -E '^Depends:' || true)
+    if [[ -z "$pkg_depends" ]]; then
+      bad "dinero-core not installed (dpkg -s returned no Depends:)"
+    else
+      verify_depends "$pkg_depends"
+    fi
+    ;;
+esac
+
+# ─────────────────────────────────────────────────────────────────
+# Check 4: Install layout — files at the spec'd paths.
+# Spec §1.1: binaries in /usr/bin, systemd unit in /lib/systemd/system,
+# example configs in /usr/share/doc/dinero/, journald drop-in shipped.
+# ─────────────────────────────────────────────────────────────────
+echo "[4/8] install layout"
+# Per file: a list of acceptable rel-paths. The package may install at
+# any one of them — the .deb-build pipeline applies dh_compress (which
+# gzips files under /usr/share/doc/) and the host distro picks
+# /lib/systemd/system/ vs /usr/lib/systemd/system/ depending on the
+# usrmerged layout. We accept any spec-compliant landing point.
+EXPECTED_FILES_KIND=(
+  "exec|usr/bin/dinerod"
+  "exec|usr/bin/dinero-cli"
+  "exec|usr/bin/dinero-backup"
+  "exec|usr/bin/dinero-prepare-upgrade"
+  "conf|lib/systemd/system/dinero.service:usr/lib/systemd/system/dinero.service"
+  "conf|usr/share/doc/dinero/dinero.conf.example:usr/share/doc/dinero/dinero.conf.example.gz"
+  "conf|usr/share/doc/dinero/dinero.service.example:usr/share/doc/dinero/dinero.service.example.gz"
+  "conf|usr/share/doc/dinero/journald-dinero.conf.example:usr/share/doc/dinero/journald-dinero.conf.example.gz"
+)
+# Resolve each entry to the path that actually exists in $staging.
+# $RESOLVED_FILES is "<kind>|<resolved-relpath>" per accepted file,
+# used by the file-modes check (Check 5) so we only mode-check what's
+# actually there.
+RESOLVED_FILES=()
+for entry in "${EXPECTED_FILES_KIND[@]}"; do
+  kind="${entry%%|*}"
+  paths="${entry#*|}"
+  found=""
+  IFS=':' read -ra alts <<< "$paths"
+  for relpath in "${alts[@]}"; do
+    if [[ -e "$staging/$relpath" ]]; then
+      found="$relpath"; break
+    fi
+  done
+  if [[ -z "$found" ]]; then
+    bad "missing: any of (${alts[*]})"
+    continue
+  fi
+  fp="$staging/$found"
+  if [[ "$kind" == "exec" ]]; then
+    if [[ ! -x "$fp" ]]; then
+      bad "not executable: /$found"
+    else
+      ok "[$kind] /$found"
+    fi
+  else
+    ok "[$kind] /$found"
+  fi
+  RESOLVED_FILES+=("$kind|$found")
+done
+
+# ─────────────────────────────────────────────────────────────────
+# Check 5: File modes — binaries 0755, conf examples 0644.
+# ─────────────────────────────────────────────────────────────────
+echo "[5/8] file modes"
+check_mode() {
+  local fp="$1" expected="$2" label="$3"
+  [[ ! -e "$fp" ]] && return  # already flagged by Check 4
+  local actual
+  actual=$(stat -c '%a' "$fp" 2>/dev/null || stat -f '%Lp' "$fp" 2>/dev/null)
+  if [[ "$actual" != "$expected" ]]; then
+    bad "wrong mode: $label expected $expected got $actual"
+  else
+    ok "[mode $expected] $label"
+  fi
+}
+for entry in "${RESOLVED_FILES[@]}"; do
+  kind="${entry%%|*}"
+  relpath="${entry#*|}"
+  fp="$staging/$relpath"
+  if [[ "$kind" == "exec" ]]; then
+    check_mode "$fp" "755" "/$relpath"
+  else
+    check_mode "$fp" "644" "/$relpath"
+  fi
+done
+
+# ─────────────────────────────────────────────────────────────────
+# Check 6: Maintainer scripts (postinst + postrm) sanity.
+#
+# Postinst (spec §1.1 row 1, 2, 5): adduser dinero, /var/lib/dinero
+# perms 0750 dinero:dinero, daemon-reload, NO auto-enable.
+#
+# Postrm: non-destructive on `remove` (preserves /var/lib/dinero —
+# chain data + wallet seeds). On `purge`, removes /var/lib/dinero,
+# /etc/dinero, journald drop-in, and dinero user. The hard gate is
+# "remove arm does NOT rm /var/lib/dinero" — losing wallet seeds on
+# routine package removal would be a critical operator-data bug.
+# ─────────────────────────────────────────────────────────────────
+echo "[6/8] maintainer-script sanity (postinst + postrm)"
+postinst_path=""
+case "$source_kind" in
+  deb)
+    if [[ -z "${work:-}" ]]; then
+      work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+    fi
+    dpkg-deb -e "$target" "$work/DEBIAN" 2>/dev/null
+    postinst_path="$work/DEBIAN/postinst"
+    ;;
+  staging)
+    src_root="$staging"
+    for _ in 1 2 3; do
+      src_root=$(dirname "$src_root")
+      if [[ -f "$src_root/debian/dinero-core.postinst" ]]; then
+        postinst_path="$src_root/debian/dinero-core.postinst"; break
+      fi
+      if [[ -f "$src_root/debian/postinst" ]]; then
+        postinst_path="$src_root/debian/postinst"; break
+      fi
+    done
+    ;;
+  live)
+    # The installed system has the postinst already executed; we
+    # observe its effects (Check 6.live below) rather than re-read
+    # the script. The script lives at /var/lib/dpkg/info/dinero-core.postinst.
+    postinst_path="/var/lib/dpkg/info/dinero-core.postinst"
+    [[ -f "$postinst_path" ]] || postinst_path=""
+    ;;
+esac
+if [[ -z "$postinst_path" || ! -f "$postinst_path" ]]; then
+  bad "postinst not found"
+else
+  if [[ "$source_kind" == "live" ]]; then
+    # Effect checks: postinst already ran; verify outcomes.
+    if getent passwd dinero >/dev/null 2>&1; then
+      pwline=$(getent passwd dinero)
+      shell=$(cut -d: -f7 <<<"$pwline")
+      ok "dinero system user exists ($pwline)"
+      case "$shell" in
+        /usr/sbin/nologin|/bin/false|/sbin/nologin|/usr/bin/false)
+          ok "dinero user has non-interactive shell ($shell)"
+          ;;
+        *)
+          bad "dinero user has interactive shell ($shell) — should be nologin/false"
+          ;;
+      esac
+    else
+      bad "dinero system user does not exist"
+    fi
+    if [[ -d /var/lib/dinero ]]; then
+      mode=$(stat -c '%a' /var/lib/dinero)
+      owner=$(stat -c '%U:%G' /var/lib/dinero)
+      [[ "$mode" == "750" ]] && ok "/var/lib/dinero mode=750" || bad "/var/lib/dinero mode=$mode (expected 750)"
+      [[ "$owner" == "dinero:dinero" ]] && ok "/var/lib/dinero owner=dinero:dinero" || bad "/var/lib/dinero owner=$owner (expected dinero:dinero)"
+    else
+      bad "/var/lib/dinero does not exist"
+    fi
+    unit_file_line=$(systemctl list-unit-files dinero.service --no-legend --no-pager 2>/dev/null || true)
+    if systemctl status dinero.service >/dev/null 2>&1 || grep -q '^dinero\.service' <<<"$unit_file_line"; then
+      ok "dinero.service unit visible to systemd"
+    else
+      bad "dinero.service not visible to systemd (postinst missed daemon-reload?)"
+    fi
+    # Auto-enable contract is a property of the postinst script,
+    # NOT of current runtime state. In a migration scenario the
+    # operator legitimately runs `systemctl enable` after install,
+    # which would make `is-enabled` return `enabled` even though
+    # the postinst itself does not auto-enable. Read the postinst
+    # script (already located at $postinst_path) and apply the
+    # same script-grep used in static mode below.
+    no_echo=$(grep -vE '^[[:space:]]*echo' "$postinst_path")
+    if grep -qE 'systemctl[[:space:]]+enable[[:space:]]+(--now[[:space:]]+)?dinero($|[[:space:]])' <<<"$no_echo"; then
+      bad "postinst auto-enables dinero.service via 'systemctl enable' (spec §1.1 row 5: NO auto-enable)"
+    elif grep -q 'deb-systemd-helper[[:space:]]\+enable' <<<"$no_echo" \
+         && ! grep -q 'was-enabled' <<<"$no_echo"; then
+      bad "postinst calls 'deb-systemd-helper enable' without was-enabled gate (would auto-enable on fresh install)"
+    else
+      ok "postinst does not auto-enable dinero.service (current runtime state may be enabled by operator — that's allowed)"
+    fi
+    note "  current runtime: is-enabled=$(systemctl is-enabled dinero.service 2>&1 | head -1) is-active=$(systemctl is-active dinero.service 2>&1 | head -1)"
+  else
+    # Static script-grep checks for static modes.
+    # adduser invocations often span continuation lines; the precondition
+    # `getent passwd dinero` is a reliable single-line signal that the
+    # postinst conditionally creates the user.
+    if grep -qE 'getent[[:space:]]+passwd[[:space:]]+dinero|useradd[[:space:]].*dinero' "$postinst_path"; then
+      ok "creates dinero system user"
+    else
+      bad "postinst does not create the dinero system user"
+    fi
+    if grep -qE 'chown[[:space:]]+(-R[[:space:]]+)?dinero[:.]dinero[[:space:]]+/var/lib/dinero' "$postinst_path"; then
+      ok "chowns /var/lib/dinero to dinero:dinero"
+    else
+      bad "postinst does not chown /var/lib/dinero to dinero:dinero"
+    fi
+    if grep -qE 'chmod[[:space:]]+0?750[[:space:]]+/var/lib/dinero' "$postinst_path"; then
+      ok "chmods /var/lib/dinero to 0750"
+    else
+      bad "postinst does not chmod /var/lib/dinero to 0750"
+    fi
+    if grep -qE 'systemctl[[:space:]]+daemon-reload|deb-systemd-helper[[:space:]]+update-state|dh_installsystemd' "$postinst_path"; then
+      ok "triggers systemctl daemon-reload"
+    else
+      bad "postinst does not trigger systemd daemon-reload"
+    fi
+    # Detect TRUE auto-enable. dh_installsystemd --no-enable still
+    # injects a `deb-systemd-helper enable` call, but it's gated by
+    # `deb-systemd-helper was-enabled` so it only re-enables on
+    # upgrade if previously enabled (a no-op on fresh install). That
+    # conditional re-enable is spec-compliant.
+    #
+    # Treat the file as auto-enabling ONLY if:
+    #   (a) `systemctl enable ... dinero` appears outside an echo-string, OR
+    #   (b) `deb-systemd-helper enable` appears AND `was-enabled` does NOT
+    #       (the latter is the marker that dh_installsystemd --no-enable
+    #       was used).
+    no_echo=$(grep -vE '^[[:space:]]*echo' "$postinst_path")
+    if grep -qE 'systemctl[[:space:]]+enable[[:space:]]+(--now[[:space:]]+)?dinero($|[[:space:]])' <<<"$no_echo"; then
+      bad "postinst auto-enables dinero.service via 'systemctl enable' (spec §1.1 row 5: NO auto-enable)"
+    elif grep -q 'deb-systemd-helper[[:space:]]\+enable' <<<"$no_echo" \
+         && ! grep -q 'was-enabled' <<<"$no_echo"; then
+      bad "postinst calls 'deb-systemd-helper enable' without was-enabled gate (would auto-enable on fresh install)"
+    else
+      ok "no auto-enable of dinero.service"
+    fi
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# Postrm sanity. Critical safety: the `remove` arm MUST NOT delete
+# /var/lib/dinero. Operator wallet seeds + chain data live there;
+# routine `apt remove` should be reversible. The `purge` arm should
+# remove it (operator opted in to full wipe).
+# ─────────────────────────────────────────────────────────────────
+postrm_path=""
+case "$source_kind" in
+  deb)
+    postrm_path="$work/DEBIAN/postrm"
+    [[ -f "$postrm_path" ]] || postrm_path=""
+    ;;
+  staging)
+    src_root="$staging"
+    for _ in 1 2 3; do
+      src_root=$(dirname "$src_root")
+      if [[ -f "$src_root/debian/dinero-core.postrm" ]]; then
+        postrm_path="$src_root/debian/dinero-core.postrm"; break
+      fi
+      if [[ -f "$src_root/debian/postrm" ]]; then
+        postrm_path="$src_root/debian/postrm"; break
+      fi
+    done
+    ;;
+  live)
+    postrm_path="/var/lib/dpkg/info/dinero-core.postrm"
+    [[ -f "$postrm_path" ]] || postrm_path=""
+    ;;
+esac
+if [[ -z "$postrm_path" || ! -f "$postrm_path" ]]; then
+  if [[ "$source_kind" == "live" ]]; then
+    skip "postrm not on disk (dpkg may have removed it post-install — check on the .deb instead)"
+  else
+    bad "postrm not found"
+  fi
+else
+  # Extract the `remove)` arm of the case statement and confirm it
+  # does NOT contain a destructive operation against /var/lib/dinero,
+  # /etc/dinero, or the dinero system user. We use awk to carve out
+  # the section between `remove)` and the next `;;` (or `purge)`).
+  remove_arm=$(awk '
+    /^[[:space:]]*remove[[:space:]]*\)|^[[:space:]]*remove\|/ { in_arm=1; next }
+    in_arm && /^[[:space:]]*;;/ { exit }
+    in_arm
+  ' "$postrm_path" 2>/dev/null || true)
+  # The actual postrm uses pipe-style alternations like
+  # `remove|upgrade|failed-upgrade|...)`. awk above gates on the
+  # `remove` token — be liberal about the format.
+  if [[ -z "$remove_arm" ]]; then
+    remove_arm=$(awk '
+      /[[:<:]]remove[[:>:]]/ && /\)/ { in_arm=1; next }
+      in_arm && /^[[:space:]]*;;/ { exit }
+      in_arm
+    ' "$postrm_path" 2>/dev/null || true)
+  fi
+  if [[ -z "$remove_arm" ]]; then
+    bad "postrm has no recognizable 'remove)' case arm"
+  else
+    if grep -qE 'rm[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*/var/lib/dinero' <<<"$remove_arm" \
+       || grep -qE 'rm[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*/etc/dinero' <<<"$remove_arm" \
+       || grep -qE 'deluser.*dinero|userdel.*dinero' <<<"$remove_arm"; then
+      bad "postrm 'remove' arm is DESTRUCTIVE (would wipe operator data on routine apt remove)"
+    else
+      ok "postrm 'remove' arm preserves operator state (non-destructive)"
+    fi
+  fi
+  # Verify the purge arm DOES wipe state (so `apt purge` actually
+  # purges; otherwise the package would leave orphaned dirs).
+  purge_arm=$(awk '/^[[:space:]]*purge[[:space:]]*\)/ {in_arm=1; next} in_arm && /^[[:space:]]*;;/ {exit} in_arm' "$postrm_path" 2>/dev/null || true)
+  if [[ -z "$purge_arm" ]]; then
+    bad "postrm has no 'purge)' arm"
+  else
+    if grep -qE 'rm[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*/var/lib/dinero' <<<"$purge_arm"; then
+      ok "postrm 'purge' arm removes /var/lib/dinero"
+    else
+      bad "postrm 'purge' arm does not remove /var/lib/dinero (apt purge would leave state behind)"
+    fi
+    if grep -qE 'deluser.*dinero|userdel.*dinero' <<<"$purge_arm"; then
+      ok "postrm 'purge' arm removes the dinero user"
+    else
+      bad "postrm 'purge' arm does not remove the dinero system user"
+    fi
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# Check 7: Service unit sanity — User=dinero, ExecStart=/usr/bin/dinerod,
+# Restart=on-failure, no auto-enable (handled by postinst check above).
+# ─────────────────────────────────────────────────────────────────
+echo "[7/8] service unit sanity"
+if [[ "$source_kind" == "live" ]]; then
+  unit="/lib/systemd/system/dinero.service"
+  [[ -f "$unit" ]] || unit="/usr/lib/systemd/system/dinero.service"
+else
+  unit="$staging/lib/systemd/system/dinero.service"
+  [[ -f "$unit" ]] || unit="$staging/usr/lib/systemd/system/dinero.service"
+fi
+if [[ ! -f "$unit" ]]; then
+  bad "service unit missing (already flagged by Check 4)"
+else
+  if grep -qE '^User=dinero$' "$unit"; then
+    ok "User=dinero"
+  else
+    bad "service unit has no User=dinero (would run as root)"
+  fi
+  if grep -qE '^ExecStart=/usr/bin/dinerod' "$unit"; then
+    ok "ExecStart=/usr/bin/dinerod"
+  else
+    bad "service unit ExecStart does not point at /usr/bin/dinerod"
+  fi
+  if grep -qE '^Restart=' "$unit"; then
+    ok "$(grep -E '^Restart=' "$unit" | head -1)"
+  else
+    bad "service unit has no Restart= directive"
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# Check 8: Runtime contract — bundled-libs JSON + dinero-cli health.
+#
+# In --static mode: both SKIP (cannot exist without a live daemon).
+# In --installed mode:
+#   - dinero-cli health: HARD-FAIL if exit code is not 0/1/2 or
+#     output is missing the OK / DEGRADED / FAILING token.
+#   - bundled-libs JSON: SKIP until Phase D.4 names the command.
+#     Re-grade to HARD-FAIL once D.4 lands.
+# ─────────────────────────────────────────────────────────────────
+echo "[8/8] runtime contract checks"
+# Bundled-libs JSON contract (spec §1.4). Hard check in BOTH modes
+# now that `dinero-cli version --json` is implemented and works
+# without a daemon (compile-time data only). Validates the schema:
+#   {"dinerod": {"version", "commit", "build_date"},
+#    "bundled_libs": {<lib>: {"version", "linkage", [sha256]}, ...}}
+# Operator nuance: static-linked libs do NOT report a sha256 (no
+# separate .so artifact to hash); shared-bundled libs MUST.
+verify_bundled_libs_schema() {
+  local out="$1"
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip "bundled-libs JSON schema — python3 unavailable for JSON validation"
+    return
+  fi
+  local report
+  report=$(VERIFY_VERSION_JSON="$out" python3 <<'PYEOF'
+import os, json
+data = json.loads(os.environ["VERIFY_VERSION_JSON"])
+problems = []
+for k in ("dinerod", "bundled_libs"):
+    if k not in data: problems.append(f"missing top-level key: {k}")
+if "dinerod" in data:
+    for k in ("version", "commit", "build_date"):
+        if k not in data["dinerod"]: problems.append(f"dinerod.{k} missing")
+        elif not isinstance(data["dinerod"][k], str) or not data["dinerod"][k]:
+            problems.append(f"dinerod.{k} not a non-empty string")
+expected_libs = {"openssl", "rocksdb"}
+if "bundled_libs" in data:
+    libs = data["bundled_libs"]
+    if not isinstance(libs, dict): problems.append("bundled_libs not an object")
+    else:
+        missing = expected_libs - set(libs.keys())
+        if missing: problems.append(f"bundled_libs missing required: {sorted(missing)}")
+        for name, entry in libs.items():
+            if not isinstance(entry, dict):
+                problems.append(f"bundled_libs.{name} not an object"); continue
+            for k in ("version", "linkage"):
+                if k not in entry: problems.append(f"bundled_libs.{name}.{k} missing")
+            linkage = entry.get("linkage")
+            if linkage not in ("static", "shared-bundled", "system"):
+                problems.append(f"bundled_libs.{name}.linkage='{linkage}' not in {{static,shared-bundled,system}}")
+            if linkage == "shared-bundled" and "sha256" not in entry:
+                problems.append(f"bundled_libs.{name}: shared-bundled requires sha256")
+            if linkage == "static" and "sha256" in entry:
+                problems.append(f"bundled_libs.{name}: static must NOT carry sha256 (spec §1.4 nuance)")
+print("OK" if not problems else "\n".join(problems))
+PYEOF
+  )
+  if [[ "$report" == "OK" ]]; then
+    ok "bundled-libs JSON schema valid (dinerod + ${expected_libs:-required deps})"
+    note "  $(jq -c '.dinerod' <<<"$out" 2>/dev/null || echo "${out:0:120}")"
+  else
+    bad "bundled-libs JSON schema violations:"
+    while IFS= read -r line; do note "  $line"; done <<<"$report"
+  fi
+}
+
+if [[ "$verify_mode" == "static" ]]; then
+  # In --static mode the binary is in the staging dir / unpacked .deb.
+  # The version command is daemon-free, so we CAN run it.
+  if [[ -x "$dinero_cli_bin" ]]; then
+    if version_out=$(timeout 5 "$dinero_cli_bin" version --json 2>&1); then
+      verify_bundled_libs_schema "$version_out"
+    else
+      bad "dinero-cli version --json failed (exit $?): $version_out"
+    fi
+  else
+    skip "dinero-cli not executable in this env — bundled-libs check unavailable"
+  fi
+  skip "dinero-cli health exit-code matrix — requires --installed mode"
+else
+  # Live mode — actually invoke dinero-cli.
+  #
+  # Capture-bug fix: `... || true` after $(...) overwrites $? with 0,
+  # so we can't read the CLI's actual exit. Use the if-form to capture
+  # both output and exit cleanly under set -e.
+  if cli_health_out=$(timeout 10 "$dinero_cli_bin" health 2>&1); then
+    cli_health_exit=0
+  else
+    cli_health_exit=$?
+  fi
+  # Spec §Standard 10:
+  #   exit 0 ⇒ "OK"        (text token)
+  #   exit 1 ⇒ "DEGRADED <reason>"
+  #   exit 2 ⇒ "FAILING <reason>"
+  # Any other exit (including 1 with "Error: Failed to connect ...")
+  # is a contract violation. Hard-fail with a hint pointing at the
+  # likely cause so the operator knows whether it's the daemon
+  # not running (CLI should still return FAILING) or the CLI
+  # itself not implementing the spec'd schema.
+  # The exit code + output token together encode the spec contract:
+  #   exit 0 ⇒ "OK"
+  #   exit 1 ⇒ "DEGRADED <reason>"
+  #   exit 2 ⇒ "FAILING <reason>"
+  # If the CLI cannot reach the daemon, a SPEC-COMPLIANT response is
+  # still exit 2 + "FAILING <reason>" — the reason will mention the
+  # connection error. We accept that as ✓.
+  #
+  # The pre-fix CLI bug was exit 1 + "Error: Failed to connect ...":
+  # connection-error string with the wrong exit code AND no FAILING
+  # token. Detect that lossy combination specifically and surface
+  # the remediation pointer. If exit/token are spec-compliant, the
+  # fact that the reason text mentions "Failed to load RPC cookie"
+  # is just informative — the CLI did the right thing.
+  case "$cli_health_exit" in
+    0) [[ "$cli_health_out" == *"OK"* ]] && ok "dinero-cli health: OK (exit 0)" \
+                                         || bad "dinero-cli health exit 0 but output missing 'OK': $cli_health_out" ;;
+    1) [[ "$cli_health_out" == *"DEGRADED"* ]] && ok "dinero-cli health: DEGRADED (exit 1)" \
+                                              || bad "dinero-cli health exit 1 but output missing 'DEGRADED': $cli_health_out" ;;
+    2) [[ "$cli_health_out" == *"FAILING"* ]] && ok "dinero-cli health: FAILING (exit 2)" \
+                                             || bad "dinero-cli health exit 2 but output missing 'FAILING': $cli_health_out" ;;
+    *) if grep -q 'Failed to connect to daemon\|Failed to load RPC cookie' <<<"$cli_health_out"; then
+         bad "dinero-cli health: daemon unreachable, but CLI returned exit $cli_health_exit instead of exit 2 + 'FAILING'"
+         note "  spec §Standard 10 requires exit 2 + 'FAILING <reason>' even when"
+         note "  the daemon is down. Fix in src/cli/ to wrap unreachable-daemon as FAILING."
+         note "  raw output: $cli_health_out"
+       else
+         bad "dinero-cli health exit $cli_health_exit (expected 0/1/2 per spec §Standard 10)"
+         note "  output: $cli_health_out"
+       fi ;;
+  esac
+  # Bundled-libs JSON. Same daemon-free command as --static mode.
+  if version_out=$(timeout 5 "$dinero_cli_bin" version --json 2>&1); then
+    verify_bundled_libs_schema "$version_out"
+  else
+    bad "dinero-cli version --json failed (exit $?): $version_out"
+  fi
+fi
+
+echo
+if [[ $fail -ne 0 ]]; then
+  echo "FAIL: dinero-deb-verify found contract violations. Release MUST NOT proceed."
+  exit 1
+fi
+if [[ $skipped -gt 0 ]]; then
+  echo "PASS (with $skipped skipped): hard contract checks green in this mode."
+  if [[ "$verify_mode" == "static" ]]; then
+    echo "      Re-run with --installed on a dpkg-installed system to clear runtime SKIPs."
+  fi
+  echo "      Both --static AND --installed must pass before E.3/E.6 is complete."
+else
+  echo "PASS: dinero-deb-verify — all hard contract checks green."
+fi
+exit 0

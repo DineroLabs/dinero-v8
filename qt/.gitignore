@@ -1,0 +1,29 @@
+# OS files
+.DS_Store
+**/.DS_Store
+
+# Build/cache artifacts
+build/
+build-*/
+build-release/
+.cache/
+DerivedData/
+
+# Xcode user files
+xcuserdata/
+*.xcuserstate
+
+# Local run/smoke logs
+*.log
+.external-force.log
+.external-manual.log
+.smoke-regtest/
+.smoke-run.log
+
+# AI development notes (not shipped)
+AI_PROGRESS.md
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

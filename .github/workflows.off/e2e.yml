@@ -1,0 +1,25 @@
+name: e2e-regtest
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          brew update
+          brew install cmake sqlite jq python@3.11
+          python3 -m pip install --upgrade pip
+          python3 -m pip install requests urllib3
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target dinerod -j2
+      - name: Run e2e tests
+        run: |
+          bash scripts/ci/run_e2e_tests.sh

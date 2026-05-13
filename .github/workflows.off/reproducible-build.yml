@@ -1,0 +1,197 @@
+name: Reproducible Build Verification
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+env:
+  # Fixed timestamp for reproducible builds
+  SOURCE_DATE_EPOCH: 1692576000
+
+jobs:
+  reproducible-build:
+    name: Reproducible Build Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux
+            arch: x64
+          - os: macos-13
+            platform: macos
+            arch: x64
+          - os: macos-14
+            platform: macos
+            arch: arm64
+          - os: windows-2022
+            platform: windows
+            arch: x64
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git timestamp
+      
+      - name: Setup build environment (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build llvm
+          echo "CMAKE_GENERATOR=Ninja" >> $GITHUB_ENV
+      
+      - name: Setup build environment (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          brew install ninja llvm
+          echo "CMAKE_GENERATOR=Ninja" >> $GITHUB_ENV
+          echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
+      
+      - name: Setup build environment (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          choco install ninja llvm
+          echo "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+      
+      - name: Setup MSVC (Windows)
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      
+      - name: First build
+        run: |
+          mkdir build1
+          cd build1
+          cmake .. -G "${{ env.CMAKE_GENERATOR }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_VENDOR_ROCKSDB=ON \
+            -DDINERO_WITH_SNAPPY=ON \
+            -DDINERO_WITH_LZ4=ON \
+            -DDINERO_WITH_ZSTD=ON
+          cmake --build . --config Release --parallel
+      
+      - name: Second build (clean environment)
+        run: |
+          mkdir build2
+          cd build2
+          cmake .. -G "${{ env.CMAKE_GENERATOR }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_VENDOR_ROCKSDB=ON \
+            -DDINERO_WITH_SNAPPY=ON \
+            -DDINERO_WITH_LZ4=ON \
+            -DDINERO_WITH_ZSTD=ON
+          cmake --build . --config Release --parallel
+      
+      - name: Compare binaries (Unix)
+        if: matrix.platform != 'windows'
+        run: |
+          echo "Comparing dinerod binaries..."
+          if cmp -s build1/bin/dinerod build2/bin/dinerod; then
+            echo "✅ dinerod binaries are identical"
+          else
+            echo "❌ dinerod binaries differ"
+            ls -la build1/bin/dinerod build2/bin/dinerod
+            exit 1
+          fi
+          
+          echo "Comparing dinero-cli binaries..."
+          if cmp -s build1/bin/dinero-cli build2/bin/dinero-cli; then
+            echo "✅ dinero-cli binaries are identical"
+          else
+            echo "❌ dinero-cli binaries differ"
+            ls -la build1/bin/dinero-cli build2/bin/dinero-cli
+            exit 1
+          fi
+      
+      - name: Compare binaries (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          echo "Comparing dinerod.exe binaries..."
+          if (Compare-Object (Get-Content build1/bin/Release/dinerod.exe -Raw -Encoding Byte) (Get-Content build2/bin/Release/dinerod.exe -Raw -Encoding Byte)) {
+            Write-Host "❌ dinerod.exe binaries differ"
+            Get-ChildItem build1/bin/Release/dinerod.exe, build2/bin/Release/dinerod.exe
+            exit 1
+          } else {
+            Write-Host "✅ dinerod.exe binaries are identical"
+          }
+          
+          echo "Comparing dinero-cli.exe binaries..."
+          if (Compare-Object (Get-Content build1/bin/Release/dinero-cli.exe -Raw -Encoding Byte) (Get-Content build2/bin/Release/dinero-cli.exe -Raw -Encoding Byte)) {
+            Write-Host "❌ dinero-cli.exe binaries differ"
+            Get-ChildItem build1/bin/Release/dinero-cli.exe, build2/bin/Release/dinero-cli.exe
+            exit 1
+          } else {
+            Write-Host "✅ dinero-cli.exe binaries are identical"
+          }
+      
+      - name: Generate and verify SBOM
+        run: |
+          cd build1
+          # SBOM should be generated during build
+          if [ -f "sbom.json" ]; then
+            echo "✅ SBOM generated successfully"
+            echo "SBOM contents:"
+            head -20 sbom.json
+          else
+            echo "⚠️ SBOM not found (expected for this phase)"
+          fi
+      
+      - name: Verify static linking (Unix)
+        if: matrix.platform != 'windows'
+        run: |
+          cd build1
+          echo "Checking static linking..."
+          
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            echo "macOS dependency check:"
+            otool -L bin/dinerod | grep -v '/usr/lib' | grep -v '/System' || echo "✅ No external dependencies"
+            if otool -L bin/dinerod | grep -E '(rocksdb|ssl|crypto|snappy|lz4|zstd)'; then
+              echo "❌ Found external dependencies"
+              exit 1
+            fi
+          else
+            echo "Linux dependency check:"
+            ldd bin/dinerod | grep -v 'linux-vdso\|libc\|libm\|libpthread\|libdl\|ld-linux' || echo "✅ Minimal dependencies"
+            if ldd bin/dinerod | grep -E '(rocksdb|ssl|crypto|snappy|lz4|zstd)'; then
+              echo "❌ Found external dependencies"
+              exit 1
+            fi
+          fi
+      
+      - name: Verify static linking (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          cd build1
+          echo "Windows dependency check:"
+          # Use objdump to check DLL dependencies
+          if (objdump -p bin/Release/dinerod.exe | Select-String -Pattern "DLL Name" | Select-String -Pattern "(rocksdb|ssl|crypto|snappy|lz4|zstd)") {
+            Write-Host "❌ Found external DLL dependencies"
+            exit 1
+          } else {
+            Write-Host "✅ No external DLL dependencies found"
+          }
+      
+      - name: Archive build artifacts
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinero-${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            build1/bin/
+            build1/sbom.json
+          retention-days: 30
+      
+      - name: Report reproducibility status
+        run: |
+          echo "=== Reproducible Build Report ==="
+          echo "Platform: ${{ matrix.platform }}-${{ matrix.arch }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}"
+          echo "Status: ✅ REPRODUCIBLE"
+          echo "==============================="

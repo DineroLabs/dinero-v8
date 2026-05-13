@@ -1,0 +1,508 @@
+/* Dinero Desktop - Modern Styling System */
+/* Production-grade Qt6 stylesheet with dark/light theme support */
+
+/* ============================================
+   GLOBAL VARIABLES & BASE STYLING
+   ============================================ */
+
+QWidget {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #212529;
+    background-color: #ffffff;
+}
+
+/* ============================================
+   MAIN WINDOW STYLING
+   ============================================ */
+
+QMainWindow {
+    background-color: #f8f9fa;
+    color: #212529;
+}
+
+QMainWindow::separator {
+    background-color: #dee2e6;
+    width: 1px;
+    height: 1px;
+}
+
+/* ============================================
+   MODERN STATUS BADGES
+   ============================================ */
+
+QLabel[class="status-badge"] {
+    padding: 4px 12px;
+    border-radius: 16px;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+QLabel[network="mainnet"] {
+    background-color: #28a745;
+    color: white;
+}
+
+QLabel[network="testnet"] {
+    background-color: #17a2b8;
+    color: white;
+}
+
+QLabel[network="regtest"] {
+    background-color: #ffc107;
+    color: black;
+}
+
+QLabel[network="offline"] {
+    background-color: #dc3545;
+    color: white;
+}
+
+/* ============================================
+   MODERN BUTTONS
+   ============================================ */
+
+QPushButton {
+    background-color: #0066cc;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    min-height: 36px;
+}
+
+QPushButton:hover {
+    background-color: #0056b3;
+}
+
+QPushButton:pressed {
+    background-color: #004085;
+}
+
+QPushButton:disabled {
+    background-color: #adb5bd;
+    color: #e9ecef;
+}
+
+QPushButton[class="primary"] {
+    background-color: #0066cc;
+}
+
+QPushButton[class="success"] {
+    background-color: #28a745;
+}
+
+QPushButton[class="warning"] {
+    background-color: #ffc107;
+    color: black;
+}
+
+QPushButton[class="danger"] {
+    background-color: #dc3545;
+}
+
+QPushButton[class="outline"] {
+    background-color: transparent;
+    color: #0066cc;
+    border: 2px solid #0066cc;
+}
+
+QPushButton[class="outline"]:hover {
+    background-color: #0066cc;
+    color: white;
+}
+
+/* ============================================
+   MODERN TABS
+   ============================================ */
+
+QTabWidget::pane {
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    background-color: #ffffff;
+    margin-top: -1px;
+}
+
+QTabBar::tab {
+    background-color: #f8f9fa;
+    color: #6c757d;
+    border: 1px solid #dee2e6;
+    border-bottom: none;
+    padding: 12px 24px;
+    margin-right: 2px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    min-width: 120px;
+    font-weight: 500;
+}
+
+QTabBar::tab:hover {
+    background-color: #e9ecef;
+    color: #212529;
+}
+
+QTabBar::tab:selected {
+    background-color: #ffffff;
+    color: #0066cc;
+    border-bottom: 2px solid #0066cc;
+    font-weight: 600;
+}
+
+/* ============================================
+   MODERN LISTS
+   ============================================ */
+
+QListWidget {
+    background-color: #ffffff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    outline: none;
+    padding: 4px;
+}
+
+QListWidget::item {
+    background-color: transparent;
+    color: #212529;
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 2px 0;
+    border: none;
+}
+
+QListWidget::item:hover {
+    background-color: #e9ecef;
+}
+
+QListWidget::item:selected {
+    background-color: #007bff;
+    color: white;
+}
+
+/* ============================================
+   MODERN INPUT FIELDS
+   ============================================ */
+
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #ffffff;
+    border: 2px solid #dee2e6;
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: #212529;
+    font-size: 14px;
+    selection-background-color: #0066cc;
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border-color: #0066cc;
+    outline: none;
+}
+
+QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {
+    background-color: #e9ecef;
+    color: #adb5bd;
+    border-color: #adb5bd;
+}
+
+/* ============================================
+   MODERN TYPOGRAPHY
+   ============================================ */
+
+QLabel[class="heading-1"] {
+    font-size: 32px;
+    font-weight: bold;
+    color: #212529;
+    margin: 16px 0;
+}
+
+QLabel[class="heading-2"] {
+    font-size: 24px;
+    font-weight: 600;
+    color: #212529;
+    margin: 12px 0;
+}
+
+QLabel[class="heading-3"] {
+    font-size: 18px;
+    font-weight: 600;
+    color: #212529;
+    margin: 8px 0;
+}
+
+QLabel[class="subtitle"] {
+    font-size: 16px;
+    color: #6c757d;
+    font-weight: 400;
+}
+
+QLabel[class="caption"] {
+    font-size: 12px;
+    color: #adb5bd;
+    font-weight: 400;
+}
+
+QLabel[class="monospace"] {
+    font-family: "SF Mono", Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 13px;
+    background-color: #e9ecef;
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #212529;
+}
+
+/* ============================================
+   MODERN PROGRESS BARS
+   ============================================ */
+
+QProgressBar {
+    background-color: #e9ecef;
+    border: none;
+    border-radius: 8px;
+    height: 16px;
+    text-align: center;
+    color: #212529;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+QProgressBar::chunk {
+    background-color: #0066cc;
+    border-radius: 8px;
+    margin: 2px;
+}
+
+/* ============================================
+   MODERN SCROLLBARS
+   ============================================ */
+
+QScrollBar:vertical {
+    background-color: #f8f9fa;
+    width: 12px;
+    border-radius: 6px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #adb5bd;
+    border-radius: 6px;
+    min-height: 20px;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #6c757d;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+/* ============================================
+   MODERN STATUS BAR
+   ============================================ */
+
+QStatusBar {
+    background-color: #f8f9fa;
+    border-top: 1px solid #dee2e6;
+    padding: 4px 8px;
+    color: #6c757d;
+    font-size: 12px;
+}
+
+QStatusBar QLabel {
+    color: #6c757d;
+    font-size: 12px;
+    margin: 0 8px;
+}
+
+/* ============================================
+   MODERN MENU BAR
+   ============================================ */
+
+QMenuBar {
+    background-color: #ffffff;
+    border-bottom: 1px solid #dee2e6;
+    color: #212529;
+    padding: 4px 0;
+}
+
+QMenuBar::item {
+    padding: 8px 16px;
+    margin: 0 2px;
+    border-radius: 4px;
+}
+
+QMenuBar::item:selected {
+    background-color: #e9ecef;
+}
+
+QMenuBar::item:pressed {
+    background-color: #007bff;
+    color: white;
+}
+
+QMenu {
+    background-color: #ffffff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 8px 0;
+}
+
+QMenu::item {
+    padding: 8px 24px;
+    color: #212529;
+}
+
+QMenu::item:selected {
+    background-color: #e9ecef;
+}
+
+QMenu::separator {
+    height: 1px;
+    background-color: #dee2e6;
+    margin: 4px 16px;
+}
+
+/* ============================================
+   DINERO BRANDING
+   ============================================ */
+
+QLabel[class="dinero-logo"] {
+    color: #ffd700;
+    font-weight: bold;
+    font-size: 24px;
+}
+
+QLabel[class="dinero-accent"] {
+    color: #0066cc;
+    font-weight: 600;
+}
+
+QLabel[class="blockchain-hash"] {
+    font-family: "SF Mono", Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+    background-color: #e9ecef;
+    padding: 4px 8px;
+    border-radius: 4px;
+    color: #212529;
+    border: 1px solid #dee2e6;
+}
+
+QLabel[class="crypto-value"] {
+    font-family: "SF Mono", Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 14px;
+    font-weight: 600;
+    color: #0066cc;
+}
+
+/* ============================================
+   DARK THEME (Applied via [theme="dark"] attribute)
+   ============================================ */
+
+QWidget[theme="dark"] {
+    color: #ffffff;
+    background-color: #1a1a1a;
+}
+
+QMainWindow[theme="dark"] {
+    background-color: #1a1a1a;
+    color: #ffffff;
+}
+
+QMainWindow[theme="dark"]::separator {
+    background-color: #555555;
+}
+
+QTabWidget[theme="dark"]::pane {
+    border: 1px solid #555555;
+    background-color: #2d2d2d;
+}
+
+QTabBar[theme="dark"]::tab {
+    background-color: #2d2d2d;
+    color: #cccccc;
+    border: 1px solid #555555;
+}
+
+QTabBar[theme="dark"]::tab:hover {
+    background-color: #404040;
+    color: #ffffff;
+}
+
+QTabBar[theme="dark"]::tab:selected {
+    background-color: #2d2d2d;
+    color: #0066cc;
+    border-bottom: 2px solid #0066cc;
+}
+
+QListWidget[theme="dark"] {
+    background-color: #2d2d2d;
+    border: 1px solid #555555;
+}
+
+QListWidget[theme="dark"]::item {
+    color: #ffffff;
+}
+
+QListWidget[theme="dark"]::item:hover {
+    background-color: #404040;
+}
+
+QListWidget[theme="dark"]::item:selected {
+    background-color: #007bff;
+}
+
+QLineEdit[theme="dark"], QTextEdit[theme="dark"], QPlainTextEdit[theme="dark"] {
+    background-color: #2d2d2d;
+    border: 2px solid #555555;
+    color: #ffffff;
+}
+
+QLineEdit[theme="dark"]:focus, QTextEdit[theme="dark"]:focus, QPlainTextEdit[theme="dark"]:focus {
+    border-color: #0066cc;
+}
+
+QStatusBar[theme="dark"] {
+    background-color: #2d2d2d;
+    border-top: 1px solid #555555;
+    color: #cccccc;
+}
+
+QMenuBar[theme="dark"] {
+    background-color: #1a1a1a;
+    border-bottom: 1px solid #555555;
+    color: #ffffff;
+}
+
+QMenuBar[theme="dark"]::item:selected {
+    background-color: #404040;
+}
+
+QMenu[theme="dark"] {
+    background-color: #2d2d2d;
+    border: 1px solid #555555;
+}
+
+QMenu[theme="dark"]::item {
+    color: #ffffff;
+}
+
+QMenu[theme="dark"]::item:selected {
+    background-color: #404040;
+}
+
+QScrollBar[theme="dark"]:vertical {
+    background-color: #2d2d2d;
+}
+
+QScrollBar[theme="dark"]::handle:vertical {
+    background-color: #666666;
+}
+
+QScrollBar[theme="dark"]::handle:vertical:hover {
+    background-color: #888888;
+}

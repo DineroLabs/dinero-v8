@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "mining.stop",
+  "description": "Stop mining operations",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "mining.stop"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["stopped", "not_running"],
+          "description": "Mining stop status"
+        },
+        "blocks_mined": {
+          "type": "integer",
+          "description": "Total blocks mined this session"
+        },
+        "session_duration": {
+          "type": "number",
+          "description": "Mining session duration in seconds"
+        },
+        "average_hashrate": {
+          "type": "number",
+          "description": "Average hashrate during session (H/s)"
+        }
+      },
+      "required": ["status"]
+    }
+  }
+}

@@ -1,0 +1,153 @@
+# Dinero Alerting Rules for Prometheus
+groups:
+  - name: dinero.critical
+    interval: 30s
+    rules:
+      # Deep reorg detection - CRITICAL
+      - alert: DineroDeepReorg
+        expr: reorg_depth_max > 6
+        for: 1m
+        labels:
+          severity: critical
+          service: dinerod
+        annotations:
+          summary: "Deep blockchain reorganization detected"
+          description: "Dinero node {{ $labels.instance }} experienced a {{ $value }}-block reorg. This may indicate a network attack or major consensus issue."
+          
+      # Safe mode activation - CRITICAL  
+      - alert: DineroSafeMode
+        expr: safemode{state="on"} == 1
+        for: 0s
+        labels:
+          severity: critical
+          service: dinerod
+        annotations:
+          summary: "Dinero node entered safe mode"
+          description: "Node {{ $labels.instance }} has entered safe mode due to {{ $labels.reason }}. Manual intervention required."
+          
+      # Node offline - CRITICAL
+      - alert: DineroNodeDown
+        expr: up{job="dinerod"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: dinerod
+        annotations:
+          summary: "Dinero node is down"
+          description: "Dinero daemon on {{ $labels.instance }} has been down for more than 2 minutes."
+          
+      # Chain stalled - CRITICAL
+      - alert: DineroChainStalled
+        expr: (time() - last_block_time) > 1800
+        for: 5m
+        labels:
+          severity: critical
+          service: dinerod
+        annotations:
+          summary: "Blockchain appears stalled"
+          description: "No new blocks received for {{ $value | humanizeDuration }} on {{ $labels.instance }}."
+
+  - name: dinero.warning
+    interval: 60s
+    rules:
+      # Block lag warning
+      - alert: DineroBlockLag
+        expr: (time() - last_block_time) > 600
+        for: 5m
+        labels:
+          severity: warning
+          service: dinerod
+        annotations:
+          summary: "Block production lagging"
+          description: "Last block was {{ $value | humanizeDuration }} ago on {{ $labels.instance }}."
+          
+      # Low peer count
+      - alert: DineroLowPeerCount
+        expr: peers_active < 4
+        for: 5m
+        labels:
+          severity: warning
+          service: dinerod
+        annotations:
+          summary: "Low peer count"
+          description: "Node {{ $labels.instance }} has only {{ $value }} active peers. Network connectivity may be impaired."
+          
+      # Headers-blocks gap
+      - alert: DineroHeadersBlocksGap
+        expr: (headers_tip_height - blocks_tip_height) > 6
+        for: 10m
+        labels:
+          severity: warning
+          service: dinerod
+        annotations:
+          summary: "Headers ahead of blocks"
+          description: "Headers are {{ $value }} blocks ahead of validated blocks on {{ $labels.instance }}. Sync may be slow."
+          
+      # High reorg frequency
+      - alert: DineroHighReorgRate
+        expr: rate(reorgs_total[1h]) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          service: dinerod
+        annotations:
+          summary: "High reorganization rate"
+          description: "{{ $value | printf \"%.2f\" }} reorgs per hour on {{ $labels.instance }}. Network may be unstable."
+          
+      # Large mempool
+      - alert: DineroLargeMempool
+        expr: mempool_size_mb > 64
+        for: 10m
+        labels:
+          severity: warning
+          service: dinerod
+        annotations:
+          summary: "Large mempool"
+          description: "Mempool is {{ $value }}MB on {{ $labels.instance }}. Transaction backlog may be building up."
+          
+      # High RPC latency
+      - alert: DineroHighRPCLatency
+        expr: rpc_request_duration_seconds{quantile="0.95"} > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          service: dinerod
+        annotations:
+          summary: "High RPC latency"
+          description: "95th percentile RPC latency is {{ $value | printf \"%.2f\" }}s on {{ $labels.instance }}."
+
+  - name: dinero.info
+    interval: 300s
+    rules:
+      # Chainwork progress
+      - alert: DineroChainworkMilestone
+        expr: increase(active_chain_work[1h]) > 1000000
+        for: 0s
+        labels:
+          severity: info
+          service: dinerod
+        annotations:
+          summary: "Significant chainwork increase"
+          description: "Chainwork increased by {{ $value | humanize }} in the last hour on {{ $labels.instance }}."
+          
+      # Mining milestone
+      - alert: DineroMiningMilestone  
+        expr: increase(blocks_mined_total[24h]) >= 1440
+        for: 0s
+        labels:
+          severity: info
+          service: dinerod
+        annotations:
+          summary: "Daily mining target achieved"
+          description: "Node {{ $labels.instance }} participated in mining {{ $value }} blocks in 24h (target: 1440)."
+          
+      # Network health check
+      - alert: DineroNetworkHealthy
+        expr: peers_active >= 8 AND (time() - last_block_time) < 300
+        for: 1h
+        labels:
+          severity: info
+          service: dinerod
+        annotations:
+          summary: "Network operating normally"
+          description: "Node {{ $labels.instance }} has good connectivity ({{ $labels.peers_active }} peers) and recent blocks."

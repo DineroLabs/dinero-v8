@@ -1,0 +1,904 @@
+openapi: 3.0.3
+info: 
+  title: Dinero Explorer API
+  version: "1.0.0"
+  description: |
+    Fast, read-only blockchain explorer API for Dinero cryptocurrency.
+    
+    **Exact JSON contracts locked in - no drift allowed.**
+    
+    Features:
+    - Real-time chain data with smart caching
+    - Address/UTXO lookups with cursor pagination  
+    - Mempool monitoring with fee histograms
+    - WebSocket streaming for live updates
+    - Electrum-compatible scripthash endpoints
+    
+servers: 
+  - url: /api/v1
+    description: Explorer API v1
+
+paths:
+  /chain/tip:
+    get:
+      summary: Current blockchain tip
+      responses:
+        "200":
+          description: Current tip information
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: "public,max-age=5"
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [height, hash, time]
+                properties:
+                  height:
+                    type: integer
+                    example: 1
+                  hash:
+                    type: string
+                    pattern: "^[0-9a-fA-F]{64}$"
+                    example: "a415b97b505c865e0e857261a7c744c9497086bf2450740056d51b7c241f1418"
+                  time:
+                    type: integer
+                    format: int64
+                    example: 1700000093
+
+  /block/{hash}:
+    get:
+      summary: Block by hash
+      parameters:
+        - in: path
+          name: hash
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+          example: "a415b97b505c865e0e857261a7c744c9497086bf2450740056d51b7c241f1418"
+        - in: query
+          name: verbosity
+          schema:
+            type: integer
+            enum: [0, 1, 2]
+            default: 1
+          description: |
+            - 0: Raw hex block string
+            - 1: Block header + transaction IDs array
+            - 2: Block header + full decoded transactions
+      responses:
+        "200":
+          description: Block data
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: "public,max-age=3600"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: string
+                    description: Raw hex (verbosity=0)
+                    example: "02000000..."
+                  - type: object
+                    description: Block with txids (verbosity=1)
+                    required: [hash, height, time, bits, nonce, merkleroot, previousblockhash, tx]
+                    properties:
+                      hash:
+                        type: string
+                        example: "a415b97b505c865e0e857261a7c744c9497086bf2450740056d51b7c241f1418"
+                      height:
+                        type: integer
+                        example: 1
+                      time:
+                        type: integer
+                        example: 1700000093
+                      bits:
+                        type: string
+                        example: "1f002710"
+                      nonce:
+                        type: integer
+                        example: 357968948
+                      merkleroot:
+                        type: string
+                        example: "1e6e49...fdf5"
+                      previousblockhash:
+                        type: string
+                        example: "4588ac...000000"
+                      tx:
+                        type: array
+                        items:
+                          type: string
+                        example: ["acbc4b852bea0e52cb8ec3fb89662a318ccb6b048f00560d3fb7fba5dd77dedb"]
+                  - type: object
+                    description: Block with full transactions (verbosity=2)
+                    properties:
+                      tx:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Transaction'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /block/height/{height}:
+    get:
+      summary: Block by height
+      parameters:
+        - in: path
+          name: height
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+          example: 1
+        - in: query
+          name: verbosity
+          schema:
+            type: integer
+            enum: [0, 1, 2]
+            default: 1
+      responses:
+        "200":
+          description: Same as /block/{hash}
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /blocks:
+    get:
+      summary: Block list with pagination
+      parameters:
+        - in: query
+          name: from_height
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+      responses:
+        "200":
+          description: Array of block summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BlockSummary'
+                  next_from_height:
+                    type: integer
+                    description: Height to use for next page (if more results)
+
+  /tx/{txid}:
+    get:
+      summary: Transaction by ID
+      parameters:
+        - in: path
+          name: txid
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+          example: "acbc4b852bea0e52cb8ec3fb89662a318ccb6b048f00560d3fb7fba5dd77dedb"
+      responses:
+        "200":
+          description: Decoded transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /tx/{txid}/hex:
+    get:
+      summary: Transaction raw hex
+      parameters:
+        - in: path
+          name: txid
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+      responses:
+        "200":
+          description: Raw transaction hex
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hex]
+                properties:
+                  hex:
+                    type: string
+                    example: "02000000..."
+
+  /tx/{txid}/proof:
+    get:
+      summary: Merkle proof for transaction
+      parameters:
+        - in: path
+          name: txid
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+      responses:
+        "200":
+          description: Merkle proof
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MerkleProof'
+        "404":
+          description: Transaction not confirmed
+
+  /address/{address}:
+    get:
+      summary: Address summary
+      parameters:
+        - in: path
+          name: address
+          required: true
+          schema:
+            type: string
+            pattern: "^din1[0-9a-zA-Z]+$"
+          example: "din1qw508d6qejxtdg4y5r3zarvary0c5xw7k..."
+      responses:
+        "200":
+          description: Address statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddressSummary'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+
+  /address/{address}/utxos:
+    get:
+      summary: Address UTXOs with pagination
+      parameters:
+        - in: path
+          name: address
+          required: true
+          schema:
+            type: string
+            pattern: "^din1[0-9a-zA-Z]+$"
+        - in: query
+          name: minconf
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - in: query
+          name: cursor
+          schema:
+            type: string
+          description: Base64-encoded pagination cursor
+      responses:
+        "200":
+          description: UTXO list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UTXOPage'
+
+  /address/{address}/txs:
+    get:
+      summary: Address transaction history
+      parameters:
+        - in: path
+          name: address
+          required: true
+          schema:
+            type: string
+            pattern: "^din1[0-9a-zA-Z]+$"
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - in: query
+          name: cursor
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction history (newest first)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TxHistoryPage'
+
+  /scripthash/{scripthash}/utxos:
+    get:
+      summary: Scripthash UTXOs (Electrum-compatible)
+      parameters:
+        - in: path
+          name: scripthash
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+          description: Little-endian hex of SHA256(scriptPubKey)
+        - in: query
+          name: minconf
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - in: query
+          name: cursor
+          schema:
+            type: string
+      responses:
+        "200":
+          description: UTXO list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UTXOPage'
+
+  /scripthash/{scripthash}/history:
+    get:
+      summary: Scripthash transaction history
+      parameters:
+        - in: path
+          name: scripthash
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - in: query
+          name: cursor
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TxHistoryPage'
+
+  /mempool:
+    get:
+      summary: Mempool summary
+      responses:
+        "200":
+          description: Mempool statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MempoolSummary'
+
+  /mempool/txids:
+    get:
+      summary: Mempool transaction IDs
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+            default: 1000
+      responses:
+        "200":
+          description: Array of transaction IDs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: string
+                      pattern: "^[0-9a-fA-F]{64}$"
+
+  /mempool/tx/{txid}:
+    get:
+      summary: Mempool transaction
+      parameters:
+        - in: path
+          name: txid
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+      responses:
+        "200":
+          description: Unconfirmed transaction (no block fields)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+
+  /stats/supply:
+    get:
+      summary: Supply statistics
+      responses:
+        "200":
+          description: Current supply info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupplyStats'
+
+  /stats/difficulty:
+    get:
+      summary: Difficulty statistics
+      responses:
+        "200":
+          description: Current difficulty
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DifficultyStats'
+
+  /stats/blocks/24h:
+    get:
+      summary: 24-hour block statistics
+      responses:
+        "200":
+          description: Block stats for last 24 hours
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockStats24h'
+
+  /search:
+    get:
+      summary: Search blocks, transactions, or addresses
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+          description: Search query (block hash, height, txid, or address)
+          example: "1"
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResult'
+        "400":
+          description: Missing search query
+
+  /health:
+    get:
+      summary: API health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+        "503":
+          description: Service unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+
+components:
+  schemas:
+    BlockSummary:
+      type: object
+      required: [height, hash, time, tx_count]
+      properties:
+        height:
+          type: integer
+          example: 1
+        hash:
+          type: string
+          example: "a415b97b505c865e0e857261a7c744c9497086bf2450740056d51b7c241f1418"
+        time:
+          type: integer
+          example: 1700000093
+        tx_count:
+          type: integer
+          example: 1
+
+    Transaction:
+      type: object
+      required: [txid, version, locktime, size, vsize, vin, vout]
+      properties:
+        txid:
+          type: string
+          example: "acbc4b852bea0e52cb8ec3fb89662a318ccb6b048f00560d3fb7fba5dd77dedb"
+        version:
+          type: integer
+          example: 1
+        locktime:
+          type: integer
+          example: 0
+        size:
+          type: integer
+          example: 123
+        vsize:
+          type: integer
+          example: 123
+        vin:
+          type: array
+          items:
+            oneOf:
+              - type: object
+                description: Coinbase input
+                required: [coinbase, sequence]
+                properties:
+                  coinbase:
+                    type: string
+                    example: "..."
+                  sequence:
+                    type: integer
+                    example: 4294967295
+              - type: object
+                description: Regular input
+                required: [txid, vout, sequence]
+                properties:
+                  txid:
+                    type: string
+                  vout:
+                    type: integer
+                  sequence:
+                    type: integer
+        vout:
+          type: array
+          items:
+            type: object
+            required: [n, value, scriptPubKey]
+            properties:
+              n:
+                type: integer
+                example: 0
+              value:
+                type: number
+                format: double
+                example: 2000000.0
+              scriptPubKey:
+                type: object
+                required: [hex, type]
+                properties:
+                  hex:
+                    type: string
+                    example: "0014f5d4a415975f8cc990de60e476616103377423a7"
+                  type:
+                    type: string
+                    example: "witness_v0_keyhash"
+        # Optional fields for confirmed transactions
+        blockhash:
+          type: string
+          example: "a415b97b505c865e0e857261a7c744c9497086bf2450740056d51b7c241f1418"
+        height:
+          type: integer
+          example: 1
+        time:
+          type: integer
+          example: 1700000093
+        confirmations:
+          type: integer
+          example: 1
+
+    AddressSummary:
+      type: object
+      required: [address, scripthash, received, sent, balance, tx_count]
+      properties:
+        address:
+          type: string
+          example: "din1..."
+        scripthash:
+          type: string
+          description: Little-endian hex of SHA256(scriptPubKey)
+          example: "e3ab..."
+        received:
+          type: number
+          format: double
+          example: 2000000.0
+        sent:
+          type: number
+          format: double
+          example: 0.0
+        balance:
+          type: number
+          format: double
+          example: 2000000.0
+        tx_count:
+          type: integer
+          example: 1
+
+    UTXO:
+      type: object
+      required: [txid, vout, value, height, spk_hex]
+      properties:
+        txid:
+          type: string
+          example: "acbc4b852bea0e52cb8ec3fb89662a318ccb6b048f00560d3fb7fba5dd77dedb"
+        vout:
+          type: integer
+          example: 0
+        value:
+          type: number
+          format: double
+          example: 2000000.0
+        height:
+          type: integer
+          example: 1
+        spk_hex:
+          type: string
+          example: "0014f5d4a415975f8cc990de60e476616103377423a7"
+
+    UTXOPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UTXO'
+        next_cursor:
+          type: string
+          description: Base64 cursor for next page
+          example: "eyJoIjoxLCJ0aSI6MH0"
+
+    TxHistoryItem:
+      type: object
+      required: [txid, height, confirmations, delta, inputs, outputs]
+      properties:
+        txid:
+          type: string
+        height:
+          type: integer
+        confirmations:
+          type: integer
+        delta:
+          type: number
+          format: double
+          description: Net change for this address (can be negative)
+        inputs:
+          type: array
+          items:
+            type: string
+          description: Minimal input summaries
+        outputs:
+          type: array
+          items:
+            type: string
+          description: Minimal output summaries
+
+    TxHistoryPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TxHistoryItem'
+        next_cursor:
+          type: string
+
+    MempoolSummary:
+      type: object
+      required: [tx_count, total_bytes, min_fee_rate, histogram]
+      properties:
+        tx_count:
+          type: integer
+          example: 0
+        total_bytes:
+          type: integer
+          format: int64
+          example: 0
+        min_fee_rate:
+          type: number
+          format: double
+          example: 0.0
+        histogram:
+          type: array
+          items:
+            type: object
+            required: [fee_rate, count]
+            properties:
+              fee_rate:
+                type: number
+                format: double
+              count:
+                type: integer
+
+    SupplyStats:
+      type: object
+      required: [height, subsidy, cumulative_issued, circulating]
+      properties:
+        height:
+          type: integer
+          example: 1
+        subsidy:
+          type: number
+          format: double
+          example: 0.0
+        cumulative_issued:
+          type: number
+          format: double
+          example: 2000000.0
+        circulating:
+          type: number
+          format: double
+          example: 2000000.0
+
+    DifficultyStats:
+      type: object
+      required: [height, bits, difficulty]
+      properties:
+        height:
+          type: integer
+          example: 1
+        bits:
+          type: string
+          example: "1f002710"
+        difficulty:
+          type: number
+          format: double
+          example: 1.0
+
+    BlockStats24h:
+      type: object
+      required: [count, avg_interval_sec]
+      properties:
+        count:
+          type: integer
+          example: 1
+        avg_interval_sec:
+          type: number
+          format: double
+          example: 60.0
+
+    SearchResult:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: ["block", "tx", "address", "not_found"]
+        result:
+          type: object
+          description: Result data (varies by type)
+
+    HealthCheck:
+      type: object
+      required: [ok, height, db, mempool_index]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        height:
+          type: integer
+          example: 1
+        db:
+          type: string
+          example: "ok"
+        mempool_index:
+          type: string
+          example: "ok"
+
+    MerkleProof:
+      type: object
+      required: [blockhash, merkleroot, txid, index, path]
+      properties:
+        blockhash:
+          type: string
+          example: "a415b97b505c865e0e857261a7c744c9497086bf2450740056d51b7c241f1418"
+        merkleroot:
+          type: string
+          example: "1e6e49...fdf5"
+        txid:
+          type: string
+          example: "acbc4b852bea0e52cb8ec3fb89662a318ccb6b048f00560d3fb7fba5dd77dedb"
+        index:
+          type: integer
+          example: 0
+        path:
+          type: array
+          items:
+            type: string
+          description: Merkle path siblings from leaf to root
+          example: ["<32-byte-hex>"]
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: integer
+              example: -5
+            message:
+              type: string
+              example: "block not found"
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: -3
+              message: "invalid address"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: -5
+              message: "block not found"
+
+# WebSocket Documentation (not part of OpenAPI spec)
+# Path: ws://localhost:25998/ws/explorer
+# Messages (JSON):
+# {"type":"newBlock","height":2,"hash":"...","time":1700000153}
+# {"type":"newTx","txid":"...","fee_rate":0.0}
+# {"type":"reorg","from":10,"to":9,"detached":["..."],"attached":["..."]}
+# {"type":"txConfirmed","txid":"...","height":11}

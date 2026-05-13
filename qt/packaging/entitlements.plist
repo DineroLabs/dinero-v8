@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Outbound network connections: RPC to dinerod, AI provider APIs, CoinGecko -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Hardened runtime required for notarization -->
+    <!-- JIT not needed; allow unsigned memory only if required by Qt internals -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+</dict>
+</plist>

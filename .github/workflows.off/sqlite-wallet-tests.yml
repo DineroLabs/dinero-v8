@@ -1,0 +1,92 @@
+name: SQLite Wallet Tests
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  sqlite-wallet-tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [RelWithDebInfo]
+        sync_mode: [NORMAL, FULL]
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake ninja-build pkg-config
+
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install cmake ninja pkg-config
+
+    - name: Configure
+      run: |
+        cmake -S . -B build-test \
+          -DENABLE_SANITIZERS=ON \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DWITH_QT=OFF \
+          -DBUILD_WALLET_GUI=OFF \
+          -GNinja
+
+    - name: Build
+      run: cmake --build build-test -j4
+
+    - name: Test SQLite Wallet (${{ matrix.sync_mode }})
+      run: |
+        cd build-test
+        DINERO_WALLET_SYNC=${{ matrix.sync_mode }} \
+        ctest -C ${{ matrix.build_type }} -j2 \
+        -R wallet_sqlite_lifecycle \
+        --output-on-failure \
+        --verbose
+
+    - name: Test Kill-9 Durability (${{ matrix.sync_mode }})
+      run: |
+        cd build-test
+        DINERO_WALLET_SYNC=${{ matrix.sync_mode }} \
+        ctest -C ${{ matrix.build_type }} -j2 \
+        -R wallet_kill9_durability \
+        --output-on-failure \
+        --verbose
+
+    - name: Flake Test (10 iterations)
+      if: matrix.sync_mode == 'FULL'
+      run: |
+        cd build-test
+        DINERO_WALLET_SYNC=${{ matrix.sync_mode }} \
+        ctest -C ${{ matrix.build_type }} \
+        -R wallet_sqlite_lifecycle \
+        --repeat until-fail:10 \
+        --output-on-failure
+
+    - name: Migration Dry-Run Test
+      run: |
+        cd build-test
+        DINERO_WALLET_MIGRATE_DRYRUN=1 \
+        DINERO_WALLET_SYNC=${{ matrix.sync_mode }} \
+        ctest -C ${{ matrix.build_type }} \
+        -R wallet_sqlite_lifecycle \
+        --output-on-failure
+
+    - name: Upload test artifacts on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-artifacts-${{ matrix.os }}-${{ matrix.sync_mode }}
+        path: |
+          /tmp/test-wallet.sqlite*
+          /tmp/test_output.log
+          /tmp/wallet-sample.txt
+        retention-days: 7

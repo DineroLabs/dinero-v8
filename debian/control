@@ -1,0 +1,44 @@
+Source: dinero-core
+Section: net
+Priority: optional
+Maintainer: Trucker2827 <Trucker2827@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cmake (>= 3.20),
+ g++ (>= 11),
+ pkg-config,
+ perl,
+ zlib1g-dev,
+Standards-Version: 4.6.2
+Homepage: https://github.com/DineroLabs/Dinero-Coin
+Vcs-Git: https://github.com/DineroLabs/Dinero-Coin.git
+Vcs-Browser: https://github.com/DineroLabs/Dinero-Coin
+Rules-Requires-Root: binary-targets
+
+Package: dinero-core
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ adduser,
+Description: Dinero (DIN) full node and CLI
+ Dinero Core ships dinerod (the full node), dinero-cli (the RPC
+ client), dinero-backup (wallet/shielded recovery tool), and
+ dinero-prepare-upgrade (rollback binary capture).
+ .
+ Phase E.3: RocksDB, Boost, secp256k1-zkp, jsoncpp, and OpenSSL are
+ statically linked from third_party/ vendoring. GPU mining and
+ hardware-wallet HID support are excluded from the packaged daemon
+ (separate desktop / miner packages will ship those). The entire
+ gRPC stack (libgrpc++, libprotobuf, abseil, c-ares, re2) is
+ excluded via DINERO_RELEASE=ON because the current gRPC server
+ has not had TLS/mTLS landed; revisit when Lightning is actually
+ shipping. ${shlibs:Depends} therefore narrows to base-system
+ packages only.
+ .
+ See /usr/share/doc/dinero/dinero.conf.example for configuration
+ keys and /usr/share/doc/dinero/dinero.service.example for a
+ manual-mode systemd unit. The package itself ships
+ /lib/systemd/system/dinero.service for packaged-service mode.
+ The unit is installed but NOT auto-enabled; run
+ `systemctl enable --now dinero` to start the service.

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.dinero.daemon</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/dinerod</string>
+        <string>-conf</string>
+        <string>/Users/USERNAME/.dinero/dinero.conf</string>
+    </array>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>KeepAlive</key>
+    <true/>
+    
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/dinerod.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/dinerod.err</string>
+    
+    <key>WorkingDirectory</key>
+    <string>/Users/USERNAME</string>
+    
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+
+<!-- Installation:
+1. Replace USERNAME with your actual username
+2. Copy to ~/Library/LaunchAgents/org.dinero.daemon.plist
+3. Load: launchctl load ~/Library/LaunchAgents/org.dinero.daemon.plist
+4. Start: launchctl start org.dinero.daemon
+-->

@@ -1,0 +1,111 @@
+name: Quick Windows Build
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  build-windows-simple:
+    name: Windows Build (MSVC)
+    runs-on: windows-2022
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+    
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+    
+    - name: Cache vcpkg
+      uses: actions/cache@v3
+      with:
+        path: C:\vcpkg\installed
+        key: vcpkg-${{ runner.os }}-${{ hashFiles('**/vcpkg.json') }}
+    
+    - name: Install dependencies
+      run: |
+        vcpkg install `
+          openssl:x64-windows-static `
+          sqlite3:x64-windows-static `
+          rocksdb:x64-windows-static `
+          lz4:x64-windows-static `
+          boost-system:x64-windows-static `
+          boost-filesystem:x64-windows-static `
+          boost-program-options:x64-windows-static
+        vcpkg integrate install
+      shell: powershell
+      continue-on-error: false
+    
+    - name: Configure
+      run: |
+        cmake -B build `
+          -G "Visual Studio 17 2022" `
+          -A x64 `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+          -DBUILD_TESTING=OFF `
+          -DBUILD_GUI=OFF
+      shell: powershell
+    
+    - name: Build
+      run: |
+        cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
+      shell: powershell
+    
+    - name: Package
+      run: |
+        $VERSION = git describe --tags --always --dirty
+        $FOLDER = "DineroCoin-Windows-$VERSION"
+        mkdir $FOLDER
+        
+        # Copy binaries
+        copy build\Release\dinerod.exe $FOLDER\ -ErrorAction SilentlyContinue
+        copy build\Release\dcli.exe $FOLDER\ -ErrorAction SilentlyContinue
+        copy build\Release\rpcd.exe $FOLDER\ -ErrorAction SilentlyContinue
+        
+        # Create README
+        @"
+DineroCoin Windows Build
+========================
+Version: $VERSION
+Built: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+Platform: Windows x64 (MSVC)
+
+Files:
+- dinerod.exe: DineroCoin daemon
+- dcli.exe: Command-line interface
+- rpcd.exe: RPC server
+
+Usage:
+  dinerod.exe --help
+  
+"@ | Out-File -FilePath "$FOLDER\README.txt" -Encoding ASCII
+        
+        # Create ZIP
+        Compress-Archive -Path $FOLDER -DestinationPath "$FOLDER.zip"
+        
+        echo "BUILD_FOLDER=$FOLDER" >> $env:GITHUB_ENV
+        echo "ZIP_FILE=$FOLDER.zip" >> $env:GITHUB_ENV
+      shell: powershell
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dinerocoin-windows-x64
+        path: DineroCoin-Windows-*.zip
+        if-no-files-found: error
+    
+    - name: Upload to release
+      if: github.event.inputs.upload_to_release == 'true'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ${{ env.ZIP_FILE }}
+        tag_name: latest
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

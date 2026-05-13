@@ -1,0 +1,131 @@
+// Example Fiat On-Ramp UI Component
+// mobile-tauri/src/components/FiatOnRampScreen.tsx.example
+
+import React, { useState } from 'react';
+import { useFiatOnRamp, useFiatOrderStatus } from '../hooks/useLiquidityOnRamp';
+import { useKYC } from '../hooks/useLiquidityOnRamp';
+
+export function FiatOnRampScreen() {
+  const { createOrder, loading, error } = useFiatOnRamp();
+  const { kycStatus, startVerification } = useKYC();
+  
+  const [amount, setAmount] = useState<number>(0);
+  const [fiatCurrency, setFiatCurrency] = useState('USD');
+  const [paymentMethod, setPaymentMethod] = useState('card');
+  const [order, setOrder] = useState<any>(null);
+
+  const handleCreateOrder = async () => {
+    try {
+      const newOrder = await createOrder(amount, fiatCurrency, 'DIN', paymentMethod);
+      setOrder(newOrder);
+      
+      // Open payment URL in browser
+      if (newOrder.payment_url) {
+        window.open(newOrder.payment_url, '_blank');
+      }
+    } catch (err) {
+      alert(`Failed to create order: ${err}`);
+    }
+  };
+
+  const handleStartKYC = async () => {
+    try {
+      const url = await startVerification('basic', 'US');
+      window.open(url, '_blank');
+    } catch (err) {
+      alert(`Failed to start KYC: ${err}`);
+    }
+  };
+
+  // Check if KYC is required (some payment methods require KYC)
+  const requiresKYC = paymentMethod !== 'card' || amount > 1000;
+
+  return (
+    <div className="fiat-onramp-screen">
+      <h1>Buy Dinero</h1>
+
+      {/* KYC Status */}
+      {!kycStatus?.is_verified && requiresKYC && (
+        <div className="kyc-banner">
+          <p>KYC verification required for this transaction</p>
+          <button onClick={handleStartKYC}>Start KYC Verification</button>
+        </div>
+      )}
+
+      {kycStatus?.is_verified && (
+        <div className="kyc-status">
+          ✓ Verified ({kycStatus.verification_level})
+        </div>
+      )}
+
+      {/* Order Form */}
+      <div className="order-form">
+        <div className="form-group">
+          <label>Amount ({fiatCurrency})</label>
+          <input
+            type="number"
+            value={amount || ''}
+            onChange={e => setAmount(parseFloat(e.target.value) || 0)}
+            placeholder="0.00"
+          />
+        </div>
+
+        <div className="form-group">
+          <label>Currency</label>
+          <select value={fiatCurrency} onChange={e => setFiatCurrency(e.target.value)}>
+            <option value="USD">USD</option>
+            <option value="EUR">EUR</option>
+            <option value="GBP">GBP</option>
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>Payment Method</label>
+          <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
+            <option value="card">Credit/Debit Card</option>
+            <option value="bank">Bank Transfer</option>
+            <option value="sepa">SEPA Transfer</option>
+            <option value="wire">Wire Transfer</option>
+          </select>
+        </div>
+
+        <button
+          onClick={handleCreateOrder}
+          disabled={loading || amount <= 0 || (requiresKYC && !kycStatus?.is_verified)}
+        >
+          Create Order
+        </button>
+
+        {error && <div className="error">{error}</div>}
+      </div>
+
+      {/* Order Status */}
+      {order && <FiatOrderStatus orderId={order.order_id} />}
+    </div>
+  );
+}
+
+function FiatOrderStatus({ orderId }: { orderId: string }) {
+  const { order, loading } = useFiatOrderStatus(orderId);
+
+  if (!order) return null;
+
+  return (
+    <div className="order-status">
+      <h3>Order Status</h3>
+      <p>Order ID: {order.order_id}</p>
+      <p>Status: {order.status}</p>
+      <p>
+        {order.fiat_amount} {order.fiat_currency} → {order.crypto_amount} {order.crypto_symbol}
+      </p>
+      <p>Fee: {order.fee} {order.fiat_currency}</p>
+      {order.payment_url && (
+        <a href={order.payment_url} target="_blank" rel="noopener noreferrer">
+          Complete Payment
+        </a>
+      )}
+      {loading && <p>Updating...</p>}
+    </div>
+  );
+}
+

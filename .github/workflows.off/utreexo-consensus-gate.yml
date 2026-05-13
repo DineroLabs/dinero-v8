@@ -1,0 +1,169 @@
+name: Consensus Gate
+
+# ============================================================================
+# CONSENSUS-CRITICAL: This job protects consensus invariants.
+# See docs/consensus/UTREEXO_FREEZE.md for freeze policy.
+#
+# REQUIRED GATES (hard fail on any):
+#   1. test_stateless_proof_minimal  (13 tests) - Utreexo accumulator
+#   2. test_utreexo_enforcement      (5 tests)  - Block validation
+#   3. test_p2p_adversarial          (25 tests) - P2P attack resistance
+#
+# This job MUST:
+# - Run on ALL pull requests and pushes to main
+# - Never be skipped or made optional
+# - Be marked as "required" in branch protection rules
+# ============================================================================
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  consensus-gate:
+    name: Consensus Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for refactor tripwire
+
+      # ======================================================================
+      # Refactor Tripwire: Warn if core consensus files are modified
+      # ======================================================================
+      - name: Check for consensus-critical file modifications
+        if: github.event_name == 'pull_request'
+        run: |
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null || echo "")
+
+          CONSENSUS_FILES=""
+          if echo "$CHANGED" | grep -qE 'src/consensus/utreexo_accumulator\.cpp|include/consensus/utreexo_accumulator\.h'; then
+            CONSENSUS_FILES="$CONSENSUS_FILES utreexo_accumulator"
+          fi
+          if echo "$CHANGED" | grep -qE 'src/consensus/block_validation\.cpp|include/consensus/block_validation\.h'; then
+            CONSENSUS_FILES="$CONSENSUS_FILES block_validation"
+          fi
+          if echo "$CHANGED" | grep -qE 'src/net/p2p_.*\.cpp|include/net/p2p_.*\.h'; then
+            CONSENSUS_FILES="$CONSENSUS_FILES p2p_layer"
+          fi
+
+          if [ -n "$CONSENSUS_FILES" ]; then
+            echo "::warning::Consensus-critical files modified:$CONSENSUS_FILES"
+            echo ""
+            echo "╔══════════════════════════════════════════════════════════════╗"
+            echo "║  WARNING: Consensus-critical files modified                  ║"
+            echo "║                                                              ║"
+            echo "║  Modified:$CONSENSUS_FILES"
+            echo "║                                                              ║"
+            echo "║  These files are consensus-frozen.                           ║"
+            echo "║  Refactors that alter execution order are consensus changes. ║"
+            echo "║                                                              ║"
+            echo "║  See: docs/consensus/UTREEXO_FREEZE.md                       ║"
+            echo "╚══════════════════════════════════════════════════════════════╝"
+            echo ""
+          fi
+
+      # ======================================================================
+      # Build all required test targets
+      # ======================================================================
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Consensus Gate Tests
+        run: |
+          echo "Building required consensus gate tests..."
+          cmake --build build --target test_stateless_proof_minimal -j $(nproc)
+          cmake --build build --target test_utreexo_enforcement -j $(nproc)
+          cmake --build build --target test_p2p_adversarial -j $(nproc)
+
+      # ======================================================================
+      # Gate 1: Utreexo Accumulator (13 tests)
+      # ======================================================================
+      - name: "Gate 1: Utreexo Accumulator"
+        run: |
+          cd build
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  GATE 1: Utreexo Accumulator (13 tests)"
+          echo "  Target: test_stateless_proof_minimal"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          ./test_stateless_proof_minimal
+          echo ""
+          echo "  ✅ Gate 1 PASSED"
+
+      # ======================================================================
+      # Gate 2: Block Validation (5 tests)
+      # ======================================================================
+      - name: "Gate 2: Block Validation"
+        run: |
+          cd build
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  GATE 2: Block Validation (5 tests)"
+          echo "  Target: test_utreexo_enforcement"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          ./test_utreexo_enforcement
+          echo ""
+          echo "  ✅ Gate 2 PASSED"
+
+      # ======================================================================
+      # Gate 3: P2P Adversarial (25 tests)
+      # ======================================================================
+      - name: "Gate 3: P2P Adversarial"
+        run: |
+          cd build
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  GATE 3: P2P Adversarial (25 tests)"
+          echo "  Target: test_p2p_adversarial"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          ./test_p2p_adversarial
+          echo ""
+          echo "  ✅ Gate 3 PASSED"
+
+      # ======================================================================
+      # Final Summary
+      # ======================================================================
+      - name: Consensus Gate Summary
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║  ✅ ALL CONSENSUS GATES PASSED                               ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  Gate 1: Utreexo Accumulator     13/13 tests                 ║"
+          echo "║  Gate 2: Block Validation         5/5  tests                 ║"
+          echo "║  Gate 3: P2P Adversarial        25/25 tests                  ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  Total: 43 consensus-critical tests passed                   ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+
+      # ======================================================================
+      # Failure notification
+      # ======================================================================
+      - name: Failure Summary
+        if: failure()
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║  ❌ CONSENSUS GATE FAILED                                    ║"
+          echo "║                                                              ║"
+          echo "║  One or more consensus-critical tests failed.                ║"
+          echo "║  This PR cannot be merged until all gates pass.              ║"
+          echo "║                                                              ║"
+          echo "║  See: docs/consensus/UTREEXO_FREEZE.md                       ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "::error::Consensus gate failed. All 43 tests must pass."

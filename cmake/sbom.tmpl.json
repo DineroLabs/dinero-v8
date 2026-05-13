@@ -1,0 +1,231 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "serialNumber": "urn:uuid:@DINERO_BUILD_UUID@",
+  "version": 1,
+  "metadata": {
+    "timestamp": "@DINERO_BUILD_TIMESTAMP@",
+    "tools": [
+      {
+        "vendor": "Dinero Project",
+        "name": "CMake SBOM Generator",
+        "version": "@CMAKE_VERSION@"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "dinero-@PROJECT_VERSION@",
+      "name": "Dinero",
+      "version": "@PROJECT_VERSION@",
+      "description": "Independent cryptocurrency with Bitcoin-like economics",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "openssl-3.3.1",
+      "name": "OpenSSL",
+      "version": "3.3.1",
+      "description": "Cryptography and SSL/TLS toolkit",
+      "scope": "required",
+      "supplier": {
+        "name": "OpenSSL Software Foundation"
+      },
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:generic/openssl@3.3.1",
+      "properties": [
+        {
+          "name": "dinero:source",
+          "value": "vendored"
+        },
+        {
+          "name": "dinero:build-type",
+          "value": "static"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "rocksdb-9.1.0",
+      "name": "RocksDB",
+      "version": "9.1.0",
+      "description": "High-performance embedded database for key-value data",
+      "scope": "required",
+      "supplier": {
+        "name": "Facebook, Inc."
+      },
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:generic/rocksdb@9.1.0",
+      "properties": [
+        {
+          "name": "dinero:source",
+          "value": "vendored"
+        },
+        {
+          "name": "dinero:build-type",
+          "value": "static"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "snappy-1.1.10",
+      "name": "Snappy",
+      "version": "1.1.10",
+      "description": "Fast compression/decompression library",
+      "scope": "required",
+      "supplier": {
+        "name": "Google Inc."
+      },
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:generic/snappy@1.1.10",
+      "properties": [
+        {
+          "name": "dinero:source",
+          "value": "vendored"
+        },
+        {
+          "name": "dinero:build-type",
+          "value": "static"
+        },
+        {
+          "name": "dinero:enabled",
+          "value": "@DINERO_WITH_SNAPPY@"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "lz4-1.9.4",
+      "name": "LZ4",
+      "version": "1.9.4",
+      "description": "Extremely fast compression algorithm",
+      "scope": "required",
+      "supplier": {
+        "name": "Yann Collet"
+      },
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD-2-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:generic/lz4@1.9.4",
+      "properties": [
+        {
+          "name": "dinero:source",
+          "value": "vendored"
+        },
+        {
+          "name": "dinero:build-type",
+          "value": "static"
+        },
+        {
+          "name": "dinero:enabled",
+          "value": "@DINERO_WITH_LZ4@"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "zstd-1.5.6",
+      "name": "Zstandard",
+      "version": "1.5.6",
+      "description": "Real-time compression algorithm with high compression ratios",
+      "scope": "required",
+      "supplier": {
+        "name": "Facebook, Inc."
+      },
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:generic/zstd@1.5.6",
+      "properties": [
+        {
+          "name": "dinero:source",
+          "value": "vendored"
+        },
+        {
+          "name": "dinero:build-type",
+          "value": "static"
+        },
+        {
+          "name": "dinero:enabled",
+          "value": "@DINERO_WITH_ZSTD@"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "jsoncpp-1.9.5",
+      "name": "JsonCpp",
+      "version": "1.9.5",
+      "description": "C++ library for interacting with JSON",
+      "scope": "required",
+      "supplier": {
+        "name": "Baptiste Lepilleur"
+      },
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:generic/jsoncpp@1.9.5",
+      "properties": [
+        {
+          "name": "dinero:source",
+          "value": "FetchContent"
+        },
+        {
+          "name": "dinero:build-type",
+          "value": "static"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "dinero-@PROJECT_VERSION@",
+      "dependsOn": [
+        "openssl-3.3.1",
+        "rocksdb-9.1.0",
+        "snappy-1.1.10",
+        "lz4-1.9.4",
+        "zstd-1.5.6",
+        "jsoncpp-1.9.5"
+      ]
+    }
+  ]
+}

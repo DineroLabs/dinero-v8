@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "mining.status",
+  "description": "Get current mining status and performance metrics",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "mining.status"
+    },
+    "params": {
+      "type": "array",
+      "items": {},
+      "maxItems": 0
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "mining": {
+          "type": "boolean",
+          "description": "Whether mining is active"
+        },
+        "threads": {
+          "type": "integer",
+          "description": "Number of mining threads"
+        },
+        "address": {
+          "type": "string",
+          "description": "Mining reward address"
+        },
+        "hashrate": {
+          "type": "number",
+          "description": "Current hashrate (H/s)"
+        },
+        "hashrate_avg": {
+          "type": "number",
+          "description": "Average hashrate over last 10 minutes (H/s)"
+        },
+        "target": {
+          "type": "string",
+          "description": "Current target (hex)"
+        },
+        "target_bits": {
+          "type": "string",
+          "description": "Current target bits (hex)"
+        },
+        "difficulty": {
+          "type": "number",
+          "description": "Current difficulty"
+        },
+        "blocks_found": {
+          "type": "integer",
+          "description": "Blocks found this session"
+        },
+        "blocks_found_total": {
+          "type": "integer",
+          "description": "Total blocks found by this miner"
+        },
+        "session_start": {
+          "type": "integer",
+          "description": "Mining session start timestamp"
+        },
+        "session_duration": {
+          "type": "number",
+          "description": "Session duration in seconds"
+        },
+        "estimated_time_remaining": {
+          "type": "number",
+          "description": "Estimated time to next block (seconds, null if unknown)"
+        },
+        "shares_accepted": {
+          "type": "integer",
+          "description": "Accepted shares (if pool mining)"
+        },
+        "shares_rejected": {
+          "type": "integer",
+          "description": "Rejected shares (if pool mining)"
+        },
+        "last_block_time": {
+          "type": "integer",
+          "description": "Timestamp of last block found"
+        },
+        "network_hashrate": {
+          "type": "number",
+          "description": "Estimated network hashrate (H/s)"
+        },
+        "phase": {
+          "type": "string",
+          "enum": ["developer_fund", "cpu_friendly", "halving"],
+          "description": "Current mining phase"
+        },
+        "reward_una": {
+          "type": "integer",
+          "description": "Current block reward in una"
+        },
+        "reward_din": {
+          "type": "string",
+          "description": "Current block reward in DIN (formatted)"
+        }
+      },
+      "required": ["mining", "threads", "hashrate", "difficulty"]
+    }
+  }
+}

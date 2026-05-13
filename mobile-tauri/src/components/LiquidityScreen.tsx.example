@@ -1,0 +1,90 @@
+// Example Liquidity Pool UI Component
+// mobile-tauri/src/components/LiquidityScreen.tsx.example
+
+import React, { useState } from 'react';
+import { useLiquidity } from '../hooks/useLiquidityOnRamp';
+
+export function LiquidityScreen() {
+  const { pools, loading, error, addLiquidity, removeLiquidity } = useLiquidity();
+  const [selectedPool, setSelectedPool] = useState<string | null>(null);
+  const [amount, setAmount] = useState<number>(0);
+  const [action, setAction] = useState<'add' | 'remove'>('add');
+
+  const handleSubmit = async () => {
+    if (!selectedPool || amount <= 0) return;
+
+    try {
+      if (action === 'add') {
+        const txid = await addLiquidity(selectedPool, amount);
+        alert(`Liquidity added! TXID: ${txid}`);
+      } else {
+        const txid = await removeLiquidity(selectedPool, amount);
+        alert(`Liquidity removed! TXID: ${txid}`);
+      }
+    } catch (err) {
+      alert(`Failed: ${err}`);
+    }
+  };
+
+  if (loading && pools.length === 0) {
+    return <div>Loading pools...</div>;
+  }
+
+  return (
+    <div className="liquidity-screen">
+      <h1>Liquidity Pools</h1>
+
+      {error && <div className="error">{error}</div>}
+
+      <div className="pools-list">
+        {pools.map(pool => (
+          <div key={pool.pool_id} className="pool-card">
+            <h2>{pool.symbol} Pool</h2>
+            <p>Total Liquidity: {pool.total_liquidity.toLocaleString()}</p>
+            <p>Available: {pool.available_liquidity.toLocaleString()}</p>
+            <p>APY: {pool.apy}%</p>
+            <p>Min Deposit: {pool.min_deposit}</p>
+            <p>Max Deposit: {pool.max_deposit}</p>
+            <button onClick={() => setSelectedPool(pool.pool_id)}>
+              Select Pool
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {selectedPool && (
+        <div className="liquidity-form">
+          <h2>Manage Liquidity</h2>
+          <div>
+            <label>
+              <input
+                type="radio"
+                checked={action === 'add'}
+                onChange={() => setAction('add')}
+              />
+              Add Liquidity
+            </label>
+            <label>
+              <input
+                type="radio"
+                checked={action === 'remove'}
+                onChange={() => setAction('remove')}
+              />
+              Remove Liquidity
+            </label>
+          </div>
+          <input
+            type="number"
+            value={amount || ''}
+            onChange={e => setAmount(parseFloat(e.target.value) || 0)}
+            placeholder="Amount"
+          />
+          <button onClick={handleSubmit} disabled={loading}>
+            {action === 'add' ? 'Add' : 'Remove'} Liquidity
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+

@@ -1,0 +1,102 @@
+name: Consensus-Critical Tests
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  block-progression-regression:
+    name: Block Progression Regression (Consensus-Critical)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            libssl-dev \
+            libsqlite3-dev \
+            libjsoncpp-dev \
+            libsecp256k1-dev \
+            libgtest-dev \
+            librocksdb-dev \
+            pkg-config \
+            protobuf-compiler \
+            libprotobuf-dev \
+            libgrpc++-dev \
+            protobuf-compiler-grpc \
+            autoconf \
+            automake \
+            libtool
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install \
+            cmake \
+            ninja \
+            openssl \
+            sqlite \
+            jsoncpp \
+            secp256k1 \
+            googletest \
+            rocksdb \
+            protobuf \
+            grpc \
+            autoconf \
+            automake \
+            libtool
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build secp256k1-zkp
+        run: |
+          cd third_party/secp256k1-zkp
+          ./autogen.sh
+          ./configure --enable-module-generator --enable-module-rangeproof --enable-module-recovery --enable-module-ecdh --enable-module-musig --enable-module-ecdsa-adaptor --enable-experimental --enable-module-schnorrsig
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          cd ../..
+
+      - name: Configure CMake
+        env:
+          OPENSSL_ROOT_DIR: /usr
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DENABLE_TESTING=ON \
+            -DUSE_SYSTEM_OPENSSL=ON \
+            -DOPENSSL_ROOT_DIR=/usr
+
+      - name: Build
+        run: cmake --build build --parallel -- -k
+
+      - name: Run Block Progression Regression Test (v1.0.4 endianness fix)
+        run: |
+          echo "🔍 Running consensus-critical block progression regression test..."
+          echo "   Verifies v1.0.4 block header endianness fix (genesis → block 3)"
+          build/tests/regression/test_block_progression_regression
+          echo "✅ Block progression regression test passed"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consensus-test-results-${{ matrix.os }}
+          path: build/test-results/

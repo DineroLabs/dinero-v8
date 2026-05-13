@@ -1,0 +1,118 @@
+# ===================================
+# AGGRESSIVE .dockerignore for DineroCoin
+# Only copy SOURCE CODE needed to build
+# ===================================
+
+# Build artifacts and binaries
+build*/
+*build*/
+bin/
+lib/
+*.exe
+*.a
+*.o
+dinerod
+dcli
+rpcd
+dinerod-linux
+dinerod-win.exe
+
+# All test directories
+test*/
+*test*/
+Testing/
+smoke*/
+regtest*/
+
+# Data directories
+data*/
+*data*/
+blockchain_data*/
+nodes/
+node*/
+ci_*/
+
+# Deployment packages
+deploy*/
+*deploy*/
+dinero-*/
+*.tar.gz
+*.zip
+
+# Node modules and dependencies
+node_modules/
+_deps/
+# external/  # KEEP external/ for bech32 and secp256k1
+3rd/
+
+# Build system generated
+CMakeFiles/
+cmake_install.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+CTestTestfile.cmake
+Makefile
+DartConfiguration.tcl
+
+# Git
+.git/
+.github/
+.gitignore
+.gitmodules
+
+# IDE and editor files
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Documentation (comment out if you need docs in container)
+docs/
+*.md
+!README.md
+!CMakeLists.txt
+
+# Scripts not needed for build
+*.sh
+*.bat
+*.ps1
+*.command
+
+# Logs and temp files
+logs/
+*.log
+*.err
+*.pid
+*.json
+!package.json
+
+# Python and test files
+*.py
+*.pyc
+__pycache__/
+
+# CI/CD
+.github/
+ci_*/
+
+# Everything else that's not source code
+artifacts/
+backup*/
+duplicates/
+examples/
+fuzz/
+migrations/
+packaging/
+release*/
+schemas/
+systemd/
+# tools/  # KEEP tools/ for genesis_miner, dinero_miner, etc.
+x-legacy/
+zero-errors/

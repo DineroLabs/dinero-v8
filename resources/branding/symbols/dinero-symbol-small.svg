@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" aria-label="Dinero Sign Small" role="img">
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M275 155H440C655 155 810 320 810 500C810 680 655 845 440 845H275Z" stroke-width="140"/>
+    <line x1="360" y1="70" x2="360" y2="930" stroke-width="96"/>
+    <line x1="510" y1="70" x2="510" y2="930" stroke-width="96"/>
+  </g>
+</svg>

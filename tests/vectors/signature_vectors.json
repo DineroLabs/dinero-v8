@@ -1,0 +1,28 @@
+{
+  "generated_at": 1769386955,
+  "generator": "dinero_test_utils",
+  "version": "1.0.0",
+  "vectors": {
+    "description": "Signature test vectors",
+    "test_cases": [
+      {
+        "name": "ecdsa_deterministic",
+        "type": "ecdsa",
+        "private_key": "0000000000000000000000000000000000000000000000000000000000000001",
+        "public_key": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "message": "b6c1a63fd76f75b233b949d0baa67291ca170ce57db5e09ea867867266c19002",
+        "signature_der": "3045022100ae28dc0895207837e1b5dcc9a6892ae60e862fd7ae88ebbf6ca120eb182e997d02204dbaa0be5652477ace24470117b85e4edd9b8c2f47965b8adf150dc691658ff6",
+        "note": "RFC6979 deterministic k"
+      },
+      {
+        "name": "schnorr_bip340",
+        "type": "schnorr",
+        "private_key": "0000000000000000000000000000000000000000000000000000000000000001",
+        "x_only_pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "message": "b6c1a63fd76f75b233b949d0baa67291ca170ce57db5e09ea867867266c19002",
+        "signature": "e3a401b0f1a9c990e96d6e17492da6bca7e1bfed5d78d13708dc4028ca1f76d36bfb21b61aee3936adff1194a36acd8882482d334b611250d596b007741fec47",
+        "note": "BIP340 Schnorr signature"
+      }
+    ]
+  }
+}

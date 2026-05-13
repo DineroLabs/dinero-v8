@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${NET:=mainnet}"
+case "${NET}" in
+  mainnet) DEFAULT_RPCPORT=20998; DEFAULT_DATADIR="${HOME}/.dinero" ;;
+  testnet) DEFAULT_RPCPORT=20998; DEFAULT_DATADIR="${HOME}/.dinero/testnet" ;;
+  regtest) DEFAULT_RPCPORT=20996; DEFAULT_DATADIR="${HOME}/.dinero/regtest" ;;
+  *) echo "Unknown NET='${NET}'"; exit 2 ;;
+esac
+: "${RPCPORT:=${DEFAULT_RPCPORT}}"
+: "${DATADIR:=${DINERO_DATADIR:-${DEFAULT_DATADIR}}}"
+COOKIE="${DATADIR}/.cookie"
+echo "📁 DATADIR: ${DATADIR}"
+echo "🔑 COOKIE : ${COOKIE}"
+echo "🌐 RPC    : http://127.0.0.1:${RPCPORT}"
+
+if [[ -f "${COOKIE}" ]]; then
+  CREDS="$(cat "${COOKIE}")"
+  echo -n "⛓  height: "
+  HEIGHT="$(curl -s --fail --user "${CREDS}" -H 'content-type: application/json' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"getblockcount","params":[]}' \
+    "http://127.0.0.1:${RPCPORT}" | sed -n 's/.*"result":\s*\([0-9]*\).*/\1/p' || true)"
+  if [[ -n "${HEIGHT}" ]]; then
+    echo "${HEIGHT}"
+  else
+    echo "n/a"
+  fi
+else
+  echo "❌ No cookie yet. Is the daemon running?"
+fi

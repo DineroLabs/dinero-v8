@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block title %}Block #{{ block.height }} - Dinero Explorer{% endblock %}
+
+{% block content %}
+<!-- Block Summary -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Block #{{ block.height }}</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <dl class="row">
+                    <dt class="col-sm-4">Height:</dt>
+                    <dd class="col-sm-8">{{ block.height }}</dd>
+
+                    <dt class="col-sm-4">Confirmations:</dt>
+                    <dd class="col-sm-8">
+                        <span class="badge badge-confirmed">{{ block.confirmations }}</span>
+                    </dd>
+
+                    <dt class="col-sm-4">Timestamp:</dt>
+                    <dd class="col-sm-8">{{ block.time | timestamp }}</dd>
+
+                    <dt class="col-sm-4">Transactions:</dt>
+                    <dd class="col-sm-8">{{ block.tx_count }}</dd>
+
+                    <dt class="col-sm-4">Total Fees:</dt>
+                    <dd class="col-sm-8">{{ block.total_fees | din }} DIN</dd>
+                </dl>
+            </div>
+            <div class="col-md-6">
+                <dl class="row">
+                    <dt class="col-sm-4">Version:</dt>
+                    <dd class="col-sm-8">{{ block.version }}</dd>
+
+                    <dt class="col-sm-4">Nonce:</dt>
+                    <dd class="col-sm-8">{{ block.nonce }}</dd>
+
+                    <dt class="col-sm-4">Bits:</dt>
+                    <dd class="col-sm-8">{{ "%08x" | format(block.bits) }}</dd>
+                </dl>
+            </div>
+        </div>
+
+        <hr>
+
+        <dl class="row">
+            <dt class="col-sm-2">Block Hash:</dt>
+            <dd class="col-sm-10">
+                <code class="hash-text">{{ block.hash }}</code>
+            </dd>
+
+            <dt class="col-sm-2">Merkle Root:</dt>
+            <dd class="col-sm-10">
+                <code class="hash-text">{{ block.merkleroot }}</code>
+            </dd>
+
+            {% if block.previousblockhash %}
+            <dt class="col-sm-2">Previous Block:</dt>
+            <dd class="col-sm-10">
+                <a href="{{ url_for('block_detail', height_or_hash=block.previousblockhash) }}"
+                   class="link-hash hash-text">
+                    {{ block.previousblockhash }}
+                </a>
+            </dd>
+            {% endif %}
+        </dl>
+    </div>
+</div>
+
+<!-- Transactions -->
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="mb-0">Transactions ({{ transactions | length }})</h5>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Transaction ID</th>
+                        <th class="text-center">Type</th>
+                        <th class="text-center">Inputs</th>
+                        <th class="text-center">Outputs</th>
+                        <th class="text-end">Total Output</th>
+                        <th class="text-end">Fee</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for tx in transactions %}
+                    <tr>
+                        <td>
+                            <a href="{{ url_for('transaction_detail', txid=tx.txid) }}"
+                               class="link-hash hash-text">
+                                {{ tx.txid | shorthash }}
+                            </a>
+                        </td>
+                        <td class="text-center">
+                            {% if tx.is_coinbase %}
+                            <span class="badge badge-coinbase">Coinbase</span>
+                            {% else %}
+                            <span class="badge bg-secondary">Regular</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-center">{{ tx.input_count }}</td>
+                        <td class="text-center">{{ tx.output_count }}</td>
+                        <td class="text-end">
+                            <span class="text-muted">{{ tx.total_output | din }} DIN</span>
+                        </td>
+                        <td class="text-end">
+                            {% if tx.fee > 0 %}
+                            <span class="text-success">{{ tx.fee | din }} DIN</span>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Navigation -->
+<div class="mt-4 d-flex justify-content-between">
+    {% if block.previousblockhash %}
+    <a href="{{ url_for('block_detail', height_or_hash=block.height - 1) }}"
+       class="btn btn-secondary">
+        ← Previous Block
+    </a>
+    {% else %}
+    <span></span>
+    {% endif %}
+
+    {% if block.height > 0 %}
+    <a href="{{ url_for('block_detail', height_or_hash=block.height + 1) }}"
+       class="btn btn-primary">
+        Next Block →
+    </a>
+    {% endif %}
+</div>
+{% endblock %}

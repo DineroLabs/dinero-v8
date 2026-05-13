@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "nodeinfo.json",
+  "description": "Canonical node information format for cross-UI compatibility",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Node version string"
+    },
+    "network": {
+      "type": "string",
+      "enum": ["mainnet", "testnet", "regtest"],
+      "description": "Network identifier"
+    },
+    "datadir": {
+      "type": "string",
+      "description": "Absolute path to node data directory"
+    },
+    "rpc": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "RPC endpoint URL"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "RPC port number"
+        },
+        "schema_version": {
+          "type": "string",
+          "default": "din.rpc.v1",
+          "description": "RPC schema version"
+        }
+      },
+      "required": ["url", "port"]
+    },
+    "p2p": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "P2P network port"
+        },
+        "listen": {
+          "type": "boolean",
+          "description": "Whether node accepts incoming connections"
+        }
+      },
+      "required": ["port"]
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "cookie_path": {
+          "type": "string",
+          "description": "Absolute path to RPC cookie file"
+        },
+        "method": {
+          "type": "string",
+          "enum": ["cookie", "userpass"],
+          "default": "cookie",
+          "description": "Authentication method"
+        }
+      },
+      "required": ["cookie_path"]
+    },
+    "status": {
+      "type": "object",
+      "properties": {
+        "running": {
+          "type": "boolean",
+          "description": "Whether daemon is currently running"
+        },
+        "pid": {
+          "type": "integer",
+          "description": "Process ID (if running)"
+        },
+        "uptime": {
+          "type": "number",
+          "description": "Uptime in seconds"
+        },
+        "last_updated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp (ISO 8601)"
+        }
+      },
+      "required": ["running", "last_updated"]
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "wallet": {
+          "type": "boolean",
+          "description": "Wallet functionality available"
+        },
+        "mining": {
+          "type": "boolean", 
+          "description": "Mining functionality available"
+        },
+        "zmq": {
+          "type": "boolean",
+          "description": "ZeroMQ notifications available"
+        }
+      }
+    }
+  },
+  "required": ["version", "network", "datadir", "rpc", "auth", "status"],
+  "additionalProperties": false
+}

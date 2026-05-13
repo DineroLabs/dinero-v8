@@ -1,0 +1,15 @@
+// Auto-generated at CMake configure time. Do not edit.
+// Source of truth: shaders/sha256d.cu
+//
+// Embedded as a raw C-string literal so NVRTC can compile the kernel at
+// runtime without needing the .cu file shipped alongside the binary.
+
+namespace dinero::solo::gpu {
+
+extern const char* SHA256D_CU_SRC;
+
+const char* SHA256D_CU_SRC = R"DINERO_KERNEL(
+@MINER_CUDA_KERNEL_SRC@
+)DINERO_KERNEL";
+
+} // namespace dinero::solo::gpu

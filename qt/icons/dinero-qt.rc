@@ -1,0 +1,41 @@
+// Windows resource file for dinero-qt.exe.
+//
+// Embeds the application icon so Windows Explorer, the Start Menu, the
+// taskbar, and Alt-Tab all show the proper Dinero logo before and after
+// the app launches. This mirrors the macOS Dinero.icns embedding via
+// MACOSX_BUNDLE_ICON_FILE.
+//
+// IDI_ICON1 (value 1, the lowest-numbered ICON resource) is what the
+// Windows shell picks up for the .exe file icon.
+
+IDI_ICON1 ICON "dinero-qt.ico"
+
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 2,2,5,0
+ PRODUCTVERSION 2,2,5,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "DineroLabs"
+            VALUE "FileDescription", "Dinero Qt Wallet"
+            VALUE "FileVersion", "2.2.5-rc8"
+            VALUE "InternalName", "dinero-qt"
+            VALUE "OriginalFilename", "dinero-qt.exe"
+            VALUE "ProductName", "Dinero"
+            VALUE "ProductVersion", "2.2.5-rc8"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

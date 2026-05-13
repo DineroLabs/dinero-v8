@@ -1,0 +1,64 @@
+# Dinero Node Configuration
+# Copy to ~/.dinero/dinero.conf or specify with -conf=path/to/dinero.conf
+
+# Network Settings
+#network=main
+#datadir=~/.dinero
+
+# P2P Settings (Production Defaults)
+p2p=1                    # Enable P2P by default
+maxpeers=16              # Reasonable peer limit
+port=0                   # Auto-select P2P port
+timeout=30               # 30-second timeouts
+
+# Block Download Settings
+blockmaxinflight=128     # Global in-flight limit
+perpeermax=16           # Per-peer in-flight limit
+
+# RPC Settings
+server=1                 # Enable RPC server
+rpcbind=127.0.0.1       # Bind to localhost only
+rpcallowip=127.0.0.1    # Allow localhost only
+rpcport=0               # Auto-select RPC port
+rpcbatchlimit=100       # Batch request limit
+
+# WebSocket Settings
+#websocket=1             # Enable WebSocket RPC
+#wsport=0               # Auto-select WebSocket port
+
+# Mining Settings
+#gen=0                  # Disable mining by default
+#genproclimit=0         # Auto-detect CPU cores
+#generatetoaddress=     # Set mining address
+
+# Wallet Settings
+autowallet=default      # Auto-create default wallet
+
+# Logging & Debug
+#debug=p2p,headers      # Enable P2P debug logging
+#printtoconsole=1       # Print to console (daemon mode)
+#logips=0               # Don't log IP addresses
+
+# Performance Settings
+dbcache=450             # Database cache (MB)
+maxmempool=300          # Mempool size (MB)
+
+# Security Settings
+#rpcauth=user:hash      # RPC authentication (see rpcauth.py)
+#rpccookiefile=         # Custom cookie file path
+
+# Operational Settings
+nodeinfo=nodeinfo.json  # Always write port info
+#daemon=1               # Run as daemon (background)
+
+# Example Production Config for VPS:
+# p2p=1
+# maxpeers=32
+# gen=1
+# generatetoaddress=din1qyour_mining_address_here
+# rpcbind=0.0.0.0
+# rpcallowip=10.0.0.0/8
+# rpcallowip=172.16.0.0/12
+# rpcallowip=192.168.0.0/16
+# daemon=1
+# debug=p2p,headers,mining

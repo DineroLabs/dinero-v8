@@ -1,0 +1,10 @@
+Re-mined premine block with corrected amount (2,627,900 DIN)
+
+- Updated premine amount from 20,000 DIN to 2,627,900 DIN
+- Re-computed merkle root: 2501ed56dda21d4f23bc510f0447f3674dd42ca1d1d8b244aa2bf1c988786640
+- Re-mined block: nonce=0x00068fc6, hash=00002410d81614800d1f211bd3856e3f2e17fee4ea75af02a0fabb5ed1fa3693
+- Verified January 2025 - All verifications PASSED
+- Added complete audit trail and documentation
+- Mining tools: tools/premine_reminer.py, tools/premine_verify.py
+- Documentation: PREMINE_REMINING_GUIDE.md, PREMINE_AUDIT.md, etc.
+- Canonical record: docs/chain/blocks/block_1_premine.json

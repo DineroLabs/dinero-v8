@@ -1,0 +1,34 @@
+---
+Checks: >
+  bugprone-*,
+  clang-analyzer-*,
+  readability-*,
+  performance-*,
+  modernize-*,
+  cppcoreguidelines-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -modernize-use-trailing-return-type,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-vararg
+
+WarningsAsErrors: 'bugprone-*,clang-analyzer-*'
+
+CheckOptions:
+  - key: readability-magic-numbers.IgnoredIntegerValues
+    value: '0,1,2,8,16,32,64,128,256,512,1024,2048,4096'
+  - key: readability-magic-numbers.IgnoredFloatingPointValues
+    value: '0.0,1.0,2.0,0.5'
+  - key: readability-identifier-naming.ClassCase
+    value: 'CamelCase'
+  - key: readability-identifier-naming.FunctionCase
+    value: 'camelBack'
+  - key: readability-identifier-naming.VariableCase
+    value: 'lower_case'
+  - key: readability-identifier-naming.ConstantCase
+    value: 'UPPER_CASE'
+  - key: performance-unnecessary-value-param.AllowedTypes
+    value: 'std::string;Json::Value'
+
+HeaderFilterRegex: '(src|include)/.*\.(h|hpp)$'

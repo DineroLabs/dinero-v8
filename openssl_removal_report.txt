@@ -1,0 +1,134 @@
+
+OpenSSL Removal Report
+======================
+
+Summary:
+- Total files processed: 2456
+- Files modified: 38
+- Total changes made: 46
+- Errors encountered: 0
+
+Modified Files:
+===============
+
+/Users/haydarevich/Documents/DineroCoin/test-crypto.cpp:
+  - Made 2 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/build-qt/openssl_x64-prefix/src/openssl_x64-stamp/download-openssl_x64.cmake:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/build-qt/openssl_arm64-prefix/src/openssl_arm64-stamp/download-openssl_arm64.cmake:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/include/common/sha256d.h:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/include/daemon/script_utils.h:
+  - Made 2 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/include/daemon/miner_core.h:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/daemon/network.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/daemon/blockchain.cpp:
+  - Made 2 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/daemon/mining.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/daemon/cookie_auth.cpp:
+  - Removed 1 OpenSSL includes
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/daemon/p2p_message.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/daemon/miner_core.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/daemon/rpc_authcookie.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/daemon/rpc_server.cpp:
+  - Made 8 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/main.cpp:
+  - Removed 3 OpenSSL includes
+  - Made 5 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/embedded_gui/main.cpp:
+  - Made 2 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/crypto/dinero_crypto_minimal.cpp:
+  - Made 3 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/crypto/evp_secp256k1.h:
+  - Removed 1 OpenSSL includes
+  - Made 2 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/crypto/evp_secp256k1.cpp:
+  - Removed 6 OpenSSL includes
+  - Made 10 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/crypto/dinero_crypto_minimal.h:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/cli_gui/main.cpp:
+  - Removed 3 OpenSSL includes
+  - Made 5 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/grandma_gui/main.cpp:
+  - Removed 3 OpenSSL includes
+  - Made 5 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/unified_miner/lightweight_miner.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/unified_miner/embedded_miner.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/primitives/tx.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/primitives/block.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/common/blockchain_db.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/common/sha256d.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/daemon/network.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/daemon/blockchain.cpp:
+  - Made 2 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/daemon/p2p_message.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/daemon/miner_core.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/daemon/rpc_authcookie.cpp:
+  - Made 1 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/daemon/rpc_server.cpp:
+  - Made 2 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/wallet/address.cpp:
+  - Made 4 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/wallet/ledger_wallet.cpp:
+  - Made 2 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/miner/main_wrapper.cpp:
+  - Removed 3 OpenSSL includes
+  - Made 5 function replacements
+
+/Users/haydarevich/Documents/DineroCoin/src/miner/main_miner.cpp:
+  - Removed 3 OpenSSL includes
+  - Made 5 function replacements

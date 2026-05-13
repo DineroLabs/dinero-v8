@@ -1,0 +1,57 @@
+========================================
+EXACT LINE TO ADD TO slip-0044.md
+========================================
+
+Copy this EXACT line and paste it into slip-0044.md in numerical order:
+
+| 1447 | [0x800005a7](https://github.com/Trucker2827/Dinero-Coin) | DIN | DineroCoin |
+
+========================================
+PR TITLE
+========================================
+
+Add DineroCoin (DIN) - coin type 1447
+
+========================================
+PR DESCRIPTION
+========================================
+
+# Add DineroCoin (DIN)
+
+## Coin Information
+- **Coin Type:** 1447 (0x800005a7)
+- **Symbol:** DIN
+- **Name:** DineroCoin
+- **Repository:** https://github.com/Trucker2827/Dinero-Coin
+
+## Technical Details
+- **Standard:** BIP84 (Native SegWit)
+- **Derivation Path:** m/84'/1447'/0'/0/x
+- **Address Type:** P2WPKH (Bech32)
+- **Bech32 HRP:** din
+- **Example Address:** din1qw508d6qejxtdg4y5r3zarvary0c5xw7kxzy6k3
+
+## Blockchain Specifications
+- **Algorithm:** SHA-256 (two-phase mining)
+- **Block Time:** 5 minutes
+- **Max Supply:** 99,000,000 DIN
+- **Precision:** 8 decimals
+- **Launch:** 2025 (Mainnet)
+
+## Verification
+Coin type 1447 verified as available in the SLIP-44 registry.
+
+## Project Status
+- Active development
+- Testnet operational
+- Mainnet launching 2025
+- Open source (MIT License)
+- BIP39/BIP32/BIP84 compliant
+
+## Maintainer
+- GitHub: @Trucker2827
+- Project: https://github.com/Trucker2827/Dinero-Coin
+
+Thank you for reviewing this registration request!
+
+========================================

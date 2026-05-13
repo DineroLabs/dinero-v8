@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "Stateless wallet scanner test vectors for DineroCoin. All implementations MUST produce identical scan results for the same inputs.",
+  "invariants": [
+    "Same block + descriptor → same discovered outputs",
+    "Script matching is deterministic",
+    "Balance delta = sum of discovered output values",
+    "Spend detection requires known UTXO set",
+    "Gap limit triggers needs_more_addresses when approaching limit"
+  ],
+  "test_seed": {
+    "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "length_bytes": 64,
+    "description": "Same deterministic seed as descriptors.json"
+  },
+  "wallet_scripts": {
+    "description": "Pre-computed scripts for the test wallet. Scanner matches outputs against these.",
+    "external": [
+      {
+        "index": 0,
+        "script_pubkey": "5120325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc",
+        "address": "din1pxfv5dg9j9ehe5fd6th929p0vts7m6gf750kjzztu2thpfflhpt7q8jd250"
+      },
+      {
+        "index": 1,
+        "script_pubkey": "512045f0695e9a17cd85fd0e7163f7cd741cd7b59de722aa78a1e72ff55a91573358",
+        "address": "din1pghcxjh56zlxctlgww93l0nt5rntmt808y2483g089l644y2hxdvq70xte9"
+      },
+      {
+        "index": 2,
+        "script_pubkey": "5120602fa34bfe537e199ef716b21cfb92ad75eedb64e78de09920d7fa34c4ec8dbc",
+        "address": "din1pvqh6xjl72dlpn8hhz6epe7uj4467akmyu7x7pxfq6larf38v3k7q58k6dm"
+      },
+      {
+        "index": 3,
+        "script_pubkey": "5120363db1922419987ad70147fe8563a64a2a0a833d35fb5ec1bffbb64a42804e22",
+        "address": "din1pxc7mry3yrxv844cpgllg2caxfg4q4qeaxha4asdllwmy5s5qfc3ql56yq5"
+      },
+      {
+        "index": 4,
+        "script_pubkey": "51206fdc737a1633d4e9a02e5c75ba60756a00fb0fd6c7ddf750eae7bad2bb8051cb",
+        "address": "din1pdlw8x7skx02wngpwt36m5cr4dgq0kr7kclwlw582u7ad9wuq289sgmlg9g"
+      }
+    ],
+    "internal": [
+      {
+        "index": 0,
+        "script_pubkey": "512006c770d0a50756f4075775d49b8d0820d2b343870d685f830b6af71bbae34f2d",
+        "address": "din1pqmrhp599qat0gp6hwh2fhrggyrftxsu8p459lqctdtm3hwhrfuks808urz"
+      },
+      {
+        "index": 1,
+        "script_pubkey": "51207acb9dba80da61b30b796eedb4915e84cf251c3c99496fefb56ea41e912f52a8",
+        "address": "din1p0t9emw5qmfsmxzmedmkmfy27sn8j28pun9yklma4d6jpayf0225q4a302f"
+      },
+      {
+        "index": 2,
+        "script_pubkey": "5120e74672f73fa4d3f66e89b16d985a890d0494e36297fb3efdf4a8a98ee16ec575",
+        "address": "din1puar89ael5nflvm5fk9kesk5fp5zffcmzjlanal054z5cactwc46s9vvj8x"
+      }
+    ]
+  },
+  "scan_policy_defaults": {
+    "gap_limit": 20,
+    "external_start": 0,
+    "internal_start": 0,
+    "track_spends": true
+  },
+  "scan_tests": [
+    {
+      "name": "empty_block",
+      "description": "Scanning an empty block should return empty results",
+      "block": {
+        "height": 500,
+        "transactions": []
+      },
+      "known_utxos": [],
+      "expected": {
+        "discovered_outputs": [],
+        "spent_outputs": [],
+        "balance_delta": 0,
+        "max_external_index": null,
+        "max_internal_index": null,
+        "needs_more_addresses": false
+      }
+    },
+    {
+      "name": "single_external_output",
+      "description": "Transaction with single output to external address 0",
+      "block": {
+        "height": 100,
+        "transactions": [
+          {
+            "version": 2,
+            "inputs": [
+              {
+                "prev_txid": "0101010101010101010101010101010101010101010101010101010101010101",
+                "prev_vout": 4294967295,
+                "sequence": 4294967295,
+                "witness": ["0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
+              }
+            ],
+            "outputs": [
+              {
+                "value": 100000000,
+                "script_pubkey": "5120325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc"
+              }
+            ],
+            "locktime": 0
+          }
+        ]
+      },
+      "known_utxos": [],
+      "expected": {
+        "discovered_outputs": [
+          {
+            "txid": "354b2f0f7fdb871331f2a76472c92dc548a717e932a4232c214d8d8d565309ed",
+            "vout": 0,
+            "value": 100000000,
+            "script_pubkey": "5120325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc",
+            "height": 100,
+            "key_role": "external",
+            "key_index": 0
+          }
+        ],
+        "spent_outputs": [],
+        "balance_delta": 100000000,
+        "max_external_index": 0,
+        "max_internal_index": null,
+        "needs_more_addresses": false
+      }
+    },
+    {
+      "name": "multiple_outputs_external_and_internal",
+      "description": "Transaction with outputs to both external and internal addresses",
+      "block": {
+        "height": 200,
+        "transactions": [
+          {
+            "version": 2,
+            "inputs": [
+              {
+                "prev_txid": "0202020202020202020202020202020202020202020202020202020202020202",
+                "prev_vout": 4294967295,
+                "sequence": 4294967295,
+                "witness": ["0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
+              }
+            ],
+            "outputs": [
+              {
+                "value": 50000000,
+                "script_pubkey": "5120325946a0b22e6f9a25ba5dcaa285ec5c3dbd213ea3ed21097c52ee14a7f70afc"
+              },
+              {
+                "value": 30000000,
+                "script_pubkey": "512006c770d0a50756f4075775d49b8d0820d2b343870d685f830b6af71bbae34f2d"
+              }
+            ],
+            "locktime": 0
+          }
+        ]
+      },
+      "known_utxos": [],
+      "expected": {
+        "discovered_outputs": [
+          {
+            "txid": "eff8006f49de44d5e31e68ffca944dcc8993c17491990b5960e700dd24833b34",
+            "vout": 0,
+            "value": 50000000,
+            "key_role": "external",
+            "key_index": 0
+          },
+          {
+            "txid": "eff8006f49de44d5e31e68ffca944dcc8993c17491990b5960e700dd24833b34",
+            "vout": 1,
+            "value": 30000000,
+            "key_role": "internal",
+            "key_index": 0
+          }
+        ],
+        "spent_outputs": [],
+        "balance_delta": 80000000,
+        "max_external_index": 0,
+        "max_internal_index": 0,
+        "needs_more_addresses": false
+      }
+    },
+    {
+      "name": "mixed_matching_and_non_matching",
+      "description": "Transaction with one matching output and one non-matching output",
+      "block": {
+        "height": 300,
+        "transactions": [
+          {
+            "version": 2,
+            "inputs": [
+              {
+                "prev_txid": "0303030303030303030303030303030303030303030303030303030303030303",
+                "prev_vout": 0,
+                "sequence": 4294967295,
+                "witness": ["0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
+              }
+            ],
+            "outputs": [
+              {
+                "value": 25000000,
+                "script_pubkey": "5120602fa34bfe537e199ef716b21cfb92ad75eedb64e78de09920d7fa34c4ec8dbc"
+              },
+              {
+                "value": 75000000,
+                "script_pubkey": "5120dededededededededededededededededededededededededededededededede"
+              }
+            ],
+            "locktime": 0
+          }
+        ]
+      },
+      "known_utxos": [],
+      "expected": {
+        "discovered_outputs": [
+          {
+            "txid": "470bf658aa27f22ae3200809b9133ed30e75965dc0d7f2ecb39765e8b8762a66",
+            "vout": 0,
+            "value": 25000000,
+            "key_role": "external",
+            "key_index": 2
+          }
+        ],
+        "spent_outputs": [],
+        "balance_delta": 25000000,
+        "max_external_index": 2,
+        "max_internal_index": null,
+        "needs_more_addresses": false,
+        "note": "Only the first output matches (external index 2). Second output is ignored."
+      }
+    },
+    {
+      "name": "no_matching_outputs",
+      "description": "Transaction with no outputs matching our wallet",
+      "block": {
+        "height": 350,
+        "transactions": [
+          {
+            "version": 2,
+            "inputs": [
+              {
+                "prev_txid": "0404040404040404040404040404040404040404040404040404040404040404",
+                "prev_vout": 0,
+                "sequence": 4294967295,
+                "witness": ["0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
+              }
+            ],
+            "outputs": [
+              {
+                "value": 50000000,
+                "script_pubkey": "5120aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              {
+                "value": 50000000,
+                "script_pubkey": "5120bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              }
+            ],
+            "locktime": 0
+          }
+        ]
+      },
+      "known_utxos": [],
+      "expected": {
+        "discovered_outputs": [],
+        "spent_outputs": [],
+        "balance_delta": 0,
+        "max_external_index": null,
+        "max_internal_index": null,
+        "needs_more_addresses": false
+      }
+    }
+  ],
+  "spend_detection_tests": [
+    {
+      "name": "detect_spend_of_known_utxo",
+      "description": "Detect when a known UTXO is spent in a transaction",
+      "known_utxos": [
+        {
+          "txid": "bdb422c539c2e6e41ea29feefef4b226040a6195b7217df843ca5723bc071f88",
+          "vout": 0
+        }
+      ],
+      "spending_tx": {
+        "version": 2,
+        "inputs": [
+          {
+            "prev_txid": "bdb422c539c2e6e41ea29feefef4b226040a6195b7217df843ca5723bc071f88",
+            "prev_vout": 0,
+            "sequence": 4294967295,
+            "witness": ["0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]
+          }
+        ],
+        "outputs": [
+          {
+            "value": 99000000,
+            "script_pubkey": "5120eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ],
+        "locktime": 0
+      },
+      "expected_spending_txid": "3898108fffd92f151995914290ff6caae168dcb0c32c4a18e969ea6a2fd24c1c",
+      "expected_spent_output": {
+        "txid": "bdb422c539c2e6e41ea29feefef4b226040a6195b7217df843ca5723bc071f88",
+        "vout": 0
+      }
+    }
+  ],
+  "batch_scan_tests": [
+    {
+      "name": "receive_then_spend",
+      "description": "Batch scan: receive UTXO in block 1, spend it in block 2",
+      "blocks": [
+        {
+          "height": 400,
+          "description": "Receive 1 DIN to external address 0",
+          "tx_creates_utxo": {
+            "txid": "bdb422c539c2e6e41ea29feefef4b226040a6195b7217df843ca5723bc071f88",
+            "vout": 0,
+            "value": 100000000
+          }
+        },
+        {
+          "height": 401,
+          "description": "Spend the UTXO to external address",
+          "tx_spends_utxo": {
+            "txid": "bdb422c539c2e6e41ea29feefef4b226040a6195b7217df843ca5723bc071f88",
+            "vout": 0
+          }
+        }
+      ],
+      "expected": {
+        "total_discovered": 1,
+        "total_spent": 1,
+        "final_balance": 0,
+        "remaining_utxo_count": 0
+      }
+    }
+  ],
+  "gap_limit_tests": [
+    {
+      "name": "needs_more_addresses_when_approaching_limit",
+      "description": "With gap_limit=5, finding output at index 3 should trigger needs_more_addresses",
+      "policy": {
+        "gap_limit": 5,
+        "external_start": 0,
+        "internal_start": 0
+      },
+      "output_at_index": 3,
+      "expected": {
+        "discovered_outputs_count": 1,
+        "max_external_index": 3,
+        "needs_more_addresses": true,
+        "note": "3 + 5/2 = 5.5 >= 4 (derived), so needs_more_addresses is true"
+      }
+    },
+    {
+      "name": "no_extension_needed_for_low_index",
+      "description": "With default gap_limit=20, finding output at index 0 should not trigger extension",
+      "policy": {
+        "gap_limit": 20,
+        "external_start": 0,
+        "internal_start": 0
+      },
+      "output_at_index": 0,
+      "expected": {
+        "discovered_outputs_count": 1,
+        "max_external_index": 0,
+        "needs_more_addresses": false,
+        "note": "0 + 20/2 = 10 < 19 (derived), so needs_more_addresses is false"
+      }
+    }
+  ],
+  "discovered_output_structure": {
+    "description": "Structure of a discovered output (potential UTXO)",
+    "fields": {
+      "txid": "32-byte transaction ID (little-endian, display reversed)",
+      "vout": "Output index within transaction (0-based)",
+      "value": "Output value in una (smallest unit)",
+      "script_pubkey": "Output script (P2TR format: 0x5120 + 32-byte pubkey)",
+      "height": "Block height where discovered",
+      "key_role": "external (receiving) or internal (change)",
+      "key_index": "Derivation index within role"
+    }
+  },
+  "spent_output_structure": {
+    "description": "Structure of a spent output",
+    "fields": {
+      "txid": "Transaction ID of the spent output",
+      "vout": "Output index that was spent",
+      "spending_txid": "Transaction ID of the spending transaction",
+      "height": "Block height where spent"
+    }
+  },
+  "notes": {
+    "stateless": "Scanner is stateless - it does not maintain internal UTXO set. Caller must track known UTXOs for spend detection.",
+    "script_matching": "Only P2TR scripts are matched. Script format: OP_1 (0x51) + PUSH32 (0x20) + 32-byte x-only pubkey.",
+    "gap_limit": "BIP44 standard gap limit is 20. Scanner derives addresses up to start + gap_limit initially.",
+    "balance_delta": "Sum of discovered output values. Does NOT subtract spends (caller must track values).",
+    "determinism": "All operations are deterministic. Same inputs always produce same outputs.",
+    "verification": "Run 'cargo test --test cross_language_vectors' in crates/dpi to validate these vectors."
+  }
+}

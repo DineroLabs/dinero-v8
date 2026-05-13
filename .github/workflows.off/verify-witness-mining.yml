@@ -1,0 +1,57 @@
+name: verify-witness-mining
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Install dependencies the script expects
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl lsof netcat-openbsd
+
+      # Build the daemon (replace with your actual build process)
+      - name: Build dinerod
+        run: |
+          # Install build dependencies
+          sudo apt-get install -y build-essential cmake git
+          
+          # Build (adjust paths as needed for your project)
+          mkdir -p build
+          cd build
+          cmake ..
+          make -j$(nproc) dinerod
+          
+          # Ensure the script can find the binary
+          ln -sf $(pwd)/bin/dinerod ../scripts/dinerod
+
+      # Run witness mining verification using our robust Makefile
+      - name: Run verification
+        run: make verify-ci
+
+      # Upload artifacts (always, even on failure)
+      - name: Upload verify artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: witness-verify
+          path: |
+            build/verify/verify.json
+            build/verify/verify.log
+          retention-days: 30
+
+      # Show summary
+      - name: Show verification summary
+        if: always()
+        run: |
+          echo "📊 Verification Summary:"
+          jq -r '.checks | "  Witness-based mining: \(.witness_coinbase.found) instances" + "\n  Correct script format: \(.script_format.count) instances" + "\n  Bech32 errors: \(.bech32_errors)" + "\n  HRP: \(.hrp)" + "\n  Blocks mined: \(.blocks_mined)"' build/verify/verify.json

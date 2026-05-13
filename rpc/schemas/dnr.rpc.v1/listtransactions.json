@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "listtransactions",
+  "description": "List wallet transaction history",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "listtransactions"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "description": "Account name (deprecated, use '*')"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of transactions to return (default: 10)"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of transactions to skip (default: 0)"
+        },
+        {
+          "type": "boolean",
+          "description": "Include watch-only addresses (default: true)"
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 4
+    },
+    "result": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "involvesWatchonly": {
+            "type": "boolean",
+            "description": "Whether transaction involves watch-only address"
+          },
+          "address": {
+            "type": "string",
+            "description": "Receiving address"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["send", "receive", "generate", "immature", "orphan"],
+            "description": "Transaction category"
+          },
+          "amount_una": {
+            "type": "integer",
+            "description": "Transaction amount in una"
+          },
+          "amount_din": {
+            "type": "string",
+            "description": "Transaction amount in DIN (formatted)"
+          },
+          "label": {
+            "type": "string",
+            "description": "Address label"
+          },
+          "vout": {
+            "type": "integer",
+            "description": "Output index"
+          },
+          "fee_una": {
+            "type": "integer",
+            "description": "Transaction fee in una (if applicable)"
+          },
+          "fee_din": {
+            "type": "string",
+            "description": "Transaction fee in DIN (if applicable)"
+          },
+          "confirmations": {
+            "type": "integer",
+            "description": "Number of confirmations"
+          },
+          "trusted": {
+            "type": "boolean",
+            "description": "Whether transaction is trusted"
+          },
+          "blockhash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "Block hash (if confirmed)"
+          },
+          "blockheight": {
+            "type": "integer",
+            "description": "Block height (if confirmed)"
+          },
+          "blockindex": {
+            "type": "integer",
+            "description": "Transaction index in block"
+          },
+          "blocktime": {
+            "type": "integer",
+            "description": "Block timestamp"
+          },
+          "txid": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "Transaction ID"
+          },
+          "walletconflicts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Conflicting transaction IDs"
+          },
+          "time": {
+            "type": "integer",
+            "description": "Transaction time"
+          },
+          "timereceived": {
+            "type": "integer",
+            "description": "Time received by wallet"
+          },
+          "comment": {
+            "type": "string",
+            "description": "Transaction comment"
+          },
+          "bip125_replaceable": {
+            "type": "string",
+            "enum": ["yes", "no", "unknown"],
+            "description": "Whether transaction is BIP125 replaceable"
+          },
+          "abandoned": {
+            "type": "boolean",
+            "description": "Whether transaction was abandoned"
+          }
+        },
+        "required": ["address", "category", "amount_una", "amount_din", "confirmations", "txid", "time"]
+      }
+    }
+  }
+}

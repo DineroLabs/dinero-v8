@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "wallet.restore",
+  "description": "Restore wallet from backup file or blob",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "const": "wallet.restore"
+    },
+    "params": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string",
+          "description": "Backup file path OR base64-encoded backup blob"
+        },
+        {
+          "type": "object",
+          "description": "Restore options",
+          "properties": {
+            "wallet_name": {
+              "type": "string",
+              "description": "Name for restored wallet (default: auto-generate)"
+            },
+            "rescan": {
+              "type": "boolean",
+              "description": "Rescan blockchain after restore (default: true)"
+            },
+            "rescan_height": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Height to start rescan from (default: 0)"
+            },
+            "replace_existing": {
+              "type": "boolean",
+              "description": "Replace existing wallet with same name (default: false)"
+            },
+            "verify_backup": {
+              "type": "boolean",
+              "description": "Verify backup integrity before restore (default: true)"
+            }
+          }
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean",
+          "description": "Whether restore was successful"
+        },
+        "wallet_name": {
+          "type": "string",
+          "description": "Name of restored wallet"
+        },
+        "wallet_path": {
+          "type": "string",
+          "description": "Path to restored wallet file"
+        },
+        "backup_verified": {
+          "type": "boolean",
+          "description": "Whether backup integrity was verified"
+        },
+        "backup_version": {
+          "type": "integer",
+          "description": "Version of restored backup"
+        },
+        "descriptors_restored": {
+          "type": "integer",
+          "description": "Number of descriptors restored"
+        },
+        "addresses_restored": {
+          "type": "integer",
+          "description": "Number of addresses restored"
+        },
+        "transactions_restored": {
+          "type": "integer",
+          "description": "Number of transactions restored"
+        },
+        "rescan_started": {
+          "type": "boolean",
+          "description": "Whether blockchain rescan was started"
+        },
+        "rescan_height": {
+          "type": "integer",
+          "description": "Height rescan started from"
+        },
+        "estimated_rescan_time": {
+          "type": "integer",
+          "description": "Estimated rescan time in seconds"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Restore warnings"
+        },
+        "errors": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Non-fatal restore errors"
+        }
+      },
+      "required": ["success", "wallet_name", "descriptors_restored", "addresses_restored"]
+    }
+  }
+}

@@ -1,0 +1,494 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "Deterministic coin selection test vectors for DineroCoin. All implementations MUST produce identical selection results for these inputs.",
+  "invariants": [
+    "Same inputs → same outputs (deterministic)",
+    "Stable sort by txid:vout when amounts are equal",
+    "Negative effective value UTXOs are skipped",
+    "Dust change is donated to fee",
+    "Confirmation filtering is applied before selection"
+  ],
+  "policies": {
+    "MinimizeFee": "Largest effective value first (fewer inputs = lower fee)",
+    "MinimizeChange": "Smallest UTXOs first (get close to target)",
+    "MaximizePrivacy": "Mix of sizes to obscure amounts",
+    "Consolidate": "Smallest UTXOs first (include many small)",
+    "FirstInFirstOut": "Most confirmed (oldest) first"
+  },
+  "constants": {
+    "TX_BASE_WEIGHT": 42,
+    "P2TR_INPUT_WEIGHT": 230,
+    "P2TR_OUTPUT_WEIGHT": 172,
+    "DUST_THRESHOLD": 546,
+    "description": "Weight in WU, amounts in una"
+  },
+  "selection_tests": [
+    {
+      "name": "simple_single_utxo",
+      "description": "Simple payment from one UTXO with change",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 100000000,
+          "confirmations": 6,
+          "input_weight": 230
+        }
+      ],
+      "target": 70000000,
+      "fee_rate_una_per_vb": 1,
+      "policy": "MinimizeFee",
+      "min_confirmations": 1,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected": {
+        "selected": [
+          {"txid": "0101010101010101010101010101010101010101010101010101010101010101", "vout": 0}
+        ],
+        "has_change": true,
+        "input_total": 100000000,
+        "fee_range": {"min": 100, "max": 200},
+        "note": "Change = 100M - 70M - fee ≈ 29.9M"
+      },
+      "base_weight_breakdown": "TX_BASE_WEIGHT(42) + P2TR_OUTPUT_WEIGHT(172) = 214"
+    },
+    {
+      "name": "two_utxos_minimize_fee",
+      "description": "MinimizeFee selects largest UTXO first",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 100000000,
+          "confirmations": 6,
+          "input_weight": 230
+        },
+        {
+          "txid": "0202020202020202020202020202020202020202020202020202020202020202",
+          "vout": 0,
+          "amount": 50000000,
+          "confirmations": 6,
+          "input_weight": 230
+        }
+      ],
+      "target": 70000000,
+      "fee_rate_una_per_vb": 1,
+      "policy": "MinimizeFee",
+      "min_confirmations": 1,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected": {
+        "selected": [
+          {"txid": "0101010101010101010101010101010101010101010101010101010101010101", "vout": 0}
+        ],
+        "selected_count": 1,
+        "has_change": true,
+        "input_total": 100000000,
+        "note": "Selects 100M UTXO only (largest first)"
+      }
+    },
+    {
+      "name": "two_utxos_consolidate",
+      "description": "Consolidate policy selects smallest UTXOs first",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 100000000,
+          "confirmations": 6,
+          "input_weight": 230
+        },
+        {
+          "txid": "0202020202020202020202020202020202020202020202020202020202020202",
+          "vout": 0,
+          "amount": 10000000,
+          "confirmations": 6,
+          "input_weight": 230
+        },
+        {
+          "txid": "0303030303030303030303030303030303030303030303030303030303030303",
+          "vout": 0,
+          "amount": 5000000,
+          "confirmations": 6,
+          "input_weight": 230
+        }
+      ],
+      "target": 10000000,
+      "fee_rate_una_per_vb": 1,
+      "policy": "Consolidate",
+      "min_confirmations": 0,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected": {
+        "selected": [
+          {"txid": "0303030303030303030303030303030303030303030303030303030303030303", "vout": 0},
+          {"txid": "0202020202020202020202020202020202020202020202020202020202020202", "vout": 0}
+        ],
+        "selected_count": 2,
+        "has_change": true,
+        "input_total": 15000000,
+        "note": "5M + 10M = 15M, smallest first"
+      }
+    },
+    {
+      "name": "fifo_policy",
+      "description": "FirstInFirstOut selects oldest (most confirmed) first",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 10000000,
+          "confirmations": 100,
+          "input_weight": 230
+        },
+        {
+          "txid": "0202020202020202020202020202020202020202020202020202020202020202",
+          "vout": 0,
+          "amount": 10000000,
+          "confirmations": 10,
+          "input_weight": 230
+        },
+        {
+          "txid": "0303030303030303030303030303030303030303030303030303030303030303",
+          "vout": 0,
+          "amount": 10000000,
+          "confirmations": 50,
+          "input_weight": 230
+        }
+      ],
+      "target": 5000000,
+      "fee_rate_una_per_vb": 1,
+      "policy": "FirstInFirstOut",
+      "min_confirmations": 0,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected": {
+        "selected": [
+          {"txid": "0101010101010101010101010101010101010101010101010101010101010101", "vout": 0}
+        ],
+        "selected_count": 1,
+        "has_change": true,
+        "input_total": 10000000,
+        "note": "UTXO with 100 confs selected first (oldest)"
+      }
+    },
+    {
+      "name": "dust_change_donated",
+      "description": "Change below dust threshold is donated to fee",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 1000000,
+          "confirmations": 6,
+          "input_weight": 230
+        }
+      ],
+      "target": 999400,
+      "fee_rate_una_per_vb": 1,
+      "policy": "MinimizeFee",
+      "min_confirmations": 1,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected": {
+        "selected": [
+          {"txid": "0101010101010101010101010101010101010101010101010101010101010101", "vout": 0}
+        ],
+        "has_change": false,
+        "input_total": 1000000,
+        "fee_is_remainder": true,
+        "note": "1M - 999.4k = 600 una leftover. After change output fee (~43), only ~557 change, which is below dust if we account for full change calculation"
+      }
+    },
+    {
+      "name": "confirmation_filter",
+      "description": "Unconfirmed UTXOs filtered when min_confirmations > 0",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 100000000,
+          "confirmations": 0,
+          "input_weight": 230
+        },
+        {
+          "txid": "0202020202020202020202020202020202020202020202020202020202020202",
+          "vout": 0,
+          "amount": 50000000,
+          "confirmations": 6,
+          "input_weight": 230
+        }
+      ],
+      "target": 40000000,
+      "fee_rate_una_per_vb": 1,
+      "policy": "MinimizeFee",
+      "min_confirmations": 1,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected": {
+        "selected": [
+          {"txid": "0202020202020202020202020202020202020202020202020202020202020202", "vout": 0}
+        ],
+        "selected_count": 1,
+        "has_change": true,
+        "input_total": 50000000,
+        "note": "100M UTXO skipped (0 confs < 1 required)"
+      }
+    },
+    {
+      "name": "determinism_same_amounts",
+      "description": "Stable sort by txid:vout when amounts equal",
+      "utxos": [
+        {
+          "txid": "0303030303030303030303030303030303030303030303030303030303030303",
+          "vout": 0,
+          "amount": 30000000,
+          "confirmations": 6,
+          "input_weight": 230
+        },
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 30000000,
+          "confirmations": 6,
+          "input_weight": 230
+        },
+        {
+          "txid": "0202020202020202020202020202020202020202020202020202020202020202",
+          "vout": 0,
+          "amount": 30000000,
+          "confirmations": 6,
+          "input_weight": 230
+        }
+      ],
+      "target": 50000000,
+      "fee_rate_una_per_vb": 1,
+      "policy": "MinimizeFee",
+      "min_confirmations": 0,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected": {
+        "selected": [
+          {"txid": "0101010101010101010101010101010101010101010101010101010101010101", "vout": 0},
+          {"txid": "0202020202020202020202020202020202020202020202020202020202020202", "vout": 0}
+        ],
+        "selected_count": 2,
+        "has_change": true,
+        "input_total": 60000000,
+        "note": "Same effective value, sorted by txid (01 < 02 < 03)"
+      }
+    },
+    {
+      "name": "multiple_vouts_same_txid",
+      "description": "Deterministic ordering for same txid, different vouts",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 2,
+          "amount": 10000000,
+          "confirmations": 6,
+          "input_weight": 230
+        },
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 10000000,
+          "confirmations": 6,
+          "input_weight": 230
+        },
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 1,
+          "amount": 10000000,
+          "confirmations": 6,
+          "input_weight": 230
+        }
+      ],
+      "target": 15000000,
+      "fee_rate_una_per_vb": 1,
+      "policy": "MinimizeFee",
+      "min_confirmations": 0,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected": {
+        "selected": [
+          {"txid": "0101010101010101010101010101010101010101010101010101010101010101", "vout": 0},
+          {"txid": "0101010101010101010101010101010101010101010101010101010101010101", "vout": 1}
+        ],
+        "selected_count": 2,
+        "has_change": true,
+        "input_total": 20000000,
+        "note": "Same txid, sorted by vout (0 < 1 < 2)"
+      }
+    },
+    {
+      "name": "high_fee_rate_skips_small",
+      "description": "Small UTXOs with negative effective value are skipped",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 100,
+          "confirmations": 6,
+          "input_weight": 230
+        },
+        {
+          "txid": "0202020202020202020202020202020202020202020202020202020202020202",
+          "vout": 0,
+          "amount": 10000000,
+          "confirmations": 6,
+          "input_weight": 230
+        }
+      ],
+      "target": 5000000,
+      "fee_rate_una_per_vb": 10,
+      "policy": "MinimizeFee",
+      "min_confirmations": 0,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected": {
+        "selected": [
+          {"txid": "0202020202020202020202020202020202020202020202020202020202020202", "vout": 0}
+        ],
+        "selected_count": 1,
+        "has_change": true,
+        "input_total": 10000000,
+        "note": "100 una UTXO skipped (spend cost at 10 una/vB = 575 una > 100 una value)"
+      }
+    }
+  ],
+  "error_cases": [
+    {
+      "name": "insufficient_funds",
+      "description": "Target exceeds available funds",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 10000,
+          "confirmations": 6,
+          "input_weight": 230
+        }
+      ],
+      "target": 1000000,
+      "fee_rate_una_per_vb": 1,
+      "policy": "MinimizeFee",
+      "min_confirmations": 1,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected_error": "InsufficientFunds"
+    },
+    {
+      "name": "no_utxos",
+      "description": "Empty UTXO set",
+      "utxos": [],
+      "target": 1000000,
+      "fee_rate_una_per_vb": 1,
+      "policy": "MinimizeFee",
+      "min_confirmations": 0,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected_error": "NoUtxos"
+    },
+    {
+      "name": "all_filtered_by_confirmations",
+      "description": "All UTXOs filtered out by confirmation requirement",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 100000000,
+          "confirmations": 0,
+          "input_weight": 230
+        }
+      ],
+      "target": 50000000,
+      "fee_rate_una_per_vb": 1,
+      "policy": "MinimizeFee",
+      "min_confirmations": 6,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected_error": "NoUtxos"
+    },
+    {
+      "name": "all_dust_at_high_fee",
+      "description": "All UTXOs have negative effective value at high fee rate",
+      "utxos": [
+        {
+          "txid": "0101010101010101010101010101010101010101010101010101010101010101",
+          "vout": 0,
+          "amount": 100,
+          "confirmations": 6,
+          "input_weight": 230
+        },
+        {
+          "txid": "0202020202020202020202020202020202020202020202020202020202020202",
+          "vout": 0,
+          "amount": 200,
+          "confirmations": 6,
+          "input_weight": 230
+        }
+      ],
+      "target": 50,
+      "fee_rate_una_per_vb": 100,
+      "policy": "MinimizeFee",
+      "min_confirmations": 0,
+      "base_weight": 214,
+      "change_output_weight": 172,
+      "dust_threshold": 546,
+      "expected_error": "InsufficientFunds",
+      "note": "At 100 una/vB, spend cost = 5750 una per input, both UTXOs are dust"
+    }
+  ],
+  "effective_value_examples": [
+    {
+      "name": "positive_effective_value",
+      "utxo_amount": 10000,
+      "fee_rate_una_per_vb": 1,
+      "input_weight": 230,
+      "expected_effective_value": 9942,
+      "spend_cost": 58,
+      "formula": "10000 - ceil(230 * 1 / 4) = 10000 - 58 = 9942"
+    },
+    {
+      "name": "negative_effective_value",
+      "utxo_amount": 100,
+      "fee_rate_una_per_vb": 10,
+      "input_weight": 230,
+      "expected_effective_value": -475,
+      "spend_cost": 575,
+      "formula": "100 - ceil(230 * 10 / 4) = 100 - 575 = -475"
+    },
+    {
+      "name": "breakeven_effective_value",
+      "utxo_amount": 575,
+      "fee_rate_una_per_vb": 10,
+      "input_weight": 230,
+      "expected_effective_value": 0,
+      "spend_cost": 575,
+      "formula": "575 - ceil(230 * 10 / 4) = 575 - 575 = 0"
+    }
+  ],
+  "notes": {
+    "txid_format": "32-byte transaction ID as 64 hex characters, used for deterministic sorting",
+    "amount_unit": "All amounts in una (1 DIN = 100,000,000 una)",
+    "weight_unit": "All weights in weight units (WU). vbytes = ceil(WU / 4)",
+    "base_weight": "Typically TX_BASE_WEIGHT(42) + output weights. For 1 P2TR output: 42 + 172 = 214 WU",
+    "fee_calculation": "Total fee = fee_rate * ceil((base_weight + sum(input_weights) + change_weight?) / 4)",
+    "determinism": "When effective values are equal, sort by txid then vout (lexicographic on bytes)",
+    "verification": "Run 'cargo test coin_select' in crates/dpi to validate these vectors"
+  }
+}

@@ -1,0 +1,169 @@
+name: Mining System Hardening Tests
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  mining-hardening-tests:
+    name: ${{ matrix.os }}-${{ matrix.sanitizer }}
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        sanitizer: [asan-ubsan, tsan]
+        
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        
+    - name: Cache secp256k1
+      uses: actions/cache@v3
+      with:
+        path: secp-prefix/
+        key: ${{ runner.os }}-secp256k1-${{ hashFiles('external/secp256k1/**') }}
+        
+    - name: Cache SQLite
+      uses: actions/cache@v3
+      with:
+        path: third_party/sqlite/
+        key: ${{ runner.os }}-sqlite-${{ hashFiles('third_party/sqlite/**') }}
+        
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake ninja-build
+        sudo apt-get install -y libcurl4-openssl-dev pkg-config
+        sudo apt-get install -y llvm clang
+        
+    - name: Install dependencies (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install cmake ninja curl pkg-config llvm
+        
+    - name: Configure CMake (ASAN+UBSAN)
+      if: matrix.sanitizer == 'asan-ubsan'
+      run: |
+        cmake -S . -B build-hardening \
+          -DBUILD_TESTING=ON \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -O1 --coverage" \
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -O1 --coverage" \
+          -DENABLE_SANITIZERS=ON
+          
+    - name: Configure CMake (TSAN)
+      if: matrix.sanitizer == 'tsan'
+      run: |
+        cmake -S . -B build-hardening \
+          -DBUILD_TESTING=ON \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -O1" \
+          -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -O1" \
+          -DENABLE_SANITIZERS=ON
+          
+    - name: Build
+      run: |
+        cmake --build build-hardening -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+        
+    - name: Run Unit Tests
+      run: |
+        cd build-hardening
+        ctest --output-on-failure -j$(nproc 2>/dev/null || sysctl -n hw.ncpu) -L "mining;unit"
+        
+    - name: Run Integration Tests
+      run: |
+        cd build-hardening
+        ctest --output-on-failure -L "mining;integration"
+        
+    - name: Run Mining Integration Script
+      run: |
+        cd build-hardening
+        timeout 300 bash ../tests/mining/test_mining_integration.sh || true
+        
+    - name: Generate Coverage Report (ASAN+UBSAN only)
+      if: matrix.sanitizer == 'asan-ubsan' && matrix.os == 'ubuntu-latest'
+      run: |
+        cd build-hardening
+        llvm-profdata merge -sparse *.profraw -o coverage.profdata || true
+        llvm-cov show ./bin/dinerod -instr-profile=coverage.profdata -format=html -output-dir=coverage-html || true
+        llvm-cov export ./bin/dinerod -instr-profile=coverage.profdata -format=lcov > coverage.lcov || true
+        
+    - name: Upload Coverage to Codecov
+      if: matrix.sanitizer == 'asan-ubsan' && matrix.os == 'ubuntu-latest'
+      uses: codecov/codecov-action@v3
+      with:
+        file: build-hardening/coverage.lcov
+        flags: mining-hardening
+        name: mining-hardening-coverage
+        
+    - name: Collect Artifacts
+      if: always()
+      run: |
+        mkdir -p artifacts
+        
+        # Collect daemon logs
+        find . -name "*.log" -type f | head -10 | xargs -I {} cp {} artifacts/ || true
+        
+        # Collect metrics dump
+        if [ -f build-hardening/bin/dinerod ]; then
+          timeout 10 ./build-hardening/bin/dinerod -regtest -datadir=./artifacts/metrics-dump -daemon=0 &
+          sleep 5
+          curl -s http://127.0.0.1:20992/metrics > artifacts/metrics-dump.txt || true
+          pkill -f dinerod || true
+        fi
+        
+        # Collect performance results
+        cp performance_baseline.json artifacts/ || true
+        
+        # Collect coverage report
+        cp -r build-hardening/coverage-html artifacts/ || true
+        
+    - name: Upload Artifacts
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: mining-hardening-${{ matrix.os }}-${{ matrix.sanitizer }}
+        path: artifacts/
+        retention-days: 7
+        
+  mining-fuzz-tests:
+    name: Fuzz Testing
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang libfuzzer-dev
+        
+    - name: Build Fuzz Targets
+      run: |
+        clang++ -fsanitize=fuzzer,address -O1 \
+          -I include/ -I src/ \
+          tests/mining/fuzz_bech32.cpp \
+          src/address/addr_codec.cpp \
+          -o fuzz_bech32
+          
+    - name: Run Bech32 Fuzzer
+      run: |
+        mkdir -p fuzz-corpus
+        timeout 300 ./fuzz_bech32 fuzz-corpus/ -max_total_time=300 || true
+        
+    - name: Upload Fuzz Artifacts
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: fuzz-results
+        path: |
+          fuzz-corpus/
+          crash-*
+          leak-*
+          timeout-*

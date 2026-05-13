@@ -1,0 +1,138 @@
+name: A2Z End-to-End Validation
+
+on:
+  # Manual-only: stripped automatic push/pull_request triggers.
+  # GitHub will NOT run this workflow automatically. To run it,
+  # use the "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  a2z:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        sanitizer: [off, asan-ubsan]
+        exclude:
+          # Skip ASan on scheduled runs to save resources
+          - sanitizer: asan-ubsan
+            if: github.event_name == 'schedule'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup dependencies
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y cmake ninja-build jq sqlite3 ripgrep
+            # Stabilize ASan on Linux
+            sudo sysctl -w vm.mmap_rnd_bits=28 || true
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install cmake ninja jq sqlite ripgrep
+          fi
+          
+      - name: Build & Run A→Z
+        env:
+          CMAKE_SAN: ${{ matrix.sanitizer }}
+          NIGHTLY_SOAK: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
+        run: |
+          # Configure sanitizers
+          if [ "$CMAKE_SAN" = "asan-ubsan" ]; then
+            export CFLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+            export CXXFLAGS="$CFLAGS"
+            export LDFLAGS="-fsanitize=address,undefined"
+            export ASAN_OPTIONS="detect_leaks=1:abort_on_error=1:halt_on_error=1"
+            export UBSAN_OPTIONS="print_stacktrace=1:abort_on_error=1"
+          fi
+          
+          # Run A→Z test
+          bash scripts/run-a2z.sh
+          
+      - name: Check for failure indicators
+        if: always()
+        run: |
+          echo "🔍 Scanning logs for failure indicators..."
+          
+          # Find daemon logs
+          DAEMON_LOGS=$(find /tmp -maxdepth 2 -name 'daemon.log' -type f 2>/dev/null || true)
+          
+          if [ -n "$DAEMON_LOGS" ]; then
+            echo "Found daemon logs: $DAEMON_LOGS"
+            
+            # Check for duplicate RPC registrations
+            if grep -q "Duplicate RPC method registration" $DAEMON_LOGS; then
+              echo "❌ Duplicate RPC registrations found"
+              grep "Duplicate RPC method registration" $DAEMON_LOGS
+              exit 1
+            fi
+            
+            # Check for placeholder usage beyond premine
+            if grep -q "Using placeholder script\|fallback.*placeholder" $DAEMON_LOGS; then
+              echo "❌ Placeholder script usage detected"
+              grep "placeholder\|fallback" $DAEMON_LOGS
+              exit 1
+            fi
+            
+            # Check for unhandled exceptions
+            if grep -q "Unhandled exception\|SIGABRT\|terminate called" $DAEMON_LOGS; then
+              echo "❌ Unhandled exceptions detected"
+              grep "exception\|SIGABRT\|terminate" $DAEMON_LOGS
+              exit 1
+            fi
+            
+            echo "✅ No failure indicators found in logs"
+          else
+            echo "⚠️ No daemon logs found"
+          fi
+          
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a2z-failure-logs-${{ matrix.os }}-${{ matrix.sanitizer }}
+          path: |
+            /tmp/din-a2z-*/regtest/daemon.log
+            /tmp/din-a2z-*/regtest/*.db
+          retention-days: 7
+          
+      - name: Upload logs on failure (fallback)
+        if: failure()
+        run: |
+          echo "📋 Daemon logs for debugging:"
+          find /tmp -maxdepth 2 -type f -name 'daemon.log' -print -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || echo "No daemon logs found"
+          
+          echo "📊 Database files:"
+          find /tmp -maxdepth 3 -name '*.db' -type f -exec ls -la {} \; 2>/dev/null || echo "No database files found"
+
+  nightly-soak:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build jq sqlite3 ripgrep
+          
+      - name: Nightly soak test
+        run: |
+          echo "🌙 Running nightly soak test with extended mining and PSBT loops"
+          export NIGHTLY_SOAK=true
+          bash scripts/run-a2z.sh
+          
+      - name: Upload soak results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-soak-results
+          path: |
+            /tmp/din-a2z-*/regtest/daemon.log
+            /tmp/din-a2z-*/regtest/*.db
+          retention-days: 3

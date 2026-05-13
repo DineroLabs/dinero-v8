@@ -1,0 +1,54 @@
+[Unit]
+Description=DineroCoin Daemon
+Documentation=https://github.com/DineroCoin/DineroCoin
+After=network.target
+Wants=network.target
+
+[Service]
+Type=notify
+# Operational safety: dinerod now manages its own datadir lock + PID file.
+# Never add ExecStartPre rules that delete LOCK/pid files.
+ExecStart=/usr/local/bin/dinerod -daemon -conf=/etc/dinero/dinero.conf -datadir=/var/lib/dinero
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+# Security hardening
+User=dinero
+Group=dinero
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/dinero /var/log/dinero
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+MemoryMax=8G
+CPUQuota=400%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dinerod
+
+# Environment
+Environment=MALLOC_ARENA_MAX=4
+Environment=MALLOC_MMAP_THRESHOLD_=131072
+
+[Install]
+WantedBy=multi-user.target

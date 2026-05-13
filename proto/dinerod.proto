@@ -1,0 +1,481 @@
+// DineroCoin gRPC API
+// Protocol for inter-daemon communication between dinerod and lightningd
+//
+// Version: 1.0
+// Status: Phase 1 - Lightning Decoupling
+
+syntax = "proto3";
+
+package dinerod;
+
+// ============================================================================
+// Service: Blockchain
+// ============================================================================
+// Core blockchain queries for block and transaction data
+
+service Blockchain {
+  // Get block by height or hash
+  // Returns serialized block data with metadata
+  rpc GetBlock(GetBlockRequest) returns (GetBlockResponse);
+  
+  // Get current blockchain height
+  // Returns the height of the most recent block
+  rpc GetBlockHeight(EmptyRequest) returns (BlockHeightResponse);
+  
+  // Get block hash at specific height
+  // Used for reorg detection and chain synchronization
+  rpc GetBlockHash(BlockHashRequest) returns (BlockHashResponse);
+  
+  // Check transaction confirmation status
+  // Returns number of confirmations (0 if unconfirmed/not found)
+  rpc GetConfirmationCount(TxIdRequest) returns (ConfirmationCountResponse);
+  
+  // Get UTXO for given outpoint
+  // Returns UTXO data if it exists and is unspent
+  rpc GetUTXO(OutPointRequest) returns (UTXOResponse);
+  
+  // Get multiple UTXOs in batch
+  // More efficient than multiple GetUTXO calls
+  rpc GetUTXOs(OutPointsRequest) returns (UTXOsResponse);
+  
+  // Get raw transaction by txid
+  // Returns serialized transaction if found
+  rpc GetTransaction(TxIdRequest) returns (TransactionResponse);
+}
+
+// ============================================================================
+// Service: Mempool
+// ============================================================================
+// Transaction broadcasting and mempool queries
+
+service Mempool {
+  // Broadcast raw transaction to network
+  // Returns txid on success, error on failure
+  rpc BroadcastTransaction(RawTxRequest) returns (TxBroadcastResponse);
+  
+  // Estimate fee rate for target confirmation time
+  // Returns sat/vbyte for desired number of blocks
+  rpc EstimateFee(FeeEstimateRequest) returns (FeeEstimateResponse);
+  
+  // Check if transaction is in mempool
+  // Returns true if tx is pending (not yet confirmed)
+  rpc IsInMempool(TxIdRequest) returns (BoolResponse);
+  
+  // Get mempool transaction info
+  // Returns details about pending transaction
+  rpc GetMempoolTransaction(TxIdRequest) returns (MempoolTxResponse);
+  
+  // Get current mempool size and fee statistics
+  // Useful for fee estimation and network health monitoring
+  rpc GetMempoolInfo(EmptyRequest) returns (MempoolInfoResponse);
+}
+
+// ============================================================================
+// Service: Events
+// ============================================================================
+// Real-time event streaming for blockchain state changes
+
+service Events {
+  // Subscribe to new blocks (server-side streaming)
+  // Pushes each new block as it's mined
+  rpc SubscribeBlocks(EmptyRequest) returns (stream BlockEvent);
+  
+  // Subscribe to transactions matching filter
+  // Pushes transactions affecting watched addresses/txids
+  rpc SubscribeTransactions(TxFilterRequest) returns (stream TransactionEvent);
+  
+  // Subscribe to blockchain reorganization events
+  // Critical for Lightning: must handle reorgs properly
+  rpc SubscribeReorgs(EmptyRequest) returns (stream ReorgEvent);
+  
+  // Subscribe to mempool transaction events
+  // Notifies when transactions enter/leave mempool
+  rpc SubscribeMempoolEvents(TxFilterRequest) returns (stream MempoolEvent);
+}
+
+// ============================================================================
+// Service: Wallet (Optional - for Lightning wallet integration)
+// ============================================================================
+// Wallet operations that Lightning might need
+
+service Wallet {
+  // Get new address from dinerod wallet
+  // Lightning can use this for on-chain transactions
+  rpc GetNewAddress(AddressRequest) returns (AddressResponse);
+
+  // Sign raw transaction with wallet keys
+  // Useful for cooperative close transactions
+  rpc SignRawTransaction(SignRequest) returns (SignResponse);
+
+  // Get wallet balance
+  rpc GetBalance(EmptyRequest) returns (BalanceResponse);
+
+  // ========== Phase 2: Lightning Wallet Operations ==========
+
+  // List unspent UTXOs with confirmation filter
+  // Used by Lightning for channel funding
+  rpc ListUnspentUTXOs(ListUTXOsRequest) returns (ListUTXOsResponse);
+
+  // Derive Lightning-specific keys from HD wallet
+  // Unified method for all Lightning key types
+  rpc DeriveLightningKey(DeriveLightningKeyRequest) returns (DeriveLightningKeyResponse);
+
+  // Compute Taproot sighash for transaction
+  // Used for watchtower and revocation transactions
+  rpc ComputeTaprootSighash(TaprootSighashRequest) returns (TaprootSighashResponse);
+
+  // Get network HRP (Human Readable Part) for bech32 addresses
+  // Returns "din" for mainnet, "tdin" for testnet, etc.
+  rpc GetNetworkHRP(EmptyRequest) returns (NetworkHRPResponse);
+
+  // ========== Phase 3: Additional Wallet Operations ==========
+
+  // Get new change address from HD wallet
+  // Used by Lightning for channel funding change outputs
+  rpc GetNewChangeAddress(ChangeAddressRequest) returns (AddressResponse);
+
+  // Derive private key for a given scriptPubKey
+  // Used by Lightning for signing funding transactions
+  rpc DeriveKeyForScriptPubKey(ScriptPubKeyRequest) returns (PrivateKeyResponse);
+
+  // ========== Phase 7: Justice Transaction Support ==========
+
+  // Get revocation basepoint secret for a specific channel
+  // Used by Lightning for deriving per-commitment revocation keys in justice transactions
+  // Security: Returns deterministic 32-byte secret derived from wallet seed + channel_id
+  rpc GetRevocationBasepointSecret(GetRevocationBasepointSecretRequest) returns (GetRevocationBasepointSecretResponse);
+}
+
+// ============================================================================
+// Messages: Blockchain Service
+// ============================================================================
+
+message GetBlockRequest {
+  oneof identifier {
+    uint64 height = 1;      // Block height (0 = genesis)
+    bytes hash = 2;         // Block hash (32 bytes)
+  }
+  bool include_txs = 3;     // Include full transaction data
+}
+
+message GetBlockResponse {
+  bool found = 1;           // Whether block was found
+  bytes raw_block = 2;      // Serialized block (consensus format)
+  uint64 height = 3;        // Block height
+  bytes hash = 4;           // Block hash (32 bytes)
+  uint32 confirmations = 5; // Number of confirmations
+  uint64 timestamp = 6;     // Block timestamp (Unix time)
+  bytes prev_hash = 7;      // Previous block hash
+  repeated bytes tx_hashes = 8;  // Transaction hashes in block
+}
+
+message BlockHashRequest {
+  uint64 height = 1;
+}
+
+message BlockHashResponse {
+  bool found = 1;
+  bytes hash = 2;           // Block hash at height
+}
+
+message TxIdRequest {
+  bytes txid = 1;           // Transaction hash (32 bytes)
+}
+
+message ConfirmationCountResponse {
+  uint32 confirmations = 1; // 0 = unconfirmed, 1+ = confirmed
+  bool in_mempool = 2;      // True if in mempool (confirmations = 0)
+  bool confirmed = 3;       // True if confirmations > 0
+  uint64 block_height = 4;  // Height where confirmed (0 if unconfirmed)
+  bytes block_hash = 5;     // Hash of confirming block
+}
+
+message OutPointRequest {
+  bytes txid = 1;           // Transaction hash (32 bytes)
+  uint32 vout = 2;          // Output index
+}
+
+message UTXOResponse {
+  bool exists = 1;          // True if UTXO exists and is unspent
+  uint64 value = 2;         // Output value in una (una)
+  bytes script_pubkey = 3;  // scriptPubKey (locking script)
+  uint32 height = 4;        // Block height where created
+  uint32 confirmations = 5; // Number of confirmations
+  bool is_coinbase = 6;     // True if from coinbase transaction
+}
+
+message OutPointsRequest {
+  repeated OutPointRequest outpoints = 1;
+}
+
+message UTXOsResponse {
+  repeated UTXOResponse utxos = 1;  // Same order as request
+}
+
+message TransactionResponse {
+  bool found = 1;
+  bytes raw_tx = 2;         // Serialized transaction
+  bytes txid = 3;           // Transaction hash
+  uint32 confirmations = 4; // 0 if in mempool
+  uint64 block_height = 5;  // Height where confirmed (0 if unconfirmed)
+  bytes block_hash = 6;     // Hash of confirming block
+}
+
+// ============================================================================
+// Messages: Mempool Service
+// ============================================================================
+
+message RawTxRequest {
+  bytes raw_tx = 1;         // Serialized transaction (consensus format)
+  bool allow_high_fee = 2;  // Override fee sanity check
+}
+
+message TxBroadcastResponse {
+  bool success = 1;         // True if transaction accepted
+  string error = 2;         // Error message if failed
+  bytes txid = 3;           // Transaction hash (if successful)
+  enum RejectReason {
+    ACCEPTED = 0;
+    DUPLICATE = 1;          // Already in mempool/blockchain
+    INVALID = 2;            // Invalid transaction
+    INSUFFICIENT_FEE = 3;   // Fee too low
+    MEMPOOL_FULL = 4;       // Mempool at capacity
+    CONFLICT = 5;           // Conflicts with existing tx
+    OTHER = 99;
+  }
+  RejectReason reason = 4;
+}
+
+message FeeEstimateRequest {
+  uint32 target_blocks = 1; // Confirm within N blocks (1-1000)
+  enum Mode {
+    CONSERVATIVE = 0;       // Higher fee, more reliable
+    ECONOMICAL = 1;         // Lower fee, may take longer
+  }
+  Mode mode = 2;
+}
+
+message FeeEstimateResponse {
+  uint64 sat_per_vbyte = 1; // Estimated fee rate
+  bool available = 2;       // False if not enough data
+  uint32 blocks = 3;        // Actual target blocks used
+}
+
+message MempoolTxResponse {
+  bool found = 1;
+  bytes raw_tx = 2;
+  bytes txid = 3;
+  uint64 fee = 4;           // Transaction fee in una
+  uint64 vsize = 5;         // Virtual size in vbytes
+  uint64 time = 6;          // Unix timestamp when entered mempool
+  uint64 height = 7;        // Block height when entered
+}
+
+message MempoolInfoResponse {
+  uint64 size = 1;          // Number of transactions
+  uint64 bytes = 2;         // Total size in bytes
+  uint64 usage = 3;         // Memory usage in bytes
+  uint64 max_mempool = 4;   // Maximum mempool size
+  uint64 min_fee = 5;       // Minimum fee rate to enter (sat/vB)
+}
+
+// ============================================================================
+// Messages: Events Service
+// ============================================================================
+
+message BlockEvent {
+  bytes hash = 1;           // Block hash
+  uint64 height = 2;        // Block height
+  uint64 timestamp = 3;     // Block timestamp
+  bytes prev_hash = 4;      // Previous block hash
+  repeated bytes tx_hashes = 5;  // All transaction hashes
+  bytes raw_block = 6;      // Optional: full block data
+}
+
+message TxFilterRequest {
+  repeated bytes addresses = 1;     // Filter by scriptPubKey hash
+  repeated bytes txids = 2;         // Filter by specific txids
+  repeated OutPointRequest outpoints = 3;  // Filter by specific outpoints
+  bool include_mempool = 4;         // Include mempool transactions
+  bool include_confirmed = 5;       // Include confirmed transactions
+}
+
+message TransactionEvent {
+  bytes txid = 1;
+  bytes raw_tx = 2;
+  uint32 confirmations = 3;  // 0 = mempool, 1+ = confirmed
+  uint64 block_height = 4;   // 0 if in mempool
+  bytes block_hash = 5;
+  enum EventType {
+    MEMPOOL_ADDED = 0;       // Transaction entered mempool
+    CONFIRMED = 1;           // Transaction confirmed in block
+    REORG_REMOVED = 2;       // Transaction removed due to reorg
+  }
+  EventType event_type = 6;
+}
+
+message ReorgEvent {
+  uint64 old_height = 1;    // Height before reorg
+  uint64 new_height = 2;    // Height after reorg
+  bytes old_tip = 3;        // Old chain tip hash
+  bytes new_tip = 4;        // New chain tip hash
+  uint64 fork_height = 5;   // Height where chains diverged
+  repeated bytes disconnected_blocks = 6;  // Blocks removed from chain
+  repeated bytes connected_blocks = 7;     // Blocks added to chain
+}
+
+message MempoolEvent {
+  bytes txid = 1;
+  enum EventType {
+    ADDED = 0;              // Transaction added to mempool
+    REMOVED = 1;            // Transaction removed (confirmed or evicted)
+    REPLACED = 2;           // Transaction replaced by RBF
+  }
+  EventType event_type = 2;
+  bytes raw_tx = 3;         // Transaction data
+  bytes replaced_txid = 4;  // If REPLACED, the txid that was replaced
+}
+
+// ============================================================================
+// Messages: Wallet Service
+// ============================================================================
+
+message AddressRequest {
+  enum AddressType {
+    LEGACY = 0;             // P2PKH
+    SEGWIT = 1;             // P2WPKH (SegWit v0)
+    TAPROOT = 2;            // P2TR (Taproot)
+  }
+  AddressType type = 1;
+  string label = 2;         // Optional address label
+}
+
+message AddressResponse {
+  string address = 1;       // Bech32(m) address
+  bytes script_pubkey = 2;  // scriptPubKey for address
+}
+
+message SignRequest {
+  bytes raw_tx = 1;         // Unsigned transaction
+  repeated SignInput inputs = 2;
+}
+
+message SignInput {
+  bytes txid = 1;
+  uint32 vout = 2;
+  bytes script_pubkey = 3;  // scriptPubKey of output being spent
+  uint64 value = 4;         // Value of output (required for SegWit)
+}
+
+message SignResponse {
+  bool success = 1;
+  bytes signed_tx = 2;      // Fully signed transaction
+  bool complete = 3;        // True if all inputs signed
+  string error = 4;
+}
+
+message BalanceResponse {
+  uint64 confirmed = 1;     // Confirmed balance (una)
+  uint64 unconfirmed = 2;   // Unconfirmed balance (una)
+  uint64 immature = 3;      // Immature coinbase balance (una)
+}
+
+// Phase 2: Lightning Wallet Operations Messages
+
+message ListUTXOsRequest {
+  int32 min_confirmations = 1;  // Minimum confirmations (0 = include unconfirmed)
+  int32 max_confirmations = 2;  // Maximum confirmations (9999999 = all)
+}
+
+message UTXO {
+  bytes txid = 1;               // Transaction ID (32 bytes)
+  uint32 vout = 2;              // Output index
+  uint64 value = 3;             // Value in una
+  bytes script_pubkey = 4;      // scriptPubKey
+  uint32 confirmations = 5;     // Number of confirmations
+  bool is_coinbase = 6;         // Is this a coinbase output?
+}
+
+message ListUTXOsResponse {
+  repeated UTXO utxos = 1;
+}
+
+message DeriveLightningKeyRequest {
+  enum KeyType {
+    NODE_IDENTITY = 0;          // Node's permanent identity key
+    FUNDING = 1;                // Channel funding key
+    REVOCATION_BASE = 2;        // Revocation base key
+    PAYMENT_BASE = 3;           // Payment base key
+    DELAYED_PAYMENT_BASE = 4;   // Delayed payment base key
+    HTLC_BASE = 5;              // HTLC base key
+  }
+  KeyType key_type = 1;
+  uint32 account = 2;           // BIP32 account (usually 0)
+  uint32 index = 3;             // Key index
+}
+
+message DeriveLightningKeyResponse {
+  bytes private_key = 1;        // 32-byte private key
+  bytes public_key = 2;         // 33-byte compressed public key
+}
+
+message TaprootSighashRequest {
+  bytes raw_tx = 1;                         // Serialized transaction
+  uint32 input_index = 2;                   // Input being signed
+  repeated uint64 prevout_values = 3;       // Values of all prevouts
+  repeated bytes prevout_scripts = 4;       // scriptPubKeys of all prevouts
+  uint32 sighash_type = 5;                  // SIGHASH flags (0x00 = DEFAULT)
+  bytes annex = 6;                          // Optional annex data
+}
+
+message TaprootSighashResponse {
+  bytes sighash = 1;            // 32-byte sighash for signing
+}
+
+message NetworkHRPResponse {
+  string hrp = 1;               // "din", "tdin", or "rdin"
+}
+
+// Phase 3: Additional wallet operation messages
+
+message ChangeAddressRequest {
+  string label = 1;             // Optional label for change address
+}
+
+message ScriptPubKeyRequest {
+  string script_pubkey_hex = 1; // scriptPubKey in hex format
+}
+
+message PrivateKeyResponse {
+  bytes private_key = 1;        // 32-byte private key
+}
+
+// Phase 7: Justice transaction support messages
+
+message GetRevocationBasepointSecretRequest {
+  string channel_id = 1;        // Channel identifier (hex string)
+}
+
+message GetRevocationBasepointSecretResponse {
+  bytes secret = 1;             // 32-byte revocation basepoint secret (MUST be exactly 32 bytes)
+}
+
+// ============================================================================
+// Common Messages
+// ============================================================================
+
+message EmptyRequest {}
+
+message BoolResponse {
+  bool value = 1;
+}
+
+message BlockHeightResponse {
+  uint64 height = 1;
+  bytes hash = 2;           // Hash of tip block
+}
+
+message ErrorResponse {
+  string message = 1;
+  int32 code = 2;
+}

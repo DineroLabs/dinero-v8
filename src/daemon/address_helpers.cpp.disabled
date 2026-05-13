@@ -1,0 +1,66 @@
+#include "daemon/address_helpers.h"
+#include "daemon/bech32_decode.h"
+#include "address/addr_codec.h"
+#include "bech32.hpp"
+// #include "common/bech32_segwit.h" // For segwit::EncodeSegwit
+#include <stdexcept>
+#include <algorithm>
+#include <sstream>
+
+namespace dinero {
+
+// ChainParams implementation using active network HRP
+std::string ChainParamsImpl::HRP() const {
+    return HrpForActiveNetworkRef();
+}
+
+// Get current chain parameters
+const ChainParamsImpl& GetChainParams() {
+    static ChainParamsImpl g_chain_params;
+    return g_chain_params;
+}
+
+bool ToWitnessScript(const std::string& addr,
+                     std::vector<uint8_t>& out_script,
+                     const ChainParamsImpl& params,
+                     std::string& why) {
+    int witver = -1;
+    std::vector<uint8_t> prog;
+    
+    if (!dinero::mining::Bech32DecodeSegwit(addr, params.HRP(), witver, prog)) {
+        why = "not valid bech32 for " + params.HRP();
+        return false;
+    }
+    
+    if (witver == 0 && prog.size() == 20) { // P2WPKH
+        out_script = {0x00, 0x14}; // OP_0 + 20-byte push
+        out_script.insert(out_script.end(), prog.begin(), prog.end());
+        return true;
+    }
+    
+    if (witver == 0 && prog.size() == 32) { // P2WSH
+        out_script = {0x00, 0x20}; // OP_0 + 32-byte push
+        out_script.insert(out_script.end(), prog.begin(), prog.end());
+        return true;
+    }
+    
+    std::ostringstream oss;
+    oss << "unsupported witness program: version=" << witver << " length=" << prog.size();
+    why = oss.str();
+    return false;
+}
+
+std::string EncodeBech32P2WPKH(const std::vector<uint8_t>& pubkey_hash, const std::string& hrp) {
+    if (pubkey_hash.size() != 20) {
+        throw std::invalid_argument("pubkey_hash must be 20 bytes");
+    }
+    
+    // Use the shared segwit encoder with BECH32 encoding for v0
+    // Use bech32::Encode directly
+    std::vector<uint8_t> data;
+    data.push_back(0); // witness version 0
+    bech32::convertbits(data, pubkey_hash, 8, 5, true); // pad on encode
+    return bech32::Encode(hrp, 0, pubkey_hash, bech32::Encoding::BECH32);
+}
+
+} // namespace dinero

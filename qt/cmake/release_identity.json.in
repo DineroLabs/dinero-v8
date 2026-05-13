@@ -1,0 +1,14 @@
+{
+  "schema": "din.release.bundle.v1",
+  "qt": {
+    "repo": "dinero-qt",
+    "version": "@PROJECT_VERSION@",
+    "commit": "@DINERO_QT_GIT_FULL@",
+    "build_time": "@DINERO_QT_BUILD_TIME@"
+  },
+  "expected_repo_heads": {
+    "dinero": "@DINERO_SOURCE_GIT_FULL@",
+    "dinero_solo_miner": "@DINERO_SOLO_MINER_SOURCE_GIT_FULL@",
+    "stratum": "@DINERO_STRATUM_SOURCE_GIT_FULL@"
+  }
+}
