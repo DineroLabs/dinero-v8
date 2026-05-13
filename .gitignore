@@ -1,5 +1,5 @@
-build-*/
-build*/
+/build-*/
+/build*/
 CMakeFiles/
 __pycache__/
 *.pyc
@@ -104,7 +104,7 @@ nodeB/.cookie
 **/.DS_Store
 
 # Build artifacts
-build/
+/build/
 releases/
 release-*/
 gui/*_autogen/
