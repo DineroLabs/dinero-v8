@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <string>
 #include <cstdint>
+#include "mining/mining_stats.h"
 #include "mining/gpu/compute_backend.h"
 #include "mining/gpu/gpu_device_manager.h"
 
@@ -24,28 +25,6 @@ namespace dinero {
 #include "mining/block_assembler.h"
 
 namespace dinero {
-
-/**
- * @brief Mining statistics for monitoring
- */
-struct MiningStats {
-    std::atomic<uint64_t> total_hashes{0};
-    std::atomic<uint64_t> blocks_found{0};
-    std::atomic<uint64_t> jobs_processed{0};
-    std::atomic<double> current_hashrate{0.0};
-    std::atomic<uint32_t> active_threads{0};
-    std::atomic<bool> is_mining{false};
-    
-    // Timing
-    std::atomic<uint64_t> mining_start_time{0};
-    std::atomic<uint64_t> last_block_time{0};
-    
-    // Current job info
-    std::string current_job_id;
-    uint32_t current_height{0};
-    uint32_t current_difficulty{0};
-    std::string mining_phase;
-};
 
 /**
  * @brief CPU miner implementation

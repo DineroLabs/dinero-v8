@@ -370,10 +370,8 @@ bool InvMessage::deserialize(const std::vector<uint8_t>& data) {
         InventoryVector inv;
         inv.type = static_cast<InventoryType>(readUint32(data, pos));
 
-        // Phase M.0: Read 32 bytes directly into uint256
-        for (int j = 0; j < 32; j++) {
-            inv.hash.data[j] = readUint8(data, pos);
-        }
+        auto hash_bytes = readBytes(data, pos, sizeof(inv.hash.data));
+        std::memcpy(inv.hash.data, hash_bytes.data(), sizeof(inv.hash.data));
 
         inventory.push_back(inv);
     }
@@ -412,10 +410,8 @@ bool GetdataMessage::deserialize(const std::vector<uint8_t>& data) {
         InventoryVector inv;
         inv.type = static_cast<InventoryType>(readUint32(data, pos));
 
-        // Phase M.0: Read 32 bytes directly into uint256
-        for (int j = 0; j < 32; j++) {
-            inv.hash.data[j] = readUint8(data, pos);
-        }
+        auto hash_bytes = readBytes(data, pos, sizeof(inv.hash.data));
+        std::memcpy(inv.hash.data, hash_bytes.data(), sizeof(inv.hash.data));
 
         inventory.push_back(inv);
     }

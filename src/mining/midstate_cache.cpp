@@ -41,14 +41,14 @@ SHA256Midstate SHA256Midstate::FromHex(const std::string& hex) {
 // MidstateCache implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
-SHA256Midstate MidstateCache::ComputeMidstate(const uint8_t header112[DINERO_HEADER_SIZE_BYTES]) {
+SHA256Midstate MidstateCache::ComputeMidstate(const uint8_t header128[DINERO_HEADER_SIZE_BYTES]) {
     SHA256Midstate result;
 
     // Initialize SHA256 with standard IV
     crypto::CSHA256 sha;
 
     // Process first 64 bytes (Block 1)
-    sha.TransformBlock(header112);
+    sha.TransformBlock(header128);
 
     // Extract midstate
     sha.GetMidstate(result.state);
@@ -58,7 +58,7 @@ SHA256Midstate MidstateCache::ComputeMidstate(const uint8_t header112[DINERO_HEA
 }
 
 MiningJobMidstate MidstateCache::CreateMiningJob(
-    const uint8_t header112[DINERO_HEADER_SIZE_BYTES],
+    const uint8_t header128[DINERO_HEADER_SIZE_BYTES],
     const std::string& job_id,
     uint32_t nbits
 ) {
@@ -68,13 +68,13 @@ MiningJobMidstate MidstateCache::CreateMiningJob(
     job.nbits = nbits;
 
     // Copy full header for block submission
-    std::memcpy(job.full_header, header112, DINERO_HEADER_SIZE_BYTES);
+    std::memcpy(job.full_header, header128, DINERO_HEADER_SIZE_BYTES);
 
     // Compute midstate from first 64 bytes
-    job.midstate = ComputeMidstate(header112);
+    job.midstate = ComputeMidstate(header128);
 
-    // Copy block 2 data (bytes 64-111)
-    std::memcpy(job.block2_data, header112 + DINERO_SHA256_BLOCK_SIZE, DINERO_SHA256_BLOCK2_PAYLOAD);
+    // Copy block 2 data (bytes 64-127)
+    std::memcpy(job.block2_data, header128 + DINERO_SHA256_BLOCK_SIZE, DINERO_SHA256_BLOCK2_PAYLOAD);
 
     // Prepare padded block 2 for SHA256
     PrepareBlock2Padded(job.block2_data, job.block2_padded);
@@ -95,21 +95,10 @@ void MidstateCache::PrepareBlock2Padded(
     const uint8_t block2_data[DINERO_SHA256_BLOCK2_PAYLOAD],
     uint8_t block2_padded[DINERO_SHA256_BLOCK_SIZE]
 ) {
-    // Clear the padded block
+    // For the 128-byte v8 header, block 2 is a full SHA-256 block. Padding is
+    // applied by Finalize() after this block is processed.
     std::memset(block2_padded, 0, DINERO_SHA256_BLOCK_SIZE);
-
-    // Copy 48 bytes of header data
     std::memcpy(block2_padded, block2_data, DINERO_SHA256_BLOCK2_PAYLOAD);
-
-    // Add padding byte (0x80) at offset 48
-    block2_padded[DINERO_SHA256_BLOCK2_PAYLOAD] = 0x80;
-
-    // Bytes 49-61 are zeros (already set by memset)
-
-    // Add length in bits (1024 = 128 * 8) at bytes 62-63 (big-endian)
-    // 1024 = 0x0400
-    block2_padded[62] = 0x04;
-    block2_padded[63] = 0x00;
 }
 
 void MidstateCache::CompleteHash(
@@ -117,23 +106,13 @@ void MidstateCache::CompleteHash(
     const uint8_t block2_padded[DINERO_SHA256_BLOCK_SIZE],
     uint8_t hash_out[32]
 ) {
-    // First SHA256: start from midstate, process block 2
+    // First SHA256: start from midstate, process the full second header block,
+    // then let Finalize() append the required third padding block.
     crypto::CSHA256 sha1;
     sha1.SetMidstate(midstate.state, midstate.bytes_processed);
-    sha1.TransformBlock(block2_padded);
-
-    // Get intermediate hash (after first SHA256)
-    uint32_t intermediate_state[8];
-    sha1.GetMidstate(intermediate_state);
-
-    // Convert state to bytes (big-endian)
     uint8_t first_hash[32];
-    for (int i = 0; i < 8; i++) {
-        first_hash[i * 4 + 0] = (intermediate_state[i] >> 24) & 0xFF;
-        first_hash[i * 4 + 1] = (intermediate_state[i] >> 16) & 0xFF;
-        first_hash[i * 4 + 2] = (intermediate_state[i] >> 8) & 0xFF;
-        first_hash[i * 4 + 3] = intermediate_state[i] & 0xFF;
-    }
+    sha1.Write(block2_padded, DINERO_SHA256_BLOCK_SIZE);
+    sha1.Finalize(first_hash);
 
     // Second SHA256: hash the first hash
     crypto::CSHA256 sha2;

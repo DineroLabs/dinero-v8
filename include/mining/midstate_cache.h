@@ -3,13 +3,14 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Dinero Midstate Caching Engine
 //
-//  Provides SHA256 midstate computation for 112-byte block headers.
+//  Provides SHA256 midstate computation for 128-byte block headers.
 //  Miners can cache the midstate after processing the first 64 bytes,
 //  then only compute the final rounds when iterating through nonces.
 //
-//  Dinero 112-byte Header SHA256 Layout:
+//  Dinero 128-byte Header SHA256 Layout:
 //    Block 1 (bytes 0-63):   version + prevhash + partial merkle [MIDSTATE HERE]
-//    Block 2 (bytes 64-111): remaining merkle + time + bits + nonce + utreexo + padding
+//    Block 2 (bytes 64-127): remaining header bytes
+//    Final block: SHA-256 padding for the 128-byte message
 //
 //  For each job, Block 1 is constant - only Block 2 changes (nonce iteration).
 //  This provides significant speedup for GPU/ASIC miners.
@@ -40,8 +41,8 @@ struct SHA256Midstate {
  *
  * Contains all data needed for a miner to work on a block:
  * - midstate: SHA256 state after first 64 bytes
- * - block2_data: remaining 48 bytes (header bytes 64-111)
- * - Precomputed padding for block 2
+ * - block2_data: remaining 64 bytes (header bytes 64-127)
+ * - block2_padded: compatibility name for the full second SHA-256 block
  */
 struct MiningJobMidstate {
     // Job identification
@@ -50,25 +51,25 @@ struct MiningJobMidstate {
     // SHA256 midstate after first 64 bytes of header
     SHA256Midstate midstate;
 
-    // Block 2 data: bytes 64-111 of header (48 bytes)
+    // Block 2 data: bytes 64-127 of header (64 bytes)
     // Layout:
     //   [0-3]   merkle_root[28:31] (last 4 bytes of merkle root)
-    //   [4-7]   timestamp
-    //   [8-11]  bits
-    //   [12-15] nonce  <-- MINERS MODIFY THIS
-    //   [16-47] utreexo_commitment
-    uint8_t block2_data[DINERO_SHA256_BLOCK2_PAYLOAD];  // 48 bytes
+    //   [4-35]  utreexo_root
+    //   [36-43] timestamp
+    //   [44-47] difficulty
+    //   [48-51] nonce  <-- MINERS MODIFY THIS
+    //   [52-63] reserved
+    uint8_t block2_data[DINERO_SHA256_BLOCK2_PAYLOAD];  // 64 bytes
 
-    // Precomputed block 2 with padding (64 bytes total for SHA256)
+    // Compatibility field name: for a 128-byte header this is the complete
+    // second SHA-256 block. Padding is applied by SHA-256 finalization.
     // Layout:
-    //   [0-47]  block2_data
-    //   [48]    0x80 (padding start)
-    //   [49-61] 0x00 (zeros)
-    //   [62-63] length in bits (896 = 0x0380, big-endian)
+    //   [0-63]  block2_data
     uint8_t block2_padded[DINERO_SHA256_BLOCK_SIZE];  // 64 bytes
 
-    // Index of nonce within block2_data (offset 12)
-    static constexpr size_t NONCE_OFFSET = 12;
+    // Index of nonce within block2_data (header offset 112 - block 2 offset 64)
+    static constexpr size_t NONCE_OFFSET =
+        DINERO_HEADER_NONCE_OFFSET - DINERO_SHA256_BLOCK_SIZE;
 
     // Difficulty target
     uint32_t nbits;
@@ -116,7 +117,7 @@ public:
      * Complete SHA256d hash from midstate + block2 data
      *
      * @param midstate SHA256 state after first 64 bytes
-     * @param block2_padded Remaining 48 bytes + padding (64 bytes total)
+     * @param block2_padded Full second SHA-256 block (header bytes 64-127)
      * @param hash_out Output buffer for 32-byte hash
      */
     static void CompleteHash(
@@ -129,7 +130,7 @@ public:
      * Complete SHA256d hash with specific nonce value
      *
      * @param midstate SHA256 state after first 64 bytes
-     * @param block2_data Block 2 payload (48 bytes, will modify nonce in copy)
+     * @param block2_data Block 2 payload (64 bytes, will modify nonce in copy)
      * @param nonce Nonce value to test
      * @param hash_out Output buffer for 32-byte hash
      */

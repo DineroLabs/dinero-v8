@@ -2,7 +2,7 @@
 // Thread-safe utilities for reading and updating database meta table
 
 #include "daemon/db_meta_utils.hpp"
-#include "daemon/logger_stub.h"  // Logger stub
+#include "common/logger.h"
 #include "sqlite_txn.h"
 #include <sqlite3.h>
 #include <stdexcept>
