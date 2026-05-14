@@ -90,7 +90,8 @@ scripted symmetrically with Windows + Linux.
 ```bash
 # 1. Build the monorepo stack (already done by pre-flight check).
 
-# 2. Stage the .app + standalone binaries + produce the unsigned DMG/zip.
+# 2. Stage the .app + standalone binaries, produce the unsigned
+#    user DMG/zip, and produce the macOS operator tarball.
 #    Same -Version flag shape as the Windows / Linux scripts.
 ./packaging/mac/build-installer.sh --version 8.0.0-rc1
 
@@ -123,6 +124,9 @@ codesign --sign "Developer ID Application: Mirsad Hajdarevic (JXJS6ZA5FJ)" \
 xcrun notarytool submit "$DMG" --keychain-profile notarization-profile --wait
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
+
+# 7. The same staging script also produced the headless operator archive:
+#    packaging/mac/dist/dinero-operator-v8.0.0-rc1-macOS-arm64.tar.gz
 ```
 
 **Verification:** download to a fresh Mac (no developer tools, no
@@ -145,24 +149,35 @@ cmake -S . -B build-msvc-native -G "Visual Studio 17 2022" -A x64 `
       -DCMAKE_PREFIX_PATH="C:\Qt\6.9.1\msvc2022_64"
 cmake --build build-msvc-native --config Release `
       --target dinerod dinero-cli dinero-solo-miner-cli dinero-qt `
-                dinero-miner dinero-gpu-miner dinero-stratum-worker
+                dinero-seeder dinero-miner dinero-gpu-miner `
+                dinero-stratum-worker dinero-wallet-cli
 
 # 2. Authenticode-sign every binary (operator has the .p12 cert).
 $signtool = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe'
 $cert     = 'C:\path\to\dinero-codesign.p12'
 $pw       = $env:CERT_PASSWORD   # supplied per-session; never committed
 
-$binaries = 'dinerod','dinero-cli','dinero-qt','dinero-solo-miner',
-            'dinero-miner','dinero-gpu-miner','dinero-stratum-worker'
+$binaries = @(
+    'build-msvc-native\Release\dinerod.exe',
+    'build-msvc-native\Release\dinero-cli.exe',
+    'build-msvc-native\Release\dinero-miner.exe',
+    'build-msvc-native\Release\dinero-gpu-miner.exe',
+    'build-msvc-native\Release\dinero-stratum-worker.exe',
+    'build-msvc-native\Release\dinero-wallet-cli.exe',
+    'build-msvc-native\qt\Release\dinero-qt.exe',
+    'build-msvc-native\miner\Release\dinero-solo-miner.exe',
+    'build-msvc-native\seeder\Release\dinero-seeder.exe'
+)
 foreach ($b in $binaries) {
     & $signtool sign /f $cert /p $pw `
         /t http://timestamp.digicert.com `
         /fd SHA256 `
-        "build-msvc-native\Release\$b.exe"
+        $b
 }
 
 # 3. Run the v8-aware installer builder. Defaults now point at the
 #    in-tree qt/ subdir (no more ..\dinero-qt sibling-repo path).
+#    It also emits the Windows operator zip unless -SkipOperatorZip is set.
 .\packaging\windows\build-installer.ps1 -Version 8.0.0-rc1
 
 # 4. Sign the installer.
@@ -170,6 +185,9 @@ foreach ($b in $binaries) {
     /t http://timestamp.digicert.com `
     /fd SHA256 `
     .\packaging\windows\dist\Dinero-8.0.0-rc1-windows-x86_64-Setup.exe
+
+# 5. Operator archive from the same run:
+#    packaging\windows\dist\dinero-v8.0.0-rc1-windows-x86_64-msvc.zip
 ```
 
 **Verification:** download to a fresh Windows 11 VM, run the installer,
@@ -196,7 +214,8 @@ cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release \
       -DMINER_ENABLE_OPENCL=ON
 cmake --build build-release -j$(nproc) \
       --target dinerod dinero-cli dinero-solo-miner-cli \
-               dinero-qt dinero-seeder
+               dinero-qt dinero-seeder dinero-gpu-miner \
+               dinero-miner dinero-stratum-worker dinero-wallet-cli
 
 # Stage all tarballs + invoke dpkg-buildpackage for the .deb.
 # Same -Version flag as the macOS / Windows scripts.
@@ -213,31 +232,35 @@ sudo journalctl -u dinerod -f
 on the Dell, it connects to peers within ~30s, height advances toward
 mainnet tip.
 
-### 3.D Standalone tarball set (Linux x86_64)
+### 3.D Linux user + operator artifact set
 
-The Linux build-installer.sh already produces the v2.2.6-rc1-equivalent
-8-tarball set:
-- `dinero-core-<VERSION>-linux-x86_64.tar.gz` (dinerod)
-- `dinero-cli-<VERSION>-linux-x86_64.tar.gz`
-- `dinero-solo-miner-<VERSION>-linux-x86_64.tar.gz`
-- `dinero-qt-<VERSION>-linux-x86_64.tar.gz`
-- `dinero-seeder-<VERSION>-linux-x86_64.tar.gz` (new for v8)
-- Optional: dinero-gpu-miner, dinero-miner, dinero-stratum-worker
-  (produced if those targets were built).
+The Linux build-installer.sh produces both Linux audiences:
+
+- `Dinero-<VERSION>-linux-x86_64-full.tar.gz` — Linux user bundle:
+  `dinero-qt`, `dinerod`, `dinero-cli`, `dinero-solo-miner`,
+  `dinero-seeder`, and any miner/worker tools built on the release host.
+- `dinero-core-<VERSION>-linux-x86_64.tar.gz` — headless operator
+  daemon tarball.
+- Per-tool tarballs for `dinero-cli`, `dinero-solo-miner`,
+  `dinero-qt`, `dinero-seeder`, and optional GPU/stratum tools when
+  those targets were built.
 
 No separate step needed — the staging script ran in 3.C already
 produced them under `packaging/linux/dist/`.
 
 ### 3.E Release artifact summary
 
-By end of Phase 3, the operator has on disk:
+By end of Phase 3, the operator has on disk the six release lanes:
 
 | Artifact | Source | Notes |
 |---|---|---|
-| `Dinero-v8.0.0-rc1-macOS-arm64-qt.dmg` | macOS host | signed + notarized + stapled |
-| `Dinero-8.0.0-rc1-windows-x86_64-Setup.exe` | Windows host | Authenticode-signed |
-| `dinero-core_8.0.0~rc1-1_amd64.deb` | Dell | Ubuntu 24.04+ packaged-service Core |
-| `*-8.0.0-rc1-linux-x86_64.tar.gz` ×8 | Dell | per-binary standalone tarballs |
+| macOS users | macOS host | `Dinero-v8.0.0-rc1-macOS-arm64.dmg`, signed + notarized + stapled |
+| macOS operators | macOS host | `dinero-operator-v8.0.0-rc1-macOS-arm64.tar.gz` |
+| Windows users | Windows host | `Dinero-8.0.0-rc1-windows-x86_64-Setup.exe`, Authenticode-signed |
+| Windows operators | Windows host | `dinero-v8.0.0-rc1-windows-x86_64-msvc.zip` |
+| Linux users | Dell | `Dinero-8.0.0-rc1-linux-x86_64-full.tar.gz` |
+| Linux operators | Dell | `dinero-core-8.0.0-rc1-linux-x86_64.tar.gz` plus `.deb` |
+| Linux per-tool tarballs | Dell | `*-8.0.0-rc1-linux-x86_64.tar.gz` for CLI/miners/seeder |
 
 Compute SHA256SUMS once all artifacts are produced; upload to a
 private operator-controlled location for Phase 6.

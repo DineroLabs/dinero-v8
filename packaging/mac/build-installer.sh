@@ -2,8 +2,14 @@
 # packaging/mac/build-installer.sh
 #
 # Stage the dinerod stack + dinero-qt.app + Qt6 runtime (via macdeployqt,
-# already invoked by qt/CMakeLists.txt POST_BUILD), then produce
-# dist/Dinero-<VERSION>-macOS-arm64-qt.{zip,dmg}. Operator runs `codesign`
+# already invoked by qt/CMakeLists.txt POST_BUILD), then produce the macOS
+# user package and a headless operator tarball:
+#
+#   dist/Dinero-v<VERSION>-macOS-arm64-qt.zip
+#   dist/Dinero-v<VERSION>-macOS-arm64.dmg
+#   dist/dinero-operator-v<VERSION>-macOS-arm64.tar.gz
+#
+# Operator runs `codesign`
 # + `xcrun notarytool submit` + `xcrun stapler staple` after this script
 # completes — those steps need keychain access (Developer ID +
 # notarization-profile) and aren't safe to put in a committed script.
@@ -63,6 +69,7 @@ fi
 
 DIST_DIR="$PROJECT_ROOT/packaging/mac/dist"
 STAGE_DIR="$DIST_DIR/stage"
+OPERATOR_STAGE_DIR="$DIST_DIR/operator-stage"
 APP_BUNDLE="$BUILD_DIR/bin/dinero-qt.app"
 
 if [[ ! -d "$APP_BUNDLE" ]]; then
@@ -86,6 +93,7 @@ echo "----------------------------------------------------------"
 
 rm -rf "$DIST_DIR"
 mkdir -p "$STAGE_DIR"
+mkdir -p "$OPERATOR_STAGE_DIR/bin"
 
 echo "Copying dinero-qt.app (with embedded dinerod + Qt frameworks)..."
 ditto "$APP_BUNDLE" "$STAGE_DIR/dinero-qt.app"
@@ -110,6 +118,13 @@ if [[ -x "$BUILD_DIR/seeder/dinero-seeder" ]]; then
     cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-seeder"
 fi
 
+# Optional: standalone miner / wallet tools if this release host built them.
+for bin in dinero-gpu-miner dinero-miner dinero-stratum-worker dinero-wallet-cli; do
+    if [[ -x "$BUILD_DIR/$bin" ]]; then
+        cp "$BUILD_DIR/$bin" "$STAGE_DIR/$bin"
+    fi
+done
+
 cp "$PROJECT_ROOT/LICENSE" "$STAGE_DIR/LICENSE" 2>/dev/null || true
 
 echo ""
@@ -132,9 +147,37 @@ hdiutil create \
     -ov -format UDZO \
     "$DMG_PATH"
 
+# Produce a headless operator archive for macOS node operators. This is
+# intentionally separate from the GUI DMG so server-style macOS hosts do
+# not have to install or notarize the wallet bundle just to run dinerod.
+OPERATOR_ROOT="$OPERATOR_STAGE_DIR/dinero-operator-v${VERSION}-macOS-arm64"
+mkdir -p "$OPERATOR_ROOT/bin"
+cp "$BUILD_DIR/dinerod" "$OPERATOR_ROOT/bin/dinerod"
+cp "$BUILD_DIR/dinero-cli" "$OPERATOR_ROOT/bin/dinero-cli"
+if [[ -x "$BUILD_DIR/seeder/dinero-seeder" ]]; then
+    cp "$BUILD_DIR/seeder/dinero-seeder" "$OPERATOR_ROOT/bin/dinero-seeder"
+fi
+cp "$PROJECT_ROOT/LICENSE" "$OPERATOR_ROOT/LICENSE" 2>/dev/null || true
+cat > "$OPERATOR_ROOT/README.txt" <<EOF
+Dinero macOS operator archive ${VERSION}
+
+This archive is for headless macOS node operators. It includes the daemon
+and RPC CLI, plus dinero-seeder when the release host built it.
+
+Common entry points:
+  ./bin/dinerod
+  ./bin/dinero-cli
+  ./bin/dinero-seeder
+EOF
+(cd "$OPERATOR_ROOT" && shasum -a 256 bin/* > SHA256SUMS)
+OPERATOR_TARBALL="$DIST_DIR/dinero-operator-v${VERSION}-macOS-arm64.tar.gz"
+echo "Producing $OPERATOR_TARBALL..."
+tar -czf "$OPERATOR_TARBALL" -C "$OPERATOR_STAGE_DIR" "$(basename "$OPERATOR_ROOT")"
+
 # Hashes for SHA256SUMS-vNNN.
 ZIP_HASH=$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')
 DMG_HASH=$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')
+OPERATOR_HASH=$(shasum -a 256 "$OPERATOR_TARBALL" | awk '{print $1}')
 
 echo ""
 echo "----------------------------------------------------------"
@@ -151,5 +194,7 @@ echo "  Unsigned $ZIP_PATH"
 echo "    SHA256: $ZIP_HASH"
 echo "  Unsigned $DMG_PATH"
 echo "    SHA256: $DMG_HASH"
+echo "  Operator $OPERATOR_TARBALL"
+echo "    SHA256: $OPERATOR_HASH"
 echo ""
 echo "Full signing/notarization commands in RELEASE_v8.md Phase 3.A."

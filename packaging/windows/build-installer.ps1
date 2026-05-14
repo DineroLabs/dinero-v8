@@ -1,6 +1,10 @@
 # Stage all the daemon binaries + dinero-qt + Qt6 runtime via
-# windeployqt, then run makensis to produce
-# dist/Dinero-<VERSION>-windows-x86_64-Setup.exe.
+# windeployqt, then run makensis to produce the Windows user installer.
+# By default this also emits the headless operator zip via
+# package-daemon-stack.ps1 so release day produces both Windows artifacts:
+#
+#   dist/Dinero-<VERSION>-windows-x86_64-Setup.exe
+#   dist/dinero-v<VERSION>-windows-x86_64-msvc.zip
 #
 # Phase 3 of the v8.0.0 monorepo consolidation: defaults now point at
 # the in-tree qt/ subdir build output (build-msvc-native\qt\Release)
@@ -24,7 +28,9 @@
 #             -DENABLE_HARDWARE_WALLETS=OFF ^
 #             -DCMAKE_PREFIX_PATH="C:\Qt\6.9.1\msvc2022_64"
 #       cmake --build build-msvc-native --config Release ^
-#             --target dinerod dinero-cli dinero-solo-miner-cli dinero-qt
+#             --target dinerod dinero-cli dinero-solo-miner-cli dinero-qt ^
+#                      dinero-seeder dinero-miner dinero-stratum-worker ^
+#                      dinero-gpu-miner dinero-wallet-cli
 #
 # Usage:
 #   .\packaging\windows\build-installer.ps1 -Version 8.0.0
@@ -39,7 +45,8 @@ param(
     [string]$QtRepoDir     = '',
     [string]$QtBin         = 'C:\Qt\6.9.1\msvc2022_64\bin',
     [string]$VcpkgBin      = "$env:USERPROFILE\vcpkg\installed\x64-windows\bin",
-    [string]$Makensis      = 'C:\Program Files (x86)\NSIS\makensis.exe'
+    [string]$Makensis      = 'C:\Program Files (x86)\NSIS\makensis.exe',
+    [switch]$SkipOperatorZip
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,6 +87,11 @@ foreach ($b in $daemonBinaries) {
         exit 1
     }
 }
+$BuildRoot = Split-Path $DaemonBuildDir -Parent
+$optionalBinaries = @(
+    @{ Name = 'dinero-solo-miner'; Path = Join-Path $BuildRoot 'miner\Release\dinero-solo-miner.exe' },
+    @{ Name = 'dinero-seeder'; Path = Join-Path $BuildRoot 'seeder\Release\dinero-seeder.exe' }
+)
 $windeployqt = Join-Path $QtBin 'windeployqt.exe'
 if (-not (Test-Path $windeployqt)) {
     Write-Host "ERROR: windeployqt.exe not found at $windeployqt (override with -QtBin)" -ForegroundColor Red
@@ -101,6 +113,16 @@ Write-Host "Copying dinero-qt + daemon binaries..."
 Copy-Item $qtExe (Join-Path $Stage 'dinero-qt.exe')
 foreach ($b in $daemonBinaries) {
     Copy-Item (Join-Path $DaemonBuildDir "$b.exe") (Join-Path $Stage "$b.exe")
+}
+foreach ($entry in $optionalBinaries) {
+    $optionalPath = $entry['Path']
+    $optionalName = $entry['Name']
+    if (Test-Path $optionalPath) {
+        Copy-Item $optionalPath (Join-Path $Stage "$optionalName.exe")
+        Write-Host "  $optionalName.exe"
+    } else {
+        Write-Host "  WARNING: optional $optionalName.exe not found at $optionalPath" -ForegroundColor Yellow
+    }
 }
 Copy-Item (Join-Path $ProjectRoot 'LICENSE') (Join-Path $Stage 'LICENSE')
 
@@ -175,3 +197,12 @@ Write-Host '----------------------------------------------------------'
 Write-Host "  Path:   $installerPath"
 Write-Host ("  Size:   $installerSize bytes ({0:N2} MB)" -f ($installerSize / 1MB))
 Write-Host "  SHA256: $installerHash"
+
+if (-not $SkipOperatorZip) {
+    Write-Host ''
+    Write-Host 'Producing Windows operator zip...'
+    & (Join-Path $ScriptDir 'package-daemon-stack.ps1') `
+        -BuildDir $BuildRoot `
+        -Version $Version `
+        -OutputDir (Join-Path $ScriptDir 'dist')
+}

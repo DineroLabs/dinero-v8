@@ -1,4 +1,4 @@
-# Package the native MSVC daemon stack into a release ZIP.
+# Package the native MSVC daemon stack into a headless operator ZIP.
 #
 # Output: packaging/windows/dist/dinero-<VERSION>-windows-x86_64-msvc.zip
 # Contents:
@@ -11,8 +11,8 @@
 #   SHA256SUMS.txt              - per-file hash manifest
 #
 # A second SHA256 (of the ZIP itself) is printed to stdout for the
-# release page. Linux releases ship dinero-vX.Y.Z-linux-aarch64.tar.gz
-# with the same convention.
+# release page. This is the Windows counterpart to the Linux/macOS
+# operator archives: no GUI wallet, just command-line node tools.
 #
 # Usage from a normal PowerShell:
 #   .\packaging\windows\package-daemon-stack.ps1
@@ -62,17 +62,15 @@ if (-not $Version) {
 $Version = $Version.TrimStart('v','V')
 
 Write-Host '----------------------------------------------------------'
-Write-Host "Packaging Dinero daemon stack -- windows-x86_64-msvc"
+Write-Host "Packaging Dinero operator stack -- windows-x86_64-msvc"
 Write-Host '----------------------------------------------------------'
 Write-Host "Version:    v$Version"
 Write-Host "Build dir:  $BuildDir"
 Write-Host "Output dir: $OutputDir"
 
-# Verify all six daemon binaries exist. Matches the Linux v2.2.6-rc1
-# release body's manifest minus items that ship from separate repos
-# (dinero-qt = Qt subproject; dinero-solo-miner = its own repo;
-#  dinero-sv2-miner / dinero-sv2-gpu-miner = DineroLabs/dinero-sv2;
-#  dinero-stratum server = separate binary).
+# Verify the command-line operator binaries exist. The GUI wallet ships
+# in the Windows user installer; this ZIP is for node operators and
+# power users that want the raw daemon stack.
 $Binaries = @(
     'dinerod.exe',
     'dinero-cli.exe',
@@ -126,7 +124,7 @@ if (Test-Path $LicensePath) {
 
 $builtOn = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 $readmeLines = @(
-    "Dinero v$Version -- windows-x86_64-msvc",
+    "Dinero v$Version -- windows-x86_64-msvc operator archive",
     "========================================",
     "",
     "Build:      Microsoft Visual Studio 2022 (MSVC 14.44), x86_64",
@@ -134,7 +132,7 @@ $readmeLines = @(
     "Linkage:    Vendored OpenSSL 3.3.2 (static, no-shared)",
     "Source:     https://github.com/DineroLabs/dinero-v8",
     "",
-    "Included binaries (bin/):",
+    "Included operator binaries (bin/):",
     "  dinerod.exe                Full node daemon",
     "  dinero-cli.exe             CLI RPC client",
     "  dinero-miner.exe           CPU miner",
@@ -142,9 +140,9 @@ $readmeLines = @(
     "  dinero-gpu-miner.exe       GPU miner (OpenCL; runtime unvalidated on Windows)",
     "  dinero-wallet-cli.exe      Reference wallet CLI",
     "",
-    "Not included (shipped separately):",
-    "  dinero-qt                  Qt6 GUI wallet (separate subproject build)",
-    "  dinero-solo-miner          DineroLabs/dinero-solo-miner repo",
+    "Not included:",
+    "  dinero-qt                  Qt6 GUI wallet (use the Windows installer)",
+    "  dinero-solo-miner          Desktop/user mining tool",
     "  dinero-sv2-miner           DineroLabs/dinero-sv2 repo",
     "  dinero-sv2-gpu-miner       DineroLabs/dinero-sv2 repo",
     "  dinero-stratum (server)    separate binary",
