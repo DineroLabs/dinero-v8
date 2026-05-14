@@ -16,19 +16,30 @@
 # regtest=1    # Use regression test mode (local testing only)
 
 # P2P Port (default: 20999 for mainnet, 21000 for testnet, 21001 for regtest)
-# port=20999
+port=20999
+
+# Accept incoming P2P connections. This is the public network port,
+# not RPC. Open TCP 20999 in your firewall/router if you want this
+# node to help other peers bootstrap.
+listen=1
+
+# Offline mode disables P2P entirely. Leave this off for mainnet.
+# p2p.offline=0
 
 # Maximum number of inbound+outbound connections (default: 125)
 # maxconnections=125
 
 # ============================================================================
-# SEED NODES - MAINNET OFFICIAL SERVERS
+# SEED NODES - MAINNET BOOTSTRAP
 # ============================================================================
-# These are the official Dinero mainnet seed nodes.
-# The daemon will automatically connect to these to discover peers.
+# v8 also ships fixed seeds compiled into the binary and DNS seeds as a
+# convenience layer. These addnode lines are explicit manual fallback
+# bootstrap peers in case DNS is unavailable on first start.
 
-addnode=172.93.160.131:20999  # California (us-west)
-addnode=173.249.195.59:20999  # Virginia (us-east)
+addnode=172.93.160.131:20999  # LA / us-west
+addnode=173.249.195.59:20999  # VA / us-east
+addnode=72.18.214.120:20999   # MO / us-central
+addnode=96.9.226.98:20999     # CN / ca-east
 
 # ============================================================================
 # RPC SERVER SETTINGS
@@ -149,6 +160,10 @@ addnode=173.249.195.59:20999  # Virginia (us-east)
 # --- Full Node (validates and relays all transactions) ---
 # addnode=172.93.160.131:20999
 # addnode=173.249.195.59:20999
+# addnode=72.18.214.120:20999
+# addnode=96.9.226.98:20999
+# listen=1
+# port=20999
 # maxconnections=125
 # dbcache=1024
 
@@ -158,11 +173,15 @@ addnode=173.249.195.59:20999  # Virginia (us-east)
 # miningaddress=din1qyouraddresshere
 # addnode=172.93.160.131:20999
 # addnode=173.249.195.59:20999
+# addnode=72.18.214.120:20999
+# addnode=96.9.226.98:20999
 
 # --- Pruned Node (low disk space) ---
 # prune=550
 # addnode=172.93.160.131:20999
 # addnode=173.249.195.59:20999
+# addnode=72.18.214.120:20999
+# addnode=96.9.226.98:20999
 
 # --- Private Node (Tor-only connections) ---
 # proxy=127.0.0.1:9050

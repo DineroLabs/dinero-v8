@@ -44,20 +44,28 @@ rpcpassword=your_strong_password_here
 
 # P2P listen port
 # Default: 20999 (mainnet), 21000 (testnet), 21001 (regtest)
-#port=20999
+port=20999
 
-# Accept incoming connections
+# Accept incoming P2P connections. Keep this enabled for normal nodes.
+# If your firewall/router allows inbound TCP 20999, your node helps
+# other wallets and operators bootstrap.
 # Default: true
-#listen=true
+listen=true
+
+# Offline mode disables P2P entirely. Leave this off for mainnet.
+#p2p.offline=false
 
 # Maximum total connections
 # Default: 125 (recommended: 125-200 for public nodes)
 #maxconnections=125
 
-# Add seed nodes (optional)
-# Useful for bootstrapping or private networks
-#addnode=seed1.dinero.com:20999
-#addnode=seed2.dinero.com:20999
+# Manual bootstrap nodes. These are optional because v8 also ships
+# compiled-in fixed seeds and DNS seeds, but keeping them here makes
+# the node resilient if DNS is unavailable.
+addnode=172.93.160.131:20999  # LA / us-west
+addnode=173.249.195.59:20999  # VA / us-east
+addnode=72.18.214.120:20999   # MO / us-central
+addnode=96.9.226.98:20999     # CN / ca-east
 
 # Connect ONLY to specified nodes (disables seed discovery)
 # Use for isolated/private networks

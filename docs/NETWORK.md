@@ -1,8 +1,24 @@
-# Dinero Coin Network Configuration
+# Dinero Network Configuration
 
-## Official Seed Nodes
+## P2P vs RPC
 
-The Dinero network has the following bootstrap seed nodes for peer discovery:
+Dinero's P2P network is direct node-to-node traffic. It does not depend
+on a website. DNS seeds are only a convenience for first contact.
+
+- P2P port: `20999` on mainnet. This can be open to the internet.
+- RPC port: `20998` on mainnet. Keep this private, normally bound to
+  `127.0.0.1`.
+- Offline mode: leave `p2p.offline` unset or false for normal nodes.
+
+Every `dinerod` / `dinero-qt` instance with networking enabled can
+connect to peers, learn more peers via `getaddr`, and persist known
+peers in `peers.dat`.
+
+## v8 Bootstrap Nodes
+
+v8 has fixed seed IPs compiled into the binary and DNS seeds as an
+extra bootstrap path. These manual `addnode` lines are a useful fallback
+if DNS is unavailable or a first-start wallet needs help finding peers.
 
 ### LA Server (Los Angeles)
 - **IP Address**: `172.93.160.131`
@@ -16,6 +32,18 @@ The Dinero network has the following bootstrap seed nodes for peer discovery:
 - **Location**: Virginia, USA
 - **Add to config**: `addnode=173.249.195.59:20999`
 
+### MO Server (Missouri)
+- **IP Address**: `72.18.214.120`
+- **P2P Port**: `20999`
+- **Location**: Missouri, USA
+- **Add to config**: `addnode=72.18.214.120:20999`
+
+### CN Server (Canada)
+- **IP Address**: `96.9.226.98`
+- **P2P Port**: `20999`
+- **Location**: Canada
+- **Add to config**: `addnode=96.9.226.98:20999`
+
 ## Connecting to the Network
 
 ### Option 1: Configuration File
@@ -23,16 +51,20 @@ The Dinero network has the following bootstrap seed nodes for peer discovery:
 Create a `dinero.conf` file in your Dinero directory with the following content:
 
 ```conf
-# Add both seed nodes for redundancy
-addnode=172.93.160.131:20999
-addnode=173.249.195.59:20999
-
-# P2P port (default)
+# Enable P2P networking.
+listen=1
 port=20999
 
-# RPC settings
+# Manual bootstrap fallback nodes.
+addnode=172.93.160.131:20999
+addnode=173.249.195.59:20999
+addnode=72.18.214.120:20999
+addnode=96.9.226.98:20999
+
+# Keep RPC private.
 rpcport=20998
 rpcbind=127.0.0.1
+rpcallowip=127.0.0.1
 ```
 
 ### Option 2: Command Line
@@ -40,7 +72,11 @@ rpcbind=127.0.0.1
 Start your daemon with seed node parameters:
 
 ```bash
-./dinerod -addnode=172.93.160.131:20999 -addnode=173.249.195.59:20999
+./dinerod -listen=1 -port=20999 \
+  -addnode=172.93.160.131:20999 \
+  -addnode=173.249.195.59:20999 \
+  -addnode=72.18.214.120:20999 \
+  -addnode=96.9.226.98:20999
 ```
 
 ### Option 3: Runtime RPC Commands
@@ -56,10 +92,8 @@ curl -s -X POST http://127.0.0.1:20998 -u "$COOKIE" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":"test","method":"addnode","params":["172.93.160.131:20999","add"]}'
 
-# Add VA seed node
-curl -s -X POST http://127.0.0.1:20998 -u "$COOKIE" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":"test","method":"addnode","params":["173.249.195.59:20999","add"]}'
+# Add the remaining fallback nodes the same way:
+# 173.249.195.59:20999, 72.18.214.120:20999, 96.9.226.98:20999
 ```
 
 ## Verifying Network Connection
@@ -73,7 +107,8 @@ curl -s -X POST http://127.0.0.1:20998 -u "$COOKIE" \
   -d '{"jsonrpc":"2.0","id":"test","method":"getpeerinfo","params":[]}' | python3 -m json.tool
 ```
 
-You should see connections to one or both seed nodes.
+You should see outbound peers, and public nodes should also see inbound
+connections after TCP `20999` is reachable through the firewall/router.
 
 ## Firewall Requirements
 
@@ -91,17 +126,22 @@ sudo iptables -A INPUT -p tcp --dport 20999 -j ACCEPT
 
 ### macOS
 ```bash
-# Allow in System Preferences > Security & Privacy > Firewall > Firewall Options
-# Or use built-in firewall rules
+# System Settings > Network > Firewall > Options
+# Allow inbound connections for dinerod / dinero-qt.
 ```
+
+### Windows
+Open Windows Defender Firewall and allow inbound TCP `20999` for
+`dinerod.exe` / `dinero-qt.exe`. Keep RPC `20998` local/private.
 
 ## Network Status
 
 ### Current Network State
-- **Active Seed Nodes**: 2 (LA, VA)
-- **Consensus Fix**: ✅ Deployed (October 15, 2025)
-- **Network Protocol**: v0.1.0
-- **Difficulty**: Phase 1 (0x1d3fffff for blocks 1-180,000)
+- **Active v8 fleet bootstrap nodes**: 4 (LA, VA, MO, CN)
+- **P2P port**: `20999`
+- **RPC port**: `20998` local/private
+- **Network model**: direct P2P mesh with fixed seeds, DNS seeds,
+  `peers.dat`, and `getaddr` peer discovery
 
 ### Monitoring
 
@@ -121,7 +161,7 @@ done
 
 ### No Peers Found
 1. Check firewall allows outbound connections on port 20999
-2. Verify seed nodes are reachable: `ping 172.93.160.131` and `ping 173.249.195.59`
+2. Verify seed nodes are reachable: `nc -vz 172.93.160.131 20999`
 3. Check daemon logs for connection errors
 4. Manually add nodes via RPC `addnode` command
 
@@ -146,6 +186,5 @@ If you want to run a public seed node:
 
 ---
 
-**Last Updated**: October 15, 2025
-**Network Version**: 0.1.0
-**Consensus**: Phase 1 (Easy Difficulty)
+**Last Updated**: May 14, 2026
+**Release Line**: v8

@@ -9,7 +9,11 @@
 server=1
 
 # P2P port (default: 20999 for mainnet, 21000 for testnet, 21001 for regtest)
-# port=20999
+port=20999
+
+# Enable P2P listening. Open inbound TCP 20999 if this machine should
+# help other peers bootstrap.
+listen=1
 
 # Maximum number of connections
 # maxconnections=125
@@ -107,9 +111,12 @@ dustthreshold=546
 ## Seed Nodes (for initial peer discovery)
 ##
 
-# Add trusted nodes
-# addnode=seed1.dinero-coin.com:20999
-# addnode=seed2.dinero-coin.com:20999
+# Manual v8 bootstrap fallback nodes. The binary also has fixed seeds
+# and DNS seeds; these keep first start resilient if DNS is unavailable.
+addnode=172.93.160.131:20999
+addnode=173.249.195.59:20999
+addnode=72.18.214.120:20999
+addnode=96.9.226.98:20999
 
 # Connect only to specific nodes
 # connect=trusted.node.example.com:20999
