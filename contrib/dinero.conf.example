@@ -65,7 +65,7 @@ listen=true
 addnode=172.93.160.131:20999  # LA / us-west
 addnode=173.249.195.59:20999  # VA / us-east
 addnode=72.18.214.120:20999   # MO / us-central
-addnode=96.9.226.98:20999     # CN / ca-east
+addnode=96.9.226.98:20999     # Canada / ca-east
 
 # Connect ONLY to specified nodes (disables seed discovery)
 # Use for isolated/private networks

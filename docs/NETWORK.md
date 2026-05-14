@@ -38,7 +38,7 @@ if DNS is unavailable or a first-start wallet needs help finding peers.
 - **Location**: Missouri, USA
 - **Add to config**: `addnode=72.18.214.120:20999`
 
-### CN Server (Canada)
+### Canada Server
 - **IP Address**: `96.9.226.98`
 - **P2P Port**: `20999`
 - **Location**: Canada
@@ -137,7 +137,7 @@ Open Windows Defender Firewall and allow inbound TCP `20999` for
 ## Network Status
 
 ### Current Network State
-- **Active v8 fleet bootstrap nodes**: 4 (LA, VA, MO, CN)
+- **Active v8 fleet bootstrap nodes**: 4 (LA, VA, MO, Canada)
 - **P2P port**: `20999`
 - **RPC port**: `20998` local/private
 - **Network model**: direct P2P mesh with fixed seeds, DNS seeds,
@@ -145,16 +145,16 @@ Open Windows Defender Firewall and allow inbound TCP `20999` for
 
 ### Monitoring
 
-Monitor network health:
+Monitor your local node only. Public fleet RPC is intentionally not
+internet-exposed.
+
 ```bash
-# Check blockchain height across nodes
-for node in 172.93.160.131 173.249.195.59; do
-  echo "Node: $node"
-  curl -s http://$node:20998 -u "__cookie__:YOUR_COOKIE" \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","id":"test","method":"getblockcount","params":[]}' \
-    | python3 -c "import sys,json; print('Height:', json.load(sys.stdin)['result'])"
-done
+# Check local height through local/private RPC.
+COOKIE=$(cat data/.cookie)
+curl -s -X POST http://127.0.0.1:20998 -u "$COOKIE" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"local","method":"getblockcount","params":[]}' \
+  | python3 -c "import sys,json; print('Height:', json.load(sys.stdin)['result'])"
 ```
 
 ## Troubleshooting
@@ -180,7 +180,7 @@ done
 If you want to run a public seed node:
 
 1. Ensure stable uptime (>99%)
-2. Allow incoming connections (bind=0.0.0.0 in config)
+2. Enable P2P listening with `listen=1`
 3. Open firewall port 20999
 4. Contact maintainers to add your node to this list
 
