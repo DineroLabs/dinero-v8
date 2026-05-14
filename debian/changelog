@@ -1,3 +1,15 @@
+dinero-core (8.0.0~rc3-1) unstable; urgency=medium
+
+  * RC3 rebuild from dea2257a — picks up the user/operator packaging
+    lane split, dinero-qt's bundled-daemon bootstrap-peers default, and
+    the v8 peer bootstrap documentation.
+  * Packaged-service contract unchanged: dinerod + dinero-cli only, no
+    Qt, no GPU mining, no gRPC, no hardware-wallet HID. Operators who
+    want the GUI install dinero-qt-desktop separately (see the v8.0.0-rc3
+    GitHub release).
+
+ -- Trucker2827 <trucker2827@gmail.com>  Thu, 14 May 2026 22:30:00 +0000
+
 dinero-core (8.0.0~rc2-1) unstable; urgency=medium
 
   * RC2 Linux package rebuild from the public dinero-v8 source tree.
