@@ -11832,10 +11832,15 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
     daemonProcess_ = new QProcess(this);
   }
 
-  const QStringList args = {
+  QStringList args = {
     QString("--datadir=%1").arg(datadir),
     QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid())
   };
+  args << "--listen" << "--rpc" << "--rpcport" << "20998";
+  args << "-addnode=172.93.160.131:20999";
+  args << "-addnode=173.249.195.59:20999";
+  args << "-addnode=72.18.214.120:20999";
+  args << "-addnode=96.9.226.98:20999";
 
   qDebug() << "Starting daemon:" << dinerodPath << args << "showFeedback=" << showFeedback
            << "openLogWindow=" << openLogWindow;
