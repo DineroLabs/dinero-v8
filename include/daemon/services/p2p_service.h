@@ -2,6 +2,7 @@
 #include "daemon/iservice.h"
 #include "daemon/p2p_manager.h"
 #include "daemon/services/prune_service.h"
+#include "network/port_mapper.h"
 #include "version.h"
 #include <atomic>
 #include <chrono>
@@ -170,6 +171,7 @@ private:
     std::vector<std::string> seed_nodes_;
     std::vector<std::pair<std::string, uint16_t>> reconnect_targets_;
     bool offline_mode_{false};
+    std::unique_ptr<network::PortMappingSession> port_mapping_;
 
     // Periodic sync loop for headers-first + block scheduler in P2PService mode.
     std::atomic<bool> scheduler_tick_running_{false};
@@ -182,6 +184,8 @@ private:
     void HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg);
     void StartSchedulerTickLoop();
     void StopSchedulerTickLoop();
+    void StartPortMappingIfEnabled();
+    void StopPortMapping();
 
     // Per-peer headers rate limiting (eclipse/DoS protection)
     // Tracks timestamps of recent headers messages per peer

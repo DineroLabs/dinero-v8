@@ -10,6 +10,7 @@
 #include "dinero/network/network_invariants.h"
 #include "consensus/header_chain.h"  // P1 reorg fix: for HeaderChainSelector::GetBestHeader()
 #include "network/local_interfaces.h"  // Self-loop filter (shared with P2PManager)
+#include "network/port_mapper.h"
 #include "p2p/block_download_scheduler.h"
 #include "storage/chain_db.h"
 #include "common/ilogger.h"  // For ILogger interface dependency injection
@@ -149,6 +150,7 @@ bool BuildProactiveHeaderBurst(ChainDB* chain_db,
 
 P2PService::~P2PService() {
     StopSchedulerTickLoop();
+    StopPortMapping();
 }
 
 bool P2PService::SetNetworkActive(bool active) {
@@ -340,6 +342,77 @@ void P2PService::StopSchedulerTickLoop() {
     scheduler_tick_running_.store(false, std::memory_order_relaxed);
     if (scheduler_tick_thread_.joinable()) {
         scheduler_tick_thread_.join();
+    }
+}
+
+void P2PService::StartPortMappingIfEnabled() {
+    if (!config_ || !p2p_mgr_) {
+        return;
+    }
+
+    const std::string mode_value = config_->GetString("p2p.portmap", "");
+    const bool upnp_enabled = config_->GetBool("p2p.upnp", false);
+    const bool natpmp_enabled = config_->GetBool("p2p.natpmp", false);
+    if (mode_value.empty() && !upnp_enabled && !natpmp_enabled) {
+        return;
+    }
+
+    auto mode = network::ParsePortMappingMode(mode_value, upnp_enabled, natpmp_enabled);
+    if (mode == network::PortMappingMode::Disabled) {
+        if (logger_interface_) {
+            logger_interface_->info("[P2PService] P2P port mapping disabled");
+        }
+        return;
+    }
+
+    const bool listen_enabled = config_->GetBool("p2p.listen", true);
+    if (!listen_enabled) {
+        if (logger_interface_) {
+            logger_interface_->warning("[P2PService] P2P port mapping requested but listen=0; skipping");
+        }
+        return;
+    }
+
+    if (!p2p_mgr_->WaitUntilListening(std::chrono::seconds(5))) {
+        if (logger_interface_) {
+            logger_interface_->warning("[P2PService] P2P port mapping requested but listener is not ready; skipping");
+        }
+        return;
+    }
+
+    network::PortMappingConfig portmap_config;
+    portmap_config.mode = mode;
+    portmap_config.internal_port = p2p_mgr_->get_listen_port();
+    portmap_config.external_port = static_cast<uint16_t>(
+        config_->GetInt("p2p.external_port", portmap_config.internal_port));
+    portmap_config.lifetime_seconds = config_->GetInt("p2p.portmap_lifetime", 7200);
+
+    port_mapping_ = std::make_unique<network::PortMappingSession>();
+    const auto result = port_mapping_->Start(portmap_config);
+    if (result.success) {
+        if (logger_interface_) {
+            logger_interface_->info("[P2PService] P2P port mapped via " + result.protocol +
+                                    ": " + result.message +
+                                    (result.external_address.empty() ? "" : " (" + result.external_address + ")"));
+        }
+    } else {
+        port_mapping_.reset();
+        if (logger_interface_) {
+            logger_interface_->warning("[P2PService] P2P port mapping unavailable (" +
+                                       network::PortMappingModeName(mode) + "): " + result.message +
+                                       "; outbound P2P still works");
+        }
+    }
+}
+
+void P2PService::StopPortMapping() {
+    if (port_mapping_) {
+        if (logger_interface_ && port_mapping_->active()) {
+            logger_interface_->info("[P2PService] Removing P2P port mapping via " +
+                                    port_mapping_->protocol());
+        }
+        port_mapping_->Stop();
+        port_mapping_.reset();
     }
 }
 
@@ -733,6 +806,8 @@ bool P2PService::Start() {
         logger_interface_->info("[P2PService] P2P networking started successfully");
         logger_interface_->info("[P2PService] Listening on port " + std::to_string(listen_port_));
 
+        StartPortMappingIfEnabled();
+
         // Phase N hotfix: keep headers/block schedulers moving in P2PService mode.
         StartSchedulerTickLoop();
 
@@ -744,6 +819,7 @@ bool P2PService::Start() {
 
     } catch (const std::exception& e) {
         StopSchedulerTickLoop();
+        StopPortMapping();
         logger_interface_->error("[P2PService] Failed to start: " + std::string(e.what()));
         return false;
     }
@@ -777,6 +853,8 @@ void P2PService::Stop() {
             }
         }
 
+        StopPortMapping();
+
         // Stop P2P manager (disconnects all peers, stops threads)
         p2p_mgr_->stop();
 
@@ -788,6 +866,7 @@ void P2PService::Stop() {
 
     } catch (const std::exception& e) {
         logger_interface_->error("[P2PService] Error during shutdown: " + std::string(e.what()));
+        StopPortMapping();
         // Still reset to avoid dangling pointer
         p2p_mgr_.reset();
     }

@@ -38,6 +38,12 @@ static std::string NormalizeKey(const std::string& key) {
         {"connect",        "p2p.connect"},
         {"listen",         "p2p.listen"},
         {"maxconnections", "p2p.maxconnections"},
+        {"portmap",        "p2p.portmap"},
+        {"upnp",           "p2p.upnp"},
+        {"natpmp",         "p2p.natpmp"},
+        {"nat-pmp",        "p2p.natpmp"},
+        {"externalport",   "p2p.external_port"},
+        {"portmaplifetime","p2p.portmap_lifetime"},
 
         // Network selection
         {"testnet",        "network.testnet"},

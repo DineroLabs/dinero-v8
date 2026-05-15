@@ -28,6 +28,7 @@ cmake_install.cmake
 **/cmake_install.cmake
 Makefile
 **/Makefile
+!/depends/Makefile
 Testing/
 **/Testing/
 
@@ -179,6 +180,19 @@ dinero_support_*/
 DineroCoin-*.tar.gz
 dinero-*.tar.gz
 qt-online-installer-*.run
+
+# Bitcoin-style depends build outputs. Keep package recipes, ignore fetched
+# sources and machine-specific build prefixes.
+!/depends/
+!/depends/README.md
+!/depends/Makefile
+!/depends/packages/
+!/depends/packages/*.mk
+/depends/sources/
+/depends/work/
+/depends/current
+/depends/current-prefix.env
+/depends/*-*/
 
 # Strategic planning docs (private, not for public repo)
 AI_ROADMAP.md

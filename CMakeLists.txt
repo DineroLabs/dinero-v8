@@ -169,6 +169,7 @@ option(ENABLE_HARDWARE_WALLETS "Enable Ledger/Trezor USB HID hardware wallet sup
 # off, so we must wait until its final value is settled.)
 option(ENABLE_UTREEXO_INVARIANT_CHECKS "Enable Utreexo Pollard/Stump invariant checks (CI/debug only)" OFF)
 option(DIN_ENABLE_LEGACY_RPC "Enable deprecated legacy RPC server code paths" OFF)
+option(DINERO_ENABLE_PORTMAPPING "Enable optional UPnP/NAT-PMP P2P port mapping support when libraries are available" ON)
 
 # Phase E.3 (Dinero Core 1.0) — packaged-service build mode.
 # When ON, the build produces the artifact contract from
@@ -398,6 +399,105 @@ endif()
 
 find_package(Git QUIET)
 find_package(Threads REQUIRED)
+
+# Optional P2P port mapping support. Developer/server builds keep working when
+# miniupnpc/libnatpmp are absent, while reproducible release builds can consume
+# the pinned static libraries built by `make -C depends`.
+add_library(dinero_portmap_deps INTERFACE)
+if(DINERO_ENABLE_PORTMAPPING)
+  set(DINERO_DEPENDS_PREFIX "" CACHE PATH "Path to Dinero's Bitcoin-style depends prefix")
+  if(DINERO_DEPENDS_PREFIX STREQUAL "" AND DEFINED ENV{DINERO_DEPENDS_PREFIX})
+    set(DINERO_DEPENDS_PREFIX "$ENV{DINERO_DEPENDS_PREFIX}" CACHE PATH "Path to Dinero's Bitcoin-style depends prefix" FORCE)
+  endif()
+  if(DINERO_DEPENDS_PREFIX STREQUAL "" AND EXISTS "${CMAKE_SOURCE_DIR}/depends/current")
+    get_filename_component(DINERO_DEPENDS_PREFIX "${CMAKE_SOURCE_DIR}/depends/current" REALPATH)
+    set(DINERO_DEPENDS_PREFIX "${DINERO_DEPENDS_PREFIX}" CACHE PATH "Path to Dinero's Bitcoin-style depends prefix" FORCE)
+  endif()
+  if(NOT DINERO_DEPENDS_PREFIX STREQUAL "")
+    list(PREPEND CMAKE_PREFIX_PATH "${DINERO_DEPENDS_PREFIX}")
+    if(DEFINED ENV{PKG_CONFIG_PATH} AND NOT "$ENV{PKG_CONFIG_PATH}" STREQUAL "")
+      set(ENV{PKG_CONFIG_PATH} "${DINERO_DEPENDS_PREFIX}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+    else()
+      set(ENV{PKG_CONFIG_PATH} "${DINERO_DEPENDS_PREFIX}/lib/pkgconfig")
+    endif()
+    message(STATUS "P2P port mapping: preferring depends prefix ${DINERO_DEPENDS_PREFIX}")
+  endif()
+
+  find_package(PkgConfig QUIET)
+
+  if(PKG_CONFIG_FOUND)
+    pkg_check_modules(MINIUPNPC QUIET miniupnpc)
+    pkg_check_modules(LIBNATPMP QUIET libnatpmp)
+  endif()
+
+  if(MINIUPNPC_FOUND)
+    target_compile_definitions(dinero_portmap_deps INTERFACE DINERO_HAVE_MINIUPNPC=1)
+    target_include_directories(dinero_portmap_deps INTERFACE ${MINIUPNPC_INCLUDE_DIRS})
+    target_link_libraries(dinero_portmap_deps INTERFACE ${MINIUPNPC_LDFLAGS})
+    if(WIN32)
+      target_link_libraries(dinero_portmap_deps INTERFACE ws2_32 iphlpapi)
+    endif()
+    message(STATUS "P2P port mapping: miniupnpc found via pkg-config")
+  else()
+    if(NOT DINERO_DEPENDS_PREFIX STREQUAL "")
+      find_path(MINIUPNPC_INCLUDE_DIR NAMES miniupnpc/miniupnpc.h
+                PATHS "${DINERO_DEPENDS_PREFIX}/include" NO_DEFAULT_PATH)
+      find_library(MINIUPNPC_LIBRARY NAMES miniupnpc
+                   PATHS "${DINERO_DEPENDS_PREFIX}/lib" NO_DEFAULT_PATH)
+    endif()
+    if(NOT MINIUPNPC_INCLUDE_DIR OR NOT MINIUPNPC_LIBRARY)
+      find_path(MINIUPNPC_INCLUDE_DIR NAMES miniupnpc/miniupnpc.h)
+      find_library(MINIUPNPC_LIBRARY NAMES miniupnpc)
+    endif()
+    if(MINIUPNPC_INCLUDE_DIR AND MINIUPNPC_LIBRARY)
+      target_compile_definitions(dinero_portmap_deps INTERFACE DINERO_HAVE_MINIUPNPC=1)
+      target_include_directories(dinero_portmap_deps INTERFACE ${MINIUPNPC_INCLUDE_DIR})
+      target_link_libraries(dinero_portmap_deps INTERFACE ${MINIUPNPC_LIBRARY})
+      if(WIN32)
+        target_link_libraries(dinero_portmap_deps INTERFACE ws2_32 iphlpapi)
+      endif()
+      message(STATUS "P2P port mapping: miniupnpc found")
+    else()
+      message(STATUS "P2P port mapping: miniupnpc not found (UPnP disabled)")
+    endif()
+  endif()
+
+  if(LIBNATPMP_FOUND)
+    target_compile_definitions(dinero_portmap_deps INTERFACE DINERO_HAVE_NATPMP=1)
+    target_include_directories(dinero_portmap_deps INTERFACE ${LIBNATPMP_INCLUDE_DIRS})
+    target_link_libraries(dinero_portmap_deps INTERFACE ${LIBNATPMP_LDFLAGS})
+    if(WIN32)
+      target_compile_definitions(dinero_portmap_deps INTERFACE NATPMP_STATICLIB=1)
+      target_link_libraries(dinero_portmap_deps INTERFACE ws2_32 iphlpapi)
+    endif()
+    message(STATUS "P2P port mapping: libnatpmp found via pkg-config")
+  else()
+    if(NOT DINERO_DEPENDS_PREFIX STREQUAL "")
+      find_path(LIBNATPMP_INCLUDE_DIR NAMES natpmp.h
+                PATHS "${DINERO_DEPENDS_PREFIX}/include" NO_DEFAULT_PATH)
+      find_library(LIBNATPMP_LIBRARY NAMES natpmp
+                   PATHS "${DINERO_DEPENDS_PREFIX}/lib" NO_DEFAULT_PATH)
+    endif()
+    if(NOT LIBNATPMP_INCLUDE_DIR OR NOT LIBNATPMP_LIBRARY)
+      find_path(LIBNATPMP_INCLUDE_DIR NAMES natpmp.h)
+      find_library(LIBNATPMP_LIBRARY NAMES natpmp)
+    endif()
+    if(LIBNATPMP_INCLUDE_DIR AND LIBNATPMP_LIBRARY)
+      target_compile_definitions(dinero_portmap_deps INTERFACE DINERO_HAVE_NATPMP=1)
+      target_include_directories(dinero_portmap_deps INTERFACE ${LIBNATPMP_INCLUDE_DIR})
+      target_link_libraries(dinero_portmap_deps INTERFACE ${LIBNATPMP_LIBRARY})
+      if(WIN32)
+        target_compile_definitions(dinero_portmap_deps INTERFACE NATPMP_STATICLIB=1)
+        target_link_libraries(dinero_portmap_deps INTERFACE ws2_32 iphlpapi)
+      endif()
+      message(STATUS "P2P port mapping: libnatpmp found")
+    else()
+      message(STATUS "P2P port mapping: libnatpmp not found (NAT-PMP disabled)")
+    endif()
+  endif()
+else()
+  message(STATUS "P2P port mapping: disabled by DINERO_ENABLE_PORTMAPPING=OFF")
+endif()
 if(GIT_FOUND)
   execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --git-dir
                   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -2837,6 +2937,7 @@ add_library(dinero_core STATIC
 
   # Network
   src/network/network_invariants.cpp
+  src/network/port_mapper.cpp
   src/daemon/p2p_message.cpp
   src/daemon/peer_connection.cpp
   src/daemon/p2p_manager.cpp
@@ -2917,6 +3018,7 @@ target_link_libraries(dinero_core PUBLIC
   dinero_wallet
   dinero_lightning_keys  # Phase 3: Lightning key derivation for gRPC wallet service
   dinero_gpu_mining      # GPU mining backends (Metal/CUDA/OpenCL)
+  dinero_portmap_deps    # Optional UPnP/NAT-PMP P2P port mapping
   jsoncpp_static
   sqlite3
   secp256k1

@@ -134,6 +134,31 @@ sudo iptables -A INPUT -p tcp --dport 20999 -j ACCEPT
 Open Windows Defender Firewall and allow inbound TCP `20999` for
 `dinerod.exe` / `dinero-qt.exe`. Keep RPC `20998` local/private.
 
+### Automatic Router Port Mapping
+
+Dinero can try to open inbound TCP `20999` automatically on compatible
+home routers:
+
+```ini
+listen=1
+port=20999
+portmap=auto
+```
+
+Compatibility aliases are also accepted:
+
+```ini
+upnp=1
+natpmp=1
+```
+
+`portmap=auto` tries UPnP first, then NAT-PMP. This is best-effort:
+outbound P2P still works if the router does not support port mapping,
+UPnP/NAT-PMP is disabled, the OS firewall blocks the app, or the ISP
+uses CGNAT. Release builders should package `miniupnpc` and `libnatpmp`
+from `depends/` once Dinero moves to fully reproducible Bitcoin-style
+dependency builds.
+
 ## Network Status
 
 ### Current Network State

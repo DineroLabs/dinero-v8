@@ -324,6 +324,10 @@ QString p2pAccessPromptAcceptedKey() {
   return QStringLiteral("network/p2p_access_prompt_accepted_v1");
 }
 
+QString p2pPortMapAllowedKey() {
+  return QStringLiteral("network/p2p_portmap_auto_allowed_v1");
+}
+
 // ─────── SV2 pool miner (dinero-sv2-miner) ───────
 // Defaults point at the reference pool on LA. Users override via Settings
 // or via DINERO_SV2_* env vars for custom pools.
@@ -11740,28 +11744,33 @@ void MainWindow::maybeAutoStartDaemon() {
   }
 }
 
-void MainWindow::maybeShowP2PNetworkNotice() {
+bool MainWindow::maybeShowP2PNetworkNotice() {
   QSettings settings;
-  if (settings.value(p2pAccessPromptAcceptedKey(), false).toBool()) {
-    return;
+  if (settings.contains(p2pPortMapAllowedKey())) {
+    return settings.value(p2pPortMapAllowedKey(), false).toBool();
   }
   settings.setValue(p2pAccessPromptAcceptedKey(), true);
 
-  auto* box = new QMessageBox(this);
-  box->setAttribute(Qt::WA_DeleteOnClose);
-  box->setIcon(QMessageBox::Information);
-  box->setWindowTitle("Dinero P2P Networking");
-  box->setText(QStringLiteral("Dinero connects to the peer-to-peer network automatically."));
-  box->setInformativeText(
+  QMessageBox box(this);
+  box.setIcon(QMessageBox::Information);
+  box.setWindowTitle("Dinero P2P Networking");
+  box.setText(QStringLiteral("Dinero connects to the peer-to-peer network automatically."));
+  box.setInformativeText(
       QStringLiteral("The local node listens on TCP port %1 and connects directly to other Dinero nodes, "
                      "similar to Bitcoin Core.\n\n"
                      "Your private RPC port stays local on 127.0.0.1:20998. If macOS or Windows asks "
                      "whether to allow incoming connections, choose Allow.\n\n"
-                     "If you are behind a home router, outbound sync still works. Public inbound peers "
-                     "may require router port forwarding for TCP %1.")
+                     "Dinero can also ask compatible home routers to open TCP %1 automatically with "
+                     "UPnP/NAT-PMP. Outbound sync still works if you choose Not Now or if your router "
+                     "does not support it.")
           .arg(kDineroMainnetP2PPort));
-  box->addButton(QMessageBox::Ok);
-  box->show();
+  QPushButton* allowButton = box.addButton(QStringLiteral("Allow"), QMessageBox::AcceptRole);
+  box.addButton(QStringLiteral("Not Now"), QMessageBox::RejectRole);
+  box.exec();
+
+  const bool allowed = (box.clickedButton() == allowButton);
+  settings.setValue(p2pPortMapAllowedKey(), allowed);
+  return allowed;
 }
 
 bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
@@ -11857,7 +11866,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
 
   const QString datadir = rpc_->datadir();
 
-  maybeShowP2PNetworkNotice();
+  const bool allowPortMapping = maybeShowP2PNetworkNotice();
 
   if (!daemonProcess_) {
     daemonProcess_ = new QProcess(this);
@@ -11869,6 +11878,9 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   };
   args << "--listen" << "--p2pport" << QString::number(kDineroMainnetP2PPort)
        << "--rpc" << "--rpcport" << "20998";
+  if (allowPortMapping) {
+    args << "--portmap=auto";
+  }
   args << "-addnode=172.93.160.131:20999";
   args << "-addnode=173.249.195.59:20999";
   args << "-addnode=72.18.214.120:20999";

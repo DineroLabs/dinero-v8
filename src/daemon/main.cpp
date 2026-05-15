@@ -209,6 +209,8 @@ void print_usage(const char* program_name) {
     std::cout << "  --datadir=<dir>     Specify data directory\n";
     std::cout << "  --rpcport=<port>           RPC server port (default: 20998)\n";
     std::cout << "  --p2pport=<port>           P2P network port (default: 20999)\n";
+    std::cout << "  --portmap=<0|auto|upnp|natpmp> Try router port mapping for inbound P2P\n";
+    std::cout << "  --upnp=1 / --natpmp=1     Compatibility aliases for --portmap\n";
     std::cout << "  --wallet-socket-port=<port> Wallet socket server port (default: 50051)\n";
     std::cout << "  --regtest                  Use regression test network\n";
     std::cout << "  --testnet           Use test network\n";
