@@ -12,22 +12,16 @@
 
 namespace p2p {
 
-// Network magic bytes - must match iOS Protocol.swift and p2p_wire_protocol.cpp
-// These identify the network and prevent cross-network connections
-namespace NetworkMagic {
-    constexpr uint32_t MAINNET = 0xD1A0C0DEu;
-    constexpr uint32_t TESTNET = 0xDAB5BFFAu;
-    constexpr uint32_t REGTEST = 0xFABFB5DAu;
-}
-
-// Runtime-configurable network magic (set by init_p2p_network())
+// Runtime-configurable network magic. Set by init_p2p_network() (below)
+// from dinero::Params().magic — chainparams_impl.cpp is the single
+// source of truth for the per-chain values. There are no hardcoded
+// MAINNET/TESTNET/REGTEST literals in this file or anywhere else under
+// src/ or include/; reach for dinero::Params().magic if you need one.
 extern uint32_t g_magic;
 
-// Initialize network magic based on network name ("mainnet", "testnet", "regtest")
+// Initialize network magic based on network name ("mainnet", "testnet", "regtest").
+// Drives dinero::SelectParams() and then reads dinero::Params().magic into g_magic.
 void init_p2p_network(const std::string& network);
-
-// Legacy constant for backwards compatibility (defaults to mainnet, use g_magic instead)
-constexpr uint32_t MAGIC = NetworkMagic::MAINNET;
 
 struct Header {
     uint32_t magic;

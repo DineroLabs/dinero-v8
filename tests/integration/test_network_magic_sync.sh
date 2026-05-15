@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drift test for the P2P network magic values.
 #
-# Asserts two things:
+# Asserts three things, in increasing strictness:
 #
 #  1. seeder/include/dinero/seeder/network_constants_generated.h is in
 #     sync with src/consensus/chainparams_impl.cpp. Reruns the generator
@@ -11,15 +11,20 @@
 #  2. No file outside the canonical sources contains a hardcoded value
 #     for any of the three magics that DISAGREES with chainparams. This
 #     catches the "main daemon uses 0xD1A0C0DE but seeder probes
-#     0xD1A0C0DF" silent-divergence bug. Allowed sites: the canonical
-#     chainparams source itself, the generated seeder header, and the
-#     generator script that reads / writes them.
+#     0xD1A0C0DF" silent-divergence bug.
 #
-# The "no copies anywhere" stronger check (forbid even matching copies)
-# is intentionally NOT enforced here because the daemon-side refactor to
-# read from Params().magic at runtime is being landed incrementally;
-# enforcing zero copies would block the build until every site is done.
-# The drift-only check still catches the real wire-protocol risk.
+#  3. ENFORCED: no file outside the explicit allowlist contains ANY of
+#     the three canonical magic literals — not even ones that happen to
+#     match today. This is the "duplicate labels still taped to boxes"
+#     check: matching duplicates are exactly the attack surface for
+#     future drift. Allowed sites:
+#       - src/consensus/chainparams_impl.cpp  (canonical source)
+#       - src/crypto/params_stub.cpp          (weak-symbol fallback)
+#       - seeder/include/dinero/seeder/network_constants_generated.h
+#       - tools/sync_network_constants_headers.py  (generator)
+#       - tests/integration/test_network_magic_sync.sh  (this test)
+#       - docs/release notes / *.md  (informational only)
+#     Anything else with a literal magic value fails the build.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -109,6 +114,43 @@ then
     echo "FAIL: $drift network-magic drift site(s) detected." >&2
     exit 1
   fi
+fi
+
+# ──────────────────────────────────────────────────────────────────────
+# Strict pass: forbid ANY literal copy of the canonical magics outside
+# the allowlist, even if the copy happens to match. Matching duplicates
+# are the exact attack surface for future drift; delete them and route
+# through dinero::Params().magic instead.
+# ──────────────────────────────────────────────────────────────────────
+STRICT_PATTERN="0x(${MAINNET}|${TESTNET}|${REGTEST})"
+STRICT_IGNORE=(
+  "--glob=!src/consensus/chainparams_impl.cpp"
+  "--glob=!src/crypto/params_stub.cpp"
+  "--glob=!seeder/include/dinero/seeder/network_constants_generated.h"
+  "--glob=!tools/sync_network_constants_headers.py"
+  "--glob=!tests/integration/test_network_magic_sync.sh"
+  "--glob=!*.md"
+  "--glob=!build/"
+  "--glob=!build-*/"
+  "--glob=!obj-*/"
+)
+
+if rg --line-number --no-heading --ignore-case --pcre2 \
+      "${STRICT_IGNORE[@]}" \
+      --type=cpp --type=h \
+      "$STRICT_PATTERN" "$ROOT" >/tmp/network_magic_strict 2>/dev/null
+then
+  if [[ -s /tmp/network_magic_strict ]]; then
+    echo "FAIL: literal magic value(s) found outside the canonical allowlist." >&2
+    echo "      The three magics (0x$MAINNET / 0x$TESTNET / 0x$REGTEST) must" >&2
+    echo "      live ONLY in src/consensus/chainparams_impl.cpp and the" >&2
+    echo "      generated header. Read them via dinero::Params().magic at" >&2
+    echo "      runtime instead of hand-copying." >&2
+    cat /tmp/network_magic_strict >&2
+    rm -f /tmp/network_magic_strict
+    exit 1
+  fi
+  rm -f /tmp/network_magic_strict
 fi
 
 echo "NETWORK_MAGIC_SYNC=PASS (canonical: mainnet=0x$MAINNET testnet=0x$TESTNET regtest=0x$REGTEST)"

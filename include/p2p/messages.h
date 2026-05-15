@@ -9,7 +9,12 @@
 
 namespace din::p2p {
 
-constexpr uint32_t NET_MAGIC = 0xD1A0C0DE; // change per network
+// The P2P magic constant used to live here as a hardcoded mainnet
+// literal with a "change per network" comment that never panned out.
+// Callers now read dinero::Params().magic at runtime — chainparams_impl.cpp
+// is the single source of truth. #include "consensus/chainparams.h"
+// if you need it here.
+
 inline std::array<char,12> cmd(const char* s){
   std::array<char,12> a{}; std::strncpy(a.data(), s, 12); return a;
 }

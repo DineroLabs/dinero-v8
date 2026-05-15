@@ -25,12 +25,18 @@ namespace dinero {
  *   Year 35:    ~260.75M DIN   (0.50%/yr inflation)
  *   Year 100:   ~346.55M DIN   (0.38%/yr inflation → 0% asymptotically)
  *
- * Network Magic: 0xD1A0C0DE (Dinero mainnet — v7 restart)
+ * Network Magic: see src/consensus/chainparams_impl.cpp (Dinero mainnet — v7 restart)
  * Genesis Motto: "Dinero: Real Money For Free People - Post-Quantum Native. April 17 2026"
  */
 struct ConsensusSubsidy {
-    // Network identification
-    static constexpr uint32_t NETWORK_MAGIC = 0xD1A0C0DEu;
+    // Network identification.
+    //
+    // The P2P wire magic for each chain lives in
+    // src/consensus/chainparams_impl.cpp and is read at runtime via
+    // dinero::Params().magic. The constant that used to live here was
+    // a hardcoded mainnet-only copy with zero callers — deleted to keep
+    // exactly one truth path. If consensus code needs the magic, route
+    // through Params(); do not re-introduce a local literal.
     static constexpr const char* NETWORK_NAME = "mainnet";
     static constexpr uint32_t PROTOCOL_VERSION = 20000;  // 2.0.0 (fair launch)
 

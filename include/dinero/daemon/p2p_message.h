@@ -12,9 +12,13 @@
 
 namespace dinero {
 
-// P2P message constants
-// Canonical Dinero mainnet network magic. Must match chainparams and iOS Protocol.swift.
-const uint32_t MAGIC_BYTES = 0xD1A0C0DE;
+// P2P message constants.
+//
+// MAGIC_BYTES used to live here as a hardcoded mainnet literal. The
+// canonical per-chain values live in src/consensus/chainparams_impl.cpp;
+// read dinero::Params().magic at runtime. (This file is a duplicate of
+// include/daemon/p2p_message.h kept around for a legacy include path —
+// the same cleanup is applied there.)
 const size_t MESSAGE_HEADER_SIZE = 24;
 const size_t MAX_MESSAGE_SIZE = 4 * 1024 * 1024; // 4MB max message size (Bitcoin Core limit)
 const size_t MAX_BLOCK_SIZE = 4 * 1024 * 1024; // 4MB max block size
@@ -80,7 +84,10 @@ struct MessageHeader {
     uint32_t length;
     uint32_t checksum;
     
-    MessageHeader() : magic(MAGIC_BYTES), length(0), checksum(0) {
+    // magic defaults to 0; framing code must set it from
+    // dinero::Params().magic before sending. Same rationale as the
+    // sibling include/daemon/p2p_message.h header.
+    MessageHeader() : magic(0), length(0), checksum(0) {
         memset(command, 0, COMMAND_SIZE);
     }
 };

@@ -33,14 +33,13 @@
 #endif
 #endif
 
-// Network magic bytes for P2P protocol (must match iOS Protocol.swift)
+// Runtime P2P magic, set from chainparams (dinero::Params().magic) at
+// daemon startup after SelectParams(). The locked per-chain values
+// live in src/consensus/chainparams_impl.cpp — the single source of
+// truth. NetworkMagic::{MAINNET,TESTNET,REGTEST} constants have been
+// deleted; if you need a magic value, read dinero::Params().magic.
 namespace p2p {
-namespace NetworkMagic {
-    constexpr uint32_t MAINNET = 0xD1A0C0DEu;
-    constexpr uint32_t TESTNET = 0xDAB5BFFAu;
-    constexpr uint32_t REGTEST = 0xFABFB5DAu;
-}
-uint32_t g_magic = NetworkMagic::MAINNET;  // Runtime configurable
+uint32_t g_magic = 0;  // Set at startup; never the literal default.
 }
 
 // Global flag for shutdown signal

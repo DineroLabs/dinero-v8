@@ -227,9 +227,13 @@ public:
 
     // Configuration constants
     static constexpr uint64_t MAX_FILE_SIZE = 128 * 1024 * 1024;  // 128 MB per file (Bitcoin uses 128MB)
-    static constexpr uint32_t MAGIC_MAINNET = 0xD1A0C0DEu;
-    static constexpr uint32_t MAGIC_TESTNET = 0xDAB5BFFAu;
-    static constexpr uint32_t MAGIC_REGTEST = 0xFABFB5DAu;
+
+    // Per-chain MAGIC_* constants used to live here. They were a
+    // duplicate of the canonical values in src/consensus/chainparams_impl.cpp
+    // and were used by P2P header validation, which is a layering violation —
+    // block storage shouldn't be the source of P2P magic. BlockStorage::
+    // getMagicBytes() already reads dinero::Params().magic at runtime;
+    // call that if you need the magic for the active chain.
 
 private:
     // Internal helpers

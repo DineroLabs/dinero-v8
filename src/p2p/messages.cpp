@@ -1,5 +1,6 @@
 #include <json/json.h>
 #include "p2p/messages.h"
+#include "consensus/chainparams.h"  // dinero::Params().magic — canonical
 #include <cstring>
 #include <sstream>
 #include <iomanip>
@@ -21,7 +22,7 @@ MsgHeader::MsgHeader(uint32_t magic, const std::string& cmd, uint32_t len, uint3
 }
 
 bool MsgHeader::isValid() const {
-    return magic == NET_MAGIC;
+    return magic == dinero::Params().magic;
 }
 
 std::string MsgHeader::getCommand() const {

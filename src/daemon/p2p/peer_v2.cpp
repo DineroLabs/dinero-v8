@@ -1,4 +1,5 @@
 #include "p2p/peer_v2.h"
+#include "consensus/chainparams.h"  // dinero::Params().magic — canonical
 #include <chrono>
 #include <random>
 #include <openssl/sha.h> // for checksum; or your own sha256
@@ -53,7 +54,7 @@ void Peer::send_verack(){
 
 void Peer::write_message(const char* command, const std::vector<uint8_t>& payload){
   MsgHeader h;
-  h.magic = NET_MAGIC;
+  h.magic = dinero::Params().magic;
   h.command = cmd(command);
   h.length = (uint32_t)payload.size();
   h.checksum = checksum4(payload);
@@ -83,7 +84,7 @@ void Peer::read_header(){
       uint32_t len   = *(uint32_t*)&header_buf_[16];
       boost::endian::little_to_native_inplace(magic);
       boost::endian::little_to_native_inplace(len);
-      if(magic != NET_MAGIC || len > (8u<<20)) { close(); return; } // 8MB cap
+      if(magic != dinero::Params().magic || len > (8u<<20)) { close(); return; } // 8MB cap
       read_payload(len);
     });
 }

@@ -1,4 +1,5 @@
 #include "p2p/messages.h"
+#include "consensus/chainparams.h"  // dinero::Params().magic — canonical
 #include <cstring>
 #include <sstream>
 #include <iomanip>
@@ -20,7 +21,13 @@ MessageHeader::MessageHeader(uint32_t magic, const std::string& cmd, uint32_t le
 }
 
 bool MessageHeader::isValid() const {
-    return magic == MAGIC_MAINNET || magic == MAGIC_TESTNET || magic == MAGIC_REGTEST;
+    // Bitcoin-style: only accept the active chain's magic. The old
+    // "magic == MAGIC_MAINNET || MAGIC_TESTNET || MAGIC_REGTEST"
+    // permissive check accepted cross-network frames, which is wrong —
+    // a mainnet node should drop testnet frames at the wire. The
+    // canonical magic for the active chain comes from chainparams,
+    // set up by SelectParams() during daemon startup.
+    return magic == ::dinero::Params().magic;
 }
 
 std::string MessageHeader::getCommand() const {

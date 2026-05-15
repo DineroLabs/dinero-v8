@@ -1,6 +1,7 @@
 #include "daemon/p2p_message.h"
 #include "common/logger.h"
 #include "common/sha256d.h"
+#include "consensus/chainparams.h"  // dinero::Params().magic — canonical
 #include "network/utreexo_messages.h"
 #include <cstring>
 #include <chrono>
@@ -88,12 +89,14 @@ uint32_t P2PMessage::calculateChecksum(const std::vector<uint8_t>& data) {
 
 std::vector<uint8_t> P2PMessage::createMessageFrame(const std::string& command, const std::vector<uint8_t>& payload) {
     std::vector<uint8_t> frame;
-    
-    // Magic bytes (4 bytes)
-    frame.push_back((MAGIC_BYTES >> 0) & 0xFF);
-    frame.push_back((MAGIC_BYTES >> 8) & 0xFF);
-    frame.push_back((MAGIC_BYTES >> 16) & 0xFF);
-    frame.push_back((MAGIC_BYTES >> 24) & 0xFF);
+
+    // Magic bytes (4 bytes) — read from chainparams so the framing
+    // always matches the active network selected by SelectParams().
+    const uint32_t magic = dinero::Params().magic;
+    frame.push_back((magic >> 0) & 0xFF);
+    frame.push_back((magic >> 8) & 0xFF);
+    frame.push_back((magic >> 16) & 0xFF);
+    frame.push_back((magic >> 24) & 0xFF);
     
     // Command (12 bytes, null-padded)
     std::string cmd = command;

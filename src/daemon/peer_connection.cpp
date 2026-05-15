@@ -2,6 +2,7 @@
 #include "daemon/p2p_message.h"
 #include "common/logger.h"
 #include "compat/net_compat.h"
+#include "consensus/chainparams.h"  // dinero::Params().magic — canonical
 #include <cstring>
 #include <random>
 #include <ctime>
@@ -429,7 +430,7 @@ void PeerConnection::processReceivedData() {
                            (m_receive_buffer[2] << 16) |
                            (m_receive_buffer[3] << 24);
             
-            if (magic != MAGIC_BYTES) {
+            if (magic != dinero::Params().magic) {
                 g_logger.error("Invalid magic bytes from peer " + m_peer_id);
                 m_running = false;
                 return;

@@ -21,7 +21,12 @@ namespace din::p2p {
 
 // ---- Network constants (configurable at runtime)
 struct NetworkConfig {
-    uint32_t magic = 0xD1A0C0DE;  // Default magic, should be set via config
+    // magic MUST be initialized at startup by init_network_config()
+    // (src/p2p/p2p_wire_protocol.cpp) which reads dinero::Params().magic
+    // after SelectParams. Default 0 means a forgot-to-init NetworkConfig
+    // will produce frames rejected as bad magic — the safe failure mode
+    // versus silently sending mainnet frames on testnet.
+    uint32_t magic = 0;
     std::string user_agent_prefix = DineroUserAgent();
     uint32_t protocol_version = 70016;
     uint64_t services = 1;  // NODE_NETWORK
