@@ -3,6 +3,7 @@
 #include "secure_random.h"
 #include "crypto/sha256.h"
 #include "common/sha256d.h"  // For Bitcoin-compatible double-SHA256 checksum
+#include "consensus/chainparams.h"  // Canonical source of the P2P network magic
 #include "network/local_interfaces.h"  // Self-loop filter at dial time
 #include <iostream>
 #include <fstream>
@@ -63,15 +64,19 @@ static const uint32_t PROTOCOL_VERSION = 70016;  // Utreexo support
 #endif
 static const std::string USER_AGENT = std::string("/dinerod:") + DINERO_CLI_GIT_SHA + "/";
 
-// Network magic bytes - must match iOS Protocol.swift
-namespace NetworkMagic {
-    static const uint32_t MAINNET = 0xD1A0C0DE;
-    [[maybe_unused]] static const uint32_t TESTNET = 0xDAB5BFFA;
-    [[maybe_unused]] static const uint32_t REGTEST = 0xFABFB5DA;
-}
-// Network selection - defaults to mainnet
-// TODO: Make configurable at runtime based on --regtest/--testnet flags
-static uint32_t MAGIC_BYTES = NetworkMagic::MAINNET;  // Production: mainnet
+// Network magic bytes — now read from chainparams at call time. The
+// canonical per-chain values live in src/consensus/chainparams_impl.cpp;
+// SelectParams(chain) at daemon startup makes the right one active and
+// dinero::Params().magic returns it. The drift test in
+// tests/integration/test_network_magic_sync.sh fails the build if any
+// non-canonical literal copies sneak back in.
+//
+// The NetworkMagic namespace + static MAGIC_BYTES constants that used
+// to live here have been removed. The serialize() / parse() paths
+// below now call MagicBytes() which forwards to chainparams.
+namespace {
+inline uint32_t MagicBytes() { return dinero::Params().magic; }
+}  // namespace
 
 // Service flags - must match iOS Protocol.swift
 namespace ServiceFlags {
@@ -596,10 +601,12 @@ P2PMessage P2PMessage::create_headers(const std::vector<std::string>& header_hex
 
 std::vector<uint8_t> P2PMessage::serialize() const {
     std::vector<uint8_t> result;
-    
-    // Magic bytes (4 bytes)
+
+    // Magic bytes (4 bytes) — read from chainparams via MagicBytes() so
+    // the wire format always matches what consensus / SelectParams set.
+    const uint32_t magic = MagicBytes();
     for (int i = 0; i < 4; i++) {
-        result.push_back((MAGIC_BYTES >> (i * 8)) & 0xFF);
+        result.push_back((magic >> (i * 8)) & 0xFF);
     }
     
     // Command (12 bytes, null-padded)
@@ -638,7 +645,7 @@ std::unique_ptr<P2PMessage> P2PMessage::deserialize(const std::vector<uint8_t>& 
     for (int i = 0; i < 4; i++) {
         magic |= (static_cast<uint32_t>(data[i]) << (i * 8));
     }
-    if (magic != MAGIC_BYTES) return nullptr;
+    if (magic != MagicBytes()) return nullptr;
     
     auto msg = std::make_unique<P2PMessage>();
     

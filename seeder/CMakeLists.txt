@@ -27,6 +27,38 @@ set(SEEDER_LIB_SOURCES
 
 add_library(dinero-seeder-lib STATIC ${SEEDER_LIB_SOURCES})
 
+# ─────────────────────────────────────────────────────────────────────
+# Monorepo: auto-regenerate include/dinero/seeder/network_constants_generated.h
+# from src/consensus/chainparams_impl.cpp when it changes. The committed
+# file is the source of truth for IDEs / clangd; CMake refreshes it
+# whenever the canonical chainparams file moves. Standalone seeder
+# builds (no consensus source available) skip the gate and use the
+# committed header as-is. Mirrors the miner/chain_identity sync pattern.
+# ─────────────────────────────────────────────────────────────────────
+set(_DINERO_MONOREPO_NET_MAGIC_SYNC OFF)
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/consensus/chainparams_impl.cpp" AND
+   EXISTS "${CMAKE_SOURCE_DIR}/tools/sync_network_constants_headers.py")
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        set(_SEEDER_GEN_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/include/dinero/seeder/network_constants_generated.h")
+        set(_NET_MAGIC_SYNC_SCRIPT "${CMAKE_SOURCE_DIR}/tools/sync_network_constants_headers.py")
+        add_custom_command(
+            OUTPUT "${_SEEDER_GEN_HEADER}"
+            COMMAND ${Python3_EXECUTABLE} "${_NET_MAGIC_SYNC_SCRIPT}"
+            DEPENDS
+                "${CMAKE_SOURCE_DIR}/src/consensus/chainparams_impl.cpp"
+                "${_NET_MAGIC_SYNC_SCRIPT}"
+            COMMENT "Regenerating seeder/include/dinero/seeder/network_constants_generated.h from chainparams"
+            VERBATIM
+        )
+        add_custom_target(dinero_seeder_net_magic_gen
+            DEPENDS "${_SEEDER_GEN_HEADER}"
+        )
+        add_dependencies(dinero-seeder-lib dinero_seeder_net_magic_gen)
+        set(_DINERO_MONOREPO_NET_MAGIC_SYNC ON)
+    endif()
+endif()
+
 target_include_directories(dinero-seeder-lib
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -59,3 +91,23 @@ include(GNUInstallDirs)
 install(TARGETS dinero-seeder
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+# ─────────────────────────────────────────────────────────────────────
+# CI drift detection: confirm the committed seeder network-constants
+# header matches what chainparams_impl.cpp would generate, and that no
+# source file holds a magic value that disagrees with chainparams.
+# Only registered in monorepo mode where the chainparams source + sync
+# script are both reachable.
+# ─────────────────────────────────────────────────────────────────────
+if(_DINERO_MONOREPO_NET_MAGIC_SYNC)
+    enable_testing()
+    set(_NET_MAGIC_TEST_SCRIPT "${CMAKE_SOURCE_DIR}/tests/integration/test_network_magic_sync.sh")
+    if(EXISTS "${_NET_MAGIC_TEST_SCRIPT}")
+        add_test(
+            NAME NetworkMagicSync
+            COMMAND bash "${_NET_MAGIC_TEST_SCRIPT}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+        set_tests_properties(NetworkMagicSync PROPERTIES LABELS "seeder;network-magic")
+    endif()
+endif()

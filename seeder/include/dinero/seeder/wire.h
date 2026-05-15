@@ -7,12 +7,16 @@
 //   4) build a `getaddr` message
 //   5) parse an `addr` payload into IP:port pairs
 //
-// Magic + protocol version + port constants are intentionally inlined
-// here rather than #included from src/daemon/p2p_message.h to keep the
-// seeder binary independent of the daemon's heavyweight build graph.
-// If those constants change in the daemon, mirror the change here AND
-// add a static_assert in src/daemon/p2p_message.h to fail the build
-// when the two drift.
+// The P2P wire magic comes from network_constants_generated.h, which is
+// regenerated from src/consensus/chainparams_impl.cpp by
+// tools/sync_network_constants_headers.py. This keeps the seeder
+// binary independent of the daemon's heavyweight build graph while
+// still guaranteeing the seeder uses the same magic as the daemon.
+// The drift test in tests/integration/test_network_magic_sync.sh
+// fails the build if regen would change the file. Protocol version
+// and default port constants are still hand-mirrored — convert them
+// the same way (chainparams_impl.cpp source of truth + generated
+// header) when they next need to move.
 
 #pragma once
 
@@ -21,11 +25,16 @@
 #include <utility>
 #include <vector>
 
+#include "dinero/seeder/network_constants_generated.h"
+
 namespace dinero {
 namespace seeder {
 
-// Mirrors include/daemon/p2p_message.h:MAGIC_BYTES (0xD1A0C0DE).
-inline constexpr uint32_t kMagicBytes = 0xD1A0C0DE;
+// Default magic used by frame builders/parsers. Re-exported from the
+// generated header so existing call sites keep working. Multi-network
+// seeders should call MagicForNetwork() at startup and pass the
+// returned value into build_frame / parse_frame explicitly.
+inline constexpr uint32_t kMagicBytes = kMagicMainnet;
 
 // Mirrors src/daemon/p2p_manager.cpp:PROTOCOL_VERSION (Utreexo support).
 inline constexpr uint32_t kProtocolVersion = 70016u;

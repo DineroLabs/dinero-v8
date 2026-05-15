@@ -515,17 +515,16 @@ int main(int argc, char* argv[]) {
     dinero::SelectParams(chain);
     std::cout << "[Network] Chain parameters initialized: " << dinero::ChainToString(chain) << "\n";
 
-    // Initialize P2P network magic bytes based on selected chain
-    if (chain == dinero::Chain::REGTEST) {
-        p2p::g_magic = p2p::NetworkMagic::REGTEST;
-        std::cout << "[P2P] Network magic: 0x" << std::hex << p2p::g_magic << std::dec << " (regtest)\n";
-    } else if (chain == dinero::Chain::TESTNET) {
-        p2p::g_magic = p2p::NetworkMagic::TESTNET;
-        std::cout << "[P2P] Network magic: 0x" << std::hex << p2p::g_magic << std::dec << " (testnet)\n";
-    } else {
-        p2p::g_magic = p2p::NetworkMagic::MAINNET;
-        std::cout << "[P2P] Network magic: 0x" << std::hex << p2p::g_magic << std::dec << " (mainnet)\n";
-    }
+    // Initialize P2P network magic from chainparams (single source of truth).
+    // src/consensus/chainparams_impl.cpp owns the per-chain magic value;
+    // SelectParams() above made the correct one active. The hardcoded
+    // p2p::NetworkMagic::* constants at the top of this file remain for
+    // legacy callers that haven't migrated yet — they MUST match
+    // chainparams; the drift test in tests/integration/test_network_magic_sync.sh
+    // fails the build if they don't.
+    p2p::g_magic = dinero::Params().magic;
+    std::cout << "[P2P] Network magic: 0x" << std::hex << p2p::g_magic << std::dec
+              << " (" << dinero::ChainToString(chain) << ", from chainparams)\n";
     std::cout << "\n";
 
     std::cout << "[DaemonApp] Starting Dinero daemon with service architecture...\n";

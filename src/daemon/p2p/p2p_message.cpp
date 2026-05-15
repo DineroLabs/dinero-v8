@@ -9,23 +9,30 @@
 #include <cstring>
 #endif
 #include "common/sha256d.h"
+#include "consensus/chainparams.h"
 #ifdef QT_CORE_LIB
 #include <QIODevice>
 #endif
 
 namespace p2p {
 
-// Runtime network magic (defaults to mainnet, set by init_p2p_network)
+// Runtime network magic (defaults to mainnet, set by init_p2p_network).
+// Mirror of dinero::Params().magic — chainparams_impl.cpp is canonical.
 uint32_t g_magic = NetworkMagic::MAINNET;
 
 void init_p2p_network(const std::string& network) {
+    // Drive chainparams from the network name, then read the magic back
+    // from the canonical source. Matches src/p2p/p2p_message.cpp; the
+    // two files are duplicates that both compile into different target
+    // libraries — keep them in lockstep.
     if (network == "regtest") {
-        g_magic = NetworkMagic::REGTEST;
+        dinero::SelectParams(dinero::Chain::REGTEST);
     } else if (network == "testnet") {
-        g_magic = NetworkMagic::TESTNET;
+        dinero::SelectParams(dinero::Chain::TESTNET);
     } else {
-        g_magic = NetworkMagic::MAINNET;
+        dinero::SelectParams(dinero::Chain::MAINNET);
     }
+    g_magic = dinero::Params().magic;
 #ifdef QT_CORE_LIB
     qDebug() << "[P2P] Network magic initialized:" << Qt::hex << g_magic << "for" << QString::fromStdString(network);
 #endif

@@ -1,8 +1,10 @@
 #include "p2p/p2p_wire_protocol.h"
 #include "p2p_message.h"
 #include "common/sha256d.h"
+#include "consensus/chainparams.h"  // Canonical source of P2P magic
 #include "version.h"
 #include <array>
+#include <stdexcept>
 
 namespace din::p2p {
 
@@ -33,20 +35,25 @@ std::vector<uint8_t> build_message_with_checksum(const char* command, const std:
     return build_message(command, payload, sha256d_checksum);
 }
 
-// Network configuration initialization for different networks
+// Network configuration initialization for different networks.
+//
+// Magic value sourced from chainparams (src/consensus/chainparams_impl.cpp).
+// This file is a duplicate of src/p2p/p2p_wire_protocol.cpp — keep the
+// two in lockstep.
 void init_network_config(const std::string& network) {
     if (network == "mainnet") {
-        g_network_config.magic = 0xD1A0C0DE;  // Dinero mainnet magic
+        dinero::SelectParams(dinero::Chain::MAINNET);
         g_network_config.user_agent_prefix = DineroUserAgent();
     } else if (network == "testnet") {
-        g_network_config.magic = 0xDAB5BFFA;  // Dinero testnet magic
+        dinero::SelectParams(dinero::Chain::TESTNET);
         g_network_config.user_agent_prefix = DineroUserAgent("-testnet");
     } else if (network == "regtest") {
-        g_network_config.magic = 0xFABFB5DA;  // Dinero regtest magic
+        dinero::SelectParams(dinero::Chain::REGTEST);
         g_network_config.user_agent_prefix = DineroUserAgent("-regtest");
     } else {
         throw std::runtime_error("Unknown network: " + network);
     }
+    g_network_config.magic = dinero::Params().magic;
 
     // Also initialize p2p_message.h's magic for Qt-based peer connections
     p2p::init_p2p_network(network);
