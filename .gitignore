@@ -28,7 +28,6 @@ cmake_install.cmake
 **/cmake_install.cmake
 Makefile
 **/Makefile
-!/depends/Makefile
 Testing/
 **/Testing/
 
@@ -185,9 +184,13 @@ qt-online-installer-*.run
 # sources and machine-specific build prefixes.
 !/depends/
 !/depends/README.md
-!/depends/Makefile
+!/depends/CMakeLists.txt
+!/depends/cmake/
 !/depends/packages/
-!/depends/packages/*.mk
+!/depends/packages/*.cmake
+!/depends/toolchains/
+!/depends/toolchains/*.cmake
+/depends/build/
 /depends/sources/
 /depends/work/
 /depends/current
