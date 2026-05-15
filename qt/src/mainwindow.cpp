@@ -49,7 +49,6 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QMessageBox>
-#include <QCheckBox>
 #include <QJsonDocument>
 #include <QProcess>
 #include <QSpinBox>
@@ -11741,39 +11740,28 @@ void MainWindow::maybeAutoStartDaemon() {
   }
 }
 
-bool MainWindow::confirmP2PNetworkAccess() {
+void MainWindow::maybeShowP2PNetworkNotice() {
   QSettings settings;
   if (settings.value(p2pAccessPromptAcceptedKey(), false).toBool()) {
-    return true;
+    return;
   }
+  settings.setValue(p2pAccessPromptAcceptedKey(), true);
 
-  QMessageBox box(this);
-  box.setIcon(QMessageBox::Information);
-  box.setWindowTitle("Enable Dinero P2P Networking");
-  box.setText(QStringLiteral("Allow Dinero to connect directly to the peer-to-peer network?"));
-  box.setInformativeText(
-      QStringLiteral("Dinero will listen for other nodes on TCP port %1 and connect to peers directly. "
-                     "This helps your wallet sync and helps the network discover healthy nodes.\n\n"
+  auto* box = new QMessageBox(this);
+  box->setAttribute(Qt::WA_DeleteOnClose);
+  box->setIcon(QMessageBox::Information);
+  box->setWindowTitle("Dinero P2P Networking");
+  box->setText(QStringLiteral("Dinero connects to the peer-to-peer network automatically."));
+  box->setInformativeText(
+      QStringLiteral("The local node listens on TCP port %1 and connects directly to other Dinero nodes, "
+                     "similar to Bitcoin Core.\n\n"
                      "Your private RPC port stays local on 127.0.0.1:20998. If macOS or Windows asks "
                      "whether to allow incoming connections, choose Allow.\n\n"
-                     "If you are behind a home router, outbound sync still works. Accepting this dialog "
-                     "does not change your router; public inbound peers may still require port forwarding.")
+                     "If you are behind a home router, outbound sync still works. Public inbound peers "
+                     "may require router port forwarding for TCP %1.")
           .arg(kDineroMainnetP2PPort));
-
-  QPushButton* enableButton = box.addButton("Enable P2P", QMessageBox::AcceptRole);
-  box.addButton("Not Now", QMessageBox::RejectRole);
-  box.setDefaultButton(enableButton);
-
-  QCheckBox* remember = new QCheckBox("Do not ask again on this device");
-  remember->setChecked(true);
-  box.setCheckBox(remember);
-
-  box.exec();
-  const bool accepted = (box.clickedButton() == enableButton);
-  if (accepted && remember->isChecked()) {
-    settings.setValue(p2pAccessPromptAcceptedKey(), true);
-  }
-  return accepted;
+  box->addButton(QMessageBox::Ok);
+  box->show();
 }
 
 bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
@@ -11869,10 +11857,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
 
   const QString datadir = rpc_->datadir();
 
-  if (!confirmP2PNetworkAccess()) {
-    suppressErrorDialogs_ = false;
-    return false;
-  }
+  maybeShowP2PNetworkNotice();
 
   if (!daemonProcess_) {
     daemonProcess_ = new QProcess(this);
