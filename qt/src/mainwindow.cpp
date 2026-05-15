@@ -49,6 +49,7 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QMessageBox>
+#include <QCheckBox>
 #include <QJsonDocument>
 #include <QProcess>
 #include <QSpinBox>
@@ -317,6 +318,11 @@ QString stratumServerBinaryName() {
 
 QString localStratumEndpoint() {
   return QStringLiteral("127.0.0.1:3333");
+}
+
+constexpr int kDineroMainnetP2PPort = 20999;
+QString p2pAccessPromptAcceptedKey() {
+  return QStringLiteral("network/p2p_access_prompt_accepted_v1");
 }
 
 // ─────── SV2 pool miner (dinero-sv2-miner) ───────
@@ -11735,6 +11741,41 @@ void MainWindow::maybeAutoStartDaemon() {
   }
 }
 
+bool MainWindow::confirmP2PNetworkAccess() {
+  QSettings settings;
+  if (settings.value(p2pAccessPromptAcceptedKey(), false).toBool()) {
+    return true;
+  }
+
+  QMessageBox box(this);
+  box.setIcon(QMessageBox::Information);
+  box.setWindowTitle("Enable Dinero P2P Networking");
+  box.setText(QStringLiteral("Allow Dinero to connect directly to the peer-to-peer network?"));
+  box.setInformativeText(
+      QStringLiteral("Dinero will listen for other nodes on TCP port %1 and connect to peers directly. "
+                     "This helps your wallet sync and helps the network discover healthy nodes.\n\n"
+                     "Your private RPC port stays local on 127.0.0.1:20998. If macOS or Windows asks "
+                     "whether to allow incoming connections, choose Allow.\n\n"
+                     "If you are behind a home router, outbound sync still works. Accepting this dialog "
+                     "does not change your router; public inbound peers may still require port forwarding.")
+          .arg(kDineroMainnetP2PPort));
+
+  QPushButton* enableButton = box.addButton("Enable P2P", QMessageBox::AcceptRole);
+  box.addButton("Not Now", QMessageBox::RejectRole);
+  box.setDefaultButton(enableButton);
+
+  QCheckBox* remember = new QCheckBox("Do not ask again on this device");
+  remember->setChecked(true);
+  box.setCheckBox(remember);
+
+  box.exec();
+  const bool accepted = (box.clickedButton() == enableButton);
+  if (accepted && remember->isChecked()) {
+    settings.setValue(p2pAccessPromptAcceptedKey(), true);
+  }
+  return accepted;
+}
+
 bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   if (daemonProcess_ && daemonProcess_->state() == QProcess::Running) {
     if (showFeedback) {
@@ -11828,6 +11869,11 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
 
   const QString datadir = rpc_->datadir();
 
+  if (!confirmP2PNetworkAccess()) {
+    suppressErrorDialogs_ = false;
+    return false;
+  }
+
   if (!daemonProcess_) {
     daemonProcess_ = new QProcess(this);
   }
@@ -11836,7 +11882,8 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
     QString("--datadir=%1").arg(datadir),
     QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid())
   };
-  args << "--listen" << "--rpc" << "--rpcport" << "20998";
+  args << "--listen" << "--p2pport" << QString::number(kDineroMainnetP2PPort)
+       << "--rpc" << "--rpcport" << "20998";
   args << "-addnode=172.93.160.131:20999";
   args << "-addnode=173.249.195.59:20999";
   args << "-addnode=72.18.214.120:20999";
