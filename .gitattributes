@@ -1,2 +1,36 @@
+# Line-ending rules.
+#
+# Background: in 2026-05-14, tests/integration/test_network_magic_sync.sh
+# was created on a Windows machine with `core.autocrlf=true`. The blob
+# pushed to GitHub happened to land as LF, but a fresh Windows checkout
+# would have re-converted it to CRLF and broken bash on Linux/Mac
+# (`set -euo pipefail\r` parses `pipefail\r` as the option name). This
+# file makes the right answer the default for every shell-family file
+# in the tree.
+
+# Shell scripts: always LF, never CRLF. Bash on Linux/Mac chokes on
+# CRLF in the shebang line or `set` builtin arguments.
+*.sh   text eol=lf
+*.bash text eol=lf
+
+# Python tooling: LF for consistency with the interpreter convention.
+*.py   text eol=lf
+
+# Makefile-family: always LF.
+Makefile     text eol=lf
+debian/rules text eol=lf
+
+# Windows scripts: conventionally CRLF. .bat/.cmd require it; PowerShell
+# historically prefers it; NSIS scripts the same.
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.nsi  text eol=crlf
+*.nsh  text eol=crlf
+
+# Pre-existing per-file rules (now subsumed by the *.sh rule above but
+# kept for explicitness — drop them when the broader rule has bedded in).
 packaging/linux/build-installer.sh text eol=lf
-packaging/mac/build-installer.sh text eol=lf
+packaging/mac/build-installer.sh   text eol=lf
