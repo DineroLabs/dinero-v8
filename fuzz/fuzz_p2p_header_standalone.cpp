@@ -21,8 +21,10 @@
 #include <string>
 #include <stdexcept>
 
-// P2P constants (from dinero/daemon/p2p_message.h)
-const uint32_t MAGIC_BYTES = 0x249ED1D1;
+// P2P constants. Network magic is generated from chainparams so this
+// standalone harness cannot drift from the daemon/seeder wire identity.
+#include "../seeder/include/dinero/seeder/network_constants_generated.h"
+const uint32_t MAGIC_BYTES = dinero::seeder::kMagicMainnet;
 const size_t MESSAGE_HEADER_SIZE = 24;
 const size_t MAX_MESSAGE_SIZE = 4 * 1024 * 1024;
 const size_t COMMAND_SIZE = 12;
