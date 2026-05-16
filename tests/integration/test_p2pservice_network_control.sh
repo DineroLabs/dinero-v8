@@ -121,6 +121,13 @@ wait_rpc "${NODE_A_RPC}" "${DATA_A}" || fail "Node A RPC did not come up"
 wait_rpc "${NODE_B_RPC}" "${DATA_B}" || fail "Node B RPC did not come up"
 pass "Both regtest nodes are up"
 
+NETINFO_BOOT="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "getnetworkinfo" '[]')"
+jq -e --argjson port "${NODE_B_P2P}" \
+    '.result.networkactive == true and .result.listen == true and .result.listen_port == $port and (.result.port_mapping | type == "object")' \
+    <<<"${NETINFO_BOOT}" >/dev/null \
+    || fail "getnetworkinfo did not expose listen/port-mapping status: ${NETINFO_BOOT}"
+pass "getnetworkinfo exposes listen and port-mapping status"
+
 rpc_call "${NODE_B_RPC}" "${DATA_B}" "addnode" "[\"127.0.0.1:${NODE_A_P2P}\",\"add\"]" >/dev/null
 ADDED_JSON="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "getaddednodeinfo" '[]')"
 jq -e --arg endpoint "127.0.0.1:${NODE_A_P2P}" '.result[] | select(.addednode == $endpoint)' <<<"${ADDED_JSON}" >/dev/null \
@@ -131,6 +138,10 @@ rpc_call "${NODE_B_RPC}" "${DATA_B}" "addnode" "[\"127.0.0.1:${NODE_A_P2P}\",\"o
 wait_condition "[[ \$(rpc_call \"${NODE_B_RPC}\" \"${DATA_B}\" \"getconnectioncount\" '[]' | jq -r '.result // 0') -ge 1 ]]" \
     "Node B never connected to node A"
 pass "One-shot connect works through P2PService path"
+NETINFO_CONNECTED="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "getnetworkinfo" '[]')"
+jq -e '.result.connections >= 1 and .result.connections_out >= 1' <<<"${NETINFO_CONNECTED}" >/dev/null \
+    || fail "getnetworkinfo did not expose outbound connection count: ${NETINFO_CONNECTED}"
+pass "getnetworkinfo exposes directional peer counts"
 
 SET_OFF="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "setnetworkactive" '[false]')"
 jq -e '.result.applied == true and .result.networkactive == false and .result.requested_state == false' <<<"${SET_OFF}" >/dev/null \

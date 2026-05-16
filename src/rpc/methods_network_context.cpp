@@ -24,6 +24,7 @@
 #include "rpc/peer_json_utils.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/p2p_service.h"
+#include "consensus/chainparams.h"
 #include "common/logger.h"
 #include <memory>
 #include <atomic>
@@ -117,6 +118,99 @@ din::Json rpc_context_getconnectioncount(const ExecutionContext& ctx, const din:
         return 0;
     }
     return static_cast<int>(p2p->GetPeerCount());
+}
+
+/**
+ * getnetworkinfo - Returns P2P network status and reachability diagnostics
+ *
+ * This is the daemon truth source for operator CLI and Qt. Keep UI wording
+ * out of this layer; expose concrete facts about listening, peer direction,
+ * advertised addresses, and UPnP/NAT-PMP state.
+ */
+din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Json& params) {
+    din::Json result;
+
+    auto p2p = GetP2PService(ctx);
+    const auto network_name = dinero::Params().name;
+
+    result["version"] = 80000;
+    result["subversion"] = dinero::P2PService::GetUserAgent();
+    result["protocolversion"] = static_cast<int>(dinero::P2PService::GetProtocolVersion());
+    result["network"] = network_name;
+    result["localrelay"] = true;
+    result["timeoffset"] = 0;
+
+    din::Json networks(Json::arrayValue);
+    din::Json ipv4;
+    ipv4["name"] = "ipv4";
+    ipv4["limited"] = false;
+    ipv4["reachable"] = true;
+    ipv4["proxy"] = "";
+    networks.append(ipv4);
+    result["networks"] = networks;
+
+    if (!p2p) {
+        result["networkactive"] = false;
+        result["connections"] = 0;
+        result["connections_in"] = 0;
+        result["connections_out"] = 0;
+        result["listen"] = false;
+        result["listen_port"] = 0;
+        result["localaddresses"] = din::Json(Json::arrayValue);
+        result["warnings"] = "P2P service not available";
+
+        din::Json portmap;
+        portmap["requested"] = false;
+        portmap["active"] = false;
+        portmap["mode"] = "disabled";
+        portmap["protocol"] = "";
+        portmap["external_address"] = "";
+        portmap["external_port"] = 0;
+        portmap["message"] = "P2P service not available";
+        result["port_mapping"] = portmap;
+        return result;
+    }
+
+    const auto status = p2p->GetNetworkStatus();
+    result["networkactive"] = status.network_active;
+    result["connections"] = static_cast<Json::UInt64>(status.connections);
+    result["connections_in"] = static_cast<Json::UInt64>(status.inbound);
+    result["connections_out"] = static_cast<Json::UInt64>(status.outbound);
+    result["listen"] = status.listening;
+    result["listen_port"] = static_cast<int>(status.listen_port);
+    result["reachable"] = status.inbound > 0 || !status.advertised_addresses.empty();
+    result["inbound_observed"] = status.inbound > 0;
+
+    din::Json local_addresses(Json::arrayValue);
+    for (const auto& [address, port] : status.advertised_addresses) {
+        din::Json entry;
+        entry["address"] = address;
+        entry["port"] = static_cast<int>(port);
+        entry["score"] = 1;
+        local_addresses.append(entry);
+    }
+    result["localaddresses"] = local_addresses;
+    result["advertised_addresses_count"] = static_cast<Json::UInt64>(status.advertised_addresses.size());
+
+    din::Json portmap;
+    portmap["requested"] = status.port_mapping_requested;
+    portmap["active"] = status.port_mapping_active;
+    portmap["mode"] = status.port_mapping_mode;
+    portmap["protocol"] = status.port_mapping_protocol;
+    portmap["external_address"] = status.port_mapping_external_address;
+    portmap["external_port"] = static_cast<int>(status.port_mapping_external_port);
+    portmap["message"] = status.port_mapping_message;
+    result["port_mapping"] = portmap;
+
+    std::string warning;
+    if (status.network_active && status.listening &&
+        status.inbound == 0 && status.advertised_addresses.empty()) {
+        warning = "No inbound peer or advertised public address observed yet; outbound P2P still works";
+    }
+    result["warnings"] = warning;
+    result["rpc_schema"] = "din.rpc.v1";
+
+    return result;
 }
 
 /**
@@ -387,6 +481,16 @@ void registerNetworkMethodsContext() {
                                  RegisterMode::Overwrite,
                                  "context-aware");
 
+    g_rpcRegistry.registerHandler("getnetworkinfo",
+                                 rpc_context_getnetworkinfo,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+
+    g_rpcRegistry.registerHandler("network.info",
+                                 rpc_context_getnetworkinfo,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+
     g_rpcRegistry.registerHandler("getnettotals",
                                  rpc_context_getnettotals,
                                  RegisterMode::Overwrite,
@@ -417,5 +521,5 @@ void registerNetworkMethodsContext() {
                                  RegisterMode::Overwrite,
                                  "context-aware");
 
-    dinero::g_logger.info("[RPC Context] Registered 8 network context-aware methods");
+    dinero::g_logger.info("[RPC Context] Registered 10 network context-aware methods");
 }

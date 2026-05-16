@@ -919,6 +919,11 @@ void P2PManager::add_advertised_address(const std::string& address, uint16_t por
     std::cout << "[P2P] Advertising reachable address: " << key << std::endl;
 }
 
+std::vector<std::pair<std::string, uint16_t>> P2PManager::get_advertised_addresses() const {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    return advertised_addresses_;
+}
+
 bool P2PManager::start() {
     if (running_) {
         std::cout << "P2P manager already running" << std::endl;

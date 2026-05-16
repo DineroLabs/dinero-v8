@@ -197,6 +197,7 @@ public:
     bool is_network_active() const { return network_active_.load(std::memory_order_acquire); }
     void set_address_manager(dinero::p2p::AddressManager* address_manager);
     void add_advertised_address(const std::string& address, uint16_t port);
+    std::vector<std::pair<std::string, uint16_t>> get_advertised_addresses() const;
     
     // Message handling
     void set_message_handler(MessageHandler handler) { message_handler_ = handler; }

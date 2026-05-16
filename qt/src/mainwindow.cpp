@@ -4043,9 +4043,28 @@ void MainWindow::setupUI() {
     btnRefreshPeers_->setToolTip("Refresh peer list from daemon");
     connect(btnRefreshPeers_, &QPushButton::clicked, [this]() {
       rpc_->call("getpeerinfo", QJsonArray{});
+      rpc_->call("getnetworkinfo", QJsonArray{});
     });
     headerLayout->addWidget(btnRefreshPeers_);
     layout->addLayout(headerLayout);
+
+    auto *statusGroup = new QGroupBox("Network Status");
+    auto *statusGrid = new QGridLayout(statusGroup);
+    lblPeerSummary_ = new QLabel("Connections: -");
+    lblPeerReachability_ = new QLabel("Listening: -");
+    lblPeerPortMapping_ = new QLabel("Port mapping: -");
+    lblPeerAdvertised_ = new QLabel("Advertised: -");
+    for (auto *label : {lblPeerSummary_, lblPeerReachability_, lblPeerPortMapping_, lblPeerAdvertised_}) {
+      label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      label->setStyleSheet("QLabel { color: #cfd7df; font-size: 12px; }");
+    }
+    statusGrid->addWidget(lblPeerSummary_, 0, 0);
+    statusGrid->addWidget(lblPeerReachability_, 0, 1);
+    statusGrid->addWidget(lblPeerPortMapping_, 1, 0);
+    statusGrid->addWidget(lblPeerAdvertised_, 1, 1);
+    statusGrid->setColumnStretch(0, 1);
+    statusGrid->setColumnStretch(1, 1);
+    layout->addWidget(statusGroup);
 
     // Peer table
     tblPeers_ = new QTableWidget(0, 6);
@@ -4077,6 +4096,12 @@ void MainWindow::setupUI() {
     btnReconnectAllPeers_->setStyleSheet(chromeButtonStyle());
     connect(btnReconnectAllPeers_, &QPushButton::clicked, this, &MainWindow::onReconnectAllPeers);
     btnLayout->addWidget(btnReconnectAllPeers_);
+
+    btnCopyNetworkDiagnostics_ = new QPushButton("📋 Copy Diagnostics");
+    btnCopyNetworkDiagnostics_->setToolTip("Copy P2P status, port mapping, advertised addresses, and peers");
+    btnCopyNetworkDiagnostics_->setStyleSheet(chromeButtonStyle());
+    connect(btnCopyNetworkDiagnostics_, &QPushButton::clicked, this, &MainWindow::onCopyNetworkDiagnostics);
+    btnLayout->addWidget(btnCopyNetworkDiagnostics_);
 
     btnLayout->addStretch();
     layout->addLayout(btnLayout);
@@ -4622,6 +4647,7 @@ void MainWindow::refresh() {
 
   // Get comprehensive network info
   rpc_->getBlockCount();
+  rpc_->call("getnetworkinfo", QJsonArray());     // Get P2P listen/port-map status
   rpc_->call("getpeerinfo", QJsonArray());        // Get connection count
   rpc_->call("economics.getinfo", QJsonArray());       // Get phase & reward
   rpc_->call("economics.getsupply", QJsonArray());          // Get total supply
@@ -6128,6 +6154,10 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         qWarning() << "getmempoolinfo missing required fields";
         lblMempool_->setText("Mempool: N/A");
       }
+    }
+  } else if (method == "getnetworkinfo" || method == "network.info") {
+    if (result.isObject()) {
+      updateNetworkInfo(result.toObject());
     }
   } else if (method == "getpeerinfo" || method == "getpeerinfo") {
     // Week 7: Backend returns { "peers": [...], "connected_peers": N }
@@ -13713,6 +13743,7 @@ void MainWindow::onDisconnectPeer() {
     // Refresh peer table after disconnect
     QTimer::singleShot(1000, this, [this]() {
       rpc_->call("getpeerinfo", QJsonArray());
+      rpc_->call("getnetworkinfo", QJsonArray());
     });
   }
 }
@@ -13789,6 +13820,7 @@ void MainWindow::onBanPeer() {
 
   QTimer::singleShot(1000, this, [this]() {
     rpc_->call("getpeerinfo", QJsonArray());
+    rpc_->call("getnetworkinfo", QJsonArray());
   });
 }
 
@@ -13829,8 +13861,22 @@ void MainWindow::onReconnectAllPeers() {
     // Refresh peer table after reconnect
     QTimer::singleShot(3000, this, [this]() {
       rpc_->call("getpeerinfo", QJsonArray());
+      rpc_->call("getnetworkinfo", QJsonArray());
     });
   });
+}
+
+void MainWindow::onCopyNetworkDiagnostics() {
+  QApplication::clipboard()->setText(networkDiagnosticsText());
+  if (lblPeerSummary_) {
+    const QString previous = lblPeerSummary_->text();
+    lblPeerSummary_->setText("Diagnostics copied to clipboard");
+    QTimer::singleShot(1800, this, [this, previous]() {
+      if (lblPeerSummary_) {
+        lblPeerSummary_->setText(previous);
+      }
+    });
+  }
 }
 
 // === Block Template Viewer ===
@@ -14230,6 +14276,7 @@ void MainWindow::onWsMiningInfo(const QJsonObject& miningData) {
 }
 
 void MainWindow::onWsNetworkInfo(const QJsonObject& networkData) {
+  updateNetworkInfo(networkData);
   // Update network status
   if (lblConnections_) {
     int connections = networkData["connections"].toInt();
@@ -14291,6 +14338,113 @@ void MainWindow::updateNodeStatus(const QJsonObject& blockchainInfo, const QJson
     lblNodeSyncStatus_->setText(QString("🔄 Syncing %1%").arg(progress, 0, 'f', 1));
     lblNodeSyncStatus_->setStyleSheet("QLabel { color: #b9c2cc; font-weight: 600; }");
   }
+}
+
+void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
+  cachedNetworkInfo_ = networkInfo;
+
+  const int connections = networkInfo["connections"].toInt(0);
+  const int inbound = networkInfo["connections_in"].toInt(0);
+  const int outbound = networkInfo["connections_out"].toInt(0);
+  const bool networkActive = networkInfo["networkactive"].toBool(false);
+  const bool listening = networkInfo["listen"].toBool(false);
+  const int listenPort = networkInfo["listen_port"].toInt(kDineroMainnetP2PPort);
+  const bool inboundObserved = networkInfo["inbound_observed"].toBool(inbound > 0);
+
+  cachedPeerCount_ = connections;
+  if (lblConnections_) {
+    lblConnections_->setText(QString("Connections: %1").arg(connections));
+  }
+  if (lblPeersCount_) {
+    lblPeersCount_->setText(QString("%1 peers").arg(connections));
+  }
+  if (lblPeersStatus_) {
+    if (!networkActive) {
+      lblPeersStatus_->setText("P2P disabled");
+      lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #a9b2bc; }");
+    } else if (connections == 0) {
+      lblPeersStatus_->setText("No peers");
+      lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #a9b2bc; }");
+    } else if (inboundObserved) {
+      lblPeersStatus_->setText(QString("%1 outbound, %2 inbound").arg(outbound).arg(inbound));
+      lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #d0d7df; }");
+    } else {
+      lblPeersStatus_->setText(QString("%1 outbound, inbound not seen").arg(outbound));
+      lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #b8c0ca; }");
+    }
+  }
+
+  if (lblPeerSummary_) {
+    lblPeerSummary_->setText(QString("Connections: %1 (%2 outbound, %3 inbound)")
+        .arg(connections).arg(outbound).arg(inbound));
+  }
+  if (lblPeerReachability_) {
+    lblPeerReachability_->setText(QString("Listening: %1 on TCP %2%3")
+        .arg(listening ? "yes" : "no")
+        .arg(listenPort)
+        .arg(inboundObserved ? " · inbound seen" : " · inbound not seen"));
+  }
+
+  const QJsonObject portMap = networkInfo["port_mapping"].toObject();
+  const bool requested = portMap["requested"].toBool(false);
+  const bool active = portMap["active"].toBool(false);
+  const QString protocol = portMap["protocol"].toString();
+  const QString mode = portMap["mode"].toString("disabled");
+  const QString message = portMap["message"].toString();
+  if (lblPeerPortMapping_) {
+    QString text;
+    if (!requested) {
+      text = "Port mapping: not requested";
+    } else if (active) {
+      text = QString("Port mapping: %1 active").arg(protocol.isEmpty() ? mode : protocol);
+    } else {
+      text = QString("Port mapping: %1").arg(message.isEmpty() ? "unavailable" : message);
+    }
+    lblPeerPortMapping_->setText(text);
+  }
+
+  const QJsonArray localAddresses = networkInfo["localaddresses"].toArray();
+  QStringList advertised;
+  for (const QJsonValue& value : localAddresses) {
+    const QJsonObject obj = value.toObject();
+    const QString address = obj["address"].toString();
+    const int port = obj["port"].toInt(0);
+    if (!address.isEmpty() && port > 0) {
+      advertised << QString("%1:%2").arg(address).arg(port);
+    }
+  }
+  if (lblPeerAdvertised_) {
+    lblPeerAdvertised_->setText(advertised.isEmpty()
+        ? "Advertised: none yet"
+        : QString("Advertised: %1").arg(advertised.join(", ")));
+  }
+
+  refreshAiStatusStrip();
+}
+
+QString MainWindow::networkDiagnosticsText() const {
+  QJsonObject out;
+  out["generated_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+  out["rpc_endpoint"] = rpc_ ? rpc_->currentServer() : QString();
+  out["network_info"] = cachedNetworkInfo_;
+
+  QJsonArray peers;
+  if (tblPeers_) {
+    for (int row = 0; row < tblPeers_->rowCount(); ++row) {
+      QJsonObject peer;
+      auto* locationItem = tblPeers_->item(row, 1);
+      peer["location"] = locationItem ? locationItem->text() : "";
+      peer["endpoint"] = locationItem ? locationItem->data(Qt::UserRole).toString() : "";
+      peer["type"] = tblPeers_->item(row, 2) ? tblPeers_->item(row, 2)->text() : "";
+      peer["client"] = tblPeers_->item(row, 3) ? tblPeers_->item(row, 3)->text() : "";
+      peer["height"] = tblPeers_->item(row, 4) ? tblPeers_->item(row, 4)->text() : "";
+      peer["direction"] = tblPeers_->item(row, 5) ? tblPeers_->item(row, 5)->text() : "";
+      peers.append(peer);
+    }
+  }
+  out["peers"] = peers;
+
+  return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Indented));
 }
 
 // === Peer Table Update ===
@@ -14428,6 +14582,7 @@ void MainWindow::onExportMetrics() {
   QJsonObject network;
   network["peers_count"] = lblPeersCount_ ? lblPeersCount_->text() : "0 peers";
   network["status"] = lblPeersStatus_ ? lblPeersStatus_->text() : "Disconnected";
+  network["p2p_status"] = cachedNetworkInfo_;
   
   // Peers list
   QJsonArray peers;

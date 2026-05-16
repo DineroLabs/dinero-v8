@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 #include <unordered_map>
+#include <mutex>
 
 namespace dinero {
 
@@ -46,6 +47,22 @@ public:
     struct NetworkTotals {
         uint64_t bytes_recv{0};
         uint64_t bytes_sent{0};
+    };
+    struct NetworkStatus {
+        bool network_active{false};
+        bool listening{false};
+        uint16_t listen_port{0};
+        size_t connections{0};
+        size_t inbound{0};
+        size_t outbound{0};
+        std::vector<std::pair<std::string, uint16_t>> advertised_addresses;
+        bool port_mapping_requested{false};
+        bool port_mapping_active{false};
+        std::string port_mapping_mode{"disabled"};
+        std::string port_mapping_protocol;
+        std::string port_mapping_external_address;
+        uint16_t port_mapping_external_port{0};
+        std::string port_mapping_message;
     };
 
     P2PService() = default;
@@ -160,6 +177,7 @@ public:
     bool IsNetworkActive() const { return p2p_mgr_ ? p2p_mgr_->is_network_active() : false; }
     size_t SendPingToAll();
     NetworkTotals GetNetworkTotals() const;
+    NetworkStatus GetNetworkStatus() const;
     void BroadcastMessage(const ::P2PMessage& msg) {
         if (p2p_mgr_) p2p_mgr_->broadcast_message(msg);
     }
@@ -191,6 +209,14 @@ private:
     std::vector<std::pair<std::string, uint16_t>> reconnect_targets_;
     bool offline_mode_{false};
     std::unique_ptr<network::PortMappingSession> port_mapping_;
+    mutable std::mutex port_mapping_status_mutex_;
+    bool port_mapping_requested_{false};
+    bool port_mapping_active_{false};
+    std::string port_mapping_mode_{"disabled"};
+    std::string port_mapping_protocol_;
+    std::string port_mapping_external_address_;
+    uint16_t port_mapping_external_port_{0};
+    std::string port_mapping_message_{"not requested"};
 
     // Periodic sync loop for headers-first + block scheduler in P2PService mode.
     std::atomic<bool> scheduler_tick_running_{false};

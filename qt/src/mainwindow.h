@@ -125,6 +125,7 @@ private Q_SLOTS:
   void onDisconnectPeer();
   void onBanPeer();
   void onReconnectAllPeers();
+  void onCopyNetworkDiagnostics();
 
   // Template viewer
   void onRefreshTemplate();
@@ -194,6 +195,8 @@ private:
   void updateMiningReadinessDisplay(const QJsonObject& readiness);
   void resetMiningReadinessDisplay(const QString& summary, const QString& detail = QString());
   void updateNodeStatus(const QJsonObject& blockchainInfo, const QJsonObject& networkInfo, const QJsonObject& mempoolInfo);
+  void updateNetworkInfo(const QJsonObject& networkInfo);
+  QString networkDiagnosticsText() const;
   void updatePeerTable(const QJsonArray& peers);
   void updateBlockTemplate(const QJsonObject& blockTemplate);
   QString currentMiningMode() const;
@@ -616,6 +619,11 @@ private:
   QPushButton* btnDisconnectPeer_;
   QPushButton* btnBanPeer_;
   QPushButton* btnReconnectAllPeers_;
+  QPushButton* btnCopyNetworkDiagnostics_;
+  QLabel* lblPeerSummary_;
+  QLabel* lblPeerReachability_;
+  QLabel* lblPeerPortMapping_;
+  QLabel* lblPeerAdvertised_;
 
   // Block Template Viewer tab
   QTextEdit* txtBlockTemplate_; // Block template JSON display
@@ -670,6 +678,7 @@ private:
   int cachedHeight_ = 0;
   int cachedHeaders_ = 0;
   int cachedPeerCount_ = 0;
+  QJsonObject cachedNetworkInfo_;
   double cachedBalance_ = 0.0;
   double cachedTransparentBalance_ = 0.0;
   double cachedP2mrBalance_ = 0.0;

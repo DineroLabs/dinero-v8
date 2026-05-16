@@ -213,6 +213,51 @@ P2PService::NetworkTotals P2PService::GetNetworkTotals() const {
     return totals;
 }
 
+P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
+    NetworkStatus status;
+    if (!p2p_mgr_) {
+        std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+        status.port_mapping_requested = port_mapping_requested_;
+        status.port_mapping_active = port_mapping_active_;
+        status.port_mapping_mode = port_mapping_mode_;
+        status.port_mapping_protocol = port_mapping_protocol_;
+        status.port_mapping_external_address = port_mapping_external_address_;
+        status.port_mapping_external_port = port_mapping_external_port_;
+        status.port_mapping_message = port_mapping_message_;
+        return status;
+    }
+
+    status.network_active = p2p_mgr_->is_network_active();
+    status.listening = p2p_mgr_->IsListening();
+    status.listen_port = p2p_mgr_->get_listen_port();
+    status.advertised_addresses = p2p_mgr_->get_advertised_addresses();
+
+    const auto peers = p2p_mgr_->get_connected_peers();
+    for (const auto& peer : peers) {
+        if (!peer.is_connected) {
+            continue;
+        }
+        ++status.connections;
+        if (peer.is_outbound) {
+            ++status.outbound;
+        } else {
+            ++status.inbound;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+        status.port_mapping_requested = port_mapping_requested_;
+        status.port_mapping_active = port_mapping_active_;
+        status.port_mapping_mode = port_mapping_mode_;
+        status.port_mapping_protocol = port_mapping_protocol_;
+        status.port_mapping_external_address = port_mapping_external_address_;
+        status.port_mapping_external_port = port_mapping_external_port_;
+        status.port_mapping_message = port_mapping_message_;
+    }
+    return status;
+}
+
 void P2PService::StartSchedulerTickLoop() {
     if (scheduler_tick_running_.exchange(true)) {
         return;
@@ -355,12 +400,27 @@ void P2PService::StartPortMappingIfEnabled() {
     const std::string mode_value = config_->GetString("p2p.portmap", "");
     const bool upnp_enabled = config_->GetBool("p2p.upnp", false);
     const bool natpmp_enabled = config_->GetBool("p2p.natpmp", false);
+    auto mode = network::ParsePortMappingMode(mode_value, upnp_enabled, natpmp_enabled);
+    {
+        std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+        port_mapping_requested_ = !mode_value.empty() || upnp_enabled || natpmp_enabled;
+        port_mapping_active_ = false;
+        port_mapping_mode_ = network::PortMappingModeName(mode);
+        port_mapping_protocol_.clear();
+        port_mapping_external_address_.clear();
+        port_mapping_external_port_ = 0;
+        port_mapping_message_ = port_mapping_requested_ ? "pending" : "not requested";
+    }
+
     if (mode_value.empty() && !upnp_enabled && !natpmp_enabled) {
         return;
     }
 
-    auto mode = network::ParsePortMappingMode(mode_value, upnp_enabled, natpmp_enabled);
     if (mode == network::PortMappingMode::Disabled) {
+        {
+            std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+            port_mapping_message_ = "disabled";
+        }
         if (logger_interface_) {
             logger_interface_->info("[P2PService] P2P port mapping disabled");
         }
@@ -369,6 +429,10 @@ void P2PService::StartPortMappingIfEnabled() {
 
     const bool listen_enabled = config_->GetBool("p2p.listen", true);
     if (!listen_enabled) {
+        {
+            std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+            port_mapping_message_ = "requested but listen=0";
+        }
         if (logger_interface_) {
             logger_interface_->warning("[P2PService] P2P port mapping requested but listen=0; skipping");
         }
@@ -376,6 +440,10 @@ void P2PService::StartPortMappingIfEnabled() {
     }
 
     if (!p2p_mgr_->WaitUntilListening(std::chrono::seconds(5))) {
+        {
+            std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+            port_mapping_message_ = "requested but listener was not ready";
+        }
         if (logger_interface_) {
             logger_interface_->warning("[P2PService] P2P port mapping requested but listener is not ready; skipping");
         }
@@ -388,10 +456,21 @@ void P2PService::StartPortMappingIfEnabled() {
     portmap_config.external_port = static_cast<uint16_t>(
         config_->GetInt("p2p.external_port", portmap_config.internal_port));
     portmap_config.lifetime_seconds = config_->GetInt("p2p.portmap_lifetime", 7200);
+    {
+        std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+        port_mapping_external_port_ = portmap_config.external_port;
+    }
 
     port_mapping_ = std::make_unique<network::PortMappingSession>();
     const auto result = port_mapping_->Start(portmap_config);
     if (result.success) {
+        {
+            std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+            port_mapping_active_ = true;
+            port_mapping_protocol_ = result.protocol;
+            port_mapping_external_address_ = result.external_address;
+            port_mapping_message_ = result.message;
+        }
         if (!result.external_address.empty()) {
             std::string advertise_host;
             uint16_t advertise_port = 0;
@@ -416,6 +495,13 @@ void P2PService::StartPortMappingIfEnabled() {
         }
     } else {
         port_mapping_.reset();
+        {
+            std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+            port_mapping_active_ = false;
+            port_mapping_protocol_.clear();
+            port_mapping_external_address_.clear();
+            port_mapping_message_ = result.message.empty() ? "unavailable" : result.message;
+        }
         if (logger_interface_) {
             logger_interface_->warning("[P2PService] P2P port mapping unavailable (" +
                                        network::PortMappingModeName(mode) + "): " + result.message +
@@ -432,6 +518,14 @@ void P2PService::StopPortMapping() {
         }
         port_mapping_->Stop();
         port_mapping_.reset();
+    }
+    {
+        std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+        port_mapping_active_ = false;
+        port_mapping_protocol_.clear();
+        if (port_mapping_requested_) {
+            port_mapping_message_ = "stopped";
+        }
     }
 }
 
