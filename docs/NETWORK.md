@@ -198,6 +198,10 @@ This first overlay layer expects Tor or another compatible SOCKS5 service to
 already be running locally. Automatic hidden-service creation is a separate
 operator feature.
 
+I2P is the next natural overlay candidate, but it is not enabled in the v8
+transport layer yet. `getnetworkinfo` reports `i2p` as unavailable so tools can
+show the future slot without implying that I2P dialing works today.
+
 Setup helpers:
 
 ```bash

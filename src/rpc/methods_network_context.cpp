@@ -153,6 +153,12 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     onion["reachable"] = false;
     onion["proxy"] = "";
     networks.append(onion);
+    din::Json i2p;
+    i2p["name"] = "i2p";
+    i2p["limited"] = true;
+    i2p["reachable"] = false;
+    i2p["proxy"] = "";
+    networks.append(i2p);
     result["networks"] = networks;
 
     if (!p2p) {
@@ -193,6 +199,10 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     onion["reachable"] = status.onion_transport_reachable;
     onion["proxy"] = status.onion_proxy;
     networks.append(onion);
+    i2p["limited"] = true;
+    i2p["reachable"] = false;
+    i2p["proxy"] = "";
+    networks.append(i2p);
     result["networks"] = networks;
 
     result["networkactive"] = status.network_active;

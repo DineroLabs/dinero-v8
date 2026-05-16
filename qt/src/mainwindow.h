@@ -624,6 +624,7 @@ private:
   QLabel* lblPeerReachability_;
   QLabel* lblPeerPortMapping_;
   QLabel* lblPeerAdvertised_;
+  QLabel* lblPeerReachabilityAdvice_;
 
   // Block Template Viewer tab
   QTextEdit* txtBlockTemplate_; // Block template JSON display

@@ -4054,6 +4054,10 @@ void MainWindow::setupUI() {
     lblPeerReachability_ = new QLabel("Listening: -");
     lblPeerPortMapping_ = new QLabel("Port mapping: -");
     lblPeerAdvertised_ = new QLabel("Advertised: -");
+    lblPeerReachabilityAdvice_ = new QLabel("Reachability: checking");
+    lblPeerReachabilityAdvice_->setWordWrap(true);
+    lblPeerReachabilityAdvice_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    lblPeerReachabilityAdvice_->setStyleSheet("QLabel { color: #aeb8c2; font-size: 12px; }");
     for (auto *label : {lblPeerSummary_, lblPeerReachability_, lblPeerPortMapping_, lblPeerAdvertised_}) {
       label->setTextInteractionFlags(Qt::TextSelectableByMouse);
       label->setStyleSheet("QLabel { color: #cfd7df; font-size: 12px; }");
@@ -4062,6 +4066,7 @@ void MainWindow::setupUI() {
     statusGrid->addWidget(lblPeerReachability_, 0, 1);
     statusGrid->addWidget(lblPeerPortMapping_, 1, 0);
     statusGrid->addWidget(lblPeerAdvertised_, 1, 1);
+    statusGrid->addWidget(lblPeerReachabilityAdvice_, 2, 0, 1, 2);
     statusGrid->setColumnStretch(0, 1);
     statusGrid->setColumnStretch(1, 1);
     layout->addWidget(statusGroup);
@@ -14397,6 +14402,32 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   const bool onionReachable = onionTransport["reachable"].toBool(false);
   const QString onionProxy = onionTransport["proxy"].toString();
   const QString onionNote = onionTransport["note"].toString();
+  QString reachabilityAdvice;
+  QString reachabilityAdviceColor = "#aeb8c2";
+  if (!networkActive) {
+    reachabilityAdvice = "Reachability: P2P is disabled.";
+  } else if (!listening) {
+    reachabilityAdvice = "Reachability: outbound peer connections only.";
+  } else if (inboundObserved) {
+    reachabilityAdvice = "Reachability: inbound peers are connecting normally.";
+    reachabilityAdviceColor = "#9fd4a8";
+  } else if (active) {
+    reachabilityAdvice = QString("Reachability: router mapping is active%1.")
+        .arg(protocol.isEmpty() ? QString() : QString(" via %1").arg(protocol));
+    reachabilityAdviceColor = "#9fd4a8";
+  } else if (onionReachable) {
+    reachabilityAdvice = "Reachability: Tor fallback is ready for onion peers; clearnet may still be outbound-only.";
+    reachabilityAdviceColor = "#c6d7ff";
+  } else if (onionConfigured) {
+    reachabilityAdvice = "Reachability: Tor fallback is configured but not reachable yet.";
+    reachabilityAdviceColor = "#d8c08a";
+  } else if (requested) {
+    reachabilityAdvice = "Reachability: outbound works; router mapping did not open inbound yet.";
+    reachabilityAdviceColor = "#d8c08a";
+  } else {
+    reachabilityAdvice = "Reachability: outbound works; inbound may need router mapping or Tor fallback.";
+  }
+
   if (lblPeerPortMapping_) {
     QString text;
     if (!requested) {
@@ -14415,6 +14446,11 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
       text += QString(" · Tor: %1").arg(onionNote.isEmpty() ? "not available" : onionNote);
     }
     lblPeerPortMapping_->setText(text);
+  }
+  if (lblPeerReachabilityAdvice_) {
+    lblPeerReachabilityAdvice_->setText(reachabilityAdvice);
+    lblPeerReachabilityAdvice_->setStyleSheet(
+        QString("QLabel { color: %1; font-size: 12px; }").arg(reachabilityAdviceColor));
   }
 
   const QJsonArray localAddresses = networkInfo["localaddresses"].toArray();
