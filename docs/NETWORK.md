@@ -152,12 +152,12 @@ upnp=1
 natpmp=1
 ```
 
-`portmap=auto` tries UPnP first, then NAT-PMP. This is best-effort:
-outbound P2P still works if the router does not support port mapping,
-UPnP/NAT-PMP is disabled, the OS firewall blocks the app, or the ISP
-uses CGNAT. Release builders should package `miniupnpc` and `libnatpmp`
-from `depends/` once Dinero moves to fully reproducible Bitcoin-style
-dependency builds.
+`portmap=auto` tries UPnP first, then NAT-PMP. When the router returns a
+public address, Dinero advertises that reachable `ip:port` through P2P
+address relay so other nodes can discover it. This is best-effort: outbound
+P2P still works if the router does not support port mapping, UPnP/NAT-PMP
+is disabled, the OS firewall blocks the app, or the ISP uses CGNAT. Release
+builders should package `miniupnpc` and `libnatpmp` from `depends/`.
 
 ## Network Status
 

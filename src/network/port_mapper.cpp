@@ -13,10 +13,14 @@
 #endif
 
 #if defined(DINERO_HAVE_NATPMP)
-#include <natpmp.h>
-#ifndef _WIN32
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
 #include <sys/select.h>
 #endif
+#include <natpmp.h>
 #endif
 
 namespace dinero::network {
@@ -34,6 +38,14 @@ std::string LowerAscii(std::string value) {
 }
 
 #if defined(DINERO_HAVE_NATPMP)
+std::string InAddrToString(const in_addr& addr) {
+    char buffer[INET_ADDRSTRLEN] = {0};
+    if (!inet_ntop(AF_INET, &addr, buffer, sizeof(buffer))) {
+        return {};
+    }
+    return std::string(buffer);
+}
+
 int ReadNatPmpResponse(natpmp_t* natpmp, natpmpresp_t* response) {
     int rc = NATPMP_TRYAGAIN;
     while (rc == NATPMP_TRYAGAIN) {
@@ -242,6 +254,16 @@ bool PortMappingSession::TryNatPmp(const PortMappingConfig& config, PortMappingR
         return false;
     }
 
+    std::string public_address;
+    if (sendpublicaddressrequest(&natpmp) == 0) {
+        natpmpresp_t public_response;
+        std::memset(&public_response, 0, sizeof(public_response));
+        const int public_rc = ReadNatPmpResponse(&natpmp, &public_response);
+        if (public_rc >= 0 && public_response.type == NATPMP_RESPTYPE_PUBLICADDRESS) {
+            public_address = InAddrToString(public_response.pnu.publicaddress.addr);
+        }
+    }
+
     if (sendnewportmappingrequest(&natpmp,
                                   NATPMP_PROTOCOL_TCP,
                                   config.internal_port,
@@ -267,12 +289,15 @@ bool PortMappingSession::TryNatPmp(const PortMappingConfig& config, PortMappingR
     }
 
     if (result) {
+        const std::string mapped_port = PortToString(response.pnu.newportmapping.mappedpublicport);
         result->success = true;
         result->protocol = "NAT-PMP";
-        result->external_address = ":" + PortToString(response.pnu.newportmapping.mappedpublicport);
-        result->message = "mapped TCP " +
-            PortToString(response.pnu.newportmapping.mappedpublicport) +
-            " to local TCP " + PortToString(config.internal_port);
+        result->external_address = public_address.empty()
+            ? ":" + mapped_port
+            : public_address + ":" + mapped_port;
+        result->message = "mapped TCP " + mapped_port +
+            " to local TCP " + PortToString(config.internal_port) +
+            (public_address.empty() ? "" : " at " + public_address);
     }
     return true;
 #else
