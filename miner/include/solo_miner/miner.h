@@ -89,6 +89,7 @@ struct BlockFoundInfo {
     std::string merkle_root;
     std::string utreexo_root;
     uint32_t nbits = 0;
+    double hashrate = 0.0;  // Snapshot in H/s when the valid block was found.
 };
 
 /**

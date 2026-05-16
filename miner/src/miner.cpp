@@ -499,6 +499,10 @@ void SoloMiner::minerThread(int thread_id, uint32_t start_nonce, uint32_t stride
                 info.merkle_root = local_work->merkle_root;
                 info.utreexo_root = local_work->utreexo_root;
                 info.nbits = local_work->difficulty_bits;
+                {
+                    std::lock_guard<std::mutex> lock(stats_mutex_);
+                    info.hashrate = current_hashrate_;
+                }
                 on_block_found_(info);
             }
 
@@ -637,6 +641,10 @@ void SoloMiner::gpuMinerThread() {
                 info.merkle_root = local_work->merkle_root;
                 info.utreexo_root = local_work->utreexo_root;
                 info.nbits = local_work->difficulty_bits;
+                {
+                    std::lock_guard<std::mutex> lock(stats_mutex_);
+                    info.hashrate = current_hashrate_;
+                }
                 on_block_found_(info);
             }
 

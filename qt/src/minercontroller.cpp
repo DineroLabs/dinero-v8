@@ -4,6 +4,23 @@
 
 using namespace dinero::solo;
 
+namespace {
+
+QString formatHashrate(double hr) {
+    if (hr >= 1e9) {
+        return QString::number(hr / 1e9, 'f', 2) + " GH/s";
+    }
+    if (hr >= 1e6) {
+        return QString::number(hr / 1e6, 'f', 2) + " MH/s";
+    }
+    if (hr >= 1e3) {
+        return QString::number(hr / 1e3, 'f', 2) + " KH/s";
+    }
+    return QString::number(hr, 'f', 2) + " H/s";
+}
+
+}  // namespace
+
 MinerController::MinerController(QObject* parent)
     : QObject(parent)
 {
@@ -215,18 +232,7 @@ void MinerController::onHashrate(double hr) {
     hashrate_ = hr;
     Q_EMIT statsChanged();
 
-    // Format for log
-    QString formatted;
-    if (hr >= 1e9) {
-        formatted = QString::number(hr / 1e9, 'f', 2) + " GH/s";
-    } else if (hr >= 1e6) {
-        formatted = QString::number(hr / 1e6, 'f', 2) + " MH/s";
-    } else if (hr >= 1e3) {
-        formatted = QString::number(hr / 1e3, 'f', 2) + " KH/s";
-    } else {
-        formatted = QString::number(hr, 'f', 2) + " H/s";
-    }
-    Q_EMIT logLine("Hashrate: " + formatted);
+    Q_EMIT logLine("Hashrate: " + formatHashrate(hr));
 }
 
 void MinerController::onBlockFound(const BlockFoundInfo& info) {
@@ -237,6 +243,7 @@ void MinerController::onBlockFound(const BlockFoundInfo& info) {
     Q_EMIT logLine(QString("🎉 *** BLOCK FOUND ***  height=%1  nonce=%2")
                    .arg(info.height)
                    .arg(info.nonce));
+    Q_EMIT logLine(QString("  hashrate:     %1").arg(formatHashrate(info.hashrate > 0.0 ? info.hashrate : hashrate_)));
     Q_EMIT logLine(QString("  hash:         %1").arg(hashStr));
     Q_EMIT logLine(QString("  prev_hash:    %1").arg(QString::fromStdString(info.prev_hash)));
     Q_EMIT logLine(QString("  merkle_root:  %1").arg(QString::fromStdString(info.merkle_root)));

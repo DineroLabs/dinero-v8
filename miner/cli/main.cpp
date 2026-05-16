@@ -183,6 +183,7 @@ int main(int argc, char* argv[]) {
                   << "║  🎉 BLOCK FOUND!                                          ║\n"
                   << "╠═══════════════════════════════════════════════════════════╣\n"
                   << "║  Height: " << std::setw(10) << info.height << "                                     ║\n"
+                  << "║  Hashrate: " << std::setw(12) << formatHashrate(info.hashrate) << "                              ║\n"
                   << "║  Hash:   " << info.block_hash.substr(0, 16) << "...                       ║\n"
                   << "╚═══════════════════════════════════════════════════════════╝\n"
                   << std::endl;
