@@ -29,6 +29,11 @@ install(FILES
         "${LIBNATPMP_SOURCE_DIR}/natpmp_declspec.h"
         DESTINATION include)
 
+if(WIN32)
+  set(_libnatpmp_pc_cflags "-I\${includedir} -DNATPMP_STATICLIB")
+else()
+  set(_libnatpmp_pc_cflags "-I\${includedir}")
+endif()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/libnatpmp.pc"
 "prefix=${CMAKE_INSTALL_PREFIX}
 exec_prefix=\${prefix}
@@ -40,7 +45,7 @@ Description: NAT-PMP lightweight library
 URL: https://miniupnp.tuxfamily.org/
 Version: 20230423
 Libs: -L\${libdir} -lnatpmp
-Cflags: -I\${includedir}
+Cflags: ${_libnatpmp_pc_cflags}
 ")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libnatpmp.pc"
         DESTINATION lib/pkgconfig)

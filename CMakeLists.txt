@@ -433,8 +433,23 @@ if(DINERO_ENABLE_PORTMAPPING)
   if(MINIUPNPC_FOUND)
     target_compile_definitions(dinero_portmap_deps INTERFACE DINERO_HAVE_MINIUPNPC=1)
     target_include_directories(dinero_portmap_deps INTERFACE ${MINIUPNPC_INCLUDE_DIRS})
-    target_link_libraries(dinero_portmap_deps INTERFACE ${MINIUPNPC_LDFLAGS})
+    # Use _LINK_LIBRARIES (CMake-resolved absolute paths to the .lib /
+    # .a files) instead of _LDFLAGS (raw GCC-style "-L<dir> -l<name>
+    # -Wl,..." flags that MSVC link.exe ignores with LNK4044, then
+    # fails to resolve the symbols).
+    target_link_libraries(dinero_portmap_deps INTERFACE ${MINIUPNPC_LINK_LIBRARIES})
     if(WIN32)
+      # miniupnpc_declspec.h gates __declspec(dllimport) on _WIN32
+      # unless MINIUPNP_STATICLIB is set. The static lib was built
+      # with the define (so the symbol bodies aren't dllimport), but
+      # the consumer also needs it — otherwise port_mapper.cpp's
+      # #include <miniupnpc/miniupnpc.h> declares the symbols as
+      # __imp_* DLL imports and the link fails with LNK2019. Mirrors
+      # the NATPMP_STATICLIB pattern used in the libnatpmp branch
+      # below; ideally the .pc file's Cflags would advertise this so
+      # every pkg-config consumer gets it for free, but until the
+      # depends recipes do that, define it here as a safety net.
+      target_compile_definitions(dinero_portmap_deps INTERFACE MINIUPNP_STATICLIB=1)
       target_link_libraries(dinero_portmap_deps INTERFACE ws2_32 iphlpapi)
     endif()
     message(STATUS "P2P port mapping: miniupnpc found via pkg-config")
@@ -465,7 +480,10 @@ if(DINERO_ENABLE_PORTMAPPING)
   if(LIBNATPMP_FOUND)
     target_compile_definitions(dinero_portmap_deps INTERFACE DINERO_HAVE_NATPMP=1)
     target_include_directories(dinero_portmap_deps INTERFACE ${LIBNATPMP_INCLUDE_DIRS})
-    target_link_libraries(dinero_portmap_deps INTERFACE ${LIBNATPMP_LDFLAGS})
+    # Use _LINK_LIBRARIES (absolute paths) instead of _LDFLAGS (GCC-style
+    # "-L -l -Wl,...") so MSVC link.exe can consume them. Same rationale
+    # as the miniupnpc branch above.
+    target_link_libraries(dinero_portmap_deps INTERFACE ${LIBNATPMP_LINK_LIBRARIES})
     if(WIN32)
       target_compile_definitions(dinero_portmap_deps INTERFACE NATPMP_STATICLIB=1)
       target_link_libraries(dinero_portmap_deps INTERFACE ws2_32 iphlpapi)

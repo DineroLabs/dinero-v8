@@ -68,6 +68,11 @@ install(DIRECTORY "${MINIUPNPC_SOURCE_DIR}/include/"
         DESTINATION include/miniupnpc
         FILES_MATCHING PATTERN "*.h")
 
+if(WIN32)
+  set(_miniupnpc_pc_cflags "-I\${includedir} -DMINIUPNP_STATICLIB")
+else()
+  set(_miniupnpc_pc_cflags "-I\${includedir}")
+endif()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/miniupnpc.pc"
 "prefix=${CMAKE_INSTALL_PREFIX}
 exec_prefix=\${prefix}
@@ -79,7 +84,7 @@ Description: UPnP IGD client lightweight library
 URL: https://miniupnp.tuxfamily.org/
 Version: 2.3.3
 Libs: -L\${libdir} -lminiupnpc
-Cflags: -I\${includedir}
+Cflags: ${_miniupnpc_pc_cflags}
 ")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/miniupnpc.pc"
         DESTINATION lib/pkgconfig)
