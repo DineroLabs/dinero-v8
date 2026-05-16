@@ -4,6 +4,7 @@
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/mempool_service.h"
 #include "daemon/services/address_manager_service.h"
+#include "daemon/services/peer_scoring_service.h"
 #include "daemon/daemon_context.h"
 #include "config/seed_nodes.h"
 #include "consensus/chainparams.h"
@@ -555,6 +556,23 @@ bool P2PService::Start() {
             }
         } else if (connect_only) {
             logger_interface_->info("[P2PService] Connect-only mode: skipping peers.dat bootstrap");
+        }
+
+        if (auto* ctx = DaemonContext::instance(); ctx && ctx->peer_scoring) {
+            size_t restored_bans = 0;
+            const auto now = std::chrono::system_clock::now();
+            for (const auto& banned_peer : ctx->peer_scoring->getBannedPeers()) {
+                const auto score = ctx->peer_scoring->getPeerScore(banned_peer);
+                const auto remaining =
+                    std::chrono::duration_cast<std::chrono::seconds>(score.ban_until - now);
+                if (remaining.count() > 0 && p2p_mgr_->ban_peer(banned_peer, remaining)) {
+                    ++restored_bans;
+                }
+            }
+            if (restored_bans > 0) {
+                logger_interface_->info("[P2PService] Restored " + std::to_string(restored_bans) +
+                                        " peer ban(s) into P2P enforcement");
+            }
         }
 
         // Add user-configured seed nodes FIRST (from --connect or --addnode)

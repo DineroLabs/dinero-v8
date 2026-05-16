@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
+if [[ ! -x "${DINEROD}" && -x "${ROOT_DIR}/build-release/dinerod" ]]; then
+    DINEROD="${ROOT_DIR}/build-release/dinerod"
+fi
 BASE_PORT="${BASE_PORT:-35600}"
 NODE_A_RPC=$((BASE_PORT + 0))
 NODE_B_RPC=$((BASE_PORT + 1))
@@ -142,6 +145,24 @@ jq -e '.result.applied == true and .result.networkactive == true and .result.req
 wait_condition "[[ \$(rpc_call \"${NODE_B_RPC}\" \"${DATA_B}\" \"getconnectioncount\" '[]' | jq -r '.result // 0') -ge 1 ]]" \
     "Node B did not reconnect to runtime added node after re-enabling network"
 pass "setnetworkactive(true) reconnects through runtime seed list"
+
+BAN_JSON="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "setban" "[\"127.0.0.1\",\"add\",60,false]")"
+jq -e '.result.success == true and .result.address == "127.0.0.1"' <<<"${BAN_JSON}" >/dev/null \
+    || fail "setban add did not report success: ${BAN_JSON}"
+wait_condition "[[ \$(rpc_call \"${NODE_B_RPC}\" \"${DATA_B}\" \"getconnectioncount\" '[]' | jq -r '.result // -1') -eq 0 ]]" \
+    "Node B did not disconnect the banned peer"
+LIST_BANNED="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "listbanned" '[]')"
+jq -e '.result[] | select(.address == "127.0.0.1" and .banned_until > .ban_created)' <<<"${LIST_BANNED}" >/dev/null \
+    || fail "listbanned missing live P2P ban entry: ${LIST_BANNED}"
+pass "setban add disconnects and listbanned exposes the ban"
+
+UNBAN_JSON="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "setban" "[\"127.0.0.1\",\"remove\"]")"
+jq -e '.result.success == true and .result.address == "127.0.0.1"' <<<"${UNBAN_JSON}" >/dev/null \
+    || fail "setban remove did not report success: ${UNBAN_JSON}"
+rpc_call "${NODE_B_RPC}" "${DATA_B}" "addnode" "[\"127.0.0.1:${NODE_A_P2P}\",\"onetry\"]" >/dev/null
+wait_condition "[[ \$(rpc_call \"${NODE_B_RPC}\" \"${DATA_B}\" \"getconnectioncount\" '[]' | jq -r '.result // 0') -ge 1 ]]" \
+    "Node B did not reconnect after removing the ban"
+pass "setban remove allows reconnection"
 
 REMOVE_JSON="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "addnode" "[\"127.0.0.1:${NODE_A_P2P}\",\"remove\"]")"
 jq -e '.result.success == true and .result.removed == true' <<<"${REMOVE_JSON}" >/dev/null \

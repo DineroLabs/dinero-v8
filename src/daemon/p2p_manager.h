@@ -150,6 +150,12 @@ struct P2PMessage {
 
 class P2PManager {
 public:
+    struct BanEntry {
+        std::string target;
+        int64_t ban_created{0};
+        int64_t banned_until{0};
+    };
+
     using MessageHandler = std::function<void(const std::string& peer_address, const P2PMessage& message)>;
     using PeerConnectedHandler = std::function<void(const std::string& peer_address)>;
     using PeerDisconnectedHandler = std::function<void(const std::string& peer_address)>;
@@ -182,6 +188,11 @@ public:
     std::vector<std::pair<std::string, uint16_t>> get_seed_nodes() const;
     bool connect_to_peer(const std::string& address, uint16_t port);
     void disconnect_peer(const std::string& peer_address);
+    bool ban_peer(const std::string& target, std::chrono::seconds duration);
+    bool unban_peer(const std::string& target);
+    void clear_banned_peers();
+    std::vector<BanEntry> list_banned_peers() const;
+    bool is_peer_banned(const std::string& address, uint16_t port = 0) const;
     void set_network_active(bool active);
     bool is_network_active() const { return network_active_.load(std::memory_order_acquire); }
     void set_address_manager(dinero::p2p::AddressManager* address_manager);
@@ -302,6 +313,8 @@ private:
     std::vector<std::pair<std::string, uint16_t>> advertised_addresses_;
     dinero::p2p::AddressManager* address_manager_{nullptr};  // Owned by AddressManagerService
     std::string peers_file_path_;  // Phase C: Persistent peer database path
+    mutable std::mutex bans_mutex_;
+    std::unordered_map<std::string, BanEntry> banned_peers_;
     
     // Message handling
     MessageHandler message_handler_;

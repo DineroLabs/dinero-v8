@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "rpcclient.h"
+#include <QMenu>
 #include <QMenuBar>
 #include <QAction>
 #include <QStandardItemModel>
@@ -45,6 +46,7 @@
 #include <QGroupBox>
 #include <QScrollArea>
 #include <QClipboard>
+#include <QCursor>
 #include <QApplication>
 #include <QScreen>
 #include <QGuiApplication>
@@ -77,6 +79,7 @@
 #include <QFileInfo>
 #include <QGraphicsColorizeEffect>
 #include <QHash>
+#include <QSet>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
@@ -207,6 +210,16 @@ QString peerHostFromEndpoint(const QString& endpoint) {
     return trimmed.section(':', 0, 0);
   }
   return trimmed;
+}
+
+bool isDefaultBootstrapPeerHost(const QString& host) {
+  static const QSet<QString> bootstrapPeers{
+      "172.93.160.131",
+      "173.249.195.59",
+      "72.18.214.120",
+      "96.9.226.98",
+  };
+  return bootstrapPeers.contains(host.trimmed());
 }
 
 QString peerLocationLabel(const QString& endpoint, int peerIndex) {
@@ -13709,7 +13722,7 @@ void MainWindow::onBanPeer() {
 
   int row = tblPeers_->currentRow();
   if (row < 0) {
-    QMessageBox::warning(this, "No Peer Selected", "Please select a peer to ban.");
+    QMessageBox::warning(this, "No Peer Selected", "Please select a peer to manage.");
     return;
   }
 
@@ -13717,26 +13730,66 @@ void MainWindow::onBanPeer() {
   QString addr = peerItem ? peerItem->data(Qt::UserRole).toString() : QString();
   if (addr.isEmpty() && peerItem) addr = peerItem->text();
   const QString label = peerItem ? peerItem->text() : addr;
-  // Extract IP (remove port)
-  QString ip = peerHostFromEndpoint(addr);
-
-  auto reply = QMessageBox::question(this, "Ban Peer",
-    QString("Ban %1?\n\nThis will disconnect and prevent reconnection.").arg(label),
-    QMessageBox::Yes | QMessageBox::No);
-
-  if (reply == QMessageBox::Yes) {
-    // Use setban RPC
-    QJsonArray params;
-    params.append(ip);
-    params.append("add");
-    params.append(86400); // Ban for 24 hours
-    rpc_->call("setban", params);
-
-    // Refresh peer table after ban
-    QTimer::singleShot(1000, this, [this]() {
-      rpc_->call("getpeerinfo", QJsonArray());
-    });
+  const QString ip = peerHostFromEndpoint(addr);
+  if (ip.isEmpty()) {
+    QMessageBox::warning(this, "Peer Address Missing", "The selected peer does not have a usable address.");
+    return;
   }
+
+  QMenu menu(this);
+  QAction* block24h = menu.addAction("Block for 24 hours");
+  block24h->setData(86400);
+  QAction* block7d = menu.addAction("Block for 7 days");
+  block7d->setData(604800);
+  QAction* blockLong = menu.addAction("Block permanently");
+  blockLong->setData(315360000); // 10 years; effectively permanent for a desktop ban.
+  menu.addSeparator();
+  QAction* unblock = menu.addAction("Unblock this address");
+  unblock->setData(QStringLiteral("remove"));
+
+  QAction* chosen = menu.exec(btnBanPeer_
+      ? btnBanPeer_->mapToGlobal(QPoint(0, btnBanPeer_->height()))
+      : QCursor::pos());
+  if (!chosen) {
+    return;
+  }
+
+  const bool removing = chosen->data().toString() == QStringLiteral("remove");
+
+  if (!removing && isDefaultBootstrapPeerHost(ip)) {
+    auto reply = QMessageBox::question(this, "Block Bootstrap Peer",
+      QString("%1 is one of Dinero's default bootstrap peers.\n\nBlocking it is allowed, but it can reduce your node's ability to find peers automatically. Continue?")
+        .arg(label),
+      QMessageBox::Yes | QMessageBox::No);
+    if (reply != QMessageBox::Yes) {
+      return;
+    }
+  }
+
+  if (!removing) {
+    auto reply = QMessageBox::question(this, "Block Peer",
+      QString("%1\n\n%2 will disconnect this peer and prevent reconnection.")
+        .arg(label, chosen->text()),
+      QMessageBox::Yes | QMessageBox::No);
+    if (reply != QMessageBox::Yes) {
+      return;
+    }
+  }
+
+  QJsonArray params;
+  params.append(ip);
+  if (removing) {
+    params.append("remove");
+  } else {
+    params.append("add");
+    params.append(chosen->data().toInt());
+    params.append(false);
+  }
+  rpc_->call("setban", params);
+
+  QTimer::singleShot(1000, this, [this]() {
+    rpc_->call("getpeerinfo", QJsonArray());
+  });
 }
 
 void MainWindow::onReconnectAllPeers() {

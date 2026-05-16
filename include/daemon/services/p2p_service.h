@@ -130,6 +130,21 @@ public:
         p2p_mgr_->disconnect_peer(peer_address);
         return true;
     }
+    bool BanPeer(const std::string& target, std::chrono::seconds duration) {
+        return p2p_mgr_ ? p2p_mgr_->ban_peer(target, duration) : false;
+    }
+    bool UnbanPeer(const std::string& target) {
+        return p2p_mgr_ ? p2p_mgr_->unban_peer(target) : false;
+    }
+    void ClearBannedPeers() {
+        if (p2p_mgr_) p2p_mgr_->clear_banned_peers();
+    }
+    std::vector<::P2PManager::BanEntry> ListBannedPeers() const {
+        return p2p_mgr_ ? p2p_mgr_->list_banned_peers() : std::vector<::P2PManager::BanEntry>{};
+    }
+    bool IsPeerBanned(const std::string& address, uint16_t port = 0) const {
+        return p2p_mgr_ ? p2p_mgr_->is_peer_banned(address, port) : false;
+    }
     bool AddSeedNode(const std::string& address, uint16_t port) {
         if (!p2p_mgr_) return false;
         p2p_mgr_->add_seed_node(address, port);

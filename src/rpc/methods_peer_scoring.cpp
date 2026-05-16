@@ -1,5 +1,6 @@
 #include "rpc/rpc_registry.h"
 #include "daemon/daemon_context.h"
+#include "daemon/services/p2p_service.h"
 #include "daemon/services/peer_scoring_service.h"
 #include "common/logger.h"
 #include "din_json.h"
@@ -10,6 +11,14 @@ namespace rpc {
 using din::Json;
 using ::ExecutionContext;
 
+static P2PService* GetP2PService() {
+    auto* daemon_ctx = DaemonContext::instance();
+    if (!daemon_ctx || !daemon_ctx->p2p) {
+        return nullptr;
+    }
+    return daemon_ctx->p2p.get();
+}
+
 /**
  * listbanned - List all banned peers
  *
@@ -17,11 +26,28 @@ using ::ExecutionContext;
  */
 static Json listbanned_impl(const ExecutionContext& ctx, const Json& params) {
     auto* daemon_ctx = DaemonContext::instance();
-    if (!daemon_ctx || !daemon_ctx->peer_scoring) {
-        throw std::runtime_error("Peer scoring service not available");
+    auto* p2p = GetP2PService();
+    if (!daemon_ctx || (!daemon_ctx->peer_scoring && !p2p)) {
+        throw std::runtime_error("Peer ban services not available");
     }
 
     Json result = din::arr();
+
+    if (p2p) {
+        for (const auto& ban : p2p->ListBannedPeers()) {
+            Json entry = din::obj();
+            entry["address"] = ban.target;
+            entry["peer_id"] = ban.target;
+            entry["ban_created"] = static_cast<Json::Int64>(ban.ban_created);
+            entry["banned_until"] = static_cast<Json::Int64>(ban.banned_until);
+            entry["ban_until"] = static_cast<Json::Int64>(ban.banned_until);
+            entry["ban_duration"] = static_cast<Json::Int64>(ban.banned_until - ban.ban_created);
+            entry["source"] = "manual";
+            result.append(entry);
+        }
+        return result;
+    }
+
     auto banned_peers = daemon_ctx->peer_scoring->getBannedPeers();
 
     for (const auto& peer_id : banned_peers) {
@@ -50,15 +76,16 @@ static Json listbanned_impl(const ExecutionContext& ctx, const Json& params) {
  */
 static Json setban_impl(const ExecutionContext& ctx, const Json& params) {
     auto* daemon_ctx = DaemonContext::instance();
-    if (!daemon_ctx || !daemon_ctx->peer_scoring) {
-        throw std::runtime_error("Peer scoring service not available");
+    auto* p2p = GetP2PService();
+    if (!daemon_ctx || (!daemon_ctx->peer_scoring && !p2p)) {
+        throw std::runtime_error("Peer ban services not available");
     }
 
     if (params.size() < 2) {
-        throw std::invalid_argument("setban requires at least 2 parameters: peer_id command [bantime] [absolute]");
+        throw std::invalid_argument("setban requires at least 2 parameters: address command [bantime] [absolute]");
     }
 
-    std::string peer_id = params[0].asString();
+    std::string address = params[0].asString();
     std::string command = params[1].asString();
 
     if (command == "add") {
@@ -87,22 +114,36 @@ static Json setban_impl(const ExecutionContext& ctx, const Json& params) {
             duration = std::chrono::seconds(bantime);
         }
 
-        daemon_ctx->peer_scoring->banPeer(peer_id, duration);
+        if (duration.count() <= 0) {
+            throw std::invalid_argument("Ban duration must be positive");
+        }
+
+        if (p2p && !p2p->BanPeer(address, duration)) {
+            throw std::runtime_error("Failed to ban peer address");
+        }
+        if (daemon_ctx->peer_scoring) {
+            daemon_ctx->peer_scoring->banPeer(address, duration);
+        }
 
         Json result = din::obj();
         result["success"] = true;
         result["message"] = "Peer banned successfully";
-        result["peer_id"] = peer_id;
+        result["address"] = address;
         result["duration_seconds"] = static_cast<Json::Int64>(duration.count());
         return result;
 
     } else if (command == "remove") {
-        daemon_ctx->peer_scoring->unbanPeer(peer_id);
+        if (p2p) {
+            p2p->UnbanPeer(address);
+        }
+        if (daemon_ctx->peer_scoring) {
+            daemon_ctx->peer_scoring->unbanPeer(address);
+        }
 
         Json result = din::obj();
         result["success"] = true;
         result["message"] = "Peer unbanned successfully";
-        result["peer_id"] = peer_id;
+        result["address"] = address;
         return result;
 
     } else {
@@ -117,11 +158,17 @@ static Json setban_impl(const ExecutionContext& ctx, const Json& params) {
  */
 static Json clearbanned_impl(const ExecutionContext& ctx, const Json& params) {
     auto* daemon_ctx = DaemonContext::instance();
-    if (!daemon_ctx || !daemon_ctx->peer_scoring) {
-        throw std::runtime_error("Peer scoring service not available");
+    auto* p2p = GetP2PService();
+    if (!daemon_ctx || (!daemon_ctx->peer_scoring && !p2p)) {
+        throw std::runtime_error("Peer ban services not available");
     }
 
-    daemon_ctx->peer_scoring->clearAllBans();
+    if (p2p) {
+        p2p->ClearBannedPeers();
+    }
+    if (daemon_ctx->peer_scoring) {
+        daemon_ctx->peer_scoring->clearAllBans();
+    }
 
     Json result = din::obj();
     result["success"] = true;

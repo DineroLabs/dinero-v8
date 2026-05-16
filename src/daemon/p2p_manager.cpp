@@ -12,6 +12,8 @@
 #include <cstring>
 #include <cerrno>
 #include <cassert>  // Ring 3 Phase 4c: TS1 invariant assertions
+#include <cctype>
+#include <ctime>
 #include <deque>
 #include <optional>  // Ring 3 Phase 4d: TS2 lock-free pattern
 #include <random>    // Phase B (v8 peer discovery): mt19937 for addr-relay peer selection
@@ -187,6 +189,149 @@ bool IsLocalOrWildcardAddress(const std::string& address) {
            address == "0.0.0.0" ||
            address == "::1" ||
            address == "::";
+}
+
+std::string TrimAscii(std::string value) {
+    auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(),
+                                            [&](unsigned char c) { return !is_space(c); }));
+    value.erase(std::find_if(value.rbegin(), value.rend(),
+                             [&](unsigned char c) { return !is_space(c); }).base(),
+                value.end());
+    return value;
+}
+
+bool ParseUint16(const std::string& value, uint16_t* out_port) {
+    if (!out_port || value.empty()) {
+        return false;
+    }
+    try {
+        size_t consumed = 0;
+        const unsigned long parsed = std::stoul(value, &consumed);
+        if (consumed != value.size() || parsed == 0 || parsed > 65535) {
+            return false;
+        }
+        *out_port = static_cast<uint16_t>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool SplitHostPort(const std::string& target,
+                   std::string* out_host,
+                   uint16_t* out_port,
+                   bool* out_has_port) {
+    if (!out_host || !out_port || !out_has_port) {
+        return false;
+    }
+
+    const std::string trimmed = TrimAscii(target);
+    if (trimmed.empty()) {
+        return false;
+    }
+
+    *out_host = trimmed;
+    *out_port = 0;
+    *out_has_port = false;
+
+    if (trimmed.front() == '[') {
+        const size_t close = trimmed.find(']');
+        if (close == std::string::npos || close == 1) {
+            return false;
+        }
+        *out_host = trimmed.substr(1, close - 1);
+        if (close + 1 < trimmed.size()) {
+            if (trimmed[close + 1] != ':') {
+                return false;
+            }
+            *out_has_port = ParseUint16(trimmed.substr(close + 2), out_port);
+            return *out_has_port;
+        }
+        return true;
+    }
+
+    const size_t first_colon = trimmed.find(':');
+    if (first_colon != std::string::npos && first_colon == trimmed.rfind(':')) {
+        uint16_t parsed_port = 0;
+        if (ParseUint16(trimmed.substr(first_colon + 1), &parsed_port)) {
+            *out_host = trimmed.substr(0, first_colon);
+            *out_port = parsed_port;
+            *out_has_port = true;
+        }
+    }
+
+    return !out_host->empty();
+}
+
+bool Ipv4ToHostOrder(const std::string& value, uint32_t* out) {
+    if (!out) {
+        return false;
+    }
+    struct in_addr addr {};
+    if (inet_pton(AF_INET, value.c_str(), &addr) != 1) {
+        return false;
+    }
+    *out = ntohl(addr.s_addr);
+    return true;
+}
+
+bool CidrMatches(const std::string& cidr, const std::string& address) {
+    const size_t slash = cidr.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= cidr.size()) {
+        return false;
+    }
+
+    int prefix = -1;
+    try {
+        size_t consumed = 0;
+        prefix = std::stoi(cidr.substr(slash + 1), &consumed);
+        if (consumed != cidr.size() - slash - 1 || prefix < 0 || prefix > 32) {
+            return false;
+        }
+    } catch (...) {
+        return false;
+    }
+
+    uint32_t base = 0;
+    uint32_t candidate = 0;
+    if (!Ipv4ToHostOrder(cidr.substr(0, slash), &base) ||
+        !Ipv4ToHostOrder(address, &candidate)) {
+        return false;
+    }
+
+    const uint32_t mask = (prefix == 0) ? 0u : (0xffffffffu << (32 - prefix));
+    return (base & mask) == (candidate & mask);
+}
+
+bool BanTargetMatches(const std::string& target,
+                      const std::string& address,
+                      uint16_t port) {
+    const std::string normalized = TrimAscii(target);
+    if (normalized.empty()) {
+        return false;
+    }
+
+    if (normalized.find('/') != std::string::npos) {
+        return CidrMatches(normalized, address);
+    }
+
+    if (port != 0 && normalized == AddressKey(address, port)) {
+        return true;
+    }
+
+    std::string host;
+    uint16_t target_port = 0;
+    bool has_port = false;
+    if (!SplitHostPort(normalized, &host, &target_port, &has_port)) {
+        return false;
+    }
+
+    if (has_port) {
+        return port != 0 && target_port == port && host == address;
+    }
+
+    return host == address;
 }
 
 PeerInfo PeerInfoForAddress(const std::string& address, uint16_t port) {
@@ -957,6 +1102,9 @@ bool P2PManager::remember_peer_address(const std::string& address,
     if (port != listen_port_) {
         return false;
     }
+    if (is_peer_banned(address, port)) {
+        return false;
+    }
 
     auto network_addr = NetworkAddressForPeer(address, port);
     if (!network_addr.isValid() || !network_addr.isRoutable()) {
@@ -1103,6 +1251,12 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
                 freeaddrinfo(res);
             }
         }
+    }
+
+    if (is_peer_banned(address, port) || is_peer_banned(resolved_ip, port)) {
+        std::cout << "[P2P] Skipping banned peer: " << address << ":" << port
+                  << " (resolved " << resolved_ip << ")" << std::endl;
+        return false;
     }
 
     // Check if already connected or connection in progress
@@ -1399,6 +1553,13 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
         std::cerr << "[P2P] Warning: Failed to get peer source port: " << strerror(errno) << std::endl;
         // Fallback: Use socket FD as unique identifier
         source_port = static_cast<uint16_t>(client_socket & 0xFFFF);
+    }
+
+    if (is_peer_banned(client_address, source_port) || is_peer_banned(client_address, 0)) {
+        std::cout << "[P2P] Rejected banned inbound peer: "
+                  << client_address << ":" << source_port << std::endl;
+        close_socket(client_socket);
+        return;
     }
 
     // Ring 3 Phase 4c: Create peer with shared_ptr for TS1 compliance
@@ -1722,6 +1883,96 @@ void P2PManager::disconnect_peer(const std::string& peer_address) {
     if (peer_disconnected_handler_) {
         peer_disconnected_handler_(peer_address);
     }
+}
+
+bool P2PManager::ban_peer(const std::string& target, std::chrono::seconds duration) {
+    const std::string normalized = TrimAscii(target);
+    if (normalized.empty() || duration.count() <= 0) {
+        return false;
+    }
+
+    const auto now = std::chrono::system_clock::now();
+    const auto created = std::chrono::system_clock::to_time_t(now);
+    const auto banned_until = std::chrono::system_clock::to_time_t(now + duration);
+
+    {
+        std::lock_guard<std::mutex> lock(bans_mutex_);
+        banned_peers_[normalized] = BanEntry{
+            normalized,
+            static_cast<int64_t>(created),
+            static_cast<int64_t>(banned_until),
+        };
+    }
+
+    std::vector<std::string> peers_to_disconnect;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [peer_key, peer] : connected_peers_) {
+            if (peer && peer->is_connected &&
+                BanTargetMatches(normalized, peer->address, peer->port)) {
+                peers_to_disconnect.push_back(peer_key);
+            }
+        }
+    }
+
+    for (const auto& peer_key : peers_to_disconnect) {
+        disconnect_peer(peer_key);
+    }
+
+    std::cout << "[P2P] Banned peer target " << normalized
+              << " for " << duration.count() << " seconds"
+              << " (disconnected " << peers_to_disconnect.size() << " peer(s))" << std::endl;
+    return true;
+}
+
+bool P2PManager::unban_peer(const std::string& target) {
+    const std::string normalized = TrimAscii(target);
+    if (normalized.empty()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(bans_mutex_);
+    return banned_peers_.erase(normalized) > 0;
+}
+
+void P2PManager::clear_banned_peers() {
+    std::lock_guard<std::mutex> lock(bans_mutex_);
+    banned_peers_.clear();
+}
+
+std::vector<P2PManager::BanEntry> P2PManager::list_banned_peers() const {
+    const auto now = static_cast<int64_t>(std::time(nullptr));
+    std::vector<BanEntry> entries;
+
+    std::lock_guard<std::mutex> lock(bans_mutex_);
+    entries.reserve(banned_peers_.size());
+    for (const auto& [target, entry] : banned_peers_) {
+        if (entry.banned_until > now) {
+            entries.push_back(entry);
+        }
+    }
+    std::sort(entries.begin(), entries.end(), [](const BanEntry& a, const BanEntry& b) {
+        return a.target < b.target;
+    });
+    return entries;
+}
+
+bool P2PManager::is_peer_banned(const std::string& address, uint16_t port) const {
+    if (address.empty()) {
+        return false;
+    }
+
+    const auto now = static_cast<int64_t>(std::time(nullptr));
+    std::lock_guard<std::mutex> lock(bans_mutex_);
+    for (const auto& [target, entry] : banned_peers_) {
+        if (entry.banned_until <= now) {
+            continue;
+        }
+        if (BanTargetMatches(target, address, port)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void P2PManager::set_network_active(bool active) {
