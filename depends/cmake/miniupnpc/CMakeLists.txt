@@ -53,6 +53,13 @@ if(APPLE)
 endif()
 
 if(WIN32)
+  # miniupnpc_declspec.h gates __declspec(dllimport) on _WIN32 unless
+  # MINIUPNP_STATICLIB is defined. We build a STATIC lib here, so we
+  # MUST define it both when compiling the sources (otherwise function
+  # bodies hit C2491 "definition of dllimport function not allowed")
+  # AND when downstream consumers include the public headers. PUBLIC
+  # so the define flows out via target_link_libraries(... miniupnpc).
+  target_compile_definitions(miniupnpc PUBLIC MINIUPNP_STATICLIB)
   target_link_libraries(miniupnpc PUBLIC ws2_32 iphlpapi)
 endif()
 
