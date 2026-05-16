@@ -17,7 +17,12 @@ ExternalProject_Add(miniupnpc
     -G "${CMAKE_GENERATOR}"
     ${DINERO_DEPENDS_COMMON_CMAKE_ARGS}
     -DMINIUPNPC_SOURCE_DIR=<SOURCE_DIR>
+  # --config is needed for multi-config generators (Visual Studio, Xcode).
+  # CMAKE_BUILD_TYPE only steers single-config generators (Ninja, Make), so
+  # without --config the inner cmake --build would default to Debug for VS
+  # gen, then `cmake --install` would look in Release/ and fail with
+  # "file INSTALL cannot find ... Release/miniupnpc.lib".
   BUILD_COMMAND
-    ${CMAKE_COMMAND} --build <BINARY_DIR>
+    ${CMAKE_COMMAND} --build <BINARY_DIR> --config ${DINERO_DEPENDS_BUILD_TYPE}
   INSTALL_COMMAND
-    ${CMAKE_COMMAND} --install <BINARY_DIR>)
+    ${CMAKE_COMMAND} --install <BINARY_DIR> --config ${DINERO_DEPENDS_BUILD_TYPE})
