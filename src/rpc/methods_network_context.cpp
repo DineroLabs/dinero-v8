@@ -147,6 +147,12 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     ipv4["reachable"] = true;
     ipv4["proxy"] = "";
     networks.append(ipv4);
+    din::Json onion;
+    onion["name"] = "onion";
+    onion["limited"] = true;
+    onion["reachable"] = false;
+    onion["proxy"] = "";
+    networks.append(onion);
     result["networks"] = networks;
 
     if (!p2p) {
@@ -168,10 +174,24 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         portmap["external_port"] = 0;
         portmap["message"] = "P2P service not available";
         result["port_mapping"] = portmap;
+        din::Json onion_transport;
+        onion_transport["enabled"] = false;
+        onion_transport["proxy"] = "";
+        onion_transport["note"] = "P2P service not available";
+        result["onion_transport"] = onion_transport;
         return result;
     }
 
     const auto status = p2p->GetNetworkStatus();
+    networks.clear();
+    ipv4["reachable"] = status.network_active;
+    networks.append(ipv4);
+    onion["limited"] = !status.onion_transport_enabled;
+    onion["reachable"] = status.onion_transport_enabled;
+    onion["proxy"] = status.onion_proxy;
+    networks.append(onion);
+    result["networks"] = networks;
+
     result["networkactive"] = status.network_active;
     result["connections"] = static_cast<Json::UInt64>(status.connections);
     result["connections_in"] = static_cast<Json::UInt64>(status.inbound);
@@ -201,6 +221,14 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     portmap["external_port"] = static_cast<int>(status.port_mapping_external_port);
     portmap["message"] = status.port_mapping_message;
     result["port_mapping"] = portmap;
+
+    din::Json onion_transport;
+    onion_transport["enabled"] = status.onion_transport_enabled;
+    onion_transport["proxy"] = status.onion_proxy;
+    onion_transport["note"] = status.onion_transport_enabled
+        ? "onion peers are dialed through SOCKS5; no clearnet fallback"
+        : "disabled";
+    result["onion_transport"] = onion_transport;
 
     std::string warning;
     if (status.network_active && status.listening &&

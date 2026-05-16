@@ -44,6 +44,9 @@ static std::string NormalizeKey(const std::string& key) {
         {"nat-pmp",        "p2p.natpmp"},
         {"externalport",   "p2p.external_port"},
         {"portmaplifetime","p2p.portmap_lifetime"},
+        {"onion",          "p2p.onion"},
+        {"onionproxy",     "p2p.onion"},
+        {"tor",            "p2p.onion"},
 
         // Network selection
         {"testnet",        "network.testnet"},

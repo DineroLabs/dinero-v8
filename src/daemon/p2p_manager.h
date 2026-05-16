@@ -196,6 +196,9 @@ public:
     void set_network_active(bool active);
     bool is_network_active() const { return network_active_.load(std::memory_order_acquire); }
     void set_address_manager(dinero::p2p::AddressManager* address_manager);
+    void set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port);
+    bool onion_proxy_enabled() const;
+    std::string onion_proxy_endpoint() const;
     void add_advertised_address(const std::string& address, uint16_t port);
     std::vector<std::pair<std::string, uint16_t>> get_advertised_addresses() const;
     
@@ -312,6 +315,8 @@ private:
     std::unordered_set<std::string> connecting_peers_;  // Guards against duplicate connection attempts
     std::vector<std::pair<std::string, uint16_t>> seed_nodes_;
     std::vector<std::pair<std::string, uint16_t>> advertised_addresses_;
+    std::string onion_proxy_host_;
+    uint16_t onion_proxy_port_{0};
     dinero::p2p::AddressManager* address_manager_{nullptr};  // Owned by AddressManagerService
     std::string peers_file_path_;  // Phase C: Persistent peer database path
     mutable std::mutex bans_mutex_;
@@ -362,6 +367,10 @@ private:
     // Socket utilities
     int create_listen_socket();
     int create_client_socket(const std::string& address, uint16_t port);
+    int create_socks5_client_socket(const std::string& proxy_host,
+                                    uint16_t proxy_port,
+                                    const std::string& target_host,
+                                    uint16_t target_port);
     void close_socket(int socket_fd);
     void set_socket_nonblocking(int socket_fd);
     void set_socket_send_timeout(int socket_fd, int seconds);

@@ -159,6 +159,33 @@ P2P still works if the router does not support port mapping, UPnP/NAT-PMP
 is disabled, the OS firewall blocks the app, or the ISP uses CGNAT. Release
 builders should package `miniupnpc` and `libnatpmp` from `depends/`.
 
+### Onion Transport
+
+Dinero can dial `.onion` P2P peers through a local SOCKS5 proxy. This is an
+overlay transport for restrictive networks and privacy-aware operators; it
+does not change consensus, mining, RPC, or normal clearnet P2P.
+
+```ini
+listen=1
+onion=127.0.0.1:9050
+```
+
+Important invariants:
+
+- `.onion` peers are never resolved through clearnet DNS.
+- If the SOCKS5 proxy is unavailable, the onion peer is unreachable; Dinero
+  does not silently fall back to clearnet.
+- `externalip=<your-onion-service>.onion:20999` should only be used after a
+  real Tor hidden service forwards to the local Dinero listener.
+- Onion `externalip` is an additional advertised endpoint, not a replacement
+  for the node's clearnet identity.
+- Preserve the hidden service private key if you want a stable onion address
+  across restarts.
+
+This first overlay layer expects Tor or another compatible SOCKS5 service to
+already be running locally. Automatic hidden-service creation is a separate
+operator feature.
+
 ## Network Status
 
 ### Current Network State

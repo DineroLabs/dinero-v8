@@ -69,6 +69,22 @@ bool ParseEndpoint(const std::string& endpoint,
     }
 }
 
+std::string ToLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+bool EndsWith(const std::string& value, const std::string& suffix) {
+    return value.size() >= suffix.size() &&
+           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool IsOnionAddress(const std::string& address) {
+    return EndsWith(ToLowerAscii(address), ".onion");
+}
+
 void AddReconnectTarget(std::vector<std::pair<std::string, uint16_t>>& targets,
                         std::unordered_set<std::string>& seen,
                         const std::string& host,
@@ -231,6 +247,8 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.listening = p2p_mgr_->IsListening();
     status.listen_port = p2p_mgr_->get_listen_port();
     status.advertised_addresses = p2p_mgr_->get_advertised_addresses();
+    status.onion_transport_enabled = p2p_mgr_->onion_proxy_enabled();
+    status.onion_proxy = p2p_mgr_->onion_proxy_endpoint();
 
     const auto peers = p2p_mgr_->get_connected_peers();
     for (const auto& peer : peers) {
@@ -554,6 +572,7 @@ bool P2PService::Init(DaemonContext& ctx) {
     // Get P2P configuration from config
     listen_port_ = static_cast<uint16_t>(config_->P2PPort());
     external_ip_ = config_->GetString("externalip", "");
+    onion_proxy_ = config_->GetString("p2p.onion", "");
     offline_mode_ = config_->GetBool("p2p.offline", false);
 
     // Get datadir for peers.dat persistence
@@ -592,6 +611,7 @@ bool P2PService::Init(DaemonContext& ctx) {
     logger_interface_->info("[P2PService] Initializing P2P networking...");
     logger_interface_->info("[P2PService]   Listen port: " + std::to_string(listen_port_));
     logger_interface_->info("[P2PService]   External IP: " + (external_ip_.empty() ? "(auto-detect)" : external_ip_));
+    logger_interface_->info("[P2PService]   Onion proxy: " + (onion_proxy_.empty() ? "(disabled)" : onion_proxy_));
     logger_interface_->info("[P2PService]   Peers database: " + peers_file_path_);
     logger_interface_->info("[P2PService]   Seed nodes: " + std::to_string(seed_nodes_.size()));
     logger_interface_->info("[P2PService]   Offline mode: " + std::string(offline_mode_ ? "true" : "false"));
@@ -599,6 +619,16 @@ bool P2PService::Init(DaemonContext& ctx) {
     try {
         // Create P2PManager instance
         p2p_mgr_ = std::make_unique<::P2PManager>(listen_port_, external_ip_);
+        if (!onion_proxy_.empty()) {
+            std::string proxy_host;
+            uint16_t proxy_port = 0;
+            if (ParseEndpoint(onion_proxy_, 9050, &proxy_host, &proxy_port)) {
+                p2p_mgr_->set_onion_proxy(proxy_host, proxy_port);
+            } else {
+                logger_interface_->warning("[P2PService] Ignoring invalid onion proxy endpoint: " +
+                                           onion_proxy_);
+            }
+        }
 
         // Week 4: Bridge pattern removed - all code now uses ctx_->p2p->get()
         // Legacy global dinero::legacy::g_peer_manager() is no longer set here
@@ -681,8 +711,12 @@ bool P2PService::Start() {
             uint16_t advertise_port = 0;
             if (ParseEndpoint(external_ip_, p2p_port, &advertise_host, &advertise_port)) {
                 p2p_mgr_->add_advertised_address(advertise_host, advertise_port);
+                const std::string overlay_note = IsOnionAddress(advertise_host)
+                    ? " (onion overlay endpoint; clearnet identity remains separate)"
+                    : "";
                 logger_interface_->info("[P2PService] Advertising configured external address: " +
-                                        advertise_host + ":" + std::to_string(advertise_port));
+                                        advertise_host + ":" + std::to_string(advertise_port) +
+                                        overlay_note);
             } else {
                 logger_interface_->warning("[P2PService] Ignoring invalid externalip for addr relay: " +
                                            external_ip_);

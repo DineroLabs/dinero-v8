@@ -20,6 +20,7 @@
 #include <filesystem> // Phase C (v8 peer discovery): atomic peers.dat rename
 #include <system_error>
 #include <unordered_set>
+#include <array>
 
 // Platform-specific includes
 #ifdef _WIN32
@@ -191,6 +192,38 @@ bool IsLocalOrWildcardAddress(const std::string& address) {
            address == "::";
 }
 
+std::string ToLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+bool EndsWith(const std::string& value, const std::string& suffix) {
+    return value.size() >= suffix.size() &&
+           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool IsOnionAddress(const std::string& address) {
+    const std::string lower = ToLowerAscii(address);
+    return EndsWith(lower, ".onion");
+}
+
+dinero::p2p::NetworkAddress NetworkAddressForPeer(const std::string& address,
+                                                  uint16_t port,
+                                                  uint64_t services);
+
+bool IsAdvertisableAddress(const std::string& address, uint16_t port) {
+    if (IsLocalOrWildcardAddress(address) || port == 0) {
+        return false;
+    }
+    if (IsOnionAddress(address)) {
+        return true;
+    }
+    auto network_addr = NetworkAddressForPeer(address, port, 0);
+    return network_addr.isValid() && network_addr.isRoutable();
+}
+
 std::string TrimAscii(std::string value) {
     auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
     value.erase(value.begin(), std::find_if(value.begin(), value.end(),
@@ -353,6 +386,44 @@ dinero::p2p::NetworkAddress NetworkAddressForPeer(const std::string& address,
     peer_addr.services = services;
     peer_addr.timestamp = std::chrono::system_clock::now();
     return peer_addr;
+}
+
+bool SendAll(int socket_fd, const uint8_t* data, size_t len) {
+    size_t sent_total = 0;
+    while (sent_total < len) {
+#ifdef _WIN32
+        const int sent = send(socket_fd,
+                              reinterpret_cast<const char*>(data + sent_total),
+                              static_cast<int>(len - sent_total),
+                              0);
+#else
+        const ssize_t sent = send(socket_fd, data + sent_total, len - sent_total, MSG_NOSIGNAL);
+#endif
+        if (sent <= 0) {
+            return false;
+        }
+        sent_total += static_cast<size_t>(sent);
+    }
+    return true;
+}
+
+bool RecvAll(int socket_fd, uint8_t* data, size_t len) {
+    size_t recv_total = 0;
+    while (recv_total < len) {
+#ifdef _WIN32
+        const int got = recv(socket_fd,
+                             reinterpret_cast<char*>(data + recv_total),
+                             static_cast<int>(len - recv_total),
+                             0);
+#else
+        const ssize_t got = recv(socket_fd, data + recv_total, len - recv_total, 0);
+#endif
+        if (got <= 0) {
+            return false;
+        }
+        recv_total += static_cast<size_t>(got);
+    }
+    return true;
 }
 
 }  // namespace
@@ -894,6 +965,31 @@ void P2PManager::set_address_manager(dinero::p2p::AddressManager* address_manage
               << (address_manager_ ? "enabled" : "disabled") << std::endl;
 }
 
+void P2PManager::set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port) {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    onion_proxy_host_ = proxy_host;
+    onion_proxy_port_ = proxy_port;
+    if (!onion_proxy_host_.empty() && onion_proxy_port_ != 0) {
+        std::cout << "[P2P] Onion transport enabled via SOCKS5 proxy "
+                  << onion_proxy_host_ << ":" << onion_proxy_port_ << std::endl;
+    } else {
+        std::cout << "[P2P] Onion transport disabled" << std::endl;
+    }
+}
+
+bool P2PManager::onion_proxy_enabled() const {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    return !onion_proxy_host_.empty() && onion_proxy_port_ != 0;
+}
+
+std::string P2PManager::onion_proxy_endpoint() const {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    if (onion_proxy_host_.empty() || onion_proxy_port_ == 0) {
+        return "";
+    }
+    return onion_proxy_host_ + ":" + std::to_string(onion_proxy_port_);
+}
+
 void P2PManager::add_advertised_address(const std::string& address, uint16_t port) {
     if (IsLocalOrWildcardAddress(address) || port == 0) {
         std::cout << "[P2P] Skipping unroutable advertised address: "
@@ -901,8 +997,7 @@ void P2PManager::add_advertised_address(const std::string& address, uint16_t por
         return;
     }
 
-    auto network_addr = NetworkAddressForPeer(address, port);
-    if (!network_addr.isValid() || !network_addr.isRoutable()) {
+    if (!IsAdvertisableAddress(address, port)) {
         std::cout << "[P2P] Skipping non-routable advertised address: "
                   << address << ":" << port << std::endl;
         return;
@@ -1111,14 +1206,14 @@ bool P2PManager::remember_peer_address(const std::string& address,
         return false;
     }
 
-    auto network_addr = NetworkAddressForPeer(address, port);
-    if (!network_addr.isValid() || !network_addr.isRoutable()) {
+    if (!IsAdvertisableAddress(address, port)) {
         return false;
     }
 
     add_seed_node(address, port);
 
-    if (address_manager_) {
+    if (address_manager_ && !IsOnionAddress(address)) {
+        auto network_addr = NetworkAddressForPeer(address, port);
         address_manager_->addAddress(network_addr, source_peer);
     }
     return true;
@@ -1130,11 +1225,15 @@ void P2PManager::mark_peer_address_attempt(const std::string& address,
     if (!address_manager_ || IsLocalOrWildcardAddress(address) || port == 0) {
         return;
     }
-    auto network_addr = NetworkAddressForPeer(address, port);
-    if (!network_addr.isValid() || !network_addr.isRoutable()) {
+    if (!IsAdvertisableAddress(address, port)) {
         return;
     }
 
+    if (IsOnionAddress(address)) {
+        return;
+    }
+
+    auto network_addr = NetworkAddressForPeer(address, port);
     address_manager_->addAddress(network_addr, success ? "connect-success" : "connect-failure");
     address_manager_->markAttempt(network_addr, success);
     if (success) {
@@ -1156,8 +1255,7 @@ std::vector<std::pair<std::string, uint16_t>> P2PManager::collect_advertisable_a
         if (result.size() >= max_count || IsLocalOrWildcardAddress(address) || port == 0) {
             return;
         }
-        auto network_addr = NetworkAddressForPeer(address, port);
-        if (!network_addr.isValid() || !network_addr.isRoutable()) {
+        if (!IsAdvertisableAddress(address, port)) {
             return;
         }
         const std::string key = AddressKey(address, port);
@@ -1241,7 +1339,7 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
     // Resolve DNS to IP for dedup check (prevents duplicate connections to same IP
     // when seed list contains both raw IP and DNS name for the same server)
     std::string resolved_ip = address;
-    {
+    if (!IsOnionAddress(address)) {
         struct sockaddr_in sa;
         if (inet_pton(AF_INET, address.c_str(), &sa.sin_addr) <= 0) {
             struct addrinfo hints{}, *res = nullptr;
@@ -2738,6 +2836,22 @@ int P2PManager::create_listen_socket() {
 }
 
 int P2PManager::create_client_socket(const std::string& address, uint16_t port) {
+    if (IsOnionAddress(address)) {
+        std::string proxy_host;
+        uint16_t proxy_port = 0;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            proxy_host = onion_proxy_host_;
+            proxy_port = onion_proxy_port_;
+        }
+        if (proxy_host.empty() || proxy_port == 0) {
+            std::cerr << "[P2P] Refusing to dial onion peer without SOCKS5 proxy: "
+                      << address << ":" << port << std::endl;
+            return -1;
+        }
+        return create_socks5_client_socket(proxy_host, proxy_port, address, port);
+    }
+
     int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_fd < 0) {
         return -1;
@@ -2839,6 +2953,92 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
         fcntl(socket_fd, F_SETFL, flags & ~O_NONBLOCK);
     #endif
     
+    return socket_fd;
+}
+
+int P2PManager::create_socks5_client_socket(const std::string& proxy_host,
+                                            uint16_t proxy_port,
+                                            const std::string& target_host,
+                                            uint16_t target_port) {
+    if (target_host.empty() || target_host.size() > 255 || target_port == 0) {
+        return -1;
+    }
+    if (IsOnionAddress(proxy_host)) {
+        std::cerr << "[P2P] Onion proxy itself cannot be an onion address: "
+                  << proxy_host << ":" << proxy_port << std::endl;
+        return -1;
+    }
+
+    const int socket_fd = create_client_socket(proxy_host, proxy_port);
+    if (socket_fd < 0) {
+        std::cerr << "[P2P] SOCKS5 proxy connection failed: "
+                  << proxy_host << ":" << proxy_port << std::endl;
+        return -1;
+    }
+
+    const uint8_t greeting[] = {0x05, 0x01, 0x00};  // SOCKS5, one method, no auth.
+    uint8_t greeting_reply[2] = {};
+    if (!SendAll(socket_fd, greeting, sizeof(greeting)) ||
+        !RecvAll(socket_fd, greeting_reply, sizeof(greeting_reply)) ||
+        greeting_reply[0] != 0x05 || greeting_reply[1] != 0x00) {
+        std::cerr << "[P2P] SOCKS5 proxy rejected no-auth handshake for "
+                  << target_host << ":" << target_port << std::endl;
+        close_socket(socket_fd);
+        return -1;
+    }
+
+    std::vector<uint8_t> request;
+    request.reserve(7 + target_host.size());
+    request.push_back(0x05);  // version
+    request.push_back(0x01);  // CONNECT
+    request.push_back(0x00);  // reserved
+    request.push_back(0x03);  // domain name; lets Tor resolve .onion internally.
+    request.push_back(static_cast<uint8_t>(target_host.size()));
+    request.insert(request.end(), target_host.begin(), target_host.end());
+    request.push_back(static_cast<uint8_t>((target_port >> 8) & 0xff));
+    request.push_back(static_cast<uint8_t>(target_port & 0xff));
+
+    uint8_t reply_header[4] = {};
+    if (!SendAll(socket_fd, request.data(), request.size()) ||
+        !RecvAll(socket_fd, reply_header, sizeof(reply_header)) ||
+        reply_header[0] != 0x05 || reply_header[1] != 0x00) {
+        std::cerr << "[P2P] SOCKS5 CONNECT failed for "
+                  << target_host << ":" << target_port;
+        if (reply_header[0] == 0x05) {
+            std::cerr << " (reply=" << static_cast<int>(reply_header[1]) << ")";
+        }
+        std::cerr << std::endl;
+        close_socket(socket_fd);
+        return -1;
+    }
+
+    size_t bind_len = 0;
+    if (reply_header[3] == 0x01) {
+        bind_len = 4;       // IPv4
+    } else if (reply_header[3] == 0x03) {
+        uint8_t domain_len = 0;
+        if (!RecvAll(socket_fd, &domain_len, 1)) {
+            close_socket(socket_fd);
+            return -1;
+        }
+        bind_len = domain_len;
+    } else if (reply_header[3] == 0x04) {
+        bind_len = 16;      // IPv6
+    } else {
+        close_socket(socket_fd);
+        return -1;
+    }
+
+    std::array<uint8_t, 256> discard {};
+    if (bind_len > discard.size() ||
+        !RecvAll(socket_fd, discard.data(), bind_len) ||
+        !RecvAll(socket_fd, discard.data(), 2)) {
+        close_socket(socket_fd);
+        return -1;
+    }
+
+    std::cout << "[P2P] Connected to onion peer via SOCKS5 proxy: "
+              << target_host << ":" << target_port << std::endl;
     return socket_fd;
 }
 

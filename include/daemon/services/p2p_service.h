@@ -63,6 +63,8 @@ public:
         std::string port_mapping_external_address;
         uint16_t port_mapping_external_port{0};
         std::string port_mapping_message;
+        bool onion_transport_enabled{false};
+        std::string onion_proxy;
     };
 
     P2PService() = default;
@@ -208,6 +210,7 @@ private:
     std::vector<std::string> seed_nodes_;
     std::vector<std::pair<std::string, uint16_t>> reconnect_targets_;
     bool offline_mode_{false};
+    std::string onion_proxy_;
     std::unique_ptr<network::PortMappingSession> port_mapping_;
     mutable std::mutex port_mapping_status_mutex_;
     bool port_mapping_requested_{false};

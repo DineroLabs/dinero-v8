@@ -14391,6 +14391,9 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   const QString protocol = portMap["protocol"].toString();
   const QString mode = portMap["mode"].toString("disabled");
   const QString message = portMap["message"].toString();
+  const QJsonObject onionTransport = networkInfo["onion_transport"].toObject();
+  const bool onionEnabled = onionTransport["enabled"].toBool(false);
+  const QString onionProxy = onionTransport["proxy"].toString();
   if (lblPeerPortMapping_) {
     QString text;
     if (!requested) {
@@ -14399,6 +14402,9 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
       text = QString("Port mapping: %1 active").arg(protocol.isEmpty() ? mode : protocol);
     } else {
       text = QString("Port mapping: %1").arg(message.isEmpty() ? "unavailable" : message);
+    }
+    if (onionEnabled) {
+      text += QString(" · Tor: %1").arg(onionProxy.isEmpty() ? "enabled" : onionProxy);
     }
     lblPeerPortMapping_->setText(text);
   }
