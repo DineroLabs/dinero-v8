@@ -234,10 +234,9 @@ void MinerController::onBlockFound(const BlockFoundInfo& info) {
     currentHeight_ = static_cast<int>(info.height);
 
     Q_EMIT blockFound(hashStr, static_cast<int>(info.height));
-    Q_EMIT logLine(QString("🎉 *** BLOCK FOUND ***  height=%1  nonce=%2  difficulty=0x%3")
+    Q_EMIT logLine(QString("🎉 *** BLOCK FOUND ***  height=%1  nonce=%2")
                    .arg(info.height)
-                   .arg(info.nonce)
-                   .arg(info.nbits, 8, 16, QChar('0')));
+                   .arg(info.nonce));
     Q_EMIT logLine(QString("  hash:         %1").arg(hashStr));
     Q_EMIT logLine(QString("  prev_hash:    %1").arg(QString::fromStdString(info.prev_hash)));
     Q_EMIT logLine(QString("  merkle_root:  %1").arg(QString::fromStdString(info.merkle_root)));
