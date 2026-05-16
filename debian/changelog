@@ -1,3 +1,39 @@
+dinero-core (8.0.0~rc6-1) unstable; urgency=medium
+
+  * RC6 rebuild from a03ecd8c. First release where the daemon actually
+    links the UPnP / NAT-PMP runtime on platforms where the libraries
+    are available (depends prefix on Windows, system pkg-config on
+    Linux). Previous rc4/rc5 cuts shipped --portmap CLI args that
+    parsed but always reported the backend unavailable at runtime.
+  * Cumulative since rc3 (skipping rc4 which was never tagged in
+    public, and rc5 which shipped without UPnP/NAT-PMP runtime):
+    - Network-magic refactor: daemon + seeder + every internal call
+      site reads the P2P magic from dinero::Params() at runtime;
+      seeder header generated from chainparams_impl.cpp. Drift test
+      tests/integration/test_network_magic_sync.sh enforces one
+      truth path.
+    - fuzz/fuzz_p2p_header_standalone.cpp now reads kMagicMainnet
+      from the generated seeder header.
+    - .gitattributes pins shell-family files to LF, Windows scripts
+      to CRLF.
+    - Qt UX: prompt before enabling P2P networking, non-blocking
+      notice, in-app P2P reachability status.
+    - UPnP + NAT-PMP port-mapping deps pinned via depends/ (Bitcoin-
+      Core-style ExternalProject pipeline). Native MSVC toolchain
+      validated end-to-end on both Ninja and Visual Studio 17 2022
+      generators; .pc files now advertise *_STATICLIB defines so any
+      pkg-config consumer (not just our CMake) gets the static-lib
+      gate. dinerod / dinero-qt now statically link miniupnpc +
+      libnatpmp where present.
+    - Peer-discovery additions: bridge addrman with p2p relay, peer
+      ban controls, advertise NAT-PMP public address.
+  * Packaged-service contract unchanged: dinerod + dinero-cli only,
+    no Qt, no GPU mining, no gRPC, no hardware-wallet HID. Operators
+    who want the GUI install dinero-qt-desktop separately (see the
+    v8.0.0-rc6 GitHub release).
+
+ -- Trucker2827 <trucker2827@gmail.com>  Fri, 16 May 2026 12:30:00 +0000
+
 dinero-core (8.0.0~rc3-1) unstable; urgency=medium
 
   * RC3 rebuild from dea2257a — picks up the user/operator packaging
