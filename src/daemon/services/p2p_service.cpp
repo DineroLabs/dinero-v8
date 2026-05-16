@@ -85,6 +85,12 @@ bool IsOnionAddress(const std::string& address) {
     return EndsWith(ToLowerAscii(address), ".onion");
 }
 
+bool IsOnionAutoValue(const std::string& value) {
+    const std::string lower = ToLowerAscii(value);
+    return lower == "auto" || lower == "detect" || lower == "1" ||
+           lower == "true" || lower == "yes";
+}
+
 void AddReconnectTarget(std::vector<std::pair<std::string, uint16_t>>& targets,
                         std::unordered_set<std::string>& seen,
                         const std::string& host,
@@ -247,8 +253,12 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.listening = p2p_mgr_->IsListening();
     status.listen_port = p2p_mgr_->get_listen_port();
     status.advertised_addresses = p2p_mgr_->get_advertised_addresses();
+    status.onion_transport_configured = onion_proxy_configured_;
     status.onion_transport_enabled = p2p_mgr_->onion_proxy_enabled();
+    status.onion_transport_reachable = onion_proxy_reachable_;
+    status.onion_transport_auto_detected = onion_proxy_auto_detected_;
     status.onion_proxy = p2p_mgr_->onion_proxy_endpoint();
+    status.onion_transport_message = onion_proxy_message_;
 
     const auto peers = p2p_mgr_->get_connected_peers();
     for (const auto& peer : peers) {
@@ -573,6 +583,10 @@ bool P2PService::Init(DaemonContext& ctx) {
     listen_port_ = static_cast<uint16_t>(config_->P2PPort());
     external_ip_ = config_->GetString("externalip", "");
     onion_proxy_ = config_->GetString("p2p.onion", "");
+    onion_proxy_configured_ = !onion_proxy_.empty();
+    onion_proxy_auto_detected_ = false;
+    onion_proxy_reachable_ = false;
+    onion_proxy_message_ = onion_proxy_configured_ ? "configured, not probed yet" : "disabled";
     offline_mode_ = config_->GetBool("p2p.offline", false);
 
     // Get datadir for peers.dat persistence
@@ -620,13 +634,53 @@ bool P2PService::Init(DaemonContext& ctx) {
         // Create P2PManager instance
         p2p_mgr_ = std::make_unique<::P2PManager>(listen_port_, external_ip_);
         if (!onion_proxy_.empty()) {
-            std::string proxy_host;
-            uint16_t proxy_port = 0;
-            if (ParseEndpoint(onion_proxy_, 9050, &proxy_host, &proxy_port)) {
-                p2p_mgr_->set_onion_proxy(proxy_host, proxy_port);
+            if (IsOnionAutoValue(onion_proxy_)) {
+                const std::vector<std::pair<std::string, uint16_t>> candidates = {
+                    {"127.0.0.1", 9050},
+                    {"127.0.0.1", 9150}
+                };
+                std::vector<std::string> probe_messages;
+                for (const auto& [candidate_host, candidate_port] : candidates) {
+                    p2p_mgr_->set_onion_proxy(candidate_host, candidate_port, false);
+                    std::string probe_message;
+                    if (p2p_mgr_->probe_onion_proxy(&probe_message)) {
+                        onion_proxy_auto_detected_ = true;
+                        onion_proxy_reachable_ = true;
+                        onion_proxy_message_ = "auto-detected " + probe_message;
+                        onion_proxy_ = candidate_host + ":" + std::to_string(candidate_port);
+                        logger_interface_->info("[P2PService] Onion transport " + onion_proxy_message_);
+                        break;
+                    }
+                    probe_messages.push_back(probe_message);
+                }
+                if (!onion_proxy_reachable_) {
+                    p2p_mgr_->set_onion_proxy("", 0, false);
+                    onion_proxy_message_ =
+                        "auto-detect did not find Tor SOCKS5 on 127.0.0.1:9050 or 127.0.0.1:9150";
+                    if (!probe_messages.empty()) {
+                        onion_proxy_message_ += " (" + probe_messages.front() + ")";
+                    }
+                    logger_interface_->warning("[P2PService] Onion transport " + onion_proxy_message_);
+                }
             } else {
-                logger_interface_->warning("[P2PService] Ignoring invalid onion proxy endpoint: " +
-                                           onion_proxy_);
+                std::string proxy_host;
+                uint16_t proxy_port = 0;
+                if (ParseEndpoint(onion_proxy_, 9050, &proxy_host, &proxy_port)) {
+                    p2p_mgr_->set_onion_proxy(proxy_host, proxy_port);
+                    std::string probe_message;
+                    onion_proxy_reachable_ = p2p_mgr_->probe_onion_proxy(&probe_message);
+                    onion_proxy_message_ = probe_message;
+                    if (onion_proxy_reachable_) {
+                        logger_interface_->info("[P2PService] Onion transport " + onion_proxy_message_);
+                    } else {
+                        logger_interface_->warning("[P2PService] Onion transport configured but unavailable: " +
+                                                   onion_proxy_message_ +
+                                                   "; onion peers will stay unreachable until Tor/SOCKS5 is available");
+                    }
+                } else {
+                    onion_proxy_message_ = "invalid onion proxy endpoint: " + onion_proxy_;
+                    logger_interface_->warning("[P2PService] Ignoring " + onion_proxy_message_);
+                }
             }
         }
 

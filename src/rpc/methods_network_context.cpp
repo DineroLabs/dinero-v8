@@ -175,7 +175,10 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         portmap["message"] = "P2P service not available";
         result["port_mapping"] = portmap;
         din::Json onion_transport;
+        onion_transport["configured"] = false;
         onion_transport["enabled"] = false;
+        onion_transport["reachable"] = false;
+        onion_transport["auto_detected"] = false;
         onion_transport["proxy"] = "";
         onion_transport["note"] = "P2P service not available";
         result["onion_transport"] = onion_transport;
@@ -186,8 +189,8 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     networks.clear();
     ipv4["reachable"] = status.network_active;
     networks.append(ipv4);
-    onion["limited"] = !status.onion_transport_enabled;
-    onion["reachable"] = status.onion_transport_enabled;
+    onion["limited"] = !status.onion_transport_reachable;
+    onion["reachable"] = status.onion_transport_reachable;
     onion["proxy"] = status.onion_proxy;
     networks.append(onion);
     result["networks"] = networks;
@@ -223,11 +226,16 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     result["port_mapping"] = portmap;
 
     din::Json onion_transport;
+    onion_transport["configured"] = status.onion_transport_configured;
     onion_transport["enabled"] = status.onion_transport_enabled;
+    onion_transport["reachable"] = status.onion_transport_reachable;
+    onion_transport["auto_detected"] = status.onion_transport_auto_detected;
     onion_transport["proxy"] = status.onion_proxy;
     onion_transport["note"] = status.onion_transport_enabled
-        ? "onion peers are dialed through SOCKS5; no clearnet fallback"
-        : "disabled";
+        ? (status.onion_transport_message.empty()
+            ? "onion peers are dialed through SOCKS5; no clearnet fallback"
+            : status.onion_transport_message)
+        : (status.onion_transport_message.empty() ? "disabled" : status.onion_transport_message);
     result["onion_transport"] = onion_transport;
 
     std::string warning;

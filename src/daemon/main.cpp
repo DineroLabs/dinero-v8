@@ -211,7 +211,7 @@ void print_usage(const char* program_name) {
     std::cout << "  --p2pport=<port>           P2P network port (default: 20999)\n";
     std::cout << "  --portmap=<0|auto|upnp|natpmp> Try router port mapping for inbound P2P\n";
     std::cout << "  --upnp=1 / --natpmp=1     Compatibility aliases for --portmap\n";
-    std::cout << "  --onion=<host[:port]>     SOCKS5 proxy for .onion P2P peers (default port: 9050)\n";
+    std::cout << "  --onion=<auto|host[:port]> SOCKS5 proxy for .onion P2P peers (auto checks 9050/9150)\n";
     std::cout << "  --externalip=<host[:port]> Advertise a reachable clearnet or onion endpoint\n";
     std::cout << "  --wallet-socket-port=<port> Wallet socket server port (default: 50051)\n";
     std::cout << "  --regtest                  Use regression test network\n";

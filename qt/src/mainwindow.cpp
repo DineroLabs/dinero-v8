@@ -14392,8 +14392,11 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   const QString mode = portMap["mode"].toString("disabled");
   const QString message = portMap["message"].toString();
   const QJsonObject onionTransport = networkInfo["onion_transport"].toObject();
+  const bool onionConfigured = onionTransport["configured"].toBool(false);
   const bool onionEnabled = onionTransport["enabled"].toBool(false);
+  const bool onionReachable = onionTransport["reachable"].toBool(false);
   const QString onionProxy = onionTransport["proxy"].toString();
+  const QString onionNote = onionTransport["note"].toString();
   if (lblPeerPortMapping_) {
     QString text;
     if (!requested) {
@@ -14404,7 +14407,12 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
       text = QString("Port mapping: %1").arg(message.isEmpty() ? "unavailable" : message);
     }
     if (onionEnabled) {
-      text += QString(" · Tor: %1").arg(onionProxy.isEmpty() ? "enabled" : onionProxy);
+      text += QString(" · Tor: %1").arg(onionReachable ? "ready" : "not reachable");
+      if (!onionProxy.isEmpty()) {
+        text += QString(" (%1)").arg(onionProxy);
+      }
+    } else if (onionConfigured) {
+      text += QString(" · Tor: %1").arg(onionNote.isEmpty() ? "not available" : onionNote);
     }
     lblPeerPortMapping_->setText(text);
   }

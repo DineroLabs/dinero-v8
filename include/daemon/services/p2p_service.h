@@ -63,8 +63,12 @@ public:
         std::string port_mapping_external_address;
         uint16_t port_mapping_external_port{0};
         std::string port_mapping_message;
+        bool onion_transport_configured{false};
         bool onion_transport_enabled{false};
+        bool onion_transport_reachable{false};
+        bool onion_transport_auto_detected{false};
         std::string onion_proxy;
+        std::string onion_transport_message;
     };
 
     P2PService() = default;
@@ -211,6 +215,10 @@ private:
     std::vector<std::pair<std::string, uint16_t>> reconnect_targets_;
     bool offline_mode_{false};
     std::string onion_proxy_;
+    bool onion_proxy_configured_{false};
+    bool onion_proxy_auto_detected_{false};
+    bool onion_proxy_reachable_{false};
+    std::string onion_proxy_message_{"disabled"};
     std::unique_ptr<network::PortMappingSession> port_mapping_;
     mutable std::mutex port_mapping_status_mutex_;
     bool port_mapping_requested_{false};

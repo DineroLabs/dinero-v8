@@ -170,6 +170,18 @@ listen=1
 onion=127.0.0.1:9050
 ```
 
+For easier desktop/operator setup, use auto-detection:
+
+```ini
+listen=1
+onion=auto
+```
+
+`onion=auto` checks the common local Tor SOCKS5 ports:
+
+- `127.0.0.1:9050` for system Tor
+- `127.0.0.1:9150` for Tor Browser
+
 Important invariants:
 
 - `.onion` peers are never resolved through clearnet DNS.
@@ -185,6 +197,16 @@ Important invariants:
 This first overlay layer expects Tor or another compatible SOCKS5 service to
 already be running locally. Automatic hidden-service creation is a separate
 operator feature.
+
+Setup helpers:
+
+```bash
+# macOS/Linux: enables onion=auto in the local dinero.conf and prints Tor setup hints.
+scripts/setup-tor-p2p.sh
+
+# Windows PowerShell: enables onion=auto under %APPDATA%\Dinero\dinero.conf.
+scripts/setup-tor-p2p.ps1
+```
 
 ## Network Status
 

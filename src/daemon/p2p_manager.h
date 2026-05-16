@@ -196,9 +196,10 @@ public:
     void set_network_active(bool active);
     bool is_network_active() const { return network_active_.load(std::memory_order_acquire); }
     void set_address_manager(dinero::p2p::AddressManager* address_manager);
-    void set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port);
+    void set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port, bool log_change = true);
     bool onion_proxy_enabled() const;
     std::string onion_proxy_endpoint() const;
+    bool probe_onion_proxy(std::string* message = nullptr);
     void add_advertised_address(const std::string& address, uint16_t port);
     std::vector<std::pair<std::string, uint16_t>> get_advertised_addresses() const;
     

@@ -965,10 +965,13 @@ void P2PManager::set_address_manager(dinero::p2p::AddressManager* address_manage
               << (address_manager_ ? "enabled" : "disabled") << std::endl;
 }
 
-void P2PManager::set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port) {
+void P2PManager::set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port, bool log_change) {
     std::lock_guard<std::mutex> lock(peers_mutex_);
     onion_proxy_host_ = proxy_host;
     onion_proxy_port_ = proxy_port;
+    if (!log_change) {
+        return;
+    }
     if (!onion_proxy_host_.empty() && onion_proxy_port_ != 0) {
         std::cout << "[P2P] Onion transport enabled via SOCKS5 proxy "
                   << onion_proxy_host_ << ":" << onion_proxy_port_ << std::endl;
@@ -988,6 +991,53 @@ std::string P2PManager::onion_proxy_endpoint() const {
         return "";
     }
     return onion_proxy_host_ + ":" + std::to_string(onion_proxy_port_);
+}
+
+bool P2PManager::probe_onion_proxy(std::string* message) {
+    std::string proxy_host;
+    uint16_t proxy_port = 0;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        proxy_host = onion_proxy_host_;
+        proxy_port = onion_proxy_port_;
+    }
+
+    if (proxy_host.empty() || proxy_port == 0) {
+        if (message) {
+            *message = "onion proxy not configured";
+        }
+        return false;
+    }
+    if (IsOnionAddress(proxy_host)) {
+        if (message) {
+            *message = "onion proxy endpoint cannot itself be an onion address";
+        }
+        return false;
+    }
+
+    const int socket_fd = create_client_socket(proxy_host, proxy_port);
+    if (socket_fd < 0) {
+        if (message) {
+            *message = "SOCKS5 proxy not reachable at " + proxy_host + ":" +
+                       std::to_string(proxy_port);
+        }
+        return false;
+    }
+
+    const uint8_t greeting[] = {0x05, 0x01, 0x00};
+    uint8_t greeting_reply[2] = {};
+    const bool ok = SendAll(socket_fd, greeting, sizeof(greeting)) &&
+                    RecvAll(socket_fd, greeting_reply, sizeof(greeting_reply)) &&
+                    greeting_reply[0] == 0x05 && greeting_reply[1] == 0x00;
+    close_socket(socket_fd);
+
+    if (message) {
+        *message = ok
+            ? "SOCKS5 proxy reachable at " + proxy_host + ":" + std::to_string(proxy_port)
+            : "SOCKS5 proxy reachable but rejected no-auth handshake at " +
+              proxy_host + ":" + std::to_string(proxy_port);
+    }
+    return ok;
 }
 
 void P2PManager::add_advertised_address(const std::string& address, uint16_t port) {
