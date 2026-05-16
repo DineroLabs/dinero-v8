@@ -17,6 +17,7 @@
 #include <random>    // Phase B (v8 peer discovery): mt19937 for addr-relay peer selection
 #include <filesystem> // Phase C (v8 peer discovery): atomic peers.dat rename
 #include <system_error>
+#include <unordered_set>
 
 // Platform-specific includes
 #ifdef _WIN32
@@ -174,6 +175,39 @@ bool ReadVarInt(const std::vector<uint8_t>& data, size_t& offset, uint64_t* out_
     *out_value = ReadLE64(data, offset);
     offset += 8;
     return true;
+}
+
+std::string AddressKey(const std::string& address, uint16_t port) {
+    return address + ":" + std::to_string(port);
+}
+
+bool IsLocalOrWildcardAddress(const std::string& address) {
+    return address.empty() ||
+           address == "127.0.0.1" ||
+           address == "0.0.0.0" ||
+           address == "::1" ||
+           address == "::";
+}
+
+PeerInfo PeerInfoForAddress(const std::string& address, uint16_t port) {
+    PeerInfo info;
+    info.address = address;
+    info.port = port;
+    info.is_outbound = false;
+    info.is_connected = false;
+    info.socket_fd = -1;
+    return info;
+}
+
+dinero::p2p::NetworkAddress NetworkAddressForPeer(const std::string& address,
+                                                  uint16_t port,
+                                                  uint64_t services = 0) {
+    dinero::p2p::NetworkAddress peer_addr;
+    peer_addr.ip = address;
+    peer_addr.port = port;
+    peer_addr.services = services;
+    peer_addr.timestamp = std::chrono::system_clock::now();
+    return peer_addr;
 }
 
 }  // namespace
@@ -709,6 +743,37 @@ void P2PManager::set_user_agent(const std::string& user_agent) {
     user_agent_ = user_agent.empty() ? USER_AGENT : user_agent;
 }
 
+void P2PManager::set_address_manager(dinero::p2p::AddressManager* address_manager) {
+    address_manager_ = address_manager;
+    std::cout << "[P2P] Address manager bridge "
+              << (address_manager_ ? "enabled" : "disabled") << std::endl;
+}
+
+void P2PManager::add_advertised_address(const std::string& address, uint16_t port) {
+    if (IsLocalOrWildcardAddress(address) || port == 0) {
+        std::cout << "[P2P] Skipping unroutable advertised address: "
+                  << address << ":" << port << std::endl;
+        return;
+    }
+
+    auto network_addr = NetworkAddressForPeer(address, port);
+    if (!network_addr.isValid() || !network_addr.isRoutable()) {
+        std::cout << "[P2P] Skipping non-routable advertised address: "
+                  << address << ":" << port << std::endl;
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    const std::string key = AddressKey(address, port);
+    for (const auto& existing : advertised_addresses_) {
+        if (AddressKey(existing.first, existing.second) == key) {
+            return;
+        }
+    }
+    advertised_addresses_.emplace_back(address, port);
+    std::cout << "[P2P] Advertising reachable address: " << key << std::endl;
+}
+
 bool P2PManager::start() {
     if (running_) {
         std::cout << "P2P manager already running" << std::endl;
@@ -844,12 +909,24 @@ void P2PManager::stop() {
 }
 
 void P2PManager::add_seed_node(const std::string& address, uint16_t port) {
-    std::lock_guard<std::mutex> lock(peers_mutex_);
-    // Deduplicate — same seed can come from CLI, hardcoded list, and peers.dat
-    for (const auto& s : seed_nodes_) {
-        if (s.first == address && s.second == port) return;
+    bool inserted = false;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        // Deduplicate — same seed can come from CLI, hardcoded list, and peers.dat
+        for (const auto& s : seed_nodes_) {
+            if (s.first == address && s.second == port) return;
+        }
+        seed_nodes_.emplace_back(address, port);
+        inserted = true;
     }
-    seed_nodes_.emplace_back(address, port);
+
+    if (inserted && address_manager_) {
+        auto network_addr = NetworkAddressForPeer(address, port);
+        if (network_addr.isValid() && network_addr.isRoutable()) {
+            address_manager_->addAddress(network_addr, "seed");
+        }
+    }
+
     std::cout << "Added seed node: " << address << ":" << port << std::endl;
 }
 
@@ -866,6 +943,114 @@ bool P2PManager::remove_seed_node(const std::string& address, uint16_t port) {
 std::vector<std::pair<std::string, uint16_t>> P2PManager::get_seed_nodes() const {
     std::lock_guard<std::mutex> lock(peers_mutex_);
     return seed_nodes_;
+}
+
+bool P2PManager::remember_peer_address(const std::string& address,
+                                       uint16_t port,
+                                       const std::string& source_peer) {
+    if (IsLocalOrWildcardAddress(address) || port == 0) {
+        return false;
+    }
+    if (!external_ip_.empty() && address == external_ip_ && port == listen_port_) {
+        return false;
+    }
+    if (port != listen_port_) {
+        return false;
+    }
+
+    auto network_addr = NetworkAddressForPeer(address, port);
+    if (!network_addr.isValid() || !network_addr.isRoutable()) {
+        return false;
+    }
+
+    add_seed_node(address, port);
+
+    if (address_manager_) {
+        address_manager_->addAddress(network_addr, source_peer);
+    }
+    return true;
+}
+
+void P2PManager::mark_peer_address_attempt(const std::string& address,
+                                           uint16_t port,
+                                           bool success) {
+    if (!address_manager_ || IsLocalOrWildcardAddress(address) || port == 0) {
+        return;
+    }
+    auto network_addr = NetworkAddressForPeer(address, port);
+    if (!network_addr.isValid() || !network_addr.isRoutable()) {
+        return;
+    }
+
+    address_manager_->addAddress(network_addr, success ? "connect-success" : "connect-failure");
+    address_manager_->markAttempt(network_addr, success);
+    if (success) {
+        address_manager_->markGood(network_addr);
+    }
+}
+
+std::vector<std::pair<std::string, uint16_t>> P2PManager::get_local_advertised_addresses() const {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    return advertised_addresses_;
+}
+
+std::vector<std::pair<std::string, uint16_t>> P2PManager::collect_advertisable_addresses(
+    size_t max_count) const {
+    std::vector<std::pair<std::string, uint16_t>> result;
+    std::unordered_set<std::string> seen;
+
+    auto add_address = [&](const std::string& address, uint16_t port) {
+        if (result.size() >= max_count || IsLocalOrWildcardAddress(address) || port == 0) {
+            return;
+        }
+        auto network_addr = NetworkAddressForPeer(address, port);
+        if (!network_addr.isValid() || !network_addr.isRoutable()) {
+            return;
+        }
+        const std::string key = AddressKey(address, port);
+        if (seen.insert(key).second) {
+            result.emplace_back(address, port);
+        }
+    };
+
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& advertised : advertised_addresses_) {
+            add_address(advertised.first, advertised.second);
+        }
+        for (const auto& pair : connected_peers_) {
+            const auto& peer = pair.second;
+            if (!peer->is_connected || !peer->is_outbound) {
+                continue;
+            }
+            add_address(peer->address, peer->port);
+        }
+    }
+
+    if (address_manager_ && result.size() < max_count) {
+        const auto addrman_addresses = address_manager_->getAdvertisableAddresses(max_count - result.size());
+        for (const auto& addr : addrman_addresses) {
+            add_address(addr.ip, addr.port);
+        }
+    }
+
+    return result;
+}
+
+bool P2PManager::send_addr_list_to_socket(
+    int socket_fd,
+    const std::vector<std::pair<std::string, uint16_t>>& addresses) {
+    if (addresses.empty()) {
+        return true;
+    }
+
+    std::vector<PeerInfo> peer_infos;
+    peer_infos.reserve(addresses.size());
+    for (const auto& [address, port] : addresses) {
+        peer_infos.push_back(PeerInfoForAddress(address, port));
+    }
+    auto addr_msg = P2PMessage::create_addr(peer_infos);
+    return send_message(socket_fd, addr_msg);
 }
 
 bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
@@ -947,6 +1132,7 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
     int socket_fd = create_client_socket(address, port);
     if (socket_fd < 0) {
         std::cerr << "Failed to connect to " << peer_key << std::endl;
+        mark_peer_address_attempt(resolved_ip, port, false);
         // Remove from connecting set on failure
         std::lock_guard<std::mutex> lock(peers_mutex_);
         connecting_peers_.erase(peer_key);
@@ -1034,9 +1220,15 @@ void P2PManager::connection_manager_loop() {
             continue;
         }
 
-        // Try to connect to ALL unconnected seed nodes
+        // Try to connect to bootstrap/discovered peers. Seed nodes are the
+        // bootstrap surface; addrman is the Bitcoin-style rolling address book
+        // fed by addr/getaddr relay.
         // TS2 COMPLIANT: Collect connection targets inside lock, connect outside lock
         std::vector<std::pair<std::string, uint16_t>> seeds_to_connect;
+        std::vector<dinero::p2p::NetworkAddress> addrman_candidates;
+        if (address_manager_) {
+            addrman_candidates = address_manager_->getAddresses(MAX_OUTBOUND_CONNECTIONS);
+        }
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
 
@@ -1050,48 +1242,58 @@ void P2PManager::connection_manager_loop() {
                 }
             }
 
-            if (!seed_nodes_.empty()) {
-                for (const auto& seed : seed_nodes_) {
-                    if (active_peer_count + seeds_to_connect.size() >= 8) break; // Max peers
-
-                    std::string peer_key = seed.first + ":" + std::to_string(seed.second);
-
-                    // Skip if already connected (by peer key)
-                    auto it = connected_peers_.find(peer_key);
-                    if (it != connected_peers_.end() && it->second->is_connected) {
-                        continue;
-                    }
-
-                    // Skip if connection already in progress (prevents duplicate handlers)
-                    if (connecting_peers_.count(peer_key) > 0) {
-                        continue;
-                    }
-
-                    // Resolve DNS seeds to IP and skip if already connected to that IP
-                    // (prevents duplicate connections when both "seed1.dinero-coin.com" and
-                    // its raw IP "172.93.160.131" appear in the seed list)
-                    std::string resolved_ip = seed.first;
-                    struct sockaddr_in sa;
-                    if (inet_pton(AF_INET, seed.first.c_str(), &sa.sin_addr) <= 0) {
-                        // Not a raw IP — resolve DNS
-                        struct addrinfo hints{}, *res = nullptr;
-                        hints.ai_family = AF_INET;
-                        hints.ai_socktype = SOCK_STREAM;
-                        if (getaddrinfo(seed.first.c_str(), nullptr, &hints, &res) == 0 && res) {
-                            char buf[INET_ADDRSTRLEN];
-                            inet_ntop(AF_INET,
-                                      &((struct sockaddr_in*)res->ai_addr)->sin_addr,
-                                      buf, sizeof(buf));
-                            resolved_ip = buf;
-                            freeaddrinfo(res);
-                        }
-                    }
-                    if (connected_ips.count(resolved_ip) > 0) {
-                        continue;  // Already connected to this IP via another seed entry
-                    }
-
-                    seeds_to_connect.push_back(seed);
+            auto consider_candidate = [&](const std::string& address, uint16_t port) {
+                if (active_peer_count + seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS) {
+                    return;
                 }
+                if (address.empty() || port == 0) {
+                    return;
+                }
+
+                std::string peer_key = address + ":" + std::to_string(port);
+
+                // Skip if already connected (by peer key)
+                auto it = connected_peers_.find(peer_key);
+                if (it != connected_peers_.end() && it->second->is_connected) {
+                    return;
+                }
+
+                // Skip if connection already in progress (prevents duplicate handlers)
+                if (connecting_peers_.count(peer_key) > 0) {
+                    return;
+                }
+
+                // Resolve DNS seeds to IP and skip if already connected to that IP
+                // (prevents duplicate connections when both "seed1.dinero-coin.com" and
+                // its raw IP "172.93.160.131" appear in the seed list)
+                std::string resolved_ip = address;
+                struct sockaddr_in sa;
+                if (inet_pton(AF_INET, address.c_str(), &sa.sin_addr) <= 0) {
+                    // Not a raw IP — resolve DNS
+                    struct addrinfo hints{}, *res = nullptr;
+                    hints.ai_family = AF_INET;
+                    hints.ai_socktype = SOCK_STREAM;
+                    if (getaddrinfo(address.c_str(), nullptr, &hints, &res) == 0 && res) {
+                        char buf[INET_ADDRSTRLEN];
+                        inet_ntop(AF_INET,
+                                  &((struct sockaddr_in*)res->ai_addr)->sin_addr,
+                                  buf, sizeof(buf));
+                        resolved_ip = buf;
+                        freeaddrinfo(res);
+                    }
+                }
+                if (connected_ips.count(resolved_ip) > 0) {
+                    return;  // Already connected to this IP via another seed entry
+                }
+
+                seeds_to_connect.emplace_back(address, port);
+            };
+
+            for (const auto& seed : seed_nodes_) {
+                consider_candidate(seed.first, seed.second);
+            }
+            for (const auto& candidate : addrman_candidates) {
+                consider_candidate(candidate.ip, candidate.port);
             }
         }
 
@@ -1483,6 +1685,10 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
     std::cout << "Handshake completed with " << peer->to_string()
               << " (our_height=" << our_height << ", peer_height=" << peer->best_height << ")" << std::endl;
 
+    if (peer->is_outbound) {
+        mark_peer_address_attempt(peer->address, peer->port, true);
+    }
+
     // Request peer's known addresses for network discovery
     // Only on outbound connections to avoid addr storms
     if (peer->is_outbound) {
@@ -1494,6 +1700,15 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // timestamp, every keepalive tick would re-send and the network
         // would carry pointless addr-storm traffic.
         peer->last_getaddr_sent = std::chrono::steady_clock::now();
+    }
+
+    // Bitcoin-shaped self-advertisement: if this node knows a reachable public
+    // address (manual externalip or successful UPnP), announce it after
+    // handshake so servers and other peers can add it to addrman and relay it.
+    const auto local_addresses = get_local_advertised_addresses();
+    if (!local_addresses.empty() && send_addr_list_to_socket(peer->socket_fd, local_addresses)) {
+        std::cout << "[P2P] Advertised " << local_addresses.size()
+                  << " reachable address(es) to " << peer->to_string() << std::endl;
     }
 
     return true;
@@ -1990,17 +2205,19 @@ void P2PManager::handle_sendcmpct(const std::string& peer_address, const P2PMess
 }
 
 void P2PManager::handle_getaddr(const std::string& peer_address, const P2PMessage& message) {
-    // Only relay OUTBOUND peers — we know their real listening port.
-    // Inbound peers have ephemeral source ports that no one can connect to.
-    auto peers = get_connected_peers();
-    std::vector<PeerInfo> relayable;
-    for (auto& p : peers) {
-        if (p.is_outbound) {
-            relayable.push_back(std::move(p));
-        }
-    }
+    (void)message;
+
+    // Reply from the address book, not merely the current socket list. This is
+    // what lets a reachable community node propagate beyond the bootstrap
+    // servers: one node learns it, addrman stores it, getaddr shares it.
+    const auto relayable = collect_advertisable_addresses(1000);
     if (!relayable.empty()) {
-        auto addr_msg = P2PMessage::create_addr(relayable);
+        std::vector<PeerInfo> peer_infos;
+        peer_infos.reserve(relayable.size());
+        for (const auto& [address, port] : relayable) {
+            peer_infos.push_back(PeerInfoForAddress(address, port));
+        }
+        auto addr_msg = P2PMessage::create_addr(peer_infos);
         send_to_peer(peer_address, addr_msg);
     }
 }
@@ -2041,10 +2258,13 @@ void P2PManager::handle_addr(const std::string& peer_address, const P2PMessage& 
         // ephemeral source ports from inbound connections, not real listening ports.
         if (port != listen_port_) continue;
 
-        // Add as seed node (deduplication handled by add_seed_node)
-        add_seed_node(addr, port);
-        added++;
-        new_for_relay.emplace_back(addr, port);
+        // Add as a connect candidate and feed addrman. Inbound socket source
+        // ports are still rejected above; only explicit listening addresses
+        // survive into the address book.
+        if (remember_peer_address(addr, port, peer_address)) {
+            added++;
+            new_for_relay.emplace_back(addr, port);
+        }
     }
 
     if (added > 0) {
@@ -2096,13 +2316,7 @@ void P2PManager::relay_addresses_to_peers(
     std::vector<PeerInfo> as_peer_infos;
     as_peer_infos.reserve(addresses.size());
     for (const auto& [addr, port] : addresses) {
-        PeerInfo info;
-        info.address = addr;
-        info.port = port;
-        info.is_outbound = false;
-        info.is_connected = false;
-        info.socket_fd = -1;
-        as_peer_infos.push_back(std::move(info));
+        as_peer_infos.push_back(PeerInfoForAddress(addr, port));
     }
     auto addr_msg = P2PMessage::create_addr(as_peer_infos);
 

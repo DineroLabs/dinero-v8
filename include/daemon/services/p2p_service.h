@@ -19,6 +19,9 @@ namespace dinero {
 
 // Forward declarations
 class ILogger;
+namespace daemon {
+class AddressManagerService;
+}
 
 /**
  * P2PService - IService wrapper for P2PManager
@@ -163,6 +166,7 @@ private:
     std::shared_ptr<class ChainstateService> chainstate_;
     std::shared_ptr<class MempoolService> mempool_;
     std::shared_ptr<daemon::PruneService> prune_;
+    std::shared_ptr<daemon::AddressManagerService> address_manager_;
 
     // P2P configuration
     uint16_t listen_port_ = 20999;

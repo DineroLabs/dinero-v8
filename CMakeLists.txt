@@ -5469,6 +5469,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   add_executable(test_p2p_manager_ts1_integration
     tests/p2p/test_p2p_manager_ts1_integration.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp    # Provides Params().magic for standalone P2PManager link
     src/common/sha256d.cpp        # Required for Dinero::Common::double_sha256_raw
     src/daemon/secure_random.cpp  # Required for SecureRandom::GetUInt64()
   )
@@ -8254,6 +8256,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/addrman.cpp
   )
   target_include_directories(test_codebase_verification PRIVATE
     ${CMAKE_SOURCE_DIR}/tests
@@ -8430,6 +8433,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/daemon/bech32_decode.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/addrman.cpp
     src/daemon/wallet_crypto.cpp
     src/daemon/secure_random.cpp
     src/crypto/decrypt_encrypted_key.cpp
@@ -8763,6 +8767,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp  # For P2PMessage::create_inv() and P2PManager
+    src/p2p/addrman.cpp
   )
   target_include_directories(test_mining_smoke PRIVATE
     ${CMAKE_SOURCE_DIR}/tests

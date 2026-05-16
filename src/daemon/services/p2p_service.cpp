@@ -3,6 +3,7 @@
 #include "daemon/services/config_service.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/mempool_service.h"
+#include "daemon/services/address_manager_service.h"
 #include "daemon/daemon_context.h"
 #include "config/seed_nodes.h"
 #include "consensus/chainparams.h"
@@ -390,6 +391,23 @@ void P2PService::StartPortMappingIfEnabled() {
     port_mapping_ = std::make_unique<network::PortMappingSession>();
     const auto result = port_mapping_->Start(portmap_config);
     if (result.success) {
+        if (!result.external_address.empty()) {
+            std::string advertise_host;
+            uint16_t advertise_port = 0;
+            if (ParseEndpoint(result.external_address,
+                              portmap_config.external_port,
+                              &advertise_host,
+                              &advertise_port)) {
+                p2p_mgr_->add_advertised_address(advertise_host, advertise_port);
+                if (logger_interface_) {
+                    logger_interface_->info("[P2PService] Advertising port-mapped address: " +
+                                            advertise_host + ":" + std::to_string(advertise_port));
+                }
+            } else if (logger_interface_) {
+                logger_interface_->warning("[P2PService] Port mapping succeeded but no public address was available for addr relay: " +
+                                           result.external_address);
+            }
+        }
         if (logger_interface_) {
             logger_interface_->info("[P2PService] P2P port mapped via " + result.protocol +
                                     ": " + result.message +
@@ -425,6 +443,7 @@ bool P2PService::Init(DaemonContext& ctx) {
     chainstate_ = std::dynamic_pointer_cast<ChainstateService>(ctx.chainstate);
     mempool_ = std::dynamic_pointer_cast<MempoolService>(ctx.mempool);
     prune_ = ctx.prune;
+    address_manager_ = ctx.address_manager;
 
     if (!logger_interface_) {
         throw std::runtime_error("[P2PService] Logger interface dependency missing");
@@ -518,6 +537,12 @@ bool P2PService::Start() {
         const std::string connect_config = config_ ? config_->GetString("p2p.connect", "") : "";
         const bool connect_only = !connect_config.empty();
 
+        if (address_manager_) {
+            p2p_mgr_->set_address_manager(address_manager_->getManager());
+        } else {
+            logger_interface_->warning("[P2PService] Address manager service unavailable; addr relay will use seeds only");
+        }
+
         // Load persistent peer database
         if (!connect_only && !peers_file_path_.empty()) {
             try {
@@ -538,6 +563,20 @@ bool P2PService::Start() {
         std::unordered_set<std::string> reconnect_seen;
         std::string network = Params().name;  // "mainnet" | "testnet" | "regtest"
         uint16_t p2p_port = Params().p2p_port;  // Default P2P port for this network
+
+        if (!external_ip_.empty()) {
+            std::string advertise_host;
+            uint16_t advertise_port = 0;
+            if (ParseEndpoint(external_ip_, p2p_port, &advertise_host, &advertise_port)) {
+                p2p_mgr_->add_advertised_address(advertise_host, advertise_port);
+                logger_interface_->info("[P2PService] Advertising configured external address: " +
+                                        advertise_host + ":" + std::to_string(advertise_port));
+            } else {
+                logger_interface_->warning("[P2PService] Ignoring invalid externalip for addr relay: " +
+                                           external_ip_);
+            }
+        }
+
         for (const auto& seed : seed_nodes_) {
             std::string host;
             uint16_t port = 0;

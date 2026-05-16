@@ -13,6 +13,8 @@
 #include <functional>
 #include <chrono>
 
+#include "p2p/addrman.h"
+
 // Cross-platform P2P networking (no Qt dependencies)
 // Handles peer discovery, connections, and message routing
 
@@ -182,6 +184,8 @@ public:
     void disconnect_peer(const std::string& peer_address);
     void set_network_active(bool active);
     bool is_network_active() const { return network_active_.load(std::memory_order_acquire); }
+    void set_address_manager(dinero::p2p::AddressManager* address_manager);
+    void add_advertised_address(const std::string& address, uint16_t port);
     
     // Message handling
     void set_message_handler(MessageHandler handler) { message_handler_ = handler; }
@@ -254,6 +258,7 @@ private:
     static constexpr size_t MAX_OUTBOX_SIZE = 10000;
     static constexpr int MAX_SEND_TRIES = 10;
     static constexpr int SEND_TIMEOUT_SEC = 5;
+    static constexpr size_t MAX_OUTBOUND_CONNECTIONS = 8;
     static constexpr size_t MAX_INBOUND_CONNECTIONS = 125;
     static constexpr size_t MAX_INBOUND_PER_IP = 6;
     // Serialize writes per-socket (not globally) to avoid interleaved frames
@@ -294,6 +299,8 @@ private:
     std::unordered_map<std::string, std::shared_ptr<PeerInfo>> connected_peers_;
     std::unordered_set<std::string> connecting_peers_;  // Guards against duplicate connection attempts
     std::vector<std::pair<std::string, uint16_t>> seed_nodes_;
+    std::vector<std::pair<std::string, uint16_t>> advertised_addresses_;
+    dinero::p2p::AddressManager* address_manager_{nullptr};  // Owned by AddressManagerService
     std::string peers_file_path_;  // Phase C: Persistent peer database path
     
     // Message handling
@@ -315,6 +322,14 @@ private:
     void handle_incoming_connection(int client_socket, const std::string& client_address);
     bool perform_handshake(PeerInfo* peer);
     void cleanup_peer(const std::string& peer_address);
+    bool remember_peer_address(const std::string& address,
+                               uint16_t port,
+                               const std::string& source_peer);
+    void mark_peer_address_attempt(const std::string& address, uint16_t port, bool success);
+    std::vector<std::pair<std::string, uint16_t>> get_local_advertised_addresses() const;
+    std::vector<std::pair<std::string, uint16_t>> collect_advertisable_addresses(size_t max_count) const;
+    bool send_addr_list_to_socket(int socket_fd,
+                                  const std::vector<std::pair<std::string, uint16_t>>& addresses);
     
     // Message processing
     bool send_message(int socket_fd, const P2PMessage& message);
