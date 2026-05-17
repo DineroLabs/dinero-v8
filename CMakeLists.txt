@@ -1931,94 +1931,7 @@ target_link_libraries(dinero_tx_primitives PUBLIC
   OpenSSL::Crypto        # For randomness
 )
 
-# Core wallet library (real implementations only)
-# NOTE: src/wallet/hd_wallet.cpp is LEGACY and intentionally NOT compiled.
-#       Active implementation: src/wallet/hd_wallet.cpp (uses BIP32Deriver)
-add_library(dinero_wallet STATIC
-  src/common/logger.cpp         # Logger used by wallet code
-  src/wallet/address.cpp
-  src/common/AddressCodec.cpp  # Taproot address encoding (P2TR)
-  src/address/addr_codec.cpp    # Taproot address decoding and scriptPubKey creation
-  src/address/addr_types.cpp    # Address type definitions
-  src/wallet/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
-  src/wallet/key_identity.cpp    # Week 1: KeyID-based wallet identity
-  src/wallet/key_origin.cpp      # Week 1: KeyOriginInfo for descriptor wallet
-  src/wallet/script_ownership.cpp # Week 1: IsMine script ownership
-  src/wallet/hd_wallet.cpp
-  src/wallet/bip32_deriver.cpp   # BIP32 derivation helper (deduplicates lambdas)
-  src/wallet/shielded_derivation.cpp  # Phase 5 Wave 1: Sapling-shape sk → ask/nsk → ak/nk → ivk
-  src/wallet/bip39.cpp
-  src/wallet/key_store_impl.cpp  # Phase 3A: BIP32 HD keystore (replaces HdKeyStoreAdapter)
-  src/wallet/psbt.cpp
-  src/core/wallet/psbt.cpp    # PSBTv2 helpers (din:: namespace, add_global_output_count etc.)
-  src/wallet/psbt_signer.cpp  # PSBT signing with BIP86 guardrails
-  src/wallet/psbt_taproot_validator.cpp  # BIP86 PSBT guardrails (key-path only validation)
-  src/wallet/descriptor_checksum.cpp  # Phase 1: Bitcoin-compatible descriptor checksums
-  src/wallet/bip84_descriptor.cpp     # BIP84 descriptor factory (P2WPKH)
-  src/wallet/bip86_descriptor.cpp     # BIP86 descriptor factory (P2TR Taproot)
-  src/wallet/descriptor_activation.cpp  # Phase 2 Step 2: Descriptor activation gate (security-critical)
-  src/wallet/descriptor_psbt.cpp      # Phase 2 Step 3: Descriptor-based PSBT creation
-  src/wallet/descriptor_store.cpp     # Phase 3C: Descriptor persistence (storage + selection layer ONLY)
-  # Phase W.1.1: Rescan logic moved to wallet_worker.cpp (reuses existing block processing)
-  # src/wallet/transaction.cpp REMOVED: duplicate of src/primitives/transaction.cpp (now in dinero_consensus)
-  # Wallet uses Transaction from dinero_consensus (already linked)
-  src/wallet/transaction_deserializer.cpp
-  src/wallet/coin_selection.cpp
-  src/wallet/bip143_signer.cpp
-  src/wallet/transaction_builder.cpp  # Phase 33: Transaction building for wallet RPC
-  src/wallet/schnorr_signer.cpp  # BIP-340 Schnorr signatures for Taproot
-  src/wallet/taproot_keys.cpp  # BIP340 Schnorr key generation and signing
-  src/wallet/taproot_address.cpp  # BIP86 Taproot address generation (P2TR key-path)
-  src/wallet/taproot_tx_signer.cpp  # BIP341 Taproot transaction signing (BIP340 Schnorr)
-  src/wallet/intent_descriptor.cpp  # B3: Intent descriptor for SigHash v1 ext_commitment
-  src/wallet/policy_descriptor.cpp  # B2: PolicyDescriptor + policy_id computation
-  src/wallet/taproot_template_builder.cpp  # B2: Taproot template tree builder (PROTECTED/ESCROW)
-  src/wallet/safety_profile.cpp  # B4: Safety profile management
-  src/wallet/protected_output_builder.cpp  # B4: Protected output construction (HDWallet + template builder)
-  src/wallet/protected_spend.cpp  # B4: Script-path spending for panic/recovery leaves
-  src/wallet/recovery_qr.cpp  # B4: Encrypted recovery QR envelope (AES-256-GCM)
-  src/wallet/escrow_descriptor.cpp  # B5: Escrow descriptor + trade ID computation
-  src/wallet/receipt_bundle.cpp  # B5: Attestor receipt bundle + Schnorr verification
-  src/wallet/escrow_state_machine.cpp  # B5: Escrow state machine (NEGOTIATING->FUNDED->RELEASED)
-  src/wallet/tx_classifier.cpp          # B7: UTXO classification + extended tx details
-  src/wallet/lp_router.cpp              # B6a: LP router — provider quote aggregation
-  # Hardware wallet files added conditionally below (not available on iOS)
-  # Trezor files conditionally added below (ENABLE_TREZOR)
-  src/wallet/recipient_descriptor.cpp  # DecodePaymentTarget — structured address resolution
-  src/wallet/wallet_sync_status.cpp  # Phase W.2.1: Truthful wallet sync UX
-  src/wallet/shielded_wallet_runtime.cpp  # v5 shielded note runtime + block sync (wallet-side only)
-  src/wallet/sync_eta_estimator.cpp  # Phase W.2.2: Honest ETA estimation
-  src/wallet/sync_progress_tracker.cpp  # Phase W.2.2: Phase-aware progress tracking
-  src/wallet/reorg_detector.cpp  # Phase W.2.4: Reorg detection and visibility
-  src/wallet/slow_reason_analyzer.cpp  # Phase W.2.5: Slow reason analyzer
-  src/wallet/rbf_cpfp_detector.cpp  # Phase W.4.2: RBF & CPFP capability detection
-  src/wallet/fee_bump_engine.cpp  # Phase W.4.3: Fee bump recommendation engine
-  src/wallet/wallet_fee_bump_hooks.cpp  # Phase W.4.5: Wallet fee bump UX hooks
-  # Phase 33: Full Wallet Activation
-  src/wallet/wallet_features.cpp     # Wallet feature flags (all features enabled)
-  # Milestone 12.2: Formal UTXO State Model (v0.12.0)
-  src/wallet/wallet_utxo_state.cpp    # UTXO state machine with validated transitions
-  src/wallet/wallet_utxo_tracker.cpp  # Per-wallet UTXO tracking with formal state model
-  # Milestone 12.4: Unsigned Transaction Construction (v0.12.0)
-  src/wallet/unsigned_tx_builder.cpp  # Pure transaction builder (no side effects)
-  # Milestone 12.5: Transaction Signing & Local Validation (v0.12.0)
-  src/wallet/transaction_signer.cpp   # Sign unsigned tx + local validation
-  # Milestone 12.6: Wallet ↔ Mempool Submission (v0.12.0)
-  src/wallet/wallet_mempool_adapter.cpp  # Adapter between wallet and mempool
-  # Milestone 12.7: Transaction Batching (v0.12.0 - FINAL)
-  src/wallet/batch_transaction_builder.cpp  # Pay multiple recipients in one tx
-  # Phase 30: Taproot Asset Layer
-  src/assets/asset_id.cpp           # Asset ID computation and metadata
-  src/assets/asset_state.cpp        # Asset UTXO and state tracking
-  src/assets/asset_proof.cpp        # Merkle proofs for asset operations
-  src/assets/asset_transfer.cpp     # Asset transfer protocol
-  src/assets/asset_registry.cpp     # Global asset registry (SQLite)
-  src/crypto/pbkdf2.cpp
-  src/crypto/wallet_crypto.cpp  # Wallet encryption (Argon2id + AES-256-GCM)
-  # Wallet UX Abstractions (Phase CT.2 - Unified API layer)
-  src/wallet/unified_balance_service.cpp # UnifiedBalanceService: combined transparent + CT balance
-  src/wallet/address_factory.cpp         # AddressFactory: generate any address type
-)
+add_subdirectory(src/wallet)
 
 # Lightning Key Derivation (always built - used by wallet to provide keys to Lightning)
 # This is separate from the Lightning daemon and from wallet UTXOs.
@@ -2523,49 +2436,6 @@ else()
 endif()
 
 add_subdirectory(src/storage)
-
-# ─────────────────────────────────────────────────────────────────────────
-# Layer 2: Wallet (SQLite ONLY - User private data)
-# ─────────────────────────────────────────────────────────────────────────
-target_include_directories(dinero_wallet PUBLIC
-  ${CMAKE_SOURCE_DIR}/include
-  ${CMAKE_SOURCE_DIR}/src
-  ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include  # ZK proof support
-)
-
-target_link_libraries(dinero_wallet PUBLIC
-  dinero_tx_primitives # ← Transaction structures and Schnorr/Taproot signing
-  dinero_crypto
-  dinero_consensus  # ← Needed for CoinbaseMaturity::isCoinbaseMature()
-  dinero_shielded
-  argon2            # ← Wallet encryption (bundled Argon2id)
-  OpenSSL::SSL
-  OpenSSL::Crypto
-  sqlite3           # ← ONLY SQLite, NO RocksDB
-)
-# Hardware wallet USB/HID transport — not available on iOS or when disabled
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND ENABLE_HARDWARE_WALLETS)
-  target_link_libraries(dinero_wallet PUBLIC hidapi::hidapi)
-  target_sources(dinero_wallet PRIVATE
-    src/wallet/hardware_wallet_interface.cpp
-    src/wallet/hid_transport.cpp
-    src/wallet/ledger_wallet.cpp
-  )
-  target_compile_definitions(dinero_wallet PUBLIC HAVE_USB_HWALLET=1)
-endif()
-
-# Trezor support (optional - requires protobuf and trezor-common protos)
-if(ENABLE_TREZOR)
-  target_sources(dinero_wallet PRIVATE
-    src/wallet/trezor_transport.cpp  # Trezor wire protocol transport (Protobuf over HID)
-    src/wallet/trezor_wallet.cpp  # Trezor hardware wallet implementation (Protobuf messages)
-  )
-  target_link_libraries(dinero_wallet PUBLIC trezor_proto)
-  target_compile_definitions(dinero_wallet PUBLIC ENABLE_TREZOR=1)
-  message(STATUS "Trezor hardware wallet support: ENABLED")
-else()
-  message(STATUS "Trezor hardware wallet support: DISABLED (use -DENABLE_TREZOR=ON to enable)")
-endif()
 
 # ─────────────────────────────────────────────────────────────────────────
 # Wallet FFI Library (C API for iOS/Mobile/Rust)
