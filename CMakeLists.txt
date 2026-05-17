@@ -2098,6 +2098,9 @@ target_link_libraries(dinero_pool PUBLIC
   dinero_chainstate  # storage/chain_db.h
 )
 
+# Live P2P/network source list consumed by dinero_core.
+include(src/p2p/CMakeLists.txt)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -2202,17 +2205,7 @@ add_library(dinero_core STATIC
   # Metrics
   src/metrics/metrics_registry.cpp
 
-  # P2P layer
-  src/p2p/peer_scoring.cpp
-  src/p2p/connection_manager.cpp
-  src/p2p/rate_limiter.cpp
-  src/p2p/network_limits_monitor.cpp   # Phase E.2.c: Network limits monitoring
-  src/p2p/block_download_scheduler.cpp
-  src/p2p/headers_first_sync.cpp
-  src/p2p/multi_peer_headers_sync.cpp
-  src/p2p/compact_block.cpp  # Phase G.13: Compact block relay (Plan-A: binary wire format)
-  src/p2p/addrman.cpp
-  src/p2p/peer_manager_posix.cpp  # Non-Qt P2P PeerManager implementation (POSIX sockets)
+  ${DINERO_CORE_P2P_SOURCES}
 
   # Policy layer
   src/policy/mempool_policy.cpp
@@ -2228,16 +2221,6 @@ add_library(dinero_core STATIC
   src/daemon/hd_wallet_manager.cpp
   src/daemon/wallet_crypto.cpp
   src/wallet/psbt.cpp  # PSBT helpers (Phase 2 Step 4: export for tests)
-
-  # Network
-  src/network/network_invariants.cpp
-  src/network/port_mapper.cpp
-  src/daemon/p2p_message.cpp
-  src/daemon/peer_connection.cpp
-  src/daemon/p2p_manager.cpp
-  src/daemon/header_serialization.cpp
-  src/network/utreexo_messages.cpp
-  src/network/stateless_node.cpp
 
   # Crypto utilities
   src/crypto/sp_context.cpp
@@ -2255,10 +2238,6 @@ add_library(dinero_core STATIC
   src/daemon/block_acceptor.cpp
   src/daemon/block_relay_manager.cpp  # Phase G.2: Block propagation
   src/daemon/tx_relay_manager.cpp  # Phase G.3: Mempool relay
-
-  # P2P infrastructure (Phase G.7+)
-  src/p2p/orphan_block_pool.cpp       # Phase G.7: Orphan block handling
-  src/p2p/block_presence.cpp          # Required by orphan_block_pool
 
   # Privacy
   src/core/privacy/silent_scanner_manager.cpp
