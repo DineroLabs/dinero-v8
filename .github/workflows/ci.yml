@@ -1,0 +1,152 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Continuous Integration — Linux x86_64 only, $0/month
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Cost model (READ THIS before adding anything to this file):
+#
+#   DineroLabs/dinero-v8 is a PUBLIC repository.
+#   GitHub Actions on `ubuntu-latest` for public repos is FREE with NO
+#   minute quota whatsoever — https://docs.github.com/en/billing/managing-billing-for-your-products/about-billing-for-github-actions#about-billing-for-github-actions
+#
+#   The expensive runners (DO NOT add without a deliberate decision):
+#     macos-*       → 10x cost multiplier
+#     windows-*     → 2x cost multiplier
+#     ubuntu-*-large→ 2–8x cost multiplier
+#
+#   For cross-platform release builds (macOS notarization, Windows MSVC),
+#   create a SEPARATE workflow gated on `on: push: tags: [v8.*]` so it
+#   fires only for release tags (a few times/month) rather than every PR.
+#   That keeps macOS/Windows minutes minimal and predictable.
+#
+# ─────────────────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches: [dinero-main]
+  pull_request:
+    branches: [dinero-main]
+  workflow_dispatch:  # also allows manual triggering from the Actions UI
+
+# Cancel an older in-progress run when a new commit lands on the same PR
+# or branch. Stops a rapid-iteration cycle from queueing wasted runs.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Defense-in-depth: this workflow only ever READS the repo. No write,
+# no PR-comment, no label, no push.
+permissions:
+  contents: read
+
+jobs:
+  linux-build-test:
+    name: Linux x86_64 — daemon build + unit tests
+    runs-on: ubuntu-latest
+
+    # Safety net: any single run that exceeds this is killed. Prevents a
+    # hung build from accidentally accumulating minutes (still free on
+    # public repo, but good hygiene).
+    timeout-minutes: 90
+
+    steps:
+      # ─── checkout (with submodules — rocksdb, secp256k1-zkp, jsoncpp …) ───
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1   # shallow — no history needed in CI
+
+      # ─── apt deps ──────────────────────────────────────────────────────
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            ccache \
+            pkg-config \
+            python3 \
+            perl \
+            libcurl4-openssl-dev
+
+      # ─── Rust toolchain (bulletproofs-ffi is Rust) ─────────────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # ─── ccache: caches compiled object files between runs ─────────────
+      # Free, transparent, cuts a from-scratch 30-min build down to a
+      # few minutes when only a handful of files changed.
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.workflow }}-linux
+          max-size: 500M
+
+      # ─── cache vendored prereqs (OpenSSL prebuilt, depends/, cargo) ────
+      # Same idea: subsequent runs skip OpenSSL rebuild + crate downloads.
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.3.2/prebuilt
+            depends/sources
+            depends/x86_64-pc-linux-gnu*
+            ~/.cargo/registry
+            ~/.cargo/git
+            third_party/bulletproofs_ffi/target
+            third_party/bulletproofs-ffi/target
+          key: vendored-${{ runner.os }}-${{ hashFiles('depends/CMakeLists.txt', 'depends/packages/*.cmake', 'scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock', 'third_party/bulletproofs-ffi/Cargo.lock') }}
+          restore-keys: |
+            vendored-${{ runner.os }}-
+
+      # ─── build vendored OpenSSL (cached after first run) ───────────────
+      - name: Build vendored OpenSSL
+        run: bash scripts/build-openssl-vendored.sh
+
+      # ─── build depends/ (miniupnpc + libnatpmp) ────────────────────────
+      - name: Build depends
+        run: |
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j
+
+      # ─── configure ─────────────────────────────────────────────────────
+      - name: CMake configure
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      # ─── build daemon ──────────────────────────────────────────────────
+      # v1 deliberately builds only the daemon target. The Qt UI, the
+      # standalone miner, and the various test-only targets are skipped
+      # to keep per-run minutes minimal. Add them as separate jobs later
+      # once the daemon path is reliably green.
+      - name: Build daemon (dinerod)
+        run: cmake --build build --target dinerod -j
+
+      # ─── smoke-test the binary ─────────────────────────────────────────
+      # If --version or --help blow up, something fundamental is broken
+      # even though the build succeeded.
+      - name: Smoke-test the binary
+        run: |
+          ./build/dinerod --version
+          ./build/dinerod --help | grep -qi portmap
+          echo "✓ dinerod runs; UPnP/NAT-PMP options present (depends/ linked correctly)"
+
+      # ─── run unit tests ────────────────────────────────────────────────
+      # NOTE: test_csn_proof_refresh is excluded — pre-existing
+      # `Undefined symbols: ParamsImpl()` link failure on the v8 initial
+      # snapshot (commit 12df3cf9), reproducible on clean dinero-main.
+      # Tracked in project_codebase_cleanup_followups (Tier 2, item 5).
+      # Remove this exclusion once that test is fixed.
+      - name: Run unit tests
+        run: |
+          ctest --test-dir build \
+            --output-on-failure \
+            --exclude-regex 'test_csn_proof_refresh'
