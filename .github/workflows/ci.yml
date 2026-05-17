@@ -71,7 +71,8 @@ jobs:
             python3 \
             perl \
             libcurl4-openssl-dev \
-            libudev-dev
+            libudev-dev \
+            libusb-1.0-0-dev
 
       # ─── Rust toolchain (bulletproofs-ffi is Rust) ─────────────────────
       - name: Install Rust toolchain
@@ -115,11 +116,20 @@ jobs:
 
       # ─── configure ─────────────────────────────────────────────────────
       - name: CMake configure
+        # ENABLE_GRPC=OFF intentionally drops the gRPC stack for CI builds.
+        # The CMakeLists comment around the flag says: "ENABLE_GRPC=OFF
+        # drops the entire gRPC stack — protobuf, abseil runtime deps".
+        # That's what we want for CI: smaller build, no need for
+        # libgrpc++-dev/libprotobuf-dev/protobuf-compiler apt packages,
+        # matches what release builds do (DINERO_RELEASE=ON forces it).
+        # If you ever need to verify gRPC paths specifically, add a
+        # separate CI job that builds with ENABLE_GRPC=ON.
         run: |
           cmake -S . -B build \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
