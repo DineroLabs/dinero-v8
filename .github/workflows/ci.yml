@@ -70,7 +70,8 @@ jobs:
             pkg-config \
             python3 \
             perl \
-            libcurl4-openssl-dev
+            libcurl4-openssl-dev \
+            libudev-dev
 
       # ─── Rust toolchain (bulletproofs-ffi is Rust) ─────────────────────
       - name: Install Rust toolchain
