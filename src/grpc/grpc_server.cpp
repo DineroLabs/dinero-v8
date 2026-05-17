@@ -21,10 +21,10 @@ GrpcServer::GrpcServer(ChainDB* chain_db,
                        int port)
     : m_running(false)
 {
-    // Build server address
-    // Use 0.0.0.0:port format to bind to all interfaces
+    // Build server address. The service still uses insecure credentials, so
+    // keep explicit opt-in dev builds loopback-only.
     std::ostringstream oss;
-    oss << "0.0.0.0:" << port;
+    oss << "127.0.0.1:" << port;
     m_server_address = oss.str();
 
     // Create service implementations
@@ -86,7 +86,7 @@ bool GrpcServer::Start() {
         }
 
         g_logger.info("GrpcServer::Start() - Adding listening port: " + m_server_address);
-        // Listen on the specified address without authentication
+        // Listen on loopback without authentication.
         // TODO: Add TLS/mTLS for production deployments
         int selected_port = 0;
         builder.AddListeningPort(m_server_address, ::grpc::InsecureServerCredentials(), &selected_port);
