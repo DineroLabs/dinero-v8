@@ -2522,39 +2522,7 @@ else()
   )
 endif()
 
-# ─────────────────────────────────────────────────────────────────────────
-# Layer 1: Chainstate (RocksDB ONLY - Consensus storage)
-# ─────────────────────────────────────────────────────────────────────────
-add_library(dinero_chainstate STATIC
-  src/storage/chain_db.cpp             # ChainDB (RocksDB backend)
-  src/storage/persistent_utxo_adapter.cpp  # Phase 2: Bridges consensus to persistence
-  src/storage/block_storage.cpp        # BlockStorage (block/undo file management)
-  src/storage/disk_space_monitor.cpp   # Phase E.2.b: Disk space monitoring
-  # Phase 39: ChainManager DELETED (header, implementation, stubs all removed)
-  # All usage migrated to ChainstateService / ChainDB / BlockStorage
-  # src/consensus/startup_validator.cpp  # Phase E.1: Temporarily disabled - needs API fixes
-  src/wallet/utxo_index.cpp            # UTXO index (uses RocksDB)
-  src/sqlite_open.cpp                  # Minimal SQLite stub (for compatibility)
-  src/consensus/pow_consensus_engine.cpp   # PoW consensus engine (needs ChainDB)
-  src/chainstate/mtp_lookup.cpp        # Phase 23.3: BIP68 MTP lookup factory (needs ChainDB)
-)
-
-target_include_directories(dinero_chainstate BEFORE PUBLIC
-  ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include  # Must come BEFORE system paths to override Homebrew headers
-)
-target_include_directories(dinero_chainstate PUBLIC
-  ${CMAKE_SOURCE_DIR}/include
-  ${CMAKE_SOURCE_DIR}/src
-  ${CMAKE_SOURCE_DIR}/src/daemon
-)
-
-target_link_libraries(dinero_chainstate PUBLIC
-  dinero_consensus  # Depends on consensus rules
-  dinero_crypto
-  jsoncpp_static
-  secp256k1
-  RocksDB::rocksdb  # System RocksDB via find_package (reindex-enabled recovery)
-)
+add_subdirectory(src/storage)
 
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 2: Wallet (SQLite ONLY - User private data)
