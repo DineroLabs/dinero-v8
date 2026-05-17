@@ -196,8 +196,8 @@ if(DINERO_PACKAGED_BUILD)
   #   - DISABLE_GRPC compile def (gates daemon_app.cpp's gRPC server
   #     setup and shutdown out of the binary)
   #   - Lightning IPC defaults to raw sockets, not gRPC
-  # Why: the current gRPC server has a TLS/mTLS TODO and binds
-  # 0.0.0.0 with insecure credentials. Not safe for public Core 1.0.
+  # Why: the gRPC server still uses insecure credentials. Not safe for
+  # public Core 1.0.
   # Revisit when (a) Lightning is actually shipping AND (b) the
   # server has TLS/mTLS landed. Tracked in spec §"Out of scope".
   set(DINERO_RELEASE ON CACHE BOOL "Forced ON by DINERO_PACKAGED_BUILD" FORCE)
@@ -313,7 +313,7 @@ if(DINERO_RELEASE)
   set(USE_SYSTEM_OPENSSL OFF CACHE BOOL "" FORCE)
 else()
   message(STATUS "🛠️  DEV MODE: Development build with dynamic linking")
-  message(STATUS "   - gRPC enabled for faster iteration")
+  message(STATUS "   - gRPC disabled by default; pass -DENABLE_GRPC=ON for local IPC work")
   message(STATUS "   - Homebrew dependencies OK")
 endif()
 
@@ -1239,7 +1239,7 @@ endif()
 # Used for dinerod <-> lightningd communication (Lightning decoupling)
 # Phase 2 of Lightning decoupling plan
 
-option(ENABLE_GRPC "Enable gRPC server for inter-daemon communication" ON)
+option(ENABLE_GRPC "Enable gRPC server for inter-daemon communication" OFF)
 
 # When ENABLE_GRPC=OFF (whether forced by DINERO_RELEASE or set directly by
 # the operator on the configure line), define DISABLE_GRPC so daemon_app.cpp
@@ -3007,9 +3007,8 @@ add_library(dinero_core STATIC
   src/ipc/oracles/time_oracle_client.cpp
   src/ipc/oracles/transaction_oracle_client.cpp
 
-  # Test stubs (needed by consensus layer)
-  tests/consensus/chainstate_metadata_stub.cpp
-  tests/consensus/missing_symbols_stub.cpp
+  # Chainstate restart metadata persistence
+  src/storage/chainstate_metadata.cpp
 )
 
 target_include_directories(dinero_core BEFORE PUBLIC

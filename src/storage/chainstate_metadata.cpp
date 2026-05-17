@@ -23,7 +23,8 @@ StatusOr<ChainstateMetadata::Metadata> ChainstateMetadata::load() {
     // Read file
     std::ifstream file(metadata_path_, std::ios::binary);
     if (!file.is_open()) {
-        return Status::fromError("Failed to open metadata file: " + metadata_path_.string());
+        g_logger.error("Failed to open metadata file: " + metadata_path_.string());
+        return Status::Io;
     }
 
     // Get file size
@@ -37,7 +38,8 @@ StatusOr<ChainstateMetadata::Metadata> ChainstateMetadata::load() {
     file.close();
 
     if (file_size < 91) {  // Minimum size (magic + version + ... + checksum)
-        return Status::fromError("Metadata file too small: " + std::to_string(file_size) + " bytes");
+        g_logger.error("Metadata file too small: " + std::to_string(file_size) + " bytes");
+        return Status::Corruption;
     }
 
     // Deserialize
@@ -53,25 +55,28 @@ Status ChainstateMetadata::save(const Metadata& metadata) {
 
     std::ofstream file(temp_path, std::ios::binary);
     if (!file.is_open()) {
-        return Status::fromError("Failed to create temp metadata file: " + temp_path.string());
+        g_logger.error("Failed to create temp metadata file: " + temp_path.string());
+        return Status::Io;
     }
 
     file.write(reinterpret_cast<const char*>(data.data()), data.size());
     file.close();
 
     if (!file.good()) {
-        return Status::fromError("Failed to write metadata to: " + temp_path.string());
+        g_logger.error("Failed to write metadata to: " + temp_path.string());
+        return Status::Io;
     }
 
     // Atomic rename
     std::error_code ec;
     std::filesystem::rename(temp_path, metadata_path_, ec);
     if (ec) {
-        return Status::fromError("Failed to rename temp file: " + ec.message());
+        g_logger.error("Failed to rename temp file: " + ec.message());
+        return Status::Io;
     }
 
-    LOG_INFO("💾 Chainstate metadata saved: height=" + std::to_string(metadata.tip.height) +
-             ", hash=" + metadata.tip.hash.ToString().substr(0, 16) + "...");
+    g_logger.info("Chainstate metadata saved: height=" + std::to_string(metadata.tip.height) +
+                  ", hash=" + metadata.tip.hash.ToString().substr(0, 16) + "...");
 
     return Status::Ok;
 }
@@ -84,10 +89,11 @@ Status ChainstateMetadata::remove() {
     std::error_code ec;
     std::filesystem::remove(metadata_path_, ec);
     if (ec) {
-        return Status::fromError("Failed to remove metadata file: " + ec.message());
+        g_logger.error("Failed to remove metadata file: " + ec.message());
+        return Status::Io;
     }
 
-    LOG_INFO("🗑️  Chainstate metadata removed (forces full validation on next startup)");
+    g_logger.info("Chainstate metadata removed (forces full validation on next startup)");
     return Status::Ok;
 }
 
@@ -126,7 +132,7 @@ std::vector<uint8_t> ChainstateMetadata::serialize(const Metadata& metadata) con
     data.push_back(height & 0xFF);
 
     // Chainwork (32 bytes) - simplified, store as string padded
-    std::string work_str = metadata.tip.work.ToString();
+    std::string work_str = ChainworkToHex(metadata.tip.work);
     work_str.resize(64, '0');  // Pad to 64 hex chars
     for (size_t i = 0; i < 64; i += 2) {
         uint8_t byte = std::stoi(work_str.substr(i, 2), nullptr, 16);
@@ -166,7 +172,8 @@ std::vector<uint8_t> ChainstateMetadata::serialize(const Metadata& metadata) con
 
 StatusOr<ChainstateMetadata::Metadata> ChainstateMetadata::deserialize(const std::vector<uint8_t>& data) const {
     if (data.size() < 91) {
-        return Status::fromError("Invalid metadata size: " + std::to_string(data.size()));
+        g_logger.error("Invalid metadata size: " + std::to_string(data.size()));
+        return Status::Corruption;
     }
 
     size_t offset = 0;
@@ -179,7 +186,8 @@ StatusOr<ChainstateMetadata::Metadata> ChainstateMetadata::deserialize(const std
     offset += 4;
 
     if (magic != MAGIC) {
-        return Status::fromError("Invalid magic: 0x" + std::to_string(magic));
+        g_logger.error("Invalid chainstate metadata magic: 0x" + std::to_string(magic));
+        return Status::Corruption;
     }
 
     // Version (4 bytes)
@@ -190,7 +198,8 @@ StatusOr<ChainstateMetadata::Metadata> ChainstateMetadata::deserialize(const std
     offset += 4;
 
     if (version != VERSION) {
-        return Status::fromError("Unsupported version: " + std::to_string(version));
+        g_logger.error("Unsupported chainstate metadata version: " + std::to_string(version));
+        return Status::Invalid;
     }
 
     Metadata metadata;
@@ -202,7 +211,7 @@ StatusOr<ChainstateMetadata::Metadata> ChainstateMetadata::deserialize(const std
         snprintf(buf, sizeof(buf), "%02x", data[offset + i]);
         hash_hex += buf;
     }
-    metadata.tip.hash = uint256(hash_hex);
+    metadata.tip.hash = uint256::FromHexUnsafe(hash_hex);
     offset += 32;
 
     // Best block height (4 bytes)
@@ -219,7 +228,7 @@ StatusOr<ChainstateMetadata::Metadata> ChainstateMetadata::deserialize(const std
         snprintf(buf, sizeof(buf), "%02x", data[offset + i]);
         work_hex += buf;
     }
-    metadata.tip.work = arith_uint256(work_hex);
+    metadata.tip.work = ChainworkFromHex(work_hex);
     offset += 32;
 
     // Best block timestamp (4 bytes)
@@ -253,13 +262,15 @@ StatusOr<ChainstateMetadata::Metadata> ChainstateMetadata::deserialize(const std
     // Verify checksum (excluding the checksum itself)
     uint32_t calculated_checksum = calculateChecksum(data.data(), offset);
     if (stored_checksum != calculated_checksum) {
-        return Status::fromError("Checksum mismatch: stored=0x" + std::to_string(stored_checksum) +
-                                 ", calculated=0x" + std::to_string(calculated_checksum));
+        g_logger.error("Chainstate metadata checksum mismatch: stored=0x" +
+                       std::to_string(stored_checksum) + ", calculated=0x" +
+                       std::to_string(calculated_checksum));
+        return Status::Corruption;
     }
 
-    LOG_INFO("📂 Chainstate metadata loaded: height=" + std::to_string(metadata.tip.height) +
-             ", hash=" + metadata.tip.hash.ToString().substr(0, 16) + "..." +
-             ", ibd=" + (metadata.is_ibd ? "true" : "false"));
+    g_logger.info("Chainstate metadata loaded: height=" + std::to_string(metadata.tip.height) +
+                  ", hash=" + metadata.tip.hash.ToString().substr(0, 16) + "..." +
+                  ", ibd=" + (metadata.is_ibd ? "true" : "false"));
 
     return metadata;
 }

@@ -119,10 +119,16 @@ static constexpr size_t KEY_SIZE = 32;
 static constexpr size_t SALT_SIZE = 32;
 static constexpr size_t NONCE_SIZE = 12;
 static constexpr size_t TAG_SIZE = 16;
+static constexpr char PASSWORD_VERIFIER_DOMAIN[] = "Dinero HDWallet password verifier v2";
 
 static bool DeriveKey(const std::string& password,
                       const std::vector<uint8_t>& salt,
                       uint8_t key_out[32]);
+static bool MakePasswordVerifier(const uint8_t key[32],
+                                 std::vector<uint8_t>& verifier_out);
+static bool VerifyPasswordMaterial(const std::vector<uint8_t>& stored_verifier,
+                                   const uint8_t key[32],
+                                   bool* legacy_key_format = nullptr);
 static bool AES_Encrypt(const uint8_t* plaintext, size_t plaintext_len,
                         const uint8_t key[32], const uint8_t nonce[12],
                         uint8_t* ciphertext_out, uint8_t tag_out[16]);
@@ -1618,6 +1624,54 @@ static bool DeriveKey(const std::string& password,
   return result == 1;
 }
 
+static bool MakePasswordVerifier(const uint8_t key[32],
+                                 std::vector<uint8_t>& verifier_out) {
+  unsigned int digest_len = 0;
+  uint8_t digest[EVP_MAX_MD_SIZE];
+  const unsigned char* domain =
+      reinterpret_cast<const unsigned char*>(PASSWORD_VERIFIER_DOMAIN);
+
+  if (HMAC(EVP_sha256(), key, KEY_SIZE, domain,
+           std::strlen(PASSWORD_VERIFIER_DOMAIN), digest, &digest_len) == nullptr ||
+      digest_len != KEY_SIZE) {
+    OPENSSL_cleanse(digest, sizeof(digest));
+    return false;
+  }
+
+  verifier_out.assign(digest, digest + KEY_SIZE);
+  OPENSSL_cleanse(digest, sizeof(digest));
+  return true;
+}
+
+static bool VerifyPasswordMaterial(const std::vector<uint8_t>& stored_verifier,
+                                   const uint8_t key[32],
+                                   bool* legacy_key_format) {
+  if (legacy_key_format) {
+    *legacy_key_format = false;
+  }
+  if (stored_verifier.size() != KEY_SIZE) {
+    return false;
+  }
+
+  std::vector<uint8_t> expected;
+  if (!MakePasswordVerifier(key, expected)) {
+    return false;
+  }
+  const bool verifier_match =
+      CRYPTO_memcmp(expected.data(), stored_verifier.data(), KEY_SIZE) == 0;
+  OPENSSL_cleanse(expected.data(), expected.size());
+  if (verifier_match) {
+    return true;
+  }
+
+  // Legacy wallet_state persisted the raw derived AES key in password_hash_.
+  const bool raw_key_match = CRYPTO_memcmp(key, stored_verifier.data(), KEY_SIZE) == 0;
+  if (raw_key_match && legacy_key_format) {
+    *legacy_key_format = true;
+  }
+  return raw_key_match;
+}
+
 // Helper: AES-256-GCM encrypt
 static bool AES_Encrypt(const uint8_t* plaintext, size_t plaintext_len,
                         const uint8_t key[32], const uint8_t nonce[12],
@@ -1676,7 +1730,10 @@ static bool SealSeedForStorage(const std::vector<uint8_t>& seed,
     return false;
   }
 
-  password_hash_out.assign(key, key + KEY_SIZE);
+  if (!MakePasswordVerifier(key, password_hash_out)) {
+    OPENSSL_cleanse(key, KEY_SIZE);
+    return false;
+  }
 
   std::vector<uint8_t> nonce(NONCE_SIZE);
   if (RAND_bytes(nonce.data(), NONCE_SIZE) != 1) {
@@ -1713,8 +1770,7 @@ static bool UnsealSeedFromStorage(const std::vector<uint8_t>& salt,
     return false;
   }
 
-  const bool key_match = (std::memcmp(key, password_hash.data(), KEY_SIZE) == 0);
-  if (!key_match) {
+  if (!VerifyPasswordMaterial(password_hash, key)) {
     OPENSSL_cleanse(key, KEY_SIZE);
     return false;
   }
@@ -1796,17 +1852,22 @@ bool HDWallet::EncryptWallet(const std::string& password) {
   uint8_t key[KEY_SIZE];
   if (!DeriveKey(password, password_salt_, key)) {
     std::cerr << "Failed to derive key" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
     return false;
   }
   
-  // Store password hash for verification
-  password_hash_.resize(KEY_SIZE);
-  std::memcpy(password_hash_.data(), key, KEY_SIZE);
+  // Store a verifier, never the raw AES key.
+  if (!MakePasswordVerifier(key, password_hash_)) {
+    std::cerr << "Failed to create password verifier" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
+    return false;
+  }
   
   // Generate random nonce
   std::vector<uint8_t> nonce(NONCE_SIZE);
   if (RAND_bytes(nonce.data(), NONCE_SIZE) != 1) {
     std::cerr << "Failed to generate nonce" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
     return false;
   }
   
@@ -1819,11 +1880,13 @@ bool HDWallet::EncryptWallet(const std::string& password) {
   
   if (!AES_Encrypt(seed_.data(), seed_.size(), key, nonce.data(), ciphertext, tag)) {
     std::cerr << "Failed to encrypt seed" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
     encrypted_seed_.clear();
     password_salt_.clear();
     password_hash_.clear();
     return false;
   }
+  OPENSSL_cleanse(key, KEY_SIZE);
   
   // Clear plaintext seed from memory
   std::fill(seed_.begin(), seed_.end(), 0);
@@ -1883,17 +1946,24 @@ bool HDWallet::Unlock(const std::string& password) {
   uint8_t key[KEY_SIZE];
   if (!DeriveKey(password, password_salt_, key)) {
     std::cerr << "Failed to derive key" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
     return false;
   }
   
-  // Verify password by comparing key hash
-  if (std::memcmp(key, password_hash_.data(), KEY_SIZE) != 0) {
+  // Verify password without storing the raw AES key in wallet_state.
+  bool legacy_key_format = false;
+  if (!VerifyPasswordMaterial(password_hash_, key, &legacy_key_format)) {
     std::cerr << "❌ Incorrect password" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
     return false;
   }
   
   // Password is correct - check if already unlocked
   if (!locked_) {
+    if (legacy_key_format && MakePasswordVerifier(key, password_hash_)) {
+      Save();
+    }
+    OPENSSL_cleanse(key, KEY_SIZE);
     std::cout << "✅ Password verified (wallet already unlocked)" << std::endl;
     return true;  // Already unlocked, but password was verified
   }
@@ -1908,11 +1978,16 @@ bool HDWallet::Unlock(const std::string& password) {
   seed_.resize(ciphertext_len);
   if (!AES_Decrypt(ciphertext, ciphertext_len, key, nonce, tag, seed_.data())) {
     std::cerr << "❌ Failed to decrypt seed (corrupted wallet?)" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
     seed_.clear();
     return false;
   }
   
   locked_ = false;
+  if (legacy_key_format && MakePasswordVerifier(key, password_hash_)) {
+    Save();
+  }
+  OPENSSL_cleanse(key, KEY_SIZE);
   
   // Reset auto-lock timer
   ResetAutoLockTimer();
@@ -1950,16 +2025,22 @@ bool HDWallet::ChangePassword(const std::string& old_password, const std::string
   uint8_t key[KEY_SIZE];
   if (!DeriveKey(new_password, password_salt_, key)) {
     std::cerr << "Failed to derive new key" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
     return false;
   }
   
-  // Store new password hash
-  std::memcpy(password_hash_.data(), key, KEY_SIZE);
+  // Store new password verifier
+  if (!MakePasswordVerifier(key, password_hash_)) {
+    std::cerr << "Failed to create password verifier" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
+    return false;
+  }
   
   // Generate new nonce
   std::vector<uint8_t> nonce(NONCE_SIZE);
   if (RAND_bytes(nonce.data(), NONCE_SIZE) != 1) {
     std::cerr << "Failed to generate nonce" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
     return false;
   }
   
@@ -1972,8 +2053,10 @@ bool HDWallet::ChangePassword(const std::string& old_password, const std::string
   
   if (!AES_Encrypt(seed_.data(), seed_.size(), key, nonce.data(), ciphertext, tag)) {
     std::cerr << "Failed to encrypt seed with new password" << std::endl;
+    OPENSSL_cleanse(key, KEY_SIZE);
     return false;
   }
+  OPENSSL_cleanse(key, KEY_SIZE);
   
   // Save wallet with new encryption
   Save();
