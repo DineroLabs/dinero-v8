@@ -2495,42 +2495,8 @@ dinero_attach_win32_versioninfo(dinerod               "Dinero full node daemon")
 # Reference wallet CLI and offline test wiring lives with src/wallet/reference/.
 include(src/wallet/reference/CMakeLists.txt)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Qt6 GUI (external sibling project)
-# ═══════════════════════════════════════════════════════════════════════════════
-# dinero-qt is now a standalone project at ../dinero-qt/
-# Build it separately:
-#   cd ../dinero-qt
-#   cmake -B build -DCMAKE_PREFIX_PATH="$HOME/Qt/6.9.1/macos"
-#   cmake --build build
-#
-# Why separate?
-#   - GUI bugs ≠ consensus bugs
-#   - GUI crashes must not kill the node
-#   - GUI updates must not require consensus rebuilds
-#   - GUI attack surface is huge and unrelated to validation
-# ═══════════════════════════════════════════════════════════════════════════════
-set(DINERO_QT_PATH "${CMAKE_SOURCE_DIR}/../dinero-qt" CACHE PATH "Path to dinero-qt project")
-if(EXISTS "${DINERO_QT_PATH}/CMakeLists.txt")
-  message(STATUS "dinero-qt project found at: ${DINERO_QT_PATH}")
-  message(STATUS "  Build separately: cd ${DINERO_QT_PATH} && cmake -B build && cmake --build build")
-else()
-  message(STATUS "dinero-qt project not found at ${DINERO_QT_PATH}")
-endif()
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Stratum Mining Server (external sibling project)
-# ═══════════════════════════════════════════════════════════════════════════════
-# Stratum is now a standalone project at ../stratum/
-# Build it separately: cd ../stratum && cmake -B build && cmake --build build
-# The embedded stratum sources are still included in dinerod for integrated mode.
-set(STRATUM_PROJECT_PATH "${CMAKE_SOURCE_DIR}/../stratum" CACHE PATH "Path to stratum project")
-if(EXISTS "${STRATUM_PROJECT_PATH}/include")
-  include_directories(${STRATUM_PROJECT_PATH}/include)
-  message(STATUS "Stratum project found at: ${STRATUM_PROJECT_PATH}")
-else()
-  message(WARNING "Stratum project not found at ${STRATUM_PROJECT_PATH}")
-endif()
+# External sibling project discovery stays in cmake/.
+include(cmake/ExternalProjects.cmake)
 
 # Installation
 #
@@ -2642,87 +2608,5 @@ endif()
 # definitions use root-relative source paths and root-scope CTest properties.
 include(${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Solo miner subdirectory (Phase 2 of monorepo consolidation — 2026-05-12)
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# Bring the solo miner library + CLI into the monorepo build. OFF by
-# default during the Phase 2 transition for the same reason as Qt:
-# existing dinerod-only builds (CI, server deploys) should not start
-# compiling extra targets without an explicit opt-in. Phase 2 Step 7
-# will flip this to ON after build verification.
-#
-# When ON: miner/ is added as a CMake subdirectory. The
-# `dinero-solo-miner` library target becomes available to dinero-qt
-# (which links it directly) and the `dinero-solo-miner` CLI binary is
-# built. Qt's fallback add_subdirectory inside qt/CMakeLists.txt
-# (guarded by `if(NOT TARGET dinero-solo-miner)`) becomes a no-op
-# because the target is already defined here.
-#
-# When OFF: miner/ is ignored at root. If Qt is enabled standalone
-# (DINERO_BUILD_QT=ON, DINERO_BUILD_MINER=OFF), Qt's own
-# add_subdirectory fallback kicks in to build the miner from
-# DINERO_SOLO_MINER_SOURCE_ROOT (which defaults to ${CMAKE_SOURCE_DIR}/miner
-# in monorepo mode, so the same source tree is used either way).
-#
-# Order matters: must come BEFORE add_subdirectory(qt) so Qt's
-# TARGET check sees a defined dinero-solo-miner.
-# ═══════════════════════════════════════════════════════════════════════════
-option(DINERO_BUILD_MINER "Build dinero-solo-miner library + CLI as in-tree subdirectory (Phase 2 monorepo)" OFF)
-if(DINERO_BUILD_MINER)
-  message(STATUS "⛏️  dinero-solo-miner build: ENABLED (DINERO_BUILD_MINER=ON)")
-  add_subdirectory(miner)
-else()
-  message(STATUS "⛏️  dinero-solo-miner build: disabled (pass -DDINERO_BUILD_MINER=ON to enable)")
-endif()
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Qt GUI subdirectory (Phase 2 of monorepo consolidation — 2026-05-12)
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# Bring the Qt GUI into the monorepo build. OFF by default during the
-# Phase 2 transition so existing dinerod-only builds (CI, server deploys,
-# environments without Qt6 installed) remain unaffected. Phase 2 Step 7
-# will flip this to ON after build verification passes on macOS arm64
-# and a smoke build is confirmed on each release platform.
-#
-# When ON: dinero-qt is built from qt/CMakeLists.txt alongside dinerod,
-# dinero-cli, dinero-gpu-miner. qt/ uses $<TARGET_FILE:dinerod> etc.
-# (resolved at build time) to bundle daemon binaries into the Qt app.
-#
-# When OFF: qt/ is ignored. The directory still ships in the monorepo
-# (for history preservation and so Qt-side hotfixes don't require a
-# separate clone), but isn't compiled.
-#
-# Build command when ON:
-#   cmake -S . -B build -DDINERO_BUILD_QT=ON \
-#         -DCMAKE_PREFIX_PATH="$HOME/Qt/6.9.1/macos"
-#   cmake --build build -j
-# ═══════════════════════════════════════════════════════════════════════════
-option(DINERO_BUILD_QT "Build dinero-qt GUI alongside dinerod (Phase 2 monorepo)" OFF)
-if(DINERO_BUILD_QT)
-  message(STATUS "🎨 dinero-qt GUI build: ENABLED (DINERO_BUILD_QT=ON)")
-  add_subdirectory(qt)
-else()
-  message(STATUS "🎨 dinero-qt GUI build: disabled (pass -DDINERO_BUILD_QT=ON to enable)")
-endif()
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Seeder subdirectory (Phase E of v8 peer-discovery — 2026-05-12)
-# ═══════════════════════════════════════════════════════════════════════════
-# dinero-seeder is a small standalone crawler that probes the Dinero
-# P2P network and emits a healthy-peers list compatible with
-# contrib/seeds/seeds_main.txt. Intentionally separate from the daemon
-# build graph so operators can run it on dedicated hardware without
-# pulling in chain state, validation, mempool, etc.
-#
-# OFF by default — operators opt in. The binary is small (~200 KB on
-# macOS arm64), no Qt dependency, just OpenSSL for SHA256 checksums.
-# ═══════════════════════════════════════════════════════════════════════════
-option(DINERO_BUILD_SEEDER "Build dinero-seeder peer-discovery crawler (Phase E)" OFF)
-if(DINERO_BUILD_SEEDER)
-  message(STATUS "🕷️  dinero-seeder build: ENABLED (DINERO_BUILD_SEEDER=ON)")
-  add_subdirectory(seeder)
-else()
-  message(STATUS "🕷️  dinero-seeder build: disabled (pass -DDINERO_BUILD_SEEDER=ON to enable)")
-endif()
+# Optional in-tree component switches live in cmake/.
+include(cmake/OptionalComponents.cmake)
