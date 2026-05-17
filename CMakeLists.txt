@@ -2486,97 +2486,14 @@ include(tools/CMakeLists.txt)
 # Product CLI target wiring lives with src/cli/.
 include(src/cli/CMakeLists.txt)
 
-# Reference Wallet CLI
-add_executable(dinero-wallet-cli
-  src/wallet/reference/main.cpp
-  src/wallet/reference/wallet.cpp
-  src/wallet/reference/database.cpp
-  src/wallet/reference/crypto.cpp
-  src/wallet/reference/utxo_manager.cpp
-  src/wallet/reference/transaction_builder.cpp
-  src/wallet/reference/blockchain_sync.cpp
-  src/wallet/bip39.cpp
-  src/crypto/pbkdf2.cpp
-  src/common/rpc_client.cpp
-  external/bech32/bech32.cpp
-)
-target_link_libraries(dinero-wallet-cli PRIVATE
-  dinero_crypto
-  sqlite3
-  lightning_core_static
-  jsoncpp_static
-  ${DINERO_CURL_TARGET}
-  OpenSSL::Crypto  # Required for OPENSSL_cleanse in crypto.cpp
-)
-link_secp256k1_zkp(dinero-wallet-cli)
-if(APPLE)
-  target_link_libraries(dinero-wallet-cli PRIVATE "-framework Security")
-endif()
-target_include_directories(dinero-wallet-cli PRIVATE
-  ${CMAKE_SOURCE_DIR}/include
-  ${CMAKE_SOURCE_DIR}/src
-  ${CMAKE_SOURCE_DIR}/external
-  /opt/homebrew/include
-)
-
 # Embed VS_VERSION_INFO into each daemon binary so Explorer Properties
 # -> Details shows the right version/company/component rather than an
 # empty dialog. No-op outside Windows. See dinero_attach_win32_versioninfo()
 # definition near the top of this file.
 dinero_attach_win32_versioninfo(dinerod               "Dinero full node daemon")
-dinero_attach_win32_versioninfo(dinero-wallet-cli     "Dinero reference wallet CLI")
 
-# Reference Wallet Test Suite
-# PURE OFFLINE TESTS: No RPC calls in tests, but wallet.cpp includes optional sync method
-add_executable(test_reference_wallet
-  tests/wallet/test_reference_wallet.cpp
-  src/wallet/reference/wallet.cpp
-  src/wallet/reference/database.cpp
-  src/wallet/reference/crypto.cpp
-  src/wallet/reference/utxo_manager.cpp
-  src/wallet/reference/transaction_builder.cpp
-  src/wallet/reference/blockchain_sync.cpp  # wallet.cpp has optional SyncBlockchain() method
-  src/wallet/bip39.cpp
-  src/crypto/pbkdf2.cpp
-  src/common/rpc_client.cpp  # Required by blockchain_sync.cpp
-  external/bech32/bech32.cpp
-)
-
-add_dependencies(test_reference_wallet gtest)
-
-target_link_libraries(test_reference_wallet PRIVATE
-  dinero_crypto
-  sqlite3
-  lightning_core_static
-  ${DINERO_CURL_TARGET}
-  gtest          # Use target name, not TARGET_FILE
-  jsoncpp_static  # Must come last - after all code that uses it
-  OpenSSL::Crypto  # Required for OPENSSL_cleanse in crypto.cpp
-)
-link_secp256k1_zkp(test_reference_wallet)
-
-if(APPLE)
-  target_link_libraries(test_reference_wallet PRIVATE "-framework Security")
-endif()
-
-target_include_directories(test_reference_wallet PRIVATE
-  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
-  ${CMAKE_SOURCE_DIR}/include
-  ${CMAKE_SOURCE_DIR}/src
-  ${CMAKE_SOURCE_DIR}/external
-  # /opt/homebrew/include removed - Homebrew quarantined to enforce vendored libs
-)
-
-# Register with CTest
-add_test(NAME ReferenceWallet COMMAND test_reference_wallet)
-
-# Label as critical wallet test
-set_tests_properties(ReferenceWallet PROPERTIES
-  LABELS "wallet;reference;critical;determinism"
-  TIMEOUT 60
-)
-
-message(STATUS "✅ Reference wallet test suite enabled")
+# Reference wallet CLI and offline test wiring lives with src/wallet/reference/.
+include(src/wallet/reference/CMakeLists.txt)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Qt6 GUI (external sibling project)
