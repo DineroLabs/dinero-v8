@@ -1,32 +1,30 @@
-# P2P Networking Library (Qt-based)
-# Only built when ENABLE_P2P=ON and Qt6 is available
+# Live P2P/network sources compiled into dinero_core.
+# This file is included from the repository root so paths remain root-relative.
 
-add_library(dinero_p2p
-    ../daemon/p2p/PeerManagerQt.cpp
-    peer.cpp
-    peer_manager.cpp
-    p2p_message.cpp
-)
+set(DINERO_CORE_P2P_SOURCES
+  # P2P layer
+  src/p2p/peer_scoring.cpp
+  src/p2p/connection_manager.cpp
+  src/p2p/rate_limiter.cpp
+  src/p2p/network_limits_monitor.cpp
+  src/p2p/block_download_scheduler.cpp
+  src/p2p/headers_first_sync.cpp
+  src/p2p/multi_peer_headers_sync.cpp
+  src/p2p/compact_block.cpp
+  src/p2p/addrman.cpp
+  src/p2p/peer_manager_posix.cpp
 
-target_link_libraries(dinero_p2p
-    PRIVATE
-        Qt6::Core
-        Qt6::Network
-        Qt6::WebSockets
-        dinero_common
-        dinero_crypto
-        jsoncpp_static
-)
+  # Network glue used by the daemon core
+  src/network/network_invariants.cpp
+  src/network/port_mapper.cpp
+  src/daemon/p2p_message.cpp
+  src/daemon/peer_connection.cpp
+  src/daemon/p2p_manager.cpp
+  src/daemon/header_serialization.cpp
+  src/network/utreexo_messages.cpp
+  src/network/stateless_node.cpp
 
-target_compile_definitions(dinero_p2p PRIVATE DINERO_ENABLE_P2P=1)
-
-target_include_directories(dinero_p2p 
-    PUBLIC 
-        ${CMAKE_SOURCE_DIR}/include
-        ${CMAKE_CURRENT_LIST_DIR}
-)
-
-# Enable Qt MOC for Qt-based classes
-set_target_properties(dinero_p2p PROPERTIES
-    AUTOMOC ON
+  # P2P infrastructure
+  src/p2p/orphan_block_pool.cpp
+  src/p2p/block_presence.cpp
 )
