@@ -749,6 +749,11 @@ set(DINERO_CORE_POLICY_SOURCES
   src/policy/fee_estimator.cpp
 )
 
+set(DINERO_CORE_ADDRESS_SOURCES
+  src/address/addr_codec.cpp
+  src/address/addr_types.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -859,8 +864,7 @@ add_library(dinero_core STATIC
   ${DINERO_CORE_POLICY_SOURCES}
 
   # Address handling
-  src/address/addr_codec.cpp
-  src/address/addr_types.cpp
+  ${DINERO_CORE_ADDRESS_SOURCES}
 
   # Wallet core logic
   src/wallet/wallet_worker.cpp
