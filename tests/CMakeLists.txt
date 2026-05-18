@@ -8932,6 +8932,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     ReorgDepthFourClearsConfirmedBalanceWithoutChangeIndexRollback
     WrongBip39PassphraseFailsCleanlyWithExpectedAddressGuard
     EncryptionRoundTripRestoreAndDerivationPersistence
+    RestoreResetsLegacyEncryptionStateBeforeReEncrypt
   )
   foreach(_case IN LISTS _wmr_passing)
     add_test(
@@ -8968,7 +8969,6 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
   # corresponding subcase is fixed (or the subcase + this registration
   # is deleted).
   set(_wmr_failing
-    RestoreResetsLegacyEncryptionStateBeforeReEncrypt
     ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata
   )
   foreach(_case IN LISTS _wmr_failing)
@@ -8983,7 +8983,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
   endforeach()
   unset(_wmr_failing)
 
-  message(STATUS "  ✓ Wallet readiness tests registered: 7 active + 2 quarantined (was 1 bundled)")
+  message(STATUS "  ✓ Wallet readiness tests registered: 8 active + 1 quarantined (was 1 bundled)")
 else()
   message(STATUS "  ⚠ Wallet readiness test not found: tests/wallet/test_wallet_mainnet_readiness.cpp")
 endif()
