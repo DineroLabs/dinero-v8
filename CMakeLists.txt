@@ -764,6 +764,12 @@ set(DINERO_CORE_DATABASE_SOURCES
   src/daemon/db_meta_utils.cpp
 )
 
+set(DINERO_CORE_CRYPTO_UTILITY_SOURCES
+  src/crypto/sp_context.cpp
+  src/daemon/crypto_utils.cpp
+  src/daemon/secure_random.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -883,9 +889,7 @@ add_library(dinero_core STATIC
   src/wallet/psbt.cpp  # PSBT helpers (Phase 2 Step 4: export for tests)
 
   # Crypto utilities
-  src/crypto/sp_context.cpp
-  src/daemon/crypto_utils.cpp
-  src/daemon/secure_random.cpp
+  ${DINERO_CORE_CRYPTO_UTILITY_SOURCES}
 
   # RPC registry (logic only, not server)
   src/rpc/rpc_registry.cpp
