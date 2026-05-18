@@ -338,6 +338,17 @@ message(STATUS "✅ Phase 2 shielded daemon recovery gate registered: ctest -L p
 # Full release gate suite (wallet + parity + p2p storm + ibd torture + utreexo + mempool stress)
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_release_suite.sh)
   add_test(
+    NAME ReleaseSuiteConfigSmoke
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/test_release_suite.sh --check-config
+  )
+
+  set_tests_properties(ReleaseSuiteConfigSmoke PROPERTIES
+    LABELS "meta;smoke"
+    TIMEOUT 60
+    ENVIRONMENT "BUILD_DIR=${CMAKE_BINARY_DIR}"
+  )
+
+  add_test(
     NAME ReleaseSuite
     COMMAND ${CMAKE_SOURCE_DIR}/tests/test_release_suite.sh
   )
