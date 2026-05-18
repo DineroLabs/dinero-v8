@@ -783,6 +783,11 @@ set(DINERO_CORE_P2P_SERVICE_SOURCES
   src/daemon/services/address_manager_service.cpp
 )
 
+set(DINERO_CORE_MINING_TELEMETRY_SOURCES
+  src/daemon/mining_events.cpp
+  src/daemon/mining_metrics.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -834,8 +839,7 @@ add_library(dinero_core STATIC
   src/mining/address_validator.cpp  # Phase F.5: Address validation for mining RPC
   src/mining/payout_spec.cpp  # Phase C1: Daemon-defined pool payouts
   src/daemon/mining_safety_gates.cpp
-  src/daemon/mining_events.cpp
-  src/daemon/mining_metrics.cpp
+  ${DINERO_CORE_MINING_TELEMETRY_SOURCES}
   src/daemon/header_metadata_recovery.cpp
   src/daemon/undo_rebuild_orchestrator.cpp  # Offline --rebuild-undo-range orchestrator (commit #4 of post-Apr 30 series)
 
