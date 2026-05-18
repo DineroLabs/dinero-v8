@@ -788,6 +788,12 @@ set(DINERO_CORE_MINING_TELEMETRY_SOURCES
   src/daemon/mining_metrics.cpp
 )
 
+set(DINERO_CORE_ENCODING_SOURCES
+  src/daemon/bech32_decode.cpp
+  src/daemon/bech32_encoder.cpp
+  src/wallet/p2mr_address.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -918,9 +924,7 @@ add_library(dinero_core STATIC
   ${DINERO_CORE_PRIVACY_SOURCES}
 
   # Encoding/decoding
-  src/daemon/bech32_decode.cpp
-  src/daemon/bech32_encoder.cpp
-  src/wallet/p2mr_address.cpp            # Phase 4a: V7 P2MR bech32m address codec (din1r1...)
+  ${DINERO_CORE_ENCODING_SOURCES}
 
   # Genesis initialization (subsidy now in dinero_consensus library)
   src/daemon/genesis_init.cpp
