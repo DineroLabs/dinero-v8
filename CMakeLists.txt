@@ -770,6 +770,12 @@ set(DINERO_CORE_CRYPTO_UTILITY_SOURCES
   src/daemon/secure_random.cpp
 )
 
+set(DINERO_CORE_WEBSOCKET_SOURCES
+  src/daemon/gui_websocket_events.cpp
+  src/daemon/ws_subscriptions.cpp
+  src/daemon/ws_globals.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -779,9 +785,7 @@ set(DINERO_CORE_CRYPTO_UTILITY_SOURCES
 add_library(dinero_core STATIC
   # Daemon context (dependency injection container access)
   src/daemon/daemon_context.cpp
-  src/daemon/gui_websocket_events.cpp
-  src/daemon/ws_subscriptions.cpp
-  src/daemon/ws_globals.cpp
+  ${DINERO_CORE_WEBSOCKET_SOURCES}
 
   # Phase 3a of the shielded reorg invertibility plan
   # (docs/specs/atomic_consensus_persistence_phase3.md). Skeleton
