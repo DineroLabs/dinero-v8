@@ -85,7 +85,7 @@ Excluded labels:
 | --- | --- | --- |
 | `integration` | Broad pre-existing integration/runtime harness failures | Split into focused harness/runtime repair issues before re-enabling. |
 | `gate` | Release/readiness gate tests are not stable enough for first soak | Decide whether each gate is CI-ready, nightly-only, or obsolete. |
-| `release` | Release-suite assumptions do not match the workflow build directory yet | Fix path/config assumptions, then re-enable. |
+| `release` | Full `ReleaseSuite` is a heavy manual/release gate with baseline parity, P2P storm, IBD torture, Utreexo, canonical recovery, and mempool stress stages | Keep the full suite quarantined until each heavy stage has an explicit CI-vs-manual ownership decision. |
 | `canonicality` | Canonical recovery/readiness tests fail in the first full pass | Track deterministic failures and re-enable by category. |
 | `fuzz` | Fuzzer-style tests are not suitable for the first required-style subset | Move to a dedicated fuzz/nightly plan or make deterministic. |
 | `packaging` | Packaging tests are outside the first Linux full-build subset | Add package workflow coverage separately. |
@@ -105,6 +105,11 @@ Excluded test names:
 This map marks the current quarantine boundary. It should shrink over time; it
 should not grow without the same level of evidence.
 
+`ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
+quarantine. It verifies the release-suite wiring, build directory, `dinerod`
+binary, required scripts, and `ctest` availability without running the heavy
+release stages or requiring a baseline binary.
+
 Rules for adding exclusions:
 
 1. Each excluded test needs a reason in the workflow or a companion document.
@@ -116,6 +121,38 @@ Rules for adding exclusions:
 6. Retire exclusions one category or test at a time through focused PRs.
 7. Keep the workflow green while reducing the quarantine; do not bundle broad
    test repair with unrelated architecture work.
+
+## Test Retirement Policy
+
+Quarantine is a holding state, not a final disposition. A quarantined test should
+be classified before it is re-enabled, rewritten, converted to a smoke check, or
+deleted.
+
+Use this decision record for obsolete-looking tests:
+
+```text
+Test:
+Current status:
+Original purpose:
+Still relevant: yes/no/partial
+If obsolete, why:
+Replacement coverage:
+Action: keep quarantined / convert to smoke / rewrite / delete
+```
+
+A quarantined test may be deleted only when:
+
+- The feature or behavior it covers is no longer supported.
+- No current code path depends on the old behavior.
+- Replacement coverage exists, or the lost safety signal is explicitly accepted.
+- The deletion PR explains the rationale.
+
+Harness debt is not obsolescence. For example, a test that assumes the wrong
+build directory should be fixed or converted, not deleted. Heavy release,
+network, or readiness checks may belong in manual, nightly, or release-gate
+ownership instead of normal PR CI. Tests for behavior replaced by newer protocol
+or wallet design should usually be rewritten around the current behavior before
+deletion is considered.
 
 ## First-Run Expectations
 

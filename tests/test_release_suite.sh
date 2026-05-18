@@ -60,6 +60,7 @@ PHASE2_SHIELDED_CANONICAL_RECOVERY_LABEL="${PHASE2_SHIELDED_CANONICAL_RECOVERY_L
 
 PASSED_STAGES=()
 SKIPPED_STAGES=()
+CHECK_CONFIG_ONLY=0
 
 print_header() {
     echo -e "\n${CYAN}================================================================${NC}"
@@ -75,6 +76,9 @@ fail() { echo -e "${RED}FAIL:${NC} $*" >&2; exit 1; }
 usage() {
     cat <<USAGE
 Usage: tests/test_release_suite.sh
+
+Options:
+  --check-config                    Validate release-suite wiring and exit before heavy gates
 
 Environment:
   BUILD_DIR=<path>                    Build directory (default: ${ROOT_DIR}/build)
@@ -95,10 +99,22 @@ Environment:
 USAGE
 }
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-    usage
-    exit 0
-fi
+case "${1:-}" in
+    --help|-h)
+        usage
+        exit 0
+        ;;
+    --check-config)
+        CHECK_CONFIG_ONLY=1
+        shift
+        ;;
+    "")
+        ;;
+    *)
+        usage >&2
+        fail "unknown argument: ${1}"
+        ;;
+esac
 
 for script in \
     "${ACCEPTANCE_SCRIPT}" \
@@ -121,6 +137,16 @@ fi
 
 if ! command -v ctest >/dev/null 2>&1; then
     fail "ctest not found in PATH"
+fi
+
+if [[ "${CHECK_CONFIG_ONLY}" == "1" ]]; then
+    print_header "Release Suite Config Check"
+    info "Verified required scripts are executable"
+    info "Verified BUILD_DIR=${BUILD_DIR}"
+    info "Verified dinerod=${BUILD_DIR}/dinerod"
+    info "Verified ctest is available"
+    pass "Release suite config smoke passed"
+    exit 0
 fi
 
 if [[ "${RELEASE_REQUIRE_BASELINE}" == "1" && -z "${BASELINE_DINEROD:-}" ]]; then
