@@ -729,6 +729,12 @@ include(src/pool/CMakeLists.txt)
 # Live P2P/network source list consumed by dinero_core.
 include(src/p2p/CMakeLists.txt)
 
+set(DINERO_CORE_IPC_ORACLE_SOURCES
+  src/ipc/oracles/chain_oracle_client.cpp
+  src/ipc/oracles/time_oracle_client.cpp
+  src/ipc/oracles/transaction_oracle_client.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -886,9 +892,7 @@ add_library(dinero_core STATIC
   src/cli/version.cpp
 
   # IPC oracle clients (Phase 9.2: Lightning event forwarding)
-  src/ipc/oracles/chain_oracle_client.cpp
-  src/ipc/oracles/time_oracle_client.cpp
-  src/ipc/oracles/transaction_oracle_client.cpp
+  ${DINERO_CORE_IPC_ORACLE_SOURCES}
 
   # Chainstate restart metadata persistence
   src/storage/chainstate_metadata.cpp
