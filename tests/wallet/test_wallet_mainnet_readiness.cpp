@@ -132,15 +132,23 @@ din::Json make_restore_params(const std::string& wallet_name,
                               const std::string& bip39_passphrase,
                               const std::string& encryption_password,
                               const std::string& policy,
-                              const std::string& expected_first_address = "") {
+                              const std::string& expected_first_address = "",
+                              bool skip_checksum = false,
+                              bool replace_existing = false) {
     din::Json params = din::arr();
     params.append(wallet_name);
     params.append(mnemonic);
     params.append(bip39_passphrase);
     params.append(encryption_password);
     params.append(policy);
-    if (!expected_first_address.empty()) {
+    if (!expected_first_address.empty() || skip_checksum || replace_existing) {
         params.append(expected_first_address);
+    }
+    if (skip_checksum || replace_existing) {
+        params.append(skip_checksum);
+    }
+    if (replace_existing) {
+        params.append(true);
     }
     return params;
 }
@@ -759,7 +767,7 @@ TEST(WalletMainnetReadiness, RestoreResetsLegacyEncryptionStateBeforeReEncrypt) 
 
     // Restore over the same wallet using GUI-like flow (no password in restore RPC).
     din::Json restored = dinero::rpc::RpcRestoreWallet(
-        make_restore_params("default", mnemonic, "", "", "bip86"), &wallet);
+        make_restore_params("default", mnemonic, "", "", "bip86", "", false, true), &wallet);
     assert_rpc_success(restored);
     EXPECT_FALSE(restored.get("encrypted", false).asBool());
     EXPECT_EQ(query_encryption_flag(db), 0);
