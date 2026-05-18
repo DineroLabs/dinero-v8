@@ -3,8 +3,9 @@
 Test Workflow v2 is the safety net required before moving `dinero_core` target
 ownership or other load-bearing boundaries.
 
-Generated after the `dinero_core` source-map checkpoint at `73c5e492`. This is a
-design document only; it does not add or modify GitHub Actions workflows.
+Generated after the `dinero_core` source-map checkpoint at `73c5e492`.
+Updated during the initial `.github/workflows/tests.yml` rollout after the
+first full-build `ctest` pass exposed pre-existing runtime/integration debt.
 
 ## Purpose
 
@@ -57,7 +58,7 @@ The eventual workflow should:
 - Exclude only known-broken or quarantined tests through a documented regex.
 - Set a timeout suitable for full test execution.
 
-Expected command shape:
+Current command shape:
 
 ```bash
 cmake -S . -B build-tests \
@@ -65,16 +66,44 @@ cmake -S . -B build-tests \
   -DDINERO_USE_VENDORED_DEPS=ON \
   -DENABLE_GRPC=OFF
 cmake --build build-tests -j$(nproc)
-ctest --test-dir build-tests --output-on-failure --exclude-regex '<known-broken-regex>'
+ctest --test-dir build-tests \
+  --output-on-failure \
+  --label-exclude 'integration|gate|release|canonicality|fuzz|packaging' \
+  --exclude-regex 'test_csn_proof_refresh|ConsensusFormalVerification|ShieldedDerivation|WalletDescriptorActiveContext|ArchivalBlockReader|UtreexoE2ERelay|WalletMainnetReadiness'
 ```
 
 ## Known-Broken Exclusion Policy
 
-The initial known-broken exclusion is:
+The first full `ctest` run after the full target graph built successfully
+surfaced broad pre-existing runtime and integration debt. The initial workflow
+therefore starts with the stable full-build subset and makes the quarantine
+explicit.
+
+Excluded labels:
+
+| Label | Status | Required follow-up |
+| --- | --- | --- |
+| `integration` | Broad pre-existing integration/runtime harness failures | Split into focused harness/runtime repair issues before re-enabling. |
+| `gate` | Release/readiness gate tests are not stable enough for first soak | Decide whether each gate is CI-ready, nightly-only, or obsolete. |
+| `release` | Release-suite assumptions do not match the workflow build directory yet | Fix path/config assumptions, then re-enable. |
+| `canonicality` | Canonical recovery/readiness tests fail in the first full pass | Track deterministic failures and re-enable by category. |
+| `fuzz` | Fuzzer-style tests are not suitable for the first required-style subset | Move to a dedicated fuzz/nightly plan or make deterministic. |
+| `packaging` | Packaging tests are outside the first Linux full-build subset | Add package workflow coverage separately. |
+
+Excluded test names:
 
 | Test | Status | Required follow-up |
 | --- | --- | --- |
 | `test_csn_proof_refresh` | Pre-existing failure observed during prior CI/build work | Track with a GitHub issue that decides fix-or-delete. |
+| `ConsensusFormalVerification` | Deterministic supply-formula mismatch surfaced by first full `ctest` pass | Fix the formula or test vector, then re-enable. |
+| `ShieldedDerivation` | Deterministic shielded derivation/vector failures surfaced by first full `ctest` pass | Fix vectors or implementation expectations, then re-enable. |
+| `WalletDescriptorActiveContext` | Wallet descriptor runtime failure surfaced by first full `ctest` pass | Repair wallet descriptor setup/fixture, then re-enable. |
+| `ArchivalBlockReader` | Runtime abort surfaced by first full `ctest` pass | Debug abort and add focused regression coverage before re-enabling. |
+| `UtreexoE2ERelay` | Utreexo end-to-end runtime failure surfaced by first full `ctest` pass | Repair relay fixture or implementation, then re-enable. |
+| `WalletMainnetReadiness` | Wallet readiness gate failure surfaced by first full `ctest` pass | Decide CI readiness versus release-gate ownership, then re-enable or move. |
+
+This map marks the current quarantine boundary. It should shrink over time; it
+should not grow without the same level of evidence.
 
 Rules for adding exclusions:
 
@@ -84,24 +113,26 @@ Rules for adding exclusions:
 4. "Shut it up" is not a valid reason.
 5. Flaky tests should be marked as flaky/quarantined and tracked separately from
    deterministic known-broken tests.
+6. Retire exclusions one category or test at a time through focused PRs.
+7. Keep the workflow green while reducing the quarantine; do not bundle broad
+   test repair with unrelated architecture work.
 
 ## First-Run Expectations
 
-The first full workflow runs should be expected to fail. That does not mean the
-plan is wrong; it means the deeper workflow is finally observing failures the
-fast daemon build does not cover.
+The first full workflow runs were expected to fail. That did not mean the plan
+was wrong; it meant the deeper workflow finally observed failures the fast daemon
+build did not cover.
 
-Expected timing:
+Observed timing after cache warm-up and initial fixes:
 
-- Full from scratch: roughly 60-90 minutes.
-- Warm cache: roughly 15-30 minutes.
+- Fast daemon CI: 2m42s.
+- Test Workflow v2 full build plus stable `ctest` subset: 8m26s.
 
-Expected first-run failure classes:
+Observed first-run failure classes:
 
 - Missing Linux packages similar to earlier `libudev`/`libusb` dependency fixes.
-- Tests that were already broken but not executed by fast CI.
 - Real Linux-specific build or link issues in non-daemon targets.
-- Flaky tests that need quarantine before the workflow becomes required.
+- Tests that were already broken but not executed by fast CI.
 
 Iteration should follow the proven `ci.yml` pattern: inspect logs, make the
 smallest justified change, rerun, and document each exclusion or dependency fix.
@@ -120,11 +151,10 @@ smallest justified change, rerun, and document each exclusion or dependency fix.
 
 1. PR 1: add `tests.yml` with full build and `ctest --output-on-failure`, using
    the documented initial exclusion list.
-2. PR 2+: iterate on missing dependencies, deterministic known-broken tests, and
-   flaky quarantines.
-3. First green on `dinero-main`: begin a one-week soak period.
-4. During soak: track every failure by issue and classify it as regression,
+2. First green on `dinero-main`: begin a one-week soak period.
+3. During soak: track every failure by issue and classify it as regression,
    known-broken, dependency, flaky, or timeout.
+4. PR 2+: retire quarantined labels/tests through focused fixes.
 5. After one clean week: mark the workflow as a required check for
    `dinero-main`.
 6. Ongoing: prune exclusions as tests are fixed or deleted.

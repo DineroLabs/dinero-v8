@@ -46,7 +46,7 @@ void Mempool::forEachEntry(
 }
 
 // Block-connection notifications — referenced from chainstate_service.cpp.
-uint64_t Mempool::onBlockConnected(
+size_t Mempool::onBlockConnected(
     const Block& /*block*/,
     uint32_t /*height*/,
     const std::vector<uint8_t>& /*block_hash*/) {
@@ -60,15 +60,15 @@ void Mempool::onBlockDisconnected(
 }
 
 std::vector<uint256> Mempool::selectStaleForRefresh(
-    uint32_t /*current_height*/,
-    uint64_t /*current_time*/,
-    uint32_t /*stale_age_blocks*/,
-    uint32_t /*stale_age_seconds*/,
-    uint64_t /*max_select*/) {
+    uint32_t /*chain_height*/,
+    size_t /*max_refresh_batch*/,
+    uint32_t /*max_proof_age_blocks*/,
+    uint32_t /*max_refresh_attempts*/,
+    size_t /*stale_overload_threshold*/) {
     return {};
 }
 
-uint64_t Mempool::ReconcileAfterReorg(
+size_t Mempool::ReconcileAfterReorg(
     const std::vector<Transaction>& /*old_chain*/,
     const std::vector<Transaction>& /*new_chain*/) {
     return 0;

@@ -3127,7 +3127,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet_tests/test_wallet_descriptor_active_c
     tests/wallet_tests/test_wallet_descriptor_active_context.cpp
     src/common/logger.cpp
     src/daemon/lightning_stubs.cpp
+    src/daemon/config.cpp  # GetConfig() referenced by dinero_core objects
     tests/stubs/mempool_test_stubs.cpp  # Mempool::isOutputSpentInMempool et al.
+    tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault observers
   )
   target_link_libraries(test_wallet_descriptor_active_context PRIVATE
     dinero_wallet
@@ -3166,7 +3168,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet_tests/test_wallet_psbt_policy_context
     src/wallet/wallet_metrics.cpp
     src/common/logger.cpp
     src/daemon/lightning_stubs.cpp
+    src/daemon/config.cpp  # GetConfig() referenced by dinero_core objects
     tests/stubs/mempool_test_stubs.cpp  # Mempool::isOutputSpentInMempool et al.
+    tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault observers
   )
   target_link_libraries(test_wallet_psbt_policy_context PRIVATE
     dinero_wallet
@@ -7558,6 +7562,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_csn_proof_refresh.cpp)
     src/primitives/uint256.cpp
     src/common/sha256d.cpp
     src/common/logger.cpp
+    src/crypto/params_stub.cpp
   )
   target_link_libraries(test_csn_proof_refresh PRIVATE
     dinero_crypto

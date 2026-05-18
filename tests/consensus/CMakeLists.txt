@@ -720,8 +720,8 @@ target_link_libraries(test_segwit_serialization_roundtrip PRIVATE
     dinero_consensus
     dinero_crypto
     zstd
-    $<TARGET_FILE:gtest>
-    $<TARGET_FILE:gtest_main>
+    GTest::gtest
+    GTest::gtest_main
 )
 
 if(APPLE)
