@@ -407,6 +407,16 @@ target_include_directories(dinero_crypto PUBLIC
   ${CMAKE_SOURCE_DIR}/external
 )
 
+# macOS Security framework is required because dinero_crypto_minimal.cpp
+# calls SecRandomCopyBytes (Apple's CSPRNG). Declared INTERFACE so every
+# downstream target that links dinero_crypto (test executables, tools,
+# etc.) inherits the framework automatically — no per-target inline
+# "-framework Security" needed. Mirrors the pattern at
+# cmake/StaticSecp256k1.cmake:46. Linux/Windows ignore this branch.
+if(APPLE)
+  target_link_libraries(dinero_crypto INTERFACE "-framework Security")
+endif()
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Transaction Primitives Library (Phase 2: Lightning Wallet Detachment)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -984,6 +994,16 @@ target_link_libraries(dinero_core PUBLIC
   secp256k1
   RocksDB::rocksdb
 )
+
+# macOS Security framework is required because secure_random.cpp calls
+# SecRandomCopyBytes (Apple's CSPRNG). Declared PUBLIC so test executables
+# and other downstream targets that link dinero_core inherit the framework
+# automatically — no per-target inline "-framework Security" needed.
+# Mirrors the pattern at cmake/StaticSecp256k1.cmake:46 and the
+# dinero_crypto INTERFACE declaration above. Linux/Windows ignore this.
+if(APPLE)
+  target_link_libraries(dinero_core PUBLIC "-framework Security")
+endif()
 
 # ═════════════════════════════════════════════════════════════════════
 # Phase 3: Lightning Build-Time Decoupling COMPLETE
