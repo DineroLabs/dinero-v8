@@ -8912,12 +8912,62 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     target_link_libraries(test_wallet_mainnet_readiness PRIVATE "-framework Security")
   endif()
 
-  add_test(NAME WalletMainnetReadiness COMMAND test_wallet_mainnet_readiness)
-  set_tests_properties(WalletMainnetReadiness PROPERTIES
-    LABELS "wallet;mainnet;hardening;bip86;restore;encryption"
-    TIMEOUT 180
+  # WalletMainnetReadiness was originally registered as a single bundled
+  # ctest entry that runs all 9 subcases. As of 2026-05-18, 5/9 subcases
+  # pass on both Mac and Linux; 4/9 fail. Per the "split, not investigate"
+  # disposition in docs/architecture/quarantined-test-classification.md,
+  # the bundle is split into 9 per-subcase ctest entries via
+  # --gtest_filter so the passing subcases can graduate to the active
+  # CI set while individually-broken subcases stay quarantined with
+  # sharper per-test debt tracking. Each failing subcase becomes its
+  # own line in tests.yml's --exclude-regex and gets its own row in
+  # quarantined-test-classification.md for individual fix-or-delete
+  # decisions later.
+
+  # Passing subcases — graduate to active set (run on every PR via tests.yml).
+  set(_wmr_passing
+    InvalidMnemonicRestoreFailsWithoutPartialWallet
+    RejectsNonBip86PolicyWithoutPartialWallet
+    RestoreRpcFuzzMalformedPayloadsNoCrashNoPartialWallets
+    ReorgDepthFourClearsConfirmedBalanceWithoutChangeIndexRollback
+    WrongBip39PassphraseFailsCleanlyWithExpectedAddressGuard
   )
-  message(STATUS "  ✓ Wallet readiness test registered: test_wallet_mainnet_readiness")
+  foreach(_case IN LISTS _wmr_passing)
+    add_test(
+      NAME WalletMainnetReadiness_${_case}
+      COMMAND test_wallet_mainnet_readiness --gtest_filter=WalletMainnetReadiness.${_case}
+    )
+    set_tests_properties(WalletMainnetReadiness_${_case} PROPERTIES
+      LABELS "wallet;mainnet;hardening"
+      TIMEOUT 60
+    )
+  endforeach()
+  unset(_wmr_passing)
+
+  # Failing subcases — quarantined individually pending fix-or-delete
+  # decision. Each is excluded by name in .github/workflows/tests.yml
+  # so the active CI set graduates 5 entries without waiting on the 4
+  # broken ones. Remove a quarantine entry only after the corresponding
+  # subcase is fixed (or the subcase + this registration is deleted).
+  set(_wmr_failing
+    EncryptionRoundTripRestoreAndDerivationPersistence
+    RestoreResetsLegacyEncryptionStateBeforeReEncrypt
+    Bip86DeterminismProperty1000RandomMnemonics
+    ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata
+  )
+  foreach(_case IN LISTS _wmr_failing)
+    add_test(
+      NAME WalletMainnetReadiness_${_case}
+      COMMAND test_wallet_mainnet_readiness --gtest_filter=WalletMainnetReadiness.${_case}
+    )
+    set_tests_properties(WalletMainnetReadiness_${_case} PROPERTIES
+      LABELS "wallet;mainnet;hardening;quarantined"
+      TIMEOUT 60
+    )
+  endforeach()
+  unset(_wmr_failing)
+
+  message(STATUS "  ✓ Wallet readiness tests registered: 5 active + 4 quarantined (was 1 bundled)")
 else()
   message(STATUS "  ⚠ Wallet readiness test not found: tests/wallet/test_wallet_mainnet_readiness.cpp")
 endif()
