@@ -8913,8 +8913,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
   endif()
 
   # WalletMainnetReadiness was originally registered as a single bundled
-  # ctest entry that runs all 9 subcases. As of 2026-05-18, 5/9 subcases
-  # pass on both Mac and Linux; 4/9 fail. Per the "split, not investigate"
+  # ctest entry that runs all 9 subcases. As of 2026-05-18, 7/9 subcases
+  # pass on both Mac and Linux; 2/9 fail. Per the "split, not investigate"
   # disposition in docs/architecture/quarantined-test-classification.md,
   # the bundle is split into 9 per-subcase ctest entries via
   # --gtest_filter so the passing subcases can graduate to the active
@@ -8931,6 +8931,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     RestoreRpcFuzzMalformedPayloadsNoCrashNoPartialWallets
     ReorgDepthFourClearsConfirmedBalanceWithoutChangeIndexRollback
     WrongBip39PassphraseFailsCleanlyWithExpectedAddressGuard
+    EncryptionRoundTripRestoreAndDerivationPersistence
   )
   foreach(_case IN LISTS _wmr_passing)
     add_test(
@@ -8967,7 +8968,6 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
   # corresponding subcase is fixed (or the subcase + this registration
   # is deleted).
   set(_wmr_failing
-    EncryptionRoundTripRestoreAndDerivationPersistence
     RestoreResetsLegacyEncryptionStateBeforeReEncrypt
     ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata
   )
@@ -8983,7 +8983,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
   endforeach()
   unset(_wmr_failing)
 
-  message(STATUS "  ✓ Wallet readiness tests registered: 6 active + 3 quarantined (was 1 bundled)")
+  message(STATUS "  ✓ Wallet readiness tests registered: 7 active + 2 quarantined (was 1 bundled)")
 else()
   message(STATUS "  ⚠ Wallet readiness test not found: tests/wallet/test_wallet_mainnet_readiness.cpp")
 endif()
