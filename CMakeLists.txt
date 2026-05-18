@@ -186,47 +186,8 @@ add_subdirectory(src/consensus/pq EXCLUDE_FROM_ALL)   # dinero_pq lib
 add_subdirectory(tools/pq_bench   EXCLUDE_FROM_ALL)   # bench + tests
 add_subdirectory(src/consensus/shielded EXCLUDE_FROM_ALL)  # dinero_shielded: commitment tree, nullifiers, validation
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Hardware Wallet Security: Mock Signing Control
-# ═══════════════════════════════════════════════════════════════════════════
-# CRITICAL: Mock signing MUST be disabled in production builds
-# Default: OFF (production-safe)
-# Test builds: cmake -DDIN_HW_WALLET_MOCK=ON -DCMAKE_BUILD_TYPE=Debug
-# ═══════════════════════════════════════════════════════════════════════════
-
-option(DIN_HW_WALLET_MOCK "Enable hardware wallet mock signing (TEST ONLY - Debug builds only)" OFF)
-
-if(DIN_HW_WALLET_MOCK)
-    # CRITICAL: Block mock signing in Release/RelWithDebInfo builds
-    if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-        message(FATAL_ERROR
-            "\n"
-            "═══════════════════════════════════════════════════════════════════════════\n"
-            "FATAL: DIN_HW_WALLET_MOCK=ON is not allowed with CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}\n"
-            "═══════════════════════════════════════════════════════════════════════════\n"
-            "\n"
-            "Mock signing returns FAKE SIGNATURES that would broadcast invalid transactions.\n"
-            "This flag is only allowed in Debug builds for testing.\n"
-            "\n"
-            "To fix:\n"
-            "  - For production: Remove -DDIN_HW_WALLET_MOCK=ON\n"
-            "  - For testing: Use -DCMAKE_BUILD_TYPE=Debug\n"
-            "\n"
-        )
-    endif()
-
-    add_compile_definitions(DIN_HW_WALLET_MOCK)
-    message(WARNING "")
-    message(WARNING "═══════════════════════════════════════════════════════════════════════════")
-    message(WARNING "⚠️  HARDWARE WALLET MOCK SIGNING ENABLED - NOT PRODUCTION SAFE")
-    message(WARNING "═══════════════════════════════════════════════════════════════════════════")
-    message(WARNING "⚠️  This build will fabricate signatures for testing")
-    message(WARNING "⚠️  DO NOT use this build for real funds")
-    message(WARNING "═══════════════════════════════════════════════════════════════════════════")
-    message(WARNING "")
-else()
-    message(STATUS "✅ Hardware wallet mock signing DISABLED (production-safe)")
-endif()
+# Hardware wallet mock signing guard.
+include(cmake/HardwareWalletMock.cmake)
 
 # ============================================================================
 # gRPC and Protocol Buffers (Inter-daemon Communication)
