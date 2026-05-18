@@ -679,12 +679,16 @@ TEST(WalletMainnetReadiness, EncryptionRoundTripRestoreAndDerivationPersistence)
         assert_rpc_success(restored);
         ASSERT_TRUE(restored.isMember("addresses"));
         ASSERT_TRUE(restored["addresses"].isArray());
-        ASSERT_EQ(restored["addresses"].size(), 1u);  // index 0 only
+        ASSERT_TRUE(restored.isMember("addresses_restored"));
+        ASSERT_TRUE(restored.isMember("gap_limit"));
+        ASSERT_EQ(restored["gap_limit"].asInt(), 20);
+        ASSERT_EQ(restored["addresses_restored"].asInt(), 20);
+        ASSERT_EQ(restored["addresses"].size(), 20u);  // receive gap window: indices 0..19
 
         for (const auto& addr : restored["addresses"]) {
             restored_external.push_back(addr.asString());
         }
-        for (int i = 0; i < 39; ++i) {  // indices 1..39
+        for (int i = 0; i < 20; ++i) {  // indices 20..39
             std::string addr = restored_wallet.getNewAddress("", "taproot");
             ASSERT_FALSE(addr.empty());
             restored_external.push_back(addr);
@@ -698,6 +702,7 @@ TEST(WalletMainnetReadiness, EncryptionRoundTripRestoreAndDerivationPersistence)
     }
 
     expect_path_series(query_derivation_paths(db_b, 0), 0, 40);
+    expect_path_series(query_derivation_paths(db_b, 1), 1, 20);
 
     fs::remove_all(root);
 }
