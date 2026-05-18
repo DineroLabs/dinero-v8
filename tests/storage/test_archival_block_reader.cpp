@@ -9,6 +9,7 @@
 #include "daemon/genesis_init.hpp"
 #include "consensus/chainparams.h"
 #include "consensus/reindexer.h"
+#include "consensus/utreexo_accumulator.h"
 #include "primitives/block.h"
 #include "primitives/amount.h"
 #include <cstring>
@@ -76,11 +77,36 @@ Block MakeBlock(uint32_t nonce) {
     return block;
 }
 
+uint256 ComputeUtreexoRootAfterAddingOutputs(const Block& block) {
+    consensus::UtreexoForest forest;
+
+    for (const auto& tx : block.vtx) {
+        const TxId txid = tx.GetTxid();
+        for (size_t n = 0; n < tx.vout.size(); ++n) {
+            const auto& output = tx.vout[n];
+            const auto leaf = consensus::HashUTXO(
+                txid.AsUint256(),
+                static_cast<uint32_t>(n),
+                output.is_confidential ? 0 : output.value.GetUna(),
+                std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end()));
+            ASSERT_TRUE(forest.add(leaf) != UINT64_MAX);
+        }
+    }
+
+    const auto commitment = forest.getCommitment();
+    ASSERT_TRUE(commitment.size() == 32);
+
+    uint256 root;
+    std::memcpy(root.data, commitment.data(), 32);
+    return root;
+}
+
 Block MakeBlockWithPrev(const uint256& prev_hash, uint32_t nonce, uint32_t timestamp) {
     Block block = MakeBlock(nonce);
     block.header.prev_block_hash = prev_hash;
     block.header.timestamp = timestamp;
     block.header.difficulty = Params().genesis.nBits;
+    block.header.utreexo_root = ComputeUtreexoRootAfterAddingOutputs(block);
     return block;
 }
 
