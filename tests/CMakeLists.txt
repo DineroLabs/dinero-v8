@@ -8944,15 +8944,31 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
   endforeach()
   unset(_wmr_passing)
 
+  # Bip86DeterminismProperty1000RandomMnemonics — graduated from quarantine in
+  # the same change-set that fixed the stale 1447 coin-type pin in the test
+  # helpers. Registered as its own entry (separate from the small-timeout
+  # _wmr_passing batch above) because it runs 1000 BIP86 derivations + 10 RPC
+  # restore samples and takes ~80 sec on Mac. On the slower Linux CI runners
+  # it can exceed 60 sec, so it gets a 300-sec timeout. If this ever times
+  # out in CI, investigate runner speed regression before bumping further.
+  add_test(
+    NAME WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics
+    COMMAND test_wallet_mainnet_readiness --gtest_filter=WalletMainnetReadiness.Bip86DeterminismProperty1000RandomMnemonics
+  )
+  set_tests_properties(WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics PROPERTIES
+    LABELS "wallet;mainnet;hardening;bip86;property"
+    TIMEOUT 300
+  )
+
   # Failing subcases — quarantined individually pending fix-or-delete
   # decision. Each is excluded by name in .github/workflows/tests.yml
-  # so the active CI set graduates 5 entries without waiting on the 4
-  # broken ones. Remove a quarantine entry only after the corresponding
-  # subcase is fixed (or the subcase + this registration is deleted).
+  # so the active CI set graduates entries without waiting on the
+  # remaining broken ones. Remove a quarantine entry only after the
+  # corresponding subcase is fixed (or the subcase + this registration
+  # is deleted).
   set(_wmr_failing
     EncryptionRoundTripRestoreAndDerivationPersistence
     RestoreResetsLegacyEncryptionStateBeforeReEncrypt
-    Bip86DeterminismProperty1000RandomMnemonics
     ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata
   )
   foreach(_case IN LISTS _wmr_failing)
@@ -8967,7 +8983,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
   endforeach()
   unset(_wmr_failing)
 
-  message(STATUS "  ✓ Wallet readiness tests registered: 5 active + 4 quarantined (was 1 bundled)")
+  message(STATUS "  ✓ Wallet readiness tests registered: 6 active + 3 quarantined (was 1 bundled)")
 else()
   message(STATUS "  ⚠ Wallet readiness test not found: tests/wallet/test_wallet_mainnet_readiness.cpp")
 endif()
