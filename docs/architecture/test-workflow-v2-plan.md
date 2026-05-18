@@ -69,7 +69,7 @@ cmake --build build-tests -j$(nproc)
 ctest --test-dir build-tests \
   --output-on-failure \
   --label-exclude 'integration|gate|release|canonicality|fuzz|packaging' \
-  --exclude-regex 'ConsensusFormalVerification|ShieldedDerivation|WalletDescriptorActiveContext|ArchivalBlockReader|UtreexoE2ERelay|WalletMainnetReadiness'
+  --exclude-regex 'ConsensusFormalVerification|UtreexoE2ERelay|WalletMainnetReadiness_EncryptionRoundTripRestoreAndDerivationPersistence|WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt|WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics|WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata'
 ```
 
 ## Known-Broken Exclusion Policy
@@ -95,11 +95,11 @@ Excluded test names:
 | Test | Status | Required follow-up |
 | --- | --- | --- |
 | `ConsensusFormalVerification` | Deterministic supply-formula mismatch surfaced by first full `ctest` pass | Fix the formula or test vector, then re-enable. |
-| `ShieldedDerivation` | Fails on Linux CI. `ShieldedDerivationVectorFixture` has four vector failures, even though the same CTest target passed locally on macOS. | Fix vectors or platform-dependent implementation expectations, then re-enable. |
-| `WalletDescriptorActiveContext` | Wallet descriptor runtime failure surfaced by first full `ctest` pass | Repair wallet descriptor setup/fixture, then re-enable. |
-| `ArchivalBlockReader` | Runtime abort surfaced by first full `ctest` pass | Debug abort and add focused regression coverage before re-enabling. |
 | `UtreexoE2ERelay` | Utreexo end-to-end runtime failure surfaced by first full `ctest` pass | Repair relay fixture or implementation, then re-enable. |
-| `WalletMainnetReadiness` | Wallet readiness gate failure surfaced by first full `ctest` pass | Decide CI readiness versus release-gate ownership, then re-enable or move. |
+| `WalletMainnetReadiness_EncryptionRoundTripRestoreAndDerivationPersistence` | Encrypted-wallet round-trip restore loses derivation persistence on Mac + Linux | Fix wallet-state serialization or re-derivation ordering, then re-enable. |
+| `WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt` | Restore path leaves inconsistent legacy/current encryption state on Mac + Linux | Fix restore-then-reencrypt ordering/state clearing, then re-enable. |
+| `WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics` | Fast BIP86 determinism property failure on Mac + Linux | Identify the failing input class and repair BIP86 derivation determinism. |
+| `WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata` | Self-spend-with-change reorg unwind does not restore spent state / height metadata on Mac + Linux | Fix wallet UTXO reorg bookkeeping, then re-enable. |
 
 This map marks the current quarantine boundary. It should shrink over time; it
 should not grow without the same level of evidence.
@@ -108,10 +108,11 @@ See `docs/architecture/quarantined-test-classification.md` for the first
 per-test classification pass. That pass found that `CsnProofRefresh` was already
 running and passing because the old exclusion used the binary name
 `test_csn_proof_refresh`, not the registered CTest name `CsnProofRefresh`.
-The next pass split cheap canonical vector/restart tests away from the broad
-`canonicality` quarantine; `ShieldedV030Vectors` and `HeaderRestartSafety` now
-run in the normal Test Workflow v2 subset. `ShieldedDerivation` stays
-quarantined after Linux CI exposed vector-fixture failures.
+Subsequent passes split cheap canonical vector/restart tests away from the broad
+`canonicality` quarantine, fixed and graduated `ShieldedDerivation`, split
+`WalletMainnetReadiness` into per-subcase CTest entries, and fixed
+`ArchivalBlockReader` by making its synthetic reindex fixture write a valid
+height-1 Utreexo commitment.
 
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
