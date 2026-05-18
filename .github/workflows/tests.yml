@@ -114,4 +114,4 @@ jobs:
           ctest --test-dir build-tests \
             --output-on-failure \
             --label-exclude 'integration|gate|release|canonicality|fuzz|packaging' \
-            --exclude-regex 'ConsensusFormalVerification|ShieldedDerivation|WalletDescriptorActiveContext|ArchivalBlockReader|UtreexoE2ERelay|WalletMainnetReadiness'
+            --exclude-regex 'ConsensusFormalVerification|WalletDescriptorActiveContext|ArchivalBlockReader|UtreexoE2ERelay|WalletMainnetReadiness'
