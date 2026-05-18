@@ -95,7 +95,7 @@ Excluded test names:
 | Test | Status | Required follow-up |
 | --- | --- | --- |
 | `ConsensusFormalVerification` | Deterministic supply-formula mismatch surfaced by first full `ctest` pass | Fix the formula or test vector, then re-enable. |
-| `ShieldedDerivation` | Deterministic shielded derivation/vector failures surfaced by first full `ctest` pass | Fix vectors or implementation expectations, then re-enable. |
+| `ShieldedDerivation` | Fails on Linux CI. `ShieldedDerivationVectorFixture` has four vector failures, even though the same CTest target passed locally on macOS. | Fix vectors or platform-dependent implementation expectations, then re-enable. |
 | `WalletDescriptorActiveContext` | Wallet descriptor runtime failure surfaced by first full `ctest` pass | Repair wallet descriptor setup/fixture, then re-enable. |
 | `ArchivalBlockReader` | Runtime abort surfaced by first full `ctest` pass | Debug abort and add focused regression coverage before re-enabling. |
 | `UtreexoE2ERelay` | Utreexo end-to-end runtime failure surfaced by first full `ctest` pass | Repair relay fixture or implementation, then re-enable. |
@@ -108,6 +108,10 @@ See `docs/architecture/quarantined-test-classification.md` for the first
 per-test classification pass. That pass found that `CsnProofRefresh` was already
 running and passing because the old exclusion used the binary name
 `test_csn_proof_refresh`, not the registered CTest name `CsnProofRefresh`.
+The next pass split cheap canonical vector/restart tests away from the broad
+`canonicality` quarantine; `ShieldedV030Vectors` and `HeaderRestartSafety` now
+run in the normal Test Workflow v2 subset. `ShieldedDerivation` stays
+quarantined after Linux CI exposed vector-fixture failures.
 
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`

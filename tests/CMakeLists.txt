@@ -1172,7 +1172,7 @@ if(TARGET dinero_shielded AND TARGET gtest)
   )
   add_test(NAME ShieldedV030Vectors COMMAND test_v030_vectors)
   set_tests_properties(ShieldedV030Vectors PROPERTIES
-    LABELS "shielded;consensus;canonicality"
+    LABELS "shielded;consensus;canonical-vectors"
     TIMEOUT 300
   )
   message(STATUS "Shielded v0.3.0 wire-format vectors enabled")
@@ -5674,7 +5674,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_restart_safety.cpp)
   endif()
   add_test(NAME HeaderRestartSafety COMMAND test_header_restart_safety)
   set_tests_properties(HeaderRestartSafety PROPERTIES
-    LABELS "headers;restart;canonicality;phase1-canonical-recovery"
+    LABELS "headers;restart;canonical-restart;phase1-canonical-recovery"
   )
 endif()
 
