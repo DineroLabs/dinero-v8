@@ -69,7 +69,7 @@ cmake --build build-tests -j$(nproc)
 ctest --test-dir build-tests \
   --output-on-failure \
   --label-exclude 'integration|gate|release|canonicality|fuzz|packaging' \
-  --exclude-regex 'test_csn_proof_refresh|ConsensusFormalVerification|ShieldedDerivation|WalletDescriptorActiveContext|ArchivalBlockReader|UtreexoE2ERelay|WalletMainnetReadiness'
+  --exclude-regex 'ConsensusFormalVerification|ShieldedDerivation|WalletDescriptorActiveContext|ArchivalBlockReader|UtreexoE2ERelay|WalletMainnetReadiness'
 ```
 
 ## Known-Broken Exclusion Policy
@@ -94,7 +94,6 @@ Excluded test names:
 
 | Test | Status | Required follow-up |
 | --- | --- | --- |
-| `test_csn_proof_refresh` | Pre-existing failure observed during prior CI/build work | Track with a GitHub issue that decides fix-or-delete. |
 | `ConsensusFormalVerification` | Deterministic supply-formula mismatch surfaced by first full `ctest` pass | Fix the formula or test vector, then re-enable. |
 | `ShieldedDerivation` | Deterministic shielded derivation/vector failures surfaced by first full `ctest` pass | Fix vectors or implementation expectations, then re-enable. |
 | `WalletDescriptorActiveContext` | Wallet descriptor runtime failure surfaced by first full `ctest` pass | Repair wallet descriptor setup/fixture, then re-enable. |
@@ -104,6 +103,11 @@ Excluded test names:
 
 This map marks the current quarantine boundary. It should shrink over time; it
 should not grow without the same level of evidence.
+
+See `docs/architecture/quarantined-test-classification.md` for the first
+per-test classification pass. That pass found that `CsnProofRefresh` was already
+running and passing because the old exclusion used the binary name
+`test_csn_proof_refresh`, not the registered CTest name `CsnProofRefresh`.
 
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
