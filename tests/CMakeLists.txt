@@ -1185,8 +1185,8 @@ if(TARGET dinero_wallet AND TARGET gtest)
   )
   add_dependencies(test_shielded_derivation gtest dinero_wallet)
   target_link_libraries(test_shielded_derivation PRIVATE
-    $<TARGET_FILE:gtest>
-    $<TARGET_FILE:gtest_main>
+    GTest::gtest
+    GTest::gtest_main
     dinero_wallet
     dinero_shielded
     sqlite3
