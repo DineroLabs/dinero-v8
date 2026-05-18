@@ -289,7 +289,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_reindex_equivalence.
     COMMAND test_shielded_reindex_equivalence
   )
   set_tests_properties(ShieldedReindexEquivalence PROPERTIES
-    LABELS "shielded;reindex;canonicality;shielded-canonical-recovery"
+    LABELS "shielded;reindex;shielded-canonical-smoke;shielded-canonical-recovery"
     TIMEOUT 300
   )
 endif()
@@ -1202,7 +1202,7 @@ if(TARGET dinero_wallet AND TARGET gtest)
   endif()
   add_test(NAME ShieldedDerivation COMMAND test_shielded_derivation)
   set_tests_properties(ShieldedDerivation PROPERTIES
-    LABELS "shielded;wallet;canonicality"
+    LABELS "shielded;wallet;shielded-canonical-smoke"
     TIMEOUT 60
   )
   message(STATUS "Shielded derivation tests enabled")

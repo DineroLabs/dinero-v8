@@ -128,6 +128,13 @@ See `docs/architecture/remaining-test-label-classification.md` for the current
 label-only quarantine map after the exact-name list reached zero. That map is
 the handoff point from named-test repair to label taxonomy.
 
+The first label split graduated `ShieldedDerivation` and
+`ShieldedReindexEquivalence` from broad `canonicality` into
+`shielded-canonical-smoke`. `ShieldedPoolRoundTrip` and
+`ShieldedAdversarialHardening` remain quarantined because their helper binaries
+are stale against current shielded APIs and do not compile in the local full
+build.
+
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
 binary, required scripts, and `ctest` availability without running the heavy
