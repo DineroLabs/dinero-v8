@@ -160,10 +160,26 @@ ShieldedAccountKeys DeriveShieldedAccount(const uint8_t* seed,
 // ── Phase 5 Wave 2: diversifier + diversified address ───────────────
 
 Diversifier ChaCha20Diversifier(const Hash& dk, uint64_t j) {
-    // 12-byte ChaCha20 nonce: j little-endian (8 bytes) zero-padded to 12.
-    std::array<uint8_t, 12> nonce{};
+    // OpenSSL's EVP_chacha20() expects a 16-byte IV laid out as
+    //   [0..4)  = block counter (little-endian uint32)
+    //   [4..16) = nonce (12 bytes; IETF ChaCha20-style)
+    // Passing only a 12-byte buffer caused OpenSSL to read 4 bytes
+    // past the end of the std::array — that uninitialized stack
+    // memory was platform/compiler/call-site deterministic but
+    // diverged between (e.g.) Mac arm64 and Linux x86_64, producing
+    // different keystreams for the same (dk, j). That platform-
+    // dependent diversifier propagated through HashToPoint, DerivePkD,
+    // and EncodeShieldedAddress, giving different shielded addresses
+    // on different platforms for the same seed. The bug was caught
+    // when the v2 tests workflow first ran the full test target list
+    // on Linux CI (PR #54 era).
+    //
+    // Construct an explicit 16-byte IV with counter=0 prefix + the
+    // intended 12-byte IETF nonce = (j little-endian, 8 bytes) zero-
+    // padded to 12. Both platforms now produce identical output.
+    std::array<uint8_t, 16> iv{};
     for (int i = 0; i < 8; ++i) {
-        nonce[i] = static_cast<uint8_t>((j >> (8 * i)) & 0xFF);
+        iv[4 + i] = static_cast<uint8_t>((j >> (8 * i)) & 0xFF);
     }
     // Encrypt 11 zero bytes → 11 keystream bytes (counter starts at 0).
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
@@ -174,7 +190,7 @@ Diversifier ChaCha20Diversifier(const Hash& dk, uint64_t j) {
     std::array<uint8_t, 11> zeroes{};
     int written = 0;
     int ok =
-        EVP_EncryptInit_ex(ctx, EVP_chacha20(), nullptr, dk.data(), nonce.data()) &&
+        EVP_EncryptInit_ex(ctx, EVP_chacha20(), nullptr, dk.data(), iv.data()) &&
         EVP_EncryptUpdate(ctx, out.data(), &written,
                           zeroes.data(), static_cast<int>(zeroes.size()));
     if (!ok || written != static_cast<int>(zeroes.size())) {
