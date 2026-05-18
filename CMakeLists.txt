@@ -776,6 +776,13 @@ set(DINERO_CORE_WEBSOCKET_SOURCES
   src/daemon/ws_globals.cpp
 )
 
+set(DINERO_CORE_P2P_SERVICE_SOURCES
+  src/daemon/services/peer_scoring_service.cpp
+  src/daemon/services/headers_sync_service.cpp
+  src/daemon/services/compact_block_service.cpp
+  src/daemon/services/address_manager_service.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -804,10 +811,7 @@ add_library(dinero_core STATIC
   src/daemon/health.cpp
   src/daemon/services/mining_service.cpp
   src/daemon/services/rpc_service.cpp
-  src/daemon/services/peer_scoring_service.cpp
-  src/daemon/services/headers_sync_service.cpp
-  src/daemon/services/compact_block_service.cpp
-  src/daemon/services/address_manager_service.cpp
+  ${DINERO_CORE_P2P_SERVICE_SOURCES}
   src/daemon/services/rbf_policy_service.cpp
   src/daemon/services/block_ingress_service.cpp  # Step 5: IBlockIngress implementation
   src/daemon/services/prune_service.cpp  # Phase 34.8: Block pruning for mobile nodes
