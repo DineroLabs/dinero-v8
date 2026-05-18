@@ -107,8 +107,12 @@ static bool TestDescriptorUsesActiveWalletContext() {
 
     const std::string alpha_receive_desc = ExtractReceiveDescriptor(alpha);
     ASSERT_TRUE(!alpha_receive_desc.empty(), "alpha receive descriptor must exist");
-    ASSERT_TRUE(alpha_receive_desc.find("1447h") != std::string::npos,
-                "alpha descriptor must encode canonical coin type 1447h");
+    // Canonical coin type is 1448 (v7+, per derivation paths used everywhere
+    // in src/wallet/* and src/daemon/*; the 1447 legacy scan path was
+    // removed entirely on 2026-04-18). This test originally pinned 1447h and
+    // was quarantined when that became wrong; the impl was always correct.
+    ASSERT_TRUE(alpha_receive_desc.find("1448h") != std::string::npos,
+                "alpha descriptor must encode canonical coin type 1448h");
 
     const std::string alpha_db_path = CurrentDbPath(wallet_manager.getCurrentDatabase());
     ASSERT_TRUE(!alpha_db_path.empty(), "alpha active DB path must resolve");
@@ -122,8 +126,8 @@ static bool TestDescriptorUsesActiveWalletContext() {
 
     const std::string beta_receive_desc = ExtractReceiveDescriptor(beta);
     ASSERT_TRUE(!beta_receive_desc.empty(), "beta receive descriptor must exist");
-    ASSERT_TRUE(beta_receive_desc.find("1447h") != std::string::npos,
-                "beta descriptor must encode canonical coin type 1447h");
+    ASSERT_TRUE(beta_receive_desc.find("1448h") != std::string::npos,
+                "beta descriptor must encode canonical coin type 1448h");
 
     const std::string beta_db_path = CurrentDbPath(wallet_manager.getCurrentDatabase());
     ASSERT_TRUE(!beta_db_path.empty(), "beta active DB path must resolve");
