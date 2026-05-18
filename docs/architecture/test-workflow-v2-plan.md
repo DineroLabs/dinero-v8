@@ -122,6 +122,38 @@ Rules for adding exclusions:
 7. Keep the workflow green while reducing the quarantine; do not bundle broad
    test repair with unrelated architecture work.
 
+## Test Retirement Policy
+
+Quarantine is a holding state, not a final disposition. A quarantined test should
+be classified before it is re-enabled, rewritten, converted to a smoke check, or
+deleted.
+
+Use this decision record for obsolete-looking tests:
+
+```text
+Test:
+Current status:
+Original purpose:
+Still relevant: yes/no/partial
+If obsolete, why:
+Replacement coverage:
+Action: keep quarantined / convert to smoke / rewrite / delete
+```
+
+A quarantined test may be deleted only when:
+
+- The feature or behavior it covers is no longer supported.
+- No current code path depends on the old behavior.
+- Replacement coverage exists, or the lost safety signal is explicitly accepted.
+- The deletion PR explains the rationale.
+
+Harness debt is not obsolescence. For example, a test that assumes the wrong
+build directory should be fixed or converted, not deleted. Heavy release,
+network, or readiness checks may belong in manual, nightly, or release-gate
+ownership instead of normal PR CI. Tests for behavior replaced by newer protocol
+or wallet design should usually be rewritten around the current behavior before
+deletion is considered.
+
 ## First-Run Expectations
 
 The first full workflow runs were expected to fail. That did not mean the plan
