@@ -808,6 +808,12 @@ set(DINERO_CORE_MEMPOOL_SUPPORT_SOURCES
   src/mempool/tx_orphan_pool.cpp
 )
 
+set(DINERO_CORE_DAEMON_EDGE_SERVICE_SOURCES
+  src/daemon/services/rbf_policy_service.cpp
+  src/daemon/services/block_ingress_service.cpp
+  src/daemon/services/prune_service.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -837,9 +843,7 @@ add_library(dinero_core STATIC
   src/daemon/services/mining_service.cpp
   src/daemon/services/rpc_service.cpp
   ${DINERO_CORE_P2P_SERVICE_SOURCES}
-  src/daemon/services/rbf_policy_service.cpp
-  src/daemon/services/block_ingress_service.cpp  # Step 5: IBlockIngress implementation
-  src/daemon/services/prune_service.cpp  # Phase 34.8: Block pruning for mobile nodes
+  ${DINERO_CORE_DAEMON_EDGE_SERVICE_SOURCES}
 
   # Step 5: Interface type implementations (canonical ingress types)
   src/daemon/interfaces/ingress_types.cpp
