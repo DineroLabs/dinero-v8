@@ -66,10 +66,10 @@ cmake -S . -B build-tests \
   -DDINERO_USE_VENDORED_DEPS=ON \
   -DENABLE_GRPC=OFF
 cmake --build build-tests -j$(nproc)
-ctest --test-dir build-tests \
+  ctest --test-dir build-tests \
   --output-on-failure \
   --label-exclude 'integration|gate|release|canonicality|fuzz|packaging' \
-  --exclude-regex 'ConsensusFormalVerification|WalletMainnetReadiness_EncryptionRoundTripRestoreAndDerivationPersistence|WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt|WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics|WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata'
+  --exclude-regex 'ConsensusFormalVerification|WalletMainnetReadiness_EncryptionRoundTripRestoreAndDerivationPersistence|WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt|WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata'
 ```
 
 ## Known-Broken Exclusion Policy
@@ -97,7 +97,6 @@ Excluded test names:
 | `ConsensusFormalVerification` | Deterministic supply-formula mismatch surfaced by first full `ctest` pass | Fix the formula or test vector, then re-enable. |
 | `WalletMainnetReadiness_EncryptionRoundTripRestoreAndDerivationPersistence` | Encrypted-wallet round-trip restore loses derivation persistence on Mac + Linux | Fix wallet-state serialization or re-derivation ordering, then re-enable. |
 | `WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt` | Restore path leaves inconsistent legacy/current encryption state on Mac + Linux | Fix restore-then-reencrypt ordering/state clearing, then re-enable. |
-| `WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics` | Fast BIP86 determinism property failure on Mac + Linux | Identify the failing input class and repair BIP86 derivation determinism. |
 | `WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata` | Self-spend-with-change reorg unwind does not restore spent state / height metadata on Mac + Linux | Fix wallet UTXO reorg bookkeeping, then re-enable. |
 
 This map marks the current quarantine boundary. It should shrink over time; it
@@ -114,6 +113,9 @@ Subsequent passes split cheap canonical vector/restart tests away from the broad
 height-1 Utreexo commitment.
 `UtreexoE2ERelay` also graduated after fixing CSN transition-proof stump
 advancement for deletion-bearing proofs.
+`WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics` graduated
+after fixing stale 1447 coin-type pins in the local test helpers and giving the
+1000-mnemonic property case its own 300-second CTest timeout.
 
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`

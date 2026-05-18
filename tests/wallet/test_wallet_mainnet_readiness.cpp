@@ -253,7 +253,14 @@ std::optional<std::string> derive_bip86_first_address_from_seed(const std::vecto
     }
 
     constexpr uint32_t HARDENED = 0x80000000;
-    constexpr uint32_t DINERO_COIN_TYPE = 1447;
+    // Canonical coin type for v7+ is 1448. The 1447 legacy scan path was
+    // removed entirely on 2026-04-18; every derivation site in
+    // src/wallet/* and src/daemon/* uses 1448. This helper had been
+    // pinned to 1447 (stale), which caused the helper-derived first
+    // address to disagree with the RPC restore path's actual derivation
+    // at m/86'/1448'/0'/0/0 — same root cause as PR #58's stale 1447h
+    // pin in test_wallet_descriptor_active_context.cpp.
+    constexpr uint32_t DINERO_COIN_TYPE = 1448;
 
     auto master = dinero::crypto::HDKeychain::fromSeed(seed);
     auto purpose = master.derive(86 | HARDENED);
@@ -566,7 +573,10 @@ std::optional<bool> query_utxo_spent_state(const fs::path& wallet_db,
 void expect_path_series(const std::vector<std::string>& paths, int change, size_t expected_count) {
     ASSERT_EQ(paths.size(), expected_count);
     for (size_t i = 0; i < paths.size(); ++i) {
-        std::string expected = "m/86'/1447'/0'/" + std::to_string(change) + "/" + std::to_string(i);
+        // Canonical coin type for v7+ is 1448 (not 1447 — legacy path
+        // removed 2026-04-18). See companion comment in
+        // derive_bip86_first_address_from_seed() above.
+        std::string expected = "m/86'/1448'/0'/" + std::to_string(change) + "/" + std::to_string(i);
         EXPECT_EQ(paths[i], expected);
     }
 }
