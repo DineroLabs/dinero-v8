@@ -68,7 +68,7 @@ cmake -S . -B build-tests \
 cmake --build build-tests -j$(nproc)
   ctest --test-dir build-tests \
   --output-on-failure \
-  --label-exclude 'integration|gate|release|canonicality|fuzz|packaging'
+  --label-exclude 'integration|gate|release|canonicality|fuzz'
 ```
 
 ## Known-Broken Exclusion Policy
@@ -87,7 +87,7 @@ Excluded labels:
 | `release` | Full `ReleaseSuite` is a heavy manual/release gate with baseline parity, P2P storm, IBD torture, Utreexo, canonical recovery, and mempool stress stages | Keep the full suite quarantined until each heavy stage has an explicit CI-vs-manual ownership decision. |
 | `canonicality` | Canonical recovery/readiness tests fail in the first full pass | Track deterministic failures and re-enable by category. |
 | `fuzz` | Fuzzer-style tests are not suitable for the first required-style subset | Move to a dedicated fuzz/nightly plan or make deterministic. |
-| `packaging` | Packaging tests are outside the first Linux full-build subset | Add package workflow coverage separately. |
+| `packaging` | **Retired from the current quarantine.** The former packaging tests graduated into active `packaging-smoke` coverage. | Use a new `packaging-gate` label or dedicated workflow for future heavyweight package-build checks. |
 
 Excluded test names: none. All formerly exact-name-quarantined tests have
 graduated to the active Test Workflow v2 subset.
@@ -134,6 +134,11 @@ The first label split graduated `ShieldedDerivation` and
 `ShieldedAdversarialHardening` remain quarantined because their helper binaries
 are stale against current shielded APIs and do not compile in the local full
 build.
+
+The second label split graduated all three former `packaging` tests into
+`packaging-smoke`: `CmakeInstallLayout`, `DineroBackup`, and
+`DineroPrepareUpgrade`. The broad `packaging` label is no longer part of the
+Test Workflow v2 exclusion regex.
 
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`

@@ -1,7 +1,7 @@
 # Remaining Test Label Classification
 
 Generated from `origin/dinero-main` at `25e6f55d` after PR #65.
-Updated after PR #67 to reflect the first canonicality smoke graduation.
+Updated after PR #68 to reflect the packaging smoke graduation.
 
 This document classifies the remaining label-based exclusions in
 `.github/workflows/tests.yml`:
@@ -30,8 +30,8 @@ Current inventory:
 | Metric | Count |
 | --- | ---: |
 | Registered CTest tests | 377 |
-| Selected by current Test Workflow v2 label filter | 287 |
-| Excluded by at least one remaining label | 90 |
+| Selected by current Test Workflow v2 label filter | 290 |
+| Excluded by at least one remaining label | 87 |
 
 Per-label counts below are label memberships, not disjoint sets. Several tests
 carry more than one excluded label, for example `AcceptanceParity` is both
@@ -40,7 +40,7 @@ carry more than one excluded label, for example `AcceptanceParity` is both
 | Label | Count | Classification | Recommended disposition |
 | --- | ---: | --- | --- |
 | `canonicality` | 26 | Mixed correctness signal. Contains stale shielded helper-binary tests and heavier restart/reindex/reorg equivalence tests. | Continue splitting deliberately; keep restart/reindex cohorts quarantined until harness ownership is clear. |
-| `packaging` | 3 | Packaging and local maintenance tooling. | Split smoke checks from real package/recovery gates. Candidate for the next small PR after focused validation. |
+| `packaging` | 0 | Retired from the current label quarantine. The three former members graduated into active `packaging-smoke` coverage. | Keep future package-build or distro-output tests under a different label such as `packaging-gate` or a dedicated packaging workflow. |
 | `integration` | 79 | Broad runtime harness surface. Contains daemon, wallet, RPC, P2P, Utreexo, CSN, reindex, shielded, mining, and restart tests. | Do not graduate as one label. Split by subsystem and fixture needs. |
 | `release` | 3 | Release-readiness ownership. | Keep full release gates out of normal PR CI; preserve or create smoke equivalents where useful. |
 | `gate` | 4 | Readiness/blocking gates. | Classify each gate individually as PR-safe, nightly, release-only, or manual. |
@@ -113,7 +113,7 @@ Recommended next action:
 
 ## Label: `packaging`
 
-Tests:
+Former tests:
 
 ```text
 CmakeInstallLayout
@@ -123,17 +123,19 @@ DineroPrepareUpgrade
 
 Read:
 
-- This bucket is small and probably separable.
-- `CmakeInstallLayout` sounds like a cheap metadata/layout smoke check.
-- `DineroBackup` and `DineroPrepareUpgrade` may be more stateful because they
-  touch backup, recovery, rollback, or upgrade paths.
+- PR #68 focus-ran all three tests. The whole bucket passed locally in about one
+  second, and none required an external service or package builder.
+- The tests exercise install layout, backup archive policy, and upgrade rollback
+  capture as smoke/property checks, not full distro packaging.
 
-Recommended next action:
+Disposition:
 
-1. Focus-run the three tests with timeouts.
-2. If `CmakeInstallLayout` is cheap and deterministic, graduate it first.
-3. Keep backup/upgrade tests under a packaging or release workflow until their
-   filesystem fixture expectations are clear.
+1. Relabeled the three tests from broad `packaging` into active
+   `packaging-smoke`.
+2. Retired `packaging` from the current exclusion list in
+   `.github/workflows/tests.yml`.
+3. Future heavyweight package-build checks should use a new label such as
+   `packaging-gate` or live in a dedicated packaging workflow.
 
 ## Label: `integration`
 
@@ -296,9 +298,9 @@ Recommended next action:
    `shielded-canonical-smoke`; deferred `ShieldedPoolRoundTrip` and
    `ShieldedAdversarialHardening` because their helper binaries are stale
    against current shielded APIs.
-2. PR #68: focus-run packaging tests; graduate `CmakeInstallLayout` if it is
-   cheap and deterministic, and decide whether backup/upgrade belong in a
-   packaging workflow.
+2. PR #68: graduated all three former `packaging` tests into
+   `packaging-smoke` and removed `packaging` from the active workflow exclusion
+   list.
 3. PR #69: split address/RPC/wallet integration smoke candidates from the broad
    `integration` label.
 4. Later: design dedicated lanes for P2P/network, CSN/Utreexo, shielded E2E,

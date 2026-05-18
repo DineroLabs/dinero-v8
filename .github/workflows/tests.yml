@@ -113,4 +113,4 @@ jobs:
           # future PRs can retire exclusions one category at a time.
           ctest --test-dir build-tests \
             --output-on-failure \
-            --label-exclude 'integration|gate|release|canonicality|fuzz|packaging'
+            --label-exclude 'integration|gate|release|canonicality|fuzz'

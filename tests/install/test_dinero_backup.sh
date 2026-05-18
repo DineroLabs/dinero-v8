@@ -165,7 +165,7 @@ OUT="${TMP}/backup.tar.gz"
 
 # Permissions: 0600 (mode bits in octal — POSIX %A). Use stat with
 # both BSD/macOS (-f %Lp) and GNU/Linux (-c %a) fallbacks.
-mode=$(stat -f '%Lp' "${OUT}" 2>/dev/null || stat -c '%a' "${OUT}")
+mode=$(stat -c '%a' "${OUT}" 2>/dev/null || stat -f '%Lp' "${OUT}")
 [[ "${mode}" == "600" ]] || fail "expected mode 0600, got ${mode}"
 pass "archive at ${OUT} with mode 0600 (no .tmp leftover)"
 
