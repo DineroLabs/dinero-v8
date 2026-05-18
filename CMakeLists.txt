@@ -163,79 +163,13 @@ include(cmake/BuildOptions.cmake)
 # Platform defaults, global include policy, and build timestamp setup.
 include(cmake/PlatformConfig.cmake)
 
-find_package(Git QUIET)
 find_package(Threads REQUIRED)
 
 # Optional UPnP/NAT-PMP P2P port mapping dependency target.
 include(cmake/PortMapping.cmake)
-if(GIT_FOUND)
-  execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --git-dir
-                  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                  OUTPUT_VARIABLE GIT_DIR_RAW OUTPUT_STRIP_TRAILING_WHITESPACE)
-  if(GIT_DIR_RAW)
-    if(IS_ABSOLUTE "${GIT_DIR_RAW}")
-      set(GIT_DIR_PATH "${GIT_DIR_RAW}")
-    else()
-      get_filename_component(GIT_DIR_PATH "${CMAKE_SOURCE_DIR}/${GIT_DIR_RAW}" ABSOLUTE)
-    endif()
-  endif()
 
-  execute_process(COMMAND ${GIT_EXECUTABLE} symbolic-ref -q HEAD
-                  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                  OUTPUT_VARIABLE GIT_HEAD_REF OUTPUT_STRIP_TRAILING_WHITESPACE)
-
-  set(GIT_METADATA_DEPENDS)
-  if(GIT_DIR_PATH)
-    foreach(_git_meta HEAD packed-refs index)
-      if(EXISTS "${GIT_DIR_PATH}/${_git_meta}")
-        list(APPEND GIT_METADATA_DEPENDS "${GIT_DIR_PATH}/${_git_meta}")
-      endif()
-    endforeach()
-    if(GIT_HEAD_REF AND EXISTS "${GIT_DIR_PATH}/${GIT_HEAD_REF}")
-      list(APPEND GIT_METADATA_DEPENDS "${GIT_DIR_PATH}/${GIT_HEAD_REF}")
-    endif()
-    if(GIT_METADATA_DEPENDS)
-      set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${GIT_METADATA_DEPENDS})
-      message(STATUS "🔁 Tracking Git HEAD for automatic version metadata refresh")
-    endif()
-  endif()
-
-  execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
-                  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                  OUTPUT_VARIABLE GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE)
-  execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
-                  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                  OUTPUT_VARIABLE GIT_HASH_FULL OUTPUT_STRIP_TRAILING_WHITESPACE)
-else()
-  set(GIT_HASH "unknown")
-  set(GIT_HASH_FULL "unknown")
-endif()
-# PROJECT_VERSION is the canonical semantic version set by the
-# project() call at the top of this file (8.0.0 as of the monorepo
-# consolidation). Do NOT override it here. GIT_HASH and GIT_HASH_FULL
-# remain as separate values for build-provenance compile defs
-# (DINERO_BUILD_GIT_SHA). Pre-consolidation, this slot held
-# `set(PROJECT_VERSION "${GIT_HASH}")` which made the daemon report
-# a short git hash as its version. That override was removed so that
-# `dinerod --version`, `dinero-qt --version`, and friends all report
-# 8.0.0 — one tag, one version string.
-
-# Version variables for configure_file
-set(CLIENT_VERSION_MAJOR 1)
-set(CLIENT_VERSION_MINOR 0)
-set(CLIENT_VERSION_REVISION 0)
-set(CLIENT_VERSION_BUILD 0)
-set(CLIENT_VERSION_IS_RELEASE 0)
-set(BUILD_DATE "${BUILD_TIME}")
-set(GIT_COMMIT_ID "${GIT_HASH}")
-set(GIT_COMMIT_FULL "${GIT_HASH_FULL}")
-
-# Version config - generate to build root so it's easily found
-configure_file(${CMAKE_SOURCE_DIR}/include/compat/version_config.h.in
-               ${CMAKE_BINARY_DIR}/version_config.h @ONLY)
-
-# Include generated directory
-include_directories(${CMAKE_BINARY_DIR})
+# Git/build provenance and generated version_config.h.
+include(cmake/VersionMetadata.cmake)
 
 # ============================================================================
 # Phase D (v8 peer-discovery): chainparamsseeds.h regeneration
