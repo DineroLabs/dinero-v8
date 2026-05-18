@@ -1075,52 +1075,9 @@ target_include_directories(wallet_test_deps PUBLIC
   ${CMAKE_SOURCE_DIR}/src
 )
 
-# ─────────────────────────────────────────────────────────────────────────
-# Layer 2c: Utreexo Bridge Library (extracted from daemon-only TUs)
-# ─────────────────────────────────────────────────────────────────────────
-# bridge_node.cpp implements Utreexo proof generation for stateless/mobile
-# clients. It was previously compiled directly into ~17 test targets and
-# the nodecore_ffi exe because no linkable library exposed it; consumers
-# either duplicated the source or stubbed the symbols (see
-# tests/stubs/daemon_test_stubs.cpp BridgeNode section). Extracting it
-# here lets dinero_core declare it as a transitive dep and removes both
-# the duplication and the stub seam.
-add_library(dinero_bridge STATIC
-  src/network/bridge_node.cpp
-)
-target_include_directories(dinero_bridge PUBLIC
-  ${CMAKE_SOURCE_DIR}/include
-  ${CMAKE_SOURCE_DIR}/src
-)
-target_link_libraries(dinero_bridge PUBLIC
-  dinero_chainstate  # ChainDB + ArchivalBlockReader headers
-  dinero_consensus   # consensus/outpoint.h, consensus/undo.h
-  dinero_crypto      # crypto/sha256.h
-)
-
-# ─────────────────────────────────────────────────────────────────────────
-# Layer 2d: Mining Pool Library (extracted from daemon-only TUs)
-# ─────────────────────────────────────────────────────────────────────────
-# pool_db.cpp / pool_manager.cpp / payout_calculator.cpp implement the
-# pool-mining accounting subsystem. Previously duplicated across multiple
-# test targets and nodecore_ffi (each compiled the cpps directly), and
-# also referenced from chainstate_service.cpp inside dinero_core which
-# had nothing to link against (hence the pool stubs in daemon_test_stubs.cpp).
-# Deps are small and contained: consensus/subsidy.h (pure math),
-# storage/chain_db.h, common/logger.h. No daemon glue, no RPC.
-add_library(dinero_pool STATIC
-  src/pool/pool_db.cpp
-  src/pool/pool_manager.cpp
-  src/pool/payout_calculator.cpp
-)
-target_include_directories(dinero_pool PUBLIC
-  ${CMAKE_SOURCE_DIR}/include
-  ${CMAKE_SOURCE_DIR}/src
-)
-target_link_libraries(dinero_pool PUBLIC
-  dinero_consensus   # consensus/subsidy.h
-  dinero_chainstate  # storage/chain_db.h
-)
+# Bridge and mining-pool support target wiring lives with the source dirs.
+include(src/network/CMakeLists.txt)
+include(src/pool/CMakeLists.txt)
 
 # Live P2P/network source list consumed by dinero_core.
 include(src/p2p/CMakeLists.txt)
