@@ -27,8 +27,8 @@ target_link_libraries(test_utreexo_proof_generation PRIVATE
     dinero_consensus
     dinero_tx_primitives
     dinero_crypto
-    $<TARGET_FILE:gtest>
-    $<TARGET_FILE:gtest_main>
+    GTest::gtest
+    GTest::gtest_main
 )
 
 if(APPLE)
@@ -69,8 +69,8 @@ target_link_libraries(test_utreexo_forest_mutation PRIVATE
     dinero_consensus
     dinero_tx_primitives
     dinero_crypto
-    $<TARGET_FILE:gtest>
-    $<TARGET_FILE:gtest_main>
+    GTest::gtest
+    GTest::gtest_main
 )
 
 if(APPLE)
@@ -113,8 +113,8 @@ target_link_libraries(test_utreexo_spend_path_validation PRIVATE
     dinero_consensus
     dinero_tx_primitives
     dinero_crypto
-    $<TARGET_FILE:gtest>
-    $<TARGET_FILE:gtest_main>
+    GTest::gtest
+    GTest::gtest_main
 )
 
 if(APPLE)
@@ -155,8 +155,8 @@ target_link_libraries(test_utreexo_fork_point_root PRIVATE
     dinero_consensus
     dinero_tx_primitives
     dinero_crypto
-    $<TARGET_FILE:gtest>
-    $<TARGET_FILE:gtest_main>
+    GTest::gtest
+    GTest::gtest_main
 )
 
 if(APPLE)
