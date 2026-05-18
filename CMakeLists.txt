@@ -794,6 +794,12 @@ set(DINERO_CORE_ENCODING_SOURCES
   src/wallet/p2mr_address.cpp
 )
 
+set(DINERO_CORE_MINING_TEMPLATE_SUPPORT_SOURCES
+  src/mining/block_assembly_context.cpp
+  src/mining/transaction_scorer.cpp
+  src/mining/template_delta_tracker.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -832,10 +838,8 @@ add_library(dinero_core STATIC
 
   # Mining subsystem (Phase C - core logic)
   src/mining/block_assembler.cpp
-  src/mining/block_assembly_context.cpp  # Phase W.1: Network-aware assembly context
-  src/mining/transaction_scorer.cpp  # Phase W.1: Intelligent transaction scoring
+  ${DINERO_CORE_MINING_TEMPLATE_SUPPORT_SOURCES}
   src/mining/ct_selection_policy.cpp  # CT-specific transaction selection policies
-  src/mining/template_delta_tracker.cpp  # Phase W.1: Incremental template refresh
   src/mining/tx_inclusion_analyzer.cpp  # Phase W.4.1: Transaction inclusion analysis (read-only)
   src/mining/mining_manager_v2.cpp
   # src/mining/mining_manager.cpp  # Phase C: Replaced by mining_manager_v2.cpp (ODR violation fix)
