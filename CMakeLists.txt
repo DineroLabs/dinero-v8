@@ -759,6 +759,11 @@ set(DINERO_CORE_PRIVACY_SOURCES
   src/core/privacy/silent_scanner.cpp
 )
 
+set(DINERO_CORE_DATABASE_SOURCES
+  src/database/sqlite_manager.cpp
+  src/daemon/db_meta_utils.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -886,8 +891,7 @@ add_library(dinero_core STATIC
   src/rpc/rpc_registry.cpp
 
   # Database utilities
-  src/database/sqlite_manager.cpp
-  src/daemon/db_meta_utils.cpp
+  ${DINERO_CORE_DATABASE_SOURCES}
 
   # Validation
   src/daemon/block_acceptor.cpp
