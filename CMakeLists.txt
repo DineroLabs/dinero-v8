@@ -739,6 +739,10 @@ set(DINERO_CORE_STORAGE_GLUE_SOURCES
   src/storage/chainstate_metadata.cpp
 )
 
+set(DINERO_CORE_METRICS_SOURCES
+  src/metrics/metrics_registry.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -841,7 +845,7 @@ add_library(dinero_core STATIC
   src/util/ser.cpp  # Compact size varint serialization
 
   # Metrics
-  src/metrics/metrics_registry.cpp
+  ${DINERO_CORE_METRICS_SOURCES}
 
   ${DINERO_CORE_P2P_SOURCES}
 
