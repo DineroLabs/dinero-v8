@@ -345,6 +345,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_release_suite.sh)
   set_tests_properties(ReleaseSuite PROPERTIES
     LABELS "release;gate;meta"
     TIMEOUT 14400
+    ENVIRONMENT "BUILD_DIR=${CMAKE_BINARY_DIR}"
   )
 
   add_custom_target(test_release_suite
