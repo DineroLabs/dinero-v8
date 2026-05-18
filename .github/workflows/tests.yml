@@ -1,0 +1,112 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Test Workflow v2 — full build + ctest, Linux x86_64 only
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Purpose:
+#   CI stays fast and checks the daemon build/link/smoke path.
+#   This workflow is the deeper signal: build the full default target graph
+#   and run ctest so source drops, test regressions, and non-daemon target
+#   failures are visible before load-bearing architecture work continues.
+#
+# Rollout:
+#   This workflow is intentionally not required at first. Let it soak on
+#   dinero-main, document each exclusion/failure, then promote it after the
+#   plan in docs/architecture/test-workflow-v2-plan.md is satisfied.
+#
+# ─────────────────────────────────────────────────────────────────────────
+
+name: Tests
+
+on:
+  push:
+    branches: [dinero-main]
+  pull_request:
+    branches: [dinero-main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux-full-build-ctest:
+    name: Linux x86_64 — full build + ctest
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            ccache \
+            pkg-config \
+            python3 \
+            perl \
+            libcurl4-openssl-dev \
+            libudev-dev \
+            libusb-1.0-0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.workflow }}-linux
+          max-size: 1G
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.3.2/prebuilt
+            depends/sources
+            depends/x86_64-pc-linux-gnu*
+            ~/.cargo/registry
+            ~/.cargo/git
+            third_party/bulletproofs_ffi/target
+            third_party/bulletproofs-ffi/target
+          key: vendored-tests-${{ runner.os }}-${{ hashFiles('depends/CMakeLists.txt', 'depends/packages/*.cmake', 'scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock', 'third_party/bulletproofs-ffi/Cargo.lock') }}
+          restore-keys: |
+            vendored-tests-${{ runner.os }}-
+            vendored-${{ runner.os }}-
+
+      - name: Build vendored OpenSSL
+        run: bash scripts/build-openssl-vendored.sh
+
+      - name: Build depends
+        run: |
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j
+
+      - name: CMake configure
+        run: |
+          cmake -S . -B build-tests \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Full default build
+        run: cmake --build build-tests -j
+
+      - name: Run ctest
+        run: |
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --exclude-regex 'test_csn_proof_refresh'
