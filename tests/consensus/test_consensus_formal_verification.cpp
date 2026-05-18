@@ -251,9 +251,9 @@ TEST_F(SupplyInvariantTest, PropertySupplyFormulaCorrectness_AllEpochs) {
         uint64_t epoch_rewards = blocks_in_epoch * subsidy;
         cumulative_supply += epoch_rewards;
 
-        // Get height at END of this epoch
-        // PoW starts at height 1, so end of epoch N = 1 + (N+1) * HALVING_INTERVAL
-        uint32_t height = 1 + ((epoch + 1) * HALVING_INTERVAL);
+        // Get height at END of this epoch.
+        // PoW starts at height 1, so epoch 0 spans heights 1..HALVING_INTERVAL.
+        uint32_t height = (epoch + 1) * HALVING_INTERVAL;
 
         // Get actual supply from consensus
         uint64_t actual_supply = ConsensusSubsidy::GetTotalIssuedAtHeight(height);

@@ -68,8 +68,7 @@ cmake -S . -B build-tests \
 cmake --build build-tests -j$(nproc)
   ctest --test-dir build-tests \
   --output-on-failure \
-  --label-exclude 'integration|gate|release|canonicality|fuzz|packaging' \
-  --exclude-regex 'ConsensusFormalVerification'
+  --label-exclude 'integration|gate|release|canonicality|fuzz|packaging'
 ```
 
 ## Known-Broken Exclusion Policy
@@ -90,11 +89,9 @@ Excluded labels:
 | `fuzz` | Fuzzer-style tests are not suitable for the first required-style subset | Move to a dedicated fuzz/nightly plan or make deterministic. |
 | `packaging` | Packaging tests are outside the first Linux full-build subset | Add package workflow coverage separately. |
 
-Excluded test names:
+Excluded test names: none. All formerly exact-name-quarantined tests have
+graduated to the active Test Workflow v2 subset.
 
-| Test | Status | Required follow-up |
-| --- | --- | --- |
-| `ConsensusFormalVerification` | Deterministic supply-formula mismatch surfaced by first full `ctest` pass | Fix the formula or test vector, then re-enable. |
 This map marks the current quarantine boundary. It should shrink over time; it
 should not grow without the same level of evidence.
 
@@ -123,6 +120,9 @@ exact-name quarantines:
 - `WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata`
   by recording wallet-affecting self-spend/change history when a confirmed
   block scan has no pre-existing send row to confirm.
+- `ConsensusFormalVerification` by correcting the stale end-of-epoch supply
+  formula check to use the last block of the epoch, not the first block of the
+  next epoch.
 
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`

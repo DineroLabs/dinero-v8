@@ -28,7 +28,7 @@ that build was:
 
 | Test | Current status | Original purpose | Still relevant | Replacement coverage | Action |
 | --- | --- | --- | --- | --- | --- |
-| `ConsensusFormalVerification` | Fails locally. `SupplyInvariantTest.PropertySupplyFormulaCorrectness_AllEpochs` reports a supply formula mismatch at end of epoch 0. | Ring 1 property tests for consensus-critical supply, UTXO, and chain-selection invariants. | Yes. This is consensus safety coverage, not obsolete. | Partial: lower-level subsidy/supply tests exist, but this property suite is the broad invariant gate. | Keep quarantined. Fix the formula/test-vector disagreement in a dedicated consensus test PR, then re-enable. |
+| ~~`ConsensusFormalVerification`~~ | **RESOLVED 2026-05-18.** Root cause was a stale end-of-epoch test vector: epoch 0 starts at height 1 and spans heights `1..HALVING_INTERVAL`, but `PropertySupplyFormulaCorrectness_AllEpochs` checked height `1 + HALVING_INTERVAL`, which is the first block of epoch 1 and legitimately includes one extra 50 DIN subsidy. The test now checks `(epoch + 1) * HALVING_INTERVAL`, the actual last block of each epoch. | Ring 1 property tests for consensus-critical supply, UTXO, and chain-selection invariants. | Yes. This is consensus safety coverage, not obsolete. | n/a (active). | **Re-enabled.** Test now gates the formal supply, UTXO, and chain-selection invariant suite in Test Workflow v2. |
 | ~~`ShieldedDerivation`~~ | **RESOLVED 2026-05-18 via PR #55** (squash `81655449`). Root cause was a 4-byte uninitialized-stack read in `ChaCha20Diversifier` (passed 12-byte buffer to OpenSSL `EVP_chacha20()` which expects 16-byte IV with counter prefix). Mac happened to read zero bytes there (accidentally correct); Linux read non-zero garbage (divergent). Fix: explicit 16-byte IV with counter=0. Both platforms now produce identical output; pinned hex vectors unchanged. De-quarantined from `tests.yml` exclude regex in the same PR series. | Pins shielded key-derivation vectors for independent implementation parity. | Yes. | n/a (active). | **Re-enabled.** Test runs cleanly on both Mac and Linux CI. |
 | ~~`WalletDescriptorActiveContext`~~ | **RESOLVED 2026-05-18.** Test expectation was stale: pinned `1447h` (legacy coin type) when the canonical coin type for v7+ is `1448h` (per `src/wallet/*` + `src/daemon/*` derivation paths; the 1447 legacy scan path was removed entirely on 2026-04-18). Fix: updated both assertions to expect `1448h`. 16/16 assertions now pass on Mac + Linux. De-quarantined from `tests.yml` exclude regex in the same PR. The active-wallet-DB context check (the test's actual purpose) was always correct — only the coin-type pin was wrong. | Ensures descriptor RPC reads from the active wallet DB instead of leaking default-wallet descriptors. | Yes. | n/a (active). | **Re-enabled.** Test runs cleanly on both platforms. |
 | ~~`ArchivalBlockReader`~~ | **RESOLVED 2026-05-18.** Root cause was stale fixture data in `Reindexer_UsesFlatfilesWithoutShadowBodyWrites`: the synthetic height-1 block used a zero `utreexo_root`, but the real reindexer correctly verifies the post-block forest commitment. The fixture now computes the expected root with `HashUTXO` + `UtreexoForest`, and the test is removed from `tests.yml`'s exact-name quarantine. | Ensures archival reads prefer flatfiles from genesis through tip and do not resurrect legacy ChainDB shadow-body writes during reindex. | Yes. | n/a (active). | **Re-enabled.** Test is fixture-correct and runs in Test Workflow v2. |
@@ -72,8 +72,10 @@ Result: both passed
 
 ## Recommended Next PRs
 
-1. Repair `ConsensusFormalVerification` as a consensus-test-vector/formula PR.
+No exact-name quarantines remain. Future work should classify and shrink the
+remaining label-based quarantines (`integration`, `gate`, `release`,
+`canonicality`, `fuzz`, `packaging`) one category at a time.
 
-Deletion is not recommended for any remaining exact-name quarantined test.
+Deletion is not recommended for any formerly exact-name quarantined test.
 The only retired entry so far was the stale, ineffective
 `test_csn_proof_refresh` exclusion.
