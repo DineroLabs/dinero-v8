@@ -140,6 +140,12 @@ The second label split graduated all three former `packaging` tests into
 `DineroPrepareUpgrade`. The broad `packaging` label is no longer part of the
 Test Workflow v2 exclusion regex.
 
+The third label split graduated three RPC-adjacent integration smoke tests into
+`rpc-smoke`: `AddressIndexCrossHRP`,
+`WalletListUnspentExcludesMempoolSpent`, and `WsCookiePathResolution`. Focused
+local validation passed three consecutive runs. The two shell-backed tests now
+receive CTest's build-local `dinerod` path instead of assuming `build/dinerod`.
+
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
 binary, required scripts, and `ctest` availability without running the heavy

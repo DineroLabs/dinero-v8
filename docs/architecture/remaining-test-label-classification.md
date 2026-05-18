@@ -1,7 +1,7 @@
 # Remaining Test Label Classification
 
-Generated from `origin/dinero-main` at `25e6f55d` after PR #65.
-Updated after PR #68 to reflect the packaging smoke graduation.
+Originally generated from `origin/dinero-main` at `25e6f55d` after PR #65.
+Updated after PR #69 to reflect the packaging and RPC smoke graduations.
 
 This document classifies the remaining label-based exclusions in
 `.github/workflows/tests.yml`:
@@ -9,7 +9,7 @@ This document classifies the remaining label-based exclusions in
 ```bash
 ctest --test-dir build-tests \
   --output-on-failure \
-  --label-exclude 'integration|gate|release|canonicality|fuzz|packaging'
+  --label-exclude 'integration|gate|release|canonicality|fuzz'
 ```
 
 The exact-name quarantine is gone. The remaining work is label taxonomy:
@@ -30,8 +30,8 @@ Current inventory:
 | Metric | Count |
 | --- | ---: |
 | Registered CTest tests | 377 |
-| Selected by current Test Workflow v2 label filter | 290 |
-| Excluded by at least one remaining label | 87 |
+| Selected by current Test Workflow v2 label filter | 293 |
+| Excluded by at least one remaining label | 84 |
 
 Per-label counts below are label memberships, not disjoint sets. Several tests
 carry more than one excluded label, for example `AcceptanceParity` is both
@@ -41,7 +41,7 @@ carry more than one excluded label, for example `AcceptanceParity` is both
 | --- | ---: | --- | --- |
 | `canonicality` | 26 | Mixed correctness signal. Contains stale shielded helper-binary tests and heavier restart/reindex/reorg equivalence tests. | Continue splitting deliberately; keep restart/reindex cohorts quarantined until harness ownership is clear. |
 | `packaging` | 0 | Retired from the current label quarantine. The three former members graduated into active `packaging-smoke` coverage. | Keep future package-build or distro-output tests under a different label such as `packaging-gate` or a dedicated packaging workflow. |
-| `integration` | 79 | Broad runtime harness surface. Contains daemon, wallet, RPC, P2P, Utreexo, CSN, reindex, shielded, mining, and restart tests. | Do not graduate as one label. Split by subsystem and fixture needs. |
+| `integration` | 76 | Broad runtime harness surface. Contains daemon, wallet, RPC, P2P, Utreexo, CSN, reindex, shielded, mining, and restart tests. | Do not graduate as one label. Split by subsystem and fixture needs. |
 | `release` | 3 | Release-readiness ownership. | Keep full release gates out of normal PR CI; preserve or create smoke equivalents where useful. |
 | `gate` | 4 | Readiness/blocking gates. | Classify each gate individually as PR-safe, nightly, release-only, or manual. |
 | `fuzz` | 2 | Fuzzer-style coverage. | Move to dedicated fuzz/nightly workflow rather than normal PR `ctest`. |
@@ -143,7 +143,6 @@ Tests:
 
 ```text
 AddressBalanceMempoolOverlay
-AddressIndexCrossHRP
 AddressParentChildMempoolLifecycle
 BridgeCsnHistoricalRangeSoak
 BridgeCsnHistoricalSpendRelay
@@ -218,9 +217,7 @@ UnifiedBatchAtomicity
 UnifiedBatchAtomicity_AtomicPersistOn
 UtreexoMempoolCanonicalSeparation
 WalletCreateRawTransactionScriptPubKeyOutputs
-WalletListUnspentExcludesMempoolSpent
 Wallet_W2_6_SyncIntegration
-WsCookiePathResolution
 ```
 
 Read:
@@ -235,7 +232,7 @@ Recommended sub-buckets:
 
 | Sub-bucket | Examples | Recommended owner |
 | --- | --- | --- |
-| Address/RPC/wallet smoke | `AddressIndexCrossHRP`, `WalletListUnspentExcludesMempoolSpent`, `WsCookiePathResolution` | Candidate PR-CI smoke group after focused runs. |
+| Address/RPC/wallet smoke | `AddressIndexCrossHRP`, `WalletListUnspentExcludesMempoolSpent`, `WsCookiePathResolution` | Graduated in PR #69 as active `rpc-smoke` coverage after three focused local runs. |
 | P2P/network runtime | `CompactBlockRelayE2E`, `ParallelBlockDownloadTargeted`, `LaggingPeerCatchupNoOrphans` | Nightly or dedicated network harness first. |
 | CSN/Utreexo bridge | `BridgeCsnHistoricalSpendRelay`, `CsnBridgeAssistedSpendFlow`, `CsnSyncLiveSpendTraffic` | Dedicated Utreexo/CSN workflow; some may need external or long-running fixtures. |
 | Canonical restart/reindex | `ConnectTipRestartEquivalence`, `ReindexPromotionRestartEquivalence`, `UnifiedBatchAtomicity` | Keep with canonicality plan. |
@@ -301,8 +298,11 @@ Recommended next action:
 2. PR #68: graduated all three former `packaging` tests into
    `packaging-smoke` and removed `packaging` from the active workflow exclusion
    list.
-3. PR #69: split address/RPC/wallet integration smoke candidates from the broad
-   `integration` label.
+3. PR #69: graduated `AddressIndexCrossHRP`,
+   `WalletListUnspentExcludesMempoolSpent`, and `WsCookiePathResolution` from
+   the broad `integration` label into active `rpc-smoke` coverage. The two
+   shell tests now receive CTest's build-local `dinerod` path instead of
+   assuming `build/dinerod`.
 4. Later: design dedicated lanes for P2P/network, CSN/Utreexo, shielded E2E,
    release gates, and fuzz.
 
