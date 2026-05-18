@@ -1,3 +1,30 @@
+dinero-core (8.0.0~rc7-1) unstable; urgency=medium
+
+  * RC7: P2P port-mapping no longer freezes daemon startup.
+    - PortMappingSession::Start (miniupnpc SSDP/IGD + libnatpmp probes)
+      is now dispatched on a dedicated worker thread by P2PService.
+      Previously it ran synchronously on the daemon init thread; on
+      routers that responded to SSDP but stalled on SOAP this could
+      block the daemon (and dinero-qt's bundled-daemon launch) for
+      tens of seconds with no log output. Init now flows through
+      Mining/Metrics/RPC immediately; the portmap result lands later
+      in NetworkStatus.port_mapping_*.
+    - Bounded discovery deadline. New knob
+      `p2p.portmap_discovery_timeout=<seconds>` (default 45, minimum
+      5) caps how long the worker is allowed to run. should_abort
+      probes between each blocking phase (SSDP, IGD lookup, AddPortMapping,
+      every NAT-PMP request/response) plus a post-Start backstop drop
+      any router mapping that completed after the deadline. Outbound
+      P2P is unaffected when the deadline trips.
+    - Shutdown is bounded: StopPortMapping signals cancel and joins
+      the worker, capped by miniupnpc's own per-syscall timeout.
+  * Packaged-service contract unchanged: dinerod + dinero-cli only,
+    no Qt, no GPU mining, no gRPC, no hardware-wallet HID. Operators
+    who want the GUI install dinero-qt-desktop separately (see the
+    v8.0.0-rc7 GitHub release).
+
+ -- Trucker2827 <trucker2827@gmail.com>  Mon, 18 May 2026 18:00:00 +0000
+
 dinero-core (8.0.0~rc6-1) unstable; urgency=medium
 
   * RC6 rebuild from a03ecd8c. First release where the daemon actually
