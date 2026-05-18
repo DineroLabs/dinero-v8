@@ -129,7 +129,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_ws_cookie_path_resolution.cpp)
 
     add_test(NAME WsCookiePathResolution COMMAND test_ws_cookie_path_resolution)
     set_tests_properties(WsCookiePathResolution PROPERTIES
-        LABELS "integration;rpc;websocket;auth"
+        LABELS "rpc-smoke;rpc;websocket;auth"
         TIMEOUT 30
     )
     message(STATUS "  ✓ WsCookiePathResolution registered")
@@ -462,10 +462,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_address_index_cross_hrp.sh)
     add_test(
         NAME AddressIndexCrossHRP
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_address_index_cross_hrp.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_address_index_cross_hrp.sh
     )
     set_tests_properties(AddressIndexCrossHRP PROPERTIES
-        LABELS "integration;rpc;wallet;address-index;bech32"
+        LABELS "rpc-smoke;rpc;wallet;address-index;bech32"
         TIMEOUT 180
     )
     message(STATUS "  ✓ AddressIndexCrossHRP registered")
@@ -534,10 +536,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_listunspent_excludes_mempool_spent.sh)
     add_test(
         NAME WalletListUnspentExcludesMempoolSpent
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_listunspent_excludes_mempool_spent.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_listunspent_excludes_mempool_spent.sh
     )
     set_tests_properties(WalletListUnspentExcludesMempoolSpent PROPERTIES
-        LABELS "integration;wallet;mempool;rawtx;listunspent"
+        LABELS "rpc-smoke;rpc;wallet;mempool;rawtx;listunspent"
         TIMEOUT 180
     )
     message(STATUS "  ✓ WalletListUnspentExcludesMempoolSpent registered")

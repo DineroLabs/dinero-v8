@@ -12,17 +12,17 @@ Local evidence used:
 - Focused local runs against `build-cmake-tests` with `--timeout 60`.
 - CMake registration comments and test-file headers.
 
-The local build reported `368` registered tests. Label-quarantined inventory in
-that build was:
+The current label-quarantined inventory after the packaging and RPC smoke
+graduations is:
 
 | Label | Local count | Classification |
 | --- | ---: | --- |
-| `integration` | 79 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
+| `integration` | 76 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
 | `gate` | 4 | Release/readiness gates; heavy or policy-oriented, not normal PR-CI by default. |
 | `release` | 3 | Release ownership; keep full gates manual or release-blocking unless split into smoke checks. |
-| `canonicality` | 30 before the first split | Too broad as a single quarantine; contains tests that already pass and tests that need deeper repair. |
+| `canonicality` | 26 | Too broad as a single quarantine; contains tests that already pass and tests that need deeper repair. |
 | `fuzz` | 2 | Move to dedicated fuzz/nightly ownership; do not fold into normal PR CI. |
-| `packaging` | 3 | Move to packaging workflow ownership. |
+| `packaging` | 0 | Retired from the current quarantine; former members are active `packaging-smoke` tests. |
 
 ## Exact-Name Quarantine
 
@@ -89,6 +89,11 @@ because their `tools/pq_bench` helper binaries need API repair first.
 The second label-level graduation moved `CmakeInstallLayout`, `DineroBackup`,
 and `DineroPrepareUpgrade` into active `packaging-smoke` coverage and removed
 the broad `packaging` label from the Test Workflow v2 exclusion regex.
+
+The third label-level graduation moved `AddressIndexCrossHRP`,
+`WalletListUnspentExcludesMempoolSpent`, and `WsCookiePathResolution` into
+active `rpc-smoke` coverage. The two shell-backed tests also now receive the
+CTest build-local `dinerod` path instead of assuming `build/dinerod`.
 
 Deletion is not recommended for any formerly exact-name quarantined test.
 The only retired entry so far was the stale, ineffective
