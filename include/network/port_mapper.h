@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace dinero::network {
@@ -18,6 +19,13 @@ struct PortMappingConfig {
     uint16_t external_port{0};
     int lifetime_seconds{7200};
     std::string description{"Dinero P2P"};
+    // Optional caller-provided cancellation/deadline probe. Checked between
+    // blocking phases (SSDP discovery, IGD SOAP, AddPortMapping; NAT-PMP
+    // request/response). A truly-hung router still can't be interrupted
+    // mid-syscall, but we'll exit cleanly between phases instead of looping
+    // forever in ReadNatPmpResponse or re-entering NAT-PMP after a stalled
+    // UPnP attempt.
+    std::function<bool()> should_abort{};
 
     bool enabled() const {
         return mode != PortMappingMode::Disabled && internal_port != 0 && external_port != 0;

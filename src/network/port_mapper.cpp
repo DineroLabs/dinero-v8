@@ -46,9 +46,15 @@ std::string InAddrToString(const in_addr& addr) {
     return std::string(buffer);
 }
 
-int ReadNatPmpResponse(natpmp_t* natpmp, natpmpresp_t* response) {
+int ReadNatPmpResponse(natpmp_t* natpmp,
+                       natpmpresp_t* response,
+                       const std::function<bool()>& should_abort) {
     int rc = NATPMP_TRYAGAIN;
     while (rc == NATPMP_TRYAGAIN) {
+        if (should_abort && should_abort()) {
+            return NATPMP_ERR_RECVFROM;
+        }
+
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(natpmp->s, &fds);
@@ -62,6 +68,10 @@ int ReadNatPmpResponse(natpmp_t* natpmp, natpmpresp_t* response) {
     return rc;
 }
 #endif
+
+bool AbortRequested(const PortMappingConfig& config) {
+    return static_cast<bool>(config.should_abort) && config.should_abort();
+}
 
 }  // namespace
 
@@ -129,6 +139,16 @@ PortMappingResult PortMappingSession::Start(const PortMappingConfig& config) {
         }
     }
 
+    // Skip the NAT-PMP fallback if the caller already wants us to stop —
+    // typical when an Auto run burned the entire discovery deadline on a
+    // stalled UPnP IGD.
+    if (AbortRequested(config)) {
+        if (result.message.empty()) {
+            result.message = "aborted by caller before NAT-PMP fallback";
+        }
+        return result;
+    }
+
     if (config.mode == PortMappingMode::NatPmp || config.mode == PortMappingMode::Auto) {
         if (TryNatPmp(config, &result)) {
             active_ = true;
@@ -176,6 +196,14 @@ bool PortMappingSession::TryUpnp(const PortMappingConfig& config, PortMappingRes
         return false;
     }
 
+    if (AbortRequested(config)) {
+        freeUPNPDevlist(devices);
+        if (result) {
+            result->message = "UPnP discovery aborted after SSDP";
+        }
+        return false;
+    }
+
     UPNPUrls urls;
     IGDdatas data;
     char lan_address[64] = {0};
@@ -198,6 +226,15 @@ bool PortMappingSession::TryUpnp(const PortMappingConfig& config, PortMappingRes
         freeUPNPDevlist(devices);
         if (result) {
             result->message = "UPnP router found no valid IGD";
+        }
+        return false;
+    }
+
+    if (AbortRequested(config)) {
+        FreeUPNPUrls(&urls);
+        freeUPNPDevlist(devices);
+        if (result) {
+            result->message = "UPnP discovery aborted after IGD lookup";
         }
         return false;
     }
@@ -254,14 +291,30 @@ bool PortMappingSession::TryNatPmp(const PortMappingConfig& config, PortMappingR
         return false;
     }
 
+    if (AbortRequested(config)) {
+        closenatpmp(&natpmp);
+        if (result) {
+            result->message = "NAT-PMP aborted before public address probe";
+        }
+        return false;
+    }
+
     std::string public_address;
     if (sendpublicaddressrequest(&natpmp) == 0) {
         natpmpresp_t public_response;
         std::memset(&public_response, 0, sizeof(public_response));
-        const int public_rc = ReadNatPmpResponse(&natpmp, &public_response);
+        const int public_rc = ReadNatPmpResponse(&natpmp, &public_response, config.should_abort);
         if (public_rc >= 0 && public_response.type == NATPMP_RESPTYPE_PUBLICADDRESS) {
             public_address = InAddrToString(public_response.pnu.publicaddress.addr);
         }
+    }
+
+    if (AbortRequested(config)) {
+        closenatpmp(&natpmp);
+        if (result) {
+            result->message = "NAT-PMP aborted before mapping request";
+        }
+        return false;
     }
 
     if (sendnewportmappingrequest(&natpmp,
@@ -278,7 +331,7 @@ bool PortMappingSession::TryNatPmp(const PortMappingConfig& config, PortMappingR
 
     natpmpresp_t response;
     std::memset(&response, 0, sizeof(response));
-    const int rc = ReadNatPmpResponse(&natpmp, &response);
+    const int rc = ReadNatPmpResponse(&natpmp, &response, config.should_abort);
     closenatpmp(&natpmp);
 
     if (rc < 0 || response.type != NATPMP_RESPTYPE_TCPPORTMAPPING) {
@@ -365,7 +418,7 @@ void PortMappingSession::StopNatPmp() {
                                   0) == 0) {
         natpmpresp_t response;
         std::memset(&response, 0, sizeof(response));
-        ReadNatPmpResponse(&natpmp, &response);
+        ReadNatPmpResponse(&natpmp, &response, {});
     }
     closenatpmp(&natpmp);
 #endif

@@ -228,6 +228,12 @@ private:
     std::string port_mapping_external_address_;
     uint16_t port_mapping_external_port_{0};
     std::string port_mapping_message_{"not requested"};
+    // Port-mapping discovery (UPnP SSDP + IGD SOAP, NAT-PMP) is synchronous
+    // and can stall for tens of seconds on routers that respond to SSDP but
+    // hang on SOAP. Running it on P2PService::Start() froze dinero-qt at
+    // launch. Move the discovery off the init thread; StopPortMapping joins.
+    std::thread port_mapping_worker_;
+    std::atomic<bool> port_mapping_cancel_{false};
 
     // Periodic sync loop for headers-first + block scheduler in P2PService mode.
     std::atomic<bool> scheduler_tick_running_{false};

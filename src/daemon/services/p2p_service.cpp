@@ -484,68 +484,147 @@ void P2PService::StartPortMappingIfEnabled() {
     portmap_config.external_port = static_cast<uint16_t>(
         config_->GetInt("p2p.external_port", portmap_config.internal_port));
     portmap_config.lifetime_seconds = config_->GetInt("p2p.portmap_lifetime", 7200);
+    const int discovery_timeout_seconds = std::max(
+        5, config_->GetInt("p2p.portmap_discovery_timeout", 45));
     {
         std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
         port_mapping_external_port_ = portmap_config.external_port;
+        port_mapping_message_ = "discovering (background)";
     }
 
-    port_mapping_ = std::make_unique<network::PortMappingSession>();
-    const auto result = port_mapping_->Start(portmap_config);
-    if (result.success) {
-        {
-            std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
-            port_mapping_active_ = true;
-            port_mapping_protocol_ = result.protocol;
-            port_mapping_external_address_ = result.external_address;
-            port_mapping_message_ = result.message;
+    // Defensive: if a prior worker is still around (e.g. Start was somehow
+    // re-entered), join it before launching another.
+    if (port_mapping_worker_.joinable()) {
+        port_mapping_cancel_.store(true);
+        port_mapping_worker_.join();
+    }
+    port_mapping_cancel_.store(false);
+
+    if (logger_interface_) {
+        logger_interface_->info("[P2PService] P2P port mapping discovery dispatched in background (" +
+                                network::PortMappingModeName(mode) + ", timeout " +
+                                std::to_string(discovery_timeout_seconds) + "s)");
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(discovery_timeout_seconds);
+    portmap_config.should_abort = [this, deadline]() {
+        return port_mapping_cancel_.load() ||
+               std::chrono::steady_clock::now() >= deadline;
+    };
+
+    port_mapping_worker_ = std::thread([this, portmap_config, mode, deadline,
+                                        discovery_timeout_seconds]() {
+        // Run the slow miniupnpc / libnatpmp discovery off the daemon
+        // init thread. The session is local to this thread until either
+        // it's handed off (success) or torn down (failure / cancel).
+        auto session = std::make_unique<network::PortMappingSession>();
+        const auto result = session->Start(portmap_config);
+
+        if (port_mapping_cancel_.load()) {
+            // Shutdown raced ahead; release any mapping the router accepted
+            // and exit without publishing.
+            session->Stop();
+            return;
         }
-        if (!result.external_address.empty()) {
+
+        // Deadline hit while session->Start was inside a blocking syscall.
+        // Don't publish a router mapping the user already gave up on — drop
+        // it and surface the timeout in the status.
+        if (std::chrono::steady_clock::now() >= deadline) {
+            session->Stop();
+            {
+                std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+                port_mapping_active_ = false;
+                port_mapping_protocol_.clear();
+                port_mapping_external_address_.clear();
+                port_mapping_message_ = "discovery timed out after " +
+                                        std::to_string(discovery_timeout_seconds) + "s";
+            }
+            if (logger_interface_) {
+                logger_interface_->warning("[P2PService] P2P port mapping discovery timed out after " +
+                                           std::to_string(discovery_timeout_seconds) +
+                                           "s (" + network::PortMappingModeName(mode) +
+                                           "); outbound P2P still works");
+            }
+            return;
+        }
+
+        if (result.success) {
             std::string advertise_host;
             uint16_t advertise_port = 0;
-            if (ParseEndpoint(result.external_address,
+            const bool have_advertise =
+                !result.external_address.empty() &&
+                ParseEndpoint(result.external_address,
                               portmap_config.external_port,
                               &advertise_host,
-                              &advertise_port)) {
+                              &advertise_port);
+            {
+                std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+                port_mapping_ = std::move(session);
+                port_mapping_active_ = true;
+                port_mapping_protocol_ = result.protocol;
+                port_mapping_external_address_ = result.external_address;
+                port_mapping_message_ = result.message;
+            }
+            if (have_advertise && p2p_mgr_) {
                 p2p_mgr_->add_advertised_address(advertise_host, advertise_port);
                 if (logger_interface_) {
                     logger_interface_->info("[P2PService] Advertising port-mapped address: " +
                                             advertise_host + ":" + std::to_string(advertise_port));
                 }
-            } else if (logger_interface_) {
+            } else if (!result.external_address.empty() && logger_interface_) {
                 logger_interface_->warning("[P2PService] Port mapping succeeded but no public address was available for addr relay: " +
                                            result.external_address);
             }
+            if (logger_interface_) {
+                logger_interface_->info("[P2PService] P2P port mapped via " + result.protocol +
+                                        ": " + result.message +
+                                        (result.external_address.empty() ? "" : " (" + result.external_address + ")"));
+            }
+        } else {
+            {
+                std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+                port_mapping_active_ = false;
+                port_mapping_protocol_.clear();
+                port_mapping_external_address_.clear();
+                port_mapping_message_ = result.message.empty() ? "unavailable" : result.message;
+            }
+            if (logger_interface_) {
+                logger_interface_->warning("[P2PService] P2P port mapping unavailable (" +
+                                           network::PortMappingModeName(mode) + "): " + result.message +
+                                           "; outbound P2P still works");
+            }
+            // session destructs here; PortMappingSession::~Stop releases any
+            // partial state.
         }
-        if (logger_interface_) {
-            logger_interface_->info("[P2PService] P2P port mapped via " + result.protocol +
-                                    ": " + result.message +
-                                    (result.external_address.empty() ? "" : " (" + result.external_address + ")"));
-        }
-    } else {
-        port_mapping_.reset();
-        {
-            std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
-            port_mapping_active_ = false;
-            port_mapping_protocol_.clear();
-            port_mapping_external_address_.clear();
-            port_mapping_message_ = result.message.empty() ? "unavailable" : result.message;
-        }
-        if (logger_interface_) {
-            logger_interface_->warning("[P2PService] P2P port mapping unavailable (" +
-                                       network::PortMappingModeName(mode) + "): " + result.message +
-                                       "; outbound P2P still works");
-        }
-    }
+    });
 }
 
 void P2PService::StopPortMapping() {
-    if (port_mapping_) {
-        if (logger_interface_ && port_mapping_->active()) {
+    // Signal cancel first so a worker that's mid-discovery exits without
+    // publishing or holding a stale router mapping. Then join: the worker
+    // is bounded by the underlying miniupnpc / libnatpmp call timing out
+    // (a few seconds in the worst case). We intentionally block shutdown
+    // here rather than detach so the captured `this` stays valid.
+    port_mapping_cancel_.store(true);
+    if (port_mapping_worker_.joinable()) {
+        port_mapping_worker_.join();
+    }
+    port_mapping_cancel_.store(false);
+
+    std::unique_ptr<network::PortMappingSession> to_stop;
+    {
+        std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
+        to_stop = std::move(port_mapping_);
+    }
+    if (to_stop) {
+        if (logger_interface_ && to_stop->active()) {
             logger_interface_->info("[P2PService] Removing P2P port mapping via " +
-                                    port_mapping_->protocol());
+                                    to_stop->protocol());
         }
-        port_mapping_->Stop();
-        port_mapping_.reset();
+        to_stop->Stop();
+        to_stop.reset();
     }
     {
         std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
