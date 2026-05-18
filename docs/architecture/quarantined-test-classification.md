@@ -76,6 +76,10 @@ No exact-name quarantines remain. Future work should classify and shrink the
 remaining label-based quarantines (`integration`, `gate`, `release`,
 `canonicality`, `fuzz`, `packaging`) one category at a time.
 
+Current label-level inventory lives in
+`docs/architecture/remaining-test-label-classification.md`. Use that document
+as the starting point for the next graduation PRs.
+
 Deletion is not recommended for any formerly exact-name quarantined test.
 The only retired entry so far was the stale, ineffective
 `test_csn_proof_refresh` exclusion.

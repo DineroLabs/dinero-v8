@@ -124,6 +124,10 @@ exact-name quarantines:
   formula check to use the last block of the epoch, not the first block of the
   next epoch.
 
+See `docs/architecture/remaining-test-label-classification.md` for the current
+label-only quarantine map after the exact-name list reached zero. That map is
+the handoff point from named-test repair to label taxonomy.
+
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
 binary, required scripts, and `ctest` availability without running the heavy
