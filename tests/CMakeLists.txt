@@ -1065,8 +1065,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   )
   add_dependencies(test_shielded_validation gtest dinero_shielded)
   target_link_libraries(test_shielded_validation PRIVATE
-    $<TARGET_FILE:gtest>
-    $<TARGET_FILE:gtest_main>
+    GTest::gtest
+    GTest::gtest_main
     dinero_shielded
     dinero_wallet  # shielded_derivation.cpp: EncryptNoteForRecipient + DeriveNoteSpendKey
     sqlite3
