@@ -552,24 +552,24 @@ bool StatelessNode::ValidateWithTransitionProof(
     }
 
     // 5. Advance stump from transition proof post-state.
-    //    Reconstruct intermediate stump from roots_after_deletions, apply additions.
-    //    Pure math — no forest mutation, no findLeafPosition, cannot diverge.
+    //    roots_after_deletions is already height-indexed, matching
+    //    UtreexoTransitionProof::verify(). Preserve those slots exactly; packing
+    //    them by the pre-deletion bit pattern loses roots when deletions empty or
+    //    reshape a tree.
     {
-        std::vector<std::optional<consensus::UtreexoHash>> indexed_roots;
-        uint64_t n = tp.num_leaves_before;
-        size_t idx = 0;
-        for (uint8_t h = 0; h < 64 && n > 0; ++h) {
-            if (n & 1) {
-                if (idx < tp.roots_after_deletions.size()) {
-                    if (indexed_roots.size() <= h) indexed_roots.resize(h + 1, std::nullopt);
-                    indexed_roots[h] = tp.roots_after_deletions[idx++];
-                }
-            }
-            n >>= 1;
-        }
-        auto stump_mid = consensus::UtreexoStump::fromRoots(indexed_roots, tp.num_leaves_before);
+        auto stump_mid = consensus::UtreexoStump::fromRoots(
+            tp.roots_after_deletions, tp.num_leaves_before);
         for (const auto& leaf : tp.addition_hashes) {
             stump_mid.addSingle(leaf);
+        }
+        const auto computed_commitment = stump_mid.getCommitment();
+        if (computed_commitment != tp.commitment_after) {
+            g_logger.error("[StatelessNode-TP] FAIL step 5: local stump root_after mismatch at height " +
+                          std::to_string(proof_msg.block_height) +
+                          ": stump=" + hashHex(computed_commitment) +
+                          " tp=" + hashHex(tp.commitment_after));
+            sync_stats_.proofs_failed++;
+            return false;
         }
         local_stump_ = std::move(stump_mid);
     }
