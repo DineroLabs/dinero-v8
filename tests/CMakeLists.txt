@@ -8933,6 +8933,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     WrongBip39PassphraseFailsCleanlyWithExpectedAddressGuard
     EncryptionRoundTripRestoreAndDerivationPersistence
     RestoreResetsLegacyEncryptionStateBeforeReEncrypt
+    ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata
   )
   foreach(_case IN LISTS _wmr_passing)
     add_test(
@@ -8962,28 +8963,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     TIMEOUT 300
   )
 
-  # Failing subcases — quarantined individually pending fix-or-delete
-  # decision. Each is excluded by name in .github/workflows/tests.yml
-  # so the active CI set graduates entries without waiting on the
-  # remaining broken ones. Remove a quarantine entry only after the
-  # corresponding subcase is fixed (or the subcase + this registration
-  # is deleted).
-  set(_wmr_failing
-    ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata
-  )
-  foreach(_case IN LISTS _wmr_failing)
-    add_test(
-      NAME WalletMainnetReadiness_${_case}
-      COMMAND test_wallet_mainnet_readiness --gtest_filter=WalletMainnetReadiness.${_case}
-    )
-    set_tests_properties(WalletMainnetReadiness_${_case} PROPERTIES
-      LABELS "wallet;mainnet;hardening;quarantined"
-      TIMEOUT 60
-    )
-  endforeach()
-  unset(_wmr_failing)
-
-  message(STATUS "  ✓ Wallet readiness tests registered: 8 active + 1 quarantined (was 1 bundled)")
+  message(STATUS "  ✓ Wallet readiness tests registered: 9 active + 0 quarantined (was 1 bundled)")
 else()
   message(STATUS "  ⚠ Wallet readiness test not found: tests/wallet/test_wallet_mainnet_readiness.cpp")
 endif()

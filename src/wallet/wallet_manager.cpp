@@ -7132,42 +7132,10 @@ void WalletManager::onBlockConnected(const Block& block, uint32_t height) {
         // Phase 35.1.1: Get real transaction ID (NOT placeholder)
         // Phase M.4.3-B Step 1: Unwrap TxId for string conversion
         std::string txid = tx.GetTxid().AsUint256().GetHex();
-        bool tx_spends_wallet_inputs = false;
         bool existing_history_confirmed = false;
 
         if (!is_coinbase && current_wallet_id_ != -1) {
             existing_history_confirmed = confirmTransaction(txid, height);
-
-            const bool utxos_has_wallet_id = columnExists(db_, "utxos", "wallet_id");
-            for (const auto& input : tx.vin) {
-                const std::string prev_txid = input.prevout.txid.AsUint256().GetHex();
-                const int prev_vout = static_cast<int>(input.prevout.vout);
-
-                sqlite3_stmt* mine_stmt = nullptr;
-                const char* mine_sql_with_wallet =
-                    "SELECT 1 FROM utxos WHERE wallet_id = ? AND txid = ? AND vout = ? LIMIT 1";
-                const char* mine_sql_no_wallet =
-                    "SELECT 1 FROM utxos WHERE txid = ? AND vout = ? LIMIT 1";
-
-                if (sqlite3_prepare_v2(db_, utxos_has_wallet_id ? mine_sql_with_wallet : mine_sql_no_wallet,
-                                       -1, &mine_stmt, nullptr) != SQLITE_OK) {
-                    continue;
-                }
-
-                int bind_index = 1;
-                if (utxos_has_wallet_id) {
-                    sqlite3_bind_int(mine_stmt, bind_index++, current_wallet_id_);
-                }
-                sqlite3_bind_text(mine_stmt, bind_index++, prev_txid.c_str(), -1, SQLITE_STATIC);
-                sqlite3_bind_int(mine_stmt, bind_index++, prev_vout);
-
-                if (sqlite3_step(mine_stmt) == SQLITE_ROW) {
-                    tx_spends_wallet_inputs = true;
-                    sqlite3_finalize(mine_stmt);
-                    break;
-                }
-                sqlite3_finalize(mine_stmt);
-            }
         }
 
         // Phase 35.1.1: Track if we found any outputs for this transaction
@@ -7236,7 +7204,7 @@ void WalletManager::onBlockConnected(const Block& block, uint32_t height) {
 
         // Phase 35.1.1: Record transaction in history if it affects wallet
         if (tx_affects_wallet) {
-            if ((tx_spends_wallet_inputs || existing_history_confirmed) && !is_coinbase) {
+            if (existing_history_confirmed && !is_coinbase) {
                 WLOG_INFO("WalletManager: confirmed existing send/self-spend history for tx " + txid);
             } else {
                 std::string category = is_coinbase ? "generate" : "receive";

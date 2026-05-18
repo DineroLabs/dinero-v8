@@ -69,7 +69,7 @@ cmake --build build-tests -j$(nproc)
   ctest --test-dir build-tests \
   --output-on-failure \
   --label-exclude 'integration|gate|release|canonicality|fuzz|packaging' \
-  --exclude-regex 'ConsensusFormalVerification|WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata'
+  --exclude-regex 'ConsensusFormalVerification'
 ```
 
 ## Known-Broken Exclusion Policy
@@ -95,8 +95,6 @@ Excluded test names:
 | Test | Status | Required follow-up |
 | --- | --- | --- |
 | `ConsensusFormalVerification` | Deterministic supply-formula mismatch surfaced by first full `ctest` pass | Fix the formula or test vector, then re-enable. |
-| `WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata` | Self-spend-with-change reorg unwind does not restore spent state / height metadata on Mac + Linux | Fix wallet UTXO reorg bookkeeping, then re-enable. |
-
 This map marks the current quarantine boundary. It should shrink over time; it
 should not grow without the same level of evidence.
 
@@ -122,6 +120,9 @@ exact-name quarantines:
 - `WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt`
   by exercising the restore API's explicit `replace_existing` path for
   overwrite restore.
+- `WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata`
+  by recording wallet-affecting self-spend/change history when a confirmed
+  block scan has no pre-existing send row to confirm.
 
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
