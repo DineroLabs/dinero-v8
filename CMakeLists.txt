@@ -754,6 +754,11 @@ set(DINERO_CORE_ADDRESS_SOURCES
   src/address/addr_types.cpp
 )
 
+set(DINERO_CORE_PRIVACY_SOURCES
+  src/core/privacy/silent_scanner_manager.cpp
+  src/core/privacy/silent_scanner.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -890,8 +895,7 @@ add_library(dinero_core STATIC
   src/daemon/tx_relay_manager.cpp  # Phase G.3: Mempool relay
 
   # Privacy
-  src/core/privacy/silent_scanner_manager.cpp
-  src/core/privacy/silent_scanner.cpp
+  ${DINERO_CORE_PRIVACY_SOURCES}
 
   # Encoding/decoding
   src/daemon/bech32_decode.cpp
