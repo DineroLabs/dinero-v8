@@ -20,7 +20,7 @@ that build was:
 | `integration` | 79 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
 | `gate` | 4 | Release/readiness gates; heavy or policy-oriented, not normal PR-CI by default. |
 | `release` | 3 | Release ownership; keep full gates manual or release-blocking unless split into smoke checks. |
-| `canonicality` | 30 | Too broad as a single quarantine; contains tests that already pass and tests that need deeper repair. |
+| `canonicality` | 30 before the first split | Too broad as a single quarantine; contains tests that already pass and tests that need deeper repair. |
 | `fuzz` | 2 | Move to dedicated fuzz/nightly ownership; do not fold into normal PR CI. |
 | `packaging` | 3 | Move to packaging workflow ownership. |
 
@@ -29,7 +29,7 @@ that build was:
 | Test | Current status | Original purpose | Still relevant | Replacement coverage | Action |
 | --- | --- | --- | --- | --- | --- |
 | `ConsensusFormalVerification` | Fails locally. `SupplyInvariantTest.PropertySupplyFormulaCorrectness_AllEpochs` reports a supply formula mismatch at end of epoch 0. | Ring 1 property tests for consensus-critical supply, UTXO, and chain-selection invariants. | Yes. This is consensus safety coverage, not obsolete. | Partial: lower-level subsidy/supply tests exist, but this property suite is the broad invariant gate. | Keep quarantined. Fix the formula/test-vector disagreement in a dedicated consensus test PR, then re-enable. |
-| `ShieldedDerivation` | Passes locally in 0.01s, but remains excluded by exact name and by the broader `canonicality` label. | Pins shielded key-derivation vectors for independent implementation parity. | Yes. Vector coverage is valuable. | No complete replacement identified. | Candidate for re-enable after the `canonicality` label is split or narrowed. Do not delete. |
+| `ShieldedDerivation` | Fails on Linux CI. `ShieldedDerivationVectorFixture` reports four vector failures, despite passing locally on macOS. | Pins shielded key-derivation vectors for independent implementation parity. | Yes. Vector coverage is valuable. | No complete replacement identified. | Keep quarantined. Fix vectors or platform-dependent implementation expectations, then re-enable. Do not delete. |
 | `WalletDescriptorActiveContext` | Fails locally. Descriptor check expects canonical coin type `1447h`; current wallet output appears to use the newer wallet derivation policy. | Ensures descriptor RPC reads from the active wallet DB instead of leaking default-wallet descriptors. | Yes, but expectation may be stale. | No replacement identified for active-wallet descriptor isolation. | Keep quarantined. Decide the canonical coin-type policy first, then update the expectation or fix implementation. |
 | `ArchivalBlockReader` | Aborts locally during `Reindexer_UsesFlatfilesWithoutShadowBodyWrites`; reindex forest root mismatch at height 1. | Ensures archival reads prefer flatfiles and legacy ChainDB body fallback is explicit. | Yes. This protects storage/reindex behavior. | Partial storage tests exist, but not the same flatfile/fallback signal. | Keep quarantined. Treat as harness/runtime debt around reindex Utreexo roots, not obsolete test debt. |
 | `UtreexoE2ERelay` | Fails locally. CSN rejects a transaction spending a block-2 output due to local/proof root mismatch. | End-to-end Bridge to CSN block sync plus transaction proof relay. | Yes. This is Utreexo relay safety coverage. | Unit-level Utreexo tests exist, but not this full relay path. | Keep quarantined. Split root-tracking failure into a focused Utreexo relay repair PR. |
@@ -63,23 +63,20 @@ Result: both passed
 
 | Test | Labels | Current status | Action |
 | --- | --- | --- | --- |
-| `ShieldedV030Vectors` | `shielded;consensus;canonicality` | Passes locally in 1.40s. | Candidate for a label-split PR. It should not be hidden behind the whole `canonicality` quarantine if it stays stable. |
-| `HeaderRestartSafety` | `headers;restart;canonicality;phase1-canonical-recovery` | Passes locally in 0.48s. | Candidate for a label-split PR. Keep canonical recovery gates quarantined separately from simple restart persistence. |
+| `ShieldedV030Vectors` | Was `shielded;consensus;canonicality`; split to `shielded;consensus;canonical-vectors`. | Passes locally in 1.40s. | Graduated from the broad `canonicality` quarantine into normal Test Workflow v2. |
+| `HeaderRestartSafety` | Was `headers;restart;canonicality;phase1-canonical-recovery`; split to `headers;restart;canonical-restart;phase1-canonical-recovery`. | Passes locally in 0.48s. | Graduated from the broad `canonicality` quarantine into normal Test Workflow v2 while retaining release-suite ownership via `phase1-canonical-recovery`. |
 
 ## Recommended Next PRs
 
-1. Split the broad `canonicality` quarantine into narrower labels so passing
-   vector/restart tests can re-enter PR CI without pulling in the full recovery
-   gate surface.
-2. Split `WalletMainnetReadiness` into smaller CTest entries. Re-enable passing
+1. Split `WalletMainnetReadiness` into smaller CTest entries. Re-enable passing
    subcases first, then fix the four failing hardening cases.
-3. Repair `ConsensusFormalVerification` as a consensus-test-vector/formula PR.
-4. Repair `WalletDescriptorActiveContext` after deciding whether `1447h` or the
+2. Repair `ConsensusFormalVerification` as a consensus-test-vector/formula PR.
+3. Repair `WalletDescriptorActiveContext` after deciding whether `1447h` or the
    current derivation path is the canonical wallet descriptor expectation.
-5. Keep `ArchivalBlockReader` and `UtreexoE2ERelay` quarantined until their
+4. Keep `ArchivalBlockReader` and `UtreexoE2ERelay` quarantined until their
    root-mismatch failures are understood. They are valid safety signals, not
    deletion candidates.
 
-Deletion is not recommended for any exact-name quarantined test in this pass.
-The only retired item is the stale, ineffective `test_csn_proof_refresh`
-exclusion entry.
+Deletion is not recommended for any remaining exact-name quarantined test. The
+only retired item in this pass was the stale, ineffective
+`test_csn_proof_refresh` exclusion entry.
