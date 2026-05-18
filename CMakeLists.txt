@@ -722,27 +722,6 @@ add_subdirectory(src/storage)
 include(wallet-core/ffi/CMakeLists.txt)
 include(src/nodecore/CMakeLists.txt)
 
-# ─────────────────────────────────────────────────────────────────────────
-# Wallet Test Dependencies (Minimal stubs for testing)
-# ─────────────────────────────────────────────────────────────────────────
-add_library(wallet_test_deps STATIC
-  src/wallet/utxo_index.cpp
-  src/sqlite_open.cpp
-  src/daemon/lightning_stubs.cpp
-)
-
-target_link_libraries(wallet_test_deps PUBLIC
-  dinero_wallet
-  dinero_chainstate  # ChainDB (WalletManager::rescanBlockchain dependency)
-  RocksDB::rocksdb
-  sqlite3
-)
-
-target_include_directories(wallet_test_deps PUBLIC
-  ${CMAKE_SOURCE_DIR}/include
-  ${CMAKE_SOURCE_DIR}/src
-)
-
 # Bridge and mining-pool support target wiring lives with the source dirs.
 include(src/network/CMakeLists.txt)
 include(src/pool/CMakeLists.txt)
