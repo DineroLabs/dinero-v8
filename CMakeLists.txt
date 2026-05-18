@@ -743,6 +743,12 @@ set(DINERO_CORE_METRICS_SOURCES
   src/metrics/metrics_registry.cpp
 )
 
+set(DINERO_CORE_POLICY_SOURCES
+  src/policy/mempool_policy.cpp
+  src/policy/rbf_policy.cpp
+  src/policy/fee_estimator.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -850,9 +856,7 @@ add_library(dinero_core STATIC
   ${DINERO_CORE_P2P_SOURCES}
 
   # Policy layer
-  src/policy/mempool_policy.cpp
-  src/policy/rbf_policy.cpp
-  src/policy/fee_estimator.cpp
+  ${DINERO_CORE_POLICY_SOURCES}
 
   # Address handling
   src/address/addr_codec.cpp
