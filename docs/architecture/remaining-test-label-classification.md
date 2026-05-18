@@ -1,6 +1,7 @@
 # Remaining Test Label Classification
 
 Generated from `origin/dinero-main` at `25e6f55d` after PR #65.
+Updated after PR #67 to reflect the first canonicality smoke graduation.
 
 This document classifies the remaining label-based exclusions in
 `.github/workflows/tests.yml`:
@@ -29,8 +30,8 @@ Current inventory:
 | Metric | Count |
 | --- | ---: |
 | Registered CTest tests | 377 |
-| Selected by current Test Workflow v2 label filter | 285 |
-| Excluded by at least one remaining label | 92 |
+| Selected by current Test Workflow v2 label filter | 287 |
+| Excluded by at least one remaining label | 90 |
 
 Per-label counts below are label memberships, not disjoint sets. Several tests
 carry more than one excluded label, for example `AcceptanceParity` is both
@@ -38,7 +39,7 @@ carry more than one excluded label, for example `AcceptanceParity` is both
 
 | Label | Count | Classification | Recommended disposition |
 | --- | ---: | --- | --- |
-| `canonicality` | 28 | Mixed correctness signal. Contains cheap shielded/vector-style tests and heavier restart/reindex/reorg equivalence tests. | Split first. Graduate cheap non-integration canonicality tests only after focused runs; keep restart/reindex cohorts quarantined until harness ownership is clear. |
+| `canonicality` | 26 | Mixed correctness signal. Contains stale shielded helper-binary tests and heavier restart/reindex/reorg equivalence tests. | Continue splitting deliberately; keep restart/reindex cohorts quarantined until harness ownership is clear. |
 | `packaging` | 3 | Packaging and local maintenance tooling. | Split smoke checks from real package/recovery gates. Candidate for the next small PR after focused validation. |
 | `integration` | 79 | Broad runtime harness surface. Contains daemon, wallet, RPC, P2P, Utreexo, CSN, reindex, shielded, mining, and restart tests. | Do not graduate as one label. Split by subsystem and fixture needs. |
 | `release` | 3 | Release-readiness ownership. | Keep full release gates out of normal PR CI; preserve or create smoke equivalents where useful. |
@@ -48,10 +49,11 @@ carry more than one excluded label, for example `AcceptanceParity` is both
 ## Important Correction
 
 Removing exact-name quarantines does not mean every formerly fixed test is
-currently active in Test Workflow v2. Some resolved tests still carry an excluded
-label. Example: `ShieldedDerivation` is no longer exact-name quarantined, but it
-still has the `canonicality` label and is therefore excluded by the current broad
-label filter.
+currently active in Test Workflow v2. Some resolved tests can still carry an
+excluded label. Before PR #67, `ShieldedDerivation` was no longer exact-name
+quarantined but was still excluded by broad `canonicality`. PR #67 graduated
+`ShieldedDerivation` and `ShieldedReindexEquivalence` into
+`shielded-canonical-smoke`.
 
 This is why the next phase must split labels deliberately instead of declaring
 all fixed tests active.
@@ -79,9 +81,7 @@ ReindexPromotionRestartEquivalence
 ReorgMarkerAlignedRestartEquivalence
 ShieldedAdversarialHardening
 ShieldedDaemonRestartEquivalence
-ShieldedDerivation
 ShieldedPoolRoundTrip
-ShieldedReindexEquivalence
 ShieldedReorgDisconnectRestartEquivalence
 ShieldedReorgSecondRestartInvalidityEquivalence
 ShieldedTipMarkerRestartEquivalence
@@ -95,19 +95,20 @@ Read:
 
 - This is the highest-value label to split first because it is a correctness
   signal, not just a harness bucket.
-- It is also too broad to graduate whole. It mixes likely cheap shielded
-  canonical-vector checks with restart/reindex/reorg equivalence tests that may
-  need datadir lifecycle control.
-- Four tests are not also labeled `integration`:
-  `ShieldedAdversarialHardening`, `ShieldedDerivation`,
-  `ShieldedPoolRoundTrip`, and `ShieldedReindexEquivalence`.
+- It is also too broad to graduate whole. It mixes stale shielded helper-binary
+  tests with restart/reindex/reorg equivalence tests that may need datadir
+  lifecycle control.
+- Two non-integration shielded canonicality tests remain:
+  `ShieldedAdversarialHardening` and `ShieldedPoolRoundTrip`. Both are deferred
+  because their helper binaries do not currently compile against the current
+  shielded API.
 
 Recommended next action:
 
-1. Run the four non-integration shielded canonicality tests locally and in a PR.
-2. If stable, relabel them away from broad `canonicality` into a narrower active
-   label such as `canonical-vectors` or `shielded-canonical-smoke`.
-3. Leave restart/reindex/reorg equivalence tests quarantined until their fixture
+1. Fix or retire the stale `tools/pq_bench` shielded helper binaries before
+   trying to graduate `ShieldedPoolRoundTrip` or
+   `ShieldedAdversarialHardening`.
+2. Leave restart/reindex/reorg equivalence tests quarantined until their fixture
    and runtime profile is documented.
 
 ## Label: `packaging`
@@ -291,8 +292,10 @@ Recommended next action:
 
 ## Recommended PR Sequence
 
-1. PR #67: focus-run and, if stable, graduate the four non-integration shielded
-   canonicality tests by relabeling them out of broad `canonicality`.
+1. PR #67: graduated `ShieldedDerivation` and `ShieldedReindexEquivalence` into
+   `shielded-canonical-smoke`; deferred `ShieldedPoolRoundTrip` and
+   `ShieldedAdversarialHardening` because their helper binaries are stale
+   against current shielded APIs.
 2. PR #68: focus-run packaging tests; graduate `CmakeInstallLayout` if it is
    cheap and deterministic, and decide whether backup/upgrade belong in a
    packaging workflow.

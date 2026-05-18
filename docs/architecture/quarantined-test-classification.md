@@ -80,6 +80,11 @@ Current label-level inventory lives in
 `docs/architecture/remaining-test-label-classification.md`. Use that document
 as the starting point for the next graduation PRs.
 
+The first label-level graduation moved `ShieldedDerivation` and
+`ShieldedReindexEquivalence` into active `shielded-canonical-smoke` coverage.
+The other two non-integration shielded canonicality candidates remain excluded
+because their `tools/pq_bench` helper binaries need API repair first.
+
 Deletion is not recommended for any formerly exact-name quarantined test.
 The only retired entry so far was the stale, ineffective
 `test_csn_proof_refresh` exclusion.
