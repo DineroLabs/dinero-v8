@@ -735,6 +735,10 @@ set(DINERO_CORE_IPC_ORACLE_SOURCES
   src/ipc/oracles/transaction_oracle_client.cpp
 )
 
+set(DINERO_CORE_STORAGE_GLUE_SOURCES
+  src/storage/chainstate_metadata.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -895,7 +899,7 @@ add_library(dinero_core STATIC
   ${DINERO_CORE_IPC_ORACLE_SOURCES}
 
   # Chainstate restart metadata persistence
-  src/storage/chainstate_metadata.cpp
+  ${DINERO_CORE_STORAGE_GLUE_SOURCES}
 )
 
 target_include_directories(dinero_core BEFORE PUBLIC
