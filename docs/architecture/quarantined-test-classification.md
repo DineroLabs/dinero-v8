@@ -74,7 +74,8 @@ Result: both passed
 
 No exact-name quarantines remain. Future work should classify and shrink the
 remaining label-based quarantines (`integration`, `gate`, `release`,
-`canonicality`, `fuzz`, `packaging`) one category at a time.
+`canonicality`, `fuzz`) one category at a time. The former `packaging` bucket
+has graduated into active `packaging-smoke` coverage.
 
 Current label-level inventory lives in
 `docs/architecture/remaining-test-label-classification.md`. Use that document
@@ -84,6 +85,10 @@ The first label-level graduation moved `ShieldedDerivation` and
 `ShieldedReindexEquivalence` into active `shielded-canonical-smoke` coverage.
 The other two non-integration shielded canonicality candidates remain excluded
 because their `tools/pq_bench` helper binaries need API repair first.
+
+The second label-level graduation moved `CmakeInstallLayout`, `DineroBackup`,
+and `DineroPrepareUpgrade` into active `packaging-smoke` coverage and removed
+the broad `packaging` label from the Test Workflow v2 exclusion regex.
 
 Deletion is not recommended for any formerly exact-name quarantined test.
 The only retired entry so far was the stale, ineffective

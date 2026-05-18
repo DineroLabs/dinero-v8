@@ -41,9 +41,9 @@ export DINERO_PREPARE_UPGRADE_FORCE_LINUX_PATH=1
 pass() { echo "  [✓] $1"; }
 fail() { echo "  [FAIL] $1" >&2; exit 1; }
 
-# Stat-mode helper: BSD/macOS uses -f %Lp, GNU uses -c %a.
+# Stat-mode helper: GNU uses -c %a, BSD/macOS uses -f %Lp.
 mode_of() {
-    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
 
 TMP="$(mktemp -d -t dinero-prep-upgrade-test.XXXXXX)"

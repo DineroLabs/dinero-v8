@@ -2115,7 +2115,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/install/test_cmake_install.sh)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   )
   set_tests_properties(CmakeInstallLayout PROPERTIES
-    LABELS "packaging;install"
+    LABELS "install;packaging-smoke"
     TIMEOUT 60
     ENVIRONMENT "BUILD_DIR=${CMAKE_BINARY_DIR}"
   )
@@ -2132,7 +2132,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/install/test_dinero_backup.sh)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   )
   set_tests_properties(DineroBackup PROPERTIES
-    LABELS "packaging;backup;recovery"
+    LABELS "backup;recovery;packaging-smoke"
     TIMEOUT 60
   )
   message(STATUS "✅ dinero-backup test enabled")
@@ -2147,7 +2147,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/install/test_dinero_prepare_upgrade.sh)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   )
   set_tests_properties(DineroPrepareUpgrade PROPERTIES
-    LABELS "packaging;rollback;recovery"
+    LABELS "rollback;recovery;packaging-smoke"
     TIMEOUT 60
   )
   message(STATUS "✅ dinero-prepare-upgrade test enabled")
