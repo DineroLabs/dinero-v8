@@ -1572,34 +1572,6 @@ if(NOT APPLE)
   add_compile_definitions(NO_WALLET_ENCRYPTION)
 endif()
 
-# ═══════════════════════════════════════════════════════════════════════════
-# test_reindex - Standalone reindex tester (no mempool dependencies)
-# ═══════════════════════════════════════════════════════════════════════════
-add_executable(test_reindex
-  test_reindex.cpp
-  src/consensus/reindexer.cpp
-  src/common/logger.cpp
-  src/consensus/undo.cpp
-  # src/wallet/transaction.cpp removed - use Transaction from dinero_consensus (already linked)
-)
-
-target_link_libraries(test_reindex PRIVATE
-  dinero_chainstate
-  dinero_consensus
-  dinero_crypto
-  jsoncpp_static
-  RocksDB::rocksdb
-  OpenSSL::Crypto
-  OpenSSL::SSL
-  pthread
-)
-  link_zstd_if_needed(test_reindex)
-
-target_include_directories(test_reindex PRIVATE
-  ${CMAKE_SOURCE_DIR}/include
-  ${CMAKE_SOURCE_DIR}/src
-)
-
 # Platform-specific linking with proper crypto libraries
 # NOTE: OpenSSL is already configured earlier (lines 110-152)
 # Don't call find_package again as it overrides vendored imported targets

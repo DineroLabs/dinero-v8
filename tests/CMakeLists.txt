@@ -12,6 +12,45 @@
 # Tests (only if we have working test files)
 enable_testing()
 
+# ═══════════════════════════════════════════════════════════════════════════
+# test_reindex - Standalone reindex tester (no mempool dependencies)
+# ═══════════════════════════════════════════════════════════════════════════
+add_executable(test_reindex
+  test_reindex.cpp
+  src/consensus/reindexer.cpp
+  src/consensus/genesis_canonical.cpp
+  src/common/logger.cpp
+  src/consensus/undo.cpp
+  src/primitives/transaction_serializer.cpp
+  # src/wallet/transaction.cpp removed - use Transaction from dinero_consensus (already linked)
+)
+
+target_link_libraries(test_reindex PRIVATE
+  dinero_chainstate
+  dinero_consensus
+  dinero_shielded
+  dinero_crypto
+  jsoncpp_static
+  RocksDB::rocksdb
+  OpenSSL::Crypto
+  OpenSSL::SSL
+  pthread
+  sqlite3
+)
+link_zstd_if_needed(test_reindex)
+
+target_include_directories(test_reindex PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+
+if(APPLE)
+  target_link_libraries(test_reindex PRIVATE
+    "-framework Security"
+    "-framework CoreFoundation"
+  )
+endif()
+
 # Differential acceptance parity gate (baseline vs current binaries)
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh)
   add_test(
