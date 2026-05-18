@@ -69,7 +69,7 @@ cmake --build build-tests -j$(nproc)
 ctest --test-dir build-tests \
   --output-on-failure \
   --label-exclude 'integration|gate|release|canonicality|fuzz|packaging' \
-  --exclude-regex 'ConsensusFormalVerification|UtreexoE2ERelay|WalletMainnetReadiness_EncryptionRoundTripRestoreAndDerivationPersistence|WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt|WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics|WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata'
+  --exclude-regex 'ConsensusFormalVerification|WalletMainnetReadiness_EncryptionRoundTripRestoreAndDerivationPersistence|WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt|WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics|WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata'
 ```
 
 ## Known-Broken Exclusion Policy
@@ -95,7 +95,6 @@ Excluded test names:
 | Test | Status | Required follow-up |
 | --- | --- | --- |
 | `ConsensusFormalVerification` | Deterministic supply-formula mismatch surfaced by first full `ctest` pass | Fix the formula or test vector, then re-enable. |
-| `UtreexoE2ERelay` | Utreexo end-to-end runtime failure surfaced by first full `ctest` pass | Repair relay fixture or implementation, then re-enable. |
 | `WalletMainnetReadiness_EncryptionRoundTripRestoreAndDerivationPersistence` | Encrypted-wallet round-trip restore loses derivation persistence on Mac + Linux | Fix wallet-state serialization or re-derivation ordering, then re-enable. |
 | `WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt` | Restore path leaves inconsistent legacy/current encryption state on Mac + Linux | Fix restore-then-reencrypt ordering/state clearing, then re-enable. |
 | `WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics` | Fast BIP86 determinism property failure on Mac + Linux | Identify the failing input class and repair BIP86 derivation determinism. |
@@ -113,6 +112,8 @@ Subsequent passes split cheap canonical vector/restart tests away from the broad
 `WalletMainnetReadiness` into per-subcase CTest entries, and fixed
 `ArchivalBlockReader` by making its synthetic reindex fixture write a valid
 height-1 Utreexo commitment.
+`UtreexoE2ERelay` also graduated after fixing CSN transition-proof stump
+advancement for deletion-bearing proofs.
 
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
