@@ -171,37 +171,8 @@ include(cmake/PortMapping.cmake)
 # Git/build provenance and generated version_config.h.
 include(cmake/VersionMetadata.cmake)
 
-# ============================================================================
-# Phase D (v8 peer-discovery): chainparamsseeds.h regeneration
-# ============================================================================
-# Regenerate include/consensus/chainparamsseeds.h whenever
-# contrib/seeds/seeds_main.txt changes. The header is committed (so
-# consumers don't need Python at build time), but if seeds_main.txt is
-# newer than the header — which is the case immediately after editing
-# the seed list — this custom command brings the header back in sync.
-#
-# CI in --check mode catches the inverse case: header committed without
-# updating from input.
-find_package(Python3 QUIET COMPONENTS Interpreter)
-if(Python3_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/contrib/seeds/generate-seeds.py")
-    add_custom_command(
-        OUTPUT "${CMAKE_SOURCE_DIR}/include/consensus/chainparamsseeds.h"
-        COMMAND ${Python3_EXECUTABLE}
-                "${CMAKE_SOURCE_DIR}/contrib/seeds/generate-seeds.py"
-        DEPENDS
-            "${CMAKE_SOURCE_DIR}/contrib/seeds/seeds_main.txt"
-            "${CMAKE_SOURCE_DIR}/contrib/seeds/generate-seeds.py"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Regenerating include/consensus/chainparamsseeds.h from contrib/seeds/seeds_main.txt"
-        VERBATIM
-    )
-    add_custom_target(dinero_fixed_seeds_gen ALL
-        DEPENDS "${CMAKE_SOURCE_DIR}/include/consensus/chainparamsseeds.h"
-    )
-else()
-    message(STATUS "Python3 not found; chainparamsseeds.h regeneration is manual "
-                   "(run contrib/seeds/generate-seeds.py after editing seeds_main.txt)")
-endif()
+# Fixed seed header regeneration target.
+include(cmake/SeedGeneration.cmake)
 
 # Third-party dependency setup lives in cmake/ThirdParty.cmake.
 # Keep this as include() so helper functions and imported targets remain root-scoped.
