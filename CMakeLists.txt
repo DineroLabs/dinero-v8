@@ -800,6 +800,14 @@ set(DINERO_CORE_MINING_TEMPLATE_SUPPORT_SOURCES
   src/mining/template_delta_tracker.cpp
 )
 
+set(DINERO_CORE_MEMPOOL_SUPPORT_SOURCES
+  src/mempool/coins_view_mempool.cpp
+  src/mempool/mempool_persistence.cpp
+  src/mempool/fee_estimator.cpp
+  src/mempool/invalid_tx_cache.cpp
+  src/mempool/tx_orphan_pool.cpp
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Layer 3: Core Logic Library (Reusable, Testable)
 # ─────────────────────────────────────────────────────────────────────────
@@ -877,11 +885,7 @@ add_library(dinero_core STATIC
 
   # Mempool
   src/mempool/mempool.cpp  # Full mempool implementation (needed by compact_block.cpp)
-  src/mempool/coins_view_mempool.cpp
-  src/mempool/mempool_persistence.cpp
-  src/mempool/fee_estimator.cpp
-  src/mempool/invalid_tx_cache.cpp
-  src/mempool/tx_orphan_pool.cpp  # Transaction orphan pool (holds TXs with missing parents)
+  ${DINERO_CORE_MEMPOOL_SUPPORT_SOURCES}
 
   # Network relay
 
