@@ -2233,18 +2233,37 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_peer_scoring_service.cpp)
   message(STATUS "✅ PeerScoringService boundary smoke test enabled")
 endif()
 
-# NOTE: CompactBlockService boundary test is intentionally deferred.
-# CompactBlockService::getBlocksProcessed() and getReconstructionRate()
-# in compact_block_service.cpp reference dinero::BlockRelayManager::GetStats /
-# GetCompactBlockSuccessRate. Those symbols live in
-# src/daemon/block_relay_manager.cpp, which is itself part of dinero_core
-# and pulls in a deep transitive set (peer manager, consensus, network
-# layers). A clean boundary test for CompactBlockService requires either
-# extracting the stat accessors into a thinner unit, or providing a
-# minimal BlockRelayManager test stub — both belong in a follow-up.
-# The other 8 services in the source map's hub list are testable as
-# they stand; we'll come back to CompactBlockService once the rest of
-# the bucket is seeded.
+# services-boundary-smoke: CompactBlockService boundary contract.
+# CompactBlockService is the thinnest service hub in the original 9 — it
+# owns no internal state, only delegates stats to BlockRelayManager via
+# DaemonContext. Test exercises Name(), Init/Start/Stop lifecycle, and
+# the null-guard property on its stat accessors when block_relay is null.
+#
+# The .cpp references BlockRelayManager::GetStats() and
+# BlockRelayManager::GetCompactBlockSuccessRate() (both live in
+# src/daemon/block_relay_manager.cpp, which is dinero_core-heavy). The
+# test target links a tiny test-only stub (block_relay_manager_test_stub.cpp)
+# providing empty implementations returning defaults. Since the test
+# never sets ctx_->block_relay, those stubs are never invoked at
+# runtime — they only exist to satisfy the linker without dragging the
+# full block_relay_manager.cpp transitive set in.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_compact_block_service.cpp)
+  add_executable(test_compact_block_service
+    tests/services/test_compact_block_service.cpp
+    src/daemon/services/compact_block_service.cpp
+    tests/services/block_relay_manager_test_stub.cpp
+  )
+  target_include_directories(test_compact_block_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME CompactBlockServiceBoundary COMMAND test_compact_block_service)
+  set_tests_properties(CompactBlockServiceBoundary PROPERTIES
+    LABELS "services-boundary-smoke;daemon;compact-block;service-hub"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ CompactBlockService boundary smoke test enabled")
+endif()
 
 # Phase C (Dinero Core 1.0) — `cmake --install` layout smoke test.
 # Verifies install rules produce the contract-required layout for both
