@@ -798,6 +798,187 @@ void P2PManager::handle_relay_register(const std::string& peer_address,
               << std::endl;
 }
 
+// NAT traversal Phase C3 slice 3: handle a RELAY_CONNECT request from
+// an external peer that wants to dial a NAT'd peer through us.
+//
+// Validation:
+//   1. Payload is exactly 20 (target_node_id) + 8 (request_id) bytes.
+//   2. Target is registered (Lookup succeeds) — otherwise reply
+//      NoSuchPeer and don't allocate a circuit.
+//   3. Concurrent-circuit cap (kMaxConcurrentCircuits = 25) — otherwise
+//      reply RelayFull.
+// On success: allocate a fresh 64-bit circuit_id, insert into
+// circuits_, and reply Ok with the circuit_id.
+//
+// The target peer is NOT notified yet — they only learn about the
+// circuit when the first RELAY_DATA arrives on it from the requester
+// (or from us, when we forward it). Slice 4's client-side dispatch
+// uses circuit_id from the first RELAY_DATA to register the inbound
+// "virtual peer" on the target side.
+void P2PManager::handle_relay_connect(const std::string& peer_address,
+                                      const P2PMessage& message) {
+    if (message.payload.size() != 28) {
+        std::cout << "[P2P] relaycon: bad payload size " << message.payload.size()
+                  << " from " << peer_address << std::endl;
+        return;
+    }
+    std::array<uint8_t, 20> target_node_id{};
+    std::copy_n(message.payload.begin(), 20, target_node_id.begin());
+    const uint64_t request_id = ReadLE64(message.payload, 20);
+
+    // Lookup the target's registration.
+    auto reg = relay_registry_.Lookup(target_node_id);
+    if (!reg.has_value()) {
+        auto ack = P2PMessage::create_relay_connect_ack(
+            request_id, 0, P2PMessage::RelayConnectStatus::NoSuchPeer,
+            "target node_id is not registered with this relay");
+        send_to_peer(peer_address, ack);
+        return;
+    }
+    // Don't bridge a circuit back to its own initiator (self-relay)
+    // and don't bridge a circuit through a peer-not-connected target.
+    if (reg->peer_address == peer_address) {
+        auto ack = P2PMessage::create_relay_connect_ack(
+            request_id, 0, P2PMessage::RelayConnectStatus::NoSuchPeer,
+            "cannot relay a connection back to its initiator");
+        send_to_peer(peer_address, ack);
+        return;
+    }
+
+    // Allocate circuit_id and insert. Cap check + insert under one lock.
+    uint64_t circuit_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(circuits_mutex_);
+        if (circuits_.size() >= kMaxConcurrentCircuits) {
+            // Drop the lock before sending to avoid holding it across IO.
+        } else {
+            // Generate a non-zero circuit_id; retry once on the
+            // exceedingly-unlikely collision.
+            for (int attempt = 0; attempt < 2; attempt++) {
+                circuit_id = SecureRandom::GetUInt64();
+                if (circuit_id == 0) continue;
+                if (circuits_.find(circuit_id) == circuits_.end()) break;
+                circuit_id = 0;
+            }
+            if (circuit_id != 0) {
+                const auto now = std::chrono::steady_clock::now();
+                circuits_[circuit_id] = CircuitInfo{
+                    peer_address, reg->peer_address, now, now};
+            }
+        }
+    }
+    if (circuit_id == 0) {
+        auto ack = P2PMessage::create_relay_connect_ack(
+            request_id, 0, P2PMessage::RelayConnectStatus::RelayFull,
+            "relay is at " + std::to_string(kMaxConcurrentCircuits) +
+                " concurrent circuits");
+        send_to_peer(peer_address, ack);
+        return;
+    }
+
+    auto ack = P2PMessage::create_relay_connect_ack(
+        request_id, circuit_id, P2PMessage::RelayConnectStatus::Ok,
+        "circuit opened to " + reg->peer_address);
+    send_to_peer(peer_address, ack);
+
+    std::cout << "[P2P] relaycon: opened circuit "
+              << std::hex << circuit_id << std::dec
+              << " from " << peer_address << " to " << reg->peer_address
+              << " (circuits now " << circuits_.size() << "/"
+              << kMaxConcurrentCircuits << ")" << std::endl;
+}
+
+// NAT traversal Phase C3 slice 3: forward RELAY_DATA bytes between
+// the two endpoints of an established circuit. The relay is a pure
+// byte pipe — direction byte is preserved (endpoints use it for
+// their own accounting), payload is opaque to us.
+//
+// "Pure byte pipe" matters for the threat model: when QUIC TLS-1.3
+// is layered inside the relay tunnel (Phase B2), the relay sees only
+// ciphertext. Until then, RELAY_DATA payload is plaintext P2P
+// frames — same plaintext exposure as a direct connection over
+// today's TCP. The relay is no worse than a passive observer on
+// the path.
+void P2PManager::handle_relay_data(const std::string& peer_address,
+                                   const P2PMessage& message) {
+    if (message.payload.size() < 9) {
+        return;  // need at least circuit_id_8 + direction_1
+    }
+    const uint64_t circuit_id = ReadLE64(message.payload, 0);
+    // direction byte at offset 8 — preserved but not consulted by the
+    // relay; endpoints set it on send, read it on receive.
+
+    std::string dest;
+    {
+        std::lock_guard<std::mutex> lock(circuits_mutex_);
+        auto it = circuits_.find(circuit_id);
+        if (it == circuits_.end()) {
+            return;  // unknown circuit; drop silently to avoid amplification
+        }
+        if (peer_address == it->second.requester_addr) {
+            dest = it->second.target_addr;
+        } else if (peer_address == it->second.target_addr) {
+            dest = it->second.requester_addr;
+        } else {
+            // Peer not part of this circuit — possible spoofing or stale
+            // state. Drop without ack.
+            return;
+        }
+        it->second.last_data_at = std::chrono::steady_clock::now();
+    }
+    // Forward the EXACT same frame (preserving direction + payload).
+    // No bandwidth caps in slice 3 — those land in slice 3.1 (token
+    // bucket + daily quota + storm detection).
+    send_to_peer(dest, message);
+}
+
+// NAT traversal Phase C3 slice 3: RELAY_PING keepalive. Doesn't
+// produce a reply; just refreshes the circuit's last_data_at so
+// SweepIdleCircuits doesn't reap it. Endpoints send these every
+// ~30s to refresh NAT mappings on the path between the relay and
+// the registered peer (the NAT'd one would otherwise see its
+// inbound mapping expire mid-flow).
+void P2PManager::handle_relay_ping(const std::string& peer_address,
+                                   const P2PMessage& message) {
+    if (message.payload.size() < 8) return;
+    const uint64_t circuit_id = ReadLE64(message.payload, 0);
+    std::lock_guard<std::mutex> lock(circuits_mutex_);
+    auto it = circuits_.find(circuit_id);
+    if (it == circuits_.end()) return;
+    // Only let circuit endpoints refresh the timer — prevents an
+    // unrelated peer from keeping an idle circuit alive (very minor
+    // DoS but worth the cycle).
+    if (peer_address != it->second.requester_addr &&
+        peer_address != it->second.target_addr) {
+        return;
+    }
+    it->second.last_data_at = std::chrono::steady_clock::now();
+}
+
+// NAT traversal Phase C3 slice 3: periodic cleanup of stalled
+// circuits. Called from keepalive_loop on its existing wake-up
+// cadence. O(circuits_.size()) per call, bounded at 25 entries.
+void P2PManager::SweepIdleCircuits() {
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<uint64_t> dropped;
+    {
+        std::lock_guard<std::mutex> lock(circuits_mutex_);
+        for (auto it = circuits_.begin(); it != circuits_.end();) {
+            if (now - it->second.last_data_at >= kCircuitIdleTimeout) {
+                dropped.push_back(it->first);
+                it = circuits_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto cid : dropped) {
+        std::cout << "[P2P] relay-circuit " << std::hex << cid << std::dec
+                  << " idle-timed-out after " << kCircuitIdleTimeout.count()
+                  << "s" << std::endl;
+    }
+}
+
 // NAT traversal Phase 1A.2 / BIP155: sendaddrv2 has empty payload — its
 // mere presence is the negotiation that both peers speak addrv2.
 P2PMessage P2PMessage::create_sendaddrv2() {
@@ -3178,18 +3359,24 @@ void P2PManager::process_message(const std::string& peer_address, const P2PMessa
     } else if (message.command == "addrv2") {
         handle_addrv2(peer_address, message);
     } else if (message.command == "relayreg") {
-        // NAT Phase C3 slice 2: real handler — validates sig, registers.
+        // NAT Phase C3 slice 2: validate sig + insert into registry.
         handle_relay_register(peer_address, message);
-    } else if (message.command == "relaycon" ||
-               message.command == "relayack" || message.command == "relaydat" ||
-               message.command == "relaypng" || message.command == "relayhnt") {
-        // NAT Phase C3 slices 3+: still log-only. The splice (slice 3) and
-        // client-side outbound (slice 4) land in follow-up commits; until
-        // then we accept the messages cleanly so any forward-deployed
-        // implementation can probe whether a peer speaks the protocol.
+    } else if (message.command == "relaycon") {
+        // NAT Phase C3 slice 3: allocate circuit, ack.
+        handle_relay_connect(peer_address, message);
+    } else if (message.command == "relaydat") {
+        // NAT Phase C3 slice 3: shovel bytes between circuit endpoints.
+        handle_relay_data(peer_address, message);
+    } else if (message.command == "relaypng") {
+        // NAT Phase C3 slice 3: keepalive — refresh circuit last_data_at.
+        handle_relay_ping(peer_address, message);
+    } else if (message.command == "relayack" || message.command == "relayhnt") {
+        // Slice 4 (client-side outbound) ingests these. Relay-side does
+        // not produce/consume them. Keep the accept-and-log behavior for
+        // forward-deployed implementations that emit them at us.
         std::cout << "[P2P] relay-protocol message '" << message.command
                   << "' (" << message.payload.size() << " bytes) from "
-                  << peer_address << " — handler is a Phase C3 follow-up; dropped"
+                  << peer_address << " — slice 4 handler; dropped"
                   << std::endl;
     } else {
         // Forward to application handler
@@ -4082,6 +4269,12 @@ void P2PManager::keepalive_loop() {
         if (!network_active_.load(std::memory_order_acquire)) {
             continue;
         }
+
+        // NAT Phase C3 slice 3: piggyback circuit sweep on the 30s
+        // keepalive tick. O(25) work; sweeps idle circuits + lets the
+        // relay registry reap expired registrations.
+        SweepIdleCircuits();
+        relay_registry_.Sweep();
 
         // Send PING to all connected peers
         std::vector<std::string> peer_addresses;

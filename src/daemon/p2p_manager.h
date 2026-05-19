@@ -398,6 +398,33 @@ public:
     void handle_relay_register(const std::string& peer_address,
                                const P2PMessage& message);
 
+    // NAT traversal Phase C3 slice 3: relay-side circuit handling.
+    //
+    // handle_relay_connect — external peer requests a circuit to a
+    // NAT'd peer identified by node_id. Looks up the registration,
+    // allocates a fresh circuit_id, returns a RELAY_CONNECT_ACK
+    // (Ok / NoSuchPeer / RelayFull).
+    //
+    // handle_relay_data — opaque bytes flow either direction between
+    // the two endpoints of a circuit. Relay looks up the circuit by
+    // id, identifies which side sent (requester vs target), forwards
+    // the same RELAY_DATA frame to the other side. Refreshes
+    // last_data_at for idle-timeout tracking.
+    //
+    // handle_relay_ping — keepalive that just refreshes last_data_at.
+    // No reply is generated; if the circuit died on the relay's path
+    // to the other endpoint the next data send will surface that.
+    void handle_relay_connect(const std::string& peer_address,
+                              const P2PMessage& message);
+    void handle_relay_data(const std::string& peer_address,
+                           const P2PMessage& message);
+    void handle_relay_ping(const std::string& peer_address,
+                           const P2PMessage& message);
+
+    // Periodic maintenance: drop circuits whose last_data_at is older
+    // than kCircuitIdleTimeout. Called from keepalive_loop.
+    void SweepIdleCircuits();
+
 private:
     // Outbox for async sending
     struct OutMsg {
@@ -479,9 +506,25 @@ private:
 
     // NAT traversal Phase C3 slice 2: in-memory directory of NAT'd
     // peers that have registered with us as their relay. Empty until
-    // a RELAY_REGISTER arrives. handle_relaycon (slice 3) will look
+    // a RELAY_REGISTER arrives. handle_relay_connect (slice 3) looks
     // up the registration to find the target peer's TCP connection.
     dinero::network::RelayRegistry relay_registry_;
+
+    // NAT traversal Phase C3 slice 3: relay-side circuit table.
+    // Keyed on circuit_id (allocated by handle_relay_connect from a
+    // hardware-random 8 bytes). Forwarders mutate last_data_at on
+    // every RELAY_DATA / RELAY_PING so SweepIdleCircuits can reap
+    // stalled circuits without disrupting active ones.
+    struct CircuitInfo {
+        std::string requester_addr;   // external peer (originator)
+        std::string target_addr;      // registered NAT'd peer
+        std::chrono::steady_clock::time_point created_at;
+        std::chrono::steady_clock::time_point last_data_at;
+    };
+    mutable std::mutex circuits_mutex_;
+    std::unordered_map<uint64_t, CircuitInfo> circuits_;
+    static constexpr size_t kMaxConcurrentCircuits = 25;
+    static constexpr std::chrono::seconds kCircuitIdleTimeout{300};  // 5 min
 
     // Network threads
     void listen_loop();
