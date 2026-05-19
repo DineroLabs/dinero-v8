@@ -2265,6 +2265,33 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_compact_block_service.cpp)
   message(STATUS "✅ CompactBlockService boundary smoke test enabled")
 endif()
 
+# dinero_core gap closure: MempoolPolicy unit test.
+# Not a service-boundary test (mempool_policy isn't a service hub), but
+# it's a dinero_core source-map gap with zero prior coverage. Scope
+# deliberately avoids anything needing a real Transaction (those tests
+# are integration-shaped); exercises config defaults, error strings,
+# config round-trip, and the eviction-ordering invariant.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_mempool_policy.cpp)
+  add_executable(test_mempool_policy
+    tests/services/test_mempool_policy.cpp
+    src/policy/mempool_policy.cpp
+    src/primitives/transaction_serializer.cpp
+  )
+  target_link_libraries(test_mempool_policy PRIVATE
+    dinero_tx_primitives  # MempoolPolicy::checkSigOps references Transaction methods
+  )
+  target_include_directories(test_mempool_policy PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME MempoolPolicyUnit COMMAND test_mempool_policy)
+  set_tests_properties(MempoolPolicyUnit PROPERTIES
+    LABELS "policy-smoke;daemon;mempool;policy"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ MempoolPolicy unit test enabled")
+endif()
+
 # Phase C (Dinero Core 1.0) — `cmake --install` layout smoke test.
 # Verifies install rules produce the contract-required layout for both
 # manual mode (--prefix /usr/local-style) and packaged mode (--prefix
