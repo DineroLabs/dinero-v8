@@ -19,6 +19,7 @@ set(DINERO_CORE_P2P_SOURCES
   src/network/network_invariants.cpp
   src/network/port_mapper.cpp
   src/network/udp_socket.cpp         # NAT traversal Phase B1: UDP socket facility
+  src/network/stun_client.cpp        # NAT traversal Phase C1: STUN public-IP discovery
   src/daemon/p2p_message.cpp
   src/daemon/peer_connection.cpp
   src/daemon/p2p_manager.cpp
