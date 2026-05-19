@@ -1,8 +1,8 @@
 # Remaining Test Label Classification
 
 Originally generated from `origin/dinero-main` at `25e6f55d` after PR #65.
-Updated after PR #74 to reflect the packaging, RPC, mempool/rawtx,
-mempool-package, shutdown, and covenant/policy smoke graduations.
+Updated through the packaging, RPC, mempool/rawtx, mempool-package, shutdown,
+covenant/policy, and mining/wallet smoke graduations.
 
 This document classifies the remaining label-based exclusions in
 `.github/workflows/tests.yml`:
@@ -31,8 +31,8 @@ Current inventory:
 | Metric | Count |
 | --- | ---: |
 | Registered CTest tests | 377 |
-| Selected by current Test Workflow v2 label filter | 303 |
-| Excluded by at least one remaining label | 74 |
+| Selected by current Test Workflow v2 label filter | 306 |
+| Excluded by at least one remaining label | 71 |
 
 Per-label counts below are label memberships, not disjoint sets. Several tests
 carry more than one excluded label, for example `AcceptanceParity` is both
@@ -42,7 +42,7 @@ carry more than one excluded label, for example `AcceptanceParity` is both
 | --- | ---: | --- | --- |
 | `canonicality` | 26 | Mixed correctness signal. Contains stale shielded helper-binary tests and heavier restart/reindex/reorg equivalence tests. | Continue splitting deliberately; keep restart/reindex cohorts quarantined until harness ownership is clear. |
 | `packaging` | 0 | Retired from the current label quarantine. The three former members graduated into active `packaging-smoke` coverage. | Keep future package-build or distro-output tests under a different label such as `packaging-gate` or a dedicated packaging workflow. |
-| `integration` | 66 | Broad runtime harness surface. Contains daemon, wallet, RPC, P2P, Utreexo, CSN, reindex, shielded, mining, and restart tests. | Do not graduate as one label. Split by subsystem and fixture needs. |
+| `integration` | 63 | Broad runtime harness surface. Contains daemon, wallet, RPC, P2P, Utreexo, CSN, reindex, shielded, and restart tests. | Do not graduate as one label. Split by subsystem and fixture needs. |
 | `release` | 3 | Release-readiness ownership. | Keep full release gates out of normal PR CI; preserve or create smoke equivalents where useful. |
 | `gate` | 4 | Readiness/blocking gates. | Classify each gate individually as PR-safe, nightly, release-only, or manual. |
 | `fuzz` | 2 | Fuzzer-style coverage. | Move to dedicated fuzz/nightly workflow rather than normal PR `ctest`. |
@@ -143,7 +143,6 @@ Disposition:
 Tests:
 
 ```text
-AddressParentChildMempoolLifecycle
 BridgeCsnHistoricalRangeSoak
 BridgeCsnHistoricalSpendRelay
 ChainIdentitySync
@@ -170,12 +169,9 @@ InvalidityCrashRestartEquivalence
 InvalidityImportEquivalence
 InvalidityRestartSticky
 LaggingPeerCatchupNoOrphans
-Mining_PoolPayoutIntegration
-Mining_W1_5_Integration
 P2PManager_TS1_Integration
 P2PServiceNetworkControl
 ParallelBlockDownloadTargeted
-ParentChildRbfReplacementWithMempoolParent
 PeerMetadataRuntimeIdentity
 PositionIndexRestartEquivalence
 RebuildUndoRange
@@ -210,7 +206,6 @@ UndoMetadataRestamp
 UnifiedBatchAtomicity
 UnifiedBatchAtomicity_AtomicPersistOn
 UtreexoMempoolCanonicalSeparation
-Wallet_W2_6_SyncIntegration
 ```
 
 Read:
@@ -229,12 +224,12 @@ Recommended sub-buckets:
 | Mempool/rawtx smoke | `AddressBalanceMempoolOverlay`, `TaprootSignRawTransactionRbfOverlay`, `TaprootSignRawTransactionRbfConfirmation`, `WalletCreateRawTransactionScriptPubKeyOutputs`, `RbfPolicyReporting` | Graduated in PR #70 as active `mempool-rawtx-smoke` coverage after three focused local runs. Parent-child variants remain quarantined because they fail runtime mempool-clearing expectations. |
 | RPC shutdown smoke | `RpcStopCleanShutdown` | Graduated in PR #71 as active `rpc-shutdown-smoke` coverage after repairing the hardcoded `build/dinerod` harness path and passing three focused local runs. |
 | Mempool package smoke | `AddressParentChildMempoolLifecycle`, `ParentChildRbfReplacementWithMempoolParent` | Graduated in PR #73 as active `mempool-package-smoke` coverage after PR #72 fixed same-package child selection in block templates. |
-| Covenant/policy smoke | `CovenantScriptPath`, `EscapeHatchTests` | Graduated in PR #74 as active `covenant-policy-smoke` coverage after three focused local runs. These are compiled correctness/policy tests, not daemon integration tests. |
+| Covenant/policy smoke | `CovenantScriptPath`, `EscapeHatchTests` | Graduated in PR #75 as active `covenant-policy-smoke` coverage after three focused local runs. These are compiled correctness/policy tests, not daemon integration tests. |
+| Mining/wallet local smoke | `Mining_W1_5_Integration`, `Wallet_W2_6_SyncIntegration`, `Mining_PoolPayoutIntegration` | Graduated as active `mining-wallet-smoke` coverage after three focused local runs. These are compiled local tests, not daemon integration fixtures. |
 | P2P/network runtime | `CompactBlockRelayE2E`, `ParallelBlockDownloadTargeted`, `LaggingPeerCatchupNoOrphans` | Nightly or dedicated network harness first. |
 | CSN/Utreexo bridge | `BridgeCsnHistoricalSpendRelay`, `CsnBridgeAssistedSpendFlow`, `CsnSyncLiveSpendTraffic` | Dedicated Utreexo/CSN workflow; some may need external or long-running fixtures. |
 | Canonical restart/reindex | `ConnectTipRestartEquivalence`, `ReindexPromotionRestartEquivalence`, `UnifiedBatchAtomicity` | Keep with canonicality plan. |
 | Shielded RPC/end-to-end | `ShieldedRpcShieldEndToEnd`, `ShieldedRpcTransferMultiEndToEnd` | Dedicated shielded integration lane or staged smoke split. |
-| Mining/pool integration | `Mining_W1_5_Integration`, `Mining_PoolPayoutIntegration` | Mining workflow or nightly lane. |
 
 ## Labels: `release` and `gate`
 
@@ -314,10 +309,14 @@ Recommended next action:
 7. PR #73: graduated `AddressParentChildMempoolLifecycle` and
    `ParentChildRbfReplacementWithMempoolParent` into active
    `mempool-package-smoke` coverage.
-8. PR #74: graduated `CovenantScriptPath` and `EscapeHatchTests` into active
+8. PR #75: graduated `CovenantScriptPath` and `EscapeHatchTests` into active
    `covenant-policy-smoke` coverage. These are cheap compiled test binaries,
    not daemon integration fixtures.
-9. Later: design dedicated lanes for P2P/network, CSN/Utreexo, shielded E2E,
+9. Mining/wallet smoke split: graduate `Mining_W1_5_Integration`,
+   `Wallet_W2_6_SyncIntegration`, and `Mining_PoolPayoutIntegration` into
+   active `mining-wallet-smoke` coverage. These are cheap compiled local
+   tests, not daemon integration fixtures.
+10. Later: design dedicated lanes for P2P/network, CSN/Utreexo, shielded E2E,
    release gates, and fuzz.
 
 The rule from the named-test cleanup still applies: shrink the quarantine only

@@ -18,7 +18,7 @@ graduations is:
 
 | Label | Local count | Classification |
 | --- | ---: | --- |
-| `integration` | 66 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
+| `integration` | 63 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
 | `gate` | 4 | Release/readiness gates; heavy or policy-oriented, not normal PR-CI by default. |
 | `release` | 3 | Release ownership; keep full gates manual or release-blocking unless split into smoke checks. |
 | `canonicality` | 26 | Too broad as a single quarantine; contains tests that already pass and tests that need deeper repair. |
@@ -119,6 +119,12 @@ The seventh label-level graduation moved `CovenantScriptPath` and
 `EscapeHatchTests` into active `covenant-policy-smoke` coverage. Focused
 validation passed three consecutive local runs. These are cheap compiled
 correctness/policy tests, not daemon integration fixtures.
+
+The eighth label-level graduation moved `Mining_W1_5_Integration`,
+`Wallet_W2_6_SyncIntegration`, and `Mining_PoolPayoutIntegration` into active
+`mining-wallet-smoke` coverage. Focused validation passed three consecutive
+local runs. These are cheap compiled local tests, not daemon integration
+fixtures.
 
 Deletion is not recommended for any formerly exact-name quarantined test.
 The only retired entry so far was the stale, ineffective

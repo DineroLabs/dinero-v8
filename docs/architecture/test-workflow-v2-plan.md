@@ -171,6 +171,12 @@ into `covenant-policy-smoke`: `CovenantScriptPath` and `EscapeHatchTests`.
 Focused local validation passed three consecutive runs. These tests are not
 daemon integration fixtures and should stay in normal PR CI.
 
+The eighth label split graduated three cheap compiled local mining/wallet tests
+into `mining-wallet-smoke`: `Mining_W1_5_Integration`,
+`Wallet_W2_6_SyncIntegration`, and `Mining_PoolPayoutIntegration`. Focused
+local validation passed three consecutive runs. These tests are not daemon
+integration fixtures and should stay in normal PR CI.
+
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
 binary, required scripts, and `ctest` availability without running the heavy
