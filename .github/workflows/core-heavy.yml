@@ -1,0 +1,123 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Core Heavy — targeted load-bearing dinero_core validation
+# ─────────────────────────────────────────────────────────────────────────
+#
+# This lane is intentionally separate from Tests. It runs a tiny set of
+# expensive/high-signal integration canaries that exercise consensus batch
+# commit, crash/restart atomicity, chainstate, Utreexo, shielded markers, and
+# journal state. Use it before touching load-bearing dinero_core boundaries.
+#
+# ─────────────────────────────────────────────────────────────────────────
+
+name: Core Heavy
+
+on:
+  pull_request:
+    branches: [dinero-main]
+    paths:
+      - ".github/workflows/core-heavy.yml"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "src/consensus/**"
+      - "include/consensus/**"
+      - "src/daemon/**"
+      - "include/daemon/**"
+      - "src/mempool/**"
+      - "include/mempool/**"
+      - "src/mining/block_assembler.cpp"
+      - "src/mining/block_template.cpp"
+      - "tests/integration/CMakeLists.txt"
+      - "tests/integration/test_consensus_write_batch_leak.sh"
+      - "tests/integration/test_unified_batch_atomicity.sh"
+  workflow_dispatch:
+
+concurrency:
+  group: core-heavy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux-core-heavy:
+    name: Linux x86_64 — core-heavy smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            ccache \
+            pkg-config \
+            python3 \
+            perl \
+            libcurl4-openssl-dev \
+            libudev-dev \
+            libusb-1.0-0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.workflow }}-linux
+          max-size: 1G
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.3.2/prebuilt
+            depends/sources
+            depends/x86_64-pc-linux-gnu*
+            ~/.cargo/registry
+            ~/.cargo/git
+            third_party/bulletproofs_ffi/target
+            third_party/bulletproofs-ffi/target
+          key: vendored-core-heavy-${{ runner.os }}-${{ hashFiles('depends/CMakeLists.txt', 'depends/packages/*.cmake', 'scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock', 'third_party/bulletproofs-ffi/Cargo.lock') }}
+          restore-keys: |
+            vendored-core-heavy-${{ runner.os }}-
+            vendored-tests-${{ runner.os }}-
+            vendored-${{ runner.os }}-
+
+      - name: Build vendored OpenSSL
+        run: bash scripts/build-openssl-vendored.sh
+
+      - name: Build depends
+        run: |
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j
+
+      - name: CMake configure
+        run: |
+          cmake -S . -B build-core-heavy \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Full default build
+        run: cmake --build build-core-heavy -j
+
+      - name: Inventory core-heavy tests
+        run: ctest --test-dir build-core-heavy -N -L core-heavy-smoke
+
+      - name: Run core-heavy tests
+        run: |
+          ctest --test-dir build-core-heavy \
+            --output-on-failure \
+            -L core-heavy-smoke
