@@ -90,6 +90,27 @@ wait_for_daemon() {
     return 1
 }
 
+# Wait for wallet's UTXO scan to catch up to the given chain height before
+# requesting a proof bundle. Without this, fast CI hardware can finish
+# generatetoaddress before the wallet finishes indexing — wallet.getproofbundle
+# then returns proofs with success=false, jq filters them all out, and the
+# test dies at envelope construction under pipefail before fail() can run.
+wait_for_wallet_scan_height() {
+    local target_height="$1"
+    local max_wait="${2:-30}"
+    local waited=0
+    local scan_height=0
+    while [ "$waited" -lt "$max_wait" ]; do
+        scan_height="$(rpc_result "wallet.getsyncstatus" "[]" | jq -r '.wallet_scan.height // 0')"
+        if [ "$scan_height" -ge "$target_height" ]; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    fail "wallet scan did not reach height $target_height within ${max_wait}s (last seen: $scan_height)"
+}
+
 start_daemon() {
     mkdir -p "$DATADIR"
     "$DINEROD" \
@@ -222,6 +243,7 @@ info "Mining 110 blocks to create mature spendable wallet UTXOs"
 rpc_result "generatetoaddress" "[110,\"$ADDR\"]" >/dev/null
 TIP_HEIGHT="$(rpc_scalar "getblockcount" "[]" '.')"
 [ "$TIP_HEIGHT" -ge 110 ] || fail "expected height >= 110, got $TIP_HEIGHT"
+wait_for_wallet_scan_height "$TIP_HEIGHT"
 
 FROM_HEIGHT=$((TIP_HEIGHT - 9))
 if [ "$FROM_HEIGHT" -lt 0 ]; then
@@ -266,6 +288,7 @@ TIP_AFTER_RESTART="$(rpc_scalar "getbestblockhash" "[]" '.')"
 [ "$TIP_AFTER_RESTART" = "$OLD_TIP" ] || fail "tip hash changed across restart"
 HEIGHT_AFTER_RESTART="$(rpc_scalar "getblockcount" "[]" '.')"
 [ "$HEIGHT_AFTER_RESTART" = "$OLD_HEIGHT" ] || fail "tip height changed across restart"
+wait_for_wallet_scan_height "$HEIGHT_AFTER_RESTART"
 
 FILTERS_AFTER_RESTART="$(rpc_result "blockchain.getblockfilters" "[$FROM_HEIGHT,10]")"
 validate_filter_batch "$FILTERS_AFTER_RESTART"
@@ -308,6 +331,8 @@ ALT_ADDR="$(rpc_scalar "wallet.getnewaddress" "[]" '.address // empty')"
 info "Forcing tip reorg and refreshing proof bundle"
 rpc_result "blockchain.invalidateblock" "[\"$OLD_TIP\"]" >/dev/null
 rpc_result "generatetoaddress" "[1,\"$ALT_ADDR\"]" >/dev/null
+REORG_TIP_HEIGHT="$(rpc_scalar "getblockcount" "[]" '.')"
+wait_for_wallet_scan_height "$REORG_TIP_HEIGHT"
 
 STATUS_AFTER_REORG="$(rpc_result "wallet.proofstatus" "[\"$OLD_ROOT\"]")"
 [ "$(echo "$STATUS_AFTER_REORG" | jq -r '.stale')" = "true" ] || fail "proofstatus did not mark old bundle root stale after reorg"
