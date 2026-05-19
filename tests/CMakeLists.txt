@@ -2616,7 +2616,7 @@ if(ENABLE_ZK AND EXISTS ${CMAKE_SOURCE_DIR}/tests/test_covenant_scriptpath.cpp)
   )
   add_test(NAME CovenantScriptPath COMMAND test_covenant_scriptpath)
   set_tests_properties(CovenantScriptPath PROPERTIES
-    LABELS "covenant;scriptpath;integration"
+    LABELS "covenant;scriptpath;covenant-policy-smoke"
     TIMEOUT 60
   )
   message(STATUS "  ✓ Covenant script-path tests registered")
@@ -3854,7 +3854,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/policy/test_escape_hatches.cpp)
 
   add_test(NAME EscapeHatchTests COMMAND test_escape_hatches)
   set_tests_properties(EscapeHatchTests PROPERTIES
-    LABELS "policy;escape-hatch;integration;f4"
+    LABELS "policy;escape-hatch;covenant-policy-smoke;f4"
     TIMEOUT 10
   )
 
