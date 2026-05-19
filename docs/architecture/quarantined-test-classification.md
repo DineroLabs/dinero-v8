@@ -12,12 +12,12 @@ Local evidence used:
 - Focused local runs against `build-cmake-tests` with `--timeout 60`.
 - CMake registration comments and test-file headers.
 
-The current label-quarantined inventory after the packaging and RPC smoke
-graduations is:
+The current label-quarantined inventory after the packaging, RPC, and
+mempool/rawtx smoke graduations is:
 
 | Label | Local count | Classification |
 | --- | ---: | --- |
-| `integration` | 76 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
+| `integration` | 71 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
 | `gate` | 4 | Release/readiness gates; heavy or policy-oriented, not normal PR-CI by default. |
 | `release` | 3 | Release ownership; keep full gates manual or release-blocking unless split into smoke checks. |
 | `canonicality` | 26 | Too broad as a single quarantine; contains tests that already pass and tests that need deeper repair. |
@@ -94,6 +94,15 @@ The third label-level graduation moved `AddressIndexCrossHRP`,
 `WalletListUnspentExcludesMempoolSpent`, and `WsCookiePathResolution` into
 active `rpc-smoke` coverage. The two shell-backed tests also now receive the
 CTest build-local `dinerod` path instead of assuming `build/dinerod`.
+
+The fourth label-level graduation moved `AddressBalanceMempoolOverlay`,
+`TaprootSignRawTransactionRbfOverlay`,
+`TaprootSignRawTransactionRbfConfirmation`,
+`WalletCreateRawTransactionScriptPubKeyOutputs`, and `RbfPolicyReporting` into
+active `mempool-rawtx-smoke` coverage. Focused validation passed three
+consecutive local runs. `AddressParentChildMempoolLifecycle` and
+`ParentChildRbfReplacementWithMempoolParent` remain excluded because they fail
+runtime mempool-clearing expectations after package confirmation.
 
 Deletion is not recommended for any formerly exact-name quarantined test.
 The only retired entry so far was the stale, ineffective

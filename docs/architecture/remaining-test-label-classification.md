@@ -1,7 +1,8 @@
 # Remaining Test Label Classification
 
 Originally generated from `origin/dinero-main` at `25e6f55d` after PR #65.
-Updated after PR #69 to reflect the packaging and RPC smoke graduations.
+Updated after PR #70 to reflect the packaging, RPC, and mempool/rawtx smoke
+graduations.
 
 This document classifies the remaining label-based exclusions in
 `.github/workflows/tests.yml`:
@@ -30,8 +31,8 @@ Current inventory:
 | Metric | Count |
 | --- | ---: |
 | Registered CTest tests | 377 |
-| Selected by current Test Workflow v2 label filter | 293 |
-| Excluded by at least one remaining label | 84 |
+| Selected by current Test Workflow v2 label filter | 298 |
+| Excluded by at least one remaining label | 79 |
 
 Per-label counts below are label memberships, not disjoint sets. Several tests
 carry more than one excluded label, for example `AcceptanceParity` is both
@@ -41,7 +42,7 @@ carry more than one excluded label, for example `AcceptanceParity` is both
 | --- | ---: | --- | --- |
 | `canonicality` | 26 | Mixed correctness signal. Contains stale shielded helper-binary tests and heavier restart/reindex/reorg equivalence tests. | Continue splitting deliberately; keep restart/reindex cohorts quarantined until harness ownership is clear. |
 | `packaging` | 0 | Retired from the current label quarantine. The three former members graduated into active `packaging-smoke` coverage. | Keep future package-build or distro-output tests under a different label such as `packaging-gate` or a dedicated packaging workflow. |
-| `integration` | 76 | Broad runtime harness surface. Contains daemon, wallet, RPC, P2P, Utreexo, CSN, reindex, shielded, mining, and restart tests. | Do not graduate as one label. Split by subsystem and fixture needs. |
+| `integration` | 71 | Broad runtime harness surface. Contains daemon, wallet, RPC, P2P, Utreexo, CSN, reindex, shielded, mining, and restart tests. | Do not graduate as one label. Split by subsystem and fixture needs. |
 | `release` | 3 | Release-readiness ownership. | Keep full release gates out of normal PR CI; preserve or create smoke equivalents where useful. |
 | `gate` | 4 | Readiness/blocking gates. | Classify each gate individually as PR-safe, nightly, release-only, or manual. |
 | `fuzz` | 2 | Fuzzer-style coverage. | Move to dedicated fuzz/nightly workflow rather than normal PR `ctest`. |
@@ -142,7 +143,6 @@ Disposition:
 Tests:
 
 ```text
-AddressBalanceMempoolOverlay
 AddressParentChildMempoolLifecycle
 BridgeCsnHistoricalRangeSoak
 BridgeCsnHistoricalSpendRelay
@@ -180,7 +180,6 @@ ParallelBlockDownloadTargeted
 ParentChildRbfReplacementWithMempoolParent
 PeerMetadataRuntimeIdentity
 PositionIndexRestartEquivalence
-RbfPolicyReporting
 RebuildUndoRange
 RebuildUndoRangeCrashOracles
 ReconsiderCrashRestartEquivalence
@@ -209,14 +208,11 @@ ShieldedRpcTransferMultiEndToEnd
 ShieldedRpcUnshieldEndToEnd
 ShieldedTipMarkerRestartEquivalence
 ShieldedTipPersistRestartEquivalence
-TaprootSignRawTransactionRbfConfirmation
-TaprootSignRawTransactionRbfOverlay
 TipPersistRestartEquivalence
 UndoMetadataRestamp
 UnifiedBatchAtomicity
 UnifiedBatchAtomicity_AtomicPersistOn
 UtreexoMempoolCanonicalSeparation
-WalletCreateRawTransactionScriptPubKeyOutputs
 Wallet_W2_6_SyncIntegration
 ```
 
@@ -233,6 +229,7 @@ Recommended sub-buckets:
 | Sub-bucket | Examples | Recommended owner |
 | --- | --- | --- |
 | Address/RPC/wallet smoke | `AddressIndexCrossHRP`, `WalletListUnspentExcludesMempoolSpent`, `WsCookiePathResolution` | Graduated in PR #69 as active `rpc-smoke` coverage after three focused local runs. |
+| Mempool/rawtx smoke | `AddressBalanceMempoolOverlay`, `TaprootSignRawTransactionRbfOverlay`, `TaprootSignRawTransactionRbfConfirmation`, `WalletCreateRawTransactionScriptPubKeyOutputs`, `RbfPolicyReporting` | Graduated in PR #70 as active `mempool-rawtx-smoke` coverage after three focused local runs. Parent-child variants remain quarantined because they fail runtime mempool-clearing expectations. |
 | P2P/network runtime | `CompactBlockRelayE2E`, `ParallelBlockDownloadTargeted`, `LaggingPeerCatchupNoOrphans` | Nightly or dedicated network harness first. |
 | CSN/Utreexo bridge | `BridgeCsnHistoricalSpendRelay`, `CsnBridgeAssistedSpendFlow`, `CsnSyncLiveSpendTraffic` | Dedicated Utreexo/CSN workflow; some may need external or long-running fixtures. |
 | Canonical restart/reindex | `ConnectTipRestartEquivalence`, `ReindexPromotionRestartEquivalence`, `UnifiedBatchAtomicity` | Keep with canonicality plan. |
@@ -303,7 +300,16 @@ Recommended next action:
    the broad `integration` label into active `rpc-smoke` coverage. The two
    shell tests now receive CTest's build-local `dinerod` path instead of
    assuming `build/dinerod`.
-4. Later: design dedicated lanes for P2P/network, CSN/Utreexo, shielded E2E,
+4. PR #70: graduated `AddressBalanceMempoolOverlay`,
+   `TaprootSignRawTransactionRbfOverlay`,
+   `TaprootSignRawTransactionRbfConfirmation`,
+   `WalletCreateRawTransactionScriptPubKeyOutputs`, and `RbfPolicyReporting`
+   into active `mempool-rawtx-smoke` coverage. The parent-child mempool tests
+   and `RpcStopCleanShutdown` remain excluded: the parent-child tests fail
+   runtime mempool-clearing expectations, and `RpcStopCleanShutdown` still
+   needs its hardcoded `build/dinerod` harness path repaired before behavioral
+   classification.
+5. Later: design dedicated lanes for P2P/network, CSN/Utreexo, shielded E2E,
    release gates, and fuzz.
 
 The rule from the named-test cleanup still applies: shrink the quarantine only

@@ -450,10 +450,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_address_balance_mempool_overlay.sh)
     add_test(
         NAME AddressBalanceMempoolOverlay
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_address_balance_mempool_overlay.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_address_balance_mempool_overlay.sh
     )
     set_tests_properties(AddressBalanceMempoolOverlay PROPERTIES
-        LABELS "integration;rpc;mempool;wallet;address-index"
+        LABELS "mempool-rawtx-smoke;rpc;mempool;wallet;address-index"
         TIMEOUT 180
     )
     message(STATUS "  ✓ AddressBalanceMempoolOverlay registered")
@@ -488,10 +490,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_taproot_signrawtransaction_rbf_overlay.sh)
     add_test(
         NAME TaprootSignRawTransactionRbfOverlay
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_taproot_signrawtransaction_rbf_overlay.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_taproot_signrawtransaction_rbf_overlay.sh
     )
     set_tests_properties(TaprootSignRawTransactionRbfOverlay PROPERTIES
-        LABELS "integration;wallet;mempool;rbf;taproot"
+        LABELS "mempool-rawtx-smoke;wallet;mempool;rbf;taproot"
         TIMEOUT 240
     )
     message(STATUS "  ✓ TaprootSignRawTransactionRbfOverlay registered")
@@ -500,10 +504,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_taproot_signrawtransaction_rbf_confirmation.sh)
     add_test(
         NAME TaprootSignRawTransactionRbfConfirmation
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_taproot_signrawtransaction_rbf_confirmation.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_taproot_signrawtransaction_rbf_confirmation.sh
     )
     set_tests_properties(TaprootSignRawTransactionRbfConfirmation PROPERTIES
-        LABELS "integration;wallet;mempool;rbf;taproot"
+        LABELS "mempool-rawtx-smoke;wallet;mempool;rbf;taproot"
         TIMEOUT 240
     )
     message(STATUS "  ✓ TaprootSignRawTransactionRbfConfirmation registered")
@@ -524,10 +530,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_createrawtransaction_scriptpubkey_outputs.sh)
     add_test(
         NAME WalletCreateRawTransactionScriptPubKeyOutputs
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_createrawtransaction_scriptpubkey_outputs.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_createrawtransaction_scriptpubkey_outputs.sh
     )
     set_tests_properties(WalletCreateRawTransactionScriptPubKeyOutputs PROPERTIES
-        LABELS "integration;wallet;rawtx;taproot;scriptpubkey"
+        LABELS "mempool-rawtx-smoke;wallet;rawtx;taproot;scriptpubkey"
         TIMEOUT 180
     )
     message(STATUS "  ✓ WalletCreateRawTransactionScriptPubKeyOutputs registered")
@@ -550,10 +558,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_rbf_policy_reporting.sh)
     add_test(
         NAME RbfPolicyReporting
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_rbf_policy_reporting.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_rbf_policy_reporting.sh
     )
     set_tests_properties(RbfPolicyReporting PROPERTIES
-        LABELS "integration;rpc;mempool;rbf"
+        LABELS "mempool-rawtx-smoke;rpc;mempool;rbf"
         TIMEOUT 120
     )
     message(STATUS "  ✓ RbfPolicyReporting registered")
