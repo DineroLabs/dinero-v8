@@ -578,10 +578,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_filter_commitment_activation_boundary.sh)
     add_test(
         NAME FilterCommitmentActivationBoundary
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_filter_commitment_activation_boundary.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_filter_commitment_activation_boundary.sh
     )
     set_tests_properties(FilterCommitmentActivationBoundary PROPERTIES
-        LABELS "integration;mining;filters;activation;boundary"
+        LABELS "filter-commitment-smoke;mining;filters;activation;boundary"
         TIMEOUT 900
     )
     message(STATUS "  ✓ FilterCommitmentActivationBoundary registered")
