@@ -154,6 +154,14 @@ mine_to_height() {
     done
 }
 
+assert_no_filter_at_height() {
+    local height="$1"
+    local filter_json
+    filter_json="$(rpc_result "blockchain.getblockfilters" "[$height,1]")"
+    [ "$(echo "$filter_json" | jq -r '.count')" = "0" ] || fail "expected no filter row at pre-activation height $height"
+    pass "height $height has no filter (pre-activation, as expected)"
+}
+
 validate_filter_commitment_height() {
     local height="$1"
 
@@ -227,7 +235,7 @@ info "Mining to activation boundary at height $POST_HEIGHT"
 mine_to_height "$POST_HEIGHT" "$ADDR"
 [ "$(rpc_scalar "getblockcount" "[]" '.')" = "$POST_HEIGHT" ] || fail "unexpected tip after activation mining"
 
-validate_filter_commitment_height "$PRE_HEIGHT"
+assert_no_filter_at_height "$PRE_HEIGHT"
 validate_filter_commitment_height "$AT_HEIGHT"
 validate_filter_commitment_height "$POST_HEIGHT"
 
