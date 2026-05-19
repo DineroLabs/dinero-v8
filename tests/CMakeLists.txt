@@ -4452,6 +4452,8 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
     src/p2p/addrman.cpp
+    src/p2p/addr_v2.cpp            # NAT Phase 1A.2: BIP155 addrv2 used by p2p_manager
+    src/daemon/node_identity.cpp   # NAT Phase 1A: dineroid keypair used by p2p_manager
   )
   target_include_directories(test_codebase_verification PRIVATE
     ${CMAKE_SOURCE_DIR}/tests
@@ -4468,6 +4470,8 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     sqlite3
     jsoncpp_static
     gtest
+    OpenSSL::SSL          # NAT Phase 1A: node_identity -> dinero_crypto_minimal needs OpenSSL
+    OpenSSL::Crypto
   )
   link_zstd_if_needed(test_codebase_verification)
   if(APPLE)
@@ -4963,6 +4967,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp  # For P2PMessage::create_inv() and P2PManager
     src/p2p/addrman.cpp
+    src/p2p/addr_v2.cpp            # NAT Phase 1A.2: BIP155 addrv2 used by p2p_manager
+    src/daemon/node_identity.cpp   # NAT Phase 1A: dineroid keypair used by p2p_manager
   )
   target_include_directories(test_mining_smoke PRIVATE
     ${CMAKE_SOURCE_DIR}/tests
@@ -4979,6 +4985,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     sqlite3
     jsoncpp_static
     gtest
+    OpenSSL::SSL          # NAT Phase 1A: node_identity -> dinero_crypto_minimal needs OpenSSL
+    OpenSSL::Crypto
   )
   link_zstd_if_needed(test_mining_smoke)
   if(APPLE)
@@ -7224,6 +7232,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     src/daemon/peer_scoring.cpp
     src/daemon/peer_reputation_db.cpp
     src/p2p/addrman.cpp
+    src/p2p/addr_v2.cpp            # NAT Phase 1A.2: BIP155 addrv2 used by p2p_manager
+    src/daemon/node_identity.cpp   # NAT Phase 1A: dineroid keypair used by p2p_manager
     src/common/logger.cpp
     src/network/utreexo_messages.cpp
   )
@@ -7236,9 +7246,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     sqlite3
     jsoncpp_static
     gtest
+    OpenSSL::SSL          # NAT Phase 1A: node_identity -> dinero_crypto_minimal needs OpenSSL
+    OpenSSL::Crypto
   )
   link_zstd_if_needed(test_p2p_handshake)
-  target_include_directories(test_p2p_handshake PRIVATE
+  target_include_directories(test_p2p_handshake BEFORE PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/tests/p2p
@@ -7266,6 +7278,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     src/daemon/peer_scoring.cpp
     src/daemon/peer_reputation_db.cpp
     src/p2p/addrman.cpp
+    src/p2p/addr_v2.cpp            # NAT Phase 1A.2: BIP155 addrv2 used by p2p_manager
+    src/daemon/node_identity.cpp   # NAT Phase 1A: dineroid keypair used by p2p_manager
     src/common/logger.cpp
     src/network/utreexo_messages.cpp
   )
@@ -7278,9 +7292,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     sqlite3
     jsoncpp_static
     gtest
+    OpenSSL::SSL          # NAT Phase 1A: node_identity -> dinero_crypto_minimal needs OpenSSL
+    OpenSSL::Crypto
   )
   link_zstd_if_needed(test_p2p_ping_pong)
-  target_include_directories(test_p2p_ping_pong PRIVATE
+  target_include_directories(test_p2p_ping_pong BEFORE PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/tests/p2p
