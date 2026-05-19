@@ -479,6 +479,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_address_index_cross_hrp.sh)
     message(STATUS "  ✓ AddressIndexCrossHRP registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_p2mr_address_index_rpc_smoke.sh)
+    add_test(
+        NAME P2MRAddressIndexRpcSmoke
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_p2mr_address_index_rpc_smoke.sh
+    )
+    set_tests_properties(P2MRAddressIndexRpcSmoke PROPERTIES
+        LABELS "p2mr-address-smoke;rpc;wallet;address-index;p2mr"
+        TIMEOUT 240
+    )
+    message(STATUS "  ✓ P2MRAddressIndexRpcSmoke registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_address_parent_child_mempool_lifecycle.sh)
     add_test(
         NAME AddressParentChildMempoolLifecycle
