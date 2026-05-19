@@ -13,11 +13,12 @@ Local evidence used:
 - CMake registration comments and test-file headers.
 
 The current label-quarantined inventory after the packaging, RPC,
-mempool/rawtx, and shutdown smoke graduations is:
+mempool/rawtx, mempool-package, shutdown, and covenant/policy smoke
+graduations is:
 
 | Label | Local count | Classification |
 | --- | ---: | --- |
-| `integration` | 70 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
+| `integration` | 66 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
 | `gate` | 4 | Release/readiness gates; heavy or policy-oriented, not normal PR-CI by default. |
 | `release` | 3 | Release ownership; keep full gates manual or release-blocking unless split into smoke checks. |
 | `canonicality` | 26 | Too broad as a single quarantine; contains tests that already pass and tests that need deeper repair. |
@@ -108,6 +109,16 @@ The fifth label-level graduation moved `RpcStopCleanShutdown` into active
 `rpc-shutdown-smoke` coverage after repairing its hardcoded `build/dinerod`
 harness path. Focused validation passed three consecutive local runs and
 verified stop-RPC shutdown exits cleanly without abort markers.
+
+The sixth label-level graduation moved `AddressParentChildMempoolLifecycle` and
+`ParentChildRbfReplacementWithMempoolParent` into active
+`mempool-package-smoke` coverage after PR #72 fixed same-package child
+selection in block templates.
+
+The seventh label-level graduation moved `CovenantScriptPath` and
+`EscapeHatchTests` into active `covenant-policy-smoke` coverage. Focused
+validation passed three consecutive local runs. These are cheap compiled
+correctness/policy tests, not daemon integration fixtures.
 
 Deletion is not recommended for any formerly exact-name quarantined test.
 The only retired entry so far was the stale, ineffective

@@ -161,6 +161,16 @@ The fifth label split graduated `RpcStopCleanShutdown` into
 validation passed three consecutive stop-RPC shutdown runs without abort
 markers.
 
+The sixth label split graduated the two parent-child mempool package tests into
+`mempool-package-smoke` after PR #72 fixed same-package child selection in block
+templates: `AddressParentChildMempoolLifecycle` and
+`ParentChildRbfReplacementWithMempoolParent`.
+
+The seventh label split graduated two cheap compiled correctness/policy tests
+into `covenant-policy-smoke`: `CovenantScriptPath` and `EscapeHatchTests`.
+Focused local validation passed three consecutive runs. These tests are not
+daemon integration fixtures and should stay in normal PR CI.
+
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
 binary, required scripts, and `ctest` availability without running the heavy
