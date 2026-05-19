@@ -132,21 +132,29 @@ std::vector<Transaction> FilterChainBackedTemplateTransactions(
         return candidate_txs;
     }
 
+    // Relies on candidate_txs being topologically ordered (parent before child),
+    // as guaranteed by Mempool::selectTransactionsForBlock. The running
+    // accepted_txids set lets a child's input resolve via an in-package parent
+    // that has already been accepted, without falsely accepting a child whose
+    // parent itself gets deferred.
     std::vector<Transaction> filtered_txs;
     filtered_txs.reserve(candidate_txs.size());
+    std::unordered_set<uint256> accepted_txids;
+    accepted_txids.reserve(candidate_txs.size());
 
     for (const auto& tx : candidate_txs) {
         bool chain_backed = true;
         for (const auto& input : tx.vin) {
             const OutPoint outpoint(input.prevout.txid, input.prevout.vout);
-            if (!has_chain_utxo(outpoint)) {
-                chain_backed = false;
-                break;
-            }
+            if (has_chain_utxo(outpoint)) continue;
+            if (accepted_txids.count(input.prevout.txid.AsUint256()) != 0) continue;
+            chain_backed = false;
+            break;
         }
 
         if (chain_backed) {
             filtered_txs.push_back(tx);
+            accepted_txids.insert(tx.GetTxid().AsUint256());
         } else if (deferred_txids) {
             deferred_txids->insert(tx.GetTxid().AsUint256());
         }
