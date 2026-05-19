@@ -676,6 +676,128 @@ P2PMessage P2PMessage::create_relay_hints(const std::vector<RelayHint>& hints) {
     return msg;
 }
 
+// NAT traversal Phase C3 slice 2: validate + ingest a RELAY_REGISTER.
+//
+// Validation rules (each must hold or we log + drop):
+//   1. Peer's dineroid identity is proven (we have their pubkey).
+//   2. Payload is well-formed: 20 + 4 + 8 + 1 + sig_len bytes.
+//   3. Claimed node_id matches the dineroid-proven node_id (you can
+//      only register YOUR OWN identity — not someone else's).
+//   4. Nonce in the payload equals peer->our_nonce — the nonce WE
+//      sent in OUR version message to THIS peer. Binds the
+//      registration to this specific connection so an attacker who
+//      captures the relayreg on the wire can't replay it elsewhere.
+//   5. TTL clamped to RelayRegistry::kMaxTtlSeconds (2h).
+//   6. SHA256(nonce_LE || node_id || ttl_LE) verifies against the
+//      proven pubkey using NodeIdentity::verify_bytes.
+//   7. Registry has capacity (refuses new entries when full, but
+//      always lets existing registrants refresh).
+void P2PManager::handle_relay_register(const std::string& peer_address,
+                                       const P2PMessage& message) {
+    // (2) Wire-format length check.
+    constexpr size_t kFixedPrefix = 20 + 4 + 8 + 1;
+    if (message.payload.size() < kFixedPrefix) {
+        std::cout << "[P2P] relayreg: short payload (" << message.payload.size()
+                  << " bytes) from " << peer_address << std::endl;
+        return;
+    }
+    const uint8_t sig_len = message.payload[20 + 4 + 8];
+    if (sig_len == 0 || sig_len > 72 ||
+        message.payload.size() != kFixedPrefix + sig_len) {
+        std::cout << "[P2P] relayreg: bad sig_len " << static_cast<int>(sig_len)
+                  << " from " << peer_address << std::endl;
+        return;
+    }
+
+    std::array<uint8_t, 20> claimed_node_id{};
+    std::copy_n(message.payload.begin(), 20, claimed_node_id.begin());
+
+    const uint32_t ttl = ReadLE32(message.payload, 20);
+    const uint64_t payload_nonce = ReadLE64(message.payload, 20 + 4);
+    const uint8_t* sig_ptr = message.payload.data() + kFixedPrefix;
+
+    // (1) Look up the peer; require proven identity.
+    std::shared_ptr<PeerInfo> peer;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it != connected_peers_.end()) peer = it->second;
+    }
+    if (!peer) {
+        std::cout << "[P2P] relayreg: unknown peer " << peer_address << std::endl;
+        return;
+    }
+    if (!peer->identity_proven) {
+        std::cout << "[P2P] relayreg: rejected from " << peer_address
+                  << " — dineroid identity not proven on this connection" << std::endl;
+        return;
+    }
+
+    // (3) Claimed node_id MUST match the proven one.
+    if (claimed_node_id != peer->their_node_id) {
+        std::cout << "[P2P] relayreg: claimed node_id doesn't match proven identity from "
+                  << peer_address << " — refused" << std::endl;
+        return;
+    }
+
+    // (4) Nonce binding to THIS connection.
+    if (payload_nonce != peer->our_nonce) {
+        std::cout << "[P2P] relayreg: nonce mismatch from " << peer_address
+                  << " (replay attempt or stale message)" << std::endl;
+        return;
+    }
+
+    // (5) Clamp TTL.
+    const uint32_t effective_ttl =
+        std::min<uint32_t>(ttl, dinero::network::RelayRegistry::kMaxTtlSeconds);
+    if (effective_ttl == 0) {
+        std::cout << "[P2P] relayreg: zero TTL from " << peer_address
+                  << " — refused" << std::endl;
+        return;
+    }
+
+    // (6) Reconstruct the signed message and verify.
+    std::vector<uint8_t> signed_msg;
+    signed_msg.reserve(8 + 20 + 4);
+    for (int i = 0; i < 8; i++) {
+        signed_msg.push_back(static_cast<uint8_t>((payload_nonce >> (i * 8)) & 0xFF));
+    }
+    signed_msg.insert(signed_msg.end(), claimed_node_id.begin(), claimed_node_id.end());
+    for (int i = 0; i < 4; i++) {
+        signed_msg.push_back(static_cast<uint8_t>((ttl >> (i * 8)) & 0xFF));
+    }
+    if (!dinero::daemon::NodeIdentity::verify_bytes(
+            signed_msg.data(), signed_msg.size(),
+            sig_ptr, sig_len, peer->their_pubkey.data())) {
+        std::cout << "[P2P] relayreg: signature verification FAILED from "
+                  << peer_address << std::endl;
+        return;
+    }
+
+    // (7) Register.
+    dinero::network::RelayRegistration reg;
+    reg.node_id = claimed_node_id;
+    reg.pubkey = peer->their_pubkey;
+    reg.peer_address = peer_address;
+    reg.expires_at = std::chrono::steady_clock::now() +
+                     std::chrono::seconds(effective_ttl);
+    const bool inserted = relay_registry_.Register(reg);
+    if (!inserted) {
+        std::cout << "[P2P] relayreg: refused from " << peer_address
+                  << " — registry at capacity (" << relay_registry_.size() << ")"
+                  << std::endl;
+        return;
+    }
+
+    std::ostringstream id_hex;
+    id_hex << std::hex << std::setfill('0');
+    for (auto b : claimed_node_id) id_hex << std::setw(2) << static_cast<unsigned int>(b);
+    std::cout << "[P2P] relayreg: registered " << id_hex.str() << " from "
+              << peer_address << " for " << effective_ttl
+              << "s (registry size now " << relay_registry_.size() << ")"
+              << std::endl;
+}
+
 // NAT traversal Phase 1A.2 / BIP155: sendaddrv2 has empty payload — its
 // mere presence is the negotiation that both peers speak addrv2.
 P2PMessage P2PMessage::create_sendaddrv2() {
@@ -3055,15 +3177,16 @@ void P2PManager::process_message(const std::string& peer_address, const P2PMessa
         }
     } else if (message.command == "addrv2") {
         handle_addrv2(peer_address, message);
-    } else if (message.command == "relayreg" || message.command == "relaycon" ||
+    } else if (message.command == "relayreg") {
+        // NAT Phase C3 slice 2: real handler — validates sig, registers.
+        handle_relay_register(peer_address, message);
+    } else if (message.command == "relaycon" ||
                message.command == "relayack" || message.command == "relaydat" ||
                message.command == "relaypng" || message.command == "relayhnt") {
-        // NAT Phase C3 slice 1: protocol surface only — log + drop. Later
-        // slices add the registry (slice 2), circuit splicing (slice 3),
-        // and the client-side outbound logic (slice 4). Until then we
-        // accept the messages cleanly so any forward-deployed relay
-        // implementation can probe whether a peer speaks the protocol
-        // without us closing the connection on them.
+        // NAT Phase C3 slices 3+: still log-only. The splice (slice 3) and
+        // client-side outbound (slice 4) land in follow-up commits; until
+        // then we accept the messages cleanly so any forward-deployed
+        // implementation can probe whether a peer speaks the protocol.
         std::cout << "[P2P] relay-protocol message '" << message.command
                   << "' (" << message.payload.size() << " bytes) from "
                   << peer_address << " — handler is a Phase C3 follow-up; dropped"

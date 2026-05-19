@@ -16,6 +16,7 @@
 
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
+#include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
 
 namespace dinero { namespace daemon { class NodeIdentity; } }
 
@@ -389,6 +390,14 @@ public:
     // onion-string-roundtrip codec lands in a follow-up commit).
     void handle_addrv2(const std::string& peer_address, const P2PMessage& message);
 
+    // NAT traversal Phase C3 slice 2: validates a RELAY_REGISTER
+    // payload from `peer_address` and, on success, inserts/refreshes
+    // the corresponding RelayRegistry entry. Validation requires the
+    // peer's dineroid identity to already be proven — otherwise we
+    // have no pubkey to verify the signature against.
+    void handle_relay_register(const std::string& peer_address,
+                               const P2PMessage& message);
+
 private:
     // Outbox for async sending
     struct OutMsg {
@@ -467,6 +476,12 @@ private:
     // shared_ptr because the same instance is also consumed by other
     // services (serverinfo signer, future relay register).
     std::shared_ptr<dinero::daemon::NodeIdentity> node_identity_;
+
+    // NAT traversal Phase C3 slice 2: in-memory directory of NAT'd
+    // peers that have registered with us as their relay. Empty until
+    // a RELAY_REGISTER arrives. handle_relaycon (slice 3) will look
+    // up the registration to find the target peer's TCP connection.
+    dinero::network::RelayRegistry relay_registry_;
 
     // Network threads
     void listen_loop();
