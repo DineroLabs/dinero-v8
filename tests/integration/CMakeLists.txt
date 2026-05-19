@@ -405,7 +405,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_chain_identity_sync.sh)
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_chain_identity_sync.sh
     )
     set_tests_properties(ChainIdentitySync PROPERTIES
-        LABELS "integration;consensus;chain-identity"
+        LABELS "chain-identity-smoke;consensus;chain-identity"
         TIMEOUT 30
     )
     message(STATUS "  ✓ ChainIdentitySync registered")
