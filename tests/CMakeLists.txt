@@ -2209,6 +2209,30 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_headers_sync_service.cpp)
   message(STATUS "✅ HeadersSyncService boundary smoke test enabled")
 endif()
 
+# services-boundary-smoke: PeerScoringService boundary contract.
+# Service owns a unique_ptr<p2p::PeerScoringManager>; tests verify Name(),
+# getManager() identity preservation, Init/Start/Stop safety, and that
+# fresh-peer defaults (score=0, isBanned=false) wire through.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_peer_scoring_service.cpp)
+  add_executable(test_peer_scoring_service
+    tests/services/test_peer_scoring_service.cpp
+    src/daemon/services/peer_scoring_service.cpp
+    src/daemon/services/config_service.cpp  # ConfigService::DataDir() referenced in Init
+    src/common/logger.cpp                    # transitive through config_service
+    src/p2p/peer_scoring.cpp
+  )
+  target_include_directories(test_peer_scoring_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME PeerScoringServiceBoundary COMMAND test_peer_scoring_service)
+  set_tests_properties(PeerScoringServiceBoundary PROPERTIES
+    LABELS "services-boundary-smoke;daemon;peer-scoring;service-hub"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ PeerScoringService boundary smoke test enabled")
+endif()
+
 # NOTE: CompactBlockService boundary test is intentionally deferred.
 # CompactBlockService::getBlocksProcessed() and getReconstructionRate()
 # in compact_block_service.cpp reference dinero::BlockRelayManager::GetStats /
