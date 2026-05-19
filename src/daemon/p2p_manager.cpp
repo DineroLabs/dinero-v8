@@ -533,6 +533,25 @@ P2PMessage P2PMessage::create_verack() {
 // `nonce_to_sign` is the REMOTE peer's version nonce (8 bytes, little-endian).
 // Signing that value binds this dineroid to the specific handshake; replaying
 // it against any other connection fails because the other side's nonce differs.
+// NAT traversal Phase 1A.2 / BIP155: sendaddrv2 has empty payload — its
+// mere presence is the negotiation that both peers speak addrv2.
+P2PMessage P2PMessage::create_sendaddrv2() {
+    P2PMessage msg;
+    msg.command = "sendaddrv2";
+    msg.payload.clear();
+    return msg;
+}
+
+// NAT traversal Phase 1A.2 / BIP155: typed addr-v2 message body. Delegates
+// the wire format to dinero::p2p::EncodeAddrV2 so the encoder is shared
+// with any unit tests that might need it independently of the P2P frame.
+P2PMessage P2PMessage::create_addrv2(const std::vector<dinero::p2p::AddrV2Entry>& entries) {
+    P2PMessage msg;
+    msg.command = "addrv2";
+    msg.payload = dinero::p2p::EncodeAddrV2(entries);
+    return msg;
+}
+
 P2PMessage P2PMessage::create_dineroid(const dinero::daemon::NodeIdentity& identity,
                                        uint64_t nonce_to_sign) {
     P2PMessage msg;
@@ -1108,6 +1127,126 @@ void P2PManager::ExchangeDineroId(PeerInfo* peer) {
     }
     std::cout << "[Handshake] dineroid: identity proven for " << peer->to_string()
               << " (node_id=" << id_hex.str() << ")" << std::endl;
+}
+
+// NAT traversal Phase 1A.2 / BIP155: symmetric sendaddrv2 negotiation.
+// Called from perform_handshake right after ExchangeDineroId so it inherits
+// the same NODE_DINERO_V2 gate. Both peers send their (empty-payload)
+// sendaddrv2 in parallel — like dineroid the send-then-receive ordering is
+// deadlock-free at this fragment size.
+//
+// Failure modes are all non-fatal: rc7- peers won't send sendaddrv2, the
+// receive will time out (or the message will be a different command if a
+// post-verack message races us); either way the peer flag stays false and
+// legacy `addr` continues to flow. Only effect of failure is "we'll send
+// legacy addr to this peer instead of addrv2."
+void P2PManager::ExchangeSendAddrV2(PeerInfo* peer) {
+    if (!peer) return;
+
+    auto out = P2PMessage::create_sendaddrv2();
+    if (!send_message(peer->socket_fd, out)) {
+        std::cout << "[Handshake] sendaddrv2: send failed to " << peer->to_string()
+                  << "; legacy addr still works" << std::endl;
+        return;
+    }
+
+    auto remote = receive_message(peer->socket_fd);
+    if (!remote) {
+        std::cout << "[Handshake] sendaddrv2: no response from " << peer->to_string()
+                  << " (older peer?); falling back to legacy addr" << std::endl;
+        return;
+    }
+    if (remote->command != "sendaddrv2") {
+        std::cout << "[Handshake] sendaddrv2: expected 'sendaddrv2' but got '"
+                  << remote->command << "' from " << peer->to_string()
+                  << "; falling back to legacy addr" << std::endl;
+        return;
+    }
+    peer->peer_wants_addrv2 = true;
+    std::cout << "[Handshake] sendaddrv2: peer " << peer->to_string()
+              << " supports addrv2 (BIP155 typed addr gossip enabled)" << std::endl;
+}
+
+// BIP155 addrv2 ingestion path. Decodes via dinero::p2p::DecodeAddrV2,
+// then funnels IPV4 / IPV6 entries into the same remember_peer_address()
+// pipe that legacy handle_addr uses. TORV3 / I2P entries are parsed but
+// dropped: ingesting them requires (a) onion-string codec (TORv3 checksum
+// needs SHA3) and (b) addrman storage that remembers the network type.
+// Both land in a follow-up commit; until then we explicitly count and log
+// the dropped entries so operators can see we're seeing them.
+void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage& message) {
+    std::vector<dinero::p2p::AddrV2Entry> entries;
+    std::string err;
+    if (!dinero::p2p::DecodeAddrV2(message.payload, &entries, &err)) {
+        std::cout << "[P2P] handle_addrv2: malformed payload from " << peer_address
+                  << ": " << err << std::endl;
+        return;
+    }
+
+    int ipv4_added = 0;
+    int ipv6_seen = 0;
+    int torv3_skipped = 0;
+    int i2p_skipped = 0;
+    std::vector<std::pair<std::string, uint16_t>> new_for_relay;
+
+    for (const auto& e : entries) {
+        switch (e.net) {
+            case dinero::p2p::NetworkType::IPV4: {
+                // addr is exactly 4 bytes per network type validation.
+                char buf[16];
+                std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+                              e.addr[0], e.addr[1], e.addr[2], e.addr[3]);
+                std::string addr(buf);
+                if (e.port == 0) continue;
+                if (addr == "127.0.0.1" || addr == "0.0.0.0") continue;
+                if (!external_ip_.empty() && addr == external_ip_ && e.port == listen_port_) continue;
+                // Same defensive ephemeral-port filter as handle_addr —
+                // only allow our own listen_port_, since that's the
+                // canonical Dinero P2P port.
+                if (e.port != listen_port_) continue;
+                if (remember_peer_address(addr, e.port, peer_address)) {
+                    ipv4_added++;
+                    new_for_relay.emplace_back(addr, e.port);
+                }
+                break;
+            }
+            case dinero::p2p::NetworkType::IPV6:
+                ipv6_seen++;
+                // TODO Phase A2 follow-up: format the 16 bytes as a
+                // bracketed IPv6 string and pass through the same
+                // remember_peer_address path. Existing addrman is
+                // string-keyed so the format must be canonical.
+                break;
+            case dinero::p2p::NetworkType::TORV3:
+                torv3_skipped++;
+                // TODO Phase A2 follow-up: encode raw 32-byte pubkey
+                // back to "xxx.onion" using the TORv3 base32 + SHA3
+                // checksum scheme. Once that lands the existing
+                // SOCKS5 dial path can reach these peers.
+                break;
+            case dinero::p2p::NetworkType::I2P:
+                i2p_skipped++;
+                break;
+            case dinero::p2p::NetworkType::Unknown:
+                break;
+        }
+    }
+
+    if (ipv4_added > 0 || ipv6_seen > 0 || torv3_skipped > 0 || i2p_skipped > 0) {
+        std::cout << "[P2P] addrv2 from " << peer_address
+                  << ": ipv4_added=" << ipv4_added
+                  << " ipv6_seen=" << ipv6_seen
+                  << " torv3_skipped=" << torv3_skipped
+                  << " i2p_skipped=" << i2p_skipped
+                  << " (TORv3/I2P/IPv6 ingestion is a Phase A2 follow-up)"
+                  << std::endl;
+        if (ipv4_added > 0 && !peers_file_path_.empty()) {
+            save_peers_with_seeds(peers_file_path_);
+        }
+        if (!new_for_relay.empty()) {
+            relay_addresses_to_peers(peer_address, new_for_relay);
+        }
+    }
 }
 
 void P2PManager::set_node_identity(std::shared_ptr<dinero::daemon::NodeIdentity> identity) {
@@ -2120,6 +2259,13 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         if (both_v2 && node_identity_) {
             ExchangeDineroId(peer);
         }
+        // NAT traversal Phase 1A.2: BIP155 sendaddrv2 negotiation. Gated on
+        // the same NODE_DINERO_V2 capability (no separate flag — addrv2 is
+        // tied to v2 protocol). Identity is NOT a prereq here — addrv2
+        // works fine without proven identity.
+        if (both_v2) {
+            ExchangeSendAddrV2(peer);
+        }
 
         // Send verack
         auto verack_msg = P2PMessage::create_verack();
@@ -2165,6 +2311,13 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
                              (our_services & ServiceFlags::NODE_DINERO_V2);
         if (both_v2 && node_identity_) {
             ExchangeDineroId(peer);
+        }
+        // NAT traversal Phase 1A.2: BIP155 sendaddrv2 negotiation. Gated on
+        // the same NODE_DINERO_V2 capability (no separate flag — addrv2 is
+        // tied to v2 protocol). Identity is NOT a prereq here — addrv2
+        // works fine without proven identity.
+        if (both_v2) {
+            ExchangeSendAddrV2(peer);
         }
 
         // Wait for verack
@@ -2748,6 +2901,17 @@ void P2PManager::process_message(const std::string& peer_address, const P2PMessa
         handle_getaddr(peer_address, message);
     } else if (message.command == "addr") {
         handle_addr(peer_address, message);
+    } else if (message.command == "sendaddrv2") {
+        // BIP155 allows late `sendaddrv2` too; pick up the flag whenever it
+        // arrives. (Handshake path also sets it; this just keeps state in
+        // sync when the message comes outside the negotiation window.)
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it != connected_peers_.end() && it->second) {
+            it->second->peer_wants_addrv2 = true;
+        }
+    } else if (message.command == "addrv2") {
+        handle_addrv2(peer_address, message);
     } else {
         // Forward to application handler
         if (message_handler_) {

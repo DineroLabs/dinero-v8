@@ -12,6 +12,7 @@ set(DINERO_CORE_P2P_SOURCES
   src/p2p/multi_peer_headers_sync.cpp
   src/p2p/compact_block.cpp
   src/p2p/addrman.cpp
+  src/p2p/addr_v2.cpp                # NAT traversal Phase 1A.2: BIP155 typed addr gossip
   src/p2p/peer_manager_posix.cpp
 
   # Network glue used by the daemon core

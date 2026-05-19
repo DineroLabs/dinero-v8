@@ -15,6 +15,7 @@
 #include <array>
 
 #include "p2p/addrman.h"
+#include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
 
 namespace dinero { namespace daemon { class NodeIdentity; } }
 
@@ -95,6 +96,14 @@ struct PeerInfo {
     std::array<uint8_t, 20> their_node_id{};
     bool identity_proven{false};
 
+    // ─── NAT traversal Phase 1A.2: BIP155 addrv2 negotiation ─────────────
+    // Set true after the remote peer sends `sendaddrv2` during handshake.
+    // Outbound addr-relay paths will consult this flag (later commit) —
+    // when true, send via create_addrv2() (typed); when false, fall back
+    // to legacy create_addr() (string-form). We always advertise our own
+    // support to peers that signal NODE_DINERO_V2.
+    bool peer_wants_addrv2{false};
+
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
         : address(std::move(other.address)),
@@ -157,6 +166,13 @@ struct P2PMessage {
     // handle that as a non-fatal handshake skip.
     static P2PMessage create_dineroid(const dinero::daemon::NodeIdentity& identity,
                                       uint64_t nonce_to_sign);
+
+    // NAT traversal Phase 1A.2 / BIP155:
+    //   sendaddrv2 has empty payload — its presence is the negotiation.
+    //   addrv2 wraps a typed entry list via dinero::p2p::EncodeAddrV2.
+    static P2PMessage create_sendaddrv2();
+    static P2PMessage create_addrv2(const std::vector<dinero::p2p::AddrV2Entry>& entries);
+
     static P2PMessage create_ping(uint64_t nonce);
     static P2PMessage create_pong(uint64_t nonce);
     static P2PMessage create_getaddr();
@@ -300,6 +316,19 @@ public:
     // populates peer->their_pubkey / their_node_id / identity_proven on
     // success. Failures are non-fatal — handshake continues legacy-style.
     void ExchangeDineroId(PeerInfo* peer);
+
+    // NAT traversal Phase 1A.2: symmetric `sendaddrv2` negotiation. Sends
+    // our (empty-payload) sendaddrv2; receives remote's. Sets
+    // peer->peer_wants_addrv2 = true on receipt. Same gating as
+    // ExchangeDineroId — both peers advertise NODE_DINERO_V2 — and
+    // similarly non-fatal on failure (legacy `addr` continues to work).
+    void ExchangeSendAddrV2(PeerInfo* peer);
+
+    // BIP155 addrv2 ingestion. Mirrors handle_addr but decodes via
+    // dinero::p2p::DecodeAddrV2 and currently feeds only IPV4 / IPV6
+    // entries into addrman (TORV3 / I2P parsed-and-skipped until the
+    // onion-string-roundtrip codec lands in a follow-up commit).
+    void handle_addrv2(const std::string& peer_address, const P2PMessage& message);
 
 private:
     // Outbox for async sending

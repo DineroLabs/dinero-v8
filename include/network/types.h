@@ -68,6 +68,17 @@ namespace MessageCommands {
     // by node_identity.dat keypair. Proves the speaker controls node_id
     // = HASH160(pubkey). Older peers ignore unknown commands.
     constexpr const char* DINEROID = "dineroid";
+
+    // NAT traversal Phase 1A.2 / BIP155: typed address gossip.
+    // SENDADDRV2 (empty payload) signals support for ADDRV2 and is sent
+    // in the same post-version, pre-verack window as DINEROID, gated on
+    // NODE_DINERO_V2. When both peers send it, addr-gossip switches to
+    // ADDRV2 — entries carry an explicit network-id byte (IPV4, IPV6,
+    // TORV3 spec-compliant, I2P parsed-and-skipped for now) plus a
+    // varlen address blob and BE port. Legacy ADDR is still parsed
+    // forever for backward compat with rc7- peers.
+    constexpr const char* SENDADDRV2 = "sendaddrv2";
+    constexpr const char* ADDRV2 = "addrv2";
 } // namespace MessageCommands
 
 // Service flags for node capabilities (Bitcoin P2P protocol standard)
