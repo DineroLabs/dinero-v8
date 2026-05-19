@@ -387,7 +387,7 @@ target_include_directories(test_block_assembly_w1_integration PRIVATE
 add_test(NAME Mining_W1_5_Integration COMMAND test_block_assembly_w1_integration)
 set_tests_properties(Mining_W1_5_Integration
     PROPERTIES
-    LABELS "w1;mining;integration;benchmark;performance"
+    LABELS "mining-component-smoke;w1;mining;benchmark;performance"
     TIMEOUT 30
 )
 
@@ -659,7 +659,7 @@ target_include_directories(test_wallet_sync_integration PRIVATE
 add_test(NAME Wallet_W2_6_SyncIntegration COMMAND test_wallet_sync_integration)
 set_tests_properties(Wallet_W2_6_SyncIntegration
     PROPERTIES
-    LABELS "w2;wallet;integration;sync"
+    LABELS "wallet-component-smoke;w2;wallet;sync"
     TIMEOUT 30
 )
 
@@ -2704,7 +2704,7 @@ endif()
 add_test(NAME Mining_PoolPayoutIntegration COMMAND test_pool_payout_integration)
 set_tests_properties(Mining_PoolPayoutIntegration
     PROPERTIES
-    LABELS "mining;payout;pool;integration;c4"
+    LABELS "mining-component-smoke;mining;payout;pool;c4"
     TIMEOUT 60
 )
 
