@@ -1685,7 +1685,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
 
   # Ring 3 Phase 4c: After refactor, this should PASS
   set_tests_properties(P2PManager_TS1_Integration PROPERTIES
-    LABELS "p2p;ring3;threading;phase4c;ts1;integration"
+    LABELS "p2p;ring3;threading;phase4c;ts1;p2p-threading-smoke"
     TIMEOUT 30  # Integration tests should complete quickly
   )
 
