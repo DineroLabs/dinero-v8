@@ -1174,10 +1174,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_write_batch_leak.sh)
     add_test(
         NAME ConsensusWriteBatchLeak
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_write_batch_leak.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_write_batch_leak.sh
     )
     set_tests_properties(ConsensusWriteBatchLeak PROPERTIES
-        LABELS "integration;reorg;invertibility;phase3a"
+        LABELS "consensus-batch-smoke;reorg;invertibility;phase3a"
         TIMEOUT 240
     )
     message(STATUS "  ✓ ConsensusWriteBatchLeak registered")

@@ -37,7 +37,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 RUN_ID=$$
 DATADIR="/tmp/dinero_cwb_leak_${RUN_ID}"
 LOG="${DATADIR}/daemon.log"
