@@ -12,6 +12,67 @@
 # Tests (only if we have working test files)
 enable_testing()
 
+add_executable(test_ripemd160_src_vectors
+  tests/crypto/test_ripemd160_vectors.cpp
+  src/crypto/ripemd160.cpp
+)
+target_include_directories(test_ripemd160_src_vectors PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME RIPEMD160SrcVectors COMMAND test_ripemd160_src_vectors)
+set_tests_properties(RIPEMD160SrcVectors PROPERTIES
+  LABELS "crypto;hash;smoke"
+  TIMEOUT 10
+)
+
+add_executable(test_ripemd160_core_vectors
+  tests/crypto/test_ripemd160_vectors.cpp
+  src/core/crypto/ripemd160.cpp
+)
+target_compile_definitions(test_ripemd160_core_vectors PRIVATE DINERO_RIPEMD160_CORE_HEADER)
+target_include_directories(test_ripemd160_core_vectors PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME RIPEMD160CoreVectors COMMAND test_ripemd160_core_vectors)
+set_tests_properties(RIPEMD160CoreVectors PROPERTIES
+  LABELS "crypto;hash;smoke"
+  TIMEOUT 10
+)
+
+add_executable(test_ripemd160_standalone_vectors
+  tests/crypto/test_ripemd160_vectors.cpp
+  src/crypto/ripemd160_standalone.cpp
+)
+target_compile_definitions(test_ripemd160_standalone_vectors PRIVATE DINERO_RIPEMD160_STANDALONE)
+target_include_directories(test_ripemd160_standalone_vectors PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME RIPEMD160StandaloneVectors COMMAND test_ripemd160_standalone_vectors)
+set_tests_properties(RIPEMD160StandaloneVectors PROPERTIES
+  LABELS "crypto;hash;smoke"
+  TIMEOUT 10
+)
+
+add_executable(test_hash_wrapper_vectors
+  tests/crypto/test_ripemd160_vectors.cpp
+  src/crypto/hash.cpp
+  src/crypto/ripemd160.cpp
+  src/common/sha256d.cpp
+)
+target_compile_definitions(test_hash_wrapper_vectors PRIVATE DINERO_HASH_WRAPPER)
+target_include_directories(test_hash_wrapper_vectors PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME HashWrapperVectors COMMAND test_hash_wrapper_vectors)
+set_tests_properties(HashWrapperVectors PROPERTIES
+  LABELS "crypto;hash;smoke"
+  TIMEOUT 10
+)
+
 # Minimal wallet stubs shared by wallet-focused tests.
 add_library(wallet_test_deps STATIC
   src/wallet/utxo_index.cpp
