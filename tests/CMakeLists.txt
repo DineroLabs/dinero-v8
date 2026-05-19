@@ -1653,6 +1653,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
     tests/p2p/test_p2p_manager_ts1_integration.cpp
     src/daemon/p2p_manager.cpp
     src/p2p/addrman.cpp
+    src/p2p/addr_v2.cpp            # NAT Phase 1A.2: BIP155 addrv2 encoder used by p2p_manager
+    src/daemon/node_identity.cpp   # NAT Phase 1A: dineroid handshake keypair
+    src/common/logger.cpp          # NAT Phase 1A: node_identity uses dinero::g_logger
     src/crypto/params_stub.cpp    # Provides Params().magic for standalone P2PManager link
     src/common/sha256d.cpp        # Required for Dinero::Common::double_sha256_raw
     src/daemon/secure_random.cpp  # Required for SecureRandom::GetUInt64()
@@ -1664,6 +1667,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
         Threads::Threads
       dinero_crypto
       secp256k1
+      OpenSSL::SSL          # NAT Phase 1A: node_identity -> dinero_crypto_minimal needs OpenSSL
+      OpenSSL::Crypto
       "-framework Security"
     )
   else()
@@ -1672,11 +1677,14 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
         Threads::Threads
       dinero_crypto
       secp256k1
+      OpenSSL::SSL          # NAT Phase 1A: node_identity -> dinero_crypto_minimal needs OpenSSL
+      OpenSSL::Crypto
     )
   endif()
 
-  target_include_directories(test_p2p_manager_ts1_integration PRIVATE
+  target_include_directories(test_p2p_manager_ts1_integration BEFORE PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/daemon
   )
 
