@@ -4,10 +4,12 @@
 
 #include "network/stun_client.h"
 
+#include "crypto/secure_random.h"
+
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <random>
 #include <thread>
 
 #ifdef _WIN32
@@ -28,20 +30,16 @@ constexpr uint16_t kStunBindingRequest = 0x0001u;
 constexpr uint16_t kStunBindingSuccess = 0x0101u;
 constexpr uint16_t kStunAttrXorMappedAddress = 0x0020u;
 
-// Generate a 12-byte random transaction id using mt19937. Not
-// cryptographically critical — the goal is just to disambiguate
-// concurrent in-flight requests, and the magic cookie + server
-// response handling are the actual spoofing defenses.
-void GenerateTxnId(std::array<uint8_t, 12>& out) {
-    std::mt19937_64 rng{static_cast<uint64_t>(
-        std::chrono::steady_clock::now().time_since_epoch().count())};
-    uint64_t a = rng();
-    uint64_t b = rng();
-    for (int i = 0; i < 8; i++) {
-        out[i] = static_cast<uint8_t>((a >> (i * 8)) & 0xFF);
-    }
-    for (int i = 0; i < 4; i++) {
-        out[8 + i] = static_cast<uint8_t>((b >> (i * 8)) & 0xFF);
+// STUN transaction ids must be unpredictable enough to make off-path spoofing
+// impractical; the magic cookie identifies RFC 5389 traffic, but the txn id is
+// what binds a response to one of our outstanding requests.
+bool GenerateTxnId(std::array<uint8_t, 12>& out) {
+    try {
+        auto bytes = secure_random_bytes(out.size());
+        std::copy(bytes.begin(), bytes.end(), out.begin());
+        return true;
+    } catch (...) {
+        return false;
     }
 }
 
@@ -168,7 +166,9 @@ bool StunClient::Discover(std::chrono::seconds timeout, ResultCallback cb) {
         }
 
         Outstanding o;
-        GenerateTxnId(o.txn_id);
+        if (!GenerateTxnId(o.txn_id)) {
+            continue;
+        }
         o.server_endpoint = host + ":" + std::to_string(port);
 
         // Build STUN BINDING REQUEST (20 bytes, no attributes).

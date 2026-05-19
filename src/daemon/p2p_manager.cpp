@@ -5,6 +5,7 @@
 #include "common/sha256d.h"  // For Bitcoin-compatible double-SHA256 checksum
 #include "consensus/chainparams.h"  // Canonical source of the P2P network magic
 #include "network/local_interfaces.h"  // Self-loop filter at dial time
+#include "network/types.h"          // Canonical P2P service flag assignments
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: dineroid signing
 #include "crypto/dinero_crypto_minimal.h"  // HASH160 3-arg form for node_id derivation
 #include <iomanip>                     // std::setw / std::setfill for node_id hex log
@@ -85,22 +86,9 @@ namespace {
 inline uint32_t MagicBytes() { return dinero::Params().magic; }
 }  // namespace
 
-// Service flags - must match iOS Protocol.swift
-// TODO: consolidate with dinero::ServiceFlags in include/network/types.h —
-// these are duplicated and have already drifted (NODE_DINERO_V2 et al
-// added 2026-05-19 for NAT traversal Phase 1A but only here, not in
-// types.h-side iOS mirror).
-namespace ServiceFlags {
-    static const uint64_t NODE_NETWORK = 1ULL << 0;
-    [[maybe_unused]] static const uint64_t NODE_WITNESS = 1ULL << 3;
-    [[maybe_unused]] static const uint64_t NODE_NETWORK_LIMITED = 1ULL << 10;
-    [[maybe_unused]] static const uint64_t NODE_UTREEXO = 1ULL << 24;
-    [[maybe_unused]] static const uint64_t NODE_UTREEXO_BRIDGE = 1ULL << 25;  // Serves Utreexo proofs to stateless nodes
-    // NAT traversal Phase 1A — see dinero::ServiceFlags in include/network/types.h
-    [[maybe_unused]] static const uint64_t NODE_RELAY        = 1ULL << 26;
-    static const uint64_t NODE_DINERO_V2 = 1ULL << 27;
-    [[maybe_unused]] static const uint64_t NODE_BEHIND_RELAY = 1ULL << 28;
-}
+// Keep service-bit assignments centralized. The NAT traversal flags are shared
+// with addrv2 / relay planning, so p2p_manager must not carry a drift-prone copy.
+namespace ServiceFlags = dinero::ServiceFlags;
 
 namespace {
 
