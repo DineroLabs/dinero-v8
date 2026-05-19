@@ -1195,7 +1195,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_write_batch_leak.sh)
             ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_write_batch_leak.sh
     )
     set_tests_properties(ConsensusWriteBatchLeak PROPERTIES
-        LABELS "consensus-batch-smoke;reorg;invertibility;phase3a"
+        LABELS "core-heavy-smoke;consensus-batch-smoke;reorg;invertibility;phase3a"
         TIMEOUT 240
     )
     message(STATUS "  ✓ ConsensusWriteBatchLeak registered")
@@ -1210,22 +1210,26 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_unified_batch_atomicity.sh)
     add_test(
         NAME UnifiedBatchAtomicity
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_unified_batch_atomicity.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_unified_batch_atomicity.sh
     )
     set_tests_properties(UnifiedBatchAtomicity PROPERTIES
         ENVIRONMENT "ATOMIC_PERSIST=0"
-        LABELS "integration;restart;chainstate;canonicality;phase3b;atomic-unit"
+        LABELS "core-heavy-smoke;integration;restart;chainstate;canonicality;phase3b;atomic-unit"
         TIMEOUT 360
     )
     message(STATUS "  ✓ UnifiedBatchAtomicity registered")
 
     add_test(
         NAME UnifiedBatchAtomicity_AtomicPersistOn
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_unified_batch_atomicity.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_unified_batch_atomicity.sh
     )
     set_tests_properties(UnifiedBatchAtomicity_AtomicPersistOn PROPERTIES
         ENVIRONMENT "ATOMIC_PERSIST=1"
-        LABELS "integration;restart;chainstate;canonicality;phase3b;atomic-unit"
+        LABELS "core-heavy-smoke;integration;restart;chainstate;canonicality;phase3b;atomic-unit"
         TIMEOUT 360
     )
     message(STATUS "  ✓ UnifiedBatchAtomicity_AtomicPersistOn registered")

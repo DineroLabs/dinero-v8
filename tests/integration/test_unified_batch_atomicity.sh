@@ -34,7 +34,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 DATA_DIR="/tmp/dinero_unified_batch_atomicity_$$"
 LOG_BASE="${DATA_DIR}.base.log"
 LOG_CRASH="${DATA_DIR}.crash.log"
