@@ -30,9 +30,9 @@ VALUES=(
 pattern="$(printf '%s|' "${VALUES[@]}")"
 pattern="${pattern%|}"
 
-if rg -n "$pattern" "${TARGET_FILES[@]}" >/dev/null; then
+if grep -nE "$pattern" "${TARGET_FILES[@]}" >/dev/null 2>&1; then
   echo "Chain identity literals leaked back into maintenance tools" >&2
-  rg -n "$pattern" "${TARGET_FILES[@]}" >&2
+  grep -nE "$pattern" "${TARGET_FILES[@]}" >&2
   exit 1
 fi
 
