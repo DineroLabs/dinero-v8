@@ -301,7 +301,7 @@ if(TARGET shielded_pool_test AND TARGET shielded_adversarial_test)
     COMMAND $<TARGET_FILE:shielded_pool_test>
   )
   set_tests_properties(ShieldedPoolRoundTrip PROPERTIES
-    LABELS "shielded;canonicality;shielded-canonical-recovery"
+    LABELS "shielded;shielded-canonical-smoke;shielded-canonical-recovery"
     TIMEOUT 180
   )
 
@@ -310,7 +310,7 @@ if(TARGET shielded_pool_test AND TARGET shielded_adversarial_test)
     COMMAND $<TARGET_FILE:shielded_adversarial_test>
   )
   set_tests_properties(ShieldedAdversarialHardening PROPERTIES
-    LABELS "shielded;adversarial;canonicality;shielded-canonical-recovery"
+    LABELS "shielded;adversarial;shielded-canonical-smoke;shielded-canonical-recovery"
     TIMEOUT 180
   )
 
@@ -1652,6 +1652,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   add_executable(test_p2p_manager_ts1_integration
     tests/p2p/test_p2p_manager_ts1_integration.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
     src/daemon/node_identity.cpp   # Required by dineroid handshake methods in P2PManager
     src/p2p/addr_v2.cpp            # Required by addrv2 methods in P2PManager
     src/p2p/addrman.cpp
@@ -4448,6 +4449,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_registry.cpp
     src/p2p/addrman.cpp
   )
   target_include_directories(test_codebase_verification PRIVATE
@@ -4625,6 +4627,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/daemon/bech32_decode.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_registry.cpp
     src/p2p/addrman.cpp
     src/daemon/wallet_crypto.cpp
     src/daemon/secure_random.cpp
@@ -4959,6 +4962,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp  # For P2PMessage::create_inv() and P2PManager
+    src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
     src/daemon/node_identity.cpp # Required by dineroid handshake methods in P2PManager
     src/p2p/addr_v2.cpp          # Required by addrv2 methods in P2PManager
     src/p2p/addrman.cpp
@@ -7218,6 +7222,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     tests/p2p/test_handshake_simple.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_registry.cpp
     src/daemon/node_identity.cpp
     src/p2p/addr_v2.cpp
     src/daemon/secure_random.cpp
@@ -7262,6 +7267,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     tests/p2p/test_ping_pong.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_registry.cpp
     src/daemon/node_identity.cpp
     src/p2p/addr_v2.cpp
     src/daemon/secure_random.cpp
