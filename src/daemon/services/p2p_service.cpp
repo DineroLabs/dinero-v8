@@ -13,6 +13,7 @@
 #include "consensus/header_chain.h"  // P1 reorg fix: for HeaderChainSelector::GetBestHeader()
 #include "network/local_interfaces.h"  // Self-loop filter (shared with P2PManager)
 #include "network/port_mapper.h"
+#include "network/stun_client.h"       // NAT traversal Phase C1: public-IP discovery
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: keypair for dineroid handshake
 #include "p2p/block_download_scheduler.h"
 #include "storage/chain_db.h"
@@ -284,7 +285,109 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         status.port_mapping_external_port = port_mapping_external_port_;
         status.port_mapping_message = port_mapping_message_;
     }
+    {
+        // NAT traversal Phase C1: mirror STUN result into NetworkStatus.
+        std::lock_guard<std::mutex> lock(stun_status_mutex_);
+        status.stun_discovered_address = stun_discovered_address_;
+        status.stun_server_used = stun_server_used_;
+        status.stun_message = stun_message_;
+    }
     return status;
+}
+
+// NAT traversal Phase C1: spin up a STUN client and fire off a discovery
+// round. Hardcoded server list: DineroLabs-operated primaries (placeholder
+// hostnames until ops brings them up) plus two well-known public fallbacks.
+// DineroLabs servers go FIRST so a node never leaks its IP to a third party
+// when our own infrastructure is healthy.
+//
+// Failure modes are all non-fatal:
+//   - getaddrinfo fails for every server → "STUN: all server resolutions
+//     failed", logged, status mirrors the error, no advertised address
+//     mutation.
+//   - All servers time out within 8 seconds → "STUN: all servers timed
+//     out", same handling.
+//   - Single server succeeds → status records discovered_address + server
+//     used, and add_advertised_address gets the result.
+void P2PService::StartStunDiscoveryIfEnabled() {
+    if (!p2p_mgr_) return;
+    const bool enabled = config_ ? config_->GetBool("p2p.stun.enabled", true) : true;
+    if (!enabled) {
+        std::lock_guard<std::mutex> lock(stun_status_mutex_);
+        stun_message_ = "disabled";
+        return;
+    }
+
+    stun_client_ = std::make_unique<dinero::network::StunClient>();
+    std::vector<std::pair<std::string, uint16_t>> servers = {
+        // DineroLabs primaries (TODO ops: bring these up before rc cut)
+        {"stun1.dinerolabs.org", 3478},
+        {"stun2.dinerolabs.org", 3478},
+        {"stun3.dinerolabs.org", 3478},
+        // Public fallbacks — last in the list so we only hit them when
+        // DineroLabs servers are unreachable.
+        {"stun.l.google.com", 19302},
+        {"stun.cloudflare.com", 3478},
+    };
+    stun_client_->SetServers(std::move(servers));
+
+    {
+        std::lock_guard<std::mutex> lock(stun_status_mutex_);
+        stun_message_ = "discovering (background)";
+    }
+    if (logger_interface_) {
+        logger_interface_->info("[P2PService] STUN discovery dispatched (5 servers, 8s deadline)");
+    }
+
+    stun_client_->Discover(std::chrono::seconds(8),
+                           [this](const dinero::network::StunResult& r) {
+        if (!r.public_addr.empty()) {
+            const std::string addr_str = r.public_addr.to_string();
+            {
+                std::lock_guard<std::mutex> lock(stun_status_mutex_);
+                stun_discovered_address_ = addr_str;
+                stun_server_used_ = r.server_endpoint;
+                stun_message_ = "ok";
+            }
+            // Feed addrman via the same pipe UPnP success uses. The qt UI
+            // and `getnetworkinfo` already surface advertised_addresses,
+            // so STUN-discovered IPs immediately show up in both places.
+            // For IPv4 we strip into "a.b.c.d"; for IPv6 we use the
+            // bracketless canonical form (consistent with addrman keys).
+            if (p2p_mgr_) {
+                std::string host;
+                if (r.public_addr.family == dinero::network::UdpAddr::Family::V4) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+                                  r.public_addr.ip[0], r.public_addr.ip[1],
+                                  r.public_addr.ip[2], r.public_addr.ip[3]);
+                    host = buf;
+                } else {
+                    // Strip [...] wrapper that to_string() added.
+                    host = addr_str;
+                    if (!host.empty() && host[0] == '[') {
+                        auto rbr = host.find(']');
+                        if (rbr != std::string::npos) host = host.substr(1, rbr - 1);
+                    }
+                }
+                if (!host.empty()) {
+                    p2p_mgr_->add_advertised_address(host, r.public_addr.port);
+                    if (logger_interface_) {
+                        logger_interface_->info(
+                            "[P2PService] STUN discovered public address " + addr_str +
+                            " via " + r.server_endpoint + " — advertising via addr relay");
+                    }
+                }
+            }
+        } else {
+            std::lock_guard<std::mutex> lock(stun_status_mutex_);
+            stun_message_ = r.error_message.empty() ? "no response" : r.error_message;
+            if (logger_interface_) {
+                logger_interface_->warning("[P2PService] STUN discovery: " + stun_message_ +
+                                           " — outbound P2P still works");
+            }
+        }
+    });
 }
 
 void P2PService::StartSchedulerTickLoop() {
@@ -1149,6 +1252,14 @@ bool P2PService::Start() {
 
         StartPortMappingIfEnabled();
 
+        // NAT traversal Phase C1: launch async STUN discovery. Independent
+        // of UPnP/NAT-PMP — STUN works even on routers that don't speak
+        // IGD/PCP, as long as outbound UDP is allowed. Result lands on the
+        // StunClient internal reader thread, takes the stun_status_mutex_,
+        // and (on success) calls add_advertised_address. Surface in
+        // NetworkStatus.stun_discovered_address for the qt UI.
+        StartStunDiscoveryIfEnabled();
+
         // Phase N hotfix: keep headers/block schedulers moving in P2PService mode.
         StartSchedulerTickLoop();
 
@@ -1195,6 +1306,10 @@ void P2PService::Stop() {
         }
 
         StopPortMapping();
+
+        // NAT traversal Phase C1: tear down the STUN client (closes the
+        // ephemeral UDP socket + joins the reader thread). Idempotent.
+        stun_client_.reset();
 
         // Stop P2P manager (disconnects all peers, stops threads)
         p2p_mgr_->stop();

@@ -235,6 +235,15 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     portmap["message"] = status.port_mapping_message;
     result["port_mapping"] = portmap;
 
+    // NAT traversal Phase C1: STUN-discovered public address. Empty
+    // strings while discovery is in flight; populated by P2PService
+    // once a STUN BINDING RESPONSE arrives.
+    din::Json stun;
+    stun["discovered_address"] = status.stun_discovered_address;
+    stun["server_used"] = status.stun_server_used;
+    stun["message"] = status.stun_message;
+    result["stun"] = stun;
+
     din::Json onion_transport;
     onion_transport["configured"] = status.onion_transport_configured;
     onion_transport["enabled"] = status.onion_transport_enabled;

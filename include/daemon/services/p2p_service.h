@@ -3,7 +3,9 @@
 #include "daemon/p2p_manager.h"
 #include "daemon/services/prune_service.h"
 #include "network/port_mapper.h"
+#include "network/stun_client.h"      // NAT traversal Phase C1 (unique_ptr<StunClient> member)
 #include "version.h"
+
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -69,6 +71,15 @@ public:
         bool onion_transport_auto_detected{false};
         std::string onion_proxy;
         std::string onion_transport_message;
+
+        // NAT traversal Phase C1: STUN-discovered public IP+port. Empty
+        // when discovery hasn't completed or failed. Independent of
+        // port_mapping_external_address (that one comes from UPnP/NAT-PMP);
+        // surfacing both lets operators see whether UPnP-discovered and
+        // STUN-discovered agree (they usually do; disagreement = double NAT).
+        std::string stun_discovered_address;
+        std::string stun_server_used;
+        std::string stun_message;
     };
 
     P2PService() = default;
@@ -235,6 +246,16 @@ private:
     std::thread port_mapping_worker_;
     std::atomic<bool> port_mapping_cancel_{false};
 
+    // NAT traversal Phase C1: STUN client + mirror of last result. The
+    // unique_ptr is heap-allocated to avoid pulling stun_client.h
+    // (which pulls udp_socket.h, which pulls winsock2.h) into this
+    // public header transitively.
+    std::unique_ptr<network::StunClient> stun_client_;
+    mutable std::mutex stun_status_mutex_;
+    std::string stun_discovered_address_;
+    std::string stun_server_used_;
+    std::string stun_message_{"not run"};
+
     // Periodic sync loop for headers-first + block scheduler in P2PService mode.
     std::atomic<bool> scheduler_tick_running_{false};
     std::thread scheduler_tick_thread_;
@@ -247,6 +268,12 @@ private:
     void StartSchedulerTickLoop();
     void StopSchedulerTickLoop();
     void StartPortMappingIfEnabled();
+
+    // NAT traversal Phase C1: launch a STUN discovery round on a fresh
+    // ephemeral UDP socket. Asynchronous — result is mirrored into
+    // stun_discovered_address_ / stun_message_ under stun_status_mutex_,
+    // and on success calls p2p_mgr_->add_advertised_address().
+    void StartStunDiscoveryIfEnabled();
     void StopPortMapping();
 
     // Per-peer headers rate limiting (eclipse/DoS protection)
