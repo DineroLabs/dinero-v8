@@ -105,6 +105,16 @@ struct PeerInfo {
     // support to peers that signal NODE_DINERO_V2.
     bool peer_wants_addrv2{false};
 
+    // ─── NAT traversal Phase C3 slice 4a: outbound relay registration ────
+    // is_our_relay: true when this peer is configured via
+    //   `relayregister=...` AND dineroid+RELAY_REGISTER succeeded with
+    //   them. We refresh registration every TTL/2 from keepalive_loop.
+    // last_register_sent_at: steady-clock timestamp of the most recent
+    //   RELAY_REGISTER we sent on this connection. Used to drive the
+    //   refresh cadence; epoch sentinel means "never sent yet".
+    bool is_our_relay{false};
+    std::chrono::steady_clock::time_point last_register_sent_at{};
+
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
         : address(std::move(other.address)),
@@ -309,6 +319,13 @@ public:
     // and the handshake completes legacy-style.
     void set_node_identity(std::shared_ptr<dinero::daemon::NodeIdentity> identity);
 
+    // NAT traversal Phase C3 slice 4a: caller declares which peers we
+    // want to register with as a relay. Strings are "host:port"
+    // canonicalized to lowercase. After dineroid succeeds with one of
+    // these peers, perform_handshake sends RELAY_REGISTER on our behalf;
+    // keepalive_loop refreshes the registration every 3600s.
+    void set_configured_relay_endpoints(std::vector<std::string> endpoints);
+
     void set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port, bool log_change = true);
     bool onion_proxy_enabled() const;
     std::string onion_proxy_endpoint() const;
@@ -425,6 +442,17 @@ public:
     // than kCircuitIdleTimeout. Called from keepalive_loop.
     void SweepIdleCircuits();
 
+    // NAT traversal Phase C3 slice 4a: client-side outbound registration.
+    // SendRelayRegisterIfConfigured is called from perform_handshake on
+    // the outbound side after dineroid succeeds; checks whether `peer`
+    // matches one of configured_relay_endpoints_ and, if so, sends a
+    // RELAY_REGISTER over the existing connection. RefreshRelayRegistrations
+    // is called from keepalive_loop on its 30s tick; walks connected
+    // peers, re-sends RELAY_REGISTER on any is_our_relay peer whose
+    // last_register_sent_at is older than kRelayRegisterRefreshInterval.
+    void SendRelayRegisterIfConfigured(PeerInfo* peer);
+    void RefreshRelayRegistrations();
+
 private:
     // Outbox for async sending
     struct OutMsg {
@@ -509,6 +537,13 @@ private:
     // a RELAY_REGISTER arrives. handle_relay_connect (slice 3) looks
     // up the registration to find the target peer's TCP connection.
     dinero::network::RelayRegistry relay_registry_;
+
+    // NAT traversal Phase C3 slice 4a: configured-relay endpoints.
+    // Lower-cased "host:port" strings. Lookup is O(N) per handshake,
+    // but N is small (typically 1-3 relays per node).
+    std::vector<std::string> configured_relay_endpoints_;
+    static constexpr uint32_t kRelayRegisterTtlSeconds = 7200;       // 2h
+    static constexpr std::chrono::seconds kRelayRegisterRefreshInterval{3600};  // 1h
 
     // NAT traversal Phase C3 slice 3: relay-side circuit table.
     // Keyed on circuit_id (allocated by handle_relay_connect from a

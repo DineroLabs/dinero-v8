@@ -979,6 +979,87 @@ void P2PManager::SweepIdleCircuits() {
     }
 }
 
+// NAT traversal Phase C3 slice 4a: outbound RELAY_REGISTER on a freshly-
+// handshaked peer if (and only if) that peer is in our configured-relays
+// list AND dineroid succeeded (identity_proven=true). We sign over the
+// remote peer's version nonce — which we captured as peer->their_nonce —
+// so the relay can verify against the nonce IT sent. Signing failures
+// are non-fatal: peer stays connected as a regular peer, we just won't
+// be reachable via this relay until the next reconnect.
+//
+// Lookup is O(N) over configured_relay_endpoints_ (capped at ~3 entries
+// in practice). Per-handshake cost is negligible.
+void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
+    if (!peer || !node_identity_) return;
+    if (!peer->identity_proven) return;       // need dineroid to have run
+    if (configured_relay_endpoints_.empty()) return;
+
+    // Match peer->to_string() (e.g. "172.93.160.131:20999") against
+    // configured list (already lowercased). Both lowercased for safety.
+    std::string key = peer->to_string();
+    std::transform(key.begin(), key.end(), key.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    bool matched = false;
+    for (const auto& ep : configured_relay_endpoints_) {
+        if (ep == key) { matched = true; break; }
+    }
+    if (!matched) return;
+
+    auto msg = P2PMessage::create_relay_register(
+        *node_identity_, peer->their_nonce, kRelayRegisterTtlSeconds);
+    if (msg.payload.empty()) {
+        std::cout << "[P2P] relay-register: signing failed for " << key
+                  << " — will retry next handshake" << std::endl;
+        return;
+    }
+    if (!send_message(peer->socket_fd, msg)) {
+        std::cout << "[P2P] relay-register: send failed to " << key << std::endl;
+        return;
+    }
+    peer->is_our_relay = true;
+    peer->last_register_sent_at = std::chrono::steady_clock::now();
+    std::cout << "[P2P] relay-register: sent to " << key << " (ttl="
+              << kRelayRegisterTtlSeconds << "s)" << std::endl;
+}
+
+// NAT traversal Phase C3 slice 4a: walk connected peers and re-send
+// RELAY_REGISTER on every is_our_relay connection whose last register
+// is older than kRelayRegisterRefreshInterval. Called from
+// keepalive_loop on its 30s tick — refresh interval is 1h, so most
+// ticks no-op. Sign-and-send work is bounded by configured-relay count.
+//
+// Per the relay-side validation in handle_relay_register, the nonce
+// MUST equal the relay's their_nonce-as-seen-by-us (i.e. peer->their_nonce
+// from our local PeerInfo). Reusing the same nonce across refreshes is
+// fine — slice 2 doesn't reject duplicates, and the connection is
+// still the same (replay-binding is per-connection).
+void P2PManager::RefreshRelayRegistrations() {
+    if (!node_identity_) return;
+    if (configured_relay_endpoints_.empty()) return;
+
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<std::shared_ptr<PeerInfo>> due;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [_, peer] : connected_peers_) {
+            if (!peer || !peer->is_our_relay || !peer->is_connected) continue;
+            if (now - peer->last_register_sent_at >= kRelayRegisterRefreshInterval) {
+                due.push_back(peer);
+            }
+        }
+    }
+    for (const auto& peer : due) {
+        auto msg = P2PMessage::create_relay_register(
+            *node_identity_, peer->their_nonce, kRelayRegisterTtlSeconds);
+        if (msg.payload.empty()) continue;
+        if (send_message(peer->socket_fd, msg)) {
+            peer->last_register_sent_at = now;
+            std::cout << "[P2P] relay-register: refreshed " << peer->to_string()
+                      << " (ttl=" << kRelayRegisterTtlSeconds << "s)" << std::endl;
+        }
+    }
+}
+
 // NAT traversal Phase 1A.2 / BIP155: sendaddrv2 has empty payload — its
 // mere presence is the negotiation that both peers speak addrv2.
 P2PMessage P2PMessage::create_sendaddrv2() {
@@ -1692,6 +1773,21 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
         if (!new_for_relay.empty()) {
             relay_addresses_to_peers(peer_address, new_for_relay);
         }
+    }
+}
+
+// NAT traversal Phase C3 slice 4a: caller declares which peers we want
+// to act as relays for us. Strings are normalized to lowercase here so
+// the per-handshake lookup is straight string compare.
+void P2PManager::set_configured_relay_endpoints(std::vector<std::string> endpoints) {
+    for (auto& s : endpoints) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+    configured_relay_endpoints_ = std::move(endpoints);
+    if (!configured_relay_endpoints_.empty()) {
+        std::cout << "[P2P] configured " << configured_relay_endpoints_.size()
+                  << " relay endpoint(s) for outbound RELAY_REGISTER" << std::endl;
     }
 }
 
@@ -2724,6 +2820,13 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         if (!response || response->command != "verack") {
             return false;
         }
+
+        // NAT traversal Phase C3 slice 4a: post-verack on the outbound side,
+        // if this peer is in our configured relay list, ask it to advertise
+        // us. Sending here (rather than inside dineroid) keeps the handshake
+        // ordering BIP155-clean and avoids any chance of the relay holding
+        // up verack while it validates the registration.
+        SendRelayRegisterIfConfigured(peer);
 
     } else {
         // Wait for version message
@@ -4275,6 +4378,11 @@ void P2PManager::keepalive_loop() {
         // relay registry reap expired registrations.
         SweepIdleCircuits();
         relay_registry_.Sweep();
+        // NAT Phase C3 slice 4a: refresh outbound RELAY_REGISTER on
+        // peers we've designated as our relays. No-op most ticks (1h
+        // refresh cadence vs 30s wake-up); only fires for is_our_relay
+        // peers whose last register is older than the refresh interval.
+        RefreshRelayRegistrations();
 
         // Send PING to all connected peers
         std::vector<std::string> peer_addresses;

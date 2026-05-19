@@ -886,6 +886,33 @@ bool P2PService::Init(DaemonContext& ctx) {
             }
         }
 
+        // NAT traversal Phase C3 slice 4a: parse comma-separated relay
+        // endpoints out of `relayregister` config and hand them to the
+        // P2PManager. Format: "host:port,host:port,...". Whitespace is
+        // tolerated. Empty (the default) means "no client-side
+        // registration"; daemon still accepts inbound registrations
+        // if NODE_RELAY is advertised.
+        {
+            const std::string raw = config_ ? config_->GetString("relayregister", "") : "";
+            std::vector<std::string> endpoints;
+            std::string cur;
+            for (char c : raw) {
+                if (c == ',') {
+                    if (!cur.empty()) endpoints.push_back(cur);
+                    cur.clear();
+                } else if (!std::isspace(static_cast<unsigned char>(c))) {
+                    cur.push_back(c);
+                }
+            }
+            if (!cur.empty()) endpoints.push_back(cur);
+            if (!endpoints.empty()) {
+                p2p_mgr_->set_configured_relay_endpoints(endpoints);
+                logger_interface_->info(
+                    "[P2PService] Configured " + std::to_string(endpoints.size()) +
+                    " relay endpoint(s) via relayregister=");
+            }
+        }
+
         // Week 4: Bridge pattern removed - all code now uses ctx_->p2p->get()
         // Legacy global dinero::legacy::g_peer_manager() is no longer set here
         logger_interface_->info("[P2PService] P2PManager created successfully");
