@@ -533,6 +533,161 @@ P2PMessage P2PMessage::create_verack() {
 // `nonce_to_sign` is the REMOTE peer's version nonce (8 bytes, little-endian).
 // Signing that value binds this dineroid to the specific handshake; replaying
 // it against any other connection fails because the other side's nonce differs.
+// ─── NAT Phase C3 slice 1: circuit relay wire format ────────────────
+//
+// Each builder produces ONLY the payload bytes; the outer P2P frame
+// (magic + command + length + checksum) is added by serialize() in
+// p2p_message.cpp. All multi-byte integers are little-endian for
+// consistency with the rest of Dinero's P2P protocol EXCEPT the port
+// fields in RELAY_HINTS, which match BIP155 (BE) so addrv2-derived
+// codepaths can share format helpers later.
+
+namespace {
+
+// Local CompactSize writer mirroring dinero::p2p::WriteCompactSize but
+// kept private to this TU since the call sites are local. Splitting
+// later if a third helper needs it.
+void WriteCompactSizeLocal(std::vector<uint8_t>* out, uint64_t v) {
+    if (v < 253) {
+        out->push_back(static_cast<uint8_t>(v));
+    } else if (v <= 0xFFFFu) {
+        out->push_back(253);
+        out->push_back(static_cast<uint8_t>(v & 0xFF));
+        out->push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+    } else if (v <= 0xFFFFFFFFu) {
+        out->push_back(254);
+        for (int i = 0; i < 4; i++) out->push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
+    } else {
+        out->push_back(255);
+        for (int i = 0; i < 8; i++) out->push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
+    }
+}
+
+void WriteLE32Local(std::vector<uint8_t>* out, uint32_t v) {
+    for (int i = 0; i < 4; i++) out->push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
+}
+void WriteLE64Local(std::vector<uint8_t>* out, uint64_t v) {
+    for (int i = 0; i < 8; i++) out->push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
+}
+void WriteBE16Local(std::vector<uint8_t>* out, uint16_t v) {
+    out->push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+    out->push_back(static_cast<uint8_t>(v & 0xFF));
+}
+
+}  // namespace
+
+P2PMessage P2PMessage::create_relay_register(
+    const dinero::daemon::NodeIdentity& identity,
+    uint64_t nonce_to_sign,
+    uint32_t ttl_seconds) {
+    P2PMessage msg;
+    msg.command = "relayreg";
+
+    const auto node_id = identity.get_node_id_bytes();
+    // Build the message that the registrant signs:
+    // SHA256(nonce_8LE || node_id_20 || ttl_4LE). The receiving relay
+    // re-derives this same byte sequence and verifies against the
+    // registrant's proven pubkey.
+    std::vector<uint8_t> to_sign;
+    to_sign.reserve(8 + 20 + 4);
+    WriteLE64Local(&to_sign, nonce_to_sign);
+    to_sign.insert(to_sign.end(), node_id.begin(), node_id.end());
+    WriteLE32Local(&to_sign, ttl_seconds);
+
+    auto sig = identity.sign_bytes(to_sign.data(), to_sign.size());
+    if (sig.empty() || sig.size() > 72) return msg;  // empty payload signals error
+
+    msg.payload.reserve(20 + 4 + 8 + 1 + sig.size());
+    msg.payload.insert(msg.payload.end(), node_id.begin(), node_id.end());
+    WriteLE32Local(&msg.payload, ttl_seconds);
+    WriteLE64Local(&msg.payload, nonce_to_sign);
+    msg.payload.push_back(static_cast<uint8_t>(sig.size()));
+    msg.payload.insert(msg.payload.end(), sig.begin(), sig.end());
+    return msg;
+}
+
+P2PMessage P2PMessage::create_relay_connect(
+    const std::array<uint8_t, 20>& target_node_id,
+    uint64_t request_id) {
+    P2PMessage msg;
+    msg.command = "relaycon";
+    msg.payload.reserve(20 + 8);
+    msg.payload.insert(msg.payload.end(), target_node_id.begin(), target_node_id.end());
+    WriteLE64Local(&msg.payload, request_id);
+    return msg;
+}
+
+P2PMessage P2PMessage::create_relay_connect_ack(
+    uint64_t request_id,
+    uint64_t circuit_id,
+    RelayConnectStatus status,
+    const std::string& message) {
+    P2PMessage msg;
+    msg.command = "relayack";
+    const auto msg_len = std::min<size_t>(message.size(), 255);
+    msg.payload.reserve(8 + 8 + 1 + 1 + msg_len);
+    WriteLE64Local(&msg.payload, request_id);
+    WriteLE64Local(&msg.payload, circuit_id);
+    msg.payload.push_back(static_cast<uint8_t>(status));
+    msg.payload.push_back(static_cast<uint8_t>(msg_len));
+    msg.payload.insert(msg.payload.end(),
+                       message.begin(),
+                       message.begin() + static_cast<std::ptrdiff_t>(msg_len));
+    return msg;
+}
+
+P2PMessage P2PMessage::create_relay_data(
+    uint64_t circuit_id,
+    RelayDirection direction,
+    const std::vector<uint8_t>& payload) {
+    P2PMessage msg;
+    msg.command = "relaydat";
+    msg.payload.reserve(8 + 1 + 9 + payload.size());
+    WriteLE64Local(&msg.payload, circuit_id);
+    msg.payload.push_back(static_cast<uint8_t>(direction));
+    WriteCompactSizeLocal(&msg.payload, payload.size());
+    msg.payload.insert(msg.payload.end(), payload.begin(), payload.end());
+    return msg;
+}
+
+P2PMessage P2PMessage::create_relay_ping(uint64_t circuit_id, uint64_t nonce) {
+    P2PMessage msg;
+    msg.command = "relaypng";
+    msg.payload.reserve(16);
+    WriteLE64Local(&msg.payload, circuit_id);
+    WriteLE64Local(&msg.payload, nonce);
+    return msg;
+}
+
+P2PMessage P2PMessage::create_relay_hints(const std::vector<RelayHint>& hints) {
+    P2PMessage msg;
+    msg.command = "relayhnt";
+
+    // Pre-filter to entries whose addr length matches the per-network
+    // expectation (same defensive check as EncodeAddrV2).
+    std::vector<const RelayHint*> valid;
+    valid.reserve(hints.size());
+    for (const auto& h : hints) {
+        size_t expected = 0;
+        if (!dinero::p2p::NetworkTypeExpectedLength(h.relay_net, &expected)) continue;
+        if (h.relay_addr.size() != expected) continue;
+        valid.push_back(&h);
+    }
+
+    WriteCompactSizeLocal(&msg.payload, valid.size());
+    for (const auto* h : valid) {
+        msg.payload.insert(msg.payload.end(),
+                           h->target_node_id.begin(),
+                           h->target_node_id.end());
+        msg.payload.push_back(static_cast<uint8_t>(h->relay_net));
+        msg.payload.push_back(static_cast<uint8_t>(h->relay_addr.size()));
+        msg.payload.insert(msg.payload.end(),
+                           h->relay_addr.begin(), h->relay_addr.end());
+        WriteBE16Local(&msg.payload, h->relay_port);
+    }
+    return msg;
+}
+
 // NAT traversal Phase 1A.2 / BIP155: sendaddrv2 has empty payload — its
 // mere presence is the negotiation that both peers speak addrv2.
 P2PMessage P2PMessage::create_sendaddrv2() {
@@ -2912,6 +3067,19 @@ void P2PManager::process_message(const std::string& peer_address, const P2PMessa
         }
     } else if (message.command == "addrv2") {
         handle_addrv2(peer_address, message);
+    } else if (message.command == "relayreg" || message.command == "relaycon" ||
+               message.command == "relayack" || message.command == "relaydat" ||
+               message.command == "relaypng" || message.command == "relayhnt") {
+        // NAT Phase C3 slice 1: protocol surface only — log + drop. Later
+        // slices add the registry (slice 2), circuit splicing (slice 3),
+        // and the client-side outbound logic (slice 4). Until then we
+        // accept the messages cleanly so any forward-deployed relay
+        // implementation can probe whether a peer speaks the protocol
+        // without us closing the connection on them.
+        std::cout << "[P2P] relay-protocol message '" << message.command
+                  << "' (" << message.payload.size() << " bytes) from "
+                  << peer_address << " — handler is a Phase C3 follow-up; dropped"
+                  << std::endl;
     } else {
         // Forward to application handler
         if (message_handler_) {

@@ -79,6 +79,46 @@ namespace MessageCommands {
     // forever for backward compat with rc7- peers.
     constexpr const char* SENDADDRV2 = "sendaddrv2";
     constexpr const char* ADDRV2 = "addrv2";
+
+    // NAT traversal Phase C3 / circuit relay protocol — slice 1 lays
+    // down the wire format and dispatch surface; later slices add the
+    // registry, signature enforcement, and circuit splicing. End-to-end
+    // encryption (so the relay can't read tunneled traffic) lands with
+    // Phase B2 QUIC. None of these messages do anything functional yet
+    // — handlers just log "received" + reject the call.
+    //
+    // RELAY_REGISTER  : NAT'd peer asks a relay node to advertise it.
+    //                   Payload: node_id_20 | ttl_4LE | nonce_8 |
+    //                            sig_len_1 | sig_DER
+    //                   Signature is over SHA256(their_nonce_from_version
+    //                   || node_id || ttl) so it can't be replayed on a
+    //                   different connection.
+    // RELAY_CONNECT   : External peer asks relay to bridge to a NAT'd
+    //                   peer. Payload: target_node_id_20 | request_id_8.
+    // RELAY_CONNECT_ACK: Relay's response to RELAY_CONNECT. Payload:
+    //                   request_id_8 | circuit_id_8 (0=rejected) |
+    //                   status_1 | msg_len_1 | msg_chars.
+    //                   status: 0=ok, 1=no_such_peer, 2=relay_full,
+    //                           3=rate_limited, 4=internal_error.
+    // RELAY_DATA      : Opaque tunneled bytes over an established
+    //                   circuit. Payload: circuit_id_8 | direction_1
+    //                   (0=client→target, 1=target→client) |
+    //                   payload_len_compact | payload_bytes.
+    // RELAY_PING      : Keepalive (NAT mapping refresh on the relay's
+    //                   path to the registered peer). Payload:
+    //                   circuit_id_8 | nonce_8.
+    // RELAY_HINTS     : Post-verack capability message — speaker
+    //                   advertises which relays carry it (NODE_BEHIND_RELAY
+    //                   bit + this message together form the BIP155-clean
+    //                   alternative to a custom addrv2 type). Payload:
+    //                   count_compact | { target_node_id_20 | net_type_1
+    //                   | addr_len_1 | addr_bytes | port_2BE } × count.
+    constexpr const char* RELAY_REGISTER     = "relayreg";
+    constexpr const char* RELAY_CONNECT      = "relaycon";
+    constexpr const char* RELAY_CONNECT_ACK  = "relayack";
+    constexpr const char* RELAY_DATA         = "relaydat";
+    constexpr const char* RELAY_PING         = "relaypng";
+    constexpr const char* RELAY_HINTS        = "relayhnt";
 } // namespace MessageCommands
 
 // Service flags for node capabilities (Bitcoin P2P protocol standard)

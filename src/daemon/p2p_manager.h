@@ -173,6 +173,65 @@ struct P2PMessage {
     static P2PMessage create_sendaddrv2();
     static P2PMessage create_addrv2(const std::vector<dinero::p2p::AddrV2Entry>& entries);
 
+    // ─── Circuit relay protocol (NAT Phase C3, slice 1: wire format) ────
+    // Each helper builds the on-wire payload per the spec in
+    // include/network/types.h's MessageCommands section. Slice 1 lands
+    // the wire format only — handlers in process_message log + reject
+    // until slice 2 adds the relay registry.
+
+    // relay_register: identity = the SAME daemon-wide NodeIdentity used
+    // by dineroid. nonce_to_sign is the their_nonce captured from this
+    // connection's version handshake (so the signature can't be replayed
+    // on a different connection). Returns empty payload on signing
+    // failure; caller must check.
+    static P2PMessage create_relay_register(
+        const dinero::daemon::NodeIdentity& identity,
+        uint64_t nonce_to_sign,
+        uint32_t ttl_seconds);
+
+    // relay_connect: request_id is opaque to the relay; the originator
+    // uses it to match relay_connect_ack responses (and possibly
+    // concurrent connect requests in flight to the same relay).
+    static P2PMessage create_relay_connect(
+        const std::array<uint8_t, 20>& target_node_id,
+        uint64_t request_id);
+
+    enum class RelayConnectStatus : uint8_t {
+        Ok            = 0,
+        NoSuchPeer    = 1,
+        RelayFull     = 2,
+        RateLimited   = 3,
+        InternalError = 4,
+    };
+    static P2PMessage create_relay_connect_ack(
+        uint64_t request_id,
+        uint64_t circuit_id,
+        RelayConnectStatus status,
+        const std::string& message);
+
+    enum class RelayDirection : uint8_t {
+        ClientToTarget = 0,
+        TargetToClient = 1,
+    };
+    static P2PMessage create_relay_data(
+        uint64_t circuit_id,
+        RelayDirection direction,
+        const std::vector<uint8_t>& payload);
+
+    static P2PMessage create_relay_ping(uint64_t circuit_id, uint64_t nonce);
+
+    // relay_hints: target_node_id is usually our own node_id; relay_addr
+    // is one of the relays we've registered with. Multiple entries per
+    // message — speaker can advertise itself via 2-3 relays to give
+    // dialers a choice if one relay is overloaded.
+    struct RelayHint {
+        std::array<uint8_t, 20> target_node_id{};
+        dinero::p2p::NetworkType relay_net{dinero::p2p::NetworkType::IPV4};
+        std::vector<uint8_t> relay_addr;
+        uint16_t relay_port{0};
+    };
+    static P2PMessage create_relay_hints(const std::vector<RelayHint>& hints);
+
     static P2PMessage create_ping(uint64_t nonce);
     static P2PMessage create_pong(uint64_t nonce);
     static P2PMessage create_getaddr();
