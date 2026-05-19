@@ -20,6 +20,7 @@ set(DINERO_CORE_P2P_SOURCES
   src/daemon/p2p_message.cpp
   src/daemon/peer_connection.cpp
   src/daemon/p2p_manager.cpp
+  src/daemon/node_identity.cpp        # NAT traversal Phase 1A: dineroid handshake keypair
   src/daemon/header_serialization.cpp
   src/network/utreexo_messages.cpp
   src/network/stateless_node.cpp

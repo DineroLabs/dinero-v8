@@ -107,6 +107,40 @@ bool NodeIdentity::verify_signature(
     return CF_VerifyDER(pubkey_bytes.data(), msg_hash, signature_bytes.data(), signature_bytes.size());
 }
 
+std::vector<uint8_t> NodeIdentity::sign_bytes(const uint8_t* msg, size_t msg_len) const {
+    if (!initialized_ || !msg) {
+        return {};
+    }
+    uint8_t msg_hash[32];
+    sha256(msg, msg_len, msg_hash);
+
+    unsigned char signature[72];
+    size_t sig_len = 72;
+    if (!CF_SignDER(private_key_.data(), msg_hash, signature, sig_len, 72)) {
+        return {};
+    }
+    return std::vector<uint8_t>(signature, signature + sig_len);
+}
+
+bool NodeIdentity::verify_bytes(const uint8_t* msg, size_t msg_len,
+                                const uint8_t* sig, size_t sig_len,
+                                const uint8_t* pubkey_33) {
+    if (!msg || !sig || !pubkey_33 || sig_len == 0 || sig_len > 72) {
+        return false;
+    }
+    uint8_t msg_hash[32];
+    sha256(msg, msg_len, msg_hash);
+    return CF_VerifyDER(pubkey_33, msg_hash, sig, sig_len);
+}
+
+std::array<uint8_t, 20> NodeIdentity::get_node_id_bytes() const {
+    std::array<uint8_t, 20> id{};
+    if (initialized_) {
+        HASH160(public_key_.data(), 33, id.data());
+    }
+    return id;
+}
+
 bool NodeIdentity::load_identity(const std::string& filepath) {
     std::ifstream file(filepath, std::ios::binary);
     if (!file.is_open()) {

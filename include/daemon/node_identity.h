@@ -60,6 +60,16 @@ public:
         const std::string& pubkey_hex
     );
 
+    // ─── Binary-friendly API (added Phase 1A for `dineroid` P2P message) ─────
+    // Avoids hex round-trips when signing / verifying on the wire.
+    // Returns empty vector on failure.
+    std::vector<uint8_t> sign_bytes(const uint8_t* msg, size_t msg_len) const;
+    static bool verify_bytes(const uint8_t* msg, size_t msg_len,
+                             const uint8_t* sig, size_t sig_len,
+                             const uint8_t* pubkey_33);
+    const std::array<uint8_t, 33>& get_pubkey_bytes() const { return public_key_; }
+    std::array<uint8_t, 20> get_node_id_bytes() const;
+
 private:
     bool load_identity(const std::string& filepath);
     bool generate_and_save_identity(const std::string& filepath);

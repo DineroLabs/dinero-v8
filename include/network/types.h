@@ -60,6 +60,14 @@ namespace MessageCommands {
     constexpr const char* INVPROOF = "invproof";
     constexpr const char* GETPROOF = "getproof";
     constexpr const char* PROOFDATA = "proofdata";
+
+    // NAT traversal Phase 1A: post-verack node identity exchange.
+    // Sent immediately after VERSION and before VERACK when both peers
+    // advertise NODE_DINERO_V2. Payload: pubkey_33 + sig_len_1 + sig.
+    // Sig is DER-encoded ECDSA over remote peer's version nonce, signed
+    // by node_identity.dat keypair. Proves the speaker controls node_id
+    // = HASH160(pubkey). Older peers ignore unknown commands.
+    constexpr const char* DINEROID = "dineroid";
 } // namespace MessageCommands
 
 // Service flags for node capabilities (Bitcoin P2P protocol standard)
@@ -69,6 +77,16 @@ namespace ServiceFlags {
     constexpr uint64_t NODE_NETWORK_LIMITED = 1ULL << 10;  // Pruned node (limited block serving)
     constexpr uint64_t NODE_UTREEXO        = 1ULL << 24;  // Utreexo-aware node
     constexpr uint64_t NODE_UTREEXO_BRIDGE = 1ULL << 25;  // Can serve Utreexo proofs
+
+    // ─── NAT traversal (Dinero v8 Phase 1) ───────────────────────────────
+    // Per the NAT traversal plan: enabling node-identity exchange + circuit
+    // relay so wallets behind hostile NAT / CGNAT can be reached inbound.
+    // The three bits below MUST stay non-overlapping with Bitcoin Core's
+    // assignments (1<<6 NODE_COMPACT_FILTERS, 1<<11 NODE_P2P_V2). 1<<26-28
+    // are unused upstream and reserved for Dinero v8 use.
+    constexpr uint64_t NODE_RELAY          = 1ULL << 26;  // Willing to relay circuits for NAT'd peers
+    constexpr uint64_t NODE_DINERO_V2      = 1ULL << 27;  // Speaks post-verack `dineroid` + addrv2
+    constexpr uint64_t NODE_BEHIND_RELAY   = 1ULL << 28;  // Self is NAT'd; reach me via relay_hints
 } // namespace ServiceFlags
 
 } // namespace dinero

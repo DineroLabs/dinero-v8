@@ -5,6 +5,9 @@
 #include "common/sha256d.h"  // For Bitcoin-compatible double-SHA256 checksum
 #include "consensus/chainparams.h"  // Canonical source of the P2P network magic
 #include "network/local_interfaces.h"  // Self-loop filter at dial time
+#include "daemon/node_identity.h"      // NAT traversal Phase 1A: dineroid signing
+#include "crypto/dinero_crypto_minimal.h"  // HASH160 3-arg form for node_id derivation
+#include <iomanip>                     // std::setw / std::setfill for node_id hex log
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -83,12 +86,20 @@ inline uint32_t MagicBytes() { return dinero::Params().magic; }
 }  // namespace
 
 // Service flags - must match iOS Protocol.swift
+// TODO: consolidate with dinero::ServiceFlags in include/network/types.h —
+// these are duplicated and have already drifted (NODE_DINERO_V2 et al
+// added 2026-05-19 for NAT traversal Phase 1A but only here, not in
+// types.h-side iOS mirror).
 namespace ServiceFlags {
     static const uint64_t NODE_NETWORK = 1ULL << 0;
     [[maybe_unused]] static const uint64_t NODE_WITNESS = 1ULL << 3;
     [[maybe_unused]] static const uint64_t NODE_NETWORK_LIMITED = 1ULL << 10;
     [[maybe_unused]] static const uint64_t NODE_UTREEXO = 1ULL << 24;
     [[maybe_unused]] static const uint64_t NODE_UTREEXO_BRIDGE = 1ULL << 25;  // Serves Utreexo proofs to stateless nodes
+    // NAT traversal Phase 1A — see dinero::ServiceFlags in include/network/types.h
+    [[maybe_unused]] static const uint64_t NODE_RELAY        = 1ULL << 26;
+    static const uint64_t NODE_DINERO_V2 = 1ULL << 27;
+    [[maybe_unused]] static const uint64_t NODE_BEHIND_RELAY = 1ULL << 28;
 }
 
 namespace {
@@ -431,7 +442,8 @@ bool RecvAll(int socket_fd, uint8_t* data, size_t len) {
 // Message creation functions
 P2PMessage P2PMessage::create_version(uint32_t protocol_version, uint32_t best_height,
                                       uint64_t services,
-                                      const std::string& user_agent) {
+                                      const std::string& user_agent,
+                                      uint64_t explicit_nonce) {
     P2PMessage msg;
     msg.command = "version";
 
@@ -444,9 +456,13 @@ P2PMessage P2PMessage::create_version(uint32_t protocol_version, uint32_t best_h
     }
 
     // Services (8 bytes) - caller provides flags (prune-aware)
-    // Default: full node with Utreexo support (bridge bit is opt-in via provider/config)
+    // Default: full node with Utreexo support (bridge bit is opt-in via provider/config).
+    // NODE_DINERO_V2 announces post-verack `dineroid` capability — older peers
+    // ignore unknown service bits, so this is fully backward-compatible.
     if (services == 0) {
-        services = ServiceFlags::NODE_NETWORK | ServiceFlags::NODE_UTREEXO;
+        services = ServiceFlags::NODE_NETWORK
+                 | ServiceFlags::NODE_UTREEXO
+                 | ServiceFlags::NODE_DINERO_V2;
     }
     for (int i = 0; i < 8; i++) {
         payload.push_back((services >> (i * 8)) & 0xFF);
@@ -474,8 +490,11 @@ P2PMessage P2PMessage::create_version(uint32_t protocol_version, uint32_t best_h
     payload.push_back((20999 >> 8) & 0xFF);
     payload.push_back(20999 & 0xFF);
 
-    // Nonce (8 bytes) - random
-    uint64_t nonce = SecureRandom::GetUInt64();
+    // Nonce (8 bytes). Caller may supply an explicit nonce (e.g. so the
+    // `dineroid` post-verack identity exchange can sign exactly the value
+    // that ends up on the wire). 0 means "auto-generate", preserving prior
+    // call sites that don't track nonces.
+    uint64_t nonce = explicit_nonce != 0 ? explicit_nonce : SecureRandom::GetUInt64();
     for (int i = 0; i < 8; i++) {
         payload.push_back((nonce >> (i * 8)) & 0xFF);
     }
@@ -503,6 +522,44 @@ P2PMessage P2PMessage::create_verack() {
     P2PMessage msg;
     msg.command = "verack";
     msg.payload.clear();
+    return msg;
+}
+
+// NAT traversal Phase 1A: post-verack node-identity exchange.
+// Wire format of payload:
+//   [0..33)  : pubkey (33 bytes, secp256k1 compressed)
+//   [33]     : sig_len (1 byte, 1..72 for DER-encoded ECDSA)
+//   [34..)   : sig (sig_len bytes)
+// `nonce_to_sign` is the REMOTE peer's version nonce (8 bytes, little-endian).
+// Signing that value binds this dineroid to the specific handshake; replaying
+// it against any other connection fails because the other side's nonce differs.
+P2PMessage P2PMessage::create_dineroid(const dinero::daemon::NodeIdentity& identity,
+                                       uint64_t nonce_to_sign) {
+    P2PMessage msg;
+    msg.command = "dineroid";
+
+    const auto& pubkey = identity.get_pubkey_bytes();
+    // The identity is uninitialized if get_pubkey_bytes returns all zeros —
+    // the daemon would have failed earlier on missing keys, but stay defensive.
+    bool pubkey_is_zero = true;
+    for (auto b : pubkey) { if (b != 0) { pubkey_is_zero = false; break; } }
+    if (pubkey_is_zero) {
+        return msg;  // empty payload; caller must check and skip
+    }
+
+    uint8_t nonce_le[8];
+    for (int i = 0; i < 8; i++) {
+        nonce_le[i] = static_cast<uint8_t>((nonce_to_sign >> (i * 8)) & 0xFF);
+    }
+    auto sig = identity.sign_bytes(nonce_le, 8);
+    if (sig.empty() || sig.size() > 72) {
+        return msg;  // signing failure; caller must check and skip
+    }
+
+    msg.payload.reserve(33 + 1 + sig.size());
+    msg.payload.insert(msg.payload.end(), pubkey.begin(), pubkey.end());
+    msg.payload.push_back(static_cast<uint8_t>(sig.size()));
+    msg.payload.insert(msg.payload.end(), sig.begin(), sig.end());
     return msg;
 }
 
@@ -963,6 +1020,104 @@ void P2PManager::set_address_manager(dinero::p2p::AddressManager* address_manage
     address_manager_ = address_manager;
     std::cout << "[P2P] Address manager bridge "
               << (address_manager_ ? "enabled" : "disabled") << std::endl;
+}
+
+// NAT traversal Phase 1A: symmetric post-version, pre-verack identity
+// exchange. Caller MUST have:
+//   - already exchanged version messages (so peer->their_nonce and our own
+//     peer->our_nonce are populated)
+//   - verified both sides advertise NODE_DINERO_V2
+//   - confirmed node_identity_ is non-null
+// Both sides reach this function simultaneously (after sending their own
+// version + parsing the remote one), so the send-then-receive ordering is
+// deadlock-free: each side's ~107-byte dineroid fits the kernel send buffer.
+//
+// Failure modes are all non-fatal: send fails / receive times out /
+// payload malformed / signature invalid → log and return. The peer stays
+// connected (identity_proven=false), the relay subsystem in later phases
+// just refuses to advertise that peer's reachability.
+void P2PManager::ExchangeDineroId(PeerInfo* peer) {
+    if (!peer || !node_identity_) return;
+
+    // Send our dineroid first. Sign over peer->their_nonce so the receiver
+    // can verify against the nonce they themselves embedded in their version.
+    auto msg = P2PMessage::create_dineroid(*node_identity_, peer->their_nonce);
+    if (msg.payload.empty()) {
+        std::cout << "[Handshake] dineroid: failed to construct outgoing message for "
+                  << peer->to_string() << "; continuing legacy" << std::endl;
+        return;
+    }
+    if (!send_message(peer->socket_fd, msg)) {
+        std::cout << "[Handshake] dineroid: send failed to " << peer->to_string()
+                  << "; continuing legacy" << std::endl;
+        return;
+    }
+
+    // Receive remote dineroid. receive_message blocks with its existing
+    // socket-level timeout; if the remote peer is on rc8 or older they
+    // simply won't send and we'll time out → log and continue.
+    auto remote = receive_message(peer->socket_fd);
+    if (!remote) {
+        std::cout << "[Handshake] dineroid: no response from " << peer->to_string()
+                  << " (likely older peer); continuing legacy" << std::endl;
+        return;
+    }
+    if (remote->command != "dineroid") {
+        std::cout << "[Handshake] dineroid: expected 'dineroid' but got '"
+                  << remote->command << "' from " << peer->to_string()
+                  << "; continuing legacy" << std::endl;
+        return;
+    }
+    // Wire format: pubkey(33) | sig_len(1) | sig(sig_len)
+    if (remote->payload.size() < 34) {
+        std::cout << "[Handshake] dineroid: short payload (" << remote->payload.size()
+                  << " bytes) from " << peer->to_string() << std::endl;
+        return;
+    }
+    const uint8_t sig_len = remote->payload[33];
+    if (sig_len == 0 || sig_len > 72 ||
+        remote->payload.size() != 34u + sig_len) {
+        std::cout << "[Handshake] dineroid: invalid sig_len " << static_cast<int>(sig_len)
+                  << " from " << peer->to_string() << std::endl;
+        return;
+    }
+
+    // Verify the signature is over OUR own version nonce.
+    uint8_t our_nonce_le[8];
+    for (int i = 0; i < 8; i++) {
+        our_nonce_le[i] = static_cast<uint8_t>((peer->our_nonce >> (i * 8)) & 0xFF);
+    }
+    const uint8_t* pubkey = remote->payload.data();
+    const uint8_t* sig = remote->payload.data() + 34;
+    if (!dinero::daemon::NodeIdentity::verify_bytes(our_nonce_le, 8,
+                                                    sig, sig_len, pubkey)) {
+        std::cout << "[Handshake] dineroid: signature verification FAILED for "
+                  << peer->to_string() << "; identity not proven" << std::endl;
+        return;
+    }
+
+    // Success — derive node_id = HASH160(pubkey) and persist on the peer.
+    std::copy(pubkey, pubkey + 33, peer->their_pubkey.begin());
+    HASH160(pubkey, 33, peer->their_node_id.data());
+    peer->identity_proven = true;
+
+    std::ostringstream id_hex;
+    id_hex << std::hex << std::setfill('0');
+    for (auto b : peer->their_node_id) {
+        id_hex << std::setw(2) << static_cast<unsigned int>(b);
+    }
+    std::cout << "[Handshake] dineroid: identity proven for " << peer->to_string()
+              << " (node_id=" << id_hex.str() << ")" << std::endl;
+}
+
+void P2PManager::set_node_identity(std::shared_ptr<dinero::daemon::NodeIdentity> identity) {
+    node_identity_ = std::move(identity);
+    if (node_identity_) {
+        std::cout << "[P2P] Node identity wired (node_id=" << node_identity_->get_node_id()
+                  << ") — `dineroid` handshake enabled with NODE_DINERO_V2 peers" << std::endl;
+    } else {
+        std::cout << "[P2P] Node identity cleared — `dineroid` handshake disabled" << std::endl;
+    }
 }
 
 void P2PManager::set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port, bool log_change) {
@@ -1861,6 +2016,14 @@ static void parse_version_payload(const std::vector<uint8_t>& payload, PeerInfo*
     peer->protocol_version = ReadLE32(payload, 0);
     peer->service_flags = ReadLE64(payload, 4);
 
+    // NAT traversal Phase 1A: capture the remote nonce so we can sign it
+    // back in our `dineroid` message. Layout is fixed by the Bitcoin version
+    // message: services(8) + timestamp(8) + addrRecv(26) + addrFrom(26) +
+    // nonce(8), so nonce begins at offset 72.
+    if (payload.size() >= 80) {
+        peer->their_nonce = ReadLE64(payload, 72);
+    }
+
     // User agent and start_height are optional for malformed/minimal payloads.
     if (payload.size() <= 80) {
         return;
@@ -1919,12 +2082,21 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
     // Get service flags (prune-aware: NODE_NETWORK_LIMITED if pruned/snapshot)
     uint64_t our_services = service_flags_provider_ ? service_flags_provider_() : 0;
 
+    // NAT traversal Phase 1A: pre-generate the version nonce so it can be
+    // tracked on PeerInfo and later compared against the signature in the
+    // remote peer's `dineroid` message. SecureRandom guarantees 0 is never
+    // returned for any practical run, but the explicit_nonce=0 sentinel
+    // means "auto-gen", so re-roll defensively.
+    peer->our_nonce = SecureRandom::GetUInt64();
+    if (peer->our_nonce == 0) peer->our_nonce = 1;
+
     std::cout << "[Handshake DEBUG] Starting handshake with " << peer->to_string()
               << " (outbound=" << peer->is_outbound << ")" << std::endl;
 
     if (peer->is_outbound) {
         // Send version message with actual chain height and service flags
-        auto version_msg = P2PMessage::create_version(protocol_version_, our_height, our_services, user_agent_);
+        auto version_msg = P2PMessage::create_version(protocol_version_, our_height, our_services,
+                                                     user_agent_, peer->our_nonce);
         if (!send_message(peer->socket_fd, version_msg)) {
             return false;
         }
@@ -1938,6 +2110,16 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // P2P sync fix: Parse peer's version info (including their chain height)
         parse_version_payload(response->payload, peer);
         seed_peer_sync_telemetry(peer, our_height);
+
+        // NAT traversal Phase 1A: optional post-version, pre-verack identity
+        // exchange. Both sides must advertise NODE_DINERO_V2 AND we must have
+        // a local identity wired. Either side missing => skip silently and
+        // continue legacy verack flow (backward compatibility).
+        const bool both_v2 = (peer->service_flags & ServiceFlags::NODE_DINERO_V2) &&
+                             (our_services & ServiceFlags::NODE_DINERO_V2);
+        if (both_v2 && node_identity_) {
+            ExchangeDineroId(peer);
+        }
 
         // Send verack
         auto verack_msg = P2PMessage::create_verack();
@@ -1970,9 +2152,19 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         seed_peer_sync_telemetry(peer, our_height);
 
         // Send version response with actual chain height and service flags
-        auto response = P2PMessage::create_version(protocol_version_, our_height, our_services, user_agent_);
+        auto response = P2PMessage::create_version(protocol_version_, our_height, our_services,
+                                                  user_agent_, peer->our_nonce);
         if (!send_message(peer->socket_fd, response)) {
             return false;
+        }
+
+        // NAT traversal Phase 1A: see outbound branch above. Same gating
+        // logic; this is symmetric so both sides reach this point with the
+        // same view of NODE_DINERO_V2 + identity availability.
+        const bool both_v2 = (peer->service_flags & ServiceFlags::NODE_DINERO_V2) &&
+                             (our_services & ServiceFlags::NODE_DINERO_V2);
+        if (both_v2 && node_identity_) {
+            ExchangeDineroId(peer);
         }
 
         // Wait for verack

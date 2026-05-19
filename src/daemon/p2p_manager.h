@@ -12,8 +12,11 @@
 #include <unordered_set>
 #include <functional>
 #include <chrono>
+#include <array>
 
 #include "p2p/addrman.h"
+
+namespace dinero { namespace daemon { class NodeIdentity; } }
 
 // Cross-platform P2P networking (no Qt dependencies)
 // Handles peer discovery, connections, and message routing
@@ -77,6 +80,21 @@ struct PeerInfo {
     // to prevent TCP stream interleaving from concurrent threads.
     std::unique_ptr<std::mutex> send_mutex{std::make_unique<std::mutex>()};
 
+    // ─── NAT traversal Phase 1A: proven node identity ────────────────────
+    // our_nonce: random 8-byte value we put in our outgoing version message.
+    //   Used as the data the REMOTE peer signs in their `dineroid` message.
+    // their_nonce: random 8-byte value the remote peer put in their version.
+    //   Used as the data WE sign in our outgoing `dineroid`.
+    // their_pubkey / their_node_id: populated only after dineroid is received
+    //   AND its signature verifies against our_nonce.
+    // identity_proven: gating flag — relay subsystem (later phases) MUST
+    //   refuse to advertise a peer's reachability unless this is true.
+    uint64_t our_nonce{0};
+    uint64_t their_nonce{0};
+    std::array<uint8_t, 33> their_pubkey{};
+    std::array<uint8_t, 20> their_node_id{};
+    bool identity_proven{false};
+
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
         : address(std::move(other.address)),
@@ -127,8 +145,18 @@ struct P2PMessage {
     // Standard Bitcoin-like message types
     static P2PMessage create_version(uint32_t protocol_version, uint32_t best_height,
                                      uint64_t services = 0,
-                                     const std::string& user_agent = "");
+                                     const std::string& user_agent = "",
+                                     uint64_t explicit_nonce = 0);
     static P2PMessage create_verack();
+
+    // NAT traversal Phase 1A: post-verack node-identity exchange.
+    // Builds payload {pubkey_33, sig_len_1, sig_DER}. `nonce_to_sign` is the
+    // REMOTE peer's version nonce — signing it binds this dineroid to the
+    // specific TCP handshake and prevents cross-connection replay.
+    // Returns empty payload if the identity isn't initialized; caller MUST
+    // handle that as a non-fatal handshake skip.
+    static P2PMessage create_dineroid(const dinero::daemon::NodeIdentity& identity,
+                                      uint64_t nonce_to_sign);
     static P2PMessage create_ping(uint64_t nonce);
     static P2PMessage create_pong(uint64_t nonce);
     static P2PMessage create_getaddr();
@@ -196,6 +224,15 @@ public:
     void set_network_active(bool active);
     bool is_network_active() const { return network_active_.load(std::memory_order_acquire); }
     void set_address_manager(dinero::p2p::AddressManager* address_manager);
+
+    // NAT traversal Phase 1A: caller wires in the daemon-wide NodeIdentity
+    // (initialized in DaemonApp from node_identity.dat). When set AND the
+    // remote peer advertises NODE_DINERO_V2, perform_handshake will exchange
+    // `dineroid` messages between version and verack. Safe to call with
+    // nullptr: identity is treated as "not available", dineroid is skipped,
+    // and the handshake completes legacy-style.
+    void set_node_identity(std::shared_ptr<dinero::daemon::NodeIdentity> identity);
+
     void set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port, bool log_change = true);
     bool onion_proxy_enabled() const;
     std::string onion_proxy_endpoint() const;
@@ -256,6 +293,13 @@ public:
         const std::string& source_peer,
         const std::vector<std::pair<std::string, uint16_t>>& addresses);
     void mark_peer_seen(const std::string& peer_address);
+
+    // NAT traversal Phase 1A: drives the symmetric `dineroid` exchange in
+    // the middle of perform_handshake. Sends our signed pubkey and waits
+    // (with the same timeout receive_message uses) for the remote one;
+    // populates peer->their_pubkey / their_node_id / identity_proven on
+    // success. Failures are non-fatal — handshake continues legacy-style.
+    void ExchangeDineroId(PeerInfo* peer);
 
 private:
     // Outbox for async sending
@@ -329,6 +373,12 @@ private:
     PeerDisconnectedHandler peer_disconnected_handler_;
     HeightProvider height_provider_;  // P2P sync fix: Get chain height for version handshake
     ServiceFlagsProvider service_flags_provider_;  // Returns advertised service flags (prune-aware)
+
+    // NAT traversal Phase 1A: daemon-wide node identity. Read-only after
+    // start(); set_node_identity() is expected during init. Held by
+    // shared_ptr because the same instance is also consumed by other
+    // services (serverinfo signer, future relay register).
+    std::shared_ptr<dinero::daemon::NodeIdentity> node_identity_;
 
     // Network threads
     void listen_loop();

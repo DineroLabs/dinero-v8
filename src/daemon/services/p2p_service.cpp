@@ -13,6 +13,7 @@
 #include "consensus/header_chain.h"  // P1 reorg fix: for HeaderChainSelector::GetBestHeader()
 #include "network/local_interfaces.h"  // Self-loop filter (shared with P2PManager)
 #include "network/port_mapper.h"
+#include "daemon/node_identity.h"      // NAT traversal Phase 1A: keypair for dineroid handshake
 #include "p2p/block_download_scheduler.h"
 #include "storage/chain_db.h"
 #include "common/ilogger.h"  // For ILogger interface dependency injection
@@ -763,6 +764,25 @@ bool P2PService::Init(DaemonContext& ctx) {
             }
         }
 
+        // NAT traversal Phase 1A: load (or generate) the daemon's node-identity
+        // keypair and hand it to P2PManager. Once present, perform_handshake
+        // will exchange the proven `dineroid` message with NODE_DINERO_V2 peers.
+        // Identity is stored in <datadir>/node_identity.dat. Failure is
+        // tolerated — legacy handshake still works without identity, and the
+        // relay subsystem in later phases is gated on identity_proven so it
+        // simply won't engage on this node.
+        {
+            auto node_identity = std::make_shared<dinero::daemon::NodeIdentity>();
+            const std::string datadir = config_ ? config_->DataDir() : std::string{};
+            if (datadir.empty() || !node_identity->initialize(datadir)) {
+                logger_interface_->warning(
+                    "[P2PService] Could not load/generate node identity at " + datadir +
+                    "; dineroid handshake will be skipped, relay subsystem disabled");
+            } else {
+                p2p_mgr_->set_node_identity(node_identity);
+            }
+        }
+
         // Week 4: Bridge pattern removed - all code now uses ctx_->p2p->get()
         // Legacy global dinero::legacy::g_peer_manager() is no longer set here
         logger_interface_->info("[P2PService] P2PManager created successfully");
@@ -1092,6 +1112,9 @@ bool P2PService::Start() {
                 } else {
                     flags |= ServiceFlags::NODE_NETWORK;
                 }
+                // NAT traversal Phase 1A: announce post-verack dineroid capability.
+                // NODE_RELAY / NODE_BEHIND_RELAY are added in later phases.
+                flags |= ServiceFlags::NODE_DINERO_V2;
                 return flags;
             });
             bool pruned = prune_svc && prune_svc->isEnabled();
