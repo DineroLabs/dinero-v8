@@ -12,12 +12,12 @@ Local evidence used:
 - Focused local runs against `build-cmake-tests` with `--timeout 60`.
 - CMake registration comments and test-file headers.
 
-The current label-quarantined inventory after the packaging, RPC, and
-mempool/rawtx smoke graduations is:
+The current label-quarantined inventory after the packaging, RPC,
+mempool/rawtx, and shutdown smoke graduations is:
 
 | Label | Local count | Classification |
 | --- | ---: | --- |
-| `integration` | 71 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
+| `integration` | 70 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
 | `gate` | 4 | Release/readiness gates; heavy or policy-oriented, not normal PR-CI by default. |
 | `release` | 3 | Release ownership; keep full gates manual or release-blocking unless split into smoke checks. |
 | `canonicality` | 26 | Too broad as a single quarantine; contains tests that already pass and tests that need deeper repair. |
@@ -103,6 +103,11 @@ active `mempool-rawtx-smoke` coverage. Focused validation passed three
 consecutive local runs. `AddressParentChildMempoolLifecycle` and
 `ParentChildRbfReplacementWithMempoolParent` remain excluded because they fail
 runtime mempool-clearing expectations after package confirmation.
+
+The fifth label-level graduation moved `RpcStopCleanShutdown` into active
+`rpc-shutdown-smoke` coverage after repairing its hardcoded `build/dinerod`
+harness path. Focused validation passed three consecutive local runs and
+verified stop-RPC shutdown exits cleanly without abort markers.
 
 Deletion is not recommended for any formerly exact-name quarantined test.
 The only retired entry so far was the stale, ineffective
