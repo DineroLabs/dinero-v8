@@ -146,6 +146,15 @@ The third label split graduated three RPC-adjacent integration smoke tests into
 local validation passed three consecutive runs. The two shell-backed tests now
 receive CTest's build-local `dinerod` path instead of assuming `build/dinerod`.
 
+The fourth label split graduated five mempool/rawtx smoke tests into
+`mempool-rawtx-smoke`: `AddressBalanceMempoolOverlay`,
+`TaprootSignRawTransactionRbfOverlay`,
+`TaprootSignRawTransactionRbfConfirmation`,
+`WalletCreateRawTransactionScriptPubKeyOutputs`, and `RbfPolicyReporting`.
+Focused local validation passed three consecutive runs. Parent-child mempool
+variants remain quarantined because they fail runtime mempool-clearing
+expectations after package confirmation.
+
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
 binary, required scripts, and `ctest` availability without running the heavy
