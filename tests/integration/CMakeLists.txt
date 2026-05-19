@@ -590,10 +590,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_external_miner_coinbasetxn_filter_commitment.sh)
     add_test(
         NAME ExternalMinerCoinbaseTxnFilterCommitment
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_external_miner_coinbasetxn_filter_commitment.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_external_miner_coinbasetxn_filter_commitment.sh
     )
     set_tests_properties(ExternalMinerCoinbaseTxnFilterCommitment PROPERTIES
-        LABELS "integration;mining;filters;external-miner;coinbase"
+        LABELS "filter-commitment-smoke;mining;filters;external-miner;coinbase"
         TIMEOUT 1200
     )
     message(STATUS "  ✓ ExternalMinerCoinbaseTxnFilterCommitment registered")
