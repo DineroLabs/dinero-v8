@@ -2292,7 +2292,6 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_mempool_policy.cpp)
   message(STATUS "✅ MempoolPolicy unit test enabled")
 endif()
 
-<<<<<<< HEAD
 # services-boundary-smoke: BlockIngressService boundary contract.
 # Validation-adjacent service: this smoke intentionally avoids Submit()/BlockAcceptor
 # and locks only the IService/IBlockIngress-facing lifecycle and metrics boundary.
@@ -2316,7 +2315,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_block_ingress_service.cpp)
     TIMEOUT 30
   )
   message(STATUS "✅ BlockIngressService boundary smoke test enabled")
-=======
+endif()
+
 # dinero_core gap closure: MiningEventBus unit test.
 # MiningEventBus (src/daemon/mining_events.{h,cpp}) is the thread-safe
 # ring buffer of mining-side events (hashrate, state, block-found) that
@@ -2341,7 +2341,6 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_mining_events.cpp)
     TIMEOUT 30
   )
   message(STATUS "✅ MiningEventBus unit test enabled")
->>>>>>> 1a2d3fb1 (test: MiningEventBus unit (dinero_core gap closure))
 endif()
 
 # Phase C (Dinero Core 1.0) — `cmake --install` layout smoke test.
