@@ -2110,6 +2110,32 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_health.cpp)
   message(STATUS "✅ Health check test enabled")
 endif()
 
+# services-boundary-smoke: pilot test for MetricsService.
+# First entry in the bucket the dinero_core surgery plan requires
+# before any service hub can be moved out of dinero_core. Exercises
+# Init/Start/IsStarted/Stop/ExportMetrics lifecycle with real
+# LoggerService + ConfigService dependencies; no DaemonContext
+# heavyweight setup.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_metrics_service.cpp)
+  add_executable(test_metrics_service
+    tests/services/test_metrics_service.cpp
+    src/daemon/services/metrics_service.cpp
+    src/daemon/services/config_service.cpp
+    src/metrics/metrics_registry.cpp
+    src/common/logger.cpp
+  )
+  target_include_directories(test_metrics_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME MetricsServiceBoundary COMMAND test_metrics_service)
+  set_tests_properties(MetricsServiceBoundary PROPERTIES
+    LABELS "services-boundary-smoke;daemon;metrics;service-hub"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ MetricsService boundary smoke test enabled")
+endif()
+
 # Phase C (Dinero Core 1.0) — `cmake --install` layout smoke test.
 # Verifies install rules produce the contract-required layout for both
 # manual mode (--prefix /usr/local-style) and packaged mode (--prefix
