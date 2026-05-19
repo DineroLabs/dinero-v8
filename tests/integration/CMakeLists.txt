@@ -414,10 +414,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_p2pservice_network_control.sh)
     add_test(
         NAME P2PServiceNetworkControl
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_p2pservice_network_control.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_p2pservice_network_control.sh
     )
     set_tests_properties(P2PServiceNetworkControl PROPERTIES
-        LABELS "integration;p2p;rpc;network-control"
+        LABELS "p2p-network-control-smoke;p2p;rpc;network-control"
         TIMEOUT 180
     )
     message(STATUS "  ✓ P2PServiceNetworkControl registered")
