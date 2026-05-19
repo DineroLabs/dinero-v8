@@ -2184,6 +2184,31 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_rbf_policy_service.cpp)
   message(STATUS "✅ RBFPolicyService boundary smoke test enabled")
 endif()
 
+# services-boundary-smoke: HeadersSyncService boundary contract.
+# Service owns a unique_ptr<p2p::HeadersFirstSync>; tests verify Name(),
+# getManager() identity preservation, Init/Start/Stop safety, and fresh
+# sync-state default (isSyncing()==false on a new service).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_headers_sync_service.cpp)
+  add_executable(test_headers_sync_service
+    tests/services/test_headers_sync_service.cpp
+    src/daemon/services/headers_sync_service.cpp
+    src/p2p/headers_first_sync.cpp
+  )
+  target_link_libraries(test_headers_sync_service PRIVATE
+    jsoncpp_static  # HeadersFirstSync uses Json::Value for status/serialization
+  )
+  target_include_directories(test_headers_sync_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME HeadersSyncServiceBoundary COMMAND test_headers_sync_service)
+  set_tests_properties(HeadersSyncServiceBoundary PROPERTIES
+    LABELS "services-boundary-smoke;daemon;headers-sync;service-hub"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ HeadersSyncService boundary smoke test enabled")
+endif()
+
 # NOTE: CompactBlockService boundary test is intentionally deferred.
 # CompactBlockService::getBlocksProcessed() and getReconstructionRate()
 # in compact_block_service.cpp reference dinero::BlockRelayManager::GetStats /
