@@ -63,17 +63,17 @@ static void compress(uint32_t st[5], const uint8_t block[64]) {
     uint32_t a=st[0], b=st[1], c=st[2], d=st[3], e=st[4];
     uint32_t A=a,     B=b,     C=c,     D=d,     E=e;
 
-    for (int j=0;  j<16; ++j){ uint32_t t = rol(a + f0(b,c,d) + X[r[j ]] + K0, s[j ]); a=e; e=d; d=rol(c,10); c=b; b=t; }
-    for (int j=16; j<32; ++j){ uint32_t t = rol(a + f1(b,c,d) + X[r[j ]] + K1, s[j ]); a=e; e=d; d=rol(c,10); c=b; b=t; }
-    for (int j=32; j<48; ++j){ uint32_t t = rol(a + f2(b,c,d) + X[r[j ]] + K2, s[j ]); a=e; e=d; d=rol(c,10); c=b; b=t; }
-    for (int j=48; j<64; ++j){ uint32_t t = rol(a + f3(b,c,d) + X[r[j ]] + K3, s[j ]); a=e; e=d; d=rol(c,10); c=b; b=t; }
-    for (int j=64; j<80; ++j){ uint32_t t = rol(a + f4(b,c,d) + X[r[j ]] + K4, s[j ]); a=e; e=d; d=rol(c,10); c=b; b=t; }
+    for (int j=0;  j<16; ++j){ uint32_t t = rol(a + f0(b,c,d) + X[r[j ]] + K0, s[j ]) + e; a=e; e=d; d=rol(c,10); c=b; b=t; }
+    for (int j=16; j<32; ++j){ uint32_t t = rol(a + f1(b,c,d) + X[r[j ]] + K1, s[j ]) + e; a=e; e=d; d=rol(c,10); c=b; b=t; }
+    for (int j=32; j<48; ++j){ uint32_t t = rol(a + f2(b,c,d) + X[r[j ]] + K2, s[j ]) + e; a=e; e=d; d=rol(c,10); c=b; b=t; }
+    for (int j=48; j<64; ++j){ uint32_t t = rol(a + f3(b,c,d) + X[r[j ]] + K3, s[j ]) + e; a=e; e=d; d=rol(c,10); c=b; b=t; }
+    for (int j=64; j<80; ++j){ uint32_t t = rol(a + f4(b,c,d) + X[r[j ]] + K4, s[j ]) + e; a=e; e=d; d=rol(c,10); c=b; b=t; }
 
-    for (int j=0;  j<16; ++j){ uint32_t t = rol(A + f4(B,C,D) + X[rr[j ]] + KK0, ss[j ]); A=E; E=D; D=rol(C,10); C=B; B=t; }
-    for (int j=16; j<32; ++j){ uint32_t t = rol(A + f3(B,C,D) + X[rr[j ]] + KK1, ss[j ]); A=E; E=D; D=rol(C,10); C=B; B=t; }
-    for (int j=32; j<48; ++j){ uint32_t t = rol(A + f2(B,C,D) + X[rr[j ]] + KK2, ss[j ]); A=E; E=D; D=rol(C,10); C=B; B=t; }
-    for (int j=48; j<64; ++j){ uint32_t t = rol(A + f1(B,C,D) + X[rr[j ]] + KK3, ss[j ]); A=E; E=D; D=rol(C,10); C=B; B=t; }
-    for (int j=64; j<80; ++j){ uint32_t t = rol(A + f0(B,C,D) + X[rr[j ]] + KK4, ss[j ]); A=E; E=D; D=rol(C,10); C=B; B=t; }
+    for (int j=0;  j<16; ++j){ uint32_t t = rol(A + f4(B,C,D) + X[rr[j ]] + KK0, ss[j ]) + E; A=E; E=D; D=rol(C,10); C=B; B=t; }
+    for (int j=16; j<32; ++j){ uint32_t t = rol(A + f3(B,C,D) + X[rr[j ]] + KK1, ss[j ]) + E; A=E; E=D; D=rol(C,10); C=B; B=t; }
+    for (int j=32; j<48; ++j){ uint32_t t = rol(A + f2(B,C,D) + X[rr[j ]] + KK2, ss[j ]) + E; A=E; E=D; D=rol(C,10); C=B; B=t; }
+    for (int j=48; j<64; ++j){ uint32_t t = rol(A + f1(B,C,D) + X[rr[j ]] + KK3, ss[j ]) + E; A=E; E=D; D=rol(C,10); C=B; B=t; }
+    for (int j=64; j<80; ++j){ uint32_t t = rol(A + f0(B,C,D) + X[rr[j ]] + KK4, ss[j ]) + E; A=E; E=D; D=rol(C,10); C=B; B=t; }
 
     uint32_t T = st[1] + c + D;
     st[1]      = st[2] + d + E;

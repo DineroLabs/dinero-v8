@@ -4,84 +4,96 @@
 namespace dinero {
 namespace crypto {
 
-// RIPEMD160 implementation based on Bitcoin Core (MIT licensed)
-// https://github.com/bitcoin/bitcoin/blob/master/src/crypto/ripemd160.cpp
+// RIPEMD160 implementation based on the project's canonical internal
+// implementation. Keep this standalone wrapper vector-compatible with
+// src/crypto/ripemd160.cpp.
 
 namespace {
 
-inline uint32_t f(uint32_t x, uint32_t y, uint32_t z) { return x ^ y ^ z; }
-inline uint32_t g(uint32_t x, uint32_t y, uint32_t z) { return (x & y) | (~x & z); }
-inline uint32_t h(uint32_t x, uint32_t y, uint32_t z) { return (x | ~y) ^ z; }
-inline uint32_t i(uint32_t x, uint32_t y, uint32_t z) { return (x & z) | (y & ~z); }
-inline uint32_t j(uint32_t x, uint32_t y, uint32_t z) { return x ^ (y | ~z); }
-
-inline uint32_t rol(uint32_t x, int i) { return (x << i) | (x >> (32 - i)); }
-
-inline void Round(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, uint32_t k, int r) {
-    a = rol(a + f(b, c, d) + x + k, r) + e;
-    c = rol(c, 10);
+inline uint32_t rol(uint32_t x, unsigned n) {
+    n &= 31u;
+    return (x << n) | (x >> ((32u - n) & 31u));
 }
 
-inline void R11(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, int r) { Round(a, b, c, d, e, x, 0, r); }
-inline void R21(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, int r) { Round(a, b, c, d, e, x, 0x5A827999ul, r); }
-inline void R31(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, int r) { Round(a, b, c, d, e, x, 0x6ED9EBA1ul, r); }
-inline void R41(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, int r) { Round(a, b, c, d, e, x, 0x8F1BBCDCul, r); }
-inline void R51(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, int r) { Round(a, b, c, d, e, x, 0xA953FD4Eul, r); }
-
-inline void R12(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, int r) { Round(a, b, c, d, e, x, 0x50A28BE6ul, r); }
-inline void R22(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, int r) { Round(a, b, c, d, e, x, 0x5C4DD124ul, r); }
-inline void R32(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, int r) { Round(a, b, c, d, e, x, 0x6D703EF3ul, r); }
-inline void R42(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, int r) { Round(a, b, c, d, e, x, 0x7A6D76E9ul, r); }
-inline void R52(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t x, int r) { Round(a, b, c, d, e, x, 0, r); }
-
 inline uint32_t ReadLE32(const unsigned char* ptr) {
-    uint32_t x;
-    memcpy(&x, ptr, 4);
-    return x;
+    return static_cast<uint32_t>(ptr[0])
+         | (static_cast<uint32_t>(ptr[1]) << 8)
+         | (static_cast<uint32_t>(ptr[2]) << 16)
+         | (static_cast<uint32_t>(ptr[3]) << 24);
 }
 
 inline void WriteLE32(unsigned char* ptr, uint32_t x) {
-    memcpy(ptr, &x, 4);
+    ptr[0] = static_cast<unsigned char>(x);
+    ptr[1] = static_cast<unsigned char>(x >> 8);
+    ptr[2] = static_cast<unsigned char>(x >> 16);
+    ptr[3] = static_cast<unsigned char>(x >> 24);
 }
 
-void Transform(uint32_t* s, const unsigned char* chunk) {
-    uint32_t a1 = s[0], b1 = s[1], c1 = s[2], d1 = s[3], e1 = s[4];
-    uint32_t a2 = a1, b2 = b1, c2 = c1, d2 = d1, e2 = e1;
-    uint32_t w0 = ReadLE32(chunk + 0), w1 = ReadLE32(chunk + 4), w2 = ReadLE32(chunk + 8), w3 = ReadLE32(chunk + 12);
-    uint32_t w4 = ReadLE32(chunk + 16), w5 = ReadLE32(chunk + 20), w6 = ReadLE32(chunk + 24), w7 = ReadLE32(chunk + 28);
-    uint32_t w8 = ReadLE32(chunk + 32), w9 = ReadLE32(chunk + 36), w10 = ReadLE32(chunk + 40), w11 = ReadLE32(chunk + 44);
-    uint32_t w12 = ReadLE32(chunk + 48), w13 = ReadLE32(chunk + 52), w14 = ReadLE32(chunk + 56), w15 = ReadLE32(chunk + 60);
+inline uint32_t f0(uint32_t x,uint32_t y,uint32_t z){ return x ^ y ^ z; }
+inline uint32_t f1(uint32_t x,uint32_t y,uint32_t z){ return (x & y) | (~x & z); }
+inline uint32_t f2(uint32_t x,uint32_t y,uint32_t z){ return (x | ~y) ^ z; }
+inline uint32_t f3(uint32_t x,uint32_t y,uint32_t z){ return (x & z) | (y & ~z); }
+inline uint32_t f4(uint32_t x,uint32_t y,uint32_t z){ return x ^ (y | ~z); }
 
-    R11(a1, b1, c1, d1, e1, w0, 11);
-    R11(e1, a1, b1, c1, d1, w1, 14);
-    R11(d1, e1, a1, b1, c1, w2, 15);
-    R11(c1, d1, e1, a1, b1, w3, 12);
-    R11(b1, c1, d1, e1, a1, w4, 5);
-    R11(a1, b1, c1, d1, e1, w5, 8);
-    R11(e1, a1, b1, c1, d1, w6, 7);
-    R11(d1, e1, a1, b1, c1, w7, 9);
-    R11(c1, d1, e1, a1, b1, w8, 11);
-    R11(b1, c1, d1, e1, a1, w9, 13);
-    R11(a1, b1, c1, d1, e1, w10, 14);
-    R11(e1, a1, b1, c1, d1, w11, 15);
-    R11(d1, e1, a1, b1, c1, w12, 6);
-    R11(c1, d1, e1, a1, b1, w13, 7);
-    R11(b1, c1, d1, e1, a1, w14, 9);
-    R11(a1, b1, c1, d1, e1, w15, 8);
+static constexpr uint32_t K0 = 0x00000000u, K1 = 0x5A827999u, K2 = 0x6ED9EBA1u,
+                          K3 = 0x8F1BBCDCu, K4 = 0xA953FD4Eu;
+static constexpr uint32_t KK0= 0x50A28BE6u, KK1= 0x5C4DD124u, KK2= 0x6D703EF3u,
+                          KK3= 0x7A6D76E9u, KK4= 0x00000000u;
 
-    // Continue with remaining rounds (abbreviated for space - full implementation would include all 80 rounds)
-    // Left line: R21-R51, Right line: R12-R52
+static const uint8_t r [80] = {
+  0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
+  7,4,13,1,10,6,15,3,12,0,9,5,2,14,11,8,
+  3,10,14,4,9,15,8,1,2,7,0,6,13,11,5,12,
+  1,9,11,10,0,8,12,4,13,3,7,15,14,5,6,2,
+  4,0,5,9,7,12,2,10,14,1,3,8,11,6,15,13
+};
+static const uint8_t rr[80] = {
+  5,14,7,0,9,2,11,4,13,6,15,8,1,10,3,12,
+  6,11,3,7,0,13,5,10,14,15,8,12,4,9,1,2,
+  15,5,1,3,7,14,6,9,11,8,12,2,10,0,4,13,
+  8,6,4,1,3,11,15,0,5,12,2,13,9,7,10,14,
+  12,15,10,4,1,5,8,7,6,2,13,14,0,3,9,11
+};
+static const uint8_t s [80] = {
+  11,14,15,12,5,8,7,9,11,13,14,15,6,7,9,8,
+  7,6,8,13,11,9,7,15,7,12,15,9,11,7,13,12,
+  11,13,6,7,14,9,13,15,14,8,13,6,5,12,7,5,
+  11,12,14,15,14,15,9,8,9,14,5,6,8,6,5,12,
+  9,15,5,11,6,8,13,12,5,12,13,14,11,8,5,6
+};
+static const uint8_t ss[80] = {
+  8,9,9,11,13,15,15,5,7,7,8,11,14,14,12,6,
+  9,13,15,7,12,8,9,11,7,7,12,7,6,15,13,11,
+  9,7,15,11,8,6,6,14,12,13,5,14,13,13,7,5,
+  15,5,8,11,14,14,6,14,6,9,12,9,12,5,15,8,
+  8,5,12,9,12,5,14,6,8,13,6,5,15,13,11,11
+};
 
-    s[0] += a1;
-    s[1] += b1;
-    s[2] += c1;
-    s[3] += d1;
-    s[4] += e1;
-    s[0] += a2;
-    s[1] += b2;
-    s[2] += c2;
-    s[3] += d2;
-    s[4] += e2;
+void Transform(uint32_t* st, const unsigned char* chunk) {
+    uint32_t X[16];
+    for (int idx = 0; idx < 16; ++idx) X[idx] = ReadLE32(chunk + 4 * idx);
+
+    uint32_t a=st[0], b=st[1], c=st[2], d=st[3], e=st[4];
+    uint32_t A=a,    B=b,    C=c,    D=d,    E=e;
+
+    for (int idx=0;  idx<16; ++idx){ uint32_t t = rol(a + f0(b,c,d) + X[r[idx ]] + K0, s[idx ]) + e; a=e; e=d; d=rol(c,10); c=b; b=t; }
+    for (int idx=16; idx<32; ++idx){ uint32_t t = rol(a + f1(b,c,d) + X[r[idx ]] + K1, s[idx ]) + e; a=e; e=d; d=rol(c,10); c=b; b=t; }
+    for (int idx=32; idx<48; ++idx){ uint32_t t = rol(a + f2(b,c,d) + X[r[idx ]] + K2, s[idx ]) + e; a=e; e=d; d=rol(c,10); c=b; b=t; }
+    for (int idx=48; idx<64; ++idx){ uint32_t t = rol(a + f3(b,c,d) + X[r[idx ]] + K3, s[idx ]) + e; a=e; e=d; d=rol(c,10); c=b; b=t; }
+    for (int idx=64; idx<80; ++idx){ uint32_t t = rol(a + f4(b,c,d) + X[r[idx ]] + K4, s[idx ]) + e; a=e; e=d; d=rol(c,10); c=b; b=t; }
+
+    for (int idx=0;  idx<16; ++idx){ uint32_t t = rol(A + f4(B,C,D) + X[rr[idx ]] + KK0, ss[idx ]) + E; A=E; E=D; D=rol(C,10); C=B; B=t; }
+    for (int idx=16; idx<32; ++idx){ uint32_t t = rol(A + f3(B,C,D) + X[rr[idx ]] + KK1, ss[idx ]) + E; A=E; E=D; D=rol(C,10); C=B; B=t; }
+    for (int idx=32; idx<48; ++idx){ uint32_t t = rol(A + f2(B,C,D) + X[rr[idx ]] + KK2, ss[idx ]) + E; A=E; E=D; D=rol(C,10); C=B; B=t; }
+    for (int idx=48; idx<64; ++idx){ uint32_t t = rol(A + f1(B,C,D) + X[rr[idx ]] + KK3, ss[idx ]) + E; A=E; E=D; D=rol(C,10); C=B; B=t; }
+    for (int idx=64; idx<80; ++idx){ uint32_t t = rol(A + f0(B,C,D) + X[rr[idx ]] + KK4, ss[idx ]) + E; A=E; E=D; D=rol(C,10); C=B; B=t; }
+
+    uint32_t T = st[1] + c + D;
+    st[1]      = st[2] + d + E;
+    st[2]      = st[3] + e + A;
+    st[3]      = st[4] + a + B;
+    st[4]      = st[0] + b + C;
+    st[0]      = T;
 }
 
 } // anonymous namespace
