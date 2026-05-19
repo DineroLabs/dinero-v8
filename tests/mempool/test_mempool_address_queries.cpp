@@ -123,9 +123,31 @@ static void test_unrelated_address_is_ignored() {
     std::cout << "  PASSED" << std::endl;
 }
 
+static void test_p2mr_buildscriptpubkey() {
+    std::cout << "Test 3: P2MR AddressInfo produces witness v3 scriptPubKey..." << std::endl;
+
+    // Construct AddressInfo directly. No real rdin1r... bech32m test vector
+    // exists in the tree, so bypass DecodeAddress; the gap fixed here is in
+    // BuildScriptPubKey alone, which had no case for AddressType::P2MR.
+    mining::AddressInfo info;
+    info.type = mining::AddressType::P2MR;
+    info.program.assign(32, 0xAB);
+
+    auto script = mining::BuildScriptPubKey(info);
+
+    TEST_ASSERT(script.size() == 34, "P2MR scriptPubKey must be 34 bytes (OP_3 + len + 32-byte program)");
+    TEST_ASSERT(script[0] == 0x53, "P2MR scriptPubKey must start with OP_3 (0x53)");
+    TEST_ASSERT(script[1] == 0x20, "P2MR scriptPubKey must push 32 bytes (0x20)");
+    TEST_ASSERT(std::equal(script.begin() + 2, script.end(), info.program.begin()),
+                "P2MR scriptPubKey body must equal the 32-byte program");
+
+    std::cout << "  PASSED" << std::endl;
+}
+
 int main() {
     test_parent_and_child_spend_are_visible();
     test_unrelated_address_is_ignored();
+    test_p2mr_buildscriptpubkey();
 
     std::cout << "\nAll mempool address-query tests passed (" << tests_passed
               << "/" << tests_total << ")" << std::endl;

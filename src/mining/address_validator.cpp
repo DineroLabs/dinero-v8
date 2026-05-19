@@ -211,6 +211,19 @@ std::vector<uint8_t> BuildScriptPubKey(const AddressInfo& info) {
             break;
         }
 
+        case AddressType::P2MR: {
+            // OP_3 <32-byte-ML-DSA-65-merkle-root>
+            if (info.program.size() != 32) {
+                return {};  // Invalid
+            }
+
+            script.push_back(0x53);  // OP_3 (witness version 3)
+            script.push_back(0x20);  // Push 32 bytes
+
+            script.insert(script.end(), info.program.begin(), info.program.end());
+            break;
+        }
+
         default:
             return {};  // Unknown type
     }
