@@ -2292,6 +2292,31 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_mempool_policy.cpp)
   message(STATUS "✅ MempoolPolicy unit test enabled")
 endif()
 
+# services-boundary-smoke: BlockIngressService boundary contract.
+# Validation-adjacent service: this smoke intentionally avoids Submit()/BlockAcceptor
+# and locks only the IService/IBlockIngress-facing lifecycle and metrics boundary.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_block_ingress_service.cpp)
+  add_executable(test_block_ingress_service
+    tests/services/test_block_ingress_service.cpp
+    src/daemon/config.cpp                # GetConfig() referenced by dinero_core objects
+    tests/stubs/daemon_test_stubs.cpp    # vault + daemon mempool extra isolation seams
+    tests/stubs/mempool_test_stubs.cpp   # no-op Mempool notification/iteration seams
+  )
+  target_link_libraries(test_block_ingress_service PRIVATE
+    dinero_core
+  )
+  target_include_directories(test_block_ingress_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME BlockIngressServiceBoundary COMMAND test_block_ingress_service)
+  set_tests_properties(BlockIngressServiceBoundary PROPERTIES
+    LABELS "services-boundary-smoke;daemon;block-ingress;service-hub;validation-adjacent"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ BlockIngressService boundary smoke test enabled")
+endif()
+
 # Phase C (Dinero Core 1.0) — `cmake --install` layout smoke test.
 # Verifies install rules produce the contract-required layout for both
 # manual mode (--prefix /usr/local-style) and packaged mode (--prefix
