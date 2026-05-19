@@ -112,21 +112,34 @@ set_target_properties(p2mr_address_test PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
+set(SHIELDED_WALLET_TEST_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/wallet/shielded_derivation.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/bip32_deriver.cpp
+)
+
 # V7 Shielded pool round-trip tests.
-add_executable(shielded_pool_test shielded_pool_test.cpp)
-target_link_libraries(shielded_pool_test PRIVATE dinero_shielded OpenSSL::Crypto)
+add_executable(shielded_pool_test
+    shielded_pool_test.cpp
+    ${SHIELDED_WALLET_TEST_SOURCES}
+)
+target_link_libraries(shielded_pool_test PRIVATE dinero_shielded dinero_crypto secp256k1 OpenSSL::Crypto sqlite3)
 target_include_directories(shielded_pool_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 set_target_properties(shielded_pool_test PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
+    EXCLUDE_FROM_ALL FALSE
 )
 
 # V7 Adversarial consensus hardening suite.
-add_executable(shielded_adversarial_test shielded_adversarial_test.cpp)
-target_link_libraries(shielded_adversarial_test PRIVATE dinero_shielded OpenSSL::Crypto)
+add_executable(shielded_adversarial_test
+    shielded_adversarial_test.cpp
+    ${SHIELDED_WALLET_TEST_SOURCES}
+)
+target_link_libraries(shielded_adversarial_test PRIVATE dinero_shielded dinero_crypto secp256k1 OpenSSL::Crypto sqlite3)
 set_target_properties(shielded_adversarial_test PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
+    EXCLUDE_FROM_ALL FALSE
 )

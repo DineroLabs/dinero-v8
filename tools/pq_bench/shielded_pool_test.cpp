@@ -54,7 +54,37 @@ static sh::Hash make_hash(uint8_t fill) {
     return h;
 }
 
+static sh::Hash value_hash(uint64_t value) {
+    sh::Hash h{};
+    for (int i = 0; i < 8; ++i) {
+        h[31 - i] = static_cast<uint8_t>((value >> (8 * i)) & 0xff);
+    }
+    return h;
+}
+
+static sh::BindingSignature make_sig(uint8_t fill) {
+    sh::BindingSignature sig{};
+    std::memset(sig.data(), fill, sig.size());
+    return sig;
+}
+
+static sh::ValidationContext make_validation_context(
+    const sh::NullifierSet* nullifier_set,
+    const sh::CommitmentTree* commitment_tree,
+    uint32_t block_height,
+    int64_t transparent_value_delta) {
+    return sh::ValidationContext(
+        nullifier_set,
+        commitment_tree,
+        block_height,
+        transparent_value_delta,
+        /*shielded_activation_height=*/0,
+        /*anchor_history=*/nullptr,
+        /*tx_sighash=*/sh::Hash{});
+}
+
 struct TestNote {
+    sh::Hash diversifier;
     sh::Hash secret_key;
     sh::Hash public_key;
     sh::Hash value_hash;
@@ -64,13 +94,14 @@ struct TestNote {
 
 static TestNote make_spendable_note(uint8_t seed_base) {
     TestNote note{};
+    note.diversifier = make_hash(static_cast<uint8_t>(seed_base + 3));
     note.secret_key = make_hash(seed_base);
     sh::Hash zero{};
     note.public_key = sh::PoseidonHash2(note.secret_key, zero);
-    note.value_hash = make_hash(static_cast<uint8_t>(seed_base + 1));
+    note.value_hash = value_hash(static_cast<uint64_t>(seed_base + 1));
     note.randomness = make_hash(static_cast<uint8_t>(seed_base + 2));
     note.commitment = sh::NoteCommitment(
-        note.value_hash, note.public_key, note.randomness);
+        note.diversifier, note.public_key, note.value_hash, note.randomness);
     return note;
 }
 
@@ -79,6 +110,7 @@ static sh::ShieldedOutput make_proven_output(const TestNote& note) {
     ow.value = note.value_hash;
     ow.public_key = note.public_key;
     ow.randomness = note.randomness;
+    ow.d = note.diversifier;
 
     sh::OutputPublicInputs opi;
     opi.commitment = note.commitment;
@@ -101,7 +133,7 @@ int main() {
         sh::Hash root0 = tree.Root();
         check(root0 == tree.Root(), "empty root is deterministic");
 
-        sh::Hash cm1 = sh::NoteCommitment(make_hash(0x01), make_hash(0x02), make_hash(0x03));
+        sh::Hash cm1 = sh::NoteCommitment(make_hash(0x00), make_hash(0x01), make_hash(0x02), make_hash(0x03));
         uint64_t idx1 = tree.Append(cm1);
         check(idx1 == 0, "first leaf index=0");
         check(tree.Size() == 1, "size=1 after first append");
@@ -109,7 +141,7 @@ int main() {
         sh::Hash root1 = tree.Root();
         check(root1 != root0, "root changes after append");
 
-        sh::Hash cm2 = sh::NoteCommitment(make_hash(0x04), make_hash(0x05), make_hash(0x06));
+        sh::Hash cm2 = sh::NoteCommitment(make_hash(0x00), make_hash(0x04), make_hash(0x05), make_hash(0x06));
         uint64_t idx2 = tree.Append(cm2);
         check(idx2 == 1, "second leaf index=1");
 
@@ -172,11 +204,8 @@ int main() {
         sh::ShieldedOutput out1 = make_proven_output(note1);
         shield_bundle.outputs.push_back(out1);
 
-        sh::ValidationContext ctx;
-        ctx.nullifier_set = &ns;
-        ctx.commitment_tree = &tree;
-        ctx.block_height = 5000;
-        ctx.transparent_value_delta = 1000;  // matches value_balance
+        auto ctx = make_validation_context(
+            &ns, &tree, /*block_height=*/5000, /*transparent_value_delta=*/1000);
 
         auto err = sh::ValidateShieldedBundle(shield_bundle, ctx);
         check(err == sh::ShieldedValidationError::Ok, "shield bundle validates");
@@ -196,6 +225,7 @@ int main() {
         spend_witness1.leaf_index = 0;
         spend_witness1.value = note1.value_hash;
         spend_witness1.randomness = note1.randomness;
+        spend_witness1.d = note1.diversifier;
         spend_witness1.merkle_path = path1->siblings;
 
         sh::SpendPublicInputs spend_inputs1;
@@ -273,12 +303,13 @@ int main() {
     {
         // Build an output circuit and verify it produces a non-empty proof.
         sh::OutputWitness ow;
-        ow.value      = make_hash(0x10);
+        ow.value      = value_hash(100000000);
         ow.public_key = make_hash(0x20);
         ow.randomness = make_hash(0x30);
+        ow.d          = make_hash(0x40);
 
         sh::OutputPublicInputs opi;
-        opi.commitment = sh::NoteCommitment(ow.value, ow.public_key, ow.randomness);
+        opi.commitment = sh::NoteCommitment(ow.d, ow.public_key, ow.value, ow.randomness);
 
         auto proof = sh::ProveOutput(ow, opi, nullptr);
         check(!proof.empty(), "output proof non-empty");
@@ -297,6 +328,7 @@ int main() {
         sw.leaf_index = leaf_idx;
         sw.value = spend_note1.value_hash;
         sw.randomness = spend_note1.randomness;
+        sw.d = spend_note1.diversifier;
         sw.merkle_path = auth_path1->siblings;
 
         sh::SpendPublicInputs spi;
@@ -319,6 +351,7 @@ int main() {
         sw2.leaf_index = leaf_idx2;
         sw2.value = spend_note2.value_hash;
         sw2.randomness = spend_note2.randomness;
+        sw2.d = spend_note2.diversifier;
         sw2.merkle_path = auth_path2->siblings;
 
         sh::SpendPublicInputs spi2;
@@ -430,7 +463,7 @@ int main() {
         o1.encrypted_note = {0x10, 0x20};
         o1.zk_proof      = {0x04};
         bundle.outputs = {o1};
-        bundle.binding_sig = make_hash(0xDD);
+        bundle.binding_sig = make_sig(0xDD);
 
         auto bytes = sh::SerializeShieldedBundle(bundle);
         check(!bytes.empty(), "serialization produces bytes");
@@ -456,13 +489,15 @@ int main() {
         auto swapped = sh::SerializeShieldedBundle(decoded);
         // Find the two 32-byte nullifiers and swap them.
         // Layout: [8 bytes value_balance] [1 byte num_spends=2]
-        //         [32 bytes nul_0] [32 bytes anchor_0] [varint proof_0] ...
+        //         [32 bytes nul_0] [32 bytes anchor_0] [33 bytes cv_0]
+        //         [varint proof_0] ...
         //         [32 bytes nul_1] ...
         // We need to swap nul_0 and nul_1 in place.
-        if (swapped.size() > 9 + 32 + 32 + 3 + 32) {
+        if (swapped.size() > 9 + 32 + 32 + sh::ValueCommitment{}.size() + 3 + 32) {
             size_t nul0_off = 9;  // after 8-byte balance + 1-byte compactsize
-            // Find nul1 offset: nul0 + 32 (nul) + 32 (anchor) + varint + proof
-            size_t proof0_len_off = nul0_off + 32 + 32;
+            // Find nul1 offset: nul0 + 32 (nul) + 32 (anchor) + 33 (cv)
+            // + varint + proof.
+            size_t proof0_len_off = nul0_off + 32 + 32 + sh::ValueCommitment{}.size();
             uint64_t proof0_len = swapped[proof0_len_off]; // single-byte varint
             size_t nul1_off = proof0_len_off + 1 + proof0_len;
             if (nul1_off + 32 <= swapped.size()) {
@@ -626,11 +661,8 @@ int main() {
         shield_bundle.value_balance = 1000;
         shield_bundle.outputs.push_back(make_proven_output(note1));
 
-        sh::ValidationContext ctx;
-        ctx.nullifier_set = &ns;
-        ctx.commitment_tree = &tree;
-        ctx.block_height = 7000;
-        ctx.transparent_value_delta = 1000;
+        auto ctx = make_validation_context(
+            &ns, &tree, /*block_height=*/7000, /*transparent_value_delta=*/1000);
 
         auto err = sh::ValidateShieldedBundle(shield_bundle, ctx);
         check(err == sh::ShieldedValidationError::Ok, "initial shield bundle validates");
@@ -646,6 +678,7 @@ int main() {
         spend_witness1.leaf_index = 0;
         spend_witness1.value = note1.value_hash;
         spend_witness1.randomness = note1.randomness;
+        spend_witness1.d = note1.diversifier;
         spend_witness1.merkle_path = note1_path->siblings;
 
         sh::SpendPublicInputs spend_inputs1;
@@ -687,6 +720,7 @@ int main() {
         spend_witness2.leaf_index = 1;
         spend_witness2.value = note2.value_hash;
         spend_witness2.randomness = note2.randomness;
+        spend_witness2.d = note2.diversifier;
         spend_witness2.merkle_path = note2_path->siblings;
 
         sh::SpendPublicInputs spend_inputs2;
@@ -735,11 +769,8 @@ int main() {
         // persistence using wallet/prover state, but consensus validation after
         // reopen only depends on the restored frontier root and nullifier DB.
 
-        sh::ValidationContext restored_ctx;
-        restored_ctx.nullifier_set = &reopened;
-        restored_ctx.commitment_tree = &restored;
-        restored_ctx.block_height = 7002;
-        restored_ctx.transparent_value_delta = 0;
+        auto restored_ctx = make_validation_context(
+            &reopened, &restored, /*block_height=*/7002, /*transparent_value_delta=*/0);
 
         err = sh::ValidateShieldedBundle(post_reopen_bundle, restored_ctx);
         check(err == sh::ShieldedValidationError::Ok, "post-reopen transfer validates");
