@@ -18,6 +18,7 @@ set(DINERO_CORE_P2P_SOURCES
   # Network glue used by the daemon core
   src/network/network_invariants.cpp
   src/network/port_mapper.cpp
+  src/network/udp_socket.cpp         # NAT traversal Phase B1: UDP socket facility
   src/daemon/p2p_message.cpp
   src/daemon/peer_connection.cpp
   src/daemon/p2p_manager.cpp
