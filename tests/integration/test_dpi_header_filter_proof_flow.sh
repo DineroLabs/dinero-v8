@@ -203,6 +203,25 @@ validate_filter_batch() {
     pass "block filter batch matches local header chain ($checked rows)"
 }
 
+first_success_proof_envelope() {
+    local bundle_json="$1"
+    local root="$2"
+    local tip="$3"
+
+    echo "$bundle_json" | jq -c '
+        first(.proofs[] | select(.success == true) | {
+            txid: .txid,
+            vout: .vout,
+            utreexo_root: $root,
+            tip_hash: $tip,
+            utreexo_proof: {
+                siblings: .siblings,
+                position: .position,
+                num_leaves: .num_leaves
+            }
+        })' --arg root "$root" --arg tip "$tip"
+}
+
 trap cleanup EXIT
 
 [ -x "$DINEROD" ] || fail "missing dinerod binary at $DINEROD"
@@ -234,18 +253,9 @@ validate_filter_batch "$FILTERS"
 INITIAL_BUNDLE="$(rpc_result "wallet.getproofbundle" "[{\"min_confirmations\":1,\"spendable_only\":true,\"max_utxos\":64}]")"
 assert_bundle_matches_headers "$INITIAL_BUNDLE" "initial bundle"
 
-FIRST_PROOF_ENVELOPE="$(echo "$INITIAL_BUNDLE" | jq -c '
-    .proofs[] | select(.success == true) | {
-        txid: .txid,
-        vout: .vout,
-        utreexo_root: $root,
-        tip_hash: $tip,
-        utreexo_proof: {
-            siblings: .siblings,
-            position: .position,
-            num_leaves: .num_leaves
-        }
-    }' --arg root "$(echo "$INITIAL_BUNDLE" | jq -r '.accumulator_root')" --arg tip "$(echo "$INITIAL_BUNDLE" | jq -r '.block_hash')" | head -n 1)"
+BUNDLE_ROOT_ARG="$(echo "$INITIAL_BUNDLE" | jq -r '.accumulator_root')"
+BUNDLE_TIP_ARG="$(echo "$INITIAL_BUNDLE" | jq -r '.block_hash')"
+FIRST_PROOF_ENVELOPE="$(first_success_proof_envelope "$INITIAL_BUNDLE" "$BUNDLE_ROOT_ARG" "$BUNDLE_TIP_ARG")"
 [ -n "$FIRST_PROOF_ENVELOPE" ] || fail "failed to build proof envelope from initial bundle"
 
 VERIFY_RESULT="$(rpc_result "wallet.verifyutxoproof" "[$FIRST_PROOF_ENVELOPE,{\"enforce_bound_context\":true}]")"
@@ -284,18 +294,10 @@ assert_bundle_matches_headers "$RESTORED_BUNDLE" "restored bundle"
 [ "$(echo "$RESTORED_BUNDLE" | jq -r '.height')" = "$OLD_HEIGHT" ] || fail "bundle height changed across restart"
 pass "proof bundle bindings remain stable across restart"
 
-RESTORED_PROOF_ENVELOPE="$(echo "$RESTORED_BUNDLE" | jq -c '
-    .proofs[] | select(.success == true) | {
-        txid: .txid,
-        vout: .vout,
-        utreexo_root: $root,
-        tip_hash: $tip,
-        utreexo_proof: {
-            siblings: .siblings,
-            position: .position,
-            num_leaves: .num_leaves
-        }
-    }' --arg root "$(echo "$RESTORED_BUNDLE" | jq -r '.accumulator_root')" --arg tip "$(echo "$RESTORED_BUNDLE" | jq -r '.block_hash')" | head -n 1)"
+RESTORED_PROOF_ENVELOPE="$(first_success_proof_envelope \
+    "$RESTORED_BUNDLE" \
+    "$(echo "$RESTORED_BUNDLE" | jq -r '.accumulator_root')" \
+    "$(echo "$RESTORED_BUNDLE" | jq -r '.block_hash')")"
 [ -n "$RESTORED_PROOF_ENVELOPE" ] || fail "failed to build proof envelope from restored bundle"
 
 RESTORED_VERIFY_RESULT="$(rpc_result "wallet.verifyutxoproof" "[$RESTORED_PROOF_ENVELOPE,{\"enforce_bound_context\":true}]")"

@@ -442,10 +442,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_dpi_header_filter_proof_flow.sh)
     add_test(
         NAME DpiHeaderFilterProofFlow
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_dpi_header_filter_proof_flow.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_dpi_header_filter_proof_flow.sh
     )
     set_tests_properties(DpiHeaderFilterProofFlow PROPERTIES
-        LABELS "integration;wallet;utreexo;dpi;filters"
+        LABELS "dpi-light-wallet-smoke;wallet;utreexo;dpi;filters"
         TIMEOUT 240
     )
     message(STATUS "  ✓ DpiHeaderFilterProofFlow registered")
