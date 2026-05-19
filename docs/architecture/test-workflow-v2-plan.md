@@ -171,6 +171,22 @@ into `covenant-policy-smoke`: `CovenantScriptPath` and `EscapeHatchTests`.
 Focused local validation passed three consecutive runs. These tests are not
 daemon integration fixtures and should stay in normal PR CI.
 
+The eighth label split graduated two filter-commitment tests into
+`filter-commitment-smoke` across PRs #76 and #78:
+`ExternalMinerCoinbaseTxnFilterCommitment` and
+`FilterCommitmentActivationBoundary`. PR #78 also fixed the stale
+pre-activation assertion before graduating the activation-boundary test.
+
+The ninth label split graduated three cheap compiled local mining/wallet tests
+in PR #79: `Mining_W1_5_Integration` and `Mining_PoolPayoutIntegration` into
+`mining-component-smoke`, and `Wallet_W2_6_SyncIntegration` into
+`wallet-component-smoke`.
+
+PR #80 remains open and proposes graduating `DpiHeaderFilterProofFlow` into
+`dpi-light-wallet-smoke`, but it is not counted as graduated until its CI
+failure is repaired and the PR merges. Re-run the local CTest inventory before
+updating the merged counts.
+
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
 binary, required scripts, and `ctest` availability without running the heavy

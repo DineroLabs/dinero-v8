@@ -1,6 +1,7 @@
 # Quarantined Test Classification
 
-Generated from `dinero-main` at `c6a2a366`.
+Generated from `dinero-main` at `c6a2a366`; refreshed against
+`origin/dinero-main` at `d7f82093` after PR #79.
 
 This is the first read-only classification pass after Test Workflow v2 and
 `ReleaseSuiteConfigSmoke` landed. The goal is to decide what each quarantined
@@ -12,13 +13,14 @@ Local evidence used:
 - Focused local runs against `build-cmake-tests` with `--timeout 60`.
 - CMake registration comments and test-file headers.
 
-The current label-quarantined inventory after the packaging, RPC,
+The current merged label-quarantined inventory after the packaging, RPC,
 mempool/rawtx, mempool-package, shutdown, and covenant/policy smoke
-graduations is:
+graduations, plus the filter-commitment and mining/wallet component smoke
+graduations, is:
 
 | Label | Local count | Classification |
 | --- | ---: | --- |
-| `integration` | 66 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
+| `integration` | 61 | Mixed harness/runtime integration surface; classify by sub-suite before changing CI ownership. |
 | `gate` | 4 | Release/readiness gates; heavy or policy-oriented, not normal PR-CI by default. |
 | `release` | 3 | Release ownership; keep full gates manual or release-blocking unless split into smoke checks. |
 | `canonicality` | 26 | Too broad as a single quarantine; contains tests that already pass and tests that need deeper repair. |
@@ -119,6 +121,21 @@ The seventh label-level graduation moved `CovenantScriptPath` and
 `EscapeHatchTests` into active `covenant-policy-smoke` coverage. Focused
 validation passed three consecutive local runs. These are cheap compiled
 correctness/policy tests, not daemon integration fixtures.
+
+The eighth label-level graduation moved `ExternalMinerCoinbaseTxnFilterCommitment`
+and `FilterCommitmentActivationBoundary` into active `filter-commitment-smoke`
+coverage across PRs #76 and #78. PR #78 also fixed the stale pre-activation
+assertion before graduating the activation-boundary test.
+
+The ninth label-level graduation moved `Mining_W1_5_Integration`,
+`Mining_PoolPayoutIntegration`, and `Wallet_W2_6_SyncIntegration` into active
+`mining-component-smoke` and `wallet-component-smoke` coverage in PR #79.
+These are cheap compiled local tests, not daemon integration fixtures.
+
+PR #80 remains open to graduate `DpiHeaderFilterProofFlow` into
+`dpi-light-wallet-smoke`, but it is not counted as graduated until its CI
+failure is repaired and the PR merges. Re-run the inventory before converting
+that from open status into merged history.
 
 Deletion is not recommended for any formerly exact-name quarantined test.
 The only retired entry so far was the stale, ineffective
