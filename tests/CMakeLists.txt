@@ -2136,6 +2136,67 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_metrics_service.cpp)
   message(STATUS "✅ MetricsService boundary smoke test enabled")
 endif()
 
+# services-boundary-smoke: AddressManagerService boundary contract.
+# Service owns a unique_ptr<p2p::AddressManager>; tests verify Name(),
+# getManager() identity preservation, and Init/Start/Stop safety.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_address_manager_service.cpp)
+  add_executable(test_address_manager_service
+    tests/services/test_address_manager_service.cpp
+    src/daemon/services/address_manager_service.cpp
+    src/p2p/addrman.cpp
+  )
+  target_include_directories(test_address_manager_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME AddressManagerServiceBoundary COMMAND test_address_manager_service)
+  set_tests_properties(AddressManagerServiceBoundary PROPERTIES
+    LABELS "services-boundary-smoke;daemon;address-manager;service-hub"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ AddressManagerService boundary smoke test enabled")
+endif()
+
+# services-boundary-smoke: RBFPolicyService boundary contract.
+# Service owns a unique_ptr<policy::MempoolPolicy>; tests verify Name(),
+# getPolicy() identity preservation, and Init/Start/Stop safety.
+# Links dinero_tx_primitives because MempoolPolicy::checkSigOps etc.
+# reference Transaction::GetSize / GetWeight / Serialize.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_rbf_policy_service.cpp)
+  add_executable(test_rbf_policy_service
+    tests/services/test_rbf_policy_service.cpp
+    src/daemon/services/rbf_policy_service.cpp
+    src/policy/mempool_policy.cpp
+    src/primitives/transaction_serializer.cpp
+  )
+  target_link_libraries(test_rbf_policy_service PRIVATE
+    dinero_tx_primitives
+  )
+  target_include_directories(test_rbf_policy_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME RBFPolicyServiceBoundary COMMAND test_rbf_policy_service)
+  set_tests_properties(RBFPolicyServiceBoundary PROPERTIES
+    LABELS "services-boundary-smoke;daemon;rbf-policy;service-hub"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ RBFPolicyService boundary smoke test enabled")
+endif()
+
+# NOTE: CompactBlockService boundary test is intentionally deferred.
+# CompactBlockService::getBlocksProcessed() and getReconstructionRate()
+# in compact_block_service.cpp reference dinero::BlockRelayManager::GetStats /
+# GetCompactBlockSuccessRate. Those symbols live in
+# src/daemon/block_relay_manager.cpp, which is itself part of dinero_core
+# and pulls in a deep transitive set (peer manager, consensus, network
+# layers). A clean boundary test for CompactBlockService requires either
+# extracting the stat accessors into a thinner unit, or providing a
+# minimal BlockRelayManager test stub — both belong in a follow-up.
+# The other 8 services in the source map's hub list are testable as
+# they stand; we'll come back to CompactBlockService once the rest of
+# the bucket is seeded.
+
 # Phase C (Dinero Core 1.0) — `cmake --install` layout smoke test.
 # Verifies install rules produce the contract-required layout for both
 # manual mode (--prefix /usr/local-style) and packaged mode (--prefix
