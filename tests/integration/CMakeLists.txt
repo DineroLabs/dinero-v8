@@ -480,10 +480,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_address_parent_child_mempool_lifecycle.sh)
     add_test(
         NAME AddressParentChildMempoolLifecycle
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_address_parent_child_mempool_lifecycle.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_address_parent_child_mempool_lifecycle.sh
     )
     set_tests_properties(AddressParentChildMempoolLifecycle PROPERTIES
-        LABELS "integration;rpc;mempool;wallet;address-index;parent-child"
+        LABELS "mempool-package-smoke;rpc;mempool;wallet;address-index;parent-child"
         TIMEOUT 180
     )
     message(STATUS "  ✓ AddressParentChildMempoolLifecycle registered")
@@ -520,10 +522,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_parent_child_rbf_replacement_with_mempool_parent.sh)
     add_test(
         NAME ParentChildRbfReplacementWithMempoolParent
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_parent_child_rbf_replacement_with_mempool_parent.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_parent_child_rbf_replacement_with_mempool_parent.sh
     )
     set_tests_properties(ParentChildRbfReplacementWithMempoolParent PROPERTIES
-        LABELS "integration;wallet;mempool;rbf;parent-child"
+        LABELS "mempool-package-smoke;wallet;mempool;rbf;parent-child"
         TIMEOUT 240
     )
     message(STATUS "  ✓ ParentChildRbfReplacementWithMempoolParent registered")
