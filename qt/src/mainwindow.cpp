@@ -1983,6 +1983,23 @@ void MainWindow::setupUI() {
     "QMenuBar::item:selected { background: #2d323b; color: #eef2f6; } "
     "QMenuBar::item:pressed { background: #353b45; }"
   );
+  // rc8+: Network menu with a checkable router-port-mapping toggle.
+  // Writes the same QSettings key the daemon launcher reads. Takes
+  // effect on the next daemon restart (File → Quit, then reopen).
+  auto *networkMenu = menuBar->addMenu(tr("&Network"));
+  auto *portmapAction = networkMenu->addAction(tr("Enable router port mapping (UPnP/NAT-PMP)"));
+  portmapAction->setCheckable(true);
+  portmapAction->setChecked(QSettings().value(p2pPortMapAllowedKey(), true).toBool());
+  connect(portmapAction, &QAction::toggled, this, [this](bool enabled) {
+    QSettings().setValue(p2pPortMapAllowedKey(), enabled);
+    QMessageBox::information(this, tr("Router port mapping"),
+        enabled
+          ? tr("Router port mapping will be enabled on the next daemon restart "
+               "(File → Quit, then reopen Dinero).")
+          : tr("Router port mapping will be disabled on the next daemon restart "
+               "(File → Quit, then reopen Dinero)."));
+  });
+
   auto *helpMenu = menuBar->addMenu(tr("&Help"));
   auto *aboutAction = helpMenu->addAction(tr("&About Dinero"));
   connect(aboutAction, &QAction::triggered, this, [this]() {
@@ -11795,30 +11812,35 @@ void MainWindow::maybeAutoStartDaemon() {
 bool MainWindow::maybeShowP2PNetworkNotice() {
   QSettings settings;
   if (settings.contains(p2pPortMapAllowedKey())) {
-    return settings.value(p2pPortMapAllowedKey(), false).toBool();
+    return settings.value(p2pPortMapAllowedKey(), true).toBool();
   }
+
+  // rc8+: default-ON. The portmap subsystem runs on a worker thread with
+  // a bounded discovery deadline (default 45s), so a hostile router can
+  // no longer freeze startup. We still show a one-time non-blocking
+  // notice and offer a Disable button for users who don't want it.
   settings.setValue(p2pAccessPromptAcceptedKey(), true);
+  settings.setValue(p2pPortMapAllowedKey(), true);
 
   QMessageBox box(this);
   box.setIcon(QMessageBox::Information);
   box.setWindowTitle("Dinero P2P Networking");
-  box.setText(QStringLiteral("Dinero connects to the peer-to-peer network automatically."));
+  box.setText(QStringLiteral("Dinero is enabling automatic router port mapping."));
   box.setInformativeText(
-      QStringLiteral("The local node listens on TCP port %1 and connects directly to other Dinero nodes, "
-                     "similar to Bitcoin Core.\n\n"
-                     "Your private RPC port stays local on 127.0.0.1:20998. If macOS or Windows asks "
-                     "whether to allow incoming connections, choose Allow.\n\n"
-                     "Dinero can also ask compatible home routers to open TCP %1 automatically with "
-                     "UPnP/NAT-PMP. Outbound sync still works if you choose Not Now or if your router "
-                     "does not support it.")
+      QStringLiteral("Dinero will ask your home router (UPnP / NAT-PMP) to open TCP %1 so "
+                     "other Dinero nodes can connect inbound. Outbound sync works either way.\n\n"
+                     "You can toggle this later via the Network menu.")
           .arg(kDineroMainnetP2PPort));
-  QPushButton* allowButton = box.addButton(QStringLiteral("Allow"), QMessageBox::AcceptRole);
-  box.addButton(QStringLiteral("Not Now"), QMessageBox::RejectRole);
+  box.setStandardButtons(QMessageBox::Ok);
+  QPushButton* disableButton = box.addButton(QStringLiteral("Disable"), QMessageBox::RejectRole);
+  box.setDefaultButton(QMessageBox::Ok);
   box.exec();
 
-  const bool allowed = (box.clickedButton() == allowButton);
-  settings.setValue(p2pPortMapAllowedKey(), allowed);
-  return allowed;
+  if (box.clickedButton() == disableButton) {
+    settings.setValue(p2pPortMapAllowedKey(), false);
+    return false;
+  }
+  return true;
 }
 
 bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
