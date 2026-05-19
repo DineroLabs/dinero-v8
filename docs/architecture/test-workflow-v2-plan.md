@@ -155,6 +155,12 @@ Focused local validation passed three consecutive runs. Parent-child mempool
 variants remain quarantined because they fail runtime mempool-clearing
 expectations after package confirmation.
 
+The fifth label split graduated `RpcStopCleanShutdown` into
+`rpc-shutdown-smoke`. The test harness now accepts the CTest build-local
+`dinerod` path instead of hardcoding `build/dinerod`, and focused local
+validation passed three consecutive stop-RPC shutdown runs without abort
+markers.
+
 `ReleaseSuiteConfigSmoke` is intentionally outside the `release`/`gate`
 quarantine. It verifies the release-suite wiring, build directory, `dinerod`
 binary, required scripts, and `ctest` availability without running the heavy

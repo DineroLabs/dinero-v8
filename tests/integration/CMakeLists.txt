@@ -426,10 +426,12 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_stop_clean_shutdown.sh)
     add_test(
         NAME RpcStopCleanShutdown
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_stop_clean_shutdown.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_stop_clean_shutdown.sh
     )
     set_tests_properties(RpcStopCleanShutdown PROPERTIES
-        LABELS "integration;rpc;shutdown"
+        LABELS "rpc-shutdown-smoke;rpc;shutdown"
         TIMEOUT 120
     )
     message(STATUS "  ✓ RpcStopCleanShutdown registered")

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 BASE_PORT="${BASE_PORT:-35900}"
 RPC_PORT=$((BASE_PORT + 0))
 P2P_PORT=$((BASE_PORT + 100))
