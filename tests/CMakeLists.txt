@@ -1652,9 +1652,12 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   add_executable(test_p2p_manager_ts1_integration
     tests/p2p/test_p2p_manager_ts1_integration.cpp
     src/daemon/p2p_manager.cpp
+    src/daemon/node_identity.cpp   # Required by dineroid handshake methods in P2PManager
+    src/p2p/addr_v2.cpp            # Required by addrv2 methods in P2PManager
     src/p2p/addrman.cpp
     src/crypto/params_stub.cpp    # Provides Params().magic for standalone P2PManager link
     src/common/sha256d.cpp        # Required for Dinero::Common::double_sha256_raw
+    src/common/logger.cpp         # Required by NodeIdentity diagnostics
     src/daemon/secure_random.cpp  # Required for SecureRandom::GetUInt64()
   )
 
@@ -1664,6 +1667,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
         Threads::Threads
       dinero_crypto
       secp256k1
+      OpenSSL::Crypto
       "-framework Security"
     )
   else()
@@ -1672,6 +1676,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
         Threads::Threads
       dinero_crypto
       secp256k1
+      OpenSSL::Crypto
     )
   endif()
 
@@ -4954,6 +4959,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp  # For P2PMessage::create_inv() and P2PManager
+    src/daemon/node_identity.cpp # Required by dineroid handshake methods in P2PManager
+    src/p2p/addr_v2.cpp          # Required by addrv2 methods in P2PManager
     src/p2p/addrman.cpp
   )
   target_include_directories(test_mining_smoke PRIVATE
@@ -4971,6 +4978,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     sqlite3
     jsoncpp_static
     gtest
+    OpenSSL::Crypto
   )
   link_zstd_if_needed(test_mining_smoke)
   if(APPLE)
@@ -7210,6 +7218,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     tests/p2p/test_handshake_simple.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
     src/daemon/secure_random.cpp
     src/daemon/peer_connection.cpp
     src/daemon/p2p_message.cpp
@@ -7252,6 +7262,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     tests/p2p/test_ping_pong.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
     src/daemon/secure_random.cpp
     src/daemon/peer_connection.cpp
     src/daemon/p2p_message.cpp
