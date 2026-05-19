@@ -2292,6 +2292,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_mempool_policy.cpp)
   message(STATUS "✅ MempoolPolicy unit test enabled")
 endif()
 
+<<<<<<< HEAD
 # services-boundary-smoke: BlockIngressService boundary contract.
 # Validation-adjacent service: this smoke intentionally avoids Submit()/BlockAcceptor
 # and locks only the IService/IBlockIngress-facing lifecycle and metrics boundary.
@@ -2315,6 +2316,32 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_block_ingress_service.cpp)
     TIMEOUT 30
   )
   message(STATUS "✅ BlockIngressService boundary smoke test enabled")
+=======
+# dinero_core gap closure: MiningEventBus unit test.
+# MiningEventBus (src/daemon/mining_events.{h,cpp}) is the thread-safe
+# ring buffer of mining-side events (hashrate, state, block-found) that
+# downstream subscribers (RPC, qt UI, metrics) consume via snapshot
+# polling. Five contract properties locked: empty bus, monotonic ids,
+# since-based filtering, max cap honoured, payload shape per event type.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_mining_events.cpp)
+  add_executable(test_mining_events
+    tests/services/test_mining_events.cpp
+    src/daemon/mining_events.cpp
+  )
+  target_link_libraries(test_mining_events PRIVATE
+    jsoncpp_static  # MiningEventBus uses Json::Value as the event payload
+  )
+  target_include_directories(test_mining_events PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME MiningEventBusUnit COMMAND test_mining_events)
+  set_tests_properties(MiningEventBusUnit PROPERTIES
+    LABELS "events-smoke;daemon;mining;events"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ MiningEventBus unit test enabled")
+>>>>>>> 1a2d3fb1 (test: MiningEventBus unit (dinero_core gap closure))
 endif()
 
 # Phase C (Dinero Core 1.0) — `cmake --install` layout smoke test.
