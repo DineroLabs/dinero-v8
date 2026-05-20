@@ -26,7 +26,8 @@ TEST(QuicTransport, ReportsEncryptedDependencyButKeepsMainnetRelayGated) {
     EXPECT_NE(info.crypto_backend, "none");
 
     EXPECT_FALSE(info.mainnet_relay_ready);
-    EXPECT_NE(info.disabled_reason.find("P2PManager"), std::string::npos);
+    EXPECT_NE(info.disabled_reason.find("mainnet"), std::string::npos);
+    EXPECT_NE(info.disabled_reason.find("not enabled"), std::string::npos);
     EXPECT_TRUE(dinero::network::QuicTransport::InitializeCrypto());
 }
 

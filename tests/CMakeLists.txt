@@ -1761,6 +1761,11 @@ else()
   message(WARNING "⚠️  Ring 3 Phase 4c TS1 integration test not found - skipping")
 endif()
 
+# Focused build target for the relay/QUIC transport gate. CTest does not
+# build executables, so this target gives lean QUIC build directories a clean
+# "build focused tests, then ctest focused label" path.
+set(DINERO_QUIC_RELAY_TEST_TARGETS "")
+
 # Relay virtual-peer transport queue and mainnet plaintext safety gate.
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
   add_executable(test_relay_virtual_transport
@@ -1822,9 +1827,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
 
   add_test(NAME RelayVirtualTransport COMMAND test_relay_virtual_transport)
   set_tests_properties(RelayVirtualTransport PROPERTIES
-    LABELS "p2p;relay;transport;nat"
+    LABELS "p2p;relay;transport;nat;quic-relay-focused"
     TIMEOUT 10
   )
+  list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_relay_virtual_transport)
 endif()
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1835,9 +1841,10 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2 AND EXISTS ${CMAKE_SOURCE_DIR}/te
   target_link_libraries(test_quic_dependency PRIVATE dinero_ngtcp2)
   add_test(NAME QuicDependency COMMAND test_quic_dependency)
   set_tests_properties(QuicDependency PROPERTIES
-    LABELS "p2p;quic;ngtcp2;transport"
+    LABELS "p2p;quic;ngtcp2;transport;quic-relay-focused"
     TIMEOUT 10
   )
+  list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_dependency)
 endif()
 
 if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2 AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_quic_crypto_capability.cpp)
@@ -1861,9 +1868,10 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2 AND EXISTS ${CMAKE_SOURCE_DIR}/te
   endif()
   add_test(NAME QuicCryptoCapability COMMAND test_quic_crypto_capability)
   set_tests_properties(QuicCryptoCapability PROPERTIES
-    LABELS "p2p;quic;ngtcp2;transport;crypto"
+    LABELS "p2p;quic;ngtcp2;transport;crypto;quic-relay-focused"
     TIMEOUT 10
   )
+  list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_crypto_capability)
 endif()
 
 if(DINERO_ENABLE_QUIC AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_quic_transport.cpp)
@@ -1894,9 +1902,10 @@ if(DINERO_ENABLE_QUIC AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_quic_tra
     )
     add_test(NAME QuicTransport COMMAND test_quic_transport)
     set_tests_properties(QuicTransport PROPERTIES
-      LABELS "p2p;quic;ngtcp2;transport;crypto"
+      LABELS "p2p;quic;ngtcp2;transport;crypto;quic-relay-focused"
       TIMEOUT 10
     )
+    list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_transport)
   endif()
 endif()
 
@@ -1924,8 +1933,15 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SO
   )
   add_test(NAME QuicSession COMMAND test_quic_session)
   set_tests_properties(QuicSession PROPERTIES
-    LABELS "p2p;quic;ngtcp2;transport;crypto"
+    LABELS "p2p;quic;ngtcp2;transport;crypto;quic-relay-focused"
     TIMEOUT 10
+  )
+  list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_session)
+endif()
+
+if(DINERO_QUIC_RELAY_TEST_TARGETS)
+  add_custom_target(dinero_quic_relay_test_targets
+    DEPENDS ${DINERO_QUIC_RELAY_TEST_TARGETS}
   )
 endif()
 
