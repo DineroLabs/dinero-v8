@@ -17,6 +17,7 @@
 
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
+#include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
 
 namespace dinero { namespace daemon { class NodeIdentity; } }
@@ -40,6 +41,7 @@ struct PeerInfo {
         uint64_t circuit_id{0};
         std::string relay_peer_address;
         uint8_t outbound_direction{0};  // P2PMessage::RelayDirection wire value
+        bool encrypted_quic{false};
     };
 
     std::string address;
@@ -129,6 +131,11 @@ struct PeerInfo {
     std::mutex relay_inbox_mutex;
     std::condition_variable relay_inbox_cv;
     std::deque<std::vector<uint8_t>> relay_inbox_frames;
+    std::mutex relay_quic_mutex;
+    std::shared_ptr<dinero::network::QuicSession> relay_quic_session;
+    std::optional<dinero::network::QuicSessionOptions> relay_quic_options;
+    std::vector<uint8_t> relay_quic_stream_buffer;
+    std::deque<std::vector<uint8_t>> relay_quic_outbox_packets;
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
@@ -158,6 +165,10 @@ struct PeerInfo {
           avg_latency_ms(other.avg_latency_ms),
           last_getaddr_sent(other.last_getaddr_sent),
           via_relay(std::move(other.via_relay)),
+          relay_quic_session(std::move(other.relay_quic_session)),
+          relay_quic_options(std::move(other.relay_quic_options)),
+          relay_quic_stream_buffer(std::move(other.relay_quic_stream_buffer)),
+          relay_quic_outbox_packets(std::move(other.relay_quic_outbox_packets)),
           lifetime_state(other.lifetime_state.load()) {}
 
     // Default constructor
@@ -527,6 +538,7 @@ public:
 
 #ifdef DINERO_TEST_BUILD
     void set_plaintext_relay_dev_override_for_tests(bool allowed);
+    void set_encrypted_relay_dev_override_for_tests(bool allowed);
     bool test_plaintext_relay_transport_allowed() const;
     std::string test_install_virtual_relay_peer(
         const std::string& virtual_peer_key,
@@ -536,6 +548,13 @@ public:
         bool is_outbound);
     bool test_enqueue_relay_frame(const std::string& virtual_peer_key,
                                   const std::vector<uint8_t>& frame);
+    bool test_configure_relay_quic_server(
+        const std::string& virtual_peer_key,
+        const dinero::network::QuicSessionOptions& options);
+    bool test_drain_relay_quic_packets(
+        const std::string& virtual_peer_key,
+        std::vector<std::vector<uint8_t>>* packets);
+    bool test_relay_quic_handshake_ready(const std::string& virtual_peer_key);
     std::unique_ptr<P2PMessage> test_receive_peer_message(
         const std::string& peer_key,
         std::chrono::milliseconds timeout);
@@ -701,6 +720,7 @@ private:
 
 #ifdef DINERO_TEST_BUILD
     std::atomic<bool> plaintext_relay_dev_override_for_tests_{false};
+    std::atomic<bool> encrypted_relay_dev_override_for_tests_{false};
 #endif
 
     // Network threads
@@ -735,8 +755,15 @@ private:
     bool enqueue_relay_frame(const std::string& virtual_peer_key,
                              const std::vector<uint8_t>& frame);
     bool plaintext_relay_transport_allowed() const;
+    bool encrypted_relay_transport_allowed() const;
     void process_message(const std::string& peer_address, const P2PMessage& message);
-    bool send_relay_data_to_virtual_peer(const PeerInfo& peer, const P2PMessage& message);
+    bool send_relay_data_to_virtual_peer(PeerInfo& peer, const P2PMessage& message);
+    bool send_relay_payload_to_virtual_peer(PeerInfo& peer,
+                                            const std::vector<uint8_t>& payload);
+    bool drain_relay_quic_outgoing(PeerInfo& peer);
+    bool unwrap_relay_quic_packet(const std::string& virtual_peer_key,
+                                  PeerInfo& peer,
+                                  const std::vector<uint8_t>& packet);
     bool unwrap_relay_data_endpoint(const std::string& relay_peer_address,
                                     const P2PMessage& message);
     

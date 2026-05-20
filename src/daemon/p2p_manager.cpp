@@ -5,6 +5,7 @@
 #include "common/sha256d.h"  // For Bitcoin-compatible double-SHA256 checksum
 #include "consensus/chainparams.h"  // Canonical source of the P2P network magic
 #include "network/local_interfaces.h"  // Self-loop filter at dial time
+#include "network/quic_transport.h"    // Mainnet relay safety gate for encrypted QUIC transport
 #include "network/types.h"          // Canonical P2P service flag assignments
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: dineroid signing
 #include "crypto/dinero_crypto_minimal.h"  // HASH160 3-arg form for node_id derivation
@@ -177,6 +178,57 @@ bool ReadVarInt(const std::vector<uint8_t>& data, size_t& offset, uint64_t* out_
     *out_value = ReadLE64(data, offset);
     offset += 8;
     return true;
+}
+
+bool PeekVarInt(const std::vector<uint8_t>& data,
+                size_t offset,
+                uint64_t* out_value,
+                size_t* encoded_size) {
+    if (!out_value || !encoded_size || offset >= data.size()) {
+        return false;
+    }
+
+    const uint8_t marker = data[offset];
+    if (marker < 0xFD) {
+        *out_value = marker;
+        *encoded_size = 1;
+        return true;
+    }
+
+    if (marker == 0xFD) {
+        if (offset + 3 > data.size()) {
+            return false;
+        }
+        *out_value = static_cast<uint64_t>(data[offset + 1]) |
+                     (static_cast<uint64_t>(data[offset + 2]) << 8);
+        *encoded_size = 3;
+        return true;
+    }
+
+    if (marker == 0xFE) {
+        if (offset + 5 > data.size()) {
+            return false;
+        }
+        *out_value = static_cast<uint64_t>(ReadLE32(data, offset + 1));
+        *encoded_size = 5;
+        return true;
+    }
+
+    if (offset + 9 > data.size()) {
+        return false;
+    }
+    *out_value = ReadLE64(data, offset + 1);
+    *encoded_size = 9;
+    return true;
+}
+
+dinero::network::UdpAddr RelayQuicAddress(uint64_t circuit_id, bool client_side) {
+    const uint8_t ip[4] = {127, 0, 0, 1};
+    const auto slot = static_cast<uint16_t>(circuit_id & 0x0fff);
+    const auto base = static_cast<uint16_t>(22000 + slot * 2);
+    return dinero::network::UdpAddr::FromIPv4(
+        ip,
+        static_cast<uint16_t>(base + (client_side ? 1 : 2)));
 }
 
 std::string AddressKey(const std::string& address, uint16_t port) {
@@ -566,6 +618,14 @@ void WriteCompactSizeLocal(std::vector<uint8_t>* out, uint64_t v) {
     }
 }
 
+std::vector<uint8_t> FrameRelayQuicStreamPayload(const std::vector<uint8_t>& payload) {
+    std::vector<uint8_t> out;
+    out.reserve(payload.size() + 9);
+    WriteCompactSizeLocal(&out, payload.size());
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+
 void WriteLE32Local(std::vector<uint8_t>* out, uint32_t v) {
     for (int i = 0; i < 4; i++) out->push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
 }
@@ -930,11 +990,6 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
 // the path.
 void P2PManager::handle_relay_data(const std::string& peer_address,
                                    const P2PMessage& message) {
-    if (!plaintext_relay_transport_allowed()) {
-        std::cout << "[P2P] relaydat: plaintext relay data refused on mainnet from "
-                  << peer_address << std::endl;
-        return;
-    }
     if (message.payload.size() < 9) {
         return;  // need at least circuit_id_8 + direction_1
     }
@@ -1030,6 +1085,12 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
             direction != static_cast<uint8_t>(P2PMessage::RelayDirection::ClientToTarget)) {
             return false;
         }
+        if (!plaintext_relay_transport_allowed()) {
+            std::cout << "[P2P] relay-data: refused to create plaintext inbound virtual peer "
+                      << "on mainnet for circuit "
+                      << std::hex << circuit_id << std::dec << std::endl;
+            return true;
+        }
 
         auto virtual_peer = std::make_shared<PeerInfo>();
         virtual_peer_key = "relay:in:" + relay_peer_address + ":" + CircuitHex(circuit_id);
@@ -1058,6 +1119,34 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
 
     std::vector<uint8_t> inner(message.payload.begin() + static_cast<std::ptrdiff_t>(offset),
                                message.payload.begin() + static_cast<std::ptrdiff_t>(offset + inner_len));
+    std::shared_ptr<PeerInfo> virtual_peer;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(virtual_peer_key);
+        if (it != connected_peers_.end()) {
+            virtual_peer = it->second;
+        }
+    }
+    if (!virtual_peer || !virtual_peer->via_relay) {
+        return false;
+    }
+
+    if (virtual_peer->via_relay->encrypted_quic) {
+        if (!encrypted_relay_transport_allowed()) {
+            std::cout << "[P2P] relay-data: encrypted relay packet refused until "
+                      << "QUIC relay is enabled for this network on circuit "
+                      << std::hex << circuit_id << std::dec << std::endl;
+            return true;
+        }
+        return unwrap_relay_quic_packet(virtual_peer_key, *virtual_peer, inner);
+    }
+
+    if (!plaintext_relay_transport_allowed()) {
+        std::cout << "[P2P] relay-data: plaintext inner frame refused on mainnet for circuit "
+                  << std::hex << circuit_id << std::dec << std::endl;
+        return true;
+    }
+
     if (!P2PMessage::deserialize(inner)) {
         std::cout << "[P2P] relay-data: dropped malformed inner frame on circuit "
                   << std::hex << circuit_id << std::dec << std::endl;
@@ -1090,6 +1179,114 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
             }
         }
         start_peer_handler_thread(std::move(virtual_peer));
+    }
+    return true;
+}
+
+bool P2PManager::unwrap_relay_quic_packet(const std::string& virtual_peer_key,
+                                          PeerInfo& peer,
+                                          const std::vector<uint8_t>& packet) {
+    if (!peer.via_relay || !peer.via_relay->encrypted_quic) {
+        return false;
+    }
+
+    std::vector<std::vector<uint8_t>> ready_frames;
+    {
+        std::lock_guard<std::mutex> lock(peer.relay_quic_mutex);
+        if (!peer.relay_quic_session) {
+            peer.relay_quic_session = std::make_shared<dinero::network::QuicSession>();
+        }
+
+        const bool local_is_client =
+            peer.via_relay->outbound_direction ==
+            static_cast<uint8_t>(P2PMessage::RelayDirection::ClientToTarget);
+        const auto local_addr = RelayQuicAddress(peer.via_relay->circuit_id, local_is_client);
+        const auto remote_addr = RelayQuicAddress(peer.via_relay->circuit_id, !local_is_client);
+
+        if (!peer.relay_quic_session->active()) {
+            if (local_is_client) {
+                std::cout << "[P2P] relay-transport: inactive client-side QUIC session for "
+                          << peer.to_string() << std::endl;
+                return true;
+            }
+            if (!peer.relay_quic_options) {
+                std::cout << "[P2P] relay-transport: missing server QUIC options for "
+                          << peer.to_string() << std::endl;
+                return true;
+            }
+            if (!peer.relay_quic_session->StartServerFromInitial(
+                    local_addr, remote_addr, packet, *peer.relay_quic_options)) {
+                std::cout << "[P2P] relay-transport: failed to start relay QUIC server for "
+                          << peer.to_string() << ": "
+                          << peer.relay_quic_session->last_error() << std::endl;
+                return true;
+            }
+        }
+
+        if (!peer.relay_quic_session->ReceivePacket(local_addr, remote_addr, packet)) {
+            std::cout << "[P2P] relay-transport: failed to receive relay QUIC packet for "
+                      << peer.to_string() << ": "
+                      << peer.relay_quic_session->last_error() << std::endl;
+            return true;
+        }
+
+        (void)peer.relay_quic_session->HandleExpiry();
+        (void)drain_relay_quic_outgoing(peer);
+
+        auto stream_data = peer.relay_quic_session->TakeReceivedStreamData();
+        if (!stream_data.empty()) {
+            peer.relay_quic_stream_buffer.insert(peer.relay_quic_stream_buffer.end(),
+                                                 stream_data.begin(),
+                                                 stream_data.end());
+        }
+
+        while (!peer.relay_quic_stream_buffer.empty()) {
+            uint64_t frame_len = 0;
+            size_t prefix_len = 0;
+            if (!PeekVarInt(peer.relay_quic_stream_buffer, 0, &frame_len, &prefix_len)) {
+                break;
+            }
+            if (frame_len > 4ULL * 1024 * 1024) {
+                std::cout << "[P2P] relay-transport: QUIC stream frame too large for "
+                          << peer.to_string() << std::endl;
+                peer.relay_quic_stream_buffer.clear();
+                break;
+            }
+            const auto total_len = prefix_len + static_cast<size_t>(frame_len);
+            if (peer.relay_quic_stream_buffer.size() < total_len) {
+                break;
+            }
+            std::vector<uint8_t> frame(
+                peer.relay_quic_stream_buffer.begin() + static_cast<std::ptrdiff_t>(prefix_len),
+                peer.relay_quic_stream_buffer.begin() + static_cast<std::ptrdiff_t>(total_len));
+            peer.relay_quic_stream_buffer.erase(
+                peer.relay_quic_stream_buffer.begin(),
+                peer.relay_quic_stream_buffer.begin() + static_cast<std::ptrdiff_t>(total_len));
+            if (!P2PMessage::deserialize(frame)) {
+                std::cout << "[P2P] relay-transport: dropped malformed decrypted QUIC frame for "
+                          << peer.to_string() << std::endl;
+                continue;
+            }
+            ready_frames.push_back(std::move(frame));
+        }
+    }
+
+    for (const auto& frame : ready_frames) {
+        if (!enqueue_relay_frame(virtual_peer_key, frame)) {
+            std::cout << "[P2P] relay-transport: failed to queue decrypted QUIC frame for "
+                      << virtual_peer_key << std::endl;
+            return true;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(virtual_peer_key);
+        if (it != connected_peers_.end() && it->second) {
+            it->second->bytes_recv += packet.size();
+            it->second->last_message_at = std::chrono::system_clock::now();
+            it->second->last_seen = it->second->last_message_at;
+        }
     }
     return true;
 }
@@ -2124,12 +2321,31 @@ bool P2PManager::plaintext_relay_transport_allowed() const {
            params.network_id == "testnet" || params.network_id == "regtest";
 }
 
+bool P2PManager::encrypted_relay_transport_allowed() const {
+#ifdef DINERO_TEST_BUILD
+    if (encrypted_relay_dev_override_for_tests_.load(std::memory_order_acquire)) {
+        return true;
+    }
+#endif
+    if (dinero::network::QuicTransport::MainnetRelayReady()) {
+        return true;
+    }
+    return plaintext_relay_transport_allowed();
+}
+
 bool P2PManager::send_peer_message(PeerInfo* peer, const P2PMessage& message) {
     if (!peer) {
         return false;
     }
     if (peer->via_relay) {
-        if (!plaintext_relay_transport_allowed()) {
+        if (peer->via_relay->encrypted_quic) {
+            if (!encrypted_relay_transport_allowed()) {
+                std::cout << "[P2P] relay-transport: encrypted virtual peer send refused until "
+                          << "QUIC relay is enabled for this network for "
+                          << peer->to_string() << std::endl;
+                return false;
+            }
+        } else if (!plaintext_relay_transport_allowed()) {
             std::cout << "[P2P] relay-transport: plaintext virtual peer send refused on mainnet for "
                       << peer->to_string() << std::endl;
             return false;
@@ -2148,7 +2364,14 @@ std::unique_ptr<P2PMessage> P2PManager::receive_peer_message(
     if (!peer->via_relay) {
         return peer->socket_fd >= 0 ? receive_message(peer->socket_fd) : nullptr;
     }
-    if (!plaintext_relay_transport_allowed()) {
+    if (peer->via_relay->encrypted_quic) {
+        if (!encrypted_relay_transport_allowed()) {
+            std::cout << "[P2P] relay-transport: encrypted virtual peer receive refused until "
+                      << "QUIC relay is enabled for this network for "
+                      << peer->to_string() << std::endl;
+            return nullptr;
+        }
+    } else if (!plaintext_relay_transport_allowed()) {
         std::cout << "[P2P] relay-transport: plaintext virtual peer receive refused on mainnet for "
                   << peer->to_string() << std::endl;
         return nullptr;
@@ -2214,6 +2437,10 @@ void P2PManager::set_plaintext_relay_dev_override_for_tests(bool allowed) {
     plaintext_relay_dev_override_for_tests_.store(allowed, std::memory_order_release);
 }
 
+void P2PManager::set_encrypted_relay_dev_override_for_tests(bool allowed) {
+    encrypted_relay_dev_override_for_tests_.store(allowed, std::memory_order_release);
+}
+
 bool P2PManager::test_plaintext_relay_transport_allowed() const {
     return plaintext_relay_transport_allowed();
 }
@@ -2250,6 +2477,71 @@ std::string P2PManager::test_install_virtual_relay_peer(
 bool P2PManager::test_enqueue_relay_frame(const std::string& virtual_peer_key,
                                           const std::vector<uint8_t>& frame) {
     return enqueue_relay_frame(virtual_peer_key, frame);
+}
+
+bool P2PManager::test_configure_relay_quic_server(
+    const std::string& virtual_peer_key,
+    const dinero::network::QuicSessionOptions& options) {
+    std::shared_ptr<PeerInfo> peer;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(virtual_peer_key);
+        if (it != connected_peers_.end()) {
+            peer = it->second;
+        }
+    }
+    if (!peer || !peer->via_relay) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(peer->relay_quic_mutex);
+    peer->via_relay->encrypted_quic = true;
+    peer->relay_quic_options = options;
+    peer->relay_quic_session = std::make_shared<dinero::network::QuicSession>();
+    peer->relay_quic_stream_buffer.clear();
+    peer->relay_quic_outbox_packets.clear();
+    return true;
+}
+
+bool P2PManager::test_drain_relay_quic_packets(
+    const std::string& virtual_peer_key,
+    std::vector<std::vector<uint8_t>>* packets) {
+    if (!packets) {
+        return false;
+    }
+    packets->clear();
+    std::shared_ptr<PeerInfo> peer;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(virtual_peer_key);
+        if (it != connected_peers_.end()) {
+            peer = it->second;
+        }
+    }
+    if (!peer || !peer->via_relay) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(peer->relay_quic_mutex);
+    while (!peer->relay_quic_outbox_packets.empty()) {
+        packets->push_back(std::move(peer->relay_quic_outbox_packets.front()));
+        peer->relay_quic_outbox_packets.pop_front();
+    }
+    return true;
+}
+
+bool P2PManager::test_relay_quic_handshake_ready(const std::string& virtual_peer_key) {
+    std::shared_ptr<PeerInfo> peer;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(virtual_peer_key);
+        if (it != connected_peers_.end()) {
+            peer = it->second;
+        }
+    }
+    if (!peer || !peer->relay_quic_session) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(peer->relay_quic_mutex);
+    return peer->relay_quic_session->handshake_ready();
 }
 
 std::unique_ptr<P2PMessage> P2PManager::test_receive_peer_message(
@@ -4413,14 +4705,9 @@ bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage&
     return false;
 }
 
-bool P2PManager::send_relay_data_to_virtual_peer(const PeerInfo& peer,
-                                                 const P2PMessage& message) {
+bool P2PManager::send_relay_payload_to_virtual_peer(PeerInfo& peer,
+                                                    const std::vector<uint8_t>& payload) {
     if (!peer.via_relay) {
-        return false;
-    }
-    if (!plaintext_relay_transport_allowed()) {
-        std::cout << "[P2P] relay-transport: plaintext RELAY_DATA send refused on mainnet for "
-                  << peer.to_string() << std::endl;
         return false;
     }
     const auto via = *peer.via_relay;
@@ -4441,17 +4728,82 @@ bool P2PManager::send_relay_data_to_virtual_peer(const PeerInfo& peer,
         via.outbound_direction == static_cast<uint8_t>(P2PMessage::RelayDirection::TargetToClient)
             ? P2PMessage::RelayDirection::TargetToClient
             : P2PMessage::RelayDirection::ClientToTarget;
-    const auto inner_data = message.serialize();
-    auto relay_msg = P2PMessage::create_relay_data(via.circuit_id, direction, inner_data);
+    auto relay_msg = P2PMessage::create_relay_data(via.circuit_id, direction, payload);
     const bool ok = send_message(relay_fd, relay_msg);
     if (ok) {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(peer.to_string());
         if (it != connected_peers_.end() && it->second) {
-            it->second->bytes_sent += inner_data.size();
+            it->second->bytes_sent += payload.size();
         }
     }
     return ok;
+}
+
+bool P2PManager::drain_relay_quic_outgoing(PeerInfo& peer) {
+    if (!peer.via_relay || !peer.via_relay->encrypted_quic || !peer.relay_quic_session) {
+        return false;
+    }
+
+    std::vector<std::vector<uint8_t>> packets;
+    if (!peer.relay_quic_session->DrainOutgoing(&packets)) {
+        std::cout << "[P2P] relay-transport: QUIC drain failed for "
+                  << peer.to_string() << ": "
+                  << peer.relay_quic_session->last_error() << std::endl;
+        return false;
+    }
+
+    bool all_sent = true;
+    for (auto& packet : packets) {
+        if (!send_relay_payload_to_virtual_peer(peer, packet)) {
+            all_sent = false;
+#ifdef DINERO_TEST_BUILD
+            if (peer.relay_quic_outbox_packets.size() < 1024) {
+                peer.relay_quic_outbox_packets.push_back(std::move(packet));
+            }
+#endif
+        }
+    }
+    return all_sent;
+}
+
+bool P2PManager::send_relay_data_to_virtual_peer(PeerInfo& peer,
+                                                 const P2PMessage& message) {
+    if (!peer.via_relay) {
+        return false;
+    }
+    if (peer.via_relay->encrypted_quic) {
+        if (!encrypted_relay_transport_allowed()) {
+            std::cout << "[P2P] relay-transport: encrypted RELAY_DATA send refused until "
+                      << "QUIC relay is enabled for this network for "
+                      << peer.to_string() << std::endl;
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(peer.relay_quic_mutex);
+        if (!peer.relay_quic_session || !peer.relay_quic_session->active() ||
+            !peer.relay_quic_session->handshake_ready()) {
+            std::cout << "[P2P] relay-transport: QUIC virtual peer is not handshake-ready for "
+                      << peer.to_string() << std::endl;
+            return false;
+        }
+        const auto inner_data = message.serialize();
+        const auto framed = FrameRelayQuicStreamPayload(inner_data);
+        if (!peer.relay_quic_session->QueueStreamData(framed, false)) {
+            std::cout << "[P2P] relay-transport: failed to queue QUIC stream data for "
+                      << peer.to_string() << ": "
+                      << peer.relay_quic_session->last_error() << std::endl;
+            return false;
+        }
+        return drain_relay_quic_outgoing(peer);
+    }
+
+    if (!plaintext_relay_transport_allowed()) {
+        std::cout << "[P2P] relay-transport: plaintext RELAY_DATA send refused on mainnet for "
+                  << peer.to_string() << std::endl;
+        return false;
+    }
+    const auto inner_data = message.serialize();
+    return send_relay_payload_to_virtual_peer(peer, inner_data);
 }
 
 void P2PManager::broadcast_message(const P2PMessage& message) {

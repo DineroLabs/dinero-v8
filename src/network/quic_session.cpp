@@ -623,14 +623,17 @@ struct QuicSession::Impl {
             SetError("refusing to queue empty QUIC stream payload");
             return false;
         }
-        if (!send_buffer.empty() && !stream_fin_sent) {
+        if (!send_buffer.empty()) {
             SetError("a QUIC stream payload is already queued");
+            return false;
+        }
+        if (stream_fin_sent) {
+            SetError("the QUIC stream has already been closed");
             return false;
         }
         send_buffer = payload;
         send_offset = 0;
         send_fin = fin;
-        stream_fin_sent = false;
         return true;
     }
 
@@ -716,10 +719,20 @@ struct QuicSession::Impl {
             if (ndatalen > 0) {
                 send_offset += static_cast<size_t>(ndatalen);
                 if (send_offset >= send_buffer.size()) {
-                    stream_fin_sent = send_fin;
+                    if (send_fin) {
+                        stream_fin_sent = true;
+                    } else {
+                        send_buffer.clear();
+                        send_offset = 0;
+                    }
                 }
             } else if (ndatalen == 0 && send_offset >= send_buffer.size()) {
-                stream_fin_sent = send_fin;
+                if (send_fin) {
+                    stream_fin_sent = true;
+                } else {
+                    send_buffer.clear();
+                    send_offset = 0;
+                }
             }
         }
         return true;

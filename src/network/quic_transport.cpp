@@ -76,7 +76,7 @@ QuicTransportInfo QuicTransport::CompileInfo() {
         info.disabled_reason = "ngtcp2 is present but no compatible OpenSSL QUIC crypto bridge was compiled";
     } else if (!info.mainnet_relay_ready) {
         info.disabled_reason =
-            "encrypted QUIC stream/session plumbing is not wired into P2PManager yet";
+            "encrypted QUIC relay sessions are present but mainnet dial/config plumbing is not enabled yet";
     }
     return info;
 }
