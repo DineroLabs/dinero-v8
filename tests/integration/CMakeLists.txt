@@ -425,6 +425,27 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_p2pservice_network_control.sh)
     message(STATUS "  ✓ P2PServiceNetworkControl registered")
 endif()
 
+if(UNIX AND NOT APPLE AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_relay_nat_netns.sh)
+    find_program(DINERO_BASH_EXECUTABLE bash)
+    if(DINERO_BASH_EXECUTABLE)
+        add_test(
+            NAME RelayNatNetnsHarness
+            COMMAND ${CMAKE_COMMAND} -E env
+                "DINEROD=$<TARGET_FILE:dinerod>"
+                ${DINERO_BASH_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/test_relay_nat_netns.sh
+        )
+        set_tests_properties(RelayNatNetnsHarness PROPERTIES
+            LABELS "integration;p2p;relay;nat;netns"
+            TIMEOUT 300
+            SKIP_RETURN_CODE 77
+        )
+        message(STATUS "  ✓ RelayNatNetnsHarness registered (set DINERO_RUN_NETNS_NAT=1 and run as root)")
+    else()
+        message(STATUS "  ⊘ RelayNatNetnsHarness skipped (bash not found)")
+    endif()
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_stop_clean_shutdown.sh)
     add_test(
         NAME RpcStopCleanShutdown
