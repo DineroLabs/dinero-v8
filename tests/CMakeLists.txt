@@ -1761,6 +1761,54 @@ else()
   message(WARNING "⚠️  Ring 3 Phase 4c TS1 integration test not found - skipping")
 endif()
 
+# Relay virtual-peer transport queue and mainnet plaintext safety gate.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
+  add_executable(test_relay_virtual_transport
+    tests/p2p/test_relay_virtual_transport.cpp
+    src/daemon/p2p_manager.cpp
+    src/network/relay_registry.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  target_compile_definitions(test_relay_virtual_transport PRIVATE DINERO_TEST_BUILD)
+
+  if(APPLE)
+    target_link_libraries(test_relay_virtual_transport PRIVATE
+      GTest::gtest
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_relay_virtual_transport PRIVATE
+      GTest::gtest
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::Crypto
+    )
+  endif()
+
+  target_include_directories(test_relay_virtual_transport PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+  )
+
+  add_test(NAME RelayVirtualTransport COMMAND test_relay_virtual_transport)
+  set_tests_properties(RelayVirtualTransport PROPERTIES
+    LABELS "p2p;relay;transport;nat"
+    TIMEOUT 10
+  )
+endif()
+
 # ════════════════════════════════════════════════════════════════════════════
 # P2P Hardening Tests (March 2026 Security Audit)
 # ════════════════════════════════════════════════════════════════════════════
