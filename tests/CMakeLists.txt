@@ -1767,6 +1767,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
     tests/p2p/test_relay_virtual_transport.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_registry.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
     src/daemon/node_identity.cpp
     src/p2p/addr_v2.cpp
     src/p2p/addrman.cpp
@@ -1784,6 +1787,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
       Threads::Threads
       dinero_crypto
       secp256k1
+      OpenSSL::SSL
       OpenSSL::Crypto
       "-framework Security"
     )
@@ -1793,8 +1797,22 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
       Threads::Threads
       dinero_crypto
       secp256k1
+      OpenSSL::SSL
       OpenSSL::Crypto
     )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_relay_virtual_transport PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_relay_virtual_transport PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_relay_virtual_transport PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  if(WIN32)
+    target_link_libraries(test_relay_virtual_transport PRIVATE ws2_32)
   endif()
 
   target_include_directories(test_relay_virtual_transport PRIVATE
