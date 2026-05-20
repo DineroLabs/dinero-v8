@@ -847,6 +847,14 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
     std::copy_n(message.payload.begin(), 20, target_node_id.begin());
     const uint64_t request_id = ReadLE64(message.payload, 20);
 
+    if (!plaintext_relay_transport_allowed()) {
+        auto ack = P2PMessage::create_relay_connect_ack(
+            request_id, 0, P2PMessage::RelayConnectStatus::InternalError,
+            "plaintext relay is disabled on mainnet until encrypted transport lands");
+        send_to_peer(peer_address, ack);
+        return;
+    }
+
     // Lookup the target's registration.
     auto reg = relay_registry_.Lookup(target_node_id);
     if (!reg.has_value()) {
@@ -922,6 +930,11 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
 // the path.
 void P2PManager::handle_relay_data(const std::string& peer_address,
                                    const P2PMessage& message) {
+    if (!plaintext_relay_transport_allowed()) {
+        std::cout << "[P2P] relaydat: plaintext relay data refused on mainnet from "
+                  << peer_address << std::endl;
+        return;
+    }
     if (message.payload.size() < 9) {
         return;  // need at least circuit_id_8 + direction_1
     }
@@ -976,6 +989,7 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
 
     std::string virtual_peer_key;
     bool is_local_endpoint = false;
+    bool created_virtual_peer = false;
 
     {
         std::lock_guard<std::mutex> lock(originator_mutex_);
@@ -991,7 +1005,7 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
     if (!is_local_endpoint) {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& [key, peer] : connected_peers_) {
-            if (!peer || !peer->via_relay || !peer->is_connected) continue;
+            if (!peer || !peer->via_relay) continue;
             const auto& via = *peer->via_relay;
             if (via.circuit_id == circuit_id &&
                 via.relay_peer_address == relay_peer_address &&
@@ -1022,12 +1036,11 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
         virtual_peer->address = virtual_peer_key;
         virtual_peer->port = 0;
         virtual_peer->is_outbound = false;
-        virtual_peer->is_connected = true;
+        virtual_peer->is_connected = false;
         virtual_peer->socket_fd = -1;
         virtual_peer->connected_since = std::chrono::system_clock::now();
         virtual_peer->last_message_at = virtual_peer->connected_since;
         virtual_peer->last_seen = virtual_peer->connected_since;
-        virtual_peer->lifetime_state.store(PeerLifetimeState::RUNNING);
         virtual_peer->via_relay = PeerInfo::ViaRelayInfo{
             circuit_id,
             relay_peer_address,
@@ -1038,14 +1051,14 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
             connected_peers_.emplace(virtual_peer_key, std::move(virtual_peer));
         }
         is_local_endpoint = true;
+        created_virtual_peer = true;
         std::cout << "[P2P] relay-data: created inbound virtual peer "
                   << virtual_peer_key << std::endl;
     }
 
     std::vector<uint8_t> inner(message.payload.begin() + static_cast<std::ptrdiff_t>(offset),
                                message.payload.begin() + static_cast<std::ptrdiff_t>(offset + inner_len));
-    auto inner_msg = P2PMessage::deserialize(inner);
-    if (!inner_msg) {
+    if (!P2PMessage::deserialize(inner)) {
         std::cout << "[P2P] relay-data: dropped malformed inner frame on circuit "
                   << std::hex << circuit_id << std::dec << std::endl;
         return true;
@@ -1061,7 +1074,23 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
         }
     }
 
-    process_message(virtual_peer_key, *inner_msg);
+    if (!enqueue_relay_frame(virtual_peer_key, inner)) {
+        std::cout << "[P2P] relay-data: failed to queue inner frame for "
+                  << virtual_peer_key << std::endl;
+        return true;
+    }
+
+    if (created_virtual_peer) {
+        std::shared_ptr<PeerInfo> virtual_peer;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            auto it = connected_peers_.find(virtual_peer_key);
+            if (it != connected_peers_.end()) {
+                virtual_peer = it->second;
+            }
+        }
+        start_peer_handler_thread(std::move(virtual_peer));
+    }
     return true;
 }
 
@@ -1123,14 +1152,20 @@ uint64_t P2PManager::SendRelayConnect(
     const std::array<uint8_t, 20>& target_node_id,
     std::function<void(bool ok, uint64_t circuit_id,
                        const std::string& msg)> callback) {
-    int relay_fd = -1;
+    if (!plaintext_relay_transport_allowed()) {
+        if (callback) {
+            callback(false, 0,
+                     "plaintext relay is disabled on mainnet until encrypted transport lands");
+        }
+        return 0;
+    }
+
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(relay_peer_address);
         if (it == connected_peers_.end() || !it->second || !it->second->is_connected) {
             return 0;
         }
-        relay_fd = it->second->socket_fd;
     }
 
     // Allocate a non-zero request_id. Collisions are astronomically
@@ -1156,7 +1191,7 @@ uint64_t P2PManager::SendRelayConnect(
     }
 
     auto msg = P2PMessage::create_relay_connect(target_node_id, request_id);
-    if (!send_message(relay_fd, msg)) {
+    if (!send_to_peer(relay_peer_address, msg)) {
         // Send failed — clean up the pending entry and fire callback.
         std::function<void(bool, uint64_t, const std::string&)> cb_to_fire;
         {
@@ -1216,8 +1251,12 @@ void P2PManager::handle_relay_connect_ack(const std::string& peer_address,
         return;
     }
 
-    const bool ok = (status_byte == static_cast<uint8_t>(
-                     P2PMessage::RelayConnectStatus::Ok)) && circuit_id != 0;
+    bool ok = (status_byte == static_cast<uint8_t>(
+               P2PMessage::RelayConnectStatus::Ok)) && circuit_id != 0;
+    if (ok && !plaintext_relay_transport_allowed()) {
+        ok = false;
+        err_msg = "plaintext relay is disabled on mainnet until encrypted transport lands";
+    }
     if (ok) {
         {
             std::lock_guard<std::mutex> lock(originator_mutex_);
@@ -1232,20 +1271,20 @@ void P2PManager::handle_relay_connect_ack(const std::string& peer_address,
         virtual_peer->address = virtual_peer_key;
         virtual_peer->port = 0;
         virtual_peer->is_outbound = true;
-        virtual_peer->is_connected = true;
+        virtual_peer->is_connected = false;
         virtual_peer->socket_fd = -1;
         virtual_peer->connected_since = std::chrono::system_clock::now();
         virtual_peer->last_message_at = virtual_peer->connected_since;
         virtual_peer->last_seen = virtual_peer->connected_since;
-        virtual_peer->lifetime_state.store(PeerLifetimeState::RUNNING);
         virtual_peer->via_relay = PeerInfo::ViaRelayInfo{
             circuit_id,
             pc.relay_peer_address,
             static_cast<uint8_t>(P2PMessage::RelayDirection::ClientToTarget)};
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
-            connected_peers_[virtual_peer_key] = std::move(virtual_peer);
+            connected_peers_[virtual_peer_key] = virtual_peer;
         }
+        start_peer_handler_thread(std::move(virtual_peer));
     }
 
     std::ostringstream id_hex;
@@ -1368,7 +1407,7 @@ void P2PManager::SendRelayHintsIfApplicable(PeerInfo* peer, uint64_t our_service
     if (hints.empty()) return;
 
     auto msg = P2PMessage::create_relay_hints(hints);
-    if (!send_message(peer->socket_fd, msg)) {
+    if (!send_peer_message(peer, msg)) {
         std::cout << "[P2P] relay-hints: send failed to " << peer->to_string() << std::endl;
         return;
     }
@@ -1518,7 +1557,7 @@ void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
                   << " — will retry next handshake" << std::endl;
         return;
     }
-    if (!send_message(peer->socket_fd, msg)) {
+    if (!send_peer_message(peer, msg)) {
         std::cout << "[P2P] relay-register: send failed to " << key << std::endl;
         return;
     }
@@ -1558,7 +1597,7 @@ void P2PManager::RefreshRelayRegistrations() {
         auto msg = P2PMessage::create_relay_register(
             *node_identity_, peer->their_nonce, kRelayRegisterTtlSeconds);
         if (msg.payload.empty()) continue;
-        if (send_message(peer->socket_fd, msg)) {
+        if (send_peer_message(peer.get(), msg)) {
             peer->last_register_sent_at = now;
             std::cout << "[P2P] relay-register: refreshed " << peer->to_string()
                       << " (ttl=" << kRelayRegisterTtlSeconds << "s)" << std::endl;
@@ -2074,6 +2113,160 @@ void P2PManager::set_address_manager(dinero::p2p::AddressManager* address_manage
               << (address_manager_ ? "enabled" : "disabled") << std::endl;
 }
 
+bool P2PManager::plaintext_relay_transport_allowed() const {
+#ifdef DINERO_TEST_BUILD
+    if (plaintext_relay_dev_override_for_tests_.load(std::memory_order_acquire)) {
+        return true;
+    }
+#endif
+    const auto& params = dinero::Params();
+    return params.name == "testnet" || params.name == "regtest" ||
+           params.network_id == "testnet" || params.network_id == "regtest";
+}
+
+bool P2PManager::send_peer_message(PeerInfo* peer, const P2PMessage& message) {
+    if (!peer) {
+        return false;
+    }
+    if (peer->via_relay) {
+        if (!plaintext_relay_transport_allowed()) {
+            std::cout << "[P2P] relay-transport: plaintext virtual peer send refused on mainnet for "
+                      << peer->to_string() << std::endl;
+            return false;
+        }
+        return send_relay_data_to_virtual_peer(*peer, message);
+    }
+    return peer->socket_fd >= 0 && send_message(peer->socket_fd, message);
+}
+
+std::unique_ptr<P2PMessage> P2PManager::receive_peer_message(
+    PeerInfo* peer,
+    std::chrono::milliseconds timeout) {
+    if (!peer) {
+        return nullptr;
+    }
+    if (!peer->via_relay) {
+        return peer->socket_fd >= 0 ? receive_message(peer->socket_fd) : nullptr;
+    }
+    if (!plaintext_relay_transport_allowed()) {
+        std::cout << "[P2P] relay-transport: plaintext virtual peer receive refused on mainnet for "
+                  << peer->to_string() << std::endl;
+        return nullptr;
+    }
+
+    std::vector<uint8_t> frame;
+    {
+        std::unique_lock<std::mutex> lock(peer->relay_inbox_mutex);
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (peer->relay_inbox_frames.empty()) {
+            if (shutdown_requested_.load(std::memory_order_acquire)) {
+                return nullptr;
+            }
+            if (peer->lifetime_state.load(std::memory_order_acquire) == PeerLifetimeState::STOPPING) {
+                return nullptr;
+            }
+            if (peer->relay_inbox_cv.wait_until(lock, deadline) == std::cv_status::timeout &&
+                peer->relay_inbox_frames.empty()) {
+                return nullptr;
+            }
+        }
+        frame = std::move(peer->relay_inbox_frames.front());
+        peer->relay_inbox_frames.pop_front();
+    }
+
+    auto message = P2PMessage::deserialize(frame);
+    if (!message) {
+        std::cout << "[P2P] relay-transport: dropped malformed queued frame for "
+                  << peer->to_string() << std::endl;
+    }
+    return message;
+}
+
+bool P2PManager::enqueue_relay_frame(const std::string& virtual_peer_key,
+                                     const std::vector<uint8_t>& frame) {
+    std::shared_ptr<PeerInfo> peer;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(virtual_peer_key);
+        if (it != connected_peers_.end()) {
+            peer = it->second;
+        }
+    }
+    if (!peer || !peer->via_relay) {
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(peer->relay_inbox_mutex);
+        if (peer->relay_inbox_frames.size() >= 1024) {
+            std::cout << "[P2P] relay-transport: inbound queue full for "
+                      << virtual_peer_key << "; dropping frame" << std::endl;
+            return false;
+        }
+        peer->relay_inbox_frames.push_back(frame);
+    }
+    peer->relay_inbox_cv.notify_one();
+    return true;
+}
+
+#ifdef DINERO_TEST_BUILD
+void P2PManager::set_plaintext_relay_dev_override_for_tests(bool allowed) {
+    plaintext_relay_dev_override_for_tests_.store(allowed, std::memory_order_release);
+}
+
+bool P2PManager::test_plaintext_relay_transport_allowed() const {
+    return plaintext_relay_transport_allowed();
+}
+
+std::string P2PManager::test_install_virtual_relay_peer(
+    const std::string& virtual_peer_key,
+    const std::string& relay_peer_address,
+    uint64_t circuit_id,
+    P2PMessage::RelayDirection outbound_direction,
+    bool is_outbound) {
+    auto peer = std::make_shared<PeerInfo>();
+    peer->address = virtual_peer_key;
+    peer->port = 0;
+    peer->user_agent = user_agent_;
+    peer->is_outbound = is_outbound;
+    peer->is_connected = true;
+    peer->socket_fd = -1;
+    peer->connected_since = std::chrono::system_clock::now();
+    peer->last_message_at = peer->connected_since;
+    peer->last_seen = peer->connected_since;
+    peer->lifetime_state.store(PeerLifetimeState::RUNNING);
+    peer->via_relay = PeerInfo::ViaRelayInfo{
+        circuit_id,
+        relay_peer_address,
+        static_cast<uint8_t>(outbound_direction)};
+
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        connected_peers_[virtual_peer_key] = std::move(peer);
+    }
+    return virtual_peer_key;
+}
+
+bool P2PManager::test_enqueue_relay_frame(const std::string& virtual_peer_key,
+                                          const std::vector<uint8_t>& frame) {
+    return enqueue_relay_frame(virtual_peer_key, frame);
+}
+
+std::unique_ptr<P2PMessage> P2PManager::test_receive_peer_message(
+    const std::string& peer_key,
+    std::chrono::milliseconds timeout) {
+    std::shared_ptr<PeerInfo> peer;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_key);
+        if (it != connected_peers_.end()) {
+            peer = it->second;
+        }
+    }
+    return receive_peer_message(peer.get(), timeout);
+}
+#endif
+
 // NAT traversal Phase 1A: symmetric post-version, pre-verack identity
 // exchange. Caller MUST have:
 //   - already exchanged version messages (so peer->their_nonce and our own
@@ -2099,7 +2292,7 @@ void P2PManager::ExchangeDineroId(PeerInfo* peer) {
                   << peer->to_string() << "; continuing legacy" << std::endl;
         return;
     }
-    if (!send_message(peer->socket_fd, msg)) {
+    if (!send_peer_message(peer, msg)) {
         std::cout << "[Handshake] dineroid: send failed to " << peer->to_string()
                   << "; continuing legacy" << std::endl;
         return;
@@ -2108,7 +2301,7 @@ void P2PManager::ExchangeDineroId(PeerInfo* peer) {
     // Receive remote dineroid. receive_message blocks with its existing
     // socket-level timeout; if the remote peer is on rc8 or older they
     // simply won't send and we'll time out → log and continue.
-    auto remote = receive_message(peer->socket_fd);
+    auto remote = receive_peer_message(peer);
     if (!remote) {
         std::cout << "[Handshake] dineroid: no response from " << peer->to_string()
                   << " (likely older peer); continuing legacy" << std::endl;
@@ -2177,13 +2370,13 @@ void P2PManager::ExchangeSendAddrV2(PeerInfo* peer) {
     if (!peer) return;
 
     auto out = P2PMessage::create_sendaddrv2();
-    if (!send_message(peer->socket_fd, out)) {
+    if (!send_peer_message(peer, out)) {
         std::cout << "[Handshake] sendaddrv2: send failed to " << peer->to_string()
                   << "; legacy addr still works" << std::endl;
         return;
     }
 
-    auto remote = receive_message(peer->socket_fd);
+    auto remote = receive_peer_message(peer);
     if (!remote) {
         std::cout << "[Handshake] sendaddrv2: no response from " << peer->to_string()
                   << " (older peer?); falling back to legacy addr" << std::endl;
@@ -2478,6 +2671,9 @@ void P2PManager::stop() {
             if (pair.second->socket_fd >= 0) {
                 ::shutdown(pair.second->socket_fd, SHUT_RDWR);
             }
+            if (pair.second->via_relay) {
+                pair.second->relay_inbox_cv.notify_all();
+            }
         }
     }
 
@@ -2504,12 +2700,16 @@ void P2PManager::stop() {
     // This is the core TS1 invariant: join-before-erase
 
     // Step 1: Join all peer threads (blocks until all peer_handler_loop exit)
-    for (auto& thread : peer_threads_) {
+    std::vector<std::unique_ptr<std::thread>> peer_threads_to_join;
+    {
+        std::lock_guard<std::mutex> lock(peer_threads_mutex_);
+        peer_threads_to_join.swap(peer_threads_);
+    }
+    for (auto& thread : peer_threads_to_join) {
         if (thread && thread->joinable()) {
             thread->join();
         }
     }
-    peer_threads_.clear();
 
     // Step 2: Now that all threads are joined, transition peers to JOINED state
     {
@@ -2680,8 +2880,8 @@ std::vector<std::pair<std::string, uint16_t>> P2PManager::collect_advertisable_a
     return result;
 }
 
-bool P2PManager::send_addr_list_to_socket(
-    int socket_fd,
+bool P2PManager::send_addr_list_to_peer(
+    PeerInfo* peer,
     const std::vector<std::pair<std::string, uint16_t>>& addresses) {
     if (addresses.empty()) {
         return true;
@@ -2693,7 +2893,7 @@ bool P2PManager::send_addr_list_to_socket(
         peer_infos.push_back(PeerInfoForAddress(address, port));
     }
     auto addr_msg = P2PMessage::create_addr(peer_infos);
-    return send_message(socket_fd, addr_msg);
+    return send_peer_message(peer, addr_msg);
 }
 
 bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
@@ -2807,9 +3007,7 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
 
     // Start peer handler thread
     // Ring 3 Phase 4c: Pass shared_ptr (copied, not moved) for TS1 compliance
-    peer_threads_.emplace_back(
-        std::make_unique<std::thread>(&P2PManager::peer_handler_loop, this, peer)
-    );
+    start_peer_handler_thread(peer);
 
     return true;
 }
@@ -3073,8 +3271,19 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
               << " (send timeout: " << SEND_TIMEOUT_SEC << "s)" << std::endl;
 
     // Start peer handler thread
+    start_peer_handler_thread(peer);
+}
+
+void P2PManager::start_peer_handler_thread(std::shared_ptr<PeerInfo> peer) {
+    if (!peer || shutdown_requested_.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(peer_threads_mutex_);
+    if (shutdown_requested_.load(std::memory_order_acquire)) {
+        return;
+    }
     peer_threads_.emplace_back(
-        std::make_unique<std::thread>(&P2PManager::peer_handler_loop, this, peer)
+        std::make_unique<std::thread>(&P2PManager::peer_handler_loop, this, std::move(peer))
     );
 }
 
@@ -3142,12 +3351,7 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
         assert(state == PeerLifetimeState::RUNNING || state == PeerLifetimeState::STOPPING);
         (void)state;
 
-        // TS1 SAFE: peer_locked holds shared_ptr, peer cannot be destroyed
-        int socket_fd = peer_locked->socket_fd;
-        // Release lock before blocking I/O (prevent holding lock during recv)
-        peer_locked.reset();
-
-        auto message = receive_message(socket_fd);
+        auto message = receive_peer_message(peer_locked.get());
         if (!message) {
             std::cout << "Connection lost with " << peer_key << std::endl;
             break;
@@ -3284,12 +3488,12 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // Send version message with actual chain height and service flags
         auto version_msg = P2PMessage::create_version(protocol_version_, our_height, our_services,
                                                      user_agent_, peer->our_nonce);
-        if (!send_message(peer->socket_fd, version_msg)) {
+        if (!send_peer_message(peer, version_msg)) {
             return false;
         }
 
         // Wait for version response
-        auto response = receive_message(peer->socket_fd);
+        auto response = receive_peer_message(peer);
         if (!response || response->command != "version") {
             return false;
         }
@@ -3317,12 +3521,12 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
 
         // Send verack
         auto verack_msg = P2PMessage::create_verack();
-        if (!send_message(peer->socket_fd, verack_msg)) {
+        if (!send_peer_message(peer, verack_msg)) {
             return false;
         }
 
         // Wait for verack
-        response = receive_message(peer->socket_fd);
+        response = receive_peer_message(peer);
         if (!response || response->command != "verack") {
             return false;
         }
@@ -3344,7 +3548,7 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
     } else {
         // Wait for version message
         std::cout << "[Handshake DEBUG] Waiting for version message from inbound peer..." << std::endl;
-        auto version_msg = receive_message(peer->socket_fd);
+        auto version_msg = receive_peer_message(peer);
         if (!version_msg) {
             std::cout << "[Handshake DEBUG] receive_message returned nullptr (timeout/disconnect/parse error)" << std::endl;
             return false;
@@ -3362,7 +3566,7 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // Send version response with actual chain height and service flags
         auto response = P2PMessage::create_version(protocol_version_, our_height, our_services,
                                                   user_agent_, peer->our_nonce);
-        if (!send_message(peer->socket_fd, response)) {
+        if (!send_peer_message(peer, response)) {
             return false;
         }
 
@@ -3383,14 +3587,14 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         }
 
         // Wait for verack
-        auto verack = receive_message(peer->socket_fd);
+        auto verack = receive_peer_message(peer);
         if (!verack || verack->command != "verack") {
             return false;
         }
 
         // Send verack
         auto verack_response = P2PMessage::create_verack();
-        if (!send_message(peer->socket_fd, verack_response)) {
+        if (!send_peer_message(peer, verack_response)) {
             return false;
         }
 
@@ -3403,7 +3607,7 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
     P2PMessage sendcmpct_msg;
     sendcmpct_msg.command = "sendcmpct";
     sendcmpct_msg.payload = CreateSendCmpctPayload(true, 1);
-    if (!send_message(peer->socket_fd, sendcmpct_msg)) {
+    if (!send_peer_message(peer, sendcmpct_msg)) {
         return false;
     }
 
@@ -3419,7 +3623,7 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
     // Only on outbound connections to avoid addr storms
     if (peer->is_outbound) {
         auto getaddr_msg = P2PMessage::create_getaddr();
-        send_message(peer->socket_fd, getaddr_msg);
+        send_peer_message(peer, getaddr_msg);
         std::cout << "[P2P] Sent getaddr to " << peer->to_string() << std::endl;
         // Phase B (v8 peer discovery): record initial send so keepalive_loop
         // re-sends getaddr after the configured interval. Without this
@@ -3432,7 +3636,7 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
     // address (manual externalip or successful UPnP), announce it after
     // handshake so servers and other peers can add it to addrman and relay it.
     const auto local_addresses = get_local_advertised_addresses();
-    if (!local_addresses.empty() && send_addr_list_to_socket(peer->socket_fd, local_addresses)) {
+    if (!local_addresses.empty() && send_addr_list_to_peer(peer, local_addresses)) {
         std::cout << "[P2P] Advertised " << local_addresses.size()
                   << " reachable address(es) to " << peer->to_string() << std::endl;
     }
@@ -3588,6 +3792,10 @@ void P2PManager::cleanup_peer(const std::string& peer_address) {
 
             // Mark peer as disconnected (but keep in map until threads are joined)
             it->second->is_connected = false;
+            it->second->lifetime_state.store(PeerLifetimeState::STOPPING);
+            if (it->second->via_relay) {
+                it->second->relay_inbox_cv.notify_all();
+            }
 
             // TS1 Note: We do NOT erase here because the peer thread may still
             // be running. The erase will happen in stop() after join.
@@ -4208,6 +4416,11 @@ bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage&
 bool P2PManager::send_relay_data_to_virtual_peer(const PeerInfo& peer,
                                                  const P2PMessage& message) {
     if (!peer.via_relay) {
+        return false;
+    }
+    if (!plaintext_relay_transport_allowed()) {
+        std::cout << "[P2P] relay-transport: plaintext RELAY_DATA send refused on mainnet for "
+                  << peer.to_string() << std::endl;
         return false;
     }
     const auto via = *peer.via_relay;

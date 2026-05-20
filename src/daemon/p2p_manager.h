@@ -126,6 +126,9 @@ struct PeerInfo {
     // instead of a direct TCP socket. address is a stable virtual key:
     // relay:<target_node_id_hex>:<circuit_id_hex>.
     std::optional<ViaRelayInfo> via_relay;
+    std::mutex relay_inbox_mutex;
+    std::condition_variable relay_inbox_cv;
+    std::deque<std::vector<uint8_t>> relay_inbox_frames;
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
@@ -522,6 +525,22 @@ public:
     void SendRelayRegisterIfConfigured(PeerInfo* peer);
     void RefreshRelayRegistrations();
 
+#ifdef DINERO_TEST_BUILD
+    void set_plaintext_relay_dev_override_for_tests(bool allowed);
+    bool test_plaintext_relay_transport_allowed() const;
+    std::string test_install_virtual_relay_peer(
+        const std::string& virtual_peer_key,
+        const std::string& relay_peer_address,
+        uint64_t circuit_id,
+        P2PMessage::RelayDirection outbound_direction,
+        bool is_outbound);
+    bool test_enqueue_relay_frame(const std::string& virtual_peer_key,
+                                  const std::vector<uint8_t>& frame);
+    std::unique_ptr<P2PMessage> test_receive_peer_message(
+        const std::string& peer_key,
+        std::chrono::milliseconds timeout);
+#endif
+
 private:
     // Outbox for async sending
     struct OutMsg {
@@ -571,6 +590,7 @@ private:
     std::unique_ptr<std::thread> listen_thread_;
     std::unique_ptr<std::thread> connection_manager_thread_;
     std::unique_ptr<std::thread> keepalive_thread_;  // Phase C: Adaptive keepalive
+    std::mutex peer_threads_mutex_;
     std::vector<std::unique_ptr<std::thread>> peer_threads_;
 
     // Peer management
@@ -679,10 +699,15 @@ private:
     std::unordered_map<std::string, std::vector<RelayHintRecord>> relay_hints_by_target_;
     static constexpr size_t kMaxHintsPerTarget = 4;
 
+#ifdef DINERO_TEST_BUILD
+    std::atomic<bool> plaintext_relay_dev_override_for_tests_{false};
+#endif
+
     // Network threads
     void listen_loop();
     void connection_manager_loop();
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
+    void start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);
     void outbox_loop();
     void keepalive_loop();  // Phase C: Adaptive keepalive thread
@@ -697,12 +722,19 @@ private:
     void mark_peer_address_attempt(const std::string& address, uint16_t port, bool success);
     std::vector<std::pair<std::string, uint16_t>> get_local_advertised_addresses() const;
     std::vector<std::pair<std::string, uint16_t>> collect_advertisable_addresses(size_t max_count) const;
-    bool send_addr_list_to_socket(int socket_fd,
-                                  const std::vector<std::pair<std::string, uint16_t>>& addresses);
+    bool send_addr_list_to_peer(PeerInfo* peer,
+                                const std::vector<std::pair<std::string, uint16_t>>& addresses);
     
     // Message processing
     bool send_message(int socket_fd, const P2PMessage& message);
     std::unique_ptr<P2PMessage> receive_message(int socket_fd);
+    bool send_peer_message(PeerInfo* peer, const P2PMessage& message);
+    std::unique_ptr<P2PMessage> receive_peer_message(
+        PeerInfo* peer,
+        std::chrono::milliseconds timeout = std::chrono::seconds(10));
+    bool enqueue_relay_frame(const std::string& virtual_peer_key,
+                             const std::vector<uint8_t>& frame);
+    bool plaintext_relay_transport_allowed() const;
     void process_message(const std::string& peer_address, const P2PMessage& message);
     bool send_relay_data_to_virtual_peer(const PeerInfo& peer, const P2PMessage& message);
     bool unwrap_relay_data_endpoint(const std::string& relay_peer_address,
