@@ -198,6 +198,21 @@ std::string ToLowerAscii(std::string value) {
     return value;
 }
 
+std::string NodeIdHex(const std::array<uint8_t, 20>& node_id) {
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (auto b : node_id) {
+        out << std::setw(2) << static_cast<unsigned int>(b);
+    }
+    return out.str();
+}
+
+std::string CircuitHex(uint64_t circuit_id) {
+    std::ostringstream out;
+    out << std::hex << std::setfill('0') << std::setw(16) << circuit_id;
+    return out.str();
+}
+
 bool EndsWith(const std::string& value, const std::string& suffix) {
     return value.size() >= suffix.size() &&
            value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
@@ -676,6 +691,12 @@ P2PMessage P2PMessage::create_relay_hints(const std::vector<RelayHint>& hints) {
     return msg;
 }
 
+std::string P2PManager::RelayVirtualPeerAddress(
+    const std::array<uint8_t, 20>& target_node_id,
+    uint64_t circuit_id) const {
+    return "relay:" + NodeIdHex(target_node_id) + ":" + CircuitHex(circuit_id);
+}
+
 // NAT traversal Phase C3 slice 2: validate + ingest a RELAY_REGISTER.
 //
 // Validation rules (each must hold or we log + drop):
@@ -905,6 +926,9 @@ void P2PManager::handle_relay_data(const std::string& peer_address,
         return;  // need at least circuit_id_8 + direction_1
     }
     const uint64_t circuit_id = ReadLE64(message.payload, 0);
+    if (unwrap_relay_data_endpoint(peer_address, message)) {
+        return;
+    }
     // direction byte at offset 8 — preserved but not consulted by the
     // relay; endpoints set it on send, read it on receive.
 
@@ -930,6 +954,115 @@ void P2PManager::handle_relay_data(const std::string& peer_address,
     // No bandwidth caps in slice 3 — those land in slice 3.1 (token
     // bucket + daily quota + storm detection).
     send_to_peer(dest, message);
+}
+
+bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_address,
+                                            const P2PMessage& message) {
+    if (message.payload.size() < 9) {
+        return false;
+    }
+    const uint64_t circuit_id = ReadLE64(message.payload, 0);
+    const uint8_t direction = message.payload[8];
+
+    size_t offset = 9;
+    uint64_t inner_len = 0;
+    if (!ReadVarInt(message.payload, offset, &inner_len)) {
+        return false;
+    }
+    if (inner_len > 4ULL * 1024 * 1024 ||
+        offset + static_cast<size_t>(inner_len) > message.payload.size()) {
+        return false;
+    }
+
+    std::string virtual_peer_key;
+    bool is_local_endpoint = false;
+
+    {
+        std::lock_guard<std::mutex> lock(originator_mutex_);
+        auto it = originated_circuits_.find(circuit_id);
+        if (it != originated_circuits_.end() &&
+            it->second.relay_peer_address == relay_peer_address &&
+            direction == static_cast<uint8_t>(P2PMessage::RelayDirection::TargetToClient)) {
+            virtual_peer_key = RelayVirtualPeerAddress(it->second.target_node_id, circuit_id);
+            is_local_endpoint = true;
+        }
+    }
+
+    if (!is_local_endpoint) {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [key, peer] : connected_peers_) {
+            if (!peer || !peer->via_relay || !peer->is_connected) continue;
+            const auto& via = *peer->via_relay;
+            if (via.circuit_id == circuit_id &&
+                via.relay_peer_address == relay_peer_address &&
+                direction != via.outbound_direction) {
+                virtual_peer_key = key;
+                is_local_endpoint = true;
+                break;
+            }
+        }
+    }
+
+    if (!is_local_endpoint) {
+        std::shared_ptr<PeerInfo> relay_peer;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            auto it = connected_peers_.find(relay_peer_address);
+            if (it != connected_peers_.end()) {
+                relay_peer = it->second;
+            }
+        }
+        if (!relay_peer || !relay_peer->is_our_relay ||
+            direction != static_cast<uint8_t>(P2PMessage::RelayDirection::ClientToTarget)) {
+            return false;
+        }
+
+        auto virtual_peer = std::make_shared<PeerInfo>();
+        virtual_peer_key = "relay:in:" + relay_peer_address + ":" + CircuitHex(circuit_id);
+        virtual_peer->address = virtual_peer_key;
+        virtual_peer->port = 0;
+        virtual_peer->is_outbound = false;
+        virtual_peer->is_connected = true;
+        virtual_peer->socket_fd = -1;
+        virtual_peer->connected_since = std::chrono::system_clock::now();
+        virtual_peer->last_message_at = virtual_peer->connected_since;
+        virtual_peer->last_seen = virtual_peer->connected_since;
+        virtual_peer->lifetime_state.store(PeerLifetimeState::RUNNING);
+        virtual_peer->via_relay = PeerInfo::ViaRelayInfo{
+            circuit_id,
+            relay_peer_address,
+            static_cast<uint8_t>(P2PMessage::RelayDirection::TargetToClient)};
+
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            connected_peers_.emplace(virtual_peer_key, std::move(virtual_peer));
+        }
+        is_local_endpoint = true;
+        std::cout << "[P2P] relay-data: created inbound virtual peer "
+                  << virtual_peer_key << std::endl;
+    }
+
+    std::vector<uint8_t> inner(message.payload.begin() + static_cast<std::ptrdiff_t>(offset),
+                               message.payload.begin() + static_cast<std::ptrdiff_t>(offset + inner_len));
+    auto inner_msg = P2PMessage::deserialize(inner);
+    if (!inner_msg) {
+        std::cout << "[P2P] relay-data: dropped malformed inner frame on circuit "
+                  << std::hex << circuit_id << std::dec << std::endl;
+        return true;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(virtual_peer_key);
+        if (it != connected_peers_.end() && it->second) {
+            it->second->bytes_recv += inner.size();
+            it->second->last_message_at = std::chrono::system_clock::now();
+            it->second->last_seen = it->second->last_message_at;
+        }
+    }
+
+    process_message(virtual_peer_key, *inner_msg);
+    return true;
 }
 
 // NAT traversal Phase C3 slice 3: RELAY_PING keepalive. Doesn't
@@ -1086,10 +1219,33 @@ void P2PManager::handle_relay_connect_ack(const std::string& peer_address,
     const bool ok = (status_byte == static_cast<uint8_t>(
                      P2PMessage::RelayConnectStatus::Ok)) && circuit_id != 0;
     if (ok) {
-        std::lock_guard<std::mutex> lock(originator_mutex_);
-        originated_circuits_[circuit_id] = OriginatedCircuit{
-            pc.target_node_id, pc.relay_peer_address,
-            std::chrono::steady_clock::now()};
+        {
+            std::lock_guard<std::mutex> lock(originator_mutex_);
+            originated_circuits_[circuit_id] = OriginatedCircuit{
+                pc.target_node_id, pc.relay_peer_address,
+                std::chrono::steady_clock::now()};
+        }
+
+        auto virtual_peer = std::make_shared<PeerInfo>();
+        const std::string virtual_peer_key =
+            RelayVirtualPeerAddress(pc.target_node_id, circuit_id);
+        virtual_peer->address = virtual_peer_key;
+        virtual_peer->port = 0;
+        virtual_peer->is_outbound = true;
+        virtual_peer->is_connected = true;
+        virtual_peer->socket_fd = -1;
+        virtual_peer->connected_since = std::chrono::system_clock::now();
+        virtual_peer->last_message_at = virtual_peer->connected_since;
+        virtual_peer->last_seen = virtual_peer->connected_since;
+        virtual_peer->lifetime_state.store(PeerLifetimeState::RUNNING);
+        virtual_peer->via_relay = PeerInfo::ViaRelayInfo{
+            circuit_id,
+            pc.relay_peer_address,
+            static_cast<uint8_t>(P2PMessage::RelayDirection::ClientToTarget)};
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            connected_peers_[virtual_peer_key] = std::move(virtual_peer);
+        }
     }
 
     std::ostringstream id_hex;
@@ -3426,7 +3582,9 @@ void P2PManager::cleanup_peer(const std::string& peer_address) {
         if (it != connected_peers_.end()) {
             fd_to_clean = it->second->socket_fd;
             // Close socket to unblock any pending I/O
-            close_socket(it->second->socket_fd);
+            if (it->second->socket_fd >= 0) {
+                close_socket(it->second->socket_fd);
+            }
 
             // Mark peer as disconnected (but keep in map until threads are joined)
             it->second->is_connected = false;
@@ -3477,6 +3635,7 @@ std::vector<PeerInfo> P2PManager::get_connected_peers() const {
             info.socket_fd = pair.second->socket_fd;
             info.last_seen_unix = pair.second->last_seen_unix;
             info.avg_latency_ms = pair.second->avg_latency_ms;
+            info.via_relay = pair.second->via_relay;
             // lifetime_state remains at default ALLOCATED (internal detail, not exposed in API)
             seed_peer_sync_telemetry(&info, local_height);
 
@@ -4023,12 +4182,18 @@ bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage&
 
     // Get socket FD while holding lock, then release before sending
     int socket_fd = -1;
+    std::shared_ptr<PeerInfo> peer_info;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(peer_address);
         if (it != connected_peers_.end() && it->second->is_connected) {
+            peer_info = it->second;
             socket_fd = it->second->socket_fd;
         }
+    }
+
+    if (peer_info && peer_info->via_relay) {
+        return send_relay_data_to_virtual_peer(*peer_info, message);
     }
 
     // Send outside peers_mutex_ to avoid blocking other threads.
@@ -4038,6 +4203,42 @@ bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage&
         return send_message(socket_fd, message);
     }
     return false;
+}
+
+bool P2PManager::send_relay_data_to_virtual_peer(const PeerInfo& peer,
+                                                 const P2PMessage& message) {
+    if (!peer.via_relay) {
+        return false;
+    }
+    const auto via = *peer.via_relay;
+
+    int relay_fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(via.relay_peer_address);
+        if (it != connected_peers_.end() && it->second && it->second->is_connected) {
+            relay_fd = it->second->socket_fd;
+        }
+    }
+    if (relay_fd < 0) {
+        return false;
+    }
+
+    const auto direction =
+        via.outbound_direction == static_cast<uint8_t>(P2PMessage::RelayDirection::TargetToClient)
+            ? P2PMessage::RelayDirection::TargetToClient
+            : P2PMessage::RelayDirection::ClientToTarget;
+    const auto inner_data = message.serialize();
+    auto relay_msg = P2PMessage::create_relay_data(via.circuit_id, direction, inner_data);
+    const bool ok = send_message(relay_fd, relay_msg);
+    if (ok) {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer.to_string());
+        if (it != connected_peers_.end() && it->second) {
+            it->second->bytes_sent += inner_data.size();
+        }
+    }
+    return ok;
 }
 
 void P2PManager::broadcast_message(const P2PMessage& message) {

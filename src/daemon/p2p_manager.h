@@ -13,6 +13,7 @@
 #include <functional>
 #include <chrono>
 #include <array>
+#include <optional>
 
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
@@ -35,6 +36,12 @@ enum class PeerLifetimeState {
 };
 
 struct PeerInfo {
+    struct ViaRelayInfo {
+        uint64_t circuit_id{0};
+        std::string relay_peer_address;
+        uint8_t outbound_direction{0};  // P2PMessage::RelayDirection wire value
+    };
+
     std::string address;
     uint16_t port;
     std::string user_agent;
@@ -115,6 +122,11 @@ struct PeerInfo {
     bool is_our_relay{false};
     std::chrono::steady_clock::time_point last_register_sent_at{};
 
+    // NAT traversal slice 4c: synthetic peer carried over a relay circuit
+    // instead of a direct TCP socket. address is a stable virtual key:
+    // relay:<target_node_id_hex>:<circuit_id_hex>.
+    std::optional<ViaRelayInfo> via_relay;
+
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
         : address(std::move(other.address)),
@@ -142,6 +154,7 @@ struct PeerInfo {
           last_seen_unix(other.last_seen_unix),
           avg_latency_ms(other.avg_latency_ms),
           last_getaddr_sent(other.last_getaddr_sent),
+          via_relay(std::move(other.via_relay)),
           lifetime_state(other.lifetime_state.load()) {}
 
     // Default constructor
@@ -153,6 +166,9 @@ struct PeerInfo {
     PeerInfo& operator=(PeerInfo&&) = delete;
 
     std::string to_string() const {
+        if (via_relay.has_value()) {
+            return address;
+        }
         return address + ":" + std::to_string(port);
     }
 };
@@ -489,6 +505,12 @@ public:
     // kRelayConnectTimeout, then removes it.
     void SweepRelayConnectTimeouts();
 
+    // NAT traversal slice 4c: create/lookup the synthetic peer address
+    // backing an opened relay circuit. The returned key can be passed to
+    // send_to_peer(), which wraps the original P2P frame as RELAY_DATA.
+    std::string RelayVirtualPeerAddress(const std::array<uint8_t, 20>& target_node_id,
+                                        uint64_t circuit_id) const;
+
     // NAT traversal Phase C3 slice 4a: client-side outbound registration.
     // SendRelayRegisterIfConfigured is called from perform_handshake on
     // the outbound side after dineroid succeeds; checks whether `peer`
@@ -682,6 +704,9 @@ private:
     bool send_message(int socket_fd, const P2PMessage& message);
     std::unique_ptr<P2PMessage> receive_message(int socket_fd);
     void process_message(const std::string& peer_address, const P2PMessage& message);
+    bool send_relay_data_to_virtual_peer(const PeerInfo& peer, const P2PMessage& message);
+    bool unwrap_relay_data_endpoint(const std::string& relay_peer_address,
+                                    const P2PMessage& message);
     
     // Built-in message handlers
     void handle_version(const std::string& peer_address, const P2PMessage& message);
