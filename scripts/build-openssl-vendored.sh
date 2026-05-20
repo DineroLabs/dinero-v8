@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Build vendored OpenSSL 3.3.2 for DineroCoin
+# Build vendored OpenSSL for DineroCoin
 # Produces static libraries for portable binaries
 # Platform: macOS, Linux (x86_64, ARM64)
 # ============================================================================
@@ -17,16 +17,84 @@ NC='\033[0m' # No Color
 # Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-OPENSSL_DIR="$PROJECT_ROOT/third_party/openssl-3.3.2"
+OPENSSL_VERSION="${OPENSSL_VERSION:-3.5.6}"
+OPENSSL_DIR="${OPENSSL_SOURCE_DIR:-$PROJECT_ROOT/third_party/openssl-${OPENSSL_VERSION}}"
 MACOS_TARGET_FILE="$PROJECT_ROOT/.macos-deployment-target"
 
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Building vendored OpenSSL 3.3.2 for DineroCoin${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+known_openssl_source_sha256() {
+    case "$1" in
+        3.5.6)
+            printf '%s\n' "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+echo -e "${BLUE}--------------------------------------------------------${NC}"
+echo -e "${BLUE}Building vendored OpenSSL ${OPENSSL_VERSION} for DineroCoin${NC}"
+echo -e "${BLUE}--------------------------------------------------------${NC}"
+
+# Download the pinned source tarball when the selected source directory is not
+# already present. OPENSSL_SOURCE_DIR remains strict: if callers pass it, they
+# are responsible for making it exist.
+ensure_openssl_source() {
+    if [[ -d "$OPENSSL_DIR" ]]; then
+        return
+    fi
+
+    if [[ -n "${OPENSSL_SOURCE_DIR:-}" ]]; then
+        echo -e "${RED}Error: OPENSSL_SOURCE_DIR was provided but does not exist: $OPENSSL_DIR${NC}"
+        exit 1
+    fi
+
+    local expected_sha
+    if ! expected_sha="$(known_openssl_source_sha256 "$OPENSSL_VERSION")"; then
+        echo -e "${RED}Error: OpenSSL source missing at $OPENSSL_DIR and no pinned SHA256 is known for OPENSSL_VERSION=$OPENSSL_VERSION${NC}"
+        exit 1
+    fi
+
+    local tarball="$PROJECT_ROOT/third_party/openssl-${OPENSSL_VERSION}.tar.gz"
+    local url="https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+    mkdir -p "$PROJECT_ROOT/third_party"
+    if [[ ! -f "$tarball" ]]; then
+        echo -e "${BLUE}Downloading OpenSSL ${OPENSSL_VERSION} source...${NC}"
+        curl -L "$url" -o "$tarball"
+    fi
+
+    local actual_sha
+    actual_sha="$(python3 - "$tarball" <<'PY'
+import hashlib
+import sys
+
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as f:
+    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+        h.update(chunk)
+print(h.hexdigest())
+PY
+)"
+    if [[ "$actual_sha" != "$expected_sha" ]]; then
+        echo -e "${RED}Error: SHA256 mismatch for $tarball${NC}"
+        echo "Expected: $expected_sha"
+        echo "Actual:   $actual_sha"
+        exit 1
+    fi
+
+    echo -e "${BLUE}Extracting OpenSSL ${OPENSSL_VERSION} source...${NC}"
+    tar -xzf "$tarball" -C "$PROJECT_ROOT/third_party"
+    if [[ ! -d "$OPENSSL_DIR" ]]; then
+        echo -e "${RED}Error: OpenSSL extraction completed but expected directory is missing: $OPENSSL_DIR${NC}"
+        exit 1
+    fi
+}
+
+ensure_openssl_source
 
 # Check if OpenSSL source exists
 if [ ! -d "$OPENSSL_DIR" ]; then
-    echo -e "${RED}❌ Error: OpenSSL source directory not found at $OPENSSL_DIR${NC}"
+    echo -e "${RED}Error: OpenSSL source directory not found at $OPENSSL_DIR${NC}"
     exit 1
 fi
 
@@ -59,14 +127,14 @@ PY
 
 read_repo_macos_target() {
     if [[ ! -f "$MACOS_TARGET_FILE" ]]; then
-        echo -e "${RED}❌ Error: missing repo macOS target file at $MACOS_TARGET_FILE${NC}" >&2
+        echo -e "${RED}Error: missing repo macOS target file at $MACOS_TARGET_FILE${NC}" >&2
         exit 1
     fi
 
     local target
     target="$(tr -d '[:space:]' < "$MACOS_TARGET_FILE")"
     if [[ -z "$target" ]]; then
-        echo -e "${RED}❌ Error: repo macOS target file is empty: $MACOS_TARGET_FILE${NC}" >&2
+        echo -e "${RED}Error: repo macOS target file is empty: $MACOS_TARGET_FILE${NC}" >&2
         exit 1
     fi
     printf '%s\n' "$target"
@@ -118,7 +186,7 @@ if [[ "$OS" == "Darwin" ]]; then
     REPO_MACOS_DEPLOYMENT_TARGET="$(read_repo_macos_target)"
     REQUESTED_MACOS_TARGET="${OPENSSL_MACOS_DEPLOYMENT_TARGET:-${CMAKE_OSX_DEPLOYMENT_TARGET:-$REPO_MACOS_DEPLOYMENT_TARGET}}"
     if [[ "$(version_equal "$REQUESTED_MACOS_TARGET" "$REPO_MACOS_DEPLOYMENT_TARGET")" != "1" ]]; then
-        echo -e "${RED}❌ Error: repo policy requires macOS ${REPO_MACOS_DEPLOYMENT_TARGET}, but requested ${REQUESTED_MACOS_TARGET}${NC}" >&2
+        echo -e "${RED}Error: repo policy requires macOS ${REPO_MACOS_DEPLOYMENT_TARGET}, but requested ${REQUESTED_MACOS_TARGET}${NC}" >&2
         echo -e "${RED}   Re-run with OPENSSL_MACOS_DEPLOYMENT_TARGET=${REPO_MACOS_DEPLOYMENT_TARGET}${NC}" >&2
         exit 1
     fi
@@ -143,7 +211,7 @@ if [[ "$OUTPUT_DIR" != "$OPENSSL_DIR" ]] &&
     fi
 
     if [[ "$OS" != "Darwin" || -z "${LEGACY_TARGET}" || "$(version_equal "${LEGACY_TARGET}" "${OPENSSL_MACOS_DEPLOYMENT_TARGET}")" == "1" ]]; then
-        echo -e "${YELLOW}↪ Migrating legacy vendored OpenSSL artifacts into ${OUTPUT_DIR}${NC}"
+        echo -e "${YELLOW}Migrating legacy vendored OpenSSL artifacts into ${OUTPUT_DIR}${NC}"
         sync_output_file "${OPENSSL_DIR}/libcrypto.a" "${OUTPUT_DIR}/libcrypto.a"
         sync_output_file "${OPENSSL_DIR}/libssl.a" "${OUTPUT_DIR}/libssl.a"
         if [[ -f "${OPENSSL_DIR}/.dinero-build-meta" ]]; then
@@ -168,18 +236,18 @@ if [ -f "$OUTPUT_DIR/libcrypto.a" ] && [ -f "$OUTPUT_DIR/libssl.a" ]; then
     EXISTING_OS="$(read_metadata_field OS)"
     EXISTING_ARCH="$(read_metadata_field ARCH)"
     if [[ -n "$EXISTING_OS" && "$EXISTING_OS" != "$OS" ]]; then
-        echo -e "${YELLOW}⚠️  Existing OpenSSL OS (${EXISTING_OS}) does not match host OS (${OS})${NC}"
+        echo -e "${YELLOW}Warning: existing OpenSSL OS (${EXISTING_OS}) does not match host OS (${OS})${NC}"
         OPENSSL_REBUILD=1
     fi
     if [[ -n "$EXISTING_ARCH" && "$EXISTING_ARCH" != "$ARCH" ]]; then
-        echo -e "${YELLOW}⚠️  Existing OpenSSL arch (${EXISTING_ARCH}) does not match host arch (${ARCH})${NC}"
+        echo -e "${YELLOW}Warning: existing OpenSSL arch (${EXISTING_ARCH}) does not match host arch (${ARCH})${NC}"
         OPENSSL_REBUILD=1
     fi
     if [[ "$OS" == "Darwin" ]]; then
         EXISTING_TARGET_METADATA="$(read_metadata_target)"
         EXISTING_TARGET_ARCHIVE="$(detect_archive_target "$OUTPUT_DIR/libcrypto.a")"
         if [[ -n "$EXISTING_TARGET_METADATA" && -n "$EXISTING_TARGET_ARCHIVE" && "$(version_equal "$EXISTING_TARGET_METADATA" "$EXISTING_TARGET_ARCHIVE")" != "1" ]]; then
-            echo -e "${YELLOW}⚠️  Vendored OpenSSL metadata target (${EXISTING_TARGET_METADATA}) does not match archive target (${EXISTING_TARGET_ARCHIVE})${NC}"
+            echo -e "${YELLOW}Warning: vendored OpenSSL metadata target (${EXISTING_TARGET_METADATA}) does not match archive target (${EXISTING_TARGET_ARCHIVE})${NC}"
             OPENSSL_REBUILD=1
         fi
         if [[ -n "$EXISTING_TARGET_ARCHIVE" ]]; then
@@ -189,7 +257,7 @@ if [ -f "$OUTPUT_DIR/libcrypto.a" ] && [ -f "$OUTPUT_DIR/libssl.a" ]; then
         fi
     fi
 
-    echo -e "${YELLOW}⚠️  OpenSSL libraries already exist:${NC}"
+    echo -e "${YELLOW}Warning: OpenSSL libraries already exist:${NC}"
     echo "  libcrypto.a: $(du -h "$OUTPUT_DIR/libcrypto.a" | cut -f1)"
     echo "  libssl.a: $(du -h "$OUTPUT_DIR/libssl.a" | cut -f1)"
     if [[ -n "$EXISTING_TARGET" ]]; then
@@ -197,24 +265,24 @@ if [ -f "$OUTPUT_DIR/libcrypto.a" ] && [ -f "$OUTPUT_DIR/libssl.a" ]; then
     fi
     echo ""
     if [[ "$OS" == "Darwin" && -n "$EXISTING_TARGET" && "$(version_equal "$EXISTING_TARGET" "$OPENSSL_MACOS_DEPLOYMENT_TARGET")" != "1" ]]; then
-        echo -e "${YELLOW}⚠️  Existing OpenSSL target (${EXISTING_TARGET}) does not match requested target (${OPENSSL_MACOS_DEPLOYMENT_TARGET})${NC}"
+        echo -e "${YELLOW}Warning: existing OpenSSL target (${EXISTING_TARGET}) does not match requested target (${OPENSSL_MACOS_DEPLOYMENT_TARGET})${NC}"
         OPENSSL_REBUILD=1
     fi
     if [[ "${OPENSSL_REBUILD}" == "1" ]]; then
         echo -e "${YELLOW}OPENSSL_REBUILD=1 set, rebuilding without prompt${NC}"
     else
         if [[ ! -t 0 ]]; then
-            echo -e "${GREEN}✅ Using existing OpenSSL libraries${NC}"
+            echo -e "${GREEN}Using existing OpenSSL libraries${NC}"
             exit 0
         fi
         read -p "Rebuild anyway? (y/N): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo -e "${GREEN}✅ Using existing OpenSSL libraries${NC}"
+            echo -e "${GREEN}Using existing OpenSSL libraries${NC}"
             exit 0
         fi
     fi
-    echo -e "${YELLOW}🔨 Cleaning previous build...${NC}"
+    echo -e "${YELLOW}Cleaning previous build...${NC}"
     cd "$OPENSSL_DIR"
     make distclean 2>/dev/null || make clean 2>/dev/null || true
     find "$OPENSSL_DIR" \( -name '*.o' -o -name '*.a' -o -name '*.so' -o -name '*.dylib' -o -name '*.d' \) -delete 2>/dev/null || true
@@ -225,7 +293,7 @@ fi
 cd "$OPENSSL_DIR"
 
 # Configure based on platform
-echo -e "${BLUE}⚙️  Configuring OpenSSL...${NC}"
+echo -e "${BLUE}Configuring OpenSSL...${NC}"
 
 CONFIGURE_FLAGS=(
     no-shared        # Static libraries only
@@ -261,12 +329,12 @@ elif [ "$OS" = "Linux" ]; then
     echo -e "${BLUE}Linux target:${NC} $TARGET"
     ./Configure "$TARGET" "${CONFIGURE_FLAGS[@]}"
 else
-    echo -e "${RED}❌ Unsupported platform: $OS${NC}"
+    echo -e "${RED}Unsupported platform: $OS${NC}"
     exit 1
 fi
 
 # Build with all available cores
-echo -e "${BLUE}🔨 Building OpenSSL (this may take a few minutes)...${NC}"
+echo -e "${BLUE}Building OpenSSL (this may take a few minutes)...${NC}"
 
 if [ "$OS" = "Darwin" ]; then
     CORES=$(sysctl -n hw.ncpu)
@@ -279,10 +347,10 @@ make -j"$CORES"
 
 # Verify libraries were created
 echo ""
-echo -e "${BLUE}🔍 Verifying build...${NC}"
+echo -e "${BLUE}Verifying build...${NC}"
 
 if [ ! -f "libcrypto.a" ] || [ ! -f "libssl.a" ]; then
-    echo -e "${RED}❌ Build failed: Libraries not found${NC}"
+    echo -e "${RED}Build failed: Libraries not found${NC}"
     exit 1
 fi
 
@@ -293,6 +361,8 @@ SSL_SIZE=$(du -h libssl.a | cut -f1)
 {
     echo "OS=${OS}"
     echo "ARCH=${ARCH}"
+    echo "OPENSSL_VERSION=${OPENSSL_VERSION}"
+    echo "SOURCE_DIR=${OPENSSL_DIR}"
     if [[ "$OS" == "Darwin" ]]; then
         echo "MACOSX_DEPLOYMENT_TARGET=${OPENSSL_MACOS_DEPLOYMENT_TARGET}"
     fi
@@ -305,7 +375,7 @@ if [[ "$OUTPUT_DIR" != "$OPENSSL_DIR" ]]; then
     sync_output_file "libssl.a" "${OUTPUT_DIR}/libssl.a"
 fi
 
-echo -e "${GREEN}✅ OpenSSL built successfully!${NC}"
+echo -e "${GREEN}OpenSSL built successfully!${NC}"
 echo ""
 echo -e "${GREEN}Libraries created:${NC}"
 echo "  libcrypto.a: $(du -h "${OUTPUT_DIR}/libcrypto.a" | cut -f1)"
@@ -316,20 +386,20 @@ fi
 echo ""
 
 # Optional: Run basic test
-echo -e "${BLUE}🧪 Running basic smoke test...${NC}"
+echo -e "${BLUE}Running basic smoke test...${NC}"
 if ./apps/openssl version 2>/dev/null; then
     VERSION=$(./apps/openssl version)
     echo -e "${GREEN}  $VERSION${NC}"
 else
-    echo -e "${YELLOW}  ⚠️  openssl binary test skipped (apps disabled)${NC}"
+    echo -e "${YELLOW}  openssl binary test skipped (apps disabled)${NC}"
 fi
 
 echo ""
-echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}✅ Vendored OpenSSL ready for DineroCoin builds${NC}"
-echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}--------------------------------------------------------${NC}"
+echo -e "${GREEN}Vendored OpenSSL ready for DineroCoin builds${NC}"
+echo -e "${GREEN}--------------------------------------------------------${NC}"
 echo ""
 echo -e "You can now build DineroCoin with:"
-echo -e "  ${BLUE}cmake -B build -S .${NC}"
+echo -e "  ${BLUE}cmake -B build -S . -DDINERO_VENDORED_OPENSSL_DIR=\"${OUTPUT_DIR}\" -DDINERO_VENDORED_OPENSSL_SOURCE_DIR=\"${OPENSSL_DIR}\"${NC}"
 echo -e "  ${BLUE}cmake --build build -j${CORES}${NC}"
 echo ""

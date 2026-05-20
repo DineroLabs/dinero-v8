@@ -1,22 +1,27 @@
-# Build vendored OpenSSL 3.3.2 for DineroCoin — native Windows MSVC.
+# Build vendored OpenSSL for DineroCoin - native Windows MSVC.
 #
 # Companion to scripts/build-openssl-vendored.sh (Linux/macOS). Produces
 # the same artifacts (libcrypto + libssl) the bash script does, in the
-# location CMakeLists.txt (line ~725) probes for on Windows:
-#   third_party/openssl-3.3.2/libcrypto.lib
-#   third_party/openssl-3.3.2/libssl.lib
+# configured output directory:
+#   libcrypto.lib
+#   libssl.lib
 # plus a .dinero-build-meta file the CMake guard at line ~752 cross-checks.
 #
 # Prerequisites the script verifies:
 #   * Perl on PATH (Strawberry Perl recommended; Configure has run on
 #     others but stdlib modules are easier to get right with Strawberry).
 #   * Visual Studio Build Tools 2019+ (cl.exe + nmake). Auto-located via
-#     vswhere.exe so the script works from a regular PowerShell — no need
+#     vswhere.exe so the script works from a regular PowerShell - no need
 #     to launch a "Developer Command Prompt" first.
 #   * NASM is optional. If missing the build falls back to `no-asm` (slower
 #     SHA / AES paths, still consensus-correct).
 #
 # Usage (from a normal PowerShell):
+#   .\scripts\build-openssl-vendored.ps1
+#
+# Build a specific OpenSSL version/source/output:
+#   $env:OPENSSL_VERSION = '3.5.6'
+#   $env:OPENSSL_OUTPUT_DIR = 'C:\path\to\openssl-prebuilt'
 #   .\scripts\build-openssl-vendored.ps1
 #
 # Force a clean rebuild:
@@ -28,9 +33,19 @@ $ErrorActionPreference = 'Stop'
 
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
-$OpenSSLDir  = Join-Path $ProjectRoot 'third_party\openssl-3.3.2'
-$MetadataFile = Join-Path $OpenSSLDir '.dinero-build-meta'
+$ThirdPartyDir = Join-Path $ProjectRoot 'third_party'
+$OpenSSLVersion = if ($env:OPENSSL_VERSION) { $env:OPENSSL_VERSION } else { '3.5.6' }
+$OpenSSLDir = if ($env:OPENSSL_SOURCE_DIR) {
+    $env:OPENSSL_SOURCE_DIR
+} else {
+    Join-Path $ThirdPartyDir "openssl-$OpenSSLVersion"
+}
+$OutputDir = if ($env:OPENSSL_OUTPUT_DIR) { $env:OPENSSL_OUTPUT_DIR } else { $OpenSSLDir }
+$MetadataFile = Join-Path $OutputDir '.dinero-build-meta'
 $Rebuild     = $env:OPENSSL_REBUILD -eq '1'
+$KnownOpenSSLSourceSha256 = @{
+    '3.5.6' = 'deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736'
+}
 
 function Write-Header($msg) {
     Write-Host ''
@@ -44,11 +59,50 @@ function Fail($msg) {
     exit 1
 }
 
-Write-Header 'Building vendored OpenSSL 3.3.2 for DineroCoin (Windows MSVC)'
+function Ensure-OpenSSLSource {
+    if (Test-Path $OpenSSLDir) {
+        return
+    }
 
-if (-not (Test-Path $OpenSSLDir)) {
-    Fail "OpenSSL source directory not found at $OpenSSLDir"
+    if ($env:OPENSSL_SOURCE_DIR) {
+        Fail "OPENSSL_SOURCE_DIR was provided but does not exist: $OpenSSLDir"
+    }
+
+    if (-not $KnownOpenSSLSourceSha256.ContainsKey($OpenSSLVersion)) {
+        Fail "OpenSSL source is missing at $OpenSSLDir and no pinned SHA256 is known for OPENSSL_VERSION=$OpenSSLVersion"
+    }
+
+    New-Item -ItemType Directory -Path $ThirdPartyDir -Force | Out-Null
+    $Tarball = Join-Path $ThirdPartyDir "openssl-$OpenSSLVersion.tar.gz"
+    $Url = "https://github.com/openssl/openssl/releases/download/openssl-$OpenSSLVersion/openssl-$OpenSSLVersion.tar.gz"
+
+    if (-not (Test-Path $Tarball)) {
+        Write-Host "Downloading OpenSSL $OpenSSLVersion source..."
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Tarball
+    }
+
+    $ActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $Tarball).Hash.ToLowerInvariant()
+    $ExpectedSha256 = $KnownOpenSSLSourceSha256[$OpenSSLVersion]
+    if ($ActualSha256 -ne $ExpectedSha256) {
+        Fail "SHA256 mismatch for $Tarball. Expected $ExpectedSha256, got $ActualSha256"
+    }
+
+    Write-Host "Extracting OpenSSL $OpenSSLVersion source..."
+    & tar.exe -xzf $Tarball -C $ThirdPartyDir
+    if ($LASTEXITCODE -ne 0) {
+        Fail "tar extraction failed with code $LASTEXITCODE"
+    }
+    if (-not (Test-Path $OpenSSLDir)) {
+        Fail "OpenSSL extraction completed but expected directory is missing: $OpenSSLDir"
+    }
 }
+
+Write-Header "Building vendored OpenSSL $OpenSSLVersion for DineroCoin (Windows MSVC)"
+
+Ensure-OpenSSLSource
+New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+Write-Host "  Source: $OpenSSLDir"
+Write-Host "  Output: $OutputDir"
 
 # ----------------------------------------------------------------------
 # Locate Perl. Prefer Strawberry Perl over Git-bash's bundled minimal
@@ -173,6 +227,8 @@ try {
         $ErrorActionPreference = $oldEAP
         Get-ChildItem -Path . -Recurse -Include '*.obj','*.lib','*.pdb' -ErrorAction SilentlyContinue `
             | Remove-Item -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $OutputDir 'libcrypto.lib') -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $OutputDir 'libssl.lib') -Force -ErrorAction SilentlyContinue
     }
 
     # ------------------------------------------------------------------
@@ -241,6 +297,13 @@ try {
     $crypto = Get-Item 'libcrypto.lib'
     $ssl    = Get-Item 'libssl.lib'
 
+    if ((Resolve-Path $OutputDir).Path -ne (Resolve-Path $OpenSSLDir).Path) {
+        Copy-Item -LiteralPath $crypto.FullName -Destination (Join-Path $OutputDir 'libcrypto.lib') -Force
+        Copy-Item -LiteralPath $ssl.FullName -Destination (Join-Path $OutputDir 'libssl.lib') -Force
+        $crypto = Get-Item (Join-Path $OutputDir 'libcrypto.lib')
+        $ssl = Get-Item (Join-Path $OutputDir 'libssl.lib')
+    }
+
     Write-Host ''
     Write-Host 'Libraries created:' -ForegroundColor Green
     Write-Host ("  libcrypto.lib: {0:N0} bytes" -f $crypto.Length)
@@ -256,6 +319,8 @@ try {
     $meta = @"
 OS=Windows
 ARCH=AMD64
+OPENSSL_VERSION=$OpenSSLVersion
+SOURCE_DIR=$OpenSSLDir
 BUILT_AT_UTC=$now
 "@
     Set-Content -Path $MetadataFile -Value $meta -Encoding ASCII -NoNewline:$false
@@ -267,5 +332,5 @@ finally {
 
 Write-Header 'Vendored OpenSSL ready for DineroCoin Windows MSVC builds'
 Write-Host 'You can now (re-)configure the DineroCoin build:' -ForegroundColor Green
-Write-Host '  cmake -S . -B build-msvc-native -G "Visual Studio 17 2022" -A x64' -ForegroundColor Cyan
+Write-Host "  cmake -S . -B build-msvc-native -G `"Visual Studio 17 2022`" -A x64 -DDINERO_VENDORED_OPENSSL_DIR=`"$OutputDir`" -DDINERO_VENDORED_OPENSSL_SOURCE_DIR=`"$OpenSSLDir`"" -ForegroundColor Cyan
 Write-Host '  cmake --build build-msvc-native --config Release --target dinerod dinero-cli' -ForegroundColor Cyan
