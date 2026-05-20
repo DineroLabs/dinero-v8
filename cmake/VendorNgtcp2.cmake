@@ -207,13 +207,33 @@ if(DINERO_ENABLE_QUIC_CRYPTO)
     "${OPENSSL_INCLUDE_DIR}"
   )
 
+  function(_dinero_ngtcp2_prefer_active_openssl_headers target)
+    # Directory-level includes can put vendor/include ahead of the active
+    # OpenSSL package. The ngtcp2 crypto bridge must compile against the same
+    # headers that passed the configure probe.
+    get_target_property(_dinero_ngtcp2_target_includes ${target} INCLUDE_DIRECTORIES)
+    if(NOT _dinero_ngtcp2_target_includes)
+      set(_dinero_ngtcp2_target_includes "")
+    endif()
+
+    list(REMOVE_ITEM _dinero_ngtcp2_target_includes
+      "${CMAKE_SOURCE_DIR}/vendor/include"
+      "${CMAKE_SOURCE_DIR}/third_party/openssl-3.3.2/include"
+      "${OPENSSL_INCLUDE_DIR}"
+    )
+    set_target_properties(${target} PROPERTIES
+      INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR};${_dinero_ngtcp2_target_includes}"
+    )
+  endfunction()
+
   if(DINERO_NGTCP2_HAS_OPENSSL_OSSL_BRIDGE)
     add_library(dinero_ngtcp2_crypto_ossl STATIC
       "${DINERO_NGTCP2_SOURCE_DIR}/crypto/ossl/ossl.c"
       ${DINERO_NGTCP2_CRYPTO_COMMON_SOURCES}
     )
     target_include_directories(dinero_ngtcp2_crypto_ossl
-      PUBLIC
+      BEFORE PUBLIC
+        "${OPENSSL_INCLUDE_DIR}"
         "${DINERO_NGTCP2_SOURCE_DIR}/crypto/includes"
       PRIVATE
         ${DINERO_NGTCP2_CRYPTO_INCLUDES}
@@ -232,6 +252,7 @@ if(DINERO_ENABLE_QUIC_CRYPTO)
         OpenSSL::SSL
         OpenSSL::Crypto
     )
+    _dinero_ngtcp2_prefer_active_openssl_headers(dinero_ngtcp2_crypto_ossl)
     set_target_properties(dinero_ngtcp2_crypto_ossl PROPERTIES
       C_STANDARD 11
       C_STANDARD_REQUIRED ON
@@ -244,7 +265,8 @@ if(DINERO_ENABLE_QUIC_CRYPTO)
       ${DINERO_NGTCP2_CRYPTO_COMMON_SOURCES}
     )
     target_include_directories(dinero_ngtcp2_crypto_quictls
-      PUBLIC
+      BEFORE PUBLIC
+        "${OPENSSL_INCLUDE_DIR}"
         "${DINERO_NGTCP2_SOURCE_DIR}/crypto/includes"
       PRIVATE
         ${DINERO_NGTCP2_CRYPTO_INCLUDES}
@@ -263,6 +285,7 @@ if(DINERO_ENABLE_QUIC_CRYPTO)
         OpenSSL::SSL
         OpenSSL::Crypto
     )
+    _dinero_ngtcp2_prefer_active_openssl_headers(dinero_ngtcp2_crypto_quictls)
     set_target_properties(dinero_ngtcp2_crypto_quictls PROPERTIES
       C_STANDARD 11
       C_STANDARD_REQUIRED ON
