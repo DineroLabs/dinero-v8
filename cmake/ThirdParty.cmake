@@ -249,6 +249,8 @@ add_subdirectory(third_party/sqlite-amalgamation-3480000 EXCLUDE_FROM_ALL)
 option(USE_SYSTEM_OPENSSL "Use system OpenSSL instead of vendored version" OFF)
 set(DINERO_VENDORED_OPENSSL_DIR "" CACHE PATH
   "Override directory containing prebuilt vendored OpenSSL libraries")
+set(DINERO_VENDORED_OPENSSL_SOURCE_DIR "" CACHE PATH
+  "Override directory containing vendored OpenSSL source headers")
 
 function(dinero_detect_single_apple_arch out_arch)
   set(_archs "${CMAKE_OSX_ARCHITECTURES}")
@@ -324,9 +326,21 @@ else()
   else()
     dinero_default_vendored_openssl_dir(OPENSSL_ROOT_DIR)
   endif()
+  if(DINERO_VENDORED_OPENSSL_SOURCE_DIR)
+    set(OPENSSL_SOURCE_DIR "${DINERO_VENDORED_OPENSSL_SOURCE_DIR}")
+    message(STATUS "Using explicit vendored OpenSSL source dir: ${OPENSSL_SOURCE_DIR}")
+  elseif(DINERO_VENDORED_OPENSSL_DIR AND EXISTS "${DINERO_VENDORED_OPENSSL_DIR}/include/openssl/ssl.h")
+    set(OPENSSL_SOURCE_DIR "${DINERO_VENDORED_OPENSSL_DIR}")
+    message(STATUS "Using explicit vendored OpenSSL dir for headers: ${OPENSSL_SOURCE_DIR}")
+  endif()
   set(OPENSSL_USE_STATIC_LIBS TRUE)
   set(OPENSSL_INCLUDE_DIR ${OPENSSL_SOURCE_DIR}/include)
   set(OPENSSL_BUILD_METADATA ${OPENSSL_ROOT_DIR}/.dinero-build-meta)
+  if(NOT EXISTS "${OPENSSL_INCLUDE_DIR}/openssl/ssl.h")
+    message(FATAL_ERROR
+      "Vendored OpenSSL headers not found at ${OPENSSL_INCLUDE_DIR}. "
+      "Set DINERO_VENDORED_OPENSSL_SOURCE_DIR to the matching OpenSSL source/install directory.")
+  endif()
   if(WIN32)
     # Prefer MSVC-style .lib import archives; fall back to MinGW-w64 .a
     # archives that the existing vendored OpenSSL build script produces. The
@@ -418,7 +432,19 @@ else()
       endif()
     endif()
 
-    message(STATUS "Using vendored OpenSSL 3.3.2 (static)")
+    set(OPENSSL_VENDORED_VERSION "unknown")
+    set(OPENSSL_VERSION_HEADER "${OPENSSL_INCLUDE_DIR}/openssl/opensslv.h")
+    if(EXISTS "${OPENSSL_VERSION_HEADER}")
+      file(STRINGS "${OPENSSL_VERSION_HEADER}" OPENSSL_VERSION_TEXT_LINE
+        REGEX "^[ \t]*#[ \t]*define[ \t]+OPENSSL_VERSION_TEXT")
+      if(OPENSSL_VERSION_TEXT_LINE)
+        string(REGEX REPLACE ".*\"OpenSSL ([^\"]+)\".*" "\\1"
+          OPENSSL_VENDORED_VERSION "${OPENSSL_VERSION_TEXT_LINE}")
+      endif()
+    endif()
+
+    message(STATUS "Using vendored OpenSSL ${OPENSSL_VENDORED_VERSION} (static)")
+    message(STATUS "  Headers: ${OPENSSL_INCLUDE_DIR}")
     message(STATUS "  Crypto: ${OPENSSL_CRYPTO_LIBRARY}")
     message(STATUS "  SSL: ${OPENSSL_SSL_LIBRARY}")
 
