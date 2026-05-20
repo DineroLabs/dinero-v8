@@ -19,6 +19,7 @@ set(DINERO_CORE_P2P_SOURCES
   src/network/network_invariants.cpp
   src/network/port_mapper.cpp
   src/network/udp_socket.cpp         # NAT traversal Phase B1: UDP socket facility
+  src/network/quic_transport.cpp     # NAT traversal Phase B2: guarded ngtcp2/QUIC transport foundation
   src/network/stun_client.cpp        # NAT traversal Phase C1: STUN public-IP discovery
   src/network/relay_registry.cpp     # NAT traversal Phase C3: NAT'd peer registry on relay nodes
   src/daemon/p2p_message.cpp

@@ -1848,6 +1848,40 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2 AND EXISTS ${CMAKE_SOURCE_DIR}/te
   )
 endif()
 
+if(DINERO_ENABLE_QUIC AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_quic_transport.cpp)
+  if(TARGET dinero_ngtcp2_crypto_ossl OR TARGET dinero_ngtcp2_crypto_quictls)
+    add_executable(test_quic_transport
+      tests/network/test_quic_transport.cpp
+      src/network/quic_transport.cpp
+      src/network/udp_socket.cpp
+    )
+    target_link_libraries(test_quic_transport
+      PRIVATE
+        GTest::gtest
+        Threads::Threads
+        dinero_ngtcp2
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_quic_transport PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_quic_transport PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+    if(WIN32)
+      target_link_libraries(test_quic_transport PRIVATE ws2_32)
+    endif()
+    target_include_directories(test_quic_transport PRIVATE
+      ${CMAKE_SOURCE_DIR}/include
+    )
+    add_test(NAME QuicTransport COMMAND test_quic_transport)
+    set_tests_properties(QuicTransport PROPERTIES
+      LABELS "p2p;quic;ngtcp2;transport;crypto"
+      TIMEOUT 10
+    )
+  endif()
+endif()
+
 # P2P Hardening Tests (March 2026 Security Audit)
 # ════════════════════════════════════════════════════════════════════════════
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_hardening.cpp)

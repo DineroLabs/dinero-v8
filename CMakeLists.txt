@@ -996,6 +996,18 @@ target_link_libraries(dinero_core PUBLIC
   RocksDB::rocksdb
 )
 
+if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+  target_link_libraries(dinero_core PUBLIC dinero_ngtcp2)
+  if(TARGET dinero_ngtcp2_crypto_ossl)
+    target_link_libraries(dinero_core PUBLIC dinero_ngtcp2_crypto_ossl)
+  elseif(TARGET dinero_ngtcp2_crypto_quictls)
+    target_link_libraries(dinero_core PUBLIC dinero_ngtcp2_crypto_quictls)
+  endif()
+  if(WIN32)
+    target_link_libraries(dinero_core PUBLIC ws2_32)
+  endif()
+endif()
+
 # macOS Security framework is required because secure_random.cpp calls
 # SecRandomCopyBytes (Apple's CSPRNG). Declared PUBLIC so test executables
 # and other downstream targets that link dinero_core inherit the framework
