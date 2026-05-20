@@ -979,6 +979,201 @@ void P2PManager::SweepIdleCircuits() {
     }
 }
 
+// NAT traversal Phase C3 slice 4b: advertise our active relay
+// registrations to peers via the RELAY_HINTS message.
+//
+// When to send:
+//   - We have at least one is_our_relay PeerInfo (i.e., we successfully
+//     registered with at least one relay).
+//   - The peer we just handshook is NOT one of our own relays (no point
+//     telling a relay about itself).
+//   - Both sides advertise NODE_DINERO_V2 (slice 1+ protocol).
+//
+// What goes into the hint:
+//   - target_node_id is OUR own node_id (the registrant's identity).
+//   - One entry per registered relay, with relay address resolved out
+//     of the configured `relayregister=host:port` string. We currently
+//     support IPV4 endpoints only — hostnames + IPv6 + TORV3 land in
+//     a follow-up alongside the dialer that uses them.
+namespace {
+// Parse a single "1.2.3.4:port" into a RelayHint.relay_addr + port.
+// Returns false on malformed input or non-IPv4 host. Hostnames are
+// not resolved here; that needs blocking DNS and is deferred to a
+// follow-up alongside slice D.
+bool ParseIPv4HostPort(const std::string& hostport,
+                       std::array<uint8_t, 4>* out_ip,
+                       uint16_t* out_port) {
+    auto colon = hostport.rfind(':');
+    if (colon == std::string::npos) return false;
+    const std::string host = hostport.substr(0, colon);
+    const std::string port_str = hostport.substr(colon + 1);
+    int a, b, c, d;
+    if (std::sscanf(host.c_str(), "%d.%d.%d.%d", &a, &b, &c, &d) != 4) return false;
+    if (a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255) return false;
+    int port_int = 0;
+    if (std::sscanf(port_str.c_str(), "%d", &port_int) != 1) return false;
+    if (port_int <= 0 || port_int > 65535) return false;
+    (*out_ip)[0] = static_cast<uint8_t>(a);
+    (*out_ip)[1] = static_cast<uint8_t>(b);
+    (*out_ip)[2] = static_cast<uint8_t>(c);
+    (*out_ip)[3] = static_cast<uint8_t>(d);
+    *out_port = static_cast<uint16_t>(port_int);
+    return true;
+}
+}  // namespace
+
+void P2PManager::SendRelayHintsIfApplicable(PeerInfo* peer, uint64_t our_services) {
+    if (!peer || !node_identity_) return;
+    if (!(peer->service_flags & ServiceFlags::NODE_DINERO_V2) ||
+        !(our_services & ServiceFlags::NODE_DINERO_V2)) {
+        return;
+    }
+    // Don't advertise to a peer that IS one of our relays — they
+    // already know our registration directly.
+    if (peer->is_our_relay) return;
+
+    // Build hints from our currently-registered relays.
+    std::vector<P2PMessage::RelayHint> hints;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [_, p] : connected_peers_) {
+            if (!p || !p->is_our_relay || !p->is_connected) continue;
+            P2PMessage::RelayHint h;
+            h.target_node_id = node_identity_->get_node_id_bytes();
+            std::array<uint8_t, 4> ip{};
+            uint16_t port = 0;
+            // Reverse-lookup the relay's host:port string. Use the
+            // PeerInfo's to_string() — it's already in canonical
+            // "host:port" form.
+            if (!ParseIPv4HostPort(p->to_string(), &ip, &port)) {
+                continue;  // hostnames / IPv6 deferred
+            }
+            h.relay_net = dinero::p2p::NetworkType::IPV4;
+            h.relay_addr.assign(ip.begin(), ip.end());
+            h.relay_port = port;
+            hints.push_back(std::move(h));
+        }
+    }
+    if (hints.empty()) return;
+
+    auto msg = P2PMessage::create_relay_hints(hints);
+    if (!send_message(peer->socket_fd, msg)) {
+        std::cout << "[P2P] relay-hints: send failed to " << peer->to_string() << std::endl;
+        return;
+    }
+    std::cout << "[P2P] relay-hints: sent " << hints.size() << " hint(s) to "
+              << peer->to_string() << std::endl;
+}
+
+void P2PManager::handle_relay_hints(const std::string& peer_address,
+                                    const P2PMessage& message) {
+    const auto& payload = message.payload;
+    if (payload.empty()) return;
+
+    // Wire format (matches create_relay_hints):
+    //   count_compact | { target_node_id_20 | net_type_1 | addr_len_1
+    //                     | addr_bytes | port_2BE } × count
+    size_t offset = 0;
+    // CompactSize varint decode (same shape as addr_v2's WriteCompactSize).
+    uint64_t count = 0;
+    if (offset >= payload.size()) return;
+    {
+        uint8_t marker = payload[offset++];
+        if (marker < 253) {
+            count = marker;
+        } else if (marker == 253) {
+            if (offset + 2 > payload.size()) return;
+            count = static_cast<uint64_t>(payload[offset]) |
+                    (static_cast<uint64_t>(payload[offset + 1]) << 8);
+            offset += 2;
+        } else if (marker == 254) {
+            if (offset + 4 > payload.size()) return;
+            count = 0;
+            for (int i = 0; i < 4; i++) {
+                count |= static_cast<uint64_t>(payload[offset + i]) << (i * 8);
+            }
+            offset += 4;
+        } else {
+            if (offset + 8 > payload.size()) return;
+            count = 0;
+            for (int i = 0; i < 8; i++) {
+                count |= static_cast<uint64_t>(payload[offset + i]) << (i * 8);
+            }
+            offset += 8;
+        }
+    }
+    if (count > 100) return;  // sanity cap on hint count per message
+
+    int ingested = 0;
+    for (uint64_t i = 0; i < count; i++) {
+        if (offset + 20 + 1 + 1 > payload.size()) return;
+        std::array<uint8_t, 20> target_node_id{};
+        std::copy_n(payload.begin() + offset, 20, target_node_id.begin());
+        offset += 20;
+        const uint8_t net_byte = payload[offset++];
+        const uint8_t addr_len = payload[offset++];
+        if (offset + addr_len + 2 > payload.size()) return;
+
+        // Validate per-network expected length; skip malformed entries
+        // but DON'T fail the rest of the payload.
+        dinero::p2p::NetworkType net = dinero::p2p::NetworkType::Unknown;
+        switch (net_byte) {
+            case static_cast<uint8_t>(dinero::p2p::NetworkType::IPV4):  net = dinero::p2p::NetworkType::IPV4;  break;
+            case static_cast<uint8_t>(dinero::p2p::NetworkType::IPV6):  net = dinero::p2p::NetworkType::IPV6;  break;
+            case static_cast<uint8_t>(dinero::p2p::NetworkType::TORV3): net = dinero::p2p::NetworkType::TORV3; break;
+            case static_cast<uint8_t>(dinero::p2p::NetworkType::I2P):   net = dinero::p2p::NetworkType::I2P;   break;
+            default: break;
+        }
+        size_t expected = 0;
+        const bool len_ok = dinero::p2p::NetworkTypeExpectedLength(net, &expected) && addr_len == expected;
+
+        if (len_ok) {
+            RelayHintRecord rec;
+            rec.net = net;
+            rec.relay_addr.assign(payload.begin() + offset,
+                                  payload.begin() + offset + addr_len);
+            // Port is BE per BIP155 convention; matches create_relay_hints.
+            rec.relay_port = (static_cast<uint16_t>(payload[offset + addr_len]) << 8) |
+                             static_cast<uint16_t>(payload[offset + addr_len + 1]);
+            rec.learned_at = std::chrono::steady_clock::now();
+
+            std::ostringstream id_hex;
+            id_hex << std::hex << std::setfill('0');
+            for (auto b : target_node_id) {
+                id_hex << std::setw(2) << static_cast<unsigned int>(b);
+            }
+            const std::string key = id_hex.str();
+
+            std::lock_guard<std::mutex> lock(relay_hints_mutex_);
+            auto& bucket = relay_hints_by_target_[key];
+            // Replace any existing entry for the same (net, addr, port);
+            // otherwise append. Cap to kMaxHintsPerTarget (newest wins).
+            auto match = std::find_if(bucket.begin(), bucket.end(),
+                [&](const RelayHintRecord& r) {
+                    return r.net == rec.net && r.relay_addr == rec.relay_addr &&
+                           r.relay_port == rec.relay_port;
+                });
+            if (match != bucket.end()) {
+                match->learned_at = rec.learned_at;
+            } else {
+                if (bucket.size() >= kMaxHintsPerTarget) {
+                    bucket.erase(bucket.begin());  // drop oldest
+                }
+                bucket.push_back(std::move(rec));
+            }
+            ingested++;
+        }
+        offset += addr_len + 2;  // skip addr + port even on malformed
+    }
+
+    if (ingested > 0) {
+        std::cout << "[P2P] relay-hints: ingested " << ingested << " hint(s) from "
+                  << peer_address << " (side-table now covers "
+                  << relay_hints_by_target_.size() << " target(s))"
+                  << std::endl;
+    }
+}
+
 // NAT traversal Phase C3 slice 4a: outbound RELAY_REGISTER on a freshly-
 // handshaked peer if (and only if) that peer is in our configured-relays
 // list AND dineroid succeeded (identity_proven=true). We sign over the
@@ -2827,6 +3022,13 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // ordering BIP155-clean and avoids any chance of the relay holding
         // up verack while it validates the registration.
         SendRelayRegisterIfConfigured(peer);
+        // NAT traversal Phase C3 slice 4b: also tell non-relay peers about
+        // our existing relay registrations so they can dial us via relay
+        // when they want to. Safe to call even before SendRelayRegisterIfConfigured
+        // completes — that helper sets is_our_relay on the FRESHLY-registered
+        // peer, but this helper walks ALL is_our_relay peers (prior connections)
+        // and tells THIS peer (the not-our-relay one) about them.
+        SendRelayHintsIfApplicable(peer, our_services);
 
     } else {
         // Wait for version message
@@ -2880,6 +3082,11 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         if (!send_message(peer->socket_fd, verack_response)) {
             return false;
         }
+
+        // NAT traversal Phase C3 slice 4b: tell the inbound peer about
+        // our existing relay registrations (same call as on the outbound
+        // path). is_our_relay peers won't get hints — see the helper.
+        SendRelayHintsIfApplicable(peer, our_services);
     }
 
     P2PMessage sendcmpct_msg;
@@ -3473,13 +3680,15 @@ void P2PManager::process_message(const std::string& peer_address, const P2PMessa
     } else if (message.command == "relaypng") {
         // NAT Phase C3 slice 3: keepalive — refresh circuit last_data_at.
         handle_relay_ping(peer_address, message);
-    } else if (message.command == "relayack" || message.command == "relayhnt") {
-        // Slice 4 (client-side outbound) ingests these. Relay-side does
-        // not produce/consume them. Keep the accept-and-log behavior for
-        // forward-deployed implementations that emit them at us.
+    } else if (message.command == "relayhnt") {
+        // NAT Phase C3 slice 4b: ingest into relay_hints_by_target_.
+        handle_relay_hints(peer_address, message);
+    } else if (message.command == "relayack") {
+        // Slice 4b dial-via-relay (orchestrator) ingests these to match
+        // outstanding RELAY_CONNECT requests. Until that lands, log+drop.
         std::cout << "[P2P] relay-protocol message '" << message.command
                   << "' (" << message.payload.size() << " bytes) from "
-                  << peer_address << " — slice 4 handler; dropped"
+                  << peer_address << " — slice D handler; dropped"
                   << std::endl;
     } else {
         // Forward to application handler

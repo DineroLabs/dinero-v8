@@ -442,6 +442,22 @@ public:
     // than kCircuitIdleTimeout. Called from keepalive_loop.
     void SweepIdleCircuits();
 
+    // NAT traversal Phase C3 slice 4b: advertise + ingest RELAY_HINTS.
+    //
+    // SendRelayHintsIfApplicable is called from perform_handshake right
+    // after verack on either side, when the local node has at least one
+    // is_our_relay connection AND the peer we just handshook with is NOT
+    // one of our relays. We build a RELAY_HINTS payload listing
+    // (our_node_id, relay_endpoint) for each registered relay and send.
+    //
+    // handle_relay_hints replaces the slice-1 stub. It decodes the
+    // payload and stuffs each entry into relay_hints_by_target_, keyed
+    // by target_node_id_hex. The dialing orchestrator (slice D) reads
+    // this side-table to find relays for a target it wants to reach.
+    void SendRelayHintsIfApplicable(PeerInfo* peer, uint64_t our_services);
+    void handle_relay_hints(const std::string& peer_address,
+                            const P2PMessage& message);
+
     // NAT traversal Phase C3 slice 4a: client-side outbound registration.
     // SendRelayRegisterIfConfigured is called from perform_handshake on
     // the outbound side after dineroid succeeds; checks whether `peer`
@@ -560,6 +576,26 @@ private:
     std::unordered_map<uint64_t, CircuitInfo> circuits_;
     static constexpr size_t kMaxConcurrentCircuits = 25;
     static constexpr std::chrono::seconds kCircuitIdleTimeout{300};  // 5 min
+
+    // NAT traversal Phase C3 slice 4b: ingested relay-hints side-table.
+    // Keyed on target_node_id_hex (40 chars). Value is a list of relay
+    // endpoints we've learned about from peers' RELAY_HINTS messages.
+    // The dialing orchestrator (slice D) consults this when it wants
+    // to reach a peer whose IP-keyed direct address is unknown but
+    // whose node_id has at least one relay advertised.
+    //
+    // Entries age out by stale-replacement: each new RELAY_HINTS from
+    // any peer carrying a given target_node_id replaces the prior
+    // entry. No explicit TTL today — slice 4b+ will add one.
+    struct RelayHintRecord {
+        dinero::p2p::NetworkType net{dinero::p2p::NetworkType::IPV4};
+        std::vector<uint8_t> relay_addr;  // raw bytes per network type
+        uint16_t relay_port{0};
+        std::chrono::steady_clock::time_point learned_at;
+    };
+    mutable std::mutex relay_hints_mutex_;
+    std::unordered_map<std::string, std::vector<RelayHintRecord>> relay_hints_by_target_;
+    static constexpr size_t kMaxHintsPerTarget = 4;
 
     // Network threads
     void listen_loop();
