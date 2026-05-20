@@ -177,6 +177,7 @@ include(cmake/SeedGeneration.cmake)
 # Third-party dependency setup lives in cmake/ThirdParty.cmake.
 # Keep this as include() so helper functions and imported targets remain root-scoped.
 include(cmake/ThirdParty.cmake)
+include(cmake/VendorNgtcp2.cmake)
 
 # V7 PQ façade + bench + round-trip tests. Requires OpenSSL::Crypto
 # (pq_derivation.cpp uses HMAC-SHA256). Works with BOTH system and

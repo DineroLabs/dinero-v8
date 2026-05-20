@@ -31,3 +31,6 @@
 [submodule "third_party/rocksdb"]
 	path = third_party/rocksdb
 	url = https://github.com/facebook/rocksdb.git
+[submodule "third_party/ngtcp2"]
+	path = third_party/ngtcp2
+	url = https://github.com/ngtcp2/ngtcp2.git

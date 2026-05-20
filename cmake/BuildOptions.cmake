@@ -12,6 +12,7 @@ option(ENABLE_HARDWARE_WALLETS "Enable Ledger/Trezor USB HID hardware wallet sup
 option(ENABLE_UTREEXO_INVARIANT_CHECKS "Enable Utreexo Pollard/Stump invariant checks (CI/debug only)" OFF)
 option(DIN_ENABLE_LEGACY_RPC "Enable deprecated legacy RPC server code paths" OFF)
 option(DINERO_ENABLE_PORTMAPPING "Enable optional UPnP/NAT-PMP P2P port mapping support when libraries are available" ON)
+option(DINERO_ENABLE_QUIC "Build vendored ngtcp2 QUIC transport dependency (Phase B2; transport activation remains gated)" OFF)
 
 # Phase E.3 (Dinero Core 1.0) packaged-service build mode.
 # The .deb rules flip this ON to produce the daemon + CLI artifact contract.

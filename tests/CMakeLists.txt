@@ -1810,6 +1810,18 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
 endif()
 
 # ════════════════════════════════════════════════════════════════════════════
+if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2 AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_quic_dependency.cpp)
+  add_executable(test_quic_dependency
+    tests/network/test_quic_dependency.cpp
+  )
+  target_link_libraries(test_quic_dependency PRIVATE dinero_ngtcp2)
+  add_test(NAME QuicDependency COMMAND test_quic_dependency)
+  set_tests_properties(QuicDependency PROPERTIES
+    LABELS "p2p;quic;ngtcp2;transport"
+    TIMEOUT 10
+  )
+endif()
+
 # P2P Hardening Tests (March 2026 Security Audit)
 # ════════════════════════════════════════════════════════════════════════════
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_hardening.cpp)
