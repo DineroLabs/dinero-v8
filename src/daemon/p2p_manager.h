@@ -326,6 +326,24 @@ public:
     // keepalive_loop refreshes the registration every 3600s.
     void set_configured_relay_endpoints(std::vector<std::string> endpoints);
 
+    // NAT traversal Phase D-1: kick off a RELAY_CONNECT toward a target
+    // node_id by way of an existing TCP connection to `relay_peer_address`.
+    //
+    // Returns the request_id (a 64-bit token > 0) on success, 0 if the
+    // relay isn't currently connected. The callback fires exactly once
+    // when RELAY_CONNECT_ACK arrives (ok=true with valid circuit_id, or
+    // ok=false with the relay's error string) OR when kRelayConnectTimeout
+    // elapses with no ack (ok=false, msg="timed out").
+    //
+    // The actual P2P-traffic wrapping over the established circuit is
+    // slice 4c work. After this slice the caller knows whether a circuit
+    // is open + has a circuit_id, but sends/receives are still TODO.
+    uint64_t SendRelayConnect(
+        const std::string& relay_peer_address,
+        const std::array<uint8_t, 20>& target_node_id,
+        std::function<void(bool ok, uint64_t circuit_id,
+                           const std::string& msg)> callback);
+
     void set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port, bool log_change = true);
     bool onion_proxy_enabled() const;
     std::string onion_proxy_endpoint() const;
@@ -458,6 +476,19 @@ public:
     void handle_relay_hints(const std::string& peer_address,
                             const P2PMessage& message);
 
+    // NAT traversal Phase D-1: match an incoming RELAY_CONNECT_ACK
+    // against pending_connects_ and (on Ok) install the circuit_id into
+    // originated_circuits_. Always fires the caller's completion callback
+    // exactly once.
+    void handle_relay_connect_ack(const std::string& peer_address,
+                                  const P2PMessage& message);
+
+    // NAT traversal Phase D-1: timeout sweeper called from keepalive_loop
+    // (existing 30s cadence). Walks pending_connects_, fires the
+    // completion callback with ok=false for any entry older than
+    // kRelayConnectTimeout, then removes it.
+    void SweepRelayConnectTimeouts();
+
     // NAT traversal Phase C3 slice 4a: client-side outbound registration.
     // SendRelayRegisterIfConfigured is called from perform_handshake on
     // the outbound side after dineroid succeeds; checks whether `peer`
@@ -576,6 +607,35 @@ private:
     std::unordered_map<uint64_t, CircuitInfo> circuits_;
     static constexpr size_t kMaxConcurrentCircuits = 25;
     static constexpr std::chrono::seconds kCircuitIdleTimeout{300};  // 5 min
+
+    // NAT traversal Phase D-1: originator-side circuit state.
+    //
+    // pending_connects_ holds in-flight RELAY_CONNECT requests keyed
+    // by request_id. When the RELAY_CONNECT_ACK arrives, we look up
+    // the request_id, fire the caller's completion callback, and (on
+    // success) move the entry into originated_circuits_ keyed by the
+    // newly-assigned circuit_id.
+    //
+    // originated_circuits_ holds circuits we successfully opened.
+    // Slice 4c will consume this table to wrap outbound P2P traffic
+    // for the virtual peer ('relay:<node_id_hex>:<circuit_id_hex>')
+    // as RELAY_DATA before sending to the relay's TCP connection.
+    struct PendingConnect {
+        std::array<uint8_t, 20> target_node_id{};
+        std::string relay_peer_address;
+        std::chrono::steady_clock::time_point sent_at;
+        std::function<void(bool ok, uint64_t circuit_id,
+                           const std::string& msg)> callback;
+    };
+    struct OriginatedCircuit {
+        std::array<uint8_t, 20> target_node_id{};
+        std::string relay_peer_address;
+        std::chrono::steady_clock::time_point opened_at;
+    };
+    mutable std::mutex originator_mutex_;
+    std::unordered_map<uint64_t /*request_id*/, PendingConnect> pending_connects_;
+    std::unordered_map<uint64_t /*circuit_id*/, OriginatedCircuit> originated_circuits_;
+    static constexpr std::chrono::seconds kRelayConnectTimeout{10};
 
     // NAT traversal Phase C3 slice 4b: ingested relay-hints side-table.
     // Keyed on target_node_id_hex (40 chars). Value is a list of relay

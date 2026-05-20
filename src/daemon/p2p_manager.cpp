@@ -979,6 +979,161 @@ void P2PManager::SweepIdleCircuits() {
     }
 }
 
+// NAT traversal Phase D-1: kick off a RELAY_CONNECT request through an
+// existing TCP connection to a relay. The relay must currently be in
+// our connected_peers_ — if it isn't, return 0 and skip the callback
+// (caller's invariant: "you asked us to send on a connection that
+// doesn't exist; nothing to do"). Otherwise: allocate a fresh
+// request_id, register the pending entry + callback, fire the message.
+uint64_t P2PManager::SendRelayConnect(
+    const std::string& relay_peer_address,
+    const std::array<uint8_t, 20>& target_node_id,
+    std::function<void(bool ok, uint64_t circuit_id,
+                       const std::string& msg)> callback) {
+    int relay_fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(relay_peer_address);
+        if (it == connected_peers_.end() || !it->second || !it->second->is_connected) {
+            return 0;
+        }
+        relay_fd = it->second->socket_fd;
+    }
+
+    // Allocate a non-zero request_id. Collisions are astronomically
+    // unlikely with a 64-bit space and at most ~25 in flight, but
+    // a one-retry loop is cheap insurance.
+    uint64_t request_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(originator_mutex_);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            request_id = SecureRandom::GetUInt64();
+            if (request_id == 0) continue;
+            if (pending_connects_.find(request_id) == pending_connects_.end()) break;
+            request_id = 0;
+        }
+        if (request_id != 0) {
+            pending_connects_[request_id] = PendingConnect{
+                target_node_id, relay_peer_address,
+                std::chrono::steady_clock::now(), std::move(callback)};
+        }
+    }
+    if (request_id == 0) {
+        return 0;  // pending table is somehow full of collisions; refuse
+    }
+
+    auto msg = P2PMessage::create_relay_connect(target_node_id, request_id);
+    if (!send_message(relay_fd, msg)) {
+        // Send failed — clean up the pending entry and fire callback.
+        std::function<void(bool, uint64_t, const std::string&)> cb_to_fire;
+        {
+            std::lock_guard<std::mutex> lock(originator_mutex_);
+            auto it = pending_connects_.find(request_id);
+            if (it != pending_connects_.end()) {
+                cb_to_fire = std::move(it->second.callback);
+                pending_connects_.erase(it);
+            }
+        }
+        if (cb_to_fire) cb_to_fire(false, 0, "send to relay failed");
+        return 0;
+    }
+    return request_id;
+}
+
+// NAT traversal Phase D-1: pair an incoming RELAY_CONNECT_ACK with the
+// pending request it answers. Wire format from slice 1:
+//   request_id_8LE | circuit_id_8LE (0 if rejected) | status_1 |
+//   msg_len_1 | msg_chars (msg_len bytes).
+void P2PManager::handle_relay_connect_ack(const std::string& peer_address,
+                                          const P2PMessage& message) {
+    if (message.payload.size() < 18) {
+        // 8 + 8 + 1 + 1 minimum (empty msg)
+        return;
+    }
+    const uint64_t request_id = ReadLE64(message.payload, 0);
+    const uint64_t circuit_id = ReadLE64(message.payload, 8);
+    const uint8_t status_byte = message.payload[16];
+    const uint8_t msg_len = message.payload[17];
+    if (message.payload.size() < static_cast<size_t>(18) + msg_len) {
+        return;
+    }
+    std::string err_msg(message.payload.begin() + 18,
+                        message.payload.begin() + 18 + msg_len);
+
+    PendingConnect pc;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(originator_mutex_);
+        auto it = pending_connects_.find(request_id);
+        if (it != pending_connects_.end()) {
+            // Belt-and-suspenders: the ack MUST come from the relay we
+            // sent the RELAY_CONNECT to. Drop otherwise — defends against
+            // a malicious peer trying to inject acks for other peers'
+            // pending requests.
+            if (it->second.relay_peer_address == peer_address) {
+                pc = std::move(it->second);
+                pending_connects_.erase(it);
+                found = true;
+            }
+        }
+    }
+    if (!found) {
+        // Unknown / wrong-source ack — silently drop. Could log at
+        // debug level but the noise isn't worth it.
+        return;
+    }
+
+    const bool ok = (status_byte == static_cast<uint8_t>(
+                     P2PMessage::RelayConnectStatus::Ok)) && circuit_id != 0;
+    if (ok) {
+        std::lock_guard<std::mutex> lock(originator_mutex_);
+        originated_circuits_[circuit_id] = OriginatedCircuit{
+            pc.target_node_id, pc.relay_peer_address,
+            std::chrono::steady_clock::now()};
+    }
+
+    std::ostringstream id_hex;
+    id_hex << std::hex << std::setfill('0');
+    for (auto b : pc.target_node_id) id_hex << std::setw(2) << static_cast<unsigned int>(b);
+    std::cout << "[P2P] relay-connect-ack: target=" << id_hex.str()
+              << " via " << peer_address
+              << " status=" << static_cast<int>(status_byte)
+              << " circuit=" << std::hex << circuit_id << std::dec
+              << " msg=\"" << err_msg << "\"" << std::endl;
+
+    // Fire the caller's completion callback OUTSIDE the lock (callbacks
+    // may take other locks; we mustn't compose ours).
+    if (pc.callback) {
+        pc.callback(ok, circuit_id, err_msg);
+    }
+}
+
+// NAT traversal Phase D-1: kRelayConnectTimeout sweep — fire failure
+// callbacks for any pending RELAY_CONNECT that hasn't been ack'd. Called
+// from keepalive_loop on its 30s cadence; bounded by pending count.
+void P2PManager::SweepRelayConnectTimeouts() {
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<PendingConnect> timed_out;
+    {
+        std::lock_guard<std::mutex> lock(originator_mutex_);
+        for (auto it = pending_connects_.begin(); it != pending_connects_.end();) {
+            if (now - it->second.sent_at >= kRelayConnectTimeout) {
+                timed_out.push_back(std::move(it->second));
+                it = pending_connects_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& pc : timed_out) {
+        if (pc.callback) {
+            pc.callback(false, 0,
+                        "RELAY_CONNECT timed out after " +
+                            std::to_string(kRelayConnectTimeout.count()) + "s");
+        }
+    }
+}
+
 // NAT traversal Phase C3 slice 4b: advertise our active relay
 // registrations to peers via the RELAY_HINTS message.
 //
@@ -3684,12 +3839,8 @@ void P2PManager::process_message(const std::string& peer_address, const P2PMessa
         // NAT Phase C3 slice 4b: ingest into relay_hints_by_target_.
         handle_relay_hints(peer_address, message);
     } else if (message.command == "relayack") {
-        // Slice 4b dial-via-relay (orchestrator) ingests these to match
-        // outstanding RELAY_CONNECT requests. Until that lands, log+drop.
-        std::cout << "[P2P] relay-protocol message '" << message.command
-                  << "' (" << message.payload.size() << " bytes) from "
-                  << peer_address << " — slice D handler; dropped"
-                  << std::endl;
+        // NAT Phase D-1: match against pending RELAY_CONNECT requests.
+        handle_relay_connect_ack(peer_address, message);
     } else {
         // Forward to application handler
         if (message_handler_) {
@@ -4592,6 +4743,9 @@ void P2PManager::keepalive_loop() {
         // refresh cadence vs 30s wake-up); only fires for is_our_relay
         // peers whose last register is older than the refresh interval.
         RefreshRelayRegistrations();
+        // NAT Phase D-1: time out pending RELAY_CONNECT requests
+        // whose ack hasn't arrived within kRelayConnectTimeout (10s).
+        SweepRelayConnectTimeouts();
 
         // Send PING to all connected peers
         std::vector<std::string> peer_addresses;
