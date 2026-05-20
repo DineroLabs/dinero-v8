@@ -94,6 +94,18 @@ if(DINERO_USE_VENDORED_DEPS)
     )
   endif()
 
+  set(_rocksdb_build_parallel 8)
+  if(MSVC)
+    # RocksDB compiles many translation units into one static library target.
+    # Visual Studio parallel builds otherwise race on rocksdb.pdb and fail with
+    # C1041. /FS asks cl.exe to serialize PDB writes while keeping parallelism.
+    list(APPEND _rocksdb_cmake_args "-DCMAKE_CXX_FLAGS=/FS")
+    # Some MSVC/RocksDB combinations still trip over the shared target PDB even
+    # with /FS. Keep non-Windows fast, but make native Windows release builds
+    # deterministic.
+    set(_rocksdb_build_parallel 1)
+  endif()
+
   ExternalProject_Add(rocksdb_external
     SOURCE_DIR        ${ROCKSDB_SOURCE_DIR}
     BINARY_DIR        ${ROCKSDB_BINARY_DIR}
@@ -101,7 +113,7 @@ if(DINERO_USE_VENDORED_DEPS)
     DOWNLOAD_COMMAND  ""
     UPDATE_COMMAND    ""
     CMAKE_ARGS        ${_rocksdb_cmake_args}
-    BUILD_COMMAND     ${CMAKE_COMMAND} --build <BINARY_DIR> --target rocksdb --config Release --parallel 8
+    BUILD_COMMAND     ${CMAKE_COMMAND} --build <BINARY_DIR> --target rocksdb --config Release --parallel ${_rocksdb_build_parallel}
     INSTALL_COMMAND   ${CMAKE_COMMAND} -E make_directory <INSTALL_DIR>/lib
               COMMAND ${CMAKE_COMMAND} -E make_directory <INSTALL_DIR>/include
               COMMAND ${CMAKE_COMMAND} -E copy ${_rocksdb_built_lib} ${_rocksdb_installed_lib}
