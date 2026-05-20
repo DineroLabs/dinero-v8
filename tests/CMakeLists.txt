@@ -1822,6 +1822,32 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2 AND EXISTS ${CMAKE_SOURCE_DIR}/te
   )
 endif()
 
+if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2 AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_quic_crypto_capability.cpp)
+  add_executable(test_quic_crypto_capability
+    tests/network/test_quic_crypto_capability.cpp
+  )
+  target_link_libraries(test_quic_crypto_capability
+    PRIVATE
+      dinero_ngtcp2
+      OpenSSL::SSL
+      OpenSSL::Crypto
+  )
+  if(TARGET dinero_ngtcp2_crypto_ossl)
+    target_link_libraries(test_quic_crypto_capability PRIVATE dinero_ngtcp2_crypto_ossl)
+    target_compile_definitions(test_quic_crypto_capability PRIVATE DINERO_NGTCP2_CRYPTO_BACKEND_OSSL=1)
+  elseif(TARGET dinero_ngtcp2_crypto_quictls)
+    target_link_libraries(test_quic_crypto_capability PRIVATE dinero_ngtcp2_crypto_quictls)
+    target_compile_definitions(test_quic_crypto_capability PRIVATE DINERO_NGTCP2_CRYPTO_BACKEND_QUICTLS=1)
+  else()
+    target_compile_definitions(test_quic_crypto_capability PRIVATE DINERO_NGTCP2_CRYPTO_BACKEND_NONE=1)
+  endif()
+  add_test(NAME QuicCryptoCapability COMMAND test_quic_crypto_capability)
+  set_tests_properties(QuicCryptoCapability PROPERTIES
+    LABELS "p2p;quic;ngtcp2;transport;crypto"
+    TIMEOUT 10
+  )
+endif()
+
 # P2P Hardening Tests (March 2026 Security Audit)
 # ════════════════════════════════════════════════════════════════════════════
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_hardening.cpp)

@@ -13,6 +13,7 @@ option(ENABLE_UTREEXO_INVARIANT_CHECKS "Enable Utreexo Pollard/Stump invariant c
 option(DIN_ENABLE_LEGACY_RPC "Enable deprecated legacy RPC server code paths" OFF)
 option(DINERO_ENABLE_PORTMAPPING "Enable optional UPnP/NAT-PMP P2P port mapping support when libraries are available" ON)
 option(DINERO_ENABLE_QUIC "Build vendored ngtcp2 QUIC transport dependency (Phase B2; transport activation remains gated)" OFF)
+option(DINERO_ENABLE_QUIC_CRYPTO "Build the ngtcp2 OpenSSL QUIC TLS bridge when the active OpenSSL exposes compatible APIs" ON)
 
 # Phase E.3 (Dinero Core 1.0) packaged-service build mode.
 # The .deb rules flip this ON to produce the daemon + CLI artifact contract.

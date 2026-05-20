@@ -35,6 +35,7 @@ endfunction()
 _dinero_ngtcp2_hex_version(DINERO_NGTCP2_VERSION_NUM 1 22 1)
 
 include(CheckIncludeFile)
+include(CheckCSourceCompiles)
 include(CheckSymbolExists)
 include(CheckTypeSize)
 
@@ -156,4 +157,127 @@ set_target_properties(dinero_ngtcp2 PROPERTIES
   C_VISIBILITY_PRESET hidden
 )
 
-message(STATUS "ngtcp2 QUIC transport dependency: vendored static core enabled (${DINERO_NGTCP2_VERSION})")
+set(DINERO_NGTCP2_CRYPTO_BACKEND "none")
+
+if(DINERO_ENABLE_QUIC_CRYPTO)
+  set(_dinero_ngtcp2_saved_required_includes "${CMAKE_REQUIRED_INCLUDES}")
+  set(_dinero_ngtcp2_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
+  set(CMAKE_REQUIRED_INCLUDES "${OPENSSL_INCLUDE_DIR}")
+  set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
+
+  unset(DINERO_NGTCP2_HAS_OPENSSL_OSSL_BRIDGE CACHE)
+  check_c_source_compiles([=[
+    #include <stdint.h>
+    #include <openssl/ssl.h>
+    #include <openssl/core_dispatch.h>
+    int main(void) {
+      const void *f = (const void *)(uintptr_t)&SSL_set_quic_tls_cbs;
+      unsigned int send_id = OSSL_FUNC_SSL_QUIC_TLS_CRYPTO_SEND;
+      unsigned int level = OSSL_RECORD_PROTECTION_LEVEL_APPLICATION;
+      return f == 0 || send_id == 0 || level == 0;
+    }
+  ]=] DINERO_NGTCP2_HAS_OPENSSL_OSSL_BRIDGE)
+
+  unset(DINERO_NGTCP2_HAS_QUICTLS_BRIDGE CACHE)
+  check_c_source_compiles([=[
+    #include <stdint.h>
+    #include <openssl/ssl.h>
+    int main(void) {
+      const void *method = (const void *)(uintptr_t)&SSL_CTX_set_quic_method;
+      const void *provide = (const void *)(uintptr_t)&SSL_provide_quic_data;
+      const void *set_params = (const void *)(uintptr_t)&SSL_set_quic_transport_params;
+      OSSL_ENCRYPTION_LEVEL level = ssl_encryption_initial;
+      return method == 0 || provide == 0 || set_params == 0 || level < 0;
+    }
+  ]=] DINERO_NGTCP2_HAS_QUICTLS_BRIDGE)
+
+  set(CMAKE_REQUIRED_INCLUDES "${_dinero_ngtcp2_saved_required_includes}")
+  set(CMAKE_REQUIRED_LIBRARIES "${_dinero_ngtcp2_saved_required_libraries}")
+
+  set(DINERO_NGTCP2_CRYPTO_COMMON_SOURCES
+    "${DINERO_NGTCP2_SOURCE_DIR}/crypto/shared.c"
+  )
+  set(DINERO_NGTCP2_CRYPTO_INCLUDES
+    "${DINERO_NGTCP2_LIB_DIR}"
+    "${DINERO_NGTCP2_LIB_DIR}/includes"
+    "${DINERO_NGTCP2_BINARY_DIR}"
+    "${DINERO_NGTCP2_BINARY_DIR}/lib/includes"
+    "${DINERO_NGTCP2_SOURCE_DIR}/crypto"
+    "${DINERO_NGTCP2_SOURCE_DIR}/crypto/includes"
+    "${OPENSSL_INCLUDE_DIR}"
+  )
+
+  if(DINERO_NGTCP2_HAS_OPENSSL_OSSL_BRIDGE)
+    add_library(dinero_ngtcp2_crypto_ossl STATIC
+      "${DINERO_NGTCP2_SOURCE_DIR}/crypto/ossl/ossl.c"
+      ${DINERO_NGTCP2_CRYPTO_COMMON_SOURCES}
+    )
+    target_include_directories(dinero_ngtcp2_crypto_ossl
+      PUBLIC
+        "${DINERO_NGTCP2_SOURCE_DIR}/crypto/includes"
+      PRIVATE
+        ${DINERO_NGTCP2_CRYPTO_INCLUDES}
+    )
+    target_compile_definitions(dinero_ngtcp2_crypto_ossl
+      PUBLIC
+        DINERO_HAVE_NGTCP2_CRYPTO_OSSL=1
+        NGTCP2_STATICLIB
+      PRIVATE
+        BUILDING_NGTCP2
+        HAVE_CONFIG_H
+    )
+    target_link_libraries(dinero_ngtcp2_crypto_ossl
+      PUBLIC
+        dinero_ngtcp2
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    set_target_properties(dinero_ngtcp2_crypto_ossl PROPERTIES
+      C_STANDARD 11
+      C_STANDARD_REQUIRED ON
+      C_VISIBILITY_PRESET hidden
+    )
+    set(DINERO_NGTCP2_CRYPTO_BACKEND "ossl")
+  elseif(DINERO_NGTCP2_HAS_QUICTLS_BRIDGE)
+    add_library(dinero_ngtcp2_crypto_quictls STATIC
+      "${DINERO_NGTCP2_SOURCE_DIR}/crypto/quictls/quictls.c"
+      ${DINERO_NGTCP2_CRYPTO_COMMON_SOURCES}
+    )
+    target_include_directories(dinero_ngtcp2_crypto_quictls
+      PUBLIC
+        "${DINERO_NGTCP2_SOURCE_DIR}/crypto/includes"
+      PRIVATE
+        ${DINERO_NGTCP2_CRYPTO_INCLUDES}
+    )
+    target_compile_definitions(dinero_ngtcp2_crypto_quictls
+      PUBLIC
+        DINERO_HAVE_NGTCP2_CRYPTO_QUICTLS=1
+        NGTCP2_STATICLIB
+      PRIVATE
+        BUILDING_NGTCP2
+        HAVE_CONFIG_H
+    )
+    target_link_libraries(dinero_ngtcp2_crypto_quictls
+      PUBLIC
+        dinero_ngtcp2
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    set_target_properties(dinero_ngtcp2_crypto_quictls PROPERTIES
+      C_STANDARD 11
+      C_STANDARD_REQUIRED ON
+      C_VISIBILITY_PRESET hidden
+    )
+    set(DINERO_NGTCP2_CRYPTO_BACKEND "quictls")
+  else()
+    message(STATUS
+      "ngtcp2 QUIC crypto bridge: unavailable with the active OpenSSL "
+      "(no ngtcp2-compatible OpenSSL/quictls TLS callback API detected)")
+  endif()
+else()
+  message(STATUS "ngtcp2 QUIC crypto bridge: disabled (DINERO_ENABLE_QUIC_CRYPTO=OFF)")
+endif()
+
+message(STATUS
+  "ngtcp2 QUIC transport dependency: vendored static core enabled "
+  "(${DINERO_NGTCP2_VERSION}, crypto=${DINERO_NGTCP2_CRYPTO_BACKEND})")
