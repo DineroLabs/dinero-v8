@@ -553,6 +553,31 @@ TEST(RelayOrchestrator, OrchestratorSendsRelayConnectForReachableHintInDevMode) 
     EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
 }
 
+TEST(RelayOrchestrator, OrchestratorFallsBackFromFreshUnconnectedHint) {
+    P2PManager manager(0);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    InstallNodeIdentity(manager);
+
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    manager.test_install_connected_direct_peer(relay_key, relay.client_fd(),
+                                               true, false, {});
+
+    const auto target = MakeNodeId(0x40);
+    AddRelayHint(manager, target, relay.port());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    AddRelayHint(manager, target, relay.port() + 1);
+
+    manager.OrchestrateRelayDials();
+
+    auto sent = relay.ReceiveMessage();
+    ASSERT_NE(sent, nullptr);
+    EXPECT_EQ(sent->command, "relaycon");
+    ASSERT_EQ(sent->payload.size(), 28u);
+    EXPECT_TRUE(std::equal(target.begin(), target.end(), sent->payload.begin()));
+    EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
+}
+
 TEST(RelayOrchestrator, OrchestratorPlaintextRelayConnectIsMainnetGated) {
     P2PManager manager(0);
     ASSERT_FALSE(manager.test_plaintext_relay_transport_allowed());

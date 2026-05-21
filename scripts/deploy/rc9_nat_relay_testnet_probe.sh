@@ -117,9 +117,13 @@ expect_jq() {
     pass "$label"
 }
 
+rpc_result_filter='def rpcresult:
+  if type == "object" and has("result") then .result else . end;'
+
 expect_relay_localaddress() {
     jq -e --arg host "$RELAY_HOST" --argjson port "$RELAY_PORT" \
-        'any(((.result // .).localaddresses // [])[]?;
+        "${rpc_result_filter}"'
+        any(((rpcresult).localaddresses // [])[]?;
           ((.address // "") == $host) and ((.port // 0) == $port))' \
         >/dev/null <<<"$RELAY_NETINFO" ||
         die "relay advertises configured endpoint"
@@ -154,18 +158,18 @@ ORIGIN_NETINFO="$(rpc_json ORIGIN getnetworkinfo)"
 for role in RELAY TARGET ORIGIN; do
     json_var="${role}_NETINFO"
     expect_jq "$role is on testnet" \
-        '((.result // .).network // "") == "testnet"' \
+        "${rpc_result_filter}"' ((rpcresult).network // "") == "testnet"' \
         "${!json_var}"
 done
 
 expect_jq "relay is listening" \
-    '((.result // .).listen // false) == true' \
+    "${rpc_result_filter}"' ((rpcresult).listen // false) == true' \
     "$RELAY_NETINFO"
 
 expect_relay_localaddress
 
-STUN_MESSAGE="$(jq -r '((.result // .).stun.message // "missing")' <<<"$RELAY_NETINFO")"
-STUN_ADDR="$(jq -r '((.result // .).stun.discovered_address // "")' <<<"$RELAY_NETINFO")"
+STUN_MESSAGE="$(jq -r "${rpc_result_filter}"' (rpcresult).stun.message // "missing"' <<<"$RELAY_NETINFO")"
+STUN_ADDR="$(jq -r "${rpc_result_filter}"' (rpcresult).stun.discovered_address // ""' <<<"$RELAY_NETINFO")"
 info "relay STUN status: message=${STUN_MESSAGE} discovered_address=${STUN_ADDR:-none}"
 
 RELAY_PEERS="$(rpc_json RELAY getpeerinfo)"
@@ -173,16 +177,16 @@ TARGET_PEERS="$(rpc_json TARGET getpeerinfo)"
 ORIGIN_PEERS="$(rpc_json ORIGIN getpeerinfo)"
 
 expect_jq "relay sees at least two peers" \
-    '[((.result // .)[]?)] | length >= 2' \
+    "${rpc_result_filter}"' [(rpcresult[]?)] | length >= 2' \
     "$RELAY_PEERS"
 
 expect_jq "origin has outbound virtual relay peer" \
-    '[((.result // .)[]?) | select((.inbound == false) and
+    "${rpc_result_filter}"' [(rpcresult[]?) | select((.inbound == false) and
       ((.addr // "") | startswith("relay:")))] | length >= 1' \
     "$ORIGIN_PEERS"
 
 expect_jq "target has inbound virtual relay peer" \
-    '[((.result // .)[]?) | select((.inbound == true) and
+    "${rpc_result_filter}"' [(rpcresult[]?) | select((.inbound == true) and
       ((.addr // "") | startswith("relay:in:")))] | length >= 1' \
     "$TARGET_PEERS"
 
