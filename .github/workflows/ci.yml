@@ -106,7 +106,7 @@ jobs:
 
       # ─── build vendored OpenSSL (cached after first run) ───────────────
       - name: Build vendored OpenSSL
-        run: bash scripts/build-openssl-vendored.sh
+        run: OPENSSL_VERSION=3.3.2 bash scripts/build-openssl-vendored.sh
 
       # ─── build depends/ (miniupnpc + libnatpmp) ────────────────────────
       - name: Build depends

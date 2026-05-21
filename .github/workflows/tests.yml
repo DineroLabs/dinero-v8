@@ -85,7 +85,7 @@ jobs:
             vendored-${{ runner.os }}-
 
       - name: Build vendored OpenSSL
-        run: bash scripts/build-openssl-vendored.sh
+        run: OPENSSL_VERSION=3.3.2 bash scripts/build-openssl-vendored.sh
 
       - name: Build depends
         run: |
