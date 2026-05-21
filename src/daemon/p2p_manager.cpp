@@ -1549,14 +1549,18 @@ void P2PManager::OrchestrateRelayDials() {
     // of the orchestrator runs without holding peers_mutex_ / relay_hints_mutex_.
     std::vector<std::pair<std::string /*hex*/, RelayHintRecord>> candidates;
     std::unordered_set<std::string> already_connected_targets_hex;
+    std::unordered_set<std::string> connected_peer_addresses;
     size_t current_outbound = 0;
     const auto now = std::chrono::steady_clock::now();
 
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        for (const auto& [_, peer] : connected_peers_) {
+        for (const auto& [peer_key, peer] : connected_peers_) {
             if (!peer) continue;
             if (peer->is_outbound) current_outbound++;
+            if (peer->is_connected) {
+                connected_peer_addresses.insert(peer_key);
+            }
             if (peer->identity_proven) {
                 std::ostringstream id_oss;
                 id_oss << std::hex << std::setfill('0');
@@ -1584,15 +1588,29 @@ void P2PManager::OrchestrateRelayDials() {
                 now - bo_it->second < kRelayDialBackoff) {
                 continue;
             }
-            // Pick the freshest hint by learned_at.
-            const RelayHintRecord* best = &hints[0];
+            // Pick the freshest currently usable relay hint. A relay can
+            // advertise multiple addresses (for example configured P2P
+            // endpoint plus STUN-discovered endpoint); the orchestrator can
+            // only send RELAY_CONNECT through a relay peer we are already
+            // connected to.
+            const RelayHintRecord* best = nullptr;
             for (const auto& h : hints) {
-                if (h.learned_at > best->learned_at) best = &h;
+                // Only IPv4 hints are dialable today (slice 4b ingest accepts
+                // all four BIP155 types but TORV3/I2P aren't routable yet).
+                if (h.net != dinero::p2p::NetworkType::IPV4 ||
+                    h.relay_addr.size() != 4 || h.relay_port == 0) {
+                    continue;
+                }
+                char relay_buf[24];
+                std::snprintf(relay_buf, sizeof(relay_buf), "%u.%u.%u.%u:%u",
+                              h.relay_addr[0], h.relay_addr[1],
+                              h.relay_addr[2], h.relay_addr[3], h.relay_port);
+                if (connected_peer_addresses.count(relay_buf) == 0) {
+                    continue;
+                }
+                if (!best || h.learned_at > best->learned_at) best = &h;
             }
-            // Only IPv4 hints are dialable today (slice 4b ingest accepts
-            // all four BIP155 types but TORV3/I2P aren't routable yet).
-            if (best->net != dinero::p2p::NetworkType::IPV4 ||
-                best->relay_addr.size() != 4 || best->relay_port == 0) {
+            if (!best) {
                 continue;
             }
             candidates.emplace_back(target_hex, *best);
@@ -2735,7 +2753,11 @@ std::unique_ptr<P2PMessage> P2PManager::receive_peer_message(
     std::vector<uint8_t> frame;
     {
         std::unique_lock<std::mutex> lock(peer->relay_inbox_mutex);
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        // Production virtual peers should idle like TCP peers: no inbound
+        // message right now is not a disconnect. Tests pass explicit short
+        // timeouts when they want a bounded receive.
+        const bool idle_like_socket = (timeout == std::chrono::seconds(10));
+        auto deadline = std::chrono::steady_clock::now() + timeout;
         while (peer->relay_inbox_frames.empty()) {
             if (shutdown_requested_.load(std::memory_order_acquire)) {
                 return nullptr;
@@ -2745,6 +2767,10 @@ std::unique_ptr<P2PMessage> P2PManager::receive_peer_message(
             }
             if (peer->relay_inbox_cv.wait_until(lock, deadline) == std::cv_status::timeout &&
                 peer->relay_inbox_frames.empty()) {
+                if (idle_like_socket) {
+                    deadline = std::chrono::steady_clock::now() + timeout;
+                    continue;
+                }
                 return nullptr;
             }
         }
