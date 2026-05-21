@@ -186,6 +186,18 @@ sync_output_file() {
 
 sync_headers() {
     local dst="${OUTPUT_DIR}/include"
+    if [[ ! -d "${OPENSSL_DIR}/include/openssl" ]]; then
+        # Prebuilt-only checkout (e.g. CI): third_party/openssl-*/* is
+        # gitignored except prebuilt/, so there is no source header tree to
+        # copy from. The committed prebuilt headers under ${dst}/openssl are
+        # already canonical — leave them in place instead of deleting them.
+        if [[ -d "${dst}/openssl" ]]; then
+            return 0
+        fi
+        echo -e "${RED}Error: no OpenSSL source headers (${OPENSSL_DIR}/include/openssl)" >&2
+        echo -e "       and no prebuilt headers (${dst}/openssl)${NC}" >&2
+        exit 1
+    fi
     rm -rf "${dst}"
     mkdir -p "${dst}"
     cp -R "${OPENSSL_DIR}/include/openssl" "${dst}/openssl"
