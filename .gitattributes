@@ -34,3 +34,9 @@ debian/rules text eol=lf
 # kept for explicitness — drop them when the broader rule has bedded in).
 packaging/linux/build-installer.sh text eol=lf
 packaging/mac/build-installer.sh   text eol=lf
+
+# Curated OpenSSL release prebuilts: keep headers portable and archives binary.
+third_party/openssl-*/prebuilt/**/include/** text eol=lf
+third_party/openssl-*/prebuilt/**/*.a binary
+third_party/openssl-*/prebuilt/**/*.lib binary
+third_party/openssl-*/prebuilt/**/.dinero-build-meta text eol=lf

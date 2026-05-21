@@ -40,7 +40,11 @@ $OpenSSLDir = if ($env:OPENSSL_SOURCE_DIR) {
 } else {
     Join-Path $ThirdPartyDir "openssl-$OpenSSLVersion"
 }
-$OutputDir = if ($env:OPENSSL_OUTPUT_DIR) { $env:OPENSSL_OUTPUT_DIR } else { $OpenSSLDir }
+$OutputDir = if ($env:OPENSSL_OUTPUT_DIR) {
+    $env:OPENSSL_OUTPUT_DIR
+} else {
+    Join-Path $OpenSSLDir 'prebuilt\windows-x86_64-msvc'
+}
 $MetadataFile = Join-Path $OutputDir '.dinero-build-meta'
 $Rebuild     = $env:OPENSSL_REBUILD -eq '1'
 $KnownOpenSSLSourceSha256 = @{
@@ -57,6 +61,16 @@ function Write-Header($msg) {
 function Fail($msg) {
     Write-Host "ERROR: $msg" -ForegroundColor Red
     exit 1
+}
+
+function Sync-OpenSSLHeaders {
+    $dst = Join-Path $OutputDir 'include'
+    if (Test-Path $dst) {
+        Remove-Item -LiteralPath $dst -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $dst -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $OpenSSLDir 'include\openssl') -Destination (Join-Path $dst 'openssl') -Recurse -Force
+    Get-ChildItem -LiteralPath (Join-Path $dst 'openssl') -Recurse -Filter '*.in' | Remove-Item -Force
 }
 
 function Ensure-OpenSSLSource {
@@ -303,6 +317,7 @@ try {
         $crypto = Get-Item (Join-Path $OutputDir 'libcrypto.lib')
         $ssl = Get-Item (Join-Path $OutputDir 'libssl.lib')
     }
+    Sync-OpenSSLHeaders
 
     Write-Host ''
     Write-Host 'Libraries created:' -ForegroundColor Green
@@ -320,7 +335,6 @@ try {
 OS=Windows
 ARCH=AMD64
 OPENSSL_VERSION=$OpenSSLVersion
-SOURCE_DIR=$OpenSSLDir
 BUILT_AT_UTC=$now
 "@
     Set-Content -Path $MetadataFile -Value $meta -Encoding ASCII -NoNewline:$false

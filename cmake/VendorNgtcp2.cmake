@@ -218,7 +218,7 @@ if(DINERO_ENABLE_QUIC_CRYPTO)
 
     list(REMOVE_ITEM _dinero_ngtcp2_target_includes
       "${CMAKE_SOURCE_DIR}/vendor/include"
-      "${CMAKE_SOURCE_DIR}/third_party/openssl-3.3.2/include"
+      "${CMAKE_SOURCE_DIR}/third_party/openssl-${DINERO_VENDORED_OPENSSL_VERSION}/include"
       "${OPENSSL_INCLUDE_DIR}"
     )
     set_target_properties(${target} PROPERTIES

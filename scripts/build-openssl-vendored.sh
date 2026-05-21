@@ -168,6 +168,8 @@ default_output_dir() {
 
     if [[ "$OS" == "Darwin" ]]; then
         printf '%s/prebuilt/macos-%s\n' "$OPENSSL_DIR" "$ARCH"
+    elif [[ "$OS" == "Linux" ]]; then
+        printf '%s/prebuilt/linux-%s\n' "$OPENSSL_DIR" "$ARCH"
     else
         printf '%s\n' "$OPENSSL_DIR"
     fi
@@ -180,6 +182,14 @@ sync_output_file() {
     mkdir -p "$(dirname "${dst}")"
     cp "${src}" "${tmp}"
     mv "${tmp}" "${dst}"
+}
+
+sync_headers() {
+    local dst="${OUTPUT_DIR}/include"
+    rm -rf "${dst}"
+    mkdir -p "${dst}"
+    cp -R "${OPENSSL_DIR}/include/openssl" "${dst}/openssl"
+    find "${dst}/openssl" -name '*.in' -delete
 }
 
 if [[ "$OS" == "Darwin" ]]; then
@@ -272,12 +282,14 @@ if [ -f "$OUTPUT_DIR/libcrypto.a" ] && [ -f "$OUTPUT_DIR/libssl.a" ]; then
         echo -e "${YELLOW}OPENSSL_REBUILD=1 set, rebuilding without prompt${NC}"
     else
         if [[ ! -t 0 ]]; then
+            sync_headers
             echo -e "${GREEN}Using existing OpenSSL libraries${NC}"
             exit 0
         fi
         read -p "Rebuild anyway? (y/N): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            sync_headers
             echo -e "${GREEN}Using existing OpenSSL libraries${NC}"
             exit 0
         fi
@@ -362,7 +374,6 @@ SSL_SIZE=$(du -h libssl.a | cut -f1)
     echo "OS=${OS}"
     echo "ARCH=${ARCH}"
     echo "OPENSSL_VERSION=${OPENSSL_VERSION}"
-    echo "SOURCE_DIR=${OPENSSL_DIR}"
     if [[ "$OS" == "Darwin" ]]; then
         echo "MACOSX_DEPLOYMENT_TARGET=${OPENSSL_MACOS_DEPLOYMENT_TARGET}"
     fi
@@ -374,6 +385,7 @@ if [[ "$OUTPUT_DIR" != "$OPENSSL_DIR" ]]; then
     sync_output_file "libcrypto.a" "${OUTPUT_DIR}/libcrypto.a"
     sync_output_file "libssl.a" "${OUTPUT_DIR}/libssl.a"
 fi
+sync_headers
 
 echo -e "${GREEN}OpenSSL built successfully!${NC}"
 echo ""
