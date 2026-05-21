@@ -1461,27 +1461,6 @@ void P2PManager::handle_relay_connect_ack(const std::string& peer_address,
                 pc.target_node_id, pc.relay_peer_address,
                 std::chrono::steady_clock::now()};
         }
-
-        auto virtual_peer = std::make_shared<PeerInfo>();
-        const std::string virtual_peer_key =
-            RelayVirtualPeerAddress(pc.target_node_id, circuit_id);
-        virtual_peer->address = virtual_peer_key;
-        virtual_peer->port = 0;
-        virtual_peer->is_outbound = true;
-        virtual_peer->is_connected = false;
-        virtual_peer->socket_fd = -1;
-        virtual_peer->connected_since = std::chrono::system_clock::now();
-        virtual_peer->last_message_at = virtual_peer->connected_since;
-        virtual_peer->last_seen = virtual_peer->connected_since;
-        virtual_peer->via_relay = PeerInfo::ViaRelayInfo{
-            circuit_id,
-            pc.relay_peer_address,
-            static_cast<uint8_t>(P2PMessage::RelayDirection::ClientToTarget)};
-        {
-            std::lock_guard<std::mutex> lock(peers_mutex_);
-            connected_peers_[virtual_peer_key] = virtual_peer;
-        }
-        start_peer_handler_thread(std::move(virtual_peer));
     }
 
     std::ostringstream id_hex;
@@ -2633,6 +2612,56 @@ void P2PManager::set_encrypted_relay_dev_override_for_tests(bool allowed) {
 
 bool P2PManager::test_plaintext_relay_transport_allowed() const {
     return plaintext_relay_transport_allowed();
+}
+
+void P2PManager::test_install_connected_direct_peer(
+    const std::string& peer_address,
+    int socket_fd,
+    bool is_outbound,
+    bool identity_proven,
+    const std::array<uint8_t, 20>& node_id) {
+    auto peer = std::make_shared<PeerInfo>();
+    peer->address = peer_address;
+    peer->port = 0;
+    peer->user_agent = user_agent_;
+    peer->is_outbound = is_outbound;
+    peer->is_connected = true;
+    peer->socket_fd = socket_fd;
+    peer->connected_since = std::chrono::system_clock::now();
+    peer->last_message_at = peer->connected_since;
+    peer->last_seen = peer->connected_since;
+    peer->lifetime_state.store(PeerLifetimeState::RUNNING);
+    peer->identity_proven = identity_proven;
+    peer->their_node_id = node_id;
+
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        connected_peers_[peer_address] = std::move(peer);
+    }
+}
+
+void P2PManager::test_insert_pending_relay_connect(
+    uint64_t request_id,
+    const std::array<uint8_t, 20>& target_node_id,
+    const std::string& relay_peer_address,
+    std::function<void(bool ok, uint64_t circuit_id,
+                       const std::string& msg)> callback) {
+    std::lock_guard<std::mutex> lock(originator_mutex_);
+    pending_connects_[request_id] = PendingConnect{
+        target_node_id,
+        relay_peer_address,
+        std::chrono::steady_clock::now(),
+        std::move(callback)};
+}
+
+size_t P2PManager::test_pending_relay_connect_count() const {
+    std::lock_guard<std::mutex> lock(originator_mutex_);
+    return pending_connects_.size();
+}
+
+size_t P2PManager::test_originated_circuit_count() const {
+    std::lock_guard<std::mutex> lock(originator_mutex_);
+    return originated_circuits_.size();
 }
 
 std::string P2PManager::test_install_virtual_relay_peer(

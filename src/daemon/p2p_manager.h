@@ -365,9 +365,10 @@ public:
     // ok=false with the relay's error string) OR when kRelayConnectTimeout
     // elapses with no ack (ok=false, msg="timed out").
     //
-    // The actual P2P-traffic wrapping over the established circuit is
-    // slice 4c work. After this slice the caller knows whether a circuit
-    // is open + has a circuit_id, but sends/receives are still TODO.
+    // The completion callback owns any virtual-peer creation. On success
+    // this API records the opened circuit_id, then reports it to the
+    // orchestrator so the normal P2P handshake can run through the relay
+    // transport helpers.
     uint64_t SendRelayConnect(
         const std::string& relay_peer_address,
         const std::array<uint8_t, 20>& target_node_id,
@@ -570,6 +571,20 @@ public:
     void set_plaintext_relay_dev_override_for_tests(bool allowed);
     void set_encrypted_relay_dev_override_for_tests(bool allowed);
     bool test_plaintext_relay_transport_allowed() const;
+    void test_install_connected_direct_peer(
+        const std::string& peer_address,
+        int socket_fd,
+        bool is_outbound,
+        bool identity_proven,
+        const std::array<uint8_t, 20>& node_id);
+    void test_insert_pending_relay_connect(
+        uint64_t request_id,
+        const std::array<uint8_t, 20>& target_node_id,
+        const std::string& relay_peer_address,
+        std::function<void(bool ok, uint64_t circuit_id,
+                           const std::string& msg)> callback);
+    size_t test_pending_relay_connect_count() const;
+    size_t test_originated_circuit_count() const;
     std::string test_install_virtual_relay_peer(
         const std::string& virtual_peer_key,
         const std::string& relay_peer_address,
@@ -708,9 +723,10 @@ private:
     // newly-assigned circuit_id.
     //
     // originated_circuits_ holds circuits we successfully opened.
-    // Slice 4c will consume this table to wrap outbound P2P traffic
-    // for the virtual peer ('relay:<node_id_hex>:<circuit_id_hex>')
-    // as RELAY_DATA before sending to the relay's TCP connection.
+    // D-2/virtual-peer routing consumes this table to unwrap inbound
+    // RELAY_DATA for circuits we opened. Outbound wrapping happens through
+    // the synthetic peer ('relay:<node_id_hex>:<circuit_id_hex>') and the
+    // normal send_to_peer() path.
     struct PendingConnect {
         std::array<uint8_t, 20> target_node_id{};
         std::string relay_peer_address;

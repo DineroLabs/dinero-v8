@@ -1,4 +1,19 @@
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+#endif
+
 #include "p2p_manager.h"
+#include "daemon/node_identity.h"
 #include "network/quic_session.h"
 #include "network/quic_transport.h"
 
@@ -7,7 +22,11 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstring>
 #include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -97,6 +116,208 @@ std::vector<uint8_t> FrameForQuicStream(const P2PMessage& msg) {
     }
     out.insert(out.end(), payload.begin(), payload.end());
     return out;
+}
+
+uint64_t ReadLE64ForTest(const std::vector<uint8_t>& data, size_t offset) {
+    uint64_t value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        value |= static_cast<uint64_t>(data[offset + i]) << (i * 8);
+    }
+    return value;
+}
+
+std::array<uint8_t, 20> MakeNodeId(uint8_t base) {
+    std::array<uint8_t, 20> out{};
+    for (size_t i = 0; i < out.size(); ++i) {
+        out[i] = static_cast<uint8_t>(base + i);
+    }
+    return out;
+}
+
+void CloseTestSocket(int fd) {
+    if (fd < 0) {
+        return;
+    }
+#ifdef _WIN32
+    closesocket(static_cast<SOCKET>(fd));
+#else
+    close(fd);
+#endif
+}
+
+void SetReceiveTimeout(int fd, int milliseconds) {
+#ifdef _WIN32
+    DWORD timeout = static_cast<DWORD>(milliseconds);
+    setsockopt(static_cast<SOCKET>(fd), SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+    timeval timeout{};
+    timeout.tv_sec = milliseconds / 1000;
+    timeout.tv_usec = (milliseconds % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#endif
+}
+
+class LoopbackSocketPair {
+public:
+    static LoopbackSocketPair Create() {
+        LoopbackSocketPair pair;
+        pair.listener_ = static_cast<int>(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        if (pair.listener_ < 0) {
+            throw std::runtime_error("socket(listener) failed");
+        }
+
+        int opt = 1;
+        setsockopt(pair.listener_, SOL_SOCKET, SO_REUSEADDR,
+                   reinterpret_cast<const char*>(&opt), sizeof(opt));
+
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(0);
+        if (bind(pair.listener_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+            throw std::runtime_error("bind(listener) failed");
+        }
+        if (listen(pair.listener_, 1) != 0) {
+            throw std::runtime_error("listen(listener) failed");
+        }
+
+        socklen_t addr_len = sizeof(addr);
+        if (getsockname(pair.listener_, reinterpret_cast<sockaddr*>(&addr), &addr_len) != 0) {
+            throw std::runtime_error("getsockname(listener) failed");
+        }
+        pair.port_ = ntohs(addr.sin_port);
+
+        pair.client_ = static_cast<int>(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        if (pair.client_ < 0) {
+            throw std::runtime_error("socket(client) failed");
+        }
+        if (connect(pair.client_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+            throw std::runtime_error("connect(client) failed");
+        }
+
+        pair.server_ = static_cast<int>(accept(pair.listener_, nullptr, nullptr));
+        if (pair.server_ < 0) {
+            throw std::runtime_error("accept(listener) failed");
+        }
+        CloseTestSocket(pair.listener_);
+        pair.listener_ = -1;
+        SetReceiveTimeout(pair.server_, 100);
+        return pair;
+    }
+
+    LoopbackSocketPair(const LoopbackSocketPair&) = delete;
+    LoopbackSocketPair& operator=(const LoopbackSocketPair&) = delete;
+
+    LoopbackSocketPair(LoopbackSocketPair&& other) noexcept
+        : listener_(other.listener_),
+          client_(other.client_),
+          server_(other.server_),
+          port_(other.port_) {
+        other.listener_ = -1;
+        other.client_ = -1;
+        other.server_ = -1;
+        other.port_ = 0;
+    }
+
+    LoopbackSocketPair& operator=(LoopbackSocketPair&& other) noexcept {
+        if (this != &other) {
+            Close();
+            listener_ = other.listener_;
+            client_ = other.client_;
+            server_ = other.server_;
+            port_ = other.port_;
+            other.listener_ = -1;
+            other.client_ = -1;
+            other.server_ = -1;
+            other.port_ = 0;
+        }
+        return *this;
+    }
+
+    ~LoopbackSocketPair() {
+        Close();
+    }
+
+    int client_fd() const { return client_; }
+    uint16_t port() const { return port_; }
+
+    std::unique_ptr<P2PMessage> ReceiveMessage() {
+        std::vector<uint8_t> header(24);
+        if (!RecvExact(header.data(), header.size())) {
+            return nullptr;
+        }
+        uint32_t payload_len = 0;
+        for (int i = 0; i < 4; ++i) {
+            payload_len |= static_cast<uint32_t>(header[16 + i]) << (i * 8);
+        }
+        std::vector<uint8_t> frame = header;
+        frame.resize(24 + payload_len);
+        if (payload_len > 0 && !RecvExact(frame.data() + 24, payload_len)) {
+            return nullptr;
+        }
+        return P2PMessage::deserialize(frame);
+    }
+
+private:
+    LoopbackSocketPair() = default;
+
+    bool RecvExact(uint8_t* dst, size_t len) {
+        size_t got = 0;
+        while (got < len) {
+            const int n = recv(server_,
+                               reinterpret_cast<char*>(dst + got),
+                               static_cast<int>(len - got),
+                               0);
+            if (n <= 0) {
+                return false;
+            }
+            got += static_cast<size_t>(n);
+        }
+        return true;
+    }
+
+    void Close() {
+        CloseTestSocket(server_);
+        CloseTestSocket(client_);
+        CloseTestSocket(listener_);
+        server_ = -1;
+        client_ = -1;
+        listener_ = -1;
+    }
+
+    int listener_{-1};
+    int client_{-1};
+    int server_{-1};
+    uint16_t port_{0};
+};
+
+std::shared_ptr<dinero::daemon::NodeIdentity> InstallNodeIdentity(P2PManager& manager) {
+    const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("dinero-relay-orchestrator-" + std::to_string(suffix));
+    std::filesystem::create_directories(dir);
+
+    auto identity = std::make_shared<dinero::daemon::NodeIdentity>();
+    if (!identity->initialize(dir.string())) {
+        std::filesystem::remove_all(dir);
+        throw std::runtime_error("failed to initialize test node identity");
+    }
+    manager.set_node_identity(identity);
+    std::filesystem::remove_all(dir);
+    return identity;
+}
+
+void AddRelayHint(P2PManager& manager,
+                  const std::array<uint8_t, 20>& target,
+                  uint16_t relay_port) {
+    P2PMessage::RelayHint hint;
+    hint.target_node_id = target;
+    hint.relay_net = dinero::p2p::NetworkType::IPV4;
+    hint.relay_addr = {127, 0, 0, 1};
+    hint.relay_port = relay_port;
+    manager.handle_relay_hints("hint-source", P2PMessage::create_relay_hints({hint}));
 }
 
 }  // namespace
@@ -284,6 +505,106 @@ TEST(RelayOrchestrator, OrchestratorSkipsTargetsAlreadyHavingProvenPeer) {
     // identity, no work happens. This is a smoke test that the method
     // exits cleanly rather than tripping any of its internal asserts.
     SUCCEED();
+}
+
+TEST(RelayOrchestrator, OrchestratorSkipsProvenPeerWhenRelayHintExists) {
+    P2PManager manager(0);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    InstallNodeIdentity(manager);
+
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    manager.test_install_connected_direct_peer(relay_key, relay.client_fd(),
+                                               true, false, {});
+
+    const auto target = MakeNodeId(0x10);
+    manager.test_install_connected_direct_peer("203.0.113.9:20999", -1,
+                                               true, true, target);
+    AddRelayHint(manager, target, relay.port());
+
+    manager.OrchestrateRelayDials();
+
+    EXPECT_EQ(manager.test_pending_relay_connect_count(), 0u);
+    EXPECT_EQ(relay.ReceiveMessage(), nullptr);
+}
+
+TEST(RelayOrchestrator, OrchestratorSendsRelayConnectForReachableHintInDevMode) {
+    P2PManager manager(0);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    InstallNodeIdentity(manager);
+
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    manager.test_install_connected_direct_peer(relay_key, relay.client_fd(),
+                                               true, false, {});
+
+    const auto target = MakeNodeId(0x30);
+    AddRelayHint(manager, target, relay.port());
+
+    ASSERT_EQ(manager.test_pending_relay_connect_count(), 0u);
+    manager.OrchestrateRelayDials();
+
+    auto sent = relay.ReceiveMessage();
+    ASSERT_NE(sent, nullptr);
+    EXPECT_EQ(sent->command, "relaycon");
+    ASSERT_EQ(sent->payload.size(), 28u);
+    EXPECT_TRUE(std::equal(target.begin(), target.end(), sent->payload.begin()));
+    EXPECT_NE(ReadLE64ForTest(sent->payload, 20), 0u);
+    EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
+}
+
+TEST(RelayOrchestrator, OrchestratorPlaintextRelayConnectIsMainnetGated) {
+    P2PManager manager(0);
+    ASSERT_FALSE(manager.test_plaintext_relay_transport_allowed());
+    InstallNodeIdentity(manager);
+
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    manager.test_install_connected_direct_peer(relay_key, relay.client_fd(),
+                                               true, false, {});
+
+    const auto target = MakeNodeId(0x50);
+    AddRelayHint(manager, target, relay.port());
+
+    manager.OrchestrateRelayDials();
+
+    EXPECT_EQ(manager.test_pending_relay_connect_count(), 0u);
+    EXPECT_EQ(relay.ReceiveMessage(), nullptr);
+}
+
+TEST(RelayOrchestrator, RelayConnectAckLeavesVirtualPeerCreationToCallback) {
+    P2PManager manager(0);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    const auto target = MakeNodeId(0x70);
+    constexpr uint64_t request_id = 0x8877665544332211ULL;
+    constexpr uint64_t circuit_id = 0x1020304050607080ULL;
+
+    bool callback_called = false;
+    bool virtual_peer_existed_before_callback = false;
+    manager.test_insert_pending_relay_connect(
+        request_id,
+        target,
+        kRelayPeer,
+        [&](bool ok, uint64_t callback_circuit_id, const std::string&) {
+            callback_called = true;
+            EXPECT_TRUE(ok);
+            EXPECT_EQ(callback_circuit_id, circuit_id);
+            virtual_peer_existed_before_callback =
+                manager.get_peer_info(manager.RelayVirtualPeerAddress(target, circuit_id)) != nullptr;
+        });
+
+    const auto ack = P2PMessage::create_relay_connect_ack(
+        request_id,
+        circuit_id,
+        P2PMessage::RelayConnectStatus::Ok,
+        "ok");
+    manager.handle_relay_connect_ack(kRelayPeer, ack);
+
+    EXPECT_TRUE(callback_called);
+    EXPECT_FALSE(virtual_peer_existed_before_callback);
+    EXPECT_EQ(manager.test_originated_circuit_count(), 1u);
+    EXPECT_EQ(manager.get_peer_info(manager.RelayVirtualPeerAddress(target, circuit_id)),
+              nullptr);
 }
 
 int main(int argc, char** argv) {
