@@ -4943,6 +4943,9 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_registry.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
     src/p2p/addrman.cpp
   )
   target_include_directories(test_codebase_verification PRIVATE
@@ -4962,6 +4965,17 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     gtest
   )
   link_zstd_if_needed(test_codebase_verification)
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_codebase_verification PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_codebase_verification PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_codebase_verification PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+  if(WIN32)
+    target_link_libraries(test_codebase_verification PRIVATE ws2_32)
+  endif()
   if(APPLE)
     target_link_libraries(test_codebase_verification PRIVATE
       "-framework IOKit"
@@ -5121,6 +5135,9 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_registry.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
     src/p2p/addrman.cpp
     src/daemon/wallet_crypto.cpp
     src/daemon/secure_random.cpp
@@ -5138,6 +5155,17 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     gtest
   )
   link_zstd_if_needed(test_mining_comprehensive)
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_mining_comprehensive PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_mining_comprehensive PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_mining_comprehensive PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+  if(WIN32)
+    target_link_libraries(test_mining_comprehensive PRIVATE ws2_32)
+  endif()
   target_include_directories(test_mining_comprehensive PRIVATE
     ${CMAKE_SOURCE_DIR}/tests
     ${CMAKE_SOURCE_DIR}/src
@@ -5456,6 +5484,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp  # For P2PMessage::create_inv() and P2PManager
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
+    src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
+    src/network/quic_transport.cpp # Required by encrypted relay readiness checks in P2PManager
+    src/network/udp_socket.cpp     # Required by QuicTransport
     src/daemon/node_identity.cpp # Required by dineroid handshake methods in P2PManager
     src/p2p/addr_v2.cpp          # Required by addrv2 methods in P2PManager
     src/p2p/addrman.cpp
@@ -5478,6 +5509,17 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     OpenSSL::Crypto
   )
   link_zstd_if_needed(test_mining_smoke)
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_mining_smoke PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_mining_smoke PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_mining_smoke PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+  if(WIN32)
+    target_link_libraries(test_mining_smoke PRIVATE ws2_32)
+  endif()
   if(APPLE)
     target_link_libraries(test_mining_smoke PRIVATE
       "-framework IOKit"
@@ -7716,6 +7758,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_registry.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
     src/daemon/node_identity.cpp
     src/p2p/addr_v2.cpp
     src/daemon/secure_random.cpp
@@ -7738,6 +7783,17 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     gtest
   )
   link_zstd_if_needed(test_p2p_handshake)
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_p2p_handshake PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_p2p_handshake PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_p2p_handshake PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+  if(WIN32)
+    target_link_libraries(test_p2p_handshake PRIVATE ws2_32)
+  endif()
   target_include_directories(test_p2p_handshake PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
@@ -7761,6 +7817,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_registry.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
     src/daemon/node_identity.cpp
     src/p2p/addr_v2.cpp
     src/daemon/secure_random.cpp
@@ -7783,6 +7842,17 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     gtest
   )
   link_zstd_if_needed(test_p2p_ping_pong)
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_p2p_ping_pong PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_p2p_ping_pong PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_p2p_ping_pong PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+  if(WIN32)
+    target_link_libraries(test_p2p_ping_pong PRIVATE ws2_32)
+  endif()
   target_include_directories(test_p2p_ping_pong PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
