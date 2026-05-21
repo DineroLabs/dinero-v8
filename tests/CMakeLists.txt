@@ -1714,6 +1714,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
     tests/p2p/test_p2p_manager_ts1_integration.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
+    src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
+    src/network/quic_transport.cpp # Required by encrypted relay readiness checks in P2PManager
+    src/network/udp_socket.cpp     # Required by QuicTransport
     src/daemon/node_identity.cpp   # Required by dineroid handshake methods in P2PManager
     src/p2p/addr_v2.cpp            # Required by addrv2 methods in P2PManager
     src/p2p/addrman.cpp
@@ -1740,6 +1743,19 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
       secp256k1
       OpenSSL::Crypto
     )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_p2p_manager_ts1_integration PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_p2p_manager_ts1_integration PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_p2p_manager_ts1_integration PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  if(WIN32)
+    target_link_libraries(test_p2p_manager_ts1_integration PRIVATE ws2_32)
   endif()
 
   target_include_directories(test_p2p_manager_ts1_integration PRIVATE
