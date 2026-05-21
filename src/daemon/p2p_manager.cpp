@@ -862,6 +862,8 @@ void P2PManager::handle_relay_register(const std::string& peer_address,
     reg.peer_address = peer_address;
     reg.expires_at = std::chrono::steady_clock::now() +
                      std::chrono::seconds(effective_ttl);
+    const bool was_registered =
+        relay_registry_.Lookup(claimed_node_id).has_value();
     const bool inserted = relay_registry_.Register(reg);
     if (!inserted) {
         std::cout << "[P2P] relayreg: refused from " << peer_address
@@ -878,7 +880,13 @@ void P2PManager::handle_relay_register(const std::string& peer_address,
               << "s (registry size now " << relay_registry_.size() << ")"
               << std::endl;
 
-    AdvertiseRegisteredRelayTarget(claimed_node_id, peer_address);
+    // Advertise only a genuinely new registration. A refresh of a
+    // still-valid entry was already advertised when it first landed;
+    // peers that connected since are caught up by SendRelayRegistryToNewPeer
+    // on their handshake instead of by re-broadcasting every refresh.
+    if (!was_registered) {
+        AdvertiseRegisteredRelayTarget(claimed_node_id, peer_address);
+    }
 }
 
 // NAT traversal Phase C3 slice 3: handle a RELAY_CONNECT request from
@@ -1738,6 +1746,66 @@ bool ParseIPv4HostPort(const std::string& hostport,
     *out_port = static_cast<uint16_t>(port_int);
     return true;
 }
+
+// Classify an IP-literal host string into its BIP155 network type and
+// raw address bytes. Handles IPv4 and IPv6 literals (with or without
+// surrounding brackets); returns false for hostnames and onion/i2p names.
+bool ClassifyHostLiteral(const std::string& host,
+                         dinero::p2p::NetworkType* out_net,
+                         std::vector<uint8_t>* out_addr) {
+    std::string h = host;
+    if (h.size() >= 2 && h.front() == '[' && h.back() == ']') {
+        h = h.substr(1, h.size() - 2);
+    }
+    struct in_addr v4 {};
+    if (inet_pton(AF_INET, h.c_str(), &v4) == 1) {
+        const auto* b = reinterpret_cast<const uint8_t*>(&v4);
+        out_addr->assign(b, b + 4);
+        *out_net = dinero::p2p::NetworkType::IPV4;
+        return true;
+    }
+    struct in6_addr v6 {};
+    if (inet_pton(AF_INET6, h.c_str(), &v6) == 1) {
+        const auto* b = reinterpret_cast<const uint8_t*>(&v6);
+        out_addr->assign(b, b + 16);
+        *out_net = dinero::p2p::NetworkType::IPV6;
+        return true;
+    }
+    return false;
+}
+
+// Split an endpoint string into host + port. Handles bracketed IPv6
+// ([::1]:8333 or [::1]), IPv4 (1.2.3.4:8333 or bare), and bare IPv6
+// (::1 — no port). port is set to 0 when no valid port is present.
+void SplitHostPort(const std::string& s, std::string* host, uint16_t* port) {
+    *host = s;
+    *port = 0;
+    if (s.empty()) return;
+    if (s.front() == '[') {
+        const auto rb = s.find(']');
+        if (rb == std::string::npos) return;  // malformed
+        *host = s.substr(1, rb - 1);
+        if (rb + 2 < s.size() && s[rb + 1] == ':') {
+            int p = 0;
+            if (std::sscanf(s.c_str() + rb + 2, "%d", &p) == 1 &&
+                p > 0 && p <= 65535) {
+                *port = static_cast<uint16_t>(p);
+            }
+        }
+        return;
+    }
+    const auto first = s.find(':');
+    if (first != std::string::npos && first == s.rfind(':')) {
+        // Exactly one colon — host:port.
+        *host = s.substr(0, first);
+        int p = 0;
+        if (std::sscanf(s.c_str() + first + 1, "%d", &p) == 1 &&
+            p > 0 && p <= 65535) {
+            *port = static_cast<uint16_t>(p);
+        }
+    }
+    // 0 colons (bare IPv4/hostname) or >=2 (bare IPv6): host = whole string.
+}
 }  // namespace
 
 void P2PManager::SendRelayHintsIfApplicable(PeerInfo* peer, uint64_t our_services) {
@@ -1783,16 +1851,13 @@ void P2PManager::SendRelayHintsIfApplicable(PeerInfo* peer, uint64_t our_service
               << peer->to_string() << std::endl;
 }
 
-void P2PManager::AdvertiseRegisteredRelayTarget(
-    const std::array<uint8_t, 20>& target_node_id,
-    const std::string& registrant_peer_address) {
-    std::vector<std::string> endpoint_strings;
+std::vector<P2PMessage::RelayHint>
+P2PManager::CollectLocalRelayEndpointHints() {
+    // Collect (host, port) endpoints we can be reached at as a relay.
+    std::vector<std::pair<std::string, uint16_t>> endpoints;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        endpoint_strings.reserve(advertised_addresses_.size());
-        for (const auto& [host, port] : advertised_addresses_) {
-            endpoint_strings.push_back(host + ":" + std::to_string(port));
-        }
+        endpoints = advertised_addresses_;
     }
 
     // In regtest-only netns harnesses the relay endpoint is intentionally a
@@ -1801,28 +1866,42 @@ void P2PManager::AdvertiseRegisteredRelayTarget(
     const auto& params = dinero::Params();
     const bool regtest =
         params.name == "regtest" || params.network_id == "regtest";
-    if (endpoint_strings.empty() && regtest && !external_ip_.empty()) {
-        std::string endpoint = external_ip_;
-        if (endpoint.rfind(':') == std::string::npos) {
-            endpoint += ":" + std::to_string(listen_port_);
-        }
-        endpoint_strings.push_back(std::move(endpoint));
+    if (endpoints.empty() && regtest && !external_ip_.empty()) {
+        std::string host;
+        uint16_t port = 0;
+        SplitHostPort(external_ip_, &host, &port);
+        if (port == 0) port = listen_port_;
+        endpoints.emplace_back(std::move(host), port);
     }
 
+    // Build BIP155-typed hint address fields. IPv4 and IPv6 literals are
+    // both emitted; hostnames and onion/i2p hosts are skipped —
+    // advertised_addresses_ only ever carries routable IP literals.
+    // target_node_id is left unset for the caller to fill in.
     std::vector<P2PMessage::RelayHint> hints;
-    hints.reserve(endpoint_strings.size());
-    for (const auto& endpoint : endpoint_strings) {
-        std::array<uint8_t, 4> ip{};
-        uint16_t port = 0;
-        if (!ParseIPv4HostPort(endpoint, &ip, &port)) {
+    hints.reserve(endpoints.size());
+    for (const auto& [host, port] : endpoints) {
+        if (port == 0) continue;
+        dinero::p2p::NetworkType net = dinero::p2p::NetworkType::Unknown;
+        std::vector<uint8_t> addr;
+        if (!ClassifyHostLiteral(host, &net, &addr)) {
             continue;
         }
         P2PMessage::RelayHint hint;
-        hint.target_node_id = target_node_id;
-        hint.relay_net = dinero::p2p::NetworkType::IPV4;
-        hint.relay_addr.assign(ip.begin(), ip.end());
+        hint.relay_net = net;
+        hint.relay_addr = std::move(addr);
         hint.relay_port = port;
         hints.push_back(std::move(hint));
+    }
+    return hints;
+}
+
+void P2PManager::AdvertiseRegisteredRelayTarget(
+    const std::array<uint8_t, 20>& target_node_id,
+    const std::string& registrant_peer_address) {
+    std::vector<P2PMessage::RelayHint> hints = CollectLocalRelayEndpointHints();
+    for (auto& hint : hints) {
+        hint.target_node_id = target_node_id;
     }
     if (hints.empty()) {
         std::cout << "[P2P] relay-hints: no usable local relay endpoint to "
@@ -1854,6 +1933,37 @@ void P2PManager::AdvertiseRegisteredRelayTarget(
         std::cout << "[P2P] relay-hints: advertised registered target "
                   << NodeIdHex(target_node_id) << " to " << sent
                   << " peer(s)" << std::endl;
+    }
+}
+
+void P2PManager::SendRelayRegistryToNewPeer(PeerInfo* peer) {
+    if (!peer) return;
+    if (!(peer->service_flags & ServiceFlags::NODE_DINERO_V2)) return;
+
+    // Not a relay, or nothing registered with us yet — nothing to catch up.
+    const auto registrations = relay_registry_.SnapshotValid();
+    if (registrations.empty()) return;
+
+    const std::vector<P2PMessage::RelayHint> endpoints =
+        CollectLocalRelayEndpointHints();
+    if (endpoints.empty()) return;  // no routable relay endpoint of our own
+
+    std::vector<P2PMessage::RelayHint> hints;
+    hints.reserve(registrations.size() * endpoints.size());
+    for (const auto& reg : registrations) {
+        for (const auto& endpoint : endpoints) {
+            P2PMessage::RelayHint hint = endpoint;
+            hint.target_node_id = reg.node_id;
+            hints.push_back(std::move(hint));
+        }
+    }
+    if (hints.empty()) return;
+
+    auto msg = P2PMessage::create_relay_hints(hints);
+    if (send_peer_message(peer, msg)) {
+        std::cout << "[P2P] relay-hints: sent registry catch-up ("
+                  << registrations.size() << " target(s)) to "
+                  << peer->to_string() << std::endl;
     }
 }
 
@@ -4140,6 +4250,10 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // peer, but this helper walks ALL is_our_relay peers (prior connections)
         // and tells THIS peer (the not-our-relay one) about them.
         SendRelayHintsIfApplicable(peer, our_services);
+        // On-connect catch-up: tell this peer about every target currently
+        // registered with us, so it can dial them even though it joined
+        // after they registered (dedup means refreshes won't re-broadcast).
+        SendRelayRegistryToNewPeer(peer);
 
     } else {
         // Wait for version message
@@ -4198,6 +4312,10 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // our existing relay registrations (same call as on the outbound
         // path). is_our_relay peers won't get hints — see the helper.
         SendRelayHintsIfApplicable(peer, our_services);
+        // On-connect catch-up: tell this peer about every target currently
+        // registered with us, so it can dial them even though it joined
+        // after they registered (dedup means refreshes won't re-broadcast).
+        SendRelayRegistryToNewPeer(peer);
     }
 
     P2PMessage sendcmpct_msg;

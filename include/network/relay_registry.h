@@ -34,6 +34,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace dinero::network {
 
@@ -65,6 +66,11 @@ public:
     // entries; the sweep is opportunistic at Lookup time.
     std::optional<RelayRegistration> Lookup(
         const std::array<uint8_t, 20>& node_id) const;
+
+    // Snapshot of every currently-valid (non-expired) registration.
+    // Used to catch up a freshly-connected peer with the relay targets
+    // it can dial, without waiting for the next registration refresh.
+    std::vector<RelayRegistration> SnapshotValid() const;
 
     // Connection-closed hook: drop every entry whose peer_address
     // matches `peer_address`. Multiple node_ids registered through

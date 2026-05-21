@@ -201,6 +201,27 @@ wait_relay_peerinfo() {
     fail "${label}: expected at least one matching relay peer"
 }
 
+# Wait until no peer whose addr contains addr_substr remains — used to
+# confirm a disconnect fully settled before reconnecting.
+wait_peer_gone() {
+    local ns="$1"
+    local rpc_port="$2"
+    local datadir="$3"
+    local addr_substr="$4"
+    local label="$5"
+    local json count
+    for _ in $(seq 1 90); do
+        json="$(rpc_call "${ns}" "${rpc_port}" "${datadir}" "getpeerinfo" '[]' 2>/dev/null || true)"
+        count="$(jq -r "[.result[]? | select((.addr // \"\") | contains(\"${addr_substr}\"))] | length" <<<"${json}" 2>/dev/null || printf -- '1')"
+        if [[ "${count}" =~ ^[0-9]+$ && "${count}" -eq 0 ]]; then
+            pass "${label}"
+            return 0
+        fi
+        sleep 1
+    done
+    fail "${label}: peer '${addr_substr}' still present"
+}
+
 wait_log() {
     local logfile="$1"
     local pattern="$2"
@@ -390,5 +411,20 @@ wait_relay_peerinfo "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" \
 wait_relay_peerinfo "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
     '[.result[]? | select((.inbound == true) and ((.addr // "") | startswith("relay:in:")))] | length' \
     "target getpeerinfo reports inbound virtual relay peer"
+
+# ── on-connect registry catch-up ────────────────────────────────────
+# A peer that connects to the relay AFTER a target registered must be
+# caught up with the existing registry: per-registration advertisement
+# is deduped and refreshes are an hour apart. Drop the origin's direct
+# relay link and reconnect — the relay must replay its registry to the
+# fresh connection.
+rpc_call "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" \
+    "disconnectnode" "[\"${RELAY_IP}:${RELAY_P2P}\"]" >/dev/null 2>&1 || true
+wait_peer_gone "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" \
+    "${RELAY_IP}:${RELAY_P2P}" "origin dropped its direct relay link"
+rpc_call "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" \
+    "addnode" "[\"${RELAY_IP}:${RELAY_P2P}\",\"onetry\"]" >/dev/null
+wait_log "${LOG_RELAY}" "[P2P] relay-hints: sent registry catch-up" \
+    "relay replayed its registry to the reconnecting origin"
 
 echo "RELAY_NAT_NETNS_DIAL_THROUGH=PASS"

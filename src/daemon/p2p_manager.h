@@ -509,6 +509,15 @@ public:
     void AdvertiseRegisteredRelayTarget(
         const std::array<uint8_t, 20>& target_node_id,
         const std::string& registrant_peer_address);
+    // Address fields (relay_net/relay_addr/relay_port) for every routable
+    // relay endpoint this node can be reached at; target_node_id is left
+    // unset for the caller to fill. Shared by AdvertiseRegisteredRelayTarget
+    // and SendRelayRegistryToNewPeer.
+    std::vector<P2PMessage::RelayHint> CollectLocalRelayEndpointHints();
+    // On-connect catch-up: push relay_hints for every currently-registered
+    // target to a freshly-connected NODE_DINERO_V2 peer, so an origin that
+    // joins after a target registered still learns how to reach it.
+    void SendRelayRegistryToNewPeer(PeerInfo* peer);
 
     // NAT traversal Phase D-1: match an incoming RELAY_CONNECT_ACK
     // against pending_connects_ and (on Ok) install the circuit_id into
