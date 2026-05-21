@@ -12,7 +12,7 @@ inline constexpr std::string_view kRegtestNetworkName = "regtest";
 
 inline constexpr std::string_view kMainnetGenesisHash = dinero::chain_bundle::GENESIS_BLOCK_HASH;
 inline constexpr std::string_view kTestnetGenesisHash =
-    "4b2550cca66ef44cc63f690f8ccba331234d59693f0c0d79cd9c6a71caeb7c41";
+    "600c229a4335e865267624395c7fafd32453057dfbd5bbb6bc2987bf6c297d38";
 inline constexpr std::string_view kRegtestGenesisHash = dinero::chain_bundle::GENESIS_BLOCK_HASH;
 
 inline constexpr std::string_view kGenesisMotto = dinero::chain_bundle::GENESIS_MOTTO;

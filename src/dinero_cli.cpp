@@ -32,6 +32,7 @@
 // Default configuration
 static const char* DEFAULT_RPC_HOST = "127.0.0.1";
 static const uint16_t DEFAULT_RPC_PORT = 20998;
+static const uint16_t REGTEST_RPC_PORT = 20996;
 
 // Get default data directory
 std::string get_default_datadir() {
@@ -40,6 +41,13 @@ std::string get_default_datadir() {
         return ".dinero";
     }
     return std::string(home) + "/.dinero";
+}
+
+std::string join_path(const std::string& base, const std::string& child) {
+    if (base.empty()) return child;
+    if (child.empty()) return base;
+    if (base.back() == '/') return base + child;
+    return base + "/" + child;
 }
 
 // Parse command line arguments
@@ -53,6 +61,7 @@ struct CliConfig {
     std::vector<std::string> params;
     bool use_cookie_auth = true;
     bool json_output = false;  // --json flag (currently scoped to `health`)
+    bool datadir_explicit = false;
 };
 
 void print_usage() {
@@ -61,6 +70,8 @@ void print_usage() {
     std::cout << "Usage: dinero-cli [options] <method> [params...]\n\n";
     std::cout << "Options:\n";
     std::cout << "  -datadir=<dir>        Data directory (default: ~/.dinero)\n";
+    std::cout << "  -testnet              Use ~/.dinero/testnet unless -datadir is set\n";
+    std::cout << "  -regtest              Use ~/.dinero/regtest and RPC port 20996 unless overridden\n";
     std::cout << "  -rpcport=<port>       RPC server port (default: 20998)\n";
     std::cout << "  -rpchost=<host>       RPC server host (default: 127.0.0.1)\n";
     std::cout << "  -rpcuser=<user>       RPC username (overrides cookie auth)\n";
@@ -192,6 +203,9 @@ bool parse_args(int argc, char* argv[], CliConfig& config) {
         return false;
     }
 
+    std::optional<std::string> network;
+    bool rpcport_explicit = false;
+
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
 
@@ -210,16 +224,22 @@ bool parse_args(int argc, char* argv[], CliConfig& config) {
 
         if (arg.rfind("-rpcport=", 0) == 0) {
             config.port = std::stoi(arg.substr(9));
+            rpcport_explicit = true;
         } else if (arg.rfind("-rpchost=", 0) == 0) {
             config.host = arg.substr(9);
         } else if (arg.rfind("-datadir=", 0) == 0) {
             config.datadir = arg.substr(9);
+            config.datadir_explicit = true;
         } else if (arg.rfind("-rpcuser=", 0) == 0) {
             config.username = arg.substr(9);
             config.use_cookie_auth = false;
         } else if (arg.rfind("-rpcpassword=", 0) == 0) {
             config.password = arg.substr(13);
             config.use_cookie_auth = false;
+        } else if (arg == "-testnet" || arg == "--testnet") {
+            network = "testnet";
+        } else if (arg == "-regtest" || arg == "--regtest") {
+            network = "regtest";
         } else if (arg[0] == '-') {
             std::cerr << "Unknown option: " << arg << std::endl;
             return false;
@@ -227,6 +247,13 @@ bool parse_args(int argc, char* argv[], CliConfig& config) {
             // First non-option argument is the command
             config.command = arg;
         }
+    }
+
+    if (network.has_value() && !config.datadir_explicit) {
+        config.datadir = join_path(get_default_datadir(), *network);
+    }
+    if (network == "regtest" && !rpcport_explicit) {
+        config.port = REGTEST_RPC_PORT;
     }
 
     return !config.command.empty();

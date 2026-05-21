@@ -8,7 +8,7 @@
 namespace dinero::solo {
 
 inline constexpr std::string_view kMainnetGenesisHash = "0000001c36abf27e2c233ff40ed0c08888926c24450f3bff82a047ae1528b76f";
-inline constexpr std::string_view kTestnetGenesisHash = "4b2550cca66ef44cc63f690f8ccba331234d59693f0c0d79cd9c6a71caeb7c41";
+inline constexpr std::string_view kTestnetGenesisHash = "600c229a4335e865267624395c7fafd32453057dfbd5bbb6bc2987bf6c297d38";
 inline constexpr std::string_view kRegtestGenesisHash = "0000001c36abf27e2c233ff40ed0c08888926c24450f3bff82a047ae1528b76f";
 
 inline constexpr std::string_view NormalizeNetworkName(std::string_view raw) {

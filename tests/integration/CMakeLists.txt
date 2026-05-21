@@ -411,6 +411,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_chain_identity_sync.sh)
     message(STATUS "  ✓ ChainIdentitySync registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_testnet_cold_start_genesis.sh)
+    add_test(
+        NAME TestnetColdStartGenesis
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_testnet_cold_start_genesis.sh
+    )
+    set_tests_properties(TestnetColdStartGenesis PROPERTIES
+        LABELS "chain-identity-smoke;consensus;chain-identity;testnet"
+        TIMEOUT 120
+    )
+    message(STATUS "  ✓ TestnetColdStartGenesis registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_p2pservice_network_control.sh)
     add_test(
         NAME P2PServiceNetworkControl

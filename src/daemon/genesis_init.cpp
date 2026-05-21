@@ -221,11 +221,12 @@ bool InitializeGenesis(ChainDB* chain_db, BlockStorage* block_storage, UTXOIndex
         std::cerr << "ℹ️  Regtest: Using computed genesis hash (not validated)" << std::endl;
         std::cerr << "   Genesis hash: " << genesis_hash.GetHex() << std::endl;
     } else {
-        // Testnet: Log warning but allow
         if (genesis_hash.GetHex() != params.genesis.genesisHashHex) {
-            std::cerr << "⚠️  WARNING: " << params.name << " genesis hash mismatch" << std::endl;
+            std::cerr << "❌ FATAL: " << params.name << " genesis hash mismatch!" << std::endl;
             std::cerr << "Expected: " << params.genesis.genesisHashHex << std::endl;
             std::cerr << "Got:      " << genesis_hash.GetHex() << std::endl;
+            std::cerr << "This chain's compiled genesis identity is internally inconsistent." << std::endl;
+            return false;
         }
     }
 
