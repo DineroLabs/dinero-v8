@@ -8,7 +8,7 @@
 #include "network/quic_transport.h"    // Mainnet relay safety gate for encrypted QUIC transport
 #include "network/types.h"          // Canonical P2P service flag assignments
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: dineroid signing
-#include "crypto/dinero_crypto_minimal.h"  // HASH160 3-arg form for node_id derivation
+#include "dinero/core/crypto/dinero_crypto_minimal.h"  // HASH160 3-arg form for node_id derivation
 #include <iomanip>                     // std::setw / std::setfill for node_id hex log
 #include <iostream>
 #include <fstream>
@@ -2854,7 +2854,7 @@ void P2PManager::ExchangeDineroId(PeerInfo* peer) {
 
     // Success — derive node_id = HASH160(pubkey) and persist on the peer.
     std::copy(pubkey, pubkey + 33, peer->their_pubkey.begin());
-    HASH160(pubkey, 33, peer->their_node_id.data());
+    ::HASH160(pubkey, 33, peer->their_node_id.data());
     peer->identity_proven = true;
 
     std::ostringstream id_hex;

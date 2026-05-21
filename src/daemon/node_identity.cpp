@@ -1,5 +1,5 @@
 #include "daemon/node_identity.h"
-#include "crypto/dinero_crypto_minimal.h"
+#include "dinero/core/crypto/dinero_crypto_minimal.h"
 #include "daemon/crypto_utils.h"
 #include "common/logger.h"
 #include <fstream>
@@ -43,13 +43,13 @@ std::string NodeIdentity::sign_message(const std::string& message) const {
 
     // Hash the message with SHA256
     uint8_t msg_hash[32];
-    sha256(reinterpret_cast<const uint8_t*>(message.data()), message.size(), msg_hash);
+    ::sha256(reinterpret_cast<const uint8_t*>(message.data()), message.size(), msg_hash);
 
     // Sign the hash
     unsigned char signature[72];  // Max DER signature size
     size_t sig_len = 72;
 
-    if (!CF_SignDER(private_key_.data(), msg_hash, signature, sig_len, 72)) {
+    if (!::CF_SignDER(private_key_.data(), msg_hash, signature, sig_len, 72)) {
         dinero::g_logger.error("[NodeIdentity] Failed to sign message");
         return "";
     }
@@ -71,7 +71,7 @@ std::string NodeIdentity::get_node_id() const {
 
     // Node ID = HASH160(pubkey) for privacy
     uint8_t hash[20];
-    HASH160(public_key_.data(), 33, hash);
+    ::HASH160(public_key_.data(), 33, hash);
     return bytes_to_hex(hash, 20);
 }
 
@@ -101,10 +101,10 @@ bool NodeIdentity::verify_signature(
 
     // Hash the message
     uint8_t msg_hash[32];
-    sha256(reinterpret_cast<const uint8_t*>(message.data()), message.size(), msg_hash);
+    ::sha256(reinterpret_cast<const uint8_t*>(message.data()), message.size(), msg_hash);
 
     // Verify signature
-    return CF_VerifyDER(pubkey_bytes.data(), msg_hash, signature_bytes.data(), signature_bytes.size());
+    return ::CF_VerifyDER(pubkey_bytes.data(), msg_hash, signature_bytes.data(), signature_bytes.size());
 }
 
 std::vector<uint8_t> NodeIdentity::sign_bytes(const uint8_t* msg, size_t msg_len) const {
@@ -112,11 +112,11 @@ std::vector<uint8_t> NodeIdentity::sign_bytes(const uint8_t* msg, size_t msg_len
         return {};
     }
     uint8_t msg_hash[32];
-    sha256(msg, msg_len, msg_hash);
+    ::sha256(msg, msg_len, msg_hash);
 
     unsigned char signature[72];
     size_t sig_len = 72;
-    if (!CF_SignDER(private_key_.data(), msg_hash, signature, sig_len, 72)) {
+    if (!::CF_SignDER(private_key_.data(), msg_hash, signature, sig_len, 72)) {
         return {};
     }
     return std::vector<uint8_t>(signature, signature + sig_len);
@@ -129,14 +129,14 @@ bool NodeIdentity::verify_bytes(const uint8_t* msg, size_t msg_len,
         return false;
     }
     uint8_t msg_hash[32];
-    sha256(msg, msg_len, msg_hash);
-    return CF_VerifyDER(pubkey_33, msg_hash, sig, sig_len);
+    ::sha256(msg, msg_len, msg_hash);
+    return ::CF_VerifyDER(pubkey_33, msg_hash, sig, sig_len);
 }
 
 std::array<uint8_t, 20> NodeIdentity::get_node_id_bytes() const {
     std::array<uint8_t, 20> id{};
     if (initialized_) {
-        HASH160(public_key_.data(), 33, id.data());
+        ::HASH160(public_key_.data(), 33, id.data());
     }
     return id;
 }
@@ -154,7 +154,7 @@ bool NodeIdentity::load_identity(const std::string& filepath) {
     }
 
     // Derive public key from private key
-    if (!CF_GetCompressedPubkey(private_key_.data(), public_key_.data())) {
+    if (!::CF_GetCompressedPubkey(private_key_.data(), public_key_.data())) {
         dinero::g_logger.error("[NodeIdentity] Failed to derive public key from loaded private key");
         return false;
     }
@@ -164,13 +164,13 @@ bool NodeIdentity::load_identity(const std::string& filepath) {
 
 bool NodeIdentity::generate_and_save_identity(const std::string& filepath) {
     // Generate new private key
-    if (!CF_GeneratePrivKey(private_key_.data())) {
+    if (!::CF_GeneratePrivKey(private_key_.data())) {
         dinero::g_logger.error("[NodeIdentity] Failed to generate private key");
         return false;
     }
 
     // Derive public key
-    if (!CF_GetCompressedPubkey(private_key_.data(), public_key_.data())) {
+    if (!::CF_GetCompressedPubkey(private_key_.data(), public_key_.data())) {
         dinero::g_logger.error("[NodeIdentity] Failed to derive public key");
         return false;
     }
