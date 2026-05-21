@@ -218,6 +218,29 @@ dinero-cli -testnet -rpcport=<target-rpc-port> getpeerinfo \
 
 Both counts must be at least `1`.
 
+The read-only probe script runs the same checks once all three nodes are up:
+
+```bash
+RELAY_CLI_ARGS="-testnet -rpcport=<relay-rpc-port>" \
+TARGET_CLI_ARGS="-testnet -rpcport=<target-rpc-port>" \
+ORIGIN_CLI_ARGS="-testnet -rpcport=<origin-rpc-port>" \
+RELAY_ENDPOINT="<relay-public-host-or-ip>:<relay-p2p-port>" \
+  scripts/deploy/rc9_nat_relay_testnet_probe.sh
+```
+
+Log checks are optional but recommended for the final gate decision:
+
+```bash
+RELAY_LOG=/var/lib/dinero-testnet-relay/debug.log \
+TARGET_LOG=/var/lib/dinero-testnet-target/debug.log \
+ORIGIN_LOG=/var/lib/dinero-testnet-origin/debug.log \
+RELAY_CLI_ARGS="-testnet -rpcport=<relay-rpc-port>" \
+TARGET_CLI_ARGS="-testnet -rpcport=<target-rpc-port>" \
+ORIGIN_CLI_ARGS="-testnet -rpcport=<origin-rpc-port>" \
+RELAY_ENDPOINT="<relay-public-host-or-ip>:<relay-p2p-port>" \
+  scripts/deploy/rc9_nat_relay_testnet_probe.sh
+```
+
 ## Catch-Up Regression Check
 
 This check specifically protects the PR #106 review fix: late or reconnecting
