@@ -15,8 +15,23 @@ file_glob='*.{h,hpp,c,cc,cpp,cxx}'
 
 echo "[check_no_legacy_mempool_prod] scanning production paths..."
 
-legacy_type_hits="$(rg -n --glob "$file_glob" 'mempool::Mempool' "${TARGET_PATHS[@]}" || true)"
-legacy_include_hits="$(rg -n --glob "$file_glob" '"mempool/mempool.h"' "${TARGET_PATHS[@]}" || true)"
+if command -v rg >/dev/null 2>&1 && rg --version >/dev/null 2>&1; then
+  legacy_type_hits="$(rg -n --glob "$file_glob" 'mempool::Mempool' "${TARGET_PATHS[@]}" || true)"
+  legacy_include_hits="$(rg -n --glob "$file_glob" '"mempool/mempool.h"' "${TARGET_PATHS[@]}" || true)"
+else
+  legacy_type_hits="$(
+    grep -RIn \
+      --include='*.h' --include='*.hpp' --include='*.c' --include='*.cc' \
+      --include='*.cpp' --include='*.cxx' \
+      -F 'mempool::Mempool' "${TARGET_PATHS[@]}" || true
+  )"
+  legacy_include_hits="$(
+    grep -RIn \
+      --include='*.h' --include='*.hpp' --include='*.c' --include='*.cc' \
+      --include='*.cpp' --include='*.cxx' \
+      -F '"mempool/mempool.h"' "${TARGET_PATHS[@]}" || true
+  )"
+fi
 
 if [[ -n "$legacy_type_hits" || -n "$legacy_include_hits" ]]; then
   echo "[check_no_legacy_mempool_prod] FAIL: legacy mempool references found in production paths"
