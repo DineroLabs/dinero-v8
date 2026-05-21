@@ -506,6 +506,9 @@ public:
     void SendRelayHintsIfApplicable(PeerInfo* peer, uint64_t our_services);
     void handle_relay_hints(const std::string& peer_address,
                             const P2PMessage& message);
+    void AdvertiseRegisteredRelayTarget(
+        const std::array<uint8_t, 20>& target_node_id,
+        const std::string& registrant_peer_address);
 
     // NAT traversal Phase D-1: match an incoming RELAY_CONNECT_ACK
     // against pending_connects_ and (on Ok) install the circuit_id into

@@ -877,6 +877,8 @@ void P2PManager::handle_relay_register(const std::string& peer_address,
               << peer_address << " for " << effective_ttl
               << "s (registry size now " << relay_registry_.size() << ")"
               << std::endl;
+
+    AdvertiseRegisteredRelayTarget(claimed_node_id, peer_address);
 }
 
 // NAT traversal Phase C3 slice 3: handle a RELAY_CONNECT request from
@@ -1779,6 +1781,80 @@ void P2PManager::SendRelayHintsIfApplicable(PeerInfo* peer, uint64_t our_service
     }
     std::cout << "[P2P] relay-hints: sent " << hints.size() << " hint(s) to "
               << peer->to_string() << std::endl;
+}
+
+void P2PManager::AdvertiseRegisteredRelayTarget(
+    const std::array<uint8_t, 20>& target_node_id,
+    const std::string& registrant_peer_address) {
+    std::vector<std::string> endpoint_strings;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        endpoint_strings.reserve(advertised_addresses_.size());
+        for (const auto& [host, port] : advertised_addresses_) {
+            endpoint_strings.push_back(host + ":" + std::to_string(port));
+        }
+    }
+
+    // In regtest-only netns harnesses the relay endpoint is intentionally a
+    // private namespace address. add_advertised_address() correctly rejects it
+    // as non-routable, so fall back to the configured externalip only there.
+    const auto& params = dinero::Params();
+    const bool regtest =
+        params.name == "regtest" || params.network_id == "regtest";
+    if (endpoint_strings.empty() && regtest && !external_ip_.empty()) {
+        std::string endpoint = external_ip_;
+        if (endpoint.rfind(':') == std::string::npos) {
+            endpoint += ":" + std::to_string(listen_port_);
+        }
+        endpoint_strings.push_back(std::move(endpoint));
+    }
+
+    std::vector<P2PMessage::RelayHint> hints;
+    hints.reserve(endpoint_strings.size());
+    for (const auto& endpoint : endpoint_strings) {
+        std::array<uint8_t, 4> ip{};
+        uint16_t port = 0;
+        if (!ParseIPv4HostPort(endpoint, &ip, &port)) {
+            continue;
+        }
+        P2PMessage::RelayHint hint;
+        hint.target_node_id = target_node_id;
+        hint.relay_net = dinero::p2p::NetworkType::IPV4;
+        hint.relay_addr.assign(ip.begin(), ip.end());
+        hint.relay_port = port;
+        hints.push_back(std::move(hint));
+    }
+    if (hints.empty()) {
+        std::cout << "[P2P] relay-hints: no usable local relay endpoint to "
+                  << "advertise for registered target "
+                  << NodeIdHex(target_node_id) << std::endl;
+        return;
+    }
+
+    std::vector<std::shared_ptr<PeerInfo>> recipients;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [key, peer] : connected_peers_) {
+            if (!peer || !peer->is_connected) continue;
+            if (key == registrant_peer_address) continue;
+            if (!(peer->service_flags & ServiceFlags::NODE_DINERO_V2)) continue;
+            recipients.push_back(peer);
+        }
+    }
+    if (recipients.empty()) return;
+
+    auto msg = P2PMessage::create_relay_hints(hints);
+    size_t sent = 0;
+    for (const auto& recipient : recipients) {
+        if (send_peer_message(recipient.get(), msg)) {
+            sent++;
+        }
+    }
+    if (sent > 0) {
+        std::cout << "[P2P] relay-hints: advertised registered target "
+                  << NodeIdHex(target_node_id) << " to " << sent
+                  << " peer(s)" << std::endl;
+    }
 }
 
 void P2PManager::handle_relay_hints(const std::string& peer_address,

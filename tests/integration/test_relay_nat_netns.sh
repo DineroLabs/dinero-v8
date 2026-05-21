@@ -182,6 +182,25 @@ wait_connection_count() {
     fail "${label}: expected at least ${min_count} connection(s)"
 }
 
+wait_relay_peerinfo() {
+    local ns="$1"
+    local rpc_port="$2"
+    local datadir="$3"
+    local jq_filter="$4"
+    local label="$5"
+    local json count
+    for _ in $(seq 1 90); do
+        json="$(rpc_call "${ns}" "${rpc_port}" "${datadir}" "getpeerinfo" '[]' 2>/dev/null || true)"
+        count="$(jq -r "${jq_filter}" <<<"${json}" 2>/dev/null || printf -- '0')"
+        if [[ "${count}" =~ ^[0-9]+$ && "${count}" -ge 1 ]]; then
+            pass "${label}: ${count} matching peer(s)"
+            return 0
+        fi
+        sleep 1
+    done
+    fail "${label}: expected at least one matching relay peer"
+}
+
 wait_log() {
     local logfile="$1"
     local pattern="$2"
@@ -309,7 +328,8 @@ if tcp_probe "${NS_ORIGIN}" "${TARGET_NAT_WAN_IP}" "${TARGET_P2P}"; then
 fi
 pass "Hostile NAT blocks unsolicited origin-to-target TCP"
 
-PIDS+=("$(start_node "${NS_RELAY}" "${DATA_RELAY}" "${RELAY_RPC}" "${RELAY_P2P}" "${LOG_RELAY}")")
+PIDS+=("$(start_node "${NS_RELAY}" "${DATA_RELAY}" "${RELAY_RPC}" "${RELAY_P2P}" "${LOG_RELAY}" \
+    "--externalip=${RELAY_IP}:${RELAY_P2P}")")
 PIDS+=("$(start_node "${NS_ORIGIN}" "${DATA_ORIGIN}" "${ORIGIN_RPC}" "${ORIGIN_P2P}" "${LOG_ORIGIN}")")
 PIDS+=("$(start_node "${NS_TARGET}" "${DATA_TARGET}" "${TARGET_RPC}" "${TARGET_P2P}" "${LOG_TARGET}" \
     "--relayregister=${RELAY_IP}:${RELAY_P2P}")")
@@ -337,11 +357,13 @@ pass "Both NATed nodes can open outbound TCP to the relay"
 
 rpc_call "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" \
     "addnode" "[\"${RELAY_IP}:${RELAY_P2P}\",\"onetry\"]" >/dev/null
-rpc_call "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
-    "addnode" "[\"${RELAY_IP}:${RELAY_P2P}\",\"onetry\"]" >/dev/null
-
 wait_connection_count "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" 1 \
     "origin connected outbound to relay"
+wait_connection_count "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" 1 \
+    "relay accepted origin before target registration"
+
+rpc_call "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
+    "addnode" "[\"${RELAY_IP}:${RELAY_P2P}\",\"onetry\"]" >/dev/null
 wait_connection_count "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" 1 \
     "target connected outbound to relay"
 wait_connection_count "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" 2 \
@@ -351,6 +373,22 @@ wait_log "${LOG_TARGET}" "[P2P] relay-register: sent to ${RELAY_IP}:${RELAY_P2P}
     "target sent RELAY_REGISTER to configured relay"
 wait_log "${LOG_RELAY}" "[P2P] relayreg: registered" \
     "relay accepted target registration"
+wait_log "${LOG_RELAY}" "[P2P] relay-hints: advertised registered target" \
+    "relay advertised target reachability hint to origin"
+wait_log "${LOG_ORIGIN}" "[P2P] relay-hints: ingested" \
+    "origin ingested relay hint for target"
+wait_log "${LOG_RELAY}" "[P2P] relaycon: opened circuit" \
+    "relay opened origin-to-target circuit"
+wait_log "${LOG_ORIGIN}" "[P2P] relay-orchestrator: opened circuit" \
+    "origin installed outbound virtual relay peer"
+wait_log "${LOG_TARGET}" "[P2P] relay-data: created inbound virtual peer" \
+    "target observed inbound virtual relay peer"
 
-echo "RELAY_NAT_NETNS=PASS"
-echo "NOTE: relay circuit dialing still needs a daemon RPC/orchestrator hook before this harness can assert full dial-through."
+wait_relay_peerinfo "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" \
+    '[.result[]? | select((.inbound == false) and ((.addr // "") | startswith("relay:")))] | length' \
+    "origin getpeerinfo reports outbound virtual relay peer"
+wait_relay_peerinfo "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
+    '[.result[]? | select((.inbound == true) and ((.addr // "") | startswith("relay:in:")))] | length' \
+    "target getpeerinfo reports inbound virtual relay peer"
+
+echo "RELAY_NAT_NETNS_DIAL_THROUGH=PASS"
