@@ -52,7 +52,8 @@ public:
     // callers and tests instead of letting dependency presence imply readiness.
     static bool MainnetRelayReady();
 
-    bool Start(const Options& options = Options{});
+    bool Start();
+    bool Start(const Options& options);
     void Stop();
 
     bool SendDatagram(const UdpAddr& destination, const std::vector<uint8_t>& payload);

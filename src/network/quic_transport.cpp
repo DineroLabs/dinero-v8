@@ -101,6 +101,10 @@ bool QuicTransport::MainnetRelayReady() {
     return false;
 }
 
+bool QuicTransport::Start() {
+    return Start(Options{});
+}
+
 bool QuicTransport::Start(const Options& options) {
     if (udp_.active()) {
         SetLastError("QUIC transport is already active");
