@@ -40,12 +40,12 @@ echo -e "${BLUE}--------------------------------------------------------${NC}"
 # already present. OPENSSL_SOURCE_DIR remains strict: if callers pass it, they
 # are responsible for making it exist.
 ensure_openssl_source() {
-    if [[ -d "$OPENSSL_DIR" ]]; then
+    if [[ -f "$OPENSSL_DIR/Configure" ]]; then
         return
     fi
 
     if [[ -n "${OPENSSL_SOURCE_DIR:-}" ]]; then
-        echo -e "${RED}Error: OPENSSL_SOURCE_DIR was provided but does not exist: $OPENSSL_DIR${NC}"
+        echo -e "${RED}Error: OPENSSL_SOURCE_DIR was provided but does not contain OpenSSL source: $OPENSSL_DIR${NC}"
         exit 1
     fi
 
