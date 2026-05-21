@@ -519,6 +519,36 @@ public:
     // kRelayConnectTimeout, then removes it.
     void SweepRelayConnectTimeouts();
 
+    // NAT traversal Phase D-2: relay-aware outbound dialing orchestrator.
+    //
+    // Called from connection_manager_loop after the seed/addrman direct-
+    // dial pass. Walks relay_hints_by_target_ looking for target_node_ids
+    // we don't currently have a peer for (direct or virtual) AND for
+    // which we have at least one usable relay hint (relay is in
+    // connected_peers_). For each eligible target, picks the freshest
+    // hint and calls SendRelayConnect; the completion callback installs
+    // an outbound virtual PeerInfo and spawns its handler thread (which
+    // perform_handshakes through the existing send/receive_peer_message
+    // path — virtual-peer routing is transparent there per slice 4c).
+    //
+    // Bounded by MAX_OUTBOUND_CONNECTIONS (counts direct + virtual).
+    // Per-target backoff via last_relay_dial_attempt_ prevents thrashing
+    // on dead hints; the SendRelayConnect 10s timeout from D-1 surfaces
+    // failure cleanly.
+    void OrchestrateRelayDials();
+
+    // Production analog of test_install_virtual_relay_peer for the
+    // outbound (originator) side of a circuit. Mirrors the inbound
+    // synthesis pattern used by handle_relay_data when a previously-
+    // unseen circuit_id arrives, but with is_outbound=true and
+    // outbound_direction=ClientToTarget. Inserts into connected_peers_
+    // keyed on the synthetic "relay:<node_id_hex>:<circuit_id_hex>" key
+    // and returns that key (caller passes it to start_peer_handler_thread).
+    std::string install_outbound_virtual_relay_peer(
+        const std::array<uint8_t, 20>& target_node_id,
+        const std::string& relay_peer_address,
+        uint64_t circuit_id);
+
     // NAT traversal slice 4c: create/lookup the synthetic peer address
     // backing an opened relay circuit. The returned key can be passed to
     // send_to_peer(), which wraps the original P2P frame as RELAY_DATA.
@@ -717,6 +747,18 @@ private:
     mutable std::mutex relay_hints_mutex_;
     std::unordered_map<std::string, std::vector<RelayHintRecord>> relay_hints_by_target_;
     static constexpr size_t kMaxHintsPerTarget = 4;
+
+    // NAT traversal Phase D-2: per-target dial backoff. When the
+    // orchestrator decides to attempt a relay-dial for a target, we record
+    // the timestamp here; subsequent orchestrator iterations skip the same
+    // target for kRelayDialBackoff seconds whether the prior attempt
+    // succeeded (we'll have a connected virtual peer; check that first
+    // anyway), timed out, or got an explicit rejection. Avoids thrashing
+    // when a relay has stale hints.
+    static constexpr std::chrono::seconds kRelayDialBackoff{60};
+    std::unordered_map<std::string /*target_node_id_hex*/,
+                       std::chrono::steady_clock::time_point>
+        last_relay_dial_attempt_;
 
 #ifdef DINERO_TEST_BUILD
     std::atomic<bool> plaintext_relay_dev_override_for_tests_{false};

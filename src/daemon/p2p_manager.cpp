@@ -1500,6 +1500,196 @@ void P2PManager::handle_relay_connect_ack(const std::string& peer_address,
     }
 }
 
+// NAT traversal Phase D-2: install an outbound virtual peer for a freshly-
+// opened circuit. Mirrors the inbound auto-creation path in handle_relay_data
+// (line ~1090+) but with is_outbound=true and outbound_direction=ClientToTarget
+// so send_peer_message wraps with the correct direction byte. Synthetic key
+// "relay:<target_node_id_hex>:<circuit_id_hex>" matches the inbound naming so
+// log lines from either side are consistent.
+std::string P2PManager::install_outbound_virtual_relay_peer(
+    const std::array<uint8_t, 20>& target_node_id,
+    const std::string& relay_peer_address,
+    uint64_t circuit_id) {
+    std::ostringstream key_oss;
+    key_oss << "relay:";
+    key_oss << std::hex << std::setfill('0');
+    for (auto b : target_node_id) {
+        key_oss << std::setw(2) << static_cast<unsigned int>(b);
+    }
+    key_oss << ":" << std::hex << circuit_id;
+    const std::string virtual_peer_key = key_oss.str();
+
+    auto peer = std::make_shared<PeerInfo>();
+    peer->address = virtual_peer_key;
+    peer->port = 0;
+    peer->user_agent = user_agent_;
+    peer->is_outbound = true;
+    peer->is_connected = false;  // handshake will flip this when complete
+    peer->socket_fd = -1;
+    peer->connected_since = std::chrono::system_clock::now();
+    peer->last_message_at = peer->connected_since;
+    peer->last_seen = peer->connected_since;
+    peer->lifetime_state.store(PeerLifetimeState::RUNNING);
+    peer->via_relay = PeerInfo::ViaRelayInfo{
+        circuit_id,
+        relay_peer_address,
+        static_cast<uint8_t>(P2PMessage::RelayDirection::ClientToTarget)};
+
+    // Pre-fill their_node_id from the orchestrator's known target so any
+    // downstream code that checks node-id matches against dineroid (slice
+    // 1A) won't have to wait for the inner handshake to populate it.
+    peer->their_node_id = target_node_id;
+
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        connected_peers_[virtual_peer_key] = peer;
+    }
+    return virtual_peer_key;
+}
+
+// NAT traversal Phase D-2: relay-aware outbound dialing orchestrator.
+// See header comment for the full contract; implementation walks
+// relay_hints_by_target_, picks targets that aren't already a connected
+// peer (direct or virtual) and aren't in the kRelayDialBackoff window,
+// then issues SendRelayConnect for each. The completion callback
+// installs the outbound virtual peer and kicks the handshake.
+void P2PManager::OrchestrateRelayDials() {
+    if (!node_identity_) return;  // can't drive dineroid for the inner handshake
+
+    // Snapshot the side-table + already-connected key set so the rest
+    // of the orchestrator runs without holding peers_mutex_ / relay_hints_mutex_.
+    std::vector<std::pair<std::string /*hex*/, RelayHintRecord>> candidates;
+    std::unordered_set<std::string> already_connected_targets_hex;
+    size_t current_outbound = 0;
+    const auto now = std::chrono::steady_clock::now();
+
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [_, peer] : connected_peers_) {
+            if (!peer) continue;
+            if (peer->is_outbound) current_outbound++;
+            if (peer->identity_proven) {
+                std::ostringstream id_oss;
+                id_oss << std::hex << std::setfill('0');
+                for (auto b : peer->their_node_id) {
+                    id_oss << std::setw(2) << static_cast<unsigned int>(b);
+                }
+                already_connected_targets_hex.insert(id_oss.str());
+            }
+        }
+    }
+
+    if (current_outbound >= MAX_OUTBOUND_CONNECTIONS) {
+        return;  // slot budget already met by direct dials
+    }
+
+    {
+        std::lock_guard<std::mutex> hints_lock(relay_hints_mutex_);
+        for (const auto& [target_hex, hints] : relay_hints_by_target_) {
+            if (hints.empty()) continue;
+            if (already_connected_targets_hex.count(target_hex)) continue;
+            // Backoff per target — applies even if last attempt succeeded
+            // (handshake might have died right after install) or failed.
+            auto bo_it = last_relay_dial_attempt_.find(target_hex);
+            if (bo_it != last_relay_dial_attempt_.end() &&
+                now - bo_it->second < kRelayDialBackoff) {
+                continue;
+            }
+            // Pick the freshest hint by learned_at.
+            const RelayHintRecord* best = &hints[0];
+            for (const auto& h : hints) {
+                if (h.learned_at > best->learned_at) best = &h;
+            }
+            // Only IPv4 hints are dialable today (slice 4b ingest accepts
+            // all four BIP155 types but TORV3/I2P aren't routable yet).
+            if (best->net != dinero::p2p::NetworkType::IPV4 ||
+                best->relay_addr.size() != 4 || best->relay_port == 0) {
+                continue;
+            }
+            candidates.emplace_back(target_hex, *best);
+        }
+    }
+
+    if (candidates.empty()) return;
+
+    // For each candidate, verify the relay peer is currently connected
+    // (we need an open TCP connection to send RELAY_CONNECT through), then
+    // fire SendRelayConnect.
+    for (const auto& [target_hex, hint] : candidates) {
+        if (current_outbound >= MAX_OUTBOUND_CONNECTIONS) break;
+
+        char relay_buf[24];
+        std::snprintf(relay_buf, sizeof(relay_buf), "%u.%u.%u.%u:%u",
+                      hint.relay_addr[0], hint.relay_addr[1],
+                      hint.relay_addr[2], hint.relay_addr[3], hint.relay_port);
+        const std::string relay_peer_address = relay_buf;
+
+        bool relay_connected = false;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            auto it = connected_peers_.find(relay_peer_address);
+            relay_connected = (it != connected_peers_.end() &&
+                               it->second && it->second->is_connected);
+        }
+        if (!relay_connected) continue;
+
+        // Reconstruct target_node_id from hex for the API + later install.
+        std::array<uint8_t, 20> target_node_id{};
+        if (target_hex.size() != 40) continue;
+        bool decode_ok = true;
+        for (size_t i = 0; i < 20; i++) {
+            unsigned int byte = 0;
+            if (std::sscanf(target_hex.c_str() + (i * 2), "%2x", &byte) != 1) {
+                decode_ok = false; break;
+            }
+            target_node_id[i] = static_cast<uint8_t>(byte);
+        }
+        if (!decode_ok) continue;
+
+        // Record the attempt BEFORE dispatching so callback failure doesn't
+        // open a retry storm window. (Backoff is symmetric on success/failure.)
+        last_relay_dial_attempt_[target_hex] = now;
+
+        // SendRelayConnect's completion callback runs on the relay TCP
+        // peer's reader thread (when relayack arrives) or on keepalive_loop's
+        // thread (when the timeout sweep fires). Both are safe for our
+        // install + start_peer_handler_thread sequence.
+        auto callback =
+            [this, target_node_id, relay_peer_address, target_hex](
+                bool ok, uint64_t circuit_id, const std::string& msg) {
+                if (!ok || circuit_id == 0) {
+                    std::cout << "[P2P] relay-orchestrator: dial via "
+                              << relay_peer_address << " to " << target_hex
+                              << " failed: " << msg << std::endl;
+                    return;
+                }
+                const std::string virtual_peer_key =
+                    install_outbound_virtual_relay_peer(
+                        target_node_id, relay_peer_address, circuit_id);
+                std::shared_ptr<PeerInfo> virtual_peer;
+                {
+                    std::lock_guard<std::mutex> lock(peers_mutex_);
+                    auto it = connected_peers_.find(virtual_peer_key);
+                    if (it != connected_peers_.end()) {
+                        virtual_peer = it->second;
+                    }
+                }
+                if (!virtual_peer) return;
+                std::cout << "[P2P] relay-orchestrator: opened circuit "
+                          << std::hex << circuit_id << std::dec
+                          << " to " << target_hex << " via "
+                          << relay_peer_address << std::endl;
+                start_peer_handler_thread(std::move(virtual_peer));
+            };
+
+        uint64_t request_id = SendRelayConnect(
+            relay_peer_address, target_node_id, std::move(callback));
+        if (request_id != 0) {
+            current_outbound++;  // optimistically reserve a slot
+        }
+    }
+}
+
 // NAT traversal Phase D-1: kRelayConnectTimeout sweep — fire failure
 // callbacks for any pending RELAY_CONNECT that hasn't been ack'd. Called
 // from keepalive_loop on its 30s cadence; bounded by pending count.
@@ -3440,6 +3630,15 @@ void P2PManager::connection_manager_loop() {
         for (const auto& seed : seeds_to_connect) {
             connect_to_peer(seed.first, seed.second);
         }
+
+        // NAT traversal Phase D-2: after the direct-dial pass, look at
+        // relay hints we've ingested via slice 4b and dial-via-relay any
+        // target_node_ids we don't currently have a peer for. Bounded by
+        // MAX_OUTBOUND_CONNECTIONS; per-target backoff prevents thrashing
+        // on stale hints; SendRelayConnect's own 10s timeout (D-1) handles
+        // unresponsive relays. No-op when relay_hints_by_target_ is empty
+        // (the default for nodes that haven't been gossiped any hints).
+        OrchestrateRelayDials();
 
         // ✅ LIGHTWEIGHT KEEPALIVE: Send PING every 30s to prevent NAT timeout
         {
