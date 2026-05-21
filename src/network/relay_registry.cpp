@@ -51,6 +51,19 @@ std::optional<RelayRegistration> RelayRegistry::Lookup(
     return it->second;
 }
 
+std::vector<RelayRegistration> RelayRegistry::SnapshotValid() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<RelayRegistration> out;
+    out.reserve(entries_.size());
+    for (const auto& entry : entries_) {
+        if (now < entry.second.expires_at) {
+            out.push_back(entry.second);
+        }
+    }
+    return out;
+}
+
 void RelayRegistry::UnregisterByPeerAddress(const std::string& peer_address) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Linear scan — registry is capped at 100 entries so this is
