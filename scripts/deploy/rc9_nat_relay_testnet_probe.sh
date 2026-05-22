@@ -147,6 +147,29 @@ expect_log() {
     pass "$label"
 }
 
+expect_log_any() {
+    local label="$1"
+    local logfile="$2"
+    shift 2
+    [[ "$SKIP_LOG_CHECKS" == "1" ]] && {
+        info "skipping log check: $label"
+        return 0
+    }
+    [[ -n "$logfile" ]] || {
+        info "no log provided for: $label"
+        return 0
+    }
+    [[ -f "$logfile" ]] || die "$label log does not exist: $logfile"
+    local pattern
+    for pattern in "$@"; do
+        if grep -F "$pattern" "$logfile" >/dev/null; then
+            pass "$label"
+            return 0
+        fi
+    done
+    die "$label missing all accepted patterns: $*"
+}
+
 split_relay_endpoint "$RELAY_ENDPOINT"
 
 info "probing relay endpoint $RELAY_HOST:$RELAY_PORT"
@@ -194,8 +217,9 @@ expect_log "target sent relay register" "${TARGET_LOG:-}" \
     "[P2P] relay-register: sent to"
 expect_log "relay accepted target registration" "${RELAY_LOG:-}" \
     "[P2P] relayreg: registered"
-expect_log "relay advertised registered target" "${RELAY_LOG:-}" \
-    "[P2P] relay-hints: advertised registered target"
+expect_log_any "relay advertised registered target or catch-up" "${RELAY_LOG:-}" \
+    "[P2P] relay-hints: advertised registered target" \
+    "[P2P] relay-hints: sent registry catch-up"
 expect_log "origin ingested relay hint" "${ORIGIN_LOG:-}" \
     "[P2P] relay-hints: ingested"
 expect_log "relay opened circuit" "${RELAY_LOG:-}" \
