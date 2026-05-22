@@ -72,6 +72,11 @@ Q_SIGNALS:
     void logLine(const QString& line);
     void blockFound(const QString& hash, int height);
 
+    // Fired when the embedded miner starts (true) or stops (false). Lets the
+    // owning UI forward the state to the daemon via mining.setrelayactive so
+    // that p2p.relay=auto advertises NODE_RELAY while embedded mining runs.
+    void miningRelayStateRequested(bool active);
+
 private Q_SLOTS:
     void updateStats();
 

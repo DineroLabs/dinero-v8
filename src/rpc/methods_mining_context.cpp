@@ -684,6 +684,55 @@ din::Json rpc_context_mining_stop(const ExecutionContext& ctx, const din::Json& 
 }
 
 /**
+ * mining.setrelayactive - Signal external miner activity to the daemon's relay auto-mode.
+ *
+ * Why: mining.start/stop already flip P2PService::SetMiningRelayActive() so the daemon
+ * advertises NODE_RELAY while its own mining engine runs. The Qt embedded miner and other
+ * external clients drive mining purely through getblocktemplate/submitblock and never
+ * call mining.start, so under p2p.relay=auto the relay role never activates. This RPC
+ * lets such clients drive the same state directly.
+ *
+ * Semantics: identical to the SetMiningRelayActive() calls inside mining.start/stop.
+ * p2p.relay=0 hard opt-out and p2p.relay=1 explicit opt-in continue to override.
+ */
+din::Json rpc_context_mining_setrelayactive(const ExecutionContext& ctx, const din::Json& params) {
+    din::Json result;
+
+    if (!EnsureLocalMiningAllowed(result)) {
+        return result;
+    }
+
+    if (!params.isArray() || params.size() < 1 || !params[0].isBool()) {
+        result["error"]["code"] = -8;
+        result["error"]["message"] = "active (boolean) required";
+        return result;
+    }
+
+    bool active = params[0].asBool();
+
+    if (!ctx.daemon) {
+        result["error"]["code"] = -32000;
+        result["error"]["message"] = "DaemonContext not available";
+        return result;
+    }
+
+    auto p2p_svc = std::dynamic_pointer_cast<dinero::P2PService>(ctx.daemon->p2p);
+    if (!p2p_svc) {
+        result["error"]["code"] = -32000;
+        result["error"]["message"] = "P2P service not available";
+        return result;
+    }
+
+    p2p_svc->SetMiningRelayActive(active);
+
+    const auto status = p2p_svc->GetNetworkStatus();
+    result["mining_relay_active"] = status.mining_relay_active;
+    result["relay_mode"] = status.relay_mode;
+    result["local_relay"] = status.local_relay;
+    return result;
+}
+
+/**
  * mining.setaddress - Set mining payout address
  *
  * NEW: ctx.daemon->mining->SetMiningAddress()
@@ -931,6 +980,11 @@ void registerMiningMethodsContext() {
 
     g_rpcRegistry.registerHandler("mining.stop",
                                  rpc_context_mining_stop,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+
+    g_rpcRegistry.registerHandler("mining.setrelayactive",
+                                 rpc_context_mining_setrelayactive,
                                  RegisterMode::Overwrite,
                                  "context-aware");
 

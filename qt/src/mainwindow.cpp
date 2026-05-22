@@ -3899,6 +3899,15 @@ void MainWindow::setupUI() {
         QTimer::singleShot(1000, this, [this]() { rpc_->getBalance(); });
     });
 
+    // Forward embedded miner state into the daemon's relay auto-mode so
+    // p2p.relay=auto advertises NODE_RELAY while we're mining. The daemon
+    // handler is idempotent and p2p.relay=0/1 overrides still win.
+    connect(minerCtrl_, &MinerController::miningRelayStateRequested, this, [this](bool active) {
+        if (rpc_) {
+            rpc_->call(QStringLiteral("mining.setrelayactive"), QJsonArray{active});
+        }
+    });
+
     connect(minerCtrl_, &MinerController::runningChanged, this, [this]() {
         isMining_ = minerCtrl_->running();
         if (isMining_) {

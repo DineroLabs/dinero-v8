@@ -115,6 +115,7 @@ void MinerController::start(const QString& rpcUrl,
         status_ = useGpu && activeGpu ? "GPU mining..." : "Mining...";
         Q_EMIT statusChanged();
         Q_EMIT runningChanged();
+        Q_EMIT miningRelayStateRequested(true);
         if (useGpu && activeGpu) {
             Q_EMIT logLine(QStringLiteral("GPU miner started successfully (%1)").arg(activeBackend));
         } else if (useGpu) {
@@ -172,6 +173,7 @@ void MinerController::stop() {
     status_ = "Stopped";
     Q_EMIT statusChanged();
     Q_EMIT runningChanged();
+    Q_EMIT miningRelayStateRequested(false);
     Q_EMIT logLine("Miner stopped");
 }
 
