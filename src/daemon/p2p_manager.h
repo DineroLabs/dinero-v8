@@ -727,8 +727,8 @@ private:
         std::chrono::steady_clock::time_point created_at;
         std::chrono::steady_clock::time_point last_data_at;
         // Per-circuit token bucket; lives and dies with the circuit.
-        network::TokenBucket circuit_bucket{kRelayPerCircuitRateBps,
-                                            kRelayPerCircuitBurstBytes};
+        dinero::network::TokenBucket circuit_bucket{kRelayPerCircuitRateBps,
+                                                    kRelayPerCircuitBurstBytes};
     };
     mutable std::mutex circuits_mutex_;
     std::unordered_map<uint64_t, CircuitInfo> circuits_;
@@ -747,8 +747,8 @@ private:
     static constexpr uint64_t kRelayDailyQuotaBytes =
         50ULL * 1024 * 1024 * 1024;  // 50 GB / 24h
     static constexpr uint32_t kRelayMaxBlocksBehind = 100;
-    network::TokenBucket relay_global_bucket_{kRelayGlobalRateBps,
-                                              kRelayGlobalBurstBytes};
+    dinero::network::TokenBucket relay_global_bucket_{kRelayGlobalRateBps,
+                                                      kRelayGlobalBurstBytes};
     uint64_t relay_quota_bytes_ = 0;
     std::chrono::steady_clock::time_point relay_quota_window_start_{};
     std::atomic<bool> relay_behind_throttle_{false};
