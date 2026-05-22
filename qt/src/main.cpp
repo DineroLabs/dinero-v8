@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QCoreApplication>
 #include <QProcess>
+#include <QSettings>
 #include <QTcpSocket>
 #include <QThread>
 #include <QDebug>
@@ -57,6 +58,28 @@
 // Using QPointer to safely handle object deletion
 static QPointer<dinero::DebugConsole> g_debugConsole;
 static QMutex g_logMutex;
+
+namespace {
+
+constexpr int kDineroMainnetP2PPort = 20999;
+
+QString p2pPortMapAllowedKey() {
+    return QStringLiteral("network/p2p_portmap_auto_allowed_v1");
+}
+
+bool p2pPortMappingAllowed() {
+    return QSettings().value(p2pPortMapAllowedKey(), true).toBool();
+}
+
+void appendDaemonNetworkArgs(QStringList& args) {
+    args << "--listen" << "--p2pport" << QString::number(kDineroMainnetP2PPort)
+         << "--rpc" << "--rpcport" << "20998";
+    if (p2pPortMappingAllowed()) {
+        args << "--portmap=auto";
+    }
+}
+
+} // namespace
 
 // Temporary message handler - suppresses output until Debug Console is ready
 static void suppressingMessageHandler(QtMsgType type, const QMessageLogContext& context, const QString& msg) {
@@ -539,8 +562,9 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
     }
     args << QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid());
 
-    // Enable RPC so Qt wallet can connect
-    args << "--listen" << "--rpc" << "--rpcport" << "20998";
+    // Enable inbound P2P + RPC so Qt wallet can connect and the node can
+    // request UPnP/NAT-PMP mapping from the same early launcher used at app boot.
+    appendDaemonNetworkArgs(args);
 
     // CRITICAL: Add seed nodes so daemon can connect to network
     args << "-addnode=172.93.160.131:20999";
@@ -735,7 +759,7 @@ int main(int argc, char** argv) {
         wipeArgs << "--datadir" << datadir;
       }
       wipeArgs << "--wipe-stale-chain";
-      wipeArgs << "--listen" << "--rpc" << "--rpcport" << "20998";
+      appendDaemonNetworkArgs(wipeArgs);
       wipeArgs << "-addnode=172.93.160.131:20999";
       wipeArgs << "-addnode=173.249.195.59:20999";
       wipeArgs << "-addnode=72.18.214.120:20999";
