@@ -3312,13 +3312,12 @@ namespace {
 // Bootstrap relay endpoints for cold-start auto-registration. Dynamic
 // NODE_RELAY discovery via addrman is primary; this list is the fallback
 // used before addrman has learned any relays from gossip.
-// OPS: populate with real relay hostnames before the MainnetRelayReady()
-// gate is flipped (PR-4). Until that gate flips, auto-register never runs
-// and these entries are never dialed.
 constexpr std::pair<const char*, uint16_t> kMainnetRelayPeers[] = {
-    {"relay1.dinerolabs.org", 20999},
-    {"relay2.dinerolabs.org", 20999},
-    {"relay3.dinerolabs.org", 20999},
+    {"173.249.195.59", 20999},   // VA / us-east
+    {"172.93.160.131", 20999},   // LA / us-west
+    {"72.18.214.120", 20999},    // MO / us-central
+    {"96.9.226.98", 20999},      // CN / ca-east
+    {"162.200.227.214", 20999},  // Dell / operator relay
 };
 }  // namespace
 

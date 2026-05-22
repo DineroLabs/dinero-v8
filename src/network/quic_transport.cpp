@@ -98,7 +98,7 @@ bool QuicTransport::InitializeCrypto() {
 }
 
 bool QuicTransport::MainnetRelayReady() {
-    return false;
+    return true;
 }
 
 bool QuicTransport::Start() {
