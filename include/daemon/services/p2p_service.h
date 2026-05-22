@@ -80,6 +80,9 @@ public:
         std::string stun_discovered_address;
         std::string stun_server_used;
         std::string stun_message;
+        bool local_relay{false};
+        bool mining_relay_active{false};
+        std::string relay_mode{"auto"};
     };
 
     P2PService() = default;
@@ -195,6 +198,9 @@ public:
     size_t SendPingToAll();
     NetworkTotals GetNetworkTotals() const;
     NetworkStatus GetNetworkStatus() const;
+    void SetMiningRelayActive(bool active);
+    bool IsRelayRoleEnabled() const;
+    std::string RelayMode() const;
     void BroadcastMessage(const ::P2PMessage& msg) {
         if (p2p_mgr_) p2p_mgr_->broadcast_message(msg);
     }
@@ -255,6 +261,14 @@ private:
     std::string stun_discovered_address_;
     std::string stun_server_used_;
     std::string stun_message_{"not run"};
+
+    // Relay role policy:
+    //   p2p.relay=1/on/true  -> always advertise NODE_RELAY.
+    //   p2p.relay=0/off/no   -> never advertise NODE_RELAY.
+    //   p2p.relay=auto/unset -> advertise NODE_RELAY only while mining.
+    // Auto mode lets mining nodes strengthen the network, while explicit
+    // off remains a hard operator/user override.
+    std::atomic<bool> mining_relay_active_{false};
 
     // Periodic sync loop for headers-first + block scheduler in P2PService mode.
     std::atomic<bool> scheduler_tick_running_{false};

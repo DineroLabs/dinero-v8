@@ -36,6 +36,22 @@ namespace dinero {
 
 namespace {
 
+std::string LowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+bool IsRelayModeOn(const std::string& mode) {
+    const std::string value = LowerAscii(mode);
+    return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+bool IsRelayModeOff(const std::string& mode) {
+    const std::string value = LowerAscii(mode);
+    return value == "0" || value == "false" || value == "no" || value == "off";
+}
+
 bool ParseEndpoint(const std::string& endpoint,
                    uint16_t default_port,
                    std::string* out_host,
@@ -239,6 +255,9 @@ P2PService::NetworkTotals P2PService::GetNetworkTotals() const {
 
 P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     NetworkStatus status;
+    status.relay_mode = RelayMode();
+    status.mining_relay_active = mining_relay_active_.load(std::memory_order_acquire);
+    status.local_relay = IsRelayRoleEnabled();
     if (!p2p_mgr_) {
         std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
         status.port_mapping_requested = port_mapping_requested_;
@@ -293,6 +312,33 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         status.stun_message = stun_message_;
     }
     return status;
+}
+
+std::string P2PService::RelayMode() const {
+    return config_ ? LowerAscii(config_->GetString("p2p.relay", "auto")) : "auto";
+}
+
+bool P2PService::IsRelayRoleEnabled() const {
+    const std::string mode = RelayMode();
+    if (IsRelayModeOn(mode)) {
+        return true;
+    }
+    if (IsRelayModeOff(mode)) {
+        return false;
+    }
+    return mining_relay_active_.load(std::memory_order_acquire);
+}
+
+void P2PService::SetMiningRelayActive(bool active) {
+    const bool previous = mining_relay_active_.exchange(active, std::memory_order_acq_rel);
+    if (previous == active) {
+        return;
+    }
+    if (logger_interface_) {
+        logger_interface_->info(std::string("[P2PService] Mining relay auto-mode ") +
+                                (active ? "enabled" : "disabled") +
+                                " (p2p.relay=" + RelayMode() + ")");
+    }
 }
 
 // NAT traversal Phase C1: spin up a STUN client and fire off a discovery
@@ -1232,14 +1278,12 @@ bool P2PService::Start() {
         {
             auto prune_svc = prune_;  // capture shared_ptr by value for lambda safety
             const bool bridge_enabled = config_->GetBool("utreexo-bridge", true);
-            // NAT traversal: a node advertises NODE_RELAY (willing to relay
-            // circuits for NAT'd peers) only when the operator opts in via
-            // p2p.relay. Default off — default-on relay role needs the legal
-            // sign-off the NAT plan's risk #3 flags. The bit lets NAT'd peers
-            // discover this node as a relay through normal addrman gossip.
-            const bool relay_enabled = config_->GetBool("p2p.relay", false);
-            p2p_mgr_->set_service_flags_provider([prune_svc, bridge_enabled,
-                                                  relay_enabled]() -> uint64_t {
+            // NAT traversal: p2p.relay is tri-state. Explicit on/off wins;
+            // auto (the default) advertises NODE_RELAY only while mining.
+            // Relay data is still guarded by the P2PManager caps: 64 KB/s per
+            // circuit, 5 MB/s global, and 50 GB/day.
+            p2p_mgr_->set_service_flags_provider([this, prune_svc,
+                                                  bridge_enabled]() -> uint64_t {
                 uint64_t flags = ServiceFlags::NODE_UTREEXO;
                 if (bridge_enabled) {
                     flags |= ServiceFlags::NODE_UTREEXO_BRIDGE;
@@ -1251,7 +1295,7 @@ bool P2PService::Start() {
                 }
                 // NAT traversal Phase 1A: announce post-verack dineroid capability.
                 flags |= ServiceFlags::NODE_DINERO_V2;
-                if (relay_enabled) {
+                if (IsRelayRoleEnabled()) {
                     flags |= ServiceFlags::NODE_RELAY;
                 }
                 return flags;
@@ -1260,7 +1304,8 @@ bool P2PService::Start() {
             logger_interface_->info("[P2PService] Service flags provider wired (pruned=" +
                          std::string(pruned ? "true" : "false") +
                          ", bridge=" + std::string(bridge_enabled ? "true" : "false") +
-                         ", relay=" + std::string(relay_enabled ? "true" : "false") + ")");
+                         ", relay_mode=" + RelayMode() +
+                         ", relay=" + std::string(IsRelayRoleEnabled() ? "true" : "false") + ")");
         }
 
         {

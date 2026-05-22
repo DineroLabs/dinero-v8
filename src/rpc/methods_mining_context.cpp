@@ -573,6 +573,10 @@ din::Json rpc_context_mining_start(const ExecutionContext& ctx, const din::Json&
         return result;
     }
 
+    if (p2p_svc) {
+        p2p_svc->SetMiningRelayActive(true);
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // Phase E.3 Fix: Clear is_fresh_start after explicit mining.start()
     // ═══════════════════════════════════════════════════════════════════
@@ -652,6 +656,11 @@ din::Json rpc_context_mining_stop(const ExecutionContext& ctx, const din::Json& 
 
     // Step 3: Stop mining via MiningManager v2 (idempotent - safe to call if already stopped)
     mining->getMiningManager().stopMining();
+    if (was_mining) {
+        if (auto p2p_svc = std::dynamic_pointer_cast<dinero::P2PService>(ctx.daemon->p2p)) {
+            p2p_svc->SetMiningRelayActive(false);
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     // End Phase F.1 Enforcement - Policy check passed (always succeeds)
