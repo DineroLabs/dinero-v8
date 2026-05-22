@@ -19,6 +19,7 @@
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
+#include "network/token_bucket.h"     // NAT traversal: relay circuit bandwidth caps
 
 namespace dinero { namespace daemon { class NodeIdentity; } }
 
@@ -715,16 +716,51 @@ private:
     // hardware-random 8 bytes). Forwarders mutate last_data_at on
     // every RELAY_DATA / RELAY_PING so SweepIdleCircuits can reap
     // stalled circuits without disrupting active ones.
+    // Relay bandwidth caps (NAT plan). Over any cap the RELAY_DATA frame
+    // is dropped — the inner QUIC retransmits and backs off, so a drop
+    // paces the sender rather than corrupting the stream.
+    static constexpr double kRelayPerCircuitRateBps = 64.0 * 1024.0;      // 64 KB/s steady
+    static constexpr double kRelayPerCircuitBurstBytes = 256.0 * 1024.0;  // 256 KB burst
     struct CircuitInfo {
         std::string requester_addr;   // external peer (originator)
         std::string target_addr;      // registered NAT'd peer
         std::chrono::steady_clock::time_point created_at;
         std::chrono::steady_clock::time_point last_data_at;
+        // Per-circuit token bucket; lives and dies with the circuit.
+        network::TokenBucket circuit_bucket{kRelayPerCircuitRateBps,
+                                            kRelayPerCircuitBurstBytes};
     };
     mutable std::mutex circuits_mutex_;
     std::unordered_map<uint64_t, CircuitInfo> circuits_;
     static constexpr size_t kMaxConcurrentCircuits = 25;
     static constexpr std::chrono::seconds kCircuitIdleTimeout{300};  // 5 min
+
+    // Relay bandwidth caps — global egress token bucket, fixed-window
+    // daily quota, and the chain-behind auto-suspend gate. The quota is
+    // a fixed 24h window (resets on the boundary); worst case is ~2x the
+    // cap across an unlucky boundary — acceptable vs uncapped, upgrade to
+    // an hourly-ring rolling window only if operational data shows it
+    // matters. relay_global_bucket_ / relay_quota_* are touched only
+    // under circuits_mutex_; the atomics need no lock.
+    static constexpr double kRelayGlobalRateBps = 5.0 * 1024.0 * 1024.0;     // 5 MB/s
+    static constexpr double kRelayGlobalBurstBytes = 5.0 * 1024.0 * 1024.0;  // 1s burst
+    static constexpr uint64_t kRelayDailyQuotaBytes =
+        50ULL * 1024 * 1024 * 1024;  // 50 GB / 24h
+    static constexpr uint32_t kRelayMaxBlocksBehind = 100;
+    network::TokenBucket relay_global_bucket_{kRelayGlobalRateBps,
+                                              kRelayGlobalBurstBytes};
+    uint64_t relay_quota_bytes_ = 0;
+    std::chrono::steady_clock::time_point relay_quota_window_start_{};
+    std::atomic<bool> relay_behind_throttle_{false};
+    std::atomic<uint64_t> relay_drops_circuit_{0};
+    std::atomic<uint64_t> relay_drops_global_{0};
+    std::atomic<uint64_t> relay_drops_quota_{0};
+    std::atomic<uint64_t> relay_drops_behind_{0};
+    // Fixed-window quota check; caller holds circuits_mutex_.
+    bool RelayQuotaAllows(size_t bytes,
+                          std::chrono::steady_clock::time_point now);
+    // Recompute the cached >kRelayMaxBlocksBehind throttle (keepalive tick).
+    void RecomputeRelayBehindThrottle();
 
     // NAT traversal Phase D-1: originator-side circuit state.
     //

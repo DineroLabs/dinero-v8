@@ -26,6 +26,18 @@ set_tests_properties(RIPEMD160SrcVectors PROPERTIES
   TIMEOUT 10
 )
 
+add_executable(test_token_bucket
+  tests/network/test_token_bucket.cpp
+)
+target_include_directories(test_token_bucket PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME TokenBucket COMMAND test_token_bucket)
+set_tests_properties(TokenBucket PROPERTIES
+  LABELS "network;relay;smoke"
+  TIMEOUT 10
+)
+
 add_executable(test_ripemd160_core_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/core/crypto/ripemd160.cpp

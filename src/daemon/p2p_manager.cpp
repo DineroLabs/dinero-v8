@@ -1010,7 +1010,19 @@ void P2PManager::handle_relay_data(const std::string& peer_address,
     // direction byte at offset 8 — preserved but not consulted by the
     // relay; endpoints set it on send, read it on receive.
 
+    // Auto-suspend: while our own chain is far behind the network tip,
+    // don't spend bandwidth relaying for others — prioritise our own
+    // sync. The flag is recomputed on the keepalive tick (cached), so the
+    // data path never iterates peers under a lock.
+    if (relay_behind_throttle_.load(std::memory_order_relaxed)) {
+        relay_drops_behind_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    const size_t frame_bytes = message.payload.size();
     std::string dest;
+    enum class Verdict { kOk, kCircuitCap, kGlobalCap, kQuotaCap };
+    Verdict verdict = Verdict::kOk;
     {
         std::lock_guard<std::mutex> lock(circuits_mutex_);
         auto it = circuits_.find(circuit_id);
@@ -1026,12 +1038,78 @@ void P2PManager::handle_relay_data(const std::string& peer_address,
             // state. Drop without ack.
             return;
         }
-        it->second.last_data_at = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        it->second.last_data_at = now;
+
+        // Relay bandwidth caps: per-circuit bucket, then the shared
+        // egress bucket, then the daily quota. A per-circuit bucket that
+        // consumes for a frame later dropped on the global/quota cap is
+        // acceptable — that over-consumption is itself bounded by the
+        // global rate.
+        if (!it->second.circuit_bucket.TryConsume(frame_bytes, now)) {
+            verdict = Verdict::kCircuitCap;
+        } else if (!relay_global_bucket_.TryConsume(frame_bytes, now)) {
+            verdict = Verdict::kGlobalCap;
+        } else if (!RelayQuotaAllows(frame_bytes, now)) {
+            verdict = Verdict::kQuotaCap;
+        }
+    }
+    switch (verdict) {
+        case Verdict::kCircuitCap:
+            relay_drops_circuit_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        case Verdict::kGlobalCap:
+            relay_drops_global_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        case Verdict::kQuotaCap:
+            relay_drops_quota_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        case Verdict::kOk:
+            break;
     }
     // Forward the EXACT same frame (preserving direction + payload).
-    // No bandwidth caps in slice 3 — those land in slice 3.1 (token
-    // bucket + daily quota + storm detection).
     send_to_peer(dest, message);
+}
+
+// Fixed 24h-window relay quota. Caller holds circuits_mutex_. The window
+// (and its byte counter) resets once 24h has elapsed since it opened;
+// returns false — consuming nothing — once the window is full.
+bool P2PManager::RelayQuotaAllows(size_t bytes,
+                                  std::chrono::steady_clock::time_point now) {
+    if (relay_quota_window_start_.time_since_epoch().count() == 0) {
+        relay_quota_window_start_ = now;
+    }
+    if (now - relay_quota_window_start_ >= std::chrono::hours(24)) {
+        relay_quota_window_start_ = now;
+        relay_quota_bytes_ = 0;
+    }
+    if (relay_quota_bytes_ + bytes > kRelayDailyQuotaBytes) {
+        return false;
+    }
+    relay_quota_bytes_ += bytes;
+    return true;
+}
+
+// Recompute the cached relay auto-suspend flag: are we more than
+// kRelayMaxBlocksBehind blocks behind the best height any connected peer
+// has advertised? Runs on the keepalive tick so handle_relay_data reads
+// only an atomic — iterating peers per RELAY_DATA frame would add lock
+// contention to the relay data plane.
+void P2PManager::RecomputeRelayBehindThrottle() {
+    const uint32_t our_height = height_provider_ ? height_provider_() : 0;
+    uint32_t tip = our_height;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& pair : connected_peers_) {
+            const auto& peer = pair.second;
+            if (peer && peer->best_height > tip) {
+                tip = peer->best_height;
+            }
+        }
+    }
+    const bool behind = tip > our_height &&
+                        (tip - our_height) > kRelayMaxBlocksBehind;
+    relay_behind_throttle_.store(behind, std::memory_order_relaxed);
 }
 
 bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_address,
@@ -5932,6 +6010,7 @@ void P2PManager::keepalive_loop() {
     // operators in the early network.
     constexpr int save_every_n_ticks = 10;
     int ticks_since_save = 0;
+    uint64_t prev_relay_drops_total = 0;
 
     while (!shutdown_requested_) {
         // Ring 3 Phase 4e: TS3 Fix - Interruptible wait instead of sleep_for
@@ -5960,6 +6039,28 @@ void P2PManager::keepalive_loop() {
         // NAT Phase D-1: time out pending RELAY_CONNECT requests
         // whose ack hasn't arrived within kRelayConnectTimeout (10s).
         SweepRelayConnectTimeouts();
+        // NAT: refresh the cached relay auto-suspend flag, and surface
+        // relay bandwidth-cap drops to the operator when new ones occur.
+        RecomputeRelayBehindThrottle();
+        {
+            const uint64_t relay_drops_total =
+                relay_drops_circuit_.load(std::memory_order_relaxed) +
+                relay_drops_global_.load(std::memory_order_relaxed) +
+                relay_drops_quota_.load(std::memory_order_relaxed) +
+                relay_drops_behind_.load(std::memory_order_relaxed);
+            if (relay_drops_total > prev_relay_drops_total) {
+                std::cout << "[P2P] relay bandwidth-cap drops — circuit="
+                          << relay_drops_circuit_.load(std::memory_order_relaxed)
+                          << " global="
+                          << relay_drops_global_.load(std::memory_order_relaxed)
+                          << " quota="
+                          << relay_drops_quota_.load(std::memory_order_relaxed)
+                          << " behind="
+                          << relay_drops_behind_.load(std::memory_order_relaxed)
+                          << std::endl;
+                prev_relay_drops_total = relay_drops_total;
+            }
+        }
 
         // Send PING to all connected peers
         std::vector<std::string> peer_addresses;
