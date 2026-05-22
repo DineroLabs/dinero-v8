@@ -3610,6 +3610,42 @@ bool P2PManager::send_addr_list_to_peer(
         return true;
     }
 
+    // NAT traversal: peers that speak NODE_DINERO_V2 understand BIP155
+    // addrv2, which carries service flags. The legacy `addr` message has
+    // no services field, so a relay's NODE_RELAY bit would be lost in
+    // gossip — sending self-advertisement over addrv2 to v2 peers is how
+    // NODE_RELAY propagates so NAT'd nodes can discover relays via
+    // addrman. Non-v2 peers still get the (serviceless) legacy form.
+    if (peer && (peer->service_flags & ServiceFlags::NODE_DINERO_V2)) {
+        const uint64_t our_services =
+            service_flags_provider_ ? service_flags_provider_() : 0;
+        const uint32_t now_secs = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        std::vector<dinero::p2p::AddrV2Entry> entries;
+        entries.reserve(addresses.size());
+        for (const auto& [address, port] : addresses) {
+            dinero::p2p::AddrV2Entry e;
+            std::vector<uint8_t> addr_bytes;
+            if (!ClassifyHostLiteral(address, &e.net, &addr_bytes)) {
+                continue;  // not an IPv4/IPv6 literal — skip
+            }
+            e.addr = std::move(addr_bytes);
+            e.port = port;
+            // These are our own advertised addresses, so they carry our
+            // own service flags (NODE_RELAY included when relay-role is on).
+            e.services = our_services;
+            e.time = now_secs;
+            entries.push_back(std::move(e));
+        }
+        if (entries.empty()) {
+            return true;  // nothing addrv2-encodable in the list
+        }
+        auto addr_msg = P2PMessage::create_addrv2(entries);
+        return send_peer_message(peer, addr_msg);
+    }
+
     std::vector<PeerInfo> peer_infos;
     peer_infos.reserve(addresses.size());
     for (const auto& [address, port] : addresses) {
