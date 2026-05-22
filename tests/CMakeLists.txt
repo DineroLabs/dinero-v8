@@ -1742,6 +1742,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
     src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
     src/network/quic_transport.cpp # Required by encrypted relay readiness checks in P2PManager
     src/network/udp_socket.cpp     # Required by QuicTransport
+    src/network/relay_tls_keypair.cpp
     src/daemon/node_identity.cpp   # Required by dineroid handshake methods in P2PManager
     src/p2p/addr_v2.cpp            # Required by addrv2 methods in P2PManager
     src/p2p/addrman.cpp
@@ -1922,6 +1923,7 @@ if(DINERO_ENABLE_QUIC AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_quic_tra
       tests/network/test_quic_transport.cpp
       src/network/quic_transport.cpp
       src/network/udp_socket.cpp
+      src/network/relay_tls_keypair.cpp
     )
     target_link_libraries(test_quic_transport
       PRIVATE
@@ -1957,6 +1959,7 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SO
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
+    src/network/relay_tls_keypair.cpp
   )
   target_link_libraries(test_quic_session
     PRIVATE
@@ -5004,6 +5007,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
+    src/network/relay_tls_keypair.cpp
     src/p2p/addrman.cpp
   )
   target_include_directories(test_codebase_verification PRIVATE
@@ -5196,6 +5200,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
+    src/network/relay_tls_keypair.cpp
     src/p2p/addrman.cpp
     src/daemon/wallet_crypto.cpp
     src/daemon/secure_random.cpp
@@ -5545,6 +5550,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
     src/network/quic_transport.cpp # Required by encrypted relay readiness checks in P2PManager
     src/network/udp_socket.cpp     # Required by QuicTransport
+    src/network/relay_tls_keypair.cpp
     src/daemon/node_identity.cpp # Required by dineroid handshake methods in P2PManager
     src/p2p/addr_v2.cpp          # Required by addrv2 methods in P2PManager
     src/p2p/addrman.cpp
@@ -7819,6 +7825,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
+    src/network/relay_tls_keypair.cpp
     src/daemon/node_identity.cpp
     src/p2p/addr_v2.cpp
     src/daemon/secure_random.cpp
@@ -7878,6 +7885,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
+    src/network/relay_tls_keypair.cpp
     src/daemon/node_identity.cpp
     src/p2p/addr_v2.cpp
     src/daemon/secure_random.cpp
