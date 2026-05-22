@@ -81,7 +81,7 @@ public:
         std::string stun_server_used;
         std::string stun_message;
         bool local_relay{false};
-        bool mining_relay_active{false};
+        bool relay_active{false};
         std::string relay_mode{"auto"};
     };
 
@@ -198,7 +198,12 @@ public:
     size_t SendPingToAll();
     NetworkTotals GetNetworkTotals() const;
     NetworkStatus GetNetworkStatus() const;
-    void SetMiningRelayActive(bool active);
+    // Setter for the auto-mode relay-active toggle. Today mining.start /
+    // mining.stop are the canonical callers (mining → carry more value →
+    // worth running as a public relay), but any subsystem with a reason
+    // to engage the auto relay role can call this — the lever isn't
+    // exclusively a mining concern. See docs/network-participation.md.
+    void SetRelayActive(bool active);
     bool IsRelayRoleEnabled() const;
     std::string RelayMode() const;
     void BroadcastMessage(const ::P2PMessage& msg) {
@@ -262,13 +267,29 @@ private:
     std::string stun_server_used_;
     std::string stun_message_{"not run"};
 
-    // Relay role policy:
-    //   p2p.relay=1/on/true  -> always advertise NODE_RELAY.
-    //   p2p.relay=0/off/no   -> never advertise NODE_RELAY.
-    //   p2p.relay=auto/unset -> advertise NODE_RELAY only while mining.
-    // Auto mode lets mining nodes strengthen the network, while explicit
-    // off remains a hard operator/user override.
-    std::atomic<bool> mining_relay_active_{false};
+    // Public relay role policy (Tier 3 of the three-tier model — see
+    // docs/network-participation.md). Tier 1 (be a full P2P node) and
+    // Tier 2 (try to be reachable, register through a relay if direct
+    // inbound fails) are unconditionally on for every dinero-qt /
+    // dinerod instance — neither depends on this flag or on mining.
+    //
+    // This flag governs only Tier 3: do we ADVERTISE NODE_RELAY and
+    // accept dial-throughs from OTHER NAT'd peers? That tier carries a
+    // real bandwidth/resource cost so it stays opt-in.
+    //
+    // Modes:
+    //   p2p.relay=1/on/true  -> Tier 3 on, always.
+    //   p2p.relay=0/off/no   -> Tier 3 off, always.
+    //   p2p.relay=auto/unset -> Tier 3 on while this flag is set. Today
+    //                          mining.start / mining.stop are the only
+    //                          callers that flip the flag (mining moves
+    //                          more value through the node, so the
+    //                          incremental relay cost pays for itself);
+    //                          future triggers — operator dashboard
+    //                          opt-in toggle, spare-bandwidth heuristic,
+    //                          etc. — can flip the same lever via
+    //                          SetRelayActive() without protocol change.
+    std::atomic<bool> relay_active_{false};
 
     // Periodic sync loop for headers-first + block scheduler in P2PService mode.
     std::atomic<bool> scheduler_tick_running_{false};
