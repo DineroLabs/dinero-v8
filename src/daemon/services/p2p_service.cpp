@@ -395,35 +395,18 @@ void P2PService::StartStunDiscoveryIfEnabled() {
                 stun_server_used_ = r.server_endpoint;
                 stun_message_ = "ok";
             }
-            // Feed addrman via the same pipe UPnP success uses. The qt UI
-            // and `getnetworkinfo` already surface advertised_addresses,
-            // so STUN-discovered IPs immediately show up in both places.
-            // For IPv4 we strip into "a.b.c.d"; for IPv6 we use the
-            // bracketless canonical form (consistent with addrman keys).
-            if (p2p_mgr_) {
-                std::string host;
-                if (r.public_addr.family == dinero::network::UdpAddr::Family::V4) {
-                    char buf[16];
-                    std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
-                                  r.public_addr.ip[0], r.public_addr.ip[1],
-                                  r.public_addr.ip[2], r.public_addr.ip[3]);
-                    host = buf;
-                } else {
-                    // Strip [...] wrapper that to_string() added.
-                    host = addr_str;
-                    if (!host.empty() && host[0] == '[') {
-                        auto rbr = host.find(']');
-                        if (rbr != std::string::npos) host = host.substr(1, rbr - 1);
-                    }
-                }
-                if (!host.empty()) {
-                    p2p_mgr_->add_advertised_address(host, r.public_addr.port);
-                    if (logger_interface_) {
-                        logger_interface_->info(
-                            "[P2PService] STUN discovered public address " + addr_str +
-                            " via " + r.server_endpoint + " — advertising via addr relay");
-                    }
-                }
+            // STUN discovers the router's reflexive UDP endpoint. It is useful
+            // diagnostic data and a future hole-punching input, but it does
+            // not prove that the daemon's TCP/QUIC P2P listener is reachable.
+            // Do not feed it into advertised_addresses_: relay auto-register
+            // treats that list as confirmed direct inbound reachability. UPnP,
+            // NAT-PMP, and explicit externalip remain the sources for direct
+            // P2P address advertisement.
+            if (logger_interface_) {
+                logger_interface_->info(
+                    "[P2PService] STUN discovered public address " + addr_str +
+                    " via " + r.server_endpoint +
+                    " — keeping as diagnostic data, not advertising as reachable P2P");
             }
         } else {
             std::lock_guard<std::mutex> lock(stun_status_mutex_);
