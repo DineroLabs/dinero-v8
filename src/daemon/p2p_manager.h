@@ -844,7 +844,8 @@ private:
     void cleanup_peer(const std::string& peer_address);
     bool remember_peer_address(const std::string& address,
                                uint16_t port,
-                               const std::string& source_peer);
+                               const std::string& source_peer,
+                               uint64_t services = 0);
     void mark_peer_address_attempt(const std::string& address, uint16_t port, bool success);
     std::vector<std::pair<std::string, uint16_t>> get_local_advertised_addresses() const;
     std::vector<std::pair<std::string, uint16_t>> collect_advertisable_addresses(size_t max_count) const;

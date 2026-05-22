@@ -109,27 +109,53 @@ void AddressManager::addAddresses(const std::vector<NetworkAddress>& addresses, 
     std::lock_guard<std::mutex> lock(mutex_);
 
     for (const auto& addr : addresses) {
-        if (isValidAddress(addr) && !isDuplicate(addr)) {
-            // Eclipse prevention: limit addresses per /16 subnet
-            std::string subnet = extractSubnet16(addr.ip);
-            if (countInSubnet16(new_addresses_, subnet) >= MAX_PER_SUBNET16_NEW) {
-                continue;  // Skip — /16 subnet saturated in new pool
+        if (!isValidAddress(addr)) {
+            continue;
+        }
+        const std::string key = getAddressKey(addr);
+
+        // Re-advertisement of a known address: refresh last_seen and,
+        // when the source carried real service info, update the stored
+        // flags — this is how a peer's NODE_RELAY bit reaches addrman.
+        // SET (not OR) so a service a peer drops is reflected; services
+        // == 0 is treated as "unknown" (legacy `addr` has no services
+        // field) and left alone so it can't wipe known flags.
+        if (isDuplicate(addr)) {
+            AddressEntry* existing = nullptr;
+            if (auto it = new_addresses_.find(key); it != new_addresses_.end()) {
+                existing = &it->second;
+            } else if (auto it2 = tried_addresses_.find(key);
+                       it2 != tried_addresses_.end()) {
+                existing = &it2->second;
             }
-
-            AddressEntry entry;
-            entry.addr = addr;
-            entry.first_seen = std::chrono::system_clock::now();
-            entry.last_seen = entry.first_seen;
-            entry.ref_count = 1;
-
-            std::string key = getAddressKey(addr);
-            new_addresses_[key] = entry;
-            total_added_++;
-
-            // Evict oldest if we exceed capacity
-            if (new_addresses_.size() > max_new_addresses_) {
-                evictOldest(AddressPool::NEW);
+            if (existing) {
+                existing->last_seen = std::chrono::system_clock::now();
+                existing->ref_count++;
+                if (addr.services != 0) {
+                    existing->addr.services = addr.services;
+                }
             }
+            continue;
+        }
+
+        // Eclipse prevention: limit addresses per /16 subnet
+        std::string subnet = extractSubnet16(addr.ip);
+        if (countInSubnet16(new_addresses_, subnet) >= MAX_PER_SUBNET16_NEW) {
+            continue;  // Skip — /16 subnet saturated in new pool
+        }
+
+        AddressEntry entry;
+        entry.addr = addr;
+        entry.first_seen = std::chrono::system_clock::now();
+        entry.last_seen = entry.first_seen;
+        entry.ref_count = 1;
+
+        new_addresses_[key] = entry;
+        total_added_++;
+
+        // Evict oldest if we exceed capacity
+        if (new_addresses_.size() > max_new_addresses_) {
+            evictOldest(AddressPool::NEW);
         }
     }
 }
@@ -180,6 +206,30 @@ std::vector<NetworkAddress> AddressManager::getAddresses(size_t count) {
         }
     }
 
+    return result;
+}
+
+std::vector<NetworkAddress> AddressManager::getAddressesByService(
+    uint64_t service_bit, size_t count) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<NetworkAddress> result;
+    std::unordered_set<std::string> used_subnets;  // /16 spread
+
+    auto scan = [&](const std::unordered_map<std::string, AddressEntry>& pool) {
+        for (const auto& kv : pool) {
+            if (result.size() >= count) return;
+            const AddressEntry& entry = kv.second;
+            if (entry.is_terrible || entry.is_banned) continue;
+            if ((entry.addr.services & service_bit) == 0) continue;
+            if (!entry.addr.isRoutable()) continue;
+            const std::string subnet = extractSubnet16(entry.addr.ip);
+            if (used_subnets.count(subnet) != 0) continue;
+            used_subnets.insert(subnet);
+            result.push_back(entry.addr);
+        }
+    };
+    scan(tried_addresses_);  // prefer previously-connected peers
+    scan(new_addresses_);
     return result;
 }
 
