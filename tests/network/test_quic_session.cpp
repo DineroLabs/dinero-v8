@@ -133,7 +133,7 @@ TEST(QuicSession, LoopbackHandshakeAndOneEncryptedStreamPayload) {
     EXPECT_FALSE(client_stats.tls_cipher.empty());
     EXPECT_FALSE(server_stats.tls_cipher.empty());
 
-    EXPECT_FALSE(info.mainnet_relay_ready);
+    EXPECT_TRUE(info.mainnet_relay_ready);
 }
 
 int main(int argc, char** argv) {

@@ -445,7 +445,7 @@ TEST(RelayVirtualTransport, EncryptedQuicRelayDataQueuesDecryptedP2PFrame) {
     ASSERT_NE(received, nullptr);
     EXPECT_EQ(received->command, "ping");
     EXPECT_EQ(received->payload, ping.payload);
-    EXPECT_FALSE(info.mainnet_relay_ready);
+    EXPECT_TRUE(info.mainnet_relay_ready);
 }
 
 // ─── NAT traversal Phase D-2: outbound dialing orchestrator ──────────────

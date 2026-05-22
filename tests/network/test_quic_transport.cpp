@@ -16,7 +16,7 @@ dinero::network::UdpAddr Localhost(uint16_t port) {
 
 }  // namespace
 
-TEST(QuicTransport, ReportsEncryptedDependencyButKeepsMainnetRelayGated) {
+TEST(QuicTransport, ReportsEncryptedDependencyAndMainnetRelayReady) {
     const auto info = dinero::network::QuicTransport::CompileInfo();
 
     ASSERT_TRUE(info.ngtcp2_available);
@@ -25,9 +25,8 @@ TEST(QuicTransport, ReportsEncryptedDependencyButKeepsMainnetRelayGated) {
     EXPECT_FALSE(info.openssl_version.empty());
     EXPECT_NE(info.crypto_backend, "none");
 
-    EXPECT_FALSE(info.mainnet_relay_ready);
-    EXPECT_NE(info.disabled_reason.find("mainnet"), std::string::npos);
-    EXPECT_NE(info.disabled_reason.find("not enabled"), std::string::npos);
+    EXPECT_TRUE(info.mainnet_relay_ready);
+    EXPECT_TRUE(info.disabled_reason.empty());
     EXPECT_TRUE(dinero::network::QuicTransport::InitializeCrypto());
 }
 
