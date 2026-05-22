@@ -4079,20 +4079,22 @@ void MainWindow::setupUI() {
     lblPeerSummary_ = new QLabel("Connections: -");
     lblPeerReachability_ = new QLabel("Listening: -");
     lblPeerPortMapping_ = new QLabel("Port mapping: -");
+    lblPeerRelay_ = new QLabel("Relay: -");
     lblPeerAdvertised_ = new QLabel("Advertised: -");
     lblPeerReachabilityAdvice_ = new QLabel("Reachability: checking");
     lblPeerReachabilityAdvice_->setWordWrap(true);
     lblPeerReachabilityAdvice_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     lblPeerReachabilityAdvice_->setStyleSheet("QLabel { color: #aeb8c2; font-size: 12px; }");
-    for (auto *label : {lblPeerSummary_, lblPeerReachability_, lblPeerPortMapping_, lblPeerAdvertised_}) {
+    for (auto *label : {lblPeerSummary_, lblPeerReachability_, lblPeerPortMapping_, lblPeerRelay_, lblPeerAdvertised_}) {
       label->setTextInteractionFlags(Qt::TextSelectableByMouse);
       label->setStyleSheet("QLabel { color: #cfd7df; font-size: 12px; }");
     }
     statusGrid->addWidget(lblPeerSummary_, 0, 0);
     statusGrid->addWidget(lblPeerReachability_, 0, 1);
     statusGrid->addWidget(lblPeerPortMapping_, 1, 0);
-    statusGrid->addWidget(lblPeerAdvertised_, 1, 1);
-    statusGrid->addWidget(lblPeerReachabilityAdvice_, 2, 0, 1, 2);
+    statusGrid->addWidget(lblPeerRelay_, 1, 1);
+    statusGrid->addWidget(lblPeerAdvertised_, 2, 0, 1, 2);
+    statusGrid->addWidget(lblPeerReachabilityAdvice_, 3, 0, 1, 2);
     statusGrid->setColumnStretch(0, 1);
     statusGrid->setColumnStretch(1, 1);
     layout->addWidget(statusGroup);
@@ -14386,6 +14388,13 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   const bool listening = networkInfo["listen"].toBool(false);
   const int listenPort = networkInfo["listen_port"].toInt(kDineroMainnetP2PPort);
   const bool inboundObserved = networkInfo["inbound_observed"].toBool(inbound > 0);
+  const bool directReachable = networkInfo["direct_reachable"].toBool(inboundObserved);
+  const bool relayFallbackEligible = networkInfo["relay_fallback_eligible"].toBool(false);
+  const QJsonObject relay = networkInfo["relay"].toObject();
+  const QString relayMode = relay["mode"].toString(networkInfo["relay_mode"].toString("auto"));
+  const bool localRelay = relay["local"].toBool(networkInfo["localrelay"].toBool(false));
+  const bool miningRelayActive =
+      relay["mining_active"].toBool(networkInfo["mining_relay_active"].toBool(false));
 
   cachedPeerCount_ = connections;
   if (lblConnections_) {
@@ -14452,6 +14461,11 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   } else if (onionConfigured) {
     reachabilityAdvice = "Reachability: Tor fallback is configured but not reachable yet.";
     reachabilityAdviceColor = "#d8c08a";
+  } else if (relayFallbackEligible) {
+    reachabilityAdvice = localRelay
+        ? "Reachability: direct inbound is blocked; relay fallback is eligible and this miner can help relay the network."
+        : "Reachability: direct inbound is blocked; relay fallback is eligible.";
+    reachabilityAdviceColor = "#d8c08a";
   } else if (requested) {
     reachabilityAdvice = "Reachability: outbound works; router mapping did not open inbound yet.";
     reachabilityAdviceColor = "#d8c08a";
@@ -14477,6 +14491,23 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
       text += QString(" · Tor: %1").arg(onionNote.isEmpty() ? "not available" : onionNote);
     }
     lblPeerPortMapping_->setText(text);
+  }
+  if (lblPeerRelay_) {
+    QString role;
+    if (relayMode == "0" || relayMode == "off" || relayMode == "false" || relayMode == "no") {
+      role = "off";
+    } else if (localRelay) {
+      role = miningRelayActive ? "helping while mining" : "helping";
+    } else if (relayMode == "auto") {
+      role = "auto, idle until mining";
+    } else {
+      role = relayMode;
+    }
+
+    QString fallback = directReachable
+        ? "direct reachable"
+        : (relayFallbackEligible ? "fallback eligible" : "fallback idle");
+    lblPeerRelay_->setText(QString("Relay: %1 · %2").arg(role, fallback));
   }
   if (lblPeerReachabilityAdvice_) {
     lblPeerReachabilityAdvice_->setText(reachabilityAdvice);

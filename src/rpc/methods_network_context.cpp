@@ -214,8 +214,24 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     result["connections_out"] = static_cast<Json::UInt64>(status.outbound);
     result["listen"] = status.listening;
     result["listen_port"] = static_cast<int>(status.listen_port);
-    result["reachable"] = status.inbound > 0 || !status.advertised_addresses.empty();
-    result["inbound_observed"] = status.inbound > 0;
+    const bool direct_inbound_observed = status.inbound > 0;
+    const bool direct_advertised = !status.advertised_addresses.empty();
+    const bool direct_reachable =
+        direct_inbound_observed || direct_advertised || status.port_mapping_active;
+    const bool relay_fallback_eligible =
+        status.network_active && status.listening && !direct_reachable;
+    result["reachable"] = direct_reachable;
+    result["inbound_observed"] = direct_inbound_observed;
+    result["direct_inbound_observed"] = direct_inbound_observed;
+    result["direct_reachable"] = direct_reachable;
+    result["relay_fallback_eligible"] = relay_fallback_eligible;
+
+    din::Json relay;
+    relay["mode"] = status.relay_mode;
+    relay["local"] = status.local_relay;
+    relay["mining_active"] = status.mining_relay_active;
+    relay["fallback_eligible"] = relay_fallback_eligible;
+    result["relay"] = relay;
 
     din::Json local_addresses(Json::arrayValue);
     for (const auto& [address, port] : status.advertised_addresses) {

@@ -623,6 +623,7 @@ private:
   QLabel* lblPeerSummary_;
   QLabel* lblPeerReachability_;
   QLabel* lblPeerPortMapping_;
+  QLabel* lblPeerRelay_;
   QLabel* lblPeerAdvertised_;
   QLabel* lblPeerReachabilityAdvice_;
 
