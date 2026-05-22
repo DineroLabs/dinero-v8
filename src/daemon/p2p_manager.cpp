@@ -2185,15 +2185,21 @@ void P2PManager::handle_relay_hints(const std::string& peer_address,
 void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
     if (!peer || !node_identity_) return;
     if (!peer->identity_proven) return;       // need dineroid to have run
-    if (configured_relay_endpoints_.empty()) return;
 
-    // Match peer->to_string() (e.g. "172.93.160.131:20999") against
-    // configured list (already lowercased). Both lowercased for safety.
+    std::vector<std::string> endpoints;
+    {
+        std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
+        endpoints = configured_relay_endpoints_;
+    }
+    if (endpoints.empty()) return;
+
+    // Match peer->to_string() (e.g. "172.93.160.131:20999") against the
+    // designated relay list (already lowercased). Both lowercased.
     std::string key = peer->to_string();
     std::transform(key.begin(), key.end(), key.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     bool matched = false;
-    for (const auto& ep : configured_relay_endpoints_) {
+    for (const auto& ep : endpoints) {
         if (ep == key) { matched = true; break; }
     }
     if (!matched) return;
@@ -2228,7 +2234,10 @@ void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
 // still the same (replay-binding is per-connection).
 void P2PManager::RefreshRelayRegistrations() {
     if (!node_identity_) return;
-    if (configured_relay_endpoints_.empty()) return;
+    {
+        std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
+        if (configured_relay_endpoints_.empty()) return;
+    }
 
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::shared_ptr<PeerInfo>> due;
@@ -3284,10 +3293,116 @@ void P2PManager::set_configured_relay_endpoints(std::vector<std::string> endpoin
         std::transform(s.begin(), s.end(), s.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     }
-    configured_relay_endpoints_ = std::move(endpoints);
-    if (!configured_relay_endpoints_.empty()) {
-        std::cout << "[P2P] configured " << configured_relay_endpoints_.size()
+    // Mark config-managed BEFORE publishing the list, so the keepalive
+    // thread's auto-register sees the flag and never fights an operator.
+    relay_endpoints_from_config_.store(true, std::memory_order_release);
+    size_t n = 0;
+    {
+        std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
+        configured_relay_endpoints_ = std::move(endpoints);
+        n = configured_relay_endpoints_.size();
+    }
+    if (n != 0) {
+        std::cout << "[P2P] configured " << n
                   << " relay endpoint(s) for outbound RELAY_REGISTER" << std::endl;
+    }
+}
+
+namespace {
+// Bootstrap relay endpoints for cold-start auto-registration. Dynamic
+// NODE_RELAY discovery via addrman is primary; this list is the fallback
+// used before addrman has learned any relays from gossip.
+// OPS: populate with real relay hostnames before the MainnetRelayReady()
+// gate is flipped (PR-4). Until that gate flips, auto-register never runs
+// and these entries are never dialed.
+constexpr std::pair<const char*, uint16_t> kMainnetRelayPeers[] = {
+    {"relay1.dinerolabs.org", 20999},
+    {"relay2.dinerolabs.org", 20999},
+    {"relay3.dinerolabs.org", 20999},
+};
+}  // namespace
+
+void P2PManager::MaybeAutoRegisterWithRelays() {
+    // An operator pinned relays via relayregister= — never override them.
+    if (relay_endpoints_from_config_.load(std::memory_order_acquire)) return;
+    // Relay path not enabled for this network. This gate also guards the
+    // connect_to_peer() calls below — until it flips, nothing is dialed.
+    if (!dinero::network::QuicTransport::MainnetRelayReady()) return;
+
+    // Collect live relay connections; bail if we already have a confirmed
+    // inbound path (UPnP/NAT-PMP succeeded or an externalip is set — in
+    // both cases advertised_addresses_ is non-empty).
+    std::vector<std::string> live_relays;
+    std::unordered_set<std::string> connected_keys;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        if (!advertised_addresses_.empty()) return;
+        for (const auto& kv : connected_peers_) {
+            const auto& peer = kv.second;
+            if (!peer || !peer->is_connected) continue;
+            std::string pk = peer->to_string();
+            std::transform(pk.begin(), pk.end(), pk.begin(),
+                           [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                           });
+            connected_keys.insert(pk);
+            if (peer->is_our_relay) live_relays.push_back(pk);
+        }
+    }
+    if (live_relays.size() >= kAutoRelayTargetCount) {
+        // Enough live relays — trim the designated list back to them.
+        std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
+        configured_relay_endpoints_ = live_relays;
+        return;
+    }
+
+    // Top up: dynamic NODE_RELAY discovery first, bootstrap fallback.
+    std::vector<std::pair<std::string, uint16_t>> candidates;
+    if (address_manager_) {
+        for (const auto& a : address_manager_->getAddressesByService(
+                 ServiceFlags::NODE_RELAY, kAutoRelayTargetCount * 2)) {
+            candidates.emplace_back(a.ip, a.port);
+        }
+    }
+    for (const auto& bp : kMainnetRelayPeers) {
+        candidates.emplace_back(bp.first, bp.second);
+    }
+
+    std::vector<std::string> desired = live_relays;
+    std::vector<std::pair<std::string, uint16_t>> to_connect;
+    for (const auto& [host, port] : candidates) {
+        if (desired.size() >= kAutoRelayTargetCount) break;
+        if (port == 0) continue;
+        if (!external_ip_.empty() && host == external_ip_ &&
+            port == listen_port_) {
+            continue;  // never relay through ourselves
+        }
+        std::string key = host + ":" + std::to_string(port);
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char c) {
+                           return static_cast<char>(std::tolower(c));
+                       });
+        if (std::find(desired.begin(), desired.end(), key) != desired.end()) {
+            continue;  // already designated
+        }
+        desired.push_back(key);
+        if (connected_keys.find(key) == connected_keys.end()) {
+            to_connect.emplace_back(host, port);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
+        configured_relay_endpoints_ = desired;
+    }
+    // connect_to_peer does I/O — call it outside every lock.
+    for (const auto& [host, port] : to_connect) {
+        connect_to_peer(host, port);
+    }
+    if (!to_connect.empty()) {
+        std::cout << "[P2P] relay auto-register: dialing " << to_connect.size()
+                  << " relay candidate(s) (" << live_relays.size() << "/"
+                  << kAutoRelayTargetCount << " live)" << std::endl;
     }
 }
 
@@ -6073,6 +6188,10 @@ void P2PManager::keepalive_loop() {
         // refresh cadence vs 30s wake-up); only fires for is_our_relay
         // peers whose last register is older than the refresh interval.
         RefreshRelayRegistrations();
+        // NAT traversal: keep relay registrations topped up when this
+        // node has no confirmed inbound path. No-op when relays are
+        // operator-configured or the MainnetRelayReady() gate is closed.
+        MaybeAutoRegisterWithRelays();
         // NAT Phase D-1: time out pending RELAY_CONNECT requests
         // whose ack hasn't arrived within kRelayConnectTimeout (10s).
         SweepRelayConnectTimeouts();

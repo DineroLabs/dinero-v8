@@ -708,8 +708,21 @@ private:
     // Lower-cased "host:port" strings. Lookup is O(N) per handshake,
     // but N is small (typically 1-3 relays per node).
     std::vector<std::string> configured_relay_endpoints_;
+    // configured_relay_endpoints_ is set from config once, but also
+    // rewritten periodically by MaybeAutoRegisterWithRelays on the
+    // keepalive thread, so it is mutex-guarded. relay_endpoints_from_config_
+    // records whether an operator pinned them (relayregister=) — when true,
+    // auto-register leaves the list alone.
+    mutable std::mutex relay_endpoints_mutex_;
+    std::atomic<bool> relay_endpoints_from_config_{false};
     static constexpr uint32_t kRelayRegisterTtlSeconds = 7200;       // 2h
     static constexpr std::chrono::seconds kRelayRegisterRefreshInterval{3600};  // 1h
+    // NAT traversal: NAT-gated relay auto-registration. When this node has
+    // no confirmed inbound path it keeps up to kAutoRelayTargetCount relay
+    // registrations alive, discovered via addrman NODE_RELAY peers with a
+    // hardcoded bootstrap fallback. Runs on the keepalive tick.
+    static constexpr size_t kAutoRelayTargetCount = 3;
+    void MaybeAutoRegisterWithRelays();
 
     // NAT traversal Phase C3 slice 3: relay-side circuit table.
     // Keyed on circuit_id (allocated by handle_relay_connect from a
