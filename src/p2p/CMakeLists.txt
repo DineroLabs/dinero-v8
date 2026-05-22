@@ -23,6 +23,7 @@ set(DINERO_CORE_P2P_SOURCES
   src/network/quic_session.cpp       # NAT traversal Phase B2: encrypted ngtcp2 session driver
   src/network/stun_client.cpp        # NAT traversal Phase C1: STUN public-IP discovery
   src/network/relay_registry.cpp     # NAT traversal Phase C3: NAT'd peer registry on relay nodes
+  src/network/relay_tls_keypair.cpp  # Self-signed cert+key for the QUIC relay TLS layer
   src/daemon/p2p_message.cpp
   src/daemon/peer_connection.cpp
   src/daemon/p2p_manager.cpp

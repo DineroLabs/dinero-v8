@@ -698,6 +698,19 @@ private:
     // services (serverinfo signer, future relay register).
     std::shared_ptr<dinero::daemon::NodeIdentity> node_identity_;
 
+    // QUIC relay TLS material. Populated once at start() with an ephemeral
+    // self-signed cert+key generated in-process via
+    // dinero::network::GenerateRelayTlsKeypair. The encryption layer is
+    // opportunistic (verify_peer=false): we do not authenticate the relay or
+    // the peer at the TLS layer — the existing dineroid identity exchange
+    // running inside the encrypted stream is the trust anchor. This struct
+    // is reused for every relay circuit (client side and server side both).
+    // Empty `certificate_pem` indicates init failed and encrypted relay
+    // should refuse to engage; install paths check via_relay->encrypted_quic
+    // to gate.
+    dinero::network::QuicSessionOptions relay_tls_options_;
+    bool relay_tls_ready_{false};
+
     // NAT traversal Phase C3 slice 2: in-memory directory of NAT'd
     // peers that have registered with us as their relay. Empty until
     // a RELAY_REGISTER arrives. handle_relay_connect (slice 3) looks

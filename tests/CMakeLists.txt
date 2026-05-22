@@ -1815,6 +1815,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
+    src/network/relay_tls_keypair.cpp
     src/network/udp_socket.cpp
     src/daemon/node_identity.cpp
     src/p2p/addr_v2.cpp
@@ -1978,6 +1979,38 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SO
     TIMEOUT 10
   )
   list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_session)
+endif()
+
+if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_relay_tls_keypair.cpp)
+  add_executable(test_relay_tls_keypair
+    tests/network/test_relay_tls_keypair.cpp
+    src/network/relay_tls_keypair.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
+  )
+  target_link_libraries(test_relay_tls_keypair
+    PRIVATE
+      GTest::gtest
+      GTest::gtest_main
+      Threads::Threads
+      dinero_ngtcp2
+      dinero_ngtcp2_crypto_ossl
+      OpenSSL::SSL
+      OpenSSL::Crypto
+  )
+  if(WIN32)
+    target_link_libraries(test_relay_tls_keypair PRIVATE ws2_32)
+  endif()
+  target_include_directories(test_relay_tls_keypair PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME RelayTlsKeypair COMMAND test_relay_tls_keypair)
+  set_tests_properties(RelayTlsKeypair PROPERTIES
+    LABELS "p2p;quic;ngtcp2;transport;crypto;quic-relay-focused"
+    TIMEOUT 15
+  )
+  list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_relay_tls_keypair)
 endif()
 
 if(DINERO_QUIC_RELAY_TEST_TARGETS)
