@@ -1232,7 +1232,14 @@ bool P2PService::Start() {
         {
             auto prune_svc = prune_;  // capture shared_ptr by value for lambda safety
             const bool bridge_enabled = config_->GetBool("utreexo-bridge", true);
-            p2p_mgr_->set_service_flags_provider([prune_svc, bridge_enabled]() -> uint64_t {
+            // NAT traversal: a node advertises NODE_RELAY (willing to relay
+            // circuits for NAT'd peers) only when the operator opts in via
+            // p2p.relay. Default off — default-on relay role needs the legal
+            // sign-off the NAT plan's risk #3 flags. The bit lets NAT'd peers
+            // discover this node as a relay through normal addrman gossip.
+            const bool relay_enabled = config_->GetBool("p2p.relay", false);
+            p2p_mgr_->set_service_flags_provider([prune_svc, bridge_enabled,
+                                                  relay_enabled]() -> uint64_t {
                 uint64_t flags = ServiceFlags::NODE_UTREEXO;
                 if (bridge_enabled) {
                     flags |= ServiceFlags::NODE_UTREEXO_BRIDGE;
@@ -1243,14 +1250,17 @@ bool P2PService::Start() {
                     flags |= ServiceFlags::NODE_NETWORK;
                 }
                 // NAT traversal Phase 1A: announce post-verack dineroid capability.
-                // NODE_RELAY / NODE_BEHIND_RELAY are added in later phases.
                 flags |= ServiceFlags::NODE_DINERO_V2;
+                if (relay_enabled) {
+                    flags |= ServiceFlags::NODE_RELAY;
+                }
                 return flags;
             });
             bool pruned = prune_svc && prune_svc->isEnabled();
             logger_interface_->info("[P2PService] Service flags provider wired (pruned=" +
                          std::string(pruned ? "true" : "false") +
-                         ", bridge=" + std::string(bridge_enabled ? "true" : "false") + ")");
+                         ", bridge=" + std::string(bridge_enabled ? "true" : "false") +
+                         ", relay=" + std::string(relay_enabled ? "true" : "false") + ")");
         }
 
         {
