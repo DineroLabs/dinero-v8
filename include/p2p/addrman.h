@@ -88,7 +88,15 @@ public:
      * Get addresses for outbound connections
      */
     std::vector<NetworkAddress> getAddresses(size_t count = 1);
-    
+
+    /**
+     * Get addresses advertising a given service bit (e.g. NODE_RELAY),
+     * spread across distinct /16 subnets so no single network dominates.
+     * The caller passes the bit; addrman stays service-agnostic.
+     */
+    std::vector<NetworkAddress> getAddressesByService(uint64_t service_bit,
+                                                      size_t count = 8);
+
     /**
      * Get addresses to advertise to peers
      */

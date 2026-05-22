@@ -3231,7 +3231,7 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
                 // only allow our own listen_port_, since that's the
                 // canonical Dinero P2P port.
                 if (e.port != listen_port_) continue;
-                if (remember_peer_address(addr, e.port, peer_address)) {
+                if (remember_peer_address(addr, e.port, peer_address, e.services)) {
                     ipv4_added++;
                     new_for_relay.emplace_back(addr, e.port);
                 }
@@ -3585,7 +3585,8 @@ std::vector<std::pair<std::string, uint16_t>> P2PManager::get_seed_nodes() const
 
 bool P2PManager::remember_peer_address(const std::string& address,
                                        uint16_t port,
-                                       const std::string& source_peer) {
+                                       const std::string& source_peer,
+                                       uint64_t services) {
     if (IsLocalOrWildcardAddress(address) || port == 0) {
         return false;
     }
@@ -3606,7 +3607,7 @@ bool P2PManager::remember_peer_address(const std::string& address,
     add_seed_node(address, port);
 
     if (address_manager_ && !IsOnionAddress(address)) {
-        auto network_addr = NetworkAddressForPeer(address, port);
+        auto network_addr = NetworkAddressForPeer(address, port, services);
         address_manager_->addAddress(network_addr, source_peer);
     }
     return true;
