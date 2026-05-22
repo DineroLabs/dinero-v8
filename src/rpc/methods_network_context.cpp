@@ -137,7 +137,7 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     result["subversion"] = dinero::P2PService::GetUserAgent();
     result["protocolversion"] = static_cast<int>(dinero::P2PService::GetProtocolVersion());
     result["network"] = network_name;
-    result["localrelay"] = true;
+    result["localrelay"] = false;
     result["timeoffset"] = 0;
 
     din::Json networks(Json::arrayValue);
@@ -206,6 +206,9 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     result["networks"] = networks;
 
     result["networkactive"] = status.network_active;
+    result["localrelay"] = status.local_relay;
+    result["relay_mode"] = status.relay_mode;
+    result["mining_relay_active"] = status.mining_relay_active;
     result["connections"] = static_cast<Json::UInt64>(status.connections);
     result["connections_in"] = static_cast<Json::UInt64>(status.inbound);
     result["connections_out"] = static_cast<Json::UInt64>(status.outbound);
