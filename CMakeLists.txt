@@ -1036,6 +1036,13 @@ message(STATUS "   lightningd = optional L2 daemon (channels, HTLCs, routing)")
 # Add compile definitions needed by core logic
 target_compile_definitions(dinero_core PRIVATE
   CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"  # SQL-first schema path
+  # Version metadata: without these, the user-agent string baked into
+  # p2p_manager.cpp's USER_AGENT (and a handful of other defaults in
+  # http_rpc_server.cpp and ws/*) hits the "unknown" fallback because the
+  # define on the dinerod executable target doesn't reach already-compiled
+  # static-lib TUs. Same shape as dinero_rpc_handlers + dinerod.
+  DINERO_CLI_GIT_SHA=${GIT_HASH}
+  DINERO_GIT_COMMIT_FULL="${GIT_HASH_FULL}"
 )
 
 # ─────────────────────────────────────────────────────────────────────────
