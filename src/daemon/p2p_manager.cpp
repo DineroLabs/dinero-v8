@@ -4339,6 +4339,61 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
         peer_weak = peer;  // Create weak_ptr for thread-safe access
     }
 
+    // For QUIC-encrypted virtual relay peers, the dineroid handshake at
+    // perform_handshake cannot start until the underlying QUIC handshake
+    // has completed — send_relay_data_to_virtual_peer refuses queue work
+    // until peer->relay_quic_session->handshake_ready() is true. Inbound
+    // QUIC packets are delivered by handle_relay_data on the listen
+    // thread (independent of this thread). Outbound QUIC packets need
+    // this thread to drain them periodically, and HandleExpiry needs to
+    // fire so ngtcp2 emits retransmissions on time. Without that loop,
+    // the handshake stalls and the peer is torn down before dineroid
+    // can even start.
+    //
+    // Timeout matches kRelayConnectTimeout (10s): a tunnel that can't
+    // QUIC-handshake inside the bootstrap window is functionally dead.
+    if (peer->via_relay && peer->via_relay->encrypted_quic) {
+        constexpr auto kQuicHandshakeTimeout = std::chrono::seconds(10);
+        constexpr auto kPollInterval = std::chrono::milliseconds(50);
+        const auto deadline =
+            std::chrono::steady_clock::now() + kQuicHandshakeTimeout;
+        bool ready = false;
+        while (!shutdown_requested_.load(std::memory_order_acquire)) {
+            auto p = peer_weak.lock();
+            if (!p) break;
+            {
+                std::lock_guard<std::mutex> lock(p->relay_quic_mutex);
+                ready = p->relay_quic_session &&
+                        p->relay_quic_session->handshake_ready();
+            }
+            if (ready) break;
+            (void)drain_relay_quic_outgoing(*p);
+            {
+                std::lock_guard<std::mutex> lock(p->relay_quic_mutex);
+                if (p->relay_quic_session) {
+                    (void)p->relay_quic_session->HandleExpiry();
+                }
+            }
+            if (std::chrono::steady_clock::now() >= deadline) break;
+            std::this_thread::sleep_for(kPollInterval);
+        }
+        if (!ready) {
+            std::cout << "[P2P] relay-handshake: QUIC handshake did not "
+                      << "become ready within "
+                      << kQuicHandshakeTimeout.count()
+                      << "s for " << peer_key
+                      << " — tearing down circuit" << std::endl;
+            {
+                std::lock_guard<std::mutex> lock(peers_mutex_);
+                connecting_peers_.erase(peer_key);
+            }
+            cleanup_peer(peer_key);
+            return;
+        }
+        std::cout << "[P2P] relay-handshake: QUIC handshake ready for "
+                  << peer_key << " — starting dineroid" << std::endl;
+    }
+
     // Perform handshake
     // TS1 CRITICAL: Lock weak_ptr before access, proving peer is still alive
     auto peer_locked = peer_weak.lock();
