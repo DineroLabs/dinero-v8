@@ -6286,6 +6286,39 @@ void P2PManager::keepalive_loop() {
             }
         }
 
+        // Reap zombie relay-virtual peers. Direct peers detect dead connections
+        // via TCP-level signals (RST, keepalive timeout, send error). Relay-
+        // virtual peers have no such mechanism — if the remote endpoint's
+        // QuicSession dies, the relay still has both TCP sockets open and
+        // there's no "session closed" signal that travels back through the
+        // relay control plane. Without explicit timeout-based reaping, the
+        // local relay-virtual peer entry stays in connected_peers_ forever
+        // with a frozen last_message_at, appearing as "quiet" in the UI.
+        //
+        // Threshold: 90 seconds. PINGs go every 30s, so 90s = 3 missed
+        // PING/PONG round-trips. Real low-traffic peers still produce PINGs
+        // so they won't trip this; only genuinely-silent (= dead) peers do.
+        constexpr auto kRelayVirtualIdleTimeout = std::chrono::seconds(90);
+        std::vector<std::string> relay_zombies;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            const auto now = std::chrono::system_clock::now();
+            for (const auto& pair : connected_peers_) {
+                const auto& peer = pair.second;
+                if (!peer->is_connected) continue;
+                if (!peer->via_relay) continue;
+                const auto idle = now - peer->last_message_at;
+                if (idle > kRelayVirtualIdleTimeout) {
+                    relay_zombies.push_back(pair.first);
+                }
+            }
+        }
+        for (const auto& key : relay_zombies) {
+            std::cout << "[P2P] relay-virtual: reaping zombie peer " << key
+                      << " (no inbound message in 90s+)" << std::endl;
+            cleanup_peer(key);
+        }
+
         // Send PING to all connected peers
         std::vector<std::string> peer_addresses;
         {
