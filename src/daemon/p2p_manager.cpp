@@ -4363,13 +4363,16 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
     // For QUIC-encrypted virtual relay peers, the dineroid handshake at
     // perform_handshake cannot start until the underlying QUIC handshake
     // has completed — send_relay_data_to_virtual_peer refuses queue work
-    // until peer->relay_quic_session->handshake_ready() is true. Inbound
-    // QUIC packets are delivered by handle_relay_data on the listen
-    // thread (independent of this thread). Outbound QUIC packets need
-    // this thread to drain them periodically, and HandleExpiry needs to
-    // fire so ngtcp2 emits retransmissions on time. Without that loop,
-    // the handshake stalls and the peer is torn down before dineroid
-    // can even start.
+    // until peer->relay_quic_session->handshake_ready() is true. The
+    // QUIC handshake itself is driven entirely by handle_relay_data on
+    // the listen thread:
+    //   - Each incoming RELAY_DATA frame: StartServerFromInitial (first
+    //     packet) or ReceivePacket (subsequent), then HandleExpiry,
+    //     then drain_relay_quic_outgoing pumps the response back.
+    // This thread only needs to WAIT for handshake_ready before kicking
+    // off dineroid. Driving ngtcp2 from here (Drain / HandleExpiry)
+    // would race the listen thread without proper QuicSession-level
+    // synchronization and was empirically breaking the handshake.
     //
     // Timeout matches kRelayConnectTimeout (10s): a tunnel that can't
     // QUIC-handshake inside the bootstrap window is functionally dead.
@@ -4388,13 +4391,6 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
                         p->relay_quic_session->handshake_ready();
             }
             if (ready) break;
-            (void)drain_relay_quic_outgoing(*p);
-            {
-                std::lock_guard<std::mutex> lock(p->relay_quic_mutex);
-                if (p->relay_quic_session) {
-                    (void)p->relay_quic_session->HandleExpiry();
-                }
-            }
             if (std::chrono::steady_clock::now() >= deadline) break;
             std::this_thread::sleep_for(kPollInterval);
         }
