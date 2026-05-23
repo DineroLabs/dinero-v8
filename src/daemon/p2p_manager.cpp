@@ -4213,7 +4213,19 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
 void P2PManager::run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer) {
     std::vector<uint8_t> stream_buffer;
     const auto virtual_peer_key = peer->to_string();
-    while (!shutdown_requested_.load() && peer->is_connected) {
+    // Gate on lifetime_state, not is_connected. is_connected is only set AFTER
+    // perform_handshake completes — but the inbound side of perform_handshake
+    // blocks on receive_peer_message waiting for the version message, which is
+    // delivered BY this reader loop. Gating on is_connected was a chicken-and-egg
+    // that made the loop exit immediately on inbound relay circuits, never
+    // feeding relay_inbox_frames, leaving perform_handshake blocked forever.
+    // lifetime_state is set to RUNNING at peer_handler_loop entry — BEFORE this
+    // reader loop is spawned — so it's the correct lifecycle anchor.
+    while (!shutdown_requested_.load()) {
+        const auto state = peer->lifetime_state.load(std::memory_order_acquire);
+        if (state != PeerLifetimeState::RUNNING && state != PeerLifetimeState::ALLOCATED) {
+            break;
+        }
         if (!peer->relay_quic_session) break;
         auto chunk = peer->relay_quic_session->ReadDecryptedStream(
             std::chrono::milliseconds(200));
