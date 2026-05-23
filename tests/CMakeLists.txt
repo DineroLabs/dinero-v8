@@ -68,6 +68,24 @@ set_tests_properties(ClockSource PROPERTIES
   TIMEOUT 5
 )
 
+add_executable(test_relay_hints_eviction
+  tests/network/test_relay_hints_eviction.cpp
+  src/network/relay_hints_eviction.cpp
+)
+add_dependencies(test_relay_hints_eviction gtest gtest_main)
+target_include_directories(test_relay_hints_eviction BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_relay_hints_eviction PRIVATE
+  GTest::gtest_main
+)
+add_test(NAME RelayHintsEviction COMMAND test_relay_hints_eviction)
+set_tests_properties(RelayHintsEviction PROPERTIES
+  LABELS "network;relay;smoke"
+  TIMEOUT 5
+)
+
 add_executable(test_ripemd160_core_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/core/crypto/ripemd160.cpp

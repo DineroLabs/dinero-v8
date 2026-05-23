@@ -830,6 +830,12 @@ private:
         std::vector<uint8_t> relay_addr;  // raw bytes per network type
         uint16_t relay_port{0};
         std::chrono::steady_clock::time_point learned_at;
+        // Phase 1a: per-hint failure counter for eviction.
+        // Incremented when a dial via this hint fails (RELAY_CONNECT error
+        // OR QUIC handshake timeout on the resulting circuit). Reset to 0
+        // on any successful handshake or on receipt of a fresh duplicate
+        // hint. Drop when >= kHintMaxFailures.
+        int consecutive_dial_failures{0};
     };
     // Time source for TTL/expiry logic in the hints subsystem.
     // Defaults to SystemClockSource; tests inject a FakeClockSource.
@@ -847,6 +853,10 @@ private:
     // anyway), timed out, or got an explicit rejection. Avoids thrashing
     // when a relay has stale hints.
     static constexpr std::chrono::seconds kRelayDialBackoff{60};
+    static constexpr std::chrono::minutes kHintTtl{15};
+    static constexpr int kHintMaxFailures{3};
+    static constexpr std::chrono::minutes kHintResendPeriod{5};
+    static constexpr std::chrono::seconds kRelayDirectoryGracePeriod{90};
     std::unordered_map<std::string /*target_node_id_hex*/,
                        std::chrono::steady_clock::time_point>
         last_relay_dial_attempt_;
