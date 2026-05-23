@@ -845,6 +845,12 @@ private:
     std::unordered_map<std::string, std::vector<RelayHintRecord>> relay_hints_by_target_;
     static constexpr size_t kMaxHintsPerTarget = 4;
 
+    // Phase 1a observability — incremented from sweep + counter paths.
+    std::atomic<size_t> hints_evicted_expired_{0};
+    std::atomic<size_t> hints_evicted_failure_{0};
+    std::atomic<size_t> hints_received_self_{0};
+    std::atomic<size_t> hints_received_relay_{0};
+
     // NAT traversal Phase D-2: per-target dial backoff. When the
     // orchestrator decides to attempt a relay-dial for a target, we record
     // the timestamp here; subsequent orchestrator iterations skip the same
@@ -877,6 +883,10 @@ private:
     void run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer);
     void outbox_loop();
     void keepalive_loop();  // Phase C: Adaptive keepalive thread
+    // Phase 1a: evict stale relay-hint records from relay_hints_by_target_.
+    // Called from keepalive_loop on its existing 30s cadence; no new thread.
+    // Acquires relay_hints_mutex_. Logs eviction reason per entry.
+    void SweepRelayHintsCache();
     
     // Connection management
     void handle_incoming_connection(int client_socket, const std::string& client_address);

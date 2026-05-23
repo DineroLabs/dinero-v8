@@ -4,10 +4,11 @@
 #include "crypto/sha256.h"
 #include "common/sha256d.h"  // For Bitcoin-compatible double-SHA256 checksum
 #include "consensus/chainparams.h"  // Canonical source of the P2P network magic
-#include "network/local_interfaces.h"  // Self-loop filter at dial time
-#include "network/quic_transport.h"    // Mainnet relay safety gate for encrypted QUIC transport
-#include "network/relay_tls_keypair.h" // Self-signed cert+key for the QUIC relay TLS layer
-#include "network/types.h"          // Canonical P2P service flag assignments
+#include "network/local_interfaces.h"      // Self-loop filter at dial time
+#include "network/quic_transport.h"        // Mainnet relay safety gate for encrypted QUIC transport
+#include "network/relay_hints_eviction.h"  // ShouldEvictByTtl / ShouldEvictByFailure
+#include "network/relay_tls_keypair.h"     // Self-signed cert+key for the QUIC relay TLS layer
+#include "network/types.h"                 // Canonical P2P service flag assignments
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: dineroid signing
 #include "dinero/core/crypto/dinero_crypto_minimal.h"  // HASH160 3-arg form for node_id derivation
 #include <iomanip>                     // std::setw / std::setfill for node_id hex log
@@ -1623,6 +1624,53 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
         connected_peers_[virtual_peer_key] = peer;
     }
     return virtual_peer_key;
+}
+
+// Phase 1a: sweep stale relay-hint records from relay_hints_by_target_.
+// Called from keepalive_loop on its existing 30s cadence; no new thread.
+void P2PManager::SweepRelayHintsCache() {
+    const auto now = clock_->SteadyNow();
+    const dinero::network::HintEvictionPolicy policy{
+        .ttl = kHintTtl,
+        .max_failures = kHintMaxFailures,
+    };
+
+    size_t evicted_expired = 0;
+    size_t evicted_failure = 0;
+
+    std::lock_guard<std::mutex> lock(relay_hints_mutex_);
+    for (auto it = relay_hints_by_target_.begin();
+         it != relay_hints_by_target_.end();) {
+        auto& records = it->second;
+        records.erase(
+            std::remove_if(records.begin(), records.end(),
+                [&](const RelayHintRecord& r) {
+                    if (dinero::network::ShouldEvictByTtl(
+                            r.learned_at, now, policy)) {
+                        ++evicted_expired;
+                        std::cout << "[hint] evicted target=" << it->first
+                                  << " reason=expired" << std::endl;
+                        return true;
+                    }
+                    if (dinero::network::ShouldEvictByFailure(
+                            r.consecutive_dial_failures, policy)) {
+                        ++evicted_failure;
+                        std::cout << "[hint] evicted target=" << it->first
+                                  << " reason=failures count="
+                                  << r.consecutive_dial_failures << std::endl;
+                        return true;
+                    }
+                    return false;
+                }),
+            records.end());
+        if (records.empty()) {
+            it = relay_hints_by_target_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    hints_evicted_expired_.fetch_add(evicted_expired);
+    hints_evicted_failure_.fetch_add(evicted_failure);
 }
 
 // NAT traversal Phase D-2: relay-aware outbound dialing orchestrator.
@@ -6237,6 +6285,7 @@ void P2PManager::keepalive_loop() {
         // relay registry reap expired registrations.
         SweepIdleCircuits();
         relay_registry_.Sweep();
+        SweepRelayHintsCache();
         // NAT Phase C3 slice 4a: refresh outbound RELAY_REGISTER on
         // peers we've designated as our relays. No-op most ticks (1h
         // refresh cadence vs 30s wake-up); only fires for is_our_relay
