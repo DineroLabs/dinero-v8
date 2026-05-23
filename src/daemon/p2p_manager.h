@@ -17,6 +17,7 @@
 
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
+#include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
 #include "network/token_bucket.h"     // NAT traversal: relay circuit bandwidth caps
@@ -303,6 +304,14 @@ public:
     using ServiceFlagsProvider = std::function<uint64_t()>;  // Returns advertised service flags
 
     P2PManager(uint16_t listen_port = 20999, const std::string& external_ip = "");
+
+    // Test-only constructor: inject a custom ClockSource (e.g.,
+    // FakeClockSource) for deterministic TTL tests. Existing default
+    // ctor stays untouched — defaults clock_ to SystemClockSource.
+    P2PManager(uint16_t listen_port,
+               const std::string& external_ip,
+               std::unique_ptr<dinero::network::ClockSource> clock);
+
     ~P2PManager();
     
     // Lifecycle
@@ -821,10 +830,26 @@ private:
         std::vector<uint8_t> relay_addr;  // raw bytes per network type
         uint16_t relay_port{0};
         std::chrono::steady_clock::time_point learned_at;
+        // Phase 1a: per-hint failure counter for eviction.
+        // Incremented when a dial via this hint fails (RELAY_CONNECT error
+        // OR QUIC handshake timeout on the resulting circuit). Reset to 0
+        // on any successful handshake or on receipt of a fresh duplicate
+        // hint. Drop when >= kHintMaxFailures.
+        int consecutive_dial_failures{0};
     };
+    // Time source for TTL/expiry logic in the hints subsystem.
+    // Defaults to SystemClockSource; tests inject a FakeClockSource.
+    std::unique_ptr<dinero::network::ClockSource> clock_;
+
     mutable std::mutex relay_hints_mutex_;
     std::unordered_map<std::string, std::vector<RelayHintRecord>> relay_hints_by_target_;
     static constexpr size_t kMaxHintsPerTarget = 4;
+
+    // Phase 1a observability — incremented from sweep + counter paths.
+    std::atomic<size_t> hints_evicted_expired_{0};
+    std::atomic<size_t> hints_evicted_failure_{0};
+    std::atomic<size_t> hints_received_self_{0};
+    std::atomic<size_t> hints_received_relay_{0};
 
     // NAT traversal Phase D-2: per-target dial backoff. When the
     // orchestrator decides to attempt a relay-dial for a target, we record
@@ -834,6 +859,10 @@ private:
     // anyway), timed out, or got an explicit rejection. Avoids thrashing
     // when a relay has stale hints.
     static constexpr std::chrono::seconds kRelayDialBackoff{60};
+    static constexpr std::chrono::minutes kHintTtl{15};
+    static constexpr int kHintMaxFailures{3};
+    static constexpr std::chrono::minutes kHintResendPeriod{5};
+    static constexpr std::chrono::seconds kRelayDirectoryGracePeriod{90};
     std::unordered_map<std::string /*target_node_id_hex*/,
                        std::chrono::steady_clock::time_point>
         last_relay_dial_attempt_;
@@ -854,6 +883,18 @@ private:
     void run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer);
     void outbox_loop();
     void keepalive_loop();  // Phase C: Adaptive keepalive thread
+    // Phase 1a: evict stale relay-hint records from relay_hints_by_target_.
+    // Called from keepalive_loop on its existing 30s cadence; no new thread.
+    // Acquires relay_hints_mutex_. Logs eviction reason per entry.
+    void SweepRelayHintsCache();
+
+    // Phase 1a: re-send our own RELAY_HINTS(target=self) to every
+    // NODE_DINERO_V2 peer that isn't one of our configured relayregister=
+    // endpoints. Called from keepalive_loop; gated by kHintResendPeriod
+    // so the effective cadence is 5min ± 30s.
+    void MaybeReSendRelayHints();
+
+    std::chrono::steady_clock::time_point last_relay_hints_resend_{};
     
     // Connection management
     void handle_incoming_connection(int client_socket, const std::string& client_address);

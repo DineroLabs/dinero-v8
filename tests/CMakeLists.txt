@@ -51,6 +51,41 @@ set_tests_properties(AddrmanRelaySelect PROPERTIES
   TIMEOUT 10
 )
 
+add_executable(test_clock_source
+  tests/network/test_clock_source.cpp
+)
+add_dependencies(test_clock_source gtest gtest_main)
+target_include_directories(test_clock_source BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_clock_source PRIVATE
+  GTest::gtest_main
+)
+add_test(NAME ClockSource COMMAND test_clock_source)
+set_tests_properties(ClockSource PROPERTIES
+  LABELS "network;relay;smoke"
+  TIMEOUT 5
+)
+
+add_executable(test_relay_hints_eviction
+  tests/network/test_relay_hints_eviction.cpp
+  src/network/relay_hints_eviction.cpp
+)
+add_dependencies(test_relay_hints_eviction gtest gtest_main)
+target_include_directories(test_relay_hints_eviction BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_relay_hints_eviction PRIVATE
+  GTest::gtest_main
+)
+add_test(NAME RelayHintsEviction COMMAND test_relay_hints_eviction)
+set_tests_properties(RelayHintsEviction PROPERTIES
+  LABELS "network;relay;smoke"
+  TIMEOUT 5
+)
+
 add_executable(test_ripemd160_core_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/core/crypto/ripemd160.cpp
@@ -1738,6 +1773,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   add_executable(test_p2p_manager_ts1_integration
     tests/p2p/test_p2p_manager_ts1_integration.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
     src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
     src/network/quic_transport.cpp # Required by encrypted relay readiness checks in P2PManager
@@ -1813,6 +1849,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
   add_executable(test_relay_virtual_transport
     tests/p2p/test_relay_virtual_transport.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
@@ -5034,6 +5071,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
@@ -5227,6 +5265,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/daemon/bech32_decode.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
@@ -5577,6 +5616,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp  # For P2PMessage::create_inv() and P2PManager
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
     src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
     src/network/quic_transport.cpp # Required by encrypted relay readiness checks in P2PManager
@@ -7852,6 +7892,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     tests/p2p/test_handshake_simple.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
@@ -7912,6 +7953,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     tests/p2p/test_ping_pong.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
