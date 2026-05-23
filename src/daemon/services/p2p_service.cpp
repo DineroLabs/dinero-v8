@@ -280,6 +280,12 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.onion_transport_auto_detected = onion_proxy_auto_detected_;
     status.onion_proxy = p2p_mgr_->onion_proxy_endpoint();
     status.onion_transport_message = onion_proxy_message_;
+    status.relay_hints_received_self = p2p_mgr_->relay_hints_received_self_count();
+    status.relay_hints_received_relay = p2p_mgr_->relay_hints_received_relay_count();
+    status.relay_hints_evicted_expired = p2p_mgr_->relay_hints_evicted_expired_count();
+    status.relay_hints_evicted_failure = p2p_mgr_->relay_hints_evicted_failure_count();
+    status.relay_directory_entries = p2p_mgr_->relay_registry_entry_count();
+    status.relay_directory_grace_pending = p2p_mgr_->relay_registry_grace_pending_count();
 
     const auto peers = p2p_mgr_->get_connected_peers();
     for (const auto& peer : peers) {

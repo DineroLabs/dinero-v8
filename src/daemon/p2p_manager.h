@@ -417,6 +417,24 @@ public:
     // Network info
     uint16_t get_listen_port() const { return listen_port_; }
     std::string get_user_agent() const { return user_agent_; }
+    size_t relay_hints_received_self_count() const {
+        return hints_received_self_.load(std::memory_order_acquire);
+    }
+    size_t relay_hints_received_relay_count() const {
+        return hints_received_relay_.load(std::memory_order_acquire);
+    }
+    size_t relay_hints_evicted_expired_count() const {
+        return hints_evicted_expired_.load(std::memory_order_acquire);
+    }
+    size_t relay_hints_evicted_failure_count() const {
+        return hints_evicted_failure_.load(std::memory_order_acquire);
+    }
+    size_t relay_registry_entry_count() const {
+        return relay_registry_.size();
+    }
+    size_t relay_registry_grace_pending_count() const {
+        return relay_registry_.grace_pending_count();
+    }
 
     // ========================================================================
     // PHASE C: Persistent Peer Database & Adaptive Keepalive

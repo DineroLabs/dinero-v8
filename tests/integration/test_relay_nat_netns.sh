@@ -201,6 +201,24 @@ wait_relay_peerinfo() {
     fail "${label}: expected at least one matching relay peer"
 }
 
+wait_networkinfo_jq() {
+    local ns="$1"
+    local rpc_port="$2"
+    local datadir="$3"
+    local jq_filter="$4"
+    local label="$5"
+    local json
+    for _ in $(seq 1 90); do
+        json="$(rpc_call "${ns}" "${rpc_port}" "${datadir}" "getnetworkinfo" '[]' 2>/dev/null || true)"
+        if jq -e "${jq_filter}" <<<"${json}" >/dev/null 2>&1; then
+            pass "${label}"
+            return 0
+        fi
+        sleep 1
+    done
+    fail "${label}: getnetworkinfo did not satisfy '${jq_filter}'"
+}
+
 # Wait until no peer whose addr contains addr_substr remains — used to
 # confirm a disconnect fully settled before reconnecting.
 wait_peer_gone() {
@@ -394,10 +412,16 @@ wait_log "${LOG_TARGET}" "[P2P] relay-register: sent to ${RELAY_IP}:${RELAY_P2P}
     "target sent RELAY_REGISTER to configured relay"
 wait_log "${LOG_RELAY}" "[P2P] relayreg: registered" \
     "relay accepted target registration"
+wait_networkinfo_jq "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" \
+    '(.result.relay.directory.entries // 0) >= 1' \
+    "relay getnetworkinfo exposes registered relay directory entry"
 wait_log "${LOG_RELAY}" "[P2P] relay-hints: advertised registered target" \
     "relay advertised target reachability hint to origin"
 wait_log "${LOG_ORIGIN}" "[P2P] relay-hints: ingested" \
     "origin ingested relay hint for target"
+wait_networkinfo_jq "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" \
+    '((.result.relay.hints.received_self // 0) + (.result.relay.hints.received_relay // 0)) >= 1' \
+    "origin getnetworkinfo exposes relay hint counters"
 wait_log "${LOG_RELAY}" "[P2P] relaycon: opened circuit" \
     "relay opened origin-to-target circuit"
 wait_log "${LOG_ORIGIN}" "[P2P] relay-orchestrator: opened circuit" \
@@ -426,5 +450,24 @@ rpc_call "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" \
     "addnode" "[\"${RELAY_IP}:${RELAY_P2P}\",\"onetry\"]" >/dev/null
 wait_log "${LOG_RELAY}" "[P2P] relay-hints: sent registry catch-up" \
     "relay replayed its registry to the reconnecting origin"
+
+# ── relay-directory disconnect grace ────────────────────────────────
+# When a registered target disconnects from the fleet relay, the relay
+# must hide the target from lookups/catch-up immediately but retain it
+# behind a short grace timer so a brief reconnect can restore the entry.
+rpc_call "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
+    "disconnectnode" "[\"${RELAY_IP}:${RELAY_P2P}\"]" >/dev/null 2>&1 || true
+wait_peer_gone "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
+    "${RELAY_IP}:${RELAY_P2P}" "target dropped its direct relay link"
+wait_networkinfo_jq "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" \
+    '(.result.relay.directory.grace_pending // 0) >= 1' \
+    "relay marks disconnected registration grace-pending"
+rpc_call "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
+    "addnode" "[\"${RELAY_IP}:${RELAY_P2P}\",\"onetry\"]" >/dev/null
+wait_connection_count "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" 1 \
+    "target reconnected outbound to relay"
+wait_networkinfo_jq "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" \
+    '(.result.relay.directory.entries // 0) >= 1 and (.result.relay.directory.grace_pending // 0) == 0' \
+    "relay restores registration after target reconnect"
 
 echo "RELAY_NAT_NETNS_DIAL_THROUGH=PASS"

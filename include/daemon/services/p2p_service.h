@@ -83,6 +83,12 @@ public:
         bool local_relay{false};
         bool relay_active{false};
         std::string relay_mode{"auto"};
+        size_t relay_hints_received_self{0};
+        size_t relay_hints_received_relay{0};
+        size_t relay_hints_evicted_expired{0};
+        size_t relay_hints_evicted_failure{0};
+        size_t relay_directory_entries{0};
+        size_t relay_directory_grace_pending{0};
     };
 
     P2PService() = default;
