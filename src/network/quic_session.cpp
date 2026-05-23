@@ -362,6 +362,19 @@ struct QuicSession::Impl {
         return settings;
     }
 
+    // Enable ngtcp2's keep-alive: when the connection is idle this long,
+    // ngtcp2 emits a QUIC-level PING frame to keep the connection alive.
+    // 20 seconds gives 3x safety margin under the 60s max_idle_timeout below.
+    // Must be called AFTER ngtcp2_conn_*_new — there is no settings-level
+    // equivalent; the API is per-conn (ngtcp2_conn_set_keep_alive_timeout).
+    void EnableKeepAlive() {
+        if (conn) {
+            constexpr ngtcp2_duration kKeepAliveNs =
+                20ULL * 1000ULL * 1000ULL * 1000ULL;
+            ngtcp2_conn_set_keep_alive_timeout(conn, kKeepAliveNs);
+        }
+    }
+
     ngtcp2_transport_params BuildTransportParams() const {
         ngtcp2_transport_params params;
         ngtcp2_transport_params_default(&params);
@@ -371,7 +384,12 @@ struct QuicSession::Impl {
         params.initial_max_data = 4 * 1024 * 1024;
         params.initial_max_streams_bidi = 16;
         params.initial_max_streams_uni = 4;
-        params.max_idle_timeout = 30000;
+        // Idle timeout: 60 seconds. Raised from 30s because the keepalive_loop's
+        // dineroid PING cadence is 30s — at the bare timeout we were racing
+        // ourselves. With ngtcp2's keep_alive_period set to 20s (in settings
+        // above), QUIC-level PING frames keep the connection alive between
+        // application-layer messages; 60s timeout gives 3x safety margin.
+        params.max_idle_timeout = 60000;
         params.active_connection_id_limit = 4;
         return params;
     }
@@ -558,6 +576,7 @@ struct QuicSession::Impl {
             SetError(std::string("ngtcp2_conn_client_new failed: ") + ngtcp2_strerror(rv));
             return false;
         }
+        EnableKeepAlive();
 
         if (!SetupClientTls()) {
             return false;
@@ -650,6 +669,7 @@ struct QuicSession::Impl {
             SetError(std::string("ngtcp2_conn_server_new failed: ") + ngtcp2_strerror(rv));
             return false;
         }
+        EnableKeepAlive();
 
         if (!SetupServerTls()) {
             return false;
