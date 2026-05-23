@@ -3008,51 +3008,6 @@ bool P2PManager::test_enqueue_relay_frame(const std::string& virtual_peer_key,
     return enqueue_relay_frame(virtual_peer_key, frame);
 }
 
-bool P2PManager::test_configure_relay_quic_server(
-    const std::string& virtual_peer_key,
-    const dinero::network::QuicSessionOptions& options) {
-    std::shared_ptr<PeerInfo> peer;
-    {
-        std::lock_guard<std::mutex> lock(peers_mutex_);
-        auto it = connected_peers_.find(virtual_peer_key);
-        if (it != connected_peers_.end()) {
-            peer = it->second;
-        }
-    }
-    if (!peer || !peer->via_relay) {
-        return false;
-    }
-
-    peer->via_relay->encrypted_quic = true;
-    peer->relay_quic_options = options;
-    peer->relay_quic_session = std::make_shared<dinero::network::QuicSession>(
-        [this, virtual_peer_key](std::vector<uint8_t> bytes) {
-            std::shared_ptr<PeerInfo> p;
-            {
-                std::lock_guard<std::mutex> lock(peers_mutex_);
-                auto it = connected_peers_.find(virtual_peer_key);
-                if (it != connected_peers_.end()) p = it->second;
-            }
-            if (p) send_relay_payload_to_virtual_peer(*p, bytes);
-        });
-    return true;
-}
-
-bool P2PManager::test_relay_quic_handshake_ready(const std::string& virtual_peer_key) {
-    std::shared_ptr<PeerInfo> peer;
-    {
-        std::lock_guard<std::mutex> lock(peers_mutex_);
-        auto it = connected_peers_.find(virtual_peer_key);
-        if (it != connected_peers_.end()) {
-            peer = it->second;
-        }
-    }
-    if (!peer || !peer->relay_quic_session) {
-        return false;
-    }
-    return peer->relay_quic_session->handshake_ready();
-}
-
 std::unique_ptr<P2PMessage> P2PManager::test_receive_peer_message(
     const std::string& peer_key,
     std::chrono::milliseconds timeout) {

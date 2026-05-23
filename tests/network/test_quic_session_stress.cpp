@@ -102,7 +102,16 @@ bool RunOneHandshake(std::chrono::milliseconds timeout) {
     if (client_ready.wait_for(timeout) != std::future_status::ready) return false;
     if (server_ready.wait_for(timeout) != std::future_status::ready) return false;
 
-    return client_ready.get() && server_ready.get();
+    const bool result = client_ready.get() && server_ready.get();
+
+    // Explicit teardown so session destructors run while both sessions are still
+    // in scope, making the by-reference writer captures unambiguously safe.
+    client_session->Close();
+    server_session->Close();
+    client_session.reset();
+    server_session.reset();
+
+    return result;
 }
 
 }  // namespace

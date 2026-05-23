@@ -104,6 +104,13 @@ TEST(QuicSession, LoopbackHandshakeAndOneEncryptedStreamPayload) {
     EXPECT_FALSE(server_stats.tls_cipher.empty());
 
     EXPECT_TRUE(info.mainnet_relay_ready);
+
+    // Explicit teardown so session destructors run while both sessions are
+    // still in scope, making the by-reference writer captures unambiguously safe.
+    client_session->Close();
+    server_session->Close();
+    client_session.reset();
+    server_session.reset();
 }
 
 int main(int argc, char** argv) {

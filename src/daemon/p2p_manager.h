@@ -601,10 +601,6 @@ public:
         bool is_outbound);
     bool test_enqueue_relay_frame(const std::string& virtual_peer_key,
                                   const std::vector<uint8_t>& frame);
-    bool test_configure_relay_quic_server(
-        const std::string& virtual_peer_key,
-        const dinero::network::QuicSessionOptions& options);
-    bool test_relay_quic_handshake_ready(const std::string& virtual_peer_key);
     std::unique_ptr<P2PMessage> test_receive_peer_message(
         const std::string& peer_key,
         std::chrono::milliseconds timeout);
