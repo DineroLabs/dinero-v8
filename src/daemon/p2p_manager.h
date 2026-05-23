@@ -135,7 +135,6 @@ struct PeerInfo {
     std::mutex relay_quic_mutex;
     std::shared_ptr<dinero::network::QuicSession> relay_quic_session;
     std::optional<dinero::network::QuicSessionOptions> relay_quic_options;
-    std::vector<uint8_t> relay_quic_stream_buffer;
     std::deque<std::vector<uint8_t>> relay_quic_outbox_packets;
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
@@ -168,7 +167,6 @@ struct PeerInfo {
           via_relay(std::move(other.via_relay)),
           relay_quic_session(std::move(other.relay_quic_session)),
           relay_quic_options(std::move(other.relay_quic_options)),
-          relay_quic_stream_buffer(std::move(other.relay_quic_stream_buffer)),
           relay_quic_outbox_packets(std::move(other.relay_quic_outbox_packets)),
           lifetime_state(other.lifetime_state.load()) {}
 
@@ -896,7 +894,6 @@ private:
     bool send_relay_data_to_virtual_peer(PeerInfo& peer, const P2PMessage& message);
     bool send_relay_payload_to_virtual_peer(PeerInfo& peer,
                                             const std::vector<uint8_t>& payload);
-    bool drain_relay_quic_outgoing(PeerInfo& peer);
     bool unwrap_relay_quic_packet(const std::string& virtual_peer_key,
                                   PeerInfo& peer,
                                   const std::vector<uint8_t>& packet);

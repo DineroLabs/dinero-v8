@@ -3026,7 +3026,6 @@ bool P2PManager::test_configure_relay_quic_server(
     peer->via_relay->encrypted_quic = true;
     peer->relay_quic_options = options;
     peer->relay_quic_session = std::make_shared<dinero::network::QuicSession>();
-    peer->relay_quic_stream_buffer.clear();
     peer->relay_quic_outbox_packets.clear();
     return true;
 }
@@ -5541,33 +5540,6 @@ bool P2PManager::send_relay_payload_to_virtual_peer(PeerInfo& peer,
     return ok;
 }
 
-bool P2PManager::drain_relay_quic_outgoing(PeerInfo& peer) {
-    if (!peer.via_relay || !peer.via_relay->encrypted_quic || !peer.relay_quic_session) {
-        return false;
-    }
-
-    std::vector<std::vector<uint8_t>> packets;
-    if (!peer.relay_quic_session->DrainOutgoing(&packets)) {
-        std::cout << "[P2P] relay-transport: QUIC drain failed for "
-                  << peer.to_string() << ": "
-                  << peer.relay_quic_session->last_error() << std::endl;
-        return false;
-    }
-
-    bool all_sent = true;
-    for (auto& packet : packets) {
-        if (!send_relay_payload_to_virtual_peer(peer, packet)) {
-            all_sent = false;
-#ifdef DINERO_TEST_BUILD
-            if (peer.relay_quic_outbox_packets.size() < 1024) {
-                peer.relay_quic_outbox_packets.push_back(std::move(packet));
-            }
-#endif
-        }
-    }
-    return all_sent;
-}
-
 bool P2PManager::send_relay_data_to_virtual_peer(PeerInfo& peer,
                                                  const P2PMessage& message) {
     if (!peer.via_relay) {
@@ -5580,7 +5552,6 @@ bool P2PManager::send_relay_data_to_virtual_peer(PeerInfo& peer,
                       << peer.to_string() << std::endl;
             return false;
         }
-        std::lock_guard<std::mutex> lock(peer.relay_quic_mutex);
         if (!peer.relay_quic_session || !peer.relay_quic_session->active() ||
             !peer.relay_quic_session->handshake_ready()) {
             std::cout << "[P2P] relay-transport: QUIC virtual peer is not handshake-ready for "
@@ -5589,13 +5560,8 @@ bool P2PManager::send_relay_data_to_virtual_peer(PeerInfo& peer,
         }
         const auto inner_data = message.serialize();
         const auto framed = FrameRelayQuicStreamPayload(inner_data);
-        if (!peer.relay_quic_session->QueueStreamData(framed, false)) {
-            std::cout << "[P2P] relay-transport: failed to queue QUIC stream data for "
-                      << peer.to_string() << ": "
-                      << peer.relay_quic_session->last_error() << std::endl;
-            return false;
-        }
-        return drain_relay_quic_outgoing(peer);
+        peer.relay_quic_session->EnqueueOutgoingStream(framed, false);
+        return true;
     }
 
     if (!plaintext_relay_transport_allowed()) {
