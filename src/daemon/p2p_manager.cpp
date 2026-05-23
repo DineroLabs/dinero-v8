@@ -2761,6 +2761,23 @@ P2PManager::P2PManager(uint16_t listen_port, const std::string& external_ip)
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
+
+    if (!clock_) {
+        clock_ = std::make_unique<dinero::network::SystemClockSource>();
+    }
+}
+
+// Test-only constructor: inject a custom ClockSource (e.g., FakeClockSource)
+// for deterministic TTL tests. Delegates all other init to the default ctor,
+// then overrides clock_. Existing default ctor stays untouched.
+P2PManager::P2PManager(uint16_t listen_port,
+                       const std::string& external_ip,
+                       std::unique_ptr<dinero::network::ClockSource> clock)
+    : P2PManager(listen_port, external_ip) {
+    clock_ = std::move(clock);
+    if (!clock_) {
+        clock_ = std::make_unique<dinero::network::SystemClockSource>();
+    }
 }
 
 P2PManager::~P2PManager() {

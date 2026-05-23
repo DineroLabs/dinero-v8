@@ -17,6 +17,7 @@
 
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
+#include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
 #include "network/token_bucket.h"     // NAT traversal: relay circuit bandwidth caps
@@ -303,6 +304,14 @@ public:
     using ServiceFlagsProvider = std::function<uint64_t()>;  // Returns advertised service flags
 
     P2PManager(uint16_t listen_port = 20999, const std::string& external_ip = "");
+
+    // Test-only constructor: inject a custom ClockSource (e.g.,
+    // FakeClockSource) for deterministic TTL tests. Existing default
+    // ctor stays untouched — defaults clock_ to SystemClockSource.
+    P2PManager(uint16_t listen_port,
+               const std::string& external_ip,
+               std::unique_ptr<dinero::network::ClockSource> clock);
+
     ~P2PManager();
     
     // Lifecycle
@@ -822,6 +831,10 @@ private:
         uint16_t relay_port{0};
         std::chrono::steady_clock::time_point learned_at;
     };
+    // Time source for TTL/expiry logic in the hints subsystem.
+    // Defaults to SystemClockSource; tests inject a FakeClockSource.
+    std::unique_ptr<dinero::network::ClockSource> clock_;
+
     mutable std::mutex relay_hints_mutex_;
     std::unordered_map<std::string, std::vector<RelayHintRecord>> relay_hints_by_target_;
     static constexpr size_t kMaxHintsPerTarget = 4;
