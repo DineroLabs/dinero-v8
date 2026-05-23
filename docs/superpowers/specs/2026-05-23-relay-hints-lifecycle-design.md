@@ -103,31 +103,53 @@ Refresh: on every incoming RELAY_HINTS that names the same `(target_node_id, rel
 
 Failure counting: when the orchestrator's RELAY_CONNECT callback reports `ok=false` OR when the post-orchestrator QUIC handshake on the resulting circuit times out, increment `consecutive_dial_failures` for the hint that produced this dial.
 
-Eviction execution: a new `SweepRelayHintsCache()` runs from `keepalive_loop` (30s cadence — already exists). Walks `relay_hints_by_target_` once, removes expired entries, removes entries over failure threshold, logs the eviction reason.
+Eviction execution: a new `SweepRelayHintsCache()` runs from the existing `keepalive_loop` (same loop that runs the zombie reaper and `MaybeReSendRelayHints` above; 30s cadence — NO new thread). Walks `relay_hints_by_target_` once, removes expired entries, removes entries over failure threshold, logs the eviction reason.
+
+### Injectable clock (testability)
+
+All time reads inside the hints subsystem go through a single abstraction so tests can advance time deterministically without `std::this_thread::sleep_for`. Introduce:
+
+```cpp
+struct ClockSource {
+    virtual std::chrono::steady_clock::time_point SteadyNow() const = 0;
+    virtual std::chrono::system_clock::time_point SystemNow() const = 0;
+    virtual ~ClockSource() = default;
+};
+struct SystemClockSource : ClockSource { /* real clocks */ };
+struct FakeClockSource : ClockSource { /* test-controllable */ };
+```
+
+`P2PManager` holds `std::unique_ptr<ClockSource> clock_` (default `SystemClockSource`). Constructor takes an optional override for tests. Every `steady_clock::now()` and `system_clock::now()` inside the hints subsystem becomes `clock_->SteadyNow()` / `clock_->SystemNow()`. This makes "advance steady_clock by 16min" a single line in tests instead of an actual 16-minute sleep.
+
+Scope: limit `ClockSource` adoption to the hints code paths in Phase 1a. Don't refactor unrelated time reads — YAGNI.
 
 ### Sender propagation — periodic re-send
 
-`SendRelayHintsIfApplicable()` already exists and fires at handshake. Add a new periodic loop:
+`SendRelayHintsIfApplicable()` already exists and fires at handshake. Add a periodic re-send, driven from the **existing `keepalive_loop`** (no new thread — the QUIC race history in PR #125/#126 makes adding another periodic thread a discipline violation; the 30s keepalive cadence is fine granularity for a 5-minute resend).
 
 ```cpp
-void P2PManager::PeriodicRelayHintsResend() {
+// Inside keepalive_loop, runs every 30s anyway:
+void P2PManager::MaybeReSendRelayHints() {
+    const auto now = clock_->SteadyNow();
+    if (now - last_relay_hints_resend_ < kHintResendPeriod) return;
+    last_relay_hints_resend_ = now;
     // Walk connected_peers_, for each NODE_DINERO_V2 peer that is NOT
     // one of our configured relayregister= endpoints, re-send our own
     // RELAY_HINTS (target=self) with current relay-list snapshot.
-    // Cadence: every kHintResendPeriod = std::chrono::minutes(5)
 }
 ```
 
-Driver: a new dedicated thread (or merged into `keepalive_loop` if its 30s cadence is acceptable — pick whichever is simpler in review).
+`kHintResendPeriod = std::chrono::minutes(5)`. Effective cadence is 5min ± 30s.
 
 ### Fleet relay directory expiry
 
 The fleet relay maintains an "I am willing to relay for X" registry. Today: registrations persist forever. Add:
 
-- Track each registrant's connected `PeerInfo*` (most likely already known via the source peer that sent RELAY_REGISTER).
-- On the registrant's peer-disconnect event, start a 90s grace timer with the entry retained but flagged `grace_pending=true`.
-- If the registrant reconnects + re-sends RELAY_REGISTER inside 90s, clear the flag.
-- If 90s elapse without reconnect, evict the registration and (Phase 1c) send a directory-change RELAY_HINTS to connected peers.
+- For each registrant, store `node_id_hex` (20-byte hex) + `peer_key` (the connected_peers_ map key, the same string-keyed lookup used everywhere else in `p2p_manager`). **Do NOT store a raw `PeerInfo*` or even a `shared_ptr<PeerInfo>` inside the directory** — disconnect/reconnect is exactly where lifetime bugs land. Lookup by `peer_key` against `connected_peers_` (already mutex-protected) on each read; absence from that map = disconnected.
+- On the registrant's peer-disconnect event (fired wherever `connected_peers_.erase(...)` happens), look up directory entries whose `peer_key` matches the disconnecting peer, set `grace_expires_at = now + 90s` on each. Entry remains in directory but is flagged.
+- If a new RELAY_REGISTER arrives with the same `node_id_hex`, clear the grace flag and update `peer_key` to the new connection's key.
+- A periodic sweep (in `keepalive_loop`, same 30s cadence as the receiver-side sweep) evicts entries whose `grace_expires_at < now`.
+- Phase 1c addition: on eviction, send a directory-change RELAY_HINTS to connected peers (signed by neither relay nor evictee — just a presence delta). For Phase 1a, receivers' own TTL handles cleanup within 15min.
 
 Implementation lives wherever RELAY_REGISTER is currently handled (search `HandleRelayRegister` or similar).
 
@@ -157,23 +179,36 @@ Counters (cheap atomics, exported via getnetworkinfo extension):
 
 ### Message format change
 
-Add two fields per hint entry:
+Add three fields per hint entry:
 
 | Field | Size | Semantics |
 |---|---|---|
+| `target_pubkey` | 33 bytes | The target node's full ed25519 public key (compressed). REQUIRED so third-party receivers (gossip recipients who have never directly handshaken with the target) can verify the signature. Receiver MUST check `HASH160(target_pubkey) == target_node_id`; mismatch = drop. |
 | `expires_at` | 4 bytes LE uint32 | Unix-seconds when this hint is no longer valid. Set by target node at sign time. Receivers ignore hints where `expires_at - now > 1 hour` (clamp ceiling). |
-| `signature` | 64 bytes | ed25519 over `domain_sep ‖ target_node_id ‖ expires_at_le4 ‖ endpoints_canonical`. Signing key = the target node's existing identity key (reuse — no new keypair). |
+| `signature` | 64 bytes | ed25519 over `domain_sep ‖ target_node_id ‖ target_pubkey ‖ expires_at_le4 ‖ endpoints_canonical`. Signing key = the target node's existing identity key (reuse — no new keypair). |
 
 Domain separator: `"DIN-RELAY-HINT-V2\x00"` (constant byte string, prevents cross-protocol signature reuse).
 
 Endpoints canonical encoding: same byte layout as in the existing RELAY_HINTS message body (so the signature commits to the exact bytes peers see). Order is the encoding order.
+
+**Verification order (mandatory, in this order — fail-fast):**
+1. `HASH160(target_pubkey) == target_node_id` — else drop (binding violation).
+2. `now < expires_at` — else drop (expired).
+3. `ed25519_verify(target_pubkey, signature, domain_sep ‖ target_node_id ‖ target_pubkey ‖ expires_at_le4 ‖ endpoints_canonical)` — else drop (bad signature).
+4. Only after all three pass: insert into cache with `signer_verified=true`.
 
 ### Wire-compat with v1
 
 - v1 message tag (existing opcode) continues to be accepted. v1 hints get `signer_verified=false`.
 - New v2 message tag (different opcode). v2 hints get `signer_verified=verify(signature)`. Failed verification = drop, don't even cache.
 - Receiver cache treats v1 hints as low-trust: cached but excluded from third-party gossip (Phase 1c). Same TTL and failure-threshold apply.
-- Sender behavior: a v8 node that knows the peer supports v2 (advertised via a new service bit in the version handshake) sends v2 only. To peers without the bit, sends v1 as before.
+- Sender behavior: a v8 node that knows the peer supports v2 (advertised via the service bit defined below) sends v2 only. To peers without the bit, sends v1 as before.
+
+### Service bit allocation
+
+Allocate `NODE_RELAY_HINTS_V2 = 1ULL << 29` in `include/network/types.h`. Bit 29 is currently free (used bits: 0, 3, 10, 24, 25, 26, 27, 28); placing it at 29 keeps the relay-related cluster (NODE_RELAY=26, NODE_DINERO_V2=27, NODE_BEHIND_RELAY=28, NODE_RELAY_HINTS_V2=29) contiguous.
+
+Set on outbound version-handshake when the local binary supports the v2 wire format. Test for collision: a `static_assert((NODE_RELAY_HINTS_V2 & (NODE_NETWORK | NODE_WITNESS | NODE_NETWORK_LIMITED | NODE_UTREEXO | NODE_UTREEXO_BRIDGE | NODE_RELAY | NODE_DINERO_V2 | NODE_BEHIND_RELAY)) == 0, "service bit collision")` lives next to the constant.
 
 ### Receiver-side changes
 
@@ -268,12 +303,12 @@ Per-source counters added:
 
 ### Phase 1a (no wire change — unit + integration possible immediately)
 
-Unit tests in `tests/network/relay_hints_test.cpp` (new file):
-- TTL eviction: insert hint, advance steady_clock by 16min, run sweep, assert removed.
+Unit tests in `tests/network/relay_hints_test.cpp` (new file). All tests use `FakeClockSource` to drive time deterministically — no real sleeps:
+- TTL eviction: insert hint, `fake_clock.AdvanceSteady(16min)`, run sweep, assert removed.
 - Failure-counter eviction: insert hint, simulate 3 RELAY_CONNECT failures, assert removed.
-- Refresh on duplicate: insert hint, advance 10min, receive duplicate, advance 10min, assert still present (refreshed).
-- Periodic re-send: regtest 3-node topology, assert each node sends RELAY_HINTS every 5min ±1min.
-- Directory grace: registrant disconnect → 60s wait → reconnect → assert still in directory; same flow with 120s wait → assert dropped.
+- Refresh on duplicate: insert hint, `AdvanceSteady(10min)`, receive duplicate, `AdvanceSteady(10min)`, assert still present (refreshed).
+- Periodic re-send: drive `MaybeReSendRelayHints` with `AdvanceSteady(5min+1s)` between calls, assert hint message dispatched each time.
+- Directory grace: registrant disconnect → `AdvanceSteady(60s)` → reconnect → assert still in directory; same flow with `AdvanceSteady(120s)` → assert dropped.
 - Reconnect re-register: simulate handshake-disconnect-reconnect, assert RELAY_REGISTER fires twice.
 
 ### Phase 1b (wire format)
