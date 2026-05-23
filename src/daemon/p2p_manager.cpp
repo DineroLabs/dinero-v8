@@ -1132,7 +1132,6 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
 
     std::string virtual_peer_key;
     bool is_local_endpoint = false;
-    bool created_virtual_peer = false;
 
     {
         std::lock_guard<std::mutex> lock(originator_mutex_);
@@ -1236,11 +1235,33 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
             connected_peers_.emplace(virtual_peer_key, std::move(virtual_peer));
         }
         is_local_endpoint = true;
-        created_virtual_peer = true;
         std::cout << "[P2P] relay-data: created inbound virtual peer "
                   << virtual_peer_key
                   << (relay_tls_ready_ ? " (QUIC-encrypted)" : " (plaintext)")
                   << std::endl;
+
+        // Spawn the peer_handler thread now — regardless of whether the
+        // first inner frame takes the QUIC path (which returns at the
+        // unwrap_relay_quic_packet site below) or the plaintext path
+        // (which falls through to the bottom of this function). Without
+        // this, QUIC-encrypted inbound circuits never get a handler
+        // thread, the dineroid identity exchange never starts, and the
+        // virtual peer sits empty forever — even after the QUIC handshake
+        // completes. The QH wait inside peer_handler_loop will block
+        // until handshake_ready (or 10s timeout) before kicking dineroid.
+        {
+            std::shared_ptr<PeerInfo> handler_peer;
+            {
+                std::lock_guard<std::mutex> lock(peers_mutex_);
+                auto it = connected_peers_.find(virtual_peer_key);
+                if (it != connected_peers_.end()) {
+                    handler_peer = it->second;
+                }
+            }
+            if (handler_peer) {
+                start_peer_handler_thread(std::move(handler_peer));
+            }
+        }
     }
 
     std::vector<uint8_t> inner(message.payload.begin() + static_cast<std::ptrdiff_t>(offset),
@@ -1295,17 +1316,13 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
         return true;
     }
 
-    if (created_virtual_peer) {
-        std::shared_ptr<PeerInfo> virtual_peer;
-        {
-            std::lock_guard<std::mutex> lock(peers_mutex_);
-            auto it = connected_peers_.find(virtual_peer_key);
-            if (it != connected_peers_.end()) {
-                virtual_peer = it->second;
-            }
-        }
-        start_peer_handler_thread(std::move(virtual_peer));
-    }
+    // Note: the peer_handler thread is spawned inside the inline creation
+    // block above (right after the peer is added to connected_peers_).
+    // Keeping it there ensures the thread starts for both QUIC and
+    // plaintext paths — the QUIC branch returns at unwrap_relay_quic_packet
+    // earlier in this function and never reaches this point. Spawning here
+    // would only ever fire for the plaintext path, which is exactly the
+    // regression that left QUIC-encrypted inbound circuits without a handler.
     return true;
 }
 
@@ -4333,7 +4350,50 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
     // Perform handshake
     // TS1 CRITICAL: Lock weak_ptr before access, proving peer is still alive
     auto peer_locked = peer_weak.lock();
-    if (!peer_locked || !perform_handshake(peer_locked.get())) {
+    if (!peer_locked) {
+        std::cerr << "Handshake failed with " << peer_key << std::endl;
+        // Clear connecting guard on handshake failure
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            connecting_peers_.erase(peer_key);
+        }
+        cleanup_peer(peer_key);
+        return;
+    }
+
+    // For QUIC-encrypted virtual peers, wait for the QUIC handshake to complete
+    // before invoking the dineroid app-layer handshake. perform_handshake() sends
+    // bytes via send_relay_data_to_virtual_peer which requires handshake_ready().
+    if (peer_locked->via_relay && peer_locked->via_relay->encrypted_quic) {
+        if (!peer_locked->relay_quic_session) {
+            std::cerr << "[P2P] relay-handshake: QUIC virtual peer has no session for "
+                      << peer_key << std::endl;
+            cleanup_peer(peer_key);
+            return;
+        }
+        auto ready = peer_locked->relay_quic_session->WaitHandshakeReady();
+        if (ready.wait_for(std::chrono::seconds(10)) != std::future_status::ready ||
+            !ready.get()) {
+            std::cout << "[P2P] relay-transport: QUIC handshake did not become ready "
+                      << "within 10s for " << peer_key << std::endl;
+            cleanup_peer(peer_key);
+            return;
+        }
+        std::cout << "[P2P] relay-handshake: QUIC handshake ready for "
+                  << peer_key << " — starting dineroid" << std::endl;
+
+        // Spawn the decrypted-stream reader thread. It pumps decrypted bytes
+        // from the QuicSession outbox into enqueue_relay_frame.
+        {
+            std::lock_guard<std::mutex> lock(peer_threads_mutex_);
+            if (!shutdown_requested_.load(std::memory_order_acquire)) {
+                peer_threads_.emplace_back(std::make_unique<std::thread>(
+                    &P2PManager::run_relay_quic_reader_loop, this, peer_locked));
+            }
+        }
+    }
+
+    if (!perform_handshake(peer_locked.get())) {
         std::cerr << "Handshake failed with " << peer_key << std::endl;
         // Clear connecting guard on handshake failure
         {
