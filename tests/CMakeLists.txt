@@ -1773,6 +1773,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   add_executable(test_p2p_manager_ts1_integration
     tests/p2p/test_p2p_manager_ts1_integration.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
     src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
     src/network/quic_transport.cpp # Required by encrypted relay readiness checks in P2PManager
@@ -1848,6 +1849,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
   add_executable(test_relay_virtual_transport
     tests/p2p/test_relay_virtual_transport.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
@@ -5069,6 +5071,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
@@ -5262,6 +5265,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/daemon/bech32_decode.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
@@ -5612,6 +5616,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp  # For P2PMessage::create_inv() and P2PManager
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
     src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
     src/network/quic_transport.cpp # Required by encrypted relay readiness checks in P2PManager
@@ -7887,6 +7892,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     tests/p2p/test_handshake_simple.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
@@ -7947,6 +7953,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     tests/p2p/test_ping_pong.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
