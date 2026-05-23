@@ -2179,6 +2179,17 @@ void P2PManager::handle_relay_hints(const std::string& peer_address,
     }
     if (count > 100) return;  // sanity cap on hint count per message
 
+    // Determine source category once for the whole message (all hints share
+    // the same sender). Safe to read is_our_relay outside the hint loop.
+    bool sender_is_relay = false;
+    {
+        std::lock_guard<std::mutex> plk(peers_mutex_);
+        auto pit = connected_peers_.find(peer_address);
+        if (pit != connected_peers_.end() && pit->second) {
+            sender_is_relay = pit->second->is_our_relay;
+        }
+    }
+
     int ingested = 0;
     for (uint64_t i = 0; i < count; i++) {
         if (offset + 20 + 1 + 1 > payload.size()) return;
@@ -2210,8 +2221,6 @@ void P2PManager::handle_relay_hints(const std::string& peer_address,
             // Port is BE per BIP155 convention; matches create_relay_hints.
             rec.relay_port = (static_cast<uint16_t>(payload[offset + addr_len]) << 8) |
                              static_cast<uint16_t>(payload[offset + addr_len + 1]);
-            rec.learned_at = std::chrono::steady_clock::now();
-
             std::ostringstream id_hex;
             id_hex << std::hex << std::setfill('0');
             for (auto b : target_node_id) {
@@ -2219,22 +2228,38 @@ void P2PManager::handle_relay_hints(const std::string& peer_address,
             }
             const std::string key = id_hex.str();
 
-            std::lock_guard<std::mutex> lock(relay_hints_mutex_);
-            auto& bucket = relay_hints_by_target_[key];
-            // Replace any existing entry for the same (net, addr, port);
-            // otherwise append. Cap to kMaxHintsPerTarget (newest wins).
-            auto match = std::find_if(bucket.begin(), bucket.end(),
-                [&](const RelayHintRecord& r) {
-                    return r.net == rec.net && r.relay_addr == rec.relay_addr &&
-                           r.relay_port == rec.relay_port;
-                });
-            if (match != bucket.end()) {
-                match->learned_at = rec.learned_at;
-            } else {
-                if (bucket.size() >= kMaxHintsPerTarget) {
-                    bucket.erase(bucket.begin());  // drop oldest
+            {
+                std::lock_guard<std::mutex> lock(relay_hints_mutex_);
+                auto& bucket = relay_hints_by_target_[key];
+                // Dedup by (net, relay_addr, relay_port): refresh learned_at
+                // and reset the failure counter on duplicate; otherwise append.
+                // Cap to kMaxHintsPerTarget (oldest evicted on overflow).
+                bool refreshed = false;
+                for (auto& existing : bucket) {
+                    if (existing.net == rec.net &&
+                        existing.relay_addr == rec.relay_addr &&
+                        existing.relay_port == rec.relay_port) {
+                        existing.learned_at = clock_->SteadyNow();
+                        existing.consecutive_dial_failures = 0;
+                        refreshed = true;
+                        break;
+                    }
                 }
-                bucket.push_back(std::move(rec));
+                if (!refreshed) {
+                    rec.learned_at = clock_->SteadyNow();
+                    rec.consecutive_dial_failures = 0;
+                    if (bucket.size() >= kMaxHintsPerTarget) {
+                        bucket.erase(bucket.begin());  // drop oldest
+                    }
+                    bucket.push_back(std::move(rec));
+                }
+            }
+            // Source-tag counter: RelayPush if the sender is a configured
+            // relay (is_our_relay), Self otherwise (Phase 1a heuristic).
+            if (sender_is_relay) {
+                hints_received_relay_.fetch_add(1);
+            } else {
+                hints_received_self_.fetch_add(1);
             }
             ingested++;
         }
