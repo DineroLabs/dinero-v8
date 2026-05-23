@@ -5910,20 +5910,51 @@ void P2PManager::outbox_loop() {
             outbox_queue_.pop_front();
         }
         
-        // Find peer socket
+        // Find peer + classify as direct or relay-virtual.
+        // Relay-virtual peers have no real TCP socket_fd; they route bytes
+        // through QuicSession::EnqueueOutgoingStream instead.
+        std::shared_ptr<PeerInfo> peer_ptr;
+        bool is_relay_virtual = false;
         int socket_fd = -1;
-        bool peer_connected = false;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
             auto it = connected_peers_.find(msg.peer_id);
             if (it != connected_peers_.end() && it->second->is_connected) {
-                socket_fd = it->second->socket_fd;
-                peer_connected = true;
+                peer_ptr = it->second;
+                is_relay_virtual = (peer_ptr->via_relay &&
+                                    peer_ptr->via_relay->encrypted_quic);
+                if (!is_relay_virtual) {
+                    socket_fd = peer_ptr->socket_fd;
+                }
             }
         }
-        
-        if (!peer_connected || socket_fd < 0) {
+
+        if (!peer_ptr) {
             // Peer disconnected, drop message
+            continue;
+        }
+
+        if (is_relay_virtual) {
+            // Route through QuicSession outgoing stream (non-blocking enqueue).
+            // The session thread encrypts and ships via OutboundWriter →
+            // send_relay_payload_to_virtual_peer → RELAY_DATA on the relay
+            // socket. Bypasses the TCP socket_fd path entirely.
+            if (peer_ptr->relay_quic_session &&
+                peer_ptr->relay_quic_session->active() &&
+                peer_ptr->relay_quic_session->handshake_ready()) {
+                const auto framed = FrameRelayQuicStreamPayload(*msg.data);
+                peer_ptr->relay_quic_session->EnqueueOutgoingStream(framed, false);
+                std::lock_guard<std::mutex> lock(peers_mutex_);
+                peer_ptr->bytes_sent += msg.data->size();
+            }
+            // Whether or not the relay-virtual send succeeded, the broadcast
+            // message is consumed (no socket-level partial sends or backoff
+            // mechanism applies to QUIC-stream enqueues).
+            continue;
+        }
+
+        if (socket_fd < 0) {
+            // Direct peer without a valid socket — drop.
             continue;
         }
         
