@@ -279,6 +279,11 @@ struct QuicSession::Impl {
                               void* user_data,
                               void*) {
         auto* self = static_cast<Impl*>(user_data);
+        std::cout << "[DEBUG-DH5-QS] RecvStreamData FIRED stream_id=" << stream_id
+                  << " datalen=" << datalen
+                  << " role=" << (self->role == Role::Server ? "SERVER" : "CLIENT")
+                  << " (received_stream_data was " << self->received_stream_data.size()
+                  << "B, now adding " << datalen << "B)" << std::endl;
         self->received_stream_data.insert(self->received_stream_data.end(),
                                           data,
                                           data + datalen);
