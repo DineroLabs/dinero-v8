@@ -42,11 +42,6 @@ public:
     // they stall only this session — that's correct semantics.
     using OutboundWriter = std::function<void(std::vector<uint8_t>)>;
 
-    enum class Role {
-        Client,
-        Server,
-    };
-
     // Construction starts the owning thread, which blocks on the inbox
     // until Start{Client,Server} is called. `writer` must be valid for the
     // lifetime of the session.
@@ -67,9 +62,10 @@ public:
                      const UdpAddr& remote,
                      const QuicSessionOptions& options = QuicSessionOptions{});
 
-    // Prime the session for server role. Subsequent EnqueueIncomingPacket
-    // calls will cause StartServerFromInitial to be invoked on the first
-    // packet, then ReceivePacket on it and all subsequent packets.
+    // Prime the session for server role. The first EnqueueIncomingPacket
+    // call initialises the ngtcp2 server state; subsequent calls are
+    // delivered as normal QUIC packets. The session thread drives ngtcp2
+    // and emits outbound bytes via `writer`.
     bool StartServer(const UdpAddr& local,
                      const UdpAddr& remote,
                      const QuicSessionOptions& options);
@@ -82,13 +78,17 @@ public:
     // Enqueue application-layer stream bytes to send. Called by the
     // peer-handler thread (via send_relay_data_to_virtual_peer).
     // Non-blocking.
-    void QueueOutgoingStream(std::vector<uint8_t> payload, bool fin = false);
+    //
+    // `fin` defaults to false because relay tunnels are long-lived and
+    // many app-layer messages share one stream. Pass `fin = true` only
+    // when terminating the stream (e.g., graceful shutdown).
+    void EnqueueOutgoingStream(std::vector<uint8_t> payload, bool fin = false);
 
     // Handshake-completion future. Resolves true when both sides have
     // completed the QUIC handshake; resolves false on session failure,
     // close, or destruction. Safe to call from any thread; multiple
     // concurrent waiters are allowed (shared_future).
-    std::shared_future<bool> WaitHandshakeReady();
+    std::shared_future<bool> WaitHandshakeReady() const;
 
     // Pop any decrypted application-layer bytes that the session thread
     // has emitted since the last call. Blocks up to `timeout` if nothing
