@@ -219,25 +219,27 @@ wait_networkinfo_jq() {
     fail "${label}: getnetworkinfo did not satisfy '${jq_filter}'"
 }
 
-# Wait until no peer whose addr contains addr_substr remains — used to
-# confirm a disconnect fully settled before reconnecting.
+# Wait until no direct peer with addr exactly matching peer_addr remains. Virtual
+# relay peers can contain the relay endpoint in their synthetic relay: address,
+# so substring matching would mistake a live virtual circuit for a stale direct
+# TCP peer.
 wait_peer_gone() {
     local ns="$1"
     local rpc_port="$2"
     local datadir="$3"
-    local addr_substr="$4"
+    local peer_addr="$4"
     local label="$5"
     local json count
     for _ in $(seq 1 90); do
         json="$(rpc_call "${ns}" "${rpc_port}" "${datadir}" "getpeerinfo" '[]' 2>/dev/null || true)"
-        count="$(jq -r "[.result[]? | select((.addr // \"\") | contains(\"${addr_substr}\"))] | length" <<<"${json}" 2>/dev/null || printf -- '1')"
+        count="$(jq -r "[.result[]? | select((.addr // \"\") == \"${peer_addr}\")] | length" <<<"${json}" 2>/dev/null || printf -- '1')"
         if [[ "${count}" =~ ^[0-9]+$ && "${count}" -eq 0 ]]; then
             pass "${label}"
             return 0
         fi
         sleep 1
     done
-    fail "${label}: peer '${addr_substr}' still present"
+    fail "${label}: peer '${peer_addr}' still present"
 }
 
 wait_log() {
