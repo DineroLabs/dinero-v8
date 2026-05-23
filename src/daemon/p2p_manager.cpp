@@ -4363,16 +4363,19 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
     // For QUIC-encrypted virtual relay peers, the dineroid handshake at
     // perform_handshake cannot start until the underlying QUIC handshake
     // has completed — send_relay_data_to_virtual_peer refuses queue work
-    // until peer->relay_quic_session->handshake_ready() is true. The
-    // QUIC handshake itself is driven entirely by handle_relay_data on
-    // the listen thread:
-    //   - Each incoming RELAY_DATA frame: StartServerFromInitial (first
-    //     packet) or ReceivePacket (subsequent), then HandleExpiry,
-    //     then drain_relay_quic_outgoing pumps the response back.
-    // This thread only needs to WAIT for handshake_ready before kicking
-    // off dineroid. Driving ngtcp2 from here (Drain / HandleExpiry)
-    // would race the listen thread without proper QuicSession-level
-    // synchronization and was empirically breaking the handshake.
+    // until peer->relay_quic_session->handshake_ready() is true. Drive
+    // ngtcp2 forward by:
+    //   - HandleExpiry: fires ngtcp2 retransmit timers (without this,
+    //     if the FIRST packet is lost in the relay path, the handshake
+    //     stalls indefinitely because no retransmits are emitted).
+    //   - drain_relay_quic_outgoing: pumps any queued outgoing packets
+    //     into the relay tunnel.
+    // BOTH calls must hold peer.relay_quic_mutex (the established
+    // pattern — see unwrap_relay_quic_packet:1322-1361 which holds the
+    // lock around StartServerFromInitial / ReceivePacket / HandleExpiry
+    // / drain). Calling drain without the lock races the listen-thread
+    // path that's already pumping ngtcp2 on incoming packets, and we
+    // empirically saw QUIC handshake stalls when the two ran unlocked.
     //
     // Timeout matches kRelayConnectTimeout (10s): a tunnel that can't
     // QUIC-handshake inside the bootstrap window is functionally dead.
@@ -4387,8 +4390,13 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
             if (!p) break;
             {
                 std::lock_guard<std::mutex> lock(p->relay_quic_mutex);
-                ready = p->relay_quic_session &&
-                        p->relay_quic_session->handshake_ready();
+                if (p->relay_quic_session) {
+                    ready = p->relay_quic_session->handshake_ready();
+                    if (!ready) {
+                        (void)p->relay_quic_session->HandleExpiry();
+                        (void)drain_relay_quic_outgoing(*p);
+                    }
+                }
             }
             if (ready) break;
             if (std::chrono::steady_clock::now() >= deadline) break;
