@@ -1665,10 +1665,22 @@ void P2PManager::OrchestrateRelayDials() {
         return;  // slot budget already met by direct dials
     }
 
+    std::string own_node_id_hex;
+    {
+        const auto own_bytes = node_identity_->get_node_id_bytes();
+        std::ostringstream oss;
+        oss << std::hex << std::setfill('0');
+        for (auto b : own_bytes) {
+            oss << std::setw(2) << static_cast<unsigned int>(b);
+        }
+        own_node_id_hex = oss.str();
+    }
+
     {
         std::lock_guard<std::mutex> hints_lock(relay_hints_mutex_);
         for (const auto& [target_hex, hints] : relay_hints_by_target_) {
             if (hints.empty()) continue;
+            if (target_hex == own_node_id_hex) continue;
             if (already_connected_targets_hex.count(target_hex)) continue;
             // Backoff per target — applies even if last attempt succeeded
             // (handshake might have died right after install) or failed.
@@ -5500,11 +5512,18 @@ bool P2PManager::send_relay_data_to_virtual_peer(PeerInfo& peer,
                       << peer.to_string() << std::endl;
             return false;
         }
-        if (!peer.relay_quic_session || !peer.relay_quic_session->active() ||
-            !peer.relay_quic_session->handshake_ready()) {
-            std::cout << "[P2P] relay-transport: QUIC virtual peer is not handshake-ready for "
-                      << peer.to_string() << std::endl;
-            return false;
+        {
+            const bool have_session = static_cast<bool>(peer.relay_quic_session);
+            const bool is_active = have_session && peer.relay_quic_session->active();
+            const bool is_ready = is_active && peer.relay_quic_session->handshake_ready();
+            if (!have_session || !is_active || !is_ready) {
+                std::cout << "[P2P] relay-transport: QUIC virtual peer is not handshake-ready for "
+                          << peer.to_string()
+                          << " (session=" << have_session
+                          << " active=" << is_active
+                          << " ready=" << is_ready << ")" << std::endl;
+                return false;
+            }
         }
         const auto inner_data = message.serialize();
         const auto framed = FrameRelayQuicStreamPayload(inner_data);
