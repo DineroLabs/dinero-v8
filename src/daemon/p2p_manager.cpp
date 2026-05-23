@@ -1673,6 +1673,39 @@ void P2PManager::SweepRelayHintsCache() {
     hints_evicted_failure_.fetch_add(evicted_failure);
 }
 
+// Phase 1a: Re-send our own RELAY_HINTS(target=self) to every NODE_DINERO_V2
+// peer that isn't one of our configured relayregister= endpoints. Gated by
+// kHintResendPeriod (5min) so it fires at most once per 5min keepalive ticks.
+void P2PManager::MaybeReSendRelayHints() {
+    const auto now = clock_->SteadyNow();
+    if (now - last_relay_hints_resend_ < kHintResendPeriod) {
+        return;
+    }
+    last_relay_hints_resend_ = now;
+
+    std::vector<std::shared_ptr<PeerInfo>> targets;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [peer_key, peer] : connected_peers_) {
+            if (!peer || !peer->is_connected) continue;
+            if (peer->is_our_relay) continue;
+            if (!(peer->service_flags & ServiceFlags::NODE_DINERO_V2)) continue;
+            targets.push_back(peer);
+        }
+    }
+
+    // Compute our advertised services the same way the handshake path does.
+    const uint64_t our_services = service_flags_provider_ ? service_flags_provider_() : 0;
+
+    for (const auto& peer : targets) {
+        SendRelayHintsIfApplicable(peer.get(), our_services);
+    }
+    if (!targets.empty()) {
+        std::cout << "[hint] re-sent RELAY_HINTS to "
+                  << targets.size() << " peer(s)" << std::endl;
+    }
+}
+
 // NAT traversal Phase D-2: relay-aware outbound dialing orchestrator.
 // See header comment for the full contract; implementation walks
 // relay_hints_by_target_, picks targets that aren't already a connected
@@ -6329,6 +6362,7 @@ void P2PManager::keepalive_loop() {
         SweepIdleCircuits();
         relay_registry_.Sweep();
         SweepRelayHintsCache();
+        MaybeReSendRelayHints();
         // NAT Phase C3 slice 4a: refresh outbound RELAY_REGISTER on
         // peers we've designated as our relays. No-op most ticks (1h
         // refresh cadence vs 30s wake-up); only fires for is_our_relay

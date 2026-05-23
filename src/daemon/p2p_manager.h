@@ -887,6 +887,14 @@ private:
     // Called from keepalive_loop on its existing 30s cadence; no new thread.
     // Acquires relay_hints_mutex_. Logs eviction reason per entry.
     void SweepRelayHintsCache();
+
+    // Phase 1a: re-send our own RELAY_HINTS(target=self) to every
+    // NODE_DINERO_V2 peer that isn't one of our configured relayregister=
+    // endpoints. Called from keepalive_loop; gated by kHintResendPeriod
+    // so the effective cadence is 5min ± 30s.
+    void MaybeReSendRelayHints();
+
+    std::chrono::steady_clock::time_point last_relay_hints_resend_{};
     
     // Connection management
     void handle_incoming_connection(int client_socket, const std::string& client_address);
