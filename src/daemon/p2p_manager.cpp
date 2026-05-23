@@ -5517,11 +5517,16 @@ bool P2PManager::send_relay_data_to_virtual_peer(PeerInfo& peer,
             const bool is_active = have_session && peer.relay_quic_session->active();
             const bool is_ready = is_active && peer.relay_quic_session->handshake_ready();
             if (!have_session || !is_active || !is_ready) {
+                std::string last_err;
+                if (have_session) {
+                    last_err = peer.relay_quic_session->last_error();
+                }
                 std::cout << "[P2P] relay-transport: QUIC virtual peer is not handshake-ready for "
                           << peer.to_string()
                           << " (session=" << have_session
                           << " active=" << is_active
-                          << " ready=" << is_ready << ")" << std::endl;
+                          << " ready=" << is_ready
+                          << " err=\"" << last_err << "\")" << std::endl;
                 return false;
             }
         }
