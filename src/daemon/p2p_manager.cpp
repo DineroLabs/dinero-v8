@@ -4233,6 +4233,9 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
 void P2PManager::run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer) {
     std::vector<uint8_t> stream_buffer;
     const auto virtual_peer_key = peer->to_string();
+    std::cout << "[DEBUG-DH7] run_relay_quic_reader_loop STARTED for "
+              << virtual_peer_key << " is_connected=" << peer->is_connected
+              << " has_session=" << (peer->relay_quic_session ? "yes" : "no") << std::endl;
     while (!shutdown_requested_.load() && peer->is_connected) {
         if (!peer->relay_quic_session) break;
         auto chunk = peer->relay_quic_session->ReadDecryptedStream(

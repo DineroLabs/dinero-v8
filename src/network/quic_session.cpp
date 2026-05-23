@@ -993,10 +993,16 @@ struct QuicSession::Impl {
         if (impl.received_stream_data.empty()) return;
         auto bytes = impl.TakeReceivedStreamData();
         if (bytes.empty()) return;
+        size_t bsize = bytes.size();
+        size_t outbox_size_before;
         {
             std::lock_guard<std::mutex> lock(impl.outbox_mutex);
+            outbox_size_before = impl.decrypted_outbox.size();
             impl.decrypted_outbox.emplace_back(std::move(bytes));
         }
+        std::cout << "[DEBUG-DH6-QS] PublishDecryptedToOutbox: pushed " << bsize
+                  << "B to outbox (size " << outbox_size_before << " -> "
+                  << (outbox_size_before + 1) << ")" << std::endl;
         impl.outbox_cv.notify_all();
     }
 
