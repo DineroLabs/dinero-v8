@@ -1212,8 +1212,18 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
                     [this, peer_weak = std::weak_ptr<PeerInfo>(virtual_peer)]
                     (std::vector<uint8_t> bytes) {
                         auto peer_locked = peer_weak.lock();
-                        if (!peer_locked) return;  // peer torn down — drop the packet
-                        send_relay_payload_to_virtual_peer(*peer_locked, bytes);
+                        if (!peer_locked) {
+                            std::cout << "[DEBUG-DH2-SERVER] OutboundWriter: peer dead, drop "
+                                      << bytes.size() << "B" << std::endl;
+                            return;
+                        }
+                        std::cout << "[DEBUG-DH2-SERVER] OutboundWriter fired: " << bytes.size()
+                                  << "B for " << peer_locked->to_string() << std::endl;
+                        bool ok = send_relay_payload_to_virtual_peer(*peer_locked, bytes);
+                        if (!ok) {
+                            std::cout << "[DEBUG-DH2-SERVER] send_relay_payload FAILED for "
+                                      << peer_locked->to_string() << std::endl;
+                        }
                     });
             const auto local_addr =
                 RelayQuicAddress(circuit_id, /*client_side=*/false);
@@ -1597,8 +1607,18 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
                 [this, peer_weak = std::weak_ptr<PeerInfo>(peer)]
                 (std::vector<uint8_t> bytes) {
                     auto peer_locked = peer_weak.lock();
-                    if (!peer_locked) return;  // peer torn down — drop the packet
-                    send_relay_payload_to_virtual_peer(*peer_locked, bytes);
+                    if (!peer_locked) {
+                        std::cout << "[DEBUG-DH2-CLIENT] OutboundWriter: peer dead, drop "
+                                  << bytes.size() << "B" << std::endl;
+                        return;
+                    }
+                    std::cout << "[DEBUG-DH2-CLIENT] OutboundWriter fired: " << bytes.size()
+                              << "B for " << peer_locked->to_string() << std::endl;
+                    bool ok = send_relay_payload_to_virtual_peer(*peer_locked, bytes);
+                    if (!ok) {
+                        std::cout << "[DEBUG-DH2-CLIENT] send_relay_payload FAILED for "
+                                  << peer_locked->to_string() << std::endl;
+                    }
                 });
         const auto local_addr =
             RelayQuicAddress(circuit_id, /*client_side=*/true);
@@ -4218,6 +4238,8 @@ void P2PManager::run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer) {
         auto chunk = peer->relay_quic_session->ReadDecryptedStream(
             std::chrono::milliseconds(200));
         if (chunk.empty()) continue;
+        std::cout << "[DEBUG-DH3] reader-loop got: " << chunk.size()
+                  << "B decrypted for " << virtual_peer_key << std::endl;
         stream_buffer.insert(stream_buffer.end(), chunk.begin(), chunk.end());
 
         while (!stream_buffer.empty()) {
@@ -5496,6 +5518,8 @@ bool P2PManager::send_relay_data_to_virtual_peer(PeerInfo& peer,
         }
         const auto inner_data = message.serialize();
         const auto framed = FrameRelayQuicStreamPayload(inner_data);
+        std::cout << "[DEBUG-DH1] enqueue: " << framed.size() << "B cmd=" << message.command
+                  << " for " << peer.to_string() << std::endl;
         peer.relay_quic_session->EnqueueOutgoingStream(framed, false);
         return true;
     }
