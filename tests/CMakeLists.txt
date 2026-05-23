@@ -1984,6 +1984,37 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SO
   list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_session)
 endif()
 
+if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_quic_session_stress.cpp)
+  add_executable(test_quic_session_stress
+    tests/network/test_quic_session_stress.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
+    src/network/relay_tls_keypair.cpp
+  )
+  target_link_libraries(test_quic_session_stress
+    PRIVATE
+      GTest::gtest
+      Threads::Threads
+      dinero_ngtcp2
+      dinero_ngtcp2_crypto_ossl
+      OpenSSL::SSL
+      OpenSSL::Crypto
+  )
+  if(WIN32)
+    target_link_libraries(test_quic_session_stress PRIVATE ws2_32)
+  endif()
+  target_include_directories(test_quic_session_stress PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME QuicSessionStress COMMAND test_quic_session_stress)
+  set_tests_properties(QuicSessionStress PROPERTIES
+    LABELS "p2p;quic;ngtcp2;transport;crypto;quic-relay-focused"
+    TIMEOUT 300
+  )
+  list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_session_stress)
+endif()
+
 if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_relay_tls_keypair.cpp)
   add_executable(test_relay_tls_keypair
     tests/network/test_relay_tls_keypair.cpp

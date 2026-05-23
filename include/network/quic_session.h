@@ -8,6 +8,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
+#include <future>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -33,44 +36,80 @@ struct QuicSessionStats {
 
 class QuicSession {
 public:
-    enum class Role {
-        Client,
-        Server,
-    };
+    // Wire-bytes-out callback. Invoked from the owning session thread.
+    // Implementations MUST be non-blocking or at most briefly blocking
+    // (they hand the bytes to the relay socket writer). If they block,
+    // they stall only this session — that's correct semantics.
+    using OutboundWriter = std::function<void(std::vector<uint8_t>)>;
 
-    QuicSession();
+    // Construction starts the owning thread, which blocks on the inbox
+    // until Start{Client,Server} is called. `writer` must be valid for the
+    // lifetime of the session.
+    explicit QuicSession(OutboundWriter writer);
+
+    // Destructor signals the owning thread to stop, drains pending events,
+    // and joins. Safe to call at any time.
     ~QuicSession();
 
     QuicSession(const QuicSession&) = delete;
     QuicSession& operator=(const QuicSession&) = delete;
 
+    // Initiate handshake as client. Schedules work onto the owning thread
+    // and returns. After this, the session thread will drive ngtcp2,
+    // emit outgoing bytes via `writer`, and resolve the handshake future
+    // when complete.
     bool StartClient(const UdpAddr& local,
                      const UdpAddr& remote,
                      const QuicSessionOptions& options = QuicSessionOptions{});
 
-    bool StartServerFromInitial(const UdpAddr& local,
-                                const UdpAddr& remote,
-                                const std::vector<uint8_t>& first_packet,
-                                const QuicSessionOptions& options);
+    // Prime the session for server role. The first EnqueueIncomingPacket
+    // call initialises the ngtcp2 server state; subsequent calls are
+    // delivered as normal QUIC packets. The session thread drives ngtcp2
+    // and emits outbound bytes via `writer`.
+    bool StartServer(const UdpAddr& local,
+                     const UdpAddr& remote,
+                     const QuicSessionOptions& options);
 
-    bool ReceivePacket(const UdpAddr& local,
-                       const UdpAddr& remote,
-                       const std::vector<uint8_t>& packet);
-    bool HandleExpiry();
+    // Deliver an inbound QUIC packet. Called by the relay listen thread
+    // on every RELAY_DATA frame. Non-blocking; pushes to the inbox and
+    // returns immediately.
+    void EnqueueIncomingPacket(std::vector<uint8_t> packet);
 
-    bool QueueStreamData(const std::vector<uint8_t>& payload, bool fin = true);
-    bool DrainOutgoing(std::vector<std::vector<uint8_t>>* packets);
+    // Enqueue application-layer stream bytes to send. Called by the
+    // peer-handler thread (via send_relay_data_to_virtual_peer).
+    // Non-blocking.
+    //
+    // `fin` defaults to false because relay tunnels are long-lived and
+    // many app-layer messages share one stream. Pass `fin = true` only
+    // when terminating the stream (e.g., graceful shutdown).
+    void EnqueueOutgoingStream(std::vector<uint8_t> payload, bool fin = false);
 
-    std::vector<uint8_t> TakeReceivedStreamData();
+    // Handshake-completion future. Resolves true when both sides have
+    // completed the QUIC handshake; resolves false on session failure,
+    // close, or destruction. Safe to call from any thread; multiple
+    // concurrent waiters are allowed (shared_future).
+    std::shared_future<bool> WaitHandshakeReady() const;
+
+    // Pop any decrypted application-layer bytes that the session thread
+    // has emitted since the last call. Blocks up to `timeout` if nothing
+    // is available. Returns empty vector on timeout or session close.
+    std::vector<uint8_t> ReadDecryptedStream(std::chrono::milliseconds timeout);
+
+    // Snapshot of state. Safe from any thread; reads atomic snapshot
+    // fields the session thread publishes.
     QuicSessionStats Stats() const;
 
     bool active() const;
     bool handshake_ready() const;
     std::string last_error() const;
 
+    // Initiate graceful close. The session thread will drain the inbox,
+    // emit any pending CONNECTION_CLOSE, and exit.
+    void Close();
+
 private:
     struct Impl;
-    Impl* impl_;
+    std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace dinero::network

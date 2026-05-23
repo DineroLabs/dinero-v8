@@ -132,11 +132,8 @@ struct PeerInfo {
     std::mutex relay_inbox_mutex;
     std::condition_variable relay_inbox_cv;
     std::deque<std::vector<uint8_t>> relay_inbox_frames;
-    std::mutex relay_quic_mutex;
     std::shared_ptr<dinero::network::QuicSession> relay_quic_session;
     std::optional<dinero::network::QuicSessionOptions> relay_quic_options;
-    std::vector<uint8_t> relay_quic_stream_buffer;
-    std::deque<std::vector<uint8_t>> relay_quic_outbox_packets;
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
@@ -168,8 +165,6 @@ struct PeerInfo {
           via_relay(std::move(other.via_relay)),
           relay_quic_session(std::move(other.relay_quic_session)),
           relay_quic_options(std::move(other.relay_quic_options)),
-          relay_quic_stream_buffer(std::move(other.relay_quic_stream_buffer)),
-          relay_quic_outbox_packets(std::move(other.relay_quic_outbox_packets)),
           lifetime_state(other.lifetime_state.load()) {}
 
     // Default constructor
@@ -606,13 +601,6 @@ public:
         bool is_outbound);
     bool test_enqueue_relay_frame(const std::string& virtual_peer_key,
                                   const std::vector<uint8_t>& frame);
-    bool test_configure_relay_quic_server(
-        const std::string& virtual_peer_key,
-        const dinero::network::QuicSessionOptions& options);
-    bool test_drain_relay_quic_packets(
-        const std::string& virtual_peer_key,
-        std::vector<std::vector<uint8_t>>* packets);
-    bool test_relay_quic_handshake_ready(const std::string& virtual_peer_key);
     std::unique_ptr<P2PMessage> test_receive_peer_message(
         const std::string& peer_key,
         std::chrono::milliseconds timeout);
@@ -861,6 +849,9 @@ private:
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
     void start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);
+    // Task 5: Decrypted-stream reader for QUIC relay virtual peers.
+    // Spawned by start_peer_handler_thread (Task 6) for encrypted circuits.
+    void run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer);
     void outbox_loop();
     void keepalive_loop();  // Phase C: Adaptive keepalive thread
     
@@ -893,7 +884,6 @@ private:
     bool send_relay_data_to_virtual_peer(PeerInfo& peer, const P2PMessage& message);
     bool send_relay_payload_to_virtual_peer(PeerInfo& peer,
                                             const std::vector<uint8_t>& payload);
-    bool drain_relay_quic_outgoing(PeerInfo& peer);
     bool unwrap_relay_quic_packet(const std::string& virtual_peer_key,
                                   PeerInfo& peer,
                                   const std::vector<uint8_t>& packet);
