@@ -7,8 +7,15 @@
 #include "network/quic_transport.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <future>
+#include <mutex>
+#include <string>
+#include <thread>
 #include <utility>
 
 #if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
@@ -42,6 +49,9 @@ constexpr size_t kCidLen = 16;
 constexpr size_t kMaxPacketsPerDrain = 64;
 constexpr uint8_t kStatelessResetSecret[] = "dinero-quic-reset-secret-v1";
 
+// Returns "now" in nanoseconds, in the same clock domain ngtcp2 uses for
+// initial_ts/timestamps. Steady-clock since-epoch ns; ngtcp2 only cares
+// that callers feed it a monotonic ns counter and stay consistent with it.
 ngtcp2_tstamp Now() {
     using namespace std::chrono;
     return static_cast<ngtcp2_tstamp>(
@@ -100,6 +110,63 @@ bool MakeNgAddr(const UdpAddr& addr,
 }  // namespace
 
 struct QuicSession::Impl {
+    // Role lives on Impl now (was public on QuicSession in the pre-task-2
+    // header). Nested enum so all 5 of the existing Role::Client /
+    // Role::Server references inside Impl methods keep compiling.
+    enum class Role { Client, Server };
+    enum class StartRequest { None, Client, Server };
+
+    // --- Outbound wire-bytes callback, supplied at construction ---
+    OutboundWriter outbound_writer;
+
+    // --- Session-owned thread + queues ---
+    std::thread session_thread;
+    std::atomic<bool> stopping{false};
+
+    std::mutex inbox_mutex;
+    std::condition_variable inbox_cv;
+    std::deque<std::vector<uint8_t>> incoming_packets;
+    std::deque<std::pair<std::vector<uint8_t>, bool /*fin*/>> outgoing_streams;
+    StartRequest pending_start{StartRequest::None};
+    UdpAddr pending_local;
+    UdpAddr pending_remote;
+    QuicSessionOptions pending_options;
+    // Server role records the supplied options once StartServer arrives;
+    // the ngtcp2 server-side conn is created lazily on the first inbound
+    // packet (see SessionLoop / ProcessIncomingPacket).
+    QuicSessionOptions server_options;
+    UdpAddr server_local;
+    UdpAddr server_remote;
+    bool server_primed{false};
+
+    // Path addresses recorded at conn-creation time; used by
+    // ProcessIncomingPacket when feeding bytes to ngtcp2_conn_read_pkt
+    // (the listen thread does not pass per-packet addresses through
+    // EnqueueIncomingPacket — single-relay, no path migration).
+    UdpAddr session_local;
+    UdpAddr session_remote;
+
+    // Decrypted-stream outbox; consumed by handler thread via
+    // QuicSession::ReadDecryptedStream. Separate lock to decouple from
+    // inbox waiters.
+    std::mutex outbox_mutex;
+    std::condition_variable outbox_cv;
+    std::deque<std::vector<uint8_t>> decrypted_outbox;
+
+    // Handshake completion: session thread fulfils once, any thread waits.
+    std::promise<bool> handshake_promise;
+    std::shared_future<bool> handshake_future;
+    bool handshake_promise_set{false};  // session-thread-only
+
+    // Atomic snapshot fields read by const accessors from any thread.
+    std::atomic<bool> active_published{false};
+    std::atomic<bool> handshake_ready_published{false};
+
+    // Last-error string with its own lock (rarely contended).
+    mutable std::mutex error_mutex;
+    std::string last_error_str;
+
+    // --- ngtcp2 / TLS / connection state. Session-thread-only access. ---
     Role role{Role::Client};
     QuicSessionOptions options;
 
@@ -115,8 +182,10 @@ struct QuicSession::Impl {
 
     bool active{false};
     bool handshake_completed{false};
-    bool handshake_confirmed{false};
-    bool stream_closed{false};
+    // Atomic — written from ngtcp2 callbacks on the session thread,
+    // read by Stats() from any thread.
+    std::atomic<bool> handshake_confirmed{false};
+    std::atomic<bool> stream_closed{false};
 
     int64_t stream_id{-1};
     std::vector<uint8_t> send_buffer;
@@ -125,17 +194,25 @@ struct QuicSession::Impl {
     bool stream_fin_sent{false};
 
     std::vector<uint8_t> received_stream_data;
-    std::string last_error;
+    // Snapshotted TLS info (cipher / ALPN) captured by the session thread
+    // when handshake completes. Read by Stats() from any thread under
+    // error_mutex (cheap; rarely contended).
+    std::string tls_cipher_snapshot;
+    std::string selected_alpn_snapshot;
 
     Impl() {
         conn_ref.get_conn = &Impl::GetConn;
         conn_ref.user_data = this;
+        handshake_future = handshake_promise.get_future().share();
     }
 
     ~Impl() {
         Stop();
     }
 
+    // Tear down ngtcp2 / OpenSSL state. Called on shutdown and at the top of
+    // StartClient / StartServerFromInitial so we can reuse the same Impl for
+    // a fresh handshake (preserves prior-API semantics).
     void Stop() {
         if (ssl) {
             SSL_set_app_data(ssl, nullptr);
@@ -156,8 +233,8 @@ struct QuicSession::Impl {
         }
         active = false;
         handshake_completed = false;
-        handshake_confirmed = false;
-        stream_closed = false;
+        handshake_confirmed.store(false);
+        stream_closed.store(false);
         stream_id = -1;
         send_buffer.clear();
         send_offset = 0;
@@ -207,7 +284,7 @@ struct QuicSession::Impl {
         ngtcp2_conn_extend_max_stream_offset(conn, stream_id, datalen);
         ngtcp2_conn_extend_max_offset(conn, datalen);
         if ((flags & NGTCP2_STREAM_DATA_FLAG_FIN) != 0) {
-            self->stream_closed = true;
+            self->stream_closed.store(true);
         }
         return 0;
     }
@@ -216,13 +293,13 @@ struct QuicSession::Impl {
         auto* self = static_cast<Impl*>(user_data);
         self->handshake_completed = true;
         if (self->role == Role::Server) {
-            self->handshake_confirmed = true;
+            self->handshake_confirmed.store(true);
         }
         return 0;
     }
 
     static int HandshakeConfirmed(ngtcp2_conn*, void* user_data) {
-        static_cast<Impl*>(user_data)->handshake_confirmed = true;
+        static_cast<Impl*>(user_data)->handshake_confirmed.store(true);
         return 0;
     }
 
@@ -436,6 +513,7 @@ struct QuicSession::Impl {
         return true;
     }
 
+    // Session-thread-only: bring up the client-side ngtcp2 conn.
     bool StartClient(const UdpAddr& local,
                      const UdpAddr& remote,
                      const QuicSessionOptions& opts) {
@@ -483,11 +561,16 @@ struct QuicSession::Impl {
         if (!SetupClientTls()) {
             return false;
         }
+        session_local = local;
+        session_remote = remote;
         active = true;
-        last_error.clear();
+        active_published.store(true);
+        ClearError();
         return true;
     }
 
+    // Session-thread-only: bring up the server-side ngtcp2 conn from the
+    // first inbound packet (the QUIC Initial).
     bool StartServerFromInitial(const UdpAddr& local,
                                 const UdpAddr& remote,
                                 const std::vector<uint8_t>& first_packet,
@@ -570,11 +653,17 @@ struct QuicSession::Impl {
         if (!SetupServerTls()) {
             return false;
         }
+        session_local = local;
+        session_remote = remote;
         active = true;
-        last_error.clear();
+        active_published.store(true);
+        ClearError();
         return true;
     }
 
+    // Session-thread-only: hand a wire packet to ngtcp2. Caller is expected
+    // to have already brought up the conn (client via StartClient; server
+    // via StartServerFromInitial on the first packet).
     bool ReceivePacket(const UdpAddr& local,
                        const UdpAddr& remote,
                        const std::vector<uint8_t>& packet) {
@@ -618,6 +707,10 @@ struct QuicSession::Impl {
         return true;
     }
 
+    // Session-thread-only: queue a single app-layer payload for the next
+    // writev_stream call. Multi-payload queueing is handled at the
+    // SessionLoop layer via the outgoing_streams deque; this method only
+    // ever sees one queued chunk at a time.
     bool QueueStreamData(const std::vector<uint8_t>& payload, bool fin) {
         if (payload.empty()) {
             SetError("refusing to queue empty QUIC stream payload");
@@ -638,7 +731,7 @@ struct QuicSession::Impl {
     }
 
     bool MaybeOpenStream() {
-        if (stream_id != -1 || send_buffer.empty() || !handshake_ready()) {
+        if (stream_id != -1 || send_buffer.empty() || !ConnHandshakeReady()) {
             return true;
         }
         if (ngtcp2_conn_get_streams_bidi_left(conn) == 0) {
@@ -744,156 +837,377 @@ struct QuicSession::Impl {
         return out;
     }
 
-    QuicSessionStats Stats() const {
-        QuicSessionStats stats;
-        stats.active = active;
-        stats.handshake_completed =
-            handshake_completed || (conn && ngtcp2_conn_get_handshake_completed(conn));
-        stats.handshake_confirmed = handshake_confirmed;
-        stats.stream_closed = stream_closed;
-        if (ssl) {
-            const char* cipher = SSL_get_cipher_name(ssl);
-            if (cipher) {
-                stats.tls_cipher = cipher;
-            }
-            const unsigned char* alpn = nullptr;
-            unsigned int alpn_len = 0;
-            SSL_get0_alpn_selected(ssl, &alpn, &alpn_len);
-            if (alpn && alpn_len > 0) {
-                stats.selected_alpn.assign(reinterpret_cast<const char*>(alpn),
-                                           reinterpret_cast<const char*>(alpn) + alpn_len);
-            }
+    // Session-thread-only helper. Public Stats() reads a copy under
+    // error_mutex; tls_cipher / selected_alpn snapshots are refreshed by
+    // the session thread when the handshake completes.
+    void CaptureTlsSnapshots() {
+        if (!ssl) return;
+        std::string cipher_str;
+        std::string alpn_str;
+        const char* cipher = SSL_get_cipher_name(ssl);
+        if (cipher) cipher_str = cipher;
+        const unsigned char* alpn = nullptr;
+        unsigned int alpn_len = 0;
+        SSL_get0_alpn_selected(ssl, &alpn, &alpn_len);
+        if (alpn && alpn_len > 0) {
+            alpn_str.assign(reinterpret_cast<const char*>(alpn),
+                            reinterpret_cast<const char*>(alpn) + alpn_len);
         }
-        return stats;
+        std::lock_guard<std::mutex> lock(error_mutex);
+        tls_cipher_snapshot = std::move(cipher_str);
+        selected_alpn_snapshot = std::move(alpn_str);
     }
 
-    bool handshake_ready() const {
+    bool ConnHandshakeReady() const {
         return conn && ngtcp2_conn_get_handshake_completed(conn) != 0;
     }
 
     void SetError(std::string message) {
-        last_error = std::move(message);
+        std::lock_guard<std::mutex> lock(error_mutex);
+        last_error_str = std::move(message);
+    }
+
+    void ClearError() {
+        std::lock_guard<std::mutex> lock(error_mutex);
+        last_error_str.clear();
+    }
+
+    // ------------------------------------------------------------------
+    // Single-thread session loop. All ngtcp2_conn_* calls happen here.
+    // ------------------------------------------------------------------
+
+    static std::chrono::steady_clock::time_point NgtcpExpiryToSteady(
+            Impl& impl, uint64_t expiry_ngtcp_ns) {
+        const auto now_steady = std::chrono::steady_clock::now();
+        const uint64_t now_ngtcp = Now();
+        if (expiry_ngtcp_ns <= now_ngtcp) return now_steady;
+        return now_steady + std::chrono::nanoseconds(expiry_ngtcp_ns - now_ngtcp);
+    }
+
+    static std::chrono::steady_clock::time_point ComputeNextWakeup(Impl& impl) {
+        if (!impl.active_published.load() || !impl.conn) {
+            return std::chrono::steady_clock::time_point::max();
+        }
+        const auto expiry_ns = ngtcp2_conn_get_expiry(impl.conn);
+        if (expiry_ns == UINT64_MAX) {
+            return std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+        }
+        return NgtcpExpiryToSteady(impl, expiry_ns);
+    }
+
+    static void ProcessIncomingPacket(Impl& impl,
+                                      const std::vector<uint8_t>& packet) {
+        // Server-side lazy init: the first inbound packet brings up the
+        // ngtcp2 server conn. After that, normal ReceivePacket.
+        if (!impl.active_published.load()) {
+            if (impl.server_primed) {
+                if (!impl.StartServerFromInitial(impl.server_local,
+                                                  impl.server_remote,
+                                                  packet,
+                                                  impl.server_options)) {
+                    return;
+                }
+                // Fall through: the Initial packet itself still needs to
+                // be fed into ngtcp2_conn_read_pkt below, because
+                // StartServerFromInitial only parsed enough to allocate
+                // the conn. ngtcp2 will reparse the same bytes.
+            } else {
+                // Packet arrived before any Start*() — drop silently.
+                return;
+            }
+        }
+        // Use the session's recorded path addresses; the relay listen
+        // thread is single-path so there's no per-packet variation.
+        impl.ReceivePacket(impl.session_local, impl.session_remote, packet);
+    }
+
+    static void ProcessOutgoingStream(Impl& impl,
+                                      std::vector<uint8_t> payload,
+                                      bool fin) {
+        if (!impl.active_published.load() || !impl.conn) {
+            // No conn yet — drop. Callers should not enqueue before
+            // StartClient/StartServer returns.
+            return;
+        }
+        // QueueStreamData is single-slot; if a previous payload is still
+        // in flight, requeue at the BACK so failed entries preserve their
+        // relative order with other entries in this batch (front-push
+        // would reverse a burst of N>1 enqueues — stream ordering bug).
+        if (!impl.QueueStreamData(payload, fin)) {
+            std::lock_guard<std::mutex> lock(impl.inbox_mutex);
+            impl.outgoing_streams.emplace_back(std::move(payload), fin);
+        }
+    }
+
+    static void DrainAndShip(Impl& impl) {
+        if (!impl.active_published.load() || !impl.conn) return;
+        std::vector<std::vector<uint8_t>> packets;
+        if (!impl.DrainOutgoing(&packets)) return;
+        for (auto& pkt : packets) {
+            if (impl.outbound_writer) {
+                impl.outbound_writer(std::move(pkt));
+            }
+        }
+    }
+
+    static void MaybePublishHandshakeReady(Impl& impl) {
+        if (impl.handshake_promise_set) return;
+        if (!impl.conn) return;
+        if (ngtcp2_conn_get_handshake_completed(impl.conn)) {
+            impl.CaptureTlsSnapshots();
+            impl.handshake_ready_published.store(true);
+            try {
+                impl.handshake_promise.set_value(true);
+            } catch (...) {
+                // Already-set promise: should not happen given the
+                // handshake_promise_set guard, but be defensive.
+            }
+            impl.handshake_promise_set = true;
+        }
+    }
+
+    static void PublishDecryptedToOutbox(Impl& impl) {
+        if (impl.received_stream_data.empty()) return;
+        auto bytes = impl.TakeReceivedStreamData();
+        if (bytes.empty()) return;
+        {
+            std::lock_guard<std::mutex> lock(impl.outbox_mutex);
+            impl.decrypted_outbox.emplace_back(std::move(bytes));
+        }
+        impl.outbox_cv.notify_all();
+    }
+
+    static void SessionLoop(Impl& impl) {
+        while (true) {
+            std::unique_lock<std::mutex> lock(impl.inbox_mutex);
+            const auto wakeup = ComputeNextWakeup(impl);
+            impl.inbox_cv.wait_until(lock, wakeup, [&]() {
+                return impl.stopping.load() ||
+                       impl.pending_start != StartRequest::None ||
+                       !impl.incoming_packets.empty() ||
+                       !impl.outgoing_streams.empty();
+            });
+
+            const auto start_req = impl.pending_start;
+            impl.pending_start = StartRequest::None;
+            const UdpAddr start_local = impl.pending_local;
+            const UdpAddr start_remote = impl.pending_remote;
+            const QuicSessionOptions start_options = impl.pending_options;
+
+            std::deque<std::vector<uint8_t>> incoming;
+            std::swap(incoming, impl.incoming_packets);
+            std::deque<std::pair<std::vector<uint8_t>, bool>> outgoing;
+            std::swap(outgoing, impl.outgoing_streams);
+            const bool stopping = impl.stopping.load();
+            lock.unlock();
+
+            if (start_req == StartRequest::Client) {
+                impl.StartClient(start_local, start_remote, start_options);
+            } else if (start_req == StartRequest::Server) {
+                impl.server_options = start_options;
+                impl.server_local = start_local;
+                impl.server_remote = start_remote;
+                impl.server_primed = true;
+                // Defer ngtcp2 init until the first inbound packet.
+            }
+
+            for (auto& packet : incoming) {
+                ProcessIncomingPacket(impl, packet);
+            }
+            for (auto& entry : outgoing) {
+                ProcessOutgoingStream(impl, std::move(entry.first), entry.second);
+            }
+            if (impl.active_published.load()) {
+                impl.HandleExpiry();
+            }
+            DrainAndShip(impl);
+            MaybePublishHandshakeReady(impl);
+            PublishDecryptedToOutbox(impl);
+
+            if (stopping) {
+                // Drain whatever's left in one more pass, then exit.
+                std::lock_guard<std::mutex> lock2(impl.inbox_mutex);
+                if (impl.incoming_packets.empty() && impl.outgoing_streams.empty()) {
+                    break;
+                }
+            }
+        }
+        // Wake any ReadDecryptedStream waiters so they unblock on close.
+        impl.outbox_cv.notify_all();
     }
 };
 
-#else
+#else  // !DINERO_HAVE_NGTCP2 || !DINERO_HAVE_NGTCP2_CRYPTO_OSSL
 
+// Stub Impl for builds without ngtcp2. Threading members exist so the
+// constructor/destructor compile identically; the session thread is never
+// started, and the public API methods early-return.
 struct QuicSession::Impl {
-    std::string last_error{"ngtcp2 OpenSSL QUIC session support is not compiled in"};
+    OutboundWriter outbound_writer;
+
+    std::thread session_thread;
+    std::atomic<bool> stopping{false};
+
+    std::mutex inbox_mutex;
+    std::condition_variable inbox_cv;
+    std::deque<std::vector<uint8_t>> incoming_packets;
+    std::deque<std::pair<std::vector<uint8_t>, bool>> outgoing_streams;
+
+    std::mutex outbox_mutex;
+    std::condition_variable outbox_cv;
+    std::deque<std::vector<uint8_t>> decrypted_outbox;
+
+    std::promise<bool> handshake_promise;
+    std::shared_future<bool> handshake_future;
+    bool handshake_promise_set{false};
+
+    std::atomic<bool> active_published{false};
+    std::atomic<bool> handshake_ready_published{false};
+
+    mutable std::mutex error_mutex;
+    std::string last_error_str{"ngtcp2 OpenSSL QUIC session support is not compiled in"};
+
+    Impl() {
+        handshake_future = handshake_promise.get_future().share();
+    }
 };
 
-#endif
+#endif  // DINERO_HAVE_NGTCP2 && DINERO_HAVE_NGTCP2_CRYPTO_OSSL
 
-QuicSession::QuicSession() : impl_(new Impl()) {}
+// =====================================================================
+// Public API. All methods either enqueue work onto the session thread
+// or read a published atomic snapshot. No public method touches ngtcp2.
+// =====================================================================
+
+QuicSession::QuicSession(OutboundWriter writer)
+    : impl_(std::make_unique<Impl>()) {
+    impl_->outbound_writer = std::move(writer);
+#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
+    impl_->session_thread = std::thread([impl = impl_.get()]() {
+        Impl::SessionLoop(*impl);
+    });
+#endif
+}
 
 QuicSession::~QuicSession() {
-    delete impl_;
+    Close();
+    if (impl_->session_thread.joinable()) {
+        impl_->session_thread.join();
+    }
+    if (!impl_->handshake_promise_set) {
+        try {
+            impl_->handshake_promise.set_value(false);
+            impl_->handshake_promise_set = true;
+        } catch (...) {}
+    }
 }
 
 bool QuicSession::StartClient(const UdpAddr& local,
                               const UdpAddr& remote,
                               const QuicSessionOptions& options) {
 #if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
-    return impl_->StartClient(local, remote, options);
-#else
-    (void)local;
-    (void)remote;
-    (void)options;
-    return false;
-#endif
-}
-
-bool QuicSession::StartServerFromInitial(const UdpAddr& local,
-                                         const UdpAddr& remote,
-                                         const std::vector<uint8_t>& first_packet,
-                                         const QuicSessionOptions& options) {
-#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
-    return impl_->StartServerFromInitial(local, remote, first_packet, options);
-#else
-    (void)local;
-    (void)remote;
-    (void)first_packet;
-    (void)options;
-    return false;
-#endif
-}
-
-bool QuicSession::ReceivePacket(const UdpAddr& local,
-                                const UdpAddr& remote,
-                                const std::vector<uint8_t>& packet) {
-#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
-    return impl_->ReceivePacket(local, remote, packet);
-#else
-    (void)local;
-    (void)remote;
-    (void)packet;
-    return false;
-#endif
-}
-
-bool QuicSession::HandleExpiry() {
-#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
-    return impl_->HandleExpiry();
-#else
-    return false;
-#endif
-}
-
-bool QuicSession::QueueStreamData(const std::vector<uint8_t>& payload, bool fin) {
-#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
-    return impl_->QueueStreamData(payload, fin);
-#else
-    (void)payload;
-    (void)fin;
-    return false;
-#endif
-}
-
-bool QuicSession::DrainOutgoing(std::vector<std::vector<uint8_t>>* packets) {
-#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
-    return impl_->DrainOutgoing(packets);
-#else
-    if (packets) {
-        packets->clear();
+    {
+        std::lock_guard<std::mutex> lock(impl_->inbox_mutex);
+        impl_->pending_start = Impl::StartRequest::Client;
+        impl_->pending_local = local;
+        impl_->pending_remote = remote;
+        impl_->pending_options = options;
     }
+    impl_->inbox_cv.notify_one();
+    return true;
+#else
+    (void)local;
+    (void)remote;
+    (void)options;
     return false;
 #endif
 }
 
-std::vector<uint8_t> QuicSession::TakeReceivedStreamData() {
+bool QuicSession::StartServer(const UdpAddr& local,
+                              const UdpAddr& remote,
+                              const QuicSessionOptions& options) {
 #if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
-    return impl_->TakeReceivedStreamData();
+    {
+        std::lock_guard<std::mutex> lock(impl_->inbox_mutex);
+        impl_->pending_start = Impl::StartRequest::Server;
+        impl_->pending_local = local;
+        impl_->pending_remote = remote;
+        impl_->pending_options = options;
+    }
+    impl_->inbox_cv.notify_one();
+    return true;
 #else
-    return {};
+    (void)local;
+    (void)remote;
+    (void)options;
+    return false;
 #endif
 }
 
-QuicSessionStats QuicSession::Stats() const {
-#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
-    return impl_->Stats();
-#else
-    return {};
-#endif
+void QuicSession::EnqueueIncomingPacket(std::vector<uint8_t> packet) {
+    {
+        std::lock_guard<std::mutex> lock(impl_->inbox_mutex);
+        impl_->incoming_packets.push_back(std::move(packet));
+    }
+    impl_->inbox_cv.notify_one();
+}
+
+void QuicSession::EnqueueOutgoingStream(std::vector<uint8_t> payload, bool fin) {
+    {
+        std::lock_guard<std::mutex> lock(impl_->inbox_mutex);
+        impl_->outgoing_streams.emplace_back(std::move(payload), fin);
+    }
+    impl_->inbox_cv.notify_one();
+}
+
+std::shared_future<bool> QuicSession::WaitHandshakeReady() const {
+    return impl_->handshake_future;
+}
+
+std::vector<uint8_t> QuicSession::ReadDecryptedStream(
+        std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(impl_->outbox_mutex);
+    impl_->outbox_cv.wait_for(lock, timeout, [&]() {
+        return !impl_->decrypted_outbox.empty() || impl_->stopping.load();
+    });
+    if (impl_->decrypted_outbox.empty()) return {};
+    auto out = std::move(impl_->decrypted_outbox.front());
+    impl_->decrypted_outbox.pop_front();
+    return out;
 }
 
 bool QuicSession::active() const {
-#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
-    return impl_->active;
-#else
-    return false;
-#endif
+    return impl_->active_published.load();
 }
 
 bool QuicSession::handshake_ready() const {
-#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
-    return impl_->handshake_ready();
-#else
-    return false;
-#endif
+    return impl_->handshake_ready_published.load();
 }
 
 std::string QuicSession::last_error() const {
-    return impl_->last_error;
+    std::lock_guard<std::mutex> lock(impl_->error_mutex);
+    return impl_->last_error_str;
+}
+
+void QuicSession::Close() {
+    impl_->stopping.store(true);
+    impl_->inbox_cv.notify_all();
+    impl_->outbox_cv.notify_all();
+}
+
+QuicSessionStats QuicSession::Stats() const {
+    QuicSessionStats stats;
+    stats.active = impl_->active_published.load();
+    stats.handshake_completed = impl_->handshake_ready_published.load();
+#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
+    stats.handshake_confirmed = impl_->handshake_confirmed.load();
+    stats.stream_closed = impl_->stream_closed.load();
+    // String snapshots are session-thread-published under error_mutex.
+    std::lock_guard<std::mutex> lock(impl_->error_mutex);
+    stats.tls_cipher = impl_->tls_cipher_snapshot;
+    stats.selected_alpn = impl_->selected_alpn_snapshot;
+#endif
+    return stats;
 }
 
 }  // namespace dinero::network
