@@ -8,7 +8,10 @@
 // daemon maintains of NAT'd peers that have asked it to advertise
 // them. Each entry maps a 20-byte node_id → the TCP connection over
 // which we'll reach the registered peer + the proven pubkey + a
-// hard expiry timestamp.
+// hard expiry timestamp. When the TCP peer disconnects, the entry is
+// hidden behind a short grace timer instead of erased immediately; a
+// reconnecting registrant can refresh it without forcing a new cold
+// discovery round.
 //
 // Why an in-memory directory (not addrman): addrman is IP-keyed and
 // stores opinion-of-quality scores. Relay registrations are
@@ -18,10 +21,10 @@
 // sweep trivial.
 //
 // What lives WHERE in the relay flow:
-//   - This class    : node_id → {pubkey, peer_address, expiry}.
+//   - This class    : node_id → {pubkey, peer_address, expiry, grace}.
 //   - P2PManager    : owns one RelayRegistry; calls Register from
 //                     handle_relayreg, Lookup from handle_relaycon,
-//                     UnregisterByPeerAddress on connection close.
+//                     MarkGracePendingByPeerAddress on connection close.
 //   - P2PService    : nothing today — slice 4 will wire client-side
 //                     outbound logic that doesn't touch the registry.
 
@@ -43,6 +46,11 @@ struct RelayRegistration {
     std::array<uint8_t, 33> pubkey{};       // peer's proven secp256k1 compressed pubkey
     std::string peer_address;                // TCP connection key in P2PManager::connected_peers_
     std::chrono::steady_clock::time_point expires_at{};
+    // max() means active/not-in-grace. Any earlier value means the
+    // registrant disconnected; the entry is hidden from Lookup() and
+    // SnapshotValid() until Register() refreshes it or Sweep() evicts it.
+    std::chrono::steady_clock::time_point grace_expires_at{
+        std::chrono::steady_clock::time_point::max()};
 };
 
 class RelayRegistry {
@@ -62,27 +70,44 @@ public:
     bool Register(const RelayRegistration& reg);
 
     // Return a copy of the registration for node_id, or nullopt if
-    // not present OR present-but-expired. Caller doesn't see stale
-    // entries; the sweep is opportunistic at Lookup time.
+    // not present, expired, or grace-pending after disconnect. Caller
+    // doesn't see stale entries; Sweep() reaps in due course.
     std::optional<RelayRegistration> Lookup(
         const std::array<uint8_t, 20>& node_id) const;
 
-    // Snapshot of every currently-valid (non-expired) registration.
+    // Snapshot of every currently-valid active registration. Grace-
+    // pending entries are intentionally hidden so fleet relays stop
+    // advertising disconnected targets during the grace window.
     // Used to catch up a freshly-connected peer with the relay targets
     // it can dial, without waiting for the next registration refresh.
     std::vector<RelayRegistration> SnapshotValid() const;
 
-    // Connection-closed hook: drop every entry whose peer_address
-    // matches `peer_address`. Multiple node_ids registered through
-    // the same connection are uncommon (one peer = one identity) but
-    // the cleanup is idempotent and bounded by entries_.size().
+    // Connection-closed hook: hide every entry whose peer_address
+    // matches `peer_address` behind grace_until. Multiple node_ids
+    // registered through the same connection are uncommon (one peer =
+    // one identity) but the cleanup is idempotent and bounded by
+    // entries_.size(). Returns the number of entries marked.
+    size_t MarkGracePendingByPeerAddress(
+        const std::string& peer_address,
+        std::chrono::steady_clock::time_point grace_until);
+
+    // Node-id variant used by focused tests and future explicit
+    // disconnect/deregister paths.
+    bool MarkGracePending(
+        const std::array<uint8_t, 20>& node_id,
+        std::chrono::steady_clock::time_point grace_until);
+
+    // Legacy immediate removal hook retained for explicit operator /
+    // test cleanup paths. Normal connection close should use grace.
     void UnregisterByPeerAddress(const std::string& peer_address);
 
-    // Periodic maintenance — removes everything past expiry. Returns
+    // Periodic maintenance — removes everything past expiry or past
+    // disconnect grace. Returns
     // the number of entries removed (useful for log/metrics).
     size_t Sweep();
 
     size_t size() const;
+    size_t grace_pending_count() const;
 
 private:
     mutable std::mutex mutex_;

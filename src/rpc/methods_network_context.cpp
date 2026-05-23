@@ -234,6 +234,22 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     // docs/network-participation.md.
     relay["active"] = status.relay_active;
     relay["fallback_eligible"] = relay_fallback_eligible;
+    din::Json relay_hints;
+    relay_hints["received_self"] =
+        static_cast<Json::UInt64>(status.relay_hints_received_self);
+    relay_hints["received_relay"] =
+        static_cast<Json::UInt64>(status.relay_hints_received_relay);
+    relay_hints["evicted_expired"] =
+        static_cast<Json::UInt64>(status.relay_hints_evicted_expired);
+    relay_hints["evicted_failure"] =
+        static_cast<Json::UInt64>(status.relay_hints_evicted_failure);
+    relay["hints"] = relay_hints;
+    din::Json relay_directory;
+    relay_directory["entries"] =
+        static_cast<Json::UInt64>(status.relay_directory_entries);
+    relay_directory["grace_pending"] =
+        static_cast<Json::UInt64>(status.relay_directory_grace_pending);
+    relay["directory"] = relay_directory;
     result["relay"] = relay;
 
     din::Json local_addresses(Json::arrayValue);

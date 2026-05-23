@@ -86,6 +86,24 @@ set_tests_properties(RelayHintsEviction PROPERTIES
   TIMEOUT 5
 )
 
+add_executable(test_relay_registry_grace
+  tests/network/test_relay_registry_grace.cpp
+  src/network/relay_registry.cpp
+)
+add_dependencies(test_relay_registry_grace gtest gtest_main)
+target_include_directories(test_relay_registry_grace BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_relay_registry_grace PRIVATE
+  GTest::gtest_main
+)
+add_test(NAME RelayRegistryGrace COMMAND test_relay_registry_grace)
+set_tests_properties(RelayRegistryGrace PROPERTIES
+  LABELS "network;relay;smoke"
+  TIMEOUT 5
+)
+
 add_executable(test_ripemd160_core_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/core/crypto/ripemd160.cpp

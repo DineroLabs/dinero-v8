@@ -4972,6 +4972,15 @@ void P2PManager::set_network_active(bool active) {
 // The actual erase-from-map happens in stop() AFTER all threads are joined.
 void P2PManager::cleanup_peer(const std::string& peer_address) {
     int fd_to_clean = -1;
+    const size_t grace_marked = relay_registry_.MarkGracePendingByPeerAddress(
+        peer_address,
+        std::chrono::steady_clock::now() + kRelayDirectoryGracePeriod);
+    if (grace_marked > 0) {
+        std::cout << "[P2P] relayreg: marked " << grace_marked
+                  << " registration(s) from " << peer_address
+                  << " grace-pending for "
+                  << kRelayDirectoryGracePeriod.count() << "s" << std::endl;
+    }
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         connecting_peers_.erase(peer_address);  // Clear connecting guard
