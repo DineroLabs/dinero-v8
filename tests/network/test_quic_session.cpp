@@ -5,8 +5,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -38,38 +38,6 @@ dinero::network::UdpAddr Localhost(uint16_t port) {
     return dinero::network::UdpAddr::FromIPv4(ip, port);
 }
 
-void DeliverClientPackets(dinero::network::QuicSession& client,
-                          dinero::network::QuicSession& server,
-                          const dinero::network::UdpAddr& client_addr,
-                          const dinero::network::UdpAddr& server_addr,
-                          const dinero::network::QuicSessionOptions& options) {
-    std::vector<std::vector<uint8_t>> packets;
-    ASSERT_TRUE(client.DrainOutgoing(&packets)) << client.last_error();
-    for (const auto& packet : packets) {
-        if (!server.active()) {
-            ASSERT_TRUE(server.StartServerFromInitial(server_addr, client_addr, packet, options))
-                << server.last_error();
-        }
-        ASSERT_TRUE(server.ReceivePacket(server_addr, client_addr, packet))
-            << server.last_error();
-    }
-}
-
-void DeliverServerPackets(dinero::network::QuicSession& client,
-                          dinero::network::QuicSession& server,
-                          const dinero::network::UdpAddr& client_addr,
-                          const dinero::network::UdpAddr& server_addr) {
-    if (!server.active()) {
-        return;
-    }
-    std::vector<std::vector<uint8_t>> packets;
-    ASSERT_TRUE(server.DrainOutgoing(&packets)) << server.last_error();
-    for (const auto& packet : packets) {
-        ASSERT_TRUE(client.ReceivePacket(client_addr, server_addr, packet))
-            << client.last_error();
-    }
-}
-
 }  // namespace
 
 TEST(QuicSession, LoopbackHandshakeAndOneEncryptedStreamPayload) {
@@ -78,6 +46,8 @@ TEST(QuicSession, LoopbackHandshakeAndOneEncryptedStreamPayload) {
     ASSERT_EQ(info.crypto_backend, "ossl");
     ASSERT_TRUE(info.crypto_available) << info.disabled_reason;
 
+    using dinero::network::QuicSession;
+
     dinero::network::QuicSessionOptions options;
     options.alpn = "dinero-relay-test/1";
     options.server_name = "localhost";
@@ -85,45 +55,45 @@ TEST(QuicSession, LoopbackHandshakeAndOneEncryptedStreamPayload) {
     options.private_key_pem = kTestPrivateKey;
     options.verify_peer = false;
 
+    std::shared_ptr<QuicSession> client_session;
+    std::shared_ptr<QuicSession> server_session;
+    auto client_writer = [&server_session](std::vector<uint8_t> bytes) {
+        if (server_session) server_session->EnqueueIncomingPacket(std::move(bytes));
+    };
+    auto server_writer = [&client_session](std::vector<uint8_t> bytes) {
+        if (client_session) client_session->EnqueueIncomingPacket(std::move(bytes));
+    };
+    server_session = std::make_shared<QuicSession>(server_writer);
+    client_session = std::make_shared<QuicSession>(client_writer);
+
     const auto client_addr = Localhost(22001);
     const auto server_addr = Localhost(22002);
 
-    dinero::network::QuicSession client;
-    dinero::network::QuicSession server;
-    ASSERT_TRUE(client.StartClient(client_addr, server_addr, options))
-        << client.last_error();
+    ASSERT_TRUE(server_session->StartServer(server_addr, client_addr, options));
+    ASSERT_TRUE(client_session->StartClient(client_addr, server_addr, options));
 
-    const std::vector<uint8_t> payload = {
-        0x64, 0x69, 0x6e, 0x65, 0x72, 0x6f, 0x2d, 0x71, 0x75, 0x69, 0x63};
+    auto cr = client_session->WaitHandshakeReady();
+    auto sr = server_session->WaitHandshakeReady();
+    ASSERT_EQ(cr.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    ASSERT_EQ(sr.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    ASSERT_TRUE(cr.get());
+    ASSERT_TRUE(sr.get());
 
-    bool queued_payload = false;
+    const std::vector<uint8_t> payload = {0x64, 0x69, 0x6e, 0x65, 0x72, 0x6f,
+                                          0x2d, 0x71, 0x75, 0x69, 0x63};
+    client_session->EnqueueOutgoingStream(payload, true);
+
     std::vector<uint8_t> received;
-
-    for (int i = 0; i < 1000 && received != payload; ++i) {
-        DeliverClientPackets(client, server, client_addr, server_addr, options);
-        DeliverServerPackets(client, server, client_addr, server_addr);
-
-        if (server.active()) {
-            ASSERT_TRUE(client.HandleExpiry()) << client.last_error();
-            ASSERT_TRUE(server.HandleExpiry()) << server.last_error();
-        }
-
-        if (!queued_payload && client.handshake_ready() && server.handshake_ready()) {
-            ASSERT_TRUE(client.QueueStreamData(payload, true)) << client.last_error();
-            queued_payload = true;
-        }
-
-        auto chunk = server.TakeReceivedStreamData();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (received.size() < payload.size() &&
+           std::chrono::steady_clock::now() < deadline) {
+        auto chunk = server_session->ReadDecryptedStream(std::chrono::milliseconds(100));
         received.insert(received.end(), chunk.begin(), chunk.end());
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-
-    EXPECT_TRUE(queued_payload);
     EXPECT_EQ(received, payload);
 
-    const auto client_stats = client.Stats();
-    const auto server_stats = server.Stats();
+    const auto client_stats = client_session->Stats();
+    const auto server_stats = server_session->Stats();
     EXPECT_TRUE(client_stats.handshake_completed);
     EXPECT_TRUE(client_stats.handshake_confirmed);
     EXPECT_TRUE(server_stats.handshake_completed);

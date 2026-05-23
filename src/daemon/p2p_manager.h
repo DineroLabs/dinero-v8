@@ -132,10 +132,8 @@ struct PeerInfo {
     std::mutex relay_inbox_mutex;
     std::condition_variable relay_inbox_cv;
     std::deque<std::vector<uint8_t>> relay_inbox_frames;
-    std::mutex relay_quic_mutex;
     std::shared_ptr<dinero::network::QuicSession> relay_quic_session;
     std::optional<dinero::network::QuicSessionOptions> relay_quic_options;
-    std::deque<std::vector<uint8_t>> relay_quic_outbox_packets;
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
@@ -167,7 +165,6 @@ struct PeerInfo {
           via_relay(std::move(other.via_relay)),
           relay_quic_session(std::move(other.relay_quic_session)),
           relay_quic_options(std::move(other.relay_quic_options)),
-          relay_quic_outbox_packets(std::move(other.relay_quic_outbox_packets)),
           lifetime_state(other.lifetime_state.load()) {}
 
     // Default constructor
@@ -607,9 +604,6 @@ public:
     bool test_configure_relay_quic_server(
         const std::string& virtual_peer_key,
         const dinero::network::QuicSessionOptions& options);
-    bool test_drain_relay_quic_packets(
-        const std::string& virtual_peer_key,
-        std::vector<std::vector<uint8_t>>* packets);
     bool test_relay_quic_handshake_ready(const std::string& virtual_peer_key);
     std::unique_ptr<P2PMessage> test_receive_peer_message(
         const std::string& peer_key,

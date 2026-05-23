@@ -3022,37 +3022,19 @@ bool P2PManager::test_configure_relay_quic_server(
     if (!peer || !peer->via_relay) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(peer->relay_quic_mutex);
+
     peer->via_relay->encrypted_quic = true;
     peer->relay_quic_options = options;
-    peer->relay_quic_session = std::make_shared<dinero::network::QuicSession>();
-    peer->relay_quic_outbox_packets.clear();
-    return true;
-}
-
-bool P2PManager::test_drain_relay_quic_packets(
-    const std::string& virtual_peer_key,
-    std::vector<std::vector<uint8_t>>* packets) {
-    if (!packets) {
-        return false;
-    }
-    packets->clear();
-    std::shared_ptr<PeerInfo> peer;
-    {
-        std::lock_guard<std::mutex> lock(peers_mutex_);
-        auto it = connected_peers_.find(virtual_peer_key);
-        if (it != connected_peers_.end()) {
-            peer = it->second;
-        }
-    }
-    if (!peer || !peer->via_relay) {
-        return false;
-    }
-    std::lock_guard<std::mutex> lock(peer->relay_quic_mutex);
-    while (!peer->relay_quic_outbox_packets.empty()) {
-        packets->push_back(std::move(peer->relay_quic_outbox_packets.front()));
-        peer->relay_quic_outbox_packets.pop_front();
-    }
+    peer->relay_quic_session = std::make_shared<dinero::network::QuicSession>(
+        [this, virtual_peer_key](std::vector<uint8_t> bytes) {
+            std::shared_ptr<PeerInfo> p;
+            {
+                std::lock_guard<std::mutex> lock(peers_mutex_);
+                auto it = connected_peers_.find(virtual_peer_key);
+                if (it != connected_peers_.end()) p = it->second;
+            }
+            if (p) send_relay_payload_to_virtual_peer(*p, bytes);
+        });
     return true;
 }
 
@@ -3068,7 +3050,6 @@ bool P2PManager::test_relay_quic_handshake_ready(const std::string& virtual_peer
     if (!peer || !peer->relay_quic_session) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(peer->relay_quic_mutex);
     return peer->relay_quic_session->handshake_ready();
 }
 
