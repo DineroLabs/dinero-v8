@@ -208,7 +208,6 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     result["networkactive"] = status.network_active;
     result["localrelay"] = status.local_relay;
     result["relay_mode"] = status.relay_mode;
-    result["mining_relay_active"] = status.mining_relay_active;
     result["connections"] = static_cast<Json::UInt64>(status.connections);
     result["connections_in"] = static_cast<Json::UInt64>(status.inbound);
     result["connections_out"] = static_cast<Json::UInt64>(status.outbound);
@@ -229,7 +228,11 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     din::Json relay;
     relay["mode"] = status.relay_mode;
     relay["local"] = status.local_relay;
-    relay["mining_active"] = status.mining_relay_active;
+    // Auto-mode toggle: true when the relay role is currently engaged for
+    // any reason (today: mining is running; future: spare-bandwidth
+    // heuristic, dashboard opt-in, etc.). NOT a mining-only signal — see
+    // docs/network-participation.md.
+    relay["active"] = status.relay_active;
     relay["fallback_eligible"] = relay_fallback_eligible;
     result["relay"] = relay;
 

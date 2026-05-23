@@ -256,7 +256,7 @@ P2PService::NetworkTotals P2PService::GetNetworkTotals() const {
 P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     NetworkStatus status;
     status.relay_mode = RelayMode();
-    status.mining_relay_active = mining_relay_active_.load(std::memory_order_acquire);
+    status.relay_active = relay_active_.load(std::memory_order_acquire);
     status.local_relay = IsRelayRoleEnabled();
     if (!p2p_mgr_) {
         std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
@@ -326,17 +326,17 @@ bool P2PService::IsRelayRoleEnabled() const {
     if (IsRelayModeOff(mode)) {
         return false;
     }
-    return mining_relay_active_.load(std::memory_order_acquire);
+    return relay_active_.load(std::memory_order_acquire);
 }
 
-void P2PService::SetMiningRelayActive(bool active) {
-    const bool previous = mining_relay_active_.exchange(active, std::memory_order_acq_rel);
+void P2PService::SetRelayActive(bool active) {
+    const bool previous = relay_active_.exchange(active, std::memory_order_acq_rel);
     if (previous == active) {
         return;
     }
     if (logger_interface_) {
-        logger_interface_->info(std::string("[P2PService] Mining relay auto-mode ") +
-                                (active ? "enabled" : "disabled") +
+        logger_interface_->info(std::string("[P2PService] Relay role auto-mode ") +
+                                (active ? "engaged" : "disengaged") +
                                 " (p2p.relay=" + RelayMode() + ")");
     }
 }

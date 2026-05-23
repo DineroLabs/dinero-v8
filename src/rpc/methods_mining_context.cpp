@@ -574,7 +574,7 @@ din::Json rpc_context_mining_start(const ExecutionContext& ctx, const din::Json&
     }
 
     if (p2p_svc) {
-        p2p_svc->SetMiningRelayActive(true);
+        p2p_svc->SetRelayActive(true);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -658,7 +658,7 @@ din::Json rpc_context_mining_stop(const ExecutionContext& ctx, const din::Json& 
     mining->getMiningManager().stopMining();
     if (was_mining) {
         if (auto p2p_svc = std::dynamic_pointer_cast<dinero::P2PService>(ctx.daemon->p2p)) {
-            p2p_svc->SetMiningRelayActive(false);
+            p2p_svc->SetRelayActive(false);
         }
     }
 
@@ -684,15 +684,23 @@ din::Json rpc_context_mining_stop(const ExecutionContext& ctx, const din::Json& 
 }
 
 /**
- * mining.setrelayactive - Signal external miner activity to the daemon's relay auto-mode.
+ * mining.setrelayactive - Engage the auto-mode relay role from an external trigger.
  *
- * Why: mining.start/stop already flip P2PService::SetMiningRelayActive() so the daemon
+ * Why: mining.start/stop already flip P2PService::SetRelayActive() so the daemon
  * advertises NODE_RELAY while its own mining engine runs. The Qt embedded miner and other
  * external clients drive mining purely through getblocktemplate/submitblock and never
- * call mining.start, so under p2p.relay=auto the relay role never activates. This RPC
+ * call mining.start, so under p2p.relay=auto the relay role never engages. This RPC
  * lets such clients drive the same state directly.
  *
- * Semantics: identical to the SetMiningRelayActive() calls inside mining.start/stop.
+ * Naming note: the RPC sits under the `mining.` namespace for historical reasons —
+ * external miners were the original (and currently only) caller. The lever it pulls is
+ * NOT mining-specific; future non-mining triggers (operator dashboard opt-in,
+ * spare-bandwidth heuristic, etc.) should pull the same lever via SetRelayActive().
+ * See docs/network-participation.md for the three-tier model that justifies keeping
+ * Tier 3 (public relay) opt-in and orthogonal to Tier 1/2 (P2P participation +
+ * NAT-fallback registration, which are always-on).
+ *
+ * Semantics: identical to the SetRelayActive() calls inside mining.start/stop.
  * p2p.relay=0 hard opt-out and p2p.relay=1 explicit opt-in continue to override.
  */
 din::Json rpc_context_mining_setrelayactive(const ExecutionContext& ctx, const din::Json& params) {
@@ -723,10 +731,10 @@ din::Json rpc_context_mining_setrelayactive(const ExecutionContext& ctx, const d
         return result;
     }
 
-    p2p_svc->SetMiningRelayActive(active);
+    p2p_svc->SetRelayActive(active);
 
     const auto status = p2p_svc->GetNetworkStatus();
-    result["mining_relay_active"] = status.mining_relay_active;
+    result["relay_active"] = status.relay_active;
     result["relay_mode"] = status.relay_mode;
     result["local_relay"] = status.local_relay;
     return result;
