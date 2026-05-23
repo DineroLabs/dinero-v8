@@ -4233,10 +4233,16 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
 void P2PManager::run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer) {
     std::vector<uint8_t> stream_buffer;
     const auto virtual_peer_key = peer->to_string();
-    std::cout << "[DEBUG-DH7] run_relay_quic_reader_loop STARTED for "
-              << virtual_peer_key << " is_connected=" << peer->is_connected
-              << " has_session=" << (peer->relay_quic_session ? "yes" : "no") << std::endl;
-    while (!shutdown_requested_.load() && peer->is_connected) {
+    // BUGFIX: use lifetime_state (set to RUNNING at peer_handler_loop entry, before
+    // this reader loop is spawned) instead of is_connected (only set AFTER
+    // perform_handshake completes). The reader loop must run during the dineroid
+    // handshake to feed receive_peer_message — gating on is_connected was a
+    // chicken-and-egg that silently dropped relay-circuit completion.
+    while (!shutdown_requested_.load()) {
+        const auto state = peer->lifetime_state.load(std::memory_order_acquire);
+        if (state != PeerLifetimeState::RUNNING && state != PeerLifetimeState::ALLOCATED) {
+            break;
+        }
         if (!peer->relay_quic_session) break;
         auto chunk = peer->relay_quic_session->ReadDecryptedStream(
             std::chrono::milliseconds(200));
