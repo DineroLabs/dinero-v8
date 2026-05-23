@@ -5466,19 +5466,32 @@ bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage&
 bool P2PManager::send_relay_payload_to_virtual_peer(PeerInfo& peer,
                                                     const std::vector<uint8_t>& payload) {
     if (!peer.via_relay) {
+        std::cout << "[DEBUG-DH4] send_relay_payload: NO via_relay for "
+                  << peer.to_string() << std::endl;
         return false;
     }
     const auto via = *peer.via_relay;
 
     int relay_fd = -1;
+    bool found = false, connected = false;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(via.relay_peer_address);
-        if (it != connected_peers_.end() && it->second && it->second->is_connected) {
-            relay_fd = it->second->socket_fd;
+        if (it != connected_peers_.end()) {
+            found = true;
+            if (it->second && it->second->is_connected) {
+                connected = true;
+                relay_fd = it->second->socket_fd;
+            }
         }
     }
+    std::cout << "[DEBUG-DH4] send_relay_payload: looking up relay_addr=" << via.relay_peer_address
+              << " found=" << found << " connected=" << connected
+              << " relay_fd=" << relay_fd
+              << " payload_size=" << payload.size() << std::endl;
     if (relay_fd < 0) {
+        std::cout << "[DEBUG-DH4] send_relay_payload: NO relay_fd for "
+                  << via.relay_peer_address << std::endl;
         return false;
     }
 
@@ -5487,7 +5500,12 @@ bool P2PManager::send_relay_payload_to_virtual_peer(PeerInfo& peer,
             ? P2PMessage::RelayDirection::TargetToClient
             : P2PMessage::RelayDirection::ClientToTarget;
     auto relay_msg = P2PMessage::create_relay_data(via.circuit_id, direction, payload);
+    auto wire = relay_msg.serialize();
+    std::cout << "[DEBUG-DH4] send_relay_payload: RELAY_DATA wrapped, wire_size=" << wire.size()
+              << " sending on fd=" << relay_fd << std::endl;
     const bool ok = send_message(relay_fd, relay_msg);
+    std::cout << "[DEBUG-DH4] send_relay_payload: send_message returned " << (ok ? "OK" : "FAIL")
+              << " (wire_size=" << wire.size() << ")" << std::endl;
     if (ok) {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(peer.to_string());
