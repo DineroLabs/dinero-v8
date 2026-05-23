@@ -7,7 +7,6 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <future>
@@ -62,12 +61,19 @@ dinero::network::QuicSessionOptions StressOptions() {
 bool RunOneHandshake(std::chrono::milliseconds timeout) {
     using dinero::network::QuicSession;
 
-    const auto client_addr = Localhost(0);  // ephemeral; loopback wiring is logical
+    const auto client_addr = Localhost(0);  // address identifiers only; no real socket is bound — delivery is via writer callbacks
     const auto server_addr = Localhost(0);
 
     std::shared_ptr<QuicSession> client_session;
     std::shared_ptr<QuicSession> server_session;
 
+    // NOTE: The writer lambdas capture session pointers by reference because the
+    // QuicSession constructor takes the writer eagerly. The lifetime invariant
+    // that keeps this safe: RunOneHandshake does not return until both wait_for()
+    // calls below resolve or time out. While wait_for is pending, both sessions
+    // exist as locals in this scope, so the references stay valid. The
+    // `if (server_session)` null check guards the brief window between RunOneHandshake
+    // entry and the make_shared assignments.
     // OutboundWriter forwards wire bytes to the peer's incoming queue.
     auto client_writer = [&server_session](std::vector<uint8_t> bytes) {
         if (server_session) {
@@ -122,4 +128,9 @@ TEST(QuicSessionStress, OneThousandLoopbackHandshakesAllSucceed) {
 
     EXPECT_EQ(successes, kIterations) << "stress test failures: " << failures
                                       << " of " << kIterations;
+}
+
+int main(int argc, char** argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }
