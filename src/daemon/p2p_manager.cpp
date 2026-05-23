@@ -1200,15 +1200,35 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
             relay_peer_address,
             static_cast<uint8_t>(P2PMessage::RelayDirection::TargetToClient)};
 
-        // Wire the QUIC server session for this inbound circuit. We do NOT
-        // call StartServerFromInitial here — that fires when the first QUIC
-        // packet arrives in handle_relay_data (line ~1300 area), giving
-        // ngtcp2 the initial bytes it needs to accept the connection.
+        // Wire the QUIC server session for this inbound circuit.  The
+        // OutboundWriter fires from the session's owning thread whenever
+        // ngtcp2 has QUIC wire bytes to send; it must not block.
+        // StartServer primes the session for the server role; ngtcp2
+        // initializes lazily on the first EnqueueIncomingPacket call.
         if (relay_tls_ready_) {
             virtual_peer->via_relay->encrypted_quic = true;
             virtual_peer->relay_quic_options = relay_tls_options_;
             virtual_peer->relay_quic_session =
-                std::make_shared<dinero::network::QuicSession>();
+                std::make_shared<dinero::network::QuicSession>(
+                    [this, peer_weak = std::weak_ptr<PeerInfo>(virtual_peer)]
+                    (std::vector<uint8_t> bytes) {
+                        auto peer_locked = peer_weak.lock();
+                        if (!peer_locked) return;  // peer torn down — drop the packet
+                        send_relay_payload_to_virtual_peer(*peer_locked, bytes);
+                    });
+            const auto local_addr =
+                RelayQuicAddress(circuit_id, /*client_side=*/false);
+            const auto remote_addr =
+                RelayQuicAddress(circuit_id, /*client_side=*/true);
+            if (!virtual_peer->relay_quic_session->StartServer(
+                    local_addr, remote_addr, relay_tls_options_)) {
+                std::cout << "[P2P] relay-transport: failed to start QUIC server for "
+                          << virtual_peer_key << ": "
+                          << virtual_peer->relay_quic_session->last_error() << std::endl;
+                virtual_peer->via_relay->encrypted_quic = false;
+                virtual_peer->relay_quic_session.reset();
+                virtual_peer->relay_quic_options.reset();
+            }
         }
 
         {
@@ -1296,94 +1316,18 @@ bool P2PManager::unwrap_relay_quic_packet(const std::string& virtual_peer_key,
         return false;
     }
 
-    std::vector<std::vector<uint8_t>> ready_frames;
-    {
-        std::lock_guard<std::mutex> lock(peer.relay_quic_mutex);
-        if (!peer.relay_quic_session) {
-            peer.relay_quic_session = std::make_shared<dinero::network::QuicSession>();
-        }
-
-        const bool local_is_client =
-            peer.via_relay->outbound_direction ==
-            static_cast<uint8_t>(P2PMessage::RelayDirection::ClientToTarget);
-        const auto local_addr = RelayQuicAddress(peer.via_relay->circuit_id, local_is_client);
-        const auto remote_addr = RelayQuicAddress(peer.via_relay->circuit_id, !local_is_client);
-
-        if (!peer.relay_quic_session->active()) {
-            if (local_is_client) {
-                std::cout << "[P2P] relay-transport: inactive client-side QUIC session for "
-                          << peer.to_string() << std::endl;
-                return true;
-            }
-            if (!peer.relay_quic_options) {
-                std::cout << "[P2P] relay-transport: missing server QUIC options for "
-                          << peer.to_string() << std::endl;
-                return true;
-            }
-            if (!peer.relay_quic_session->StartServerFromInitial(
-                    local_addr, remote_addr, packet, *peer.relay_quic_options)) {
-                std::cout << "[P2P] relay-transport: failed to start relay QUIC server for "
-                          << peer.to_string() << ": "
-                          << peer.relay_quic_session->last_error() << std::endl;
-                return true;
-            }
-        }
-
-        if (!peer.relay_quic_session->ReceivePacket(local_addr, remote_addr, packet)) {
-            std::cout << "[P2P] relay-transport: failed to receive relay QUIC packet for "
-                      << peer.to_string() << ": "
-                      << peer.relay_quic_session->last_error() << std::endl;
-            return true;
-        }
-
-        (void)peer.relay_quic_session->HandleExpiry();
-        (void)drain_relay_quic_outgoing(peer);
-
-        auto stream_data = peer.relay_quic_session->TakeReceivedStreamData();
-        if (!stream_data.empty()) {
-            peer.relay_quic_stream_buffer.insert(peer.relay_quic_stream_buffer.end(),
-                                                 stream_data.begin(),
-                                                 stream_data.end());
-        }
-
-        while (!peer.relay_quic_stream_buffer.empty()) {
-            uint64_t frame_len = 0;
-            size_t prefix_len = 0;
-            if (!PeekVarInt(peer.relay_quic_stream_buffer, 0, &frame_len, &prefix_len)) {
-                break;
-            }
-            if (frame_len > 4ULL * 1024 * 1024) {
-                std::cout << "[P2P] relay-transport: QUIC stream frame too large for "
-                          << peer.to_string() << std::endl;
-                peer.relay_quic_stream_buffer.clear();
-                break;
-            }
-            const auto total_len = prefix_len + static_cast<size_t>(frame_len);
-            if (peer.relay_quic_stream_buffer.size() < total_len) {
-                break;
-            }
-            std::vector<uint8_t> frame(
-                peer.relay_quic_stream_buffer.begin() + static_cast<std::ptrdiff_t>(prefix_len),
-                peer.relay_quic_stream_buffer.begin() + static_cast<std::ptrdiff_t>(total_len));
-            peer.relay_quic_stream_buffer.erase(
-                peer.relay_quic_stream_buffer.begin(),
-                peer.relay_quic_stream_buffer.begin() + static_cast<std::ptrdiff_t>(total_len));
-            if (!P2PMessage::deserialize(frame)) {
-                std::cout << "[P2P] relay-transport: dropped malformed decrypted QUIC frame for "
-                          << peer.to_string() << std::endl;
-                continue;
-            }
-            ready_frames.push_back(std::move(frame));
-        }
+    // The session thread owns all ngtcp2 state.  Just hand the packet to
+    // its inbox; StartServer (primed at virtual-peer creation time),
+    // ReceivePacket, HandleExpiry, and drain (via the OutboundWriter) all
+    // run on that thread.  Decrypted application bytes are read by
+    // run_relay_quic_reader_loop (spawned from start_peer_handler_thread
+    // for QUIC virtual peers — Task 6).
+    if (!peer.relay_quic_session) {
+        std::cout << "[P2P] relay-transport: no QUIC session for "
+                  << peer.to_string() << std::endl;
+        return true;
     }
-
-    for (const auto& frame : ready_frames) {
-        if (!enqueue_relay_frame(virtual_peer_key, frame)) {
-            std::cout << "[P2P] relay-transport: failed to queue decrypted QUIC frame for "
-                      << virtual_peer_key << std::endl;
-            return true;
-        }
-    }
+    peer.relay_quic_session->EnqueueIncomingPacket(packet);
 
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -1622,16 +1566,23 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
     // 1A) won't have to wait for the inner handshake to populate it.
     peer->their_node_id = target_node_id;
 
-    // Wire the QUIC client session for this circuit. The originator drives
-    // the handshake (StartClient produces the initial INIT packet, which
-    // drain_relay_quic_outgoing then ships through the relay tunnel). The
-    // dineroid identity exchange runs inside the encrypted stream, NOT at
-    // the TLS layer — that's why verify_peer is false on the options.
+    // Wire the QUIC client session for this circuit. The OutboundWriter
+    // fires from the session's owning thread whenever ngtcp2 has QUIC wire
+    // bytes to send (including the initial INIT packet that StartClient
+    // enqueues). No manual drain is needed — the session thread handles it.
+    // The dineroid identity exchange runs inside the encrypted stream, NOT
+    // at the TLS layer — that's why verify_peer is false on the options.
     if (relay_tls_ready_) {
         peer->via_relay->encrypted_quic = true;
         peer->relay_quic_options = relay_tls_options_;
         peer->relay_quic_session =
-            std::make_shared<dinero::network::QuicSession>();
+            std::make_shared<dinero::network::QuicSession>(
+                [this, peer_weak = std::weak_ptr<PeerInfo>(peer)]
+                (std::vector<uint8_t> bytes) {
+                    auto peer_locked = peer_weak.lock();
+                    if (!peer_locked) return;  // peer torn down — drop the packet
+                    send_relay_payload_to_virtual_peer(*peer_locked, bytes);
+                });
         const auto local_addr =
             RelayQuicAddress(circuit_id, /*client_side=*/true);
         const auto remote_addr =
@@ -1653,13 +1604,6 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         connected_peers_[virtual_peer_key] = peer;
-    }
-
-    // Pump the initial QUIC packet(s) out so the relay forwards them to
-    // the target. ngtcp2 has already produced INIT data inside StartClient;
-    // we just need to drain and ship.
-    if (peer->via_relay->encrypted_quic) {
-        drain_relay_quic_outgoing(*peer);
     }
     return virtual_peer_key;
 }
@@ -4306,6 +4250,53 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
 
     // Start peer handler thread
     start_peer_handler_thread(peer);
+}
+
+// Task 5: Decrypted-frame extraction loop for QUIC relay virtual peers.
+// Runs on its own thread (spawned by start_peer_handler_thread — Task 6).
+// Blocks on ReadDecryptedStream up to 200 ms per call so it does not spin,
+// reassembles the varint-framed application stream, deserialises each frame
+// and enqueues it to the virtual peer's relay_inbox (same path as
+// enqueue_relay_frame used by the plaintext path).
+void P2PManager::run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer) {
+    std::vector<uint8_t> stream_buffer;
+    const auto virtual_peer_key = peer->to_string();
+    while (!shutdown_requested_.load() && peer->is_connected) {
+        if (!peer->relay_quic_session) break;
+        auto chunk = peer->relay_quic_session->ReadDecryptedStream(
+            std::chrono::milliseconds(200));
+        if (chunk.empty()) continue;
+        stream_buffer.insert(stream_buffer.end(), chunk.begin(), chunk.end());
+
+        while (!stream_buffer.empty()) {
+            uint64_t frame_len = 0;
+            size_t prefix_len = 0;
+            if (!PeekVarInt(stream_buffer, 0, &frame_len, &prefix_len)) break;
+            if (frame_len > 4ULL * 1024 * 1024) {
+                std::cout << "[P2P] relay-transport: QUIC stream frame too large for "
+                          << virtual_peer_key << std::endl;
+                stream_buffer.clear();
+                break;
+            }
+            const auto total_len = prefix_len + static_cast<size_t>(frame_len);
+            if (stream_buffer.size() < total_len) break;
+            std::vector<uint8_t> frame(
+                stream_buffer.begin() + static_cast<std::ptrdiff_t>(prefix_len),
+                stream_buffer.begin() + static_cast<std::ptrdiff_t>(total_len));
+            stream_buffer.erase(
+                stream_buffer.begin(),
+                stream_buffer.begin() + static_cast<std::ptrdiff_t>(total_len));
+            if (!P2PMessage::deserialize(frame)) {
+                std::cout << "[P2P] relay-transport: dropped malformed decrypted QUIC frame for "
+                          << virtual_peer_key << std::endl;
+                continue;
+            }
+            if (!enqueue_relay_frame(virtual_peer_key, frame)) {
+                std::cout << "[P2P] relay-transport: failed to queue decrypted QUIC frame for "
+                          << virtual_peer_key << std::endl;
+            }
+        }
+    }
 }
 
 void P2PManager::start_peer_handler_thread(std::shared_ptr<PeerInfo> peer) {

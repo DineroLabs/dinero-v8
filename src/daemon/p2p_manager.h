@@ -861,6 +861,9 @@ private:
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
     void start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);
+    // Task 5: Decrypted-stream reader for QUIC relay virtual peers.
+    // Spawned by start_peer_handler_thread (Task 6) for encrypted circuits.
+    void run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer);
     void outbox_loop();
     void keepalive_loop();  // Phase C: Adaptive keepalive thread
     
