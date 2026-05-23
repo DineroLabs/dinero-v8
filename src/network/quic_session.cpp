@@ -232,6 +232,7 @@ struct QuicSession::Impl {
             conn = nullptr;
         }
         active = false;
+        active_published.store(false);
         handshake_completed = false;
         handshake_confirmed.store(false);
         stream_closed.store(false);
@@ -895,7 +896,10 @@ struct QuicSession::Impl {
         return NgtcpExpiryToSteady(impl, expiry_ns);
     }
 
-    static void ProcessIncomingPacket(Impl& impl,
+    // Returns false if ngtcp2 encountered a fatal error processing this
+    // packet. The caller (SessionLoop) uses the return value to trigger
+    // MaybePublishHandshakeFailed and Stop.
+    static bool ProcessIncomingPacket(Impl& impl,
                                       const std::vector<uint8_t>& packet) {
         // Server-side lazy init: the first inbound packet brings up the
         // ngtcp2 server conn. After that, normal ReceivePacket.
@@ -905,7 +909,7 @@ struct QuicSession::Impl {
                                                   impl.server_remote,
                                                   packet,
                                                   impl.server_options)) {
-                    return;
+                    return false;
                 }
                 // Fall through: the Initial packet itself still needs to
                 // be fed into ngtcp2_conn_read_pkt below, because
@@ -913,12 +917,12 @@ struct QuicSession::Impl {
                 // the conn. ngtcp2 will reparse the same bytes.
             } else {
                 // Packet arrived before any Start*() — drop silently.
-                return;
+                return true;
             }
         }
         // Use the session's recorded path addresses; the relay listen
         // thread is single-path so there's no per-packet variation.
-        impl.ReceivePacket(impl.session_local, impl.session_remote, packet);
+        return impl.ReceivePacket(impl.session_local, impl.session_remote, packet);
     }
 
     static void ProcessOutgoingStream(Impl& impl,
@@ -966,6 +970,19 @@ struct QuicSession::Impl {
         }
     }
 
+    // Mirror of MaybePublishHandshakeReady for failure paths. Called from
+    // SessionLoop whenever ngtcp2 signals a fatal error (ReceivePacket,
+    // HandleExpiry, or StartClient failure). Idempotent via the same
+    // handshake_promise_set guard.
+    static void MaybePublishHandshakeFailed(Impl& impl) {
+        if (impl.handshake_promise_set) return;
+        impl.handshake_ready_published.store(false);
+        try {
+            impl.handshake_promise.set_value(false);
+        } catch (...) {}
+        impl.handshake_promise_set = true;
+    }
+
     static void PublishDecryptedToOutbox(Impl& impl) {
         if (impl.received_stream_data.empty()) return;
         auto bytes = impl.TakeReceivedStreamData();
@@ -1001,8 +1018,13 @@ struct QuicSession::Impl {
             const bool stopping = impl.stopping.load();
             lock.unlock();
 
+            // Track whether any ngtcp2 operation failed this iteration.
+            bool ngtcp2_failed = false;
+
             if (start_req == StartRequest::Client) {
-                impl.StartClient(start_local, start_remote, start_options);
+                if (!impl.StartClient(start_local, start_remote, start_options)) {
+                    ngtcp2_failed = true;
+                }
             } else if (start_req == StartRequest::Server) {
                 impl.server_options = start_options;
                 impl.server_local = start_local;
@@ -1011,14 +1033,34 @@ struct QuicSession::Impl {
                 // Defer ngtcp2 init until the first inbound packet.
             }
 
-            for (auto& packet : incoming) {
-                ProcessIncomingPacket(impl, packet);
+            if (!ngtcp2_failed) {
+                for (auto& packet : incoming) {
+                    if (!ProcessIncomingPacket(impl, packet)) {
+                        ngtcp2_failed = true;
+                        break;
+                    }
+                }
             }
-            for (auto& entry : outgoing) {
-                ProcessOutgoingStream(impl, std::move(entry.first), entry.second);
+            if (!ngtcp2_failed) {
+                for (auto& entry : outgoing) {
+                    ProcessOutgoingStream(impl, std::move(entry.first), entry.second);
+                }
             }
-            if (impl.active_published.load()) {
-                impl.HandleExpiry();
+            if (!ngtcp2_failed && impl.active_published.load()) {
+                if (!impl.HandleExpiry()) {
+                    ngtcp2_failed = true;
+                }
+            }
+
+            // On ngtcp2 failure: resolve the handshake future to false so
+            // WaitHandshakeReady() callers get a prompt false ("it failed")
+            // instead of timing out ("we don't know"). Then mark the session
+            // dead so the loop exits cleanly.
+            if (ngtcp2_failed) {
+                MaybePublishHandshakeFailed(impl);
+                impl.Stop();
+                impl.stopping.store(true);
+                impl.outbox_cv.notify_all();
             }
             DrainAndShip(impl);
             MaybePublishHandshakeReady(impl);
@@ -1145,6 +1187,7 @@ bool QuicSession::StartServer(const UdpAddr& local,
 }
 
 void QuicSession::EnqueueIncomingPacket(std::vector<uint8_t> packet) {
+    if (impl_->stopping.load()) return;  // drop post-Close; prevents destructor hang
     {
         std::lock_guard<std::mutex> lock(impl_->inbox_mutex);
         impl_->incoming_packets.push_back(std::move(packet));
@@ -1153,6 +1196,7 @@ void QuicSession::EnqueueIncomingPacket(std::vector<uint8_t> packet) {
 }
 
 void QuicSession::EnqueueOutgoingStream(std::vector<uint8_t> payload, bool fin) {
+    if (impl_->stopping.load()) return;  // drop post-Close; prevents destructor hang
     {
         std::lock_guard<std::mutex> lock(impl_->inbox_mutex);
         impl_->outgoing_streams.emplace_back(std::move(payload), fin);
