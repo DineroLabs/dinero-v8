@@ -578,7 +578,14 @@ TEST(RelayOrchestrator, OrchestratorFallsBackFromFreshUnconnectedHint) {
     EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
 }
 
-TEST(RelayOrchestrator, OrchestratorPlaintextRelayConnectIsMainnetGated) {
+// Codifies the post-encrypted-relay-data-plane contract: on mainnet, the
+// orchestrator IS allowed to issue RELAY_CONNECT — the resulting circuit's
+// data plane is QUIC-encrypted end-to-end (see install_outbound_virtual_relay_peer
+// + handle_relay_data's encrypted_quic branch), so the RELAY_CONNECT signaling
+// no longer leaks plaintext payloads. Pre-b79fde09 this site was gated;
+// post-PR keeping the gate would just block mainnet inbound circuits for no
+// privacy gain (the relay knows target_node_id anyway, it has to dispatch).
+TEST(RelayOrchestrator, OrchestratorIssuesRelayConnectOnMainnet) {
     P2PManager manager(0);
     ASSERT_FALSE(manager.test_plaintext_relay_transport_allowed());
     InstallNodeIdentity(manager);
@@ -593,8 +600,9 @@ TEST(RelayOrchestrator, OrchestratorPlaintextRelayConnectIsMainnetGated) {
 
     manager.OrchestrateRelayDials();
 
-    EXPECT_EQ(manager.test_pending_relay_connect_count(), 0u);
-    EXPECT_EQ(relay.ReceiveMessage(), nullptr);
+    // One pending connect was queued and one message hit the relay socket.
+    EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
+    EXPECT_NE(relay.ReceiveMessage(), nullptr);
 }
 
 TEST(RelayOrchestrator, RelayConnectAckLeavesVirtualPeerCreationToCallback) {

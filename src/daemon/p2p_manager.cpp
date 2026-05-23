@@ -6,6 +6,7 @@
 #include "consensus/chainparams.h"  // Canonical source of the P2P network magic
 #include "network/local_interfaces.h"  // Self-loop filter at dial time
 #include "network/quic_transport.h"    // Mainnet relay safety gate for encrypted QUIC transport
+#include "network/relay_tls_keypair.h" // Self-signed cert+key for the QUIC relay TLS layer
 #include "network/types.h"          // Canonical P2P service flag assignments
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: dineroid signing
 #include "dinero/core/crypto/dinero_crypto_minimal.h"  // HASH160 3-arg form for node_id derivation
@@ -917,13 +918,12 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
     std::copy_n(message.payload.begin(), 20, target_node_id.begin());
     const uint64_t request_id = ReadLE64(message.payload, 20);
 
-    if (!plaintext_relay_transport_allowed()) {
-        auto ack = P2PMessage::create_relay_connect_ack(
-            request_id, 0, P2PMessage::RelayConnectStatus::InternalError,
-            "plaintext relay is disabled on mainnet until encrypted transport lands");
-        send_to_peer(peer_address, ack);
-        return;
-    }
+    // Pre-b79fde09 this site refused to forward connects on mainnet because
+    // the resulting RELAY_DATA would be plaintext. Now that the install
+    // paths set encrypted_quic=true and wire a QuicSession on both ends,
+    // the data plane is encrypted end-to-end regardless of network — the
+    // relay never sees the inner P2P frames in cleartext, so there's no
+    // privacy reason to refuse the forward.
 
     // Lookup the target's registration.
     auto reg = relay_registry_.Lookup(target_node_id);
@@ -1173,9 +1173,14 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
             direction != static_cast<uint8_t>(P2PMessage::RelayDirection::ClientToTarget)) {
             return false;
         }
-        if (!plaintext_relay_transport_allowed()) {
-            std::cout << "[P2P] relay-data: refused to create plaintext inbound virtual peer "
-                      << "on mainnet for circuit "
+        // On mainnet the relay TLS keypair must be ready or we have no way
+        // to terminate the QUIC session; refuse to create the virtual peer
+        // rather than fall into the plaintext path that mainnet rejects
+        // anyway. On regtest/testnet either transport is allowed; the
+        // plaintext path stays available there for harness use.
+        if (!relay_tls_ready_ && !plaintext_relay_transport_allowed()) {
+            std::cout << "[P2P] relay-data: refused inbound virtual peer on "
+                      << "mainnet — relay TLS keypair not ready for circuit "
                       << std::hex << circuit_id << std::dec << std::endl;
             return true;
         }
@@ -1195,6 +1200,17 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
             relay_peer_address,
             static_cast<uint8_t>(P2PMessage::RelayDirection::TargetToClient)};
 
+        // Wire the QUIC server session for this inbound circuit. We do NOT
+        // call StartServerFromInitial here — that fires when the first QUIC
+        // packet arrives in handle_relay_data (line ~1300 area), giving
+        // ngtcp2 the initial bytes it needs to accept the connection.
+        if (relay_tls_ready_) {
+            virtual_peer->via_relay->encrypted_quic = true;
+            virtual_peer->relay_quic_options = relay_tls_options_;
+            virtual_peer->relay_quic_session =
+                std::make_shared<dinero::network::QuicSession>();
+        }
+
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
             connected_peers_.emplace(virtual_peer_key, std::move(virtual_peer));
@@ -1202,7 +1218,9 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
         is_local_endpoint = true;
         created_virtual_peer = true;
         std::cout << "[P2P] relay-data: created inbound virtual peer "
-                  << virtual_peer_key << std::endl;
+                  << virtual_peer_key
+                  << (relay_tls_ready_ ? " (QUIC-encrypted)" : " (plaintext)")
+                  << std::endl;
     }
 
     std::vector<uint8_t> inner(message.payload.begin() + static_cast<std::ptrdiff_t>(offset),
@@ -1437,13 +1455,12 @@ uint64_t P2PManager::SendRelayConnect(
     const std::array<uint8_t, 20>& target_node_id,
     std::function<void(bool ok, uint64_t circuit_id,
                        const std::string& msg)> callback) {
-    if (!plaintext_relay_transport_allowed()) {
-        if (callback) {
-            callback(false, 0,
-                     "plaintext relay is disabled on mainnet until encrypted transport lands");
-        }
-        return 0;
-    }
+    // Origin-side mainnet gate removed: the orchestrator's install path now
+    // wires a QUIC client session on the resulting circuit, so the data
+    // plane is encrypted end-to-end. RELAY_CONNECT itself rides the existing
+    // TCP connection to the relay — it carries no inner payload, only the
+    // target_node_id + request_id metadata the relay needs to dispatch the
+    // dial. There is no privacy gain from refusing it.
 
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -1538,10 +1555,8 @@ void P2PManager::handle_relay_connect_ack(const std::string& peer_address,
 
     bool ok = (status_byte == static_cast<uint8_t>(
                P2PMessage::RelayConnectStatus::Ok)) && circuit_id != 0;
-    if (ok && !plaintext_relay_transport_allowed()) {
-        ok = false;
-        err_msg = "plaintext relay is disabled on mainnet until encrypted transport lands";
-    }
+    // Origin-side mainnet ack gate removed: data plane is QUIC-encrypted via
+    // the install_outbound_virtual_relay_peer wiring.
     if (ok) {
         {
             std::lock_guard<std::mutex> lock(originator_mutex_);
@@ -1607,9 +1622,44 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
     // 1A) won't have to wait for the inner handshake to populate it.
     peer->their_node_id = target_node_id;
 
+    // Wire the QUIC client session for this circuit. The originator drives
+    // the handshake (StartClient produces the initial INIT packet, which
+    // drain_relay_quic_outgoing then ships through the relay tunnel). The
+    // dineroid identity exchange runs inside the encrypted stream, NOT at
+    // the TLS layer — that's why verify_peer is false on the options.
+    if (relay_tls_ready_) {
+        peer->via_relay->encrypted_quic = true;
+        peer->relay_quic_options = relay_tls_options_;
+        peer->relay_quic_session =
+            std::make_shared<dinero::network::QuicSession>();
+        const auto local_addr =
+            RelayQuicAddress(circuit_id, /*client_side=*/true);
+        const auto remote_addr =
+            RelayQuicAddress(circuit_id, /*client_side=*/false);
+        if (!peer->relay_quic_session->StartClient(
+                local_addr, remote_addr, relay_tls_options_)) {
+            std::cout << "[P2P] relay-transport: StartClient failed for "
+                      << virtual_peer_key << ": "
+                      << peer->relay_quic_session->last_error() << std::endl;
+            // Tear the QUIC plumbing back down — caller and downstream will
+            // see encrypted_quic=false and refuse to engage on mainnet,
+            // which is the correct visibility for a broken circuit.
+            peer->via_relay->encrypted_quic = false;
+            peer->relay_quic_session.reset();
+            peer->relay_quic_options.reset();
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         connected_peers_[virtual_peer_key] = peer;
+    }
+
+    // Pump the initial QUIC packet(s) out so the relay forwards them to
+    // the target. ngtcp2 has already produced INIT data inside StartClient;
+    // we just need to drain and ship.
+    if (peer->via_relay->encrypted_quic) {
+        drain_relay_quic_outgoing(*peer);
     }
     return virtual_peer_key;
 }
@@ -3524,7 +3574,30 @@ bool P2PManager::start() {
         std::cout << "P2P manager already running" << std::endl;
         return true;
     }
-    
+
+    // QUIC relay TLS material. Generated once per daemon run; never persisted.
+    // Without this, encrypted relay circuits cannot engage and the daemon
+    // falls back to the plaintext path (refused on mainnet by design).
+    if (!relay_tls_ready_) {
+        std::string err;
+        std::string cert_pem;
+        std::string key_pem;
+        if (dinero::network::GenerateRelayTlsKeypair(&cert_pem, &key_pem, &err)) {
+            relay_tls_options_.alpn = "dinero-relay/1";
+            relay_tls_options_.server_name = "localhost";
+            relay_tls_options_.certificate_pem = std::move(cert_pem);
+            relay_tls_options_.private_key_pem = std::move(key_pem);
+            relay_tls_options_.verify_peer = false;
+            relay_tls_ready_ = true;
+            std::cout << "[P2P] relay-tls: generated ephemeral QUIC keypair "
+                         "(self-signed P-256, 1y validity)" << std::endl;
+        } else {
+            std::cout << "[P2P] relay-tls: keypair generation failed: " << err
+                      << " — encrypted relay circuits will not engage"
+                      << std::endl;
+        }
+    }
+
     shutdown_requested_ = false;
     network_active_.store(true, std::memory_order_release);
     
