@@ -51,6 +51,23 @@ set_tests_properties(AddrmanRelaySelect PROPERTIES
   TIMEOUT 10
 )
 
+add_executable(test_clock_source
+  tests/network/test_clock_source.cpp
+)
+add_dependencies(test_clock_source gtest gtest_main)
+target_include_directories(test_clock_source BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_clock_source PRIVATE
+  GTest::gtest_main
+)
+add_test(NAME ClockSource COMMAND test_clock_source)
+set_tests_properties(ClockSource PROPERTIES
+  LABELS "network;relay;smoke"
+  TIMEOUT 5
+)
+
 add_executable(test_ripemd160_core_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/core/crypto/ripemd160.cpp
