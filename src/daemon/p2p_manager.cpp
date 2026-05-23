@@ -1805,6 +1805,15 @@ void P2PManager::OrchestrateRelayDials() {
                     std::cout << "[P2P] relay-orchestrator: dial via "
                               << relay_peer_address << " to " << target_hex
                               << " failed: " << msg << std::endl;
+                    {
+                        std::lock_guard<std::mutex> hints_lock(relay_hints_mutex_);
+                        auto hit = relay_hints_by_target_.find(target_hex);
+                        if (hit != relay_hints_by_target_.end()) {
+                            for (auto& r : hit->second) {
+                                r.consecutive_dial_failures++;
+                            }
+                        }
+                    }
                     return;
                 }
                 const std::string virtual_peer_key =
@@ -1824,6 +1833,15 @@ void P2PManager::OrchestrateRelayDials() {
                           << " to " << target_hex << " via "
                           << relay_peer_address << std::endl;
                 start_peer_handler_thread(std::move(virtual_peer));
+                {
+                    std::lock_guard<std::mutex> hints_lock(relay_hints_mutex_);
+                    auto hit = relay_hints_by_target_.find(target_hex);
+                    if (hit != relay_hints_by_target_.end()) {
+                        for (auto& r : hit->second) {
+                            r.consecutive_dial_failures = 0;
+                        }
+                    }
+                }
             };
 
         uint64_t request_id = SendRelayConnect(
