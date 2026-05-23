@@ -1221,6 +1221,30 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
                   << virtual_peer_key
                   << (relay_tls_ready_ ? " (QUIC-encrypted)" : " (plaintext)")
                   << std::endl;
+
+        // Spawn the peer_handler thread now — regardless of whether the
+        // first inner frame takes the QUIC path (which returns at the
+        // unwrap_relay_quic_packet site below) or the plaintext path
+        // (which falls through to the start_peer_handler_thread call at
+        // the bottom of this function). Without this, QUIC-encrypted
+        // inbound circuits never get a handler thread, the dineroid
+        // identity exchange never starts, and the virtual peer sits
+        // empty forever — even after the QUIC handshake completes. The
+        // QH wait inside peer_handler_loop will block until
+        // handshake_ready (or 10s timeout) before kicking dineroid.
+        if (created_virtual_peer) {
+            std::shared_ptr<PeerInfo> handler_peer;
+            {
+                std::lock_guard<std::mutex> lock(peers_mutex_);
+                auto it = connected_peers_.find(virtual_peer_key);
+                if (it != connected_peers_.end()) {
+                    handler_peer = it->second;
+                }
+            }
+            if (handler_peer) {
+                start_peer_handler_thread(std::move(handler_peer));
+            }
+        }
     }
 
     std::vector<uint8_t> inner(message.payload.begin() + static_cast<std::ptrdiff_t>(offset),
@@ -1275,17 +1299,14 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
         return true;
     }
 
-    if (created_virtual_peer) {
-        std::shared_ptr<PeerInfo> virtual_peer;
-        {
-            std::lock_guard<std::mutex> lock(peers_mutex_);
-            auto it = connected_peers_.find(virtual_peer_key);
-            if (it != connected_peers_.end()) {
-                virtual_peer = it->second;
-            }
-        }
-        start_peer_handler_thread(std::move(virtual_peer));
-    }
+    // Note: the peer_handler thread is now spawned inside the inline
+    // creation block above (right after the peer is added to
+    // connected_peers_). Keeping it there ensures the thread starts for
+    // both QUIC and plaintext paths — the QUIC branch returns at
+    // unwrap_relay_quic_packet earlier in this function and never reaches
+    // this point. Spawning here would only ever fire for the plaintext
+    // path, which is exactly the regression that left QUIC-encrypted
+    // inbound circuits without a handler.
     return true;
 }
 
