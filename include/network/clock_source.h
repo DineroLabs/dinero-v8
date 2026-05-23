@@ -44,8 +44,12 @@ public:
         return system_;
     }
 
-    void AdvanceSteady(std::chrono::nanoseconds delta) { steady_ += delta; }
-    void AdvanceSystem(std::chrono::nanoseconds delta) { system_ += delta; }
+    void AdvanceSteady(std::chrono::nanoseconds delta) {
+        steady_ += std::chrono::duration_cast<std::chrono::steady_clock::duration>(delta);
+    }
+    void AdvanceSystem(std::chrono::nanoseconds delta) {
+        system_ += std::chrono::duration_cast<std::chrono::system_clock::duration>(delta);
+    }
 
 private:
     std::chrono::steady_clock::time_point steady_;
