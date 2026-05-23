@@ -2792,7 +2792,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                         utreexo_peers.reserve(peers.size());
                         int bridge_sent = 0;
                         for (const auto& peer : peers) {
-                            const std::string peer_key = peer.address + ":" + std::to_string(peer.port);
+                            const std::string peer_key = peer.to_string();
                             if (p2p_service->get().peer_has_service_flags(peer_key, ServiceFlags::NODE_UTREEXO)) {
                                 utreexo_peers.push_back(peer_key);
                             }
@@ -5633,7 +5633,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     continue;
                                 }
 
-                                const std::string peer_key = peer.address + ":" + std::to_string(peer.port);
+                                // CRITICAL: relay-virtual peers use just `address` as their map key
+                                // (no :port suffix) — see PeerInfo::to_string(). Without this branch,
+                                // every block broadcast silently skips relay-virtual peers because
+                                // the wrong key (with trailing :0) doesn't match connected_peers_.
+                                const std::string peer_key = peer.via_relay.has_value()
+                                    ? peer.address
+                                    : peer.to_string();
                                 if (p2p_service->get().send_to_peer(peer_key, msg)) {
                                     ++sent;
                                 }
@@ -5650,7 +5656,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 // Send inv to ALL peers — compact-ready peers already have the block
                                 // via cmpctblock and will ignore this, but it guarantees no peer
                                 // is silently skipped (e.g. on reconnect where cmpctblock was missed).
-                                const std::string peer_key = peer.address + ":" + std::to_string(peer.port);
+                                // CRITICAL: relay-virtual peers use just `address` as their map key
+                                // (no :port suffix) — see PeerInfo::to_string(). Without this branch,
+                                // every block broadcast silently skips relay-virtual peers because
+                                // the wrong key (with trailing :0) doesn't match connected_peers_.
+                                const std::string peer_key = peer.via_relay.has_value()
+                                    ? peer.address
+                                    : peer.to_string();
                                 if (p2p_service->get().send_to_peer(peer_key, msg)) {
                                     ++sent;
                                 }
@@ -5986,7 +5998,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                     archival_bridge_peers.reserve(peers.size());
                     limited_bridge_peers.reserve(peers.size());
                     for (const auto& peer : peers) {
-                        std::string peer_key = peer.address + ":" + std::to_string(peer.port);
+                        std::string peer_key = peer.to_string();
                         if (!p2p_service->get().peer_has_service_flags(peer_key, ServiceFlags::NODE_UTREEXO_BRIDGE)) {
                             continue;
                         }
@@ -6029,7 +6041,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                                          "...; falling back to all peers");
                         eligible = static_cast<int>(peers.size());
                         for (const auto& peer : peers) {
-                            std::string peer_key = peer.address + ":" + std::to_string(peer.port);
+                            std::string peer_key = peer.to_string();
                             if (p2p_service->get().send_to_peer(peer_key, msg)) {
                                 sent++;
                             }
@@ -6038,7 +6050,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 } else {
                     eligible = static_cast<int>(peers.size());
                     for (const auto& peer : peers) {
-                        std::string peer_key = peer.address + ":" + std::to_string(peer.port);
+                        std::string peer_key = peer.to_string();
                         if (p2p_service->get().send_to_peer(peer_key, msg)) {
                             sent++;
                         }
@@ -6149,7 +6161,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 }
                 std::vector<peer_id_t> connected_peer_ids;
                 for (const auto& peer : p2p_service->get().get_connected_peers()) {
-                    connected_peer_ids.push_back(peer.address + ":" + std::to_string(peer.port));
+                    connected_peer_ids.push_back(peer.to_string());
                 }
                 if (!connected_peer_ids.empty()) {
                     parallel_download->registerPeers(connected_peer_ids);
