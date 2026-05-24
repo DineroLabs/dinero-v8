@@ -3514,6 +3514,19 @@ void P2PManager::set_node_identity(std::shared_ptr<dinero::daemon::NodeIdentity>
     }
 }
 
+std::string P2PManager::get_local_node_id_hex() const {
+    if (!node_identity_) return std::string();
+    const auto bytes = node_identity_->get_node_id_bytes();
+    static const char kHexChars[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes.size() * 2);
+    for (uint8_t b : bytes) {
+        out.push_back(kHexChars[b >> 4]);
+        out.push_back(kHexChars[b & 0x0F]);
+    }
+    return out;
+}
+
 void P2PManager::set_onion_proxy(const std::string& proxy_host, uint16_t proxy_port, bool log_change) {
     std::lock_guard<std::mutex> lock(peers_mutex_);
     onion_proxy_host_ = proxy_host;
