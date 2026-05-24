@@ -549,6 +549,18 @@ set(GUI_SOURCES
   # Track C — Liquidity Vault (production, daemon-side custodial vault).
   src/vaultpanel.cpp
   src/vaultpanel.h
+  # MyNodeDashboard — Phase 1 MVP (Tasks 1-9).
+  src/dashboardtypes.h
+  src/nodepoller.cpp
+  src/nodepoller.h
+  src/identitysection.cpp
+  src/identitysection.h
+  src/networksection.cpp
+  src/networksection.h
+  src/peerssection.cpp
+  src/peerssection.h
+  src/mynodedashboard.cpp
+  src/mynodedashboard.h
 )
 
 if(APPLE)
