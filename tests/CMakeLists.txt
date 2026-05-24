@@ -64,6 +64,19 @@ set_tests_properties(PeerQuality PROPERTIES
   TIMEOUT 10
 )
 
+add_executable(test_peer_governor
+  tests/network/test_peer_governor.cpp
+  src/p2p/peer_governor.cpp
+)
+target_include_directories(test_peer_governor PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME PeerGovernor COMMAND test_peer_governor)
+set_tests_properties(PeerGovernor PROPERTIES
+  LABELS "network;p2p;dynamic-p2p;smoke"
+  TIMEOUT 10
+)
+
 add_executable(test_clock_source
   tests/network/test_clock_source.cpp
 )
