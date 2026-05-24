@@ -38,6 +38,7 @@ Q_SIGNALS:
     void chainInfoUpdated(const ChainInfo& info);
     void peersUpdated(const QVector<PeerRow>& peers);
     void daemonStateChanged(bool reachable);
+    void dynamicP2POverviewUpdated(const DynamicP2POverview& overview);
 
 public Q_SLOTS:
     // Public so tests can feed canned responses without a real RpcClient.
@@ -67,6 +68,7 @@ private:
     void parseNetworkInfo(const QJsonValue& result);
     void parseChainInfo(const QJsonValue& result);
     void parsePeers(const QJsonValue& result);
+    void parseDynamicP2POverview(const QJsonValue& result);
     void parseMempool(const QJsonValue& result);
     void parseMining(const QJsonValue& result);
     void noteFailure();

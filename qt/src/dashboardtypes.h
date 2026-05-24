@@ -28,6 +28,19 @@ struct LocalMiningState {
 
 using LocalMiningProvider = std::function<LocalMiningState()>;
 
+// Snapshot of the daemon's Dynamic P2P state. Populated from the
+// dynamic_p2p.observe RPC (added in dinero-v8 PR #140). When DPP is off
+// or unavailable, `enabled` is false and counts are zero.
+struct DynamicP2POverview {
+    bool    enabled{false};
+    QString mode;                  // "active_slow_churn" / "observe" / "off" / "error"
+    int     hot_peers{0};
+    int     warm_candidates{0};
+    int     relay_registration_candidates{0};
+    int     demote_candidates{0};
+    int     connected_outbound{0};
+};
+
 // What we know about THIS node. Populated from getnetworkinfo +
 // getrelayinfo + getmininginfo + getuptime.
 struct NodeIdentity {
@@ -90,3 +103,4 @@ Q_DECLARE_METATYPE(dinero::qt::dashboard::NodeIdentity)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::ChainInfo)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::PeerRow)
 Q_DECLARE_METATYPE(QVector<dinero::qt::dashboard::PeerRow>)
+Q_DECLARE_METATYPE(dinero::qt::dashboard::DynamicP2POverview)

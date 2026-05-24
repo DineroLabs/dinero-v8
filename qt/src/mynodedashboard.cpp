@@ -69,6 +69,8 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
             peersSection_, &PeersSection::onPeersUpdated);
     connect(poller_, &NodePoller::daemonStateChanged,
             identitySection_, &IdentitySection::onDaemonStateChanged);
+    connect(poller_, &NodePoller::dynamicP2POverviewUpdated,
+            identitySection_, &IdentitySection::onDynamicP2POverviewUpdated);
 }
 
 void MyNodeDashboard::start() { poller_->start(); }
