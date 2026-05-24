@@ -40,16 +40,19 @@ IdentitySection::IdentitySection(QWidget* parent) : QWidget(parent) {
     reachabilityLabel_ = new QLabel(this);
     relayingLabel_     = new QLabel(this);
     miningLabel_       = new QLabel(this);
+    dpLabel_           = new QLabel(this);
     footerLabel_       = new QLabel(this);
     footerLabel_->setStyleSheet("color: #888; font-size: 11px;");
 
     root->addWidget(reachabilityLabel_);
     root->addWidget(relayingLabel_);
     root->addWidget(miningLabel_);
+    root->addWidget(dpLabel_);
     root->addWidget(footerLabel_);
     root->addStretch(1);
 
     onIdentityUpdated({});  // initial placeholder state
+    onDynamicP2POverviewUpdated({});  // initial placeholder DPP state
 }
 
 void IdentitySection::onIdentityUpdated(const NodeIdentity& id) {
@@ -58,6 +61,10 @@ void IdentitySection::onIdentityUpdated(const NodeIdentity& id) {
     relayingLabel_->setText(relayingLine(id));
     miningLabel_->setText(miningLine(id));
     footerLabel_->setText(footerLine(id));
+}
+
+void IdentitySection::onDynamicP2POverviewUpdated(const DynamicP2POverview& overview) {
+    if (dpLabel_) dpLabel_->setText(dynamicP2PLine(overview));
 }
 
 void IdentitySection::onDaemonStateChanged(bool reachable) {
@@ -131,6 +138,18 @@ QString IdentitySection::footerLine(const NodeIdentity& id) {
     return QString("uptime  %1h %2m       %3")
         .arg(h).arg(m, 2, 10, QChar('0'))
         .arg(id.subversion.isEmpty() ? "—" : id.subversion);
+}
+
+QString IdentitySection::dynamicP2PLine(const DynamicP2POverview& o) {
+    if (o.mode.isEmpty()) {
+        return "🌐  DYNAMIC P2P · —";
+    }
+    if (!o.enabled) {
+        return QString("🌐  DYNAMIC P2P · %1").arg(o.mode);
+    }
+    // Active. Surface the counts that matter most to the operator's eye.
+    return QString("🌐  DYNAMIC P2P · %1 · %2 hot, %3 warm, %4 demote")
+        .arg(o.mode).arg(o.hot_peers).arg(o.warm_candidates).arg(o.demote_candidates);
 }
 
 }  // namespace dinero::qt::dashboard

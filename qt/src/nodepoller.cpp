@@ -75,6 +75,7 @@ void NodePoller::tick() {
     rpc_->call("getpeerinfo");
     rpc_->call("getmempoolinfo");
     rpc_->call("mining.status");
+    rpc_->call("dynamic_p2p.observe");
 }
 
 void NodePoller::onRpcResponse(const QString& method,
@@ -91,15 +92,16 @@ void NodePoller::onRpcResponse(const QString& method,
     else if (method == "getpeerinfo")       parsePeers(result);
     else if (method == "getmempoolinfo")    parseMempool(result);
     else if (method == "mining.status")     parseMining(result);
+    else if (method == "dynamic_p2p.observe") parseDynamicP2POverview(result);
 }
 
 void NodePoller::parseNetworkInfo(const QJsonValue& result) {
     const auto obj = result.toObject();
     pending_identity_.subversion = obj.value("subversion").toString();
     pending_identity_.version    = obj.value("version").toInt();
-    // This daemon doesn't expose localnodeid / localservices via getnetworkinfo
-    // (Bitcoin-Core convention not adopted). Leave node_id_hex empty + services 0
-    // for now; future getrelayinfo or similar could supply them.
+    // node_id_hex was added to getnetworkinfo in dinero-v8 PR #140. Empty
+    // string on daemons predating that PR — Identity section renders "—".
+    pending_identity_.node_id_hex = obj.value("node_id_hex").toString();
 
     // localaddresses is empty for NAT'd home nodes — fall back to listen_port.
     const auto local_addrs = obj.value("localaddresses").toArray();
@@ -172,8 +174,17 @@ void NodePoller::parsePeers(const QJsonValue& result) {
         r.fleet_name       = fleetNameFor(r.addr);
         r.height           = static_cast<qint64>(
             p.value("synced_blocks").toDouble(-1));
-        r.ping_ms          = static_cast<qint64>(
-            p.value("pingtime").toDouble(-1) * 1000.0);
+        // ping_ms + quality_score added in dinero-v8 PR #140. Daemons
+        // predating that PR omit the fields; -1 / -1 keeps the dashboard's
+        // "—" / "○" rendering for the un-upgraded case.
+        if (p.contains("ping_ms")) {
+            r.ping_ms = static_cast<qint64>(p.value("ping_ms").toInt(-1));
+        } else if (p.contains("pingtime")) {
+            // Bitcoin-Core fallback path (seconds → ms)
+            r.ping_ms = static_cast<qint64>(p.value("pingtime").toDouble(-1) * 1000.0);
+        } else {
+            r.ping_ms = -1;
+        }
         r.quality_score    = p.value("quality_score").toInt(-1);
         r.handshake_complete = p.value("identity_proven").toBool(true);
         r.services         = static_cast<quint64>(
@@ -232,6 +243,23 @@ void NodePoller::parseMining(const QJsonValue& result) {
             obj.value("address").toString();
     }
     Q_EMIT identityUpdated(pending_identity_);
+}
+
+void NodePoller::parseDynamicP2POverview(const QJsonValue& result) {
+    const auto obj = result.toObject();
+    DynamicP2POverview o;
+    o.enabled = obj.value("enabled").toBool(false);
+    o.mode    = obj.value("mode").toString();
+    const auto governor = obj.value("governor").toObject();
+    if (!governor.isEmpty()) {
+        o.connected_outbound = governor.value("connected_outbound").toInt(0);
+        o.hot_peers          = governor.value("hot_peers").toArray().size();
+        o.warm_candidates    = governor.value("warm_candidates").toArray().size();
+        o.relay_registration_candidates =
+            governor.value("relay_registration_candidates").toArray().size();
+        o.demote_candidates  = governor.value("demote_candidates").toArray().size();
+    }
+    Q_EMIT dynamicP2POverviewUpdated(o);
 }
 
 void NodePoller::noteFailure() {

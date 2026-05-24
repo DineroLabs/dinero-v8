@@ -22,6 +22,7 @@ public:
 public Q_SLOTS:
     void onIdentityUpdated(const NodeIdentity& id);
     void onDaemonStateChanged(bool reachable);
+    void onDynamicP2POverviewUpdated(const DynamicP2POverview& overview);
 
 public:
     // Static formatting helpers exposed for unit testing.
@@ -30,6 +31,7 @@ public:
     static QString relayingLine(const NodeIdentity& id);
     static QString miningLine(const NodeIdentity& id);
     static QString footerLine(const NodeIdentity& id);
+    static QString dynamicP2PLine(const DynamicP2POverview& overview);
 
 private:
     QLabel*      nodeIdLabel_{nullptr};
@@ -37,6 +39,7 @@ private:
     QLabel*      reachabilityLabel_{nullptr};
     QLabel*      relayingLabel_{nullptr};
     QLabel*      miningLabel_{nullptr};
+    QLabel*      dpLabel_{nullptr};
     QLabel*      footerLabel_{nullptr};
 };
 
