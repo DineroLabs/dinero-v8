@@ -17,6 +17,7 @@ class AdvisoryBannerQueue;
 
 class AiPanel;
 class AiStatusStrip;
+namespace dinero::qt::dashboard { class CmdKPanel; }
 class DpiWidget;
 class HardwareWalletWidget;
 class QShortcut;
@@ -452,6 +453,19 @@ private:
   QLabel* lblHashrate_;
   bool isMining_ = false;  // v0.14.0.4: Track mining state for toggle button
   QString activeMinerType_ = "none";  // "internal", "stratum_worker", "external", "gpu", "daemon", or "none"
+
+public:
+  // Public accessors for the Cmd+K dashboard. Read-only snapshot of the
+  // qt-app-side state the daemon doesn't expose.
+  bool    isMiningLocal()     const { return isMining_; }
+  QString activeMinerType()   const { return activeMinerType_; }
+  double  currentHashrate()   const { return mining_stats_.current_hashrate; }
+  // Wall-clock seconds since this MainWindow was constructed. Daemon has no
+  // getuptime method on this build, so the dashboard uses app uptime as the
+  // user-visible "I've been on the network for X" signal.
+  qint64  appUptimeSeconds()  const;
+private:
+  qint64  app_started_at_ms_ = 0;  // set in ctor
   QTextEdit* txtMiningOutput_;
   QTabWidget* mainTabs_ = nullptr;
   QWidget* miningTabWidget_ = nullptr;
@@ -672,6 +686,7 @@ private:
 
   // AI Assistant
   AiPanel* aiPanel_ = nullptr;
+  dinero::qt::dashboard::CmdKPanel* cmdKPanel_ = nullptr;
   AiStatusStrip* aiStatusStrip_ = nullptr;
   QShortcut* aiToggleShortcut_ = nullptr;
   void onToggleAiPanel();

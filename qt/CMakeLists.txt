@@ -549,6 +549,20 @@ set(GUI_SOURCES
   # Track C — Liquidity Vault (production, daemon-side custodial vault).
   src/vaultpanel.cpp
   src/vaultpanel.h
+  # MyNodeDashboard — Phase 1 MVP (Tasks 1-9).
+  src/dashboardtypes.h
+  src/nodepoller.cpp
+  src/nodepoller.h
+  src/identitysection.cpp
+  src/identitysection.h
+  src/networksection.cpp
+  src/networksection.h
+  src/peerssection.cpp
+  src/peerssection.h
+  src/mynodedashboard.cpp
+  src/mynodedashboard.h
+  src/cmdkpanel.cpp
+  src/cmdkpanel.h
 )
 
 if(APPLE)
@@ -1281,6 +1295,85 @@ if(BUILD_TESTING)
 
   target_compile_definitions(test_wallet_scoped_state PRIVATE QT_NO_KEYWORDS)
   add_test(NAME WalletScopedState COMMAND test_wallet_scoped_state)
+
+  add_executable(test_node_poller
+    tests/test_node_poller.cpp
+    src/nodepoller.cpp
+    src/nodepoller.h
+    src/dashboardtypes.h
+    src/rpcclient.cpp
+    src/rpcclient.h
+  )
+
+  target_include_directories(test_node_poller PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_link_libraries(test_node_poller PRIVATE
+    Qt6::Core
+    Qt6::Network
+    Qt6::Test
+  )
+
+  target_compile_definitions(test_node_poller PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME NodePoller COMMAND test_node_poller)
+
+  add_executable(test_identity_section
+    tests/test_identity_section.cpp
+    src/identitysection.cpp
+    src/identitysection.h
+    src/dashboardtypes.h
+  )
+
+  target_link_libraries(test_identity_section PRIVATE
+    Qt6::Widgets
+    Qt6::Test
+  )
+
+  target_include_directories(test_identity_section PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_compile_definitions(test_identity_section PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME IdentitySection COMMAND test_identity_section)
+
+  add_executable(test_network_section
+    tests/test_network_section.cpp
+    src/networksection.cpp
+    src/networksection.h
+    src/dashboardtypes.h
+  )
+
+  target_link_libraries(test_network_section PRIVATE
+    Qt6::Widgets
+    Qt6::Test
+  )
+
+  target_include_directories(test_network_section PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_compile_definitions(test_network_section PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME NetworkSection COMMAND test_network_section)
+
+  add_executable(test_peers_section
+    tests/test_peers_section.cpp
+    src/peerssection.cpp
+    src/peerssection.h
+    src/dashboardtypes.h
+  )
+
+  target_link_libraries(test_peers_section PRIVATE
+    Qt6::Widgets
+    Qt6::Test
+  )
+
+  target_include_directories(test_peers_section PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_compile_definitions(test_peers_section PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PeersSection COMMAND test_peers_section)
 
   # ─────────────────────────────────────────────────────────────────────────
   # Qt firewall compile-fail probe (Phase 2 Step 5 of monorepo consolidation)

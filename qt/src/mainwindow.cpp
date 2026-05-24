@@ -12,6 +12,7 @@
 #include "hardwarewalletwidget.h"  // Hardware wallet support (production-ready)
 #include "dpiwidget.h"             // DPI Pay/Collect
 #include "aipanel.h"
+#include "cmdkpanel.h"
 #include "scrollsupport.h"
 // AI panel uses ClaudeProcess (no more AiTools)
 #include "aistatusstrip.h"
@@ -1662,6 +1663,11 @@ void appendSv2SessionHeader(QTextEdit* output,
 
 }  // namespace
 
+qint64 MainWindow::appUptimeSeconds() const {
+    if (app_started_at_ms_ == 0) return 0;
+    return (QDateTime::currentMSecsSinceEpoch() - app_started_at_ms_) / 1000;
+}
+
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , rpc_(new RpcClient(this))
@@ -2107,9 +2113,23 @@ void MainWindow::setupUI() {
   contentLayout->setSpacing(0);
   contentLayout->addWidget(tabs, 1);
 
-  aiPanel_ = new AiPanel(rpc_->datadir(), contentArea);
-  aiPanel_->setPanelWidth(0);
-  contentLayout->addWidget(aiPanel_);
+  if (app_started_at_ms_ == 0) {
+      app_started_at_ms_ = QDateTime::currentMSecsSinceEpoch();
+  }
+  aiPanel_ = new AiPanel(rpc_->datadir(), nullptr);  // re-parented by CmdKPanel below
+  cmdKPanel_ = new dinero::qt::dashboard::CmdKPanel(rpc_, aiPanel_, contentArea);
+  cmdKPanel_->setPanelWidth(0);
+  // Feed qt-side local state into the dashboard: mining flags the daemon
+  // doesn't see + app uptime since the daemon has no getuptime method.
+  cmdKPanel_->setLocalMiningProvider([this]() {
+      dinero::qt::dashboard::LocalMiningState s;
+      s.active     = isMiningLocal();
+      s.miner_type = activeMinerType();
+      s.hashrate   = currentHashrate();
+      s.app_uptime = std::chrono::seconds(appUptimeSeconds());
+      return s;
+  });
+  contentLayout->addWidget(cmdKPanel_);
 
   mainLayout->addWidget(contentArea, 1);
 
@@ -3859,6 +3879,13 @@ void MainWindow::setupUI() {
 
     // Wire MinerController signals to existing Widgets UI
     connect(minerCtrl_, &MinerController::statsChanged, this, [this]() {
+        // Keep mining_stats_.current_hashrate fresh so the Cmd+K dashboard's
+        // currentHashrate() accessor returns live data (the internal-miner
+        // path doesn't go through the stdout-regex updater that other miner
+        // types use to write this field).
+        if (minerCtrl_) {
+            mining_stats_.current_hashrate = minerCtrl_->hashrate();
+        }
         if (lblCurrentHash_) {
             double hr = minerCtrl_->hashrate();
             if (hr >= 1e9) {
@@ -14824,8 +14851,8 @@ void MainWindow::onExportMetrics() {
 // ═══════════════════════════════════════════════════════════════════
 
 void MainWindow::onToggleAiPanel() {
-  if (aiPanel_) {
-    aiPanel_->togglePanel();
+  if (cmdKPanel_) {
+    cmdKPanel_->togglePanel();
   }
 }
 
