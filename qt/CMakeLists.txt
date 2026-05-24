@@ -1323,6 +1323,25 @@ if(BUILD_TESTING)
   target_compile_definitions(test_identity_section PRIVATE QT_NO_KEYWORDS)
   add_test(NAME IdentitySection COMMAND test_identity_section)
 
+  add_executable(test_network_section
+    tests/test_network_section.cpp
+    src/networksection.cpp
+    src/networksection.h
+    src/dashboardtypes.h
+  )
+
+  target_link_libraries(test_network_section PRIVATE
+    Qt6::Widgets
+    Qt6::Test
+  )
+
+  target_include_directories(test_network_section PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_compile_definitions(test_network_section PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME NetworkSection COMMAND test_network_section)
+
   # ─────────────────────────────────────────────────────────────────────────
   # Qt firewall compile-fail probe (Phase 2 Step 5 of monorepo consolidation)
   # ─────────────────────────────────────────────────────────────────────────
