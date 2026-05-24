@@ -1282,6 +1282,28 @@ if(BUILD_TESTING)
   target_compile_definitions(test_wallet_scoped_state PRIVATE QT_NO_KEYWORDS)
   add_test(NAME WalletScopedState COMMAND test_wallet_scoped_state)
 
+  add_executable(test_node_poller
+    tests/test_node_poller.cpp
+    src/nodepoller.cpp
+    src/nodepoller.h
+    src/dashboardtypes.h
+    src/rpcclient.cpp
+    src/rpcclient.h
+  )
+
+  target_include_directories(test_node_poller PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_link_libraries(test_node_poller PRIVATE
+    Qt6::Core
+    Qt6::Network
+    Qt6::Test
+  )
+
+  target_compile_definitions(test_node_poller PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME NodePoller COMMAND test_node_poller)
+
   # ─────────────────────────────────────────────────────────────────────────
   # Qt firewall compile-fail probe (Phase 2 Step 5 of monorepo consolidation)
   # ─────────────────────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <QMetaType>
 #include <QString>
 #include <QVector>
 #include <chrono>
@@ -68,3 +69,8 @@ struct PeerRow {
 };
 
 }  // namespace dinero::qt::dashboard
+
+Q_DECLARE_METATYPE(dinero::qt::dashboard::NodeIdentity)
+Q_DECLARE_METATYPE(dinero::qt::dashboard::ChainInfo)
+Q_DECLARE_METATYPE(dinero::qt::dashboard::PeerRow)
+Q_DECLARE_METATYPE(QVector<dinero::qt::dashboard::PeerRow>)
