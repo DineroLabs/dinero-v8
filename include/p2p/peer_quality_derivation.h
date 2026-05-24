@@ -5,7 +5,8 @@
 #pragma once
 
 #include "p2p/peer_quality.h"
-#include "daemon/p2p_manager.h"  // for PeerInfo + ServiceFlags
+#include "daemon/p2p_manager.h"  // for PeerInfo
+#include "network/types.h"       // for dinero::ServiceFlags (NODE_RELAY)
 
 namespace dinero::p2p {
 
