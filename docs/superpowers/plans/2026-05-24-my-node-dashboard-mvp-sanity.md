@@ -1,12 +1,13 @@
 # MyNodeDashboard Phase 1 (MVP) — Automated sanity log
 
 **Branch:** `feature/my-node-dashboard-mvp`
+**Submodules:** verified pinned to dinero-main's recorded commits (rocksdb v9.9.3, secp256k1-zkp 42e75b61, snappy 1.2.2-4-g6f99459, zstd v1.4.7-2898-g98d2b90e) — initial build was against drifted submodule HEADs inherited from worktree-add; re-verified after `git submodule update --init --recursive`.
 
-## Results
+## Results (post-submodule-sync)
 
 | Check | Result |
 |---|---|
-| Full `dinero-qt` app build | `[100%] Built target dinero-qt` (macOS bundle, ad-hoc signed dev build) |
+| Full `dinero-qt` app build | `[100%] Built target dinero-qt` (macOS bundle, ad-hoc signed dev build, code-sign valid on disk) |
 | ctest (4 suites) | 4/4 pass — NodePoller, IdentitySection, NetworkSection, PeersSection (17 internal tests) |
 | App launch (clean isolated datadir) | Starts, alive >5s, exits cleanly on SIGTERM |
 
