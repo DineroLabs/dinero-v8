@@ -20,6 +20,10 @@ struct LocalMiningState {
     bool    active{false};
     QString miner_type;    // "internal" / "stratum_worker" / "external" / "gpu" / "daemon" / "none"
     double  hashrate{0.0}; // hashes/second
+    // App-side uptime (seconds since MainWindow construction). Carried here
+    // because the daemon's getuptime RPC doesn't exist on this build and the
+    // dashboard wants something to show; "0h 00m" was wrong by default.
+    std::chrono::seconds app_uptime{0};
 };
 
 using LocalMiningProvider = std::function<LocalMiningState()>;

@@ -456,13 +456,16 @@ private:
 
 public:
   // Public accessors for the Cmd+K dashboard. Read-only snapshot of the
-  // qt-app-side mining state — the daemon doesn't know about Qt's
-  // internal/external/stratum miners, so the dashboard's identity section
-  // overlays this on top of mining.status RPC data.
+  // qt-app-side state the daemon doesn't expose.
   bool    isMiningLocal()     const { return isMining_; }
   QString activeMinerType()   const { return activeMinerType_; }
   double  currentHashrate()   const { return mining_stats_.current_hashrate; }
+  // Wall-clock seconds since this MainWindow was constructed. Daemon has no
+  // getuptime method on this build, so the dashboard uses app uptime as the
+  // user-visible "I've been on the network for X" signal.
+  qint64  appUptimeSeconds()  const;
 private:
+  qint64  app_started_at_ms_ = 0;  // set in ctor
   QTextEdit* txtMiningOutput_;
   QTabWidget* mainTabs_ = nullptr;
   QWidget* miningTabWidget_ = nullptr;

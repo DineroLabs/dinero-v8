@@ -1663,6 +1663,11 @@ void appendSv2SessionHeader(QTextEdit* output,
 
 }  // namespace
 
+qint64 MainWindow::appUptimeSeconds() const {
+    if (app_started_at_ms_ == 0) return 0;
+    return (QDateTime::currentMSecsSinceEpoch() - app_started_at_ms_) / 1000;
+}
+
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , rpc_(new RpcClient(this))
@@ -2108,18 +2113,21 @@ void MainWindow::setupUI() {
   contentLayout->setSpacing(0);
   contentLayout->addWidget(tabs, 1);
 
+  if (app_started_at_ms_ == 0) {
+      app_started_at_ms_ = QDateTime::currentMSecsSinceEpoch();
+  }
   aiPanel_ = new AiPanel(rpc_->datadir(), nullptr);  // re-parented by CmdKPanel below
   cmdKPanel_ = new dinero::qt::dashboard::CmdKPanel(rpc_, aiPanel_, contentArea);
   cmdKPanel_->setPanelWidth(0);
-  // Feed qt-side local mining state into the dashboard so Cmd+K shows
-  // "MINING · ON" when the Qt mining tab is running its own miner
-  // (daemon's mining.status RPC only sees in-daemon mining).
+  // Feed qt-side local state into the dashboard: mining flags the daemon
+  // doesn't see + app uptime since the daemon has no getuptime method.
   cmdKPanel_->setLocalMiningProvider([this]() {
-      return dinero::qt::dashboard::LocalMiningState{
-          isMiningLocal(),
-          activeMinerType(),
-          currentHashrate(),
-      };
+      dinero::qt::dashboard::LocalMiningState s;
+      s.active     = isMiningLocal();
+      s.miner_type = activeMinerType();
+      s.hashrate   = currentHashrate();
+      s.app_uptime = std::chrono::seconds(appUptimeSeconds());
+      return s;
   });
   contentLayout->addWidget(cmdKPanel_);
 
@@ -3871,6 +3879,13 @@ void MainWindow::setupUI() {
 
     // Wire MinerController signals to existing Widgets UI
     connect(minerCtrl_, &MinerController::statsChanged, this, [this]() {
+        // Keep mining_stats_.current_hashrate fresh so the Cmd+K dashboard's
+        // currentHashrate() accessor returns live data (the internal-miner
+        // path doesn't go through the stdout-regex updater that other miner
+        // types use to write this field).
+        if (minerCtrl_) {
+            mining_stats_.current_hashrate = minerCtrl_->hashrate();
+        }
         if (lblCurrentHash_) {
             double hr = minerCtrl_->hashrate();
             if (hr >= 1e9) {

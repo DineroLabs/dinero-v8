@@ -55,6 +55,11 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
                         }
                         merged.shares_per_min = lm.hashrate / 1'000'000.0;
                     }
+                    // App uptime: daemon has no getuptime method, so always
+                    // overlay the qt-app's launch-time-derived uptime here.
+                    if (lm.app_uptime.count() > 0) {
+                        merged.uptime = lm.app_uptime;
+                    }
                 }
                 identitySection_->onIdentityUpdated(merged);
             });
