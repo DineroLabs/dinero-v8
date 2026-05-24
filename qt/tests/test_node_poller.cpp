@@ -44,6 +44,8 @@ private Q_SLOTS:
         ni["localservices"] = "20000000";
         ni["localnodeid"]   = "fd4fc04df38bacbf72d4ecae451d1589570bcaba";
         ni["localrelay"]    = true;
+        ni["direct_reachable"] = true;
+        ni["listen"]        = true;
         QJsonArray la;
         QJsonObject one;
         one["address"] = "162.200.227.214";

@@ -82,9 +82,19 @@ QString IdentitySection::formatNodeIdHex(const QString& raw_hex) {
 QString IdentitySection::reachabilityLine(const NodeIdentity& id) {
     switch (id.reachability) {
     case NodeIdentity::DIRECT:
+        if (id.local_addr.isEmpty() && id.local_port == 0) {
+            return "●  DIRECT · reachable";
+        }
+        if (id.local_addr.isEmpty()) {
+            return QString("●  DIRECT · listening on port %1").arg(id.local_port);
+        }
         return QString("●  DIRECT · reachable on %1:%2")
             .arg(id.local_addr).arg(id.local_port);
     case NodeIdentity::BEHIND_RELAY:
+        if (id.local_port != 0) {
+            return QString("●  BEHIND-RELAY · listening on port %1 · NAT'd")
+                .arg(id.local_port);
+        }
         return "●  BEHIND-RELAY · reachable via relay-virtual peers";
     case NodeIdentity::UNREACHABLE:
         return "○  UNREACHABLE · not listening";

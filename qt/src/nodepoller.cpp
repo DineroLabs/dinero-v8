@@ -97,16 +97,21 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
     const auto obj = result.toObject();
     pending_identity_.subversion = obj.value("subversion").toString();
     pending_identity_.version    = obj.value("version").toInt();
-    pending_identity_.services   = static_cast<quint64>(
-        obj.value("localservices").toString().toULongLong(nullptr, 16));
-    pending_identity_.node_id_hex = obj.value("localnodeid").toString();
+    // This daemon doesn't expose localnodeid / localservices via getnetworkinfo
+    // (Bitcoin-Core convention not adopted). Leave node_id_hex empty + services 0
+    // for now; future getrelayinfo or similar could supply them.
 
+    // localaddresses is empty for NAT'd home nodes — fall back to listen_port.
     const auto local_addrs = obj.value("localaddresses").toArray();
     if (!local_addrs.isEmpty()) {
         const auto a = local_addrs.first().toObject();
         pending_identity_.local_addr = a.value("address").toString();
         pending_identity_.local_port = static_cast<quint16>(
             a.value("port").toInt());
+    } else if (obj.contains("listen_port")) {
+        pending_identity_.local_addr.clear();
+        pending_identity_.local_port = static_cast<quint16>(
+            obj.value("listen_port").toInt());
     }
 
     if (obj.contains("relay_active")) {
@@ -119,9 +124,15 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
         pending_identity_.grace_count = obj.value("grace_pending").toInt();
     }
 
-    const bool listening = obj.value("localrelay").toBool();
+    // Reachability: direct_reachable (true = NAT open, listener confirmed),
+    // listen (true = we accept inbound), else UNREACHABLE.
+    const bool direct_ok = obj.value("direct_reachable").toBool(false);
+    const bool listening = obj.value("listen").toBool(
+                               obj.value("localrelay").toBool(false));
     pending_identity_.reachability =
-        listening ? NodeIdentity::DIRECT : NodeIdentity::UNREACHABLE;
+        direct_ok ? NodeIdentity::DIRECT
+                  : (listening ? NodeIdentity::BEHIND_RELAY
+                               : NodeIdentity::UNREACHABLE);
 
     Q_EMIT identityUpdated(pending_identity_);
 }
@@ -131,10 +142,11 @@ void NodePoller::parseChainInfo(const QJsonValue& result) {
     pending_chain_.our_height = static_cast<qint64>(
         obj.value("blocks").toDouble());
 
-    const QString bitsHex = obj.value("bits").toString();
-    pending_chain_.difficulty_compact = bitsHex.isEmpty()
-        ? 0u
-        : bitsHex.toUInt(nullptr, 16);
+    // This daemon returns difficulty as a decimal double (1310.72), not the
+    // Bitcoin nBits compact-form hex string. Round to a uint for display;
+    // tiny precision loss is acceptable at the dashboard granularity.
+    pending_chain_.difficulty_compact = static_cast<quint32>(
+        obj.value("difficulty").toDouble(0.0));
 
     Q_EMIT chainInfoUpdated(pending_chain_);
 }
@@ -201,11 +213,19 @@ void NodePoller::parseMempool(const QJsonValue& result) {
 
 void NodePoller::parseMining(const QJsonValue& result) {
     const auto obj = result.toObject();
-    pending_identity_.is_mining = obj.value("active").toBool();
-    pending_identity_.shares_per_min =
-        obj.value("shares_per_minute").toDouble(0.0);
-    pending_identity_.mining_destination =
-        obj.value("address").toString();
+    // This daemon exposes `generate` (bool) for "is mining"; shares/min +
+    // mining destination are not in getmininginfo on this build. Leave them
+    // as defaults (0 / empty) — IdentitySection renders "MINING ON" if active
+    // even without those fields.
+    pending_identity_.is_mining = obj.value("generate").toBool(false);
+    if (obj.contains("shares_per_minute")) {
+        pending_identity_.shares_per_min =
+            obj.value("shares_per_minute").toDouble(0.0);
+    }
+    if (obj.contains("address")) {
+        pending_identity_.mining_destination =
+            obj.value("address").toString();
+    }
     Q_EMIT identityUpdated(pending_identity_);
 }
 
