@@ -267,10 +267,11 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     result["relay"] = relay;
 
     din::Json dynamic_p2p;
-    dynamic_p2p["enabled"] = false;
-    dynamic_p2p["mode"] = "observe";
-    dynamic_p2p["message"] =
-        "Dynamic P2P governor is not active; these are read-only baseline metrics";
+    dynamic_p2p["enabled"] = status.dynamic_p2p_enabled;
+    dynamic_p2p["mode"] = status.dynamic_p2p_mode;
+    dynamic_p2p["message"] = status.dynamic_p2p_enabled
+        ? "Dynamic P2P governor is active in conservative slow-churn mode"
+        : "Dynamic P2P governor is not active; these are read-only baseline metrics";
 
     din::Json dynamic_addrman;
     dynamic_addrman["available"] = status.addrman.available;

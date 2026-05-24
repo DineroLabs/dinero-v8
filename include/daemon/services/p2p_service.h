@@ -87,6 +87,8 @@ public:
         size_t relay_peer_connections{0};
         std::vector<std::pair<std::string, uint16_t>> advertised_addresses;
         AddrmanSnapshot addrman;
+        bool dynamic_p2p_enabled{false};
+        std::string dynamic_p2p_mode{"observe"};
         DynamicP2PGovernorSnapshot dynamic_p2p_governor;
         bool port_mapping_requested{false};
         bool port_mapping_active{false};
@@ -332,12 +334,17 @@ private:
     std::thread scheduler_tick_thread_;
     std::chrono::milliseconds scheduler_tick_interval_{std::chrono::seconds(5)};
     std::chrono::steady_clock::time_point last_reconnect_probe_{};
+    std::chrono::steady_clock::time_point dynamic_p2p_started_at_{};
+    std::chrono::steady_clock::time_point last_dynamic_p2p_churn_{};
     std::chrono::seconds reconnect_probe_interval_{std::chrono::seconds(15)};
 
     // Internal message handler
     void HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg);
     void StartSchedulerTickLoop();
     void StopSchedulerTickLoop();
+    bool IsDynamicP2PActive() const;
+    std::string DynamicP2PMode() const;
+    void MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_point now);
     void StartPortMappingIfEnabled();
 
     // NAT traversal Phase C1: launch a STUN discovery round on a fresh
