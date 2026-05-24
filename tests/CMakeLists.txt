@@ -51,6 +51,19 @@ set_tests_properties(AddrmanRelaySelect PROPERTIES
   TIMEOUT 10
 )
 
+add_executable(test_peer_quality
+  tests/network/test_peer_quality.cpp
+  src/p2p/peer_quality.cpp
+)
+target_include_directories(test_peer_quality PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME PeerQuality COMMAND test_peer_quality)
+set_tests_properties(PeerQuality PROPERTIES
+  LABELS "network;p2p;dynamic-p2p;smoke"
+  TIMEOUT 10
+)
+
 add_executable(test_clock_source
   tests/network/test_clock_source.cpp
 )
