@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "dashboardtypes.h"
+
 #include <QPropertyAnimation>
 #include <QWidget>
 
@@ -32,6 +34,10 @@ public:
 
     void togglePanel();
     bool isPanelOpen() const { return panelOpen_; }
+
+    // Forward to MyNodeDashboard::setLocalMiningProvider — lets MainWindow
+    // surface qt-app-side mining state (which the daemon doesn't see).
+    void setLocalMiningProvider(LocalMiningProvider provider);
 
 Q_SIGNALS:
     void panelToggled(bool open);

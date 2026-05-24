@@ -40,8 +40,24 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
     outer->addWidget(scroll);
 
     poller_ = new NodePoller(rpc, this);
+    // Intercept identityUpdated so we can overlay qt-app-side local mining
+    // state (Qt's internal/external/stratum miners aren't visible to the
+    // daemon's mining.status RPC).
     connect(poller_, &NodePoller::identityUpdated,
-            identitySection_, &IdentitySection::onIdentityUpdated);
+            this, [this](const NodeIdentity& id) {
+                NodeIdentity merged = id;
+                if (local_mining_provider_) {
+                    const auto lm = local_mining_provider_();
+                    if (lm.active) {
+                        merged.is_mining = true;
+                        if (!lm.miner_type.isEmpty() && lm.miner_type != "none") {
+                            merged.mining_destination = lm.miner_type;
+                        }
+                        merged.shares_per_min = lm.hashrate / 1'000'000.0;
+                    }
+                }
+                identitySection_->onIdentityUpdated(merged);
+            });
     connect(poller_, &NodePoller::chainInfoUpdated,
             networkSection_, &NetworkSection::onChainInfoUpdated);
     connect(poller_, &NodePoller::peersUpdated,
@@ -52,5 +68,9 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
 
 void MyNodeDashboard::start() { poller_->start(); }
 void MyNodeDashboard::stop()  { poller_->stop();  }
+
+void MyNodeDashboard::setLocalMiningProvider(LocalMiningProvider provider) {
+    local_mining_provider_ = std::move(provider);
+}
 
 }  // namespace dinero::qt::dashboard

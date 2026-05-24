@@ -453,6 +453,16 @@ private:
   QLabel* lblHashrate_;
   bool isMining_ = false;  // v0.14.0.4: Track mining state for toggle button
   QString activeMinerType_ = "none";  // "internal", "stratum_worker", "external", "gpu", "daemon", or "none"
+
+public:
+  // Public accessors for the Cmd+K dashboard. Read-only snapshot of the
+  // qt-app-side mining state — the daemon doesn't know about Qt's
+  // internal/external/stratum miners, so the dashboard's identity section
+  // overlays this on top of mining.status RPC data.
+  bool    isMiningLocal()     const { return isMining_; }
+  QString activeMinerType()   const { return activeMinerType_; }
+  double  currentHashrate()   const { return mining_stats_.current_hashrate; }
+private:
   QTextEdit* txtMiningOutput_;
   QTabWidget* mainTabs_ = nullptr;
   QWidget* miningTabWidget_ = nullptr;

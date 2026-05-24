@@ -9,8 +9,20 @@
 #include <QVector>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 
 namespace dinero::qt::dashboard {
+
+// Snapshot of the qt-app-side mining state. Populated by MainWindow's
+// accessors, surfaced to IdentitySection via the LocalMiningProvider
+// callback wired through CmdKPanel → MyNodeDashboard.
+struct LocalMiningState {
+    bool    active{false};
+    QString miner_type;    // "internal" / "stratum_worker" / "external" / "gpu" / "daemon" / "none"
+    double  hashrate{0.0}; // hashes/second
+};
+
+using LocalMiningProvider = std::function<LocalMiningState()>;
 
 // What we know about THIS node. Populated from getnetworkinfo +
 // getrelayinfo + getmininginfo + getuptime.

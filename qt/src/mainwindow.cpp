@@ -2111,6 +2111,16 @@ void MainWindow::setupUI() {
   aiPanel_ = new AiPanel(rpc_->datadir(), nullptr);  // re-parented by CmdKPanel below
   cmdKPanel_ = new dinero::qt::dashboard::CmdKPanel(rpc_, aiPanel_, contentArea);
   cmdKPanel_->setPanelWidth(0);
+  // Feed qt-side local mining state into the dashboard so Cmd+K shows
+  // "MINING · ON" when the Qt mining tab is running its own miner
+  // (daemon's mining.status RPC only sees in-daemon mining).
+  cmdKPanel_->setLocalMiningProvider([this]() {
+      return dinero::qt::dashboard::LocalMiningState{
+          isMiningLocal(),
+          activeMinerType(),
+          currentHashrate(),
+      };
+  });
   contentLayout->addWidget(cmdKPanel_);
 
   mainLayout->addWidget(contentArea, 1);

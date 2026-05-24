@@ -46,6 +46,10 @@ void CmdKPanel::setPanelWidth(int w) {
     setFixedWidth(w);
 }
 
+void CmdKPanel::setLocalMiningProvider(LocalMiningProvider provider) {
+    if (dashboard_) dashboard_->setLocalMiningProvider(std::move(provider));
+}
+
 void CmdKPanel::togglePanel() {
     slideAnim_->stop();
     if (panelOpen_) {
