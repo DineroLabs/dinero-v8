@@ -118,9 +118,10 @@ QString IdentitySection::miningLine(const NodeIdentity& id) {
     if (!id.is_mining) {
         return "⛏  MINING · OFF";
     }
-    return QString("⛏  MINING to %1 · %2 shares/min")
+    // shares_per_min is reused to carry MH/s when read from mining.status
+    return QString("⛏  MINING to %1 · %2 MH/s")
         .arg(id.mining_destination.isEmpty() ? "—" : id.mining_destination)
-        .arg(id.shares_per_min, 0, 'f', 1);
+        .arg(id.shares_per_min, 0, 'f', 2);
 }
 
 QString IdentitySection::footerLine(const NodeIdentity& id) {

@@ -74,7 +74,7 @@ void NodePoller::tick() {
     rpc_->call("getblockchaininfo");
     rpc_->call("getpeerinfo");
     rpc_->call("getmempoolinfo");
-    rpc_->call("getmininginfo");
+    rpc_->call("mining.status");
 }
 
 void NodePoller::onRpcResponse(const QString& method,
@@ -90,7 +90,7 @@ void NodePoller::onRpcResponse(const QString& method,
     else if (method == "getblockchaininfo") parseChainInfo(result);
     else if (method == "getpeerinfo")       parsePeers(result);
     else if (method == "getmempoolinfo")    parseMempool(result);
-    else if (method == "getmininginfo")     parseMining(result);
+    else if (method == "mining.status")     parseMining(result);
 }
 
 void NodePoller::parseNetworkInfo(const QJsonValue& result) {
@@ -114,8 +114,12 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
             obj.value("listen_port").toInt());
     }
 
-    if (obj.contains("relay_active")) {
-        pending_identity_.is_relay_active = obj.value("relay_active").toBool();
+    // This daemon nests relay state under getnetworkinfo.relay = { active,
+    // local, mode, fallback_eligible }. Bitcoin-Core convention of flat
+    // relay_active doesn't apply.
+    if (obj.contains("relay")) {
+        const auto relay = obj.value("relay").toObject();
+        pending_identity_.is_relay_active = relay.value("active").toBool(false);
     }
     if (obj.contains("registrants")) {
         pending_identity_.registrants_count = obj.value("registrants").toInt();
@@ -212,17 +216,18 @@ void NodePoller::parseMempool(const QJsonValue& result) {
 }
 
 void NodePoller::parseMining(const QJsonValue& result) {
+    // This daemon's mining state lives in the mining.status RPC, NOT in
+    // getmininginfo (which exposes the obsolete setgenerate CPU-miner flag).
+    // Stratum server is a separate binary (dinero-stratum), so daemon-side
+    // mining.status reflects ONLY in-daemon mining — UI-driven Stratum
+    // mining won't appear here. That's a Phase 2 follow-up.
     const auto obj = result.toObject();
-    // This daemon exposes `generate` (bool) for "is mining"; shares/min +
-    // mining destination are not in getmininginfo on this build. Leave them
-    // as defaults (0 / empty) — IdentitySection renders "MINING ON" if active
-    // even without those fields.
-    pending_identity_.is_mining = obj.value("generate").toBool(false);
-    if (obj.contains("shares_per_minute")) {
-        pending_identity_.shares_per_min =
-            obj.value("shares_per_minute").toDouble(0.0);
-    }
-    if (obj.contains("address")) {
+    pending_identity_.is_mining = obj.value("mining").toBool(false);
+    // hashrate is hashes/second; convert to a "shares_per_min"-like display
+    // value by treating it as MH/s. Real shares/min requires Stratum.
+    const double hps = obj.value("hashrate").toDouble(0.0);
+    pending_identity_.shares_per_min = hps / 1'000'000.0;  // MH/s
+    if (obj.contains("address") && !obj.value("address").isNull()) {
         pending_identity_.mining_destination =
             obj.value("address").toString();
     }
