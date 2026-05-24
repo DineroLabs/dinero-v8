@@ -188,6 +188,11 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         onion_transport["proxy"] = "";
         onion_transport["note"] = "P2P service not available";
         result["onion_transport"] = onion_transport;
+        din::Json dynamic_p2p;
+        dynamic_p2p["enabled"] = false;
+        dynamic_p2p["mode"] = "unavailable";
+        dynamic_p2p["message"] = "P2P service not available";
+        result["dynamic_p2p"] = dynamic_p2p;
         return result;
     }
 
@@ -251,6 +256,53 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         static_cast<Json::UInt64>(status.relay_directory_grace_pending);
     relay["directory"] = relay_directory;
     result["relay"] = relay;
+
+    din::Json dynamic_p2p;
+    dynamic_p2p["enabled"] = false;
+    dynamic_p2p["mode"] = "observe";
+    dynamic_p2p["message"] =
+        "Dynamic P2P governor is not active; these are read-only baseline metrics";
+
+    din::Json dynamic_addrman;
+    dynamic_addrman["available"] = status.addrman.available;
+    dynamic_addrman["total"] = static_cast<Json::UInt64>(status.addrman.total_addresses);
+    dynamic_addrman["new"] = static_cast<Json::UInt64>(status.addrman.new_addresses);
+    dynamic_addrman["tried"] = static_cast<Json::UInt64>(status.addrman.tried_addresses);
+    dynamic_addrman["terrible"] = static_cast<Json::UInt64>(status.addrman.terrible_addresses);
+    dynamic_addrman["banned"] = static_cast<Json::UInt64>(status.addrman.banned_addresses);
+    dynamic_addrman["relay_candidates"] =
+        static_cast<Json::UInt64>(status.addrman.relay_candidates);
+    dynamic_addrman["avg_success_rate"] = status.addrman.avg_success_rate;
+    dynamic_p2p["addrman"] = dynamic_addrman;
+
+    din::Json dynamic_peers;
+    dynamic_peers["connections"] = static_cast<Json::UInt64>(status.connections);
+    dynamic_peers["inbound"] = static_cast<Json::UInt64>(status.inbound);
+    dynamic_peers["outbound"] = static_cast<Json::UInt64>(status.outbound);
+    dynamic_peers["configured_seed_peers"] =
+        static_cast<Json::UInt64>(status.configured_seed_peers);
+    dynamic_peers["configured_seed_connections"] =
+        static_cast<Json::UInt64>(status.configured_seed_connections);
+    dynamic_peers["non_configured_seed_connections"] =
+        static_cast<Json::UInt64>(status.discovered_connections);
+    dynamic_peers["relay_peer_connections"] =
+        static_cast<Json::UInt64>(status.relay_peer_connections);
+    dynamic_p2p["peers"] = dynamic_peers;
+
+    din::Json dynamic_reachability;
+    dynamic_reachability["direct_reachable"] = direct_reachable;
+    dynamic_reachability["direct_inbound_observed"] = direct_inbound_observed;
+    dynamic_reachability["relay_fallback_eligible"] = relay_fallback_eligible;
+    dynamic_reachability["relay_local"] = status.local_relay;
+    dynamic_reachability["relay_active"] = status.relay_active;
+    dynamic_reachability["relay_directory_entries"] =
+        static_cast<Json::UInt64>(status.relay_directory_entries);
+    dynamic_reachability["relay_hint_targets_observed"] =
+        static_cast<Json::UInt64>(status.relay_hints_received_self +
+                                  status.relay_hints_received_relay);
+    dynamic_p2p["reachability"] = dynamic_reachability;
+
+    result["dynamic_p2p"] = dynamic_p2p;
 
     din::Json local_addresses(Json::arrayValue);
     for (const auto& [address, port] : status.advertised_addresses) {
