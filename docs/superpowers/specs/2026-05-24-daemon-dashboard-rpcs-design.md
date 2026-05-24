@@ -171,13 +171,14 @@ Additive. v1 consumers ignore new fields.
   "governor": {
     "available": true,
     "mode": "active_slow_churn",
+    "candidate_source": "connected_peers",
     "connected_outbound": 3,
     "configured_seed_hot": 4,
     "relay_capable_seen": 2,
-    "hot_peers": 4,
-    "warm_candidates": 1,
-    "relay_registration_candidates": 0,
-    "demote_candidates": 0
+    "hot_peers":                     ["172.93.160.131:20999", "173.249.195.59:20999"],
+    "warm_candidates":               ["8.8.8.8:20999"],
+    "relay_registration_candidates": [],
+    "demote_candidates":             []
   },
   "peers": [
     {
