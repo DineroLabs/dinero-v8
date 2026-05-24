@@ -2,6 +2,7 @@
 
 #include "din_json.h"
 #include "daemon/p2p_manager.h"
+#include "p2p/peer_quality_derivation.h"
 #include <chrono>
 #include <iomanip>
 #include <sstream>
@@ -55,6 +56,13 @@ inline din::Json BuildPeerInfoJson(const ::PeerInfo& peer_info) {
     peer["compactblocks_enabled"] = peer_info.compact_blocks_enabled;
     peer["compactblocks_announce"] = peer_info.compact_blocks_announce;
     peer["compactblocks_version"] = static_cast<Json::UInt64>(peer_info.compact_blocks_version);
+
+    // Phase 1.5 dashboard surface: ping (from EMA latency in PeerInfo)
+    // + quality_score (derived per-call from PeerInfo state). Both fields
+    // always present so consumers can rely on key existence.
+    peer["ping_ms"] = static_cast<int>(peer_info.avg_latency_ms);
+    peer["quality_score"] =
+        dinero::p2p::BuildDynamicP2PQualitySnapshot(peer_info).score;
 
     return peer;
 }
