@@ -561,6 +561,8 @@ set(GUI_SOURCES
   src/peerssection.h
   src/mynodedashboard.cpp
   src/mynodedashboard.h
+  src/cmdkpanel.cpp
+  src/cmdkpanel.h
 )
 
 if(APPLE)
