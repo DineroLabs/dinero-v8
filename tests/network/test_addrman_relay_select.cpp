@@ -54,6 +54,8 @@ int main() {
 
         const auto relays = am.getAddressesByService(kNodeRelay, 8);
         check(!has(relays, "13.13.50.5"), "non-relay address is excluded");
+        check(am.countAddressesByService(kNodeRelay) == 4,
+              "service count includes all routable relay addresses before /16 selection");
         check(relays.size() == 3,
               "one relay per distinct /16 (the two 8.8.x collapse to one)");
         int n88 = 0;
@@ -75,6 +77,8 @@ int main() {
               "services=0 -> not selected as a relay");
 
         am.addAddress(mk("13.13.60.6", 20999, kNodeRelay));  // re-advert w/ relay bit
+        check(am.countAddressesByService(kNodeRelay) == 1,
+              "dup-update: relay count sees re-advertised NODE_RELAY");
         check(has(am.getAddressesByService(kNodeRelay, 8), "13.13.60.6"),
               "dup-update: re-advert with NODE_RELAY makes the peer discoverable");
 
