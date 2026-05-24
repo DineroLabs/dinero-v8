@@ -16,6 +16,8 @@
 #include "network/stun_client.h"       // NAT traversal Phase C1: public-IP discovery
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: keypair for dineroid handshake
 #include "p2p/block_download_scheduler.h"
+#include "p2p/peer_governor.h"
+#include "p2p/peer_quality.h"
 #include "storage/chain_db.h"
 #include "common/ilogger.h"  // For ILogger interface dependency injection
 #include "network/types.h"   // For dinero::ServiceFlags
@@ -131,6 +133,33 @@ std::string BytesToHex(const std::string& bytes) {
         out.push_back(kHexChars[c & 0x0F]);
     }
     return out;
+}
+
+dinero::p2p::PeerQualitySnapshot BuildDynamicP2PQualitySnapshot(const PeerInfo& peer) {
+    dinero::p2p::PeerQuality quality;
+    if (peer.is_connected) {
+        quality.Apply(dinero::p2p::PeerQualityEvent::ConnectionSuccess);
+    }
+    if (peer.protocol_version != 0 || !peer.user_agent.empty()) {
+        quality.Apply(dinero::p2p::PeerQualityEvent::HandshakeSuccess);
+    }
+    if (peer.synced_headers > 0 || peer.best_known_height > 0 || peer.best_height > 0) {
+        quality.Apply(dinero::p2p::PeerQualityEvent::UsefulHeader);
+    }
+    if (peer.synced_blocks > 0) {
+        quality.Apply(dinero::p2p::PeerQualityEvent::UsefulBlock);
+    }
+    if (peer.avg_latency_ms > 0.0) {
+        quality.RecordLatency(static_cast<uint32_t>(peer.avg_latency_ms));
+    }
+
+    auto snapshot = quality.Snapshot();
+    if ((peer.service_flags & dinero::ServiceFlags::NODE_RELAY) != 0 &&
+        peer.is_connected) {
+        snapshot.relay_successes = 1;
+        snapshot.relay_candidate = snapshot.score >= 55;
+    }
+    return snapshot;
 }
 
 // Self-loop filtering helpers (LocalInterfaceIps + IsLocalInterfaceIp) live
@@ -310,25 +339,52 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
                            });
     };
 
+    std::vector<dinero::p2p::PeerGovernorCandidate> governor_candidates;
     const auto peers = p2p_mgr_->get_connected_peers();
+    governor_candidates.reserve(peers.size());
     for (const auto& peer : peers) {
         if (!peer.is_connected) {
             continue;
         }
+        const bool configured_seed = is_configured_seed(peer);
+        const bool relay_capable =
+            (peer.service_flags & dinero::ServiceFlags::NODE_RELAY) != 0;
         ++status.connections;
         if (peer.is_outbound) {
             ++status.outbound;
         } else {
             ++status.inbound;
         }
-        if (is_configured_seed(peer)) {
+        if (configured_seed) {
             ++status.configured_seed_connections;
         } else {
             ++status.discovered_connections;
         }
-        if ((peer.service_flags & dinero::ServiceFlags::NODE_RELAY) != 0) {
+        if (relay_capable) {
             ++status.relay_peer_connections;
         }
+
+        dinero::p2p::PeerGovernorCandidate candidate;
+        candidate.endpoint = peer.address + ":" + std::to_string(peer.port);
+        candidate.quality = BuildDynamicP2PQualitySnapshot(peer);
+        candidate.connected = true;
+        candidate.outbound = peer.is_outbound;
+        candidate.configured_seed = configured_seed;
+        candidate.relay_capable = relay_capable;
+        governor_candidates.push_back(std::move(candidate));
+    }
+    {
+        const dinero::p2p::PeerGovernor governor;
+        const auto decision = governor.Evaluate(governor_candidates);
+        status.dynamic_p2p_governor.available = true;
+        status.dynamic_p2p_governor.connected_outbound = decision.connected_outbound;
+        status.dynamic_p2p_governor.configured_seed_hot = decision.configured_seed_hot;
+        status.dynamic_p2p_governor.relay_capable_seen = decision.relay_capable_seen;
+        status.dynamic_p2p_governor.hot_peers = decision.hot_peers;
+        status.dynamic_p2p_governor.warm_candidates = decision.warm_candidates;
+        status.dynamic_p2p_governor.relay_registration_candidates =
+            decision.relay_registration_candidates;
+        status.dynamic_p2p_governor.demote_candidates = decision.demote_candidates;
     }
 
     {

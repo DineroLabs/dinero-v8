@@ -62,6 +62,19 @@ public:
             double avg_success_rate{0.0};
         };
 
+        struct DynamicP2PGovernorSnapshot {
+            bool available{false};
+            std::string mode{"dry_run"};
+            std::string candidate_source{"connected_peers"};
+            size_t connected_outbound{0};
+            size_t configured_seed_hot{0};
+            size_t relay_capable_seen{0};
+            std::vector<std::string> hot_peers;
+            std::vector<std::string> warm_candidates;
+            std::vector<std::string> relay_registration_candidates;
+            std::vector<std::string> demote_candidates;
+        };
+
         bool network_active{false};
         bool listening{false};
         uint16_t listen_port{0};
@@ -74,6 +87,7 @@ public:
         size_t relay_peer_connections{0};
         std::vector<std::pair<std::string, uint16_t>> advertised_addresses;
         AddrmanSnapshot addrman;
+        DynamicP2PGovernorSnapshot dynamic_p2p_governor;
         bool port_mapping_requested{false};
         bool port_mapping_active{false};
         std::string port_mapping_mode{"disabled"};

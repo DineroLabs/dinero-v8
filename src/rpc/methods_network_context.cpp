@@ -28,6 +28,7 @@
 #include "common/logger.h"
 #include <memory>
 #include <atomic>
+#include <vector>
 
 namespace {
 
@@ -68,6 +69,14 @@ std::shared_ptr<dinero::P2PService> GetP2PService(const ExecutionContext& ctx) {
         return {};
     }
     return std::dynamic_pointer_cast<dinero::P2PService>(ctx.daemon->p2p);
+}
+
+din::Json StringArrayJson(const std::vector<std::string>& values) {
+    din::Json array(Json::arrayValue);
+    for (const auto& value : values) {
+        array.append(value);
+    }
+    return array;
 }
 
 }  // namespace
@@ -301,6 +310,27 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         static_cast<Json::UInt64>(status.relay_hints_received_self +
                                   status.relay_hints_received_relay);
     dynamic_p2p["reachability"] = dynamic_reachability;
+
+    din::Json dynamic_governor;
+    dynamic_governor["available"] = status.dynamic_p2p_governor.available;
+    dynamic_governor["mode"] = status.dynamic_p2p_governor.mode;
+    dynamic_governor["candidate_source"] =
+        status.dynamic_p2p_governor.candidate_source;
+    dynamic_governor["connected_outbound"] =
+        static_cast<Json::UInt64>(status.dynamic_p2p_governor.connected_outbound);
+    dynamic_governor["configured_seed_hot"] =
+        static_cast<Json::UInt64>(status.dynamic_p2p_governor.configured_seed_hot);
+    dynamic_governor["relay_capable_seen"] =
+        static_cast<Json::UInt64>(status.dynamic_p2p_governor.relay_capable_seen);
+    dynamic_governor["recommended_hot_peers"] =
+        StringArrayJson(status.dynamic_p2p_governor.hot_peers);
+    dynamic_governor["warm_candidates"] =
+        StringArrayJson(status.dynamic_p2p_governor.warm_candidates);
+    dynamic_governor["relay_registration_candidates"] =
+        StringArrayJson(status.dynamic_p2p_governor.relay_registration_candidates);
+    dynamic_governor["demote_candidates"] =
+        StringArrayJson(status.dynamic_p2p_governor.demote_candidates);
+    dynamic_p2p["governor"] = dynamic_governor;
 
     result["dynamic_p2p"] = dynamic_p2p;
 
