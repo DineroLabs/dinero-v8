@@ -6,10 +6,11 @@
 #include "daemon/services/config_service.h"  // For ConfigService::DataDir()
 #include "daemon/services/wallet_service.h"
 #include "rpc/rpc_registry.h"
-#include "rpc/rpc_init.h"         // For RegisterAllRPCMethods() (Phase E.3.1 CPU stats)
-#include "rpc/methods_mining.h"  // For din::rpc::registerStratumMethodsContext()
-#include "rpc/methods_pool.h"    // Pool accounting RPC (feature-gated)
-#include "vault/vault_runtime.h" // Track C: Liquidity Vault runtime owner
+#include "rpc/rpc_init.h"                    // For RegisterAllRPCMethods() (Phase E.3.1 CPU stats)
+#include "rpc/methods_mining.h"             // For din::rpc::registerStratumMethodsContext()
+#include "rpc/methods_pool.h"               // Pool accounting RPC (feature-gated)
+#include "rpc/rpc_dynamic_p2p_handlers.h"   // Task 6: dynamic_p2p.observe handler
+#include "vault/vault_runtime.h"            // Track C: Liquidity Vault runtime owner
 // DISABLED: Payroll feature (experimental)
 // #include "rpc/payroll_rpc.h"     // For WirePayrollRpcContext()
 // #include "database/payroll_db.h" // For PayrollDB
@@ -328,6 +329,15 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
         // Diagnostics namespace (node.info, rpc.methods) - November 8, 2025
         WireDiagnosticsRpcContext();
         dinero::g_logger.info("[RPC Context] ✅ Diagnostics context-aware handlers registered");
+
+        // Task 6: Dynamic P2P observe — live DPP mode/governor/peer-quality snapshot.
+        // ctx.p2p is already the fully-wired P2PService; pass as raw ptr (handler owns nothing).
+        // Returns {enabled:false, mode:"off", ...} gracefully when DPP is off or p2p is null.
+        http_server->register_method("dynamic_p2p.observe",
+            [&ctx](const Json::Value& /*params*/) -> Json::Value {
+                return dinero::rpc::HandleDynamicP2PObserve(ctx.p2p.get());
+            });
+        dinero::g_logger.info("[RPC Context] ✅ dynamic_p2p.observe handler registered");
 
         // Phase E.3.1: CPU stats & resource monitoring (node.getcpustats, node.getresourcepressure, node.getdiskstats)
         RegisterAllRPCMethods(ctx);
