@@ -12,6 +12,7 @@
 #include "hardwarewalletwidget.h"  // Hardware wallet support (production-ready)
 #include "dpiwidget.h"             // DPI Pay/Collect
 #include "aipanel.h"
+#include "cmdkpanel.h"
 #include "scrollsupport.h"
 // AI panel uses ClaudeProcess (no more AiTools)
 #include "aistatusstrip.h"
@@ -2107,9 +2108,10 @@ void MainWindow::setupUI() {
   contentLayout->setSpacing(0);
   contentLayout->addWidget(tabs, 1);
 
-  aiPanel_ = new AiPanel(rpc_->datadir(), contentArea);
-  aiPanel_->setPanelWidth(0);
-  contentLayout->addWidget(aiPanel_);
+  aiPanel_ = new AiPanel(rpc_->datadir(), nullptr);  // re-parented by CmdKPanel below
+  cmdKPanel_ = new dinero::qt::dashboard::CmdKPanel(rpc_, aiPanel_, contentArea);
+  cmdKPanel_->setPanelWidth(0);
+  contentLayout->addWidget(cmdKPanel_);
 
   mainLayout->addWidget(contentArea, 1);
 
@@ -14824,8 +14826,8 @@ void MainWindow::onExportMetrics() {
 // ═══════════════════════════════════════════════════════════════════
 
 void MainWindow::onToggleAiPanel() {
-  if (aiPanel_) {
-    aiPanel_->togglePanel();
+  if (cmdKPanel_) {
+    cmdKPanel_->togglePanel();
   }
 }
 

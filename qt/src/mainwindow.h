@@ -17,6 +17,7 @@ class AdvisoryBannerQueue;
 
 class AiPanel;
 class AiStatusStrip;
+namespace dinero::qt::dashboard { class CmdKPanel; }
 class DpiWidget;
 class HardwareWalletWidget;
 class QShortcut;
@@ -672,6 +673,7 @@ private:
 
   // AI Assistant
   AiPanel* aiPanel_ = nullptr;
+  dinero::qt::dashboard::CmdKPanel* cmdKPanel_ = nullptr;
   AiStatusStrip* aiStatusStrip_ = nullptr;
   QShortcut* aiToggleShortcut_ = nullptr;
   void onToggleAiPanel();
