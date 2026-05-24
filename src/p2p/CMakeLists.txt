@@ -4,6 +4,7 @@
 set(DINERO_CORE_P2P_SOURCES
   # P2P layer
   src/p2p/peer_scoring.cpp
+  src/p2p/peer_quality.cpp
   src/p2p/connection_manager.cpp
   src/p2p/rate_limiter.cpp
   src/p2p/network_limits_monitor.cpp
