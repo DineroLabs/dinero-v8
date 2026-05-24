@@ -9989,4 +9989,16 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/dpi/test_dpi_protocol.cpp)
   message(STATUS "  ✓ DPI Protocol test registered: test_dpi_protocol")
 endif()
 
+# ─── Dashboard RPC smoke test ───────────────────────────────────────────────
+if(BUILD_TESTING)
+    add_test(NAME DashboardRpcsSmoke
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/network/test_dashboard_rpcs.sh)
+    set_tests_properties(DashboardRpcsSmoke PROPERTIES
+        ENVIRONMENT
+            "DINEROD=$<TARGET_FILE:dinerod>;DINERO_CLI=$<TARGET_FILE:dinero-cli>"
+        LABELS "network;rpc;integration"
+        TIMEOUT 60
+    )
+endif()
+
 # ═══════════════════════════════════════════════════════════════════════════

@@ -378,6 +378,12 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         : (status.onion_transport_message.empty() ? "disabled" : status.onion_transport_message);
     result["onion_transport"] = onion_transport;
 
+    // Local node identity (20-byte node_id, 40-char lowercase hex).
+    // Empty string if node_identity_ has not yet been initialized.
+    result["node_id_hex"] = p2p
+        ? p2p->get().get_local_node_id_hex()
+        : std::string();
+
     std::string warning;
     if (status.network_active && status.listening &&
         status.inbound == 0 && status.advertised_addresses.empty()) {

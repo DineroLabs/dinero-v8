@@ -354,6 +354,11 @@ public:
     // and the handshake completes legacy-style.
     void set_node_identity(std::shared_ptr<dinero::daemon::NodeIdentity> identity);
 
+    // Returns the local node's identity as a 40-character lowercase hex
+    // string (20 bytes encoded). Empty string if node_identity_ has not
+    // yet been set. Safe to call before set_node_identity().
+    std::string get_local_node_id_hex() const;
+
     // NAT traversal Phase C3 slice 4a: caller declares which peers we
     // want to register with as a relay. Strings are "host:port"
     // canonicalized to lowercase. After dineroid succeeds with one of

@@ -18,6 +18,7 @@
 #include "p2p/block_download_scheduler.h"
 #include "p2p/peer_governor.h"
 #include "p2p/peer_quality.h"
+#include "p2p/peer_quality_derivation.h"
 #include "storage/chain_db.h"
 #include "common/ilogger.h"  // For ILogger interface dependency injection
 #include "network/types.h"   // For dinero::ServiceFlags
@@ -141,32 +142,6 @@ std::string BytesToHex(const std::string& bytes) {
     return out;
 }
 
-dinero::p2p::PeerQualitySnapshot BuildDynamicP2PQualitySnapshot(const PeerInfo& peer) {
-    dinero::p2p::PeerQuality quality;
-    if (peer.is_connected) {
-        quality.Apply(dinero::p2p::PeerQualityEvent::ConnectionSuccess);
-    }
-    if (peer.protocol_version != 0 || !peer.user_agent.empty()) {
-        quality.Apply(dinero::p2p::PeerQualityEvent::HandshakeSuccess);
-    }
-    if (peer.synced_headers > 0 || peer.best_known_height > 0 || peer.best_height > 0) {
-        quality.Apply(dinero::p2p::PeerQualityEvent::UsefulHeader);
-    }
-    if (peer.synced_blocks > 0) {
-        quality.Apply(dinero::p2p::PeerQualityEvent::UsefulBlock);
-    }
-    if (peer.avg_latency_ms > 0.0) {
-        quality.RecordLatency(static_cast<uint32_t>(peer.avg_latency_ms));
-    }
-
-    auto snapshot = quality.Snapshot();
-    if ((peer.service_flags & dinero::ServiceFlags::NODE_RELAY) != 0 &&
-        peer.is_connected) {
-        snapshot.relay_successes = 1;
-        snapshot.relay_candidate = snapshot.score >= 55;
-    }
-    return snapshot;
-}
 
 // Self-loop filtering helpers (LocalInterfaceIps + IsLocalInterfaceIp) live
 // in include/network/local_interfaces.h so P2PManager::connect_to_peer can
@@ -374,7 +349,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
 
         dinero::p2p::PeerGovernorCandidate candidate;
         candidate.endpoint = peer.address + ":" + std::to_string(peer.port);
-        candidate.quality = BuildDynamicP2PQualitySnapshot(peer);
+        candidate.quality = dinero::p2p::BuildDynamicP2PQualitySnapshot(peer);
         candidate.connected = true;
         candidate.outbound = peer.is_outbound;
         candidate.configured_seed = configured_seed;
@@ -520,7 +495,7 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
 
         dinero::p2p::PeerGovernorCandidate candidate;
         candidate.endpoint = endpoint;
-        candidate.quality = BuildDynamicP2PQualitySnapshot(peer);
+        candidate.quality = dinero::p2p::BuildDynamicP2PQualitySnapshot(peer);
         candidate.connected = true;
         candidate.outbound = peer.is_outbound;
         candidate.configured_seed = configured_seed;
