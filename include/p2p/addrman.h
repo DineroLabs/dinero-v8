@@ -98,6 +98,13 @@ public:
                                                       size_t count = 8);
 
     /**
+     * Count routable, non-banned, non-terrible addresses advertising a
+     * service bit. Observability-only; selection still uses
+     * getAddressesByService().
+     */
+    size_t countAddressesByService(uint64_t service_bit) const;
+
+    /**
      * Get addresses to advertise to peers
      */
     std::vector<NetworkAddress> getAdvertisableAddresses(size_t count = 1000);

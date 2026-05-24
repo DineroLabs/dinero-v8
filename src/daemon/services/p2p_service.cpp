@@ -287,6 +287,29 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.relay_directory_entries = p2p_mgr_->relay_registry_entry_count();
     status.relay_directory_grace_pending = p2p_mgr_->relay_registry_grace_pending_count();
 
+    if (address_manager_ && address_manager_->getManager()) {
+        auto* manager = address_manager_->getManager();
+        const auto stats = manager->getStats();
+        status.addrman.available = true;
+        status.addrman.total_addresses = stats.total_addresses;
+        status.addrman.new_addresses = stats.new_addresses;
+        status.addrman.tried_addresses = stats.tried_addresses;
+        status.addrman.terrible_addresses = stats.terrible_addresses;
+        status.addrman.banned_addresses = stats.banned_addresses;
+        status.addrman.avg_success_rate = stats.avg_success_rate;
+        status.addrman.relay_candidates =
+            manager->countAddressesByService(dinero::ServiceFlags::NODE_RELAY);
+    }
+
+    const auto configured_seeds = p2p_mgr_->get_seed_nodes();
+    status.configured_seed_peers = configured_seeds.size();
+    auto is_configured_seed = [&](const PeerInfo& peer) {
+        return std::any_of(configured_seeds.begin(), configured_seeds.end(),
+                           [&](const auto& seed) {
+                               return seed.first == peer.address && seed.second == peer.port;
+                           });
+    };
+
     const auto peers = p2p_mgr_->get_connected_peers();
     for (const auto& peer : peers) {
         if (!peer.is_connected) {
@@ -297,6 +320,14 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
             ++status.outbound;
         } else {
             ++status.inbound;
+        }
+        if (is_configured_seed(peer)) {
+            ++status.configured_seed_connections;
+        } else {
+            ++status.discovered_connections;
+        }
+        if ((peer.service_flags & dinero::ServiceFlags::NODE_RELAY) != 0) {
+            ++status.relay_peer_connections;
         }
     }
 

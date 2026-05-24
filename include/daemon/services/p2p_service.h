@@ -51,13 +51,29 @@ public:
         uint64_t bytes_sent{0};
     };
     struct NetworkStatus {
+        struct AddrmanSnapshot {
+            bool available{false};
+            size_t total_addresses{0};
+            size_t new_addresses{0};
+            size_t tried_addresses{0};
+            size_t terrible_addresses{0};
+            size_t banned_addresses{0};
+            size_t relay_candidates{0};
+            double avg_success_rate{0.0};
+        };
+
         bool network_active{false};
         bool listening{false};
         uint16_t listen_port{0};
         size_t connections{0};
         size_t inbound{0};
         size_t outbound{0};
+        size_t configured_seed_peers{0};
+        size_t configured_seed_connections{0};
+        size_t discovered_connections{0};
+        size_t relay_peer_connections{0};
         std::vector<std::pair<std::string, uint16_t>> advertised_addresses;
+        AddrmanSnapshot addrman;
         bool port_mapping_requested{false};
         bool port_mapping_active{false};
         std::string port_mapping_mode{"disabled"};

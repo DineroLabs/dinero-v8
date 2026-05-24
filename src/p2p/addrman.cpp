@@ -233,6 +233,25 @@ std::vector<NetworkAddress> AddressManager::getAddressesByService(
     return result;
 }
 
+size_t AddressManager::countAddressesByService(uint64_t service_bit) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t count = 0;
+
+    auto scan = [&](const std::unordered_map<std::string, AddressEntry>& pool) {
+        for (const auto& kv : pool) {
+            const AddressEntry& entry = kv.second;
+            if (entry.is_terrible || entry.is_banned) continue;
+            if ((entry.addr.services & service_bit) == 0) continue;
+            if (!entry.addr.isRoutable()) continue;
+            ++count;
+        }
+    };
+
+    scan(tried_addresses_);
+    scan(new_addresses_);
+    return count;
+}
+
 std::vector<NetworkAddress> AddressManager::getAdvertisableAddresses(size_t count) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<NetworkAddress> result;
