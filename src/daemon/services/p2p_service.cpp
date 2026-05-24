@@ -54,6 +54,12 @@ bool IsRelayModeOff(const std::string& mode) {
     return value == "0" || value == "false" || value == "no" || value == "off";
 }
 
+bool IsDynamicP2PActiveMode(const std::string& mode) {
+    const std::string value = LowerAscii(mode);
+    return value == "1" || value == "true" || value == "yes" ||
+           value == "on" || value == "active" || value == "active_slow_churn";
+}
+
 bool ParseEndpoint(const std::string& endpoint,
                    uint16_t default_port,
                    std::string* out_host,
@@ -287,6 +293,8 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.relay_mode = RelayMode();
     status.relay_active = relay_active_.load(std::memory_order_acquire);
     status.local_relay = IsRelayRoleEnabled();
+    status.dynamic_p2p_enabled = IsDynamicP2PActive();
+    status.dynamic_p2p_mode = DynamicP2PMode();
     if (!p2p_mgr_) {
         std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
         status.port_mapping_requested = port_mapping_requested_;
@@ -377,6 +385,8 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         const dinero::p2p::PeerGovernor governor;
         const auto decision = governor.Evaluate(governor_candidates);
         status.dynamic_p2p_governor.available = true;
+        status.dynamic_p2p_governor.mode =
+            status.dynamic_p2p_enabled ? "active_slow_churn" : "dry_run";
         status.dynamic_p2p_governor.connected_outbound = decision.connected_outbound;
         status.dynamic_p2p_governor.configured_seed_hot = decision.configured_seed_hot;
         status.dynamic_p2p_governor.relay_capable_seen = decision.relay_capable_seen;
@@ -422,6 +432,24 @@ bool P2PService::IsRelayRoleEnabled() const {
     return relay_active_.load(std::memory_order_acquire);
 }
 
+std::string P2PService::DynamicP2PMode() const {
+    if (!config_) {
+        return "observe";
+    }
+    const std::string mode = LowerAscii(config_->GetString("p2p.dynamic_p2p", "observe"));
+    return IsDynamicP2PActiveMode(mode) ? "active_slow_churn" : "observe";
+}
+
+bool P2PService::IsDynamicP2PActive() const {
+    if (!config_) {
+        return false;
+    }
+    if (config_->GetBool("p2p.dynamic_p2p.enabled", false)) {
+        return true;
+    }
+    return DynamicP2PMode() == "active_slow_churn";
+}
+
 void P2PService::SetRelayActive(bool active) {
     const bool previous = relay_active_.exchange(active, std::memory_order_acq_rel);
     if (previous == active) {
@@ -431,6 +459,110 @@ void P2PService::SetRelayActive(bool active) {
         logger_interface_->info(std::string("[P2PService] Relay role auto-mode ") +
                                 (active ? "engaged" : "disengaged") +
                                 " (p2p.relay=" + RelayMode() + ")");
+    }
+}
+
+void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_point now) {
+    if (!p2p_mgr_ || !IsDynamicP2PActive()) {
+        return;
+    }
+
+    const auto read_seconds = [this](const std::string& key, int fallback, int minimum) {
+        const int value = config_ ? config_->GetInt(key, fallback) : fallback;
+        return std::chrono::seconds(std::max(value, minimum));
+    };
+
+    const auto startup_grace =
+        read_seconds("p2p.dynamic_p2p.startup_grace_seconds", 300, 60);
+    const auto churn_interval =
+        read_seconds("p2p.dynamic_p2p.churn_interval_seconds", 600, 60);
+    const size_t min_peers = static_cast<size_t>(
+        config_ ? std::max(config_->GetInt("p2p.dynamic_p2p.min_peers", 4), 1) : 4);
+
+    if (dynamic_p2p_started_at_ == std::chrono::steady_clock::time_point{}) {
+        dynamic_p2p_started_at_ = now;
+        last_dynamic_p2p_churn_ = now;
+        return;
+    }
+    if (now - dynamic_p2p_started_at_ < startup_grace) {
+        return;
+    }
+    if (now - last_dynamic_p2p_churn_ < churn_interval) {
+        return;
+    }
+    last_dynamic_p2p_churn_ = now;
+
+    const auto configured_seeds = p2p_mgr_->get_seed_nodes();
+    const auto is_configured_seed = [&](const PeerInfo& peer) {
+        return std::any_of(configured_seeds.begin(), configured_seeds.end(),
+                           [&](const auto& seed) {
+                               return seed.first == peer.address && seed.second == peer.port;
+                           });
+    };
+
+    const auto peers = p2p_mgr_->get_connected_peers();
+    size_t connected = 0;
+    std::vector<dinero::p2p::PeerGovernorCandidate> candidates;
+    candidates.reserve(peers.size());
+    std::unordered_set<std::string> protected_configured_seeds;
+    for (const auto& peer : peers) {
+        if (!peer.is_connected) {
+            continue;
+        }
+        ++connected;
+        const bool configured_seed = is_configured_seed(peer);
+        const bool relay_capable =
+            (peer.service_flags & dinero::ServiceFlags::NODE_RELAY) != 0;
+        const std::string endpoint = peer.address + ":" + std::to_string(peer.port);
+        if (configured_seed) {
+            protected_configured_seeds.insert(endpoint);
+        }
+
+        dinero::p2p::PeerGovernorCandidate candidate;
+        candidate.endpoint = endpoint;
+        candidate.quality = BuildDynamicP2PQualitySnapshot(peer);
+        candidate.connected = true;
+        candidate.outbound = peer.is_outbound;
+        candidate.configured_seed = configured_seed;
+        candidate.relay_capable = relay_capable;
+        candidates.push_back(std::move(candidate));
+    }
+
+    if (connected <= min_peers) {
+        if (logger_interface_) {
+            logger_interface_->info("[DynamicP2P] active slow-churn skipped: peer floor " +
+                                    std::to_string(connected) + "/" +
+                                    std::to_string(min_peers));
+        }
+        return;
+    }
+
+    const dinero::p2p::PeerGovernor governor;
+    const auto decision = governor.Evaluate(candidates);
+    for (const auto& endpoint : decision.demote_candidates) {
+        if (protected_configured_seeds.count(endpoint) > 0) {
+            continue;
+        }
+        auto it = std::find_if(peers.begin(), peers.end(), [&](const PeerInfo& peer) {
+            return peer.is_connected && peer.is_outbound &&
+                   peer.address + ":" + std::to_string(peer.port) == endpoint;
+        });
+        if (it == peers.end()) {
+            continue;
+        }
+        if (connected - 1 < min_peers) {
+            break;
+        }
+        if (logger_interface_) {
+            logger_interface_->warning("[DynamicP2P] active slow-churn disconnecting weak outbound peer " +
+                                       endpoint + " (one-peer canary action)");
+        }
+        p2p_mgr_->disconnect_peer(endpoint);
+        return;
+    }
+
+    if (logger_interface_) {
+        logger_interface_->info("[DynamicP2P] active slow-churn evaluated: no eligible peer to rotate");
     }
 }
 
@@ -629,6 +761,8 @@ void P2PService::StartSchedulerTickLoop() {
                         }
                     }
                 }
+
+                MaybeRunDynamicP2PActiveChurn(now);
             }
             std::this_thread::sleep_for(scheduler_tick_interval_);
         }
