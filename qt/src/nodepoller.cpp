@@ -9,6 +9,7 @@
 #include <QJsonObject>
 
 #include <algorithm>
+#include <cmath>
 
 namespace dinero::qt::dashboard {
 
@@ -20,7 +21,113 @@ QString fleetNameFor(const QString& addr) {
     if (addr.startsWith("96.9.226.98"))    return "CN";
     return {};
 }
+
+QString scoreLabel(double total) {
+    if (total < 2.0) return "just observing";
+    if (total < 4.0) return "consuming responsibly";
+    if (total < 6.0) return "pulling your weight";
+    if (total < 8.0) return "you're carrying real weight";
+    return "you're load-bearing for the network";
+}
+
+double linearCap(double value, double cap_at_one) {
+    if (cap_at_one <= 0.0) return 0.0;
+    return std::min(1.0, std::max(0.0, value / cap_at_one));
+}
 }  // namespace
+
+// static
+DecentralizationScore NodePoller::ComputeDecentralizationScore(
+        const ScoreInputs& in) {
+    DecentralizationScore s;
+
+    s.breakdown.reachable = in.reachable_with_inbound ? 1.0 : 0.0;
+    s.breakdown.relay_active = in.relay_active_with_registrants ? 2.0 : 0.0;
+
+    constexpr qint64 kThirtyDaysSec = 30LL * 24 * 3600;
+    s.breakdown.uptime =
+        linearCap(static_cast<double>(in.uptime_seconds), kThirtyDaysSec) * 1.5;
+
+    s.breakdown.peer_diversity =
+        linearCap(static_cast<double>(in.unique_peer_subnets_slash16), 8.0) * 1.5;
+
+    double traffic_log = 0.0;
+    if (in.bytes_relayed_24h > 0) {
+        traffic_log = std::log10(static_cast<double>(in.bytes_relayed_24h));
+    }
+    s.breakdown.traffic = linearCap(traffic_log, 9.0) * 1.0;
+
+    double mining_ratio = 0.0;
+    if (in.fleet_hashrate_hps > 0.0) {
+        mining_ratio = in.local_hashrate_hps / in.fleet_hashrate_hps;
+    }
+    s.breakdown.mining = linearCap(mining_ratio, 1.0) * 1.5;
+
+    s.breakdown.gossip_reach =
+        linearCap(static_cast<double>(in.peers_who_learned_via_gossip), 32.0) * 1.5;
+
+    s.total = s.breakdown.reachable
+            + s.breakdown.relay_active
+            + s.breakdown.uptime
+            + s.breakdown.peer_diversity
+            + s.breakdown.traffic
+            + s.breakdown.mining
+            + s.breakdown.gossip_reach;
+    if (s.total < 0.0)  s.total = 0.0;
+    if (s.total > 10.0) s.total = 10.0;
+
+    s.label = scoreLabel(s.total);
+    return s;
+}
+
+void NodePoller::pushSparklineSample(QVector<qint64>* buf, qint64 sample) {
+    if (!buf) return;
+    buf->append(sample < 0 ? 0 : sample);
+    while (buf->size() > kSparklineCapacity) {
+        buf->removeFirst();
+    }
+}
+
+void NodePoller::emitContributionAndScore() {
+    ContributionStats stats;
+    stats.circuits_active     = 0;  // Phase 2b: real counter from daemon
+    stats.blocks_served_today = 0;  // Phase 2b: real counter from daemon
+    stats.hints_sent          = relay_hints_sent_;
+    stats.peers_via_gossip    = relay_hints_received_relay_;
+    stats.bytes_in_rate    = bytes_in_buffer_.isEmpty()  ? 0 : bytes_in_buffer_.last();
+    stats.bytes_out_rate   = bytes_out_buffer_.isEmpty() ? 0 : bytes_out_buffer_.last();
+    stats.relay_bytes_rate = relay_bytes_buffer_.isEmpty() ? 0 : relay_bytes_buffer_.last();
+    Q_EMIT contributionStatsUpdated(stats);
+
+    ScoreInputs in;
+    in.reachable_with_inbound =
+        (pending_identity_.reachability == NodeIdentity::DIRECT)
+        && (pending_peers_.size() > 0);
+    in.relay_active_with_registrants =
+        pending_identity_.is_relay_active
+        && (pending_identity_.registrants_count > 0);
+    in.uptime_seconds = pending_identity_.uptime.count();
+    QVector<QString> subnets;
+    for (const auto& r : pending_peers_) {
+        const auto dot1 = r.addr.indexOf('.');
+        if (dot1 > 0) {
+            const auto dot2 = r.addr.indexOf('.', dot1 + 1);
+            if (dot2 > 0) {
+                const auto sub16 = r.addr.left(dot2);
+                if (!subnets.contains(sub16)) subnets.append(sub16);
+            }
+        }
+    }
+    in.unique_peer_subnets_slash16 = subnets.size();
+    qint64 sum_relay = 0;
+    for (auto v : relay_bytes_buffer_) sum_relay += v;
+    // 5min × 288 = 24h linear extrapolation (Phase 2a approximation).
+    in.bytes_relayed_24h = sum_relay * 288;
+    in.local_hashrate_hps = pending_identity_.shares_per_min * 1'000'000.0;
+    in.fleet_hashrate_hps = pending_chain_.network_hashrate_hps;
+    in.peers_who_learned_via_gossip = relay_hints_received_relay_;
+    Q_EMIT decentralizationScoreUpdated(ComputeDecentralizationScore(in));
+}
 
 NodePoller::NodePoller(RpcClient* rpc, QObject* parent)
     : QObject(parent), rpc_(rpc) {
@@ -122,6 +229,9 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
     if (obj.contains("relay")) {
         const auto relay = obj.value("relay").toObject();
         pending_identity_.is_relay_active = relay.value("active").toBool(false);
+        const auto hints = relay.value("hints").toObject();
+        relay_hints_sent_           = hints.value("received_self").toInt(0);
+        relay_hints_received_relay_ = hints.value("received_relay").toInt(0);
     }
     if (obj.contains("registrants")) {
         pending_identity_.registrants_count = obj.value("registrants").toInt();
@@ -141,6 +251,7 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
                                : NodeIdentity::UNREACHABLE);
 
     Q_EMIT identityUpdated(pending_identity_);
+    emitContributionAndScore();
 }
 
 void NodePoller::parseChainInfo(const QJsonValue& result) {
@@ -216,6 +327,33 @@ void NodePoller::parsePeers(const QJsonValue& result) {
     }
 
     Q_EMIT peersUpdated(pending_peers_);
+
+    // Phase 2a: accumulate bytes for sparkline + per-tick rate stats.
+    qint64 cur_sent_total = 0;
+    qint64 cur_recv_total = 0;
+    qint64 cur_relay_total = 0;
+    for (const auto& r : pending_peers_) {
+        cur_sent_total += r.bytes_sent;
+        cur_recv_total += r.bytes_recv;
+        if (r.via_relay) cur_relay_total += r.bytes_sent + r.bytes_recv;
+    }
+    if (!have_baseline_) {
+        last_bytes_sent_total_  = cur_sent_total;
+        last_bytes_recv_total_  = cur_recv_total;
+        last_relay_bytes_total_ = cur_relay_total;
+        have_baseline_ = true;
+    }
+    const qint64 delta_recv  = std::max<qint64>(0, cur_recv_total  - last_bytes_recv_total_);
+    const qint64 delta_sent  = std::max<qint64>(0, cur_sent_total  - last_bytes_sent_total_);
+    const qint64 delta_relay = std::max<qint64>(0, cur_relay_total - last_relay_bytes_total_);
+    pushSparklineSample(&bytes_in_buffer_,    delta_recv);
+    pushSparklineSample(&bytes_out_buffer_,   delta_sent);
+    pushSparklineSample(&relay_bytes_buffer_, delta_relay);
+    last_bytes_sent_total_  = cur_sent_total;
+    last_bytes_recv_total_  = cur_recv_total;
+    last_relay_bytes_total_ = cur_relay_total;
+
+    emitContributionAndScore();
 }
 
 void NodePoller::parseMempool(const QJsonValue& result) {
@@ -242,6 +380,8 @@ void NodePoller::parseMining(const QJsonValue& result) {
         pending_identity_.mining_destination =
             obj.value("address").toString();
     }
+    pending_chain_.network_hashrate_hps =
+        obj.value("networkhashps").toDouble(0.0);
     Q_EMIT identityUpdated(pending_identity_);
 }
 

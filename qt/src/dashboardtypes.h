@@ -104,6 +104,7 @@ struct ChainInfo {
     qint64  mempool_bytes{0};
     qint64  median_fee_una_per_vbyte{0};
     double  next_bits_delta_pct{0.0};  // optional; 0 if not available
+    double  network_hashrate_hps{0.0}; // Phase 2a — from getmininginfo.networkhashps; used by Decentralization Score formula
 };
 
 // One row in the peers table.

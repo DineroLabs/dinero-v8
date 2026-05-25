@@ -1396,6 +1396,29 @@ if(BUILD_TESTING)
     TIMEOUT 10
   )
 
+  add_executable(test_decentralization_score
+    tests/test_decentralization_score.cpp
+    src/nodepoller.cpp
+    src/nodepoller.h
+    src/dashboardtypes.h
+    src/rpcclient.cpp
+    src/rpcclient.h
+  )
+  target_include_directories(test_decentralization_score PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_decentralization_score PRIVATE
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Test
+  )
+  target_compile_definitions(test_decentralization_score PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME DecentralizationScore COMMAND test_decentralization_score)
+  set_tests_properties(DecentralizationScore PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 5
+  )
+
   # ─────────────────────────────────────────────────────────────────────────
   # Qt firewall compile-fail probe (Phase 2 Step 5 of monorepo consolidation)
   # ─────────────────────────────────────────────────────────────────────────
