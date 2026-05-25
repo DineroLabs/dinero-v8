@@ -9,7 +9,7 @@
 ;   makensis /DVERSION=8.0.0-rc3 dinero-server-installer.nsi
 ;
 ; Layout in server-installer-stage/:
-;   dinerod.exe ... etc       6 daemon binaries
+;   dinerod.exe ... etc       7 daemon/operator binaries
 ;   libcurl.dll, libcrypto-3-x64.dll, libssl-3-x64.dll, z.dll  (vcpkg runtime)
 ;   LICENSE
 ;
@@ -139,7 +139,7 @@ Section "Dinero Server (required)" SecCore
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 SectionEnd
 
-LangString DESC_SecCore ${LANG_ENGLISH} "Daemon stack (dinerod + dinero-cli + miners + wallet-cli). Registers dinerod as a Windows Service (auto-start)."
+LangString DESC_SecCore ${LANG_ENGLISH} "Daemon stack (dinerod + dinero-cli + miners + wallet-cli + seeder). Registers dinerod as a Windows Service (auto-start)."
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecCore} $(DESC_SecCore)

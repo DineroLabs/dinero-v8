@@ -2,10 +2,10 @@
 #
 # Output: packaging/windows/dist/dinero-<VERSION>-windows-x86_64-msvc.zip
 # Contents:
-#   bin/                        - 6 daemon binaries
+#   bin/                        - 7 daemon/operator binaries
 #     dinerod.exe, dinero-cli.exe, dinero-miner.exe,
 #     dinero-stratum-worker.exe, dinero-gpu-miner.exe,
-#     dinero-wallet-cli.exe
+#     dinero-wallet-cli.exe, dinero-seeder.exe
 #   LICENSE
 #   README.txt                  - short Windows-MSVC-build notes
 #   SHA256SUMS.txt              - per-file hash manifest
@@ -77,22 +77,37 @@ $Binaries = @(
     'dinero-miner.exe',
     'dinero-stratum-worker.exe',
     'dinero-gpu-miner.exe',
-    'dinero-wallet-cli.exe'
+    'dinero-wallet-cli.exe',
+    'dinero-seeder.exe'
 )
+
+function Resolve-OperatorBinaryPath([string]$BinaryName) {
+    $primary = Join-Path $ReleaseBinDir $BinaryName
+    if (Test-Path $primary) {
+        return $primary
+    }
+    if ($BinaryName -eq 'dinero-seeder.exe') {
+        $seederPath = Join-Path $BuildDir 'seeder\Release\dinero-seeder.exe'
+        if (Test-Path $seederPath) {
+            return $seederPath
+        }
+    }
+    return $primary
+}
 
 $missing = @()
 foreach ($b in $Binaries) {
-    $p = Join-Path $ReleaseBinDir $b
+    $p = Resolve-OperatorBinaryPath $b
     if (-not (Test-Path $p)) { $missing += $b }
 }
 if ($missing.Count -gt 0) {
     Write-Host "ERROR: Missing binaries in ${ReleaseBinDir}:" -ForegroundColor Red
     $missing | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
     Write-Host "Build them with:" -ForegroundColor Red
-    Write-Host "  cmake --build $BuildDir --config Release --target dinerod dinero-cli dinero-miner dinero-stratum-worker dinero-gpu-miner dinero-wallet-cli" -ForegroundColor Yellow
+    Write-Host "  cmake --build $BuildDir --config Release --target dinerod dinero-cli dinero-miner dinero-stratum-worker dinero-gpu-miner dinero-wallet-cli dinero-seeder" -ForegroundColor Yellow
     exit 1
 }
-Write-Host "All 6 daemon binaries found." -ForegroundColor Green
+Write-Host "All 7 daemon/operator binaries found." -ForegroundColor Green
 
 $StageName = "dinero-v$Version-windows-x86_64-msvc"
 $StageDir  = Join-Path $OutputDir $StageName
@@ -106,7 +121,7 @@ New-Item -Path $BinSubDir -ItemType Directory -Force | Out-Null
 
 Write-Host 'Copying binaries...'
 foreach ($b in $Binaries) {
-    $src = Join-Path $ReleaseBinDir $b
+    $src = Resolve-OperatorBinaryPath $b
     $dst = Join-Path $BinSubDir $b
     Copy-Item -Path $src -Destination $dst
     $sz = (Get-Item $dst).Length
@@ -139,6 +154,7 @@ $readmeLines = @(
     "  dinero-stratum-worker.exe  Stratum worker client",
     "  dinero-gpu-miner.exe       GPU miner (OpenCL; runtime unvalidated on Windows)",
     "  dinero-wallet-cli.exe      Reference wallet CLI",
+    "  dinero-seeder.exe          DNS seeder / peer crawler",
     "",
     "Not included:",
     "  dinero-qt                  Qt6 GUI wallet (use the Windows installer)",

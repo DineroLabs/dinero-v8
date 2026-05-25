@@ -98,6 +98,15 @@ mkdir -p "$OPERATOR_STAGE_DIR/bin"
 echo "Copying dinero-qt.app (with embedded dinerod + Qt frameworks)..."
 ditto "$APP_BUNDLE" "$STAGE_DIR/dinero-qt.app"
 
+# Keep the drag-to-Applications install self-contained for advanced
+# network operators. The companion binary remains available at the DMG
+# root too, but embedding it inside the .app lets future Qt UI affordances
+# launch the seeder without requiring users to preserve sidecar files.
+if [[ -x "$BUILD_DIR/seeder/dinero-seeder" && -d "$STAGE_DIR/dinero-qt.app/Contents/MacOS" ]]; then
+    cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-qt.app/Contents/MacOS/dinero-seeder"
+    chmod +x "$STAGE_DIR/dinero-qt.app/Contents/MacOS/dinero-seeder"
+fi
+
 # Embed the standalone daemon stack alongside the .app for users who
 # want the CLI tools without launching the Qt UI. Mirrors what the
 # Linux tarball + Windows installer ship.
