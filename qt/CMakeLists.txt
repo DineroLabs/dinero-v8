@@ -567,6 +567,8 @@ set(GUI_SOURCES
   src/sparklinewidget.h
   src/contributionsection.cpp
   src/contributionsection.h
+  src/discoverysection.cpp
+  src/discoverysection.h
 )
 
 if(APPLE)
@@ -1463,6 +1465,27 @@ if(BUILD_TESTING)
   )
   add_test(NAME ContributionSection COMMAND test_contribution_section)
   set_tests_properties(ContributionSection PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 5
+  )
+
+  add_executable(test_discovery_section
+    tests/test_discovery_section.cpp
+    src/discoverysection.cpp
+    src/discoverysection.h
+    src/dashboardtypes.h
+  )
+  target_link_libraries(test_discovery_section PRIVATE
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Test
+  )
+  target_compile_definitions(test_discovery_section PRIVATE QT_NO_KEYWORDS)
+  target_include_directories(test_discovery_section PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME DiscoverySection COMMAND test_discovery_section)
+  set_tests_properties(DiscoverySection PROPERTIES
     LABELS "qt;dashboard;smoke"
     TIMEOUT 5
   )
