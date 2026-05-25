@@ -75,7 +75,12 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
     connect(poller_, &NodePoller::dynamicP2POverviewUpdated,
             identitySection_, &IdentitySection::onDynamicP2POverviewUpdated);
     connect(poller_, &NodePoller::contributionStatsUpdated,
-            contributionSection_, &ContributionSection::setContributionStats);
+            this, [this](const ContributionStats& stats) {
+        contributionSection_->setContributionStats(stats);
+        contributionSection_->setBytesInSamples(poller_->bytesInBuffer());
+        contributionSection_->setBytesOutSamples(poller_->bytesOutBuffer());
+        contributionSection_->setRelayBytesSamples(poller_->relayBytesBuffer());
+    });
     connect(poller_, &NodePoller::decentralizationScoreUpdated,
             contributionSection_, &ContributionSection::setDecentralizationScore);
 }

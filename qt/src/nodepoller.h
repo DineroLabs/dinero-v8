@@ -45,6 +45,14 @@ public:
     static DecentralizationScore ComputeDecentralizationScore(
         const ScoreInputs& inputs);
 
+    // Phase 2a — sparkline buffer accessors for ContributionSection.
+    // The buffers are mutated only on the polling thread (same as the
+    // UI thread), so a const-ref read after contributionStatsUpdated
+    // fires is race-free.
+    const QVector<qint64>& bytesInBuffer()    const { return bytes_in_buffer_; }
+    const QVector<qint64>& bytesOutBuffer()   const { return bytes_out_buffer_; }
+    const QVector<qint64>& relayBytesBuffer() const { return relay_bytes_buffer_; }
+
     // Start/stop the timer. Start triggers an immediate first poll.
     void start();
     void stop();
