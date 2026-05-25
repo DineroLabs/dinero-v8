@@ -2,18 +2,19 @@
 
 #include "dinero/seeder/wire.h"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <unistd.h>
+// Cross-platform socket headers + helpers (POSIX <-> winsock2). Provides
+// MSG_NOSIGNAL, COMPAT_CLOSE_SOCKET, compat_set_nonblocking, and the
+// compat_sock_* error-code helpers used below.
+#include "compat/net_compat.h"
 
-#include <cerrno>
+#ifndef _WIN32
+// <sys/select.h> + <sys/time.h> are only POSIX-only convenience; on Windows
+// fd_set / timeval / select() are already declared by <winsock2.h> which
+// net_compat.h pulled in above.
+#include <sys/select.h>
+#include <sys/time.h>
+#endif
+
 #include <chrono>
 #include <cstring>
 #include <random>
@@ -32,7 +33,7 @@ class FdGuard {
     int get() const { return fd_; }
     int release() { int f = fd_; fd_ = -1; return f; }
     void reset(int fd = -1) {
-        if (fd_ >= 0) ::close(fd_);
+        if (fd_ >= 0) COMPAT_CLOSE_SOCKET(fd_);
         fd_ = fd;
     }
 
@@ -48,18 +49,17 @@ uint64_t random_nonce() {
 int connect_with_timeout(const sockaddr_in& addr,
                           std::chrono::milliseconds timeout,
                           std::string& err) {
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    int fd = static_cast<int>(::socket(AF_INET, SOCK_STREAM, 0));
     if (fd < 0) {
         err = "socket(): ";
-        err += std::strerror(errno);
+        err += compat_sock_strerror(compat_sock_errno());
         return -1;
     }
 
-    int flags = ::fcntl(fd, F_GETFL, 0);
-    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        err = "fcntl(O_NONBLOCK): ";
-        err += std::strerror(errno);
-        ::close(fd);
+    if (compat_set_nonblocking(fd) < 0) {
+        err = "set non-blocking: ";
+        err += compat_sock_strerror(compat_sock_errno());
+        COMPAT_CLOSE_SOCKET(fd);
         return -1;
     }
 
@@ -67,10 +67,11 @@ int connect_with_timeout(const sockaddr_in& addr,
     if (rc == 0) {
         return fd;  // immediate success (rare)
     }
-    if (rc < 0 && errno != EINPROGRESS) {
+    const int connect_err = compat_sock_errno();
+    if (rc < 0 && !compat_sock_inprogress(connect_err)) {
         err = "connect(): ";
-        err += std::strerror(errno);
-        ::close(fd);
+        err += compat_sock_strerror(connect_err);
+        COMPAT_CLOSE_SOCKET(fd);
         return -1;
     }
 
@@ -78,34 +79,35 @@ int connect_with_timeout(const sockaddr_in& addr,
     FD_ZERO(&wfds);
     FD_SET(fd, &wfds);
     timeval tv{};
-    tv.tv_sec = timeout.count() / 1000;
-    tv.tv_usec = (timeout.count() % 1000) * 1000;
+    tv.tv_sec = static_cast<long>(timeout.count() / 1000);
+    tv.tv_usec = static_cast<long>((timeout.count() % 1000) * 1000);
 
     rc = ::select(fd + 1, nullptr, &wfds, nullptr, &tv);
     if (rc == 0) {
         err = "connect timed out";
-        ::close(fd);
+        COMPAT_CLOSE_SOCKET(fd);
         return -1;
     }
     if (rc < 0) {
         err = "select(): ";
-        err += std::strerror(errno);
-        ::close(fd);
+        err += compat_sock_strerror(compat_sock_errno());
+        COMPAT_CLOSE_SOCKET(fd);
         return -1;
     }
 
     int sockerr = 0;
     socklen_t errlen = sizeof(sockerr);
-    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockerr, &errlen) < 0) {
+    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR,
+                     reinterpret_cast<char*>(&sockerr), &errlen) < 0) {
         err = "getsockopt(SO_ERROR): ";
-        err += std::strerror(errno);
-        ::close(fd);
+        err += compat_sock_strerror(compat_sock_errno());
+        COMPAT_CLOSE_SOCKET(fd);
         return -1;
     }
     if (sockerr != 0) {
         err = "connect rejected: ";
-        err += std::strerror(sockerr);
-        ::close(fd);
+        err += compat_sock_strerror(sockerr);
+        COMPAT_CLOSE_SOCKET(fd);
         return -1;
     }
 
@@ -118,21 +120,26 @@ bool send_all(int fd, const std::vector<uint8_t>& data,
     size_t sent = 0;
     while (sent < data.size()) {
         if (std::chrono::steady_clock::now() >= deadline) return false;
-        ssize_t n = ::send(fd, data.data() + sent, data.size() - sent, 0);
+        ssize_t n = ::send(fd,
+                           reinterpret_cast<const char*>(data.data() + sent),
+                           static_cast<int>(data.size() - sent), 0);
         if (n > 0) {
             sent += static_cast<size_t>(n);
-        } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            continue;
+        }
+        const int sock_err = compat_sock_errno();
+        if (compat_sock_wouldblock(sock_err)) {
             fd_set wfds;
             FD_ZERO(&wfds);
             FD_SET(fd, &wfds);
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                 deadline - std::chrono::steady_clock::now());
             timeval tv{};
-            tv.tv_sec = remaining.count() / 1000;
-            tv.tv_usec = (remaining.count() % 1000) * 1000;
+            tv.tv_sec = static_cast<long>(remaining.count() / 1000);
+            tv.tv_usec = static_cast<long>((remaining.count() % 1000) * 1000);
             int rc = ::select(fd + 1, nullptr, &wfds, nullptr, &tv);
             if (rc <= 0) return false;
-        } else if (n < 0 && errno == EINTR) {
+        } else if (compat_sock_eintr(sock_err)) {
             continue;
         } else {
             return false;
@@ -180,19 +187,21 @@ bool read_until(int fd,
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
         timeval tv{};
-        tv.tv_sec = remaining.count() / 1000;
-        tv.tv_usec = (remaining.count() % 1000) * 1000;
+        tv.tv_sec = static_cast<long>(remaining.count() / 1000);
+        tv.tv_usec = static_cast<long>((remaining.count() % 1000) * 1000);
         int rc = ::select(fd + 1, &rfds, nullptr, nullptr, &tv);
         if (rc < 0) {
-            if (errno == EINTR) continue;
+            if (compat_sock_eintr(compat_sock_errno())) continue;
             return false;
         }
         if (rc == 0) return false;  // timed out
 
-        uint8_t scratch[4096];
+        char scratch[4096];
         ssize_t n = ::recv(fd, scratch, sizeof(scratch), 0);
         if (n <= 0) return false;
-        inbuf.insert(inbuf.end(), scratch, scratch + n);
+        inbuf.insert(inbuf.end(),
+                     reinterpret_cast<uint8_t*>(scratch),
+                     reinterpret_cast<uint8_t*>(scratch) + n);
     }
 }
 
@@ -201,6 +210,10 @@ bool read_until(int fd,
 ProbeResult probe_peer(const std::string& host,
                         uint16_t port,
                         const ProbeConfig& cfg) {
+    // Windows needs WSAStartup before any socket call; no-op on POSIX.
+    // The helper is process-once and idempotent across reentry.
+    compat_net_init_once();
+
     const auto t_start = std::chrono::steady_clock::now();
     ProbeResult result;
 

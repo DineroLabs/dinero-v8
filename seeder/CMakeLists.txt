@@ -65,6 +65,18 @@ target_include_directories(dinero-seeder-lib
         $<INSTALL_INTERFACE:include>
 )
 
+# Monorepo: expose dinero root include/ so seeder sources can pull in the
+# shared cross-platform compat shim (compat/net_compat.h) that maps POSIX
+# socket headers to winsock2 on Windows. Standalone seeder builds outside
+# the dinero monorepo (where this header isn't available) fall back to the
+# POSIX-only includes, which is fine since the standalone use case is
+# Linux-server-only seed crawlers.
+if(EXISTS "${CMAKE_SOURCE_DIR}/include/compat/net_compat.h")
+    target_include_directories(dinero-seeder-lib PRIVATE
+        "${CMAKE_SOURCE_DIR}/include"
+    )
+endif()
+
 target_link_libraries(dinero-seeder-lib
     PUBLIC
         OpenSSL::Crypto
