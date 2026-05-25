@@ -100,10 +100,11 @@ struct ChainInfo {
     qint64  net_consensus_height{0};   // mode of peers' reported heights
     qint64  max_peer_height{0};
     QVector<qint64> peer_heights;      // raw peer heights for histogram
-    quint32 difficulty_compact{0};     // nBits
+    double  difficulty{0.0};           // human-readable network difficulty
     int     mempool_tx_count{0};
     qint64  mempool_bytes{0};
-    qint64  median_fee_una_per_vbyte{0};
+    double  median_fee_una_per_vbyte{0.0};
+    bool    has_median_fee{false};
     double  next_bits_delta_pct{0.0};  // optional; 0 if not available
     double  network_hashrate_hps{0.0}; // Phase 2a — from getmininginfo.networkhashps; used by Decentralization Score formula
 };

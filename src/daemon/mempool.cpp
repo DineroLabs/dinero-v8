@@ -2235,22 +2235,28 @@ Mempool::MempoolStats Mempool::getStats() const {
     stats.total_fees = getTotalFeesLocked();
     
     if (!m_transactions.empty()) {
-        // Calculate average fee rate
+        // Calculate average and median fee rate. Fee rates are denominated in
+        // una/vB; keep this as a raw economic metric for dashboard/RPC callers.
         double total_fee_rate = 0.0;
         double min_fee_rate = std::numeric_limits<double>::max();
         double max_fee_rate = 0.0;
+        std::vector<double> fee_rates;
+        fee_rates.reserve(m_transactions.size());
         
         auto oldest_time = std::chrono::steady_clock::now();
         
         for (const auto& pair : m_transactions) {
             const auto& entry = pair.second;
             total_fee_rate += entry.fee_rate;
+            fee_rates.push_back(entry.fee_rate);
             min_fee_rate = std::min(min_fee_rate, entry.fee_rate);
             max_fee_rate = std::max(max_fee_rate, entry.fee_rate);
             oldest_time = std::min(oldest_time, entry.time);
         }
+        std::sort(fee_rates.begin(), fee_rates.end());
         
         stats.avg_fee_rate = total_fee_rate / stats.tx_count;
+        stats.median_fee_rate = fee_rates[fee_rates.size() / 2];
         stats.min_fee_rate = static_cast<size_t>(min_fee_rate);
         stats.max_fee_rate = static_cast<size_t>(max_fee_rate);
         
