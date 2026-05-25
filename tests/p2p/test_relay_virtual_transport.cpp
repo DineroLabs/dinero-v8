@@ -23,7 +23,10 @@
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
+#include <iomanip>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -62,6 +65,15 @@ std::array<uint8_t, 20> MakeNodeId(uint8_t base) {
         out[i] = static_cast<uint8_t>(base + i);
     }
     return out;
+}
+
+std::string HexNodeId(const std::array<uint8_t, 20>& node_id) {
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (auto b : node_id) {
+        out << std::setw(2) << static_cast<unsigned int>(b);
+    }
+    return out.str();
 }
 
 void CloseTestSocket(int fd) {
@@ -467,6 +479,97 @@ TEST(RelayOrchestrator, OrchestratorIssuesRelayConnectOnMainnet) {
     // One pending connect was queued and one message hit the relay socket.
     EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
     EXPECT_NE(relay.ReceiveMessage(), nullptr);
+}
+
+TEST(RelayHintsDial, RejectsMalformedTargetHex) {
+    P2PManager manager(0);
+
+    const auto result = manager.TryDialRelayHint("abc", std::nullopt, false);
+
+    EXPECT_EQ(result.status,
+              P2PManager::ManualRelayDialResult::Status::InvalidTarget);
+    EXPECT_EQ(result.request_id, 0u);
+}
+
+TEST(RelayHintsDial, ReturnsNoHintForUnknownTarget) {
+    P2PManager manager(0);
+    const auto target = MakeNodeId(0x80);
+
+    const auto result = manager.TryDialRelayHint(HexNodeId(target), std::nullopt, false);
+
+    EXPECT_EQ(result.status, P2PManager::ManualRelayDialResult::Status::NoHint);
+    EXPECT_EQ(result.request_id, 0u);
+}
+
+TEST(RelayHintsDial, DryRunOkRequiresCachedAndConnectedRelay) {
+    P2PManager manager(0);
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    manager.test_install_connected_direct_peer(relay_key, relay.client_fd(),
+                                               true, false, {});
+
+    const auto target = MakeNodeId(0x90);
+    AddRelayHint(manager, target, relay.port());
+
+    const auto result = manager.TryDialRelayHint(HexNodeId(target), std::nullopt, true);
+
+    EXPECT_EQ(result.status, P2PManager::ManualRelayDialResult::Status::DryRunOk);
+    EXPECT_EQ(result.target_node_id_hex, HexNodeId(target));
+    EXPECT_EQ(result.relay_endpoint, relay_key);
+    EXPECT_EQ(result.request_id, 0u);
+    EXPECT_EQ(manager.test_pending_relay_connect_count(), 0u);
+    EXPECT_EQ(relay.ReceiveMessage(), nullptr);
+}
+
+TEST(RelayHintsDial, ExactRelayEndpointMustComeFromCache) {
+    P2PManager manager(0);
+    const auto target = MakeNodeId(0xa0);
+    AddRelayHint(manager, target, 20999);
+
+    const auto result = manager.TryDialRelayHint(
+        HexNodeId(target), std::optional<std::string>{"127.0.0.1:21000"}, true);
+
+    EXPECT_EQ(result.status, P2PManager::ManualRelayDialResult::Status::NoHint);
+    EXPECT_EQ(result.relay_endpoint, "127.0.0.1:21000");
+    EXPECT_EQ(result.request_id, 0u);
+}
+
+TEST(RelayHintsDial, ReportsRelayNotConnectedForCachedHint) {
+    P2PManager manager(0);
+    const auto target = MakeNodeId(0xb0);
+    AddRelayHint(manager, target, 20999);
+
+    const auto result = manager.TryDialRelayHint(HexNodeId(target), std::nullopt, false);
+
+    EXPECT_EQ(result.status,
+              P2PManager::ManualRelayDialResult::Status::RelayNotConnected);
+    EXPECT_EQ(result.relay_endpoint, "127.0.0.1:20999");
+    EXPECT_EQ(result.request_id, 0u);
+}
+
+TEST(RelayHintsDial, SubmittedSendsRelayConnectForCachedConnectedRelay) {
+    P2PManager manager(0);
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    manager.test_install_connected_direct_peer(relay_key, relay.client_fd(),
+                                               true, false, {});
+
+    const auto target = MakeNodeId(0xc0);
+    AddRelayHint(manager, target, relay.port());
+
+    const auto result = manager.TryDialRelayHint(HexNodeId(target), std::nullopt, false);
+
+    EXPECT_EQ(result.status, P2PManager::ManualRelayDialResult::Status::Submitted);
+    EXPECT_EQ(result.relay_endpoint, relay_key);
+    EXPECT_NE(result.request_id, 0u);
+    EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
+
+    auto sent = relay.ReceiveMessage();
+    ASSERT_NE(sent, nullptr);
+    EXPECT_EQ(sent->command, "relaycon");
+    ASSERT_EQ(sent->payload.size(), 28u);
+    EXPECT_TRUE(std::equal(target.begin(), target.end(), sent->payload.begin()));
+    EXPECT_EQ(ReadLE64ForTest(sent->payload, 20), result.request_id);
 }
 
 TEST(RelayOrchestrator, RelayConnectAckLeavesVirtualPeerCreationToCallback) {

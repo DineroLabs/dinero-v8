@@ -9,6 +9,7 @@
 #include "p2p/addr_v2.h"
 
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,26 @@ din::Json DisabledShape() {
     return out;
 }
 
+din::Json Error(int code, const std::string& message) {
+    din::Json out;
+    out["error"]["code"] = code;
+    out["error"]["message"] = message;
+    return out;
+}
+
+const char* DialStatusToString(P2PManager::ManualRelayDialResult::Status status) {
+    using Status = P2PManager::ManualRelayDialResult::Status;
+    switch (status) {
+        case Status::Submitted:         return "submitted";
+        case Status::DryRunOk:          return "dry_run_ok";
+        case Status::AlreadyConnected:  return "already_connected";
+        case Status::NoHint:            return "no_hint";
+        case Status::RelayNotConnected: return "relay_not_connected";
+        case Status::InvalidTarget:     return "invalid_target";
+        default:                        return "unknown";
+    }
+}
+
 }  // namespace
 
 din::Json HandleRelayHintsList(dinero::P2PService* p2p_service) {
@@ -96,6 +117,57 @@ din::Json HandleRelayHintsList(dinero::P2PService* p2p_service) {
         targets.append(target);
     }
     out["targets"] = targets;
+    return out;
+}
+
+din::Json HandleRelayHintsDial(dinero::P2PService* p2p_service,
+                               const din::Json& params) {
+    if (!p2p_service) {
+        return Error(-32000, "P2P service not available");
+    }
+    if (!params.isObject()) {
+        return Error(-8, "relayhints.dial expects an object parameter");
+    }
+    if (!params.isMember("target_node_id_hex") ||
+        !params["target_node_id_hex"].isString()) {
+        return Error(-8, "target_node_id_hex (40-character hex string) required");
+    }
+
+    const std::string target_hex = params["target_node_id_hex"].asString();
+    std::optional<std::string> relay_endpoint;
+    if (params.isMember("relay_endpoint")) {
+        if (!params["relay_endpoint"].isString()) {
+            return Error(-8, "relay_endpoint must be a string when provided");
+        }
+        relay_endpoint = params["relay_endpoint"].asString();
+        if (relay_endpoint->empty()) {
+            return Error(-8, "relay_endpoint must not be empty");
+        }
+    }
+
+    bool dry_run = false;
+    if (params.isMember("dry_run")) {
+        if (!params["dry_run"].isBool()) {
+            return Error(-8, "dry_run must be a boolean when provided");
+        }
+        dry_run = params["dry_run"].asBool();
+    }
+
+    const auto result =
+        p2p_service->get().TryDialRelayHint(target_hex, relay_endpoint, dry_run);
+
+    if (result.status == P2PManager::ManualRelayDialResult::Status::InvalidTarget) {
+        return Error(-8, "target_node_id_hex must be exactly 40 hexadecimal characters");
+    }
+
+    din::Json out;
+    out["rpc_schema"] = "din.rpc.v1";
+    out["target_node_id_hex"] = result.target_node_id_hex;
+    out["relay_endpoint"] = result.relay_endpoint;
+    out["submitted"] =
+        (result.status == P2PManager::ManualRelayDialResult::Status::Submitted);
+    out["request_id"] = static_cast<Json::UInt64>(result.request_id);
+    out["status"] = DialStatusToString(result.status);
     return out;
 }
 

@@ -81,6 +81,28 @@ assert isinstance(d.get('targets'), list), \
 print(f\"PASS: relay_hints.list shape ok — total_targets={d['total_targets']} ttl={d['ttl_seconds']}s max_failures={d['max_failures']}\")
 "
 
+# ─── Assertion 1b: relayhints.dial is registered + object-parameter safe ───
+cli_a relayhints.dial '{"target_node_id_hex":"abc"}' | python3 -c "
+import sys, json
+payload = json.load(sys.stdin)
+err = payload.get('error')
+assert isinstance(err, dict), f'expected error object, got {payload!r}'
+assert err.get('code') == -8, f'expected -8 invalid params, got {err!r}'
+print('PASS: relayhints.dial invalid target returns JSON error shape')
+"
+
+cli_a relayhints.dial \
+    '{"target_node_id_hex":"00112233445566778899aabbccddeeff00112233","dry_run":true}' \
+    | python3 -c "
+import sys, json
+payload = json.load(sys.stdin)
+assert payload.get('rpc_schema') == 'din.rpc.v1', f'rpc_schema wrong: {payload!r}'
+assert payload.get('status') == 'no_hint', f'expected no_hint, got {payload!r}'
+assert payload.get('submitted') is False, f'expected submitted=false, got {payload!r}'
+assert payload.get('request_id') == 0, f'expected request_id=0, got {payload!r}'
+print('PASS: relayhints.dial dry-run unknown target returns no_hint')
+"
+
 # ─── Assertion 2: getnetworkinfo.relay has 24h counter fields (Node A) ──────
 cli_a getnetworkinfo | python3 -c "
 import sys, json
