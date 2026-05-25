@@ -8,6 +8,7 @@
 
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
@@ -24,7 +25,7 @@ namespace dinero::network {
 class Rolling24hCounter {
 public:
     explicit Rolling24hCounter(const ClockSource* clock)
-        : clock_(clock), last_touched_hour_index_(SystemHourIndex()) {}
+        : clock_(clock), last_touched_hour_index_((assert(clock), SystemHourIndex())) {}
 
     void Add(uint64_t delta) {
         const uint64_t hour_index = SystemHourIndex();
@@ -35,7 +36,7 @@ public:
 
     uint64_t Total24h() const {
         const uint64_t hour_index = SystemHourIndex();
-        const_cast<Rolling24hCounter*>(this)->RotateIfHourCrossed(hour_index);
+        RotateIfHourCrossed(hour_index);
         uint64_t total = 0;
         for (auto& b : buckets_) {
             total += b.load(std::memory_order_relaxed);
@@ -53,7 +54,7 @@ private:
         return static_cast<uint64_t>(hrs);
     }
 
-    void RotateIfHourCrossed(uint64_t hour_index) {
+    void RotateIfHourCrossed(uint64_t hour_index) const {
         std::lock_guard<std::mutex> lock(rotation_mutex_);
         if (hour_index == last_touched_hour_index_) return;
         const uint64_t span = hour_index - last_touched_hour_index_;
@@ -69,9 +70,9 @@ private:
     }
 
     const ClockSource* clock_;
-    std::array<std::atomic<uint64_t>, kBuckets> buckets_{};
+    mutable std::array<std::atomic<uint64_t>, kBuckets> buckets_{};
     mutable std::mutex rotation_mutex_;
-    uint64_t last_touched_hour_index_;
+    mutable uint64_t last_touched_hour_index_;
 };
 
 }  // namespace dinero::network
