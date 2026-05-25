@@ -8,10 +8,16 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QMessageBox>
 #include <QRegularExpression>
+#include <QSettings>
+#include <QStandardPaths>
+#include <QTimer>
 
 namespace dinero::qt::dashboard {
 
@@ -45,6 +51,10 @@ QString compact(const QString& s) {
     return s.size() <= 18 ? s : s.left(9) + QStringLiteral("…") + s.right(8);
 }
 
+QString seederOptInKey() {
+    return QStringLiteral("dashboard/seeder_opt_in_v1");
+}
+
 }  // namespace
 
 DashboardActionController::DashboardActionController(
@@ -57,12 +67,23 @@ DashboardActionController::DashboardActionController(
                                      QMessageBox::Yes | QMessageBox::No,
                                      QMessageBox::No) == QMessageBox::Yes;
     };
+    seeder_opted_in_ = QSettings().value(seederOptInKey(), false).toBool();
+    seeder_status_ = seeder_opted_in_ ? tr("Ready") : tr("Off");
     if (rpc_) {
         connect(rpc_, &RpcClient::rpcResult,
                 this, &DashboardActionController::onRpcResult);
         connect(rpc_, &RpcClient::rpcError,
                 this, &DashboardActionController::onRpcError);
+        seeder_status_timer_ = new QTimer(this);
+        seeder_status_timer_->setInterval(5000);
+        connect(seeder_status_timer_, &QTimer::timeout,
+                this, &DashboardActionController::refreshSeederStatus);
+        seeder_status_timer_->start();
+        QTimer::singleShot(0, this, &DashboardActionController::refreshSeederStatus);
     }
+    QTimer::singleShot(0, this, [this]() {
+        emitSeederState();
+    });
 }
 
 bool DashboardActionController::isRelayEndpoint(const QString& endpoint) {
@@ -196,6 +217,48 @@ void DashboardActionController::dialRelayHint(const HintRow& hint) {
         .arg(compact(hint.target_node_id_hex)));
 }
 
+void DashboardActionController::setSeederOptIn(bool enabled) {
+    seeder_opted_in_ = enabled;
+    QSettings().setValue(seederOptInKey(), enabled);
+    if (!enabled && seeder_running_) {
+        stopSeeder();
+        seeder_status_ = tr("Stopping");
+    } else {
+        seeder_status_ = enabled ? (seeder_running_ ? tr("Running") : tr("Ready"))
+                                 : tr("Off");
+    }
+    emitSeederState();
+}
+
+void DashboardActionController::startSeeder() {
+    if (!seeder_opted_in_) {
+        seeder_status_ = tr("Switch to Yes first");
+        emitSeederState();
+        return;
+    }
+    const QString binary = defaultSeederPath();
+    if (binary.isEmpty()) {
+        seeder_status_ = tr("dinero-seeder not found");
+        emitSeederState();
+        return;
+    }
+    dispatchObject(QStringLiteral("seeder.start"), QJsonObject{
+        {QStringLiteral("binary"), binary},
+    });
+    seeder_status_ = tr("Starting");
+    emitSeederState();
+}
+
+void DashboardActionController::stopSeeder() {
+    dispatchObject(QStringLiteral("seeder.stop"), QJsonObject{});
+    seeder_status_ = tr("Stopping");
+    emitSeederState();
+}
+
+void DashboardActionController::refreshSeederStatus() {
+    dispatchObject(QStringLiteral("seeder.status"), QJsonObject{});
+}
+
 bool DashboardActionController::confirm(const QString& title,
                                         const QString& body) const {
     return confirm_callback_ ? confirm_callback_(parent_widget_, title, body)
@@ -214,6 +277,40 @@ void DashboardActionController::dispatchObject(const QString& method,
     if (rpc_) rpc_->callNamed(method, params);
 }
 
+void DashboardActionController::emitSeederState() {
+    Q_EMIT seederStateChanged(seeder_opted_in_, seeder_running_, seeder_status_);
+}
+
+QString DashboardActionController::defaultSeederPath() {
+    const QString app_dir = QCoreApplication::applicationDirPath();
+    QStringList candidates;
+    auto add = [&candidates](const QString& path) {
+        if (path.trimmed().isEmpty()) return;
+        const QFileInfo info(path);
+        if (info.exists() && info.isExecutable()) {
+            const QString abs = info.absoluteFilePath();
+            if (!candidates.contains(abs)) candidates << abs;
+        }
+    };
+
+#if defined(Q_OS_WIN)
+    const QString name = QStringLiteral("dinero-seeder.exe");
+    add(QDir(app_dir).absoluteFilePath(name));
+    add(QDir(app_dir).absoluteFilePath("../" + name));
+#else
+    const QString name = QStringLiteral("dinero-seeder");
+    add(QDir(app_dir).absoluteFilePath(name));
+#if defined(Q_OS_MAC)
+    add(QDir(app_dir).absoluteFilePath("../Resources/" + name));
+    add(QDir(app_dir).absoluteFilePath("../../../../" + name));
+#else
+    add(QDir(app_dir).absoluteFilePath("../" + name));
+#endif
+#endif
+    add(QStandardPaths::findExecutable(name));
+    return candidates.isEmpty() ? QString() : candidates.first();
+}
+
 void DashboardActionController::onRpcResult(const QString& method,
                                             const QJsonValue& result) {
     if (method == QStringLiteral("relayhints.dial")) {
@@ -226,6 +323,19 @@ void DashboardActionController::onRpcResult(const QString& method,
                method == QStringLiteral("disconnectnode") ||
                method == QStringLiteral("setban")) {
         Q_EMIT actionStatusChanged(tr("%1 accepted").arg(method));
+    } else if (method == QStringLiteral("seeder.status") ||
+               method == QStringLiteral("seeder.start") ||
+               method == QStringLiteral("seeder.stop")) {
+        const auto obj = result.toObject();
+        seeder_running_ = obj.value(QStringLiteral("running")).toBool(false);
+        if (method == QStringLiteral("seeder.status")) {
+            seeder_status_ = seeder_running_ ? tr("Running")
+                                             : (seeder_opted_in_ ? tr("Ready") : tr("Off"));
+        } else {
+            seeder_status_ = seeder_running_ ? tr("Running") : tr("Stopped");
+            Q_EMIT actionStatusChanged(tr("%1 accepted").arg(method));
+        }
+        emitSeederState();
     }
 }
 
@@ -234,9 +344,16 @@ void DashboardActionController::onRpcError(const QString& method, int code,
     if (method == QStringLiteral("relayhints.dial") ||
         method == QStringLiteral("addnode") ||
         method == QStringLiteral("disconnectnode") ||
-        method == QStringLiteral("setban")) {
+        method == QStringLiteral("setban") ||
+        method == QStringLiteral("seeder.status") ||
+        method == QStringLiteral("seeder.start") ||
+        method == QStringLiteral("seeder.stop")) {
         Q_EMIT actionStatusChanged(tr("%1 failed (%2): %3")
             .arg(method).arg(code).arg(message));
+        if (method.startsWith(QStringLiteral("seeder."))) {
+            seeder_status_ = tr("Error: %1").arg(message);
+            emitSeederState();
+        }
     }
 }
 

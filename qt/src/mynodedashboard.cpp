@@ -123,6 +123,14 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
             actionController_, &DashboardActionController::copyEndpoint);
     connect(discoverySection_, &DiscoverySection::dialRelayHintRequested,
             actionController_, &DashboardActionController::dialRelayHint);
+    connect(discoverySection_, &DiscoverySection::seederOptInChanged,
+            actionController_, &DashboardActionController::setSeederOptIn);
+    connect(discoverySection_, &DiscoverySection::startSeederRequested,
+            actionController_, &DashboardActionController::startSeeder);
+    connect(discoverySection_, &DiscoverySection::stopSeederRequested,
+            actionController_, &DashboardActionController::stopSeeder);
+    connect(actionController_, &DashboardActionController::seederStateChanged,
+            discoverySection_, &DiscoverySection::setSeederState);
 
     connect(topologySection_, &TopologySection::copyEndpointRequested,
             actionController_, &DashboardActionController::copyEndpoint);

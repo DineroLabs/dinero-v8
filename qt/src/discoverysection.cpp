@@ -10,7 +10,10 @@
 #include <QLabel>
 #include <QMenu>
 #include <QPainter>
+#include <QComboBox>
 #include <QPropertyAnimation>
+#include <QPushButton>
+#include <QSignalBlocker>
 #include <QVariant>
 #include <QVBoxLayout>
 
@@ -136,6 +139,34 @@ DiscoverySection::DiscoverySection(QWidget* parent) : QFrame(parent) {
     f.setBold(true);
     header_label_->setFont(f);
     root->addWidget(header_label_);
+
+    auto* seeder_row = new QHBoxLayout();
+    seeder_row->setSpacing(8);
+    auto* seeder_label = new QLabel(tr("Seed peer discovery"), this);
+    seeder_opt_in_ = new QComboBox(this);
+    seeder_opt_in_->addItem(tr("No"), false);
+    seeder_opt_in_->addItem(tr("Yes"), true);
+    seeder_button_ = new QPushButton(tr("Start Seeder"), this);
+    seeder_button_->setEnabled(false);
+    seeder_status_ = new QLabel(tr("Off"), this);
+    seeder_row->addWidget(seeder_label);
+    seeder_row->addWidget(seeder_opt_in_);
+    seeder_row->addWidget(seeder_button_);
+    seeder_row->addWidget(seeder_status_, 1);
+    root->addLayout(seeder_row);
+
+    QObject::connect(seeder_opt_in_, &QComboBox::currentIndexChanged,
+                     this, [this](int index) {
+        Q_EMIT seederOptInChanged(seeder_opt_in_->itemData(index).toBool());
+    });
+    QObject::connect(seeder_button_, &QPushButton::clicked, this, [this]() {
+        if (seeder_running_) {
+            Q_EMIT stopSeederRequested();
+        } else {
+            Q_EMIT startSeederRequested();
+        }
+    });
+
     rows_layout_ = new QVBoxLayout();
     rows_layout_->setSpacing(2);
     root->addLayout(rows_layout_);
@@ -173,6 +204,25 @@ void DiscoverySection::setHints(const QVector<HintRow>& hints) {
         });
     }
     active_rows_ = next_rows;
+}
+
+void DiscoverySection::setSeederState(bool opted_in, bool running,
+                                      const QString& status) {
+    seeder_running_ = running;
+    if (seeder_opt_in_) {
+        const QSignalBlocker blocker(seeder_opt_in_);
+        seeder_opt_in_->setCurrentIndex(opted_in ? 1 : 0);
+    }
+    if (seeder_button_) {
+        seeder_button_->setText(running ? tr("Stop Seeder")
+                                        : tr("Start Seeder"));
+        seeder_button_->setEnabled(opted_in);
+    }
+    if (seeder_status_) {
+        seeder_status_->setText(status.isEmpty()
+            ? (running ? tr("Running") : tr("Off"))
+            : status);
+    }
 }
 
 QString DiscoverySection::rowKey(const HintRow& r) {
