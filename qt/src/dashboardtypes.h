@@ -45,8 +45,9 @@ struct DynamicP2POverview {
 // in NodePoller — this struct carries only the spot values that are
 // rendered as plain labels.
 struct ContributionStats {
-    int     circuits_active{0};        // # of relay circuits we route
-    int     blocks_served_today{0};    // approx — see Phase 2a note in code
+    qint64  blocks_served_24h{0};      // Phase 2b: getnetworkinfo.relay.blocks_served_24h
+    qint64  bytes_relayed_24h{0};      // Phase 2b: getnetworkinfo.relay.bytes_relayed_24h
+    int     registrants_active{0};     // Phase 2b: getnetworkinfo.relay.registrants_count (was "circuits")
     int     hints_sent{0};             // RELAY_HINTS we've sent since launch
     int     peers_via_gossip{0};       // peers known to us only via gossip (proxy: received_relay)
     qint64  bytes_in_rate{0};          // current 1-sample rate (bytes/sec), for the label
@@ -107,6 +108,19 @@ struct ChainInfo {
     double  network_hashrate_hps{0.0}; // Phase 2a — from getmininginfo.networkhashps; used by Decentralization Score formula
 };
 
+// Phase 2b — one row of the DiscoverySection: a relay-hint cache entry
+// for a specific target node id. (Source-discrimination is parked
+// behind a RELAY_HINTS wire change; for Phase 2b we have endpoint-level
+// data only.)
+struct HintRow {
+    QString target_node_id_hex;   // 40 hex chars
+    QString endpoint;             // "addr:port", or "(no addr)" for malformed
+    QString net;                  // "ipv4" / "ipv6"
+    qint64  age_seconds{0};       // since learned_at
+    int     dial_failures{0};
+    bool    near_eviction{false};
+};
+
 // One row in the peers table.
 struct PeerRow {
     QString addr;                  // "1.2.3.4:20999" or "relay:<id>:<circ>"
@@ -134,6 +148,8 @@ Q_DECLARE_METATYPE(dinero::qt::dashboard::NodeIdentity)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::ChainInfo)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::PeerRow)
 Q_DECLARE_METATYPE(QVector<dinero::qt::dashboard::PeerRow>)
+Q_DECLARE_METATYPE(dinero::qt::dashboard::HintRow)
+Q_DECLARE_METATYPE(QVector<dinero::qt::dashboard::HintRow>)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::DynamicP2POverview)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::ContributionStats)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::DecentralizationScore)
