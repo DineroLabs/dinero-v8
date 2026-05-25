@@ -15,6 +15,7 @@ class NodePoller;
 class IdentitySection;
 class NetworkSection;
 class PeersSection;
+class ContributionSection;
 
 class MyNodeDashboard : public QWidget {
     Q_OBJECT
@@ -31,10 +32,11 @@ public:
     void setLocalMiningProvider(LocalMiningProvider provider);
 
 private:
-    NodePoller*      poller_{nullptr};
-    IdentitySection* identitySection_{nullptr};
-    NetworkSection*  networkSection_{nullptr};
-    PeersSection*    peersSection_{nullptr};
+    NodePoller*          poller_{nullptr};
+    IdentitySection*     identitySection_{nullptr};
+    NetworkSection*      networkSection_{nullptr};
+    PeersSection*        peersSection_{nullptr};
+    ContributionSection* contributionSection_{nullptr};
 
     LocalMiningProvider local_mining_provider_;
 };

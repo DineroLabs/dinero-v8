@@ -4,6 +4,7 @@
 
 #include "mynodedashboard.h"
 
+#include "contributionsection.h"
 #include "identitysection.h"
 #include "networksection.h"
 #include "nodepoller.h"
@@ -28,13 +29,15 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    identitySection_ = new IdentitySection(content);
-    networkSection_  = new NetworkSection(content);
-    peersSection_    = new PeersSection(content);
+    identitySection_     = new IdentitySection(content);
+    networkSection_      = new NetworkSection(content);
+    peersSection_        = new PeersSection(content);
+    contributionSection_ = new ContributionSection(content);
 
     layout->addWidget(identitySection_);
     layout->addWidget(networkSection_);
     layout->addWidget(peersSection_, 1);
+    layout->addWidget(contributionSection_);
 
     scroll->setWidget(content);
     outer->addWidget(scroll);
@@ -71,6 +74,10 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
             identitySection_, &IdentitySection::onDaemonStateChanged);
     connect(poller_, &NodePoller::dynamicP2POverviewUpdated,
             identitySection_, &IdentitySection::onDynamicP2POverviewUpdated);
+    connect(poller_, &NodePoller::contributionStatsUpdated,
+            contributionSection_, &ContributionSection::setContributionStats);
+    connect(poller_, &NodePoller::decentralizationScoreUpdated,
+            contributionSection_, &ContributionSection::setDecentralizationScore);
 }
 
 void MyNodeDashboard::start() { poller_->start(); }
