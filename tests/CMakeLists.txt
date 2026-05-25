@@ -130,6 +130,23 @@ set_tests_properties(RelayRegistryGrace PROPERTIES
   TIMEOUT 5
 )
 
+add_executable(test_rolling_24h_counter
+  tests/network/test_rolling_24h_counter.cpp
+)
+add_dependencies(test_rolling_24h_counter gtest gtest_main)
+target_include_directories(test_rolling_24h_counter BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_rolling_24h_counter PRIVATE
+  GTest::gtest_main
+)
+add_test(NAME RollingCounter24h COMMAND test_rolling_24h_counter)
+set_tests_properties(RollingCounter24h PROPERTIES
+  LABELS "network;smoke"
+  TIMEOUT 10
+)
+
 add_executable(test_ripemd160_core_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/core/crypto/ripemd160.cpp
