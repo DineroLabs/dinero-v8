@@ -10018,4 +10018,16 @@ if(BUILD_TESTING)
     )
 endif()
 
+# ─── relay_hints.list + getnetworkinfo.relay 24h-counter integration test ───
+if(BUILD_TESTING)
+    add_test(NAME RelayHintsListRpc
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/network/test_relay_hints_list_rpc.sh)
+    set_tests_properties(RelayHintsListRpc PROPERTIES
+        ENVIRONMENT
+            "DINEROD=$<TARGET_FILE:dinerod>;DINERO_CLI=$<TARGET_FILE:dinero-cli>"
+        LABELS "network;rpc;dashboard"
+        TIMEOUT 60
+    )
+endif()
+
 # ═══════════════════════════════════════════════════════════════════════════
