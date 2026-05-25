@@ -2192,6 +2192,44 @@ void P2PManager::SendRelayRegistryToNewPeer(PeerInfo* peer) {
     }
 }
 
+// Phase 2b: snapshot the relay-hint table for the relay_hints.list RPC.
+// Acquires relay_hints_mutex_ once to copy the map into value types, then
+// releases before any JSON construction happens.
+P2PManager::RelayHintRpcSnapshot
+P2PManager::SnapshotRelayHintsForRpc() const {
+    RelayHintRpcSnapshot out;
+    out.ttl_seconds =
+        static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(kHintTtl).count());
+    out.max_failures = kHintMaxFailures;
+    const auto now = clock_->SteadyNow();
+    std::lock_guard<std::mutex> lock(relay_hints_mutex_);
+    out.entries.reserve(relay_hints_by_target_.size());
+    for (const auto& [target_hex, records] : relay_hints_by_target_) {
+        RelayHintRpcTarget t;
+        t.target_hex = target_hex;
+        t.endpoints.reserve(records.size());
+        for (const auto& r : records) {
+            RelayHintRpcEndpoint ep;
+            ep.net  = r.net;
+            ep.addr = r.relay_addr;
+            ep.port = r.relay_port;
+            const auto age_raw = std::chrono::duration_cast<std::chrono::seconds>(
+                now - r.learned_at).count();
+            ep.age_seconds = age_raw < 0 ? 0 : static_cast<uint64_t>(age_raw);
+            ep.dial_failures = r.consecutive_dial_failures;
+            const bool age_critical =
+                ep.age_seconds * 10 >= out.ttl_seconds * 8;  // age >= 0.8 * TTL
+            const bool fail_critical =
+                r.consecutive_dial_failures >= kHintMaxFailures - 1;
+            ep.near_eviction = age_critical || fail_critical;
+            t.endpoints.push_back(std::move(ep));
+        }
+        out.entries.push_back(std::move(t));
+    }
+    return out;
+}
+
 void P2PManager::handle_relay_hints(const std::string& peer_address,
                                     const P2PMessage& message) {
     const auto& payload = message.payload;

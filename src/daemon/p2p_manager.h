@@ -616,6 +616,28 @@ public:
     void SendRelayRegisterIfConfigured(PeerInfo* peer);
     void RefreshRelayRegistrations();
 
+    // Phase 2b — value-type snapshot for the relay_hints.list RPC.
+    // Built under relay_hints_mutex_; JSON construction happens with
+    // the lock released to keep the critical section short.
+    struct RelayHintRpcEndpoint {
+        dinero::p2p::NetworkType net;
+        std::vector<uint8_t>     addr;
+        uint16_t                 port{0};
+        uint64_t                 age_seconds{0};
+        int                      dial_failures{0};
+        bool                     near_eviction{false};
+    };
+    struct RelayHintRpcTarget {
+        std::string                          target_hex;
+        std::vector<RelayHintRpcEndpoint>    endpoints;
+    };
+    struct RelayHintRpcSnapshot {
+        std::vector<RelayHintRpcTarget>      entries;
+        uint64_t                             ttl_seconds{0};
+        int                                  max_failures{0};
+    };
+    RelayHintRpcSnapshot SnapshotRelayHintsForRpc() const;
+
 #ifdef DINERO_TEST_BUILD
     void set_plaintext_relay_dev_override_for_tests(bool allowed);
     void set_encrypted_relay_dev_override_for_tests(bool allowed);

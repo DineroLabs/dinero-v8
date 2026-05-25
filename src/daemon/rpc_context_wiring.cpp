@@ -10,6 +10,7 @@
 #include "rpc/methods_mining.h"             // For din::rpc::registerStratumMethodsContext()
 #include "rpc/methods_pool.h"               // Pool accounting RPC (feature-gated)
 #include "rpc/rpc_dynamic_p2p_handlers.h"   // Task 6: dynamic_p2p.observe handler
+#include "rpc/rpc_relay_hints_handlers.h"   // Phase 2b: relay_hints.list handler
 #include "vault/vault_runtime.h"            // Track C: Liquidity Vault runtime owner
 // DISABLED: Payroll feature (experimental)
 // #include "rpc/payroll_rpc.h"     // For WirePayrollRpcContext()
@@ -338,6 +339,16 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
                 return dinero::rpc::HandleDynamicP2PObserve(ctx.p2p.get());
             });
         dinero::g_logger.info("[RPC Context] ✅ dynamic_p2p.observe handler registered");
+
+        // Phase 2b: relay_hints.list — contents of the relay-hint cache as a
+        // structured list. Dashboard polls this every 5s to render the
+        // DiscoverySection freshness bar + stoplight glyph.
+        // Returns empty targets array when cache is empty; never errors.
+        http_server->register_method("relay_hints.list",
+            [&ctx](const Json::Value& /*params*/) -> Json::Value {
+                return dinero::rpc::HandleRelayHintsList(ctx.p2p.get());
+            });
+        dinero::g_logger.info("[RPC Context] ✅ relay_hints.list handler registered");
 
         // Phase E.3.1: CPU stats & resource monitoring (node.getcpustats, node.getresourcepressure, node.getdiskstats)
         RegisterAllRPCMethods(ctx);
