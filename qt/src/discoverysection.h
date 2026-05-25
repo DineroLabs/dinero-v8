@@ -33,6 +33,13 @@ public:
 public Q_SLOTS:
     void setHints(const QVector<HintRow>& hints);
 
+Q_SIGNALS:
+    void copyEndpointRequested(const QString& endpoint);
+    void dialRelayHintRequested(const HintRow& hint);
+
+private Q_SLOTS:
+    void onRowContextMenuRequested(const QPoint& pos);
+
 private:
     QLabel*           header_label_{nullptr};
     QVBoxLayout*      rows_layout_{nullptr};

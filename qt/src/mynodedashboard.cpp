@@ -5,6 +5,7 @@
 #include "mynodedashboard.h"
 
 #include "contributionsection.h"
+#include "dashboardactioncontroller.h"
 #include "discoverysection.h"
 #include "identitysection.h"
 #include "networksection.h"
@@ -37,6 +38,7 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
     contributionSection_ = new ContributionSection(content);
     discoverySection_    = new DiscoverySection(content);
     topologySection_     = new TopologySection(content);
+    actionController_    = new DashboardActionController(rpc, this, this);
 
     layout->addWidget(identitySection_);
     layout->addWidget(networkSection_);
@@ -105,6 +107,33 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
             discoverySection_, &DiscoverySection::setHints);
     connect(poller_, &NodePoller::topologyUpdated,
             topologySection_, &TopologySection::setTopologySnapshot);
+
+    connect(peersSection_, &PeersSection::copyEndpointRequested,
+            actionController_, &DashboardActionController::copyEndpoint);
+    connect(peersSection_, &PeersSection::copyPeerDetailsRequested,
+            actionController_, &DashboardActionController::copyPeerDetails);
+    connect(peersSection_, &PeersSection::disconnectPeerRequested,
+            actionController_, &DashboardActionController::disconnectPeer);
+    connect(peersSection_, &PeersSection::banPeerRequested,
+            actionController_, &DashboardActionController::banPeer);
+    connect(peersSection_, &PeersSection::tryDirectReconnectRequested,
+            actionController_, &DashboardActionController::tryDirectReconnect);
+
+    connect(discoverySection_, &DiscoverySection::copyEndpointRequested,
+            actionController_, &DashboardActionController::copyEndpoint);
+    connect(discoverySection_, &DiscoverySection::dialRelayHintRequested,
+            actionController_, &DashboardActionController::dialRelayHint);
+
+    connect(topologySection_, &TopologySection::copyEndpointRequested,
+            actionController_, &DashboardActionController::copyEndpoint);
+    connect(topologySection_, &TopologySection::disconnectPeerRequested,
+            actionController_, &DashboardActionController::disconnectPeer);
+    connect(topologySection_, &TopologySection::tryDirectReconnectRequested,
+            actionController_, &DashboardActionController::tryDirectReconnect);
+    connect(topologySection_, &TopologySection::banPeerRequested,
+            actionController_, &DashboardActionController::banPeer);
+    connect(topologySection_, &TopologySection::dialRelayHintRequested,
+            actionController_, &DashboardActionController::dialRelayHint);
 }
 
 void MyNodeDashboard::start() { poller_->start(); }

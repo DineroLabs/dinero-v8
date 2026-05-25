@@ -6,11 +6,38 @@
 
 #include <QHeaderView>
 #include <QLabel>
+#include <QMenu>
+#include <QRegularExpression>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
+#include <QVariant>
 
 namespace dinero::qt::dashboard {
+
+namespace {
+
+bool isBannableEndpoint(const QString& endpoint) {
+    if (endpoint.trimmed().startsWith(QStringLiteral("relay:"))) {
+        return false;
+    }
+    QString host = endpoint.trimmed();
+    if (host.startsWith('[')) {
+        const int close = host.indexOf(']');
+        if (close <= 1) return false;
+        host = host.mid(1, close - 1);
+    } else if (host.count(':') == 1) {
+        host = host.left(host.lastIndexOf(':'));
+    }
+    static const QRegularExpression ipv4(
+        QStringLiteral(R"(^(\d{1,3}\.){3}\d{1,3}$)"));
+    static const QRegularExpression ipv6(
+        QStringLiteral(R"(^[0-9a-fA-F:]+$)"));
+    return ipv4.match(host).hasMatch() ||
+           (host.contains(':') && ipv6.match(host).hasMatch());
+}
+
+}  // namespace
 
 PeersSection::PeersSection(QWidget* parent) : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
@@ -31,6 +58,9 @@ PeersSection::PeersSection(QWidget* parent) : QWidget(parent) {
     tree_->header()->setSectionResizeMode(2, QHeaderView::Stretch);
     connect(tree_, &QTreeWidget::itemClicked,
             this, &PeersSection::onRowClicked);
+    tree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tree_, &QTreeWidget::customContextMenuRequested,
+            this, &PeersSection::onContextMenuRequested);
     root->addWidget(tree_, 1);
 }
 
@@ -82,6 +112,7 @@ void PeersSection::populateRow(QTreeWidgetItem* item, const PeerRow& r) {
                                    : QString("%1 ms").arg(r.ping_ms));
 
     item->setData(0, Qt::UserRole + 1, r.addr);
+    item->setData(0, Qt::UserRole + 2, QVariant::fromValue(r));
 }
 
 void PeersSection::populateDetailChild(QTreeWidgetItem* parent,
@@ -119,6 +150,47 @@ void PeersSection::onRowClicked(QTreeWidgetItem* item, int /*column*/) {
         placeholder->setForeground(0, Qt::gray);
         item->setExpanded(true);
     }
+}
+
+void PeersSection::onContextMenuRequested(const QPoint& pos) {
+    auto* item = tree_ ? tree_->itemAt(pos) : nullptr;
+    if (!item) return;
+    if (item->parent()) item = item->parent();
+    const auto peer = item->data(0, Qt::UserRole + 2).value<PeerRow>();
+    if (peer.addr.isEmpty()) return;
+
+    QMenu menu(this);
+    auto* copy_endpoint = menu.addAction(tr("Copy endpoint"));
+    auto* copy_details = menu.addAction(tr("Copy peer details"));
+    menu.addSeparator();
+    auto* reconnect = menu.addAction(tr("Try direct reconnect"));
+    reconnect->setEnabled(!peer.addr.isEmpty() && !isRelayEndpoint(peer.addr));
+    auto* disconnect = menu.addAction(tr("Disconnect peer"));
+    auto* ban_1h = menu.addAction(tr("Ban 1 hour"));
+    auto* ban_24h = menu.addAction(tr("Ban 24 hours"));
+    const bool can_ban = isBannableEndpoint(peer.addr);
+    ban_1h->setEnabled(can_ban);
+    ban_24h->setEnabled(can_ban);
+
+    QAction* chosen = menu.exec(tree_->viewport()->mapToGlobal(pos));
+    if (!chosen) return;
+    if (chosen == copy_endpoint) {
+        Q_EMIT copyEndpointRequested(peer.addr);
+    } else if (chosen == copy_details) {
+        Q_EMIT copyPeerDetailsRequested(peer);
+    } else if (chosen == reconnect) {
+        Q_EMIT tryDirectReconnectRequested(peer.addr);
+    } else if (chosen == disconnect) {
+        Q_EMIT disconnectPeerRequested(peer.addr);
+    } else if (chosen == ban_1h) {
+        Q_EMIT banPeerRequested(peer.addr, 3600);
+    } else if (chosen == ban_24h) {
+        Q_EMIT banPeerRequested(peer.addr, 86400);
+    }
+}
+
+bool PeersSection::isRelayEndpoint(const QString& endpoint) {
+    return endpoint.trimmed().startsWith(QStringLiteral("relay:"));
 }
 
 }  // namespace dinero::qt::dashboard

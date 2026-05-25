@@ -12,6 +12,7 @@ class RpcClient;
 namespace dinero::qt::dashboard {
 
 class NodePoller;
+class DashboardActionController;
 class IdentitySection;
 class NetworkSection;
 class PeersSection;
@@ -41,6 +42,7 @@ private:
     ContributionSection* contributionSection_{nullptr};
     DiscoverySection*    discoverySection_{nullptr};
     TopologySection*     topologySection_{nullptr};
+    DashboardActionController* actionController_{nullptr};
 
     LocalMiningProvider local_mining_provider_;
 };
