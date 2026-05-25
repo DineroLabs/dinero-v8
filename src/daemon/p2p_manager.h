@@ -638,6 +638,32 @@ public:
     };
     RelayHintRpcSnapshot SnapshotRelayHintsForRpc() const;
 
+    // Phase 3: operator-initiated relay dial for MyNodeDashboard peer actions.
+    // This is intentionally constrained to cached RELAY_HINTS entries: callers
+    // may ask us to dial a target_node_id through one of the relays we already
+    // learned from the network, but cannot use the RPC as an arbitrary relay
+    // connect primitive.
+    struct ManualRelayDialResult {
+        enum class Status {
+            Submitted,
+            DryRunOk,
+            AlreadyConnected,
+            NoHint,
+            RelayNotConnected,
+            InvalidTarget,
+        };
+
+        Status status{Status::NoHint};
+        std::string target_node_id_hex;
+        std::string relay_endpoint;
+        uint64_t request_id{0};
+    };
+
+    ManualRelayDialResult TryDialRelayHint(
+        const std::string& target_node_id_hex,
+        const std::optional<std::string>& relay_endpoint,
+        bool dry_run);
+
 #ifdef DINERO_TEST_BUILD
     void set_plaintext_relay_dev_override_for_tests(bool allowed);
     void set_encrypted_relay_dev_override_for_tests(bool allowed);

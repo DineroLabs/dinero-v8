@@ -25,4 +25,11 @@ namespace dinero::rpc {
 // Empty cache returns total_targets:0 + targets:[]. Never errors.
 din::Json HandleRelayHintsList(dinero::P2PService* p2p_service);
 
+// Operator/dashboard action: ask the daemon to open a relay circuit to a
+// target from the cached relay_hints table. The optional relay_endpoint must
+// match an endpoint already returned by relay_hints.list; arbitrary endpoints
+// are deliberately rejected by lookup rather than dialed.
+din::Json HandleRelayHintsDial(dinero::P2PService* p2p_service,
+                               const din::Json& params);
+
 }  // namespace dinero::rpc

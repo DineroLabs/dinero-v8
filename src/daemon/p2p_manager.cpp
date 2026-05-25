@@ -267,6 +267,27 @@ std::string CircuitHex(uint64_t circuit_id) {
     return out.str();
 }
 
+bool DecodeNodeIdHex(const std::string& hex, std::array<uint8_t, 20>* out) {
+    if (!out || hex.size() != 40) {
+        return false;
+    }
+    std::array<uint8_t, 20> decoded{};
+    for (size_t i = 0; i < decoded.size(); ++i) {
+        const unsigned char hi = static_cast<unsigned char>(hex[i * 2]);
+        const unsigned char lo = static_cast<unsigned char>(hex[i * 2 + 1]);
+        if (!std::isxdigit(hi) || !std::isxdigit(lo)) {
+            return false;
+        }
+        unsigned int byte = 0;
+        if (std::sscanf(hex.c_str() + (i * 2), "%2x", &byte) != 1) {
+            return false;
+        }
+        decoded[i] = static_cast<uint8_t>(byte);
+    }
+    *out = decoded;
+    return true;
+}
+
 bool EndsWith(const std::string& value, const std::string& suffix) {
     return value.size() >= suffix.size() &&
            value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
@@ -1711,6 +1732,179 @@ void P2PManager::MaybeReSendRelayHints() {
         std::cout << "[hint] re-sent RELAY_HINTS to "
                   << targets.size() << " peer(s)" << std::endl;
     }
+}
+
+P2PManager::ManualRelayDialResult P2PManager::TryDialRelayHint(
+    const std::string& target_node_id_hex,
+    const std::optional<std::string>& relay_endpoint,
+    bool dry_run) {
+    ManualRelayDialResult result;
+    result.target_node_id_hex = target_node_id_hex;
+
+    std::array<uint8_t, 20> target_node_id{};
+    if (!DecodeNodeIdHex(target_node_id_hex, &target_node_id)) {
+        result.status = ManualRelayDialResult::Status::InvalidTarget;
+        return result;
+    }
+    const std::string target_hex = NodeIdHex(target_node_id);
+    result.target_node_id_hex = target_hex;
+
+    if (node_identity_ &&
+        target_hex == NodeIdHex(node_identity_->get_node_id_bytes())) {
+        result.status = ManualRelayDialResult::Status::AlreadyConnected;
+        return result;
+    }
+
+    std::unordered_set<std::string> connected_peer_addresses;
+    bool already_connected = false;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [peer_key, peer] : connected_peers_) {
+            if (!peer) continue;
+            if (peer->is_connected) {
+                connected_peer_addresses.insert(peer_key);
+            }
+            if (peer->identity_proven && NodeIdHex(peer->their_node_id) == target_hex) {
+                already_connected = true;
+            }
+            if (peer_key.rfind("relay:" + target_hex + ":", 0) == 0) {
+                already_connected = true;
+            }
+        }
+    }
+    if (already_connected) {
+        result.status = ManualRelayDialResult::Status::AlreadyConnected;
+        return result;
+    }
+
+    struct DialableHint {
+        std::string endpoint;
+        std::chrono::steady_clock::time_point learned_at;
+        bool relay_connected{false};
+    };
+
+    auto endpoint_for = [](const RelayHintRecord& h) -> std::optional<std::string> {
+        if (h.net != dinero::p2p::NetworkType::IPV4 ||
+            h.relay_addr.size() != 4 || h.relay_port == 0) {
+            return std::nullopt;
+        }
+        char relay_buf[24];
+        std::snprintf(relay_buf, sizeof(relay_buf), "%u.%u.%u.%u:%u",
+                      h.relay_addr[0], h.relay_addr[1],
+                      h.relay_addr[2], h.relay_addr[3], h.relay_port);
+        return std::string(relay_buf);
+    };
+
+    std::optional<DialableHint> freshest_any;
+    std::optional<DialableHint> freshest_connected;
+    bool exact_endpoint_seen = false;
+    {
+        std::lock_guard<std::mutex> hints_lock(relay_hints_mutex_);
+        auto it = relay_hints_by_target_.find(target_hex);
+        if (it != relay_hints_by_target_.end()) {
+            for (const auto& hint : it->second) {
+                auto ep = endpoint_for(hint);
+                if (!ep) continue;
+                if (relay_endpoint && *relay_endpoint != *ep) {
+                    continue;
+                }
+                exact_endpoint_seen = true;
+                DialableHint candidate{
+                    *ep,
+                    hint.learned_at,
+                    connected_peer_addresses.count(*ep) != 0,
+                };
+                if (!freshest_any || candidate.learned_at > freshest_any->learned_at) {
+                    freshest_any = candidate;
+                }
+                if (candidate.relay_connected &&
+                    (!freshest_connected ||
+                     candidate.learned_at > freshest_connected->learned_at)) {
+                    freshest_connected = candidate;
+                }
+            }
+        }
+    }
+
+    if ((relay_endpoint && !exact_endpoint_seen) ||
+        (!relay_endpoint && !freshest_any)) {
+        result.status = ManualRelayDialResult::Status::NoHint;
+        if (relay_endpoint) result.relay_endpoint = *relay_endpoint;
+        return result;
+    }
+
+    const DialableHint chosen =
+        freshest_connected ? *freshest_connected : *freshest_any;
+    result.relay_endpoint = chosen.endpoint;
+
+    if (!chosen.relay_connected) {
+        result.status = ManualRelayDialResult::Status::RelayNotConnected;
+        return result;
+    }
+
+    if (dry_run) {
+        result.status = ManualRelayDialResult::Status::DryRunOk;
+        return result;
+    }
+
+    const std::string relay_peer_address = chosen.endpoint;
+    auto callback =
+        [this, target_node_id, relay_peer_address, target_hex](
+            bool ok, uint64_t circuit_id, const std::string& msg) {
+            if (!ok || circuit_id == 0) {
+                std::cout << "[P2P] relayhints.dial: dial via "
+                          << relay_peer_address << " to " << target_hex
+                          << " failed: " << msg << std::endl;
+                {
+                    std::lock_guard<std::mutex> hints_lock(relay_hints_mutex_);
+                    auto hit = relay_hints_by_target_.find(target_hex);
+                    if (hit != relay_hints_by_target_.end()) {
+                        for (auto& r : hit->second) {
+                            r.consecutive_dial_failures++;
+                        }
+                    }
+                }
+                return;
+            }
+
+            const std::string virtual_peer_key =
+                install_outbound_virtual_relay_peer(
+                    target_node_id, relay_peer_address, circuit_id);
+            std::shared_ptr<PeerInfo> virtual_peer;
+            {
+                std::lock_guard<std::mutex> lock(peers_mutex_);
+                auto it = connected_peers_.find(virtual_peer_key);
+                if (it != connected_peers_.end()) {
+                    virtual_peer = it->second;
+                }
+            }
+            if (!virtual_peer) return;
+            std::cout << "[P2P] relayhints.dial: opened circuit "
+                      << std::hex << circuit_id << std::dec
+                      << " to " << target_hex << " via "
+                      << relay_peer_address << std::endl;
+            start_peer_handler_thread(std::move(virtual_peer));
+            {
+                std::lock_guard<std::mutex> hints_lock(relay_hints_mutex_);
+                auto hit = relay_hints_by_target_.find(target_hex);
+                if (hit != relay_hints_by_target_.end()) {
+                    for (auto& r : hit->second) {
+                        r.consecutive_dial_failures = 0;
+                    }
+                }
+            }
+        };
+
+    const uint64_t request_id = SendRelayConnect(
+        relay_peer_address, target_node_id, std::move(callback));
+    if (request_id == 0) {
+        result.status = ManualRelayDialResult::Status::RelayNotConnected;
+        return result;
+    }
+
+    result.status = ManualRelayDialResult::Status::Submitted;
+    result.request_id = request_id;
+    return result;
 }
 
 // NAT traversal Phase D-2: relay-aware outbound dialing orchestrator.

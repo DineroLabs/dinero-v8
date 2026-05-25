@@ -350,6 +350,15 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
             });
         dinero::g_logger.info("[RPC Context] ✅ relay_hints.list handler registered");
 
+        // Phase 3: relayhints.dial — dashboard/operator action to submit a
+        // RELAY_CONNECT through a cached hint. The handler refuses arbitrary
+        // relay endpoints; relay_endpoint must match relay_hints.list output.
+        http_server->register_method("relayhints.dial",
+            [&ctx](const Json::Value& params) -> Json::Value {
+                return dinero::rpc::HandleRelayHintsDial(ctx.p2p.get(), params);
+            });
+        dinero::g_logger.info("[RPC Context] ✅ relayhints.dial handler registered");
+
         // Phase E.3.1: CPU stats & resource monitoring (node.getcpustats, node.getresourcepressure, node.getdiskstats)
         RegisterAllRPCMethods(ctx);
         dinero::g_logger.info("[RPC Context] ✅ CPU stats & resource monitoring handlers registered (Phase E.3.1)");
