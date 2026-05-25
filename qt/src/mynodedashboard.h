@@ -17,6 +17,7 @@ class NetworkSection;
 class PeersSection;
 class ContributionSection;
 class DiscoverySection;
+class TopologySection;
 
 class MyNodeDashboard : public QWidget {
     Q_OBJECT
@@ -39,6 +40,7 @@ private:
     PeersSection*        peersSection_{nullptr};
     ContributionSection* contributionSection_{nullptr};
     DiscoverySection*    discoverySection_{nullptr};
+    TopologySection*     topologySection_{nullptr};
 
     LocalMiningProvider local_mining_provider_;
 };

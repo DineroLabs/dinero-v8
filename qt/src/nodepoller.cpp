@@ -7,6 +7,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QSet>
 
 #include <algorithm>
 #include <cmath>
@@ -33,6 +34,37 @@ QString scoreLabel(double total) {
 double linearCap(double value, double cap_at_one) {
     if (cap_at_one <= 0.0) return 0.0;
     return std::min(1.0, std::max(0.0, value / cap_at_one));
+}
+
+QString peerBucket(int quality_score) {
+    if (quality_score < 0) return {};
+    if (quality_score >= 70) return QStringLiteral("hot");
+    if (quality_score >= 40) return QStringLiteral("warm");
+    return QStringLiteral("demote");
+}
+
+QString compactNodeId(const QString& hex) {
+    if (hex.isEmpty()) return QStringLiteral("unknown");
+    if (hex.size() <= 12) return hex;
+    return hex.left(6) + QStringLiteral("…") + hex.right(4);
+}
+
+QString labelForPeer(const PeerRow& peer) {
+    if (!peer.fleet_name.isEmpty()) return peer.fleet_name;
+    if (peer.via_relay) return QStringLiteral("relay peer");
+    return peer.addr;
+}
+
+QString relayEndpointFromVirtualAddr(const QString& addr) {
+    static const QString prefix = QStringLiteral("relay:in:");
+    if (!addr.startsWith(prefix)) return {};
+    QString body = addr.mid(prefix.size());
+    if (body.endsWith(QStringLiteral(":0"))) {
+        body.chop(2);
+    }
+    const int circuit_sep = body.lastIndexOf(':');
+    if (circuit_sep <= 0) return {};
+    return body.left(circuit_sep);
 }
 }  // namespace
 
@@ -105,6 +137,90 @@ QVector<HintRow> NodePoller::ParseRelayHintsList(const QJsonObject& response) {
         }
     }
     return out;
+}
+
+// static
+TopologySnapshot NodePoller::BuildTopologySnapshot(
+        const NodeIdentity& identity,
+        const QVector<PeerRow>& peers,
+        const QVector<HintRow>& hints,
+        const DynamicP2POverview& /*overview*/) {
+    TopologySnapshot snapshot;
+
+    TopologyNode self;
+    self.id = QStringLiteral("self");
+    self.label = identity.node_id_hex.isEmpty()
+        ? QStringLiteral("This node")
+        : QStringLiteral("This node · %1").arg(compactNodeId(identity.node_id_hex));
+    self.endpoint = identity.local_addr.isEmpty()
+        ? (identity.local_port > 0
+              ? QStringLiteral(":%1").arg(identity.local_port)
+              : QString{})
+        : QStringLiteral("%1:%2").arg(identity.local_addr).arg(identity.local_port);
+    self.kind = QStringLiteral("self");
+    self.connected = true;
+    snapshot.nodes.push_back(self);
+
+    QSet<QString> hint_target_nodes;
+    for (const auto& peer : peers) {
+        TopologyNode node;
+        node.id = QStringLiteral("peer:%1").arg(peer.addr);
+        node.label = labelForPeer(peer);
+        node.endpoint = peer.addr;
+        node.kind = peer.via_relay
+            ? QStringLiteral("relay_virtual")
+            : (peer.fleet_name.isEmpty() ? QStringLiteral("direct")
+                                         : QStringLiteral("fleet"));
+        node.bucket = peerBucket(peer.quality_score);
+        node.quality_score = peer.quality_score;
+        node.connected = true;
+        snapshot.nodes.push_back(node);
+
+        TopologyEdge edge;
+        edge.from_id = QStringLiteral("self");
+        edge.to_id = node.id;
+        edge.kind = peer.via_relay ? QStringLiteral("relay_virtual")
+                                   : QStringLiteral("direct");
+        edge.via_relay = peer.relay_via_addr.isEmpty()
+            ? relayEndpointFromVirtualAddr(peer.addr)
+            : peer.relay_via_addr;
+        snapshot.edges.push_back(edge);
+    }
+
+    QVector<HintRow> sorted_hints = hints;
+    std::sort(sorted_hints.begin(), sorted_hints.end(),
+              [](const HintRow& a, const HintRow& b) {
+        if (a.target_node_id_hex != b.target_node_id_hex) {
+            return a.target_node_id_hex < b.target_node_id_hex;
+        }
+        return a.endpoint < b.endpoint;
+    });
+    for (const auto& hint : sorted_hints) {
+        if (hint.target_node_id_hex.isEmpty()) continue;
+        const QString node_id = QStringLiteral("hint:%1").arg(hint.target_node_id_hex);
+        if (!hint_target_nodes.contains(node_id)) {
+            TopologyNode node;
+            node.id = node_id;
+            node.label = QStringLiteral("hint %1")
+                .arg(compactNodeId(hint.target_node_id_hex));
+            node.endpoint = hint.endpoint;
+            node.kind = QStringLiteral("hint");
+            node.bucket = QStringLiteral("relay_candidate");
+            node.quality_score = -1;
+            node.connected = false;
+            snapshot.nodes.push_back(node);
+            hint_target_nodes.insert(node_id);
+        }
+
+        TopologyEdge edge;
+        edge.from_id = QStringLiteral("self");
+        edge.to_id = node_id;
+        edge.kind = QStringLiteral("hint");
+        edge.via_relay = hint.endpoint;
+        snapshot.edges.push_back(edge);
+    }
+
+    return snapshot;
 }
 
 void NodePoller::pushSparklineSample(QVector<qint64>* buf, qint64 sample) {
@@ -251,8 +367,7 @@ void NodePoller::onRpcResponse(const QString& method,
     else if (method == "getmempoolinfo")    parseMempool(result);
     else if (method == "mining.status")     parseMining(result);
     else if (method == "dynamic_p2p.observe") parseDynamicP2POverview(result);
-    else if (method == "relay_hints.list")
-        Q_EMIT hintsUpdated(ParseRelayHintsList(result.toObject()));
+    else if (method == "relay_hints.list")  parseHints(result);
 }
 
 void NodePoller::parseNetworkInfo(const QJsonValue& result) {
@@ -315,6 +430,7 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
 
     Q_EMIT identityUpdated(pending_identity_);
     emitContributionAndScore();
+    emitTopologySnapshot();
 }
 
 void NodePoller::parseChainInfo(const QJsonValue& result) {
@@ -344,6 +460,7 @@ void NodePoller::parsePeers(const QJsonValue& result) {
         PeerRow r;
         r.addr             = p.value("addr").toString();
         r.via_relay        = r.addr.startsWith("relay:");
+        r.relay_via_addr   = p.value("relay_via_addr").toString();
         r.is_inbound       = p.value("inbound").toBool();
         r.fleet_name       = fleetNameFor(r.addr);
         r.height           = static_cast<qint64>(
@@ -390,6 +507,7 @@ void NodePoller::parsePeers(const QJsonValue& result) {
     }
 
     Q_EMIT peersUpdated(pending_peers_);
+    emitTopologySnapshot();
 
     // Phase 2a: accumulate bytes for sparkline + per-tick rate stats.
     qint64 cur_sent_total = 0;
@@ -465,7 +583,15 @@ void NodePoller::parseDynamicP2POverview(const QJsonValue& result) {
             governor.value("relay_registration_candidates").toArray().size();
         o.demote_candidates  = governor.value("demote_candidates").toArray().size();
     }
+    pending_dynamic_p2p_ = o;
     Q_EMIT dynamicP2POverviewUpdated(o);
+    emitTopologySnapshot();
+}
+
+void NodePoller::parseHints(const QJsonValue& result) {
+    pending_hints_ = ParseRelayHintsList(result.toObject());
+    Q_EMIT hintsUpdated(pending_hints_);
+    emitTopologySnapshot();
 }
 
 void NodePoller::noteFailure() {
@@ -484,6 +610,12 @@ void NodePoller::noteSuccess() {
         setIntervalMs(5000);
         Q_EMIT daemonStateChanged(true);
     }
+}
+
+void NodePoller::emitTopologySnapshot() {
+    Q_EMIT topologyUpdated(
+        BuildTopologySnapshot(pending_identity_, pending_peers_,
+                              pending_hints_, pending_dynamic_p2p_));
 }
 
 }  // namespace dinero::qt::dashboard

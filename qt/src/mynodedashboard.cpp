@@ -10,6 +10,7 @@
 #include "networksection.h"
 #include "nodepoller.h"
 #include "peerssection.h"
+#include "topologysection.h"
 
 #include <QScrollArea>
 #include <QVBoxLayout>
@@ -35,12 +36,14 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
     peersSection_        = new PeersSection(content);
     contributionSection_ = new ContributionSection(content);
     discoverySection_    = new DiscoverySection(content);
+    topologySection_     = new TopologySection(content);
 
     layout->addWidget(identitySection_);
     layout->addWidget(networkSection_);
     layout->addWidget(peersSection_, 1);
     layout->addWidget(contributionSection_);
     layout->addWidget(discoverySection_);
+    layout->addWidget(topologySection_);
 
     scroll->setWidget(content);
     outer->addWidget(scroll);
@@ -100,6 +103,8 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
             contributionSection_, &ContributionSection::setDecentralizationScore);
     connect(poller_, &NodePoller::hintsUpdated,
             discoverySection_, &DiscoverySection::setHints);
+    connect(poller_, &NodePoller::topologyUpdated,
+            topologySection_, &TopologySection::setTopologySnapshot);
 }
 
 void MyNodeDashboard::start() { poller_->start(); }

@@ -49,6 +49,12 @@ public:
     // Phase 2b — pure parser, exposed for unit tests.
     static QVector<HintRow> ParseRelayHintsList(const QJsonObject& response);
 
+    // Phase 3 — pure topology builder, exposed for unit tests.
+    static TopologySnapshot BuildTopologySnapshot(const NodeIdentity& identity,
+                                                  const QVector<PeerRow>& peers,
+                                                  const QVector<HintRow>& hints,
+                                                  const DynamicP2POverview& overview);
+
     // Phase 2a — sparkline buffer accessors for ContributionSection.
     // The buffers are mutated only on the polling thread (same as the
     // UI thread), so a const-ref read after contributionStatsUpdated
@@ -82,6 +88,7 @@ Q_SIGNALS:
     void contributionStatsUpdated(const ContributionStats& stats);
     void decentralizationScoreUpdated(const DecentralizationScore& score);
     void hintsUpdated(const QVector<HintRow>& hints);
+    void topologyUpdated(const TopologySnapshot& snapshot);
 
 public Q_SLOTS:
     // Public so tests can feed canned responses without a real RpcClient.
@@ -102,6 +109,8 @@ private:
     NodeIdentity pending_identity_;
     ChainInfo    pending_chain_;
     QVector<PeerRow> pending_peers_;
+    QVector<HintRow> pending_hints_;
+    DynamicP2POverview pending_dynamic_p2p_;
 
     // Daemon-reachable state machine. degraded == 3 consecutive RPC
     // failures.
@@ -154,10 +163,12 @@ private:
     void parseDynamicP2POverview(const QJsonValue& result);
     void parseMempool(const QJsonValue& result);
     void parseMining(const QJsonValue& result);
+    void parseHints(const QJsonValue& result);
     void noteFailure();
     void noteSuccess();
     void pushSparklineSample(QVector<qint64>* buf, qint64 sample);
     void emitContributionAndScore();
+    void emitTopologySnapshot();
 };
 
 }  // namespace dinero::qt::dashboard
