@@ -6,10 +6,13 @@
 
 #include "sparklinewidget.h"
 
+#include <QEvent>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QHelpEvent>
 #include <QLabel>
+#include <QToolTip>
 #include <QVBoxLayout>
 
 namespace dinero::qt::dashboard {
@@ -50,6 +53,20 @@ ContributionSection::ContributionSection(QWidget* parent)
     out_rate_label_   = new QLabel(QStringLiteral("—"));
     relay_rate_label_ = new QLabel(QStringLiteral("—"));
 
+    // Phase 2b — install tooltip providers on each sparkline.
+    spark_in_->setTooltipProvider([this]() {
+        return formatSparklineTooltip(tr("Bytes in"),
+            cached_5min_in_, cached_1hr_in_, cached_24hr_in_);
+    });
+    spark_out_->setTooltipProvider([this]() {
+        return formatSparklineTooltip(tr("Bytes out"),
+            cached_5min_out_, cached_1hr_out_, cached_24hr_out_);
+    });
+    spark_relay_->setTooltipProvider([this]() {
+        return formatSparklineTooltip(tr("Relay traffic"),
+            cached_5min_relay_, cached_1hr_relay_, cached_24hr_relay_);
+    });
+
     spark_grid->addWidget(new QLabel(tr("Bytes in")),         0, 0);
     spark_grid->addWidget(spark_in_,                          0, 1);
     spark_grid->addWidget(in_rate_label_,                     0, 2);
@@ -71,9 +88,9 @@ ContributionSection::ContributionSection(QWidget* parent)
     hints_sent_value_       = new QLabel(QStringLiteral("0"));
     peers_via_gossip_value_ = new QLabel(QStringLiteral("0"));
 
-    stat_grid->addWidget(new QLabel(tr("Circuits active:")),    0, 0);
+    stat_grid->addWidget(new QLabel(tr("Registrants active:")), 0, 0);
     stat_grid->addWidget(circuits_value_,                       0, 1);
-    stat_grid->addWidget(new QLabel(tr("Blocks served today:")), 0, 2);
+    stat_grid->addWidget(new QLabel(tr("Blocks served (24h):")), 0, 2);
     stat_grid->addWidget(blocks_served_value_,                  0, 3);
     stat_grid->addWidget(new QLabel(tr("Hints sent:")),         1, 0);
     stat_grid->addWidget(hints_sent_value_,                     1, 1);
@@ -91,6 +108,8 @@ ContributionSection::ContributionSection(QWidget* parent)
     QFont score_font = score_total_label_->font();
     score_font.setBold(true);
     score_total_label_->setFont(score_font);
+    score_total_label_->installEventFilter(this);
+    score_total_label_->setMouseTracking(true);
     score_row->addWidget(score_caption);
     score_row->addWidget(score_total_label_);
     score_row->addWidget(score_phrase_label_, 1);
@@ -98,8 +117,8 @@ ContributionSection::ContributionSection(QWidget* parent)
 }
 
 void ContributionSection::setContributionStats(const ContributionStats& stats) {
-    circuits_value_->setText(QString::number(stats.circuits_active));
-    blocks_served_value_->setText(QString::number(stats.blocks_served_today));
+    circuits_value_->setText(QString::number(stats.registrants_active));
+    blocks_served_value_->setText(QString::number(stats.blocks_served_24h));
     hints_sent_value_->setText(QString::number(stats.hints_sent));
     peers_via_gossip_value_->setText(QString::number(stats.peers_via_gossip));
     in_rate_label_->setText(formatBytesPerSec(stats.bytes_in_rate));
@@ -109,6 +128,7 @@ void ContributionSection::setContributionStats(const ContributionStats& stats) {
 
 void ContributionSection::setDecentralizationScore(
         const DecentralizationScore& score) {
+    last_score_ = score;
     score_total_label_->setText(
         QStringLiteral("%1 / 10").arg(score.total, 0, 'f', 1));
     score_phrase_label_->setText(score.label);
@@ -124,12 +144,93 @@ void ContributionSection::setRelayBytesSamples(const QVector<qint64>& s) {
     spark_relay_->setSamples(s);
 }
 
+void ContributionSection::setBytesInLongWindows(qint64 v5min, qint64 v1hr, qint64 v24hr) {
+    cached_5min_in_ = v5min;  cached_1hr_in_ = v1hr;  cached_24hr_in_ = v24hr;
+}
+void ContributionSection::setBytesOutLongWindows(qint64 v5min, qint64 v1hr, qint64 v24hr) {
+    cached_5min_out_ = v5min;  cached_1hr_out_ = v1hr;  cached_24hr_out_ = v24hr;
+}
+void ContributionSection::setRelayBytesLongWindows(qint64 v5min, qint64 v1hr, qint64 v24hr) {
+    cached_5min_relay_ = v5min;  cached_1hr_relay_ = v1hr;  cached_24hr_relay_ = v24hr;
+}
+
 QString ContributionSection::formatBytesPerSec(qint64 bytes_per_5s) {
     // Per-tick byte delta is over the 5s poll interval; divide to get B/s.
     const double bps = static_cast<double>(bytes_per_5s) / 5.0;
     if (bps < 1024.0)         return QStringLiteral("%1 B/s").arg(bps, 0, 'f', 0);
     if (bps < 1024.0 * 1024.0) return QStringLiteral("%1 KB/s").arg(bps / 1024.0, 0, 'f', 1);
     return QStringLiteral("%1 MB/s").arg(bps / (1024.0 * 1024.0), 0, 'f', 1);
+}
+
+bool ContributionSection::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == score_total_label_ && event->type() == QEvent::ToolTip) {
+        auto* help = static_cast<QHelpEvent*>(event);
+        QToolTip::showText(help->globalPos(),
+                           buildScoreTooltipHtml(last_score_),
+                           score_total_label_);
+        return true;
+    }
+    return QFrame::eventFilter(watched, event);
+}
+
+QString ContributionSection::formatSparklineTooltip(const QString& title,
+        qint64 v5min, qint64 v1hr, qint64 v24hr) {
+    // Each window buffer stores byte deltas over its accumulation unit:
+    //   5min buffer: average of 60 × 5s-deltas  → divide by 5   for B/s
+    //   1hr  buffer: average of 60 × 60s-sums   → divide by 60  for B/s
+    //   24hr buffer: average of 24 × 3600s-sums → divide by 3600 for B/s
+    auto fmtRate = [](double bps) {
+        if (bps < 1024.0)             return QStringLiteral("%1 B/s").arg(bps, 0, 'f', 0);
+        if (bps < 1024.0 * 1024.0)   return QStringLiteral("%1 KB/s").arg(bps / 1024.0, 0, 'f', 1);
+        return QStringLiteral("%1 MB/s").arg(bps / (1024.0 * 1024.0), 0, 'f', 1);
+    };
+    return QStringLiteral(
+        "<html><body><b>%1</b><br>"
+        "5min avg: %2<br>1hr avg: %3<br>24hr avg: %4"
+        "</body></html>")
+        .arg(title)
+        .arg(fmtRate(double(v5min) / 5.0))
+        .arg(fmtRate(double(v1hr) / 60.0))
+        .arg(fmtRate(double(v24hr) / 3600.0));
+}
+
+QString ContributionSection::buildScoreTooltipHtml(
+        const DecentralizationScore& s) {
+    auto hint = [](double v, double cap, const QString& better) {
+        return v >= cap ? QStringLiteral("✓") : better;
+    };
+    return QStringLiteral(
+        "<html><body><b>Decentralization breakdown</b><br>"
+        "<table cellspacing='4'>"
+        "<tr><td>Reachable</td><td>%1 / 1.0</td><td>%2</td></tr>"
+        "<tr><td>Relay active</td><td>%3 / 2.0</td><td>%4</td></tr>"
+        "<tr><td>Uptime</td><td>%5 / 1.5</td><td>%6</td></tr>"
+        "<tr><td>Peer diversity</td><td>%7 / 1.5</td><td>%8</td></tr>"
+        "<tr><td>Traffic</td><td>%9 / 1.0</td><td>%10</td></tr>"
+        "<tr><td>Mining</td><td>%11 / 1.5</td><td>%12</td></tr>"
+        "<tr><td>Gossip reach</td><td>%13 / 1.5</td><td>%14</td></tr>"
+        "</table></body></html>")
+        .arg(s.breakdown.reachable, 0, 'f', 1)
+        .arg(hint(s.breakdown.reachable, 1.0,
+                  QStringLiteral("Open port 20999 inbound")))
+        .arg(s.breakdown.relay_active, 0, 'f', 1)
+        .arg(hint(s.breakdown.relay_active, 2.0,
+                  QStringLiteral("Enable relay mode")))
+        .arg(s.breakdown.uptime, 0, 'f', 2)
+        .arg(hint(s.breakdown.uptime, 1.5,
+                  QStringLiteral("Keep running (30d = full)")))
+        .arg(s.breakdown.peer_diversity, 0, 'f', 2)
+        .arg(hint(s.breakdown.peer_diversity, 1.5,
+                  QStringLiteral("Connect to more /16 subnets")))
+        .arg(s.breakdown.traffic, 0, 'f', 2)
+        .arg(hint(s.breakdown.traffic, 1.0,
+                  QStringLiteral("Become a relay to carry more traffic")))
+        .arg(s.breakdown.mining, 0, 'f', 2)
+        .arg(hint(s.breakdown.mining, 1.5,
+                  QStringLiteral("Mine if you can")))
+        .arg(s.breakdown.gossip_reach, 0, 'f', 2)
+        .arg(hint(s.breakdown.gossip_reach, 1.5,
+                  QStringLiteral("Peers will discover you via gossip")));
 }
 
 }  // namespace dinero::qt::dashboard

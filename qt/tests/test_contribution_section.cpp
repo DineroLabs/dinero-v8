@@ -23,8 +23,8 @@ private Q_SLOTS:
     void stats_update_propagates_to_labels() {
         ContributionSection w;
         ContributionStats s;
-        s.circuits_active     = 3;
-        s.blocks_served_today = 42;
+        s.registrants_active  = 3;
+        s.blocks_served_24h   = 42;
         s.hints_sent          = 7;
         s.peers_via_gossip    = 11;
         s.bytes_in_rate       = 5120;   // ~1 KB/s after /5

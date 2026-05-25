@@ -4,8 +4,11 @@
 
 #include "sparklinewidget.h"
 
+#include <QEvent>
+#include <QHelpEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QToolTip>
 
 #include <algorithm>
 
@@ -29,6 +32,20 @@ QSize SparklineWidget::sizeHint() const {
 void SparklineWidget::setSamples(const QVector<qint64>& samples) {
     samples_ = samples;
     update();
+}
+
+void SparklineWidget::setTooltipProvider(std::function<QString()> provider) {
+    tooltip_provider_ = std::move(provider);
+    setMouseTracking(true);
+}
+
+bool SparklineWidget::event(QEvent* event) {
+    if (event->type() == QEvent::ToolTip && tooltip_provider_) {
+        auto* help = static_cast<QHelpEvent*>(event);
+        QToolTip::showText(help->globalPos(), tooltip_provider_(), this);
+        return true;
+    }
+    return QWidget::event(event);
 }
 
 void SparklineWidget::paintEvent(QPaintEvent* /*event*/) {
