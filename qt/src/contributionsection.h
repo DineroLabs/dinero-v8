@@ -10,6 +10,7 @@
 #include <QFrame>
 #include <QVector>
 
+class QEvent;
 class QLabel;
 
 namespace dinero::qt::dashboard {
@@ -49,7 +50,13 @@ private:
     QLabel* score_total_label_{nullptr};
     QLabel* score_phrase_label_{nullptr};
 
+    DecentralizationScore last_score_{};   // cached for the tooltip
+
     static QString formatBytesPerSec(qint64 bytes_per_5s);
+    static QString buildScoreTooltipHtml(const DecentralizationScore& s);
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
 };
 
 }  // namespace dinero::qt::dashboard
