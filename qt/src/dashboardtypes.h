@@ -41,6 +41,36 @@ struct DynamicP2POverview {
     int     connected_outbound{0};
 };
 
+// Per-tick contribution snapshot. Sparkline buffers (rolling 5-min) live
+// in NodePoller — this struct carries only the spot values that are
+// rendered as plain labels.
+struct ContributionStats {
+    int     circuits_active{0};        // # of relay circuits we route
+    int     blocks_served_today{0};    // approx — see Phase 2a note in code
+    int     hints_sent{0};             // RELAY_HINTS we've sent since launch
+    int     peers_via_gossip{0};       // peers known to us only via gossip (proxy: received_relay)
+    qint64  bytes_in_rate{0};          // current 1-sample rate (bytes/sec), for the label
+    qint64  bytes_out_rate{0};
+    qint64  relay_bytes_rate{0};
+};
+
+// Decentralization score (0.0–10.0) computed from observable signals.
+// `breakdown` carries each weighted component so the tooltip can show the
+// formula attribution. `label` is the plain-English bucket from the spec.
+struct DecentralizationScore {
+    double  total{0.0};                 // clamp(0, 10) of the weighted sum
+    QString label;                      // "just observing" / "consuming responsibly" / etc.
+    struct {
+        double reachable{0.0};          // 0 or 1.0
+        double relay_active{0.0};       // 0 or 2.0
+        double uptime{0.0};             // 0..1.5
+        double peer_diversity{0.0};     // 0..1.5
+        double traffic{0.0};            // 0..1.0
+        double mining{0.0};             // 0..1.5
+        double gossip_reach{0.0};       // 0..1.5
+    } breakdown;
+};
+
 // What we know about THIS node. Populated from getnetworkinfo +
 // getrelayinfo + getmininginfo + getuptime.
 struct NodeIdentity {
@@ -74,6 +104,7 @@ struct ChainInfo {
     qint64  mempool_bytes{0};
     qint64  median_fee_una_per_vbyte{0};
     double  next_bits_delta_pct{0.0};  // optional; 0 if not available
+    double  network_hashrate_hps{0.0}; // Phase 2a — from getmininginfo.networkhashps; used by Decentralization Score formula
 };
 
 // One row in the peers table.
@@ -104,3 +135,5 @@ Q_DECLARE_METATYPE(dinero::qt::dashboard::ChainInfo)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::PeerRow)
 Q_DECLARE_METATYPE(QVector<dinero::qt::dashboard::PeerRow>)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::DynamicP2POverview)
+Q_DECLARE_METATYPE(dinero::qt::dashboard::ContributionStats)
+Q_DECLARE_METATYPE(dinero::qt::dashboard::DecentralizationScore)

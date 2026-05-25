@@ -563,6 +563,10 @@ set(GUI_SOURCES
   src/mynodedashboard.h
   src/cmdkpanel.cpp
   src/cmdkpanel.h
+  src/sparklinewidget.cpp
+  src/sparklinewidget.h
+  src/contributionsection.cpp
+  src/contributionsection.h
 )
 
 if(APPLE)
@@ -1374,6 +1378,71 @@ if(BUILD_TESTING)
 
   target_compile_definitions(test_peers_section PRIVATE QT_NO_KEYWORDS)
   add_test(NAME PeersSection COMMAND test_peers_section)
+
+  add_executable(test_sparkline_widget
+    tests/test_sparkline_widget.cpp
+    src/sparklinewidget.cpp
+    src/sparklinewidget.h
+  )
+  target_include_directories(test_sparkline_widget PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_sparkline_widget PRIVATE
+    Qt6::Widgets
+    Qt6::Test
+  )
+  target_compile_definitions(test_sparkline_widget PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME SparklineWidget COMMAND test_sparkline_widget)
+  set_tests_properties(SparklineWidget PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 10
+  )
+
+  add_executable(test_decentralization_score
+    tests/test_decentralization_score.cpp
+    src/nodepoller.cpp
+    src/nodepoller.h
+    src/dashboardtypes.h
+    src/rpcclient.cpp
+    src/rpcclient.h
+  )
+  target_include_directories(test_decentralization_score PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_decentralization_score PRIVATE
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Test
+  )
+  target_compile_definitions(test_decentralization_score PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME DecentralizationScore COMMAND test_decentralization_score)
+  set_tests_properties(DecentralizationScore PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 5
+  )
+
+  add_executable(test_contribution_section
+    tests/test_contribution_section.cpp
+    src/contributionsection.cpp
+    src/contributionsection.h
+    src/sparklinewidget.cpp
+    src/sparklinewidget.h
+    src/dashboardtypes.h
+  )
+  target_link_libraries(test_contribution_section PRIVATE
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Test
+  )
+  target_compile_definitions(test_contribution_section PRIVATE QT_NO_KEYWORDS)
+  target_include_directories(test_contribution_section PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME ContributionSection COMMAND test_contribution_section)
+  set_tests_properties(ContributionSection PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 5
+  )
 
   # ─────────────────────────────────────────────────────────────────────────
   # Qt firewall compile-fail probe (Phase 2 Step 5 of monorepo consolidation)
