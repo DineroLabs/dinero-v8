@@ -271,6 +271,8 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     if (ctx.daemon && ctx.daemon->block_relay) {
         relay["blocks_served_24h"] = static_cast<Json::UInt64>(
             ctx.daemon->block_relay->BlocksServed24h());
+    } else {
+        relay["blocks_served_24h"] = Json::UInt64(0);
     }
     relay["bytes_relayed_24h"] = static_cast<Json::UInt64>(
         p2p->get().BytesRelayed24h());
