@@ -32,12 +32,24 @@ namespace {
 std::atomic<bool> g_stop{false};
 
 void install_signal_handlers() {
+    // POSIX sigaction is the strict-correct path (no race window on
+    // re-arm). Windows doesn't ship sigaction; the looser signal() call
+    // is fine here because dinero-seeder is a short-lived crawler that
+    // doesn't re-arm — the handler fires once and sets g_stop.
+#ifdef _WIN32
+    auto handler = [](int /*sig*/) {
+        g_stop.store(true, std::memory_order_release);
+    };
+    std::signal(SIGINT, handler);
+    std::signal(SIGTERM, handler);
+#else
     struct sigaction sa{};
     sa.sa_handler = [](int /*sig*/) { g_stop.store(true, std::memory_order_release); };
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
+#endif
 }
 
 void usage(const char* argv0) {
