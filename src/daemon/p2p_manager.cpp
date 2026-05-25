@@ -1310,6 +1310,8 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
             it->second->last_seen = it->second->last_message_at;
         }
     }
+    // Phase 2b: count inner bytes received on this relay-virtual circuit (plaintext path).
+    RecordRelayBytes(static_cast<uint64_t>(inner.size()));
 
     if (!enqueue_relay_frame(virtual_peer_key, inner)) {
         std::cout << "[P2P] relay-data: failed to queue inner frame for "
@@ -1356,6 +1358,11 @@ bool P2PManager::unwrap_relay_quic_packet(const std::string& virtual_peer_key,
             it->second->last_seen = it->second->last_message_at;
         }
     }
+    // Phase 2b: count QUIC wire bytes received on this relay-virtual circuit.
+    // Note: these are outer QUIC packet bytes (ciphertext); the plaintext path
+    // counts inner payload bytes. The asymmetry mirrors established bytes_recv
+    // practice in both code paths.
+    RecordRelayBytes(static_cast<uint64_t>(packet.size()));
     return true;
 }
 
@@ -2901,6 +2908,8 @@ P2PManager::P2PManager(uint16_t listen_port, const std::string& external_ip)
     if (!clock_) {
         clock_ = std::make_unique<dinero::network::SystemClockSource>();
     }
+    // Phase 2b: clock_ is now live — safe to construct bytes_relayed_24h_.
+    bytes_relayed_24h_.emplace(clock_.get());
 }
 
 // Test-only constructor: inject a custom ClockSource (e.g., FakeClockSource)
@@ -2914,6 +2923,9 @@ P2PManager::P2PManager(uint16_t listen_port,
     if (!clock_) {
         clock_ = std::make_unique<dinero::network::SystemClockSource>();
     }
+    // Phase 2b: re-emplace with the overridden clock source so the counter
+    // uses the injected FakeClockSource (important for deterministic tests).
+    bytes_relayed_24h_.emplace(clock_.get());
 }
 
 P2PManager::~P2PManager() {
@@ -5659,6 +5671,8 @@ bool P2PManager::send_relay_payload_to_virtual_peer(PeerInfo& peer,
         if (it != connected_peers_.end() && it->second) {
             it->second->bytes_sent += payload.size();
         }
+        // Phase 2b: count inner payload bytes actually sent over a relay-virtual circuit.
+        RecordRelayBytes(static_cast<uint64_t>(payload.size()));
     }
     return ok;
 }

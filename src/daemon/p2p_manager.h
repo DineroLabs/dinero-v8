@@ -18,6 +18,7 @@
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
 #include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
+#include "network/rolling_24h_counter.h"  // Phase 2b: rolling 24h byte counter for relay-virtual traffic
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
 #include "network/token_bucket.h"     // NAT traversal: relay circuit bandwidth caps
@@ -439,6 +440,14 @@ public:
     }
     size_t relay_registry_grace_pending_count() const {
         return relay_registry_.grace_pending_count();
+    }
+
+    // Phase 2b — rolling 24h total bytes carried over relay-virtual peers
+    // (sent + received via the relay-virtual data funnels). Surfaced via
+    // getnetworkinfo.relay.bytes_relayed_24h.
+    uint64_t BytesRelayed24h() const {
+        if (!bytes_relayed_24h_) return 0;
+        return bytes_relayed_24h_->Total24h();
     }
 
     // ========================================================================
@@ -863,6 +872,19 @@ private:
     // Time source for TTL/expiry logic in the hints subsystem.
     // Defaults to SystemClockSource; tests inject a FakeClockSource.
     std::unique_ptr<dinero::network::ClockSource> clock_;
+
+    // Phase 2b: rolling 24h byte counter for bytes carried over relay-virtual
+    // peers (both directions). Declared after clock_ — clock_ is always set
+    // in the constructor body before bytes_relayed_24h_.emplace() is called.
+    // std::optional defers construction until clock_ is live.
+    std::optional<dinero::network::Rolling24hCounter> bytes_relayed_24h_;
+
+    // Increment bytes_relayed_24h_ from the relay-virtual data funnels.
+    // Safe to call on any thread; Rolling24hCounter::Add is lock-free in
+    // the hot path.
+    void RecordRelayBytes(uint64_t bytes) {
+        if (bytes_relayed_24h_) bytes_relayed_24h_->Add(bytes);
+    }
 
     mutable std::mutex relay_hints_mutex_;
     std::unordered_map<std::string, std::vector<RelayHintRecord>> relay_hints_by_target_;
