@@ -142,6 +142,31 @@ struct PeerRow {
     std::chrono::seconds last_message_ago{0};
 };
 
+// Phase 3 — local topology view model. This is intentionally a Qt-side
+// approximation built from getpeerinfo + relay_hints.list + dashboard state;
+// it is not a global network graph.
+struct TopologyNode {
+    QString id;
+    QString label;
+    QString endpoint;
+    QString kind;       // self/direct/relay_virtual/hint/fleet
+    QString bucket;     // hot/warm/demote/relay_candidate/empty
+    int     quality_score{-1};
+    bool    connected{false};
+};
+
+struct TopologyEdge {
+    QString from_id;
+    QString to_id;
+    QString kind;       // direct/relay_virtual/hint
+    QString via_relay;
+};
+
+struct TopologySnapshot {
+    QVector<TopologyNode> nodes;
+    QVector<TopologyEdge> edges;
+};
+
 }  // namespace dinero::qt::dashboard
 
 Q_DECLARE_METATYPE(dinero::qt::dashboard::NodeIdentity)
@@ -153,3 +178,6 @@ Q_DECLARE_METATYPE(QVector<dinero::qt::dashboard::HintRow>)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::DynamicP2POverview)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::ContributionStats)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::DecentralizationScore)
+Q_DECLARE_METATYPE(dinero::qt::dashboard::TopologyNode)
+Q_DECLARE_METATYPE(dinero::qt::dashboard::TopologyEdge)
+Q_DECLARE_METATYPE(dinero::qt::dashboard::TopologySnapshot)

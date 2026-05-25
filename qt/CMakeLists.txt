@@ -569,6 +569,8 @@ set(GUI_SOURCES
   src/contributionsection.h
   src/discoverysection.cpp
   src/discoverysection.h
+  src/topologysection.cpp
+  src/topologysection.h
 )
 
 if(APPLE)
@@ -1486,6 +1488,49 @@ if(BUILD_TESTING)
   )
   add_test(NAME DiscoverySection COMMAND test_discovery_section)
   set_tests_properties(DiscoverySection PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 5
+  )
+
+  add_executable(test_topology_snapshot
+    tests/test_topology_snapshot.cpp
+    src/nodepoller.cpp
+    src/nodepoller.h
+    src/dashboardtypes.h
+    src/rpcclient.cpp
+    src/rpcclient.h
+  )
+  target_link_libraries(test_topology_snapshot PRIVATE
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Test
+  )
+  target_compile_definitions(test_topology_snapshot PRIVATE QT_NO_KEYWORDS)
+  target_include_directories(test_topology_snapshot PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME TopologySnapshot COMMAND test_topology_snapshot)
+  set_tests_properties(TopologySnapshot PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 5
+  )
+
+  add_executable(test_topology_section
+    tests/test_topology_section.cpp
+    src/topologysection.cpp
+    src/topologysection.h
+    src/dashboardtypes.h
+  )
+  target_link_libraries(test_topology_section PRIVATE
+    Qt6::Widgets
+    Qt6::Test
+  )
+  target_compile_definitions(test_topology_section PRIVATE QT_NO_KEYWORDS)
+  target_include_directories(test_topology_section PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME TopologySection COMMAND test_topology_section)
+  set_tests_properties(TopologySection PROPERTIES
     LABELS "qt;dashboard;smoke"
     TIMEOUT 5
   )
