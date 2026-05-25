@@ -9,7 +9,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 
 DATA_DIR="/tmp/dinero_unshield_rpc_e2e_$$"
 LOG_FILE="${DATA_DIR}.log"

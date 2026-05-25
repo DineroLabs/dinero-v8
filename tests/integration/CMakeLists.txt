@@ -895,6 +895,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_shield_e2e.sh)
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_shield_e2e.sh
     )
     set_tests_properties(ShieldedRpcShieldEndToEnd PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "integration;shielded;rpc;wallet;phase3-wave3b"
         TIMEOUT 240
     )
@@ -907,6 +908,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_unshield_e2e.sh)
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_unshield_e2e.sh
     )
     set_tests_properties(ShieldedRpcUnshieldEndToEnd PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "integration;shielded;rpc;wallet;phase3-wave3c"
         TIMEOUT 240
     )
@@ -919,6 +921,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_e2e.sh)
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_e2e.sh
     )
     set_tests_properties(ShieldedRpcTransferEndToEnd PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "integration;shielded;rpc;wallet;phase3-wave3d"
         TIMEOUT 240
     )
@@ -931,6 +934,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_multi_e2e.sh)
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_multi_e2e.sh
     )
     set_tests_properties(ShieldedRpcTransferMultiEndToEnd PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "integration;shielded;rpc;wallet;phase3-wave3e"
         TIMEOUT 240
     )
@@ -943,6 +947,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_getaddress.sh)
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_getaddress.sh
     )
     set_tests_properties(ShieldedRpcGetAddress PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "integration;shielded;rpc;wallet;phase5-wave3c"
         TIMEOUT 120
     )
@@ -955,6 +960,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_addressed_e2e.s
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_addressed_e2e.sh
     )
     set_tests_properties(ShieldedRpcTransferAddressedEndToEnd PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "integration;shielded;rpc;wallet;phase5-wave3d"
         TIMEOUT 240
     )
@@ -967,6 +973,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_addressed_detec
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_addressed_detect_e2e.sh
     )
     set_tests_properties(ShieldedRpcTransferAddressedDetectEndToEnd PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "integration;shielded;rpc;wallet;phase5-wave3e"
         TIMEOUT 240
     )
