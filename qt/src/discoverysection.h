@@ -12,6 +12,8 @@
 #include <QVector>
 
 class QLabel;
+class QComboBox;
+class QPushButton;
 class QVBoxLayout;
 
 namespace dinero::qt::dashboard {
@@ -32,17 +34,25 @@ public:
 
 public Q_SLOTS:
     void setHints(const QVector<HintRow>& hints);
+    void setSeederState(bool opted_in, bool running, const QString& status);
 
 Q_SIGNALS:
     void copyEndpointRequested(const QString& endpoint);
     void dialRelayHintRequested(const HintRow& hint);
+    void seederOptInChanged(bool enabled);
+    void startSeederRequested();
+    void stopSeederRequested();
 
 private Q_SLOTS:
     void onRowContextMenuRequested(const QPoint& pos);
 
 private:
     QLabel*           header_label_{nullptr};
+    QComboBox*        seeder_opt_in_{nullptr};
+    QPushButton*      seeder_button_{nullptr};
+    QLabel*           seeder_status_{nullptr};
     QVBoxLayout*      rows_layout_{nullptr};
+    bool              seeder_running_{false};
     // Key: target_node_id_hex + "@" + endpoint. Identifies a unique row
     // across ticks so we can fade out evictions instead of redrawing.
     QHash<QString, HintRowWidget*> active_rows_;

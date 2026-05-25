@@ -800,6 +800,7 @@ if(APPLE)
     COMMAND ${CMAKE_COMMAND} -E rm -f
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/MacOS/dinerod"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/MacOS/dinero-cli"
+      "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/MacOS/dinero-seeder"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/MacOS/dinero-gpu-miner"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/MacOS/dinero-miner"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/MacOS/dinero-stratum"
@@ -810,6 +811,7 @@ if(APPLE)
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/MacOS/dinero-qt.bak"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/dinerod"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/dinero-cli"
+      "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/dinero-seeder"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/dinero-gpu-miner"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/dinero-miner"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/dinero-stratum"
@@ -907,6 +909,22 @@ if(APPLE)
       COMMENT "Bundling dinero-cli..."
     )
     message(STATUS "Will bundle dinero-cli from: ${CLI_BINARY}")
+  endif()
+
+  if(TARGET dinero-seeder)
+    add_custom_command(TARGET dinero-qt POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE:dinero-seeder>"
+        "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/MacOS/dinero-seeder"
+      COMMAND chmod +x "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/MacOS/dinero-seeder"
+      COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE:dinero-seeder>"
+        "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/dinero-seeder"
+      COMMAND chmod +x "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/dinero-seeder"
+      COMMENT "Bundling in-tree dinero-seeder into dinero-qt.app..."
+    )
+    add_dependencies(dinero-qt dinero-seeder)
+    message(STATUS "Will bundle dinero-seeder from in-tree CMake target")
   endif()
 
   # Bundle GPU miner (macOS only - Metal backend)
@@ -1155,6 +1173,17 @@ if(NOT APPLE)
       COMMENT "Bundling dinero-cli..."
     )
     message(STATUS "Will bundle dinero-cli from: ${CLI_BINARY}")
+  endif()
+
+  if(TARGET dinero-seeder)
+    add_custom_command(TARGET dinero-qt POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy
+        "$<TARGET_FILE:dinero-seeder>"
+        "$<TARGET_FILE_DIR:dinero-qt>/dinero-seeder${CMAKE_EXECUTABLE_SUFFIX}"
+      COMMENT "Bundling in-tree dinero-seeder..."
+    )
+    add_dependencies(dinero-qt dinero-seeder)
+    message(STATUS "Will bundle dinero-seeder from in-tree CMake target")
   endif()
 
   if(TARGET dinero-gpu-miner)
