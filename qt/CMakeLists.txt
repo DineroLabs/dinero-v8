@@ -565,6 +565,8 @@ set(GUI_SOURCES
   src/cmdkpanel.h
   src/sparklinewidget.cpp
   src/sparklinewidget.h
+  src/contributionsection.cpp
+  src/contributionsection.h
 )
 
 if(APPLE)
@@ -1415,6 +1417,29 @@ if(BUILD_TESTING)
   target_compile_definitions(test_decentralization_score PRIVATE QT_NO_KEYWORDS)
   add_test(NAME DecentralizationScore COMMAND test_decentralization_score)
   set_tests_properties(DecentralizationScore PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 5
+  )
+
+  add_executable(test_contribution_section
+    tests/test_contribution_section.cpp
+    src/contributionsection.cpp
+    src/contributionsection.h
+    src/sparklinewidget.cpp
+    src/sparklinewidget.h
+    src/dashboardtypes.h
+  )
+  target_link_libraries(test_contribution_section PRIVATE
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Test
+  )
+  target_compile_definitions(test_contribution_section PRIVATE QT_NO_KEYWORDS)
+  target_include_directories(test_contribution_section PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME ContributionSection COMMAND test_contribution_section)
+  set_tests_properties(ContributionSection PROPERTIES
     LABELS "qt;dashboard;smoke"
     TIMEOUT 5
   )
