@@ -57,6 +57,17 @@ public:
     const QVector<qint64>& bytesOutBuffer()   const { return bytes_out_buffer_; }
     const QVector<qint64>& relayBytesBuffer() const { return relay_bytes_buffer_; }
 
+    // Phase 2b — derived averages for the sparkline hover tooltip.
+    qint64 bytesIn5min()    const { return AverageOverWindow(bytes_in_buffer_); }
+    qint64 bytesIn1hr()     const { return AverageOverWindow(bytes_in_long_.minute_buffer); }
+    qint64 bytesIn24hr()    const { return AverageOverWindow(bytes_in_long_.hour_buffer); }
+    qint64 bytesOut5min()   const { return AverageOverWindow(bytes_out_buffer_); }
+    qint64 bytesOut1hr()    const { return AverageOverWindow(bytes_out_long_.minute_buffer); }
+    qint64 bytesOut24hr()   const { return AverageOverWindow(bytes_out_long_.hour_buffer); }
+    qint64 relayBytes5min() const { return AverageOverWindow(relay_bytes_buffer_); }
+    qint64 relayBytes1hr()  const { return AverageOverWindow(relay_bytes_long_.minute_buffer); }
+    qint64 relayBytes24hr() const { return AverageOverWindow(relay_bytes_long_.hour_buffer); }
+
     // Start/stop the timer. Start triggers an immediate first poll.
     void start();
     void stop();
@@ -102,6 +113,26 @@ private:
     QVector<qint64> bytes_in_buffer_;
     QVector<qint64> bytes_out_buffer_;
     QVector<qint64> relay_bytes_buffer_;
+
+    // Phase 2b — downsampled longer-window accumulators for sparkline
+    // tooltip. 12 ticks (5s) → 1 minute sample, kept in minute_buffer
+    // (60 entries = 1hr). 60 minutes → 1 hour sample, kept in
+    // hour_buffer (24 entries = 24hr).
+    struct LongerWindowAccumulator {
+        QVector<qint64> minute_buffer;
+        qint64          partial_minute_sum{0};
+        int             partial_minute_ticks{0};
+        QVector<qint64> hour_buffer;
+        qint64          partial_hour_sum{0};
+        int             partial_hour_minutes{0};
+    };
+    LongerWindowAccumulator bytes_in_long_;
+    LongerWindowAccumulator bytes_out_long_;
+    LongerWindowAccumulator relay_bytes_long_;
+
+    static void AccumulateLongerWindow(LongerWindowAccumulator& acc,
+                                       qint64 sample);
+    static qint64 AverageOverWindow(const QVector<qint64>& buf);
 
     qint64 last_bytes_sent_total_{0};
     qint64 last_bytes_recv_total_{0};

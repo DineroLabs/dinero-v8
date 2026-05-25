@@ -80,6 +80,18 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
         contributionSection_->setBytesInSamples(poller_->bytesInBuffer());
         contributionSection_->setBytesOutSamples(poller_->bytesOutBuffer());
         contributionSection_->setRelayBytesSamples(poller_->relayBytesBuffer());
+        contributionSection_->setBytesInLongWindows(
+            poller_->bytesIn5min(),
+            poller_->bytesIn1hr(),
+            poller_->bytesIn24hr());
+        contributionSection_->setBytesOutLongWindows(
+            poller_->bytesOut5min(),
+            poller_->bytesOut1hr(),
+            poller_->bytesOut24hr());
+        contributionSection_->setRelayBytesLongWindows(
+            poller_->relayBytes5min(),
+            poller_->relayBytes1hr(),
+            poller_->relayBytes24hr());
     });
     connect(poller_, &NodePoller::decentralizationScoreUpdated,
             contributionSection_, &ContributionSection::setDecentralizationScore);

@@ -53,6 +53,20 @@ ContributionSection::ContributionSection(QWidget* parent)
     out_rate_label_   = new QLabel(QStringLiteral("—"));
     relay_rate_label_ = new QLabel(QStringLiteral("—"));
 
+    // Phase 2b — install tooltip providers on each sparkline.
+    spark_in_->setTooltipProvider([this]() {
+        return formatSparklineTooltip(tr("Bytes in"),
+            cached_5min_in_, cached_1hr_in_, cached_24hr_in_);
+    });
+    spark_out_->setTooltipProvider([this]() {
+        return formatSparklineTooltip(tr("Bytes out"),
+            cached_5min_out_, cached_1hr_out_, cached_24hr_out_);
+    });
+    spark_relay_->setTooltipProvider([this]() {
+        return formatSparklineTooltip(tr("Relay traffic"),
+            cached_5min_relay_, cached_1hr_relay_, cached_24hr_relay_);
+    });
+
     spark_grid->addWidget(new QLabel(tr("Bytes in")),         0, 0);
     spark_grid->addWidget(spark_in_,                          0, 1);
     spark_grid->addWidget(in_rate_label_,                     0, 2);
@@ -130,6 +144,16 @@ void ContributionSection::setRelayBytesSamples(const QVector<qint64>& s) {
     spark_relay_->setSamples(s);
 }
 
+void ContributionSection::setBytesInLongWindows(qint64 v5min, qint64 v1hr, qint64 v24hr) {
+    cached_5min_in_ = v5min;  cached_1hr_in_ = v1hr;  cached_24hr_in_ = v24hr;
+}
+void ContributionSection::setBytesOutLongWindows(qint64 v5min, qint64 v1hr, qint64 v24hr) {
+    cached_5min_out_ = v5min;  cached_1hr_out_ = v1hr;  cached_24hr_out_ = v24hr;
+}
+void ContributionSection::setRelayBytesLongWindows(qint64 v5min, qint64 v1hr, qint64 v24hr) {
+    cached_5min_relay_ = v5min;  cached_1hr_relay_ = v1hr;  cached_24hr_relay_ = v24hr;
+}
+
 QString ContributionSection::formatBytesPerSec(qint64 bytes_per_5s) {
     // Per-tick byte delta is over the 5s poll interval; divide to get B/s.
     const double bps = static_cast<double>(bytes_per_5s) / 5.0;
@@ -147,6 +171,27 @@ bool ContributionSection::eventFilter(QObject* watched, QEvent* event) {
         return true;
     }
     return QFrame::eventFilter(watched, event);
+}
+
+QString ContributionSection::formatSparklineTooltip(const QString& title,
+        qint64 v5min, qint64 v1hr, qint64 v24hr) {
+    // Each window buffer stores byte deltas over its accumulation unit:
+    //   5min buffer: average of 60 × 5s-deltas  → divide by 5   for B/s
+    //   1hr  buffer: average of 60 × 60s-sums   → divide by 60  for B/s
+    //   24hr buffer: average of 24 × 3600s-sums → divide by 3600 for B/s
+    auto fmtRate = [](double bps) {
+        if (bps < 1024.0)             return QStringLiteral("%1 B/s").arg(bps, 0, 'f', 0);
+        if (bps < 1024.0 * 1024.0)   return QStringLiteral("%1 KB/s").arg(bps / 1024.0, 0, 'f', 1);
+        return QStringLiteral("%1 MB/s").arg(bps / (1024.0 * 1024.0), 0, 'f', 1);
+    };
+    return QStringLiteral(
+        "<html><body><b>%1</b><br>"
+        "5min avg: %2<br>1hr avg: %3<br>24hr avg: %4"
+        "</body></html>")
+        .arg(title)
+        .arg(fmtRate(double(v5min) / 5.0))
+        .arg(fmtRate(double(v1hr) / 60.0))
+        .arg(fmtRate(double(v24hr) / 3600.0));
 }
 
 QString ContributionSection::buildScoreTooltipHtml(

@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include <QVector>
 #include <QWidget>
 
@@ -23,13 +25,19 @@ public:
     void setSamples(const QVector<qint64>& samples);
     QVector<qint64> samples() const { return samples_; }
 
+    // Optional hover-tooltip provider. If set, returns the tooltip text
+    // when QEvent::ToolTip fires on this widget.
+    void setTooltipProvider(std::function<QString()> provider);
+
     QSize sizeHint() const override;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    bool event(QEvent* event) override;
 
 private:
     QVector<qint64> samples_;
+    std::function<QString()> tooltip_provider_;
 };
 
 }  // namespace dinero::qt::dashboard

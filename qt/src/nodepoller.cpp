@@ -115,6 +115,31 @@ void NodePoller::pushSparklineSample(QVector<qint64>* buf, qint64 sample) {
     }
 }
 
+void NodePoller::AccumulateLongerWindow(LongerWindowAccumulator& acc,
+                                        qint64 sample) {
+    acc.partial_minute_sum += sample;
+    if (++acc.partial_minute_ticks >= 12) {  // 12 × 5s = 1min
+        acc.minute_buffer.append(acc.partial_minute_sum);
+        while (acc.minute_buffer.size() > 60) acc.minute_buffer.removeFirst();
+        acc.partial_hour_sum += acc.partial_minute_sum;
+        acc.partial_minute_sum = 0;
+        acc.partial_minute_ticks = 0;
+        if (++acc.partial_hour_minutes >= 60) {
+            acc.hour_buffer.append(acc.partial_hour_sum);
+            while (acc.hour_buffer.size() > 24) acc.hour_buffer.removeFirst();
+            acc.partial_hour_sum = 0;
+            acc.partial_hour_minutes = 0;
+        }
+    }
+}
+
+qint64 NodePoller::AverageOverWindow(const QVector<qint64>& buf) {
+    if (buf.isEmpty()) return 0;
+    qint64 s = 0;
+    for (auto v : buf) s += v;
+    return s / buf.size();
+}
+
 void NodePoller::emitContributionAndScore() {
     ContributionStats stats;
     stats.blocks_served_24h   = pending_blocks_served_24h_;
@@ -387,6 +412,9 @@ void NodePoller::parsePeers(const QJsonValue& result) {
     pushSparklineSample(&bytes_in_buffer_,    delta_recv);
     pushSparklineSample(&bytes_out_buffer_,   delta_sent);
     pushSparklineSample(&relay_bytes_buffer_, delta_relay);
+    AccumulateLongerWindow(bytes_in_long_,    delta_recv);
+    AccumulateLongerWindow(bytes_out_long_,   delta_sent);
+    AccumulateLongerWindow(relay_bytes_long_, delta_relay);
     last_bytes_sent_total_  = cur_sent_total;
     last_bytes_recv_total_  = cur_recv_total;
     last_relay_bytes_total_ = cur_relay_total;
