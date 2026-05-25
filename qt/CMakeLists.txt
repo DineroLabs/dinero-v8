@@ -563,6 +563,8 @@ set(GUI_SOURCES
   src/mynodedashboard.h
   src/cmdkpanel.cpp
   src/cmdkpanel.h
+  src/sparklinewidget.cpp
+  src/sparklinewidget.h
 )
 
 if(APPLE)
@@ -1374,6 +1376,25 @@ if(BUILD_TESTING)
 
   target_compile_definitions(test_peers_section PRIVATE QT_NO_KEYWORDS)
   add_test(NAME PeersSection COMMAND test_peers_section)
+
+  add_executable(test_sparkline_widget
+    tests/test_sparkline_widget.cpp
+    src/sparklinewidget.cpp
+    src/sparklinewidget.h
+  )
+  target_include_directories(test_sparkline_widget PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_sparkline_widget PRIVATE
+    Qt6::Widgets
+    Qt6::Test
+  )
+  target_compile_definitions(test_sparkline_widget PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME SparklineWidget COMMAND test_sparkline_widget)
+  set_tests_properties(SparklineWidget PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 10
+  )
 
   # ─────────────────────────────────────────────────────────────────────────
   # Qt firewall compile-fail probe (Phase 2 Step 5 of monorepo consolidation)
