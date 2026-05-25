@@ -17,7 +17,7 @@
 #             -DENABLE_HARDWARE_WALLETS=OFF ^
 #             -DCMAKE_PREFIX_PATH="C:\Qt\6.9.1\msvc2022_64"
 #       cmake --build build-msvc-native --config Release ^
-#             --target dinerod dinero-cli dinero-miner dinero-stratum-worker dinero-gpu-miner dinero-wallet-cli
+#             --target dinerod dinero-cli dinero-miner dinero-stratum-worker dinero-gpu-miner dinero-wallet-cli dinero-seeder
 #   - NSIS at "C:\Program Files (x86)\NSIS\makensis.exe"
 #   - vcpkg installed at ~\vcpkg (for the runtime DLLs)
 #
@@ -49,9 +49,25 @@ Write-Host '----------------------------------------------------------'
 
 # Sanity checks. dinero-qt + dinero-solo-miner are intentionally NOT
 # in this list — the server installer ships headless.
-$daemonBinaries = 'dinerod','dinero-cli','dinero-miner','dinero-stratum-worker','dinero-gpu-miner','dinero-wallet-cli'
+$daemonBinaries = 'dinerod','dinero-cli','dinero-miner','dinero-stratum-worker','dinero-gpu-miner','dinero-wallet-cli','dinero-seeder'
+$BuildRoot = Split-Path $DaemonBuildDir -Parent
+
+function Resolve-DaemonBinaryPath([string]$BinaryName) {
+    $primary = Join-Path $DaemonBuildDir "$BinaryName.exe"
+    if (Test-Path $primary) {
+        return $primary
+    }
+    if ($BinaryName -eq 'dinero-seeder') {
+        $seederPath = Join-Path $BuildRoot 'seeder\Release\dinero-seeder.exe'
+        if (Test-Path $seederPath) {
+            return $seederPath
+        }
+    }
+    return $primary
+}
+
 foreach ($b in $daemonBinaries) {
-    if (-not (Test-Path (Join-Path $DaemonBuildDir "$b.exe"))) {
+    if (-not (Test-Path (Resolve-DaemonBinaryPath $b))) {
         Write-Host "ERROR: $b.exe not found in $DaemonBuildDir" -ForegroundColor Red
         exit 1
     }
@@ -70,7 +86,7 @@ New-Item $Stage -ItemType Directory | Out-Null
 
 Write-Host "Copying daemon binaries..."
 foreach ($b in $daemonBinaries) {
-    Copy-Item (Join-Path $DaemonBuildDir "$b.exe") (Join-Path $Stage "$b.exe")
+    Copy-Item (Resolve-DaemonBinaryPath $b) (Join-Path $Stage "$b.exe")
     Write-Host "  $b.exe"
 }
 Copy-Item (Join-Path $ProjectRoot 'LICENSE') (Join-Path $Stage 'LICENSE')
