@@ -29,6 +29,16 @@ public:
 public Q_SLOTS:
     void setTopologySnapshot(const TopologySnapshot& snapshot);
 
+Q_SIGNALS:
+    void copyEndpointRequested(const QString& endpoint);
+    void disconnectPeerRequested(const QString& peer_addr);
+    void tryDirectReconnectRequested(const QString& endpoint);
+    void banPeerRequested(const QString& endpoint, int seconds);
+    void dialRelayHintRequested(const HintRow& hint);
+
+private Q_SLOTS:
+    void onContextMenuRequested(const QPoint& pos);
+
 private:
     QLabel* header_label_{nullptr};
     QGraphicsView* view_{nullptr};
@@ -41,6 +51,7 @@ private:
     static QString nodeTooltip(const TopologyNode& node);
     static QColor colorForNode(const TopologyNode& node);
     static QColor colorForEdge(const TopologyEdge& edge);
+    static QString targetIdFromHintNode(const TopologyNode& node);
 };
 
 }  // namespace dinero::qt::dashboard

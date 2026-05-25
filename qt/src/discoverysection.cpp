@@ -8,8 +8,10 @@
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMenu>
 #include <QPainter>
 #include <QPropertyAnimation>
+#include <QVariant>
 #include <QVBoxLayout>
 
 #include <functional>
@@ -154,9 +156,13 @@ void DiscoverySection::setHints(const QVector<HintRow>& hints) {
             active_rows_.erase(it);
         } else {
             w = new HintRowWidget(this);
+            w->setContextMenuPolicy(Qt::CustomContextMenu);
+            QObject::connect(w, &QWidget::customContextMenuRequested,
+                             this, &DiscoverySection::onRowContextMenuRequested);
             rows_layout_->addWidget(w);
         }
         w->update(r, kAssumedTtlSeconds);
+        w->setProperty("hintRow", QVariant::fromValue(r));
         next_rows.insert(key, w);
     }
     // Any active_rows_ remaining are evictions — fade them out.
@@ -171,6 +177,26 @@ void DiscoverySection::setHints(const QVector<HintRow>& hints) {
 
 QString DiscoverySection::rowKey(const HintRow& r) {
     return r.target_node_id_hex + QStringLiteral("@") + r.endpoint;
+}
+
+void DiscoverySection::onRowContextMenuRequested(const QPoint& pos) {
+    auto* row = qobject_cast<QWidget*>(sender());
+    if (!row) return;
+    const auto hint = row->property("hintRow").value<HintRow>();
+    if (hint.target_node_id_hex.isEmpty()) return;
+
+    QMenu menu(this);
+    auto* copy_endpoint = menu.addAction(tr("Copy relay endpoint"));
+    copy_endpoint->setEnabled(!hint.endpoint.isEmpty() &&
+                              hint.endpoint != QStringLiteral("(no addr)"));
+    auto* dial = menu.addAction(tr("Dial via relay hint"));
+    QAction* chosen = menu.exec(row->mapToGlobal(pos));
+    if (!chosen) return;
+    if (chosen == copy_endpoint) {
+        Q_EMIT copyEndpointRequested(hint.endpoint);
+    } else if (chosen == dial) {
+        Q_EMIT dialRelayHintRequested(hint);
+    }
 }
 
 }  // namespace dinero::qt::dashboard

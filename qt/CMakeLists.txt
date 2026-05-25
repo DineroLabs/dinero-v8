@@ -571,6 +571,8 @@ set(GUI_SOURCES
   src/discoverysection.h
   src/topologysection.cpp
   src/topologysection.h
+  src/dashboardactioncontroller.cpp
+  src/dashboardactioncontroller.h
 )
 
 if(APPLE)
@@ -1531,6 +1533,29 @@ if(BUILD_TESTING)
   )
   add_test(NAME TopologySection COMMAND test_topology_section)
   set_tests_properties(TopologySection PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 5
+  )
+
+  add_executable(test_dashboard_actions
+    tests/test_dashboard_actions.cpp
+    src/dashboardactioncontroller.cpp
+    src/dashboardactioncontroller.h
+    src/dashboardtypes.h
+    src/rpcclient.cpp
+    src/rpcclient.h
+  )
+  target_link_libraries(test_dashboard_actions PRIVATE
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Test
+  )
+  target_compile_definitions(test_dashboard_actions PRIVATE QT_NO_KEYWORDS)
+  target_include_directories(test_dashboard_actions PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME DashboardActions COMMAND test_dashboard_actions)
+  set_tests_properties(DashboardActions PROPERTIES
     LABELS "qt;dashboard;smoke"
     TIMEOUT 5
   )
