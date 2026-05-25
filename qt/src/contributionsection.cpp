@@ -71,9 +71,9 @@ ContributionSection::ContributionSection(QWidget* parent)
     hints_sent_value_       = new QLabel(QStringLiteral("0"));
     peers_via_gossip_value_ = new QLabel(QStringLiteral("0"));
 
-    stat_grid->addWidget(new QLabel(tr("Circuits active:")),    0, 0);
+    stat_grid->addWidget(new QLabel(tr("Registrants active:")), 0, 0);
     stat_grid->addWidget(circuits_value_,                       0, 1);
-    stat_grid->addWidget(new QLabel(tr("Blocks served today:")), 0, 2);
+    stat_grid->addWidget(new QLabel(tr("Blocks served (24h):")), 0, 2);
     stat_grid->addWidget(blocks_served_value_,                  0, 3);
     stat_grid->addWidget(new QLabel(tr("Hints sent:")),         1, 0);
     stat_grid->addWidget(hints_sent_value_,                     1, 1);
@@ -98,8 +98,8 @@ ContributionSection::ContributionSection(QWidget* parent)
 }
 
 void ContributionSection::setContributionStats(const ContributionStats& stats) {
-    circuits_value_->setText(QString::number(stats.circuits_active));
-    blocks_served_value_->setText(QString::number(stats.blocks_served_today));
+    circuits_value_->setText(QString::number(stats.registrants_active));
+    blocks_served_value_->setText(QString::number(stats.blocks_served_24h));
     hints_sent_value_->setText(QString::number(stats.hints_sent));
     peers_via_gossip_value_->setText(QString::number(stats.peers_via_gossip));
     in_rate_label_->setText(formatBytesPerSec(stats.bytes_in_rate));

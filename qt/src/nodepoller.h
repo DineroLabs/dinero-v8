@@ -6,6 +6,7 @@
 
 #include "dashboardtypes.h"
 
+#include <QJsonObject>
 #include <QObject>
 #include <QTimer>
 
@@ -45,6 +46,9 @@ public:
     static DecentralizationScore ComputeDecentralizationScore(
         const ScoreInputs& inputs);
 
+    // Phase 2b — pure parser, exposed for unit tests.
+    static QVector<HintRow> ParseRelayHintsList(const QJsonObject& response);
+
     // Phase 2a — sparkline buffer accessors for ContributionSection.
     // The buffers are mutated only on the polling thread (same as the
     // UI thread), so a const-ref read after contributionStatsUpdated
@@ -66,6 +70,7 @@ Q_SIGNALS:
     void dynamicP2POverviewUpdated(const DynamicP2POverview& overview);
     void contributionStatsUpdated(const ContributionStats& stats);
     void decentralizationScoreUpdated(const DecentralizationScore& score);
+    void hintsUpdated(const QVector<HintRow>& hints);
 
 public Q_SLOTS:
     // Public so tests can feed canned responses without a real RpcClient.
@@ -105,6 +110,12 @@ private:
 
     int    relay_hints_sent_{0};
     int    relay_hints_received_relay_{0};
+
+    // Phase 2b — real values from getnetworkinfo.relay, replacing Phase 2a
+    // placeholders + bytes_relayed extrapolation.
+    qint64 pending_blocks_served_24h_{0};
+    qint64 pending_bytes_relayed_24h_{0};
+    int    pending_registrants_active_{0};
 
     void parseNetworkInfo(const QJsonValue& result);
     void parseChainInfo(const QJsonValue& result);

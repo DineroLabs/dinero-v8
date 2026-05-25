@@ -1421,6 +1421,29 @@ if(BUILD_TESTING)
     TIMEOUT 5
   )
 
+  add_executable(test_relay_hints_parser
+    tests/test_relay_hints_parser.cpp
+    src/nodepoller.cpp
+    src/nodepoller.h
+    src/dashboardtypes.h
+    src/rpcclient.cpp
+    src/rpcclient.h
+  )
+  target_link_libraries(test_relay_hints_parser PRIVATE
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Test
+  )
+  target_compile_definitions(test_relay_hints_parser PRIVATE QT_NO_KEYWORDS)
+  target_include_directories(test_relay_hints_parser PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  add_test(NAME RelayHintsParser COMMAND test_relay_hints_parser)
+  set_tests_properties(RelayHintsParser PROPERTIES
+    LABELS "qt;dashboard;smoke"
+    TIMEOUT 5
+  )
+
   add_executable(test_contribution_section
     tests/test_contribution_section.cpp
     src/contributionsection.cpp

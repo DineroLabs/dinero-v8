@@ -80,6 +80,33 @@ DecentralizationScore NodePoller::ComputeDecentralizationScore(
     return s;
 }
 
+// static
+QVector<HintRow> NodePoller::ParseRelayHintsList(const QJsonObject& response) {
+    QVector<HintRow> out;
+    const auto targets = response.value("targets").toArray();
+    for (const auto& tv : targets) {
+        const auto t = tv.toObject();
+        const auto target_hex = t.value("target_node_id_hex").toString();
+        for (const auto& ev : t.value("endpoints").toArray()) {
+            const auto e = ev.toObject();
+            HintRow r;
+            r.target_node_id_hex = target_hex;
+            r.net = e.value("net").toString();
+            const auto addr = e.value("addr").toString();
+            const auto port = e.value("port").toInt();
+            r.endpoint = addr.isEmpty()
+                ? QStringLiteral("(no addr)")
+                : QStringLiteral("%1:%2").arg(addr).arg(port);
+            r.age_seconds = static_cast<qint64>(
+                e.value("age_seconds").toDouble(0.0));
+            r.dial_failures = e.value("dial_failures").toInt(0);
+            r.near_eviction = e.value("near_eviction").toBool(false);
+            out.append(r);
+        }
+    }
+    return out;
+}
+
 void NodePoller::pushSparklineSample(QVector<qint64>* buf, qint64 sample) {
     if (!buf) return;
     buf->append(sample < 0 ? 0 : sample);
@@ -90,8 +117,9 @@ void NodePoller::pushSparklineSample(QVector<qint64>* buf, qint64 sample) {
 
 void NodePoller::emitContributionAndScore() {
     ContributionStats stats;
-    stats.circuits_active     = 0;  // Phase 2b: real counter from daemon
-    stats.blocks_served_today = 0;  // Phase 2b: real counter from daemon
+    stats.blocks_served_24h   = pending_blocks_served_24h_;
+    stats.bytes_relayed_24h   = pending_bytes_relayed_24h_;
+    stats.registrants_active  = pending_registrants_active_;
     stats.hints_sent          = relay_hints_sent_;
     stats.peers_via_gossip    = relay_hints_received_relay_;
     stats.bytes_in_rate    = bytes_in_buffer_.isEmpty()  ? 0 : bytes_in_buffer_.last();
@@ -119,10 +147,7 @@ void NodePoller::emitContributionAndScore() {
         }
     }
     in.unique_peer_subnets_slash16 = subnets.size();
-    qint64 sum_relay = 0;
-    for (auto v : relay_bytes_buffer_) sum_relay += v;
-    // 5min × 288 = 24h linear extrapolation (Phase 2a approximation).
-    in.bytes_relayed_24h = sum_relay * 288;
+    in.bytes_relayed_24h = pending_bytes_relayed_24h_;
     in.local_hashrate_hps = pending_identity_.shares_per_min * 1'000'000.0;
     in.fleet_hashrate_hps = pending_chain_.network_hashrate_hps;
     in.peers_who_learned_via_gossip = relay_hints_received_relay_;
@@ -183,6 +208,7 @@ void NodePoller::tick() {
     rpc_->call("getmempoolinfo");
     rpc_->call("mining.status");
     rpc_->call("dynamic_p2p.observe");
+    rpc_->call("relay_hints.list");
 }
 
 void NodePoller::onRpcResponse(const QString& method,
@@ -200,6 +226,8 @@ void NodePoller::onRpcResponse(const QString& method,
     else if (method == "getmempoolinfo")    parseMempool(result);
     else if (method == "mining.status")     parseMining(result);
     else if (method == "dynamic_p2p.observe") parseDynamicP2POverview(result);
+    else if (method == "relay_hints.list")
+        Q_EMIT hintsUpdated(ParseRelayHintsList(result.toObject()));
 }
 
 void NodePoller::parseNetworkInfo(const QJsonValue& result) {
@@ -232,10 +260,20 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
         const auto hints = relay.value("hints").toObject();
         relay_hints_sent_           = hints.value("received_self").toInt(0);
         relay_hints_received_relay_ = hints.value("received_relay").toInt(0);
+        // Phase 2b — real 24h counters replace Phase 2a placeholders and
+        // the bytes_relayed linear extrapolation.
+        pending_blocks_served_24h_ =
+            static_cast<qint64>(relay.value("blocks_served_24h").toDouble(0.0));
+        pending_bytes_relayed_24h_ =
+            static_cast<qint64>(relay.value("bytes_relayed_24h").toDouble(0.0));
     }
     if (obj.contains("registrants")) {
         pending_identity_.registrants_count = obj.value("registrants").toInt();
     }
+    // Phase 2b — reuse the already-parsed registrants_count rather than
+    // adding a duplicate relay.registrants_count parse path: the daemon
+    // emits registrants at the top level, not nested inside relay.
+    pending_registrants_active_ = pending_identity_.registrants_count;
     if (obj.contains("grace_pending")) {
         pending_identity_.grace_count = obj.value("grace_pending").toInt();
     }
