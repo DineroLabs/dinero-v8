@@ -11,6 +11,7 @@
 #include "rpc/methods_pool.h"               // Pool accounting RPC (feature-gated)
 #include "rpc/rpc_dynamic_p2p_handlers.h"   // Task 6: dynamic_p2p.observe handler
 #include "rpc/rpc_relay_hints_handlers.h"   // Phase 2b: relay_hints.list handler
+#include "rpc/rpc_seeder_handlers.h"        // Dashboard seeder lifecycle handlers
 #include "vault/vault_runtime.h"            // Track C: Liquidity Vault runtime owner
 // DISABLED: Payroll feature (experimental)
 // #include "rpc/payroll_rpc.h"     // For WirePayrollRpcContext()
@@ -358,6 +359,27 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
                 return dinero::rpc::HandleRelayHintsDial(ctx.p2p.get(), params);
             });
         dinero::g_logger.info("[RPC Context] ✅ relayhints.dial handler registered");
+
+        // Dashboard seeder lifecycle. These RPCs are intentionally explicit:
+        // the daemon never starts dinero-seeder by default; Qt must pass the
+        // bundled binary path after the user opts in and presses Start Seeder.
+        http_server->register_method("seeder.status",
+            [&ctx](const Json::Value& /*params*/) -> Json::Value {
+                return dinero::rpc::HandleSeederStatus(
+                    dynamic_cast<dinero::ConfigService*>(ctx.config.get()));
+            });
+        http_server->register_method("seeder.start",
+            [&ctx](const Json::Value& params) -> Json::Value {
+                return dinero::rpc::HandleSeederStart(
+                    dynamic_cast<dinero::ConfigService*>(ctx.config.get()),
+                    params);
+            });
+        http_server->register_method("seeder.stop",
+            [&ctx](const Json::Value& /*params*/) -> Json::Value {
+                return dinero::rpc::HandleSeederStop(
+                    dynamic_cast<dinero::ConfigService*>(ctx.config.get()));
+            });
+        dinero::g_logger.info("[RPC Context] ✅ seeder lifecycle handlers registered");
 
         // Phase E.3.1: CPU stats & resource monitoring (node.getcpustats, node.getresourcepressure, node.getdiskstats)
         RegisterAllRPCMethods(ctx);

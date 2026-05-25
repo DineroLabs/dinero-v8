@@ -10030,4 +10030,16 @@ if(BUILD_TESTING)
     )
 endif()
 
+# ─── seeder.status/start/stop lifecycle smoke test ──────────────────────────
+if(BUILD_TESTING AND DINERO_BUILD_SEEDER)
+    add_test(NAME SeederLifecycleRpc
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/network/test_seeder_lifecycle_rpc.sh)
+    set_tests_properties(SeederLifecycleRpc PROPERTIES
+        ENVIRONMENT
+            "DINEROD=$<TARGET_FILE:dinerod>;DINERO_CLI=$<TARGET_FILE:dinero-cli>;DINERO_SEEDER=$<TARGET_FILE:dinero-seeder>"
+        LABELS "network;rpc;dashboard;seeder"
+        TIMEOUT 60
+    )
+endif()
+
 # ═══════════════════════════════════════════════════════════════════════════
