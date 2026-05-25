@@ -19,9 +19,9 @@ namespace dinero::qt::dashboard {
 class MyNodeDashboard;
 
 // Top-level slide-in container for the Cmd+K experience.
-// Owns the slide animation. Hosts a QTabBar + QStackedWidget with two
-// tabs in Phase 1: Dashboard (default) and AI (existing AiPanel,
-// passed in by the parent so its lifecycle is unchanged).
+// Owns the slide animation. When an AiPanel is supplied it hosts the
+// Dashboard and AI tabs; when the pointer is null it becomes a
+// dashboard-only panel. This keeps the temporary AI hide reversible.
 class CmdKPanel : public QWidget {
     Q_OBJECT
     Q_PROPERTY(int panelWidth READ panelWidth WRITE setPanelWidth)

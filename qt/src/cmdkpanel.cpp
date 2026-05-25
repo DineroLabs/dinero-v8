@@ -23,13 +23,17 @@ CmdKPanel::CmdKPanel(RpcClient* rpc, AiPanel* aiPanel, QWidget* parent)
 
     tabBar_ = new QTabBar(this);
     tabBar_->addTab("Dashboard");
-    tabBar_->addTab("AI");
     root->addWidget(tabBar_);
 
     stack_ = new QStackedWidget(this);
     dashboard_ = new MyNodeDashboard(rpc, this);
     stack_->addWidget(dashboard_);   // index 0
-    stack_->addWidget(aiPanel);      // index 1 — re-parented to us
+    if (aiPanel) {
+        tabBar_->addTab("AI");
+        stack_->addWidget(aiPanel);  // index 1 — re-parented to us
+    } else {
+        tabBar_->setVisible(false);
+    }
     root->addWidget(stack_, 1);
 
     connect(tabBar_, &QTabBar::currentChanged,

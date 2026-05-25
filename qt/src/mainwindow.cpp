@@ -105,6 +105,10 @@
 
 namespace {
 
+// Temporary product gate: Cmd+K should expose only My Node Dashboard while
+// the AI assistant surface is parked for release polish.
+constexpr bool kShowAiAssistantPanel = false;
+
 QString defaultDineroDataDir() {
 #if defined(Q_OS_WIN)
   const QString appdata = qEnvironmentVariable("APPDATA");
@@ -1862,7 +1866,8 @@ MainWindow::MainWindow(QWidget* parent)
   // reachable, make one silent attempt to start the bundled dinerod.
   QTimer::singleShot(1500, this, &MainWindow::maybeAutoStartDaemon);
 
-  // AI Assistant: keyboard shortcut + load saved API key
+  // Cmd+K dashboard. The AI assistant surface is temporarily hidden by
+  // kShowAiAssistantPanel, but the shortcut remains the dashboard entry point.
   aiToggleShortcut_ = new QShortcut(QKeySequence("Ctrl+K"), this);
   connect(aiToggleShortcut_, &QShortcut::activated, this, &MainWindow::onToggleAiPanel);
 
@@ -2106,7 +2111,7 @@ void MainWindow::setupUI() {
     }
   });
 
-  // Content area: tabs + AI panel side by side
+  // Content area: tabs + Cmd+K dashboard side panel.
   auto *contentArea = new QWidget;
   auto *contentLayout = new QHBoxLayout(contentArea);
   contentLayout->setContentsMargins(0, 0, 0, 0);
@@ -2116,7 +2121,9 @@ void MainWindow::setupUI() {
   if (app_started_at_ms_ == 0) {
       app_started_at_ms_ = QDateTime::currentMSecsSinceEpoch();
   }
-  aiPanel_ = new AiPanel(rpc_->datadir(), nullptr);  // re-parented by CmdKPanel below
+  if (kShowAiAssistantPanel) {
+    aiPanel_ = new AiPanel(rpc_->datadir(), nullptr);  // re-parented by CmdKPanel below
+  }
   cmdKPanel_ = new dinero::qt::dashboard::CmdKPanel(rpc_, aiPanel_, contentArea);
   cmdKPanel_->setPanelWidth(0);
   // Feed qt-side local state into the dashboard: mining flags the daemon
@@ -2133,10 +2140,13 @@ void MainWindow::setupUI() {
 
   mainLayout->addWidget(contentArea, 1);
 
-  // AI Status Strip
-  aiStatusStrip_ = new AiStatusStrip(central);
-  connect(aiStatusStrip_, &AiStatusStrip::clicked, this, &MainWindow::onToggleAiPanel);
-  mainLayout->addWidget(aiStatusStrip_);
+  // AI Status Strip: parked with the AI assistant surface. The dashboard
+  // remains available through Ctrl+K.
+  if (kShowAiAssistantPanel) {
+    aiStatusStrip_ = new AiStatusStrip(central);
+    connect(aiStatusStrip_, &AiStatusStrip::clicked, this, &MainWindow::onToggleAiPanel);
+    mainLayout->addWidget(aiStatusStrip_);
+  }
   
   // === Overview Tab ===
   {
