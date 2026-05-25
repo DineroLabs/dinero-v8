@@ -358,6 +358,7 @@ public:
         size_t total_size;
         uint64_t total_fees;
         double avg_fee_rate;
+        double median_fee_rate;
         size_t min_fee_rate;
         size_t max_fee_rate;
         std::chrono::seconds oldest_tx_age;

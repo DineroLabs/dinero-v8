@@ -438,11 +438,13 @@ void NodePoller::parseChainInfo(const QJsonValue& result) {
     pending_chain_.our_height = static_cast<qint64>(
         obj.value("blocks").toDouble());
 
-    // This daemon returns difficulty as a decimal double (1310.72), not the
-    // Bitcoin nBits compact-form hex string. Round to a uint for display;
-    // tiny precision loss is acceptable at the dashboard granularity.
-    pending_chain_.difficulty_compact = static_cast<quint32>(
-        obj.value("difficulty").toDouble(0.0));
+    pending_chain_.difficulty = obj.value("difficulty").toDouble(0.0);
+    if (pending_chain_.net_consensus_height <= 0 && pending_chain_.our_height > 0) {
+        pending_chain_.net_consensus_height = pending_chain_.our_height;
+    }
+    if (pending_chain_.max_peer_height <= 0 && pending_chain_.our_height > 0) {
+        pending_chain_.max_peer_height = pending_chain_.our_height;
+    }
 
     Q_EMIT chainInfoUpdated(pending_chain_);
 }
@@ -463,8 +465,11 @@ void NodePoller::parsePeers(const QJsonValue& result) {
         r.relay_via_addr   = p.value("relay_via_addr").toString();
         r.is_inbound       = p.value("inbound").toBool();
         r.fleet_name       = fleetNameFor(r.addr);
-        r.height           = static_cast<qint64>(
-            p.value("synced_blocks").toDouble(-1));
+        r.height = static_cast<qint64>(
+            p.value("observed_sync_height").toDouble(
+                p.value("synced_blocks").toDouble(
+                    p.value("bestknownheight").toDouble(
+                        p.value("startingheight").toDouble(-1)))));
         // ping_ms + quality_score added in dinero-v8 PR #140. Daemons
         // predating that PR omit the fields; -1 / -1 keeps the dashboard's
         // "—" / "○" rendering for the un-upgraded case.
@@ -545,6 +550,9 @@ void NodePoller::parseMempool(const QJsonValue& result) {
     pending_chain_.mempool_tx_count = obj.value("size").toInt();
     pending_chain_.mempool_bytes    = static_cast<qint64>(
         obj.value("bytes").toDouble());
+    pending_chain_.has_median_fee = obj.contains("median_fee_rate");
+    pending_chain_.median_fee_una_per_vbyte =
+        obj.value("median_fee_rate").toDouble(0.0);
     Q_EMIT chainInfoUpdated(pending_chain_);
 }
 

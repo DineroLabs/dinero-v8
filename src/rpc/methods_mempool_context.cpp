@@ -101,6 +101,7 @@ din::Json rpc_context_mempool_getinfo(const ExecutionContext& ctx, const din::Js
 
         if (stats.tx_count > 0) {
             result["avg_fee_rate"] = stats.avg_fee_rate;
+            result["median_fee_rate"] = stats.median_fee_rate;
             result["min_fee_rate"] = static_cast<int>(stats.min_fee_rate);
             result["max_fee_rate"] = static_cast<int>(stats.max_fee_rate);
             result["oldest_tx_age_seconds"] = static_cast<int>(stats.oldest_tx_age.count());
