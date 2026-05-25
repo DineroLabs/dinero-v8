@@ -94,6 +94,26 @@ if ($missing.Count -gt 0) {
 }
 Write-Host "All 6 daemon binaries found." -ForegroundColor Green
 
+# Optional binaries: shipped if present, skipped silently otherwise.
+# dinero-seeder.exe lives in a different subdir (seeder/Release/) because
+# it's its own CMake project; gated on -DDINERO_BUILD_SEEDER=ON in the
+# top-level configure. Operators running a seed crawler want it in the
+# same archive as dinerod; users who don't need it pay nothing.
+$OptionalBinaries = @(
+    @{ Name = 'dinero-seeder.exe'; Path = (Join-Path $BuildDir 'seeder\Release\dinero-seeder.exe') }
+)
+$IncludedOptional = New-Object System.Collections.Generic.List[string]
+foreach ($entry in $OptionalBinaries) {
+    if (Test-Path $entry.Path) {
+        $IncludedOptional.Add($entry.Name)
+    }
+}
+if ($IncludedOptional.Count -gt 0) {
+    Write-Host ("Optional binaries to include: {0}" -f ($IncludedOptional -join ', ')) -ForegroundColor Green
+} else {
+    Write-Host "No optional binaries to include (build with -DDINERO_BUILD_SEEDER=ON for the seeder)."
+}
+
 $StageName = "dinero-v$Version-windows-x86_64-msvc"
 $StageDir  = Join-Path $OutputDir $StageName
 $BinSubDir = Join-Path $StageDir 'bin'
@@ -111,6 +131,14 @@ foreach ($b in $Binaries) {
     Copy-Item -Path $src -Destination $dst
     $sz = (Get-Item $dst).Length
     Write-Host ('  bin\{0}  {1} bytes' -f $b, $sz)
+}
+foreach ($entry in $OptionalBinaries) {
+    if (Test-Path $entry.Path) {
+        $dst = Join-Path $BinSubDir $entry.Name
+        Copy-Item -Path $entry.Path -Destination $dst
+        $sz = (Get-Item $dst).Length
+        Write-Host ('  bin\{0}  {1} bytes  [optional]' -f $entry.Name, $sz)
+    }
 }
 
 # Top-level LICENSE + README.txt. LICENSE pulled from repo root.
@@ -138,7 +166,12 @@ $readmeLines = @(
     "  dinero-miner.exe           CPU miner",
     "  dinero-stratum-worker.exe  Stratum worker client",
     "  dinero-gpu-miner.exe       GPU miner (OpenCL; runtime unvalidated on Windows)",
-    "  dinero-wallet-cli.exe      Reference wallet CLI",
+    "  dinero-wallet-cli.exe      Reference wallet CLI"
+)
+if ($IncludedOptional -contains 'dinero-seeder.exe') {
+    $readmeLines += "  dinero-seeder.exe          Peer-discovery crawler (DineroLabs seed fleet tool)"
+}
+$readmeLines += @(
     "",
     "Not included:",
     "  dinero-qt                  Qt6 GUI wallet (use the Windows installer)",
@@ -168,6 +201,9 @@ try {
     $files = @('README.txt', 'LICENSE')
     foreach ($b in $Binaries) {
         $files += "bin/$b"
+    }
+    foreach ($opt in $IncludedOptional) {
+        $files += "bin/$opt"
     }
     foreach ($rel in $files) {
         $full = $rel -replace '/', [IO.Path]::DirectorySeparatorChar
