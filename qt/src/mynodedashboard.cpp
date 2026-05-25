@@ -5,6 +5,7 @@
 #include "mynodedashboard.h"
 
 #include "contributionsection.h"
+#include "discoverysection.h"
 #include "identitysection.h"
 #include "networksection.h"
 #include "nodepoller.h"
@@ -33,11 +34,13 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
     networkSection_      = new NetworkSection(content);
     peersSection_        = new PeersSection(content);
     contributionSection_ = new ContributionSection(content);
+    discoverySection_    = new DiscoverySection(content);
 
     layout->addWidget(identitySection_);
     layout->addWidget(networkSection_);
     layout->addWidget(peersSection_, 1);
     layout->addWidget(contributionSection_);
+    layout->addWidget(discoverySection_);
 
     scroll->setWidget(content);
     outer->addWidget(scroll);
@@ -95,6 +98,8 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
     });
     connect(poller_, &NodePoller::decentralizationScoreUpdated,
             contributionSection_, &ContributionSection::setDecentralizationScore);
+    connect(poller_, &NodePoller::hintsUpdated,
+            discoverySection_, &DiscoverySection::setHints);
 }
 
 void MyNodeDashboard::start() { poller_->start(); }
