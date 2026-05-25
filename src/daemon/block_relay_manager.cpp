@@ -25,8 +25,12 @@ static constexpr uint32_t MSG_BLOCK = 2;
 // Constructor
 // ============================================================================
 
-BlockRelayManager::BlockRelayManager(ILogger* logger, std::shared_ptr<BlockDownloadScheduler> scheduler)
-    : logger_(logger)
+BlockRelayManager::BlockRelayManager(ILogger* logger,
+                                     std::shared_ptr<BlockDownloadScheduler> scheduler,
+                                     const dinero::network::ClockSource* clock)
+    : owned_clock_(clock ? nullptr : std::make_unique<dinero::network::SystemClockSource>())
+    , blocks_served_24h_(clock ? clock : owned_clock_.get())
+    , logger_(logger)
     , send_message_callback_(nullptr)
     , validate_block_callback_(nullptr)
     , retrieve_block_callback_(nullptr)
@@ -325,6 +329,9 @@ void BlockRelayManager::HandleGetData(const std::string& peer_address, const uin
         logger_->info("[BlockRelayManager] Sent block to " + peer_address +
                      ": " + block_hash.GetHex().substr(0, 16) + "...");
     }
+
+    // Phase 2b: count successful outbound block serve for blocks_served_24h metric.
+    blocks_served_24h_.Add(1);
 
     // Peer requested this block and we sent it — update their tracked height.
     if (chain_db_) {

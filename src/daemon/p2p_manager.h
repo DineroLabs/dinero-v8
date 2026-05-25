@@ -18,6 +18,7 @@
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
 #include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
+#include "network/rolling_24h_counter.h"  // Phase 2b: rolling 24h byte counter for relay-virtual traffic
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
 #include "network/token_bucket.h"     // NAT traversal: relay circuit bandwidth caps
@@ -441,6 +442,14 @@ public:
         return relay_registry_.grace_pending_count();
     }
 
+    // Phase 2b — rolling 24h total bytes carried over relay-virtual peers
+    // (sent + received via the relay-virtual data funnels). Surfaced via
+    // getnetworkinfo.relay.bytes_relayed_24h.
+    uint64_t BytesRelayed24h() const {
+        if (!bytes_relayed_24h_) return 0;
+        return bytes_relayed_24h_->Total24h();
+    }
+
     // ========================================================================
     // PHASE C: Persistent Peer Database & Adaptive Keepalive
     // ========================================================================
@@ -606,6 +615,28 @@ public:
     // last_register_sent_at is older than kRelayRegisterRefreshInterval.
     void SendRelayRegisterIfConfigured(PeerInfo* peer);
     void RefreshRelayRegistrations();
+
+    // Phase 2b — value-type snapshot for the relay_hints.list RPC.
+    // Built under relay_hints_mutex_; JSON construction happens with
+    // the lock released to keep the critical section short.
+    struct RelayHintRpcEndpoint {
+        dinero::p2p::NetworkType net;
+        std::vector<uint8_t>     addr;
+        uint16_t                 port{0};
+        uint64_t                 age_seconds{0};
+        int                      dial_failures{0};
+        bool                     near_eviction{false};
+    };
+    struct RelayHintRpcTarget {
+        std::string                          target_hex;
+        std::vector<RelayHintRpcEndpoint>    endpoints;
+    };
+    struct RelayHintRpcSnapshot {
+        std::vector<RelayHintRpcTarget>      entries;
+        uint64_t                             ttl_seconds{0};
+        int                                  max_failures{0};
+    };
+    RelayHintRpcSnapshot SnapshotRelayHintsForRpc() const;
 
 #ifdef DINERO_TEST_BUILD
     void set_plaintext_relay_dev_override_for_tests(bool allowed);
@@ -863,6 +894,19 @@ private:
     // Time source for TTL/expiry logic in the hints subsystem.
     // Defaults to SystemClockSource; tests inject a FakeClockSource.
     std::unique_ptr<dinero::network::ClockSource> clock_;
+
+    // Phase 2b: rolling 24h byte counter for bytes carried over relay-virtual
+    // peers (both directions). Declared after clock_ — clock_ is always set
+    // in the constructor body before bytes_relayed_24h_.emplace() is called.
+    // std::optional defers construction until clock_ is live.
+    std::optional<dinero::network::Rolling24hCounter> bytes_relayed_24h_;
+
+    // Increment bytes_relayed_24h_ from the relay-virtual data funnels.
+    // Safe to call on any thread; Rolling24hCounter::Add is lock-free in
+    // the hot path.
+    void RecordRelayBytes(uint64_t bytes) {
+        if (bytes_relayed_24h_) bytes_relayed_24h_->Add(bytes);
+    }
 
     mutable std::mutex relay_hints_mutex_;
     std::unordered_map<std::string, std::vector<RelayHintRecord>> relay_hints_by_target_;

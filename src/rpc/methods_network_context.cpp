@@ -24,6 +24,7 @@
 #include "rpc/peer_json_utils.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/p2p_service.h"
+#include "daemon/block_relay_manager.h"  // Task 5: BlocksServed24h()
 #include "consensus/chainparams.h"
 #include "common/logger.h"
 #include <memory>
@@ -264,6 +265,17 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     relay_directory["grace_pending"] =
         static_cast<Json::UInt64>(status.relay_directory_grace_pending);
     relay["directory"] = relay_directory;
+    // Phase 2b: 24h throughput counters — real inputs for the dashboard's
+    // Decentralization Score (replaces the 5min-extrapolation and
+    // zero-placeholder from Phase 2a).
+    if (ctx.daemon && ctx.daemon->block_relay) {
+        relay["blocks_served_24h"] = static_cast<Json::UInt64>(
+            ctx.daemon->block_relay->BlocksServed24h());
+    } else {
+        relay["blocks_served_24h"] = Json::UInt64(0);
+    }
+    relay["bytes_relayed_24h"] = static_cast<Json::UInt64>(
+        p2p->get().BytesRelayed24h());
     result["relay"] = relay;
 
     din::Json dynamic_p2p;

@@ -41,6 +41,8 @@
 #include "p2p/orphan_block_pool.h"    // Phase G.7: Orphan handling
 #include "p2p/compact_block.h"        // Phase G.13: Compact blocks
 #include "p2p/block_download_scheduler.h"  // Phase W.1: SyncPhase enum
+#include "network/clock_source.h"     // Phase 2b: injectable time source
+#include "network/rolling_24h_counter.h"  // Phase 2b: blocks_served_24h
 #include <functional>
 #include <unordered_set>
 #include <mutex>
@@ -132,8 +134,11 @@ public:
      * Constructor
      * @param logger Logger instance
      * @param scheduler Block download scheduler (optional - enables download coordination)
+     * @param clock Clock source for Rolling24hCounter (optional - defaults to SystemClockSource)
      */
-    explicit BlockRelayManager(ILogger* logger, std::shared_ptr<BlockDownloadScheduler> scheduler = nullptr);
+    explicit BlockRelayManager(ILogger* logger,
+                               std::shared_ptr<BlockDownloadScheduler> scheduler = nullptr,
+                               const dinero::network::ClockSource* clock = nullptr);
 
     ~BlockRelayManager() = default;
 
@@ -475,6 +480,15 @@ public:
      */
     Stats GetStats() const;
 
+    /**
+     * Phase 2b: Rolling 24-hour count of successful outbound block sends
+     * in response to getdata requests. Surfaced via
+     * getnetworkinfo.relay.blocks_served_24h.
+     *
+     * Thread-safe: backed by atomic bucket counters.
+     */
+    uint64_t BlocksServed24h() const { return blocks_served_24h_.Total24h(); }
+
     // ========================================================================
     // Phase G.10: Peer-Aware Intelligence
     // ========================================================================
@@ -660,6 +674,13 @@ private:
         Block partial_block;
         std::vector<uint32_t> missing_indexes;
     };
+
+    // Phase 2b: clock ownership (non-null when caller passes nullptr; keeps
+    // blocks_served_24h_ valid for the whole object lifetime).
+    std::unique_ptr<dinero::network::SystemClockSource> owned_clock_;
+
+    // Phase 2b: rolling 24h outbound block-serve counter.
+    dinero::network::Rolling24hCounter blocks_served_24h_;
 
     // Logger
     ILogger* logger_;

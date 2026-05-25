@@ -594,6 +594,7 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/methods_mempool_context.cpp
   src/rpc/methods_network_context.cpp
   src/rpc/rpc_dynamic_p2p_handlers.cpp  # dynamic_p2p.observe handler (Task 5)
+  src/rpc/rpc_relay_hints_handlers.cpp  # relay_hints.list handler (Phase 2b)
   src/rpc/methods_contract_context.cpp
   src/rpc/methods_economics_context.cpp
   src/rpc/methods_economics_vnext.cpp  # VNext DSL with full metadata (rpc.getcontext, etc.)
