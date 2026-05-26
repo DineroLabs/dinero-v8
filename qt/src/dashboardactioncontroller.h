@@ -15,6 +15,7 @@
 #include <functional>
 
 class RpcClient;
+class QTimer;
 
 namespace dinero::qt::dashboard {
 
@@ -44,10 +45,15 @@ public Q_SLOTS:
     void banPeer(const QString& endpoint, int seconds);
     void tryDirectReconnect(const QString& endpoint);
     void dialRelayHint(const HintRow& hint);
+    void setSeederOptIn(bool enabled);
+    void startSeeder();
+    void stopSeeder();
+    void refreshSeederStatus();
 
 Q_SIGNALS:
     void actionStatusChanged(const QString& message);
     void rpcDispatched(const QString& method, const QJsonValue& params, bool named);
+    void seederStateChanged(bool opted_in, bool running, const QString& status);
 
 private Q_SLOTS:
     void onRpcResult(const QString& method, const QJsonValue& result);
@@ -57,10 +63,16 @@ private:
     RpcClient* rpc_{nullptr};
     QWidget* parent_widget_{nullptr};
     ConfirmCallback confirm_callback_;
+    QTimer* seeder_status_timer_{nullptr};
+    bool seeder_opted_in_{false};
+    bool seeder_running_{false};
+    QString seeder_status_;
 
     bool confirm(const QString& title, const QString& body) const;
     void dispatchArray(const QString& method, const QJsonArray& params);
     void dispatchObject(const QString& method, const QJsonObject& params);
+    void emitSeederState();
+    static QString defaultSeederPath();
 };
 
 }  // namespace dinero::qt::dashboard

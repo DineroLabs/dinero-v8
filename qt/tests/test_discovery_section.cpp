@@ -5,7 +5,9 @@
 #include "discoverysection.h"
 #include "dashboardtypes.h"
 
+#include <QComboBox>
 #include <QLabel>
+#include <QPushButton>
 #include <QtTest/QtTest>
 
 using dinero::qt::dashboard::DiscoverySection;
@@ -76,6 +78,24 @@ private Q_SLOTS:
         s.setHints({});
         // No assertion: just verifying no crash during fade-out setup.
         QVERIFY(true);
+    }
+
+    void seeder_control_defaults_to_no_and_requires_opt_in() {
+        DiscoverySection s;
+        auto* combo = s.findChild<QComboBox*>();
+        auto* button = s.findChild<QPushButton*>();
+        QVERIFY(combo != nullptr);
+        QVERIFY(button != nullptr);
+        QCOMPARE(combo->currentText(), QStringLiteral("No"));
+        QCOMPARE(button->text(), QStringLiteral("Start Seeder"));
+        QVERIFY(!button->isEnabled());
+
+        s.setSeederState(true, false, QStringLiteral("Ready"));
+        QCOMPARE(combo->currentText(), QStringLiteral("Yes"));
+        QVERIFY(button->isEnabled());
+
+        s.setSeederState(true, true, QStringLiteral("Running"));
+        QCOMPARE(button->text(), QStringLiteral("Stop Seeder"));
     }
 };
 
