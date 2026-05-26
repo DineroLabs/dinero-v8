@@ -27,7 +27,7 @@ iOS in thin-client mode talks to one or more remote dinerod nodes through the ex
 
 1. **Can see** which blocks the client requests (`blockchain.getblock <hash>`). This is unchanged from the existing transparent light-client behavior.
 2. **Cannot see** which shielded outputs in those blocks belong to the client. The client trial-decrypts every shielded output's `encrypted_note` locally and silently discards non-matches; the remote node has no signal of which (if any) succeeded.
-3. **Cannot forge** balances or note ownership. Every claimed note must round-trip through commitment-tree verification anchored at a PoW-checked block hash; every spend (Phase 2) generates its own Spartan proof client-side.
+3. **Cannot forge** balances or note ownership. Every claimed note must round-trip through a locally maintained incremental shielded commitment tree anchored at a PoW-checked block hash; every spend (Phase 2) generates its own Spartan proof client-side.
 4. **Can withhold blocks** (DoS), in which case the client doesn't learn about new notes until a different RPC endpoint serves them. This is the same DoS surface as transparent light-client mode and is mitigated by the existing multi-endpoint fallback logic in `NodeKit.shared`.
 
 Privacy property summary: an adversary who controls every RPC endpoint the client ever talks to learns the wallet's blocks-of-interest set but does **not** learn which outputs in those blocks the wallet owns, the wallet's value flow, or anything about the wallet's view key. This is materially better than Zcash light-client mode (server sees scan-request shape) and Monero light-client mode (server sees value via outsourced view-key).
@@ -87,8 +87,8 @@ Every primitive listed below must match the daemon's reference implementation by
 
 - **Poseidon-2 over secp256k1 scalar field.** Port from `src/consensus/shielded/poseidon.cpp` (or wherever the daemon's Poseidon-2 lives — verify exact file before implementing). Hardest of the four ports because Poseidon is parameter-sensitive: round constants, S-box exponent, and MDS matrix all matter. The Swift implementation MUST use the same parameter set the daemon uses.
 - **Hash-to-curve XMD:SHA-256_SSWU_RO_ per RFC 9380 §8.7.** Used for deriving `pk_d = hash_to_point(d) · ivk`. CryptoKit lacks this; pure-Swift implementation following the RFC.
-- **ChaCha20-Poly1305 IETF (RFC 8439), 12-byte nonce.** CryptoKit has `ChaChaPoly` natively (`CryptoKit.ChaChaPoly`), but it uses 12-byte nonce + Poly1305 tag in the exact IETF profile we need. Verify the AAD/nonce layout matches `docs/specs/shielded_derivation.md` §7 before adopting CryptoKit; fall back to a pure-Swift impl if needed.
-- **HKDF-SHA256 (RFC 5869).** CryptoKit has `HKDF<SHA256>`. Verify exact `info` and `salt` semantics match the daemon side.
+- **ChaCha20-Poly1305 IETF (RFC 8439), 12-byte nonce.** CryptoKit has `ChaChaPoly` natively (`CryptoKit.ChaChaPoly`), and the daemon path in `src/wallet/shielded_derivation.cpp` uses the same IETF profile: nonce = 12 zero bytes, AAD = the 32-byte `epk`, output = ciphertext || 16-byte tag. M1 day-1 spike: verify CryptoKit's `SealedBox` combined/detached layout against this daemon byte layout. If it does not match cleanly, fall back to a pure-Swift port (~100 LOC).
+- **HKDF-SHA256 (RFC 5869).** CryptoKit has `HKDF<SHA256>`. The daemon's `kAeadInfo` is the ASCII bytes `DIN/v7/shielded/note`, with salt = `epk[0..32]` and IKM = the 32-byte ECDH shared secret. M1 day-1 spike: verify CryptoKit's `info`/`salt` semantics produce the same key bytes.
 
 #### Shielded key derivation
 
@@ -184,9 +184,10 @@ This step also detects mis-encryption attacks where an adversary sends valid AEA
 Each scanned block has a header hash. The client MUST:
 
 1. Verify the block hash against its locally synced header chain (already done by `FilterChainSync.swift`).
-2. Verify that the block's `commitment_tree_root_after` value (a field on the block — verify exact name in `shielded_block_validation.cpp`) is consistent with the previous root + the block's shielded outputs added in canonical order. This re-derives the on-chain commitment-tree root locally; if the client's local derivation disagrees with the block's reported root, the block is malicious-or-corrupt and the client refuses to advance.
+2. Maintain a local incremental shielded commitment tree replica from `shielded_activation_height` forward, hashing every shielded output commitment into the frontier in canonical block order.
+3. Verify that the block's reported `commitment_tree_root_after` value (verify the exact field name in `shielded_block_validation.cpp`) equals the locally derived root after appending that block's outputs.
 
-(The simpler alternative — trust the block's reported `commitment_tree_root_after` — is acceptable for Phase 1 receive-only because no value is at risk from a wrong root; the worst a malicious RPC can do is hide notes from the user. Phase 2 spend requires a real path-to-anchor verification, so we may as well lay the groundwork now.)
+M1 commits to full tree maintenance. Trusting the block's reported root is explicitly out of scope: it leaves the client exposed to malicious-RPC wrong-`leaf_index` scenarios that may only surface later as Phase 2 witness/spend failures. With full local maintenance, scan-time failure is a clear chain inconsistency, stored `leaf_index` values are provably tied to the local anchor, and Phase 2 witness RPCs only need to prove a path against an anchor the client already owns.
 
 #### `ShieldedNoteDiscovery` orchestrator
 
@@ -227,6 +228,8 @@ PRIMARY KEY (txid, output_index)
 ```
 
 Reorg-safe: on reorg, the existing `FilterChainSync` rollback path rolls back transparent UTXOs from `UTXOStore`; the same path also calls into `ShieldedNoteStore` to truncate notes whose `block_height` is above the new tip.
+
+Memo handling is store-only in M1: decrypt and persist the fixed-length memo blob, but do not surface it in the UI. M1.5 adds a narrow HistoryView detail expansion: row tap shows memo text in monospace up to 240 chars with a "show full" affordance. Markdown rendering and attachments stay out of scope; memos must not become a side channel.
 
 #### Integration with existing UX
 
@@ -297,7 +300,9 @@ Returns a Merkle path from the requested leaf to the root at `anchor_height`. iO
 ## Phasing
 
 - **M1 (Phase 1 receive-only, no daemon changes):**
-  iOS ports Poseidon, hash-to-curve, ChaCha20-Poly1305 (or adopts CryptoKit), HKDF, the shielded key tree, encrypted_note layout, commitment recompute, anchor verify, and `ShieldedNoteDiscovery`. Uses existing `getblock` RPC. Trial-decrypts every shielded output in every block-of-interest. Surfaces balance + history in `WalletShieldedView` even in thin-client mode.
+  iOS ports Poseidon, hash-to-curve, ChaCha20-Poly1305 (or adopts CryptoKit), HKDF, the shielded key tree, encrypted_note layout, commitment recompute, full incremental commitment-tree maintenance, and `ShieldedNoteDiscovery`. Uses existing `getblock` RPC. Trial-decrypts every shielded output in every block-of-interest. Scans the active wallet only. Surfaces balance + history in `WalletShieldedView` even in thin-client mode, with memos persisted but not rendered.
+- **M1.5 (UX follow-up):**
+  Add memo rendering in HistoryView detail and an explicit archived-wallet scan preference if users ask for it. Archived-wallet scanning is not part of M1.
 - **M2 (bandwidth optimization, daemon-side):**
   Add `blockchain.shielded.outputs <hash>` RPC. iOS uses it in preference to `getblock` when available. ~80% bandwidth reduction. Optional but the daemon work is small (~150 LOC + tests).
 - **M3 (Phase 2 spend):**
@@ -314,10 +319,11 @@ Estimates per the M1 design (trial-decrypt every shielded output):
   - ChaCha20-Poly1305 open: ~1 µs per 611-byte ciphertext on iPhone 16 (CryptoKit-accelerated).
   - ECDH on secp256k1: ~30 µs per output (existing Secp256k1.swift uses libsecp256k1 — verified fast).
   - Poseidon2 commit reverify on successful decrypt only: rare; ~100 µs.
+  - Commitment-tree maintenance: ~1 ms/block to append every shielded output commitment and update the frontier.
   - Total per output: ~30 µs ECDH + ~1 µs AEAD = ~31 µs typical.
-  - Per block (10 shielded outputs avg): ~310 µs.
-- **Catchup time for a fresh wallet:** chain at h≈30k, ~10 outputs/block average → 300k trial-decrypts → ~10 sec on iPhone CPU. Acceptable for a one-time first-launch sync.
-- **Steady-state scan cost:** ~310 µs per 2-min block = essentially zero battery impact.
+  - Per block (10 shielded outputs avg): ~310 µs trial-decrypt + ~1 ms tree maintenance.
+- **Catchup time for a fresh wallet:** chain at h≈30k, `shielded_activation_height = 8650`, ~22k blocks, ~10 outputs/block average → ~220k-300k trial-decrypts (~10 sec) plus ~22 sec full tree maintenance. Budget ~32 sec on first sync. Acceptable for a one-time restore because it runs with progress UI and can continue in background.
+- **Steady-state scan cost:** ~1.3 ms per 2-min block = essentially zero battery impact.
 - **Network bandwidth:** full block fetch ~50 KB/block × N blocks. ~36 MB to catch up the whole chain at h=30k. With M2 (`shielded.outputs`), drops to ~7 MB.
 
 These numbers comfortably fit within mobile resource budgets.
@@ -345,13 +351,13 @@ These numbers comfortably fit within mobile resource budgets.
 - `BlockchainShieldedOutputsRpcTest`: regtest scenario shields 5 notes, calls `blockchain.shielded.outputs <hash>`, asserts it returns exactly those 5 outputs with correct `commitment` + `encrypted_note` bytes.
 - `BlockchainShieldedOutputsBandwidthTest`: assert payload size is < 20% of equivalent `getblock` result.
 
-## Open questions
+## M1 decisions
 
-1. **CryptoKit ChaCha20-Poly1305 compatibility.** CryptoKit's `ChaChaPoly.SealedBox` uses 12-byte nonce + 16-byte tag and produces output in the IETF format. Verify the AAD handling matches `docs/specs/shielded_derivation.md` exactly. If not, fall back to a pure-Swift port.
-2. **Anchor verification scope in M1.** Re-deriving the commitment-tree root locally on every block is non-trivial (Sapling-shape trees have specific incremental-hash semantics). For M1 receive-only, can we accept the block's reported `commitment_tree_root_after` without re-derivation? The trust assumption is "if a malicious RPC reports a wrong root, the worst case is hiding notes" — but verify this is actually load-bearing for Phase 2 spend before deciding.
-3. **Multi-account support.** DineroDPI today supports multiple wallets. Does Phase 1 scan all `account` branches in parallel, or only the active wallet? Default to "active wallet only" with a "scan archived accounts" opt-in.
-4. **Memo handling.** The 479-byte memo field is decrypted as part of trial-decrypt. Phase 1 just stores it; UX in HistoryView could surface short memos. Out of scope for Phase 1.
-5. **Recovery from wipe.** If the user wipes the app and restores from seed, the scanner must scan the entire chain from `shielded_activation_height = 8650` to current tip. At h≈30k that's ~22k blocks. Acceptable one-time cost (~10 sec) but should show progress UI.
+1. **CryptoKit compatibility is a day-1 spike, not a blocker.** `ChaChaPoly` + `HKDF<SHA256>` should cover the daemon path directly; verify the exact `kAeadInfo`, salt, nonce, AAD, and ciphertext/tag layout first. Fall back to a small pure-Swift AEAD port only if byte parity fails.
+2. **Anchor verification uses full incremental tree maintenance.** M1 does not trust the block's reported root. The client appends every shielded output commitment locally and refuses to advance on root mismatch.
+3. **Wallet scope is active-wallet-only.** This matches existing transparent `FilterBasedDiscovery` behavior. Archived wallet/account scanning is deferred to M1.5 behind a user preference if demand appears.
+4. **Memos are store-only in M1.** The scanner persists memo blobs in `ShieldedNoteStore`; UI rendering is M1.5.
+5. **Recovery-from-wipe requires progress UI.** During restore/rescan, show a non-modal banner: `Scanning shielded history... block 12,847 / 22,103 (58%)`. Users can dismiss the banner into background; scanning continues in the existing iOS `BGProcessing` slot already used by `FilterChainSync`. Transparent balance, send, and history remain usable. On completion, show a one-time toast: `Shielded ready - N notes synced`.
 
 ## File map
 
