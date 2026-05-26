@@ -198,14 +198,16 @@ M1 commits to full tree maintenance. Trusting the block's reported root is expli
 
 Sapling-shape incremental Merkle frontiers append cheaply but cannot pop. On a reorg the client cannot simply remove the disconnected blocks' leaves and continue — the frontier state above the new tip is invalid and must be reconstructed.
 
-**M1 strategy: periodic snapshots + forward replay.**
+**Invariant (load-bearing for both M1 receive and M3 spend):** the client persists a verified frontier snapshot every `kSnapshotInterval = 256` blocks and retains the last `kSnapshotRetention = 8` snapshots at all times. This is **not an optimization** — it is the local anchor lineage that the witness verification in M3 will use to prove paths against. Reducing the retention, lengthening the interval, or skipping snapshots under storage pressure all break the ability to produce a valid spend witness after a reorg.
 
-- `CommitmentTree.swift` persists a full frontier snapshot every `kSnapshotInterval = 256` blocks (~8.5 hr at ~2 min/block, well above Dinero's policy-bounded reorg depth of 100 blocks).
-- Snapshots are written atomically to `<datadir>/shielded_tree_snapshots/<height>.bin` and pruned to the last `kSnapshotRetention = 8` entries (~2 days of rollback headroom).
+Concretely:
+
+- `CommitmentTree.swift` persists a full frontier snapshot every 256 blocks (~8.5 hr at ~2 min/block, well above Dinero's policy-bounded reorg depth of 100 blocks).
+- Snapshots are written atomically to `<datadir>/shielded_tree_snapshots/<height>.bin` and pruned to the last 8 entries (~2 days of rollback headroom). Retention below 8 is a correctness regression, not a tuning knob.
 - On reorg detection (driven by `FilterChainSync`), the client picks the most recent snapshot at or below `new_tip - 100` (the deepest reorg the consensus allows), loads it as the active frontier, and re-applies blocks from snapshot height up to the new tip in canonical order.
-- If no snapshot is recent enough (catastrophic deep reorg or fresh wipe), fall back to full rebuild from `shielded_activation_height` — same code path the first-launch sync uses.
+- If no snapshot is recent enough (catastrophic deep reorg deeper than retention covers, or fresh wipe), fall back to full rebuild from `shielded_activation_height` — same code path the first-launch sync uses.
 
-Snapshot file format mirrors the daemon's existing `anchor_history.bin` shape from `src/consensus/shielded/anchor_history.cpp`: `[magic 0xB0C30001][version 1][height][frontier-node-count][frontier-nodes...]`. Atomic via `path.tmp` rename. Failure non-fatal (rebuild from earlier snapshot or full scan).
+Snapshot file format mirrors the daemon's existing `anchor_history.bin` shape from `src/consensus/shielded/anchor_history.cpp`: `[magic 0xB0C30001][version 1][height][frontier-node-count][frontier-nodes...]`. Atomic via `path.tmp` rename. Failure of an individual snapshot write is non-fatal in the short term (the in-memory frontier remains valid until next snapshot interval), but repeated failures must be surfaced — silent loss of snapshot lineage degrades to "always full-rebuild on reorg" which is acceptable for receive-only M1 but breaks M3 spend.
 
 **Cost:** one snapshot every 256 blocks × ~2 KB per snapshot (Sapling-shape frontier is O(log N) nodes, ~50 × 32 bytes at h=30k) = ~250 KB on disk for the 8-snapshot retention window. Replay after reorg: ≤256 blocks × ~1 ms tree work = ≤256 ms, well below user-visible threshold.
 
@@ -263,7 +265,7 @@ The existing `WalletShieldedView` already calls `wallet.listshielded` / `wallet.
 
 To spend a discovered note, the client needs:
 
-1. **The note's full witness:** Merkle path from the note's leaf to a recent anchor in the commitment tree. The local `ShieldedNoteStore` records `leaf_index`; the client fetches the path on demand via the new `shielded.witness.by_index <leaf_idx> <anchor_height>` RPC, then verifies the path against the locally-stored anchor (which was itself anchored at the PoW-checked block hash during scanning).
+1. **The note's full witness:** Merkle path from the note's leaf to a recent anchor in the commitment tree. The local `ShieldedNoteStore` records `leaf_index`; the client fetches the path on demand via the new `shielded.witness.by_index <leaf_idx> <anchor_height>` RPC, then verifies the path against the locally-stored anchor (which was itself anchored at the PoW-checked block hash during scanning). **This step depends on the M1 snapshot-retention invariant above** — the witness verification anchor must come from a frontier snapshot the client computed itself, not from a server-reported root. Phase 2 spend cannot ship unless the M1 snapshot lineage is intact; treat that invariant as part of Phase 2's correctness contract, not as M1 polish.
 2. **A Spartan spend proof.** Generated client-side. This requires porting the Spartan prover to Swift OR using a precompiled library. The daemon's Spartan/Hyrax/Nova prover is C++; expose it via a thin Swift bridge using SwiftPM + a vendored `.xcframework`. **This is the hardest part of Phase 2** and is roughly equivalent in scope to the rest of Phase 1 combined.
 3. **A signed transaction envelope.** iOS already has `TransactionBuilder` + `TaprootSigner` for transparent; extend to wrap the shielded spend bundle + binding-sig.
 
