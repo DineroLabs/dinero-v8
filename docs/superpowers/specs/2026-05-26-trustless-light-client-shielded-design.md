@@ -85,7 +85,7 @@ The daemon-side filter is structurally identical to DNRF (`filter_commitment.h`)
 
 Every primitive listed below must match the daemon's reference implementation byte-for-byte. Test vectors live at `docs/specs/shielded_v030_test_vectors.md` and must round-trip on iOS.
 
-- **Poseidon-2 over secp256k1 scalar field.** Port from `src/consensus/shielded/poseidon.cpp` (or wherever the daemon's Poseidon-2 lives — verify exact file before implementing). Hardest of the four ports because Poseidon is parameter-sensitive: round constants, S-box exponent, and MDS matrix all matter. The Swift implementation MUST use the same parameter set the daemon uses.
+- **Poseidon-2 over secp256k1 scalar field.** Port from `src/consensus/shielded/poseidon.cpp` (or wherever the daemon's Poseidon-2 lives — verify exact file before implementing). Hardest of the four ports because Poseidon is parameter-sensitive: round constants, S-box exponent, and MDS matrix all matter. The Swift implementation MUST use the same parameter set the daemon uses. **Performance unknown.** All per-block timing estimates in this spec assume Swift Poseidon-2 reaches throughput close to the daemon's C++ implementation; realistic ranges without SIMD intrinsics or hand-tuning are 3-5× slower, which would push first-sync from ~32 s to ~60-110 s. If the day-2 micro-benchmark misses budget, the mitigation is to expose the daemon's Poseidon as a `.xcframework` (precompiled C++) — the same technique M3 plans for the Spartan prover. Don't ship a slow pure-Swift Poseidon if it bottlenecks the scanner.
 - **Hash-to-curve XMD:SHA-256_SSWU_RO_ per RFC 9380 §8.7.** Used for deriving `pk_d = hash_to_point(d) · ivk`. CryptoKit lacks this; pure-Swift implementation following the RFC.
 - **ChaCha20-Poly1305 IETF (RFC 8439), 12-byte nonce.** CryptoKit has `ChaChaPoly` natively (`CryptoKit.ChaChaPoly`), and the daemon path in `src/wallet/shielded_derivation.cpp` uses the same IETF profile: nonce = 12 zero bytes, AAD = the 32-byte `epk`, output = ciphertext || 16-byte tag. M1 day-1 spike: verify CryptoKit's `SealedBox` combined/detached layout against this daemon byte layout. If it does not match cleanly, fall back to a pure-Swift port (~100 LOC).
 - **HKDF-SHA256 (RFC 5869).** CryptoKit has `HKDF<SHA256>`. The daemon's `kAeadInfo` is the ASCII bytes `DIN/v7/shielded/note`, with salt = `epk[0..32]` and IKM = the 32-byte ECDH shared secret. M1 day-1 spike: verify CryptoKit's `info`/`salt` semantics produce the same key bytes.
@@ -187,7 +187,27 @@ Each scanned block has a header hash. The client MUST:
 2. Maintain a local incremental shielded commitment tree replica from `shielded_activation_height` forward, hashing every shielded output commitment into the frontier in canonical block order.
 3. Verify that the block's reported `commitment_tree_root_after` value (verify the exact field name in `shielded_block_validation.cpp`) equals the locally derived root after appending that block's outputs.
 
+**Endpoint divergence.** If two RPC endpoints disagree on `commitment_tree_root_after` for the same block hash, the client knows at least one is malicious or corrupt. M1 behavior:
+- The endpoint whose reported root mismatches the local derivation is marked `untrusted_until_session_restart` in `NodeKit`'s per-endpoint health state.
+- Scanner switches to the next healthy endpoint via the existing multi-endpoint fallback and retries from the last-verified snapshot height.
+- If all endpoints diverge from the local derivation, the local derivation is the source of truth (the client has the headers and the block-of-interest data, and tree maintenance is deterministic). Surface a one-time alert: `Network inconsistency detected. Shielded sync paused until a trusted endpoint is available.` No funds at risk in receive-only M1; spend (M3) refuses to proceed in this state.
+
 M1 commits to full tree maintenance. Trusting the block's reported root is explicitly out of scope: it leaves the client exposed to malicious-RPC wrong-`leaf_index` scenarios that may only surface later as Phase 2 witness/spend failures. With full local maintenance, scan-time failure is a clear chain inconsistency, stored `leaf_index` values are provably tied to the local anchor, and Phase 2 witness RPCs only need to prove a path against an anchor the client already owns.
+
+#### Commitment-tree reorg handling
+
+Sapling-shape incremental Merkle frontiers append cheaply but cannot pop. On a reorg the client cannot simply remove the disconnected blocks' leaves and continue — the frontier state above the new tip is invalid and must be reconstructed.
+
+**M1 strategy: periodic snapshots + forward replay.**
+
+- `CommitmentTree.swift` persists a full frontier snapshot every `kSnapshotInterval = 256` blocks (~8.5 hr at ~2 min/block, well above Dinero's policy-bounded reorg depth of 100 blocks).
+- Snapshots are written atomically to `<datadir>/shielded_tree_snapshots/<height>.bin` and pruned to the last `kSnapshotRetention = 8` entries (~2 days of rollback headroom).
+- On reorg detection (driven by `FilterChainSync`), the client picks the most recent snapshot at or below `new_tip - 100` (the deepest reorg the consensus allows), loads it as the active frontier, and re-applies blocks from snapshot height up to the new tip in canonical order.
+- If no snapshot is recent enough (catastrophic deep reorg or fresh wipe), fall back to full rebuild from `shielded_activation_height` — same code path the first-launch sync uses.
+
+Snapshot file format mirrors the daemon's existing `anchor_history.bin` shape from `src/consensus/shielded/anchor_history.cpp`: `[magic 0xB0C30001][version 1][height][frontier-node-count][frontier-nodes...]`. Atomic via `path.tmp` rename. Failure non-fatal (rebuild from earlier snapshot or full scan).
+
+**Cost:** one snapshot every 256 blocks × ~2 KB per snapshot (Sapling-shape frontier is O(log N) nodes, ~50 × 32 bytes at h=30k) = ~250 KB on disk for the 8-snapshot retention window. Replay after reorg: ≤256 blocks × ~1 ms tree work = ≤256 ms, well below user-visible threshold.
 
 #### `ShieldedNoteDiscovery` orchestrator
 
@@ -322,7 +342,7 @@ Estimates per the M1 design (trial-decrypt every shielded output):
   - Commitment-tree maintenance: ~1 ms/block to append every shielded output commitment and update the frontier.
   - Total per output: ~30 µs ECDH + ~1 µs AEAD = ~31 µs typical.
   - Per block (10 shielded outputs avg): ~310 µs trial-decrypt + ~1 ms tree maintenance.
-- **Catchup time for a fresh wallet:** chain at h≈30k, `shielded_activation_height = 8650`, ~22k blocks, ~10 outputs/block average → ~220k-300k trial-decrypts (~10 sec) plus ~22 sec full tree maintenance. Budget ~32 sec on first sync. Acceptable for a one-time restore because it runs with progress UI and can continue in background.
+- **Catchup time for a fresh wallet:** chain at h≈30k, `shielded_activation_height = 8650`, ~22k blocks, ~10 outputs/block average → ~220k-300k trial-decrypts (~10 sec) plus ~22 sec full tree maintenance. Budget ~32 sec on first sync **under today's mainnet conditions (light shielded adoption).** Once mobile thin-client mode unblocks shielded adoption — the explicit goal of this work — outputs/block grows and catchup grows linearly. A wallet recovering from wipe 12-18 months after broad activation could see 3-10× more outputs/block; first-sync budgeting should plan for ~3-5 minutes under those conditions. Mitigations available without spec changes: M2 bandwidth optimization reduces I/O; the `.xcframework` Poseidon mitigation reduces CPU; both compose. Acceptable for a one-time restore because it runs with progress UI and can continue in background.
 - **Steady-state scan cost:** ~1.3 ms per 2-min block = essentially zero battery impact.
 - **Network bandwidth:** full block fetch ~50 KB/block × N blocks. ~36 MB to catch up the whole chain at h=30k. With M2 (`shielded.outputs`), drops to ~7 MB.
 
@@ -339,6 +359,7 @@ These numbers comfortably fit within mobile resource budgets.
 - `NoteCipherTests`: trial-decrypt a known-good ciphertext succeeds; same ciphertext with wrong ivk fails; AEAD-tampered ciphertext fails with correct ivk.
 - `CommitmentRecomputeTests`: ports the equivalent of `src/test/pedersen_tests.cpp::CommitmentReproducibility`.
 - `ShieldedNoteStoreTests`: write, read, mark-spent, rollback-on-reorg.
+- `CommitmentTreeSnapshotTests`: append N=1000 leaves, snapshot at intervals, simulate reorg back 80 blocks, replay forward, assert frontier-root matches a pristine rebuild. Repeat at boundaries (h%256==0, h%256==255).
 
 ### iOS integration tests
 
@@ -368,7 +389,7 @@ These numbers comfortably fit within mobile resource budgets.
 - New: `DineroDPI/DineroDPI/Core/Shielded/ShieldedKeys.swift` (~300 LOC)
 - New: `DineroDPI/DineroDPI/Core/Shielded/ShieldedAddress.swift` (~150 LOC)
 - New: `DineroDPI/DineroDPI/Core/Shielded/NoteCipher.swift` (~200 LOC)
-- New: `DineroDPI/DineroDPI/Core/Shielded/CommitmentTree.swift` (~250 LOC)
+- New: `DineroDPI/DineroDPI/Core/Shielded/CommitmentTree.swift` (~350 LOC — frontier maintenance + snapshot persistence + reorg replay)
 - New: `DineroDPI/DineroDPI/Core/Shielded/AnchorVerifier.swift` (~100 LOC)
 - New: `DineroDPI/DineroDPI/Core/Shielded/ShieldedNote.swift` (~80 LOC value type)
 - New: `DineroDPI/DineroDPI/Core/Filters/ShieldedNoteDiscovery.swift` (~300 LOC)
