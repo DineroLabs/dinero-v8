@@ -66,6 +66,30 @@ Result: **47 tests, 0 failures.**
 
 ## Perf measurements (2026-05-26)
 
+**iPhone 26.5 physical device, Release, ENABLE_TESTABILITY=YES:**
+
+| Test | Value |
+|---|---|
+| `PoseidonTests/test_perf_canary_noBigIntRegression` | **170.34 µs/eval** over 1000 iterations |
+
+Command used:
+
+```bash
+xcodebuild -project DineroDPI/DineroDPI.xcodeproj \
+  -scheme DineroDPI \
+  -configuration Release \
+  -destination 'id=00008130-0008384C20FA8D3A' \
+  test \
+  -only-testing:DineroDPITests/PoseidonTests/test_perf_canary_noBigIntRegression \
+  ENABLE_TESTABILITY=YES \
+  -allowProvisioningUpdates
+```
+
+Result: **1 selected test, 0 failures.** Local note: the shared scheme's
+`DineroDPIUITests` testable was removed in the temp worktree for this benchmark
+run because Xcode built the UI test bundle before honoring the selected unit
+test filter. No production code changed.
+
 **iPad (A16) Simulator, Release, ENABLE_TESTABILITY=YES, Mac M-series silicon:**
 
 | Test | Value |
@@ -77,29 +101,25 @@ Result: **47 tests, 0 failures.**
 | Configuration | µs/eval | Ratio vs daemon native |
 |---|---|---|
 | Daemon C++ `-O3` via libsecp256k1, Mac M-series | 24.77 | 1.0× (reference) |
+| Swift via libsecp256k1 wrappers, **iPhone physical Release** | **170.34** | 6.88× |
 | Swift via libsecp256k1 wrappers, **iPad sim Release** | **194.63** | 7.85× |
 | Swift+BigInt regression-shape, Mac native Release | 274 | 11.07× (this would be the FAIL state) |
 | Swift via libsecp256k1 wrappers, iPad sim Debug | ~310 | 12.5× (sim+Debug overhead) |
 
-**On-device iPhone Release: BLOCKED on local Xcode provisioning fix.**
+**On-device iPhone Release: PASSED.**
 
-`xcodebuild test … -destination 'id=<iPhone>'` currently fails because the project's
-saved provisioning profile (`iOS Team Provisioning Profile: *`) doesn't include
-the local signing certificate (`Apple Development: Mirsad Hajdarevic (3QCCW489L8)`).
-This is a per-machine Xcode UI fix (Signing & Capabilities → toggle automatic
-signing) — not addressable from CLI without altering project signing config.
+The real device number is slightly faster than the iPad simulator proxy and
+preserves the same perf-shape decision: pure Swift + libsecp256k1 wrappers are
+correct and usable for M1, but miss the original 67 µs gate.
 
-**Best projection from iPad sim Release:** real iPhone Release will be roughly
-equivalent (~150-300 µs/eval depending on A-series vs M-series perf delta).
-
-## Gate reconciliation — plan-stated 67 µs vs measured ~195 µs
+## Gate reconciliation — plan-stated 67 µs vs measured ~170 µs
 
 The original plan's `≤ 67 µs/eval` gate was derived from Spike #2's optimistic
 "Swift→C call overhead ≈ ns-scale → projected ~30-50 µs/eval." Empirical
-measurement shows the real overhead is `~8×` over native C++ (not `~1.5×`),
-producing `~195 µs/eval` instead of `~40 µs/eval`.
+measurement shows the real overhead is `~7×` over native C++ (not `~1.5×`),
+producing `~170 µs/eval` on device instead of `~40 µs/eval`.
 
-**This misses the strict 67 µs gate by ~3×.** But the spec line 347 explicitly
+**This misses the strict 67 µs gate by ~2.5×.** But the spec line 347 explicitly
 contemplates this case:
 
 > "Catchup time … first-sync budgeting should plan for **~3-5 minutes** under
@@ -109,7 +129,7 @@ contemplates this case:
 > progress UI and can continue in background.**"
 
 **Translating to user-facing wall-clock at 22k blocks × ~10 outputs/block:**
-- Trial-decrypt + tree maintenance @ 195 µs/eval → **~43 sec** for owned trial-decrypts only (220k Poseidons), plus tree maintenance overhead
+- Trial-decrypt + tree maintenance @ 170 µs/eval → **~37 sec** for owned trial-decrypts only (220k Poseidons), plus tree maintenance overhead
 - Conservative ceiling: **~2-3 min** first-sync wall-clock (within spec's acceptable range)
 - With `.xcframework` Poseidon mitigation (M3 dependency anyway): **~30 sec** first-sync
 
@@ -118,14 +138,11 @@ The 67 µs gate in the plan was over-optimistic and is being corrected here.
 
 ## Follow-ups documented
 
-1. **iPhone Release on-device bench** — once Xcode provisioning is fixed, re-run
-   the same test and add the actual µs/eval line to this log. Don't block PR on it;
-   sim Release is a representative-enough proxy for the perf-shape decision.
-2. **`.xcframework` Poseidon mitigation** — already on the roadmap for M3 (Spartan
+1. **`.xcframework` Poseidon mitigation** — already on the roadmap for M3 (Spartan
    prover wrap). When M3 lands the infrastructure, M1's Swift Poseidon stays as
    the byte-equivalent reference impl in tests; production scanner switches to
    the wrapped C++ for ~8× speedup.
-3. **First-sync UX** — when BlockParser/FilterChainSync wiring lands in the
+2. **First-sync UX** — when BlockParser/FilterChainSync wiring lands in the
    T8 follow-up PR, the scanner integration MUST include a progress bar +
    background-continue UX. Per-block scan is already fast; the user-visible
    metric is total elapsed time, not per-eval time.
