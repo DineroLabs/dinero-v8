@@ -21,6 +21,11 @@ local owned note
 - DineroDPI witness client, note-store migration, nullifier fix, one-note unshield builder
 - sanity log with daemon and physical-iPhone timings
 
+**Post-witness follow-up:** Tasks 1-2 shipped in PR #164 and were deployed to the fleet at
+`baa12e93d8478838e489f540ad20e3210884805a`. The active prover/iOS implementation
+slice is now tracked in
+`docs/superpowers/plans/2026-05-27-trustless-light-client-shielded-m3-prover-ios-plan.md`.
+
 **Out of scope:**
 
 - multi-note spends
