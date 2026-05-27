@@ -43,6 +43,8 @@
 #include "consensus/chainparams.h"
 #include "consensus/merkle_root.h"  // For ComputeMerkleRoot (Phase 11a.2)
 #include "consensus/shielded/shielded_output_feed.h"  // M2: shielded outputs RPC
+#include "consensus/shielded/shielded_witness.h"      // M3: witness builder RPC
+#include "util/hex.h"                                 // M3: parse anchor_root hex param
 // Phase 39: chain_manager.h deleted (ChainManager removed)
 #include "primitives/uint256.h"  // Phase M.0: For uint256 type
 #include "common/address_script_builder.h"  // Phase W.1.1: For BuildScriptPubKeyFromAddress
@@ -3365,6 +3367,176 @@ static din::Json rpc_context_shieldedoutputs(const ExecutionContext& ctx, const 
     return result;
 }
 
+/**
+ * shielded.witness.by_index — Trustless witness builder (M3).
+ *
+ * Returns the 32-sibling auth path for a shielded commitment leaf at a
+ * client-pinned `anchor_height` + `anchor_root`. The daemon replays the
+ * public output feed from `shielded_activation_height` through the
+ * anchor, rebuilds a fresh full-leaf commitment tree, validates the
+ * client's anchor root, and emits the path. If the daemon's deterministic
+ * replay disagrees with the client's anchor, the request is refused —
+ * the client has staked their trust on `anchor_root`, and a path that
+ * would not verify is worse than no path.
+ *
+ * Params: { "leaf_index": uint64, "anchor_height": uint32, "anchor_root": hex(32) }
+ *   or positional: [leaf_index, anchor_height, anchor_root]
+ *
+ * Response shape — see
+ * docs/superpowers/specs/2026-05-27-trustless-light-client-shielded-m3-spend-design.md.
+ */
+static din::Json rpc_context_shieldedwitnessbyindex(const ExecutionContext& ctx, const din::Json& params) {
+    din::Json result;
+
+    if (!ctx.daemon || !ctx.daemon->chainstate) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "Chainstate service not available";
+        return result;
+    }
+
+    auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    dinero::ChainDB* chain_db = chainstate ? chainstate->GetChainDB() : nullptr;
+    if (!chain_db) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "ChainDB not initialized";
+        return result;
+    }
+
+    // ── Param parsing ───────────────────────────────────────────────
+    uint64_t    leaf_index    = 0;
+    uint32_t    anchor_height = 0;
+    std::string anchor_root_hex;
+    bool        have_leaf_index    = false;
+    bool        have_anchor_height = false;
+    bool        have_anchor_root   = false;
+
+    auto read_uint64 = [](const din::Json& v, uint64_t& out) -> bool {
+        if (v.isUInt64() || v.isUInt()) {
+            out = v.asUInt64();
+            return true;
+        }
+        if (v.isInt64() && v.asInt64() >= 0) {
+            out = static_cast<uint64_t>(v.asInt64());
+            return true;
+        }
+        return false;
+    };
+
+    auto read_uint32 = [&](const din::Json& v, uint32_t& out) -> bool {
+        uint64_t wide = 0;
+        if (!read_uint64(v, wide) || wide > 0xFFFFFFFFULL) {
+            return false;
+        }
+        out = static_cast<uint32_t>(wide);
+        return true;
+    };
+
+    if (params.isArray()) {
+        if (params.size() > 0) have_leaf_index    = read_uint64(params[0], leaf_index);
+        if (params.size() > 1) have_anchor_height = read_uint32(params[1], anchor_height);
+        if (params.size() > 2 && params[2].isString()) {
+            anchor_root_hex = params[2].asString();
+            have_anchor_root = true;
+        }
+    } else if (params.isObject()) {
+        if (params.isMember("leaf_index")) {
+            have_leaf_index = read_uint64(params["leaf_index"], leaf_index);
+        }
+        if (params.isMember("anchor_height")) {
+            have_anchor_height = read_uint32(params["anchor_height"], anchor_height);
+        }
+        if (params.isMember("anchor_root") && params["anchor_root"].isString()) {
+            anchor_root_hex = params["anchor_root"].asString();
+            have_anchor_root = true;
+        }
+    }
+
+    if (!have_leaf_index || !have_anchor_height || !have_anchor_root) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "required params: leaf_index(uint64), anchor_height(uint32), anchor_root(hex)";
+        return result;
+    }
+
+    // Anchor_root is the load-bearing client commitment; reject malformed input.
+    std::vector<uint8_t> anchor_root_bytes = util::HexToBytes(anchor_root_hex);
+    if (anchor_root_bytes.size() != ::dinero::consensus::shielded::HASH_BYTES) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "anchor_root must be 32-byte hex (64 chars)";
+        return result;
+    }
+
+    // Tip-bounds check: a wallet must not request an anchor newer than the daemon has.
+    auto tip_result = chain_db->getTip();
+    if (!tip_result.ok()) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "Failed to get chain tip";
+        return result;
+    }
+    const int tip_height = tip_result.value().height;
+    if (static_cast<int>(anchor_height) > tip_height) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "anchor_height past tip";
+        return result;
+    }
+
+    // ── Block lookup closure ────────────────────────────────────────
+    ::dinero::BlockStorage* block_storage =
+        ctx.daemon ? ctx.daemon->block_storage.get() : nullptr;
+    auto block_lookup = [chainstate, chain_db, block_storage](uint32_t h) -> std::optional<::dinero::Block> {
+        auto hash_result = chain_db->getBlockHashByHeight(static_cast<int>(h));
+        if (!hash_result.ok()) return std::nullopt;
+        auto block_result = ReadRpcBlock(chainstate.get(), chain_db, block_storage, hash_result.value());
+        if (!block_result.ok()) return std::nullopt;
+        return block_result.value();
+    };
+
+    // ── Build the request and dispatch ──────────────────────────────
+    ::dinero::consensus::shielded::ShieldedWitnessRequest req{};
+    req.leaf_index                 = leaf_index;
+    req.anchor_height              = anchor_height;
+    req.shielded_activation_height = dinero::Params().shielded_activation_height;
+    std::memcpy(req.anchor_root.data(), anchor_root_bytes.data(),
+                ::dinero::consensus::shielded::HASH_BYTES);
+
+    ::dinero::consensus::shielded::ShieldedWitness witness{};
+    const auto err = ::dinero::consensus::shielded::BuildWitnessByIndex(req, block_lookup, &witness);
+    if (err != ::dinero::consensus::shielded::ShieldedWitnessError::Ok) {
+        const char* msg = "Witness build failed";
+        switch (err) {
+            case ::dinero::consensus::shielded::ShieldedWitnessError::MissingBlock:
+                msg = "Missing block during replay"; break;
+            case ::dinero::consensus::shielded::ShieldedWitnessError::BundleDecodeFailed:
+                msg = "Shielded bundle decode failed during replay"; break;
+            case ::dinero::consensus::shielded::ShieldedWitnessError::LeafOutOfRange:
+                msg = "leaf_index >= tree size at anchor"; break;
+            case ::dinero::consensus::shielded::ShieldedWitnessError::AnchorMismatch:
+                msg = "Daemon's replay root disagrees with client anchor_root"; break;
+            default: break;
+        }
+        result["error"]["code"] = -1;
+        result["error"]["message"] = msg;
+        return result;
+    }
+
+    // ── Serialise witness ───────────────────────────────────────────
+    result["leaf_index"]    = static_cast<Json::UInt64>(witness.leaf_index);
+    result["anchor_height"] = static_cast<int>(witness.anchor_height);
+    result["tree_size"]     = static_cast<Json::UInt64>(witness.tree_size);
+    result["anchor_root"]   = RawBytesToHex(witness.anchor_root.data(),
+                                            witness.anchor_root.size());
+    result["commitment"]    = RawBytesToHex(witness.commitment.data(),
+                                            witness.commitment.size());
+
+    din::Json siblings_array = din::arr();
+    for (const auto& s : witness.auth_path.siblings) {
+        siblings_array.append(RawBytesToHex(s.data(), s.size()));
+    }
+    result["path"] = siblings_array;
+    result["tip_height"] = tip_height;
+
+    return result;
+}
+
 void registerBlockchainMethodsContext() {
     extern RpcRegistry g_rpcRegistry;
 
@@ -3625,6 +3797,13 @@ void registerBlockchainMethodsContext() {
                                  RegisterMode::Overwrite,
                                  "context-aware");
     g_rpcRegistry.registerAlias("shieldedoutputs", "blockchain.shielded.outputs");
+
+    // M3: trustless witness builder for thin-client spend path
+    g_rpcRegistry.registerHandler("shielded.witness.by_index",
+                                 rpc_context_shieldedwitnessbyindex,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+    g_rpcRegistry.registerAlias("shieldedwitnessbyindex", "shielded.witness.by_index");
 
     // gettxout: query single UTXO by txid + vout
     g_rpcRegistry.registerHandler("blockchain.gettxout",
