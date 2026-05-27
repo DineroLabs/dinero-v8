@@ -71,9 +71,6 @@ ShieldedOutputFeedError ExtractShieldedOutputFeed(
              output_index < bundle.outputs.size();
              ++output_index) {
             const ShieldedOutput& o = bundle.outputs[output_index];
-            if (o.encrypted_note.size() != kShieldedEncryptedNoteBytes) {
-                return ShieldedOutputFeedError::EncryptedNoteWrongSize;
-            }
             ShieldedOutputFeedEntry entry{};
             entry.block_hash     = block_hash;
             entry.height         = height;

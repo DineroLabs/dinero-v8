@@ -278,16 +278,23 @@ TEST(ShieldedOutputFeed, MalformedBundleBytesReturnsDecodeFailed) {
               ShieldedOutputFeedError::BundleDecodeFailed);
 }
 
-TEST(ShieldedOutputFeed, WrongEncryptedNoteSizeReturnsSizeError) {
+TEST(ShieldedOutputFeed, LegacyShortEncryptedNoteStillEmitsForTreeCompleteness) {
     ShieldedBundle bundle{};
-    // Wrong size: 610 instead of kShieldedEncryptedNoteBytes (611).
-    bundle.outputs.push_back(MakeOutput(0xAA, 0xC1, /*enc_size=*/610));
+    // Older wallet paths emitted 96-byte placeholder notes. They are not
+    // decryptable by M2 clients, but their commitments are still real tree
+    // leaves, so the feed must return them instead of poisoning the range.
+    bundle.outputs.push_back(MakeOutput(0xAA, 0xC1, /*enc_size=*/96));
     Transaction tx = MakeShieldedTx(Transaction::TX_VERSION_SHIELDED, bundle);
     Block block = MakeBlockWith({tx});
 
     ShieldedOutputFeedResult out{};
-    EXPECT_EQ(ExtractShieldedOutputFeed(block, 1, 0, &out),
-              ShieldedOutputFeedError::EncryptedNoteWrongSize);
+    ASSERT_EQ(ExtractShieldedOutputFeed(block, 1, 0, &out),
+              ShieldedOutputFeedError::Ok);
+    ASSERT_EQ(out.outputs.size(), 1u);
+    EXPECT_EQ(out.outputs[0].commitment, MakeHash(0xAA));
+    EXPECT_EQ(out.outputs[0].encrypted_note.size(), 96u);
+    EXPECT_EQ(out.outputs[0].leaf_index, 0u);
+    EXPECT_EQ(out.next_leaf_index, 1u);
 }
 
 TEST(ShieldedOutputFeed, NullOutPointerReturnsDecodeFailed) {

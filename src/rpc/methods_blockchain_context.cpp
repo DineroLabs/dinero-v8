@@ -3268,7 +3268,7 @@ static din::Json rpc_context_shieldedoutputs(const ExecutionContext& ctx, const 
 
     // ── Establish leaf-index basis for from_height ──
     // Lookup closure: ChainDB → uint256 → Block via ReadRpcBlock.
-    const ::dinero::IBlockStorage* block_storage =
+    ::dinero::BlockStorage* block_storage =
         ctx.daemon ? ctx.daemon->block_storage.get() : nullptr;
     auto block_lookup = [chainstate, chain_db, block_storage](uint32_t h) -> std::optional<::dinero::Block> {
         auto hash_result = chain_db->getBlockHashByHeight(static_cast<int>(h));

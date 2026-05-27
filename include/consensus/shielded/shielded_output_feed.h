@@ -39,9 +39,10 @@ namespace dinero { struct Block; }
 
 namespace dinero::consensus::shielded {
 
-/// Wire-format size of a single ShieldedOutput's `encrypted_note`
-/// payload (epk || ct || tag = 32 + 563 + 16). Declared here to keep
-/// the consensus layer independent of `include/wallet/shielded_derivation.h`.
+/// Current decryptable shielded note size (epk || ct || tag =
+/// 32 + 563 + 16). Older consensus-valid wallet paths emitted shorter
+/// placeholder notes; the feed still returns those bytes so clients can
+/// maintain a complete commitment tree and simply skip trial-decrypt.
 constexpr size_t kShieldedEncryptedNoteBytes = 611;
 
 /// One public output entry the feed emits to thin clients.
@@ -79,7 +80,6 @@ struct ShieldedOutputFeedResult {
 enum class ShieldedOutputFeedError : uint8_t {
     Ok                       = 0,
     BundleDecodeFailed       = 1,
-    EncryptedNoteWrongSize   = 2,
 };
 
 /**
@@ -89,8 +89,10 @@ enum class ShieldedOutputFeedError : uint8_t {
  * are not v5/v6 or whose `shielded_bundle_bytes` is empty. For shielded
  * transactions, deserialises the bundle via `DeserializeShieldedBundle`
  * (preserves canonical sorted-by-commitment within-bundle order),
- * verifies each output's `encrypted_note.size() == kShieldedEncryptedNoteBytes`,
  * and emits one feed entry per output + one nullifier entry per spend.
+ * The encrypted note is copied verbatim regardless of length: length is
+ * not a consensus validity condition, and legacy 96-byte placeholders
+ * must still reach light clients for tree-completeness.
  *
  * Leaf indices: `leaf_index = first_leaf_index + outputs_seen_so_far`
  * (across the entire block, in tx-then-output order — same order the
