@@ -273,6 +273,8 @@ Phase 2 is deferred to a separate spec once Phase 1 ships and we have real iOS u
 
 ## Daemon detail
 
+**M2 correction (2026-05-27):** the recipient-specific shielded compact filter sketched below is not implementable against the current v5/v6 wire format without a new sender-provided viewing tag. `epk` is sender-random, while `d` and `pk_d` are inside the encrypted note. The daemon cannot build a wallet-checkable recipient filter from public chain data alone. The committed M2 direction is therefore `blockchain.shielded.outputs`, a public shielded output feed documented in `docs/superpowers/specs/2026-05-27-trustless-light-client-shielded-m2-design.md`.
+
 ### `blockchain.shielded.filter <hash>` RPC
 
 Returns a GCS filter over the recipient-diversifier tags of all shielded outputs in the requested block.
