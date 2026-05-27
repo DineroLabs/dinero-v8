@@ -463,7 +463,7 @@ TEST_F(ShieldedValidationFixture, BuilderProducesValidatorAcceptedBundle) {
     const Hash spend_val  = ValueAsHash(100'000'000);  // 1 DIN
     const Hash spend_rand = MakeHash(0x81, 0xF2);
     const Hash pk         = PoseidonHash2(sk, Hash{});
-    const Hash d{};
+    const Hash d          = MakeHash(0xA2, 0xC1);
 
     const Hash spend_cm = NoteCommitment(d, pk, spend_val, spend_rand);
     const uint64_t leaf_idx = tree.Append(spend_cm);
@@ -539,7 +539,7 @@ TEST_F(ShieldedValidationFixture, BuilderTamperedSighashRejectedByValidator) {
     const Hash spend_val  = ValueAsHash(100'000'000);
     const Hash spend_rand = MakeHash(0x91, 0xF3);
     const Hash pk         = PoseidonHash2(sk, Hash{});
-    const Hash d{};
+    const Hash d          = MakeHash(0xA2, 0xC1);
 
     const Hash spend_cm = NoteCommitment(d, pk, spend_val, spend_rand);
     const uint64_t leaf_idx = tree.Append(spend_cm);
@@ -711,7 +711,10 @@ TEST_F(ShieldedValidationFixture, UnshieldHelperProducesValidatorAcceptedTx) {
     const Hash sk         = MakeHash(0xA0, 0xC1);
     const Hash randomness = MakeHash(0xA1, 0xC1);
     const Hash pk         = PoseidonHash2(sk, Hash{});
-    const Hash d{};
+    // M3 prover/iOS gate: real received notes carry a decrypted
+    // diversifier. The unshield helper must prove against that exact
+    // d-bound commitment, not the old zero-diversifier shortcut.
+    const Hash d          = MakeHash(0xA2, 0xC1);
     const Hash value_hash = ValueAsHash(kNoteValue);
 
     const Hash spend_cm = NoteCommitment(d, pk, value_hash, randomness);
@@ -723,6 +726,7 @@ TEST_F(ShieldedValidationFixture, UnshieldHelperProducesValidatorAcceptedTx) {
     wallet::shielded_ops::UnshieldNoteInput note;
     note.secret_key  = sk;
     note.randomness  = randomness;
+    note.d           = d;
     note.anchor      = tree.Root();
     note.leaf_index  = leaf_idx;
     note.value_una   = kNoteValue;
