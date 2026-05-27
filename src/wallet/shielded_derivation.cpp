@@ -56,9 +56,17 @@ secp256k1_context* GetCtx() {
 /// when multiplied by G, yields the returned x-only pubkey (i.e., possibly
 /// negated from the input so the resulting y is even).
 ///
-/// libsecp's `secp256k1_keypair_create` does exactly this normalisation —
-/// it stores the negated scalar internally if the input would have produced
-/// odd-y. `secp256k1_keypair_sec` reads back the post-normalisation scalar.
+/// IMPORTANT — libsecp's keypair API does NOT normalise the scalar:
+///   - `secp256k1_keypair_save` stores the input scalar UNTOUCHED at
+///     `keypair->data[0..32]` (see modules/extrakeys/main_impl.h:157).
+///   - `secp256k1_keypair_sec` reads that buffer back as-is.
+///   - Only the x-only pubkey path (`keypair_xonly_pub`) reports the
+///     parity flag and exposes the BIP340-normalised x-coordinate.
+///
+/// Earlier revisions assumed keypair_create did the negation internally;
+/// it does not. We therefore read `pk_parity` from `keypair_xonly_pub` and
+/// negate the secret in place when parity == 1, so the returned scalar is
+/// the one that pairs with the returned x-only pubkey under BIP340.
 struct ScalarPubkey {
     Hash scalar{};
     Hash x_only{};
@@ -84,13 +92,24 @@ ScalarPubkey NormalizeScalarToEvenY(const Hash& candidate) {
         throw std::runtime_error("secp256k1_keypair_sec failed");
     }
     secp256k1_xonly_pubkey xonly{};
-    if (secp256k1_keypair_xonly_pub(ctx, &xonly, nullptr, &kp) != 1) {
+    int pk_parity = 0;
+    if (secp256k1_keypair_xonly_pub(ctx, &xonly, &pk_parity, &kp) != 1) {
         OPENSSL_cleanse(&kp, sizeof(kp));
         throw std::runtime_error("secp256k1_keypair_xonly_pub failed");
     }
     if (secp256k1_xonly_pubkey_serialize(ctx, out.x_only.data(), &xonly) != 1) {
         OPENSSL_cleanse(&kp, sizeof(kp));
         throw std::runtime_error("secp256k1_xonly_pubkey_serialize failed");
+    }
+    // BIP340 even-y normalisation: if the keypair's pubkey had odd-y and
+    // the x-only path negated to even-y, negate the secret too so that
+    // `out.scalar * G == out.x_only` (with even-y).
+    if (pk_parity == 1) {
+        if (secp256k1_ec_seckey_negate(ctx, out.scalar.data()) != 1) {
+            OPENSSL_cleanse(&kp, sizeof(kp));
+            OPENSSL_cleanse(out.scalar.data(), out.scalar.size());
+            throw std::runtime_error("secp256k1_ec_seckey_negate failed during even-y normalisation");
+        }
     }
     OPENSSL_cleanse(&kp, sizeof(kp));
     return out;
