@@ -42,6 +42,7 @@
 #include "daemon/block_acceptor.h"
 #include "consensus/chainparams.h"
 #include "consensus/merkle_root.h"  // For ComputeMerkleRoot (Phase 11a.2)
+#include "consensus/shielded/shielded_output_feed.h"  // M2: shielded outputs RPC
 // Phase 39: chain_manager.h deleted (ChainManager removed)
 #include "primitives/uint256.h"  // Phase M.0: For uint256 type
 #include "common/address_script_builder.h"  // Phase W.1.1: For BuildScriptPubKeyFromAddress
@@ -3200,6 +3201,170 @@ static din::Json rpc_context_getblockfilters(const ExecutionContext& ctx, const 
     return result;
 }
 
+/**
+ * blockchain.shielded.outputs — Public shielded output feed (M2).
+ *
+ * Returns the public shielded outputs and spend nullifiers in the
+ * requested height range. Thin clients trial-decrypt the encrypted
+ * notes locally against their own viewing keys; the daemon performs
+ * no recipient-derived filtering (the wire format provides no
+ * client-precomputable recipient clue).
+ *
+ * Params: { "from_height": int, "count": int (max 2000) }
+ *   or positional: [from_height, count]
+ *
+ * Response shape — see
+ * docs/superpowers/specs/2026-05-27-trustless-light-client-shielded-m2-design.md.
+ * Blocks with zero shielded outputs AND zero shielded spends are
+ * omitted from the `blocks` array.
+ */
+static din::Json rpc_context_shieldedoutputs(const ExecutionContext& ctx, const din::Json& params) {
+    din::Json result;
+
+    if (!ctx.daemon || !ctx.daemon->chainstate) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "Chainstate service not available";
+        return result;
+    }
+
+    auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    dinero::ChainDB* chain_db = chainstate ? chainstate->GetChainDB() : nullptr;
+    if (!chain_db) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "ChainDB not initialized";
+        return result;
+    }
+
+    auto tip_result = chain_db->getTip();
+    if (!tip_result.ok()) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "Failed to get chain tip";
+        return result;
+    }
+    const int tip_height = tip_result.value().height;
+
+    // ── Param parsing (same shape as blockchain.getblockfilters) ──
+    int from_height = 0;
+    int count = 2000;
+    static constexpr int MAX_BATCH = 2000;
+
+    if (params.isArray()) {
+        if (params.size() > 0 && params[0].isInt()) from_height = params[0].asInt();
+        if (params.size() > 1 && params[1].isInt()) count = params[1].asInt();
+    } else if (params.isObject()) {
+        if (params.isMember("from_height") && params["from_height"].isInt()) {
+            from_height = params["from_height"].asInt();
+        }
+        if (params.isMember("count") && params["count"].isInt()) {
+            count = params["count"].asInt();
+        }
+    }
+    if (from_height < 0) from_height = 0;
+    if (count < 1)        count = 1;
+    if (count > MAX_BATCH) count = MAX_BATCH;
+
+    int end_height = from_height + count - 1;
+    if (end_height > tip_height) end_height = tip_height;
+
+    // ── Establish leaf-index basis for from_height ──
+    // Lookup closure: ChainDB → uint256 → Block via ReadRpcBlock.
+    ::dinero::BlockStorage* block_storage =
+        ctx.daemon ? ctx.daemon->block_storage.get() : nullptr;
+    auto block_lookup = [chainstate, chain_db, block_storage](uint32_t h) -> std::optional<::dinero::Block> {
+        auto hash_result = chain_db->getBlockHashByHeight(static_cast<int>(h));
+        if (!hash_result.ok()) return std::nullopt;
+        auto block_result = ReadRpcBlock(chainstate.get(), chain_db, block_storage, hash_result.value());
+        if (!block_result.ok()) return std::nullopt;
+        return block_result.value();
+    };
+
+    const uint32_t activation_height = dinero::Params().shielded_activation_height;
+
+    auto first_leaf_result = ::dinero::consensus::shielded::CountShieldedOutputsBeforeHeight(
+        static_cast<uint32_t>(from_height),
+        activation_height,
+        block_lookup);
+    if (!first_leaf_result.ok()) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "Failed to derive first_leaf_index: " +
+            std::string(::dinero::StatusToString(first_leaf_result.status()));
+        return result;
+    }
+    uint64_t next_leaf_index = first_leaf_result.value();
+
+    // ── Walk requested height range ──
+    din::Json blocks_array = din::arr();
+
+    for (int h = from_height; h <= end_height; ++h) {
+        if (static_cast<uint32_t>(h) < activation_height) continue;
+
+        auto hash_result = chain_db->getBlockHashByHeight(h);
+        if (!hash_result.ok()) break;
+        const uint256& block_hash = hash_result.value();
+
+        auto block_result = ReadRpcBlock(chainstate.get(), chain_db, block_storage, block_hash);
+        if (!block_result.ok()) continue;
+        const auto& block = block_result.value();
+
+        ::dinero::consensus::shielded::ShieldedOutputFeedResult feed{};
+        const auto feed_status = ::dinero::consensus::shielded::ExtractShieldedOutputFeed(
+            block, static_cast<uint32_t>(h), next_leaf_index, &feed);
+        if (feed_status != ::dinero::consensus::shielded::ShieldedOutputFeedError::Ok) {
+            result["error"]["code"] = -1;
+            result["error"]["message"] = "Shielded output feed extraction failed at height " +
+                std::to_string(h);
+            return result;
+        }
+
+        // Skip blocks that contributed no shielded data to the feed.
+        if (feed.outputs.empty() && feed.spent_nullifiers.empty()) {
+            // next_leaf_index is unchanged when no outputs were emitted.
+            continue;
+        }
+
+        din::Json block_obj;
+        block_obj["height"]                = h;
+        block_obj["block_hash"]             = block_hash.GetHex();
+        block_obj["shielded_spend_count"]   = static_cast<int>(feed.spent_nullifiers.size());
+        block_obj["shielded_output_count"]  = static_cast<int>(feed.outputs.size());
+
+        din::Json spends_array = din::arr();
+        for (const auto& nf : feed.spent_nullifiers) {
+            din::Json o;
+            o["txid"]        = nf.txid.AsUint256().GetHex();
+            o["tx_index"]    = static_cast<int>(nf.tx_index);
+            o["spend_index"] = static_cast<int>(nf.spend_index);
+            o["nullifier"]   = RawBytesToHex(nf.nullifier.data(), nf.nullifier.size());
+            spends_array.append(o);
+        }
+        block_obj["spent_nullifiers"] = spends_array;
+
+        din::Json outputs_array = din::arr();
+        for (const auto& e : feed.outputs) {
+            din::Json o;
+            o["txid"]         = e.txid.AsUint256().GetHex();
+            o["tx_index"]     = static_cast<int>(e.tx_index);
+            o["output_index"] = static_cast<int>(e.output_index);
+            // leaf_index is monotonically advancing; JSON integers stay safe
+            // for chain heights up to ~2^53 outputs.
+            o["leaf_index"]   = static_cast<Json::UInt64>(e.leaf_index);
+            o["commitment"]   = RawBytesToHex(e.commitment.data(), e.commitment.size());
+            o["encrypted_note"] = BytesToHex(e.encrypted_note);
+            outputs_array.append(o);
+        }
+        block_obj["outputs"] = outputs_array;
+
+        blocks_array.append(block_obj);
+        next_leaf_index = feed.next_leaf_index;
+    }
+
+    result["from_height"] = from_height;
+    result["count"]       = count;
+    result["tip_height"]  = tip_height;
+    result["blocks"]      = blocks_array;
+    return result;
+}
+
 void registerBlockchainMethodsContext() {
     extern RpcRegistry g_rpcRegistry;
 
@@ -3453,6 +3618,13 @@ void registerBlockchainMethodsContext() {
                                  RegisterMode::Overwrite,
                                  "context-aware");
     g_rpcRegistry.registerAlias("getblockfilters", "blockchain.getblockfilters");
+
+    // M2: public shielded output feed for thin-client receive scanning
+    g_rpcRegistry.registerHandler("blockchain.shielded.outputs",
+                                 rpc_context_shieldedoutputs,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+    g_rpcRegistry.registerAlias("shieldedoutputs", "blockchain.shielded.outputs");
 
     // gettxout: query single UTXO by txid + vout
     g_rpcRegistry.registerHandler("blockchain.gettxout",

@@ -980,6 +980,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_addressed_detec
     message(STATUS "  ✓ ShieldedRpcTransferAddressedDetectEndToEnd registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_outputs_rpc_feed.sh)
+    add_test(
+        NAME ShieldedOutputsRpcFeed
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_outputs_rpc_feed.sh
+    )
+    set_tests_properties(ShieldedOutputsRpcFeed PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        LABELS "integration;shielded;rpc;m2"
+        TIMEOUT 240
+    )
+    message(STATUS "  ✓ ShieldedOutputsRpcFeed registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_tip_marker_restart_equivalence.sh)
     add_test(
         NAME ShieldedTipMarkerRestartEquivalence

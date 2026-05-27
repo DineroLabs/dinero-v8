@@ -1390,6 +1390,39 @@ if(TARGET dinero_wallet AND TARGET gtest)
   message(STATUS "Shielded derivation tests enabled")
 endif()
 
+# ── M2: shielded output feed extractor unit tests ───────────────────
+if(TARGET dinero_shielded AND TARGET gtest)
+  add_executable(test_shielded_output_feed
+    src/test/shielded_output_feed_tests.cpp
+  )
+  add_dependencies(test_shielded_output_feed gtest dinero_shielded)
+  target_link_libraries(test_shielded_output_feed PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_shielded
+    dinero_zk
+    dinero_tx_primitives
+    dinero_crypto
+    dinero_consensus
+    zstd
+    sqlite3
+  )
+  target_include_directories(test_shielded_output_feed BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_output_feed PRIVATE "-framework Security")
+  endif()
+  add_test(NAME ShieldedOutputFeed COMMAND test_shielded_output_feed)
+  set_tests_properties(ShieldedOutputFeed PROPERTIES
+    LABELS "shielded;shielded-canonical-smoke;m2"
+    TIMEOUT 60
+  )
+  message(STATUS "Shielded output feed tests enabled")
+endif()
+
 # ════════════════════════════════════════════════════════════════════════════
 # Ring 2: V4-V5 Validation Property Oracles (State Transition & Enforcement)
 # ════════════════════════════════════════════════════════════════════════════
