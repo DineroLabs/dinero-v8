@@ -1423,6 +1423,39 @@ if(TARGET dinero_shielded AND TARGET gtest)
   message(STATUS "Shielded output feed tests enabled")
 endif()
 
+# ── M3: shielded witness builder unit tests ─────────────────────────
+if(TARGET dinero_shielded AND TARGET gtest)
+  add_executable(test_shielded_witness
+    src/test/shielded_witness_tests.cpp
+  )
+  add_dependencies(test_shielded_witness gtest dinero_shielded)
+  target_link_libraries(test_shielded_witness PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_shielded
+    dinero_zk
+    dinero_tx_primitives
+    dinero_crypto
+    dinero_consensus
+    zstd
+    sqlite3
+  )
+  target_include_directories(test_shielded_witness BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_witness PRIVATE "-framework Security")
+  endif()
+  add_test(NAME ShieldedWitness COMMAND test_shielded_witness)
+  set_tests_properties(ShieldedWitness PROPERTIES
+    LABELS "shielded;shielded-canonical-smoke;m3"
+    TIMEOUT 60
+  )
+  message(STATUS "Shielded witness tests enabled")
+endif()
+
 # ════════════════════════════════════════════════════════════════════════════
 # Ring 2: V4-V5 Validation Property Oracles (State Transition & Enforcement)
 # ════════════════════════════════════════════════════════════════════════════
