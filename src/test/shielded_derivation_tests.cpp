@@ -137,8 +137,15 @@ TEST_F(ShieldedDerivationVectorFixture, PinnedHexVector1Account0) {
     // Seed = CanonicalSeed() (see fixture), account = 0. Captured 2026-04-27.
     EXPECT_EQ(Hex(keys.sk),
               "0afa9463b4d5f06c7d4e9cf14f9d261eaf6c7a0ba243453f5d4308ddc415d9e0");
+    // NOTE: This vector flipped from the pre-fix value
+    //   a03942071a4e3c2b821b4db65f7930255e46484354b656387e9be77e6b695794
+    // when NormalizeScalarToEvenY started actually negating the scalar on
+    // odd-y inputs (this commit). The old value is `n - new_value`, where
+    // n is the secp256k1 group order. ask·G now correctly has even-y,
+    // matching the stored vector_keys_ak (which always had even-y because
+    // libsecp's x-only path already normalised it).
     EXPECT_EQ(Hex(keys.ask),
-              "a03942071a4e3c2b821b4db65f7930255e46484354b656387e9be77e6b695794");
+              "5fc6bdf8e5b1c3d47de4b249a086cfd95c6894a35a924a034136770e64cce9ad");
     EXPECT_EQ(Hex(keys.nsk),
               "4d548e2eabaab49cb2e5877bfaad6e456c4033bcc2bfb1882c1f991d1aeb8e3e");
     EXPECT_EQ(Hex(keys.ovk),
