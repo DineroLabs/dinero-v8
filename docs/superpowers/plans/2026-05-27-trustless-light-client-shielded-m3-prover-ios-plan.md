@@ -209,12 +209,12 @@ The artifact hash goes in the PR description and the M3 sanity log. Do not paste
 
 ### PR B Verification
 
-Suggested local verification:
+Suggested local verification (`$WORKTREE` = clean checkout of `codex/m3-shielded-proverkit`; the `/private/tmp/dinero-v8-m3-proverkit` shape is a session-specific convention from prior milestones, not a requirement):
 
 ```bash
-cmake -S /private/tmp/dinero-v8-m3-proverkit -B /private/tmp/dinero-v8-m3-proverkit-build
-cmake --build /private/tmp/dinero-v8-m3-proverkit-build --target dinerod dinero-cli -j
-ctest --test-dir /private/tmp/dinero-v8-m3-proverkit-build --output-on-failure -R 'ShieldedWitness|ShieldedProver|Shielded.*Circuit|Shielded.*Validation'
+cmake -S "$WORKTREE" -B "$WORKTREE-build"
+cmake --build "$WORKTREE-build" --target dinerod dinero-cli -j
+ctest --test-dir "$WORKTREE-build" --output-on-failure -R 'ShieldedWitness|ShieldedProver|Shielded.*Circuit|Shielded.*Validation'
 scripts/build-shielded-proverkit-xcframework.sh
 ```
 
@@ -250,7 +250,7 @@ Expected DineroDPI files:
 
 Add persisted fields:
 
-- `d` as 11 raw diversifier bytes or 32-byte packed form; choose one canonical storage shape and document it.
+- `d` as **32 bytes** (canonical). This matches the `uint8_t d[32]` field on the PR B ABI (`dinero_shielded_spend_note`) and the daemon's `sh::Hash` shape. PR B is allowed to change the on-wire ABI shape if smaller raw form is later justified; until it does, C1 stores `d` as 32 bytes verbatim.
 - `commitment` as 32-byte block-supplied commitment.
 - `real_nullifier` as 32-byte daemon-equivalent nullifier.
 - `pending_spend_txid`.
@@ -338,6 +338,7 @@ Rules:
 - If broadcast fails, clear pending immediately.
 - On restart, check pending txids. If tx is unknown and no mined nullifier exists, clear pending.
 - On reorg, if the mined nullifier disappears, clear confirmed-spent state; if the tx is still in mempool, keep pending.
+- If the selected anchor is reorged out **between bundle build and broadcast** (anchor height/root no longer matches the wallet's local shielded sync), drop the in-flight bundle, re-select a fresh anchor, re-fetch witness, and rebuild before broadcasting. If no usable anchor remains, leave the note spendable and surface the retry to the user; never broadcast a bundle anchored to a discarded root.
 
 ### PR C1 Verification
 
