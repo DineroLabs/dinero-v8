@@ -3406,21 +3406,55 @@ static din::Json rpc_context_shieldedwitnessbyindex(const ExecutionContext& ctx,
     uint64_t    leaf_index    = 0;
     uint32_t    anchor_height = 0;
     std::string anchor_root_hex;
+    bool        have_leaf_index    = false;
+    bool        have_anchor_height = false;
+    bool        have_anchor_root   = false;
+
+    auto read_uint64 = [](const din::Json& v, uint64_t& out) -> bool {
+        if (v.isUInt64() || v.isUInt()) {
+            out = v.asUInt64();
+            return true;
+        }
+        if (v.isInt64() && v.asInt64() >= 0) {
+            out = static_cast<uint64_t>(v.asInt64());
+            return true;
+        }
+        return false;
+    };
+
+    auto read_uint32 = [&](const din::Json& v, uint32_t& out) -> bool {
+        uint64_t wide = 0;
+        if (!read_uint64(v, wide) || wide > 0xFFFFFFFFULL) {
+            return false;
+        }
+        out = static_cast<uint32_t>(wide);
+        return true;
+    };
 
     if (params.isArray()) {
-        if (params.size() > 0 && params[0].isInt()) leaf_index    = params[0].asUInt64();
-        if (params.size() > 1 && params[1].isInt()) anchor_height = static_cast<uint32_t>(params[1].asUInt64());
-        if (params.size() > 2 && params[2].isString()) anchor_root_hex = params[2].asString();
-    } else if (params.isObject()) {
-        if (params.isMember("leaf_index") && params["leaf_index"].isInt()) {
-            leaf_index = params["leaf_index"].asUInt64();
+        if (params.size() > 0) have_leaf_index    = read_uint64(params[0], leaf_index);
+        if (params.size() > 1) have_anchor_height = read_uint32(params[1], anchor_height);
+        if (params.size() > 2 && params[2].isString()) {
+            anchor_root_hex = params[2].asString();
+            have_anchor_root = true;
         }
-        if (params.isMember("anchor_height") && params["anchor_height"].isInt()) {
-            anchor_height = static_cast<uint32_t>(params["anchor_height"].asUInt64());
+    } else if (params.isObject()) {
+        if (params.isMember("leaf_index")) {
+            have_leaf_index = read_uint64(params["leaf_index"], leaf_index);
+        }
+        if (params.isMember("anchor_height")) {
+            have_anchor_height = read_uint32(params["anchor_height"], anchor_height);
         }
         if (params.isMember("anchor_root") && params["anchor_root"].isString()) {
             anchor_root_hex = params["anchor_root"].asString();
+            have_anchor_root = true;
         }
+    }
+
+    if (!have_leaf_index || !have_anchor_height || !have_anchor_root) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "required params: leaf_index(uint64), anchor_height(uint32), anchor_root(hex)";
+        return result;
     }
 
     // Anchor_root is the load-bearing client commitment; reject malformed input.
@@ -3497,7 +3531,7 @@ static din::Json rpc_context_shieldedwitnessbyindex(const ExecutionContext& ctx,
     for (const auto& s : witness.auth_path.siblings) {
         siblings_array.append(RawBytesToHex(s.data(), s.size()));
     }
-    result["auth_path"] = siblings_array;
+    result["path"] = siblings_array;
     result["tip_height"] = tip_height;
 
     return result;
