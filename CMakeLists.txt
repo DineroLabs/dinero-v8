@@ -444,6 +444,7 @@ target_link_libraries(dinero_tx_primitives PUBLIC
 )
 
 add_subdirectory(src/wallet)
+add_subdirectory(src/shielded_prover_kit EXCLUDE_FROM_ALL)
 
 # Lightning Key Derivation (always built - used by wallet to provide keys to Lightning)
 # This is separate from the Lightning daemon and from wallet UTXOs.
