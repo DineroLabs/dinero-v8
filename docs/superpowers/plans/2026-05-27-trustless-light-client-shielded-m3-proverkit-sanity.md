@@ -48,6 +48,22 @@ Script added:
 scripts/build-shielded-proverkit-xcframework.sh
 ```
 
+OpenSSL prerequisites:
+
+```bash
+OPENSSL_VERSION=3.3.2 OPENSSL_REBUILD=1 bash scripts/build-openssl-vendored.sh
+bash scripts/build_openssl_ios.sh
+```
+
+Results:
+
+- macOS OpenSSL 3.3.2 arm64 cache rebuilt at `third_party/openssl-3.3.2/prebuilt/macos-arm64/`.
+- iOS device OpenSSL 3.3.2 arm64 cache rebuilt at `third_party/openssl-3.3.2/prebuilt/ios-arm64/`.
+- iOS simulator OpenSSL 3.3.2 arm64 cache rebuilt at `third_party/openssl-3.3.2/prebuilt/ios-simulator-arm64/`.
+- All three caches contain `libcrypto.a`, `libssl.a`, and `include/openssl/`.
+- `lipo -info` reports arm64 for all six OpenSSL archives.
+- The vendored OpenSSL cleanup scripts explicitly exclude `prebuilt/`; `find ... -prune ... -delete` is not used because `-delete` implies `-depth` and would evaluate prune too late.
+
 Script syntax/preflight:
 
 ```bash
@@ -58,8 +74,17 @@ scripts/build-shielded-proverkit-xcframework.sh
 Result:
 
 - Syntax check passed.
-- Artifact build did not run because the repository currently lacks iOS vendored OpenSSL slice directories:
-  - `third_party/openssl-3.3.2/prebuilt/ios-arm64/libcrypto.a`
-  - `third_party/openssl-3.3.2/prebuilt/ios-simulator-arm64/libcrypto.a`
+- First artifact run built both native slices but failed after compile because macOS system Bash lacks `mapfile`.
+- The packaging script now uses a Bash 3.2-compatible `while read` archive collection loop.
+- Second artifact run completed successfully.
+- `xcodebuild -create-xcframework` wrote `artifacts/ShieldedProverKit.xcframework`.
+- `artifacts/ShieldedProverKit.xcframework.zip` was generated and hashed.
+- `lipo -info` reports arm64 for both packaged `libShieldedProverKit.a` slices:
+  - `build-shielded-proverkit-ios/slices/ios-arm64/libShieldedProverKit.a`
+  - `build-shielded-proverkit-ios/slices/ios-simulator-arm64/libShieldedProverKit.a`
 
-Artifact hash: pending until the iOS OpenSSL slices are present and the packaging script completes.
+Artifact hash:
+
+```text
+df2184868b984ef49f474b8b0d199f403317a044f742a4bfd9ca2cf44d309a6b  /private/tmp/dinero-v8-m3-proverkit/artifacts/ShieldedProverKit.xcframework.zip
+```

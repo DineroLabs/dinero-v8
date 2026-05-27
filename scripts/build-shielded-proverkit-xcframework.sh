@@ -76,7 +76,11 @@ merge_archives() {
   local out_dir="$2"
   mkdir -p "$out_dir"
 
-  mapfile -t archives < <(collect_archives "$build_dir")
+  local archives=()
+  local found_archive
+  while IFS= read -r found_archive; do
+    archives+=("$found_archive")
+  done < <(collect_archives "$build_dir")
   local wrapper="$build_dir/src/shielded_prover_kit/libShieldedProverKit.a"
   [ -f "$wrapper" ] || die "missing $wrapper"
   [ "${#archives[@]}" -gt 0 ] || die "no static archives found in $build_dir"

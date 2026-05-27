@@ -204,6 +204,18 @@ sync_headers() {
     find "${dst}/openssl" -name '*.in' -delete
 }
 
+clean_openssl_tree() {
+    # Keep prebuilt/ intact. It lives inside the OpenSSL source directory and
+    # stores completed platform slices. Do not use `find ... -prune ... -delete`
+    # here: `-delete` implies `-depth`, so prune is evaluated too late.
+    make distclean >/dev/null 2>&1 || make clean >/dev/null 2>&1 || true
+    find . \( -name '*.o' -o -name '*.d' -o -name '*.a' -o -name '*.so' -o -name '*.dylib' \) \
+        -type f ! -path './prebuilt/*' -delete >/dev/null 2>&1 || true
+    rm -f Makefile Makefile.in configdata.pm builddata.pm \
+        libcrypto.pc libssl.pc openssl.pc \
+        OpenSSLConfig.cmake OpenSSLConfigVersion.cmake
+}
+
 if [[ "$OS" == "Darwin" ]]; then
     REPO_MACOS_DEPLOYMENT_TARGET="$(read_repo_macos_target)"
     REQUESTED_MACOS_TARGET="${OPENSSL_MACOS_DEPLOYMENT_TARGET:-${CMAKE_OSX_DEPLOYMENT_TARGET:-$REPO_MACOS_DEPLOYMENT_TARGET}}"
@@ -308,13 +320,12 @@ if [ -f "$OUTPUT_DIR/libcrypto.a" ] && [ -f "$OUTPUT_DIR/libssl.a" ]; then
     fi
     echo -e "${YELLOW}Cleaning previous build...${NC}"
     cd "$OPENSSL_DIR"
-    make distclean 2>/dev/null || make clean 2>/dev/null || true
-    find "$OPENSSL_DIR" \( -name '*.o' -o -name '*.a' -o -name '*.so' -o -name '*.dylib' -o -name '*.d' \) -delete 2>/dev/null || true
-    rm -f Makefile configdata.pm builddata.pm libcrypto.pc libssl.pc openssl.pc OpenSSLConfig.cmake OpenSSLConfigVersion.cmake
+    clean_openssl_tree
 fi
 
 # Change to OpenSSL directory
 cd "$OPENSSL_DIR"
+clean_openssl_tree
 
 # Configure based on platform
 echo -e "${BLUE}Configuring OpenSSL...${NC}"
