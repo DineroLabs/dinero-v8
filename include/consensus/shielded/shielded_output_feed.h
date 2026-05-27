@@ -1,0 +1,112 @@
+// Copyright (c) 2026 Dinero Developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#pragma once
+
+/**
+ * Shielded output feed extractor (M2).
+ *
+ * Pure helper that walks a block's transactions and emits the public
+ * shielded output and spend-nullifier metadata that the
+ * `blockchain.shielded.outputs` RPC serves to thin clients.
+ *
+ * No view key, no recipient-specific filter — by design. See
+ * docs/superpowers/specs/2026-05-27-trustless-light-client-shielded-m2-design.md
+ * for the justification. The daemon cannot derive a recipient-tagged
+ * compact filter from the current v5/v6 wire format (epk is sender-
+ * random, d/pk_d are encrypted), so M2 ships a public output feed and
+ * the client still does the trial-decrypt.
+ *
+ * Lives in `dinero_shielded` so the helper is reusable from RPC
+ * handlers, indexer code, and gtest fixtures without dragging
+ * `dinero_wallet` into the consensus layer.
+ */
+
+#include "consensus/shielded/commitment_tree.h"  // Hash, HASH_BYTES
+#include "primitives/hash_domains.h"              // TxId
+#include "primitives/uint256.h"                   // uint256
+
+#include <cstdint>
+#include <vector>
+
+// Forward-declare Block in the correct namespace; full definition
+// pulled in by the .cpp via "primitives/block.h".
+namespace dinero { struct Block; }
+
+namespace dinero::consensus::shielded {
+
+/// Wire-format size of a single ShieldedOutput's `encrypted_note`
+/// payload (epk || ct || tag = 32 + 563 + 16). Declared here to keep
+/// the consensus layer independent of `include/wallet/shielded_derivation.h`.
+constexpr size_t kShieldedEncryptedNoteBytes = 611;
+
+/// One public output entry the feed emits to thin clients.
+struct ShieldedOutputFeedEntry {
+    uint256              block_hash;
+    uint32_t             height = 0;
+    TxId                 txid;
+    uint32_t             tx_index = 0;
+    uint32_t             output_index = 0;
+    uint64_t             leaf_index = 0;
+    Hash                 commitment{};
+    std::vector<uint8_t> encrypted_note;
+};
+
+/// One public spend-nullifier entry. Nullifiers do NOT increment
+/// `leaf_index`; only outputs append to the commitment tree.
+struct ShieldedNullifierFeedEntry {
+    uint256  block_hash;
+    uint32_t height = 0;
+    TxId     txid;
+    uint32_t tx_index = 0;
+    uint32_t spend_index = 0;
+    Hash     nullifier{};
+};
+
+/// Aggregate result of extracting a single block. `next_leaf_index` is
+/// `first_leaf_index + total_outputs_seen` — callers chain it across
+/// blocks in canonical height order.
+struct ShieldedOutputFeedResult {
+    std::vector<ShieldedOutputFeedEntry>     outputs;
+    std::vector<ShieldedNullifierFeedEntry>  spent_nullifiers;
+    uint64_t                                 next_leaf_index = 0;
+};
+
+enum class ShieldedOutputFeedError : uint8_t {
+    Ok                       = 0,
+    BundleDecodeFailed       = 1,
+    EncryptedNoteWrongSize   = 2,
+};
+
+/**
+ * Extract the public shielded output + nullifier feed for `block`.
+ *
+ * Walks `block.vtx` in canonical block order. Skips transactions that
+ * are not v5/v6 or whose `shielded_bundle_bytes` is empty. For shielded
+ * transactions, deserialises the bundle via `DeserializeShieldedBundle`
+ * (preserves canonical sorted-by-commitment within-bundle order),
+ * verifies each output's `encrypted_note.size() == kShieldedEncryptedNoteBytes`,
+ * and emits one feed entry per output + one nullifier entry per spend.
+ *
+ * Leaf indices: `leaf_index = first_leaf_index + outputs_seen_so_far`
+ * (across the entire block, in tx-then-output order — same order the
+ * commitment tree appends them).
+ *
+ * Spend nullifiers do NOT advance `leaf_index`. `out->next_leaf_index`
+ * is set to `first_leaf_index + out->outputs.size()`.
+ *
+ * Returns `Ok` on success. On any decode failure, `out` is left in an
+ * undefined intermediate state and the corresponding error code is
+ * returned so the RPC layer can surface a structured error instead of
+ * silently dropping bundles.
+ *
+ * Pre-conditions: `out != nullptr`.
+ */
+ShieldedOutputFeedError ExtractShieldedOutputFeed(
+    const dinero::Block& block,
+    uint32_t height,
+    uint64_t first_leaf_index,
+    ShieldedOutputFeedResult* out);
+
+} // namespace dinero::consensus::shielded
