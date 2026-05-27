@@ -418,12 +418,15 @@ account = 0
 (The seed pin is verified deterministically by `CanonicalSeed()` in
 `src/test/shielded_derivation_tests.cpp`.)
 
-Wave 1 outputs (PINNED, captured 2026-04-27 against the implementation
-in `src/wallet/shielded_derivation.cpp`):
+Wave 1 outputs (PINNED, originally captured 2026-04-27 against
+`src/wallet/shielded_derivation.cpp`; `ask` re-pinned 2026-05-26
+after the `NormalizeScalarToEvenY` fix that actually negates the
+scalar on odd-y inputs — the old `ask` was `n - new_ask` and did
+not pair with the stored `ak`):
 
 ```
 sk:    0afa9463b4d5f06c7d4e9cf14f9d261eaf6c7a0ba243453f5d4308ddc415d9e0
-ask:   a03942071a4e3c2b821b4db65f7930255e46484354b656387e9be77e6b695794
+ask:   5fc6bdf8e5b1c3d47de4b249a086cfd95c6894a35a924a034136770e64cce9ad
 nsk:   4d548e2eabaab49cb2e5877bfaad6e456c4033bcc2bfb1882c1f991d1aeb8e3e
 ovk:   5eff91d8d132177c83f2302494d879ad01e064846a767617170406d48627ecc9
 dk:    7ca608cc6062bfebd3d1a6f7128cdbe9befc60edbb4fc29060fc6219e782c3f2
