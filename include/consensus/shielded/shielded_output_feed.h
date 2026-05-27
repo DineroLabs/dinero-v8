@@ -23,11 +23,14 @@
  * `dinero_wallet` into the consensus layer.
  */
 
+#include "common/status.h"                       // StatusOr
 #include "consensus/shielded/commitment_tree.h"  // Hash, HASH_BYTES
 #include "primitives/hash_domains.h"              // TxId
 #include "primitives/uint256.h"                   // uint256
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <vector>
 
 // Forward-declare Block in the correct namespace; full definition
@@ -108,5 +111,36 @@ ShieldedOutputFeedError ExtractShieldedOutputFeed(
     uint32_t height,
     uint64_t first_leaf_index,
     ShieldedOutputFeedResult* out);
+
+// ── Leaf-index walk helper (T2) ────────────────────────────────────
+
+/// Look up a block by height. Returns nullopt if no block exists at
+/// that height (chain tip is below it, or the block is not in storage).
+using BlockByHeightLookup = std::function<std::optional<dinero::Block>(uint32_t height)>;
+
+/**
+ * Count the total number of shielded outputs in blocks
+ * `[shielded_activation_height, from_height)` — i.e., the
+ * `first_leaf_index` the next block (at `from_height`) would consume.
+ *
+ * This is the deterministic source of truth for leaf indexing that the
+ * `blockchain.shielded.outputs` RPC needs when servicing a height
+ * range. For M2 the walk is O(chain_height) at the requested boundary
+ * and has no cache — the plan calls this out explicitly so the sanity
+ * log can measure honestly. If benchmarks show the walk dominates, a
+ * follow-up commit adds a sidecar cache; do NOT preemptively add one.
+ *
+ * Returns `Status::NotFound` if `lookup` returns nullopt for any height
+ * in the walk window (chain not synced past `from_height-1` yet).
+ * Returns `Status::Serialization` if a historical shielded bundle
+ * fails to decode. Returns the count on success.
+ *
+ * If `from_height <= shielded_activation_height`, returns 0 — no
+ * shielded outputs exist before activation.
+ */
+StatusOr<uint64_t> CountShieldedOutputsBeforeHeight(
+    uint32_t from_height,
+    uint32_t shielded_activation_height,
+    BlockByHeightLookup lookup);
 
 } // namespace dinero::consensus::shielded

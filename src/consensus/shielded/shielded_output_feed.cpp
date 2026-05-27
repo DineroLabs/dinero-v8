@@ -92,4 +92,38 @@ ShieldedOutputFeedError ExtractShieldedOutputFeed(
     return ShieldedOutputFeedError::Ok;
 }
 
+// ── Leaf-index walk helper ─────────────────────────────────────────
+
+StatusOr<uint64_t> CountShieldedOutputsBeforeHeight(
+    uint32_t from_height,
+    uint32_t shielded_activation_height,
+    BlockByHeightLookup lookup) {
+
+    if (from_height <= shielded_activation_height) {
+        return uint64_t{0};
+    }
+
+    uint64_t total = 0;
+    for (uint32_t h = shielded_activation_height; h < from_height; ++h) {
+        std::optional<::dinero::Block> block_opt = lookup(h);
+        if (!block_opt.has_value()) {
+            return ::dinero::Status::NotFound;
+        }
+        const ::dinero::Block& block = *block_opt;
+        for (const ::dinero::Transaction& tx : block.vtx) {
+            if (!::dinero::Transaction::IsShieldedVersion(tx.version)) continue;
+            if (tx.shielded_bundle_bytes.empty())                       continue;
+
+            ShieldedBundle bundle{};
+            const auto decode = DeserializeShieldedBundle(tx.shielded_bundle_bytes,
+                                                           &bundle);
+            if (decode != BundleDecodeError::Ok) {
+                return ::dinero::Status::Serialization;
+            }
+            total += bundle.outputs.size();
+        }
+    }
+    return total;
+}
+
 } // namespace dinero::consensus::shielded

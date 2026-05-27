@@ -21,6 +21,8 @@
 
 #include <array>
 #include <cstring>
+#include <map>
+#include <optional>
 #include <vector>
 
 using dinero::Block;
@@ -292,4 +294,112 @@ TEST(ShieldedOutputFeed, NullOutPointerReturnsDecodeFailed) {
     Block block = MakeBlockWith({});
     EXPECT_EQ(ExtractShieldedOutputFeed(block, 0, 0, /*out=*/nullptr),
               ShieldedOutputFeedError::BundleDecodeFailed);
+}
+
+// ── T2: CountShieldedOutputsBeforeHeight ───────────────────────────
+
+using dinero::consensus::shielded::BlockByHeightLookup;
+using dinero::consensus::shielded::CountShieldedOutputsBeforeHeight;
+using dinero::Status;
+
+namespace {
+
+// Build a synthetic mapping height → Block. Empty entries mean
+// "transparent-only block at that height". Used as a `lookup` callable.
+struct StaticChain {
+    std::map<uint32_t, Block> blocks;
+
+    Block ZeroBundleBlock() const { return MakeBlockWith({MakeTransparentTx()}); }
+
+    Block WithOutputCount(int n) const {
+        ShieldedBundle b{};
+        for (int i = 0; i < n; ++i) {
+            b.outputs.push_back(MakeOutput(static_cast<uint8_t>(0x10 + i),
+                                            static_cast<uint8_t>(0xA0 + i)));
+        }
+        return MakeBlockWith({MakeShieldedTx(Transaction::TX_VERSION_SHIELDED, b)});
+    }
+
+    BlockByHeightLookup lookup() {
+        return [this](uint32_t h) -> std::optional<Block> {
+            auto it = blocks.find(h);
+            if (it == blocks.end()) return std::nullopt;
+            return it->second;
+        };
+    }
+};
+
+}  // namespace
+
+TEST(ShieldedOutputFeed, CountReturnsZeroBeforeActivation) {
+    StaticChain chain;
+    auto result = CountShieldedOutputsBeforeHeight(/*from_height=*/100,
+                                                    /*activation=*/100,
+                                                    chain.lookup());
+    ASSERT_TRUE(result.ok());
+    EXPECT_EQ(result.value(), 0u);
+
+    result = CountShieldedOutputsBeforeHeight(/*from=*/50,
+                                               /*activation=*/100,
+                                               chain.lookup());
+    ASSERT_TRUE(result.ok());
+    EXPECT_EQ(result.value(), 0u)
+        << "from_height < activation_height yields 0 without calling lookup";
+}
+
+TEST(ShieldedOutputFeed, CountAccumulatesAcrossBlocks) {
+    StaticChain chain;
+    // Activation at 100. Blocks 100-104:
+    //   100: 2 outputs
+    //   101: 0 outputs (transparent-only)
+    //   102: 1 output
+    //   103: 3 outputs
+    //   104: 0 outputs (empty bundle bytes via transparent-only)
+    chain.blocks[100] = chain.WithOutputCount(2);
+    chain.blocks[101] = chain.ZeroBundleBlock();
+    chain.blocks[102] = chain.WithOutputCount(1);
+    chain.blocks[103] = chain.WithOutputCount(3);
+    chain.blocks[104] = chain.ZeroBundleBlock();
+
+    // Walk [100, 105) → expect 2 + 0 + 1 + 3 + 0 = 6
+    auto result = CountShieldedOutputsBeforeHeight(/*from=*/105,
+                                                    /*activation=*/100,
+                                                    chain.lookup());
+    ASSERT_TRUE(result.ok());
+    EXPECT_EQ(result.value(), 6u);
+
+    // Walk [100, 103) → expect 2 + 0 + 1 = 3
+    result = CountShieldedOutputsBeforeHeight(/*from=*/103,
+                                               /*activation=*/100,
+                                               chain.lookup());
+    ASSERT_TRUE(result.ok());
+    EXPECT_EQ(result.value(), 3u);
+}
+
+TEST(ShieldedOutputFeed, CountReturnsNotFoundWhenChainShortOfRequestedHeight) {
+    StaticChain chain;
+    chain.blocks[100] = chain.WithOutputCount(1);
+    // Height 101 absent — lookup returns nullopt.
+
+    auto result = CountShieldedOutputsBeforeHeight(/*from=*/102,
+                                                    /*activation=*/100,
+                                                    chain.lookup());
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.status(), Status::NotFound);
+}
+
+TEST(ShieldedOutputFeed, CountReturnsSerializationOnMalformedHistoricalBundle) {
+    StaticChain chain;
+    chain.blocks[100] = chain.WithOutputCount(2);
+    // Inject a malformed shielded tx at height 101.
+    Transaction badTx{};
+    badTx.version = Transaction::TX_VERSION_SHIELDED;
+    badTx.shielded_bundle_bytes = {0x99, 0x88, 0x77};  // junk
+    chain.blocks[101] = MakeBlockWith({badTx});
+
+    auto result = CountShieldedOutputsBeforeHeight(/*from=*/102,
+                                                    /*activation=*/100,
+                                                    chain.lookup());
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.status(), Status::Serialization);
 }
