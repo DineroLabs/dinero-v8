@@ -27,6 +27,8 @@ require_tool zip
 
 LIBTOOL="$(xcrun --find libtool)"
 [ -x "$LIBTOOL" ] || die "xcrun libtool not found"
+NMEDIT="$(xcrun --find nmedit)"
+[ -x "$NMEDIT" ] || die "xcrun nmedit not found"
 
 for openssl_dir in "$OPENSSL_DEVICE_DIR" "$OPENSSL_SIMULATOR_DIR"; do
   [ -f "$openssl_dir/libcrypto.a" ] || die "missing $openssl_dir/libcrypto.a"
@@ -49,6 +51,9 @@ configure_and_build() {
     -DIOS_PLATFORM="$platform" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+    -DCMAKE_C_VISIBILITY_PRESET=hidden \
+    -DCMAKE_CXX_VISIBILITY_PRESET=hidden \
+    -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON \
     -DBUILD_NODECORE=ON \
     -DDINERO_VENDORED_OPENSSL_DIR="$openssl_dir" \
     -DENABLE_ZK=ON \
@@ -63,12 +68,19 @@ configure_and_build() {
 
 collect_archives() {
   local build_dir="$1"
-  find "$build_dir" -type f -name '*.a' \
-    ! -path '*/CMakeFiles/*' \
-    ! -name 'libgtest*.a' \
-    ! -name 'libgmock*.a' \
-    ! -name 'libbenchmark*.a' \
-    | sort
+  local archives=(
+    "$build_dir/src/consensus/shielded/libdinero_shielded.a"
+    "$build_dir/src/wallet/libdinero_wallet.a"
+    "$build_dir/libdinero_crypto.a"
+    "$build_dir/libdinero_consensus.a"
+    "$build_dir/libdinero_zk.a"
+  )
+
+  local archive
+  for archive in "${archives[@]}"; do
+    [ -f "$archive" ] || die "missing expected archive $archive"
+    printf '%s\n' "$archive"
+  done
 }
 
 merge_archives() {
@@ -96,6 +108,30 @@ merge_archives() {
   done
 
   "$LIBTOOL" -static -o "$out_dir/libShieldedProverKit.a" "${merged[@]}"
+  localize_duplicate_nodecore_symbols "$out_dir/libShieldedProverKit.a"
+}
+
+localize_duplicate_nodecore_symbols() {
+  local archive="$1"
+  local symbols_file
+  symbols_file="$(mktemp)"
+  cat > "$symbols_file" <<'SYMBOLS'
+__ZNK6dinero11Transaction11GetBaseSizeEv
+__ZNK6dinero11Transaction12SerializeHexENS_19TxSerializationModeE
+__ZNK6dinero11Transaction12SerializeHexEb
+__ZNK6dinero11Transaction7GetSizeEv
+__ZNK6dinero11Transaction7GetTxidEv
+__ZNK6dinero11Transaction8GetWtxidEv
+__ZNK6dinero11Transaction9GetWeightEv
+__ZNK6dinero11Transaction9SerializeENS_19TxSerializationModeE
+__ZNK6dinero11Transaction9SerializeEb
+SYMBOLS
+
+  # NodeCore already exports these transaction convenience methods. ProverKit
+  # needs its bundled transaction object for standalone serialization, but it
+  # must not publish a second app-level owner or Xcode warns on every link.
+  "$NMEDIT" -D -R "$symbols_file" "$archive"
+  rm -f "$symbols_file"
 }
 
 copy_headers() {

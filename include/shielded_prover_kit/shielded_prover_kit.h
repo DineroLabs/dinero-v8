@@ -10,6 +10,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if defined(_WIN32)
+#  define DINERO_SHIELDED_PROVERKIT_API __declspec(dllexport)
+#elif defined(__GNUC__) || defined(__clang__)
+#  define DINERO_SHIELDED_PROVERKIT_API __attribute__((visibility("default")))
+#else
+#  define DINERO_SHIELDED_PROVERKIT_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -56,20 +64,23 @@ typedef struct dinero_shielded_unshield_result {
     char* error;
 } dinero_shielded_unshield_result;
 
-int dinero_shielded_compute_note_commitment(const uint8_t d[32],
-                                            const uint8_t rcm[32],
-                                            uint64_t value_una,
-                                            uint8_t out_commitment[32]);
+DINERO_SHIELDED_PROVERKIT_API int
+dinero_shielded_compute_note_commitment(const uint8_t d[32],
+                                        const uint8_t rcm[32],
+                                        uint64_t value_una,
+                                        uint8_t out_commitment[32]);
 
-int dinero_shielded_compute_nullifier(const uint8_t rcm[32],
-                                      uint64_t leaf_index,
-                                      uint8_t out_nullifier[32]);
+DINERO_SHIELDED_PROVERKIT_API int
+dinero_shielded_compute_nullifier(const uint8_t rcm[32],
+                                  uint64_t leaf_index,
+                                  uint8_t out_nullifier[32]);
 
-int dinero_shielded_build_unshield_bundle(
+DINERO_SHIELDED_PROVERKIT_API int dinero_shielded_build_unshield_bundle(
     const dinero_shielded_unshield_request* req,
     dinero_shielded_unshield_result* out);
 
-void dinero_shielded_free_result(dinero_shielded_unshield_result* out);
+DINERO_SHIELDED_PROVERKIT_API void
+dinero_shielded_free_result(dinero_shielded_unshield_result* out);
 
 #ifdef __cplusplus
 } // extern "C"
