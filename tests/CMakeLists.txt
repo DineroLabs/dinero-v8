@@ -1279,6 +1279,42 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   message(STATUS "Shielded validation tests enabled")
 endif()
 
+# M3 PR B: native ShieldedProverKit C ABI for iOS
+if(TARGET dinero_shielded_prover_kit AND TARGET gtest)
+  add_executable(test_shielded_prover_kit
+    src/test/shielded_prover_kit_tests.cpp
+  )
+  add_dependencies(test_shielded_prover_kit gtest dinero_shielded_prover_kit)
+  target_link_libraries(test_shielded_prover_kit PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_shielded_prover_kit
+    dinero_shielded
+    dinero_wallet
+    dinero_zk
+    dinero_tx_primitives
+    dinero_crypto
+    dinero_consensus
+    zstd
+    sqlite3
+  )
+  target_include_directories(test_shielded_prover_kit BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/sqlite-amalgamation-3480000
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_prover_kit PRIVATE "-framework Security")
+  endif()
+  add_test(NAME ShieldedProverKit COMMAND test_shielded_prover_kit)
+  set_tests_properties(ShieldedProverKit PROPERTIES
+    LABELS "shielded;proverkit;m3;mandatory"
+    TIMEOUT 600
+  )
+  message(STATUS "Shielded ProverKit ABI tests enabled")
+endif()
+
 # Focused ValidationContext tripwire: consensus replay callers must pass
 # the same tx_sighash used by the bundle's binding signature.
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_context_tests.cpp)

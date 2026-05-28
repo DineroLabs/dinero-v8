@@ -197,6 +197,7 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
 struct UnshieldNoteInput {
     consensus::shielded::Hash secret_key{};
     consensus::shielded::Hash randomness{};
+    consensus::shielded::Hash d{};            ///< 32-byte packed diversifier bound into the note commitment
     consensus::shielded::Hash anchor{};       ///< wallet-tree root at spend time
     uint64_t                  leaf_index = 0;
     uint64_t                  value_una = 0;

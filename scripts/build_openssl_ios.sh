@@ -1,80 +1,108 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Build OpenSSL for iOS arm64
-# This script builds static libraries for iOS device (arm64)
+# Build vendored OpenSSL 3.3.2 for iOS device + simulator slices, installing
+# into the cache layout the ShieldedProverKit xcframework packager consumes:
+#
+#   third_party/openssl-3.3.2/prebuilt/ios-arm64/{libcrypto.a,libssl.a,include/openssl/}
+#   third_party/openssl-3.3.2/prebuilt/ios-simulator-arm64/{...}
+#
+# Mirrors the inline iOS-OpenSSL logic in build_nodecore_xcframework.sh so the
+# shielded-prover-kit lane can run a one-shot prerequisite instead of the full
+# NodeCore xcframework build. Adds header sync because the prover-kit script
+# requires include/openssl in each cache directory.
 
-OPENSSL_VERSION="3.2.1"
-BUILD_DIR="build-openssl-ios"
-INSTALL_DIR="${PWD}/${BUILD_DIR}/install"
-IOS_SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
-IOS_SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-IOS_MIN_VERSION="11.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+OPENSSL_SRC="${ROOT_DIR}/third_party/openssl-3.3.2"
+IOS_DEPLOY_TARGET="${IOS_DEPLOY_TARGET:-15.0}"
+NCPU="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
-echo "🔧 Building OpenSSL ${OPENSSL_VERSION} for iOS"
-echo "   SDK: ${IOS_SDK_VERSION}"
-echo "   Path: ${IOS_SDK_PATH}"
-echo "   Min iOS: ${IOS_MIN_VERSION}"
+DEVICE_CACHE="${OPENSSL_SRC}/prebuilt/ios-arm64"
+SIM_CACHE="${OPENSSL_SRC}/prebuilt/ios-simulator-arm64"
 
-# Create build directory
-mkdir -p "${BUILD_DIR}"
-cd "${BUILD_DIR}"
+die() { echo "error: $*" >&2; exit 1; }
+require() { command -v "$1" >/dev/null 2>&1 || die "$1 not found"; }
 
-# Download OpenSSL if not already present
-if [ ! -d "openssl-${OPENSSL_VERSION}" ]; then
-    echo "📥 Downloading OpenSSL ${OPENSSL_VERSION}..."
-    curl -L "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz" -o openssl-${OPENSSL_VERSION}.tar.gz
-    tar -xzf openssl-${OPENSSL_VERSION}.tar.gz
-fi
+require xcrun
+require make
+require perl
+[ -f "${OPENSSL_SRC}/Configure" ] || die "OpenSSL source not found at ${OPENSSL_SRC}"
 
-cd "openssl-${OPENSSL_VERSION}"
+clean_openssl_tree() {
+    # MUST exclude prebuilt/ because it lives inside OPENSSL_SRC and holds
+    # completed macOS + iOS slices that other builds depend on.
+    #
+    # WARNING: `-prune` does NOT work here because `-delete` auto-enables
+    # `-depth`, so find descends into prebuilt/ before evaluating prune on the
+    # dir itself, deleting cached .a files as collateral. Use `! -path` instead.
+    make distclean >/dev/null 2>&1 || make clean >/dev/null 2>&1 || true
+    find . \( -name '*.o' -o -name '*.d' -o -name '*.a' -o -name '*.dylib' \) \
+        -type f ! -path './prebuilt/*' -delete >/dev/null 2>&1 || true
+    rm -f Makefile Makefile.in configdata.pm builddata.pm
+}
 
-# Clean previous build
-make clean 2>/dev/null || true
+sync_headers() {
+    local dst="$1"
+    rm -rf "${dst}/include"
+    mkdir -p "${dst}/include"
+    cp -R "${OPENSSL_SRC}/include/openssl" "${dst}/include/openssl"
+    find "${dst}/include/openssl" -name '*.in' -delete
+}
 
-# Configure for iOS arm64
-echo "⚙️  Configuring OpenSSL for iOS arm64..."
-CC=$(xcrun --sdk iphoneos --find clang)
-CXX=$(xcrun --sdk iphoneos --find clang++)
-CFLAGS="-arch arm64 -mios-version-min=${IOS_MIN_VERSION} -isysroot ${IOS_SDK_PATH} -fembed-bitcode"
-CXXFLAGS="${CFLAGS}"
+build_slice() {
+    local target="$1"
+    local cache_dir="$2"
+    local is_sim="$3"
+    local version_flag
 
-export CC
-export CXX
-export CFLAGS
-export CXXFLAGS
+    if [ "$is_sim" = "sim" ]; then
+        version_flag="-mios-simulator-version-min=${IOS_DEPLOY_TARGET}"
+    else
+        version_flag="-miphoneos-version-min=${IOS_DEPLOY_TARGET}"
+    fi
 
-./Configure \
-    ios64-cross \
-    --prefix="${INSTALL_DIR}" \
-    --openssldir="${INSTALL_DIR}" \
-    no-shared \
-    no-tests \
-    no-docs \
-    no-async \
-    no-weak-ssl-ciphers \
-    enable-ec_nistp_64_gcc_128
+    echo "==> Building OpenSSL for ${target} (${version_flag})"
 
-# Build
-echo "🔨 Building OpenSSL..."
-make -j$(sysctl -n hw.ncpu)
+    rm -rf "${cache_dir}"
+    mkdir -p "${cache_dir}"
 
-# Install
-echo "📦 Installing OpenSSL..."
-make install_sw
+    pushd "${OPENSSL_SRC}" >/dev/null
+    clean_openssl_tree
 
-echo ""
-echo "✅ OpenSSL build complete!"
-echo "   Libraries: ${INSTALL_DIR}/lib/"
-ls -lh "${INSTALL_DIR}/lib/"*.a 2>/dev/null || echo "   (checking for libraries...)"
+    ./Configure "${target}" \
+        no-shared \
+        no-tests \
+        no-apps \
+        no-ui-console \
+        no-async \
+        no-engine \
+        no-module \
+        enable-ec \
+        enable-ecdh \
+        enable-ecdsa \
+        "${version_flag}"
 
-# Copy to iOS project
-if [ -f "${INSTALL_DIR}/lib/libcrypto.a" ] && [ -f "${INSTALL_DIR}/lib/libssl.a" ]; then
-    echo ""
-    echo "📋 Libraries found:"
-    ls -lh "${INSTALL_DIR}/lib/"*.a
-    echo ""
-    echo "💡 Next step: Copy libraries to iOS project FFI directory"
-    echo "   cp ${INSTALL_DIR}/lib/libcrypto.a /Users/haydarevich/Documents/DineroiOS/Dinero/Dinero/FFI/"
-    echo "   cp ${INSTALL_DIR}/lib/libssl.a /Users/haydarevich/Documents/DineroiOS/Dinero/Dinero/FFI/"
-fi
+    make -j"${NCPU}"
+
+    [ -f libcrypto.a ] || die "${target}: libcrypto.a not produced"
+    [ -f libssl.a ] || die "${target}: libssl.a not produced"
+
+    cp libcrypto.a "${cache_dir}/"
+    cp libssl.a "${cache_dir}/"
+    popd >/dev/null
+
+    sync_headers "${cache_dir}"
+
+    local size_kb
+    size_kb=$(( $(stat -f%z "${cache_dir}/libcrypto.a") / 1024 ))
+    echo "    libcrypto.a ${size_kb} KB at ${cache_dir}/"
+}
+
+build_slice "ios64-xcrun" "${DEVICE_CACHE}" ""
+build_slice "iossimulator-arm64-xcrun" "${SIM_CACHE}" "sim"
+
+echo
+echo "OpenSSL iOS slices ready:"
+ls -la "${DEVICE_CACHE}"
+ls -la "${SIM_CACHE}"

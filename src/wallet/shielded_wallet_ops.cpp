@@ -272,11 +272,8 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
         }
     }
 
-    // 1. Reconstruct pk + value_hash to feed the spend witness.
-    sh::Hash zero{};
-    sh::Hash public_key = sh::PoseidonHash2(note.secret_key, zero);
+    // 1. Reconstruct value_hash to feed the spend witness.
     sh::Hash value_hash = ValueToHash(note.value_una);
-    sh::Hash diversifier{};  // Phase 2 wave 5: zero diversifier until Phase 5.
 
     // 2. Generate the Spartan spend proof.
     sh::SpendWitness sw{};
@@ -284,7 +281,7 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
     sw.leaf_index  = note.leaf_index;
     sw.value       = value_hash;
     sw.randomness  = note.randomness;
-    sw.d           = diversifier;
+    sw.d           = note.d;
     sw.merkle_path = note.merkle_path;
 
     sh::SpendPublicInputs spi{};
@@ -446,9 +443,10 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
 
     // ── Spend side: reconstruct pk + value_hash, generate spend proof.
     sh::Hash zero{};
+    sh::Hash output_d{};
     sh::Hash spend_pk = sh::PoseidonHash2(note.secret_key, zero);
     sh::Hash spend_value_hash = ValueToHash(note.value_una);
-    sh::Hash spend_d{};
+    sh::Hash spend_d = note.d;
 
     sh::SpendWitness sw{};
     sw.secret_key  = note.secret_key;
@@ -632,8 +630,7 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
     }
 
     sh::Hash zero{};
-    sh::Hash diversifier{};
-
+    sh::Hash output_d{};
     // ── Spend side: per-note Spartan spend proof + PlannedSpend.
     std::vector<sh::PlannedSpend> planned_spends;
     planned_spends.reserve(spends.size());
@@ -644,7 +641,7 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
         sw.leaf_index  = s.leaf_index;
         sw.value       = value_hash;
         sw.randomness  = s.randomness;
-        sw.d           = diversifier;
+        sw.d           = s.d;
         sw.merkle_path = s.merkle_path;
 
         sh::SpendPublicInputs spi{};
@@ -680,14 +677,14 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
         mat.randomness = RandomHash();
         mat.value_una  = value_una;
         sh::Hash value_hash = ValueToHash(value_una);
-        mat.commitment = sh::NoteCommitment(diversifier, mat.public_key,
+        mat.commitment = sh::NoteCommitment(output_d, mat.public_key,
                                             value_hash, mat.randomness);
 
         sh::OutputWitness ow{};
         ow.value      = value_hash;
         ow.public_key = mat.public_key;
         ow.randomness = mat.randomness;
-        ow.d          = diversifier;
+        ow.d          = output_d;
 
         sh::OutputPublicInputs opi{};
         opi.commitment = mat.commitment;
@@ -816,7 +813,7 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         sw.leaf_index  = s.leaf_index;
         sw.value       = value_hash;
         sw.randomness  = s.randomness;
-        sw.d           = sh::Hash{};
+        sw.d           = s.d;
         sw.merkle_path = s.merkle_path;
         sh::SpendPublicInputs spi{};
         spi.nullifier = sh::ComputeNullifier(s.secret_key, s.leaf_index);
