@@ -216,6 +216,35 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
     return proof_bytes;
 }
 
+// AUDIT-ONLY (SUSPECTED-01 PoC). Identical to ProveSpend EXCEPT the circuit is built
+// from `pub_committed` (the real note → satisfiable) while the Fiat-Shamir transcript
+// is bound to `pub_present`. This isolates the public-input-binding property: if the
+// verifier truly binds the on-chain inputs to the committed witness, a proof produced
+// here must be rejected when verified/presented with `pub_present`. NOT a production path.
+std::vector<uint8_t> ProveSpend_AuditDesync(const SpendWitness& witness,
+                                            const SpendPublicInputs& pub_committed,
+                                            const SpendPublicInputs& pub_present,
+                                            secp256k1_context_struct* ctx) {
+    auto* sctx = ResolveCtx(ctx);
+    auto cs = BuildSpendCircuit(witness, pub_committed);
+    if (!cs.is_satisfied()) {
+        return {};
+    }
+
+    Transcript transcript("dinero.shielded.spend.v1");
+    BindSpendTranscript(transcript, pub_present);  // <-- desync: bind PRESENTED, not committed
+
+    const auto& gens = ShieldedGenerators(cs, sctx);
+    SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
+        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx);
+
+    std::vector<uint8_t> proof_bytes;
+    proof_bytes.push_back(kSpendProofVersion);
+    auto serialized = proof.serialize(sctx);
+    proof_bytes.insert(proof_bytes.end(), serialized.begin(), serialized.end());
+    return proof_bytes;
+}
+
 bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
                  const SpendPublicInputs& pub,
                  secp256k1_context_struct* ctx) {

@@ -17,6 +17,7 @@
 
 #include <array>
 #include <cstdint>
+#include <iostream>
 #include <vector>
 
 namespace dinero::consensus::shielded::testing {
@@ -31,6 +32,7 @@ using shielded::OutputPublicInputs;
 using shielded::OutputWitness;
 using shielded::ProveOutput;
 using shielded::ProveSpend;
+using shielded::ProveSpend_AuditDesync;
 using shielded::SpendPublicInputs;
 using shielded::SpendWitness;
 using shielded::VerifyOutput;
@@ -212,6 +214,81 @@ TEST(ShieldedSpendCircuitTest, TamperedAnchorRejected) {
     SpendPublicInputs tampered = fx.pub;
     tampered.anchor[10] ^= 0x40;
     EXPECT_FALSE(VerifySpend(proof, tampered, nullptr));
+}
+
+// SUSPECTED-01 PoC (2026-05-30): does the verifier bind the on-chain anchor to the
+// COMMITTED witness, or only to the Fiat-Shamir transcript?
+//
+// The existing TamperedAnchorRejected test above proves nothing about binding: it
+// reuses an honest proof (transcript bound to A1) and verifies with A2, so it fails
+// on the *transcript mismatch*, not on anchor-to-witness binding. This test isolates
+// binding correctly: the proof's circuit is committed to the REAL anchor A1 (so it is
+// satisfiable), but BOTH the transcript AND the presented public input are A2. The
+// transcripts therefore MATCH (no Fiat-Shamir mismatch), so the only thing that could
+// reject is a genuine binding of the committed anchor (A1) to the presented one (A2).
+//
+//   sound system  -> VerifySpend rejects (A1 in witness != A2 presented)
+//   unbound system -> VerifySpend ACCEPTS (verifier never checks z-io == presented pub)
+TEST(ShieldedSpendCircuitTest, SUSPECTED01_AnchorBindingPoC) {
+    SpendFixture fx;
+    fx.Build();
+
+    // Sanity: the honest round-trip works.
+    auto honest = ProveSpend(fx.witness, fx.pub, nullptr);
+    ASSERT_FALSE(honest.empty());
+    ASSERT_TRUE(VerifySpend(honest, fx.pub, nullptr));
+
+    // A2: a different "root" (one byte flipped from the real anchor A1). In a real
+    // attack this would be any real historical root the attacker does not have a path
+    // to; for the binding test any value != A1 suffices.
+    SpendPublicInputs pub_present = fx.pub;
+    pub_present.anchor[10] ^= 0x40;
+    ASSERT_NE(pub_present.anchor, fx.pub.anchor);
+
+    // Forge: circuit committed to A1 (fx.pub), transcript + presentation bound to A2.
+    auto forged = ProveSpend_AuditDesync(fx.witness, /*pub_committed=*/fx.pub,
+                                         /*pub_present=*/pub_present, nullptr);
+    ASSERT_FALSE(forged.empty());  // committed circuit is the real, satisfiable A1 spend
+
+    const bool accepted = VerifySpend(forged, pub_present, nullptr);
+    std::cerr << "\n========================================================\n"
+              << "[SUSPECTED-01 PoC] committed anchor A1, presented+transcript anchor A2\n"
+              << "  VerifySpend(forged, A2) accepted = "
+              << (accepted ? "TRUE  ==> PUBLIC-INPUT BINDING ABSENT (forgery confirmed)"
+                           : "false ==> anchor IS bound to the witness (sound)")
+              << "\n========================================================\n\n";
+
+    // REGRESSION TEST for the CONFIRMED-CRIT-05 fix (Spartan z=(1,io,W) split): a sound
+    // proof system MUST reject this forgery. Before the fix this accepted (=TRUE) and the
+    // assertion failed, exposing the bug; with the fix it must reject (=false). If this
+    // ever fails again, the public-input binding has regressed.
+    EXPECT_FALSE(accepted);
+}
+
+// Companion to the anchor PoC: prove the NULLIFIER is bound too. The nullifier sits at
+// witness index 1, the anchor at index 2 — so a slot-specific layout bug could bind one
+// and not the other. This desyncs the nullifier (not the anchor) at proof-generation
+// time; a sound system must reject. (The existing TamperedNullifierRejected only catches
+// the transcript-mismatch case, like the old anchor test did.)
+TEST(ShieldedSpendCircuitTest, NullifierBindingPoC) {
+    SpendFixture fx;
+    fx.Build();
+
+    SpendPublicInputs pub_present = fx.pub;
+    pub_present.nullifier[3] ^= 0x80;  // N2 != N1
+    ASSERT_NE(pub_present.nullifier, fx.pub.nullifier);
+
+    // Circuit committed to the real nullifier N1; transcript + presentation bound to N2.
+    auto forged = ProveSpend_AuditDesync(fx.witness, /*pub_committed=*/fx.pub,
+                                         /*pub_present=*/pub_present, nullptr);
+    ASSERT_FALSE(forged.empty());
+
+    const bool accepted = VerifySpend(forged, pub_present, nullptr);
+    std::cerr << "\n[NullifierBindingPoC] committed nullifier N1, presented+transcript N2; "
+              << "VerifySpend(forged, N2) accepted = "
+              << (accepted ? "TRUE  ==> NULLIFIER UNBOUND (bug)" : "false ==> nullifier bound (sound)")
+              << "\n\n";
+    EXPECT_FALSE(accepted);  // sound system MUST reject
 }
 
 TEST(ShieldedSpendCircuitTest, EmptyProofRejected) {

@@ -85,6 +85,19 @@ bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
                  const SpendPublicInputs& pub,
                  secp256k1_context_struct* ctx);
 
+/**
+ * AUDIT-ONLY (SUSPECTED-01 PoC, 2026-05-30). Generates a spend proof whose R1CS
+ * is built from `pub_committed` (a real note/anchor, so the circuit is satisfiable)
+ * but whose Fiat-Shamir transcript is bound to `pub_present`. Exists solely to test
+ * whether the verifier binds on-chain public inputs to the committed witness — it is
+ * NOT a production path and must not be called outside the audit harness. Returns {}
+ * if the committed circuit is unsatisfiable.
+ */
+std::vector<uint8_t> ProveSpend_AuditDesync(const SpendWitness& witness,
+                                            const SpendPublicInputs& pub_committed,
+                                            const SpendPublicInputs& pub_present,
+                                            secp256k1_context_struct* ctx);
+
 // ── Output proof ─────────────────────────────────────────────────────
 
 struct OutputWitness {
