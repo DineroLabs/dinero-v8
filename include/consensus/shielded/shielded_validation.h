@@ -115,6 +115,14 @@ struct ValidationContext {
     /// `ForPreActivationTests` to make that intent explicit).
     Hash                    tx_sighash;
 
+    /// CONFIRMED-CRIT-05: blocks at/above this height verify shielded proofs with the
+    /// public-input-bound rule; below it, the pre-fix unbound rule. Defaulted member
+    /// (NOT a constructor parameter) so existing construction sites are unaffected;
+    /// consensus callers set it via BuildShieldedValidationContext from chainparams.
+    /// Default 0 = "always bind" (the secure rule) — matches the prover's bind=true
+    /// default, so direct-construction unit tests exercise the bound rule.
+    uint32_t                shielded_input_binding_activation_height = 0;
+
     constexpr ValidationContext(
         const NullifierSet*    nullifier_set,
         const CommitmentTree*  commitment_tree,
@@ -190,7 +198,12 @@ ValidationContext BuildShieldedValidationContext(
     uint32_t                     block_height,
     int64_t                      transparent_value_delta,
     uint32_t                     shielded_activation_height,
-    const AnchorHistory*         anchor_history);
+    const AnchorHistory*         anchor_history,
+    // CONFIRMED-CRIT-05: from chainparams.shielded_input_binding_activation_height.
+    // Default UINT32_MAX (never bind) is a safe fallback for any caller that has not
+    // yet been updated — such a caller would use the old rule, never silently accept a
+    // forgery under the new rule. Real consensus callers pass the chainparams value.
+    uint32_t                     shielded_input_binding_activation_height = UINT32_MAX);
 
 // (Phase 2's ComputeBindingTag — SHA-256 structural tag — was replaced
 // by the Phase 3 wave 2 Schnorr binding signature. See binding_sig.h

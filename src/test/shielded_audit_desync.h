@@ -23,11 +23,13 @@ namespace dinero::consensus::shielded {
 std::vector<uint8_t> ProveSpend_AuditDesync(const SpendWitness& witness,
                                             const SpendPublicInputs& pub_committed,
                                             const SpendPublicInputs& pub_present,
-                                            secp256k1_context_struct* ctx);
+                                            secp256k1_context_struct* ctx,
+                                            bool bind_public_inputs = true);
 
 std::vector<uint8_t> ProveOutput_AuditDesync(const OutputWitness& witness,
                                              const OutputPublicInputs& pub_committed,
                                              const OutputPublicInputs& pub_present,
-                                             secp256k1_context_struct* ctx);
+                                             secp256k1_context_struct* ctx,
+                                             bool bind_public_inputs = true);
 
 }  // namespace dinero::consensus::shielded

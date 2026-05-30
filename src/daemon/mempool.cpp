@@ -2854,7 +2854,8 @@ bool Mempool::validateTransaction(const Transaction& tx, std::string& error) con
             next_block_height,
             transparent_delta,
             dinero::Params().shielded_activation_height,
-            /*anchor_history=*/nullptr);
+            /*anchor_history=*/nullptr,
+            dinero::Params().shielded_input_binding_activation_height);
         const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
         if (validation != consensus::shielded::ShieldedValidationError::Ok) {
             error = "Shielded validation failed: " +

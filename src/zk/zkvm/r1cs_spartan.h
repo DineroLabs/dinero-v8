@@ -104,7 +104,12 @@ SpartanProof r1cs_spartan_prove(
     const Scalar& u,               // relaxation scalar
     const GeneratorSet& gens,
     Transcript& transcript,
-    secp256k1_context* ctx
+    secp256k1_context* ctx,
+    // CONFIRMED-CRIT-05: when true (default), commit/open only the private witness and
+    // have the verifier bind the public inputs (z=(1,io,W) split). false reproduces the
+    // pre-fix behavior (full-z commit, public inputs UNBOUND) — retained ONLY to validate
+    // pre-activation-height history under the old consensus rule. Never use false for new proofs.
+    bool bind_public_inputs = true
 );
 
 // ---------------------------------------------------------------------------
@@ -134,7 +139,11 @@ bool r1cs_spartan_verify(
     const Scalar& u,
     const GeneratorSet& gens,
     Transcript& transcript,
-    secp256k1_context* ctx
+    secp256k1_context* ctx,
+    // CONFIRMED-CRIT-05: must match the prover. true (default) reconstructs the public-input
+    // contribution to z̃(ry) and binds it; false is the pre-fix unbound rule, retained only
+    // for validating pre-activation-height history.
+    bool bind_public_inputs = true
 );
 
 /**

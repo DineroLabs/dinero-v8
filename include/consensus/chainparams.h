@@ -198,6 +198,15 @@ struct ChainParams {
     // ===========================================================================
     uint32_t shielded_activation_height = UINT32_MAX;
 
+    // ===========================================================================
+    // CONSENSUS: shielded public-input-binding activation height (CONFIRMED-CRIT-05).
+    // Blocks at or above this height verify shielded spend/output proofs with the
+    // public-input-bound Spartan rule (z=(1,io,W) split). Blocks below it use the
+    // pre-fix unbound rule, retained only to validate pre-activation history.
+    // Changing this changes block validity — operators MUST coordinate a release.
+    // ===========================================================================
+    uint32_t shielded_input_binding_activation_height = UINT32_MAX;
+
     // Genesis block parameters
     GenesisParams genesis;
 

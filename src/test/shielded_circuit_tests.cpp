@@ -331,6 +331,38 @@ TEST(ShieldedSpendCircuitTest, NullifierBindingPoC) {
     EXPECT_FALSE(accepted);  // sound system MUST reject
 }
 
+// Activation-gate behavior (CONFIRMED-CRIT-05): proves the height gate's two branches
+// select different rules. Below the binding-activation height (bind=false) the proof
+// system reproduces the pre-fix UNBOUND rule and ACCEPTS the anchor forgery; at/above it
+// (bind=true) the same forgery is REJECTED. This documents the known pre-activation
+// weakness and verifies the gate flips behavior. Honest proofs round-trip under each
+// rule when prover and verifier agree (which the height gate guarantees).
+TEST(ShieldedSpendCircuitTest, ActivationGate_OldRuleAcceptsForgery_NewRuleRejects) {
+    SpendFixture fx;
+    fx.Build();
+
+    SpendPublicInputs pub_present = fx.pub;
+    pub_present.anchor[10] ^= 0x40;
+
+    // Pre-activation (bind=false): the forgery is ACCEPTED — the rule is unbound.
+    auto forged_old = ProveSpend_AuditDesync(fx.witness, fx.pub, pub_present, nullptr,
+                                             /*bind_public_inputs=*/false);
+    ASSERT_FALSE(forged_old.empty());
+    EXPECT_TRUE(VerifySpend(forged_old, pub_present, nullptr, /*bind_public_inputs=*/false));
+
+    // Post-activation (bind=true): the same forgery is REJECTED.
+    auto forged_new = ProveSpend_AuditDesync(fx.witness, fx.pub, pub_present, nullptr,
+                                             /*bind_public_inputs=*/true);
+    ASSERT_FALSE(forged_new.empty());
+    EXPECT_FALSE(VerifySpend(forged_new, pub_present, nullptr, /*bind_public_inputs=*/true));
+
+    // Honest proofs round-trip under BOTH rules (prover/verifier agree).
+    auto honest_old = ProveSpend(fx.witness, fx.pub, nullptr, /*bind_public_inputs=*/false);
+    auto honest_new = ProveSpend(fx.witness, fx.pub, nullptr, /*bind_public_inputs=*/true);
+    EXPECT_TRUE(VerifySpend(honest_old, fx.pub, nullptr, /*bind_public_inputs=*/false));
+    EXPECT_TRUE(VerifySpend(honest_new, fx.pub, nullptr, /*bind_public_inputs=*/true));
+}
+
 TEST(ShieldedSpendCircuitTest, EmptyProofRejected) {
     SpendFixture fx;
     fx.Build();

@@ -197,7 +197,8 @@ bool ValidateShieldedTransactionBundle(
         height,
         transparent_delta,
         Params().shielded_activation_height,
-        anchor_history);
+        anchor_history,
+        Params().shielded_input_binding_activation_height);
     const auto validation = shielded::ValidateShieldedBundle(bundle, ctx);
     if (validation != shielded::ShieldedValidationError::Ok) {
         error = "Shielded validation failed: " +

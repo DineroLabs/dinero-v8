@@ -195,7 +195,8 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
 
 std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
                                  const SpendPublicInputs& pub,
-                                 secp256k1_context_struct* ctx) {
+                                 secp256k1_context_struct* ctx,
+                                 bool bind_public_inputs) {
     auto* sctx = ResolveCtx(ctx);
     auto cs = BuildSpendCircuit(witness, pub);
     if (!cs.is_satisfied()) {
@@ -207,7 +208,7 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
 
     const auto& gens = ShieldedGenerators(cs, sctx);
     SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
-        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx);
+        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx, bind_public_inputs);
 
     std::vector<uint8_t> proof_bytes;
     proof_bytes.push_back(kSpendProofVersion);
@@ -224,7 +225,8 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
 std::vector<uint8_t> ProveSpend_AuditDesync(const SpendWitness& witness,
                                             const SpendPublicInputs& pub_committed,
                                             const SpendPublicInputs& pub_present,
-                                            secp256k1_context_struct* ctx) {
+                                            secp256k1_context_struct* ctx,
+                                            bool bind_public_inputs) {
     auto* sctx = ResolveCtx(ctx);
     auto cs = BuildSpendCircuit(witness, pub_committed);
     if (!cs.is_satisfied()) {
@@ -236,7 +238,7 @@ std::vector<uint8_t> ProveSpend_AuditDesync(const SpendWitness& witness,
 
     const auto& gens = ShieldedGenerators(cs, sctx);
     SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
-        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx);
+        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx, bind_public_inputs);
 
     std::vector<uint8_t> proof_bytes;
     proof_bytes.push_back(kSpendProofVersion);
@@ -247,7 +249,8 @@ std::vector<uint8_t> ProveSpend_AuditDesync(const SpendWitness& witness,
 
 bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
                  const SpendPublicInputs& pub,
-                 secp256k1_context_struct* ctx) {
+                 secp256k1_context_struct* ctx,
+                 bool bind_public_inputs) {
     auto* sctx = ResolveCtx(ctx);
     SpartanProof proof;
     if (!DeserializeShieldedProof(proof_bytes, kSpendProofVersion, proof, sctx)) {
@@ -264,7 +267,7 @@ bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
     return zk::zkvm::r1cs_spartan_verify(
         proof, verifier_cs, verifier_cs.num_constraints(),
         verifier_cs.num_variables(), circuit_hash, Scalar::one(),
-        gens, transcript, sctx);
+        gens, transcript, sctx, bind_public_inputs);
 }
 
 // ── Output circuit ───────────────────────────────────────────────────
@@ -304,7 +307,8 @@ R1CS BuildOutputCircuit(const OutputWitness& witness,
 
 std::vector<uint8_t> ProveOutput(const OutputWitness& witness,
                                   const OutputPublicInputs& pub,
-                                  secp256k1_context_struct* ctx) {
+                                  secp256k1_context_struct* ctx,
+                                  bool bind_public_inputs) {
     auto* sctx = ResolveCtx(ctx);
     auto cs = BuildOutputCircuit(witness, pub);
     if (!cs.is_satisfied()) {
@@ -316,7 +320,7 @@ std::vector<uint8_t> ProveOutput(const OutputWitness& witness,
 
     const auto& gens = ShieldedGenerators(cs, sctx);
     SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
-        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx);
+        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx, bind_public_inputs);
 
     std::vector<uint8_t> proof_bytes;
     proof_bytes.push_back(kOutputProofVersion);
@@ -332,7 +336,8 @@ std::vector<uint8_t> ProveOutput(const OutputWitness& witness,
 std::vector<uint8_t> ProveOutput_AuditDesync(const OutputWitness& witness,
                                              const OutputPublicInputs& pub_committed,
                                              const OutputPublicInputs& pub_present,
-                                             secp256k1_context_struct* ctx) {
+                                             secp256k1_context_struct* ctx,
+                                             bool bind_public_inputs) {
     auto* sctx = ResolveCtx(ctx);
     auto cs = BuildOutputCircuit(witness, pub_committed);
     if (!cs.is_satisfied()) {
@@ -344,7 +349,7 @@ std::vector<uint8_t> ProveOutput_AuditDesync(const OutputWitness& witness,
 
     const auto& gens = ShieldedGenerators(cs, sctx);
     SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
-        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx);
+        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx, bind_public_inputs);
 
     std::vector<uint8_t> proof_bytes;
     proof_bytes.push_back(kOutputProofVersion);
@@ -355,7 +360,8 @@ std::vector<uint8_t> ProveOutput_AuditDesync(const OutputWitness& witness,
 
 bool VerifyOutput(const std::vector<uint8_t>& proof_bytes,
                   const OutputPublicInputs& pub,
-                  secp256k1_context_struct* ctx) {
+                  secp256k1_context_struct* ctx,
+                  bool bind_public_inputs) {
     auto* sctx = ResolveCtx(ctx);
     SpartanProof proof;
     if (!DeserializeShieldedProof(proof_bytes, kOutputProofVersion, proof, sctx)) {
@@ -372,7 +378,7 @@ bool VerifyOutput(const std::vector<uint8_t>& proof_bytes,
     return zk::zkvm::r1cs_spartan_verify(
         proof, verifier_cs, verifier_cs.num_constraints(),
         verifier_cs.num_variables(), circuit_hash, Scalar::one(),
-        gens, transcript, sctx);
+        gens, transcript, sctx, bind_public_inputs);
 }
 
 } // namespace dinero::consensus::shielded

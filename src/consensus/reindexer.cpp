@@ -2224,7 +2224,8 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
                 static_cast<uint32_t>(height),
                 transparent_delta,
                 Params().shielded_activation_height,
-                &shielded_anchor_history_);
+                &shielded_anchor_history_,
+                Params().shielded_input_binding_activation_height);
             const auto validation = shielded::ValidateShieldedBundle(bundle, ctx);
             if (validation != shielded::ShieldedValidationError::Ok) {
                 g_logger.error("[reindex] Shielded validation failed at height " +

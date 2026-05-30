@@ -364,7 +364,8 @@ SpartanProof r1cs_spartan_prove(
     const Scalar& u,
     const GeneratorSet& gens,
     Transcript& transcript,
-    secp256k1_context* ctx
+    secp256k1_context* ctx,
+    bool bind_public_inputs
 ) {
     SpartanProof proof;
 
@@ -375,17 +376,20 @@ SpartanProof r1cs_spartan_prove(
     const size_t m_p  = next_pow2(m);                    // padded for sum-check
 
     // SECURITY (CONFIRMED-CRIT-05 fix, 2026-05-30) — Spartan z=(1, io, W) split.
-    // Commit/open ONLY the private witness W: zero the public slots (index 0 = the
-    // constant ONE, indices 1..num_inputs = public inputs). The verifier recomputes
-    // the public/io contribution to z̃(ry) itself from the on-chain public inputs and
-    // adds it back. Without this split the public inputs are unbound to the proof and
-    // forgeable (see ShieldedSpendCircuitTest.SUSPECTED01_AnchorBindingPoC). The
-    // sum-check below still runs over the FULL z (A·z/B·z/C·z and z_table); only the
-    // commitment and the eval proof use z_priv.
+    // When bind_public_inputs (the default), commit/open ONLY the private witness W:
+    // zero the public slots (index 0 = the constant ONE, 1..num_inputs = public inputs).
+    // The verifier recomputes the public/io contribution to z̃(ry) itself from the
+    // on-chain public inputs and adds it back. Without this split the public inputs are
+    // unbound and forgeable (see ShieldedSpendCircuitTest.SUSPECTED01_AnchorBindingPoC).
+    // The sum-check below always runs over the FULL z; only the commitment + eval use
+    // the (possibly public-zeroed) vector. bind_public_inputs=false reproduces the
+    // pre-fix unbound rule — retained ONLY for pre-activation-height history validation.
     const size_t num_pub = 1 + cs.num_inputs();          // constant ONE + public inputs
     std::vector<Scalar> z_priv = z;
-    for (size_t j = 0; j < num_pub && j < z_priv.size(); ++j) {
-        z_priv[j] = Scalar::zero();
+    if (bind_public_inputs) {
+        for (size_t j = 0; j < num_pub && j < z_priv.size(); ++j) {
+            z_priv[j] = Scalar::zero();
+        }
     }
 
     // Hyrax parameters
@@ -537,7 +541,8 @@ bool r1cs_spartan_verify(
     const Scalar& u,
     const GeneratorSet& gens,
     Transcript& transcript,
-    secp256k1_context* ctx
+    secp256k1_context* ctx,
+    bool bind_public_inputs
 ) {
     // --- Basic sanity checks ---
     if (proof.circuit_hash.size() != 32) return false;
@@ -678,15 +683,19 @@ bool r1cs_spartan_verify(
     // populated from the on-chain `pub`. z̃(ry) = io_eval(ry) + W̃(ry). This is what ties
     // the proof to the presented public inputs; a proof committing different io values
     // (a forgery) no longer satisfies inner_final == M_eval · z̃(ry).
-    const std::vector<Scalar>& zpub = verifier_cs.witness();
-    const size_t num_pub = 1 + verifier_cs.num_inputs();   // constant ONE + public inputs
-    Scalar io_eval = Scalar::zero();
-    for (size_t j = 0; j < num_pub && j < zpub.size() && j < n_zp; ++j) {
-        io_eval += eq_ry[j] * zpub[j];
+    Scalar z_at_ry = proof.eval_W.claimed;
+    if (bind_public_inputs) {
+        const std::vector<Scalar>& zpub = verifier_cs.witness();
+        const size_t num_pub = 1 + verifier_cs.num_inputs();   // constant ONE + public inputs
+        Scalar io_eval = Scalar::zero();
+        for (size_t j = 0; j < num_pub && j < zpub.size() && j < n_zp; ++j) {
+            io_eval += eq_ry[j] * zpub[j];
+        }
+        z_at_ry = io_eval + proof.eval_W.claimed;
     }
-    const Scalar z_at_ry = io_eval + proof.eval_W.claimed;
+    // bind_public_inputs=false → z_at_ry = eval_W.claimed (pre-fix unbound rule).
 
-    // inner_final == M_eval * z̃(ry), with z̃(ry) = io_eval(ry) + W̃(ry)
+    // inner_final == M_eval * z̃(ry), with z̃(ry) = io_eval(ry) + W̃(ry) when bound
     if (!(M_eval * z_at_ry == inner_final)) return false;
 
     // --- Verify Hyrax eval proofs ---

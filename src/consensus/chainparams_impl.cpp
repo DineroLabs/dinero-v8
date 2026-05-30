@@ -84,6 +84,12 @@ static ChainParams g_mainnet = {
     // before the gate flips.
     .shielded_activation_height = 8650,
 
+    // CONFIRMED-CRIT-05: public-input-bound shielded proof rule activates at 32300
+    // (chosen as current_tip+1 at deploy time, 2026-05-30). Upgrade all fleet nodes
+    // before this height; blocks < 32300 validate under the pre-fix rule (no real
+    // shielded value existed under it), blocks >= 32300 require the bound rule.
+    .shielded_input_binding_activation_height = 32300,
+
     .genesis = {
         .nVersion = 1,
         .nTime = 1776384000,  // 2026-04-17 00:00:00 UTC — v7 Genesis Restart
@@ -334,6 +340,10 @@ static ChainParams g_regtest = {
     // Shielded pool: active from genesis on regtest so unit tests
     // exercise the full pipeline without needing to override.
     .shielded_activation_height = 0,
+
+    // CONFIRMED-CRIT-05: bound shielded-proof rule active from genesis on regtest, so
+    // tests exercise the secure rule end-to-end.
+    .shielded_input_binding_activation_height = 0,
 
     .genesis = CreateRegtestGenesis()
 };
