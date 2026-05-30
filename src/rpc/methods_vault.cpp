@@ -171,18 +171,23 @@ Json rpc_vault_observe(const ExecutionContext& /*ctx*/, const Json& params) {
     }
     auto vout = static_cast<uint32_t>(obj["vout"].asUInt());
     dinero::vault::AccountId account{obj["account_id"].asString()};
-    auto amount = static_cast<dinero::vault::UnaAmount>(obj["amount_una"].asUInt64());
-    auto height = static_cast<uint64_t>(obj["height"].asUInt64());
-    std::string bh_hex = obj["block_hash"].asString();
-    std::array<uint8_t, 32> block_hash_display{};
-    if (!hexToBytes32(bh_hex, block_hash_display)) {
-        return errorObj("invalid block_hash hex");
-    }
+
+    // SECURITY (F-CRIT-03, 2026-05-29): do NOT trust caller-supplied amount/height/
+    // block_hash. Verify the outpoint against chainstate — it must exist in the UTXO
+    // set, pay the configured vault operator script, and be transparent — and use the
+    // REAL on-chain value/height/hash. This is what makes unbacked credit-minting
+    // impossible via this RPC. (The legacy amount_una/height/block_hash request fields
+    // are now ignored.)
+    uint64_t amount = 0;
+    uint64_t height = 0;
     std::array<uint8_t, 32> block_hash{};
-    for (size_t i = 0; i < 32; ++i) {
-        block_hash[i] = block_hash_display[31 - i];
+    std::string verr;
+    if (!dinero::vault::VerifyOperatorDeposit(txid_raw, vout, amount, height, block_hash, verr)) {
+        return errorObj(std::string("deposit verification failed: ") + verr);
     }
-    svc->recordDeposit(txid_raw, vout, account, amount, height, block_hash);
+
+    svc->recordDeposit(txid_raw, vout, account,
+                       static_cast<dinero::vault::UnaAmount>(amount), height, block_hash);
     result["status"] = "observed";
     return result;
 }

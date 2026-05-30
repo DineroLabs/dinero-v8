@@ -6646,7 +6646,16 @@ bool DaemonApp::Start() {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
         std::cout << "[DaemonApp] Socket wallet server skipped (iOS)" << std::endl;
 #else
-        std::cout << "[DaemonApp] Starting socket wallet server..." << std::endl;
+        // SECURITY (F-CRIT-01, 2026-05-29): this socket serves private-key derivation
+        // (GetSeed-derived Lightning/scriptPubKey keys) to ANY local client with NO
+        // authentication. It is now opt-in and DISABLED by default. Lightning users must
+        // set `wallet.socket.enable=true`. Do not re-enable by default without adding
+        // authentication + a wallet-lock check on the key-derivation handlers.
+        if (!(ctx_.config && ctx_.config->GetBool("wallet.socket.enable", false))) {
+            std::cout << "[DaemonApp] Socket wallet server DISABLED (default; serves keys "
+                         "unauthenticated). Set wallet.socket.enable=true to use Lightning." << std::endl;
+        } else {
+        std::cout << "[DaemonApp] Starting socket wallet server (wallet.socket.enable=true)..." << std::endl;
 
         // Construct socket address from configured port
         std::string socket_addr = "127.0.0.1:" + std::to_string(ctx_.wallet_socket_port);
@@ -6674,6 +6683,7 @@ bool DaemonApp::Start() {
             std::cerr << "[DaemonApp] ❌ Socket wallet server error: " << e.what() << " (non-fatal)" << std::endl;
             socket_wallet_server_.reset();
         }
+        }  // end wallet.socket.enable opt-in guard (F-CRIT-01)
 #endif
     }
 
