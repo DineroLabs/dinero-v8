@@ -325,6 +325,34 @@ std::vector<uint8_t> ProveOutput(const OutputWitness& witness,
     return proof_bytes;
 }
 
+// AUDIT-ONLY (CONFIRMED-CRIT-05 regression, declared in src/test/shielded_audit_desync.h).
+// Output-circuit analogue of ProveSpend_AuditDesync: build the circuit from
+// `pub_committed` (real, satisfiable) but bind the transcript to `pub_present`, so the
+// commitment-binding property can be tested the same way as anchor/nullifier binding.
+std::vector<uint8_t> ProveOutput_AuditDesync(const OutputWitness& witness,
+                                             const OutputPublicInputs& pub_committed,
+                                             const OutputPublicInputs& pub_present,
+                                             secp256k1_context_struct* ctx) {
+    auto* sctx = ResolveCtx(ctx);
+    auto cs = BuildOutputCircuit(witness, pub_committed);
+    if (!cs.is_satisfied()) {
+        return {};
+    }
+
+    Transcript transcript("dinero.shielded.output.v1");
+    BindOutputTranscript(transcript, pub_present);  // <-- desync: bind PRESENTED, not committed
+
+    const auto& gens = ShieldedGenerators(cs, sctx);
+    SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
+        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx);
+
+    std::vector<uint8_t> proof_bytes;
+    proof_bytes.push_back(kOutputProofVersion);
+    auto serialized = proof.serialize(sctx);
+    proof_bytes.insert(proof_bytes.end(), serialized.begin(), serialized.end());
+    return proof_bytes;
+}
+
 bool VerifyOutput(const std::vector<uint8_t>& proof_bytes,
                   const OutputPublicInputs& pub,
                   secp256k1_context_struct* ctx) {

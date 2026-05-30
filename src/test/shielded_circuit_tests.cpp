@@ -14,6 +14,7 @@
 
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/shielded_circuit.h"
+#include "shielded_audit_desync.h"  // test-only transcript-desync provers
 
 #include <array>
 #include <cstdint>
@@ -31,6 +32,7 @@ using shielded::PoseidonHash2;
 using shielded::OutputPublicInputs;
 using shielded::OutputWitness;
 using shielded::ProveOutput;
+using shielded::ProveOutput_AuditDesync;
 using shielded::ProveSpend;
 using shielded::ProveSpend_AuditDesync;
 using shielded::SpendPublicInputs;
@@ -121,6 +123,44 @@ TEST(ShieldedOutputCircuitTest, TamperedCommitmentRejected) {
     OutputPublicInputs tampered = pub;
     tampered.commitment[5] ^= 0x01;
     EXPECT_FALSE(VerifyOutput(proof, tampered, nullptr));
+}
+
+// Companion to the spend anchor/nullifier binding PoCs (CONFIRMED-CRIT-05): prove the
+// OUTPUT commitment is bound too. TamperedCommitmentRejected above tampers an honest
+// proof and so can reject on transcript mismatch (false confidence); this desyncs the
+// commitment at proof-generation time (transcript bound to the presented C2), so the
+// only thing that can reject a committed≠presented proof is genuine binding. A sound
+// system MUST reject. Regression for the z=(1,io,W) split's public-input binding.
+TEST(ShieldedOutputCircuitTest, CommitmentBindingPoC) {
+    OutputWitness w;
+    w.value      = ValueAsHash(50'000'000);
+    w.public_key = MakeHash(0x12, 0x20);
+    w.randomness = MakeHash(0x13, 0x20);
+
+    OutputPublicInputs pub_committed;
+    pub_committed.commitment = NoteCommitment(w.d, w.public_key, w.value, w.randomness);
+
+    // Sanity: honest round-trip verifies.
+    auto honest = ProveOutput(w, pub_committed, nullptr);
+    ASSERT_FALSE(honest.empty());
+    ASSERT_TRUE(VerifyOutput(honest, pub_committed, nullptr));
+
+    // C2: a different presented commitment.
+    OutputPublicInputs pub_present = pub_committed;
+    pub_present.commitment[5] ^= 0x01;
+    ASSERT_NE(pub_present.commitment, pub_committed.commitment);
+
+    // Circuit committed to C1; transcript + presentation bound to C2.
+    auto forged = ProveOutput_AuditDesync(w, /*pub_committed=*/pub_committed,
+                                          /*pub_present=*/pub_present, nullptr);
+    ASSERT_FALSE(forged.empty());
+
+    const bool accepted = VerifyOutput(forged, pub_present, nullptr);
+    std::cerr << "\n[OutputCommitmentBindingPoC] committed C1, presented+transcript C2; "
+              << "VerifyOutput(forged, C2) accepted = "
+              << (accepted ? "TRUE  ==> COMMITMENT UNBOUND (bug)" : "false ==> commitment bound (sound)")
+              << "\n\n";
+    EXPECT_FALSE(accepted);  // sound system MUST reject
 }
 
 TEST(ShieldedOutputCircuitTest, EmptyProofRejected) {
