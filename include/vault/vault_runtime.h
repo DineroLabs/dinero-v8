@@ -120,6 +120,20 @@ void ObserveWalletOutput(const std::array<uint8_t, 32>& txid_raw,
                          uint64_t height,
                          const std::string& block_hash_hex);
 
+/// SECURITY (F-CRIT-03, 2026-05-29) — trust boundary for the `vault.observe` RPC.
+/// Verifies a *claimed* operator deposit against chainstate: the outpoint
+/// (`txid_raw`, `vout`) must exist in the UTXO set, pay the configured operator
+/// script, and be a transparent (non-confidential) output. On success returns the
+/// REAL on-chain value/height/consensus-order block-hash via the out-params and
+/// `true`; on any mismatch sets `err` and returns `false`. Callers MUST use the
+/// returned values and never trust caller-supplied amount/height/block_hash.
+bool VerifyOperatorDeposit(const std::array<uint8_t, 32>& txid_raw,
+                           uint32_t vout,
+                           uint64_t& out_amount,
+                           uint64_t& out_height,
+                           std::array<uint8_t, 32>& out_block_hash_raw,
+                           std::string& err);
+
 /// Build a `block_hash_at_height` closure backed by the live
 /// ChainDB on `ctx`. Returns the canonical hash of the active-chain
 /// block at `height`, or a 32-byte zero array as the "unknown"

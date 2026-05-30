@@ -370,6 +370,72 @@ OperatorBinding GetVaultOperator() {
     return out;
 }
 
+bool VerifyOperatorDeposit(const std::array<uint8_t, 32>& txid_raw,
+                           uint32_t vout,
+                           uint64_t& out_amount,
+                           uint64_t& out_height,
+                           std::array<uint8_t, 32>& out_block_hash_raw,
+                           std::string& err) {
+    if (!g_initialized.load()) {
+        err = "vault runtime not initialized";
+        return false;
+    }
+    if (g_operator_script.empty()) {
+        err = "no vault operator script configured";
+        return false;
+    }
+    auto* daemon = ::DaemonContext::instance();
+    if (daemon == nullptr || !daemon->chainstate) {
+        err = "chainstate unavailable";
+        return false;
+    }
+    auto* chain_db = daemon->chainstate->GetChainDB();
+    if (chain_db == nullptr) {
+        err = "chain db unavailable";
+        return false;
+    }
+
+    // Look the outpoint up in the canonical UTXO set. A missing entry means the
+    // outpoint is unknown, already spent, or not yet confirmed — none of which may
+    // credit the ledger.
+    uint256 txid;
+    std::memcpy(txid.begin(), txid_raw.data(), 32);
+    auto coin_res = chain_db->getCoin(txid, vout);
+    if (!coin_res.ok()) {
+        err = "outpoint not found in UTXO set (unknown, already spent, or unconfirmed)";
+        return false;
+    }
+    const Coin& coin = coin_res.value();
+
+    // The deposit MUST pay the configured operator script. Compare as raw bytes
+    // (memcmp) — script bytes can exceed 0x7f, so a signed-char/uint8 mismatch must
+    // not creep in.
+    if (coin.script_pubkey.size() != g_operator_script.size() ||
+        std::memcmp(coin.script_pubkey.data(), g_operator_script.data(),
+                    g_operator_script.size()) != 0) {
+        err = "outpoint does not pay the vault operator script";
+        return false;
+    }
+
+    // Confidential outputs carry no public value to credit.
+    if (coin.is_confidential) {
+        err = "confidential outputs cannot be credited as vault deposits";
+        return false;
+    }
+
+    // Use the REAL on-chain value/height and the canonical block hash at that height —
+    // never the caller's claimed values.
+    out_amount = coin.amount;
+    out_height = static_cast<uint64_t>(coin.height);
+    auto hash_res = chain_db->getBlockHashByHeight(coin.height);
+    if (!hash_res.ok()) {
+        err = "could not resolve canonical block hash for deposit height";
+        return false;
+    }
+    std::memcpy(out_block_hash_raw.data(), hash_res.value().begin(), 32);
+    return true;
+}
+
 void ObserveWalletOutput(const std::array<uint8_t, 32>& txid_raw,
                          uint32_t vout,
                          const std::vector<uint8_t>& script_pub_key,
