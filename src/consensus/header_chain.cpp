@@ -154,13 +154,6 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
     auto new_entry = std::make_unique<HeaderIndexEntry>(header, parent);
     const HeaderIndexEntry* entry_ptr = new_entry.get();
 
-    // DEBUG: Log chainwork calculation
-    std::cerr << "[CHAINWORK] Added header height=" << entry_ptr->height
-              << " bits=0x" << std::hex << header.difficulty << std::dec
-              << " work=" << entry_ptr->chainwork.GetHex().substr(56)
-              << " (parent_work=" << (parent ? parent->chainwork.GetHex().substr(56) : "none") << ")"
-              << std::endl;
-
     // Store in index
     header_index_[hash] = std::move(new_entry);
 
@@ -336,13 +329,11 @@ bool HeaderChainSelector::ValidateHeader(
         return false;
     }
 
-    // For non-genesis blocks, check timestamp is not before parent
-    // Bitcoin allows timestamps up to 2 hours in the future and doesn't require
-    // strictly increasing timestamps - only that they're >= median of past 11 blocks
-    // For simplicity, we just check timestamp >= parent (not strictly greater)
+    // For non-genesis blocks, enforce the same header-level time rule the
+    // active chain accepts: a timestamp must be greater than median-time-past.
+    // It does not have to be monotonic relative to the direct parent.
     if (prev != nullptr) {
-        if (header.timestamp < prev->header.timestamp) {
-            // Timestamp cannot be before parent
+        if (header.timestamp <= prev->GetMedianTimePast()) {
             return false;
         }
     }
@@ -391,18 +382,6 @@ void HeaderChainSelector::UpdateBestHeader(const HeaderIndexEntry* new_entry) {
         best_header_ = new_entry;
         return;
     }
-
-    // Compare chainwork - LOUD DEBUG
-    printf("\n=== CHAINWORK COMPARE ===\n");
-    printf("  candidate: height=%u hash=%s\n", new_entry->height, new_entry->hash.GetHex().substr(0,16).c_str());
-    printf("  candidate chainwork: %s\n", new_entry->chainwork.GetHex().c_str());
-    printf("  best:      height=%u hash=%s\n", best_header_->height, best_header_->hash.GetHex().substr(0,16).c_str());
-    printf("  best chainwork:      %s\n", best_header_->chainwork.GetHex().c_str());
-    printf("  comparison: candidate %s best\n",
-           (new_entry->chainwork > best_header_->chainwork) ? ">" :
-           (new_entry->chainwork == best_header_->chainwork) ? "==" : "<");
-    printf("=========================\n\n");
-    fflush(stdout);
 
     if (new_entry->chainwork > best_header_->chainwork) {
         // New chain has more work

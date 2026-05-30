@@ -370,6 +370,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_header_backlog_restart_equivalence.sh
     )
     set_tests_properties(HeaderBacklogRestartEquivalence PROPERTIES
         LABELS "integration;restart;headers;checkpoint;canonicality;phase1-canonical-recovery"
+        ENVIRONMENT "DINERO_BUILD_DIR=${CMAKE_BINARY_DIR}"
         TIMEOUT 240
     )
     message(STATUS "  ✓ HeaderBacklogRestartEquivalence registered")

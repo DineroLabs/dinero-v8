@@ -2,10 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
-BACKLOG_INJECTOR="${ROOT_DIR}/build/tests/integration/header_store_backlog_injector"
+BUILD_DIR="${DINERO_BUILD_DIR:-${ROOT_DIR}/build}"
+DINEROD="${BUILD_DIR}/dinerod"
+BACKLOG_INJECTOR="${BUILD_DIR}/tests/integration/header_store_backlog_injector"
 if [[ ! -x "${BACKLOG_INJECTOR}" ]]; then
-    BACKLOG_INJECTOR="${ROOT_DIR}/build/header_store_backlog_injector"
+    BACKLOG_INJECTOR="${BUILD_DIR}/header_store_backlog_injector"
 fi
 TMP_ROOT="$(mktemp -d /tmp/dinero_header_backlog_restart_equiv.XXXXXX)"
 DATA_DIR="${TMP_ROOT}/datadir"

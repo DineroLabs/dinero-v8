@@ -191,12 +191,42 @@ int main() {
         std::cout << "✅ Deep fork ancestor finding correct" << std::endl;
     }
 
+    // ========================================================================
+    // Test 5: Header timestamps may move backward relative to parent
+    // ========================================================================
+    {
+        std::cout << "\n5. Testing median-time-past timestamp validation..." << std::endl;
+
+        HeaderChainSelector selector;
+
+        uint256 null_hash;
+        null_hash.SetNull();
+        BlockHeader genesis = CreateTestHeader(null_hash, 5000000);
+        assert(selector.AddHeader(genesis));
+
+        uint256 prev = genesis.GetHash();
+        for (int i = 1; i <= 11; i++) {
+            BlockHeader block = CreateTestHeader(prev, 5000000 + i);
+            assert(selector.AddHeader(block));
+            prev = block.GetHash();
+        }
+
+        // The direct parent is at 5000011, but MTP of the previous 11 headers is
+        // lower. Consensus permits this child because it is greater than MTP.
+        BlockHeader backward_time = CreateTestHeader(prev, 5000010);
+        assert(selector.AddHeader(backward_time));
+        assert(selector.GetBestHeader()->height == 12);
+
+        std::cout << "✅ Non-monotonic parent timestamp accepted above MTP" << std::endl;
+    }
+
     std::cout << "\n=== ALL TESTS PASSED ===" << std::endl;
     std::cout << "\nPhase N.3 Header Fork-Choice Validation:" << std::endl;
     std::cout << "  ✅ Linear headers advance best tip" << std::endl;
     std::cout << "  ✅ Genesis header validated" << std::endl;
     std::cout << "  ✅ Out-of-order headers require parent" << std::endl;
     std::cout << "  ✅ Deep fork ancestors found correctly" << std::endl;
+    std::cout << "  ✅ Median-time-past timestamp rule matches active chain" << std::endl;
     std::cout << "\nHeader-only fork-choice is working correctly." << std::endl;
     std::cout << "\nPhase M.0 Compliance:" << std::endl;
     std::cout << "  ✅ BlockHeader::GetHash() returns uint256 (binary identity)" << std::endl;
