@@ -30,16 +30,19 @@ struct HashHasher {
 };
 
 bool VerifySpendProof(const ShieldedSpend& spend, const ValidationContext& ctx) {
-    (void)ctx;
+    // CONFIRMED-CRIT-05: blocks at/above the binding-activation height require the
+    // public-input-bound proof rule; older blocks use the pre-fix unbound rule.
+    const bool bind = ctx.block_height >= ctx.shielded_input_binding_activation_height;
     const SpendPublicInputs pub{spend.nullifier, spend.anchor};
     return VerifySpend(
-        spend.zk_proof, pub, dinero::crypto::GetSecp256k1ContextSignVerify());
+        spend.zk_proof, pub, dinero::crypto::GetSecp256k1ContextSignVerify(), bind);
 }
 
-bool VerifyOutputProof(const ShieldedOutput& output) {
+bool VerifyOutputProof(const ShieldedOutput& output, const ValidationContext& ctx) {
+    const bool bind = ctx.block_height >= ctx.shielded_input_binding_activation_height;
     const OutputPublicInputs pub{output.commitment};
     return VerifyOutput(
-        output.zk_proof, pub, dinero::crypto::GetSecp256k1ContextSignVerify());
+        output.zk_proof, pub, dinero::crypto::GetSecp256k1ContextSignVerify(), bind);
 }
 
 } // namespace
@@ -159,7 +162,7 @@ ShieldedValidationError ValidateShieldedBundle(
         }
     }
     for (const auto& output : bundle.outputs) {
-        if (!VerifyOutputProof(output)) {
+        if (!VerifyOutputProof(output, ctx)) {
             return ShieldedValidationError::ProofInvalid;
         }
     }
@@ -181,8 +184,9 @@ ValidationContext BuildShieldedValidationContext(
     uint32_t                     block_height,
     int64_t                      transparent_value_delta,
     uint32_t                     shielded_activation_height,
-    const AnchorHistory*         anchor_history) {
-    return ValidationContext(
+    const AnchorHistory*         anchor_history,
+    uint32_t                     shielded_input_binding_activation_height) {
+    ValidationContext ctx(
         nullifier_set,
         commitment_tree,
         block_height,
@@ -190,6 +194,9 @@ ValidationContext BuildShieldedValidationContext(
         shielded_activation_height,
         anchor_history,
         ComputeShieldedTxSighash(tx));
+    // CONFIRMED-CRIT-05: defaulted member (not a ctor param) — set it here.
+    ctx.shielded_input_binding_activation_height = shielded_input_binding_activation_height;
+    return ctx;
 }
 
 void ApplyShieldedBundle(const ShieldedBundle& bundle,

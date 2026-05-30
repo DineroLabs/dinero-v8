@@ -76,14 +76,26 @@ zk::zkvm::R1CS BuildSpendCircuit(const SpendWitness& witness,
  */
 std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
                                  const SpendPublicInputs& pub,
-                                 secp256k1_context_struct* ctx);
+                                 secp256k1_context_struct* ctx,
+                                 bool bind_public_inputs = true);
 
 /**
  * Verify a spend proof against public inputs.
+ *
+ * `bind_public_inputs` selects the consensus rule: true (default) = the public-input-
+ * bound rule (CONFIRMED-CRIT-05 fix); false = the pre-fix unbound rule, used ONLY when
+ * validating blocks below the shielded-input-binding activation height. Must match the
+ * rule the proof was produced under.
  */
 bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
                  const SpendPublicInputs& pub,
-                 secp256k1_context_struct* ctx);
+                 secp256k1_context_struct* ctx,
+                 bool bind_public_inputs = true);
+
+// NOTE: audit-only transcript-desync provers (ProveSpend_AuditDesync /
+// ProveOutput_AuditDesync) used by the public-input-binding regression tests are
+// declared in the test-only header src/test/shielded_audit_desync.h — deliberately
+// kept OUT of this production consensus API.
 
 // ── Output proof ─────────────────────────────────────────────────────
 
@@ -104,10 +116,12 @@ zk::zkvm::R1CS BuildOutputCircuit(const OutputWitness& witness,
 
 std::vector<uint8_t> ProveOutput(const OutputWitness& witness,
                                   const OutputPublicInputs& pub,
-                                  secp256k1_context_struct* ctx);
+                                  secp256k1_context_struct* ctx,
+                                  bool bind_public_inputs = true);
 
 bool VerifyOutput(const std::vector<uint8_t>& proof_bytes,
                   const OutputPublicInputs& pub,
-                  secp256k1_context_struct* ctx);
+                  secp256k1_context_struct* ctx,
+                  bool bind_public_inputs = true);
 
 } // namespace dinero::consensus::shielded

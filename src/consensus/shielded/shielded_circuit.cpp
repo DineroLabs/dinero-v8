@@ -195,7 +195,8 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
 
 std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
                                  const SpendPublicInputs& pub,
-                                 secp256k1_context_struct* ctx) {
+                                 secp256k1_context_struct* ctx,
+                                 bool bind_public_inputs) {
     auto* sctx = ResolveCtx(ctx);
     auto cs = BuildSpendCircuit(witness, pub);
     if (!cs.is_satisfied()) {
@@ -207,7 +208,37 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
 
     const auto& gens = ShieldedGenerators(cs, sctx);
     SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
-        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx);
+        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx, bind_public_inputs);
+
+    std::vector<uint8_t> proof_bytes;
+    proof_bytes.push_back(kSpendProofVersion);
+    auto serialized = proof.serialize(sctx);
+    proof_bytes.insert(proof_bytes.end(), serialized.begin(), serialized.end());
+    return proof_bytes;
+}
+
+// AUDIT-ONLY (SUSPECTED-01 PoC). Identical to ProveSpend EXCEPT the circuit is built
+// from `pub_committed` (the real note → satisfiable) while the Fiat-Shamir transcript
+// is bound to `pub_present`. This isolates the public-input-binding property: if the
+// verifier truly binds the on-chain inputs to the committed witness, a proof produced
+// here must be rejected when verified/presented with `pub_present`. NOT a production path.
+std::vector<uint8_t> ProveSpend_AuditDesync(const SpendWitness& witness,
+                                            const SpendPublicInputs& pub_committed,
+                                            const SpendPublicInputs& pub_present,
+                                            secp256k1_context_struct* ctx,
+                                            bool bind_public_inputs) {
+    auto* sctx = ResolveCtx(ctx);
+    auto cs = BuildSpendCircuit(witness, pub_committed);
+    if (!cs.is_satisfied()) {
+        return {};
+    }
+
+    Transcript transcript("dinero.shielded.spend.v1");
+    BindSpendTranscript(transcript, pub_present);  // <-- desync: bind PRESENTED, not committed
+
+    const auto& gens = ShieldedGenerators(cs, sctx);
+    SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
+        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx, bind_public_inputs);
 
     std::vector<uint8_t> proof_bytes;
     proof_bytes.push_back(kSpendProofVersion);
@@ -218,7 +249,8 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
 
 bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
                  const SpendPublicInputs& pub,
-                 secp256k1_context_struct* ctx) {
+                 secp256k1_context_struct* ctx,
+                 bool bind_public_inputs) {
     auto* sctx = ResolveCtx(ctx);
     SpartanProof proof;
     if (!DeserializeShieldedProof(proof_bytes, kSpendProofVersion, proof, sctx)) {
@@ -235,7 +267,7 @@ bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
     return zk::zkvm::r1cs_spartan_verify(
         proof, verifier_cs, verifier_cs.num_constraints(),
         verifier_cs.num_variables(), circuit_hash, Scalar::one(),
-        gens, transcript, sctx);
+        gens, transcript, sctx, bind_public_inputs);
 }
 
 // ── Output circuit ───────────────────────────────────────────────────
@@ -275,7 +307,8 @@ R1CS BuildOutputCircuit(const OutputWitness& witness,
 
 std::vector<uint8_t> ProveOutput(const OutputWitness& witness,
                                   const OutputPublicInputs& pub,
-                                  secp256k1_context_struct* ctx) {
+                                  secp256k1_context_struct* ctx,
+                                  bool bind_public_inputs) {
     auto* sctx = ResolveCtx(ctx);
     auto cs = BuildOutputCircuit(witness, pub);
     if (!cs.is_satisfied()) {
@@ -287,7 +320,36 @@ std::vector<uint8_t> ProveOutput(const OutputWitness& witness,
 
     const auto& gens = ShieldedGenerators(cs, sctx);
     SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
-        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx);
+        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx, bind_public_inputs);
+
+    std::vector<uint8_t> proof_bytes;
+    proof_bytes.push_back(kOutputProofVersion);
+    auto serialized = proof.serialize(sctx);
+    proof_bytes.insert(proof_bytes.end(), serialized.begin(), serialized.end());
+    return proof_bytes;
+}
+
+// AUDIT-ONLY (CONFIRMED-CRIT-05 regression, declared in src/test/shielded_audit_desync.h).
+// Output-circuit analogue of ProveSpend_AuditDesync: build the circuit from
+// `pub_committed` (real, satisfiable) but bind the transcript to `pub_present`, so the
+// commitment-binding property can be tested the same way as anchor/nullifier binding.
+std::vector<uint8_t> ProveOutput_AuditDesync(const OutputWitness& witness,
+                                             const OutputPublicInputs& pub_committed,
+                                             const OutputPublicInputs& pub_present,
+                                             secp256k1_context_struct* ctx,
+                                             bool bind_public_inputs) {
+    auto* sctx = ResolveCtx(ctx);
+    auto cs = BuildOutputCircuit(witness, pub_committed);
+    if (!cs.is_satisfied()) {
+        return {};
+    }
+
+    Transcript transcript("dinero.shielded.output.v1");
+    BindOutputTranscript(transcript, pub_present);  // <-- desync: bind PRESENTED, not committed
+
+    const auto& gens = ShieldedGenerators(cs, sctx);
+    SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
+        cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx, bind_public_inputs);
 
     std::vector<uint8_t> proof_bytes;
     proof_bytes.push_back(kOutputProofVersion);
@@ -298,7 +360,8 @@ std::vector<uint8_t> ProveOutput(const OutputWitness& witness,
 
 bool VerifyOutput(const std::vector<uint8_t>& proof_bytes,
                   const OutputPublicInputs& pub,
-                  secp256k1_context_struct* ctx) {
+                  secp256k1_context_struct* ctx,
+                  bool bind_public_inputs) {
     auto* sctx = ResolveCtx(ctx);
     SpartanProof proof;
     if (!DeserializeShieldedProof(proof_bytes, kOutputProofVersion, proof, sctx)) {
@@ -315,7 +378,7 @@ bool VerifyOutput(const std::vector<uint8_t>& proof_bytes,
     return zk::zkvm::r1cs_spartan_verify(
         proof, verifier_cs, verifier_cs.num_constraints(),
         verifier_cs.num_variables(), circuit_hash, Scalar::one(),
-        gens, transcript, sctx);
+        gens, transcript, sctx, bind_public_inputs);
 }
 
 } // namespace dinero::consensus::shielded

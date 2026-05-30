@@ -428,7 +428,7 @@ public:
 
 private:
     // Core functionality (Stratum mining)
-    std::vector<Transaction> SelectTransactions(uint32_t max_weight, uint64_t& total_fees);
+    std::vector<Transaction> SelectTransactions(uint32_t max_weight, uint32_t target_height, uint64_t& total_fees);
     std::string BuildCoinbaseTransaction(uint32_t height, uint64_t reward, uint64_t fees,
                                        const std::vector<uint8_t>& payout_script);
     std::string GenerateJobId();
@@ -454,6 +454,7 @@ private:
     struct MempoolEntry;  // Forward declare to avoid circular dependency
     std::vector<Transaction> selectTransactionsForBlock(
         uint32_t max_weight,
+        uint32_t target_height,
         uint64_t& total_fees_out,
         std::vector<std::string>& included_txids_out
     );
@@ -473,6 +474,7 @@ private:
      */
     std::vector<Transaction> selectTransactionsIntelligent(
         uint32_t max_weight,
+        uint32_t target_height,
         uint64_t& total_fees_out,
         std::vector<std::string>& included_txids_out
     );

@@ -364,7 +364,8 @@ SpartanProof r1cs_spartan_prove(
     const Scalar& u,
     const GeneratorSet& gens,
     Transcript& transcript,
-    secp256k1_context* ctx
+    secp256k1_context* ctx,
+    bool bind_public_inputs
 ) {
     SpartanProof proof;
 
@@ -374,6 +375,23 @@ SpartanProof r1cs_spartan_prove(
     const size_t m    = cs.num_constraints();
     const size_t m_p  = next_pow2(m);                    // padded for sum-check
 
+    // SECURITY (CONFIRMED-CRIT-05 fix, 2026-05-30) — Spartan z=(1, io, W) split.
+    // When bind_public_inputs (the default), commit/open ONLY the private witness W:
+    // zero the public slots (index 0 = the constant ONE, 1..num_inputs = public inputs).
+    // The verifier recomputes the public/io contribution to z̃(ry) itself from the
+    // on-chain public inputs and adds it back. Without this split the public inputs are
+    // unbound and forgeable (see ShieldedSpendCircuitTest.SUSPECTED01_AnchorBindingPoC).
+    // The sum-check below always runs over the FULL z; only the commitment + eval use
+    // the (possibly public-zeroed) vector. bind_public_inputs=false reproduces the
+    // pre-fix unbound rule — retained ONLY for pre-activation-height history validation.
+    const size_t num_pub = 1 + cs.num_inputs();          // constant ONE + public inputs
+    std::vector<Scalar> z_priv = z;
+    if (bind_public_inputs) {
+        for (size_t j = 0; j < num_pub && j < z_priv.size(); ++j) {
+            z_priv[j] = Scalar::zero();
+        }
+    }
+
     // Hyrax parameters
     const HyraxParams H_z = HyraxParams::from_n(n_z);
     const HyraxParams H_E = HyraxParams::from_n(m);
@@ -382,8 +400,8 @@ SpartanProof r1cs_spartan_prove(
     const size_t gens_need = std::max(H_z.n_cols, H_E.n_cols);
     assert(gens.size() >= gens_need);
 
-    // --- Step 1: Commit witness and error vector ---
-    proof.comm_W = hyrax_commit(z,                           H_z, gens, ctx);
+    // --- Step 1: Commit private witness and error vector ---
+    proof.comm_W = hyrax_commit(z_priv,                      H_z, gens, ctx);
     proof.comm_E = hyrax_commit(std::vector<Scalar>(E.begin(), E.end()), H_E, gens, ctx);
     proof.circuit_hash = spartan_hash_r1cs_structure(cs);
 
@@ -496,9 +514,10 @@ SpartanProof r1cs_spartan_prove(
     proof.inner_sc = sc_prove(M_table, z_table, transcript, ctx, inner_challenges);
     const std::vector<Scalar> ry(inner_challenges.rbegin(), inner_challenges.rend());
 
-    // --- Step 9: Hyrax eval proof for z at ry ---
-    // Transcript is already bound to comm_W (appended in Step 1).
-    proof.eval_W = hyrax_eval_prove(z, ry, H_z, gens, transcript, ctx);
+    // --- Step 9: Hyrax eval proof for the PRIVATE witness z_priv at ry ---
+    // Must open the same vector that was committed in Step 1 (z_priv, public slots
+    // zeroed). The verifier adds the public/io contribution to z̃(ry) separately.
+    proof.eval_W = hyrax_eval_prove(z_priv, ry, H_z, gens, transcript, ctx);
 
     // --- Step 10: Hyrax eval proof for E at rx_m ---
     // Transcript is already bound to comm_E.
@@ -522,7 +541,8 @@ bool r1cs_spartan_verify(
     const Scalar& u,
     const GeneratorSet& gens,
     Transcript& transcript,
-    secp256k1_context* ctx
+    secp256k1_context* ctx,
+    bool bind_public_inputs
 ) {
     // --- Basic sanity checks ---
     if (proof.circuit_hash.size() != 32) return false;
@@ -655,8 +675,28 @@ bool r1cs_spartan_verify(
         M_eval += col_sum[j] * eq_ry[j];
     }
 
-    // inner_final == M_eval * eval_W.claimed
-    if (!(M_eval * proof.eval_W.claimed == inner_final)) return false;
+    // SECURITY (CONFIRMED-CRIT-05 fix, 2026-05-30) — bind the public inputs.
+    // The prover committed/opened ONLY the private witness (public slots zeroed), so
+    // eval_W.claimed = W̃(ry). The verifier reconstructs the public/io contribution to
+    // z̃(ry) itself from its KNOWN public inputs — the constant ONE (zpub[0]==1) plus
+    // verifier_cs's public-input slots (1..num_inputs), which BuildSpend/OutputCircuit
+    // populated from the on-chain `pub`. z̃(ry) = io_eval(ry) + W̃(ry). This is what ties
+    // the proof to the presented public inputs; a proof committing different io values
+    // (a forgery) no longer satisfies inner_final == M_eval · z̃(ry).
+    Scalar z_at_ry = proof.eval_W.claimed;
+    if (bind_public_inputs) {
+        const std::vector<Scalar>& zpub = verifier_cs.witness();
+        const size_t num_pub = 1 + verifier_cs.num_inputs();   // constant ONE + public inputs
+        Scalar io_eval = Scalar::zero();
+        for (size_t j = 0; j < num_pub && j < zpub.size() && j < n_zp; ++j) {
+            io_eval += eq_ry[j] * zpub[j];
+        }
+        z_at_ry = io_eval + proof.eval_W.claimed;
+    }
+    // bind_public_inputs=false → z_at_ry = eval_W.claimed (pre-fix unbound rule).
+
+    // inner_final == M_eval * z̃(ry), with z̃(ry) = io_eval(ry) + W̃(ry) when bound
+    if (!(M_eval * z_at_ry == inner_final)) return false;
 
     // --- Verify Hyrax eval proofs ---
     // eval_W: z̃(ry)
