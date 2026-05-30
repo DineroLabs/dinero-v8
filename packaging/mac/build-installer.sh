@@ -9,10 +9,10 @@
 #   dist/Dinero-v<VERSION>-macOS-arm64.dmg
 #   dist/dinero-operator-v<VERSION>-macOS-arm64.tar.gz
 #
-# Operator runs `codesign`
-# + `xcrun notarytool submit` + `xcrun stapler staple` after this script
-# completes — those steps need keychain access (Developer ID +
-# notarization-profile) and aren't safe to put in a committed script.
+# Operator runs packaging/mac/sign-notarize-release.sh after this script.
+# That finalizer signs the *final staged app* after all helper binaries have
+# been copied, notarizes/staples the app, rebuilds the public ZIP/DMG, signs
+# and notarizes/staples the DMG, and writes the final checksum file.
 #
 # This is the macOS counterpart to packaging/windows/build-installer.ps1
 # and packaging/linux/build-installer.sh — same -Version flag, same
@@ -37,9 +37,9 @@
 #   ./packaging/mac/build-installer.sh --version 8.0.0 --build-dir build-release
 #
 # After this script:
-#   1. Developer ID-sign the .app and DMG (see RELEASE_v8.md Phase 3.A).
-#   2. Notarize via xcrun notarytool submit --keychain-profile.
-#   3. Staple ticket via xcrun stapler staple.
+#   ./packaging/mac/sign-notarize-release.sh \
+#       --version 8.0.0-rc1 \
+#       --notary-profile dinero-notarytool
 
 set -euo pipefail
 
@@ -190,14 +190,11 @@ OPERATOR_HASH=$(shasum -a 256 "$OPERATOR_TARBALL" | awk '{print $1}')
 
 echo ""
 echo "----------------------------------------------------------"
-echo "Stage ready (unsigned). Next steps for the operator:"
+echo "Stage ready (unsigned/not notarized). Next step for the operator:"
 echo "----------------------------------------------------------"
-echo "  1. Developer ID-sign the .app inside $STAGE_DIR (or the .zip)."
-echo "  2. Notarize the .zip via xcrun notarytool submit --keychain-profile."
-echo "  3. Staple the ticket back onto the .app."
-echo "  4. Re-create the DMG from the stapled .app, codesign + notarize"
-echo "     + staple the DMG."
-echo "  5. Final artifacts go in $DIST_DIR with the staple tickets."
+echo "  ./packaging/mac/sign-notarize-release.sh \\"
+echo "      --version $VERSION \\"
+echo "      --notary-profile dinero-notarytool"
 echo ""
 echo "  Unsigned $ZIP_PATH"
 echo "    SHA256: $ZIP_HASH"
@@ -206,4 +203,5 @@ echo "    SHA256: $DMG_HASH"
 echo "  Operator $OPERATOR_TARBALL"
 echo "    SHA256: $OPERATOR_HASH"
 echo ""
-echo "Full signing/notarization commands in RELEASE_v8.md Phase 3.A."
+echo "Do not upload macOS GUI artifacts until the finalizer reports"
+echo "Notarized Developer ID for both the app and DMG."
