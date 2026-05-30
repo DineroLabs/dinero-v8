@@ -1844,7 +1844,42 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
 
     std::shared_lock<std::shared_mutex> lock(m_mutex);
 
-    // v7: freeze-fork filter removed along with ring/CT stack.
+    // Re-validate height-gated proof rules at template-selection time.
+    // A shielded tx admitted before an activation boundary may no longer be
+    // valid for the block currently being assembled.
+    std::unordered_map<uint256, bool> selectable_cache;
+    std::unordered_map<uint256, std::string> selectable_reason_cache;
+    size_t height_rule_excluded = 0;
+    auto selectable_at_height = [&](const uint256& txid,
+                                    const MempoolEntry& entry,
+                                    std::string* reason) -> bool {
+        auto cached = selectable_cache.find(txid);
+        if (cached != selectable_cache.end()) {
+            if (reason) {
+                auto reason_it = selectable_reason_cache.find(txid);
+                *reason = reason_it != selectable_reason_cache.end()
+                    ? reason_it->second
+                    : std::string{};
+            }
+            return cached->second;
+        }
+
+        std::string local_reason;
+        const bool selectable =
+            isSelectableAtHeightLocked(entry, next_block_height, &local_reason);
+        selectable_cache.emplace(txid, selectable);
+        if (!selectable) {
+            selectable_reason_cache.emplace(txid, local_reason);
+            ++height_rule_excluded;
+            MPLOG_WARN("selectTransactionsForBlock: excluding tx " +
+                txid.GetHex() + " at target height " +
+                std::to_string(next_block_height) + ": " + local_reason);
+        }
+        if (reason) {
+            *reason = local_reason;
+        }
+        return selectable;
+    };
 
     // Total timeout for block template transaction selection.
     // If the entire selection takes longer than 2 seconds, stop adding
@@ -1899,6 +1934,9 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
             ++template_excluded;
             continue;
         }
+        if (!selectable_at_height(txid, entry, nullptr)) {
+            continue;
+        }
 
         // Check timeout: if scoring is taking too long, stop scoring remaining txs
         if (std::chrono::steady_clock::now() - selectionStart > SELECTION_TIMEOUT) {
@@ -1932,8 +1970,13 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
             }
 
             // Only consider parents in mempool (unconfirmed)
-            if (m_transactions.find(parent_txid.AsUint256()) != m_transactions.end()) {
-                to_visit.push_back(parent_txid.AsUint256());
+            auto parent_it = m_transactions.find(parent_txid.AsUint256());
+            if (parent_it != m_transactions.end()) {
+                if (!selectable_at_height(parent_it->first, parent_it->second, nullptr)) {
+                    excluded_ancestor = true;
+                    break;
+                }
+                to_visit.push_back(parent_it->first);
             }
         }
 
@@ -1959,6 +2002,11 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
             if (ancestor_it == m_transactions.end()) continue;
 
             const auto& ancestor_entry = ancestor_it->second;
+            if (!selectable_at_height(current, ancestor_entry, nullptr)) {
+                excluded_ancestor = true;
+                break;
+            }
+
             score.ancestors.push_back(current);
             score.ancestor_fee += ancestor_entry.fee;
             score.ancestor_size += ancestor_entry.tx_size;
@@ -2045,6 +2093,9 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
         if (included.count(score.txid)) {
             continue;
         }
+        if (!selectable_at_height(score.txid, *score.entry, nullptr)) {
+            continue;
+        }
 
         // Calculate total size if we include this transaction + all ancestors
         size_t package_size = score.entry->tx_size;
@@ -2066,16 +2117,24 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
         }
 
         // Include all ancestors first (in correct order)
+        bool package_valid = true;
         for (const auto& ancestor_txid : score.ancestors) {
             if (!included.count(ancestor_txid)) {
                 auto ancestor_it = m_transactions.find(ancestor_txid);
                 if (ancestor_it != m_transactions.end()) {
+                    if (!selectable_at_height(ancestor_txid, ancestor_it->second, nullptr)) {
+                        package_valid = false;
+                        break;
+                    }
                     selected.push_back(ancestor_it->second.tx);
                     included.insert(ancestor_txid);
                     current_size += ancestor_it->second.tx_size;
                     current_weight += ancestor_it->second.tx_size * 4;
                 }
             }
+        }
+        if (!package_valid) {
+            continue;
         }
 
         // Include the transaction itself
@@ -2093,9 +2152,130 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
                  " transactions (" + std::to_string(current_size) + " bytes, " +
                  std::to_string(current_weight) + " weight units, excluded=" +
                  std::to_string(template_excluded) + ", excluded_descendants=" +
-                 std::to_string(excluded_descendants) + ")");
+                 std::to_string(excluded_descendants) + ", height_rule_excluded=" +
+                 std::to_string(height_rule_excluded) + ")");
 
     return selected;
+}
+
+bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
+                                         uint32_t next_block_height,
+                                         std::string* reason) const {
+    const Transaction& tx = entry.tx;
+    if (next_block_height == 0 || !UsesShieldedValueSemantics(tx)) {
+        return true;
+    }
+
+    const uint32_t binding_activation =
+        dinero::Params().shielded_input_binding_activation_height;
+    if (next_block_height < binding_activation) {
+        return true;
+    }
+
+    auto set_reason = [&](const std::string& msg) {
+        if (reason) {
+            *reason = msg;
+        }
+    };
+
+    if (!Transaction::IsShieldedVersion(tx.version) ||
+        tx.shielded_bundle_bytes.empty()) {
+        set_reason("malformed shielded transaction");
+        return false;
+    }
+
+    if (!shielded_tree_ || !shielded_nullifiers_) {
+        set_reason("shielded state unavailable");
+        return false;
+    }
+    if (!chain_db_) {
+        set_reason("chain state unavailable");
+        return false;
+    }
+
+    consensus::shielded::ShieldedBundle bundle;
+    const auto decode = consensus::shielded::DeserializeShieldedBundle(
+        tx.shielded_bundle_bytes, &bundle);
+    if (decode != consensus::shielded::BundleDecodeError::Ok) {
+        set_reason("shielded bundle decode failed (code " +
+                   std::to_string(static_cast<int>(decode)) + ")");
+        return false;
+    }
+
+    uint64_t total_input_value = 0;
+    MempoolUTXOView utxo_view(&coins_view_, chain_db_, &m_transactions);
+    for (const auto& input : tx.vin) {
+        const uint256 input_txid = input.prevout.txid.AsUint256();
+        const uint32_t input_vout = input.prevout.vout;
+
+        uint64_t value = 0;
+        std::string spk_str;
+        if (!utxo_view.GetUTXO(input_txid, input_vout, value, spk_str)) {
+            OutPoint outpoint{input.prevout.txid, input.prevout.vout};
+            if (auto recovered = recoverConflictedInputUTXO(outpoint)) {
+                value = recovered->value.GetUna();
+                if (recovered->is_confidential) {
+                    set_reason("legacy private lane removed");
+                    return false;
+                }
+            } else {
+                set_reason("input UTXO not found: " + input_txid.GetHex() +
+                           ":" + std::to_string(input_vout));
+                return false;
+            }
+        } else {
+            std::vector<uint8_t> commitment;
+            bool is_confidential = false;
+            if (utxo_view.GetConfidentialUTXO(input_txid, input_vout,
+                                              commitment, is_confidential) &&
+                is_confidential) {
+                set_reason("legacy private lane removed");
+                return false;
+            }
+        }
+        total_input_value += value;
+    }
+
+    uint64_t total_output_value = 0;
+    for (const auto& output : tx.vout) {
+        total_output_value += output.value.GetUna();
+    }
+
+    uint64_t fee = 0;
+    if (tx.HasExplicitFee()) {
+        fee = tx.GetExplicitFee();
+    } else if (total_output_value > total_input_value) {
+        set_reason("outputs exceed inputs (negative fee)");
+        return false;
+    } else {
+        fee = total_input_value - total_output_value;
+    }
+
+    int64_t transparent_delta = 0;
+    std::string error;
+    if (!ComputeTransparentValueDelta(total_input_value, total_output_value,
+                                      fee, transparent_delta, error)) {
+        set_reason(error);
+        return false;
+    }
+
+    auto ctx = consensus::shielded::BuildShieldedValidationContext(
+        tx,
+        shielded_nullifiers_,
+        shielded_tree_,
+        next_block_height,
+        transparent_delta,
+        dinero::Params().shielded_activation_height,
+        /*anchor_history=*/nullptr,
+        binding_activation);
+    const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
+    if (validation != consensus::shielded::ShieldedValidationError::Ok) {
+        set_reason("shielded validation failed: " +
+                   std::string(ShieldedValidationErrorToString(validation)));
+        return false;
+    }
+
+    return true;
 }
 
 void Mempool::removeConfirmedTransactions(const std::vector<uint256>& confirmed_txids) {

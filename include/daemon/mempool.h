@@ -237,12 +237,10 @@ public:
     // Block template creation.
     //
     // next_block_height: height at which the produced template will land.
-    // When non-zero and at-or-above the v5 freeze-fork activation height for
-    // the active chain, transactions that violate any freeze-fork gate
-    // (is_confidential, tx.version in {3,4}, non-Taproot / non-OP_RETURN
-    // outputs) are filtered out. When zero, no freeze-fork filter is applied
-    // — used by non-mining callers (RPC introspection, tests) that just want
-    // to see what the mempool would produce absent consensus rules.
+    // When non-zero, height-gated consensus checks that can change between
+    // mempool admission and mining selection are re-applied for that target
+    // height. This prevents stale mempool transactions from being assembled
+    // into an invalid activation-boundary block.
     std::vector<Transaction> selectTransactionsForBlock(
         size_t max_block_size = 1000000,    // 1MB default
         uint64_t max_block_weight = 4000000, // 4M weight units
@@ -481,6 +479,9 @@ private:
     void rebuildCoinsViewLocked();
     uint64_t getTotalFeesLocked() const;
     size_t getTotalSizeLocked() const;
+    bool isSelectableAtHeightLocked(const MempoolEntry& entry,
+                                    uint32_t next_block_height,
+                                    std::string* reason = nullptr) const;
     bool isTemplateExcludedLocked(const uint256& txid,
                                   const std::chrono::steady_clock::time_point& now,
                                   std::string* reason = nullptr) const;

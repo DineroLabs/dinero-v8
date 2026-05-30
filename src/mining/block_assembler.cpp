@@ -486,7 +486,7 @@ std::shared_ptr<MiningJob> BlockAssembler::CreateJob(const uint256* explicit_tip
     
     // Select transactions from mempool
     job->total_fees = 0;
-    job->transactions = SelectTransactions(max_block_weight_, job->total_fees);
+    job->transactions = SelectTransactions(max_block_weight_, job->height, job->total_fees);
     
     // Create coinbase transaction (SegWit with witness nonce for Utreexo compatibility)
     // Uses createCoinbaseTransaction which puts miner entropy in witness (not scriptSig),
@@ -837,7 +837,10 @@ std::string BlockAssembler::GetMiningStats() const {
 
 // Private methods
 
-std::vector<Transaction> BlockAssembler::SelectTransactions(uint32_t max_weight, uint64_t& total_fees) {
+std::vector<Transaction> BlockAssembler::SelectTransactions(
+    uint32_t max_weight,
+    uint32_t target_height,
+    uint64_t& total_fees) {
     std::vector<Transaction> selected;
     total_fees = 0;
     
@@ -846,14 +849,13 @@ std::vector<Transaction> BlockAssembler::SelectTransactions(uint32_t max_weight,
         return selected;
     }
     
-    // Week 7: Use mempool's built-in selection method (implements fee-rate sorting, weight limits, dependency checking)
-    // V5 freeze fork: pass next_block_height so the mempool filters out CT /
-    // v3 / v4 / non-Taproot txs that would fail post-activation validation.
-    const uint32_t next_block_height = last_job_height_.load() + 1;
+    // Week 7: Use mempool's built-in selection method (implements fee-rate sorting, weight limits, dependency checking).
+    // Pass the actual candidate height so height-gated consensus checks use
+    // the rule set this template will be validated under.
     selected = mempool_->selectTransactionsForBlock(
         max_block_weight_ / 4,  // max_block_size (approximate: weight / 4)
         max_weight,              // max_block_weight
-        next_block_height        // freeze-fork target height
+        target_height            // target block height
     );
 
     // Calculate total fees from selected transactions (exact, per-tx summation)
@@ -1273,6 +1275,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
     std::vector<std::string> included_txids;
     std::vector<Transaction> selected_txs = selectTransactionsForBlock(
         max_block_weight_,
+        height,
         total_fees,
         included_txids
     );
@@ -1765,12 +1768,13 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
 
 std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
     uint32_t max_weight,
+    uint32_t target_height,
     uint64_t& total_fees_out,
     std::vector<std::string>& included_txids_out
 ) {
     // Phase W.1.3: Use intelligent selection if enabled
     if (use_intelligent_selection_ && block_relay_manager_) {
-        return selectTransactionsIntelligent(max_weight, total_fees_out, included_txids_out);
+        return selectTransactionsIntelligent(max_weight, target_height, total_fees_out, included_txids_out);
     }
 
     // Default: Use standard CPFP-aware selection
@@ -1789,10 +1793,8 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
     // - Package selection (ensures ancestors included before children)
     // - Weight/size limit enforcement
     size_t max_size = max_weight / 4;  // Approximate: weight / 4 = size
-    uint32_t current_height = last_job_height_.load();
-    // V5 freeze fork: pass next_block_height so frozen txs are filtered out.
     auto candidates = mempool_->selectTransactionsForBlock(max_size, max_weight,
-                                                           current_height + 1);
+                                                           target_height);
 
     // Apply CT selection policy if enabled
     size_t ct_count = 0;
@@ -1819,7 +1821,7 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
 
         // Apply CT policy checks
         if (ct_policy_ && ct_policy_->HasConfidentialOutputs(tx)) {
-            auto policy_result = ct_policy_->CheckPolicy(tx, current_height, ct_count, ct_proof_bytes);
+            auto policy_result = ct_policy_->CheckPolicy(tx, target_height, ct_count, ct_proof_bytes);
             if (!policy_result.acceptable) {
                 dinero::g_logger.debug("CT tx rejected by policy: " + policy_result.rejection_reason);
                 continue;  // Skip this CT transaction
@@ -1847,7 +1849,7 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
             const uint8_t scheme_id = input.witness[0][0];
             // Only count schemes the registry recognizes as live.
             if (!dinero::consensus::pq::IsSchemeAcceptedAtHeight(
-                    scheme_id, current_height + 1) &&
+                    scheme_id, target_height) &&
                 !dinero::consensus::pq::IsSchemeDarkReserved(scheme_id)) {
                 continue;
             }
@@ -2104,6 +2106,7 @@ std::vector<std::string> BlockAssembler::getUnconfirmedAncestors(const std::stri
 
 std::vector<Transaction> BlockAssembler::selectTransactionsIntelligent(
     uint32_t max_weight,
+    uint32_t target_height,
     uint64_t& total_fees_out,
     std::vector<std::string>& included_txids_out
 ) {
@@ -2136,10 +2139,8 @@ std::vector<Transaction> BlockAssembler::selectTransactionsIntelligent(
 
     // Step 3: Get all transactions from mempool (CPFP-aware sorted)
     size_t max_size = max_weight / 4;  // Approximate: weight / 4 = size
-    // V5 freeze fork: pass next_block_height so frozen txs are filtered out.
-    const uint32_t intelligent_next_height = last_job_height_.load() + 1;
     auto all_txs = mempool_->selectTransactionsForBlock(max_size * 2, max_weight * 2,
-                                                        intelligent_next_height);  // Get more candidates
+                                                        target_height);  // Get more candidates
 
     if (all_txs.empty()) {
         dinero::g_logger.debug("selectTransactionsIntelligent: No transactions in mempool");
