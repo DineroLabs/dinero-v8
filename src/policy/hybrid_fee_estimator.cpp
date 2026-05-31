@@ -1,7 +1,7 @@
 /**
  * Phase 32: Hybrid ML Fee Estimator Implementation
  *
- * Combines EWMA + ML + Mempool analysis for robust fee estimation on small chains.
+ * Combines EWMA + ML history + adaptive fallbacks for robust fee estimation on small chains.
  */
 
 #include "policy/hybrid_fee_estimator.h"
@@ -136,75 +136,13 @@ void MLTrendPredictor::clear() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Mempool Analyzer Implementation
+// Mempool Analyzer Placeholder
 // ═══════════════════════════════════════════════════════════════════════════
 
 MempoolAnalyzer::MempoolAnalyzer()
     : capacity_mb_(300)  // Default mempool capacity (300 MB)
 {
     g_logger.info("[MempoolAnalyzer] Initialized with capacity=" + std::to_string(capacity_mb_) + " MB");
-}
-
-double MempoolAnalyzer::analyzeMempoolFees(const mempool::Mempool& mempool, size_t target_blocks) const {
-    // Get mempool congestion
-    double congestion = calculateCongestion(mempool);
-
-    // Get fee at appropriate percentile based on target
-    double percentile;
-    if (target_blocks == 1) {
-        percentile = 0.90;  // IMMEDIATE: 90th percentile (high priority)
-    } else if (target_blocks <= 3) {
-        percentile = 0.75;  // FAST: 75th percentile
-    } else if (target_blocks <= 6) {
-        percentile = 0.50;  // NORMAL: median
-    } else {
-        percentile = 0.25;  // SLOW/ECONOMY: 25th percentile
-    }
-
-    double base_fee = getFeeAtPercentile(mempool, percentile);
-
-    // Adjust for congestion
-    // If mempool is >70% full, increase fees
-    if (congestion > 0.7) {
-        double multiplier = 1.0 + ((congestion - 0.7) * 2.0);  // Up to 2.6x at 100% full
-        base_fee *= multiplier;
-
-        g_logger.info("[MempoolAnalyzer] Congestion adjustment: " + std::to_string(congestion * 100) +
-                     "% full → " + std::to_string(multiplier) + "x multiplier");
-    }
-
-    g_logger.debug("[MempoolAnalyzer] target=" + std::to_string(target_blocks) +
-                  " blocks, p" + std::to_string(static_cast<int>(percentile * 100)) +
-                  "=" + std::to_string(base_fee) + " sat/vB");
-
-    return base_fee;
-}
-
-double MempoolAnalyzer::calculateCongestion(const mempool::Mempool& mempool) const {
-    size_t mempool_size_bytes = mempool.getSize();
-    size_t capacity_bytes = capacity_mb_ * 1024 * 1024;
-
-    double congestion = static_cast<double>(mempool_size_bytes) / static_cast<double>(capacity_bytes);
-
-    return congestion;
-}
-
-double MempoolAnalyzer::getFeeAtPercentile(const mempool::Mempool& mempool, double percentile) const {
-    auto entries = mempool.getEntriesByFeeRate();  // Sorted by fee rate (descending)
-
-    if (entries.empty()) {
-        return 1.0;  // Default minimum fee
-    }
-
-    // Reverse to get ascending order
-    std::reverse(entries.begin(), entries.end());
-
-    size_t index = static_cast<size_t>(percentile * entries.size());
-    if (index >= entries.size()) {
-        index = entries.size() - 1;
-    }
-
-    return entries[index]->fee_rate;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -530,11 +468,6 @@ FeeEstimate HybridFeeEstimator::estimateFee(FeeTarget target) {
         ml_estimate = ml_predictor_->predictFeeRate(target_blocks, std::time(nullptr));
     }
 
-    // 3. Mempool Analysis
-    if (mempool_) {
-        mempool_estimate = mempool_analyzer_->analyzeMempoolFees(*mempool_, target_blocks);
-    }
-
     // Calculate weights for hybrid decision
     Weights weights = calculateWeights(target);
 
@@ -580,26 +513,9 @@ HybridFeeEstimator::Weights HybridFeeEstimator::calculateWeights(FeeTarget targe
     Weights w;
 
     // Base weights
-    w.ewma_weight = 0.4;     // EWMA is baseline
-    w.ml_weight = 0.3;       // ML adds trend awareness
-    w.mempool_weight = 0.3;  // Mempool adds real-time awareness
-
-    // Adjust based on mempool congestion
-    if (mempool_) {
-        double congestion = mempool_analyzer_->calculateCongestion(*mempool_);
-
-        if (congestion > 0.7) {
-            // High congestion: trust mempool more
-            w.mempool_weight = 0.6;
-            w.ewma_weight = 0.2;
-            w.ml_weight = 0.2;
-        } else if (congestion < 0.1) {
-            // Low congestion: trust EWMA and ML more
-            w.mempool_weight = 0.1;
-            w.ewma_weight = 0.5;
-            w.ml_weight = 0.4;
-        }
-    }
+    w.ewma_weight = 0.6;     // EWMA is baseline
+    w.ml_weight = 0.4;       // ML adds trend awareness
+    w.mempool_weight = 0.0;  // Dead legacy mempool adapter removed
 
     // Adjust based on ML confidence
     if (ml_predictor_->hasSufficientData()) {
@@ -608,13 +524,11 @@ HybridFeeEstimator::Weights HybridFeeEstimator::calculateWeights(FeeTarget targe
         if (std::abs(trend_slope) > 0.001) {
             // Strong trend: increase ML weight
             w.ml_weight += 0.1;
-            w.ewma_weight -= 0.05;
-            w.mempool_weight -= 0.05;
+            w.ewma_weight -= 0.1;
         }
     } else {
         // Insufficient ML data: redistribute weight
-        w.ewma_weight += w.ml_weight / 2.0;
-        w.mempool_weight += w.ml_weight / 2.0;
+        w.ewma_weight += w.ml_weight;
         w.ml_weight = 0.0;
     }
 
@@ -658,7 +572,7 @@ double HybridFeeEstimator::combineEstimates(double ewma, double ml, double mempo
 HybridFeeEstimator::EstimateBreakdown HybridFeeEstimator::getBreakdown(FeeTarget target) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    EstimateBreakdown breakdown;
+    EstimateBreakdown breakdown{};
 
     size_t target_blocks = static_cast<size_t>(target);
 
@@ -674,12 +588,6 @@ HybridFeeEstimator::EstimateBreakdown HybridFeeEstimator::getBreakdown(FeeTarget
         breakdown.trend_slope = ml_predictor_->getTrendSlope();
     }
 
-    // Mempool analysis
-    if (mempool_) {
-        breakdown.mempool_estimate = mempool_analyzer_->analyzeMempoolFees(*mempool_, target_blocks);
-        breakdown.congestion_ratio = mempool_analyzer_->calculateCongestion(*mempool_);
-    }
-
     // Calculate final hybrid estimate
     Weights weights = calculateWeights(target);
     breakdown.hybrid_final = combineEstimates(breakdown.ewma_estimate,
@@ -688,9 +596,7 @@ HybridFeeEstimator::EstimateBreakdown HybridFeeEstimator::getBreakdown(FeeTarget
                                               weights);
 
     // Decision reason
-    if (breakdown.congestion_ratio > 0.7) {
-        breakdown.decision_reason = "High mempool congestion (mempool-weighted)";
-    } else if (ml_predictor_->hasSufficientData() && std::abs(breakdown.trend_slope) > 0.001) {
+    if (ml_predictor_->hasSufficientData() && std::abs(breakdown.trend_slope) > 0.001) {
         breakdown.decision_reason = "Strong fee trend detected (ML-weighted)";
     } else if (breakdown.ewma_estimate > 0.0) {
         breakdown.decision_reason = "Normal operation (EWMA-weighted)";

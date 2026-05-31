@@ -1,13 +1,13 @@
 #pragma once
 
 #include "policy/fee_estimator.h"
-#include "mempool/mempool.h"
 #include <vector>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <chrono>
 #include <string>
+#include <unordered_map>
 
 namespace dinero {
 namespace policy {
@@ -17,17 +17,16 @@ namespace policy {
  * @brief Hybrid ML Fee Estimator (Phase 32)
  *
  * Combines EWMA-based historical tracking with ML trend prediction and
- * real-time mempool analysis for accurate fee estimation on small chains.
+ * adaptive fallback rates for accurate fee estimation on small chains.
  *
  * Architecture:
  * 1. EWMA Base Layer - Existing fee estimator (exponentially weighted moving average)
  * 2. ML Trend Predictor - Simple linear regression for fee trends
- * 3. Mempool Analyzer - Real-time congestion and fee pressure analysis
- * 4. Historical Persistence - Store fee history to disk for better estimates
- * 5. Adaptive Fallbacks - Dynamic fallback rates based on recent activity
+ * 3. Historical Persistence - Store fee history to disk for better estimates
+ * 4. Adaptive Fallbacks - Dynamic fallback rates based on recent activity
  *
  * This hybrid approach mitigates noise in small chains while providing
- * responsive estimates during network congestion.
+ * responsive estimates as fee history develops.
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -131,50 +130,17 @@ private:
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * @brief Real-time mempool state analysis
+ * @brief Placeholder for a future live daemon-mempool adapter.
  *
- * Analyzes current mempool to determine:
- * - Congestion level (mempool fullness)
- * - Fee pressure (demand for block space)
- * - Percentile-based fee recommendations
+ * The historical analyzer methods accepted the removed legacy mempool class.
+ * Keep this live-constructed object so callers do not need a lifecycle change
+ * while the dead class path is removed.
  */
 class MempoolAnalyzer {
 public:
     MempoolAnalyzer();
 
-    /**
-     * @brief Analyze current mempool state
-     *
-     * Extracts real-time fee metrics from mempool:
-     * - P25, P50, P75, P90 fee rates
-     * - Mempool congestion ratio
-     * - Fee pressure indicator
-     *
-     * @param mempool Mempool to analyze
-     * @param target_blocks Target confirmation time
-     * @return Recommended fee rate (sat/vB)
-     */
-    double analyzeMempoolFees(const mempool::Mempool& mempool, size_t target_blocks) const;
-
-    /**
-     * @brief Calculate mempool congestion ratio
-     *
-     * @param mempool Mempool to analyze
-     * @return Congestion [0.0, 1.0+] (0 = empty, 1.0 = full, >1.0 = over capacity)
-     */
-    double calculateCongestion(const mempool::Mempool& mempool) const;
-
-    /**
-     * @brief Get fee rate at percentile
-     *
-     * @param mempool Mempool to analyze
-     * @param percentile Percentile [0.0, 1.0] (e.g., 0.5 = median)
-     * @return Fee rate at percentile (sat/vB)
-     */
-    double getFeeAtPercentile(const mempool::Mempool& mempool, double percentile) const;
-
 private:
-    // Mempool capacity threshold (bytes)
     size_t capacity_mb_;
 };
 
@@ -280,19 +246,16 @@ private:
  * Combines multiple estimation techniques for robust fee predictions:
  * 1. EWMA base layer (existing FeeEstimator)
  * 2. ML trend prediction (linear regression on recent history)
- * 3. Mempool-aware real-time adjustments
- * 4. Historical persistence for cold starts
- * 5. Adaptive fallback rates
+ * 3. Historical persistence for cold starts
+ * 4. Adaptive fallback rates
  *
  * Decision Logic:
- * - If mempool is congested (>70% full) → use mempool analysis (real-time)
- * - Else if EWMA has sufficient data → use EWMA estimate
+ * - If EWMA has sufficient data → use EWMA estimate
  * - Else if ML predictor has data → use ML prediction
  * - Else → use adaptive fallback
  *
  * Weight adjustment:
  * - ML weight increases with trend confidence
- * - Mempool weight increases with congestion
  * - EWMA weight is baseline
  */
 class HybridFeeEstimator {
@@ -311,13 +274,6 @@ public:
     bool initialize(std::shared_ptr<FeeEstimator> base_estimator = nullptr);
 
     /**
-     * @brief Set mempool for real-time analysis
-     *
-     * @param mempool Mempool instance
-     */
-    void setMempool(mempool::Mempool* mempool) { mempool_ = mempool; }
-
-    /**
      * @brief Record new transaction confirmation
      *
      * Called when a transaction gets confirmed to update models.
@@ -331,7 +287,7 @@ public:
     /**
      * @brief Estimate fee rate (hybrid method)
      *
-     * Combines EWMA + ML + Mempool analysis for robust estimate.
+     * Combines EWMA + ML + adaptive fallback signals for robust estimate.
      *
      * @param target Fee target (IMMEDIATE, FAST, NORMAL, etc.)
      * @return Hybrid fee estimate
@@ -354,7 +310,7 @@ public:
      * Returns individual estimates from each component:
      * - EWMA estimate
      * - ML prediction
-     * - Mempool analysis
+     * - Reserved mempool estimate field (currently zero)
      * - Final hybrid estimate
      */
     struct EstimateBreakdown {
@@ -380,12 +336,9 @@ private:
     // Sub-components
     std::shared_ptr<FeeEstimator> base_estimator_;        // EWMA base layer
     std::unique_ptr<MLTrendPredictor> ml_predictor_;      // ML trend prediction
-    std::unique_ptr<MempoolAnalyzer> mempool_analyzer_;   // Real-time mempool analysis
+    std::unique_ptr<MempoolAnalyzer> mempool_analyzer_;   // Placeholder for a future live adapter
     std::unique_ptr<FeeHistoryPersistence> persistence_;  // Historical data storage
     std::unique_ptr<AdaptiveFallbackRates> adaptive_fallbacks_;  // Dynamic fallbacks
-
-    // Mempool reference
-    mempool::Mempool* mempool_{nullptr};
 
     // Data directory
     std::string data_dir_;

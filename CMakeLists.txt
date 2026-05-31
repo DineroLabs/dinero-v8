@@ -51,7 +51,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
   )
 endif()
 
-# Guardrail: production code must not depend on legacy mempool::Mempool path.
+# Guardrail: production code must not depend on the legacy mempool path.
 add_custom_target(check_no_legacy_mempool_prod
   COMMAND ${CMAKE_SOURCE_DIR}/tools/check_no_legacy_mempool_prod.sh
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -810,6 +810,7 @@ set(DINERO_CORE_ENCODING_SOURCES
 )
 
 set(DINERO_CORE_MINING_TEMPLATE_SUPPORT_SOURCES
+  src/mining/block_template.cpp
   src/mining/block_assembly_context.cpp
   src/mining/transaction_scorer.cpp
   src/mining/template_delta_tracker.cpp
@@ -903,7 +904,6 @@ add_library(dinero_core STATIC
   src/consensus/adapters/wallet_utxo_adapter.cpp  # UTXO adapter for wallet integration
 
   # Mempool
-  src/mempool/mempool.cpp  # Full mempool implementation (needed by compact_block.cpp)
   ${DINERO_CORE_MEMPOOL_SUPPORT_SOURCES}
 
   # Network relay

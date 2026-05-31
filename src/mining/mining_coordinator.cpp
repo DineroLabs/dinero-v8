@@ -158,7 +158,7 @@ std::shared_ptr<MiningJob> MiningCoordinator::createJob(const std::string& minin
     // This version:
     // ✅ Uses PRODUCTION mempool (dinero::Mempool) from MempoolService
     // ✅ Calculates ACTUAL difficulty using GetNextWorkRequired
-    // ✅ No Phase 25 dependencies (mempool::Mempool, BlockTemplateBuilder)
+    // No Phase 25 dependencies (legacy mempool, BlockTemplateBuilder)
     // ✅ Direct integration with daemon services
     // ========================================================================
 

@@ -3,18 +3,11 @@
 #include "consensus/outpoint.h"
 #include "primitives/uint256.h"
 #include "primitives/transaction.h"
-#include "consensus/tx_validation.h"
-#include "consensus/chain_state_view.h"
-#include "common/status.h"
-#include "mempool/invalid_tx_cache.h"
-#include <unordered_map>
 #include <unordered_set>
-#include <set>
 #include <vector>
-#include <memory>
-#include <mutex>
-#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace dinero {
 namespace mempool {
@@ -113,7 +106,44 @@ enum class MempoolAcceptResult {
     TOO_MANY_COVENANT_INPUTS,    // Exceeds covenant input limit (DoS protection)
 };
 
-const char* MempoolAcceptResultToString(MempoolAcceptResult result);
+inline const char* MempoolAcceptResultToString(MempoolAcceptResult result) {
+    switch (result) {
+        case MempoolAcceptResult::OK:
+            return "OK";
+        case MempoolAcceptResult::ALREADY_IN_MEMPOOL:
+            return "Transaction already in mempool";
+        case MempoolAcceptResult::ALREADY_IN_CHAIN:
+            return "Transaction already in blockchain";
+        case MempoolAcceptResult::INVALID_TX:
+            return "Transaction failed consensus validation";
+        case MempoolAcceptResult::INSUFFICIENT_FEE:
+            return "Fee rate too low";
+        case MempoolAcceptResult::MEMPOOL_FULL:
+            return "Mempool at capacity";
+        case MempoolAcceptResult::CONFLICTS_WITH_MEMPOOL:
+            return "Double spend without RBF";
+        case MempoolAcceptResult::RBF_REJECTED:
+            return "RBF attempted but failed rules";
+        case MempoolAcceptResult::TOO_MANY_ANCESTORS:
+            return "Exceeds ancestor limit";
+        case MempoolAcceptResult::TOO_MANY_DESCENDANTS:
+            return "Exceeds descendant limit";
+        case MempoolAcceptResult::MISSING_INPUTS:
+            return "Parent transactions not found";
+        case MempoolAcceptResult::SCRIPT_VERIFY_FAILED:
+            return "Script validation failed";
+        case MempoolAcceptResult::LOCKTIME_NOT_SATISFIED:
+            return "Transaction not yet valid";
+        case MempoolAcceptResult::COVENANT_ANCESTOR_MISSING:
+            return "Covenant parent transaction not confirmed or in mempool";
+        case MempoolAcceptResult::COVENANT_RBF_FORBIDDEN:
+            return "Replace-by-fee forbidden for covenant transactions (policy)";
+        case MempoolAcceptResult::TOO_MANY_COVENANT_INPUTS:
+            return "Transaction exceeds maximum covenant input limit (DoS protection)";
+        default:
+            return "Unknown error";
+    }
+}
 
 /**
  * Mempool submission mode
@@ -164,315 +194,6 @@ struct MempoolConfig {
         , max_script_stack_bytes(10 * 1024 * 1024)
         , max_signature_cache_mb(100)
     {}
-};
-
-/**
- * Transaction Mempool
- *
- * The mempool stores unconfirmed transactions waiting to be mined.
- * It provides:
- * - Transaction validation and acceptance
- * - Fee estimation and prioritization
- * - Conflict detection (double spends)
- * - RBF (Replace-By-Fee) support
- * - CPFP (Child Pays For Parent) via ancestor tracking
- * - Eviction when full
- * - Block template building support
- */
-class Mempool {
-public:
-    explicit Mempool(const MempoolConfig& config = MempoolConfig());
-    ~Mempool();
-
-    // ========================================================================
-    // Transaction Acceptance
-    // ========================================================================
-
-    /**
-     * Accept transaction into mempool
-     *
-     * Performs full validation:
-     * 1. Consensus validation (script, inputs, outputs)
-     * 2. Fee validation (meets minimum)
-     * 3. Conflict detection (double spends)
-     * 4. Ancestor/descendant limits
-     * 5. RBF rules (if replacing)
-     *
-     * @param tx             Transaction to add
-     * @param coins_view     UTXO view (with mempool modifications)
-     * @param current_height Current block height
-     * @param current_time   Current median time past
-     * @return               Acceptance result
-     */
-    MempoolAcceptResult acceptTransaction(
-        const Transaction& tx,
-        const consensus::ChainStateView& coins_view,
-        uint32_t current_height,
-        uint64_t current_time
-    );
-
-    /**
-     * Submit transaction with mode control (TEST_ONLY for policy testing)
-     *
-     * @param tx             Transaction to add
-     * @param coins_view     UTXO view (with mempool modifications)
-     * @param current_height Current block height
-     * @param current_time   Current median time past
-     * @param mode           Submission mode (NORMAL or TEST_ONLY)
-     * @return               Acceptance result
-     */
-    MempoolAcceptResult submitTransaction(
-        const Transaction& tx,
-        const consensus::ChainStateView& coins_view,
-        uint32_t current_height,
-        uint64_t current_time,
-        MempoolSubmitMode mode
-    );
-
-    /**
-     * Remove transaction from mempool
-     * Phase M.4.3-C: Changed to TxId for type safety
-     */
-    bool removeTransaction(const TxId& txid, bool recursive = false);
-
-    /**
-     * Remove transactions that are now in a block
-     */
-    void removeForBlock(const std::vector<Transaction>& block_txs);
-
-    // ========================================================================
-    // Queries
-    // ========================================================================
-
-    /**
-     * Check if transaction is in mempool
-     * Phase M.4.3-C: Changed to TxId for type safety
-     */
-    bool contains(const TxId& txid) const;
-
-    /**
-     * Get transaction by ID
-     * Phase M.4.3-C: Changed to TxId for type safety
-     */
-    std::shared_ptr<const MempoolEntry> getEntry(const TxId& txid) const;
-
-    /**
-     * Get all transactions (for block template)
-     */
-    std::vector<std::shared_ptr<const MempoolEntry>> getAllEntries() const;
-
-    /**
-     * Get transactions sorted by fee rate (descending)
-     */
-    std::vector<std::shared_ptr<const MempoolEntry>> getEntriesByFeeRate() const;
-
-    /**
-     * Get transactions sorted by ancestor score (for mining)
-     */
-    std::vector<std::shared_ptr<const MempoolEntry>> getEntriesByAncestorScore() const;
-
-    /**
-     * Phase 34: Get transactions for block assembly
-     *
-     * Returns transactions sorted by ancestor score (fee/size), suitable for
-     * inclusion in a block. Respects weight limits and ensures topological
-     * ordering (parents before children).
-     *
-     * @param max_weight   Maximum block weight (default: 4000000 WU)
-     * @return             Ordered list of transactions ready for block inclusion
-     */
-    std::vector<std::shared_ptr<const MempoolEntry>> GetTransactionsForBlock(
-        size_t max_weight = 4000000  // Bitcoin's MAX_BLOCK_WEIGHT
-    ) const;
-
-    /**
-     * Get mempool size in bytes
-     */
-    size_t getSize() const;
-
-    /**
-     * Get number of transactions
-     */
-    size_t getCount() const;
-
-    /**
-     * Get total fees in mempool
-     */
-    uint64_t getTotalFees() const;
-
-    // ========================================================================
-    // Fee Estimation
-    // ========================================================================
-
-    /**
-     * Estimate fee rate for confirmation in N blocks
-     *
-     * @param target_blocks  Number of blocks for confirmation
-     * @return               Estimated fee rate (sat/vB)
-     */
-    double estimateFeeRate(size_t target_blocks) const;
-
-    /**
-     * Get minimum fee rate to enter mempool
-     */
-    double getMinFeeRate() const { return config_.min_fee_rate; }
-
-    // ========================================================================
-    // Maintenance
-    // ========================================================================
-
-    /**
-     * F.9.7: Eviction statistics
-     */
-    struct EvictionStats {
-        size_t expired_count;       // Transactions removed due to expiry
-        uint64_t expired_fees;      // Total fees from expired transactions
-        size_t size_evicted_count;  // Transactions removed due to size limit
-        uint64_t size_evicted_fees; // Total fees from size-evicted transactions
-    };
-
-    /**
-     * Evict low-fee transactions when mempool is full
-     *
-     * F.9.7: Eviction strategy:
-     * 1. Remove expired transactions (> expiry_hours = 336h = 14 days)
-     * 2. Remove lowest fee rate transactions if over size limit
-     * 3. Recursive removal (removes descendants automatically)
-     *
-     * Returns statistics about evicted transactions for logging.
-     */
-    EvictionStats evictTransactions();
-
-    /**
-     * Clear all transactions
-     */
-    void clear();
-
-    // ========================================================================
-    // Reorg Handling
-    // ========================================================================
-
-    /**
-     * Reconcile mempool after a blockchain reorganization
-     *
-     * When a reorg occurs:
-     * 1. Transactions from disconnected blocks become unconfirmed
-     * 2. These should be returned to mempool (if still valid)
-     * 3. Transactions in new connected blocks are already removed via removeForBlock
-     *
-     * This method:
-     * - Takes transactions from disconnected blocks
-     * - Filters out any that are now in connected blocks (by txid)
-     * - Re-validates remaining against the new UTXO set
-     * - Re-adds valid transactions to mempool
-     *
-     * @param disconnected_txs   Transactions from disconnected blocks
-     * @param connected_txs      Transactions from newly connected blocks (to filter)
-     * @param coins_view         Current UTXO view (post-reorg)
-     * @param current_height     Current chain height (post-reorg)
-     * @param current_time       Current median time past
-     * @return                   Number of transactions successfully restored
-     */
-    size_t ReconcileAfterReorg(
-        const std::vector<Transaction>& disconnected_txs,
-        const std::vector<Transaction>& connected_txs,
-        const consensus::ChainStateView& coins_view,
-        uint32_t current_height,
-        uint64_t current_time
-    );
-
-    /**
-     * Phase E.2.a: Explicit memory accounting
-     *
-     * Make memory usage transparent and verifiable for DoS hardening.
-     */
-    struct MemoryStats {
-        size_t tx_count;                // Number of transactions
-        size_t total_bytes;             // Total memory used (tx data + metadata)
-        size_t max_bytes;               // Configured maximum
-        size_t available_bytes;         // Remaining capacity
-        double usage_percent;           // Percentage full
-        size_t largest_tx_bytes;        // Largest single transaction
-        size_t smallest_tx_bytes;       // Smallest single transaction
-        size_t avg_tx_bytes;            // Average transaction size
-
-        // Per-tx breakdown
-        size_t tx_data_bytes;           // Actual transaction data
-        size_t metadata_bytes;          // MempoolEntry overhead (estimated)
-        size_t index_bytes;             // Index overhead (estimated)
-    };
-
-    MemoryStats getMemoryStats() const;
-
-    /**
-     * Get mempool statistics
-     */
-    struct Stats {
-        size_t count;
-        size_t size_bytes;
-        uint64_t total_fees;
-        double min_fee_rate;
-        double max_fee_rate;
-        double median_fee_rate;
-    };
-
-    Stats getStats() const;
-
-private:
-    // Configuration
-    MempoolConfig config_;
-
-    // F.9.8: Invalid transaction cache (DoS protection)
-    InvalidTxCache invalid_tx_cache_;
-
-    // Transaction storage (Phase M.4.3-C: Type-safe TxId keys)
-    mutable std::mutex mutex_;
-    std::unordered_map<TxId, std::shared_ptr<MempoolEntry>> entries_;
-
-    // Indexes for efficient queries (Phase M.4.3-C: Type-safe TxId)
-    std::set<std::pair<double, TxId>> by_fee_rate_;  // (fee_rate, txid)
-    std::set<std::pair<uint64_t, TxId>> by_time_;    // (time, txid)
-
-    // Conflict tracking (outpoint -> txid) (Phase M.4.3-C: Type-safe TxId values, OutPoint.txid already TxId)
-    std::unordered_map<OutPoint, TxId> spent_outpoints_;
-
-    // Statistics
-    size_t total_size_;
-    uint64_t total_fees_;
-
-    // Helper functions
-    bool validateTransaction(
-        const Transaction& tx,
-        const consensus::ChainStateView& coins_view,
-        uint32_t current_height,
-        uint64_t current_time,
-        consensus::TxValidationResult& result
-    );
-
-    bool checkConflicts(
-        const Transaction& tx,
-        std::vector<TxId>& conflicts  // Phase M: TxId identity
-    ) const;
-
-    bool checkRBFRules(
-        const Transaction& new_tx,
-        const std::vector<TxId>& conflicts,  // Phase M: TxId identity
-        uint64_t new_fee
-    ) const;
-
-    void updateAncestorState(const uint256& txid);  // Phase M.0: Changed to uint256
-    void updateDescendantState(const uint256& txid);  // Phase M.0: Changed to uint256
-
-    bool exceedsLimits(const MempoolEntry& entry) const;
-
-    void addToIndexes(const TxId& txid, const MempoolEntry& entry);  // Phase M: TxId identity
-    void removeFromIndexes(const TxId& txid);  // Phase M: TxId identity
-
-    size_t calculateVirtualSize(const Transaction& tx) const;
-    bool signalsRBF(const Transaction& tx) const;
-
-    // Phase C.2: Covenant detection helper (policy heuristic, not consensus)
-    bool detectCovenantScript(const std::vector<uint8_t>& scriptPubKey) const;
 };
 
 } // namespace mempool
