@@ -58,7 +58,7 @@ struct BlockDownloadRequest {
  * - Need single scheduler to consolidate ALL download decisions
  *
  * Authority Boundaries:
- * - MultiPeerHeadersSync: OWNS header validation (Phase H.6 locked)
+ * - HeaderChainSelector: OWNS header validation
  * - BlockDownloadScheduler: OWNS block download scheduling (this component)
  * - ChainstateService: OWNS block validation (Phase C.1 locked)
  *
