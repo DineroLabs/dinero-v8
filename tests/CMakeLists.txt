@@ -6575,6 +6575,37 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_restart_safety.cpp)
   )
 endif()
 
+# 4d-2 (issue #181): bounded side-branch header storage with work-aware eviction.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sidebranch_bound.cpp)
+  add_executable(test_header_sidebranch_bound
+    tests/consensus/test_header_sidebranch_bound.cpp
+    src/consensus/header_chain.cpp
+    src/consensus/header_store.cpp
+  )
+  target_link_libraries(test_header_sidebranch_bound PRIVATE
+    dinero_consensus
+    dinero_wallet
+    dinero_crypto
+    secp256k1
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_header_sidebranch_bound)
+  target_include_directories(test_header_sidebranch_bound PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_header_sidebranch_bound PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME HeaderSideBranchBound COMMAND test_header_sidebranch_bound)
+  set_tests_properties(HeaderSideBranchBound PROPERTIES
+    LABELS "headers;security;dos;sidebranch-eviction"
+  )
+endif()
+
 # ============================================================================
 # Phase N.2: Header Sync State Machine Tests (Header-First Sync)
 # ============================================================================

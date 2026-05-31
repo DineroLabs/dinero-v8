@@ -21,6 +21,7 @@
 #include "consensus/chainwork.h"
 #include <memory>
 #include <map>
+#include <set>
 #include <cstdint>
 #include <mutex>
 
@@ -56,6 +57,12 @@ struct HeaderIndexEntry {
 
     // Parent linkage (nullptr for genesis)
     const HeaderIndexEntry* parent;
+
+    // Number of stored children (4d-2 / #181). RUNTIME-ONLY: never serialized;
+    // rebuilt by LoadFromStorage. Used to identify side-branch "tips"
+    // (child_count == 0) for the bounded-storage eviction policy. An entry with
+    // child_count == 0 that is not best_header_ is a losing side-branch tip.
+    uint32_t child_count = 0;
 
     /**
      * @brief Default constructor
@@ -106,6 +113,21 @@ struct HeaderIndexEntry {
      * @return Median time past in seconds since epoch
      */
     uint32_t GetMedianTimePast() const;
+};
+
+/**
+ * @brief Order side-branch tips by ascending cumulative work (4d-2 / #181).
+ *
+ * Strict-weak ordering over HeaderIndexEntry pointers: by chainwork ascending,
+ * then by hash ascending as a deterministic, unique tiebreaker. `begin()` of a
+ * set ordered this way is the LOWEST-work tip — the eviction candidate.
+ */
+struct SideBranchTipLess {
+    bool operator()(const HeaderIndexEntry* a, const HeaderIndexEntry* b) const {
+        if (a->chainwork < b->chainwork) return true;
+        if (b->chainwork < a->chainwork) return false;
+        return a->hash < b->hash;
+    }
 };
 
 /**
@@ -249,6 +271,32 @@ private:
 
     // Persistent storage (Phase N.1: restart safety)
     class HeaderStore* header_store_;  // Not owned, optional
+
+    // 4d-2 (issue #181): bounded side-branch header storage with work-aware
+    // eviction. `evictable_tips_` holds every losing side-branch TIP
+    // (child_count == 0 and != best_header_), ordered by ascending cumulative
+    // work, so begin() is the lowest-work eviction candidate. The active best
+    // chain (best_header_ + its ancestors) is never present here and is never
+    // evicted; the AssumeUTXO/replay anchor sits on the best chain so it is
+    // protected transitively. Runtime-only state (rebuilt by LoadFromStorage).
+    std::set<const HeaderIndexEntry*, SideBranchTipLess> evictable_tips_;
+
+    // Throttle the cap-hit warning so a header flood can't become a log flood.
+    bool side_branch_cap_warned_ = false;
+
+    /**
+     * @brief Recompute `entry`'s membership in `evictable_tips_` to match the
+     * invariant (in the set iff child_count == 0 && entry != best_header_).
+     * Lock must already be held; touches members directly (no locking accessors).
+     */
+    void RefreshTipStatus(const HeaderIndexEntry* entry);
+
+    /**
+     * @brief Evict a losing side-branch starting at `tip`, pruning upward while
+     * ancestors become childless, stopping at the best tip or the fork point.
+     * Never removes a best-chain header. Lock must already be held.
+     */
+    void EvictBranch(const HeaderIndexEntry* tip);
 
     /**
      * @brief Validate header (stateless checks only)
