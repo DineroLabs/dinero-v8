@@ -11,7 +11,6 @@ set(DINERO_CORE_P2P_SOURCES
   src/p2p/network_limits_monitor.cpp
   src/p2p/block_download_scheduler.cpp
   src/p2p/headers_first_sync.cpp
-  src/p2p/multi_peer_headers_sync.cpp
   src/p2p/compact_block.cpp
   src/p2p/addrman.cpp
   src/p2p/addr_v2.cpp                # NAT traversal Phase 1A.2: BIP155 typed addr gossip

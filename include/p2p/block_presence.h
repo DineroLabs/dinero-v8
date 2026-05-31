@@ -155,7 +155,7 @@ public:
     /**
      * @brief Mark that we have a header for this block
      *
-     * Called when MultiPeerHeadersSync validates a header.
+     * Called when HeaderChainSelector validates a header.
      *
      * @param block_hash Block hash (hex string)
      * @param height Block height (for prioritization)

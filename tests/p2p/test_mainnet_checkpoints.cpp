@@ -1,30 +1,13 @@
 #include <gtest/gtest.h>
 
 #include "consensus/assume_utxo.h"
-#include "p2p/multi_peer_headers_sync.h"
 
 namespace dinero::p2p {
 
-TEST(MainnetCheckpoints, UsesRealDineroChainAnchors) {
-    const auto checkpoints = getCheckpoints();
-
-    ASSERT_GE(checkpoints.size(), 2u);
-
-    for (size_t i = 1; i < checkpoints.size(); ++i) {
-        EXPECT_LT(checkpoints[i - 1].height, checkpoints[i].height);
-        EXPECT_NE(checkpoints[i - 1].block_hash, checkpoints[i].block_hash);
-    }
-
-    EXPECT_EQ(checkpoints.front().height, 0u);
-    EXPECT_EQ(checkpoints.front().block_hash,
-              "0000001c36abf27e2c233ff40ed0c08888926c24450f3bff82a047ae1528b76f");
-    EXPECT_NE(checkpoints.front().block_hash,
-              "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
-
-    EXPECT_EQ(checkpoints.back().height, 13000u);
-    EXPECT_EQ(checkpoints.back().block_hash,
-              "0000006f34bdfd52f0d61556175a3ccec56fc57428a1b04f7e012ee7e245c8a3");
-}
+// The former hard-coded-checkpoint-anchors test was removed with the dead
+// header-sync module it depended on; its anchors were redundant with the live
+// AssumeUTXO registry asserted below (h=13000) and the header-replay tests
+// (genesis). See git history for the removal rationale.
 
 TEST(MainnetCheckpoints, AssumeUTXOSnapshot13000NeverChanges) {
     auto snapshot = dinero::consensus::AssumeUTXORegistry::GetSnapshot(13000);

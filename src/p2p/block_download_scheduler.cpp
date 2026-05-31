@@ -91,7 +91,7 @@ void BlockDownloadScheduler::scheduleBlockRange(uint32_t start_height, uint32_t 
         // For now, this is a placeholder showing the pattern
 
         // In production, you would:
-        // 1. Query MultiPeerHeadersSync for header at this height
+        // 1. Query HeaderChainSelector for header at this height
         // 2. Get block_hash from header
         // 3. Schedule using scheduleBlock()
 
