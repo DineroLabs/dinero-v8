@@ -18,6 +18,7 @@
 
 #include "consensus/header_chain.h"
 #include "consensus/header_store.h"
+#include "consensus/chainparams.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include <iostream>
@@ -61,6 +62,11 @@ void AssertSchemaMetadataPresent(const HeaderStore& store) {
 }
 
 int main() {
+    // Synthetic headers carry fake PoW (arbitrary bits, nonce=1). Header
+    // validation now enforces PoW on mainnet/testnet, so run under regtest
+    // (PoW skipped, matching block_acceptor) — correct for restart-safety logic.
+    dinero::SelectParams(dinero::Chain::REGTEST);
+
     std::cout << "=== Phase N.1: Header Restart Safety Test ===" << std::endl;
 
     // Why std::filesystem::temp_directory_path() instead of "/tmp/...": the

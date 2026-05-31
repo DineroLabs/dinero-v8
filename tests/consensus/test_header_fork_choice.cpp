@@ -18,6 +18,7 @@
  */
 
 #include "consensus/header_chain.h"
+#include "consensus/chainparams.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include <iostream>
@@ -45,6 +46,13 @@ BlockHeader CreateTestHeader(
 }
 
 int main() {
+    // These tests exercise header fork-choice/ancestor LOGIC with synthetic
+    // headers that carry arbitrary `bits` for chainwork shaping and no real PoW.
+    // Header validation now enforces proof-of-work on mainnet/testnet, so run
+    // under regtest (where PoW is intentionally skipped, matching block_acceptor)
+    // — the correct context for PoW-agnostic logic tests.
+    dinero::SelectParams(dinero::Chain::REGTEST);
+
     std::cout << "=== Phase N.3: Header Fork-Choice Tests ===" << std::endl;
 
     // ========================================================================

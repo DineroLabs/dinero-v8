@@ -6490,6 +6490,35 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_fork_choice.cpp)
   add_test(NAME HeaderForkChoice COMMAND test_header_fork_choice)
 endif()
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_pow_verification.cpp)
+  add_executable(test_header_pow_verification
+    tests/consensus/test_header_pow_verification.cpp
+    src/consensus/header_chain.cpp
+    src/consensus/header_store.cpp
+    src/consensus/genesis_canonical.cpp
+    src/common/logger.cpp
+  )
+  target_link_libraries(test_header_pow_verification PRIVATE
+    dinero_consensus
+    dinero_wallet
+    dinero_crypto
+    secp256k1
+  )
+  link_zstd_if_needed(test_header_pow_verification)
+  target_include_directories(test_header_pow_verification PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_directories(test_header_pow_verification PRIVATE /opt/homebrew/lib)
+    target_link_libraries(test_header_pow_verification PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME HeaderPoWVerification COMMAND test_header_pow_verification)
+endif()
+
 # ============================================================================
 # Phase N.1: Header Restart Safety Tests (Header-First Sync)
 # ============================================================================

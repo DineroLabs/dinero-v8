@@ -7,6 +7,8 @@
 #include "consensus/header_chain.h"
 #include "consensus/header_store.h"
 #include "consensus/difficulty.h"
+#include "consensus/pow.h"
+#include "consensus/chainparams.h"
 #include "crypto/sha256.h"
 #include <algorithm>
 #include <iostream>
@@ -347,12 +349,30 @@ bool HeaderChainSelector::ValidateHeader(
         }
     }
 
-    // 4. PoW validity - simplified check
-    // In production, this would validate hash < target
-    // For now, just verify hash exists (non-null)
+    // 4. Proof-of-work validity — the header hash must meet the claimed target.
+    //
+    // SECURITY (header-PoW verification): without this, a peer can submit headers
+    // claiming arbitrarily hard difficulty bits (hence arbitrarily large
+    // GetBlockProof() chainwork) backed by NO real work, win fork-choice in
+    // UpdateBestHeader(), and steer block download toward a forged chain — a
+    // zero-cost sync-stall / eclipse vector. Full blocks are still rejected at
+    // connect (block_acceptor), so this is availability, not theft; this check
+    // closes the header-level hole and restores the "chainwork is lower-bounded
+    // by real work" invariant fork-choice relies on.
+    //
+    // Regtest policy mirrors block_acceptor's PATH A exactly: regtest blocks are
+    // mined deterministically (nonce=0, instant) and skip PoW at connect, so we
+    // must skip it here too — otherwise a header for a block the node *would*
+    // accept could fail header validation (startup-replay divergence / regtest
+    // breakage). On mainnet/testnet, enforce hash <= target.
     uint256 hash = header.GetHash();
     if (hash.IsNull()) {
         return false;
+    }
+    if (Params().name != "regtest") {
+        if (!CheckProofOfWork(header, /*require_standard=*/true)) {
+            return false;
+        }
     }
 
     // 5. Linkage - prev_hash must match parent (already checked in AddHeader)
