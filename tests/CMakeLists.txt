@@ -5829,14 +5829,9 @@ endif()
 # ============================================================================
 # Phase 10d: Utreexo Template Builder Integration Test
 # ============================================================================
-# DELETED registration: this test directly compiles src/mining/block_template.cpp
-# whose BlockTemplateBuilder::createBlockTemplate() has a latent reference to
-# an undeclared `coinbase_value` (lines 155/377). The dead-code path has been
-# superseded — production mining uses MiningService::createBlockTemplate() in
-# src/daemon/services/mining_service.cpp, not BlockTemplateBuilder. The
-# regular dinerod build does NOT include block_template.cpp (nothing else
-# links it), so the bug never surfaces in production. Don't re-enable this
-# test without porting it to MiningService or fixing the dead createBlockTemplate.
+# DELETED registration: this test used the removed legacy BlockTemplateBuilder
+# instance API. Production mining uses MiningService::createBlockTemplate() in
+# src/daemon/services/mining_service.cpp.
 
 # ============================================================================
 # Phase 10d: Utreexo Height-2 Root Lock Test (Consensus Critical)
@@ -9182,117 +9177,6 @@ if(ENABLE_TESTS AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_prune_eligib
     )
   endif()
   add_test(NAME PruneEligibility COMMAND test_prune_eligibility)
-endif()
-
-# ============================================================================
-# Phase M.X: Mempool Policy Tests
-# ============================================================================
-
-# Ancestor/Descendant Tracking Test
-if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_ancestor_descendant.cpp)
-  add_executable(test_ancestor_descendant
-    tests/mempool/test_ancestor_descendant.cpp
-    src/primitives/transaction.cpp
-    src/primitives/transaction_serializer.cpp
-    src/consensus/tx_validation.cpp
-    src/mempool/mempool.cpp
-    src/mempool/coins_view_mempool.cpp
-    src/mempool/invalid_tx_cache.cpp
-    src/crypto/sha256.cpp
-    src/crypto/hash.cpp
-    src/crypto/ripemd160.cpp
-    src/common/logger.cpp
-  )
-  target_link_libraries(test_ancestor_descendant PRIVATE
-    dinero_consensus
-    dinero_chainstate  # Phase 23.3: For ChainDB (BIP68 MTP lookup)
-    jsoncpp_static
-    OpenSSL::Crypto
-  )
-  link_zstd_if_needed(test_ancestor_descendant)
-  target_include_directories(test_ancestor_descendant PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-  )
-  if(APPLE)
-    target_link_directories(test_ancestor_descendant PRIVATE /opt/homebrew/lib)
-    target_link_libraries(test_ancestor_descendant PRIVATE
-      "-framework Security"
-      "-framework CoreFoundation"
-    )
-  endif()
-  add_test(NAME MempoolAncestorDescendant COMMAND test_ancestor_descendant)
-endif()
-
-# Mempool Expiry Test
-if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_expiry.cpp)
-  add_executable(test_mempool_expiry
-    tests/mempool/test_mempool_expiry.cpp
-    src/primitives/transaction.cpp
-    src/primitives/transaction_serializer.cpp
-    src/consensus/tx_validation.cpp
-    src/mempool/mempool.cpp
-    src/mempool/coins_view_mempool.cpp
-    src/mempool/invalid_tx_cache.cpp
-    src/crypto/sha256.cpp
-    src/crypto/hash.cpp
-    src/crypto/ripemd160.cpp
-    src/common/logger.cpp
-  )
-  target_link_libraries(test_mempool_expiry PRIVATE
-    dinero_consensus
-    dinero_chainstate  # Phase 23.3: For ChainDB (BIP68 MTP lookup)
-    jsoncpp_static
-    OpenSSL::Crypto
-  )
-  link_zstd_if_needed(test_mempool_expiry)
-  target_include_directories(test_mempool_expiry PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-  )
-  if(APPLE)
-    target_link_directories(test_mempool_expiry PRIVATE /opt/homebrew/lib)
-    target_link_libraries(test_mempool_expiry PRIVATE
-      "-framework Security"
-      "-framework CoreFoundation"
-    )
-  endif()
-  add_test(NAME MempoolExpiry COMMAND test_mempool_expiry)
-endif()
-
-# Covenant Policy Test
-if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_covenant_policy.cpp)
-  add_executable(test_mempool_covenant_policy
-    tests/mempool/test_mempool_covenant_policy.cpp
-    src/primitives/transaction.cpp
-    src/primitives/transaction_serializer.cpp
-    src/consensus/tx_validation.cpp
-    src/mempool/mempool.cpp
-    src/mempool/coins_view_mempool.cpp
-    src/mempool/invalid_tx_cache.cpp
-    src/crypto/sha256.cpp
-    src/crypto/hash.cpp
-    src/crypto/ripemd160.cpp
-    src/common/logger.cpp
-  )
-  target_link_libraries(test_mempool_covenant_policy PRIVATE
-    dinero_consensus
-    jsoncpp_static
-    OpenSSL::Crypto
-  )
-  link_zstd_if_needed(test_mempool_covenant_policy)
-  target_include_directories(test_mempool_covenant_policy PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-  )
-  if(APPLE)
-    target_link_directories(test_mempool_covenant_policy PRIVATE /opt/homebrew/lib)
-    target_link_libraries(test_mempool_covenant_policy PRIVATE
-      "-framework Security"
-      "-framework CoreFoundation"
-    )
-  endif()
-  add_test(NAME MempoolCovenantPolicy COMMAND test_mempool_covenant_policy)
 endif()
 
 # ═══════════════════════════════════════════════════════════════════════════

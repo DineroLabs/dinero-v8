@@ -13,133 +13,8 @@
 #
 # ============================================================================
 
-# ============================================================================
-# Standalone Test T20: Block Assembly with Mature Transactions (I.10.1, I.10.3, I.10.4)
-# ============================================================================
-
-add_executable(standalone_test_t20
-    standalone_test_t20.cpp
-    ${CMAKE_SOURCE_DIR}/src/mempool/mempool.cpp
-    ${CMAKE_SOURCE_DIR}/src/mempool/invalid_tx_cache.cpp
-    ${CMAKE_SOURCE_DIR}/src/mempool/coins_view_mempool.cpp
-    ${CMAKE_SOURCE_DIR}/src/mining/block_assembler.cpp
-    ${CMAKE_SOURCE_DIR}/src/consensus/block_validation.cpp
-    ${CMAKE_SOURCE_DIR}/src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
-    ${CMAKE_SOURCE_DIR}/src/daemon/config.cpp     # Provides GetConfig()
-    ${CMAKE_SOURCE_DIR}/src/network/bridge_node.cpp  # Provides BridgeNode::GenerateProofForBlock
-    ${CMAKE_SOURCE_DIR}/tests/stubs/vault_test_stubs.cpp  # No-op vault hooks for chainstate_service/wallet_worker
-)
-
-# Link libraries for T20 (mining + consensus + mempool)
-target_link_libraries(standalone_test_t20 PRIVATE
-    dinero_core          # Includes primitives, crypto
-    dinero_chainstate    # For block assembly
-    dinero_consensus     # For CoinsDB, block validation
-    dinero_crypto        # For crypto primitives
-    argon2
-    jsoncpp_static
-    sqlite3
-    secp256k1
-    bulletproofs_ffi     # For confidential transactions
-    OpenSSL::Crypto      # For crypto functions
-    RocksDB::rocksdb
-)
-
-# Include directories for T20
-target_include_directories(standalone_test_t20 PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_BINARY_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
-    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
-    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
-)
-
-# Compile definitions for T20
-target_compile_definitions(standalone_test_t20 PRIVATE
-    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-
-# Platform-specific settings for T20
-if(APPLE)
-    target_link_libraries(standalone_test_t20 PRIVATE
-        "-framework Security"
-        "-framework CoreFoundation"
-    )
-endif()
-
-# Register standalone T20 as a test
-add_test(NAME Mining_T20_Standalone COMMAND standalone_test_t20)
-set_tests_properties(Mining_T20_Standalone
-    PROPERTIES
-    LABELS "f10;mining;block_assembly;mature;validation"
-    TIMEOUT 30
-)
-
-# ============================================================================
-# Standalone Test T21: Block Assembly Excludes Immature (I.10.1, I.10.2)
-# ============================================================================
-
-add_executable(standalone_test_t21
-    standalone_test_t21.cpp
-    ${CMAKE_SOURCE_DIR}/src/mempool/mempool.cpp
-    ${CMAKE_SOURCE_DIR}/src/mempool/invalid_tx_cache.cpp
-    ${CMAKE_SOURCE_DIR}/src/mempool/coins_view_mempool.cpp
-    ${CMAKE_SOURCE_DIR}/src/mining/block_assembler.cpp
-    ${CMAKE_SOURCE_DIR}/src/consensus/block_validation.cpp
-    ${CMAKE_SOURCE_DIR}/src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
-    ${CMAKE_SOURCE_DIR}/src/daemon/config.cpp     # Provides GetConfig()
-    ${CMAKE_SOURCE_DIR}/src/network/bridge_node.cpp  # Provides BridgeNode::GenerateProofForBlock
-    ${CMAKE_SOURCE_DIR}/tests/stubs/vault_test_stubs.cpp  # No-op vault hooks
-)
-
-# Link libraries for T21 (mining + consensus + mempool)
-target_link_libraries(standalone_test_t21 PRIVATE
-    dinero_core          # Includes primitives, crypto
-    dinero_chainstate    # For block assembly
-    dinero_consensus     # For CoinsDB, block validation
-    dinero_crypto        # For crypto primitives
-    argon2
-    jsoncpp_static
-    sqlite3
-    secp256k1
-    bulletproofs_ffi     # For confidential transactions
-    OpenSSL::Crypto      # For crypto functions
-    RocksDB::rocksdb
-)
-
-# Include directories for T21
-target_include_directories(standalone_test_t21 PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_BINARY_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
-    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
-    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
-)
-
-# Compile definitions for T21
-target_compile_definitions(standalone_test_t21 PRIVATE
-    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-
-# Platform-specific settings for T21
-if(APPLE)
-    target_link_libraries(standalone_test_t21 PRIVATE
-        "-framework Security"
-        "-framework CoreFoundation"
-    )
-endif()
-
-# Register standalone T21 as a test
-add_test(NAME Mining_T21_Standalone COMMAND standalone_test_t21)
-set_tests_properties(Mining_T21_Standalone
-    PROPERTIES
-    LABELS "f10;mining;block_assembly;immature;exclusion"
-    TIMEOUT 30
-)
+# Standalone T20/T21 were tied to the removed legacy mempool test path.
+# Live mining coverage uses daemon::Mempool-backed BlockAssembler tests below.
 
 # ============================================================================
 # Standalone Test T22: Block Validation Rejects Immature (I.10.3)
@@ -234,67 +109,7 @@ message(STATUS "⊘ Phase F.10 T22 test DISABLED (BlockValidator API changed)")
 
 message(STATUS "⊘ Phase F.11 reorg safety tests DISABLED (BlockValidator API changed)")
 
-# ============================================================================
-# Standalone Test T24: Reorg + Coinbase Maturity Regression (I.11.3)
-# ============================================================================
-
-add_executable(standalone_test_t24
-    standalone_test_t24.cpp
-    ${CMAKE_SOURCE_DIR}/src/mempool/mempool.cpp
-    ${CMAKE_SOURCE_DIR}/src/mempool/invalid_tx_cache.cpp
-    ${CMAKE_SOURCE_DIR}/src/mempool/coins_view_mempool.cpp
-    ${CMAKE_SOURCE_DIR}/tests/stubs/vault_test_stubs.cpp  # No-op vault hooks
-)
-
-# Link libraries for T24 (mempool + consensus)
-target_link_libraries(standalone_test_t24 PRIVATE
-    dinero_core          # Includes primitives, crypto
-    dinero_chainstate    # For mempool context
-    dinero_consensus     # For CoinsDB
-    dinero_crypto        # For crypto primitives
-    argon2
-    jsoncpp_static
-    sqlite3
-    secp256k1
-    bulletproofs_ffi     # For confidential transactions
-    OpenSSL::Crypto      # For crypto functions
-    RocksDB::rocksdb
-)
-
-# Include directories for T24
-target_include_directories(standalone_test_t24 PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_BINARY_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
-    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
-    ${CMAKE_SOURCE_DIR}/third_party/argon2/include
-)
-
-# Compile definitions for T24
-target_compile_definitions(standalone_test_t24 PRIVATE
-    CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-
-# Platform-specific settings for T24
-if(APPLE)
-    target_link_libraries(standalone_test_t24 PRIVATE
-        "-framework Security"
-        "-framework CoreFoundation"
-    )
-endif()
-
-# Register standalone T24 as a test
-add_test(NAME Mining_T24_Standalone COMMAND standalone_test_t24)
-set_tests_properties(Mining_T24_Standalone
-    PROPERTIES
-    LABELS "f11;mining;reorg;coinbase_maturity;maturity_regression"
-    TIMEOUT 30
-)
-
-message(STATUS "✅ Phase F.11 reorg safety tests configured")
-message(STATUS "   Standalone tests: T23 (Blocked-by-design), T24 (Coinbase maturity regression)")
+message(STATUS "Phase F.11 standalone T24 removed with dead legacy mempool test path")
 
 # ============================================================================
 # Phase W.1: Block Assembly Intelligence Tests
@@ -691,7 +506,6 @@ message(STATUS "   Tests: Component integration (3 tests)")
 #     test_block_progression_regression.cpp
 #     ${CMAKE_SOURCE_DIR}/src/mining/block_assembler.cpp
 #     ${CMAKE_SOURCE_DIR}/src/consensus/block_validation.cpp
-#     ${CMAKE_SOURCE_DIR}/src/mempool/mempool.cpp
 #     ${CMAKE_SOURCE_DIR}/src/mempool/invalid_tx_cache.cpp
 #     ${CMAKE_SOURCE_DIR}/src/mempool/coins_view_mempool.cpp
 # )

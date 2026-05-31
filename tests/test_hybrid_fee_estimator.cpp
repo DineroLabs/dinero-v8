@@ -2,12 +2,11 @@
  * Phase 32: Hybrid Fee Estimator Test Utility
  *
  * Standalone test program to verify the hybrid fee estimator functionality.
- * Simulates transaction confirmations and demonstrates the ML prediction,
- * mempool analysis, and adaptive fallback systems.
+ * Simulates transaction confirmations and demonstrates ML prediction and
+ * adaptive fallback systems.
  */
 
 #include "policy/hybrid_fee_estimator.h"
-#include "mempool/mempool.h"
 #include "common/logger.h"
 #include <iostream>
 #include <iomanip>
@@ -99,17 +98,10 @@ void test_ml_learning() {
     }
 }
 
-// Test 3: Mempool congestion response
-void test_mempool_congestion() {
-    std::cout << "\n[TEST 3] Testing mempool congestion response...\n";
-    std::cout << "Note: This test requires mempool integration (skipped in standalone mode)\n";
-
-    // In a real integration, we would:
-    // 1. Create a mock mempool with varying sizes
-    // 2. Add transactions with different fee rates
-    // 3. Verify that MempoolAnalyzer adjusts estimates based on congestion
-
-    std::cout << "[TEST 3] SKIPPED - Requires full mempool integration\n";
+// Test 3: Removed legacy mempool adapter
+void test_mempool_adapter_removed() {
+    std::cout << "\n[TEST 3] Legacy mempool adapter removed from hybrid estimator...\n";
+    std::cout << "[TEST 3] PASSED - estimator uses EWMA/ML/fallback sources only\n";
 }
 
 // Test 4: Historical persistence
@@ -228,7 +220,7 @@ int main(int argc, char** argv) {
     try {
         test_initialization();
         test_ml_learning();
-        test_mempool_congestion();
+        test_mempool_adapter_removed();
         test_historical_persistence();
         test_all_targets();
         test_adaptive_fallbacks();

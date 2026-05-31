@@ -2,19 +2,8 @@
 
 #include "wallet/transaction.h"
 #include "primitives/block.h"
-#include "mempool/mempool.h"
-#include "consensus/coins_db.h"
-#include "mining/payout_spec.h"
 #include <vector>
-#include <memory>
 #include <string>
-
-// Phase 10d: Forward declaration for optional Utreexo integration
-namespace dinero {
-namespace consensus {
-    class UtreexoForest;
-}
-}
 
 namespace dinero {
 namespace mining {
@@ -68,193 +57,13 @@ struct BlockTemplate {
 };
 
 /**
- * Block template builder configuration
- */
-struct BlockTemplateConfig {
-    // Block limits (Bitcoin consensus)
-    size_t max_block_weight;    // Default: 4,000,000 WU (1 MB base + 3 MB witness)
-    size_t max_block_size;      // Default: 1,000,000 bytes (legacy limit)
-    size_t max_sigops;          // Default: 80,000 signature operations
-
-    // Mining address
-    std::string mining_address; // Address to receive block reward
-
-    // Template options
-    bool include_witness;       // Include witness data (SegWit)
-    bool sort_by_ancestor_fee;  // Sort by ancestor fee rate (CPFP)
-
-    BlockTemplateConfig()
-        : max_block_weight(4000000)
-        , max_block_size(1000000)
-        , max_sigops(80000)
-        , include_witness(true)
-        , sort_by_ancestor_fee(true)
-    {}
-};
-
-/**
  * Block Template Builder
  *
- * Constructs block templates for mining by:
- * 1. Selecting transactions from mempool by fee rate
- * 2. Packaging ancestors before descendants (CPFP)
- * 3. Enforcing block weight and size limits
- * 4. Creating coinbase transaction with subsidy + fees
- * 5. Computing merkle root
- * 6. Assembling final block header
- *
- * This is the core of the mining engine - it converts the mempool
- * into a valid block ready for PoW mining.
+ * Historical block-template construction moved to MiningService. This class now
+ * only owns shared static helpers still used by mining and tests.
  */
 class BlockTemplateBuilder {
 public:
-    BlockTemplateBuilder(
-        mempool::Mempool& mempool,
-        consensus::CoinsDB& coins_db,
-        const BlockTemplateConfig& config = BlockTemplateConfig(),
-        consensus::UtreexoForest* utreexo_forest = nullptr  // Phase 10d: Optional Utreexo accumulator
-    );
-
-    ~BlockTemplateBuilder();
-
-    // ========================================================================
-    // Block Template Construction
-    // ========================================================================
-
-    /**
-     * Create a new block template
-     *
-     * @param previous_block_hash  Hash of the previous block
-     * @param height               Block height
-     * @param timestamp            Block timestamp (current time)
-     * @param bits                 Difficulty target (compact form)
-     * @param mining_address       Address to receive block reward
-     * @return                     Block template ready for mining
-     */
-    std::unique_ptr<BlockTemplate> createBlockTemplate(
-        const std::string& previous_block_hash,
-        uint32_t height,
-        uint64_t timestamp,
-        uint32_t bits,
-        const std::string& mining_address
-    );
-
-    /**
-     * Create a new block template with pool payouts (Phase C3)
-     *
-     * Supports daemon-defined pool payouts with weighted distribution.
-     * The daemon constructs all coinbase outputs - miners never build them.
-     *
-     * @param previous_block_hash  Hash of the previous block
-     * @param height               Block height
-     * @param timestamp            Block timestamp (current time)
-     * @param bits                 Difficulty target (compact form)
-     * @param payout_spec          Payout specification (single or weighted)
-     * @return                     Block template ready for mining
-     */
-    std::unique_ptr<BlockTemplate> createBlockTemplate(
-        const std::string& previous_block_hash,
-        uint32_t height,
-        uint64_t timestamp,
-        uint32_t bits,
-        const dinero::PayoutSpec& payout_spec
-    );
-
-    /**
-     * Update block timestamp and rebuild merkle root
-     *
-     * Allows miner to update timestamp without rebuilding entire template.
-     */
-    void updateTimestamp(BlockTemplate& template_block, uint64_t new_timestamp);
-
-    // ========================================================================
-    // Transaction Selection
-    // ========================================================================
-
-    /**
-     * Select transactions from mempool for block
-     *
-     * Selection algorithm:
-     * 1. Get all mempool transactions sorted by ancestor fee rate
-     * 2. Iterate in descending fee rate order
-     * 3. Add transaction if:
-     *    - All ancestors are already in block
-     *    - Adding it doesn't exceed block limits
-     *    - Signature operations don't exceed limit
-     * 4. Continue until block is full or no more transactions
-     *
-     * @param height              Block height (for coinbase maturity checks)
-     * @param max_weight          Maximum block weight
-     * @param max_sigops          Maximum signature operations
-     * @param selected_txs        [out] Selected transactions
-     * @param total_fees          [out] Total fees collected
-     * @return                    True if selection succeeded
-     */
-    bool selectTransactions(
-        uint32_t height,
-        size_t max_weight,
-        size_t max_sigops,
-        std::vector<Transaction>& selected_txs,
-        uint64_t& total_fees
-    );
-
-    // ========================================================================
-    // Coinbase Transaction
-    // ========================================================================
-
-    /**
-     * Create coinbase transaction
-     *
-     * Coinbase structure:
-     * - 1 input with null outpoint (0x00...00:0xFFFFFFFF)
-     * - scriptSig contains block height (BIP 34) + extra nonce
-     * - 1 or more outputs paying to mining address
-     * - Total output value = block subsidy + fees
-     *
-     * @param height              Block height
-     * @param block_subsidy       Block reward (100 DIN at height 2+, halves every 1,314,000 blocks)
-     * @param total_fees          Total transaction fees
-     * @param mining_address      Address to receive reward
-     * @param extra_nonce         Extra nonce for mining (4 bytes)
-     * @return                    Coinbase transaction
-     */
-    Transaction createCoinbase(
-        uint32_t height,
-        uint64_t block_subsidy,
-        uint64_t total_fees,
-        const std::string& mining_address,
-        uint32_t extra_nonce = 0
-    );
-
-    /**
-     * Create coinbase transaction with pool payouts (Phase C3)
-     *
-     * Constructs coinbase with multiple outputs based on PayoutSpec.
-     * Daemon-defined: miners and stratum never build coinbase outputs.
-     *
-     * Coinbase structure:
-     * - 1 input with null outpoint (0x00...00:0xFFFFFFFF)
-     * - scriptSig contains block height (BIP 34) + witness nonce placeholder
-     * - N outputs based on resolved payout amounts
-     * - Total output value = block subsidy + fees (exact)
-     *
-     * Output ordering: deterministic (input order from PayoutSpec)
-     *
-     * @param height              Block height
-     * @param block_subsidy       Block reward
-     * @param total_fees          Total transaction fees
-     * @param payout_spec         Payout specification
-     * @param extra_nonce         Extra nonce for mining (4 bytes)
-     * @return                    Coinbase transaction with multi-output
-     */
-    Transaction createCoinbase(
-        uint32_t height,
-        uint64_t block_subsidy,
-        uint64_t total_fees,
-        const dinero::PayoutSpec& payout_spec,
-        uint32_t extra_nonce = 0
-    );
-
     /**
      * Calculate block subsidy (block reward)
      *
@@ -319,76 +128,6 @@ public:
         std::string& merkle_root,
         std::vector<std::string>& merkle_branches
     );
-
-    // ========================================================================
-    // Weight and Size Calculation
-    // ========================================================================
-
-    /**
-     * Calculate transaction weight (BIP 141 - SegWit)
-     *
-     * Weight formula:
-     * weight = (base_size * 3) + total_size
-     *
-     * Where:
-     * - base_size = size without witness data
-     * - total_size = size with witness data
-     *
-     * This gives witness data a 75% discount.
-     *
-     * @param tx  Transaction
-     * @return    Weight in weight units (WU)
-     */
-    static size_t calculateTransactionWeight(const Transaction& tx);
-
-    /**
-     * Count signature operations in transaction
-     *
-     * @param tx  Transaction
-     * @return    Number of signature operations
-     */
-    static size_t countSigOps(const Transaction& tx);
-
-    // Transaction selection state (public: needed by tests and addTransaction caller)
-    struct SelectionState {
-        std::unordered_set<std::string> selected_txids;
-        size_t current_weight;
-        size_t current_sigops;
-        uint64_t current_fees;
-
-        SelectionState()
-            : current_weight(0), current_sigops(0), current_fees(0)
-        {}
-    };
-
-private:
-    // Dependencies
-    mempool::Mempool& mempool_;
-    consensus::CoinsDB& coins_db_;
-    BlockTemplateConfig config_;
-    consensus::UtreexoForest* utreexo_forest_;  // Phase 10d: Optional Utreexo accumulator (nullable)
-
-    // Helper functions
-    bool canAddTransaction(
-        const mempool::MempoolEntry& entry,
-        const SelectionState& state,
-        size_t max_weight,
-        size_t max_sigops
-    ) const;
-
-    bool hasAllAncestors(
-        const mempool::MempoolEntry& entry,
-        const SelectionState& state
-    ) const;
-
-    void addTransaction(
-        const mempool::MempoolEntry& entry,
-        SelectionState& state,
-        std::vector<Transaction>& selected_txs
-    );
-
-    std::vector<uint8_t> buildCoinbaseScriptSig(uint32_t height, uint32_t extra_nonce) const;
-    std::vector<uint8_t> buildMiningOutputScript(const std::string& address) const;
 };
 
 } // namespace mining
