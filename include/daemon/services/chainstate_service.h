@@ -952,7 +952,9 @@ private:
 
     // FIX 2 (issue #186): deferred snapshot-bootstrap state (peeked at startup;
     // block download is deferred while pending). Only set on a fresh datadir.
-    bool snapshot_bootstrap_pending_ = false;
+    // Atomic: read by the scheduler's defer predicate (possibly a network
+    // thread), written on the daemon thread.
+    std::atomic<bool> snapshot_bootstrap_pending_{false};
     std::string snapshot_bootstrap_path_;
     uint256 snapshot_bootstrap_base_hash_;
     uint32_t snapshot_bootstrap_base_height_ = 0;

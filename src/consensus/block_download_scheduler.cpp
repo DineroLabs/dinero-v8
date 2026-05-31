@@ -126,6 +126,15 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
 void BlockDownloadScheduler::Tick() {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // FIX 2 (issue #186): central deferral. While a snapshot bootstrap is
+    // pending, request no new blocks regardless of which call site invoked
+    // Tick() — this keeps the UTXO set empty so the snapshot can load. The
+    // predicate resolves to false once the snapshot loads or the bootstrap is
+    // abandoned (→ full IBD resumes).
+    if (defer_check_ && defer_check_()) {
+        return;
+    }
+
     // Restart bootstrap: HeaderChainSelector may already contain a persisted
     // best chain from HeaderStore before any fresh headers message arrives.
     // If we only ever set headers_processed_ from OnHeadersProcessed(), the
