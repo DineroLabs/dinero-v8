@@ -1592,20 +1592,19 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
         // ============================================================================
         const auto& params = dinero::Params();
 
-        // SAFEGUARD 1: MINIMUM_CHAINWORK
-        // Reject chains that don't have sufficient proof-of-work
-        // This prevents nodes from accidentally accepting their own chains or
-        // chains with trivial work (e.g., from regtest or isolated mining)
-        if (!params.nMinimumChainWork.empty()) {
-            int cmp = dinero::CompareChainwork(newChainwork, params.nMinimumChainWork);
-            if (cmp < 0) {
-                error = "Rejecting block: insufficient chainwork (got " + newChainwork.substr(0, 16) + "..., need " + params.nMinimumChainWork.substr(0, 16) + "...)";
-                LOG_ERROR("⛔ " + error);
-                LOG_ERROR("⛔ This is an ANTI-SELF-CHAIN safeguard - the chain does not have enough cumulative proof-of-work");
-                return false;
-            }
-            LOG_INFO("✅ Chainwork validation passed: " + newChainwork.substr(0, 16) + "... >= minimum " + params.nMinimumChainWork.substr(0, 16) + "...");
-        }
+        // 4d-1: nMinimumChainWork is NOT enforced per-block here.
+        //
+        // The previous SAFEGUARD-1 rejected any individual block whose *cumulative*
+        // chainwork was below nMinimumChainWork. That is incorrect: during IBD the
+        // real chain's early blocks legitimately have cumulative work below the
+        // threshold, so a non-zero nMinimumChainWork would reject them and brick
+        // sync at genesis (which is why the value had to stay zero).
+        //
+        // Bitcoin-style enforcement gates the best *header* chain's total work
+        // before block download/activation (so a sub-threshold/forged-low-work
+        // chain is never followed), then accepts ALL blocks on a qualifying chain.
+        // That chain-level gate lives at the header-sync activation trigger; here we
+        // only keep the IBD/AssumeValid heuristic below (which uses params).
 
         // ====================================================================
         // F.10.9: ASSUMEVALID (IBD Performance Optimization)

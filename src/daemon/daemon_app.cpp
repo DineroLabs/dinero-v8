@@ -5163,9 +5163,35 @@ bool DaemonApp::Init(int argc, char** argv) {
                             chainstate_ptr->RecordHeaderAnnouncements(peer_addr, headers);
                         }
 
+                        // 4d-1: minimum-chainwork gate (anti low-work-chain DoS / anti-eclipse
+                        // during IBD). Only download/activate blocks once the best HEADER chain
+                        // proves cumulative work >= nMinimumChainWork. Gated on the header
+                        // chain's TOTAL work (not per-block), so the real chain's early
+                        // sub-threshold blocks still connect once its tip qualifies; a forged or
+                        // flood low-work header chain — which cannot reach the threshold without
+                        // real hashpower now that PoW+ASERT are enforced on headers — never
+                        // triggers block download or activation. Headers are still accepted and
+                        // stored above to BUILD the chain. Restart-safe: a synced node's best
+                        // header == active tip, so the activation trigger below doesn't fire, and
+                        // startup activation goes through ActivateBestChain directly (ungated).
+                        bool header_chain_has_min_work = true;
+                        if (header_chain_ptr) {
+                            const auto& min_work_hex = dinero::Params().nMinimumChainWork;
+                            if (!min_work_hex.empty()) {
+                                const auto* best_hdr = header_chain_ptr->GetBestHeader();
+                                header_chain_has_min_work =
+                                    (best_hdr != nullptr &&
+                                     dinero::CompareChainwork(best_hdr->chainwork.GetHex(), min_work_hex) >= 0);
+                                if (!header_chain_has_min_work) {
+                                    g_logger.info("[4d-1] best header chainwork below nMinimumChainWork "
+                                                  "— deferring block download/activation (IBD anti-DoS)");
+                                }
+                            }
+                        }
+
                         // Always refresh the block scheduler when we accepted new headers.
                         // This keeps block queueing live across long truncated header batches.
-                        if (block_download_ptr && added > 0) {
+                        if (header_chain_has_min_work && block_download_ptr && added > 0) {
                             block_download_ptr->OnHeadersProcessed();
                             block_download_ptr->Tick();
                             g_logger.info("[Phase N.3] Block download scheduler refreshed after header batch");
@@ -5175,7 +5201,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // the best chain past our active tip. ActivateBestChain will detect
                         // the better header chain and call RequestBlocks() for missing bodies.
                         // Gate avoids thrash during bulk header batches.
-                        if (chainstate_ptr && header_chain_ptr) {
+                        if (header_chain_has_min_work && chainstate_ptr && header_chain_ptr) {
                             auto* best = header_chain_ptr->GetBestHeader();
                             auto* active = chainstate_ptr->GetActiveTip();
                             if (best && active && best->height > active->height) {

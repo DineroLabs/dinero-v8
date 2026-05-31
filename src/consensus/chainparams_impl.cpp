@@ -134,7 +134,19 @@ static ChainParams g_mainnet = {
     //
     // ENFORCEMENT: See src/daemon/block_acceptor.cpp:1048-1061
     // ───────────────────────────────────────────────────────────────────────────
-    .nMinimumChainWork = "0x0000000000000000000000000000000000000000000000000000000000000000",  // Reset for chain restart
+    // 4d-1: set to the cumulative chainwork at height 13000 (== assumeValidHeight),
+    // well behind the live tip (h~32600+), so the real chain far exceeds it while
+    // an adversarial low-work chain cannot reach it. Gated on the best HEADER
+    // chain's total work (header-sync download/activation trigger), NOT per-block,
+    // so the real chain's early sub-threshold blocks still connect. Also satisfies
+    // the AssumeValid safety precondition (assumeValidHeight=13000).
+    //
+    // FORMAT: bare 64-char hex, NO "0x" prefix. CompareChainwork() requires exactly
+    // 64 chars and compares against arith_uint256::GetHex() (which is bare-64); a
+    // "0x"-prefixed value is 66 chars and makes CompareChainwork return 0 (invalid),
+    // silently disabling the gate. (This was the prior latent bug — the value was
+    // both zero AND 0x-prefixed.)
+    .nMinimumChainWork = "000000000000000000000000000000000000000000000000000001198ed06efa",  // chainwork@13000 (bare 64-hex)
 
     // ───────────────────────────────────────────────────────────────────────────
     // F.10.9: AssumeValid Optimization (IBD Performance)
