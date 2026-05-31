@@ -21,15 +21,19 @@
 # Prerequisites (one-time per machine):
 #   - dpkg-dev, debhelper, devscripts (apt install dpkg-dev debhelper devscripts)
 #   - lintian (for .deb verification)
-#   - The monorepo stack already built, e.g.:
+#   - The monorepo stack already built. The Linux release surface is HEADLESS
+#     (core/cli/seeder/solo-miner) and the daemon must be SERVER-SAFE, so build
+#     with GPU mining OFF — this keeps libOpenCL/libCUDA out of dinerod's NEEDED
+#     (a fresh Ubuntu VPS has no libOpenCL.so.1; a daemon linking it won't start):
 #       cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release \
-#             -DDINERO_BUILD_QT=ON -DDINERO_BUILD_MINER=ON \
-#             -DDINERO_BUILD_SEEDER=ON \
-#             -DMINER_ENABLE_OPENCL=ON   # CUDA optional on Linux per host
+#             -DENABLE_GPU_MINING=OFF \
+#             -DDINERO_BUILD_QT=OFF -DDINERO_BUILD_MINER=ON \
+#             -DDINERO_BUILD_SEEDER=ON
 #       cmake --build build-release -j$(nproc) \
 #             --target dinerod dinero-cli dinero-solo-miner-cli \
-#                      dinero-qt dinero-seeder dinero-gpu-miner \
-#                      dinero-miner dinero-stratum-worker
+#                      dinero-seeder
+#   (A server-safety guard below refuses to package a dinerod that links a GPU
+#    runtime. GPU mining belongs only in the separate GPU-miner build/targets.)
 #
 # Usage:
 #   ./packaging/linux/build-installer.sh --version 8.0.0-rc1
@@ -64,6 +68,24 @@ if [[ ! -d "$BUILD_DIR" ]]; then
     echo "ERROR: build directory not found at $BUILD_DIR" >&2
     echo "Build the monorepo stack first (see top-of-file usage)." >&2
     exit 1
+fi
+
+# rc24: the daemon must be SERVER-SAFE — no GPU runtime dependency. GPU/OpenCL
+# belongs only in GPU miner targets, never in dinerod. A fresh Ubuntu VPS has no
+# libOpenCL.so.1, so a daemon that links it dies at startup with
+# "error while loading shared libraries: libOpenCL.so.1" (found via the rc23
+# independent-operator test). Build the Linux daemon with -DENABLE_GPU_MINING=OFF
+# (drops libOpenCL/libCUDA from NEEDED). This guard refuses to package a daemon
+# that would fail to start on a stock box.
+if [[ -x "$BUILD_DIR/dinerod" ]] && command -v ldd >/dev/null 2>&1; then
+    if ldd "$BUILD_DIR/dinerod" 2>/dev/null | grep -qiE 'libOpenCL|libcuda'; then
+        echo "ERROR: $BUILD_DIR/dinerod links a GPU runtime (libOpenCL/libCUDA)." >&2
+        echo "       The daemon must be server-safe; a stock box has no such lib." >&2
+        echo "       Rebuild the Linux daemon with -DENABLE_GPU_MINING=OFF." >&2
+        ldd "$BUILD_DIR/dinerod" 2>/dev/null | grep -iE 'opencl|cuda' >&2 || true
+        exit 1
+    fi
+    echo "✅ dinerod is server-safe (no libOpenCL/libCUDA dependency)"
 fi
 
 DIST_DIR="$PROJECT_ROOT/packaging/linux/dist"
