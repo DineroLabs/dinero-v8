@@ -18,6 +18,18 @@
 namespace dinero {
 namespace consensus {
 
+// 4d-2 (issue #181): maximum number of stored headers NOT on the active best
+// chain (losing/side forks). Bounds a low-work header-flood DoS while leaving
+// ample headroom for any realistic reorg (network reorgs are shallow; this
+// allows a ~10000-header losing fork — far deeper than anything legitimate).
+// The active chain and the AssumeUTXO/replay anchor on it are never counted or
+// evicted. ~10000 entries ≈ a few MB of bounded storage. When the budget is
+// full, a NEW side-branch header is admitted only by evicting a strictly
+// lower-work side-branch tip (work-aware), so a higher-work reorg always wins
+// even through a full budget; a header with no more work than what we already
+// keep is refused.
+static constexpr size_t MAX_SIDE_BRANCH_HEADERS = 10000;
+
 // ============================================================================
 // HeaderIndexEntry Implementation
 // ============================================================================
@@ -137,6 +149,7 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
     uint256 prev_hash = header.prev_block_hash;
     const HeaderIndexEntry* parent = nullptr;
 
+    HeaderIndexEntry* parent_mut = nullptr;  // non-const handle for child_count
     if (!prev_hash.IsNull()) {  // Not genesis
         auto parent_it = header_index_.find(prev_hash);
         if (parent_it == header_index_.end()) {
@@ -146,7 +159,8 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
                       << prev_hash.GetHex().substr(0, 16) << "..." << std::endl;
             return false;
         }
-        parent = parent_it->second.get();
+        parent_mut = parent_it->second.get();
+        parent = parent_mut;
     }
 
     // Validate header (stateless checks)
@@ -154,11 +168,74 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
         return false;
     }
 
-    // Create new header entry
+    // Create new header entry (computes height + chainwork)
     auto new_entry = std::make_unique<HeaderIndexEntry>(header, parent);
     const HeaderIndexEntry* entry_ptr = new_entry.get();
 
-    // Store in index
+    // 4d-2: RESERVE this header's slot in its parent BEFORE the eviction logic
+    // runs. This bumps the parent's child_count and removes it from the
+    // eviction-eligible tip set, which is load-bearing for safety: when the
+    // incoming header EXTENDS a side-branch tip P, P would otherwise be (or be
+    // pruned as) the lowest-work tip and `EvictBranch` would free this header's
+    // own parent — a use-after-free. With the reservation, P has child_count >= 1
+    // so it can neither be selected as min_tip nor be pruned away beneath us. The
+    // reservation is undone on the refuse path below.
+    if (parent_mut != nullptr) {
+        parent_mut->child_count++;
+        RefreshTipStatus(parent_mut);
+    }
+
+    // 4d-2 (issue #181): bounded side-branch storage with work-aware eviction.
+    //
+    // A header that would become the new best tip (more work, or an exact-tie the
+    // fork-choice in UpdateBestHeader would pick) is the active chain and is never
+    // capped. Otherwise it is a losing side branch: once the side-branch budget is
+    // full we admit it ONLY by evicting a strictly lower-work side-branch tip, so
+    // a higher-work reorg always wins even through a full budget of low-work junk,
+    // while equal-or-lower-work flood headers are refused. The active best chain
+    // (and the AssumeUTXO/replay anchor on it) is never an eviction candidate.
+    if (best_header_ != nullptr) {
+        const bool would_be_best =
+            (entry_ptr->chainwork > best_header_->chainwork) ||
+            (entry_ptr->chainwork == best_header_->chainwork &&
+             entry_ptr->hash < best_header_->hash);
+        if (!would_be_best) {
+            const size_t active_len = static_cast<size_t>(best_header_->height) + 1;
+            const size_t side_count =
+                header_index_.size() > active_len ? header_index_.size() - active_len : 0;
+            if (side_count >= MAX_SIDE_BRANCH_HEADERS) {
+                const HeaderIndexEntry* min_tip =
+                    evictable_tips_.empty() ? nullptr : *evictable_tips_.begin();
+                if (min_tip == nullptr ||
+                    !(entry_ptr->chainwork > min_tip->chainwork)) {
+                    // No lower-work tip to displace — this header cannot belong to
+                    // a chain that beats what we already store. Undo the parent
+                    // reservation and refuse.
+                    if (parent_mut != nullptr) {
+                        parent_mut->child_count--;
+                        RefreshTipStatus(parent_mut);
+                    }
+                    if (!side_branch_cap_warned_) {
+                        std::cerr << "[HeaderChainSelector] side-branch budget full ("
+                                  << side_count << " >= " << MAX_SIDE_BRANCH_HEADERS
+                                  << ") — refusing low-work fork headers (first: "
+                                  << hash.GetHex().substr(0, 16) << "...)" << std::endl;
+                        side_branch_cap_warned_ = true;
+                    }
+                    return false;  // new_entry discarded; best chain untouched
+                }
+                // Newcomer outranks the lowest-work tip: evict that losing branch
+                // to make room, then admit the newcomer below. The parent
+                // reservation guarantees EvictBranch cannot touch our parent.
+                EvictBranch(min_tip);
+                side_branch_cap_warned_ = false;
+            } else {
+                side_branch_cap_warned_ = false;
+            }
+        }
+    }
+
+    // Store in index (parent's child_count was already incremented above).
     header_index_[hash] = std::move(new_entry);
 
     // Phase N.1: Persist header to storage
@@ -167,7 +244,15 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
     }
 
     // Update best header if necessary
+    const HeaderIndexEntry* old_best = best_header_;
     UpdateBestHeader(entry_ptr);
+
+    // Reconcile tip status for exactly the entries whose tip/best state can change
+    // in one AddHeader: the new entry, and (on a reorg) the demoted old best tip.
+    RefreshTipStatus(entry_ptr);
+    if (old_best != nullptr && old_best != best_header_) {
+        RefreshTipStatus(old_best);
+    }
 
     // Phase N.1: Persist best header if changed
     if (header_store_ && best_header_ == entry_ptr) {
@@ -175,6 +260,77 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
     }
 
     return true;
+}
+
+void HeaderChainSelector::RefreshTipStatus(const HeaderIndexEntry* entry) {
+    // Invariant: entry ∈ evictable_tips_  iff  (child_count == 0 && entry != best_header_).
+    // (The only childless best-chain entry is best_header_ itself — every other
+    // best-chain header has the next best-chain header as a child.)
+    if (entry == nullptr) {
+        return;
+    }
+    const bool should_be_tip = (entry->child_count == 0) && (entry != best_header_);
+    auto it = evictable_tips_.find(entry);
+    const bool present = (it != evictable_tips_.end());
+    if (should_be_tip && !present) {
+        evictable_tips_.insert(entry);
+    } else if (!should_be_tip && present) {
+        evictable_tips_.erase(it);
+    }
+}
+
+void HeaderChainSelector::EvictBranch(const HeaderIndexEntry* tip) {
+    // Prune a losing side branch from `tip` upward, removing each header while it
+    // is childless and not the best tip, stopping at the fork point (an ancestor
+    // that still has another stored child) or at best_header_. Never removes a
+    // best-chain header: best-chain ancestors all have a best-chain child
+    // (child_count >= 1), so the walk stops there; best_header_ is excluded
+    // explicitly. Re-looks-up by hash each step so no freed pointer is touched.
+    if (tip == nullptr) {
+        return;
+    }
+    uint256 cur_hash = tip->hash;
+    while (true) {
+        auto it = header_index_.find(cur_hash);
+        if (it == header_index_.end()) {
+            break;
+        }
+        HeaderIndexEntry* cur = it->second.get();
+        if (cur == best_header_) {
+            break;  // never evict the best tip
+        }
+        if (cur->child_count != 0) {
+            break;  // reached a fork point with a surviving branch — stop
+        }
+        const bool has_parent = (cur->parent != nullptr);
+        const uint256 parent_hash = has_parent ? cur->parent->hash : uint256();
+
+        // Remove from the tip set + disk, then erase from the index (frees cur).
+        auto tip_it = evictable_tips_.find(cur);
+        if (tip_it != evictable_tips_.end()) {
+            evictable_tips_.erase(tip_it);
+        }
+        if (header_store_) {
+            header_store_->DeleteHeader(cur_hash);
+        }
+        header_index_.erase(it);
+
+        if (!has_parent) {
+            break;  // reached genesis
+        }
+        auto parent_it = header_index_.find(parent_hash);
+        if (parent_it == header_index_.end()) {
+            break;
+        }
+        HeaderIndexEntry* parent = parent_it->second.get();
+        if (parent->child_count > 0) {
+            parent->child_count--;
+        }
+        // Continue upward: if the parent is now a childless non-best header it is
+        // part of the same losing branch and will be pruned next iteration; if it
+        // still has children or is best_header_, the loop stops there.
+        cur_hash = parent_hash;
+    }
 }
 
 const HeaderIndexEntry* HeaderChainSelector::GetBestHeader() const {
@@ -235,6 +391,8 @@ void HeaderChainSelector::Clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     header_index_.clear();
     best_header_ = nullptr;
+    evictable_tips_.clear();          // 4d-2: runtime tip set
+    side_branch_cap_warned_ = false;
 
     // Phase N.1: Clear storage if present
     if (header_store_) {
@@ -293,6 +451,40 @@ bool HeaderChainSelector::LoadFromStorage() {
         best_header_ = nullptr;  // Reset to force full scan
         for (const auto& pair : header_index_) {
             UpdateBestHeader(pair.second.get());
+        }
+    }
+
+    // 4d-2 (issue #181): rebuild the runtime child_count + eviction-eligible tip
+    // set (neither is persisted), then enforce the side-branch budget so a
+    // persisted flood is bounded the same way as the live path. Order matters:
+    // parent pointers (above) → child_count → best_header_ (above) → tips → trim.
+    for (auto& pair : header_index_) {
+        pair.second->child_count = 0;
+    }
+    for (auto& pair : header_index_) {
+        const HeaderIndexEntry* e = pair.second.get();
+        if (e->parent != nullptr) {
+            // Entries are owned non-const; parent is exposed const for callers.
+            const_cast<HeaderIndexEntry*>(e->parent)->child_count++;
+        }
+    }
+    evictable_tips_.clear();
+    side_branch_cap_warned_ = false;
+    for (const auto& pair : header_index_) {
+        const HeaderIndexEntry* e = pair.second.get();
+        if (e->child_count == 0 && e != best_header_) {
+            evictable_tips_.insert(e);
+        }
+    }
+    // Trim a persisted over-budget store down to the cap by evicting the
+    // lowest-work tips (reuses the live-path eviction so behavior matches). A
+    // correctly written store is already within budget (we DeleteHeader on
+    // eviction), so this is defensive.
+    if (best_header_ != nullptr) {
+        const size_t active_len = static_cast<size_t>(best_header_->height) + 1;
+        while (!evictable_tips_.empty() &&
+               header_index_.size() > active_len + MAX_SIDE_BRANCH_HEADERS) {
+            EvictBranch(*evictable_tips_.begin());
         }
     }
 
