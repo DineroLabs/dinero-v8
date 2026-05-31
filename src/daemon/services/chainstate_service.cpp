@@ -2905,7 +2905,7 @@ bool ChainstateService::Start() {
                 if (ReadSnapshotHeaderPreview(snapshot_path, peek, perr) &&
                     peek.magic == consensus::SNAPSHOT_MAGIC) {
                     // RULE 1: base peeked before any deferral.
-                    snapshot_bootstrap_pending_ = true;
+                    snapshot_bootstrap_state_.store(SnapshotBootstrapState::Pending);
                     snapshot_bootstrap_path_ = snapshot_path;
                     snapshot_bootstrap_base_hash_ = peek.block_hash;
                     snapshot_bootstrap_base_height_ = peek.block_height;
@@ -7659,6 +7659,12 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
 
 consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::filesystem::path& snapshot_path) {
     using namespace consensus;
+    // rc24.1 single-flight: LoadSnapshot mutates the consensus UTXO set in place
+    // and is reachable from the auto-bootstrap path AND the manual RPC path.
+    // Serialize so two callers can never mutate the set concurrently — the
+    // empty-set precondition below then cleanly rejects the loser. Held for the
+    // full load (a one-time bootstrap; block download stays deferred meanwhile).
+    std::lock_guard<std::mutex> load_guard(snapshot_load_mutex_);
     SnapshotImportResult result;
     result.success = false;
     result.utxos_imported = 0;
@@ -11840,10 +11846,13 @@ bool ChainstateService::TrySnapshotBootstrap(const std::filesystem::path& snapsh
 }
 
 void ChainstateService::TryDeferredSnapshotBootstrap() {
-    // FIX 2 (issue #186): driven from the header-processing path while a snapshot
-    // bootstrap is pending. Implements owner safety rules 2-4 + 6.
-    if (!snapshot_bootstrap_pending_) {
-        return;  // safe no-op
+    // FIX 2 (issue #186) + rc24.1 single-flight guard. Driven concurrently from
+    // the header-processing path AND the periodic daemon thread. Only ONE thread
+    // may transition Pending -> Loading and call the loader; all others return.
+    // State: Pending -> Loading -> Loaded, or Pending -> Fallback. Implements
+    // owner safety rules 2-4 + 6.
+    if (snapshot_bootstrap_state_.load() != SnapshotBootstrapState::Pending) {
+        return;  // inactive / already loading / loaded / fell back — safe no-op
     }
 
     const consensus::HeaderIndexEntry* base_hdr =
@@ -11853,37 +11862,50 @@ void ChainstateService::TryDeferredSnapshotBootstrap() {
 
     // RULE 2: only load once the EXACT base hash is on our header chain.
     if (base_hdr != nullptr) {
+        // Single-flight: exactly one thread wins Pending -> Loading and loads.
+        // Everyone else loses the CAS and returns. The Loading state keeps the
+        // scheduler's defer predicate true, so no blocks connect during the load.
+        SnapshotBootstrapState expected = SnapshotBootstrapState::Pending;
+        if (!snapshot_bootstrap_state_.compare_exchange_strong(
+                expected, SnapshotBootstrapState::Loading)) {
+            return;  // another thread is already loading / has resolved it
+        }
         logger_->info("[snapshot] base hash " +
                       snapshot_bootstrap_base_hash_.GetHex().substr(0, 16) +
-                      "... is on the header chain — loading snapshot...");
+                      "... is on the header chain — loading snapshot (single-flight)...");
         if (TrySnapshotBootstrap(snapshot_bootstrap_path_)) {
             logger_->info("[snapshot] loaded — node usable at height " +
                           std::to_string(snapshot_bootstrap_base_height_) +
                           "; background validation running, block download resumes from base+1");
+            snapshot_bootstrap_state_.store(SnapshotBootstrapState::Loaded);
         } else {
             // Base present but load still failed (e.g. UTXO not empty / corrupt
             // file): do not retry forever — fall back to full sync.
             logger_->warning("[snapshot] rejected — base present but load failed; "
                              "fallback to full sync");
+            snapshot_bootstrap_state_.store(SnapshotBootstrapState::Fallback);
         }
-        snapshot_bootstrap_pending_ = false;  // resolved either way
         return;
     }
 
     // RULES 3+4: the base hash is NOT on our chain. If headers have already
     // reached/passed the base height, the snapshot is stale/orphaned (its base
     // block is not on the canonical chain we synced) — give up immediately and
-    // fall back to full IBD. Never block block-download forever.
+    // fall back to full IBD. Never block block-download forever. CAS so only the
+    // first thread logs/transitions Pending -> Fallback.
     const consensus::HeaderIndexEntry* best_hdr =
         header_chain_selector_ ? header_chain_selector_->GetBestHeader() : nullptr;
     if (best_hdr != nullptr && best_hdr->height >= snapshot_bootstrap_base_height_) {
-        logger_->warning("[snapshot] rejected — headers reached height " +
-                         std::to_string(best_hdr->height) + " (>= base " +
-                         std::to_string(snapshot_bootstrap_base_height_) + ") but base hash " +
-                         snapshot_bootstrap_base_hash_.GetHex().substr(0, 16) +
-                         "... is not on the canonical chain (stale/orphaned snapshot); "
-                         "fallback to full sync");
-        snapshot_bootstrap_pending_ = false;
+        SnapshotBootstrapState expected = SnapshotBootstrapState::Pending;
+        if (snapshot_bootstrap_state_.compare_exchange_strong(
+                expected, SnapshotBootstrapState::Fallback)) {
+            logger_->warning("[snapshot] rejected — headers reached height " +
+                             std::to_string(best_hdr->height) + " (>= base " +
+                             std::to_string(snapshot_bootstrap_base_height_) + ") but base hash " +
+                             snapshot_bootstrap_base_hash_.GetHex().substr(0, 16) +
+                             "... is not on the canonical chain (stale/orphaned snapshot); "
+                             "fallback to full sync");
+        }
     }
     // else: still syncing headers toward the base height — remain pending.
 }

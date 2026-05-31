@@ -360,7 +360,13 @@ public:
     // the snapshot loads. If headers pass the base height without the base hash
     // appearing (stale/orphaned snapshot), pending is cleared and the node falls
     // back to full IBD — it never blocks forever.
-    bool IsSnapshotBootstrapPending() const { return snapshot_bootstrap_pending_; }
+    // Defer block download while the bootstrap is Pending (awaiting base hash)
+    // OR Loading (a thread is importing the snapshot) — never connect blocks
+    // concurrently with the load.
+    bool IsSnapshotBootstrapPending() const {
+        const auto s = snapshot_bootstrap_state_.load();
+        return s == SnapshotBootstrapState::Pending || s == SnapshotBootstrapState::Loading;
+    }
     // Drive the deferred bootstrap: load if the base hash is now on the header
     // chain; give up (→ full IBD) if headers passed the base height without it.
     // Safe no-op when no bootstrap is pending.
@@ -950,14 +956,23 @@ private:
     uint256 assumeutxo_base_block_;            // Block hash where UTXO set was snapshotted
     uint32_t assumeutxo_base_height_ = 0;      // Height where UTXO set was snapshotted
 
-    // FIX 2 (issue #186): deferred snapshot-bootstrap state (peeked at startup;
-    // block download is deferred while pending). Only set on a fresh datadir.
-    // Atomic: read by the scheduler's defer predicate (possibly a network
-    // thread), written on the daemon thread.
-    std::atomic<bool> snapshot_bootstrap_pending_{false};
+    // FIX 2 (issue #186) + rc24.1 single-flight guard: deferred snapshot-bootstrap
+    // state machine (peeked at startup; block download is deferred while Pending
+    // OR Loading). Only ONE thread may win the Pending -> Loading transition and
+    // call LoadSnapshot; all other callers return. Set Pending only on a fresh
+    // datadir. Atomic: read by the scheduler's defer predicate (network thread),
+    // transitioned from the header-processing + periodic daemon threads.
+    //   Inactive --(startup: fresh + snapshot configured)--> Pending
+    //   Pending  --(base hash on header chain; CAS winner)---> Loading --> Loaded
+    //   Pending  --(load failed | headers passed base height)-> Fallback
+    enum class SnapshotBootstrapState { Inactive = 0, Pending, Loading, Loaded, Fallback };
+    std::atomic<SnapshotBootstrapState> snapshot_bootstrap_state_{SnapshotBootstrapState::Inactive};
     std::string snapshot_bootstrap_path_;
     uint256 snapshot_bootstrap_base_hash_;
     uint32_t snapshot_bootstrap_base_height_ = 0;
+    // Serializes LoadSnapshot across the auto-bootstrap path AND the manual RPC
+    // path so the consensus UTXO set is never mutated concurrently (rc24.1 crash).
+    std::mutex snapshot_load_mutex_;
 
     // Phase 44: Background validation state (parallel validation of assumed UTXO)
     BackgroundValidationStatus bg_validation_status_ = BackgroundValidationStatus::NotStarted;
