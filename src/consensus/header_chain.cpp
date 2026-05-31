@@ -365,12 +365,25 @@ bool HeaderChainSelector::ValidateHeader(
     // must skip it here too — otherwise a header for a block the node *would*
     // accept could fail header validation (startup-replay divergence / regtest
     // breakage). On mainnet/testnet, enforce hash <= target.
+    //
+    // require_standard=FALSE is deliberate and load-bearing. The live block-connect
+    // PoW gate (pow_consensus_engine: CheckProofOfWork(blockHash, bits)) verifies
+    // hash <= target but does NOT call CheckDifficultyBits. The ASERT schedule
+    // legitimately eased early-block difficulty below MAX_BITS (0x1d31ffce) — e.g.
+    // mainnet block 1 has bits 0x1E00C7FF, an easier target than MAX_BITS — so
+    // CheckDifficultyBits()/require_standard=true would REJECT real historical
+    // headers (difficulty<1) that block-connect accepted, bricking header sync and
+    // startup replay. require_standard=false keeps the real hash <= target check
+    // (NOT a stub) while dropping the min-difficulty floor block-connect never
+    // imposed. Soundness is preserved: hash <= target still lower-bounds chainwork
+    // by real work, and the ASERT check below pins bits to the exact required value
+    // (a stronger constraint than any floor).
     uint256 hash = header.GetHash();
     if (hash.IsNull()) {
         return false;
     }
     if (Params().name != "regtest") {
-        if (!CheckProofOfWork(header, /*require_standard=*/true)) {
+        if (!CheckProofOfWork(header, /*require_standard=*/false)) {
             return false;
         }
     }
