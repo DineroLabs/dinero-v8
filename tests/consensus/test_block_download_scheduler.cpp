@@ -8,6 +8,7 @@
 #include "consensus/active_chain_ancestry.h"
 #include "consensus/block_download_scheduler.h"
 #include "consensus/header_chain.h"
+#include "consensus/chainparams.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 
@@ -138,6 +139,11 @@ bool Require(bool condition, const std::string& message) {
 }  // namespace
 
 int main() {
+    // Synthetic headers carry fake PoW (arbitrary bits, nonce=1). Header
+    // validation now enforces PoW on mainnet/testnet, so run under regtest
+    // (PoW skipped, matching block_acceptor) — correct for scheduler logic tests.
+    dinero::SelectParams(dinero::Chain::REGTEST);
+
     std::cout << "=== BlockDownloadScheduler Regression Tests ===" << std::endl;
 
     {

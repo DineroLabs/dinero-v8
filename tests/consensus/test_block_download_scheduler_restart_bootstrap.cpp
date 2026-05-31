@@ -91,8 +91,11 @@ int main() {
     // second scenario reach into code paths that consult dinero::GetActiveChain(),
     // which throws if SelectParams() has never been called. Wire up chain
     // selection here so the test exercises the rehydration path with a
-    // consistent chain answer.
-    dinero::SelectParams(dinero::Chain::MAINNET);
+    // consistent chain answer. Use regtest: the synthetic headers carry fake PoW
+    // (arbitrary bits, nonce=1) and header validation now enforces PoW on
+    // mainnet/testnet — regtest skips PoW (matching block_acceptor), and this
+    // test only needs *some* chain selected, not mainnet specifically.
+    dinero::SelectParams(dinero::Chain::REGTEST);
 
     std::cout << "=== BlockDownloadScheduler Restart Bootstrap Regression ===" << std::endl;
 
