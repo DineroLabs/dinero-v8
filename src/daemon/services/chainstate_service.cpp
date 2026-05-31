@@ -7820,6 +7820,37 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             return result;
         }
 
+        // FIX 2 (issue #186): if this height is a compiled-in AssumeUTXO trust
+        // anchor, enforce it on the .dat load path too (not just the manifest
+        // path) — the file's content hash AND base block hash must match the
+        // registry. Makes the registry load-bearing for auto-bootstrap: a
+        // tampered/wrong snapshot at a registered height is rejected before any
+        // UTXO is imported. (Byte-order handling mirrors the manifest check.)
+        if (auto anchor = consensus::AssumeUTXORegistry::GetSnapshot(header.block_height)) {
+            if (ToLowerHex(anchor->block_hash.GetHex()) != ToLowerHex(header.block_hash.GetHex())) {
+                result.error_message = "Snapshot base block conflicts with built-in trust anchor at height " +
+                                      std::to_string(header.block_height);
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            std::string file_sha;
+            std::string sha_err;
+            if (!ComputeFileSha256Hex(snapshot_path, file_sha, sha_err)) {
+                result.error_message = "Cannot hash snapshot for trust-anchor check: " + sha_err;
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            if (ToLowerHex(anchor->snapshot_hash.GetHex()) != ToLowerHex(file_sha)) {
+                result.error_message = "Snapshot content does not match built-in trust anchor at height " +
+                                      std::to_string(header.block_height) + " (expected " +
+                                      ToLowerHex(anchor->snapshot_hash.GetHex()) + ", got " + file_sha + ")";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            logger_->info("[LoadSnapshot] snapshot verified against built-in trust anchor at height " +
+                          std::to_string(header.block_height));
+        }
+
         // Verify block height matches — check chaindb first, fall back to HCS
         int verified_height = -1;
         auto height_result = chain_db_->getBlockHeight(header.block_hash);
