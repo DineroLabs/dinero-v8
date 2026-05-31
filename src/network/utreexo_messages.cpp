@@ -98,6 +98,10 @@ bool UtreexoProofMessage::deserialize(const std::vector<uint8_t>& data) {
         // Deserialize proof data
         uint64_t proof_size = reader.readVarInt();
         if (proof_size > MAX_PROOF_SIZE) return false;
+        // Bound the allocation to bytes actually present, so a tiny packet
+        // claiming a large proof_size can't force a multi-MB transient alloc
+        // (DoS amplification) before the read below fails.
+        if (proof_size > reader.remaining()) return false;
 
         std::vector<uint8_t> proof_bytes(proof_size);
         reader.read(proof_bytes.data(), proof_size);
