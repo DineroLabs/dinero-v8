@@ -142,6 +142,19 @@ public:
      */
     void Tick();
 
+    /**
+     * FIX 2 (issue #186): central block-download deferral. If set, Tick() calls
+     * this predicate and requests NO new blocks while it returns true —
+     * regardless of which call site invoked Tick(). This is the single choke
+     * point that lets a pending AssumeUTXO snapshot bootstrap keep the UTXO set
+     * empty until the snapshot loads. The predicate must be cheap + non-blocking
+     * (it runs under the scheduler mutex); wire it to
+     * ChainstateService::IsSnapshotBootstrapPending().
+     */
+    void SetDeferCheck(std::function<bool()> defer_check) {
+        defer_check_ = std::move(defer_check);
+    }
+
     // ========================================================================
     // Status Queries
     // ========================================================================
@@ -442,6 +455,11 @@ private:
     // Before this, the scheduler hasn't populated missing_blocks_ yet,
     // so empty missing_blocks_ does NOT mean "synced".
     std::atomic<bool> headers_processed_{false};
+
+    // FIX 2 (issue #186): when set + returns true, Tick() requests no new blocks
+    // (central deferral for a pending AssumeUTXO snapshot bootstrap; keeps the
+    // UTXO set empty so the snapshot can load).
+    std::function<bool()> defer_check_;
 
     // CSN/stateless mode uses the ordered OnUtxoBlock path for activation.
     bool stateless_mode_ = false;

@@ -2882,26 +2882,42 @@ bool ChainstateService::Start() {
         logger_->info("   assumeutxo_snapshot=/path/to/snapshot.dat");
         logger_->info("════════════════════════════════════════════════════════════════");
 
-        // Check config for automatic snapshot bootstrap path
-        if (config_) {
-            std::string snapshot_path = config_->GetString("assumeutxo_snapshot", "");
-            if (!snapshot_path.empty()) {
-                logger_->info("[IBD] Config specifies snapshot path: " + snapshot_path);
-                logger_->info("[IBD] Attempting automatic snapshot bootstrap...");
-
-                if (TrySnapshotBootstrap(snapshot_path)) {
-                    logger_->info("[IBD] Automatic snapshot bootstrap succeeded!");
-                    logger_->info("[IBD] Node is ready for immediate use");
-                } else {
-                    logger_->warning("[IBD] Automatic snapshot bootstrap failed");
-                    logger_->warning("[IBD] Continuing with traditional IBD");
-                    ibd_status_ = IBDStatus::InIBD;
-                }
+        // FIX 2 (issue #186): set up a DEFERRED snapshot bootstrap. We must NOT
+        // load the snapshot here — the base block isn't on our header chain yet
+        // (P2P header sync hasn't run), and loading now would also let the
+        // snapshot pre-empt nothing useful. Instead: peek the base height/hash
+        // (RULE 1), only on a fresh genesis-only datadir (RULE 5), and mark it
+        // pending. The header-processing path then defers block download and
+        // drives the actual load once headers reach the EXACT base hash; if
+        // headers pass the base height without it, it falls back to full IBD
+        // (RULES 2-4, see TryDeferredSnapshotBootstrap).
+        ibd_status_ = IBDStatus::InIBD;
+        const std::string snapshot_path =
+            config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
+        if (!snapshot_path.empty()) {
+            if (height > 0) {
+                // RULE 5: never auto-load onto an existing datadir.
+                logger_->info("[snapshot] existing datadir (height " + std::to_string(height) +
+                              " > 0) — NOT auto-loading snapshot; continuing as a full node");
             } else {
-                ibd_status_ = IBDStatus::InIBD;
+                consensus::SnapshotMetadata peek;
+                std::string perr;
+                if (ReadSnapshotHeaderPreview(snapshot_path, peek, perr) &&
+                    peek.magic == consensus::SNAPSHOT_MAGIC) {
+                    // RULE 1: base peeked before any deferral.
+                    snapshot_bootstrap_pending_ = true;
+                    snapshot_bootstrap_path_ = snapshot_path;
+                    snapshot_bootstrap_base_hash_ = peek.block_hash;
+                    snapshot_bootstrap_base_height_ = peek.block_height;
+                    logger_->info("[snapshot] pending — base height " +
+                                  std::to_string(peek.block_height) + ", base hash " +
+                                  peek.block_hash.GetHex().substr(0, 16) +
+                                  "...; deferring block download until headers reach it");
+                } else {
+                    logger_->warning("[snapshot] cannot read snapshot header (" + perr +
+                                     ") — ignoring; continuing with full sync");
+                }
             }
-        } else {
-            ibd_status_ = IBDStatus::InIBD;
         }
     } else {
         // Not in IBD - services ready immediately
@@ -7804,6 +7820,37 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             return result;
         }
 
+        // FIX 2 (issue #186): if this height is a compiled-in AssumeUTXO trust
+        // anchor, enforce it on the .dat load path too (not just the manifest
+        // path) — the file's content hash AND base block hash must match the
+        // registry. Makes the registry load-bearing for auto-bootstrap: a
+        // tampered/wrong snapshot at a registered height is rejected before any
+        // UTXO is imported. (Byte-order handling mirrors the manifest check.)
+        if (auto anchor = consensus::AssumeUTXORegistry::GetSnapshot(header.block_height)) {
+            if (ToLowerHex(anchor->block_hash.GetHex()) != ToLowerHex(header.block_hash.GetHex())) {
+                result.error_message = "Snapshot base block conflicts with built-in trust anchor at height " +
+                                      std::to_string(header.block_height);
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            std::string file_sha;
+            std::string sha_err;
+            if (!ComputeFileSha256Hex(snapshot_path, file_sha, sha_err)) {
+                result.error_message = "Cannot hash snapshot for trust-anchor check: " + sha_err;
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            if (ToLowerHex(anchor->snapshot_hash.GetHex()) != ToLowerHex(file_sha)) {
+                result.error_message = "Snapshot content does not match built-in trust anchor at height " +
+                                      std::to_string(header.block_height) + " (expected " +
+                                      ToLowerHex(anchor->snapshot_hash.GetHex()) + ", got " + file_sha + ")";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            logger_->info("[LoadSnapshot] snapshot verified against built-in trust anchor at height " +
+                          std::to_string(header.block_height));
+        }
+
         // Verify block height matches — check chaindb first, fall back to HCS
         int verified_height = -1;
         auto height_result = chain_db_->getBlockHeight(header.block_hash);
@@ -11790,6 +11837,55 @@ bool ChainstateService::TrySnapshotBootstrap(const std::filesystem::path& snapsh
     logger_->info("═══════════════════════════════════════════════════════════════════════");
 
     return true;
+}
+
+void ChainstateService::TryDeferredSnapshotBootstrap() {
+    // FIX 2 (issue #186): driven from the header-processing path while a snapshot
+    // bootstrap is pending. Implements owner safety rules 2-4 + 6.
+    if (!snapshot_bootstrap_pending_) {
+        return;  // safe no-op
+    }
+
+    const consensus::HeaderIndexEntry* base_hdr =
+        header_chain_selector_
+            ? header_chain_selector_->GetHeader(snapshot_bootstrap_base_hash_)
+            : nullptr;
+
+    // RULE 2: only load once the EXACT base hash is on our header chain.
+    if (base_hdr != nullptr) {
+        logger_->info("[snapshot] base hash " +
+                      snapshot_bootstrap_base_hash_.GetHex().substr(0, 16) +
+                      "... is on the header chain — loading snapshot...");
+        if (TrySnapshotBootstrap(snapshot_bootstrap_path_)) {
+            logger_->info("[snapshot] loaded — node usable at height " +
+                          std::to_string(snapshot_bootstrap_base_height_) +
+                          "; background validation running, block download resumes from base+1");
+        } else {
+            // Base present but load still failed (e.g. UTXO not empty / corrupt
+            // file): do not retry forever — fall back to full sync.
+            logger_->warning("[snapshot] rejected — base present but load failed; "
+                             "fallback to full sync");
+        }
+        snapshot_bootstrap_pending_ = false;  // resolved either way
+        return;
+    }
+
+    // RULES 3+4: the base hash is NOT on our chain. If headers have already
+    // reached/passed the base height, the snapshot is stale/orphaned (its base
+    // block is not on the canonical chain we synced) — give up immediately and
+    // fall back to full IBD. Never block block-download forever.
+    const consensus::HeaderIndexEntry* best_hdr =
+        header_chain_selector_ ? header_chain_selector_->GetBestHeader() : nullptr;
+    if (best_hdr != nullptr && best_hdr->height >= snapshot_bootstrap_base_height_) {
+        logger_->warning("[snapshot] rejected — headers reached height " +
+                         std::to_string(best_hdr->height) + " (>= base " +
+                         std::to_string(snapshot_bootstrap_base_height_) + ") but base hash " +
+                         snapshot_bootstrap_base_hash_.GetHex().substr(0, 16) +
+                         "... is not on the canonical chain (stale/orphaned snapshot); "
+                         "fallback to full sync");
+        snapshot_bootstrap_pending_ = false;
+    }
+    // else: still syncing headers toward the base height — remain pending.
 }
 
 bool ChainstateService::AreServicesReady() const {

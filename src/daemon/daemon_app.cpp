@@ -2424,6 +2424,16 @@ bool DaemonApp::Init(int argc, char** argv) {
     );
     ctx_.block_download = block_download;
 
+    // FIX 2 (issue #186): central block-download deferral for a pending
+    // AssumeUTXO snapshot bootstrap. Tick() consults this predicate on EVERY
+    // call site, so blocks never download from genesis while a snapshot is
+    // pending (which would fill the UTXO and block the load). Resolves to false
+    // once the snapshot loads or the bootstrap is abandoned (→ full IBD). No-op
+    // for nodes without assumeutxo_snapshot (pending is never set).
+    block_download->SetDeferCheck([this]() -> bool {
+        return ctx_.chainstate && ctx_.chainstate->IsSnapshotBootstrapPending();
+    });
+
     // Seed the scheduler from the validated active chain tip, not the raw
     // ChainDB storage tip. ChainDB can be ahead during restart recovery when
     // blocks are stored on disk but chainstate has not replayed them yet.
@@ -5189,9 +5199,28 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                         }
 
+                        // FIX 2 (issue #186): if a snapshot bootstrap is pending,
+                        // defer block download until the snapshot loads (or the
+                        // give-up fallback fires). Drive the deferred load here —
+                        // headers were just processed, so the base block may now
+                        // be on the header chain. While pending, blocks must NOT
+                        // download from genesis (else the UTXO fills and the load
+                        // is refused). No-op for the fleet (no assumeutxo_snapshot).
+                        bool snapshot_bootstrap_pending = false;
+                        if (chainstate_ptr) {
+                            chainstate_ptr->TryDeferredSnapshotBootstrap();
+                            snapshot_bootstrap_pending = chainstate_ptr->IsSnapshotBootstrapPending();
+                        }
+                        // The scheduler defers centrally via its SetDeferCheck
+                        // predicate (covers every Tick() call site), so blocks
+                        // never download while a bootstrap is pending. This local
+                        // gate just avoids the redundant header-path Tick.
+                        const bool can_download_blocks =
+                            header_chain_has_min_work && !snapshot_bootstrap_pending;
+
                         // Always refresh the block scheduler when we accepted new headers.
                         // This keeps block queueing live across long truncated header batches.
-                        if (header_chain_has_min_work && block_download_ptr && added > 0) {
+                        if (can_download_blocks && block_download_ptr && added > 0) {
                             block_download_ptr->OnHeadersProcessed();
                             block_download_ptr->Tick();
                             g_logger.info("[Phase N.3] Block download scheduler refreshed after header batch");
@@ -5201,7 +5230,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // the best chain past our active tip. ActivateBestChain will detect
                         // the better header chain and call RequestBlocks() for missing bodies.
                         // Gate avoids thrash during bulk header batches.
-                        if (header_chain_has_min_work && chainstate_ptr && header_chain_ptr) {
+                        if (can_download_blocks && chainstate_ptr && header_chain_ptr) {
                             auto* best = header_chain_ptr->GetBestHeader();
                             auto* active = chainstate_ptr->GetActiveTip();
                             if (best && active && best->height > active->height) {
@@ -6153,6 +6182,16 @@ bool DaemonApp::Init(int argc, char** argv) {
             std::cout << "[DaemonApp]    - Send: HeaderSyncP2P/BlockDownloadScheduler → P2PService" << std::endl;
 
             if (ctx_.block_download && ctx_.header_chain && ctx_.chainstate) {
+                // FIX 2 (issue #186): drive the deferred snapshot bootstrap from
+                // this periodic, daemon-thread path (headers are continuously
+                // synced here). Once headers reach the snapshot base hash it
+                // loads; if they pass the base height without it, it gives up to
+                // full IBD. Runs on the daemon thread (not under the scheduler
+                // mutex), so the heavy LoadSnapshot is safe here. No-op unless a
+                // bootstrap is pending. Block download stays deferred (scheduler
+                // SetDeferCheck) until this resolves.
+                ctx_.chainstate->TryDeferredSnapshotBootstrap();
+
                 auto* best = ctx_.header_chain->GetBestHeader();
                 auto* active = ctx_.chainstate->GetActiveTip();
                 const auto peers = p2p_service->get().get_connected_peers();

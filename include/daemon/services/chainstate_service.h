@@ -351,6 +351,21 @@ public:
     }
     // Attempt to bootstrap from snapshot during IBD
     bool TrySnapshotBootstrap(const std::filesystem::path& snapshot_path);
+
+    // FIX 2 (issue #186): deferred snapshot bootstrap. A configured
+    // `assumeutxo_snapshot` cannot be loaded at startup (the base block isn't on
+    // our header chain yet) and must not pre-empt block download from genesis.
+    // The base height/hash are PEEKED at startup and a "pending" state is set;
+    // block download is deferred until headers reach the EXACT base hash, then
+    // the snapshot loads. If headers pass the base height without the base hash
+    // appearing (stale/orphaned snapshot), pending is cleared and the node falls
+    // back to full IBD — it never blocks forever.
+    bool IsSnapshotBootstrapPending() const { return snapshot_bootstrap_pending_; }
+    // Drive the deferred bootstrap: load if the base hash is now on the header
+    // chain; give up (→ full IBD) if headers passed the base height without it.
+    // Safe no-op when no bootstrap is pending.
+    void TryDeferredSnapshotBootstrap();
+
     // Check if node services are ready (RPC, mining, wallets)
     bool AreServicesReady() const;
 
@@ -934,6 +949,15 @@ private:
     bool assumeutxo_active_ = false;           // True if loaded from snapshot
     uint256 assumeutxo_base_block_;            // Block hash where UTXO set was snapshotted
     uint32_t assumeutxo_base_height_ = 0;      // Height where UTXO set was snapshotted
+
+    // FIX 2 (issue #186): deferred snapshot-bootstrap state (peeked at startup;
+    // block download is deferred while pending). Only set on a fresh datadir.
+    // Atomic: read by the scheduler's defer predicate (possibly a network
+    // thread), written on the daemon thread.
+    std::atomic<bool> snapshot_bootstrap_pending_{false};
+    std::string snapshot_bootstrap_path_;
+    uint256 snapshot_bootstrap_base_hash_;
+    uint32_t snapshot_bootstrap_base_height_ = 0;
 
     // Phase 44: Background validation state (parallel validation of assumed UTXO)
     BackgroundValidationStatus bg_validation_status_ = BackgroundValidationStatus::NotStarted;
