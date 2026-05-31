@@ -340,3 +340,97 @@ TEST(ASERTDAA, DebugSnapshotIncludesConsensusFields) {
 
 // Note: Regtest difficulty is tested via integration tests since it
 // depends on dinero::Params() chain selection, not the Consensus struct.
+
+// HeaderChainSelector::ValidateHeader (header-accept) calls
+// GetNextWorkRequiredForCandidate with chain_db = nullptr, relying solely on the
+// parent HeaderIndexEntry's in-memory ancestry. This asserts the header-only
+// mode computes the SAME expected bits as the block-connect mode (chain_db
+// present) and the mining path across a range of heights — i.e. header
+// acceptance and block connect cannot drift on the difficulty rule, and the
+// header path does not need chain_db.
+TEST(ASERTDAA, HeaderPathNullChainDbMatchesBlockAndMining) {
+    const Consensus c = GetConsensusForCurrentNetwork();
+    const int64_t genesis_time = 1772496000;
+    const uint32_t max_parent = 20;
+
+    FakeChainDBForAsert fake_db;
+    std::vector<dinero::consensus::HeaderIndexEntry> entries(max_parent + 1);
+    for (uint32_t height = 0; height <= max_parent; ++height) {
+        const uint64_t timestamp = static_cast<uint64_t>(
+            genesis_time + (height * static_cast<uint64_t>(c.targetSpacingSec)));
+        BlockHeader header = MakeHeader(timestamp, c.asertAnchorBits);
+        fake_db.Add(height, header);
+        entries[height].height = height;
+        entries[height].header = header;
+        entries[height].parent = (height == 0) ? nullptr : &entries[height - 1];
+    }
+
+    for (uint32_t ph = 1; ph <= max_parent; ++ph) {
+        const int32_t target_height = static_cast<int32_t>(ph + 1);
+        const int64_t candidate_time =
+            genesis_time + (target_height * static_cast<int64_t>(c.targetSpacingSec));
+
+        const uint32_t header_path_bits = GetNextWorkRequiredForCandidate(
+            target_height, candidate_time, c,
+            /*parent_index=*/nullptr,
+            /*parent_entry=*/&entries[ph],
+            /*chain_db=*/static_cast<FakeChainDBForAsert*>(nullptr));
+        const uint32_t block_path_bits = GetNextWorkRequiredForCandidate(
+            target_height, candidate_time, c,
+            /*parent_index=*/nullptr,
+            /*parent_entry=*/&entries[ph],
+            /*chain_db=*/&fake_db);
+        const uint32_t mining_bits = GetNextWorkRequiredWithChainDB(
+            target_height, candidate_time, c, &fake_db);
+
+        EXPECT_NE(header_path_bits, 0u)
+            << "header-path bits uncomputable at height " << target_height;
+        EXPECT_EQ(header_path_bits, block_path_bits)
+            << "header (null chain_db) vs block path drift at height " << target_height;
+        EXPECT_EQ(header_path_bits, mining_bits)
+            << "header path vs mining drift at height " << target_height;
+    }
+}
+
+// Side branches must be validated against their OWN parent/anchor context, not a
+// shared/active tip. Two header chains share genesis but progress at different
+// rates; expected bits computed via each branch's own parent entry must reflect
+// that branch's ancestry, proving GetNextWorkRequiredForCandidate uses the
+// passed parent_entry's chain (prev->GetMedianTimePast walks prev's ancestry).
+TEST(ASERTDAA, SideBranchUsesOwnParentForExpectedBits) {
+    const Consensus c = GetConsensusForCurrentNetwork();
+    const int64_t genesis_time = 1772496000;
+    const uint32_t ph = 15;
+
+    std::vector<dinero::consensus::HeaderIndexEntry> a(ph + 1);  // on-schedule
+    std::vector<dinero::consensus::HeaderIndexEntry> b(ph + 1);  // 4x slower
+    for (uint32_t h = 0; h <= ph; ++h) {
+        const uint64_t ta =
+            genesis_time + (h * static_cast<uint64_t>(c.targetSpacingSec));
+        const uint64_t tb =
+            genesis_time + (h * static_cast<uint64_t>(c.targetSpacingSec) * 4);
+        a[h].height = h; a[h].header = MakeHeader(ta, c.asertAnchorBits);
+        a[h].parent = (h == 0) ? nullptr : &a[h - 1];
+        b[h].height = h; b[h].header = MakeHeader(tb, c.asertAnchorBits);
+        b[h].parent = (h == 0) ? nullptr : &b[h - 1];
+    }
+
+    const int32_t target_height = static_cast<int32_t>(ph + 1);
+    const int64_t ca = genesis_time + (target_height * static_cast<int64_t>(c.targetSpacingSec));
+    const int64_t cb = genesis_time + (target_height * static_cast<int64_t>(c.targetSpacingSec) * 4);
+
+    const uint32_t bits_a = GetNextWorkRequiredForCandidate(
+        target_height, ca, c, nullptr, &a[ph],
+        static_cast<FakeChainDBForAsert*>(nullptr));
+    const uint32_t bits_b = GetNextWorkRequiredForCandidate(
+        target_height, cb, c, nullptr, &b[ph],
+        static_cast<FakeChainDBForAsert*>(nullptr));
+
+    EXPECT_NE(bits_a, 0u);
+    EXPECT_NE(bits_b, 0u);
+    // The slower branch is behind schedule → ASERT eases difficulty → its
+    // required bits differ from the on-schedule branch. Equal bits would mean
+    // the computation ignored the branch's own ancestry.
+    EXPECT_NE(bits_a, bits_b)
+        << "side branch must compute expected bits from its own ancestry";
+}

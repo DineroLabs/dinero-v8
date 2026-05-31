@@ -25,6 +25,28 @@ inline Consensus GetConsensusForCurrentNetwork() {
     return consensus;
 }
 
+// Null chain-db adapter for header-only difficulty validation.
+//
+// HeaderChainSelector::ValidateHeader computes expected difficulty purely from a
+// candidate's parent HeaderIndexEntry (its in-memory ancestry supplies MTP and
+// the genesis-anchored reference), so it has no ChainDB. Instantiating the
+// shared GetNextWorkRequiredForCandidate with the real ChainDB type would force
+// the header-validation TU to link ChainDB's storage methods. Passing a null
+// NoChainDb* instead keeps ONE shared expected-bits function while letting the
+// chain_db fallback branch resolve to trivial inline no-ops — they are never
+// called at runtime (the pointer is null and the parent_entry path is taken).
+struct NoChainDb {
+    StatusOr<uint256> getBlockHashByHeight(int) const {
+        return StatusOr<uint256>(Status::NotFound);
+    }
+    StatusOr<BlockHeader> getHeader(const uint256&) const {
+        return StatusOr<BlockHeader>(Status::NotFound);
+    }
+    StatusOr<Block> getBlock(const uint256&) const {
+        return StatusOr<Block>(Status::NotFound);
+    }
+};
+
 inline bool IsAsertActive(int32_t target_height, const Consensus& consensus) {
     return consensus.daaType == DAAType::ASERT && target_height >= 1;
 }

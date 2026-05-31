@@ -8,6 +8,8 @@
 #include "consensus/header_store.h"
 #include "consensus/difficulty.h"
 #include "consensus/pow.h"
+#include "consensus/pow.hpp"          // GetNextWorkRequiredForCandidate (shared expected-bits fn)
+#include "consensus/pow_context.h"    // GetConsensusForCurrentNetwork, NoChainDb
 #include "consensus/chainparams.h"
 #include "crypto/sha256.h"
 #include <algorithm>
@@ -384,6 +386,44 @@ bool HeaderChainSelector::ValidateHeader(
     }
     if (Params().name != "regtest") {
         if (!CheckProofOfWork(header, /*require_standard=*/false)) {
+            return false;
+        }
+    }
+
+    // 4b. Expected difficulty (ASERT schedule) — defense-in-depth.
+    //
+    // Mirrors block_acceptor's bad-diffbits check at the header level, using the
+    // SAME shared computation (GetNextWorkRequiredForCandidate) so header
+    // acceptance and block connect can never drift on the difficulty rule. A
+    // header whose claimed bits != the bits required by the ASERT schedule for
+    // its height is rejected before its (claimed) chainwork is credited.
+    //
+    // Computed from THIS header's own parent (`prev`) — prev->GetMedianTimePast()
+    // walks prev's own ancestry, so side branches validate against their own
+    // anchor context, not the active tip.
+    //
+    // Gating: skip genesis (prev == nullptr; handled by the PoW check above) and
+    // skip regtest (block_acceptor PATH A skips difficulty there too — same-rule).
+    // expected == 0 means "uncomputable" (pre-ASERT height / missing context):
+    // skip rather than reject, so honest persisted headers replay cleanly at
+    // startup and block_acceptor remains the backstop. Compact bits are compared
+    // for equality against the canonical encoding (never ordered numerically).
+    if (prev != nullptr && Params().name != "regtest") {
+        const Consensus consensus = GetConsensusForCurrentNetwork();
+        const uint32_t expected_bits = GetNextWorkRequiredForCandidate(
+            static_cast<int32_t>(prev->height) + 1,
+            static_cast<int64_t>(header.timestamp),
+            consensus,
+            /*parent_index=*/static_cast<const CBlockIndex*>(nullptr),
+            /*parent_entry=*/prev,
+            /*chain_db=*/static_cast<dinero::NoChainDb*>(nullptr));
+        if (expected_bits != 0 && header.difficulty != expected_bits) {
+            std::cerr << "[HeaderChainSelector] ❌ bad-diffbits-header at height "
+                      << (prev->height + 1) << ": header has "
+                      << std::hex << header.difficulty << ", required "
+                      << expected_bits << std::dec
+                      << " (hash " << hash.GetHex().substr(0, 16) << "...)"
+                      << std::endl;
             return false;
         }
     }
