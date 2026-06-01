@@ -286,6 +286,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.listening = p2p_mgr_->IsListening();
     status.listen_port = p2p_mgr_->get_listen_port();
     status.advertised_addresses = p2p_mgr_->get_advertised_addresses();
+    status.has_explicit_advertised = p2p_mgr_->has_explicit_advertised();
     status.onion_transport_configured = onion_proxy_configured_;
     status.onion_transport_enabled = p2p_mgr_->onion_proxy_enabled();
     status.onion_transport_reachable = onion_proxy_reachable_;

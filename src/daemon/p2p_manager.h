@@ -399,8 +399,17 @@ public:
     bool onion_proxy_enabled() const;
     std::string onion_proxy_endpoint() const;
     bool probe_onion_proxy(std::string* message = nullptr);
-    void add_advertised_address(const std::string& address, uint16_t port);
+    // learned=true marks a peer-vote-discovered address (Gap 1) that is NOT
+    // proof of direct inbound reachability; learned=false (default) is an
+    // explicit/trusted source (operator externalip, UPnP/NAT-PMP) and sets the
+    // has_explicit_advertised_ flag used by the relay-fallback gate.
+    void add_advertised_address(const std::string& address, uint16_t port, bool learned = false);
     std::vector<std::pair<std::string, uint16_t>> get_advertised_addresses() const;
+    // True iff we have an EXPLICIT/confirmed reachable advertised address
+    // (operator externalip or port-mapping) — not merely a Gap-1-learned one.
+    // Used so a NAT'd node (only a learned, dead address) stays relay-fallback
+    // eligible instead of wrongly classifying itself as directly reachable.
+    bool has_explicit_advertised() const { return has_explicit_advertised_.load(std::memory_order_acquire); }
 
     // Gap 1 (peer-reported external-IP learning): record that `reporter_ip` told
     // us (in their version addrRecv) that our external address is `reported_addr`.
@@ -773,6 +782,10 @@ private:
     std::unordered_set<std::string> connecting_peers_;  // Guards against duplicate connection attempts
     std::vector<std::pair<std::string, uint16_t>> seed_nodes_;
     std::vector<std::pair<std::string, uint16_t>> advertised_addresses_;
+    // True once an EXPLICIT/trusted reachable address (operator externalip or
+    // port-mapping) has been advertised — distinct from Gap-1-learned addresses.
+    // Drives the relay-fallback gate so NAT'd nodes (learned-only) stay eligible.
+    std::atomic<bool> has_explicit_advertised_{false};
 
     // Gap 1 (peer-reported external-IP learning): votes for our own external
     // address. Key = address a peer reported as ours (addrRecv); value = set of

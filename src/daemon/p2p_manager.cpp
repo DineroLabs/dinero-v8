@@ -3859,7 +3859,7 @@ bool P2PManager::probe_onion_proxy(std::string* message) {
     return ok;
 }
 
-void P2PManager::add_advertised_address(const std::string& address, uint16_t port) {
+void P2PManager::add_advertised_address(const std::string& address, uint16_t port, bool learned) {
     if (IsLocalOrWildcardAddress(address) || port == 0) {
         std::cout << "[P2P] Skipping unroutable advertised address: "
                   << address << ":" << port << std::endl;
@@ -3872,6 +3872,18 @@ void P2PManager::add_advertised_address(const std::string& address, uint16_t por
         return;
     }
 
+    // Gap 2 / reachability classification: an address from an EXPLICIT source
+    // (operator externalip config or a successful UPnP/NAT-PMP mapping) is a
+    // trusted assertion of direct inbound reachability. A peer-vote-LEARNED
+    // address (Gap 1) is only the IP peers see us from — for a NAT'd node that's
+    // the gateway's public IP, which is NOT actually dialable. So learned
+    // addresses must NOT mark us "directly reachable" (else they'd suppress the
+    // relay fallback). Direct reachability is instead proven by an observed
+    // inbound connection, port-mapping, or explicit operator config.
+    if (!learned) {
+        has_explicit_advertised_.store(true, std::memory_order_release);
+    }
+
     std::lock_guard<std::mutex> lock(peers_mutex_);
     const std::string key = AddressKey(address, port);
     for (const auto& existing : advertised_addresses_) {
@@ -3880,7 +3892,8 @@ void P2PManager::add_advertised_address(const std::string& address, uint16_t por
         }
     }
     advertised_addresses_.emplace_back(address, port);
-    std::cout << "[P2P] Advertising reachable address: " << key << std::endl;
+    std::cout << "[P2P] Advertising " << (learned ? "learned" : "reachable")
+              << " address: " << key << std::endl;
 }
 
 std::vector<std::pair<std::string, uint16_t>> P2PManager::get_advertised_addresses() const {
@@ -3921,7 +3934,7 @@ void P2PManager::record_self_address_report(const std::string& reported_addr,
         std::cout << "[P2P] Self-address learned from peers (" << votes
                   << " distinct reporters): " << reported_addr << ":" << listen_port_
                   << " — advertising" << std::endl;
-        add_advertised_address(reported_addr, listen_port_);
+        add_advertised_address(reported_addr, listen_port_, /*learned=*/true);
     }
 }
 
