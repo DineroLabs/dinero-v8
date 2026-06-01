@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -107,6 +108,80 @@ TEST(QuicSession, LoopbackHandshakeAndOneEncryptedStreamPayload) {
 
     // Explicit teardown so session destructors run while both sessions are
     // still in scope, making the by-reference writer captures unambiguously safe.
+    client_session->Close();
+    server_session->Close();
+    client_session.reset();
+    server_session.reset();
+}
+
+TEST(QuicSession, PostHandshakeStreamSurvivesDelayedSecondSend) {
+    const auto info = dinero::network::QuicTransport::CompileInfo();
+    ASSERT_TRUE(info.ngtcp2_available);
+    ASSERT_EQ(info.crypto_backend, "ossl");
+    ASSERT_TRUE(info.crypto_available) << info.disabled_reason;
+
+    using dinero::network::QuicSession;
+
+    dinero::network::QuicSessionOptions options;
+    options.alpn = "dinero-relay-test/1";
+    options.server_name = "localhost";
+    options.certificate_pem = kTestCertificate;
+    options.private_key_pem = kTestPrivateKey;
+    options.verify_peer = false;
+
+    std::shared_ptr<QuicSession> client_session;
+    std::shared_ptr<QuicSession> server_session;
+    auto client_writer = [&server_session](std::vector<uint8_t> bytes) {
+        if (server_session) server_session->EnqueueIncomingPacket(std::move(bytes));
+    };
+    auto server_writer = [&client_session](std::vector<uint8_t> bytes) {
+        if (client_session) client_session->EnqueueIncomingPacket(std::move(bytes));
+    };
+    server_session = std::make_shared<QuicSession>(server_writer);
+    client_session = std::make_shared<QuicSession>(client_writer);
+
+    const auto client_addr = Localhost(22101);
+    const auto server_addr = Localhost(22102);
+
+    ASSERT_TRUE(server_session->StartServer(server_addr, client_addr, options));
+    ASSERT_TRUE(client_session->StartClient(client_addr, server_addr, options));
+
+    auto cr = client_session->WaitHandshakeReady();
+    auto sr = server_session->WaitHandshakeReady();
+    ASSERT_EQ(cr.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    ASSERT_EQ(sr.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    ASSERT_TRUE(cr.get());
+    ASSERT_TRUE(sr.get());
+
+    const std::vector<uint8_t> first = {'f', 'i', 'r', 's', 't'};
+    const std::vector<uint8_t> second = {'s', 'e', 'c', 'o', 'n', 'd'};
+
+    client_session->EnqueueOutgoingStream(first, false);
+    std::vector<uint8_t> received;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (received.size() < first.size() &&
+           std::chrono::steady_clock::now() < deadline) {
+        auto chunk = server_session->ReadDecryptedStream(std::chrono::milliseconds(100));
+        received.insert(received.end(), chunk.begin(), chunk.end());
+    }
+    ASSERT_EQ(received, first);
+
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    ASSERT_TRUE(client_session->active()) << client_session->last_error();
+    ASSERT_TRUE(server_session->active()) << server_session->last_error();
+
+    client_session->EnqueueOutgoingStream(second, false);
+    received.clear();
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (received.size() < second.size() &&
+           std::chrono::steady_clock::now() < deadline) {
+        auto chunk = server_session->ReadDecryptedStream(std::chrono::milliseconds(100));
+        received.insert(received.end(), chunk.begin(), chunk.end());
+    }
+    EXPECT_EQ(received, second);
+    EXPECT_TRUE(client_session->active()) << client_session->last_error();
+    EXPECT_TRUE(server_session->active()) << server_session->last_error();
+
     client_session->Close();
     server_session->Close();
     client_session.reset();
