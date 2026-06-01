@@ -1143,6 +1143,55 @@ bool P2PManager::RelayQuotaAllows(size_t bytes,
 // has advertised? Runs on the keepalive tick so handle_relay_data reads
 // only an atomic — iterating peers per RELAY_DATA frame would add lock
 // contention to the relay data plane.
+namespace {
+std::string LowerEndpoint(const std::string& s) {
+    std::string k = s;
+    std::transform(k.begin(), k.end(), k.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return k;
+}
+}  // namespace
+
+// Relay health scoring (auto-registration set). EWMA in [0,1]: each success
+// nudges the score toward 1.0, each failure toward 0.0, so recent outcomes
+// dominate (failure decay). Used by MaybeAutoRegisterWithRelays.
+void P2PManager::note_relay_outcome(const std::string& relay_endpoint, bool success) {
+    const std::string key = LowerEndpoint(relay_endpoint);
+    if (key.empty()) return;
+    const auto now = clock_ ? clock_->SteadyNow() : std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(relay_health_mutex_);
+    auto& h = relay_health_[key];
+    h.score = h.score * (1.0 - kRelayHealthAlpha) +
+              (success ? 1.0 : 0.0) * kRelayHealthAlpha;
+    h.last_update = now;
+    if (success) {
+        h.successes++;
+        h.consecutive_failures = 0;
+        h.last_success = now;
+    } else {
+        h.failures++;
+        h.consecutive_failures++;
+    }
+}
+
+double P2PManager::relay_health_score(const std::string& relay_endpoint) const {
+    const std::string key = LowerEndpoint(relay_endpoint);
+    std::lock_guard<std::mutex> lock(relay_health_mutex_);
+    auto it = relay_health_.find(key);
+    return it == relay_health_.end() ? 0.5 : it->second.score;
+}
+
+bool P2PManager::relay_health_replace_eligible(const std::string& relay_endpoint) const {
+    const std::string key = LowerEndpoint(relay_endpoint);
+    std::lock_guard<std::mutex> lock(relay_health_mutex_);
+    auto it = relay_health_.find(key);
+    if (it == relay_health_.end()) return false;  // unknown → give it a chance
+    const auto& h = it->second;
+    if (h.consecutive_failures >= kRelayMaxConsecutiveFailures) return true;
+    return (h.successes + h.failures) >= kRelayHealthMinSamples &&
+           h.score < kRelayHealthReplaceFloor;
+}
+
 void P2PManager::RecomputeRelayBehindThrottle() {
     const uint32_t our_height = height_provider_ ? height_provider_() : 0;
     uint32_t tip = our_height;
@@ -2631,6 +2680,7 @@ void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
     }
     peer->is_our_relay = true;
     peer->last_register_sent_at = std::chrono::steady_clock::now();
+    note_relay_outcome(key, true);  // registered with this relay — positive health
     std::cout << "[P2P] relay-register: sent to " << key << " (ttl="
               << kRelayRegisterTtlSeconds << "s)" << std::endl;
 }
@@ -3810,6 +3860,23 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
         }
     }
 
+    // Relay health scoring (#3): prefer healthy relays and let bad ones be
+    // replaced. Sort live relays + dynamic candidates by EWMA health score
+    // (best first) so the target cap keeps the healthiest; the preservation
+    // loops below skip replace-eligible relays so a persistently-failing relay
+    // is dropped and backfilled by a fresher candidate. The bootstrap reserve
+    // step still guarantees >=1 known-good fleet relay.
+    std::sort(live_relays.begin(), live_relays.end(),
+              [&](const std::string& a, const std::string& b) {
+                  return relay_health_score(a) > relay_health_score(b);
+              });
+    std::sort(dynamic_candidates.begin(), dynamic_candidates.end(),
+              [&](const std::pair<std::string, uint16_t>& a,
+                  const std::pair<std::string, uint16_t>& b) {
+                  return relay_health_score(endpoint_key(a.first, a.second)) >
+                         relay_health_score(endpoint_key(b.first, b.second));
+              });
+
     std::vector<std::string> desired;
     std::vector<std::pair<std::string, uint16_t>> to_connect;
     auto add_live_key = [&](const std::string& key) {
@@ -3835,7 +3902,9 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     };
 
     for (const auto& key : live_relays) {
-        if (bootstrap_keys.count(key)) add_live_key(key);
+        if (bootstrap_keys.count(key) && !relay_health_replace_eligible(key)) {
+            add_live_key(key);
+        }
     }
     if (std::none_of(desired.begin(), desired.end(),
                      [&](const std::string& key) {
@@ -3852,7 +3921,9 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
         }
     }
     for (const auto& key : live_relays) {
-        if (!bootstrap_keys.count(key)) add_live_key(key);
+        if (!bootstrap_keys.count(key) && !relay_health_replace_eligible(key)) {
+            add_live_key(key);
+        }
     }
     for (const auto& [host, port] : dynamic_candidates) {
         add_endpoint(host, port);
@@ -4928,9 +4999,11 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
     // before invoking the dineroid app-layer handshake. perform_handshake() sends
     // bytes via send_relay_data_to_virtual_peer which requires handshake_ready().
     if (peer_locked->via_relay && peer_locked->via_relay->encrypted_quic) {
+        const std::string circuit_relay = peer_locked->via_relay->relay_peer_address;
         if (!peer_locked->relay_quic_session) {
             std::cerr << "[P2P] relay-handshake: QUIC virtual peer has no session for "
                       << peer_key << std::endl;
+            note_relay_outcome(circuit_relay, false);  // circuit through this relay failed
             cleanup_peer(peer_key);
             return;
         }
@@ -4939,9 +5012,11 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
             !ready.get()) {
             std::cout << "[P2P] relay-transport: QUIC handshake did not become ready "
                       << "within 10s for " << peer_key << std::endl;
+            note_relay_outcome(circuit_relay, false);  // handshake never completed via this relay
             cleanup_peer(peer_key);
             return;
         }
+        note_relay_outcome(circuit_relay, true);  // data plane works through this relay
         std::cout << "[P2P] relay-handshake: QUIC handshake ready for "
                   << peer_key << " — starting dineroid" << std::endl;
 
@@ -6960,7 +7035,7 @@ void P2PManager::keepalive_loop() {
         // PING/PONG round-trips. Real low-traffic peers still produce PINGs
         // so they won't trip this; only genuinely-silent (= dead) peers do.
         constexpr auto kRelayVirtualIdleTimeout = std::chrono::seconds(90);
-        std::vector<std::string> relay_zombies;
+        std::vector<std::pair<std::string /*key*/, std::string /*relay*/>> relay_zombies;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
             const auto now = std::chrono::system_clock::now();
@@ -6970,13 +7045,17 @@ void P2PManager::keepalive_loop() {
                 if (!peer->via_relay) continue;
                 const auto idle = now - peer->last_message_at;
                 if (idle > kRelayVirtualIdleTimeout) {
-                    relay_zombies.push_back(pair.first);
+                    relay_zombies.emplace_back(pair.first,
+                                               peer->via_relay->relay_peer_address);
                 }
             }
         }
-        for (const auto& key : relay_zombies) {
+        for (const auto& [key, relay_ep] : relay_zombies) {
             std::cout << "[P2P] relay-virtual: reaping zombie peer " << key
                       << " (no inbound message in 90s+)" << std::endl;
+            // A circuit that went silent → the relay path degraded. Penalize
+            // the relay's health so a persistently-bad relay gets replaced.
+            note_relay_outcome(relay_ep, false);
             cleanup_peer(key);
         }
 

@@ -1038,6 +1038,36 @@ private:
                        std::chrono::steady_clock::time_point>
         last_relay_dial_attempt_;
 
+public:
+    // ── Relay health scoring (auto-registration SET) ────────────────────
+    // Per-relay health for the relays we REGISTER WITH to stay reachable
+    // (distinct from RelayHintRecord, which is dial-side hint health).
+    // Updated by real outcomes — RELAYREG confirmation (a relay advertising us
+    // back via RELAYHINTS received_self), inbound relay-circuit handshake
+    // success, and failures (circuit idle-close, relay connection drop). The
+    // score is an EWMA in [0,1] so recent outcomes dominate (failure decay);
+    // MaybeAutoRegisterWithRelays prefers high-score relays and replaces bad
+    // ones, while preserving >=1 known-good bootstrap relay.
+    void note_relay_outcome(const std::string& relay_endpoint, bool success);
+    double relay_health_score(const std::string& relay_endpoint) const;  // 0.5 if unknown
+    bool relay_health_replace_eligible(const std::string& relay_endpoint) const;
+
+private:
+    struct RelayHealth {
+        double   score{0.5};                 // EWMA, neutral prior
+        uint32_t successes{0};
+        uint32_t failures{0};
+        int      consecutive_failures{0};
+        std::chrono::steady_clock::time_point last_update{};
+        std::chrono::steady_clock::time_point last_success{};
+    };
+    mutable std::mutex relay_health_mutex_;
+    std::unordered_map<std::string /*endpoint_key host:port*/, RelayHealth> relay_health_;
+    static constexpr double kRelayHealthAlpha = 0.3;            // EWMA weight on new sample
+    static constexpr int    kRelayMaxConsecutiveFailures = 4;   // replace at/after this many
+    static constexpr double kRelayHealthReplaceFloor = 0.25;    // score below + tried → replace
+    static constexpr uint32_t kRelayHealthMinSamples = 3;       // need this many before score-based eviction
+
 #ifdef DINERO_TEST_BUILD
     std::atomic<bool> plaintext_relay_dev_override_for_tests_{false};
     std::atomic<bool> encrypted_relay_dev_override_for_tests_{false};
