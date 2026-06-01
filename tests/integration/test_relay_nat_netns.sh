@@ -256,6 +256,36 @@ wait_log() {
     fail "${label}: missing log pattern '${pattern}'"
 }
 
+# Like wait_log but matches an extended regex (for patterns that span tokens,
+# e.g. asserting "headers" and "relay:" appear on the same line in any order).
+wait_log_regex() {
+    local logfile="$1"
+    local pattern="$2"
+    local label="$3"
+    for _ in $(seq 1 90); do
+        if [[ -f "${logfile}" ]] && grep -Eq "${pattern}" "${logfile}"; then
+            pass "${label}"
+            return 0
+        fi
+        sleep 1
+    done
+    fail "${label}: missing log pattern /${pattern}/"
+}
+
+# Negative assertion: the given pattern must NOT appear in the log. Used to
+# guard the data plane against the ERR_IDLE_CLOSE class — a relay virtual peer
+# can be created and then die when the QUIC handshake never completes, which
+# the plumbing-only assertions above would miss.
+assert_log_absent() {
+    local logfile="$1"
+    local pattern="$2"
+    local label="$3"
+    if [[ -f "${logfile}" ]] && grep -Fq "${pattern}" "${logfile}"; then
+        fail "${label}: forbidden log pattern present '${pattern}'"
+    fi
+    pass "${label}"
+}
+
 tcp_probe() {
     local ns="$1"
     local host="$2"
@@ -364,6 +394,42 @@ start_node() {
 
 setup_topology
 
+# ── optional WAN impairment (tc netem) to reproduce real-internet conditions ──
+# Clean netns is sub-millisecond + lossless, so the relay-tunneled QUIC
+# handshake always completes there. Real fleet links have latency/jitter/loss.
+# Gated by DINERO_NETNS_NETEM_DELAY / _JITTER / _LOSS / _RATE — applied to the
+# relay's WAN egress and both NATs' WAN egress, so the relay tunnel sees the
+# impairment in BOTH directions. Use this to probe whether the live
+# ERR_IDLE_CLOSE data-plane failure is latency/loss-triggered.
+apply_netem() {
+    local ns="$1" dev="$2"
+    local spec=""
+    if [[ -n "${DINERO_NETNS_NETEM_DELAY:-}" ]]; then
+        spec="delay ${DINERO_NETNS_NETEM_DELAY} ${DINERO_NETNS_NETEM_JITTER:-}"
+    fi
+    if [[ -n "${DINERO_NETNS_NETEM_LOSS:-}" ]]; then
+        spec="${spec} loss ${DINERO_NETNS_NETEM_LOSS}"
+    fi
+    if [[ -n "${DINERO_NETNS_NETEM_RATE:-}" ]]; then
+        spec="${spec} rate ${DINERO_NETNS_NETEM_RATE}"
+    fi
+    if [[ -z "${spec// /}" ]]; then
+        return 0
+    fi
+    if ip netns exec "${ns}" tc qdisc add dev "${dev}" root netem ${spec} 2>/dev/null; then
+        info "netem on ${ns}/${dev}: ${spec}"
+    else
+        info "netem on ${ns}/${dev} FAILED to apply (continuing without it)"
+    fi
+}
+if [[ -n "${DINERO_NETNS_NETEM_DELAY:-}${DINERO_NETNS_NETEM_LOSS:-}${DINERO_NETNS_NETEM_RATE:-}" ]]; then
+    info "Applying WAN impairment via tc netem (delay='${DINERO_NETNS_NETEM_DELAY:-}' jitter='${DINERO_NETNS_NETEM_JITTER:-}' loss='${DINERO_NETNS_NETEM_LOSS:-}' rate='${DINERO_NETNS_NETEM_RATE:-}')"
+    # setup_wan_peer renames each node's WAN veth to "wan0" inside its netns.
+    apply_netem "${NS_RELAY}"      "wan0"
+    apply_netem "${NS_NAT_ORIGIN}" "wan0"
+    apply_netem "${NS_NAT_TARGET}" "wan0"
+fi
+
 if tcp_probe "${NS_ORIGIN}" "${TARGET_NAT_WAN_IP}" "${TARGET_P2P}"; then
     fail "origin unexpectedly opened a direct TCP connection to target NAT public address"
 fi
@@ -437,6 +503,36 @@ wait_relay_peerinfo "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" \
 wait_relay_peerinfo "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
     '[.result[]? | select((.inbound == true) and ((.addr // "") | startswith("relay:in:")))] | length' \
     "target getpeerinfo reports inbound virtual relay peer"
+
+# ── DATA PLANE: the circuit must CARRY data, not merely exist ────────
+# A relay circuit forming (asserted above) is NOT proof that data flows.
+# The ERR_IDLE_CLOSE failure class leaves a created-but-dead virtual peer
+# whose QUIC handshake never completes. Require the encrypted relay stream
+# to actually carry, end-to-end over the virtual peer: (1) QUIC handshake
+# completion, (2) the dineroid identity exchange (multi-message encrypted
+# app traffic), and (3) headers sync — and require that NO node logs an
+# ERR_IDLE_CLOSE idle teardown of the circuit.
+wait_log "${LOG_ORIGIN}" "relay-handshake: QUIC handshake ready for relay:" \
+    "origin: QUIC handshake completed over relay virtual peer"
+wait_log "${LOG_TARGET}" "relay-handshake: QUIC handshake ready for relay:in:" \
+    "target: QUIC handshake completed over relay virtual peer"
+wait_log "${LOG_ORIGIN}" "dineroid: identity proven for relay:" \
+    "origin: dineroid identity proven OVER relay virtual peer (encrypted stream carries app data)"
+wait_log "${LOG_TARGET}" "dineroid: identity proven for relay:in:" \
+    "target: dineroid identity proven OVER relay virtual peer (encrypted stream carries app data)"
+wait_log_regex "${LOG_ORIGIN}" "headers[^\"]*relay:|relay:[^\"]*headers" \
+    "origin: headers sync ran over relay virtual peer"
+wait_log_regex "${LOG_TARGET}" "headers[^\"]*relay:in:|relay:in:[^\"]*headers" \
+    "target: headers sync ran over relay virtual peer"
+# Negative guard: the QUIC relay session must not have idle-closed before/while
+# carrying data. Checked here (before the disconnect sub-tests below, which
+# intentionally tear circuits down).
+assert_log_absent "${LOG_ORIGIN}" "ERR_IDLE_CLOSE" \
+    "origin: relay QUIC session did NOT hit ERR_IDLE_CLOSE"
+assert_log_absent "${LOG_TARGET}" "ERR_IDLE_CLOSE" \
+    "target: relay QUIC session did NOT hit ERR_IDLE_CLOSE"
+assert_log_absent "${LOG_RELAY}" "ERR_IDLE_CLOSE" \
+    "relay: no ERR_IDLE_CLOSE on the relay node"
 
 # ── on-connect registry catch-up ────────────────────────────────────
 # A peer that connects to the relay AFTER a target registered must be
