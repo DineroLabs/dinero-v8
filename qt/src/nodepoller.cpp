@@ -418,15 +418,20 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
         pending_identity_.grace_count = obj.value("grace_pending").toInt();
     }
 
-    // Reachability: direct_reachable (true = NAT open, listener confirmed),
-    // listen (true = we accept inbound), else UNREACHABLE.
+    // Reachability — mirror the daemon's computed verdict (same fields
+    // `node.status` uses) so the dashboard and `dinero-cli node.status` agree,
+    // one source of truth. DIRECT iff the daemon computed direct_reachable.
+    // BEHIND_RELAY uses the daemon's relay_fallback_eligible (network_active &&
+    // listening && !direct) — NOT bare "listen", which would falsely claim
+    // relay reachability for any listening node with no relay path. Falls back
+    // to listen/localrelay on daemons predating relay_fallback_eligible.
     const bool direct_ok = obj.value("direct_reachable").toBool(false);
-    const bool listening = obj.value("listen").toBool(
-                               obj.value("localrelay").toBool(false));
+    const bool relay_eligible = obj.value("relay_fallback_eligible").toBool(
+        obj.value("listen").toBool(obj.value("localrelay").toBool(false)));
     pending_identity_.reachability =
         direct_ok ? NodeIdentity::DIRECT
-                  : (listening ? NodeIdentity::BEHIND_RELAY
-                               : NodeIdentity::UNREACHABLE);
+                  : (relay_eligible ? NodeIdentity::BEHIND_RELAY
+                                    : NodeIdentity::UNREACHABLE);
 
     Q_EMIT identityUpdated(pending_identity_);
     emitContributionAndScore();
