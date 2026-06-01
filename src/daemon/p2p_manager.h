@@ -299,6 +299,22 @@ struct P2PMessage {
     static std::unique_ptr<P2PMessage> deserialize(const std::vector<uint8_t>& data);
 };
 
+// Gap 2 (Stage A / A.1): a node is DIRECTLY reachable iff peers have been
+// observed connecting inbound, an EXPLICIT/trusted address is advertised
+// (operator externalip or a successful UPnP/NAT-PMP mapping), or a port
+// mapping is currently active. A Gap-1-LEARNED address (the NAT gateway's
+// public IP — seen by peers, but not necessarily dialable) does NOT count.
+// This single predicate gates BOTH the getnetworkinfo relay-fallback report
+// AND the MaybeAutoRegisterWithRelays behavioral gate so the two can never
+// diverge — the divergence that left Stage A reporting-complete but
+// behavior-incomplete (the RPC said relay_fallback_eligible=true while the
+// auto-register gate still suppressed registration on a learned address).
+inline bool IsDirectlyReachable(bool inbound_observed,
+                                bool has_explicit_advertised,
+                                bool port_mapping_active) {
+    return inbound_observed || has_explicit_advertised || port_mapping_active;
+}
+
 class P2PManager {
 public:
     struct BanEntry {
@@ -410,6 +426,13 @@ public:
     // Used so a NAT'd node (only a learned, dead address) stays relay-fallback
     // eligible instead of wrongly classifying itself as directly reachable.
     bool has_explicit_advertised() const { return has_explicit_advertised_.load(std::memory_order_acquire); }
+    // Gap 2 (A.1): P2PService pushes its port-mapping state here so the relay
+    // auto-register gate (MaybeAutoRegisterWithRelays) can apply the SAME
+    // reachability predicate as getnetworkinfo. P2PService owns the mapping
+    // lifecycle; this is a lock-free mirror it updates on every state change.
+    void set_port_mapping_active(bool active) {
+        port_mapping_active_.store(active, std::memory_order_release);
+    }
 
     // Gap 1 (peer-reported external-IP learning): record that `reporter_ip` told
     // us (in their version addrRecv) that our external address is `reported_addr`.
@@ -786,6 +809,10 @@ private:
     // port-mapping) has been advertised — distinct from Gap-1-learned addresses.
     // Drives the relay-fallback gate so NAT'd nodes (learned-only) stay eligible.
     std::atomic<bool> has_explicit_advertised_{false};
+    // Gap 2 (A.1): lock-free mirror of P2PService::port_mapping_active_, pushed
+    // via set_port_mapping_active(). Lets the relay auto-register gate apply the
+    // same reachability predicate (IsDirectlyReachable) as the getnetworkinfo RPC.
+    std::atomic<bool> port_mapping_active_{false};
 
     // Gap 1 (peer-reported external-IP learning): votes for our own external
     // address. Key = address a peer reported as ours (addrRecv); value = set of

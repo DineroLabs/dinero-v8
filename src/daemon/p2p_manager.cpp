@@ -3684,17 +3684,26 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     // connect_to_peer() calls below — until it flips, nothing is dialed.
     if (!dinero::network::QuicTransport::MainnetRelayReady()) return;
 
-    // Collect live relay connections; bail if we already have a confirmed
-    // inbound path (UPnP/NAT-PMP succeeded or an externalip is set — in
-    // both cases advertised_addresses_ is non-empty).
+    // Collect live relay connections and count observed inbound peers.
     std::vector<std::string> live_relays;
     std::unordered_set<std::string> connected_keys;
+    size_t inbound_observed = 0;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        if (!advertised_addresses_.empty()) return;
         for (const auto& kv : connected_peers_) {
             const auto& peer = kv.second;
             if (!peer || !peer->is_connected) continue;
+            // Count ONLY real direct inbound sockets as proof of reachability.
+            // Relay-virtual peers (via_relay) are inserted with is_outbound=false
+            // but a node reachable ONLY through a relay is NOT directly reachable;
+            // counting them would self-suppress its own relay registration once
+            // Stage B dialing lands, then it expires at the 2h TTL and oscillates.
+            // Deliberate divergence from status.inbound (which counts all conns
+            // for display) — here inbound means "a peer dialed our real socket".
+            if (!peer->is_outbound && !peer->via_relay.has_value() &&
+                peer->socket_fd >= 0) {
+                ++inbound_observed;
+            }
             std::string pk = peer->to_string();
             std::transform(pk.begin(), pk.end(), pk.begin(),
                            [](unsigned char c) {
@@ -3703,6 +3712,19 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
             connected_keys.insert(pk);
             if (peer->is_our_relay) live_relays.push_back(pk);
         }
+    }
+    // Gap 2 Stage A.1: skip relay auto-registration ONLY when this node is
+    // genuinely directly reachable — the SAME predicate getnetworkinfo uses.
+    // The prior gate `!advertised_addresses_.empty()` wrongly treated a
+    // Gap-1-LEARNED address (the NAT gateway's public IP, not necessarily
+    // dialable) as proof of reachability, so a NAT'd node never registered
+    // with a relay (Stage A fixed the RPC report but left this behavioral
+    // gate on the old assumption). IsDirectlyReachable keeps a learned-only
+    // NAT'd node eligible so it actually sends RELAYREG.
+    if (IsDirectlyReachable(inbound_observed > 0,
+                            has_explicit_advertised_.load(std::memory_order_acquire),
+                            port_mapping_active_.load(std::memory_order_acquire))) {
+        return;
     }
     if (live_relays.size() >= kAutoRelayTargetCount) {
         // Enough live relays — trim the designated list back to them.
@@ -3758,6 +3780,34 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
         std::cout << "[P2P] relay auto-register: dialing " << to_connect.size()
                   << " relay candidate(s) (" << live_relays.size() << "/"
                   << kAutoRelayTargetCount << " live)" << std::endl;
+    }
+
+    // Send the INITIAL RELAY_REGISTER to relays we're ALREADY connected to.
+    // SendRelayRegisterIfConfigured otherwise only fires post-verack at
+    // handshake time — so a relay designated AFTER its connection was already
+    // established (the common case for a NAT'd node that's already peered with
+    // the fleet from syncing) would never receive its first registration until
+    // the connection happened to re-handshake. Collect those peers under the
+    // lock, then send outside it (send_peer_message does socket I/O). The
+    // is_our_relay guard makes this a one-shot per connection; ongoing refresh
+    // is handled by RefreshRelayRegistrations.
+    std::vector<std::shared_ptr<PeerInfo>> initial_register;
+    {
+        std::unordered_set<std::string> desired_set(desired.begin(), desired.end());
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& kv : connected_peers_) {
+            const auto& peer = kv.second;
+            if (!peer || !peer->is_connected || peer->is_our_relay) continue;
+            std::string pk = peer->to_string();
+            std::transform(pk.begin(), pk.end(), pk.begin(),
+                           [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                           });
+            if (desired_set.count(pk)) initial_register.push_back(peer);
+        }
+    }
+    for (const auto& peer : initial_register) {
+        SendRelayRegisterIfConfigured(peer.get());
     }
 }
 
