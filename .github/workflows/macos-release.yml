@@ -1,0 +1,201 @@
+# ─────────────────────────────────────────────────────────────────────────
+# macOS release builds — Intel (x86_64) + Apple Silicon (arm64)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Cost model (READ THIS — see ci.yml for the full rationale):
+#
+#   macos-* runners are a 10x cost multiplier. This workflow is therefore
+#   gated to RELEASE TAGS ONLY (on: push: tags: [v8.*]) plus manual dispatch.
+#   It fires a few times a month, not on every PR — exactly the "separate
+#   release-gated workflow" ci.yml's header asks for.
+#
+# What it does:
+#   Builds the HEADLESS macOS operator stack (dinerod + dinero-cli) NATIVELY
+#   on both architectures:
+#     • macos-13  → Intel  x86_64   (fills the Intel-Mac lineup gap)
+#     • macos-14  → Apple Silicon arm64
+#   Because each slice is built on its own native runner, every vendored dep
+#   (OpenSSL, the Rust bulletproofs FFI, RocksDB, depends/ miniupnpc+libnatpmp)
+#   compiles for the right arch automatically — no cross-compile juggling, and
+#   UPnP/NAT-PMP port-mapping is ON (unlike the laptop cross-build).
+#
+# What it does NOT do (deliberately, for v1):
+#   • No Developer-ID signing / notarization of these headless binaries.
+#     The signed+notarized GUI (.dmg/.zip) is still produced by the manual
+#     packaging/mac/sign-notarize-release.sh flow. Codesigning these operator
+#     binaries in CI needs the Developer-ID cert + notary creds as repo
+#     secrets — add as a follow-up if Gatekeeper friction warrants it.
+#   • No Qt GUI build here (DINERO_BUILD_QT=OFF) — headless operator only.
+#
+# Output: dinero-operator-v<version>-macOS-<arch>.tar.gz (+ SHA256SUMS),
+#   uploaded as workflow artifacts AND attached to the release for the tag.
+# ─────────────────────────────────────────────────────────────────────────
+
+name: macOS Release Build
+
+on:
+  push:
+    tags: ['v8.*']        # release tags only — keeps 10x macOS minutes minimal
+  workflow_dispatch:       # manual run from the Actions UI (uses the chosen ref)
+    inputs:
+      release_tag:
+        description: 'Release tag to attach artifacts to (blank = artifacts only)'
+        required: false
+        default: ''
+
+concurrency:
+  group: macos-release-${{ github.ref }}
+  cancel-in-progress: true
+
+# contents: write so the tag-triggered run can attach the tarballs to the
+# existing GitHub release. (The release itself is still created by the manual
+# notarized flow; this only uploads the headless operator assets to it.)
+permissions:
+  contents: write
+
+jobs:
+  macos-build:
+    name: macOS ${{ matrix.arch }} — operator build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-13   # last Intel image — the x86_64 slice
+          - arch: arm64
+            runner: macos-14   # Apple Silicon
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      # Native Rust toolchain for the runner's arch (bulletproofs-ffi is Rust).
+      # No --target needed: macos-13 builds x86_64, macos-14 builds arm64.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build tools
+        run: brew install ninja ccache   # cmake is preinstalled on the image
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: macos-${{ matrix.arch }}
+          max-size: 500M
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.3.2/prebuilt
+            third_party/openssl-3.5.6/prebuilt
+            depends/sources
+            ~/.cargo/registry
+            ~/.cargo/git
+            third_party/bulletproofs_ffi/target
+          key: vendored-macos-${{ matrix.arch }}-${{ hashFiles('depends/CMakeLists.txt', 'scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock') }}
+          restore-keys: |
+            vendored-macos-${{ matrix.arch }}-
+
+      # Derive the version string (strip leading "v" from the tag; fall back
+      # to the dispatch input, else a dev marker).
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ inputs.release_tag }}" ]; then
+            V="${{ inputs.release_tag }}"; V="${V#v}"
+          else
+            V="8.0.0-dev"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Building macOS ${{ matrix.arch }} for version: $V"
+
+      # Native OpenSSL build for this runner's arch (script keys off uname -m).
+      - name: Build vendored OpenSSL
+        run: OPENSSL_REBUILD=1 bash scripts/build-openssl-vendored.sh
+
+      # depends/ provides miniupnpc + libnatpmp → port-mapping ON (native arch).
+      - name: Build depends (miniupnpc + libnatpmp)
+        run: |
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j$(sysctl -n hw.ncpu)
+
+      - name: CMake configure
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DDINERO_BUILD_QT=OFF \
+            -DENABLE_GPU_MINING=OFF \
+            -DENABLE_GRPC=OFF \
+            -DDINERO_ENABLE_PORTMAPPING=ON \
+            -DDINERO_RELEASE_TAG=${{ steps.ver.outputs.version }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build daemon + CLI
+        run: cmake --build build --target dinerod dinero-cli -j$(sysctl -n hw.ncpu)
+
+      # Fail loudly if the binary is the wrong arch, too-new min-OS, or doesn't run.
+      - name: Verify + smoke-test
+        run: |
+          BIN=$(find build -maxdepth 3 -type f -name dinerod -perm +111 | head -1)
+          echo "binary: $BIN"
+          ARCH=$(lipo -archs "$BIN"); echo "arch: $ARCH"
+          [ "$ARCH" = "${{ matrix.arch }}" ] || { echo "::error::arch mismatch: got $ARCH, want ${{ matrix.arch }}"; exit 1; }
+          MINOS=$(otool -l "$BIN" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')
+          echo "min-OS: $MINOS"
+          "$BIN" --version
+          "$BIN" --help | grep -qi portmap && echo "✓ port-mapping present"
+
+      - name: Package operator tarball
+        id: pkg
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          A="${{ matrix.arch }}"
+          ROOT="dinero-operator-v${V}-macOS-${A}"
+          mkdir -p "$ROOT/bin"
+          cp "$(find build -maxdepth 3 -type f -name dinerod -perm +111 | head -1)"    "$ROOT/bin/dinerod"
+          cp "$(find build -maxdepth 3 -type f -name dinero-cli -perm +111 | head -1)" "$ROOT/bin/dinero-cli"
+          cp LICENSE "$ROOT/LICENSE" 2>/dev/null || true
+          cat > "$ROOT/README.txt" <<EOF
+          Dinero macOS operator archive ${V} (${A})
+          Headless daemon + RPC CLI for macOS ${A} node operators (min-OS 13.0).
+            ./bin/dinerod
+            ./bin/dinero-cli
+          EOF
+          ( cd "$ROOT" && shasum -a 256 bin/* > SHA256SUMS )
+          TARBALL="dinero-operator-v${V}-macOS-${A}.tar.gz"
+          tar -czf "$TARBALL" "$ROOT"
+          shasum -a 256 "$TARBALL" | tee "SHA256SUMS-macos-${A}-${V}"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinero-operator-macOS-${{ matrix.arch }}
+          path: |
+            ${{ steps.pkg.outputs.tarball }}
+            SHA256SUMS-macos-${{ matrix.arch }}-${{ steps.ver.outputs.version }}
+          if-no-files-found: error
+
+      # Attach to the GitHub release for this tag (only on a real tag push).
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            "${{ steps.pkg.outputs.tarball }}" \
+            "SHA256SUMS-macos-${{ matrix.arch }}-${{ steps.ver.outputs.version }}" \
+            --clobber
