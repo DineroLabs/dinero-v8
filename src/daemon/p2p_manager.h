@@ -724,6 +724,10 @@ public:
         bool is_outbound,
         bool identity_proven,
         const std::array<uint8_t, 20>& node_id);
+    void test_set_peer_connected(const std::string& peer_address,
+                                 bool connected);
+    void test_maybe_auto_register_with_relays();
+    std::vector<std::string> test_configured_relay_endpoints() const;
     void test_insert_pending_relay_connect(
         uint64_t request_id,
         const std::array<uint8_t, 20>& target_node_id,

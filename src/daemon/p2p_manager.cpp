@@ -1789,6 +1789,8 @@ P2PManager::ManualRelayDialResult P2PManager::TryDialRelayHint(
             if (!peer) continue;
             if (peer->is_connected) {
                 connected_peer_addresses.insert(peer_key);
+            } else {
+                continue;
             }
             if (peer->identity_proven && NodeIdHex(peer->their_node_id) == target_hex) {
                 already_connected = true;
@@ -3389,6 +3391,25 @@ void P2PManager::test_install_connected_direct_peer(
     }
 }
 
+void P2PManager::test_set_peer_connected(const std::string& peer_address,
+                                         bool connected) {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    auto it = connected_peers_.find(peer_address);
+    if (it == connected_peers_.end() || !it->second) return;
+    it->second->is_connected = connected;
+    it->second->lifetime_state.store(
+        connected ? PeerLifetimeState::RUNNING : PeerLifetimeState::JOINED);
+}
+
+void P2PManager::test_maybe_auto_register_with_relays() {
+    MaybeAutoRegisterWithRelays();
+}
+
+std::vector<std::string> P2PManager::test_configured_relay_endpoints() const {
+    std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
+    return configured_relay_endpoints_;
+}
+
 void P2PManager::test_insert_pending_relay_connect(
     uint64_t request_id,
     const std::array<uint8_t, 20>& target_node_id,
@@ -3694,9 +3715,9 @@ void P2PManager::set_configured_relay_endpoints(std::vector<std::string> endpoin
 }
 
 namespace {
-// Bootstrap relay endpoints for cold-start auto-registration. Dynamic
-// NODE_RELAY discovery via addrman is primary; this list is the fallback
-// used before addrman has learned any relays from gossip.
+// Bootstrap relay endpoints for cold-start auto-registration. NAT'd nodes keep
+// at least one of these known-good fleet relays in their small registration set
+// so dynamic gossip cannot fill the whole budget with unvetted relays.
 constexpr std::pair<const char*, uint16_t> kMainnetRelayPeers[] = {
     {"173.249.195.59", 20999},   // VA / us-east
     {"172.93.160.131", 20999},   // LA / us-west
@@ -3755,46 +3776,89 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
                             port_mapping_active_.load(std::memory_order_acquire))) {
         return;
     }
-    if (live_relays.size() >= kAutoRelayTargetCount) {
-        // Enough live relays — trim the designated list back to them.
-        std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
-        configured_relay_endpoints_ = live_relays;
-        return;
-    }
 
-    // Top up: dynamic NODE_RELAY discovery first, bootstrap fallback.
-    std::vector<std::pair<std::string, uint16_t>> candidates;
-    if (address_manager_) {
-        for (const auto& a : address_manager_->getAddressesByService(
-                 ServiceFlags::NODE_RELAY, kAutoRelayTargetCount * 2)) {
-            candidates.emplace_back(a.ip, a.port);
-        }
-    }
-    for (const auto& bp : kMainnetRelayPeers) {
-        candidates.emplace_back(bp.first, bp.second);
-    }
-
-    std::vector<std::string> desired = live_relays;
-    std::vector<std::pair<std::string, uint16_t>> to_connect;
-    for (const auto& [host, port] : candidates) {
-        if (desired.size() >= kAutoRelayTargetCount) break;
-        if (port == 0) continue;
-        if (!external_ip_.empty() && host == external_ip_ &&
-            port == listen_port_) {
-            continue;  // never relay through ourselves
-        }
-        std::string key = host + ":" + std::to_string(port);
+    auto endpoint_key = [](std::string host, uint16_t port) {
+        std::string key = std::move(host) + ":" + std::to_string(port);
         std::transform(key.begin(), key.end(), key.begin(),
                        [](unsigned char c) {
                            return static_cast<char>(std::tolower(c));
                        });
+        return key;
+    };
+
+    std::unordered_set<std::string> bootstrap_keys;
+    for (const auto& bp : kMainnetRelayPeers) {
+        bootstrap_keys.insert(endpoint_key(bp.first, bp.second));
+    }
+
+    auto is_self = [&](const std::string& host, uint16_t port) {
+        return !external_ip_.empty() && host == external_ip_ &&
+               port == listen_port_;
+    };
+
+    // Keep the target count at 3, but compose it deliberately:
+    // 1. preserve any already-live bootstrap/fleet relays;
+    // 2. if none are live, reserve one slot for a bootstrap/fleet relay;
+    // 3. preserve remaining live relays;
+    // 4. fill the rest from dynamic NODE_RELAY gossip;
+    // 5. use additional bootstrap relays as cold-start fallback.
+    std::vector<std::pair<std::string, uint16_t>> dynamic_candidates;
+    if (address_manager_) {
+        for (const auto& a : address_manager_->getAddressesByService(
+                 ServiceFlags::NODE_RELAY, kAutoRelayTargetCount * 2)) {
+            dynamic_candidates.emplace_back(a.ip, a.port);
+        }
+    }
+
+    std::vector<std::string> desired;
+    std::vector<std::pair<std::string, uint16_t>> to_connect;
+    auto add_live_key = [&](const std::string& key) {
+        if (desired.size() >= kAutoRelayTargetCount) return;
+        if (std::find(desired.begin(), desired.end(), key) != desired.end()) return;
+        desired.push_back(key);
+    };
+    auto add_endpoint = [&](const std::string& host, uint16_t port) -> bool {
+        if (desired.size() >= kAutoRelayTargetCount) return false;
+        if (port == 0) return false;
+        if (is_self(host, port)) {
+            return false;  // never relay through ourselves
+        }
+        const std::string key = endpoint_key(host, port);
         if (std::find(desired.begin(), desired.end(), key) != desired.end()) {
-            continue;  // already designated
+            return false;  // already designated
         }
         desired.push_back(key);
         if (connected_keys.find(key) == connected_keys.end()) {
             to_connect.emplace_back(host, port);
         }
+        return true;
+    };
+
+    for (const auto& key : live_relays) {
+        if (bootstrap_keys.count(key)) add_live_key(key);
+    }
+    if (std::none_of(desired.begin(), desired.end(),
+                     [&](const std::string& key) {
+                         return bootstrap_keys.count(key) != 0;
+                     })) {
+        for (const auto& bp : kMainnetRelayPeers) {
+            add_endpoint(bp.first, bp.second);
+            if (std::any_of(desired.begin(), desired.end(),
+                            [&](const std::string& key) {
+                                return bootstrap_keys.count(key) != 0;
+                            })) {
+                break;
+            }
+        }
+    }
+    for (const auto& key : live_relays) {
+        if (!bootstrap_keys.count(key)) add_live_key(key);
+    }
+    for (const auto& [host, port] : dynamic_candidates) {
+        add_endpoint(host, port);
+    }
+    for (const auto& bp : kMainnetRelayPeers) {
+        add_endpoint(bp.first, bp.second);
     }
 
     {
