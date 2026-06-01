@@ -67,6 +67,12 @@ std::array<uint8_t, 20> MakeNodeId(uint8_t base) {
     return out;
 }
 
+uint8_t RelayAckStatus(const P2PMessage& message) {
+    EXPECT_EQ(message.command, "relayack");
+    EXPECT_GE(message.payload.size(), 18u);
+    return message.payload.size() >= 18 ? message.payload[16] : 0xff;
+}
+
 std::string HexNodeId(const std::array<uint8_t, 20>& node_id) {
     std::ostringstream out;
     out << std::hex << std::setfill('0');
@@ -607,41 +613,58 @@ TEST(RelayOrchestrator, RelayConnectAckLeavesVirtualPeerCreationToCallback) {
               nullptr);
 }
 
-// Reproduces the live ERR_IDLE_CLOSE symptom class at the relay-forwarding
-// layer: when a relay is >kRelayMaxBlocksBehind behind its peers, the
-// behind-tip throttle drops RELAYDAT FORWARDS. QUIC handshake packets ride
-// RELAYDAT, so a behind relay silently stalls every circuit's handshake (the
-// circuit still forms via RELAYCON/RELAYACK, which are not throttled) until
-// ngtcp2 idle-closes it. This test pins the mechanism: throttle ON drops the
-// forward; throttle OFF does not. A fix that exempts relay control/handshake
-// frames from the throttle would change this expectation.
-TEST(RelayBehindThrottle, DropsRelayDataForwardIncludingQuicHandshakeWhenBehind) {
+TEST(RelayBehindThrottle, RefusesNewCircuitsWhenBehind) {
     P2PManager manager(0);
-    const uint64_t circuit_id = 0xAABBCCDDEEFF0011ULL;
-    // Stand-in for a tunneled QUIC handshake (Initial) packet.
+    auto requester = LoopbackSocketPair::Create();
+    const std::string requester_key =
+        "127.0.0.1:" + std::to_string(requester.port());
+    manager.test_install_connected_direct_peer(requester_key,
+                                               requester.client_fd(),
+                                               true, false, {});
+
+    constexpr uint64_t request_id = 0x1122334455667788ULL;
+    const auto relay_connect =
+        P2PMessage::create_relay_connect(MakeNodeId(0x20), request_id);
+
+    manager.test_set_relay_behind_throttle(true);
+    manager.handle_relay_connect(requester_key, relay_connect);
+
+    auto ack = requester.ReceiveMessage();
+    ASSERT_NE(ack, nullptr);
+    EXPECT_EQ(ReadLE64ForTest(ack->payload, 0), request_id);
+    EXPECT_EQ(ReadLE64ForTest(ack->payload, 8), 0u);
+    EXPECT_EQ(RelayAckStatus(*ack),
+              static_cast<uint8_t>(P2PMessage::RelayConnectStatus::RateLimited));
+    EXPECT_EQ(manager.test_relay_drops_behind_count(), 0u);
+}
+
+TEST(RelayBehindThrottle, EstablishedCircuitStillForwardsWhenBehind) {
+    P2PManager manager(0);
+    auto target = LoopbackSocketPair::Create();
+    const std::string target_key =
+        "127.0.0.1:" + std::to_string(target.port());
+    const char* kRequester = "10.0.0.7:20999";
+    constexpr uint64_t circuit_id = 0xAABBCCDDEEFF0011ULL;
+
+    manager.test_install_connected_direct_peer(target_key, target.client_fd(),
+                                               true, false, {});
+    manager.test_install_relay_circuit(circuit_id, kRequester, target_key);
+
+    // Stand-in for a tunneled QUIC Initial packet. The relay cannot inspect
+    // its encrypted contents; the invariant is that already-open circuits are
+    // forwarded rather than silently black-holed while the relay is behind.
     const std::vector<uint8_t> quic_packet(64, 0x5A);
     const auto frame = P2PMessage::create_relay_data(
         circuit_id, P2PMessage::RelayDirection::ClientToTarget, quic_packet);
-    const char* kForwardSender = "10.0.0.7:20999";  // not a local endpoint
 
-    // Control: throttle OFF. The behind-gate does not fire; the frame falls
-    // through to the unknown-circuit drop, which does NOT touch the behind
-    // counter.
-    manager.test_set_relay_behind_throttle(false);
-    manager.handle_relay_data(kForwardSender, frame);
-    EXPECT_EQ(manager.test_relay_drops_behind_count(), 0u);
-
-    // Throttle ON: the SAME RELAYDAT forward is dropped at the behind-gate.
     manager.test_set_relay_behind_throttle(true);
-    manager.handle_relay_data(kForwardSender, frame);
-    EXPECT_EQ(manager.test_relay_drops_behind_count(), 1u);
+    manager.handle_relay_data(kRequester, frame);
 
-    // Every subsequent handshake/data frame is dropped while behind — this is
-    // why a behind relay stalls the handshake to ERR_IDLE_CLOSE rather than
-    // failing fast.
-    manager.handle_relay_data(kForwardSender, frame);
-    manager.handle_relay_data(kForwardSender, frame);
-    EXPECT_EQ(manager.test_relay_drops_behind_count(), 3u);
+    auto forwarded = target.ReceiveMessage();
+    ASSERT_NE(forwarded, nullptr);
+    EXPECT_EQ(forwarded->command, "relaydat");
+    EXPECT_EQ(forwarded->payload, frame.payload);
+    EXPECT_EQ(manager.test_relay_drops_behind_count(), 0u);
 }
 
 int main(int argc, char** argv) {

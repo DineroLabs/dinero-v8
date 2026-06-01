@@ -953,6 +953,18 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
     std::copy_n(message.payload.begin(), 20, target_node_id.begin());
     const uint64_t request_id = ReadLE64(message.payload, 20);
 
+    // Shed load before opening new circuits while this relay is far behind.
+    // Established circuits are still honored in handle_relay_data; refusing
+    // setup is visible to the originator, while dropping data mid-circuit just
+    // black-holes the tunneled QUIC handshake until it idle-closes.
+    if (relay_behind_throttle_.load(std::memory_order_relaxed)) {
+        auto ack = P2PMessage::create_relay_connect_ack(
+            request_id, 0, P2PMessage::RelayConnectStatus::RateLimited,
+            "relay is syncing; try another relay");
+        send_to_peer(peer_address, ack);
+        return;
+    }
+
     // Pre-b79fde09 this site refused to forward connects on mainnet because
     // the resulting RELAY_DATA would be plaintext. Now that the install
     // paths set encrypted_quic=true and wire a QuicSession on both ends,
@@ -1045,14 +1057,15 @@ void P2PManager::handle_relay_data(const std::string& peer_address,
     // direction byte at offset 8 — preserved but not consulted by the
     // relay; endpoints set it on send, read it on receive.
 
-    // Auto-suspend: while our own chain is far behind the network tip,
-    // don't spend bandwidth relaying for others — prioritise our own
-    // sync. The flag is recomputed on the keepalive tick (cached), so the
-    // data path never iterates peers under a lock.
-    if (relay_behind_throttle_.load(std::memory_order_relaxed)) {
-        relay_drops_behind_.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
+    // NOTE: the behind-tip auto-suspend is enforced at CIRCUIT SETUP
+    // (handle_relay_connect refuses new RELAY_CONNECTs while we're behind),
+    // NOT here on the data path. Silently dropping RELAY_DATA mid-circuit
+    // black-holes the tunneled QUIC handshake/keepalive of ALREADY-ESTABLISHED
+    // circuits — the endpoints can't tell, so the session just idle-closes
+    // (ERR_IDLE_CLOSE). Once we've committed to a circuit we honour it; we
+    // shed load by declining NEW circuits, not by breaking live ones. Steady-
+    // state bandwidth on established circuits is still bounded by the per-
+    // circuit/global/quota buckets below.
 
     const size_t frame_bytes = message.payload.size();
     std::string dest;
@@ -3340,6 +3353,14 @@ void P2PManager::test_set_relay_behind_throttle(bool behind) {
 
 uint64_t P2PManager::test_relay_drops_behind_count() const {
     return relay_drops_behind_.load(std::memory_order_relaxed);
+}
+
+void P2PManager::test_install_relay_circuit(uint64_t circuit_id,
+                                            const std::string& requester_addr,
+                                            const std::string& target_addr) {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(circuits_mutex_);
+    circuits_[circuit_id] = CircuitInfo{requester_addr, target_addr, now, now};
 }
 
 void P2PManager::test_install_connected_direct_peer(

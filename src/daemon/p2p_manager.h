@@ -745,11 +745,13 @@ public:
         std::chrono::milliseconds timeout);
     // Force/read the relay behind-tip throttle (normally set by
     // RecomputeRelayBehindThrottle when this relay is >kRelayMaxBlocksBehind
-    // behind its peers). Lets a test verify that the throttle drops RELAYDAT
-    // forwarding — including QUIC-handshake frames — which stalls relay
-    // circuits with ERR_IDLE_CLOSE.
+    // behind its peers). Lets tests verify that a behind relay refuses new
+    // circuits cleanly without black-holing already-open circuit data.
     void test_set_relay_behind_throttle(bool behind);
     uint64_t test_relay_drops_behind_count() const;
+    void test_install_relay_circuit(uint64_t circuit_id,
+                                    const std::string& requester_addr,
+                                    const std::string& target_addr);
 #endif
 
 private:
