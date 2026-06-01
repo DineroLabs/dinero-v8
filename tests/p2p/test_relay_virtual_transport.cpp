@@ -736,6 +736,38 @@ TEST(RelayBehindThrottle, EstablishedCircuitStillForwardsWhenBehind) {
     EXPECT_EQ(manager.test_relay_drops_behind_count(), 0u);
 }
 
+// Relay health scoring (#3): the auto-registration set prefers healthy relays
+// and replaces persistently-failing ones. This pins the EWMA score + the
+// replacement-eligibility rules that MaybeAutoRegisterWithRelays consults.
+TEST(RelayHealthScoring, ScoreEwmaAndReplacementEligibility) {
+    P2PManager manager(0);
+    const std::string r = "203.0.113.7:20999";
+
+    // Unknown relay: neutral prior, never replace-eligible (give it a chance).
+    EXPECT_DOUBLE_EQ(manager.relay_health_score("unknown:1"), 0.5);
+    EXPECT_FALSE(manager.relay_health_replace_eligible("unknown:1"));
+
+    // Successes pull the EWMA toward 1.0; a healthy relay is never replaced.
+    for (int i = 0; i < 5; ++i) manager.note_relay_outcome(r, true);
+    EXPECT_GT(manager.relay_health_score(r), 0.8);
+    EXPECT_FALSE(manager.relay_health_replace_eligible(r));
+
+    // A run of consecutive failures (>= kRelayMaxConsecutiveFailures = 4) makes
+    // the relay replace-eligible and drives the score below neutral.
+    for (int i = 0; i < 4; ++i) manager.note_relay_outcome(r, false);
+    EXPECT_TRUE(manager.relay_health_replace_eligible(r));
+    EXPECT_LT(manager.relay_health_score(r), 0.5);
+
+    // A single success resets the consecutive-failure streak and lifts the
+    // score back above the replace floor → no longer eligible.
+    manager.note_relay_outcome(r, true);
+    EXPECT_FALSE(manager.relay_health_replace_eligible(r));
+
+    // Endpoint keying is case-insensitive.
+    manager.note_relay_outcome("HOST:20999", true);
+    EXPECT_GT(manager.relay_health_score("host:20999"), 0.5);
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
