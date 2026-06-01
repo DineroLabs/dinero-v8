@@ -31,6 +31,8 @@
 #include <memory>
 #include <atomic>
 #include <vector>
+#include <string>
+#include <cstdint>
 
 namespace {
 
@@ -686,6 +688,104 @@ din::Json rpc_context_setnetworkactive(const ExecutionContext& ctx, const din::J
     return result;
 }
 
+// node.status — one operator-facing health summary answering the questions an
+// operator actually asks right after install: am I synced? do I have peers? am
+// I directly reachable or behind NAT? am I registered with relays? can someone
+// reach me through a relay? Reuses getnetworkinfo (so the reachability/relay
+// predicates keep ONE source of truth — see IsDirectlyReachable) and
+// getsynchealth, then distills them into clear booleans + a one-line summary.
+extern din::Json rpc_context_getsynchealth(const ExecutionContext& ctx,
+                                           const din::Json& params);
+
+din::Json rpc_context_nodestatus(const ExecutionContext& ctx, const din::Json& params) {
+    const din::Json net = rpc_context_getnetworkinfo(ctx, params);
+    const din::Json sync = rpc_context_getsynchealth(ctx, params);
+
+    din::Json result;
+
+    // ── sync ──
+    const bool sync_ok = !sync.isMember("error");
+    const bool in_ibd =
+        sync.isMember("initialblockdownload") && sync["initialblockdownload"].asBool();
+    const bool synced = sync_ok && !in_ibd;
+    const uint64_t height =
+        sync.isMember("active_height")
+            ? static_cast<uint64_t>(sync["active_height"].asInt())
+            : 0;
+    din::Json sync_obj;
+    sync_obj["synced"] = synced;
+    sync_obj["height"] = static_cast<Json::UInt64>(height);
+    sync_obj["initial_block_download"] = in_ibd;
+    if (sync.isMember("chain")) {
+        sync_obj["chain"] = sync["chain"].asString();
+    }
+    result["sync"] = sync_obj;
+
+    // ── peers ──
+    const uint64_t cin =
+        net.isMember("connections_in") ? net["connections_in"].asUInt64() : 0;
+    const uint64_t cout =
+        net.isMember("connections_out") ? net["connections_out"].asUInt64() : 0;
+    din::Json peers;
+    peers["in"] = static_cast<Json::UInt64>(cin);
+    peers["out"] = static_cast<Json::UInt64>(cout);
+    peers["total"] = static_cast<Json::UInt64>(cin + cout);
+    result["peers"] = peers;
+
+    // ── reachability (reuse getnetworkinfo's computed predicates) ──
+    const bool direct =
+        net.isMember("direct_reachable") && net["direct_reachable"].asBool();
+    const bool eligible =
+        net.isMember("relay_fallback_eligible") &&
+        net["relay_fallback_eligible"].asBool();
+    uint64_t registered_relays = 0;
+    if (net.isMember("dynamic_p2p") &&
+        net["dynamic_p2p"].isMember("peers") &&
+        net["dynamic_p2p"]["peers"].isMember("relay_peer_connections")) {
+        registered_relays =
+            net["dynamic_p2p"]["peers"]["relay_peer_connections"].asUInt64();
+    }
+    bool relay_data_ready = false;
+    if (net.isMember("quic_transport") &&
+        net["quic_transport"].isMember("relay_data_ready")) {
+        relay_data_ready = net["quic_transport"]["relay_data_ready"].asBool();
+    }
+    const bool behind_nat = !direct && eligible;
+    const bool reachable_via_relay = relay_data_ready && registered_relays > 0;
+    din::Json reach;
+    reach["direct_reachable"] = direct;
+    reach["behind_nat"] = behind_nat;
+    reach["relay_fallback_eligible"] = eligible;
+    reach["registered_relays"] = static_cast<Json::UInt64>(registered_relays);
+    reach["relay_data_ready"] = relay_data_ready;
+    reach["reachable_via_relay"] = reachable_via_relay;
+    result["reachability"] = reach;
+
+    // ── overall verdict + one-line operator summary ──
+    const bool reachable_somehow = direct || reachable_via_relay;
+    const bool ok = synced && (cin + cout) > 0 && reachable_somehow;
+    result["ok"] = ok;
+
+    std::string summary = synced ? "synced" : "syncing";
+    summary += " @ height " + std::to_string(height);
+    summary += "; " + std::to_string(cin + cout) + " peers (" +
+               std::to_string(cin) + " in / " + std::to_string(cout) + " out)";
+    if (direct) {
+        summary += "; directly reachable";
+    } else if (reachable_via_relay) {
+        summary += "; behind NAT, reachable via relay (" +
+                   std::to_string(registered_relays) + " relays)";
+    } else if (eligible) {
+        summary += "; behind NAT, relay-eligible but NOT yet relay-reachable (" +
+                   std::to_string(registered_relays) + " relays, data_ready=" +
+                   std::string(relay_data_ready ? "yes" : "no") + ")";
+    } else {
+        summary += "; reachability not yet determined";
+    }
+    result["summary"] = summary;
+    return result;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // REGISTRATION FUNCTION
 // ═══════════════════════════════════════════════════════════════
@@ -751,5 +851,15 @@ void registerNetworkMethodsContext() {
                                  RegisterMode::Overwrite,
                                  "context-aware");
 
-    dinero::g_logger.info("[RPC Context] Registered 10 network context-aware methods");
+    // Operator one-shot health summary (install/dashboard/CLI).
+    g_rpcRegistry.registerHandler("node.status",
+                                 rpc_context_nodestatus,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+    g_rpcRegistry.registerHandler("node.health",
+                                 rpc_context_nodestatus,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+
+    dinero::g_logger.info("[RPC Context] Registered 12 network context-aware methods");
 }
