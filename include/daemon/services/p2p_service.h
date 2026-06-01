@@ -86,6 +86,10 @@ public:
         size_t discovered_connections{0};
         size_t relay_peer_connections{0};
         std::vector<std::pair<std::string, uint16_t>> advertised_addresses;
+        // True iff an EXPLICIT/confirmed reachable address (operator externalip
+        // or port-mapping) is advertised — not merely a Gap-1-learned one. Used
+        // by the relay-fallback gate so NAT'd nodes stay eligible.
+        bool has_explicit_advertised{false};
         AddrmanSnapshot addrman;
         bool dynamic_p2p_enabled{false};
         std::string dynamic_p2p_mode{"observe"};

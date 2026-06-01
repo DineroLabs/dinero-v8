@@ -229,7 +229,13 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     result["listen"] = status.listening;
     result["listen_port"] = static_cast<int>(status.listen_port);
     const bool direct_inbound_observed = status.inbound > 0;
-    const bool direct_advertised = !status.advertised_addresses.empty();
+    // Gap 2 fix: only an EXPLICIT/confirmed reachable advertisement (operator
+    // externalip or port-mapping) proves direct reachability — a Gap-1-LEARNED
+    // address is just the IP peers see us from (the NAT gateway's public IP for
+    // a NAT'd node), which isn't actually dialable. Using "any advertised
+    // address" here would let a learned, dead address wrongly suppress the relay
+    // fallback for genuinely NAT'd nodes.
+    const bool direct_advertised = status.has_explicit_advertised;
     const bool direct_reachable =
         direct_inbound_observed || direct_advertised || status.port_mapping_active;
     const bool relay_fallback_eligible =
