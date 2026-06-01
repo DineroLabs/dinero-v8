@@ -236,8 +236,11 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     // address" here would let a learned, dead address wrongly suppress the relay
     // fallback for genuinely NAT'd nodes.
     const bool direct_advertised = status.has_explicit_advertised;
-    const bool direct_reachable =
-        direct_inbound_observed || direct_advertised || status.port_mapping_active;
+    // Same predicate the relay auto-register gate uses (IsDirectlyReachable in
+    // p2p_manager.h) — keep these two call sites identical so the relay-fallback
+    // report can never disagree with the registration behavior it gates.
+    const bool direct_reachable = IsDirectlyReachable(
+        direct_inbound_observed, direct_advertised, status.port_mapping_active);
     const bool relay_fallback_eligible =
         status.network_active && status.listening && !direct_reachable;
     result["reachable"] = direct_reachable;
@@ -403,9 +406,13 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         : std::string();
 
     std::string warning;
-    if (status.network_active && status.listening &&
-        status.inbound == 0 && status.advertised_addresses.empty()) {
-        warning = "No inbound peer or advertised public address observed yet; outbound P2P still works";
+    // Reuse the single reachability predicate (direct_reachable) rather than the
+    // pre-Gap1 `advertised_addresses.empty()` check — otherwise a NAT'd node with
+    // only a Gap-1-LEARNED (dead) address would suppress this warning despite not
+    // being directly reachable.
+    if (status.network_active && status.listening && !direct_reachable) {
+        warning = "No confirmed direct reachability (no inbound peer, explicit advertised "
+                  "address, or active port mapping) yet; outbound P2P still works";
     }
     result["warnings"] = warning;
     result["rpc_schema"] = "din.rpc.v1";

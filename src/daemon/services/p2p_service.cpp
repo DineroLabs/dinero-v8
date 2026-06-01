@@ -769,6 +769,7 @@ void P2PService::StartPortMappingIfEnabled() {
         std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
         port_mapping_requested_ = !mode_value.empty() || upnp_enabled || natpmp_enabled;
         port_mapping_active_ = false;
+        if (p2p_mgr_) p2p_mgr_->set_port_mapping_active(false);  // Gap 2 A.1 mirror
         port_mapping_mode_ = network::PortMappingModeName(mode);
         port_mapping_protocol_.clear();
         port_mapping_external_address_.clear();
@@ -872,6 +873,7 @@ void P2PService::StartPortMappingIfEnabled() {
             {
                 std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
                 port_mapping_active_ = false;
+                if (p2p_mgr_) p2p_mgr_->set_port_mapping_active(false);  // Gap 2 A.1 mirror
                 port_mapping_protocol_.clear();
                 port_mapping_external_address_.clear();
                 port_mapping_message_ = "discovery timed out after " +
@@ -899,6 +901,7 @@ void P2PService::StartPortMappingIfEnabled() {
                 std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
                 port_mapping_ = std::move(session);
                 port_mapping_active_ = true;
+                if (p2p_mgr_) p2p_mgr_->set_port_mapping_active(true);  // Gap 2 A.1 mirror
                 port_mapping_protocol_ = result.protocol;
                 port_mapping_external_address_ = result.external_address;
                 port_mapping_message_ = result.message;
@@ -922,6 +925,7 @@ void P2PService::StartPortMappingIfEnabled() {
             {
                 std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
                 port_mapping_active_ = false;
+                if (p2p_mgr_) p2p_mgr_->set_port_mapping_active(false);  // Gap 2 A.1 mirror
                 port_mapping_protocol_.clear();
                 port_mapping_external_address_.clear();
                 port_mapping_message_ = result.message.empty() ? "unavailable" : result.message;
@@ -965,6 +969,7 @@ void P2PService::StopPortMapping() {
     {
         std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
         port_mapping_active_ = false;
+        if (p2p_mgr_) p2p_mgr_->set_port_mapping_active(false);  // Gap 2 A.1 mirror
         port_mapping_protocol_.clear();
         if (port_mapping_requested_) {
             port_mapping_message_ = "stopped";
