@@ -607,6 +607,43 @@ TEST(RelayOrchestrator, RelayConnectAckLeavesVirtualPeerCreationToCallback) {
               nullptr);
 }
 
+// Reproduces the live ERR_IDLE_CLOSE symptom class at the relay-forwarding
+// layer: when a relay is >kRelayMaxBlocksBehind behind its peers, the
+// behind-tip throttle drops RELAYDAT FORWARDS. QUIC handshake packets ride
+// RELAYDAT, so a behind relay silently stalls every circuit's handshake (the
+// circuit still forms via RELAYCON/RELAYACK, which are not throttled) until
+// ngtcp2 idle-closes it. This test pins the mechanism: throttle ON drops the
+// forward; throttle OFF does not. A fix that exempts relay control/handshake
+// frames from the throttle would change this expectation.
+TEST(RelayBehindThrottle, DropsRelayDataForwardIncludingQuicHandshakeWhenBehind) {
+    P2PManager manager(0);
+    const uint64_t circuit_id = 0xAABBCCDDEEFF0011ULL;
+    // Stand-in for a tunneled QUIC handshake (Initial) packet.
+    const std::vector<uint8_t> quic_packet(64, 0x5A);
+    const auto frame = P2PMessage::create_relay_data(
+        circuit_id, P2PMessage::RelayDirection::ClientToTarget, quic_packet);
+    const char* kForwardSender = "10.0.0.7:20999";  // not a local endpoint
+
+    // Control: throttle OFF. The behind-gate does not fire; the frame falls
+    // through to the unknown-circuit drop, which does NOT touch the behind
+    // counter.
+    manager.test_set_relay_behind_throttle(false);
+    manager.handle_relay_data(kForwardSender, frame);
+    EXPECT_EQ(manager.test_relay_drops_behind_count(), 0u);
+
+    // Throttle ON: the SAME RELAYDAT forward is dropped at the behind-gate.
+    manager.test_set_relay_behind_throttle(true);
+    manager.handle_relay_data(kForwardSender, frame);
+    EXPECT_EQ(manager.test_relay_drops_behind_count(), 1u);
+
+    // Every subsequent handshake/data frame is dropped while behind — this is
+    // why a behind relay stalls the handshake to ERR_IDLE_CLOSE rather than
+    // failing fast.
+    manager.handle_relay_data(kForwardSender, frame);
+    manager.handle_relay_data(kForwardSender, frame);
+    EXPECT_EQ(manager.test_relay_drops_behind_count(), 3u);
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

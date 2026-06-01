@@ -743,6 +743,13 @@ public:
     std::unique_ptr<P2PMessage> test_receive_peer_message(
         const std::string& peer_key,
         std::chrono::milliseconds timeout);
+    // Force/read the relay behind-tip throttle (normally set by
+    // RecomputeRelayBehindThrottle when this relay is >kRelayMaxBlocksBehind
+    // behind its peers). Lets a test verify that the throttle drops RELAYDAT
+    // forwarding — including QUIC-handshake frames — which stalls relay
+    // circuits with ERR_IDLE_CLOSE.
+    void test_set_relay_behind_throttle(bool behind);
+    uint64_t test_relay_drops_behind_count() const;
 #endif
 
 private:

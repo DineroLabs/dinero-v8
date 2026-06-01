@@ -3334,6 +3334,14 @@ bool P2PManager::test_plaintext_relay_transport_allowed() const {
     return plaintext_relay_transport_allowed();
 }
 
+void P2PManager::test_set_relay_behind_throttle(bool behind) {
+    relay_behind_throttle_.store(behind, std::memory_order_relaxed);
+}
+
+uint64_t P2PManager::test_relay_drops_behind_count() const {
+    return relay_drops_behind_.load(std::memory_order_relaxed);
+}
+
 void P2PManager::test_install_connected_direct_peer(
     const std::string& peer_address,
     int socket_fd,
