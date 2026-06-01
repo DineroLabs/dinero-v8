@@ -57,6 +57,17 @@ if [[ ! -d "$APP" ]]; then
     exit 1
 fi
 
+for path in \
+    "$APP/Contents/MacOS/dinero-seeder" \
+    "$APP/Contents/Resources/dinero-seeder" \
+    "$STAGE_DIR/dinero-seeder"; do
+    if [[ ! -x "$path" ]]; then
+        echo "ERROR: required dinero-seeder missing from staged macOS release: $path" >&2
+        echo "Rebuild with -DDINERO_BUILD_SEEDER=ON and target dinero-seeder." >&2
+        exit 1
+    fi
+done
+
 echo "----------------------------------------------------------"
 echo "Finalizing Dinero macOS release -- v$VERSION"
 echo "----------------------------------------------------------"
@@ -146,8 +157,8 @@ cp "$PROJECT_ROOT/LICENSE" "$OPERATOR_ROOT/LICENSE" 2>/dev/null || true
 cat > "$OPERATOR_ROOT/README.txt" <<EOF
 Dinero macOS operator archive ${VERSION}
 
-This archive is for headless macOS node operators. It includes the daemon
-and RPC CLI, plus dinero-seeder when the release host built it.
+This archive is for headless macOS node operators. It includes the daemon,
+RPC CLI, and dinero-seeder.
 
 Common entry points:
   ./bin/dinerod

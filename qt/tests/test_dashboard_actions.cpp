@@ -93,6 +93,32 @@ private Q_SLOTS:
         QCOMPARE(params.at(1).toString(), QStringLiteral("add"));
         QCOMPARE(params.at(2).toInt(), 3600);
     }
+
+    void seeder_missing_binary_error_survives_status_refresh() {
+        DashboardActionController c(nullptr, nullptr);
+        QSignalSpy spy(&c, &DashboardActionController::seederStateChanged);
+
+        c.setSeederOptIn(true);
+        c.startSeeder();
+
+        QVERIFY(spy.count() >= 2);
+        QCOMPARE(spy.last().at(2).toString(),
+                 QStringLiteral("dinero-seeder not found"));
+
+        QJsonObject stopped;
+        stopped.insert(QStringLiteral("running"), false);
+        const bool invoked = QMetaObject::invokeMethod(
+            &c,
+            "onRpcResult",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("seeder.status")),
+            Q_ARG(QJsonValue, QJsonValue(stopped)));
+        QVERIFY(invoked);
+
+        QVERIFY(spy.count() >= 3);
+        QCOMPARE(spy.last().at(2).toString(),
+                 QStringLiteral("dinero-seeder not found"));
+    }
 };
 
 QTEST_MAIN(TestDashboardActions)

@@ -78,11 +78,13 @@ if [[ ! -d "$APP_BUNDLE" ]]; then
     exit 1
 fi
 
-# Verify the daemon stack the Qt app embeds.
-for bin in dinerod dinero-cli; do
+# Verify the daemon stack the Qt app embeds. dinero-seeder is required because
+# the Cmd+K dashboard exposes a Start Seeder control; shipping the GUI without
+# the helper makes that button fail at runtime.
+for bin in dinerod dinero-cli seeder/dinero-seeder; do
     if [[ ! -x "$BUILD_DIR/$bin" ]]; then
         echo "ERROR: $bin not found at $BUILD_DIR/$bin" >&2
-        echo "Run cmake --build $BUILD_DIR --target dinerod dinero-cli first." >&2
+        echo "Run cmake --build $BUILD_DIR --target dinerod dinero-cli dinero-seeder first." >&2
         exit 1
     fi
 done
@@ -102,10 +104,11 @@ ditto "$APP_BUNDLE" "$STAGE_DIR/dinero-qt.app"
 # network operators. The companion binary remains available at the DMG
 # root too, but embedding it inside the .app lets future Qt UI affordances
 # launch the seeder without requiring users to preserve sidecar files.
-if [[ -x "$BUILD_DIR/seeder/dinero-seeder" && -d "$STAGE_DIR/dinero-qt.app/Contents/MacOS" ]]; then
-    cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-qt.app/Contents/MacOS/dinero-seeder"
-    chmod +x "$STAGE_DIR/dinero-qt.app/Contents/MacOS/dinero-seeder"
-fi
+cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-qt.app/Contents/MacOS/dinero-seeder"
+chmod +x "$STAGE_DIR/dinero-qt.app/Contents/MacOS/dinero-seeder"
+mkdir -p "$STAGE_DIR/dinero-qt.app/Contents/Resources"
+cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-seeder"
+chmod +x "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-seeder"
 
 # Embed the standalone daemon stack alongside the .app for users who
 # want the CLI tools without launching the Qt UI. Mirrors what the
@@ -122,10 +125,7 @@ if [[ -x "$BUILD_DIR/miner/dinero-solo-miner" ]]; then
     cp "$BUILD_DIR/miner/dinero-solo-miner" "$STAGE_DIR/dinero-solo-miner"
 fi
 
-# Optional: seeder if it was built.
-if [[ -x "$BUILD_DIR/seeder/dinero-seeder" ]]; then
-    cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-seeder"
-fi
+cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-seeder"
 
 # Optional: standalone miner / wallet tools if this release host built them.
 for bin in dinero-gpu-miner dinero-miner dinero-stratum-worker dinero-wallet-cli; do
@@ -163,15 +163,13 @@ OPERATOR_ROOT="$OPERATOR_STAGE_DIR/dinero-operator-v${VERSION}-macOS-arm64"
 mkdir -p "$OPERATOR_ROOT/bin"
 cp "$BUILD_DIR/dinerod" "$OPERATOR_ROOT/bin/dinerod"
 cp "$BUILD_DIR/dinero-cli" "$OPERATOR_ROOT/bin/dinero-cli"
-if [[ -x "$BUILD_DIR/seeder/dinero-seeder" ]]; then
-    cp "$BUILD_DIR/seeder/dinero-seeder" "$OPERATOR_ROOT/bin/dinero-seeder"
-fi
+cp "$BUILD_DIR/seeder/dinero-seeder" "$OPERATOR_ROOT/bin/dinero-seeder"
 cp "$PROJECT_ROOT/LICENSE" "$OPERATOR_ROOT/LICENSE" 2>/dev/null || true
 cat > "$OPERATOR_ROOT/README.txt" <<EOF
 Dinero macOS operator archive ${VERSION}
 
-This archive is for headless macOS node operators. It includes the daemon
-and RPC CLI, plus dinero-seeder when the release host built it.
+This archive is for headless macOS node operators. It includes the daemon,
+RPC CLI, and dinero-seeder.
 
 Common entry points:
   ./bin/dinerod

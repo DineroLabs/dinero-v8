@@ -219,6 +219,7 @@ void DashboardActionController::dialRelayHint(const HintRow& hint) {
 
 void DashboardActionController::setSeederOptIn(bool enabled) {
     seeder_opted_in_ = enabled;
+    seeder_error_sticky_ = false;
     QSettings().setValue(seederOptInKey(), enabled);
     if (!enabled && seeder_running_) {
         stopSeeder();
@@ -238,10 +239,12 @@ void DashboardActionController::startSeeder() {
     }
     const QString binary = defaultSeederPath();
     if (binary.isEmpty()) {
+        seeder_error_sticky_ = true;
         seeder_status_ = tr("dinero-seeder not found");
         emitSeederState();
         return;
     }
+    seeder_error_sticky_ = false;
     dispatchObject(QStringLiteral("seeder.start"), QJsonObject{
         {QStringLiteral("binary"), binary},
     });
@@ -250,6 +253,7 @@ void DashboardActionController::startSeeder() {
 }
 
 void DashboardActionController::stopSeeder() {
+    seeder_error_sticky_ = false;
     dispatchObject(QStringLiteral("seeder.stop"), QJsonObject{});
     seeder_status_ = tr("Stopping");
     emitSeederState();
@@ -329,9 +333,14 @@ void DashboardActionController::onRpcResult(const QString& method,
         const auto obj = result.toObject();
         seeder_running_ = obj.value(QStringLiteral("running")).toBool(false);
         if (method == QStringLiteral("seeder.status")) {
-            seeder_status_ = seeder_running_ ? tr("Running")
-                                             : (seeder_opted_in_ ? tr("Ready") : tr("Off"));
+            if (seeder_running_) {
+                seeder_error_sticky_ = false;
+                seeder_status_ = tr("Running");
+            } else if (!seeder_error_sticky_) {
+                seeder_status_ = seeder_opted_in_ ? tr("Ready") : tr("Off");
+            }
         } else {
+            seeder_error_sticky_ = false;
             seeder_status_ = seeder_running_ ? tr("Running") : tr("Stopped");
             Q_EMIT actionStatusChanged(tr("%1 accepted").arg(method));
         }
@@ -351,6 +360,7 @@ void DashboardActionController::onRpcError(const QString& method, int code,
         Q_EMIT actionStatusChanged(tr("%1 failed (%2): %3")
             .arg(method).arg(code).arg(message));
         if (method.startsWith(QStringLiteral("seeder."))) {
+            seeder_error_sticky_ = true;
             seeder_status_ = tr("Error: %1").arg(message);
             emitSeederState();
         }

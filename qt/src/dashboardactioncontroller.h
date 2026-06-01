@@ -66,6 +66,7 @@ private:
     QTimer* seeder_status_timer_{nullptr};
     bool seeder_opted_in_{false};
     bool seeder_running_{false};
+    bool seeder_error_sticky_{false};
     QString seeder_status_;
 
     bool confirm(const QString& title, const QString& body) const;
