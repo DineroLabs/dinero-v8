@@ -521,7 +521,8 @@ bool RecvAll(int socket_fd, uint8_t* data, size_t len) {
 P2PMessage P2PMessage::create_version(uint32_t protocol_version, uint32_t best_height,
                                       uint64_t services,
                                       const std::string& user_agent,
-                                      uint64_t explicit_nonce) {
+                                      uint64_t explicit_nonce,
+                                      const std::string& addr_recv_ip) {
     P2PMessage msg;
     msg.command = "version";
 
@@ -552,11 +553,23 @@ P2PMessage P2PMessage::create_version(uint32_t protocol_version, uint32_t best_h
         payload.push_back((timestamp >> (i * 8)) & 0xFF);
     }
 
-    // addrRecv (26 bytes): services(8) + IPv6(16) + port(2)
+    // addrRecv (26 bytes): services(8) + IPv6(16) + port(2).
+    // Fill the IPv4 octets with the RECIPIENT's address (addr_recv_ip) so the
+    // peer can learn its own external IP from us (Bitcoin addrRecv semantics).
+    // Empty / non-IPv4 => 0.0.0.0 (legacy behavior, harmless).
     for (int i = 0; i < 8; i++) payload.push_back((services >> (i * 8)) & 0xFF);  // services
     for (int i = 0; i < 10; i++) payload.push_back(0);  // IPv6 prefix zeros
-    payload.push_back(0xff); payload.push_back(0xff);  // IPv4 marker
-    payload.push_back(0); payload.push_back(0); payload.push_back(0); payload.push_back(0);  // IPv4 zeros
+    payload.push_back(0xff); payload.push_back(0xff);  // IPv4-mapped marker
+    {
+        struct in_addr v4 {};
+        if (!addr_recv_ip.empty() && inet_pton(AF_INET, addr_recv_ip.c_str(), &v4) == 1) {
+            const uint8_t* b = reinterpret_cast<const uint8_t*>(&v4.s_addr);  // network byte order
+            payload.push_back(b[0]); payload.push_back(b[1]);
+            payload.push_back(b[2]); payload.push_back(b[3]);
+        } else {
+            payload.push_back(0); payload.push_back(0); payload.push_back(0); payload.push_back(0);
+        }
+    }
     payload.push_back((20999 >> 8) & 0xFF);  // Port (big-endian)
     payload.push_back(20999 & 0xFF);
 
@@ -3875,6 +3888,43 @@ std::vector<std::pair<std::string, uint16_t>> P2PManager::get_advertised_address
     return advertised_addresses_;
 }
 
+void P2PManager::record_self_address_report(const std::string& reported_addr,
+                                            const std::string& reporter_ip) {
+    if (reported_addr.empty() || reporter_ip.empty()) {
+        return;
+    }
+    // Cheap early-out for obviously-useless reports; add_advertised_address still
+    // enforces the full routability gate before anything is actually advertised.
+    if (IsLocalOrWildcardAddress(reported_addr)) {
+        return;
+    }
+
+    // Anti-spoof: require agreement from this many DISTINCT reporter peers before
+    // trusting a self-address, so a single (possibly malicious) peer can't
+    // promote a bogus address on its own.
+    static constexpr size_t kSelfAddrVoteThreshold = 3;
+
+    bool promote = false;
+    size_t votes = 0;
+    {
+        std::lock_guard<std::mutex> lock(self_addr_mutex_);
+        auto& reporters = self_addr_votes_[reported_addr];
+        reporters.insert(reporter_ip);          // distinct reporter IPs only
+        votes = reporters.size();
+        promote = votes >= kSelfAddrVoteThreshold;
+    }
+
+    if (promote) {
+        // Use OUR listen port — the port the peer saw is our ephemeral outbound
+        // port, not our inbound listener. add_advertised_address de-dups and
+        // gates on routability, so repeated promotions are harmless no-ops.
+        std::cout << "[P2P] Self-address learned from peers (" << votes
+                  << " distinct reporters): " << reported_addr << ":" << listen_port_
+                  << " — advertising" << std::endl;
+        add_advertised_address(reported_addr, listen_port_);
+    }
+}
+
 bool P2PManager::start() {
     if (running_) {
         std::cout << "P2P manager already running" << std::endl;
@@ -4857,6 +4907,20 @@ static void parse_version_payload(const std::vector<uint8_t>& payload, PeerInfo*
         peer->their_nonce = ReadLE64(payload, 72);
     }
 
+    // Gap 1 (peer-reported external-IP learning): extract the IPv4 in addrRecv —
+    // the address this peer reports as OURS. addrRecv starts at offset 20
+    // (services[8]@20, IP[16]@28, port[2]@44); an IPv4-mapped IPv6 carries the
+    // 4 IPv4 octets at offset 40-43. 0.0.0.0 means a legacy peer that zero-fills
+    // addrRecv — ignore those. The caller (which holds the P2PManager) feeds a
+    // non-empty reported_local_addr into self-address vote scoring.
+    if (payload.size() >= 46) {
+        const uint8_t a = payload[40], b = payload[41], c = payload[42], d = payload[43];
+        if (!(a == 0 && b == 0 && c == 0 && d == 0)) {
+            peer->reported_local_addr = std::to_string(a) + "." + std::to_string(b) +
+                                        "." + std::to_string(c) + "." + std::to_string(d);
+        }
+    }
+
     // User agent and start_height are optional for malformed/minimal payloads.
     if (payload.size() <= 80) {
         return;
@@ -4927,9 +4991,10 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
               << " (outbound=" << peer->is_outbound << ")" << std::endl;
 
     if (peer->is_outbound) {
-        // Send version message with actual chain height and service flags
+        // Send version message with actual chain height and service flags.
+        // Pass peer->address as addrRecv so the peer can learn its own IP from us.
         auto version_msg = P2PMessage::create_version(protocol_version_, our_height, our_services,
-                                                     user_agent_, peer->our_nonce);
+                                                     user_agent_, peer->our_nonce, peer->address);
         if (!send_peer_message(peer, version_msg)) {
             return false;
         }
@@ -4942,6 +5007,8 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
 
         // P2P sync fix: Parse peer's version info (including their chain height)
         parse_version_payload(response->payload, peer);
+        // Gap 1: feed the address this peer reported as ours into vote scoring.
+        record_self_address_report(peer->reported_local_addr, peer->address);
         seed_peer_sync_telemetry(peer, our_height);
 
         // NAT traversal Phase 1A: optional post-version, pre-verack identity
@@ -5007,11 +5074,14 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
 
         // P2P sync fix: Parse peer's version info (including their chain height)
         parse_version_payload(version_msg->payload, peer);
+        // Gap 1: feed the address this peer reported as ours into vote scoring.
+        record_self_address_report(peer->reported_local_addr, peer->address);
         seed_peer_sync_telemetry(peer, our_height);
 
-        // Send version response with actual chain height and service flags
+        // Send version response with actual chain height and service flags.
+        // Pass peer->address as addrRecv so the peer can learn its own IP from us.
         auto response = P2PMessage::create_version(protocol_version_, our_height, our_services,
-                                                  user_agent_, peer->our_nonce);
+                                                  user_agent_, peer->our_nonce, peer->address);
         if (!send_peer_message(peer, response)) {
             return false;
         }
