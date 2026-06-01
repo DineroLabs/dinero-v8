@@ -14,6 +14,7 @@
 #include "network/local_interfaces.h"  // Self-loop filter (shared with P2PManager)
 #include "network/port_mapper.h"
 #include "network/stun_client.h"       // NAT traversal Phase C1: public-IP discovery
+#include "network/quic_transport.h"    // Stage B: log QUIC relay-transport readiness at startup
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: keypair for dineroid handshake
 #include "p2p/block_download_scheduler.h"
 #include "p2p/peer_governor.h"
@@ -1522,6 +1523,24 @@ bool P2PService::Start() {
 
         logger_interface_->info("[P2PService] P2P networking started successfully");
         logger_interface_->info("[P2PService] Listening on port " + std::to_string(listen_port_));
+
+        // Stage B: surface QUIC relay-transport readiness at startup so the
+        // operator can see whether encrypted relay DATA can flow on this binary
+        // (relay registration rides TCP regardless; relay data on mainnet needs
+        // the QUIC crypto bridge). Mirrors the getnetworkinfo.quic_transport field.
+        {
+            const auto quic = dinero::network::QuicTransport::CompileInfo();
+            const bool relay_data_ready =
+                quic.ngtcp2_available && quic.crypto_available && quic.mainnet_relay_ready;
+            logger_interface_->info(
+                "[P2PService] QUIC relay-transport: ngtcp2=" +
+                std::string(quic.ngtcp2_available ? "yes" : "no") +
+                " crypto=" + std::string(quic.crypto_available ? "yes" : "no") +
+                " backend=" + quic.crypto_backend +
+                " mainnet_ready=" + std::string(quic.mainnet_relay_ready ? "yes" : "no") +
+                " => relay_data_ready=" + std::string(relay_data_ready ? "YES" : "NO") +
+                (quic.disabled_reason.empty() ? "" : " (" + quic.disabled_reason + ")"));
+        }
 
         StartPortMappingIfEnabled();
 

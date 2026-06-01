@@ -25,6 +25,7 @@
 #include "daemon/daemon_context.h"
 #include "daemon/services/p2p_service.h"
 #include "daemon/block_relay_manager.h"  // Task 5: BlocksServed24h()
+#include "network/quic_transport.h"      // Stage B: surface QUIC relay-transport readiness
 #include "consensus/chainparams.h"
 #include "common/logger.h"
 #include <memory>
@@ -286,6 +287,28 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     relay["bytes_relayed_24h"] = static_cast<Json::UInt64>(
         p2p->get().BytesRelayed24h());
     result["relay"] = relay;
+
+    // Stage B: surface the QUIC relay-transport readiness so operators can
+    // confirm in the field whether encrypted relay DATA can actually flow on
+    // this binary (registration rides TCP and works regardless; relay data on
+    // mainnet requires the QUIC crypto bridge). Without this there is no
+    // runtime signal of crypto_backend / mainnet_relay_ready.
+    {
+        const auto quic = dinero::network::QuicTransport::CompileInfo();
+        din::Json q;
+        q["ngtcp2_available"] = quic.ngtcp2_available;
+        q["crypto_available"] = quic.crypto_available;
+        q["mainnet_relay_ready"] = quic.mainnet_relay_ready;
+        q["crypto_backend"] = quic.crypto_backend;
+        q["ngtcp2_version"] = quic.ngtcp2_version;
+        q["openssl_version"] = quic.openssl_version;
+        q["disabled_reason"] = quic.disabled_reason;
+        // Encrypted relay data can flow only when ngtcp2 + a crypto bridge are
+        // compiled in AND the mainnet gate is open.
+        q["relay_data_ready"] =
+            quic.ngtcp2_available && quic.crypto_available && quic.mainnet_relay_ready;
+        result["quic_transport"] = q;
+    }
 
     din::Json dynamic_p2p;
     dynamic_p2p["enabled"] = status.dynamic_p2p_enabled;
