@@ -105,6 +105,11 @@ struct PeerInfo {
     //   refuse to advertise a peer's reachability unless this is true.
     uint64_t our_nonce{0};
     uint64_t their_nonce{0};
+    // Gap 1 (peer-reported external-IP learning): the address THIS peer reported
+    // as OURS in their version message (Bitcoin addrRecv). Empty when the peer
+    // is an older node that zero-fills addrRecv. Fed into self-address voting so
+    // a reachable node can auto-discover + advertise its own external IP.
+    std::string reported_local_addr;
     std::array<uint8_t, 33> their_pubkey{};
     std::array<uint8_t, 20> their_node_id{};
     bool identity_proven{false};
@@ -191,10 +196,14 @@ struct P2PMessage {
     uint32_t checksum;
     
     // Standard Bitcoin-like message types
+    // addr_recv_ip: the IPv4 address of the peer we're sending this version TO,
+    // written into addrRecv so the recipient can learn its own external address
+    // (Bitcoin addrRecv semantics). Empty => 0.0.0.0 (legacy behavior).
     static P2PMessage create_version(uint32_t protocol_version, uint32_t best_height,
                                      uint64_t services = 0,
                                      const std::string& user_agent = "",
-                                     uint64_t explicit_nonce = 0);
+                                     uint64_t explicit_nonce = 0,
+                                     const std::string& addr_recv_ip = "");
     static P2PMessage create_verack();
 
     // NAT traversal Phase 1A: post-verack node-identity exchange.
@@ -392,7 +401,16 @@ public:
     bool probe_onion_proxy(std::string* message = nullptr);
     void add_advertised_address(const std::string& address, uint16_t port);
     std::vector<std::pair<std::string, uint16_t>> get_advertised_addresses() const;
-    
+
+    // Gap 1 (peer-reported external-IP learning): record that `reporter_ip` told
+    // us (in their version addrRecv) that our external address is `reported_addr`.
+    // Once enough DISTINCT peers agree, the address is promoted to an advertised
+    // address (with our listen port) via add_advertised_address — so a reachable
+    // node auto-discovers + announces its own IP with zero config. Anti-spoof:
+    // counts distinct reporter IPs and requires a threshold before trusting.
+    void record_self_address_report(const std::string& reported_addr,
+                                    const std::string& reporter_ip);
+
     // Message handling
     void set_message_handler(MessageHandler handler) { message_handler_ = handler; }
     void set_peer_connected_handler(PeerConnectedHandler handler) { peer_connected_handler_ = handler; }
@@ -755,6 +773,13 @@ private:
     std::unordered_set<std::string> connecting_peers_;  // Guards against duplicate connection attempts
     std::vector<std::pair<std::string, uint16_t>> seed_nodes_;
     std::vector<std::pair<std::string, uint16_t>> advertised_addresses_;
+
+    // Gap 1 (peer-reported external-IP learning): votes for our own external
+    // address. Key = address a peer reported as ours (addrRecv); value = set of
+    // distinct reporter IPs. Promoted to advertised once a distinct-peer
+    // threshold is met. Guarded by self_addr_mutex_.
+    mutable std::mutex self_addr_mutex_;
+    std::unordered_map<std::string, std::unordered_set<std::string>> self_addr_votes_;
     std::string onion_proxy_host_;
     uint16_t onion_proxy_port_{0};
     dinero::p2p::AddressManager* address_manager_{nullptr};  // Owned by AddressManagerService
