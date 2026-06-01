@@ -384,12 +384,13 @@ struct QuicSession::Impl {
         params.initial_max_data = 4 * 1024 * 1024;
         params.initial_max_streams_bidi = 16;
         params.initial_max_streams_uni = 4;
-        // Idle timeout: 60 seconds. Raised from 30s because the keepalive_loop's
+        // Idle timeout: 60 seconds. ngtcp2_duration values are nanoseconds.
+        // Raised from 30s because the keepalive_loop's
         // dineroid PING cadence is 30s — at the bare timeout we were racing
         // ourselves. With ngtcp2's keep_alive_period set to 20s (in settings
         // above), QUIC-level PING frames keep the connection alive between
         // application-layer messages; 60s timeout gives 3x safety margin.
-        params.max_idle_timeout = 60000;
+        params.max_idle_timeout = 60ULL * 1000ULL * 1000ULL * 1000ULL;
         params.active_connection_id_limit = 4;
         return params;
     }
@@ -916,6 +917,14 @@ struct QuicSession::Impl {
         return NgtcpExpiryToSteady(impl, expiry_ns);
     }
 
+    static bool ExpiryDue(Impl& impl) {
+        if (!impl.active_published.load() || !impl.conn) {
+            return false;
+        }
+        const auto expiry_ns = ngtcp2_conn_get_expiry(impl.conn);
+        return expiry_ns != UINT64_MAX && expiry_ns <= Now();
+    }
+
     // Returns false if ngtcp2 encountered a fatal error processing this
     // packet. The caller (SessionLoop) uses the return value to trigger
     // MaybePublishHandshakeFailed and Stop.
@@ -1066,7 +1075,7 @@ struct QuicSession::Impl {
                     ProcessOutgoingStream(impl, std::move(entry.first), entry.second);
                 }
             }
-            if (!ngtcp2_failed && impl.active_published.load()) {
+            if (!ngtcp2_failed && ExpiryDue(impl)) {
                 if (!impl.HandleExpiry()) {
                     ngtcp2_failed = true;
                 }
