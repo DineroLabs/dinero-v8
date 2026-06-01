@@ -14,6 +14,8 @@
 
 #include "p2p_manager.h"
 #include "daemon/node_identity.h"
+#include "network/types.h"
+#include "p2p/addrman.h"
 
 #include <gtest/gtest.h>
 
@@ -65,6 +67,21 @@ std::array<uint8_t, 20> MakeNodeId(uint8_t base) {
         out[i] = static_cast<uint8_t>(base + i);
     }
     return out;
+}
+
+dinero::p2p::NetworkAddress MakeRelayAddress(const std::string& ip,
+                                             uint16_t port) {
+    dinero::p2p::NetworkAddress addr;
+    addr.ip = ip;
+    addr.port = port;
+    addr.services = dinero::ServiceFlags::NODE_RELAY;
+    addr.timestamp = std::chrono::system_clock::now();
+    return addr;
+}
+
+bool ContainsEndpoint(const std::vector<std::string>& endpoints,
+                      const std::string& endpoint) {
+    return std::find(endpoints.begin(), endpoints.end(), endpoint) != endpoints.end();
 }
 
 uint8_t RelayAckStatus(const P2PMessage& message) {
@@ -576,6 +593,58 @@ TEST(RelayHintsDial, SubmittedSendsRelayConnectForCachedConnectedRelay) {
     ASSERT_EQ(sent->payload.size(), 28u);
     EXPECT_TRUE(std::equal(target.begin(), target.end(), sent->payload.begin()));
     EXPECT_EQ(ReadLE64ForTest(sent->payload, 20), result.request_id);
+}
+
+TEST(RelayHintsDial, IgnoresStaleDisconnectedVirtualPeerForAlreadyConnected) {
+    P2PManager manager(0);
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    manager.test_install_connected_direct_peer(relay_key, relay.client_fd(),
+                                               true, false, {});
+
+    const auto target = MakeNodeId(0xc8);
+    const std::string stale_virtual_key = "relay:" + HexNodeId(target) + ":deadbeef:0";
+    manager.test_install_connected_direct_peer(stale_virtual_key, -1,
+                                               false, true, target);
+    manager.test_set_peer_connected(stale_virtual_key, false);
+    AddRelayHint(manager, target, relay.port());
+
+    const auto result = manager.TryDialRelayHint(HexNodeId(target), std::nullopt, false);
+
+    EXPECT_EQ(result.status, P2PManager::ManualRelayDialResult::Status::Submitted);
+    EXPECT_EQ(result.relay_endpoint, relay_key);
+    EXPECT_NE(result.request_id, 0u);
+    EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
+}
+
+TEST(RelayAutoRegister, KeepsBootstrapRelayWhenDynamicCandidatesFillBudget) {
+    P2PManager manager(20999);
+    dinero::p2p::AddressManager addrman;
+    manager.set_address_manager(&addrman);
+
+    addrman.addAddress(MakeRelayAddress("8.8.10.1", 20999));
+    addrman.addAddress(MakeRelayAddress("9.9.20.2", 20999));
+    addrman.addAddress(MakeRelayAddress("13.13.30.3", 20999));
+    addrman.addAddress(MakeRelayAddress("14.14.40.4", 20999));
+
+    std::vector<LoopbackSocketPair> sockets;
+    auto install_connected = [&](const std::string& endpoint) {
+        sockets.push_back(LoopbackSocketPair::Create());
+        manager.test_install_connected_direct_peer(endpoint,
+                                                   sockets.back().client_fd(),
+                                                   true, false, {});
+    };
+    install_connected("173.249.195.59:20999");  // VA / bootstrap fleet relay
+    install_connected("8.8.10.1:20999");
+    install_connected("9.9.20.2:20999");
+    install_connected("13.13.30.3:20999");
+    install_connected("14.14.40.4:20999");
+
+    manager.test_maybe_auto_register_with_relays();
+
+    const auto endpoints = manager.test_configured_relay_endpoints();
+    EXPECT_EQ(endpoints.size(), 5u);
+    EXPECT_TRUE(ContainsEndpoint(endpoints, "173.249.195.59:20999"));
 }
 
 TEST(RelayOrchestrator, RelayConnectAckLeavesVirtualPeerCreationToCallback) {

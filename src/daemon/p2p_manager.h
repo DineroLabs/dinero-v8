@@ -270,7 +270,7 @@ struct P2PMessage {
 
     // relay_hints: target_node_id is usually our own node_id; relay_addr
     // is one of the relays we've registered with. Multiple entries per
-    // message — speaker can advertise itself via 2-3 relays to give
+    // message — speaker can advertise itself via several relays to give
     // dialers a choice if one relay is overloaded.
     struct RelayHint {
         std::array<uint8_t, 20> target_node_id{};
@@ -724,6 +724,10 @@ public:
         bool is_outbound,
         bool identity_proven,
         const std::array<uint8_t, 20>& node_id);
+    void test_set_peer_connected(const std::string& peer_address,
+                                 bool connected);
+    void test_maybe_auto_register_with_relays();
+    std::vector<std::string> test_configured_relay_endpoints() const;
     void test_insert_pending_relay_connect(
         uint64_t request_id,
         const std::array<uint8_t, 20>& target_node_id,
@@ -870,7 +874,7 @@ private:
 
     // NAT traversal Phase C3 slice 4a: configured-relay endpoints.
     // Lower-cased "host:port" strings. Lookup is O(N) per handshake,
-    // but N is small (typically 1-3 relays per node).
+    // but N is small (typically up to five relays per node).
     std::vector<std::string> configured_relay_endpoints_;
     // configured_relay_endpoints_ is set from config once, but also
     // rewritten periodically by MaybeAutoRegisterWithRelays on the
@@ -885,7 +889,7 @@ private:
     // no confirmed inbound path it keeps up to kAutoRelayTargetCount relay
     // registrations alive, discovered via addrman NODE_RELAY peers with a
     // hardcoded bootstrap fallback. Runs on the keepalive tick.
-    static constexpr size_t kAutoRelayTargetCount = 3;
+    static constexpr size_t kAutoRelayTargetCount = 5;
     void MaybeAutoRegisterWithRelays();
 
     // NAT traversal Phase C3 slice 3: relay-side circuit table.
