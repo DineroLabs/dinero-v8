@@ -194,6 +194,55 @@ int main() {
     }
 
     {
+        std::cout << "\n1b. getdata callback carries each block's true header height..." << std::endl;
+
+        // The daemon wiring uses the height passed here to skip peers whose
+        // advertised height is below the block (they would reply NOTFOUND and
+        // cancel the in-flight request — the catch-up stall). That filter is
+        // only correct if the scheduler hands over the block's real header
+        // height, so assert that contract at the scheduler boundary.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;  // index == height (hashes[0] == genesis)
+        try {
+            BuildLinearHeaders(selector, 6, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build header chain: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+
+        std::vector<std::pair<uint256, uint32_t>> requests;
+        scheduler.SetSendGetDataCallback([&requests](const uint256& block_hash, uint32_t height) {
+            requests.emplace_back(block_hash, height);
+        });
+
+        scheduler.OnHeadersProcessed();
+        for (int t = 0; t < 8; ++t) scheduler.Tick();  // fan out across the missing range
+
+        if (!Require(!requests.empty(), "expected at least one getdata request")) {
+            return 1;
+        }
+
+        bool all_correct = true;
+        for (const auto& [hash, height] : requests) {
+            if (height == 0 || height >= hashes.size() || hashes[height] != hash) {
+                all_correct = false;
+                std::cerr << "   ❌ getdata carried wrong height " << height
+                          << " for block " << hash.GetHex().substr(0, 16) << "..." << std::endl;
+                break;
+            }
+        }
+        if (!Require(all_correct, "every getdata must carry the block's true header height")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ " << requests.size()
+                  << " requests, each carrying the correct header height" << std::endl;
+    }
+
+    {
         std::cout << "\n2. fork detection requests competing branch block at local tip height..." << std::endl;
 
         dcs::HeaderChainSelector selector;
