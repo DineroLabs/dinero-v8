@@ -6032,7 +6032,7 @@ bool DaemonApp::Init(int argc, char** argv) {
             // Phase P.3: CSN requests MSG_UTREEXO_BLOCK (block + proof) instead of MSG_BLOCK
             bool csn_mode = GetConfig().utreexo_stateless;
             auto csn_bridge_rr_index = std::make_shared<std::atomic<size_t>>(0);
-            block_download->SetSendGetDataCallback([p2p_service, csn_mode, csn_bridge_rr_index](const uint256& block_hash) {
+            block_download->SetSendGetDataCallback([p2p_service, csn_mode, csn_bridge_rr_index](const uint256& block_hash, uint32_t block_height) {
                 // Use binary format with raw bytes (not hex) to preserve correct byte order
                 uint32_t inv_type = csn_mode
                     ? static_cast<uint32_t>(dinero::InventoryType::MSG_UTREEXO_BLOCK)
@@ -6047,6 +6047,32 @@ bool DaemonApp::Init(int argc, char** argv) {
                 int sent = 0;
                 int eligible = 0;
 
+                // Height-aware peer selection: skip peers whose advertised
+                // height is below this block — they can't have it and would
+                // reply NOTFOUND, and a single NOTFOUND cancels the in-flight
+                // request (BlockDownloadScheduler::OnBlockNotFound) and triggers
+                // a rescan. So behind/stuck peers in the set poison every
+                // catch-up request and stall a far-behind node; excluding them
+                // is the fix. Only applied when at least one capable peer
+                // remains, so this can never drop to zero recipients (no
+                // deadlock): worst case it degrades to the prior broadcast.
+                // (PeerInfo is non-copyable — hence a skip-set of keys, not a
+                // filtered PeerInfo vector.)
+                std::unordered_set<std::string> skip_below_height;
+                if (block_height > 0) {
+                    size_t capable = 0;
+                    for (const auto& p : peers) {
+                        if (std::max(p.best_height, p.start_height) >= block_height) ++capable;
+                    }
+                    if (capable > 0 && capable < peers.size()) {
+                        for (const auto& p : peers) {
+                            if (std::max(p.best_height, p.start_height) < block_height) {
+                                skip_below_height.insert(p.to_string());
+                            }
+                        }
+                    }
+                }
+
                 if (csn_mode) {
                     std::vector<std::string> archival_bridge_peers;
                     std::vector<std::string> limited_bridge_peers;
@@ -6054,6 +6080,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                     limited_bridge_peers.reserve(peers.size());
                     for (const auto& peer : peers) {
                         std::string peer_key = peer.to_string();
+                        if (skip_below_height.count(peer_key)) {
+                            continue;  // peer's height is below this block
+                        }
                         if (!p2p_service->get().peer_has_service_flags(peer_key, ServiceFlags::NODE_UTREEXO_BRIDGE)) {
                             continue;
                         }
@@ -6097,6 +6126,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                         eligible = static_cast<int>(peers.size());
                         for (const auto& peer : peers) {
                             std::string peer_key = peer.to_string();
+                            if (skip_below_height.count(peer_key)) {
+                                continue;  // peer's height is below this block
+                            }
                             if (p2p_service->get().send_to_peer(peer_key, msg)) {
                                 sent++;
                             }
@@ -6106,6 +6138,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                     eligible = static_cast<int>(peers.size());
                     for (const auto& peer : peers) {
                         std::string peer_key = peer.to_string();
+                        if (skip_below_height.count(peer_key)) {
+                            continue;  // peer's height is below this block
+                        }
                         if (p2p_service->get().send_to_peer(peer_key, msg)) {
                             sent++;
                         }

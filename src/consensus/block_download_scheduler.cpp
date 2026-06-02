@@ -168,7 +168,7 @@ void BlockDownloadScheduler::Tick() {
         next_missing_idx_ = (gap_idx + 1) % missing_blocks_.size();
 
         if (send_getdata_callback_) {
-            send_getdata_callback_(gap_state.block_hash);
+            send_getdata_callback_(gap_state.block_hash, gap_state.height);
             g_logger.info("[BlockDownloadScheduler] Requested stateless frontier block: " +
                           gap_state.block_hash.GetHex() +
                           " (height " + std::to_string(gap_state.height) + ")");
@@ -667,7 +667,7 @@ bool BlockDownloadScheduler::RequestNextBlock() {
 
             // Send getdata via callback
             if (send_getdata_callback_) {
-                send_getdata_callback_(fetch_state.block_hash);
+                send_getdata_callback_(fetch_state.block_hash, fetch_state.height);
                 g_logger.info("[BlockDownloadScheduler] Requested block: " +
                              fetch_state.block_hash.GetHex() +
                              " (height " + std::to_string(fetch_state.height) + ")");
@@ -1036,7 +1036,8 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocks(size_t max_blocks) {
 
                 bool requested_parent = false;
                 if (!parent_in_flight && !cooldown_active && send_getdata_callback_) {
-                    send_getdata_callback_(parent_hash);
+                    // Parent sits one height below the block we're trying to connect.
+                    send_getdata_callback_(parent_hash, want > 0 ? want - 1 : 0);
                     parent_request_times_[parent_hash] = now;
                     requested_parent = true;
                 }

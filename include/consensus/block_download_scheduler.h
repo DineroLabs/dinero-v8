@@ -277,8 +277,13 @@ public:
      *
      * Parameters:
      *   - block_hash: Hash of block to request
+     *   - block_height: header-chain height of the block. The wiring layer uses
+     *     it to send the getdata only to peers whose advertised height covers
+     *     the block. Peers that can't have it would otherwise reply NOTFOUND and
+     *     cancel the in-flight request (see OnBlockNotFound), which is what
+     *     stalls a far-behind node whose peer set includes other lagging peers.
      */
-    using SendGetDataCallback = std::function<void(const uint256& block_hash)>;
+    using SendGetDataCallback = std::function<void(const uint256& block_hash, uint32_t block_height)>;
 
     /**
      * Callback type for disconnecting peer (on invalid block).
