@@ -142,17 +142,20 @@ Section "Dinero Server (required)" SecCore
   ; dinerod enter StartServiceCtrlDispatcher(), while --datadir points the
   ; LocalSystem service at the shared ProgramData location.
   ;
-  ; sc create's binPath= value has nested quoting (a path-with-spaces wrapped
-  ; in literal quotes, embedded inside the binPath= value which is itself
-  ; quoted in argv). Passing this directly through ExecWait / CreateProcess
-  ; produces a mis-parsed value on some Windows builds: sc create silently
-  ; fails with no service registered, and the install continues to write
-  ; registry/uninstaller entries unaware. Wrapping via cmd.exe /c is
-  ; empirically reliable -- cmd's parser normalises the nested quoting before
-  ; handing the command off to sc.exe. We also capture the exit code now and
-  ; abort loudly on failure so the silent-fail mode can't recur.
+  ; sc create's binPath= value has nested quoting: a path-with-spaces wrapped
+  ; in literal quotes ("C:\Program Files\...\dinerod.exe"), embedded inside
+  ; the binPath= value which is itself an argv element wrapped in outer
+  ; quotes. The embedded quotes MUST be backslash-escaped (\") so
+  ; CommandLineToArgvW preserves them while still treating the outer pair as
+  ; an argv delimiter -- without the backslash the parser sees consecutive
+  ; "" and splits the binPath value across multiple argv elements, leaving
+  ; sc.exe with an unparseable command. The original NSIS used $\" which
+  ; emits a bare quote; this version uses \$\" to emit \" and wraps via
+  ; cmd.exe /c for defense in depth (proven on the validation VPS). We also
+  ; capture the exit code and Abort on failure so the silent-fail mode that
+  ; bit the first-pass fix can't recur.
   DetailPrint "Registering ${SVC_NAME} Windows service..."
-  nsExec::ExecToLog '"$SYSDIR\cmd.exe" /c sc create ${SVC_NAME} binPath= "$\"$INSTDIR\dinerod.exe$\" --service --datadir=$\"$AppDataDir$\"" start= auto DisplayName= "${SVC_DISPLAY}"'
+  nsExec::ExecToLog '"$SYSDIR\cmd.exe" /c sc create ${SVC_NAME} binPath= "\$\"$INSTDIR\dinerod.exe\$\" --service --datadir=\$\"$AppDataDir\$\"" start= auto DisplayName= "${SVC_DISPLAY}"'
   Pop $0
   ${If} $0 <> 0
     DetailPrint "sc create failed with exit code $0"
