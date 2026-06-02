@@ -125,8 +125,11 @@ Section "Dinero Server (required)" SecCore
   Call ResolveCommonDataDir
 
   ; Stop and remove any existing Dinerod service before overwriting binaries.
-  ExecWait '"$SYSDIR\sc.exe" stop ${SVC_NAME}'
-  ExecWait '"$SYSDIR\sc.exe" delete ${SVC_NAME}'
+  ; Best-effort -- legitimate non-zero exits when the service is absent.
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" stop ${SVC_NAME}'
+  Pop $0
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" delete ${SVC_NAME}'
+  Pop $0
 
   SetOutPath "$INSTDIR"
   File /r "dist\server-installer-stage\*.*"
@@ -138,10 +141,36 @@ Section "Dinero Server (required)" SecCore
   ; Register dinerod as a real Windows Service. The --service flag makes
   ; dinerod enter StartServiceCtrlDispatcher(), while --datadir points the
   ; LocalSystem service at the shared ProgramData location.
-  ExecWait '"$SYSDIR\sc.exe" create ${SVC_NAME} binPath= "$\"$INSTDIR\dinerod.exe$\" --service --datadir=$\"$AppDataDir$\"" start= auto DisplayName= "${SVC_DISPLAY}"'
-  ExecWait '"$SYSDIR\sc.exe" description ${SVC_NAME} "${SVC_DESC}"'
-  ExecWait '"$SYSDIR\sc.exe" failure ${SVC_NAME} reset= 86400 actions= restart/5000/restart/5000/restart/30000'
-  ExecWait '"$SYSDIR\sc.exe" start ${SVC_NAME}'
+  ;
+  ; sc create's binPath= value has nested quoting (a path-with-spaces wrapped
+  ; in literal quotes, embedded inside the binPath= value which is itself
+  ; quoted in argv). Passing this directly through ExecWait / CreateProcess
+  ; produces a mis-parsed value on some Windows builds: sc create silently
+  ; fails with no service registered, and the install continues to write
+  ; registry/uninstaller entries unaware. Wrapping via cmd.exe /c is
+  ; empirically reliable -- cmd's parser normalises the nested quoting before
+  ; handing the command off to sc.exe. We also capture the exit code now and
+  ; abort loudly on failure so the silent-fail mode can't recur.
+  DetailPrint "Registering ${SVC_NAME} Windows service..."
+  nsExec::ExecToLog '"$SYSDIR\cmd.exe" /c sc create ${SVC_NAME} binPath= "$\"$INSTDIR\dinerod.exe$\" --service --datadir=$\"$AppDataDir$\"" start= auto DisplayName= "${SVC_DISPLAY}"'
+  Pop $0
+  ${If} $0 <> 0
+    DetailPrint "sc create failed with exit code $0"
+    MessageBox MB_ICONSTOP "Could not register the Dinerod Windows service (sc create exit code $0). The installer will abort.$\r$\n$\r$\nCommon causes:$\r$\n  - not running with administrator privileges$\r$\n  - antivirus blocking service registration$\r$\n  - leftover Dinerod service from a failed prior install (run 'sc.exe delete Dinerod' from an elevated prompt, then rerun this installer)"
+    Abort
+  ${EndIf}
+
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" description ${SVC_NAME} "${SVC_DESC}"'
+  Pop $0
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" failure ${SVC_NAME} reset= 86400 actions= restart/5000/restart/5000/restart/30000'
+  Pop $0
+
+  DetailPrint "Starting ${SVC_NAME} service..."
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" start ${SVC_NAME}'
+  Pop $0
+  ${If} $0 <> 0
+    DetailPrint "sc start returned exit code $0 (service is registered; start can be retried via 'sc start ${SVC_NAME}' or services.msc)"
+  ${EndIf}
 
   WriteRegStr HKLM "${APP_REGKEY}" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "${APP_REGKEY}" "Version"    "${APP_VERSION}"
@@ -170,8 +199,16 @@ Section "Uninstall"
   SetShellVarContext all
   SetRegView 64
 
-  ExecWait '"$SYSDIR\sc.exe" stop ${SVC_NAME}'
-  ExecWait '"$SYSDIR\sc.exe" delete ${SVC_NAME}'
+  ; Stop the service and wait for STOPPED before delete + RMDir, otherwise
+  ; dinerod.exe file handles can still be open when RMDir tries to clear the
+  ; install dir and the dir is left behind. (Observed in rc27-fix testing:
+  ; service in STOP_PENDING raced with the uninstaller's RMDir.)
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" stop ${SVC_NAME}'
+  Pop $0
+  Sleep 5000
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" delete ${SVC_NAME}'
+  Pop $0
+  Sleep 1000
 
   Delete "$INSTDIR\Uninstall.exe"
   RMDir /r "$INSTDIR"
