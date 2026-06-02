@@ -14,6 +14,25 @@ option(DIN_ENABLE_LEGACY_RPC "Enable deprecated legacy RPC server code paths" OF
 option(DINERO_ENABLE_PORTMAPPING "Enable optional UPnP/NAT-PMP P2P port mapping support when libraries are available" ON)
 option(DINERO_ENABLE_QUIC "Build vendored ngtcp2 QUIC transport dependency (Phase B2; transport activation remains gated)" OFF)
 option(DINERO_ENABLE_QUIC_CRYPTO "Build the ngtcp2 OpenSSL QUIC TLS bridge when the active OpenSSL exposes compatible APIs" ON)
+option(DINERO_WINDOWS_SERVER_BUILD "Build the Windows headless server artifact without daemon GPU/hardware-wallet load-time dependencies" OFF)
+
+if(DINERO_WINDOWS_SERVER_BUILD)
+  if(NOT WIN32)
+    message(FATAL_ERROR "DINERO_WINDOWS_SERVER_BUILD=ON is only supported on Windows")
+  endif()
+
+  set(ENABLE_GPU_MINING OFF CACHE BOOL "Forced OFF by DINERO_WINDOWS_SERVER_BUILD" FORCE)
+  set(MINER_ENABLE_CUDA OFF CACHE BOOL "Forced OFF by DINERO_WINDOWS_SERVER_BUILD" FORCE)
+  set(MINER_ENABLE_OPENCL OFF CACHE BOOL "Forced OFF by DINERO_WINDOWS_SERVER_BUILD" FORCE)
+  set(ENABLE_HARDWARE_WALLETS OFF CACHE BOOL "Forced OFF by DINERO_WINDOWS_SERVER_BUILD" FORCE)
+  set(ENABLE_GRPC OFF CACHE BOOL "Forced OFF by DINERO_WINDOWS_SERVER_BUILD" FORCE)
+  set(DINERO_BUILD_QT OFF CACHE BOOL "Forced OFF by DINERO_WINDOWS_SERVER_BUILD" FORCE)
+
+  message(STATUS "DINERO_WINDOWS_SERVER_BUILD=ON - Windows headless server artifact")
+  message(STATUS "   - daemon GPU mining: forced OFF (no CUDA/NVRTC load-time imports)")
+  message(STATUS "   - solo-miner CUDA/OpenCL: forced OFF for this headless lane")
+  message(STATUS "   - hardware wallets and gRPC: forced OFF")
+endif()
 
 # Phase E.3 (Dinero Core 1.0) packaged-service build mode.
 # The .deb rules flip this ON to produce the daemon + CLI artifact contract.

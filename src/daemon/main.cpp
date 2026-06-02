@@ -17,8 +17,20 @@
 #include <thread>
 #include <chrono>
 #include <string>
+#include <vector>
 #include <cerrno>
 #include <cstring>
+#include <cstdlib>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #ifndef _WIN32
 #include <unistd.h>  // For fork(), setsid(), getppid()
@@ -45,9 +57,21 @@ uint32_t g_magic = 0;  // Set at startup; never the literal default.
 // Global flag for shutdown signal
 static std::atomic<bool> g_shutdown_requested{false};
 
+int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service);
+
 namespace {
 
 using ShutdownClock = std::chrono::steady_clock;
+
+const char* GetHomeDirEnv() {
+    const char* home = std::getenv("HOME");
+#ifdef _WIN32
+    if (!home || !*home) {
+        home = std::getenv("USERPROFILE");
+    }
+#endif
+    return home;
+}
 
 void LogShutdownPhase(const char* phase,
                       const ShutdownClock::time_point& start,
@@ -67,7 +91,7 @@ std::string ExpandTildePath(const std::string& path) {
         return path;
     }
 
-    const char* home = std::getenv("HOME");
+    const char* home = GetHomeDirEnv();
     if (!home) {
         return path;
     }
@@ -89,12 +113,15 @@ std::string ResolveStartupDataDir(int argc, char* argv[], bool use_testnet, bool
         if (arg.rfind("--datadir=", 0) == 0) {
             return ExpandTildePath(arg.substr(10));
         }
-        if (arg == "--datadir" && i + 1 < argc) {
+        if (arg.rfind("-datadir=", 0) == 0) {
+            return ExpandTildePath(arg.substr(9));
+        }
+        if ((arg == "--datadir" || arg == "-datadir") && i + 1 < argc) {
             return ExpandTildePath(argv[i + 1]);
         }
     }
 
-    const char* home = std::getenv("HOME");
+    const char* home = GetHomeDirEnv();
     if (!home) {
         return {};
     }
@@ -192,6 +219,150 @@ void StartEmbeddedParentMonitor(pid_t parent_pid) {
 }
 #endif
 
+#ifdef _WIN32
+constexpr const char* kWindowsServiceName = "Dinerod";
+
+SERVICE_STATUS_HANDLE g_service_status_handle = nullptr;
+SERVICE_STATUS g_service_status = {};
+std::atomic<int> g_service_exit_code{0};
+std::vector<std::string> g_service_arg_storage;
+std::vector<char*> g_service_argv;
+std::thread g_service_worker;
+
+bool HasWindowsServiceFlag(int argc, char* argv[]) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i] ? argv[i] : "";
+        if (arg == "--service" || arg == "-service") {
+            return true;
+        }
+    }
+    return false;
+}
+
+void PrepareWindowsServiceArgs(int argc, char* argv[]) {
+    g_service_arg_storage.clear();
+    g_service_arg_storage.reserve(static_cast<size_t>(argc));
+
+    for (int i = 0; i < argc; ++i) {
+        const std::string arg = argv[i] ? argv[i] : "";
+        if (i > 0 && (arg == "--service" || arg == "-service")) {
+            continue;
+        }
+        g_service_arg_storage.push_back(arg);
+    }
+
+    g_service_argv.clear();
+    g_service_argv.reserve(g_service_arg_storage.size());
+    for (auto& arg : g_service_arg_storage) {
+        g_service_argv.push_back(arg.data());
+    }
+}
+
+void ReportWindowsServiceStatus(DWORD state,
+                                DWORD win32_exit_code = NO_ERROR,
+                                DWORD service_exit_code = 0,
+                                DWORD wait_hint_ms = 0) {
+    if (!g_service_status_handle) {
+        return;
+    }
+
+    static DWORD checkpoint = 1;
+    g_service_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_service_status.dwCurrentState = state;
+    g_service_status.dwControlsAccepted =
+        (state == SERVICE_START_PENDING || state == SERVICE_STOPPED)
+            ? 0
+            : (SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN);
+    g_service_status.dwWin32ExitCode = win32_exit_code;
+    g_service_status.dwServiceSpecificExitCode = service_exit_code;
+    g_service_status.dwWaitHint = wait_hint_ms;
+    g_service_status.dwCheckPoint =
+        (state == SERVICE_START_PENDING || state == SERVICE_STOP_PENDING)
+            ? checkpoint++
+            : 0;
+
+    SetServiceStatus(g_service_status_handle, &g_service_status);
+}
+
+DWORD WINAPI DinerodServiceControlHandler(DWORD control,
+                                          DWORD,
+                                          LPVOID,
+                                          LPVOID) {
+    switch (control) {
+    case SERVICE_CONTROL_STOP:
+    case SERVICE_CONTROL_SHUTDOWN:
+        ReportWindowsServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 0, 30000);
+        g_shutdown_requested.store(true);
+        return NO_ERROR;
+    case SERVICE_CONTROL_INTERROGATE:
+        ReportWindowsServiceStatus(g_service_status.dwCurrentState);
+        return NO_ERROR;
+    default:
+        return ERROR_CALL_NOT_IMPLEMENTED;
+    }
+}
+
+void WINAPI DinerodServiceMain(DWORD, LPSTR*) {
+    g_service_status_handle =
+        RegisterServiceCtrlHandlerExA(kWindowsServiceName,
+                                      DinerodServiceControlHandler,
+                                      nullptr);
+    if (!g_service_status_handle) {
+        return;
+    }
+
+    ReportWindowsServiceStatus(SERVICE_START_PENDING, NO_ERROR, 0, 30000);
+    g_shutdown_requested.store(false);
+    g_service_exit_code.store(0);
+
+    g_service_worker = std::thread([]() {
+        const int rc = RunDaemonMain(static_cast<int>(g_service_argv.size()),
+                                     g_service_argv.data(),
+                                     true);
+        g_service_exit_code.store(rc);
+    });
+
+    ReportWindowsServiceStatus(SERVICE_RUNNING);
+    g_service_worker.join();
+
+    const int rc = g_service_exit_code.load();
+    ReportWindowsServiceStatus(SERVICE_STOPPED,
+                               rc == 0 ? NO_ERROR : ERROR_SERVICE_SPECIFIC_ERROR,
+                               static_cast<DWORD>(rc),
+                               0);
+}
+
+int RunWindowsService(int argc, char* argv[]) {
+    PrepareWindowsServiceArgs(argc, argv);
+
+    SERVICE_TABLE_ENTRYA service_table[] = {
+        {const_cast<LPSTR>(kWindowsServiceName), DinerodServiceMain},
+        {nullptr, nullptr},
+    };
+
+    if (!StartServiceCtrlDispatcherA(service_table)) {
+        const DWORD err = GetLastError();
+        std::cerr << "[WindowsService] StartServiceCtrlDispatcher failed: "
+                  << err << ". Run without --service for console mode.\n";
+        return 1;
+    }
+    return g_service_exit_code.load();
+}
+
+BOOL WINAPI ConsoleControlHandler(DWORD control_type) {
+    switch (control_type) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        g_shutdown_requested.store(true);
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+#endif
+
 }  // namespace
 
 // Signal handler for clean shutdown
@@ -217,6 +388,9 @@ void print_usage(const char* program_name) {
     std::cout << "  --regtest                  Use regression test network\n";
     std::cout << "  --testnet           Use test network\n";
     std::cout << "  -daemon             Run in background (Unix only)\n";
+#ifdef _WIN32
+    std::cout << "  --service           Run under Windows Service Control Manager\n";
+#endif
     std::cout << "  --embedded-parent-pid=<pid>  Internal: shut down when GUI parent exits\n";
     std::cout << "\n";
     std::cout << "Recovery Options:\n";
@@ -246,7 +420,7 @@ void print_usage(const char* program_name) {
     std::cout << "\n";
 }
 
-int main(int argc, char* argv[]) {
+int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     // Handle "doctor" subcommand immediately (before general arg parsing)
     // This ensures doctor gets its own --help, --deep, etc. without interference
     if (argc >= 2 && std::string(argv[1]) == "doctor") {
@@ -282,6 +456,10 @@ int main(int argc, char* argv[]) {
             use_regtest = true;
         } else if (arg == "-daemon" || arg == "--daemon") {
             run_as_daemon = true;
+#ifdef _WIN32
+        } else if (arg == "--service" || arg == "-service") {
+            // Consumed by main() before entering the daemon lifecycle.
+#endif
         } else if (arg == "--reindex") {
             do_reindex = true;
         } else if (arg == "--reindex-chainstate") {
@@ -362,11 +540,19 @@ int main(int argc, char* argv[]) {
                 repair_datadir = arg.substr(10);
                 break;
             }
+            if (arg.find("-datadir=") == 0) {
+                repair_datadir = arg.substr(9);
+                break;
+            }
+            if ((arg == "--datadir" || arg == "-datadir") && i + 1 < argc) {
+                repair_datadir = argv[i + 1];
+                break;
+            }
         }
 
         // Use default datadir if not specified
         if (repair_datadir.empty()) {
-            const char* home = std::getenv("HOME");
+            const char* home = GetHomeDirEnv();
             if (home) {
                 if (use_regtest) {
                     repair_datadir = std::string(home) + "/.dinero/regtest";
@@ -487,7 +673,7 @@ int main(int argc, char* argv[]) {
 
     // Print version banner (after daemonization, so only final process prints)
     // Note: In daemon mode, stdout is now /dev/null, but we print anyway for consistency
-    if (!run_as_daemon) {
+    if (!run_as_daemon && !running_as_windows_service) {
         auto build_identity = dinero::build::CurrentIdentity();
         std::cout << build_identity.component << " " << build_identity.version << "\n";
         std::cout << "Built: " << build_identity.build_time << "\n";
@@ -501,6 +687,10 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGPIPE, SIG_IGN);  // Ignore broken pipe
+#else
+    if (!running_as_windows_service) {
+        SetConsoleCtrlHandler(ConsoleControlHandler, TRUE);
+    }
 #endif
 
     // Select network parameters BEFORE initializing services
@@ -569,8 +759,13 @@ int main(int argc, char* argv[]) {
 
     std::cout << "\n";
     std::cout << "========================================\n";
-    std::cout << "Dinero daemon is running\n";
-    std::cout << "Press Ctrl+C to stop\n";
+    if (running_as_windows_service) {
+        std::cout << "Dinero daemon is running as a Windows service\n";
+        std::cout << "Use Service Control Manager to stop\n";
+    } else {
+        std::cout << "Dinero daemon is running\n";
+        std::cout << "Press Ctrl+C to stop\n";
+    }
     std::cout << "========================================\n";
     std::cout << "\n";
 
@@ -597,4 +792,13 @@ int main(int argc, char* argv[]) {
     LogShutdownPhase("shutdown_complete", shutdown_start, "main returning cleanly");
     std::cout << "[Shutdown] Clean shutdown complete\n";
     return 0;
+}
+
+int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    if (HasWindowsServiceFlag(argc, argv)) {
+        return RunWindowsService(argc, argv);
+    }
+#endif
+    return RunDaemonMain(argc, argv, false);
 }

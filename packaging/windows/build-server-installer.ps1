@@ -1,56 +1,134 @@
-# Stage the daemon binaries + vcpkg runtime DLLs, then run makensis
-# against dinero-server-installer.nsi to produce
-# dist\Dinero-Server-<VERSION>-windows-x86_64-Setup.exe.
+# Build and stage the Windows headless server installer.
 #
-# This is the OPERATOR lane for Windows: headless install with dinerod
-# registered as a Windows Service, no Qt6 GUI. Parallel to
-# build-installer.ps1 (the user lane that ships dinero-qt).
+# Output:
+#   packaging/windows/dist/Dinero-Server-<VERSION>-windows-x86_64-Setup.exe
 #
-# Prerequisites:
-#   - The Dinero daemon stack already built under build-msvc-native\
-#     via the same cmake invocation as the user installer:
-#       cmake -S . -B build-msvc-native -G "Visual Studio 17 2022" -A x64 ^
-#             -DCMAKE_BUILD_TYPE=Release ^
-#             -DDINERO_BUILD_QT=ON -DDINERO_BUILD_MINER=ON ^
-#             -DMINER_ENABLE_CUDA=ON -DMINER_ENABLE_OPENCL=ON ^
-#             -DENABLE_GPU_MINING=ON -DENABLE_GRPC=OFF ^
-#             -DENABLE_HARDWARE_WALLETS=OFF ^
-#             -DCMAKE_PREFIX_PATH="C:\Qt\6.9.1\msvc2022_64"
-#       cmake --build build-msvc-native --config Release ^
-#             --target dinerod dinero-cli dinero-miner dinero-stratum-worker dinero-gpu-miner dinero-wallet-cli dinero-seeder
-#   - NSIS at "C:\Program Files (x86)\NSIS\makensis.exe"
-#   - vcpkg installed at ~\vcpkg (for the runtime DLLs)
+# This is the operator lane: no Qt GUI, no desktop solo-miner bundle. It
+# installs dinerod as a real Windows Service and ships command-line node tools.
+# The server build is intentionally GPU-disabled for the daemon so fresh Windows
+# Server hosts do not need NVIDIA/CUDA DLLs just to start a full node.
 #
 # Usage:
-#   .\packaging\windows\build-server-installer.ps1 -Version 8.0.0-rc3
+#   .\packaging\windows\build-server-installer.ps1 -Version 8.0.0-rc27
+#   .\packaging\windows\build-server-installer.ps1 -Version 8.0.0-rc27 -SkipBuild
 
 [CmdletBinding()]
 param(
-    [string]$Version       = '8.0.0-dev',
+    [string]$Version        = '8.0.0-dev',
+    [string]$BuildDir       = '',
     [string]$DaemonBuildDir = '',
-    [string]$VcpkgBin      = "$env:USERPROFILE\vcpkg\installed\x64-windows\bin",
-    [string]$Makensis      = 'C:\Program Files (x86)\NSIS\makensis.exe'
+    [string]$CMake          = 'cmake',
+    [string]$VcpkgRoot      = "$env:USERPROFILE\vcpkg",
+    [string]$VcpkgBin       = "$env:USERPROFILE\vcpkg\installed\x64-windows\bin",
+    [string]$Makensis       = 'C:\Program Files (x86)\NSIS\makensis.exe',
+    [string]$VcRedistPath   = '',
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = 'Stop'
 
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = (Resolve-Path (Join-Path $ScriptDir '..\..')).Path
+$DistDir     = Join-Path $ScriptDir 'dist'
+$Stage       = Join-Path $DistDir 'server-installer-stage'
 
-if (-not $DaemonBuildDir) {
-    $DaemonBuildDir = Join-Path $ProjectRoot 'build-msvc-native\Release'
+if (-not $BuildDir) {
+    $BuildDir = Join-Path $ProjectRoot 'build-msvc-server'
+} elseif (-not [System.IO.Path]::IsPathRooted($BuildDir)) {
+    $BuildDir = Join-Path $ProjectRoot $BuildDir
 }
 
-$Stage = Join-Path $ScriptDir 'dist\server-installer-stage'
+if (-not $DaemonBuildDir) {
+    $DaemonBuildDir = Join-Path $BuildDir 'Release'
+} elseif (-not [System.IO.Path]::IsPathRooted($DaemonBuildDir)) {
+    $DaemonBuildDir = Join-Path $ProjectRoot $DaemonBuildDir
+}
+
+$BuildRoot = Split-Path $DaemonBuildDir -Parent
 
 Write-Host '----------------------------------------------------------'
 Write-Host "Building Dinero Server installer -- v$Version"
 Write-Host '----------------------------------------------------------'
+Write-Host "Build dir:  $BuildDir"
+Write-Host "Binary dir: $DaemonBuildDir"
 
-# Sanity checks. dinero-qt + dinero-solo-miner are intentionally NOT
-# in this list — the server installer ships headless.
-$daemonBinaries = 'dinerod','dinero-cli','dinero-miner','dinero-stratum-worker','dinero-gpu-miner','dinero-wallet-cli','dinero-seeder'
-$BuildRoot = Split-Path $DaemonBuildDir -Parent
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath exited with code $LASTEXITCODE"
+    }
+}
+
+function Find-Dumpbin {
+    $cmd = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+    if ($cmd) {
+        return $cmd.Source
+    }
+
+    $programFilesX86 = ${env:ProgramFiles(x86)}
+    if ($programFilesX86) {
+        $vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (Test-Path $vswhere) {
+            $installPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null).Trim()
+            if ($installPath) {
+                $candidate = Get-ChildItem -Path (Join-Path $installPath 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe') -ErrorAction SilentlyContinue |
+                    Sort-Object FullName -Descending |
+                    Select-Object -First 1
+                if ($candidate) {
+                    return $candidate.FullName
+                }
+            }
+        }
+    }
+
+    return $null
+}
+
+function Assert-NoCudaLoadTimeImports {
+    param([Parameter(Mandatory = $true)][string]$BinaryPath)
+
+    $dumpbin = Find-Dumpbin
+    if (-not $dumpbin) {
+        Write-Host "WARNING: dumpbin.exe not found; cannot verify CUDA load-time imports for $BinaryPath" -ForegroundColor Yellow
+        return
+    }
+
+    $deps = (& $dumpbin /dependents $BinaryPath 2>&1) -join "`n"
+    if ($deps -match '(?i)\bnvcuda\.dll\b' -or $deps -match '(?i)\bnvrtc[^\s]*\.dll\b') {
+        Write-Host "ERROR: $BinaryPath has CUDA/NVRTC load-time imports." -ForegroundColor Red
+        Write-Host "Rebuild the server lane with DINERO_WINDOWS_SERVER_BUILD=ON / ENABLE_GPU_MINING=OFF." -ForegroundColor Red
+        Write-Host $deps
+        exit 1
+    }
+
+    Write-Host 'Verified: dinerod.exe has no CUDA/NVRTC load-time imports.'
+}
+
+function Resolve-VcRedist {
+    if ($VcRedistPath) {
+        if (-not (Test-Path $VcRedistPath)) {
+            Write-Host "ERROR: -VcRedistPath not found: $VcRedistPath" -ForegroundColor Red
+            exit 1
+        }
+        return (Resolve-Path $VcRedistPath).Path
+    }
+
+    if (-not (Test-Path $DistDir)) {
+        New-Item $DistDir -ItemType Directory | Out-Null
+    }
+
+    $cached = Join-Path $DistDir 'vc_redist.x64.exe'
+    if (-not (Test-Path $cached)) {
+        Write-Host 'Downloading Microsoft VC++ 2015-2022 x64 Redistributable...'
+        Invoke-WebRequest 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $cached
+    }
+    return $cached
+}
 
 function Resolve-DaemonBinaryPath([string]$BinaryName) {
     $primary = Join-Path $DaemonBuildDir "$BinaryName.exe"
@@ -66,6 +144,38 @@ function Resolve-DaemonBinaryPath([string]$BinaryName) {
     return $primary
 }
 
+if (-not $SkipBuild) {
+    Write-Host 'Configuring server-safe MSVC build...'
+    $configureArgs = @(
+        '-S', $ProjectRoot,
+        '-B', $BuildDir,
+        '-G', 'Visual Studio 17 2022',
+        '-A', 'x64',
+        '-DDINERO_WINDOWS_SERVER_BUILD=ON',
+        '-DDINERO_BUILD_SEEDER=ON',
+        '-DDINERO_BUILD_MINER=OFF',
+        '-DDINERO_ENABLE_QUIC=OFF'
+    )
+    $vcpkgToolchain = Join-Path $VcpkgRoot 'scripts\buildsystems\vcpkg.cmake'
+    if (Test-Path $vcpkgToolchain) {
+        $configureArgs += "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain"
+    }
+    $dependsPrefix = Join-Path $ProjectRoot 'depends\windows-AMD64'
+    if (Test-Path $dependsPrefix) {
+        $configureArgs += "-DCMAKE_PREFIX_PATH=$dependsPrefix"
+    }
+    Invoke-NativeCommand $CMake $configureArgs
+
+    Write-Host 'Building server targets...'
+    Invoke-NativeCommand $CMake @(
+        '--build', $BuildDir,
+        '--config', 'Release',
+        '--target', 'dinerod', 'dinero-cli', 'dinero-miner', 'dinero-stratum-worker', 'dinero-gpu-miner', 'dinero-wallet-cli', 'dinero-seeder',
+        '--parallel', '1'
+    )
+}
+
+$daemonBinaries = 'dinerod','dinero-cli','dinero-miner','dinero-stratum-worker','dinero-gpu-miner','dinero-wallet-cli','dinero-seeder'
 foreach ($b in $daemonBinaries) {
     if (-not (Test-Path (Resolve-DaemonBinaryPath $b))) {
         Write-Host "ERROR: $b.exe not found in $DaemonBuildDir" -ForegroundColor Red
@@ -77,23 +187,22 @@ if (-not (Test-Path $Makensis)) {
     exit 1
 }
 
-# Stage
+Assert-NoCudaLoadTimeImports (Resolve-DaemonBinaryPath 'dinerod')
+
 if (Test-Path $Stage) {
-    Write-Host "Cleaning prior stage..."
+    Write-Host 'Cleaning prior stage...'
     Remove-Item $Stage -Recurse -Force
 }
 New-Item $Stage -ItemType Directory | Out-Null
 
-Write-Host "Copying daemon binaries..."
+Write-Host 'Copying daemon binaries...'
 foreach ($b in $daemonBinaries) {
     Copy-Item (Resolve-DaemonBinaryPath $b) (Join-Path $Stage "$b.exe")
     Write-Host "  $b.exe"
 }
 Copy-Item (Join-Path $ProjectRoot 'LICENSE') (Join-Path $Stage 'LICENSE')
 
-# vcpkg runtime DLLs. Same chain as the user installer: dinerod and the
-# miner binaries link against libcurl + OpenSSL DLLs at runtime.
-Write-Host "Copying runtime DLLs from vcpkg..."
+Write-Host 'Copying runtime DLLs from vcpkg if required...'
 $vcpkgDlls = 'libcurl.dll','libcrypto-3-x64.dll','libssl-3-x64.dll','z.dll'
 foreach ($d in $vcpkgDlls) {
     $src = Join-Path $VcpkgBin $d
@@ -105,11 +214,15 @@ foreach ($d in $vcpkgDlls) {
     }
 }
 
+$vcRedist = Resolve-VcRedist
+Copy-Item $vcRedist (Join-Path $Stage 'vc_redist.x64.exe')
+Write-Host '  vc_redist.x64.exe'
+
 $totalSize = (Get-ChildItem $Stage -Recurse | Measure-Object Length -Sum).Sum
 $fileCount = (Get-ChildItem $Stage -Recurse -File).Count
 Write-Host ("Stage: $fileCount files, {0:N2} MB" -f ($totalSize / 1MB))
 
-Write-Host "Running makensis (LZMA solid compression)..."
+Write-Host 'Running makensis (LZMA solid compression)...'
 Push-Location $ScriptDir
 try {
     $oldEAP = $ErrorActionPreference

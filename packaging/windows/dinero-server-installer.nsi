@@ -1,20 +1,20 @@
 ; Dinero Windows Server installer (NSIS)
 ;
-; Headless install for Windows server administrators. Installs only the
-; daemon stack (no Qt GUI, no dinero-solo-miner) to C:\Program Files\
-; Dinero-Server\ and registers dinerod as a Windows Service set to
-; auto-start. Parallel to dinero-installer.nsi (which is the user lane).
+; Headless install for Windows server administrators. Installs the daemon stack
+; to C:\Program Files\Dinero-Server\ and registers dinerod as a Windows Service.
+; Parallel to dinero-installer.nsi, which is the Qt user lane.
 ;
 ; Build with:
-;   makensis /DVERSION=8.0.0-rc3 dinero-server-installer.nsi
+;   makensis /DVERSION=8.0.0-rc27 dinero-server-installer.nsi
 ;
 ; Layout in server-installer-stage/:
-;   dinerod.exe ... etc       7 daemon/operator binaries
-;   libcurl.dll, libcrypto-3-x64.dll, libssl-3-x64.dll, z.dll  (vcpkg runtime)
+;   dinerod.exe ... etc
+;   vc_redist.x64.exe
+;   optional runtime DLLs copied by build-server-installer.ps1
 ;   LICENSE
 ;
-; Datadir convention: C:\ProgramData\Dinero. Created by the installer
-; (writable by LocalSystem under which the service runs).
+; Datadir convention: C:\ProgramData\Dinero. Created by the installer and
+; writable by LocalSystem, which is the default service account.
 
 !ifndef VERSION
   !define VERSION "0.0.0-dev"
@@ -28,12 +28,9 @@
 !define SVC_NAME       "Dinerod"
 !define SVC_DISPLAY    "Dinero Full Node"
 !define SVC_DESC       "Dinero blockchain full node daemon. Runs the dinerod RPC + peer-to-peer node as a Windows service."
-!define APP_DATADIR    "$COMMONAPPDATA\Dinero"
 !define APP_REGKEY     "Software\${APP_NAME}"
 !define APP_UNINSTKEY  "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_DIRNAME}"
 
-; LZMA solid compression: same single-stream LZMA across all files,
-; gives the highest ratio. Slow to build, fast to extract.
 SetCompressor /SOLID lzma
 SetCompressorDictSize 64
 
@@ -44,12 +41,6 @@ InstallDirRegKey HKLM "${APP_REGKEY}" "InstallDir"
 RequestExecutionLevel admin
 Unicode true
 
-; Embedded file metadata — shows up in right-click installer.exe ->
-; Properties -> Details. Authenticode signing (not yet wired up) is what
-; controls the UAC dialog's "Verified publisher" line — VIAddVersionKey
-; below does not.
-;
-; VIProductVersion requires X.Y.Z.W numeric format (no -rc suffix).
 VIProductVersion "8.0.0.0"
 VIFileVersion    "8.0.0.0"
 VIAddVersionKey "ProductName"      "${APP_NAME}"
@@ -63,7 +54,10 @@ VIAddVersionKey "OriginalFilename" "Dinero-Server-${APP_VERSION}-windows-x86_64-
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
 !insertmacro GetSize
+
+Var AppDataDir
 
 !define MUI_ABORTWARNING
 
@@ -80,45 +74,110 @@ VIAddVersionKey "OriginalFilename" "Dinero-Server-${APP_VERSION}-windows-x86_64-
 
 !insertmacro MUI_LANGUAGE "English"
 
+Function ResolveCommonDataDir
+  ; With all-users shell context, $APPDATA resolves to the common appdata
+  ; location (normally C:\ProgramData), not the installing user's profile.
+  SetShellVarContext all
+  StrCpy $AppDataDir "$APPDATA\Dinero"
+FunctionEnd
+
+Function IsVCRedistInstalled
+  StrCpy $R0 "0"
+  SetRegView 64
+  ClearErrors
+  ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Installed"
+  ${IfNot} ${Errors}
+  ${AndIf} $0 = 1
+    StrCpy $R0 "1"
+  ${EndIf}
+FunctionEnd
+
+Function EnsureVCRedist
+  Call IsVCRedistInstalled
+  ${If} $R0 = "1"
+    DetailPrint "Microsoft Visual C++ runtime already installed."
+    Return
+  ${EndIf}
+
+  IfFileExists "$INSTDIR\vc_redist.x64.exe" 0 missing_redist
+    DetailPrint "Installing Microsoft Visual C++ 2015-2022 x64 Redistributable..."
+    ExecWait '"$INSTDIR\vc_redist.x64.exe" /install /quiet /norestart' $0
+    ${If} $0 = 0
+    ${OrIf} $0 = 3010
+    ${OrIf} $0 = 1638
+      DetailPrint "Microsoft Visual C++ runtime installer completed with exit code $0."
+      Return
+    ${EndIf}
+
+    MessageBox MB_ICONSTOP "Microsoft Visual C++ 2015-2022 x64 Redistributable installation failed with exit code $0. Dinero Server cannot start without the MSVC runtime."
+    Abort
+
+  missing_redist:
+    MessageBox MB_ICONSTOP "Microsoft Visual C++ 2015-2022 x64 Redistributable is not installed, and vc_redist.x64.exe was not bundled in this installer. Install the official x64 redistributable from Microsoft, then rerun this installer."
+    Abort
+FunctionEnd
+
 Section "Dinero Server (required)" SecCore
   SectionIn RO
 
   SetShellVarContext all
   SetRegView 64
+  Call ResolveCommonDataDir
 
-  ; Stop and remove any existing Dinerod service from a prior install so
-  ; we can overwrite the binaries without a "file in use" error.
-  ExecWait '"$SYSDIR\sc.exe" stop ${SVC_NAME}'
-  ExecWait '"$SYSDIR\sc.exe" delete ${SVC_NAME}'
+  ; Stop and remove any existing Dinerod service before overwriting binaries.
+  ; Best-effort -- legitimate non-zero exits when the service is absent.
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" stop ${SVC_NAME}'
+  Pop $0
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" delete ${SVC_NAME}'
+  Pop $0
 
   SetOutPath "$INSTDIR"
   File /r "dist\server-installer-stage\*.*"
 
-  ; Datadir under ProgramData. LocalSystem (the service account) has
-  ; full access by default. Wallets and blockchain data live here so
-  ; uninstall preserves it the same way the user installer preserves
-  ; %APPDATA%\Dinero.
-  CreateDirectory "${APP_DATADIR}"
+  Call EnsureVCRedist
 
-  ; Register dinerod as a Windows Service:
-  ;   - auto-start (start= auto)
-  ;   - LocalSystem account (default, no obj= flag)
-  ;   - binPath includes the -datadir flag so the service knows where
-  ;     to read/write chain + wallet state (LocalSystem's %APPDATA% is
-  ;     under \System32\config\systemprofile which is confusing; the
-  ;     ProgramData path is the canonical Windows-Service convention).
-  ExecWait '"$SYSDIR\sc.exe" create ${SVC_NAME} binPath= "\"$INSTDIR\dinerod.exe\" -datadir=\"${APP_DATADIR}\"" start= auto DisplayName= "${SVC_DISPLAY}"'
-  ExecWait '"$SYSDIR\sc.exe" description ${SVC_NAME} "${SVC_DESC}"'
-  ; Configure service failure recovery: restart on first three failures,
-  ; reset failure counter after 1 day.
-  ExecWait '"$SYSDIR\sc.exe" failure ${SVC_NAME} reset= 86400 actions= restart/5000/restart/5000/restart/30000'
-  ; Start it now.
-  ExecWait '"$SYSDIR\sc.exe" start ${SVC_NAME}'
+  CreateDirectory "$AppDataDir"
 
-  ; Registry: own key + Add/Remove Programs entry
+  ; Register dinerod as a real Windows Service. The --service flag makes
+  ; dinerod enter StartServiceCtrlDispatcher(), while --datadir points the
+  ; LocalSystem service at the shared ProgramData location.
+  ;
+  ; sc create's binPath= value has nested quoting: a path-with-spaces wrapped
+  ; in literal quotes ("C:\Program Files\...\dinerod.exe"), embedded inside
+  ; the binPath= value which is itself an argv element wrapped in outer
+  ; quotes. The embedded quotes MUST be backslash-escaped (\") so
+  ; CommandLineToArgvW preserves them while still treating the outer pair as
+  ; an argv delimiter -- without the backslash the parser sees consecutive
+  ; "" and splits the binPath value across multiple argv elements, leaving
+  ; sc.exe with an unparseable command. The original NSIS used $\" which
+  ; emits a bare quote; this version uses \$\" to emit \" and wraps via
+  ; cmd.exe /c for defense in depth (proven on the validation VPS). We also
+  ; capture the exit code and Abort on failure so the silent-fail mode that
+  ; bit the first-pass fix can't recur.
+  DetailPrint "Registering ${SVC_NAME} Windows service..."
+  nsExec::ExecToLog '"$SYSDIR\cmd.exe" /c sc create ${SVC_NAME} binPath= "\$\"$INSTDIR\dinerod.exe\$\" --service --datadir=\$\"$AppDataDir\$\"" start= auto DisplayName= "${SVC_DISPLAY}"'
+  Pop $0
+  ${If} $0 <> 0
+    DetailPrint "sc create failed with exit code $0"
+    MessageBox MB_ICONSTOP "Could not register the Dinerod Windows service (sc create exit code $0). The installer will abort.$\r$\n$\r$\nCommon causes:$\r$\n  - not running with administrator privileges$\r$\n  - antivirus blocking service registration$\r$\n  - leftover Dinerod service from a failed prior install (run 'sc.exe delete Dinerod' from an elevated prompt, then rerun this installer)"
+    Abort
+  ${EndIf}
+
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" description ${SVC_NAME} "${SVC_DESC}"'
+  Pop $0
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" failure ${SVC_NAME} reset= 86400 actions= restart/5000/restart/5000/restart/30000'
+  Pop $0
+
+  DetailPrint "Starting ${SVC_NAME} service..."
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" start ${SVC_NAME}'
+  Pop $0
+  ${If} $0 <> 0
+    DetailPrint "sc start returned exit code $0 (service is registered; start can be retried via 'sc start ${SVC_NAME}' or services.msc)"
+  ${EndIf}
+
   WriteRegStr HKLM "${APP_REGKEY}" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "${APP_REGKEY}" "Version"    "${APP_VERSION}"
-  WriteRegStr HKLM "${APP_REGKEY}" "Datadir"    "${APP_DATADIR}"
+  WriteRegStr HKLM "${APP_REGKEY}" "Datadir"    "$AppDataDir"
   WriteRegStr HKLM "${APP_REGKEY}" "ServiceName" "${SVC_NAME}"
 
   WriteRegStr   HKLM "${APP_UNINSTKEY}" "DisplayName"     "${APP_NAME}"
@@ -139,46 +198,29 @@ Section "Dinero Server (required)" SecCore
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 SectionEnd
 
-LangString DESC_SecCore ${LANG_ENGLISH} "Daemon stack (dinerod + dinero-cli + miners + wallet-cli + seeder). Registers dinerod as a Windows Service (auto-start)."
-
-!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecCore} $(DESC_SecCore)
-!insertmacro MUI_FUNCTION_DESCRIPTION_END
-
-; ====================================================================
-; Uninstall section
-; ====================================================================
-;
-; Removes:
-;   - The Dinerod Windows Service (stop + delete)
-;   - $INSTDIR (the program files we installed)
-;   - Registry keys (own + Add/Remove)
-;
-; Preserves:
-;   - ${APP_DATADIR} (C:\ProgramData\Dinero) — never touched by
-;     uninstall so wallets + blockchain data survive reinstalls.
-
 Section "Uninstall"
   SetShellVarContext all
   SetRegView 64
 
-  ; Stop + delete the service before removing the binary, otherwise
-  ; dinerod.exe is locked by the SCM and RMDir /r fails.
-  ExecWait '"$SYSDIR\sc.exe" stop ${SVC_NAME}'
-  ExecWait '"$SYSDIR\sc.exe" delete ${SVC_NAME}'
+  ; Stop the service and wait for dinerod to actually release its file
+  ; handles before delete + RMDir, otherwise RMDir leaves $INSTDIR behind.
+  ; dinerod's graceful-shutdown path (flush chainstate, close ChainDB, close
+  ; wallets) takes ~15-30s on a syncing node; we wait 30s here as a worst-
+  ; case ceiling. (Observed: 5s sleep was enough to clear STOP_PENDING but
+  ; dinerod still held blk00000.dat handles when RMDir fired.)
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" stop ${SVC_NAME}'
+  Pop $0
+  Sleep 30000
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" delete ${SVC_NAME}'
+  Pop $0
+  Sleep 1000
 
   Delete "$INSTDIR\Uninstall.exe"
-
-  ; Blow away the install dir. ${APP_DATADIR} lives under ProgramData
-  ; (not under $INSTDIR) so wallet + chain data survive.
   RMDir /r "$INSTDIR"
 
-  ; Registry
   DeleteRegKey HKLM "${APP_REGKEY}"
   DeleteRegKey HKLM "${APP_UNINSTKEY}"
 
-  ; NOTE: We intentionally do NOT remove ${APP_DATADIR} —
-  ; wallet + chain state survives uninstall so reinstall/upgrade
-  ; doesn't lose data. Operators who want a full purge can delete
-  ; C:\ProgramData\Dinero manually.
+  ; Wallet and chain state under C:\ProgramData\Dinero are intentionally
+  ; preserved across uninstall/reinstall.
 SectionEnd
