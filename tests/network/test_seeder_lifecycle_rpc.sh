@@ -8,6 +8,7 @@
 #   - seeder.start rejects a missing binary immediately
 #   - seeder.start launches the supplied dinero-seeder binary
 #   - seeder.stop terminates it and reports stopped
+#   - seeder.stop force-kills a helper that ignores SIGTERM
 
 set -euo pipefail
 
@@ -75,6 +76,46 @@ assert stop["pid"] == 0, stop
 assert stop["state_path"].endswith("/seeder/peers.state"), stop
 assert stop["output_path"].endswith("/seeder/seeds_observed.txt"), stop
 print("PASS: seeder.start launches and seeder.stop terminates")
+PY
+
+STUBBORN="$TMP/stubborn-seeder.sh"
+cat > "$STUBBORN" <<'SH'
+#!/usr/bin/env bash
+trap '' TERM
+while true; do
+    sleep 60
+done
+SH
+chmod +x "$STUBBORN"
+
+STUBBORN_START_JSON="$(mktemp)"
+STUBBORN_STOP_JSON="$(mktemp)"
+HOME="$HOME_DIR" "$DINERO_CLI" -rpcport=19142 seeder.start \
+    "{\"binary\":\"${STUBBORN}\",\"cycle_pause_seconds\":1,\"batch\":1}" > "$STUBBORN_START_JSON"
+sleep 1
+STUBBORN_PID="$(python3 - "$STUBBORN_START_JSON" <<'PY'
+import json, sys
+start = json.load(open(sys.argv[1]))
+assert start["running"] is True, start
+assert start["pid"] > 0, start
+print(start["pid"])
+PY
+)"
+HOME="$HOME_DIR" "$DINERO_CLI" -rpcport=19142 seeder.stop > "$STUBBORN_STOP_JSON"
+
+python3 - "$STUBBORN_STOP_JSON" "$STUBBORN_PID" <<'PY'
+import json, os, sys
+stop = json.load(open(sys.argv[1]))
+pid = int(sys.argv[2])
+assert stop["running"] is False, stop
+assert stop["pid"] == 0, stop
+try:
+    os.kill(pid, 0)
+except ProcessLookupError:
+    pass
+else:
+    raise AssertionError(f"stubborn seeder pid {pid} survived seeder.stop")
+print("PASS: seeder.stop force-kills SIGTERM-resistant helper")
 PY
 
 echo "=== ALL ASSERTIONS PASS ==="
