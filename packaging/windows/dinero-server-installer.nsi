@@ -202,13 +202,15 @@ Section "Uninstall"
   SetShellVarContext all
   SetRegView 64
 
-  ; Stop the service and wait for STOPPED before delete + RMDir, otherwise
-  ; dinerod.exe file handles can still be open when RMDir tries to clear the
-  ; install dir and the dir is left behind. (Observed in rc27-fix testing:
-  ; service in STOP_PENDING raced with the uninstaller's RMDir.)
+  ; Stop the service and wait for dinerod to actually release its file
+  ; handles before delete + RMDir, otherwise RMDir leaves $INSTDIR behind.
+  ; dinerod's graceful-shutdown path (flush chainstate, close ChainDB, close
+  ; wallets) takes ~15-30s on a syncing node; we wait 30s here as a worst-
+  ; case ceiling. (Observed: 5s sleep was enough to clear STOP_PENDING but
+  ; dinerod still held blk00000.dat handles when RMDir fired.)
   nsExec::ExecToLog '"$SYSDIR\sc.exe" stop ${SVC_NAME}'
   Pop $0
-  Sleep 5000
+  Sleep 30000
   nsExec::ExecToLog '"$SYSDIR\sc.exe" delete ${SVC_NAME}'
   Pop $0
   Sleep 1000
