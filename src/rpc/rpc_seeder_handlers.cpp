@@ -183,11 +183,25 @@ public:
             last_error_ = error;
             return Error(-32001, last_error_);
         }
-        WaitBrieflyForExitLocked();
+        WaitForExitLocked(kGracefulStopWait);
+        if (running_) {
+            if (!ForceTerminate(pid_, error)) {
+                last_error_ = error;
+                return Error(-32001, last_error_);
+            }
+            WaitForExitLocked(kForcedStopWait);
+        }
+        if (running_) {
+            last_error_ = "seeder process did not exit after SIGTERM/SIGKILL";
+            return Error(-32001, last_error_);
+        }
         return StatusLocked();
     }
 
 private:
+    static constexpr auto kGracefulStopWait = std::chrono::seconds(2);
+    static constexpr auto kForcedStopWait = std::chrono::seconds(1);
+
     std::mutex mu_;
     bool running_{false};
     bool stopping_{false};
@@ -259,12 +273,14 @@ private:
 #endif
     }
 
-    void WaitBrieflyForExitLocked() {
-        for (int i = 0; i < 40 && running_; ++i) {
+    void WaitForExitLocked(std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (running_ && std::chrono::steady_clock::now() < deadline) {
             ReapIfExitedLocked();
             if (!running_) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
+        ReapIfExitedLocked();
     }
 
     void StopLockedForDestruction() {
@@ -272,7 +288,11 @@ private:
         if (!running_) return;
         std::string ignored;
         Terminate(pid_, ignored);
-        ReapIfExitedLocked();
+        WaitForExitLocked(kGracefulStopWait);
+        if (running_) {
+            ForceTerminate(pid_, ignored);
+            WaitForExitLocked(kForcedStopWait);
+        }
     }
 
     bool Spawn(const std::vector<std::string>& args, const std::string& log_path,
@@ -351,6 +371,24 @@ private:
 #else
         if (!process_handle_) return true;
         if (!TerminateProcess(process_handle_, 0)) {
+            error = "TerminateProcess failed";
+            return false;
+        }
+        return true;
+#endif
+    }
+
+    bool ForceTerminate(ProcessId pid, std::string& error) {
+        if (pid == kNoProcess) return true;
+#ifndef _WIN32
+        if (kill(pid, SIGKILL) != 0) {
+            error = "SIGKILL failed";
+            return false;
+        }
+        return true;
+#else
+        if (!process_handle_) return true;
+        if (!TerminateProcess(process_handle_, 1)) {
             error = "TerminateProcess failed";
             return false;
         }
