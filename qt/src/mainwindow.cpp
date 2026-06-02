@@ -2065,7 +2065,7 @@ void MainWindow::setupUI() {
   cmbWalletSelector_->setStyleSheet(
     "QComboBox { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
     "border-radius: 8px; padding: 0 8px; font-size: 12px; } "
-    "QComboBox::drop-down { border: none; width: 20px; }");
+    "QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border-left: 1px solid #353b44; background: #21262c; border-top-right-radius: 8px; border-bottom-right-radius: 8px; } QComboBox::down-arrow { width: 0; height: 0; margin-right: 7px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #c4cdd9; } QComboBox::down-arrow:disabled { border-top: 6px solid #5b6470; }");
   cmbWalletSelector_->setToolTip("Select a wallet to load");
   cmbWalletSelector_->setEnabled(false);
   cmbWalletSelector_->setVisible(!singleWalletMode_);
@@ -3569,7 +3569,7 @@ void MainWindow::setupUI() {
     cmbMiningMode_->setStyleSheet(
       "QComboBox { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
       "border-radius: 8px; padding: 0 8px; font-size: 12px; } "
-      "QComboBox::drop-down { border: none; width: 20px; }");
+      "QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border-left: 1px solid #353b44; background: #21262c; border-top-right-radius: 8px; border-bottom-right-radius: 8px; } QComboBox::down-arrow { width: 0; height: 0; margin-right: 7px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #c4cdd9; } QComboBox::down-arrow:disabled { border-top: 6px solid #5b6470; }");
     cmbMiningMode_->setToolTip(
       "Solo = mine directly with your node.\n"
       "Pool (Stratum V1) = submit shares to a V1 pool (legacy, cleartext).\n"
@@ -3682,7 +3682,7 @@ void MainWindow::setupUI() {
     cmbSv2Backend_->setStyleSheet(
       "QComboBox { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
       "border-radius: 8px; padding: 0 8px; font-size: 12px; } "
-      "QComboBox::drop-down { border: none; width: 20px; }");
+      "QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border-left: 1px solid #353b44; background: #21262c; border-top-right-radius: 8px; border-bottom-right-radius: 8px; } QComboBox::down-arrow { width: 0; height: 0; margin-right: 7px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #c4cdd9; } QComboBox::down-arrow:disabled { border-top: 6px solid #5b6470; }");
     cmbSv2Backend_->setToolTip(
       "CPU = dinero-sv2-miner (all cores hashing).\n"
       "GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).");
@@ -3727,7 +3727,7 @@ void MainWindow::setupUI() {
     cmbMinerType_->setStyleSheet(
       "QComboBox { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
       "border-radius: 8px; padding: 0 8px; font-size: 12px; } "
-      "QComboBox::drop-down { border: none; width: 20px; }");
+      "QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border-left: 1px solid #353b44; background: #21262c; border-top-right-radius: 8px; border-bottom-right-radius: 8px; } QComboBox::down-arrow { width: 0; height: 0; margin-right: 7px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #c4cdd9; } QComboBox::down-arrow:disabled { border-top: 6px solid #5b6470; }");
     cmbMinerType_->setToolTip("Choose the solo mining engine");
     connect(cmbMinerType_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onMinerTypeChanged);
@@ -8998,6 +8998,14 @@ void MainWindow::onMinerTypeChanged(int index) {
                : "Path to external RPC miner binary...");
   }
 
+  // The engine selector stays enabled while mining (see setMiningModeControlsLocked),
+  // but a switch only applies on the next Start — say so instead of silently no-op'ing.
+  if (isMining_ && !anyPool && txtMiningOutput_) {
+    txtMiningOutput_->append(
+      "Note: mining engine changed to \"" + (cmbMinerType_ ? cmbMinerType_->currentText() : minerType) +
+      "\" — Stop and Start mining to apply it.");
+  }
+
   qDebug() << "Miner type changed to:" << minerType << "(mode =" << mode << ")";
 }
 
@@ -9007,11 +9015,12 @@ void MainWindow::setMiningModeControlsLocked(bool locked) {
   }
   if (cmbMinerType_) {
     // Pool mode keeps miner type fixed to the dedicated Stratum worker.
-    if (currentMiningMode() == "pool") {
-      cmbMinerType_->setEnabled(false);
-    } else {
-      cmbMinerType_->setEnabled(!locked);
-    }
+    // In solo mode, keep the engine selector enabled even while mining so it
+    // stays visibly a dropdown the user can open. Changing it mid-run only
+    // updates the pending selection/visibility (onMinerTypeChanged); it does
+    // not restart the running miner, so leaving it live is safe — the new
+    // engine takes effect on the next Stop/Start.
+    cmbMinerType_->setEnabled(currentMiningMode() != "pool");
   }
   if (edtMinerPath_) {
     edtMinerPath_->setEnabled(!locked);
