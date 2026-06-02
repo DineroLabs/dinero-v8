@@ -120,7 +120,7 @@ int main() {
     scheduler.SetLocalTipHeight(3);
 
     std::vector<uint256> requested_hashes;
-    scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash) {
+    scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash, uint32_t /*height*/) {
         requested_hashes.push_back(block_hash);
     });
 
