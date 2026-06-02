@@ -161,7 +161,7 @@ int main() {
         scheduler.SetLocalTipHeight(0);
 
         std::vector<uint256> requested_hashes;
-        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash) {
+        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash, uint32_t /*height*/) {
             requested_hashes.push_back(block_hash);
         });
 
@@ -241,7 +241,7 @@ int main() {
         scheduler.SetLocalTipHeight(3);
 
         std::vector<uint256> requested_hashes;
-        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash) {
+        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash, uint32_t /*height*/) {
             requested_hashes.push_back(block_hash);
         });
         scheduler.SetGetBlockHashAtHeightCallback(
@@ -352,7 +352,7 @@ int main() {
             scheduler_buggy.SetLocalTipHeight(3);
 
             std::vector<uint256> requested;
-            scheduler_buggy.SetSendGetDataCallback([&requested](const uint256& h) {
+            scheduler_buggy.SetSendGetDataCallback([&requested](const uint256& h, uint32_t /*height*/) {
                 requested.push_back(h);
             });
 
@@ -403,7 +403,7 @@ int main() {
             scheduler_fixed.SetLocalTipHeight(3);
 
             std::vector<uint256> requested;
-            scheduler_fixed.SetSendGetDataCallback([&requested](const uint256& h) {
+            scheduler_fixed.SetSendGetDataCallback([&requested](const uint256& h, uint32_t /*height*/) {
                 requested.push_back(h);
             });
             scheduler_fixed.SetGetBlockHashAtHeightCallback(
@@ -456,7 +456,7 @@ int main() {
         });
 
         std::vector<uint256> requested_hashes;
-        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash) {
+        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash, uint32_t /*height*/) {
             requested_hashes.push_back(block_hash);
         });
 
@@ -524,7 +524,7 @@ int main() {
         });
 
         std::vector<uint256> requested_hashes;
-        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash) {
+        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash, uint32_t /*height*/) {
             requested_hashes.push_back(block_hash);
         });
 
@@ -615,7 +615,7 @@ int main() {
         );
 
         std::vector<uint256> requested_hashes;
-        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash) {
+        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash, uint32_t /*height*/) {
             requested_hashes.push_back(block_hash);
         });
 
