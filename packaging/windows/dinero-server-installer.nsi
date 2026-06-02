@@ -117,6 +117,49 @@ Function EnsureVCRedist
     Abort
 FunctionEnd
 
+Function MaybeConfigureSnapshot
+  ; On fresh installs, lay down a default dinero.conf and copy the bundled
+  ; AssumeUTXO snapshot into the datadir so dinerod fast-syncs from the
+  ; compiled-in trust anchor (height 33048) instead of a from-genesis IBD.
+  ;
+  ; Strict no-op on upgrades / configured operators:
+  ;   - If $AppDataDir\dinero.conf already exists, leave it alone.
+  ;   - If $AppDataDir\blockchain\ already has files, the operator chose
+  ;     to start from genesis previously — don't second-guess that.
+  ;
+  ; The snapshot file is staged into $INSTDIR by File /r, then moved to
+  ; $AppDataDir (the daemon's datadir) so it survives uninstall alongside
+  ; chain state, peers.dat, wallets, etc. The $INSTDIR copy is removed at
+  ; the end either way — it lived there only as installer payload.
+
+  IfFileExists "$AppDataDir\dinero.conf" snapshot_cleanup 0
+  IfFileExists "$AppDataDir\blockchain\*.*" snapshot_cleanup 0
+  IfFileExists "$INSTDIR\utxo-snapshot-33048.dat" 0 snapshot_cleanup
+
+  DetailPrint "Copying AssumeUTXO snapshot to $AppDataDir..."
+  CopyFiles /SILENT "$INSTDIR\utxo-snapshot-33048.dat" "$AppDataDir\utxo-snapshot-33048.dat"
+
+  IfFileExists "$AppDataDir\utxo-snapshot-33048.dat" 0 snapshot_cleanup
+
+  DetailPrint "Writing $AppDataDir\dinero.conf (fast-sync via AssumeUTXO)..."
+  FileOpen $0 "$AppDataDir\dinero.conf" w
+  FileWrite $0 "# Dinero server config -- written by Dinero-Server installer (${APP_VERSION}).$\r$\n"
+  FileWrite $0 "# This file is preserved across uninstall/reinstall. Edit freely.$\r$\n"
+  FileWrite $0 "# Remove the assumeutxo_snapshot line to force a from-genesis sync.$\r$\n"
+  FileWrite $0 "listen=1$\r$\n"
+  FileWrite $0 "rpcbind=127.0.0.1$\r$\n"
+  FileWrite $0 "rpcallowip=127.0.0.1$\r$\n"
+  FileWrite $0 "assumeutxo_snapshot=$AppDataDir\utxo-snapshot-33048.dat$\r$\n"
+  FileClose $0
+
+  snapshot_cleanup:
+    ; The bundled snapshot lived in $INSTDIR only as installer payload.
+    ; The datadir copy (if we placed one) is the authoritative file the
+    ; daemon reads. Remove the install-dir copy so it isn't carried around
+    ; for the lifetime of the install.
+    Delete "$INSTDIR\utxo-snapshot-33048.dat"
+FunctionEnd
+
 Section "Dinero Server (required)" SecCore
   SectionIn RO
 
@@ -137,6 +180,8 @@ Section "Dinero Server (required)" SecCore
   Call EnsureVCRedist
 
   CreateDirectory "$AppDataDir"
+
+  Call MaybeConfigureSnapshot
 
   ; Register dinerod as a real Windows Service. The --service flag makes
   ; dinerod enter StartServiceCtrlDispatcher(), while --datadir points the

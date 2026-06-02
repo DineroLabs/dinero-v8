@@ -20,8 +20,10 @@ param(
     [string]$CMake          = 'cmake',
     [string]$VcpkgRoot      = "$env:USERPROFILE\vcpkg",
     [string]$VcpkgBin       = "$env:USERPROFILE\vcpkg\installed\x64-windows\bin",
-    [string]$Makensis       = 'C:\Program Files (x86)\NSIS\makensis.exe',
-    [string]$VcRedistPath   = '',
+    [string]$Makensis           = 'C:\Program Files (x86)\NSIS\makensis.exe',
+    [string]$VcRedistPath       = '',
+    [string]$SnapshotPath       = '',
+    [string]$SnapshotReleaseTag = 'v8.0.0-rc28',
     [switch]$SkipBuild
 )
 
@@ -130,6 +132,43 @@ function Resolve-VcRedist {
     return $cached
 }
 
+function Resolve-Snapshot {
+    # Resolve the AssumeUTXO snapshot file the installer will bundle. Returns
+    # an absolute path to a verified-by-the-daemon snapshot. The daemon checks
+    # the sha256 against its compiled-in trust anchor at load time, so a
+    # tampered file is rejected — the installer is just transport here.
+    #
+    # Precedence:
+    #   1. -SnapshotPath (explicit local file; for offline / mirrored builds)
+    #   2. Cached copy at $DistDir\utxo-snapshot-33048.dat
+    #   3. Download from the v8 release tagged by -SnapshotReleaseTag.
+    #
+    # The snapshot file has been unchanged since rc24 (height 33048), so
+    # pulling from any rc24+ release tag produces an identical file. The
+    # default points at a known-good recent tag; override -SnapshotReleaseTag
+    # if a future cut publishes a new snapshot height.
+
+    if ($SnapshotPath) {
+        if (-not (Test-Path $SnapshotPath)) {
+            Write-Host "ERROR: -SnapshotPath not found: $SnapshotPath" -ForegroundColor Red
+            exit 1
+        }
+        return (Resolve-Path $SnapshotPath).Path
+    }
+
+    if (-not (Test-Path $DistDir)) {
+        New-Item $DistDir -ItemType Directory | Out-Null
+    }
+
+    $cached = Join-Path $DistDir 'utxo-snapshot-33048.dat'
+    if (-not (Test-Path $cached)) {
+        $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$SnapshotReleaseTag/utxo-snapshot-33048.dat"
+        Write-Host "Downloading AssumeUTXO snapshot from $url..."
+        Invoke-WebRequest $url -OutFile $cached
+    }
+    return $cached
+}
+
 function Resolve-DaemonBinaryPath([string]$BinaryName) {
     $primary = Join-Path $DaemonBuildDir "$BinaryName.exe"
     if (Test-Path $primary) {
@@ -217,6 +256,10 @@ foreach ($d in $vcpkgDlls) {
 $vcRedist = Resolve-VcRedist
 Copy-Item $vcRedist (Join-Path $Stage 'vc_redist.x64.exe')
 Write-Host '  vc_redist.x64.exe'
+
+$snapshot = Resolve-Snapshot
+Copy-Item $snapshot (Join-Path $Stage 'utxo-snapshot-33048.dat')
+Write-Host '  utxo-snapshot-33048.dat'
 
 $totalSize = (Get-ChildItem $Stage -Recurse | Measure-Object Length -Sum).Sum
 $fileCount = (Get-ChildItem $Stage -Recurse -File).Count
