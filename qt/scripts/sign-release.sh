@@ -56,6 +56,14 @@ for dir in "$APP/Contents/Resources" "$APP/Contents/MacOS"; do
     [ -d "$dir" ] || continue
     for f in "$dir"/*; do
         [ -f "$f" ] || continue
+        # Skip the main bundle executable here — it must be signed LAST (step 2),
+        # after every sibling helper. This loop iterates MacOS/* alphabetically,
+        # and "dinero-qt" sorts before "dinero-seeder"/"dinero-solo-miner", so
+        # signing it here seals the bundle while those helpers are still unsigned
+        # → "code object is not signed at all / In subcomponent: dinero-seeder".
+        if [ "$f" = "$APP/Contents/MacOS/dinero-qt" ]; then
+            continue
+        fi
         if file "$f" 2>/dev/null | grep -q "Mach-O"; then
             codesign "${SIGN_FLAGS[@]}" "$f"
         fi
