@@ -285,11 +285,28 @@ def main() -> int:
     fix_rpaths(app)
 
     contents = app / "Contents"
+
+    # The CFBundleExecutable is signed LAST via codesign(app, ...) below. Signing
+    # it seals the whole bundle and requires every nested Mach-O — including the
+    # sibling helper executables in Contents/MacOS/ — to already be signed. It
+    # lives at the same path depth as those helpers, so the depth sort below does
+    # NOT guarantee it is signed after them; whichever same-depth file os.walk
+    # yields last wins (arm64 happened to order it last; x86_64 didn't). Exclude
+    # it here so the final codesign(app) seals a fully-signed bundle.
+    main_exe: Optional[Path] = None
+    try:
+        with (contents / "Info.plist").open("rb") as fh:
+            _exe_name = plistlib.load(fh).get("CFBundleExecutable")
+        if _exe_name:
+            main_exe = (contents / "MacOS" / _exe_name).resolve()
+    except Exception:
+        main_exe = None
+
     sign_targets: list[Path] = []
     for root, _, files in os.walk(contents):
         for file_name in files:
             candidate = Path(root) / file_name
-            if should_sign_file(candidate):
+            if should_sign_file(candidate) and (main_exe is None or candidate.resolve() != main_exe):
                 sign_targets.append(candidate)
 
     sign_targets.sort(key=lambda p: len(p.parts), reverse=True)

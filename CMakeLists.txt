@@ -209,9 +209,22 @@ add_subdirectory(third_party/lightning_core)
 # This provides production-grade range proofs for shielded proof support
 set(BP_FFI_DIR "${CMAKE_SOURCE_DIR}/third_party/bulletproofs_ffi")
 
+# Cross-arch macOS build (e.g. x86_64 on Apple Silicon): cargo emits to a
+# target-triple subdir (target/<triple>/release) and must be invoked with
+# --target, otherwise it builds for the host arch and the link fails.
+set(BP_FFI_CARGO_TARGET "")
+if(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64"
+        AND NOT CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    set(BP_FFI_CARGO_TARGET "x86_64-apple-darwin")
+endif()
+
 # Determine library extension based on platform
 if(APPLE)
-    set(BP_FFI_LIB "${BP_FFI_DIR}/target/release/libbulletproofs_ffi.a")
+    if(BP_FFI_CARGO_TARGET)
+        set(BP_FFI_LIB "${BP_FFI_DIR}/target/${BP_FFI_CARGO_TARGET}/release/libbulletproofs_ffi.a")
+    else()
+        set(BP_FFI_LIB "${BP_FFI_DIR}/target/release/libbulletproofs_ffi.a")
+    endif()
 elseif(WIN32)
     set(BP_FFI_LIB "${BP_FFI_DIR}/target/release/bulletproofs_ffi.lib")
 else()
@@ -247,16 +260,20 @@ if(CARGO_EXECUTABLE)
             set(BP_LDFLAGS "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
         endif()
 
+        set(BP_FFI_CARGO_TARGET_ARGS "")
+        if(BP_FFI_CARGO_TARGET)
+            set(BP_FFI_CARGO_TARGET_ARGS --target ${BP_FFI_CARGO_TARGET})
+        endif()
         set(BP_FFI_BUILD_COMMAND
             ${CMAKE_COMMAND} -E env
             "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}"
             "RUSTFLAGS=${BP_RUSTFLAGS}"
             "CFLAGS=${BP_CFLAGS}"
             "LDFLAGS=${BP_LDFLAGS}"
-            "${CARGO_EXECUTABLE}" build --release
+            "${CARGO_EXECUTABLE}" build --release ${BP_FFI_CARGO_TARGET_ARGS}
         )
 
-        message(STATUS "   Bulletproofs FFI macOS target: ${CMAKE_OSX_DEPLOYMENT_TARGET}")
+        message(STATUS "   Bulletproofs FFI macOS target: ${CMAKE_OSX_DEPLOYMENT_TARGET} (cargo target: ${BP_FFI_CARGO_TARGET})")
     endif()
 
     # Add build target for Rust library
