@@ -376,6 +376,20 @@ void BlockRelayManager::HandleBlock(const std::string& peer_address, const Block
         return;
     }
 
+    // issue #216: mark the download "received" the MOMENT the block's bytes
+    // arrive — before the orphan/validate branches. The old code only notified
+    // the scheduler on the accepted (post-connect) path, so a block that
+    // orphaned or was slow to validate stayed "in-flight" and the scheduler's
+    // time-only stale check re-requested it every timeout — a re-request storm
+    // that throttled catch-up sync. notifyBlockReceiving() stops those
+    // re-requests WITHOUT marking the block completed, so a block the orphan
+    // pool later drops can still be re-fetched (last resort, after a long
+    // grace). The block is marked truly done (completed_) only when it actually
+    // CONNECTS, via notifyBlockReceived() on the accepted path below.
+    if (download_scheduler_) {
+        download_scheduler_->notifyBlockReceiving(block_hash);
+    }
+
     // Phase G.7: Check if parent exists (orphan detection)
     // Phase 3: prev_block_hash is uint256, convert to hex
     std::string parent_hex = block.header.prev_block_hash.GetHex();
@@ -443,7 +457,10 @@ void BlockRelayManager::HandleBlock(const std::string& peer_address, const Block
         // Mark as seen (prevent reprocessing)
         MarkBlockAsSeen(block_hash);
 
-        // Notify scheduler that block was received successfully
+        // issue #216: the block actually CONNECTED — now mark it truly done
+        // (clears it from in-flight and records it completed). Receipt was
+        // signalled earlier via notifyBlockReceiving(); this is the terminal
+        // "downloaded and connected" state.
         if (download_scheduler_) {
             download_scheduler_->notifyBlockReceived(block_hash);
         }

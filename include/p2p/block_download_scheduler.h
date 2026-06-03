@@ -35,6 +35,10 @@ struct BlockDownloadRequest {
     int64_t timestamp{0};         // When request was created
     peer_id_t requested_from;     // Peer handling this request
     bool in_flight{false};        // Currently downloading
+    // issue #216: time the block's bytes arrived (0 = still awaiting bytes). Once
+    // received, the normal stale-timeout no longer re-requests it (that was the
+    // re-request amplification); only a long-grace last-resort re-fetch applies.
+    int64_t received_at{0};
 };
 
 /**
@@ -120,6 +124,17 @@ public:
     void notifyBlockReceived(const uint256& block_hash);
 
     /**
+     * issue #216: called the MOMENT a block's bytes arrive off the wire — before
+     * it validates/connects. Marks the in-flight request "received" so the
+     * normal stale-timeout stops re-requesting it (orphaned / slow-to-connect
+     * blocks no longer cause a re-request storm). The block stays tracked (it is
+     * NOT marked completed_, so a block the orphan pool later drops can still be
+     * re-fetched) until it actually connects (notifyBlockReceived) or a long
+     * grace elapses (last-resort re-fetch).
+     */
+    void notifyBlockReceiving(const uint256& block_hash);
+
+    /**
      * Notify that a peer has disconnected
      * Reschedules any in-flight requests from that peer
      *
@@ -160,6 +175,9 @@ public:
      */
     void setMaxInFlight(uint32_t max) { max_in_flight_ = max; }
     void setTimeout(int64_t timeout_secs) { timeout_seconds_ = timeout_secs; }
+    // issue #216: grace before a RECEIVED-but-unconnected block is re-fetched as a
+    // last resort (recovers dropped orphans without a per-timeout storm).
+    void setReceivedGraceSeconds(int64_t secs) { received_grace_seconds_ = secs; }
     void setMaxRetries(uint32_t max) { max_retries_ = max; }
     void setMaxPeerInFlight(uint32_t max) { max_peer_in_flight_ = max; }
 
@@ -255,6 +273,10 @@ private:
     // Configuration
     uint32_t max_in_flight_{16};          // Maximum concurrent downloads
     int64_t timeout_seconds_{60};         // Download timeout (seconds)
+    // issue #216: a block whose bytes arrived but hasn't connected yet is only
+    // re-fetched after THIS much time (a last-resort net for orphans the pool
+    // dropped), instead of every timeout_seconds_. 5x the normal timeout.
+    int64_t received_grace_seconds_{300};
     uint32_t max_retries_{3};             // Maximum retry attempts
     uint32_t max_peer_in_flight_{4};      // Maximum downloads per peer
 
