@@ -740,6 +740,11 @@ void P2PService::StartSchedulerTickLoop() {
                 }
 
                 MaybeRunDynamicP2PActiveChurn(now);
+
+                // issue #214: detect a frozen best-header (lost announcements on
+                // stale connections) and recover in-daemon (re-getheaders /
+                // rotate stalest peer) instead of relying on an external restart.
+                MaybeRecoverStaleTip(now);
             }
             std::this_thread::sleep_for(scheduler_tick_interval_);
         }
@@ -748,6 +753,88 @@ void P2PService::StartSchedulerTickLoop() {
             logger_interface_->info("[P2PService] Scheduler tick loop stopped");
         }
     });
+}
+
+void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now) {
+    // issue #214: detect a frozen best-header (the node stopped LEARNING about
+    // new blocks — lost inv/headers announcements on stale long-lived
+    // connections) and recover without an external restart.
+    if (!p2p_mgr_) {
+        return;
+    }
+    auto* ctx = DaemonContext::instance();
+    if (!ctx || !ctx->chainstate || !ctx->header_chain) {
+        return;
+    }
+
+    const auto* best = ctx->header_chain->GetBestHeader();
+    const uint32_t best_h = best ? best->height : 0;
+
+    // Best header advanced (or first observation): reset the stall clock.
+    if (best_h > last_best_header_height_ ||
+        last_header_advance_time_.time_since_epoch().count() == 0) {
+        last_best_header_height_ = best_h;
+        last_header_advance_time_ = now;
+        staleness_getheaders_count_ = 0;
+        return;
+    }
+
+    // Best header is frozen. Only treat it as a stall if we still have peers and
+    // a real chain — a zero-peer node is handled by the reconnect logic above,
+    // and height 0 means we never synced.
+    const size_t peer_count = p2p_mgr_->get_peer_count();
+    if (peer_count == 0 || best_h == 0) {
+        return;
+    }
+    if (now - last_header_advance_time_ < staleness_threshold_) {
+        return;  // not frozen long enough yet
+    }
+    if (now - last_staleness_getheaders_ < staleness_getheaders_interval_) {
+        return;  // rate-limit recovery actions
+    }
+    last_staleness_getheaders_ = now;
+    ++staleness_getheaders_count_;
+
+    const auto stale_secs =
+        std::chrono::duration_cast<std::chrono::seconds>(now - last_header_advance_time_).count();
+
+    // Recovery: re-issue getheaders to every peer. getheaders is a PULL, so
+    // peers answer it even when their announcement (push) path to us has gone
+    // quiet — this recovers the common "lost announcements" stall without
+    // dropping any connection.
+    //
+    // Send per-peer with the SYNCHRONOUS send_to_peer(), NOT broadcast_message():
+    // the async broadcast outbox can silently drop messages under congestion,
+    // and a recovery probe must actually reach peers precisely when the node is
+    // wedged. Mirrors the block-getdata callback in daemon_app.cpp.
+    auto locator = ctx->chainstate->GenerateBlockLocator();
+    int sent = 0;
+    if (!locator.empty()) {
+        std::vector<std::string> locator_hex;
+        locator_hex.reserve(locator.size());
+        for (const auto& hash_item : locator) {
+            locator_hex.push_back(hash_item.GetHex());
+        }
+        ::P2PMessage getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
+        for (const auto& peer : p2p_mgr_->get_connected_peers()) {
+            if (p2p_mgr_->send_to_peer(peer.to_string(), getheaders_msg)) {
+                ++sent;
+            }
+        }
+    }
+    if (logger_interface_) {
+        logger_interface_->warning(
+            "[P2PService] Stale tip: best header frozen at " + std::to_string(best_h) +
+            " for " + std::to_string(stale_secs) + "s — re-issued getheaders to " +
+            std::to_string(sent) + "/" + std::to_string(peer_count) +
+            " peers (attempt " + std::to_string(staleness_getheaders_count_) + ")");
+    }
+
+    // NOTE: a stalest-peer rotation tier (disconnect the longest-silent peer to
+    // force a fresh connection) is deliberately deferred — getheaders-refresh is
+    // the safe v1, and the external height-watchdog backstops the rare case of a
+    // genuinely dead connection that won't answer getheaders. Revisit rotation
+    // once this is confirmed against a real stall (issue #214).
 }
 
 void P2PService::StopSchedulerTickLoop() {

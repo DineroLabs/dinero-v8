@@ -342,6 +342,27 @@ private:
     std::chrono::steady_clock::time_point last_dynamic_p2p_churn_{};
     std::chrono::seconds reconnect_probe_interval_{std::chrono::seconds(15)};
 
+    // ── In-daemon staleness recovery (issue #214) ────────────────────────────
+    // A node that has finished syncing relies on inv/headers announcements to
+    // learn about new blocks. If those stop arriving on long-lived connections
+    // (stale peer state), the best header freezes and the node silently falls
+    // behind — it thinks it is "Synced" while the network moves on. The
+    // BlockDownloadScheduler only acts on MISSING blocks below the known header
+    // tip, so a frozen header tip leaves it idle. We detect a stalled best
+    // header here and recover by re-issuing getheaders (pulling what the stale
+    // connections stopped pushing). The external fleet height-watchdog stays as
+    // a backstop until this is confirmed against a live stall; a peer-rotation
+    // tier is deferred (see #214).
+    uint32_t last_best_header_height_{0};
+    std::chrono::steady_clock::time_point last_header_advance_time_{};
+    std::chrono::steady_clock::time_point last_staleness_getheaders_{};
+    int staleness_getheaders_count_{0};
+    // Tunables (deliberately generous to avoid acting during legitimate quiet
+    // periods — getheaders is a cheap, harmless probe either way).
+    std::chrono::seconds staleness_threshold_{std::chrono::seconds(120)};
+    std::chrono::seconds staleness_getheaders_interval_{std::chrono::seconds(60)};
+    void MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now);
+
     // Internal message handler
     void HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg);
     void StartSchedulerTickLoop();
