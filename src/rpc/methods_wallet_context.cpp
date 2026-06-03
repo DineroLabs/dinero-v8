@@ -21,6 +21,7 @@
 
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "rpc/proof_bundle_consistency.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/chainstate_service.h"
@@ -3715,70 +3716,119 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
 
         din::Json batch_params = din::arr();
         batch_params.append(proof_input);
-        din::Json batch_result = din::rpc_getutxoproofs_batch(ctx, batch_params);
 
-        if (batch_result.isMember("error")) {
-            result["error"] = "Proof generation failed: " + ExtractRpcErrorMessage(batch_result);
-            return result;
-        }
+        // The individual UTXO proofs and the stump (accumulator root + num_leaves)
+        // must describe ONE Utreexo forest state, or a light client rejects the
+        // bundle with "proof leaf count mismatch" (it requires every proof's
+        // num_leaves == stump_num_leaves, since a proof only verifies against the
+        // stump of the same forest size). Proof generation and the stump snapshot
+        // are separate forest reads, so a block connecting on the sync thread in
+        // between grows the forest and makes them diverge. Rather than hold a
+        // consensus lock from this RPC thread (deadlock risk), assemble
+        // optimistically and bracket the work with a forest-commitment read before
+        // and after: getCommitment() reflects additions AND deletions (num_leaves
+        // alone misses spends), so an unchanged commitment proves the whole bundle
+        // came from one consistent state. If a block landed mid-assembly, retry.
+        // Fails safe: on exhaustion return a transient error the client already
+        // handles via seed failover/retry — never an internally inconsistent bundle.
+        constexpr int kMaxAttempts = 4;
+        bool consistent = false;
+        std::string root_hex;
 
-        // Bind to the exact compact accumulator context used by the proofs.
-        const std::string root_hex = BytesToHex(forest->getCommitment());
-        std::string tip_hash = chainstate_service->getBestBlockHash();
-        int tip_height = chainstate_service->getBlockHeight();
+        for (int attempt = 0; attempt < kMaxAttempts && !consistent; ++attempt) {
+            const auto commitment_before = forest->getCommitment();
 
-        // Build response
-        result["accumulator_root"] = root_hex;
-        result["block_hash"] = tip_hash;
-        result["height"] = tip_height;
-        result["truncated"] = truncated;
-        AppendWalletProofRootsSnapshot(result, *forest);
+            din::Json batch_result = din::rpc_getutxoproofs_batch(ctx, batch_params);
+            if (batch_result.isMember("error")) {
+                result["error"] = "Proof generation failed: " + ExtractRpcErrorMessage(batch_result);
+                return result;
+            }
 
-        // Transform batch result into proof bundle format
-        din::Json proofs_out = din::arr();
-        size_t success_count = 0;
+            din::Json attempt_result;
+            // Bind to the exact compact accumulator context used by the proofs.
+            AppendWalletProofRootsSnapshot(attempt_result, *forest);
+            const uint64_t stump_num_leaves = attempt_result["stump_num_leaves"].asUInt64();
 
-        if (batch_result.isMember("proofs") && batch_result["proofs"].isArray()) {
-            for (const auto& p : batch_result["proofs"]) {
-                din::Json entry;
-                entry["txid"] = p.isMember("txid") ? p["txid"].asString() : "";
-                entry["vout"] = p.isMember("vout") ? p["vout"].asUInt() : 0;
+            // commitment_after must be the LAST forest read so the whole window
+            // (proof gen + stump snapshot) is provably inside the unchanged span.
+            const auto commitment_after = forest->getCommitment();
+            root_hex = BytesToHex(commitment_after);
+            if (commitment_before != commitment_after) {
+                continue;  // a block connected mid-assembly; re-assemble
+            }
 
-                bool ok = p.isMember("success") && p["success"].isBool() && p["success"].asBool();
-                entry["success"] = ok;
+            attempt_result["accumulator_root"] = root_hex;
+            attempt_result["block_hash"] = chainstate_service->getBestBlockHash();
+            attempt_result["height"] = chainstate_service->getBlockHeight();
+            attempt_result["truncated"] = truncated;
 
-                if (ok && p.isMember("proof") && p["proof"].isObject()) {
-                    const auto& proof = p["proof"];
-                    if (proof.isMember("leaf_hash")) entry["leaf_hash"] = proof["leaf_hash"];
-                    if (proof.isMember("position")) entry["position"] = proof["position"];
-                    if (proof.isMember("num_leaves")) entry["num_leaves"] = proof["num_leaves"];
-                    if (proof.isMember("siblings")) entry["siblings"] = proof["siblings"];
-                    success_count++;
-                }
+            // Transform batch result into proof bundle format
+            din::Json proofs_out = din::arr();
+            std::vector<uint64_t> proof_num_leaves;
+            size_t success_count = 0;
 
-                // Include amount for client-side balance verification
-                for (const auto& utxo : utxos) {
-                    if (utxo.txid == entry["txid"].asString() &&
-                        utxo.vout == entry["vout"].asUInt()) {
-                        entry["amount_una"] = static_cast<int64_t>(utxo.amount_una);
-                        entry["amount_unas"] = static_cast<int64_t>(utxo.amount_una);
-                        entry["script_pubkey"] = utxo.script_pubkey;
-                        break;
+            if (batch_result.isMember("proofs") && batch_result["proofs"].isArray()) {
+                for (const auto& p : batch_result["proofs"]) {
+                    din::Json entry;
+                    entry["txid"] = p.isMember("txid") ? p["txid"].asString() : "";
+                    entry["vout"] = p.isMember("vout") ? p["vout"].asUInt() : 0;
+
+                    bool ok = p.isMember("success") && p["success"].isBool() && p["success"].asBool();
+                    entry["success"] = ok;
+
+                    if (ok && p.isMember("proof") && p["proof"].isObject()) {
+                        const auto& proof = p["proof"];
+                        if (proof.isMember("leaf_hash")) entry["leaf_hash"] = proof["leaf_hash"];
+                        if (proof.isMember("position")) entry["position"] = proof["position"];
+                        if (proof.isMember("num_leaves")) {
+                            entry["num_leaves"] = proof["num_leaves"];
+                            proof_num_leaves.push_back(proof["num_leaves"].asUInt64());
+                        }
+                        if (proof.isMember("siblings")) entry["siblings"] = proof["siblings"];
+                        success_count++;
                     }
-                }
 
-                proofs_out.append(entry);
+                    // Include amount for client-side balance verification
+                    for (const auto& utxo : utxos) {
+                        if (utxo.txid == entry["txid"].asString() &&
+                            utxo.vout == entry["vout"].asUInt()) {
+                            entry["amount_una"] = static_cast<int64_t>(utxo.amount_una);
+                            entry["amount_unas"] = static_cast<int64_t>(utxo.amount_una);
+                            entry["script_pubkey"] = utxo.script_pubkey;
+                            break;
+                        }
+                    }
+
+                    proofs_out.append(entry);
+                }
+            }
+
+            // Defense in depth: the commitment gate above already guarantees this,
+            // but assert the exact invariant the client validates before emitting.
+            if (!dinero::rpc::ProofBundleLeafCountsConsistent(proof_num_leaves, stump_num_leaves)) {
+                continue;
+            }
+
+            attempt_result["proofs"] = proofs_out;
+            attempt_result["utxo_count"] = static_cast<int>(success_count);
+
+            result = std::move(attempt_result);
+            consistent = true;
+
+            if (ctx.logger) {
+                ctx.logger->info("[wallet.getproofbundle] Generated " +
+                                 std::to_string(success_count) + "/" +
+                                 std::to_string(utxos.size()) +
+                                 " proofs, root=" + root_hex.substr(0, 16) + "...");
             }
         }
 
-        result["proofs"] = proofs_out;
-        result["utxo_count"] = static_cast<int>(success_count);
-
-        if (ctx.logger) {
-            ctx.logger->info("[wallet.getproofbundle] Generated " +
-                             std::to_string(success_count) + "/" +
-                             std::to_string(utxos.size()) +
-                             " proofs, root=" + root_hex.substr(0, 16) + "...");
+        if (!consistent) {
+            result = din::Json();
+            result["error"] = "Proof bundle could not be assembled from a stable "
+                              "forest state (blocks connecting); please retry";
+            result["retryable"] = true;
+            return result;
         }
 
     } catch (const std::exception& e) {

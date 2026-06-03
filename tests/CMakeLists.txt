@@ -132,6 +132,22 @@ if(NOT MSVC)
   )
 endif()
 
+# Regression (DineroDPI): wallet.getproofbundle must never emit a bundle whose
+# proof num_leaves diverge from the stump num_leaves ("proof leaf count mismatch"
+# — a block connecting between proof gen and stump snapshot). Header-only invariant
+# check; the handler enforces it via a forest-commitment equality gate + retry.
+add_executable(test_proof_bundle_consistency
+  tests/rpc/test_proof_bundle_consistency.cpp
+)
+target_include_directories(test_proof_bundle_consistency BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME ProofBundleConsistency COMMAND test_proof_bundle_consistency)
+set_tests_properties(ProofBundleConsistency PROPERTIES
+  LABELS "rpc;dpi;proof;regression"
+  TIMEOUT 15
+)
+
 add_executable(test_relay_hints_eviction
   tests/network/test_relay_hints_eviction.cpp
   src/network/relay_hints_eviction.cpp
