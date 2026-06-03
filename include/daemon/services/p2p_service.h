@@ -2,6 +2,7 @@
 #include "daemon/iservice.h"
 #include "daemon/p2p_manager.h"
 #include "daemon/services/prune_service.h"
+#include "daemon/services/stale_tip_recovery.h"  // issue #214: StaleTipState + decision
 #include "network/port_mapper.h"
 #include "network/stun_client.h"      // NAT traversal Phase C1 (unique_ptr<StunClient> member)
 #include "version.h"
@@ -341,6 +342,35 @@ private:
     std::chrono::steady_clock::time_point dynamic_p2p_started_at_{};
     std::chrono::steady_clock::time_point last_dynamic_p2p_churn_{};
     std::chrono::seconds reconnect_probe_interval_{std::chrono::seconds(15)};
+
+    // ── In-daemon staleness recovery (issue #214) ────────────────────────────
+    // A node that has finished syncing relies on inv/headers announcements to
+    // learn about new blocks. If those stop arriving on long-lived connections
+    // (stale peer state), the best header freezes and the node silently falls
+    // behind — it thinks it is "Synced" while the network moves on. The
+    // BlockDownloadScheduler only acts on MISSING blocks below the known header
+    // tip, so a frozen header tip leaves it idle. We detect a stalled best
+    // header here and recover by re-issuing getheaders (pulling what the stale
+    // connections stopped pushing). The external fleet height-watchdog stays as
+    // a backstop until this is confirmed against a live stall; a peer-rotation
+    // tier is deferred (see #214).
+    //
+    // The WHEN-to-act decision lives in DecideStaleTipAction (stale_tip_recovery.h)
+    // so it can be unit-tested without sockets/singletons; this struct holds the
+    // mutable stall-tracking state it advances. MaybeRecoverStaleTip() reads the
+    // live height/peer-count, calls the decision, and does the getheaders I/O.
+    daemon::StaleTipState stale_tip_state_;
+    // Tunables. The threshold MUST sit several block-times above the normal
+    // inter-block gap, NOT at it: TARGET_SPACING_SEC is 120s and block arrival is
+    // Poisson, so ~37% of healthy gaps already exceed 120s. A 120s threshold
+    // would therefore fire getheaders on roughly a third of all normal blocks —
+    // log spam, and worse, it destroys the stall signal (you could no longer
+    // tell a real stall from a routine quiet gap). 600s = 5× spacing puts the
+    // false-fire rate at e^-5 (~0.7%), while staying below the external
+    // height-watchdog's 900s so in-daemon recovery remains the first responder.
+    std::chrono::seconds staleness_threshold_{std::chrono::seconds(600)};
+    std::chrono::seconds staleness_getheaders_interval_{std::chrono::seconds(60)};
+    void MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now);
 
     // Internal message handler
     void HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg);

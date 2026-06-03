@@ -740,6 +740,11 @@ void P2PService::StartSchedulerTickLoop() {
                 }
 
                 MaybeRunDynamicP2PActiveChurn(now);
+
+                // issue #214: detect a frozen best-header (lost announcements on
+                // stale connections) and recover in-daemon (re-getheaders /
+                // rotate stalest peer) instead of relying on an external restart.
+                MaybeRecoverStaleTip(now);
             }
             std::this_thread::sleep_for(scheduler_tick_interval_);
         }
@@ -748,6 +753,73 @@ void P2PService::StartSchedulerTickLoop() {
             logger_interface_->info("[P2PService] Scheduler tick loop stopped");
         }
     });
+}
+
+void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now) {
+    // issue #214: detect a frozen best-header (the node stopped LEARNING about
+    // new blocks — lost inv/headers announcements on stale long-lived
+    // connections) and recover without an external restart.
+    if (!p2p_mgr_) {
+        return;
+    }
+    auto* ctx = DaemonContext::instance();
+    if (!ctx || !ctx->chainstate || !ctx->header_chain) {
+        return;
+    }
+
+    const auto* best = ctx->header_chain->GetBestHeader();
+    const uint32_t best_h = best ? best->height : 0;
+    const size_t peer_count = p2p_mgr_->get_peer_count();
+
+    // The WHEN-to-act decision is a pure state machine (unit-tested in
+    // test_stale_tip_recovery.cpp). Everything below only runs when it says the
+    // tip is stale enough to re-probe.
+    if (daemon::decideStaleTipAction(best_h, peer_count, now, staleness_threshold_,
+                                     staleness_getheaders_interval_, stale_tip_state_) !=
+        daemon::StaleTipAction::SEND_GETHEADERS) {
+        return;
+    }
+
+    const auto stale_secs = std::chrono::duration_cast<std::chrono::seconds>(
+        now - stale_tip_state_.last_header_advance_time).count();
+
+    // Recovery: re-issue getheaders to every peer. getheaders is a PULL, so
+    // peers answer it even when their announcement (push) path to us has gone
+    // quiet — this recovers the common "lost announcements" stall without
+    // dropping any connection.
+    //
+    // Send per-peer with the SYNCHRONOUS send_to_peer(), NOT broadcast_message():
+    // the async broadcast outbox can silently drop messages under congestion,
+    // and a recovery probe must actually reach peers precisely when the node is
+    // wedged. Mirrors the block-getdata callback in daemon_app.cpp.
+    auto locator = ctx->chainstate->GenerateBlockLocator();
+    int sent = 0;
+    if (!locator.empty()) {
+        std::vector<std::string> locator_hex;
+        locator_hex.reserve(locator.size());
+        for (const auto& hash_item : locator) {
+            locator_hex.push_back(hash_item.GetHex());
+        }
+        ::P2PMessage getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
+        for (const auto& peer : p2p_mgr_->get_connected_peers()) {
+            if (p2p_mgr_->send_to_peer(peer.to_string(), getheaders_msg)) {
+                ++sent;
+            }
+        }
+    }
+    if (logger_interface_) {
+        logger_interface_->warning(
+            "[P2PService] Stale tip: best header frozen at " + std::to_string(best_h) +
+            " for " + std::to_string(stale_secs) + "s — re-issued getheaders to " +
+            std::to_string(sent) + "/" + std::to_string(peer_count) +
+            " peers (attempt " + std::to_string(stale_tip_state_.staleness_getheaders_count) + ")");
+    }
+
+    // NOTE: a stalest-peer rotation tier (disconnect the longest-silent peer to
+    // force a fresh connection) is deliberately deferred — getheaders-refresh is
+    // the safe v1, and the external height-watchdog backstops the rare case of a
+    // genuinely dead connection that won't answer getheaders. Revisit rotation
+    // once this is confirmed against a real stall (issue #214).
 }
 
 void P2PService::StopSchedulerTickLoop() {
@@ -1009,6 +1081,44 @@ bool P2PService::Init(DaemonContext& ctx) {
     onion_proxy_reachable_ = false;
     onion_proxy_message_ = onion_proxy_configured_ ? "configured, not probed yet" : "disabled";
     offline_mode_ = config_->GetBool("p2p.offline", false);
+
+    // issue #214: regtest-only overrides for the in-daemon staleness-recovery
+    // clock, so an integration test can exercise the 600s default in seconds.
+    // Gated to regtest (like the announce-suppression hook) so these test-only
+    // env vars can never alter staleness behavior on a real mainnet/testnet node.
+    // A real ops tuning knob, if ever wanted, belongs in a proper config option.
+    if (Params().name == "regtest") {
+    if (const char* env = std::getenv("DINERO_TEST_STALENESS_THRESHOLD_SECS")) {
+        try {
+            staleness_threshold_ = std::chrono::seconds(std::max(1, std::stoi(env)));
+            if (logger_interface_) {
+                logger_interface_->warning("[P2PService] Override: staleness_threshold=" +
+                                           std::to_string(staleness_threshold_.count()) + "s");
+            }
+        } catch (const std::exception& e) {
+            if (logger_interface_) {
+                logger_interface_->warning(
+                    "[P2PService] Ignoring malformed DINERO_TEST_STALENESS_THRESHOLD_SECS: " +
+                    std::string(e.what()));
+            }
+        }
+    }
+    if (const char* env = std::getenv("DINERO_TEST_STALENESS_GETHEADERS_INTERVAL_SECS")) {
+        try {
+            staleness_getheaders_interval_ = std::chrono::seconds(std::max(1, std::stoi(env)));
+            if (logger_interface_) {
+                logger_interface_->warning("[P2PService] Override: staleness_getheaders_interval=" +
+                                           std::to_string(staleness_getheaders_interval_.count()) + "s");
+            }
+        } catch (const std::exception& e) {
+            if (logger_interface_) {
+                logger_interface_->warning(
+                    "[P2PService] Ignoring malformed DINERO_TEST_STALENESS_GETHEADERS_INTERVAL_SECS: " +
+                    std::string(e.what()));
+            }
+        }
+    }
+    }  // regtest-only staleness overrides
 
     // Get datadir for peers.dat persistence
     std::string datadir = config_->DataDir();

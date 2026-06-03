@@ -11,8 +11,10 @@
 #include "consensus/header_sync_manager.h"  // Phase G.8
 #include "storage/chain_db.h"  // Phase W.1: For sync phase detection
 #include "common/ilogger.h"
+#include "consensus/chainparams.h"  // issue #214: regtest gate for test-only announce suppression
 #include "primitives/block.h"
 #include "util/ser.h"  // CompactSize (varint) encoding for P2P messages
+#include <cstdlib>  // std::getenv (issue #214 test hook)
 #include <cstring>
 #include <iostream>  // Debug logging
 
@@ -66,6 +68,25 @@ void BlockRelayManager::AnnounceBlock(const uint256& block_hash) {
     if (!send_message_callback_) {
         if (logger_) {
             logger_->warning("[BlockRelayManager] Cannot announce block: send callback not set");
+        }
+        return;
+    }
+
+    // issue #214 (TEST HOOK): suppress the spontaneous block PUSH (cmpctblock/inv)
+    // so an integration test can reproduce the "lost announcements" stall — a peer
+    // mines ahead but stops announcing, freezing the other node's header tip. The
+    // getheaders RESPONSE (pull) path is elsewhere and stays intact, so the node
+    // under test can still recover by re-issuing getheaders. Gated to regtest AND
+    // an explicit env var so it can never affect a real (mainnet/testnet) node.
+    // Evaluated once (function-local static): env + network are fixed per process.
+    static const bool kSuppressAnnouncements = [] {
+        const char* env = std::getenv("DINERO_TEST_SUPPRESS_ANNOUNCEMENTS");
+        return env && std::string(env) == "1" && dinero::Params().name == "regtest";
+    }();
+    if (kSuppressAnnouncements) {
+        if (logger_) {
+            logger_->warning("[BlockRelayManager] TEST: suppressing announcement for block " +
+                             block_hash.GetHex().substr(0, 16) + "... (regtest, #214 repro)");
         }
         return;
     }

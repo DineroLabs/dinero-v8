@@ -440,6 +440,26 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_p2pservice_network_control.sh)
     message(STATUS "  ✓ P2PServiceNetworkControl registered")
 endif()
 
+# issue #214: two-node integration repro of in-daemon staleness recovery.
+# CONTROL (recovery off -> stays stuck) vs EXPERIMENT (recovery on -> re-getheaders
+# and catches up). Needs the DINERO_TEST_* regtest hooks built into dinerod.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_p2p_staleness_recovery.sh)
+    add_test(
+        NAME P2PStalenessRecovery
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_p2p_staleness_recovery.sh
+    )
+    # NOTE: deliberately NOT labeled "integration" — the CI ctest lane runs
+    # --label-exclude 'integration|...', so that label would silently drop this
+    # test from CI. Mirror P2PServiceNetworkControl's label set, which DOES run.
+    set_tests_properties(P2PStalenessRecovery PROPERTIES
+        LABELS "p2p-network-control-smoke;p2p;staleness-recovery;network-control"
+        TIMEOUT 240
+    )
+    message(STATUS "  ✓ P2PStalenessRecovery (#214) registered")
+endif()
+
 if(UNIX AND NOT APPLE AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_relay_nat_netns.sh)
     find_program(DINERO_BASH_EXECUTABLE bash)
     if(DINERO_BASH_EXECUTABLE)
