@@ -2761,6 +2761,28 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_headers_sync_service.cpp)
   message(STATUS "✅ HeadersSyncService boundary smoke test enabled")
 endif()
 
+# issue #214: deterministic regression for in-daemon staleness recovery.
+# Pure decision logic (header-only) — links only gtest, no daemon/sockets.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_stale_tip_recovery.cpp)
+  add_executable(test_stale_tip_recovery
+    tests/services/test_stale_tip_recovery.cpp
+  )
+  add_dependencies(test_stale_tip_recovery gtest gtest_main)
+  target_include_directories(test_stale_tip_recovery BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  target_link_libraries(test_stale_tip_recovery PRIVATE
+    GTest::gtest_main
+  )
+  add_test(NAME StaleTipRecovery COMMAND test_stale_tip_recovery)
+  set_tests_properties(StaleTipRecovery PROPERTIES
+    LABELS "services-boundary-smoke;daemon;p2p;staleness-recovery;smoke"
+    TIMEOUT 15
+  )
+  message(STATUS "✅ StaleTipRecovery (#214) deterministic test enabled")
+endif()
+
 # services-boundary-smoke: PeerScoringService boundary contract.
 # Service owns a unique_ptr<p2p::PeerScoringManager>; tests verify Name(),
 # getManager() identity preservation, Init/Start/Stop safety, and that

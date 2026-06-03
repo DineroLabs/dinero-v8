@@ -769,34 +769,19 @@ void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now)
 
     const auto* best = ctx->header_chain->GetBestHeader();
     const uint32_t best_h = best ? best->height : 0;
-
-    // Best header advanced (or first observation): reset the stall clock.
-    if (best_h > last_best_header_height_ ||
-        last_header_advance_time_.time_since_epoch().count() == 0) {
-        last_best_header_height_ = best_h;
-        last_header_advance_time_ = now;
-        staleness_getheaders_count_ = 0;
-        return;
-    }
-
-    // Best header is frozen. Only treat it as a stall if we still have peers and
-    // a real chain — a zero-peer node is handled by the reconnect logic above,
-    // and height 0 means we never synced.
     const size_t peer_count = p2p_mgr_->get_peer_count();
-    if (peer_count == 0 || best_h == 0) {
+
+    // The WHEN-to-act decision is a pure state machine (unit-tested in
+    // test_stale_tip_recovery.cpp). Everything below only runs when it says the
+    // tip is stale enough to re-probe.
+    if (daemon::decideStaleTipAction(best_h, peer_count, now, staleness_threshold_,
+                                     staleness_getheaders_interval_, stale_tip_state_) !=
+        daemon::StaleTipAction::SEND_GETHEADERS) {
         return;
     }
-    if (now - last_header_advance_time_ < staleness_threshold_) {
-        return;  // not frozen long enough yet
-    }
-    if (now - last_staleness_getheaders_ < staleness_getheaders_interval_) {
-        return;  // rate-limit recovery actions
-    }
-    last_staleness_getheaders_ = now;
-    ++staleness_getheaders_count_;
 
-    const auto stale_secs =
-        std::chrono::duration_cast<std::chrono::seconds>(now - last_header_advance_time_).count();
+    const auto stale_secs = std::chrono::duration_cast<std::chrono::seconds>(
+        now - stale_tip_state_.last_header_advance_time).count();
 
     // Recovery: re-issue getheaders to every peer. getheaders is a PULL, so
     // peers answer it even when their announcement (push) path to us has gone
@@ -827,7 +812,7 @@ void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now)
             "[P2PService] Stale tip: best header frozen at " + std::to_string(best_h) +
             " for " + std::to_string(stale_secs) + "s — re-issued getheaders to " +
             std::to_string(sent) + "/" + std::to_string(peer_count) +
-            " peers (attempt " + std::to_string(staleness_getheaders_count_) + ")");
+            " peers (attempt " + std::to_string(stale_tip_state_.staleness_getheaders_count) + ")");
     }
 
     // NOTE: a stalest-peer rotation tier (disconnect the longest-silent peer to
