@@ -707,6 +707,96 @@ int main() {
                   << "..." << std::endl;
     }
 
+    {
+        std::cout << "\n6. issue #216: stale-timeout must NOT re-request a block already on the active chain..." << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 4, &hashes);  // genesis + heights 1..4
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+
+        std::unordered_map<uint256, int> sends;
+        scheduler.SetSendGetDataCallback([&sends](const uint256& h, uint32_t) { sends[h]++; return true; });
+
+        // Active-chain hash lookup: the chain holds the linear hash at each height
+        // up to `connected_tip` (blocks above it aren't connected yet).
+        uint32_t connected_tip = 0;
+        scheduler.SetGetBlockHashAtHeightCallback(
+            [&hashes, &connected_tip](uint32_t height, uint256& out) -> bool {
+                if (height >= hashes.size() || height > connected_tip) return false;
+                out = hashes[height];
+                return true;
+            });
+
+        scheduler.OnHeadersProcessed();
+        for (int t = 0; t < 20; ++t) scheduler.Tick();  // request the whole 1..4 range
+        const int s1_before = sends[hashes[1]];
+        const int s2_before = sends[hashes[2]];
+        if (!Require(s1_before >= 1 && s2_before >= 1, "setup: blocks 1 and 2 should each be requested")) return 1;
+
+        // Block 1 connects to the active chain; tip advances to 1. Force the stale timeout.
+        connected_tip = 1;
+        scheduler.SetLocalTipHeight(1);
+        scheduler.SetStaleRequestTimeoutSeconds(0);
+        scheduler.Tick();
+
+        // FIX: block 1 is on the active chain (hash matches at its height) → NOT re-requested.
+        if (!Require(sends[hashes[1]] == s1_before,
+                     "#216: a block already on the active chain must NOT be re-requested by the stale timeout")) return 1;
+        // Safety net: block 2 (height 2 > tip 1) is genuinely missing → still re-requested.
+        if (!Require(sends[hashes[2]] > s2_before,
+                     "a genuinely-missing block must still be re-requested after the timeout")) return 1;
+        std::cout << "   ✅ connected block not re-requested; missing block retried" << std::endl;
+    }
+
+    {
+        std::cout << "\n7. issue #216 reorg-safety: a stale block whose hash differs from the active chain at its height IS re-requested..." << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 4, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+        std::unordered_map<uint256, int> sends;
+        scheduler.SetSendGetDataCallback([&sends](const uint256& h, uint32_t) { sends[h]++; return true; });
+
+        // The active chain holds a DIFFERENT hash at height 1 (a fork) — so the
+        // requested best-chain block (hashes[1]) is NOT what's connected there.
+        scheduler.SetGetBlockHashAtHeightCallback(
+            [](uint32_t height, uint256& out) -> bool {
+                if (height == 1) { out.SetNull(); return true; }  // != hashes[1]
+                return false;
+            });
+
+        scheduler.OnHeadersProcessed();
+        for (int t = 0; t < 20; ++t) scheduler.Tick();
+        const int s1_before = sends[hashes[1]];
+        if (!Require(s1_before >= 1, "setup: block 1 should be requested")) return 1;
+
+        scheduler.SetLocalTipHeight(1);  // tip says height 1 reached, but with a fork hash
+        scheduler.SetStaleRequestTimeoutSeconds(0);
+        scheduler.Tick();
+
+        // Hash-precise guard: chain hash at height 1 != hashes[1] → must re-request.
+        // A bare height<=tip check would wrongly mark this RECEIVED → reorg stall.
+        if (!Require(sends[hashes[1]] > s1_before,
+                     "#216 reorg-safety: a block whose hash != the active-chain hash at its height MUST be re-requested")) return 1;
+        std::cout << "   ✅ fork block correctly re-requested" << std::endl;
+    }
+
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
     return 0;
 }
