@@ -113,6 +113,25 @@ set_tests_properties(LoggerRotation PROPERTIES
   TIMEOUT 15
 )
 
+# Regression (issue #224 follow-up): logging from a global constructor, before
+# g_logger's own dynamic init, must not abort the process. Guards the macOS
+# static-init mutex crash that aborted every full (mining) dinerod at launch.
+# Plain exit-0 test (no gtest); the crash, if reintroduced, aborts at load.
+if(NOT MSVC)
+  add_executable(test_static_init_logging
+    tests/common/test_static_init_logging.cpp
+    src/common/logger.cpp
+  )
+  target_include_directories(test_static_init_logging BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME StaticInitLogging COMMAND test_static_init_logging)
+  set_tests_properties(StaticInitLogging PROPERTIES
+    LABELS "common;logging;smoke;regression"
+    TIMEOUT 15
+  )
+endif()
+
 add_executable(test_relay_hints_eviction
   tests/network/test_relay_hints_eviction.cpp
   src/network/relay_hints_eviction.cpp
