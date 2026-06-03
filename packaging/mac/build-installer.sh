@@ -89,6 +89,24 @@ for bin in dinerod dinero-cli seeder/dinero-seeder; do
     fi
 done
 
+# Startup smoke test (release gate): the daemon stack the .app embeds MUST
+# actually launch. rc30 shipped a macOS dinerod that aborted at startup (a
+# static initializer logged before the logger mutex was constructed -> SIGABRT,
+# PR #227) because it was packaged + notarized without ever being run. `--version`
+# exercises all static initializers then exits; a launch crash kills the process
+# with a signal (exit >= 128) or prints a C++ terminate/abort message. Refuse to
+# package a broken release.
+echo "Smoke-testing the daemon stack launches (--version)..."
+for bin in dinerod dinero-cli seeder/dinero-seeder; do
+    if smoke_out=$("$BUILD_DIR/$bin" --version 2>&1); then smoke_rc=0; else smoke_rc=$?; fi
+    if [[ "$smoke_rc" -ge 128 ]] || printf '%s' "$smoke_out" | grep -qiE "libc\+\+abi|terminating due to|mutex lock failed|Abort trap|Segmentation fault"; then
+        echo "ERROR: $bin crashed at startup (exit $smoke_rc) -- refusing to package a broken release." >&2
+        printf '%s\n' "$smoke_out" | tail -5 >&2
+        exit 1
+    fi
+done
+echo "  OK: daemon stack launches cleanly"
+
 echo "----------------------------------------------------------"
 echo "Building Dinero macOS installer -- v$VERSION"
 echo "----------------------------------------------------------"
