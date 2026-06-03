@@ -48,6 +48,9 @@ void Logger::setLogFile(const std::string& filename) {
     bytes_written_ = ec ? 0 : static_cast<std::size_t>(existing);
     // Register as the active file logger so SIGHUP can reach us.
     g_file_logger.store(this, std::memory_order_release);
+    // Now safe (and necessary) for log() to take file_mutex_. Set last so the
+    // mutex/stream are fully set up before any concurrent log() observes it.
+    has_file_dest_.store(true, std::memory_order_release);
 }
 
 void Logger::setRotation(std::size_t max_bytes, std::uint32_t max_files) {
@@ -119,7 +122,11 @@ void Logger::log(LogLevel level, const std::string& message) {
     // Also output to file if configured and not shut down. issue #224: the
     // file write, reopen, and rotation are serialized under file_mutex_ so
     // concurrent log() calls can't tear a rotation.
-    if (!shutdown_flag_.load()) {
+    // Only touch file_mutex_ once a file destination has been configured (from
+    // main(), after static init). This keeps log() safe to call from a global
+    // constructor: without it, locking the still-zero-initialized mutex throws
+    // EINVAL on macOS (non-zero PTHREAD_MUTEX_INITIALIZER) and aborts at startup.
+    if (!shutdown_flag_.load() && has_file_dest_.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(file_mutex_);
         if (reopen_requested_.exchange(false, std::memory_order_relaxed)) {
             reopenLocked_();

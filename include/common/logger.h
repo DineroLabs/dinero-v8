@@ -61,6 +61,12 @@ private:
     std::size_t max_log_bytes_{0};        // 0 = rotation disabled
     std::uint32_t max_log_files_{5};
     std::atomic<bool> reopen_requested_{false};
+    // Static-init safety: false until setLogFile() runs (from main(), after all
+    // static initializers). log() only acquires file_mutex_ when this is true,
+    // so a log() call from a global constructor never touches the still-
+    // zero-initialized mutex. On macOS PTHREAD_MUTEX_INITIALIZER is non-zero, so
+    // locking a zero-init std::mutex throws EINVAL; atomics are valid zero-init.
+    std::atomic<bool> has_file_dest_{false};
 
     std::string getCurrentTimestamp();
     std::string levelToString(LogLevel level);
