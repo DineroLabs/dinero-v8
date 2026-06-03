@@ -1082,6 +1082,44 @@ bool P2PService::Init(DaemonContext& ctx) {
     onion_proxy_message_ = onion_proxy_configured_ ? "configured, not probed yet" : "disabled";
     offline_mode_ = config_->GetBool("p2p.offline", false);
 
+    // issue #214: regtest-only overrides for the in-daemon staleness-recovery
+    // clock, so an integration test can exercise the 600s default in seconds.
+    // Gated to regtest (like the announce-suppression hook) so these test-only
+    // env vars can never alter staleness behavior on a real mainnet/testnet node.
+    // A real ops tuning knob, if ever wanted, belongs in a proper config option.
+    if (Params().name == "regtest") {
+    if (const char* env = std::getenv("DINERO_TEST_STALENESS_THRESHOLD_SECS")) {
+        try {
+            staleness_threshold_ = std::chrono::seconds(std::max(1, std::stoi(env)));
+            if (logger_interface_) {
+                logger_interface_->warning("[P2PService] Override: staleness_threshold=" +
+                                           std::to_string(staleness_threshold_.count()) + "s");
+            }
+        } catch (const std::exception& e) {
+            if (logger_interface_) {
+                logger_interface_->warning(
+                    "[P2PService] Ignoring malformed DINERO_TEST_STALENESS_THRESHOLD_SECS: " +
+                    std::string(e.what()));
+            }
+        }
+    }
+    if (const char* env = std::getenv("DINERO_TEST_STALENESS_GETHEADERS_INTERVAL_SECS")) {
+        try {
+            staleness_getheaders_interval_ = std::chrono::seconds(std::max(1, std::stoi(env)));
+            if (logger_interface_) {
+                logger_interface_->warning("[P2PService] Override: staleness_getheaders_interval=" +
+                                           std::to_string(staleness_getheaders_interval_.count()) + "s");
+            }
+        } catch (const std::exception& e) {
+            if (logger_interface_) {
+                logger_interface_->warning(
+                    "[P2PService] Ignoring malformed DINERO_TEST_STALENESS_GETHEADERS_INTERVAL_SECS: " +
+                    std::string(e.what()));
+            }
+        }
+    }
+    }  // regtest-only staleness overrides
+
     // Get datadir for peers.dat persistence
     std::string datadir = config_->DataDir();
     peers_file_path_ = datadir + "/peers.dat";
