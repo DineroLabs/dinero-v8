@@ -3018,6 +3018,113 @@ void test_g2_17_3_fee_aware_propagation() {
 }
 
 //=============================================================================
+// Test G.2.18: re-request behavior (#216). A block whose bytes have arrived
+// ("received") must NOT be re-requested on the normal stale timeout — that was
+// the re-request amplification that throttled catch-up sync. It stays TRACKED
+// (re-fetchable as a last resort, and not marked completed) until it actually
+// connects. These tests count getdata sends through the scheduler callback;
+// setTimeout(-1) forces the normal stale check to fire deterministically, and a
+// large received-grace keeps the last-resort re-fetch from firing in the test.
+// Note: plain assert() is a no-op under NDEBUG (release), so these use a
+// throwing check — main() catches and returns non-zero, so they actually gate.
+//=============================================================================
+
+static void g2_18_require(bool cond, const char* msg) {
+    if (!cond) throw std::runtime_error(msg);
+}
+
+void test_g2_18_1_received_orphan_not_rerequested() {
+    std::cout << "\n=== Test G.2.18.1: received orphan not re-requested (#216) ===\n";
+
+    TestLogger logger;
+    // Count getdata sends PER HASH — the orphan path legitimately requests the
+    // missing PARENT (a different hash), so a total-send counter would be wrong.
+    std::unordered_map<uint256, int> sends;
+    auto scheduler = std::make_shared<BlockDownloadScheduler>(
+        [&sends](peer_id_t, const uint256& hh) { sends[hh]++; return true; });
+    scheduler->registerPeers({"127.0.0.1:20999"});
+    scheduler->setReceivedGraceSeconds(100000);  // no last-resort re-fetch during the test
+
+    BlockRelayManager relay(&logger, scheduler);
+    relay.SetSendMessageCallback([](const std::string&, const std::string&, const std::vector<uint8_t>&) {});
+    relay.SetHasBlockCallback([](const uint256&) { return false; });          // parent missing → orphan
+    relay.SetValidateBlockCallback([](const Block&, const std::string&) { return true; });
+
+    // Non-zero prev so it is NOT genesis → takes the orphan branch.
+    Block orphan = create_test_block(500, std::string(63, '0') + "1");
+    uint256 h = orphan.GetHash();
+
+    scheduler->scheduleBlock(h, 500, "127.0.0.1:20999");
+    scheduler->processQueue();
+    g2_18_require(sends[h] == 1, "G.2.18.1 setup: initial getdata should have been sent");
+    g2_18_require(scheduler->isInFlight(h), "G.2.18.1 setup: block should be in-flight");
+
+    relay.HandleBlock("127.0.0.1:20999", orphan);  // bytes arrive → marked received (orphan)
+
+    scheduler->setTimeout(-1);   // make the normal stale timeout fire immediately
+    scheduler->processQueue();   // retryTimedOutDownloads
+
+    // FIX: received block is skipped by the stale timer → h not re-requested.
+    // OLD: orphan stayed unreceived in-flight → re-requested → sends[h] == 2.
+    g2_18_require(sends[h] == 1, "G.2.18.1: received orphan was re-requested on the normal timeout — amplification (#216)");
+    std::cout << "✅ received orphan not re-requested on the normal stale timeout\n";
+}
+
+void test_g2_18_2_received_reject_not_rerequested() {
+    std::cout << "\n=== Test G.2.18.2: received-then-rejected not re-requested (#216) ===\n";
+
+    TestLogger logger;
+    std::unordered_map<uint256, int> sends;
+    auto scheduler = std::make_shared<BlockDownloadScheduler>(
+        [&sends](peer_id_t, const uint256& hh) { sends[hh]++; return true; });
+    scheduler->registerPeers({"127.0.0.1:20999"});
+    scheduler->setReceivedGraceSeconds(100000);
+
+    BlockRelayManager relay(&logger, scheduler);
+    relay.SetSendMessageCallback([](const std::string&, const std::string&, const std::vector<uint8_t>&) {});
+    relay.SetHasBlockCallback([](const uint256&) { return true; });           // parent exists → not orphan
+    relay.SetValidateBlockCallback([](const Block&, const std::string&) { return false; });  // REJECT
+
+    Block blk = create_test_block(600, std::string(63, '0') + "2");
+    uint256 h = blk.GetHash();
+
+    scheduler->scheduleBlock(h, 600, "127.0.0.1:20999");
+    scheduler->processQueue();
+    g2_18_require(sends[h] == 1, "G.2.18.2 setup: initial getdata should have been sent");
+
+    relay.HandleBlock("127.0.0.1:20999", blk);  // bytes arrive → marked received, then validation rejects
+
+    scheduler->setTimeout(-1);
+    scheduler->processQueue();
+
+    g2_18_require(sends[h] == 1, "G.2.18.2: received-then-rejected block was re-requested on the normal timeout — amplification (#216)");
+    std::cout << "✅ received-then-rejected block not re-requested on the normal stale timeout\n";
+}
+
+void test_g2_18_3_unreceived_block_still_retried() {
+    std::cout << "\n=== Test G.2.18.3: unreceived block still retried (#216 safety net) ===\n";
+
+    // Guard: the fix must NOT break retry of a genuinely-unreceived (lost) block.
+    TestLogger logger;
+    std::unordered_map<uint256, int> sends;
+    auto scheduler = std::make_shared<BlockDownloadScheduler>(
+        [&sends](peer_id_t, const uint256& hh) { sends[hh]++; return true; });
+    scheduler->registerPeers({"127.0.0.1:20999"});
+
+    Block blk = create_test_block(700, std::string(63, '0') + "3");
+    uint256 h = blk.GetHash();
+    scheduler->scheduleBlock(h, 700, "127.0.0.1:20999");
+    scheduler->processQueue();
+    g2_18_require(sends[h] == 1, "G.2.18.3 setup: initial getdata should have been sent");
+
+    // Never deliver the block → it stays unreceived. The stale timeout must still retry it.
+    scheduler->setTimeout(-1);
+    scheduler->processQueue();
+    g2_18_require(sends[h] == 2, "G.2.18.3: a genuinely-unreceived block must still be retried after the timeout");
+    std::cout << "✅ unreceived block still retried after timeout (retry safety net intact)\n";
+}
+
+//=============================================================================
 // Main Test Runner
 //=============================================================================
 
@@ -3064,6 +3171,9 @@ int main() {
         test_g2_17_1_mempool_sync_hints();
         test_g2_17_2_success_prediction();
         test_g2_17_3_fee_aware_propagation();
+        test_g2_18_1_received_orphan_not_rerequested();
+        test_g2_18_2_received_reject_not_rerequested();
+        test_g2_18_3_unreceived_block_still_retried();
 
         std::cout << "\n╔═════════════════════════════════════════════════════════════════════════════════════╗" << std::endl;
         std::cout << "║  ALL PHASE G.2+G.7+G.8+G.9+G.10+G.11+G.12+G.13+G.14+G.15+G.16+G.17 TESTS PASSED ✅ ║" << std::endl;

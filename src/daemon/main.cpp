@@ -2,6 +2,7 @@
 // Week 1 Migration: Using DaemonApp with dependency injection
 
 #include "daemon/daemon_app.h"
+#include "common/logger.h"  // issue #224: requestLogReopen() for SIGHUP
 #include "daemon/db_repair.h"  // Database repair utility
 #include "daemon/doctor/doctor_command.h"  // dinerod doctor subcommand
 #include "daemon/datadir_guard.h"
@@ -687,6 +688,10 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGPIPE, SIG_IGN);  // Ignore broken pipe
+    // issue #224: SIGHUP reopens the log file so external logrotate works
+    // without leaking the renamed-file handle until restart. The handler only
+    // sets an atomic flag (async-signal-safe); the reopen happens on next write.
+    signal(SIGHUP, [](int) { dinero::requestLogReopen(); });
 #else
     if (!running_as_windows_service) {
         SetConsoleCtrlHandler(ConsoleControlHandler, TRUE);

@@ -2,6 +2,8 @@
 #include "daemon/iservice.h"
 #include "common/logger.h"
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -45,7 +47,12 @@ public:
         // `--debug.log_file=<path>` on the CLI.
         if (!log_path_.empty()) {
             logger_->setLogFile(log_path_);
-            logger_->info("[LoggerService] Log file opened: " + log_path_);
+            // issue #224: bound on-disk growth so file logging is safe for
+            // unattended nodes (and external logrotate can SIGHUP-reopen).
+            logger_->setRotation(rot_max_bytes_, rot_max_files_);
+            logger_->info("[LoggerService] Log file opened: " + log_path_ +
+                          " (rotate at " + std::to_string(rot_max_bytes_ / (std::size_t{1024} * 1024)) +
+                          "MB, keep " + std::to_string(rot_max_files_) + ")");
         } else {
             logger_->info("[LoggerService] No file destination configured "
                           "(debug.log_file unset); logging to stderr/journal");
@@ -57,6 +64,13 @@ public:
     // AFTER the config-file loader has populated `debug.log_file` but
     // BEFORE Start() runs, so log_path_ reflects the operator's choice.
     void SetLogPath(const std::string& path) { log_path_ = path; }
+
+    // issue #224: configure log rotation before Start(). max_bytes == 0 disables
+    // rotation (legacy unbounded behavior). Applied to the Logger in Start().
+    void SetRotation(std::size_t max_bytes, std::uint32_t max_files) {
+        rot_max_bytes_ = max_bytes;
+        rot_max_files_ = max_files == 0 ? 1 : max_files;
+    }
 
     void Stop() override {
         logger_->info("[LoggerService] Shutting down logger");
@@ -121,6 +135,11 @@ private:
 
     std::string log_path_;
     std::unique_ptr<Logger> logger_;
+
+    // issue #224: rotation config (defaults applied if SetRotation is never
+    // called; 0 bytes would disable rotation but daemon startup always sets it).
+    std::size_t rot_max_bytes_{std::size_t{50} * 1024 * 1024};  // 50 MB
+    std::uint32_t rot_max_files_{5};
 
     // FATAL ring for health-check signal. Mutex-guarded. Steady clock so
     // wall-clock skew (NTP corrections etc.) doesn't desync the window.

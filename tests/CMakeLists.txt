@@ -94,6 +94,25 @@ set_tests_properties(ClockSource PROPERTIES
   TIMEOUT 5
 )
 
+# issue #224: daemon log rotation + reopen
+add_executable(test_logger_rotation
+  tests/common/test_logger_rotation.cpp
+  src/common/logger.cpp
+)
+add_dependencies(test_logger_rotation gtest gtest_main)
+target_include_directories(test_logger_rotation BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_logger_rotation PRIVATE
+  GTest::gtest_main
+)
+add_test(NAME LoggerRotation COMMAND test_logger_rotation)
+set_tests_properties(LoggerRotation PROPERTIES
+  LABELS "common;logging;smoke"
+  TIMEOUT 15
+)
+
 add_executable(test_relay_hints_eviction
   tests/network/test_relay_hints_eviction.cpp
   src/network/relay_hints_eviction.cpp

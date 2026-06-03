@@ -417,6 +417,14 @@ public:
         local_tip_height_ = height;
     }
 
+    // issue #216: override the stale-request timeout. Primarily a test seam (the
+    // default 30s can't be exercised deterministically otherwise); also usable
+    // to tune re-request aggressiveness.
+    void SetStaleRequestTimeoutSeconds(uint32_t secs) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stale_request_timeout_seconds_ = secs;
+    }
+
     /**
      * Get the local chainstate tip height.
      */
@@ -495,7 +503,8 @@ private:
     // Stale in-flight timeout: if a REQUESTED block hasn't been received after
     // this many seconds, reset it to MISSING so the next Tick() re-requests it
     // (potentially to different/newer peers that actually have the block).
-    static constexpr uint32_t stale_request_timeout_seconds_ = 30;
+    // Non-const so tests can force the timeout to fire (see SetStaleRequestTimeoutSeconds).
+    uint32_t stale_request_timeout_seconds_ = 30;
 
     // NOTFOUND rescan rate-limit: at most one RescanFromActualTip per this
     // many seconds when NOTFOUND responses arrive in bursts.

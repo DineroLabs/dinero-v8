@@ -188,6 +188,44 @@ void BlockDownloadScheduler::Tick() {
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 now - fetch_state.request_time).count();
             if (elapsed >= stale_request_timeout_seconds_) {
+                // issue #216: before re-requesting, check we don't ALREADY have
+                // the block. A block we requested can be received AND connected
+                // via a parallel path (BlockRelayManager -> chainstate) without
+                // OnBlockReceived() ever marking it RECEIVED here — e.g. the
+                // block's bytes arrived after this stale timeout had already
+                // flipped it out of in_flight_blocks_, so the OnNewBlock router
+                // took the relay path and skipped our OnBlockReceived(); or its
+                // redundant StoreBlock raced the relay path. Left unchecked, the
+                // block sits REQUESTED below our own advancing tip and we
+                // re-request it every timeout — the catch-up re-request
+                // amplification (observed ~7x on a slow node).
+                //
+                // HASH-PRECISE check: a bare "height <= local_tip_height_" is NOT
+                // safe — on a reorg, ScanForMissingBlocks queues new-fork blocks
+                // below the old tip that we genuinely don't have. We only "have
+                // it" if we recorded the receipt, OR the ACTIVE chain holds THIS
+                // exact block hash at its height (a different hash on a fork →
+                // re-request, which is correct).
+                bool already_have =
+                    received_blocks_.count(fetch_state.block_hash) > 0;
+                if (!already_have && fetch_state.height <= local_tip_height_ &&
+                    get_block_hash_at_height_callback_) {
+                    uint256 chain_hash;
+                    if (get_block_hash_at_height_callback_(fetch_state.height, chain_hash) &&
+                        chain_hash == fetch_state.block_hash) {
+                        already_have = true;
+                    }
+                }
+                if (already_have) {
+                    g_logger.info("[BlockDownloadScheduler] Stale REQUESTED block already present "
+                                  "(height " + std::to_string(fetch_state.height) + " <= tip " +
+                                  std::to_string(local_tip_height_) + ") — marking RECEIVED, not "
+                                  "re-requesting: " + fetch_state.block_hash.GetHex().substr(0, 16) + "...");
+                    fetch_state.status = FetchStatus::RECEIVED;
+                    in_flight_blocks_.erase(fetch_state.block_hash);
+                    received_blocks_.insert(fetch_state.block_hash);
+                    continue;
+                }
                 g_logger.info("[BlockDownloadScheduler] Stale request expired: " +
                              fetch_state.block_hash.GetHex().substr(0, 16) +
                              "... (height " + std::to_string(fetch_state.height) +
