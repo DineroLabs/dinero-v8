@@ -159,6 +159,42 @@ fi
 echo
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Test 4: Startup smoke test (catches launch / static-init crashes)
+# ═══════════════════════════════════════════════════════════════════════════
+# A release binary must actually RUN. `--version` exercises every static
+# initializer (where a bad global constructor aborts) and the arg parser, then
+# exits — so it catches launch-time crashes without starting a long-lived daemon.
+#
+# This exists because rc30's macOS dinerod aborted at startup (SIGABRT) from a
+# static initializer that logged before the logger mutex was constructed; the
+# binary was signed, notarized, and shipped without anyone running it. A crash
+# kills the process with a signal (exit >= 128); an unrecognized --version just
+# exits cleanly non-zero (NOT a crash), so we only fail on signal termination or
+# a C++ terminate/abort message in the output.
+echo "Test 4: Startup smoke test (binary launches without crashing)..."
+
+set +e
+SMOKE_OUT=$("$BINARY" --version 2>&1)
+SMOKE_RC=$?
+set -e
+
+if [[ "$SMOKE_RC" -ge 128 ]]; then
+    echo -e "${RED}❌ FAILED: Binary crashed at startup (killed by signal $((SMOKE_RC - 128)))${NC}"
+    echo "$SMOKE_OUT" | tail -5
+    echo
+    echo "The binary aborts during launch. A release binary MUST run — see the"
+    echo "rc30 macOS static-init logger crash (PR #227) for an example."
+    exit 1
+elif echo "$SMOKE_OUT" | grep -qiE "libc\+\+abi|terminating due to|mutex lock failed|Segmentation fault|Abort trap"; then
+    echo -e "${RED}❌ FAILED: Binary printed a crash/terminate message at startup${NC}"
+    echo "$SMOKE_OUT" | tail -5
+    exit 1
+else
+    echo -e "${GREEN}✅ PASSED: Binary launches cleanly (exit $SMOKE_RC)${NC}"
+fi
+echo
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════════════════════
 echo "═══════════════════════════════════════════════════════════════════════"
@@ -169,6 +205,7 @@ echo "Binary $(basename "$BINARY") is release-grade:"
 echo "  ✅ No Homebrew dependencies"
 echo "  ✅ No gRPC/protobuf/abseil"
 echo "  ✅ Only system libraries"
+echo "  ✅ Launches without crashing (startup smoke test)"
 echo "  ✅ Exchange-ready"
 echo
 echo "Dependencies ($TOTAL_DEPS total):"
