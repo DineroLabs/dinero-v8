@@ -135,6 +135,22 @@ void BlockDownloadScheduler::notifyBlockReceived(const uint256& block_hash) {
     retry_count_.erase(block_hash);
 }
 
+void BlockDownloadScheduler::notifyBlockReceiving(const uint256& block_hash) {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+
+    // issue #216: the bytes are off the wire. Mark the in-flight request
+    // "received" so retryTimedOutDownloads stops re-requesting it on the normal
+    // stale-timeout (the re-request amplification). Deliberately do NOT erase it
+    // or add it to completed_ — the block may still orphan or be dropped by the
+    // orphan pool, and must remain re-fetchable. It is cleared by
+    // notifyBlockReceived() once it actually connects, or re-fetched as a last
+    // resort after received_grace_seconds_.
+    auto it = in_flight_.find(block_hash);
+    if (it != in_flight_.end() && it->second.received_at == 0) {
+        it->second.received_at = getCurrentTime();
+    }
+}
+
 void BlockDownloadScheduler::notifyPeerDisconnected(peer_id_t peer_id) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
 
@@ -320,6 +336,17 @@ void BlockDownloadScheduler::retryTimedOutDownloads() {
 
     // Find timed-out requests
     for (const auto& [block_hash, request] : in_flight_) {
+        // issue #216: a block whose bytes already arrived is connecting /
+        // orphaned / pending validation. Do NOT re-request it on the normal
+        // timeout — that was the re-request amplification that throttled
+        // catch-up sync. Re-fetch ONLY as a last resort, after a long grace, to
+        // recover a block the orphan pool dropped without storming the network.
+        if (request.received_at != 0) {
+            if (now - request.received_at > received_grace_seconds_) {
+                timed_out_blocks.push_back(block_hash);
+            }
+            continue;
+        }
         int64_t elapsed = now - request.timestamp;
         if (elapsed > timeout_seconds_) {
             timed_out_blocks.push_back(block_hash);
