@@ -871,6 +871,17 @@ bool DaemonApp::Init(int argc, char** argv) {
     // default). Operators wanting file logging set `debug.log_file =
     // <path>` in dinero.conf or pass `--debug.log_file=<path>`.
     logger->SetLogPath(config->GetString("debug.log_file", ""));
+    // issue #224: bound the on-disk log so an unattended node can't fill the
+    // disk when file logging is enabled. Defaults: 50 MB per file, keep 5
+    // archives (~300 MB max). `debug.log_max_size_mb = 0` disables rotation.
+    {
+        const int max_mb = config->GetInt("debug.log_max_size_mb", 50);
+        const int max_files = config->GetInt("debug.log_max_files", 5);
+        const std::size_t max_bytes =
+            max_mb <= 0 ? 0 : static_cast<std::size_t>(max_mb) * 1024U * 1024U;
+        logger->SetRotation(max_bytes,
+                            max_files < 1 ? 1U : static_cast<std::uint32_t>(max_files));
+    }
 
     auto ApplySyncProfilePolicy = [&]() {
         // Resolve sync profile. sync-profile is authoritative.
