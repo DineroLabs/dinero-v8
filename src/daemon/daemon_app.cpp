@@ -2888,10 +2888,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                 const bool csn_mode_for_inv = GetConfig().utreexo_stateless;
                 auto inv_header_refresh_times =
                     std::make_shared<std::unordered_map<std::string, std::chrono::steady_clock::time_point>>();
+                auto inv_header_refresh_hashes =
+                    std::make_shared<std::unordered_map<std::string, std::string>>();
                 auto inv_header_refresh_mutex = std::make_shared<std::mutex>();
                 p2p_service->OnInv = [block_relay, tx_relay, block_download_for_inv,
                                       chainstate_for_inv, p2p_service, csn_mode_for_inv,
-                                      inv_header_refresh_times, inv_header_refresh_mutex](
+                                      inv_header_refresh_times, inv_header_refresh_hashes,
+                                      inv_header_refresh_mutex](
                     const std::string& peer_addr, const ::P2PMessage& msg) {
                     g_logger.info("[Relay] OnInv received from " + peer_addr + " (payload size: " + std::to_string(msg.payload.size()) + ")");
 
@@ -2911,24 +2914,33 @@ bool DaemonApp::Init(int argc, char** argv) {
                     }
 
                     bool requested_headers_refresh = false;
-                    auto request_headers_refresh = [&]() -> bool {
+                    auto request_headers_refresh = [&](const uint256* announced_hash) -> bool {
                         if (requested_headers_refresh || !chainstate_for_inv || !p2p_service) {
                             return false;
                         }
 
-                        const bool near_tip_refresh =
-                            block_download_for_inv && block_download_for_inv->IsFullySynchronized();
                         const auto now = std::chrono::steady_clock::now();
-                        if (!near_tip_refresh) {
+                        const std::string announced_hash_hex =
+                            announced_hash ? announced_hash->GetHex() : std::string();
+                        {
                             std::lock_guard<std::mutex> lock(*inv_header_refresh_mutex);
                             auto it = inv_header_refresh_times->find(peer_addr);
+                            auto hash_it = inv_header_refresh_hashes->find(peer_addr);
+                            const bool same_announced_hash =
+                                announced_hash_hex.empty() ||
+                                (hash_it != inv_header_refresh_hashes->end() &&
+                                 hash_it->second == announced_hash_hex);
                             if (it != inv_header_refresh_times->end() &&
-                                now - it->second < std::chrono::milliseconds(750)) {
+                                now - it->second < std::chrono::milliseconds(750) &&
+                                same_announced_hash) {
                                 g_logger.debug("[Relay] Header refresh already requested recently for " +
                                                peer_addr + "; coalescing block inv");
                                 return false;
                             }
                             (*inv_header_refresh_times)[peer_addr] = now;
+                            if (!announced_hash_hex.empty()) {
+                                (*inv_header_refresh_hashes)[peer_addr] = announced_hash_hex;
+                            }
                         }
 
                         auto locator = chainstate_for_inv->GenerateBlockLocator();
@@ -2969,21 +2981,23 @@ bool DaemonApp::Init(int argc, char** argv) {
                         } else if (inv_type == 2 && block_relay) {
                             // MSG_BLOCK = 2
                             if (csn_mode_for_inv) {
-                                request_headers_refresh();
+                                request_headers_refresh(&hash);
 
                                 g_logger.info("[Relay] CSN mode routes block inv through headers-first sync, not BlockRelayManager (" +
                                               peer_addr + ")");
                                 continue;
                             }
-                            if (block_download_for_inv &&
-                                !block_download_for_inv->IsFullySynchronized()) {
-                                request_headers_refresh();
+                            if (block_download_for_inv) {
+                                request_headers_refresh(&hash);
 
                                 if (!block_download_for_inv->HeadersSynced()) {
                                     g_logger.info("[Relay] Headers not yet synced; requesting headers instead of routing block inv from " +
                                                   peer_addr);
-                                } else {
+                                } else if (!block_download_for_inv->IsFullySynchronized()) {
                                     g_logger.info("[Relay] Block sync still catching up; requesting headers refresh instead of routing block inv from " +
+                                                  peer_addr);
+                                } else {
+                                    g_logger.info("[Relay] Headers-first mode: requesting headers before block relay from " +
                                                   peer_addr);
                                 }
                                 continue;
@@ -5184,6 +5198,15 @@ bool DaemonApp::Init(int argc, char** argv) {
                             chainstate_ptr->RecordHeaderAnnouncements(peer_addr, headers);
                         }
 
+                        if (added > 0 && header_chain_ptr) {
+                            const auto* best = header_chain_ptr->GetBestHeader();
+                            auto p2p_locked = p2p_weak.lock();
+                            if (best && p2p_locked) {
+                                p2p_locked->get().update_peer_height(peer_addr, best->height);
+                                p2p_locked->get().update_peer_synced_headers(peer_addr, best->height);
+                            }
+                        }
+
                         // 4d-1: minimum-chainwork gate (anti low-work-chain DoS / anti-eclipse
                         // during IBD). Only download/activate blocks once the best HEADER chain
                         // proves cumulative work >= nMinimumChainWork. Gated on the header
@@ -5380,9 +5403,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                 auto block_relay = ctx_.block_relay;
                 auto chainstate = ctx_.chainstate;
                 auto block_download = ctx_.block_download;
+                auto header_chain = ctx_.header_chain;
                 auto prune_service = ctx_.prune;  // Phase 34.8: Capture prune service
 
-                p2p_service->OnNewBlock = [block_relay, chainstate, block_download, prune_service, p2p_service](
+                p2p_service->OnNewBlock = [block_relay, chainstate, block_download, header_chain, prune_service, p2p_service](
                     const std::string& peer_addr,
                     const ::P2PMessage& msg
                 ) {
@@ -5429,7 +5453,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // 1) blocks known to the consensus scheduler (in-flight or expected), or
                         // 2) blocks explicitly requested by BlockRelayManager relay scheduler.
                         // Drop everything else as truly unsolicited.
-                        bool scheduler_syncing = block_download && !block_download->IsFullySynchronized();
+                        bool header_backlog_active = false;
+                        if (header_chain && chainstate) {
+                            const auto* best = header_chain->GetBestHeader();
+                            const auto* active = chainstate->GetActiveTip();
+                            header_backlog_active = best && active && best->height > active->height;
+                        }
+                        bool scheduler_syncing = block_download &&
+                            (!block_download->IsFullySynchronized() || header_backlog_active);
                         if (scheduler_syncing && !is_known && !relay_in_flight) {
                             std::cout << "[P2P-DEBUG] DROPPING unsolicited block " << block_hash.substr(0, 16)
                                       << "... (scheduler still syncing)" << std::endl;
@@ -5473,7 +5504,15 @@ bool DaemonApp::Init(int argc, char** argv) {
                         //
                         // Post-sync (fully synchronized), process blocks immediately
                         // through ChainstateService for instant chain extension.
-                        bool scheduler_syncing_after_receive = block_download && !block_download->IsFullySynchronized();
+                        bool header_backlog_active_after_receive = false;
+                        if (header_chain && chainstate) {
+                            const auto* best = header_chain->GetBestHeader();
+                            const auto* active = chainstate->GetActiveTip();
+                            header_backlog_active_after_receive =
+                                best && active && best->height > active->height;
+                        }
+                        bool scheduler_syncing_after_receive = block_download &&
+                            (!block_download->IsFullySynchronized() || header_backlog_active_after_receive);
 
                         // P1 reorg fix: Blocks explicitly requested by ActivateBestChain::RequestBlocks()
                         // are tracked in ChainstateService::in_flight_blocks_, NOT the scheduler's
@@ -6069,15 +6108,24 @@ bool DaemonApp::Init(int argc, char** argv) {
                 // deadlock): worst case it degrades to the prior broadcast.
                 // (PeerInfo is non-copyable — hence a skip-set of keys, not a
                 // filtered PeerInfo vector.)
+                auto peer_advertised_height = [](const ::PeerInfo& p) -> uint32_t {
+                    return std::max({
+                        p.best_height,
+                        p.best_known_height,
+                        p.start_height,
+                        p.synced_headers,
+                        p.synced_blocks
+                    });
+                };
                 std::unordered_set<std::string> skip_below_height;
                 if (block_height > 0) {
                     size_t capable = 0;
                     for (const auto& p : peers) {
-                        if (std::max(p.best_height, p.start_height) >= block_height) ++capable;
+                        if (peer_advertised_height(p) >= block_height) ++capable;
                     }
                     if (capable > 0 && capable < peers.size()) {
                         for (const auto& p : peers) {
-                            if (std::max(p.best_height, p.start_height) < block_height) {
+                            if (peer_advertised_height(p) < block_height) {
                                 skip_below_height.insert(p.to_string());
                             }
                         }

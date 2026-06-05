@@ -372,6 +372,15 @@ private:
     std::chrono::seconds staleness_getheaders_interval_{std::chrono::seconds(60)};
     void MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now);
 
+    // Event-driven catch-up: if a peer later advertises or validates to a
+    // height above our current header view, ask that peer immediately instead
+    // of waiting for the stale-tip timer. Throttled by peer+height.
+    std::mutex peer_tip_getheaders_mutex_;
+    std::unordered_map<std::string, uint32_t> last_peer_tip_getheaders_height_;
+    void MaybeRequestHeadersForPeerTip(const std::string& peer_addr,
+                                       uint32_t peer_height,
+                                       const char* reason);
+
     // Internal message handler
     void HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg);
     void StartSchedulerTickLoop();

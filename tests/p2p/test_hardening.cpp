@@ -204,14 +204,14 @@ static void test_seed_nodes_complete() {
     auto seeds = config::getSeedNodes("mainnet");
     assert(seeds.size() >= 4);
 
-    bool found_la = false, found_va = false, found_mo = false, found_cn = false;
+    bool found_la = false, found_va = false, found_sj = false, found_cn = false;
     for (const auto& seed : seeds) {
         if (seed.hostname == "172.93.160.131") found_la = true;
         if (seed.hostname == "173.249.195.59") found_va = true;
-        if (seed.hostname == "72.18.214.120") found_mo = true;
+        if (seed.hostname == "173.249.200.59") found_sj = true;  // SJ replaced retired MO
         if (seed.hostname == "96.9.226.98") found_cn = true;
     }
-    assert(found_la && found_va && found_mo && found_cn);
+    assert(found_la && found_va && found_sj && found_cn);
 
     std::cout << "  PASS: All 4 mainnet seed nodes present" << std::endl;
 }
@@ -243,8 +243,9 @@ static void test_anchor_peers_list() {
 static void test_config_is_anchor_peer() {
     assert(config::isAnchorPeer("173.249.195.59", "mainnet"));
     assert(config::isAnchorPeer("172.93.160.131", "mainnet"));
-    assert(config::isAnchorPeer("72.18.214.120", "mainnet"));
+    assert(config::isAnchorPeer("96.9.226.98", "mainnet"));   // CN replaced retired MO as 3rd anchor
     assert(!config::isAnchorPeer("1.2.3.4", "mainnet"));
+    assert(!config::isAnchorPeer("72.18.214.120", "mainnet"));  // retired MO is no longer an anchor
     assert(!config::isAnchorPeer("173.249.195.59", "testnet"));
 
     std::cout << "  PASS: config::isAnchorPeer works correctly" << std::endl;

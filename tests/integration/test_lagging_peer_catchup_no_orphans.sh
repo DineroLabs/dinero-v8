@@ -172,9 +172,9 @@ info "Mining ${EXTRA_BLOCKS} more blocks on node A during node B catch-up"
 ) &
 MINER_PID=$!
 
+wait "${MINER_PID}" || fail "Background mining failed during catch-up"
 wait_condition "[[ \$(get_height \"${NODE_B_RPC}\" \"${DATA_B}\") -eq \$(get_height \"${NODE_A_RPC}\" \"${DATA_A}\") && \"\$(get_best_hash \"${NODE_B_RPC}\" \"${DATA_B}\")\" = \"\$(get_best_hash \"${NODE_A_RPC}\" \"${DATA_A}\")\" ]]" \
     "Node B did not converge to node A tip"
-wait "${MINER_PID}" || fail "Background mining failed during catch-up"
 pass "Lagging follower converged to node A tip"
 
 python3 "${CHECKER}" \

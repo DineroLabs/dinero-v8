@@ -326,6 +326,7 @@ public:
     using MessageHandler = std::function<void(const std::string& peer_address, const P2PMessage& message)>;
     using PeerConnectedHandler = std::function<void(const std::string& peer_address)>;
     using PeerDisconnectedHandler = std::function<void(const std::string& peer_address)>;
+    using PeerHeightUpdatedHandler = std::function<void(const std::string& peer_address, uint32_t height)>;
     using HeightProvider = std::function<uint32_t()>;  // P2P sync fix: Callback to get current chain height
     using ServiceFlagsProvider = std::function<uint64_t()>;  // Returns advertised service flags
 
@@ -447,6 +448,7 @@ public:
     void set_message_handler(MessageHandler handler) { message_handler_ = handler; }
     void set_peer_connected_handler(PeerConnectedHandler handler) { peer_connected_handler_ = handler; }
     void set_peer_disconnected_handler(PeerDisconnectedHandler handler) { peer_disconnected_handler_ = handler; }
+    void set_peer_height_updated_handler(PeerHeightUpdatedHandler handler) { peer_height_updated_handler_ = handler; }
 
     // P2P sync fix: Set height provider for version handshake
     void set_height_provider(HeightProvider provider) { height_provider_ = provider; }
@@ -844,6 +846,7 @@ private:
     MessageHandler message_handler_;
     PeerConnectedHandler peer_connected_handler_;
     PeerDisconnectedHandler peer_disconnected_handler_;
+    PeerHeightUpdatedHandler peer_height_updated_handler_;
     HeightProvider height_provider_;  // P2P sync fix: Get chain height for version handshake
     ServiceFlagsProvider service_flags_provider_;  // Returns advertised service flags (prune-aware)
 

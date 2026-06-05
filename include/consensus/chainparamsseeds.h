@@ -24,8 +24,8 @@ namespace dinero::consensus {
 inline const std::vector<std::string> kFixedSeedsMainnet = {
     "172.93.160.131:20999",   // California (us-west, LA)
     "173.249.195.59:20999",   // Virginia (us-east, VA)
-    "72.18.214.120:20999",    // Missouri (us-central, MO)
     "96.9.226.98:20999",      // Canada (ca-east)
+    "173.249.200.59:20999",   // San Jose (us-west, SJ; replaced retired MO)
 };
 
 } // namespace dinero::consensus

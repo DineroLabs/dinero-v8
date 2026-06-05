@@ -83,32 +83,107 @@ collect_archives() {
   done
 }
 
-merge_archives() {
+ABI_EXPORTS="$BUILD_ROOT/abi-exports.txt"
+write_abi_exports() {
+  mkdir -p "$BUILD_ROOT"
+  # The complete public C ABI (the functions Swift calls). Everything else —
+  # the bundled dinero:: core — must stay hidden so it cannot collide with
+  # NodeCore.xcframework's copies.
+  cat > "$ABI_EXPORTS" <<'EOF'
+_dinero_shielded_build_unshield_bundle
+_dinero_shielded_compute_note_commitment
+_dinero_shielded_compute_nullifier
+_dinero_shielded_free_result
+EOF
+}
+
+# Build ShieldedProverKit as a DYNAMIC framework instead of a static archive.
+# A static .a cannot hide its symbols (-fvisibility=hidden is a no-op there), so
+# its bundled dinero:: core collides at app-link with NodeCore.xcframework's copy;
+# if the two frameworks are from different commits the linker stitches a
+# Frankenstein build -> ODR -> memory corruption (the "__next_prime overflow"
+# genesis crash). A dylib DOES honor hidden visibility: -exported_symbols_list
+# publishes only the C ABI, -dead_strip prunes to the ABI-reachable closure, and
+# every internal dinero:: symbol becomes private. The kit then shares ZERO
+# linker-visible symbols with NodeCore, so the two may drift commits safely.
+build_dynamic_framework() {
   local build_dir="$1"
   local out_dir="$2"
-  mkdir -p "$out_dir"
+  local openssl_dir="$3"
+  local sdk="$4"          # iphoneos | iphonesimulator
+  local min_flag="$5"     # -mios-version-min=... | -mios-simulator-version-min=...
+  local platform_key="$6" # iPhoneOS | iPhoneSimulator
 
-  local archives=()
-  local found_archive
-  while IFS= read -r found_archive; do
-    archives+=("$found_archive")
-  done < <(collect_archives "$build_dir")
   local wrapper="$build_dir/src/shielded_prover_kit/libShieldedProverKit.a"
   [ -f "$wrapper" ] || die "missing $wrapper"
-  [ "${#archives[@]}" -gt 0 ] || die "no static archives found in $build_dir"
 
-  # Put the wrapper first for readability in ar listings; libtool handles
-  # duplicate object names better than hand-unpacking archives.
-  local merged=("$wrapper")
-  local archive
-  for archive in "${archives[@]}"; do
-    if [ "$archive" != "$wrapper" ]; then
-      merged+=("$archive")
-    fi
-  done
+  local fw="$out_dir/ShieldedProverKit.framework"
+  rm -rf "$fw"
+  mkdir -p "$fw/Headers"
 
-  "$LIBTOOL" -static -o "$out_dir/libShieldedProverKit.a" "${merged[@]}"
-  localize_duplicate_nodecore_symbols "$out_dir/libShieldedProverKit.a"
+  # The dependency closure. -dead_strip keeps only what the ABI actually reaches
+  # (measured ~4 MB), so over-listing here (rocksdb/sqlite/etc.) is harmless.
+  xcrun -sdk "$sdk" clang++ -dynamiclib -arch arm64 "$min_flag" \
+    -install_name "@rpath/ShieldedProverKit.framework/ShieldedProverKit" \
+    -Wl,-dead_strip \
+    -Wl,-exported_symbols_list,"$ABI_EXPORTS" \
+    -Wl,-force_load,"$wrapper" \
+    "$build_dir/src/consensus/shielded/libdinero_shielded.a" \
+    "$build_dir/src/wallet/libdinero_wallet.a" \
+    "$build_dir/libdinero_consensus.a" \
+    "$build_dir/libdinero_crypto.a" \
+    "$build_dir/libdinero_zk.a" \
+    "$build_dir/libdinero_tx_primitives.a" \
+    "$build_dir/src/consensus/pq/libdinero_pq.a" \
+    "$build_dir/third_party/secp256k1-zkp/src/libsecp256k1.a" \
+    "$build_dir/third_party/pqclean/libpqclean_ml_dsa_65.a" \
+    "$build_dir/third_party/argon2/libargon2.a" \
+    "$build_dir/_deps/jsoncpp-build/src/lib_json/libjsoncpp.a" \
+    "$build_dir/_deps/rocksdb-build/librocksdb.a" \
+    "$build_dir/lib/libsqlite3.a" \
+    "$build_dir/libzstd.a" \
+    "$openssl_dir/libcrypto.a" "$openssl_dir/libssl.a" \
+    -framework Foundation -framework Security \
+    -o "$fw/ShieldedProverKit"
+
+  # Hard gate: the framework must export ONLY the C ABI. Any leaked dinero::
+  # global would reintroduce the cross-framework collision.
+  local total_globals abi_globals leaked
+  total_globals="$(nm -gU "$fw/ShieldedProverKit" 2>/dev/null | grep -cE ' T ' || true)"
+  abi_globals="$(nm -gU "$fw/ShieldedProverKit" 2>/dev/null | grep -cE ' T _dinero_shielded_' || true)"
+  leaked=$(( total_globals - abi_globals ))
+  [ "$leaked" -eq 0 ] || die "framework leaks $leaked non-ABI global symbol(s) — refusing to ship"
+
+  cp "$ROOT_DIR/include/shielded_prover_kit/"*.h "$fw/Headers/"
+
+  # Clang module map so the app imports the C ABI framework-style
+  # (<ShieldedProverKit/shielded_prover_kit.h>), as required for a dynamic framework.
+  mkdir -p "$fw/Modules"
+  cat > "$fw/Modules/module.modulemap" <<'MODMAP'
+framework module ShieldedProverKit {
+    header "shielded_prover_kit.h"
+    export *
+}
+MODMAP
+
+  cat > "$fw/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleExecutable</key><string>ShieldedProverKit</string>
+  <key>CFBundleIdentifier</key><string>com.dinerolabs.ShieldedProverKit</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>ShieldedProverKit</string>
+  <key>CFBundlePackageType</key><string>FMWK</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>MinimumOSVersion</key><string>$IOS_DEPLOYMENT_TARGET</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>$platform_key</string></array>
+</dict>
+</plist>
+PLIST
 }
 
 localize_duplicate_nodecore_symbols() {
@@ -148,21 +223,24 @@ DEVICE_SLICE="$BUILD_ROOT/slices/ios-arm64"
 SIM_SLICE="$BUILD_ROOT/slices/ios-simulator-arm64"
 HEADERS_DIR="$BUILD_ROOT/Headers"
 
-echo "[1/5] Building iOS device slice"
+write_abi_exports
+
+echo "[1/5] Building iOS device slice (dynamic framework)"
 configure_and_build OS "$DEVICE_BUILD" "$OPENSSL_DEVICE_DIR"
-merge_archives "$DEVICE_BUILD" "$DEVICE_SLICE"
+build_dynamic_framework "$DEVICE_BUILD" "$DEVICE_SLICE" "$OPENSSL_DEVICE_DIR" \
+  iphoneos "-mios-version-min=$IOS_DEPLOYMENT_TARGET" iPhoneOS
 
-echo "[2/5] Building iOS simulator slice"
+echo "[2/5] Building iOS simulator slice (dynamic framework)"
 configure_and_build SIMULATOR "$SIM_BUILD" "$OPENSSL_SIMULATOR_DIR"
-merge_archives "$SIM_BUILD" "$SIM_SLICE"
+build_dynamic_framework "$SIM_BUILD" "$SIM_SLICE" "$OPENSSL_SIMULATOR_DIR" \
+  iphonesimulator "-mios-simulator-version-min=$IOS_DEPLOYMENT_TARGET" iPhoneSimulator
 
-echo "[3/5] Preparing headers"
-copy_headers "$HEADERS_DIR"
+echo "[3/5] Headers are embedded in each .framework"
 
-echo "[4/5] Creating ShieldedProverKit.xcframework"
+echo "[4/5] Creating ShieldedProverKit.xcframework (dynamic)"
 xcodebuild -create-xcframework \
-  -library "$DEVICE_SLICE/libShieldedProverKit.a" -headers "$HEADERS_DIR" \
-  -library "$SIM_SLICE/libShieldedProverKit.a" -headers "$HEADERS_DIR" \
+  -framework "$DEVICE_SLICE/ShieldedProverKit.framework" \
+  -framework "$SIM_SLICE/ShieldedProverKit.framework" \
   -output "$ARTIFACT_DIR/ShieldedProverKit.xcframework"
 
 echo "[5/5] Zipping and hashing"
@@ -176,7 +254,9 @@ echo "  $ARTIFACT_DIR/ShieldedProverKit.xcframework"
 echo "  $ARTIFACT_DIR/ShieldedProverKit.xcframework.zip"
 echo "  $ARTIFACT_DIR/ShieldedProverKit.sha256"
 echo
-echo "Library info:"
-lipo -info "$DEVICE_SLICE/libShieldedProverKit.a"
-lipo -info "$SIM_SLICE/libShieldedProverKit.a"
+echo "Framework info:"
+lipo -info "$DEVICE_SLICE/ShieldedProverKit.framework/ShieldedProverKit"
+lipo -info "$SIM_SLICE/ShieldedProverKit.framework/ShieldedProverKit"
+echo "Exported symbols (must be ONLY the C ABI):"
+nm -gU "$DEVICE_SLICE/ShieldedProverKit.framework/ShieldedProverKit" 2>/dev/null | grep -E ' T '
 cat "$ARTIFACT_DIR/ShieldedProverKit.sha256"
