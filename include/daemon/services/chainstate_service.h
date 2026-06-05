@@ -810,13 +810,29 @@ private:
     //     == sum of non-coinbase tx inputs, pre_block_shielded_frontier
     //     present iff block has shielded txs)
     //   - chaindb UD:<hash> sidecar read (utreexo-active heights)
-    //   - UTXO read-back: coinbase output 0 in chaindb post-publish
+    //   - UTXO read-back: coinbase output 0 in chaindb post-publish,
+    //     but ONLY while that coinbase is still immature. Past
+    //     COINBASE_MATURITY confirmations a coinbase output 0 may be
+    //     legitimately spent (gettxout == null), which is normal chain
+    //     state — not an atomicity failure. `reference_tip_height` is
+    //     the chain tip the caller is reasoning from; the read-back is
+    //     skipped when (reference_tip_height - height) >= maturity.
+    //     The post-commit ConnectTip caller passes the freshly-connected
+    //     tip (depth 0, always immature) so its atomicity invariant is
+    //     still fully exercised; only the deep startup-audit walk-back
+    //     skips, where a spent coinbase used to raise a false
+    //     chainstate_recovery.marker.
     //
     // The block must be supplied because the structural sanity checks
     // and shielded-presence check need to inspect tx_count, vin, and
     // shielded txs. Caller can ReadStoredBlock once and pass it.
+    // The coinbase output-0 read-back inside this function is maturity-
+    // gated via dinero::daemon::CoinbaseReadbackApplies (see
+    // include/daemon/coinbase_readback_gate.h) so a legitimately-spent
+    // mature coinbase does not raise a false chainstate_recovery.marker.
     DisconnectMaterialCheck CheckBlockDisconnectMaterialDurable(
-        const Block& block, const uint256& hash, uint32_t height) const;
+        const Block& block, const uint256& hash, uint32_t height,
+        uint32_t reference_tip_height) const;
 
     // Reasons a code path may publish (or republish) the in-memory
     // active_tip_ pointer. Each direct-assignment site documents its

@@ -1,6 +1,7 @@
 #include "daemon/services/chainstate_service.h"
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/chainstate_commit_batch.h"
+#include "daemon/coinbase_readback_gate.h"  // maturity gate for coinbase read-back
 #include "common/crash_injection.h"
 #include "rpc/longpoll_notifier.h"  // Server-side long-poll signaling for getblocktemplate
 #include "daemon/services/chainstate_restart_import.h"
@@ -3722,7 +3723,8 @@ void ChainstateService::PublishActiveTip(CBlockIndex* tip, TipPublishReason reas
 ChainstateService::DisconnectMaterialCheck
 ChainstateService::CheckBlockDisconnectMaterialDurable(const Block& block,
                                                       const uint256& hash,
-                                                      uint32_t height) const {
+                                                      uint32_t height,
+                                                      uint32_t reference_tip_height) const {
     DisconnectMaterialCheck result;
     result.durable = false;
 
@@ -3848,7 +3850,23 @@ ChainstateService::CheckBlockDisconnectMaterialDurable(const Block& block,
     // atomically with the tip pointer (rocksdb's WriteBatch atomicity
     // makes that impossible IN THEORY but a future refactor that
     // splits the batch into pieces would be caught here).
-    if (!block.vtx.empty() && !block.vtx[0].vout.empty()) {
+    //
+    // MATURITY GATE (Jun 2026): the read-back is only valid while the
+    // coinbase is still IMMATURE. Consensus forbids spending a coinbase
+    // until `coinbase_maturity` confirmations, so an immature coinbase
+    // output 0 cannot have been spent and MUST be readable. Once mature
+    // it may be legitimately spent (gettxout == null) — normal chain
+    // state, NOT an atomicity failure. The post-commit ConnectTip caller
+    // passes the freshly-connected tip (reference_tip_height == height,
+    // depth 0, always immature) so the atomicity invariant it enforces
+    // is still fully exercised; only the deep startup-audit walk-back
+    // skips here, where a spent mature coinbase previously raised a
+    // false chainstate_recovery.marker (e.g. the height=35600 marker
+    // observed fleet-wide). Use the network's actual maturity so the
+    // gate is correct on regtest (10) as well as mainnet (100).
+    const bool readback_applies = daemon::CoinbaseReadbackApplies(
+        reference_tip_height, height, Params().coinbase_maturity);
+    if (readback_applies && !block.vtx.empty() && !block.vtx[0].vout.empty()) {
         const auto coinbase_txid = block.vtx[0].GetTxid().AsUint256();
         auto coin_result = chain_db_->getCoin(coinbase_txid, 0);
         if (coin_result.status() != Status::Ok) {
@@ -3896,6 +3914,9 @@ ChainstateService::AuditUndoMetadataForRestamp(uint32_t max_blocks_back,
         ? std::numeric_limits<uint32_t>::max()
         : max_blocks_back;
     uint32_t current_height = static_cast<uint32_t>(std::max(0, tip_result.value().height));
+    // Maturity reference for the per-block read-back gate: the tip we
+    // start the walk-back from, captured before the loop decrements it.
+    const uint32_t audit_tip_height = current_height;
 
     while (report.scanned < scan_limit && current_height > 0) {
         UndoMetadataRestampEntry entry;
@@ -3956,7 +3977,8 @@ ChainstateService::AuditUndoMetadataForRestamp(uint32_t max_blocks_back,
 
         if (entry.has_undo_flag) {
             const auto durable =
-                CheckBlockDisconnectMaterialDurable(block, entry.hash, current_height);
+                CheckBlockDisconnectMaterialDurable(block, entry.hash, current_height,
+                                                    audit_tip_height);
             if (durable.durable) {
                 entry.reason = "ok";
                 if (include_ok) {
@@ -4215,7 +4237,8 @@ bool ChainstateService::VerifyActiveChainUndoCoverage(uint32_t tip_height,
             return true;
         }
         auto material = CheckBlockDisconnectMaterialDurable(
-            block_for_check_result.value(), current_hash, current_height);
+            block_for_check_result.value(), current_hash, current_height,
+            tip_height);
         if (!material.durable) {
             write_marker_and_log(material.failure_reason);
             return false;
@@ -11220,8 +11243,12 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     //     already committed; the in-memory state is rolled back to
     //     the previous tip, and ActivateBestChain stops.
     {
+        // Reference tip == the block being connected: depth 0, coinbase
+        // always immature, so the read-back invariant runs unconditionally
+        // here (this is the atomicity-enforcing path).
         const auto material = CheckBlockDisconnectMaterialDurable(
-            block, tip_to_connect->hash, tip_to_connect->height);
+            block, tip_to_connect->hash, tip_to_connect->height,
+            tip_to_connect->height);
         if (!material.durable) {
             const std::string msg =
                 "INVARIANT VIOLATION at ConnectTip publish: " + material.failure_reason;
