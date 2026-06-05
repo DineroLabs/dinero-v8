@@ -411,14 +411,20 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     if (!wallet_schema_path.empty()) {
         args_storage.push_back("--wallet-schema-path=" + wallet_schema_path);
     }
+    // NOTE: the daemon's arg parser stores keys VERBATIM (config->Set(key, value) with
+    // key = text between "--" and "="; no hyphen->underscore normalization), and every
+    // consumer reads these with UNDERSCORES (config_->GetString("assumeutxo_snapshot"),
+    // etc. in chainstate_service.cpp + methods_blockchain_context.cpp). Passing the
+    // hyphenated form here silently stored an unread "assumeutxo-snapshot" key, so the
+    // snapshot was ignored and the node fell back to genesis IBD. Match the read keys.
     if (!assumeutxo_snapshot_path.empty()) {
-        args_storage.push_back("--assumeutxo-snapshot=" + assumeutxo_snapshot_path);
+        args_storage.push_back("--assumeutxo_snapshot=" + assumeutxo_snapshot_path);
     }
     if (!assumeutxo_manifest_path.empty()) {
-        args_storage.push_back("--assumeutxo-manifest=" + assumeutxo_manifest_path);
+        args_storage.push_back("--assumeutxo_manifest=" + assumeutxo_manifest_path);
     }
     if (assumeutxo_require_manifest) {
-        args_storage.push_back("--assumeutxo-require-manifest=1");
+        args_storage.push_back("--assumeutxo_require_manifest=1");
     }
     if (max_peers > 0) {
         args_storage.push_back("--maxconnections=" + std::to_string(max_peers));
