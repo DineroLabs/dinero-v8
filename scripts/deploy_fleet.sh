@@ -55,7 +55,6 @@ SEEDS=(
   "LA|172.93.160.131|dnrcalifornia.key"   # <- canary (deployed + verified before the rest)
   "VA|173.249.195.59|dinerova_key"
   "CN|96.9.226.98|dinerocn_key"
-  "MO|72.18.214.120|dineromo_key"
 )
 
 REMOTE_USER="root"
