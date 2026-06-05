@@ -39,8 +39,8 @@ const std::vector<SeedNode> MAINNET_SEED_IPS = {
     // Port will be set dynamically from chainparams
     {"172.93.160.131", 0, "us-west", true},    // LA Server - Los Angeles
     {"173.249.195.59", 0, "us-east", true},    // VA Server - Virginia
-    {"72.18.214.120", 0, "us-central", true},  // MO Server - Missouri
     {"96.9.226.98", 0, "ca-east", true},       // CN Server - Canada
+    {"173.249.200.59", 0, "us-west", true},    // SJ Server - San Jose (replaced retired MO)
 };
 
 /**
@@ -58,7 +58,7 @@ const std::vector<SeedNode> MAINNET_SEED_IPS = {
 const std::vector<SeedNode> MAINNET_ANCHOR_PEERS = {
     {"173.249.195.59", 0, "us-east", true},    // VA Server - Virginia
     {"172.93.160.131", 0, "us-west", true},     // LA Server - Los Angeles
-    {"72.18.214.120", 0, "us-central", true},   // MO Server - Missouri
+    {"96.9.226.98", 0, "ca-east", true},        // CN Server - Canada (replaced retired MO; keeps 3-region diversity)
 };
 
 /**

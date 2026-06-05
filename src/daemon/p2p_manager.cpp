@@ -3771,8 +3771,8 @@ namespace {
 constexpr std::pair<const char*, uint16_t> kMainnetRelayPeers[] = {
     {"173.249.195.59", 20999},   // VA / us-east
     {"172.93.160.131", 20999},   // LA / us-west
-    {"72.18.214.120", 20999},    // MO / us-central
     {"96.9.226.98", 20999},      // CN / ca-east
+    {"173.249.200.59", 20999},   // SJ / us-west (replaced retired MO)
     {"162.200.227.214", 20999},  // Dell / operator relay
 };
 }  // namespace
