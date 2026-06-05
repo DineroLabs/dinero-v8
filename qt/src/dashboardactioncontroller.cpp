@@ -105,7 +105,7 @@ bool DashboardActionController::isFleetEndpoint(const QString& endpoint) {
     const QString host = endpointHost(endpoint);
     return host == QStringLiteral("172.93.160.131") ||
            host == QStringLiteral("173.249.195.59") ||
-           host == QStringLiteral("72.18.214.120") ||
+           host == QStringLiteral("173.249.200.59") ||
            host == QStringLiteral("96.9.226.98");
 }
 

@@ -90,7 +90,7 @@ private Q_SLOTS:
     void hint_only_target_is_disconnected_relay_candidate() {
         const QString target = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         const auto snap = NodePoller::BuildTopologySnapshot(
-            {}, {}, {hint(target, "72.18.214.120:20999")}, {});
+            {}, {}, {hint(target, "173.249.200.59:20999")}, {});
 
         QCOMPARE(snap.nodes.size(), 2);
         QCOMPARE(snap.edges.size(), 1);
@@ -99,7 +99,7 @@ private Q_SLOTS:
         QCOMPARE(h.bucket, QString("relay_candidate"));
         QVERIFY(!h.connected);
         QCOMPARE(snap.edges[0].kind, QString("hint"));
-        QCOMPARE(snap.edges[0].via_relay, QString("72.18.214.120:20999"));
+        QCOMPARE(snap.edges[0].via_relay, QString("173.249.200.59:20999"));
     }
 };
 

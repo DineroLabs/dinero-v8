@@ -569,7 +569,7 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
     // CRITICAL: Add seed nodes so daemon can connect to network
     args << "-addnode=172.93.160.131:20999";
     args << "-addnode=173.249.195.59:20999";
-    args << "-addnode=72.18.214.120:20999";
+    args << "-addnode=173.249.200.59:20999";
     args << "-addnode=96.9.226.98:20999";
 
     // Track C: Liquidity Vault. Daemon defaults are vault=1 and
@@ -762,7 +762,7 @@ int main(int argc, char** argv) {
       appendDaemonNetworkArgs(wipeArgs);
       wipeArgs << "-addnode=172.93.160.131:20999";
       wipeArgs << "-addnode=173.249.195.59:20999";
-      wipeArgs << "-addnode=72.18.214.120:20999";
+      wipeArgs << "-addnode=173.249.200.59:20999";
       wipeArgs << "-addnode=96.9.226.98:20999";
 
       daemonProcess = new QProcess();

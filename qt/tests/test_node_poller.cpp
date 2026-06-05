@@ -79,7 +79,7 @@ private Q_SLOTS:
         };
         peers.append(mk("172.93.160.131:20999", 27402, 92));
         peers.append(mk("173.249.195.59:20999", 27402, 88));
-        peers.append(mk("72.18.214.120:20999",  27402, 75));
+        peers.append(mk("173.249.200.59:20999",  27402, 75));
         peers.append(mk("96.9.226.98:20999",    27401, 44));
 
         p.feed("getpeerinfo", peers);
@@ -90,7 +90,7 @@ private Q_SLOTS:
         QCOMPARE(rows.size(), 4);
         QCOMPARE(rows[0].fleet_name, QString("LA"));
         QCOMPARE(rows[1].fleet_name, QString("VA"));
-        QCOMPARE(rows[2].fleet_name, QString("MO"));
+        QCOMPARE(rows[2].fleet_name, QString("SJ"));
         QCOMPARE(rows[3].fleet_name, QString("CN"));
         QCOMPARE(rows[0].quality_score, 92);
 
