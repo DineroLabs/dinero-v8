@@ -26,6 +26,7 @@
 #             -DMINER_ENABLE_CUDA=ON -DMINER_ENABLE_OPENCL=ON ^
 #             -DENABLE_GPU_MINING=ON -DENABLE_GRPC=OFF ^
 #             -DENABLE_HARDWARE_WALLETS=OFF ^
+#             -DDINERO_ENABLE_QUIC=ON ^
 #             -DCMAKE_PREFIX_PATH="C:\Qt\6.9.1\msvc2022_64"
 #       cmake --build build-msvc-native --config Release ^
 #             --target dinerod dinero-cli dinero-solo-miner-cli dinero-qt ^
