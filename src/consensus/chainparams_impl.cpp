@@ -185,11 +185,18 @@ static ChainParams g_mainnet = {
     //   seed2.dinero-coin.com -> 173.249.195.59 (Virginia)
     //   seed3.dinero-coin.com -> 72.18.214.120 (Missouri)
     //   seed4.dinero-coin.com -> 96.9.226.98 (Canada)
+    //   seed.dinerolabs.org   -> multi-A: all fleet IPs (LA/VA/MO/CN/SJ)
+    //
+    // MIGRATION (dinero-coin.com -> dinerolabs.org): both domains are queried so
+    // the transition is seamless. dinero-coin.com is retained for back-compat with
+    // already-deployed nodes; once the fleet runs a binary with this seed list and
+    // seed.dinerolabs.org carries the full fleet, dinero-coin.com can be retired.
     .vSeeds = {
-        "seed1.dinero-coin.com",  // California seed
-        "seed2.dinero-coin.com",  // Virginia seed
-        "seed3.dinero-coin.com",  // Missouri seed
-        "seed4.dinero-coin.com",  // Canada seed
+        "seed1.dinero-coin.com",  // California seed (legacy domain, back-compat)
+        "seed2.dinero-coin.com",  // Virginia seed   (legacy domain, back-compat)
+        "seed3.dinero-coin.com",  // Missouri seed   (legacy domain, back-compat)
+        "seed4.dinero-coin.com",  // Canada seed     (legacy domain, back-compat)
+        "seed.dinerolabs.org",    // dinerolabs.org migration (multi-A: full fleet incl. SJ)
     },
 
     // Fixed Seeds: hardcoded fallback IP:port combinations. Last-resort

@@ -89,8 +89,16 @@ const std::vector<SeedNode> REGTEST_SEED_IPS = {
  * - seed2.dinero-coin.com → 173.249.195.59 (Virginia)
  */
 const std::vector<std::string> DNS_SEEDS = {
+    // dinerolabs.org migration: single multi-A hostname returns the full fleet
+    // (LA/VA/MO/CN/SJ). This is the live DNS-seed path (getDnsSeeds()).
+    "seed.dinerolabs.org",
+    // dinero-coin.com retained for back-compat with already-deployed nodes.
+    // (seed3/seed4 were previously absent here while present in DNS + chainparams,
+    //  so MO/CN were never queried as DNS seeds — restored for full redundancy.)
     "seed1.dinero-coin.com",
     "seed2.dinero-coin.com",
+    "seed3.dinero-coin.com",
+    "seed4.dinero-coin.com",
 };
 
 /**
