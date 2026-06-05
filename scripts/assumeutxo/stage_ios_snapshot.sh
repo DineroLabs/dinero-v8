@@ -13,7 +13,11 @@ set -euo pipefail
 
 SNAPSHOT_PATH="${1:-}"
 MANIFEST_PATH="${2:-}"
-TARGET_DIR="${3:-/Users/haydarevich/Documents/DINERO/DineroDPI/DineroDPI/DineroDPI/Bootstrap}"
+# iOS app Bootstrap/ directory. Override with arg 3 or DPI_BOOTSTRAP_DIR. The old
+# default pointed at a stale ~/Documents path; the live DineroDPI checkout is under
+# ~/src/apps. A wrong path here silently stages into a phantom dir (the app then ships
+# an unchanged snapshot), so the default is validated below.
+TARGET_DIR="${3:-${DPI_BOOTSTRAP_DIR:-/Users/haydarevich/src/apps/DineroDPI/DineroDPI/DineroDPI/Bootstrap}}"
 TARGET_SNAPSHOT_NAME="${TARGET_SNAPSHOT_NAME:-mainnet-snapshot.dat}"
 TARGET_MANIFEST_NAME="${TARGET_MANIFEST_NAME:-mainnet-snapshot.dat.manifest.json}"
 TARGET_LEGACY_METADATA_NAME="${TARGET_LEGACY_METADATA_NAME:-mainnet-snapshot.dat.json}"
@@ -37,7 +41,18 @@ if [ -z "$MANIFEST_PATH" ]; then
     fi
 fi
 
+# Guard against silently staging into a phantom/wrong directory: the target's parent
+# (the DineroDPI source dir) must already exist. Pass arg 3 / set DPI_BOOTSTRAP_DIR if
+# your checkout is elsewhere.
+TARGET_PARENT="$(dirname "$TARGET_DIR")"
+if [ ! -d "$TARGET_PARENT" ]; then
+    echo "error: target parent does not exist: $TARGET_PARENT" >&2
+    echo "  the iOS Bootstrap dir looks wrong — pass it as arg 3 or set DPI_BOOTSTRAP_DIR" >&2
+    exit 1
+fi
+
 mkdir -p "$TARGET_DIR"
+echo "staging into: $TARGET_DIR"
 
 TARGET_SNAPSHOT_PATH="$TARGET_DIR/$TARGET_SNAPSHOT_NAME"
 TARGET_MANIFEST_PATH="$TARGET_DIR/$TARGET_MANIFEST_NAME"
