@@ -5625,40 +5625,115 @@ size_t P2PManager::get_peer_count() const {
 }
 
 void P2PManager::update_peer_height(const std::string& peer_address, uint32_t height) {
-    std::lock_guard<std::mutex> lock(peers_mutex_);
-    auto it = connected_peers_.find(peer_address);
-    if (it != connected_peers_.end()) {
-        // best_known_height tracks the remote peer's advertised best height.
-        // Never let local sync bookkeeping push it backwards.
-        if (height > it->second->best_known_height) {
-            it->second->best_known_height = height;
-            it->second->best_height = height;
+    uint32_t notify_height = 0;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it != connected_peers_.end()) {
+            const uint32_t before = std::max({
+                it->second->best_known_height,
+                it->second->best_height,
+                it->second->start_height,
+                it->second->synced_headers,
+                it->second->synced_blocks
+            });
+
+            // best_known_height tracks the remote peer's advertised best height.
+            // Never let local sync bookkeeping push it backwards.
+            if (height > it->second->best_known_height) {
+                it->second->best_known_height = height;
+                it->second->best_height = height;
+            }
+
+            const uint32_t after = std::max({
+                it->second->best_known_height,
+                it->second->best_height,
+                it->second->start_height,
+                it->second->synced_headers,
+                it->second->synced_blocks
+            });
+            if (after > before) {
+                notify_height = after;
+            }
         }
+    }
+    if (notify_height > 0 && peer_height_updated_handler_) {
+        peer_height_updated_handler_(peer_address, notify_height);
     }
 }
 
 void P2PManager::update_peer_synced_headers(const std::string& peer_address, uint32_t height) {
-    std::lock_guard<std::mutex> lock(peers_mutex_);
-    auto it = connected_peers_.find(peer_address);
-    if (it != connected_peers_.end()) {
-        if (height > it->second->best_known_height) {
-            it->second->best_known_height = height;
-            it->second->best_height = height;
+    uint32_t notify_height = 0;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it != connected_peers_.end()) {
+            const uint32_t before = std::max({
+                it->second->best_known_height,
+                it->second->best_height,
+                it->second->start_height,
+                it->second->synced_headers,
+                it->second->synced_blocks
+            });
+
+            if (height > it->second->best_known_height) {
+                it->second->best_known_height = height;
+                it->second->best_height = height;
+            }
+            it->second->synced_headers = std::max(it->second->synced_headers, height);
+
+            const uint32_t after = std::max({
+                it->second->best_known_height,
+                it->second->best_height,
+                it->second->start_height,
+                it->second->synced_headers,
+                it->second->synced_blocks
+            });
+            if (after > before) {
+                notify_height = after;
+            }
         }
-        it->second->synced_headers = std::max(it->second->synced_headers, height);
+    }
+    if (notify_height > 0 && peer_height_updated_handler_) {
+        peer_height_updated_handler_(peer_address, notify_height);
     }
 }
 
 void P2PManager::update_peer_synced_blocks(const std::string& peer_address, uint32_t height) {
-    std::lock_guard<std::mutex> lock(peers_mutex_);
-    auto it = connected_peers_.find(peer_address);
-    if (it != connected_peers_.end()) {
-        if (height > it->second->best_known_height) {
-            it->second->best_known_height = height;
-            it->second->best_height = height;
+    uint32_t notify_height = 0;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it != connected_peers_.end()) {
+            const uint32_t before = std::max({
+                it->second->best_known_height,
+                it->second->best_height,
+                it->second->start_height,
+                it->second->synced_headers,
+                it->second->synced_blocks
+            });
+
+            if (height > it->second->best_known_height) {
+                it->second->best_known_height = height;
+                it->second->best_height = height;
+            }
+            it->second->synced_blocks = std::max(it->second->synced_blocks, height);
+            it->second->synced_headers = std::max(it->second->synced_headers, height);
+
+            const uint32_t after = std::max({
+                it->second->best_known_height,
+                it->second->best_height,
+                it->second->start_height,
+                it->second->synced_headers,
+                it->second->synced_blocks
+            });
+            if (after > before) {
+                notify_height = after;
+            }
         }
-        it->second->synced_blocks = std::max(it->second->synced_blocks, height);
-        it->second->synced_headers = std::max(it->second->synced_headers, height);
+    }
+    if (notify_height > 0 && peer_height_updated_handler_) {
+        peer_height_updated_handler_(peer_address, notify_height);
     }
 }
 

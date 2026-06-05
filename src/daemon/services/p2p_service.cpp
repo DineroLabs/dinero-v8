@@ -822,6 +822,76 @@ void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now)
     // once this is confirmed against a real stall (issue #214).
 }
 
+void P2PService::MaybeRequestHeadersForPeerTip(const std::string& peer_addr,
+                                               uint32_t peer_height,
+                                               const char* reason) {
+    if (!p2p_mgr_ || !chainstate_ || peer_height == 0) {
+        return;
+    }
+
+    auto* ctx = DaemonContext::instance();
+    if (!ctx || !ctx->chainstate) {
+        return;
+    }
+
+    const auto* best_header = ctx->header_chain ? ctx->header_chain->GetBestHeader() : nullptr;
+    const auto* active_tip = ctx->chainstate->GetActiveTip();
+    const uint32_t best_header_height = best_header ? best_header->height : 0;
+    const uint32_t active_height = active_tip ? active_tip->height : chainstate_->getBlockHeight();
+    const uint32_t known_height = std::max(best_header_height, active_height);
+
+    chainstate_->UpdateNetworkHeight(peer_height);
+
+    if (peer_height <= known_height) {
+        if (ctx->block_download && ctx->header_chain && best_header && active_tip &&
+            best_header->height > active_tip->height &&
+            ctx->block_download->HasSendGetDataCallback()) {
+            ctx->block_download->OnHeadersProcessed();
+            ctx->block_download->Tick();
+        }
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(peer_tip_getheaders_mutex_);
+        const auto last_it = last_peer_tip_getheaders_height_.find(peer_addr);
+        if (last_it != last_peer_tip_getheaders_height_.end() &&
+            peer_height <= last_it->second) {
+            return;
+        }
+    }
+
+    auto locator = chainstate_->GenerateBlockLocator();
+    if (locator.empty()) {
+        return;
+    }
+
+    std::vector<std::string> locator_hex;
+    locator_hex.reserve(locator.size());
+    for (const auto& hash_item : locator) {
+        locator_hex.push_back(hash_item.GetHex());
+    }
+
+    auto getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
+    const bool sent = p2p_mgr_->send_to_peer(peer_addr, getheaders_msg);
+    if (sent) {
+        {
+            std::lock_guard<std::mutex> lock(peer_tip_getheaders_mutex_);
+            last_peer_tip_getheaders_height_[peer_addr] = peer_height;
+        }
+        if (logger_interface_) {
+            logger_interface_->info(
+                "[P2PService] Peer " + peer_addr + " reports higher tip " +
+                std::to_string(peer_height) + " (" + std::string(reason ? reason : "height-update") +
+                ", known=" + std::to_string(known_height) + ") — requested headers");
+        }
+    } else if (logger_interface_) {
+        logger_interface_->warning(
+            "[P2PService] Peer " + peer_addr + " reports higher tip " +
+            std::to_string(peer_height) + " but getheaders send failed");
+    }
+}
+
 void P2PService::StopSchedulerTickLoop() {
     scheduler_tick_running_.store(false, std::memory_order_relaxed);
     if (scheduler_tick_thread_.joinable()) {
@@ -1164,6 +1234,10 @@ bool P2PService::Init(DaemonContext& ctx) {
     try {
         // Create P2PManager instance
         p2p_mgr_ = std::make_unique<::P2PManager>(listen_port_, external_ip_);
+        p2p_mgr_->set_peer_height_updated_handler(
+            [this](const std::string& peer_addr, uint32_t height) {
+                MaybeRequestHeadersForPeerTip(peer_addr, height, "peer-height-update");
+            });
         if (!onion_proxy_.empty()) {
             if (IsOnionAutoValue(onion_proxy_)) {
                 const std::vector<std::pair<std::string, uint16_t>> candidates = {
