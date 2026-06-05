@@ -84,17 +84,17 @@ const std::vector<SeedNode> REGTEST_SEED_IPS = {
  * These DNS names return A records with IP addresses of active Dinero nodes.
  * This provides decentralized peer discovery beyond hardcoded seed nodes.
  *
- * PRODUCTION ACTIVE (October 27, 2025):
- * - seed1.dinero-coin.com → 172.93.160.131 (California)
- * - seed2.dinero-coin.com → 173.249.195.59 (Virginia)
+ * PRIMARY domain: dinerolabs.org (since 2026-06). dinero-coin.com is kept as a
+ * fallback for already-deployed binaries hardcoded to it; retire it once the
+ * dinerolabs.org-aware binary is fully rolled out.
  */
 const std::vector<std::string> DNS_SEEDS = {
-    // dinerolabs.org migration: single multi-A hostname returns the full fleet
-    // (LA/VA/MO/CN/SJ). This is the live DNS-seed path (getDnsSeeds()).
+    // PRIMARY: dinerolabs.org — single multi-A hostname returning the full fleet
+    // (LA/VA/CN/SJ). This is the live DNS-seed path (getDnsSeeds()).
     "seed.dinerolabs.org",
-    // dinero-coin.com retained for back-compat with already-deployed nodes.
-    // (seed3/seed4 were previously absent here while present in DNS + chainparams,
-    //  so MO/CN were never queried as DNS seeds — restored for full redundancy.)
+    // FALLBACK: legacy dinero-coin.com, retained for back-compat with
+    // already-deployed nodes. (seed3/seed4 were previously absent here, so MO/CN
+    // were never queried as DNS seeds — restored for full redundancy.)
     "seed1.dinero-coin.com",
     "seed2.dinero-coin.com",
     "seed3.dinero-coin.com",
@@ -199,7 +199,8 @@ std::vector<SeedNode> getClosestSeeds(const std::vector<SeedNode>& seeds, const 
  * PRODUCTION DEPLOYMENT NOTES:
  * 
  * 1. **Domain & DNS**:
- *    - Use dinero-coin.com as the canonical domain
+ *    - Canonical domain: dinerolabs.org (seed.dinerolabs.org, multi-A → full fleet).
+ *      dinero-coin.com is kept as a fallback for already-deployed binaries.
  *    - Set up DNS A records pointing to actual seed node IPs
  *    - Configure DNS seeds to return active node IPs
  * 
