@@ -7,9 +7,10 @@
 # checkout and ships an ancient binary over the live DineroLabs/dinero-v8 nodes.
 # A seed should hold a binary, never buildable source. This script audits each
 # seed for trees containing both a `.git` dir and a `CMakeLists.txt`, and (with
-# --execute) renames them to a loud quarantine name and strips their build dirs
-# so nothing can be built from them. It never deletes — you delete by hand once
-# you've confirmed the catalog.
+# --execute) renames them to a loud quarantine name, strips their build dirs,
+# and disables the top-level CMake entrypoint so deploy preflight no longer sees
+# a buildable source tree. It never deletes — you delete by hand once you've
+# confirmed the catalog.
 #
 # DRY-RUN BY DEFAULT. Pass --execute to actually rename/strip.
 #
@@ -65,6 +66,10 @@ echo "\$trees" | while read -r d; do
     # strip build dirs first so nothing is buildable even mid-rename
     find "\$d" -maxdepth 2 -type d \( -name build -o -name 'build-*' -o -name 'cmake-build-*' \) \
       -exec rm -rf {} + 2>/dev/null || true
+    if [ -f "\$d/CMakeLists.txt" ]; then
+      mv "\$d/CMakeLists.txt" "\$d/CMakeLists.txt.QUARANTINED"
+      echo "  DISABLED \$d/CMakeLists.txt"
+    fi
     tgt="\$base/\${prefix}\${leaf}"
     if [ -e "\$tgt" ]; then echo "  SKIP rename (target exists): \$tgt"; else
       mv "\$d" "\$tgt"; echo "  QUARANTINED -> \$tgt"
