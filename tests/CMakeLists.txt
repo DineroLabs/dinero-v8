@@ -3141,6 +3141,25 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_chainstate_recovery_marker.cpp)
   message(STATUS "✅ Chainstate recovery marker test enabled")
 endif()
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_undo_audit_coinbase_gate.cpp)
+  add_executable(test_undo_audit_coinbase_gate
+    tests/daemon/test_undo_audit_coinbase_gate.cpp
+  )
+
+  target_include_directories(test_undo_audit_coinbase_gate BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+
+  add_test(NAME UndoAuditCoinbaseGate COMMAND test_undo_audit_coinbase_gate)
+  set_tests_properties(UndoAuditCoinbaseGate PROPERTIES
+    LABELS "daemon;recovery"
+    TIMEOUT 30
+  )
+
+  message(STATUS "✅ Undo-audit coinbase maturity gate test enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_utxo_position_index_rebuild.cpp)
   add_executable(test_utxo_position_index_rebuild
     tests/daemon/test_utxo_position_index_rebuild.cpp
