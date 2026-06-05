@@ -18,7 +18,7 @@ namespace {
 QString fleetNameFor(const QString& addr) {
     if (addr.startsWith("172.93.160.131")) return "LA";
     if (addr.startsWith("173.249.195.59")) return "VA";
-    if (addr.startsWith("72.18.214.120"))  return "MO";
+    if (addr.startsWith("173.249.200.59"))  return "SJ";
     if (addr.startsWith("96.9.226.98"))    return "CN";
     return {};
 }

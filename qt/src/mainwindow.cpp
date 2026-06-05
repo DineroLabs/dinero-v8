@@ -221,7 +221,7 @@ bool isDefaultBootstrapPeerHost(const QString& host) {
   static const QSet<QString> bootstrapPeers{
       "172.93.160.131",
       "173.249.195.59",
-      "72.18.214.120",
+      "173.249.200.59",
       "96.9.226.98",
   };
   return bootstrapPeers.contains(host.trimmed());
@@ -232,7 +232,7 @@ QString peerLocationLabel(const QString& endpoint, int peerIndex) {
   static const QHash<QString, QString> knownSeedRegions{
       {"172.93.160.131", "US-West"},
       {"173.249.195.59", "US-East"},
-      {"72.18.214.120", "US-Midwest"},
+      {"173.249.200.59", "US-West"},
       {"96.9.226.98", "Canada"},
   };
 
@@ -12010,7 +12010,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   }
   args << "-addnode=172.93.160.131:20999";
   args << "-addnode=173.249.195.59:20999";
-  args << "-addnode=72.18.214.120:20999";
+  args << "-addnode=173.249.200.59:20999";
   args << "-addnode=96.9.226.98:20999";
 
   qDebug() << "Starting daemon:" << dinerodPath << args << "showFeedback=" << showFeedback
