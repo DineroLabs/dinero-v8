@@ -45,6 +45,14 @@ clean_openssl_tree() {
     rm -f Makefile Makefile.in configdata.pm builddata.pm
 }
 
+sync_openssl_headers() {
+    local DST=$1
+    rm -rf "${DST}/include"
+    mkdir -p "${DST}/include"
+    cp -R "${OPENSSL_SRC}/include/openssl" "${DST}/include/openssl"
+    find "${DST}/include/openssl" -name '*.in' -delete
+}
+
 # ==============================================================================
 # Step 0: Clean previous xcframework
 # ==============================================================================
@@ -102,6 +110,7 @@ build_openssl_ios() {
 
     cp libcrypto.a "${OUTPUT_DIR}/"
     cp libssl.a "${OUTPUT_DIR}/"
+    sync_openssl_headers "${OUTPUT_DIR}"
 
     local SIZE=$(stat -f%z "${OUTPUT_DIR}/libcrypto.a" 2>/dev/null || echo "0")
     echo "  OpenSSL built: libcrypto.a ($(( SIZE / 1024 / 1024 )) MB)"
@@ -149,6 +158,7 @@ build_openssl_macos() {
 
     cp libcrypto.a "${OUTPUT_DIR}/"
     cp libssl.a "${OUTPUT_DIR}/"
+    sync_openssl_headers "${OUTPUT_DIR}"
 
     local SIZE=$(stat -f%z "${OUTPUT_DIR}/libcrypto.a" 2>/dev/null || echo "0")
     echo "  OpenSSL built: libcrypto.a ($(( SIZE / 1024 / 1024 )) MB)"
