@@ -2845,6 +2845,7 @@ bool ChainstateService::Start() {
                 config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
 
             if (!snapshot_path.empty()) {
+                const uint64_t stale_utxos = consensus_utxo_set_->GetSetSize();
                 logger_->warning("[AssumeUTXO restore] Consensus UTXO set is not at snapshot base "
                                  "(utxo-tip=" +
                                  consensus_utxo_set_->GetBestBlock().GetHex().substr(0, 16) +
@@ -2853,6 +2854,13 @@ bool ChainstateService::Start() {
                                  assumeutxo_base_block_.GetHex().substr(0, 16) +
                                  "...@" + std::to_string(assumeutxo_base_height_) +
                                  "); rehydrating from configured snapshot");
+
+                if (stale_utxos > 0) {
+                    logger_->warning("[AssumeUTXO restore] Clearing stale pre-snapshot consensus UTXO set (" +
+                                     std::to_string(stale_utxos) +
+                                     " UTXOs) before trusted snapshot rehydrate");
+                    consensus_utxo_set_->Clear();
+                }
 
                 auto import_result = LoadSnapshot(std::filesystem::path(snapshot_path));
                 if (!import_result.success) {
