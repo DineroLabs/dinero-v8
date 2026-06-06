@@ -1532,6 +1532,19 @@ bool ChainstateService::VerifyOrBootstrapShieldedTipMarker(const uint256& tip_ha
         return true;
     }
 
+    // In AssumeUTXO/mobile headers-only mode, ChainDB intentionally remains
+    // below the snapshot base while the active consensus tip is restored from
+    // the snapshot. Historical block bodies are not locally available, so the
+    // range scan below would conservatively report "shielded activity" and
+    // fail a valid snapshot restore. If the shielded state itself matches the
+    // persisted marker, advance only the marker tip to the snapshot base.
+    if (assumeutxo_active_ && state_matches && !tip_matches) {
+        if (logger_) {
+            logger_->warning("[ChainstateService] Advancing ShieldedTipMarker across AssumeUTXO snapshot restore");
+        }
+        return PersistShieldedTipMarker(tip_hash, tip_height);
+    }
+
     // The shielded-inactive-range advance path below stays: an
     // operator may legitimately load a chain whose tip advanced
     // across pre-shielded heights without writing a marker for
@@ -2732,7 +2745,14 @@ bool ChainstateService::Start() {
         }
     }
 
-    {
+    bool persisted_assumeutxo_active_for_startup = false;
+    if (utxo_index_) {
+        auto active_meta = utxo_index_->GetMetadata(assumeutxo::kActiveKey);
+        persisted_assumeutxo_active_for_startup =
+            active_meta && active_meta.value() == "true";
+    }
+
+    if (!persisted_assumeutxo_active_for_startup) {
         auto current_tip_result = chain_db_->getTip();
         if (current_tip_result.status() == Status::Ok) {
             const auto& stored_tip = current_tip_result.value();
@@ -2749,6 +2769,8 @@ bool ChainstateService::Start() {
             logger_->error("[ChainstateService] Failed to load ChainDB tip for shielded startup verification");
             return false;
         }
+    } else {
+        logger_->info("[ChainstateService] Deferring shielded startup verification until AssumeUTXO restore completes");
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -2815,9 +2837,47 @@ bool ChainstateService::Start() {
         logger_->info("⚠️  Snapshot base height: " + std::to_string(assumeutxo_base_height_));
         logger_->info("⚠️  Snapshot base block: " + assumeutxo_base_block_.GetHex());
 
+        bool snapshot_rehydrated_from_file = false;
+        if (consensus_utxo_set_ &&
+            (consensus_utxo_set_->GetBestBlock() != assumeutxo_base_block_ ||
+             consensus_utxo_set_->GetHeight() != assumeutxo_base_height_)) {
+            const std::string snapshot_path =
+                config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
+
+            if (!snapshot_path.empty()) {
+                logger_->warning("[AssumeUTXO restore] Consensus UTXO set is not at snapshot base "
+                                 "(utxo-tip=" +
+                                 consensus_utxo_set_->GetBestBlock().GetHex().substr(0, 16) +
+                                 "...@" + std::to_string(consensus_utxo_set_->GetHeight()) +
+                                 ", snapshot=" +
+                                 assumeutxo_base_block_.GetHex().substr(0, 16) +
+                                 "...@" + std::to_string(assumeutxo_base_height_) +
+                                 "); rehydrating from configured snapshot");
+
+                auto import_result = LoadSnapshot(std::filesystem::path(snapshot_path));
+                if (!import_result.success) {
+                    logger_->error("[AssumeUTXO restore] Snapshot rehydrate failed: " +
+                                   import_result.error_message);
+                    return false;
+                }
+
+                snapshot_rehydrated_from_file = true;
+                logger_->info("[AssumeUTXO restore] Snapshot rehydrated from file: " +
+                              std::to_string(import_result.utxos_imported) +
+                              " UTXOs at height " +
+                              std::to_string(import_result.block_height));
+            } else {
+                logger_->error("[AssumeUTXO restore] Persisted AssumeUTXO metadata exists, but "
+                               "consensus UTXO state is not at the snapshot base and no "
+                               "assumeutxo_snapshot path is configured");
+                return false;
+            }
+        }
+
         // Check if background validation needs to be resumed
         if (bg_validation_status_ != BackgroundValidationStatus::Completed &&
-            bg_validation_status_ != BackgroundValidationStatus::Failed) {
+            bg_validation_status_ != BackgroundValidationStatus::Failed &&
+            !snapshot_rehydrated_from_file) {
 
             logger_->info("🔍 Background validation incomplete - resuming...");
             logger_->info("   This validates the snapshot from genesis → snapshot height");

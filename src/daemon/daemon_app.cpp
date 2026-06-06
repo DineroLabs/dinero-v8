@@ -4456,11 +4456,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                         std::lock_guard<std::mutex> lock(*buffer_mutex);
 
                         // CSN reorg reset: ActivateBestChain signals us to reset after a STATELESS reorg
-                        {
-                            uint32_t reset_h = chainstate_service->GetCSNReorgResetHeight();
-                            if (reset_h > 0) {
-                                // One-shot signal: clear immediately once observed.
-                                chainstate_service->ClearCSNReorgReset();
+	                        {
+	                            uint32_t reset_h = chainstate_service->GetCSNReorgResetHeight();
+	                            if (reset_h > 0) {
+	                                // One-shot signal: clear immediately once observed.
+	                                chainstate_service->ClearCSNReorgReset();
                                 if (reset_h != *next_validate_height) {
                                     g_logger.info("[CSN] Reorg reset: next_validate_height " +
                                                  std::to_string(*next_validate_height) + " → " +
@@ -4469,12 +4469,31 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     pending_blocks->clear();
                                     pending_count_for_scheduler->store(0, std::memory_order_relaxed);
                                     retry_counts->clear();
-                                }
-                            }
-                        }
+	                                }
+	                            }
+	                        }
 
-                        // Pre-drain: consume any buffered blocks before inserting new ones.
-                        // Without this, the safety limit (below) drops new arrivals while
+	                        // The CSN handler is wired before ChainstateService::Start()
+	                        // may restore an AssumeUTXO snapshot. In that case the
+	                        // cursor was initialized from genesis (1), then the active
+	                        // tip legitimately jumps to the snapshot base (for example
+	                        // 33048). Keep the ordered validation cursor aligned with
+	                        // the active tip before applying the far-ahead window.
+	                        if (const auto* active_tip = chainstate_service->GetActiveTip()) {
+	                            if (active_tip->height >= 0) {
+	                                const uint32_t active_next =
+	                                    static_cast<uint32_t>(active_tip->height) + 1;
+	                                if (active_next > *next_validate_height) {
+	                                    g_logger.info("[CSN] Active-tip cursor sync: next_validate_height " +
+	                                                  std::to_string(*next_validate_height) + " -> " +
+	                                                  std::to_string(active_next));
+	                                    *next_validate_height = active_next;
+	                                }
+	                            }
+	                        }
+
+	                        // Pre-drain: consume any buffered blocks before inserting new ones.
+	                        // Without this, the safety limit (below) drops new arrivals while
                         // validated blocks sit in the buffer un-drained, causing CSN IBD stall.
                         while (pending_blocks->count(*next_validate_height)) {
                             auto it = pending_blocks->find(*next_validate_height);
