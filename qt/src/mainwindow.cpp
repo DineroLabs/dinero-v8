@@ -8303,6 +8303,8 @@ void MainWindow::updateOverviewHardwareTelemetry() {
   if (isMining_) {
     if (activeMinerType_ == "gpu") {
       minerText = "Miner: Solo GPU";
+    } else if (activeMinerType_ == "internal_gpu") {
+      minerText = "Miner: Solo GPU (embedded)";
     } else if (activeMinerType_ == "sv2_pool_gpu") {
       minerText = "Miner: SV2 Pool GPU";
     } else if (activeMinerType_ == "sv2_pool") {
@@ -8322,7 +8324,8 @@ void MainWindow::updateOverviewHardwareTelemetry() {
   lblMinerModeOverview_->setText(minerText);
 
   const bool activeGpuMiner =
-      activeMinerType_ == "gpu" || activeMinerType_ == "sv2_pool_gpu";
+      activeMinerType_ == "gpu" || activeMinerType_ == "internal_gpu" ||
+      activeMinerType_ == "sv2_pool_gpu";
   const bool activeCpuMiner =
       activeMinerType_ == "internal" || activeMinerType_ == "external" ||
       activeMinerType_ == "sv2_pool";
@@ -10352,7 +10355,7 @@ void MainWindow::startInternalMiner(bool useGpu) {
   // MinerController::runningChanged signal handles UI state updates
   minerCtrl_->start("http://127.0.0.1:20998", cookiePath, addr, useGpu ? 0 : threads, useGpu);
 
-  activeMinerType_ = useGpu ? "gpu" : "internal";
+  activeMinerType_ = useGpu ? "internal_gpu" : "internal";
   setMiningModeControlsLocked(true);
   updateOverviewHardwareTelemetry();
 }
@@ -10971,12 +10974,16 @@ void MainWindow::onStopMining() {
     minerType = cmbMinerType_->currentData().toString();
   }
 
-  if (minerType == "internal") {
+  if (minerType == "internal" || minerType == "internal_gpu") {
+    // Both internal lanes run inside this process via MinerController
+    // (CPU SoloMiner or in-process CUDA backend). The Stop path must
+    // call MinerController::stop() — terminating miningProcess_ is a
+    // no-op for these because no QProcess was ever spawned.
     stopInternalMiner();
   } else if (minerType == "daemon") {
     rpc_->miningStop();
   } else {
-    // GPU and external both use miningProcess_
+    // External pool/SV2 miners and the Metal "gpu" lane use miningProcess_
     stopExternalMiner();
   }
 }
