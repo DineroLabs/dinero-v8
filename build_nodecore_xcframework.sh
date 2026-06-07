@@ -27,7 +27,7 @@ echo "Project: ${PROJECT_ROOT}"
 echo "Output:  ${XCFRAMEWORK_OUTPUT}"
 echo ""
 
-OPENSSL_SRC="${PROJECT_ROOT}/third_party/openssl-3.3.2"
+OPENSSL_SRC="${PROJECT_ROOT}/third_party/openssl-3.5.6"
 NCPU=$(sysctl -n hw.ncpu)
 
 sync_artifact() {
