@@ -35,12 +35,12 @@ struct SeedNode {
  * Updated: 2025-11-05 - Dynamic port resolution
  */
 const std::vector<SeedNode> MAINNET_SEED_IPS = {
-    // Primary production seeds (high availability)
-    // Port will be set dynamically from chainparams
-    {"172.93.160.131", 0, "us-west", true},    // LA Server - Los Angeles
-    {"173.249.195.59", 0, "us-east", true},    // VA Server - Virginia
-    {"96.9.226.98", 0, "ca-east", true},       // CN Server - Canada
-    {"173.249.200.59", 0, "us-west", true},    // SJ Server - San Jose (replaced retired MO)
+    // Active production fleet (high availability). Port set dynamically from
+    // chainparams. VA/CN retired 2026-06; replaced by DineroNA + DineroEU1.
+    {"172.93.160.131", 0, "us-west", true},    // DineroLA  - Los Angeles
+    {"173.249.200.59", 0, "us-west", true},    // DineroSJ  - San Jose (archival)
+    {"172.93.167.32", 0, "us-east", true},     // DineroNA  - North America (archival)
+    {"92.118.190.62", 0, "eu", true},          // DineroEU1 - Europe (archival)
 };
 
 /**
@@ -56,9 +56,11 @@ const std::vector<SeedNode> MAINNET_SEED_IPS = {
  * Bitcoin Core reserves 2 anchor connections; we reserve 3 (geographic diversity).
  */
 const std::vector<SeedNode> MAINNET_ANCHOR_PEERS = {
-    {"173.249.195.59", 0, "us-east", true},    // VA Server - Virginia
-    {"172.93.160.131", 0, "us-west", true},     // LA Server - Los Angeles
-    {"96.9.226.98", 0, "ca-east", true},        // CN Server - Canada (replaced retired MO; keeps 3-region diversity)
+    // 3 stable full-archival bridges, geographically diverse. DineroLA is omitted
+    // (filling up / being retired) so anchors stay on long-lived nodes.
+    {"173.249.200.59", 0, "us-west", true},    // DineroSJ  - San Jose (archival)
+    {"172.93.167.32", 0, "us-east", true},     // DineroNA  - North America (archival)
+    {"92.118.190.62", 0, "eu", true},          // DineroEU1 - Europe (archival)
 };
 
 /**
@@ -89,12 +91,16 @@ const std::vector<SeedNode> REGTEST_SEED_IPS = {
  * dinerolabs.org-aware binary is fully rolled out.
  */
 const std::vector<std::string> DNS_SEEDS = {
-    // PRIMARY: dinerolabs.org — single multi-A hostname returning the full fleet
-    // (LA/VA/CN/SJ). This is the live DNS-seed path (getDnsSeeds()).
+    // PRIMARY: dinerolabs.org named per-node seed subdomains — each a single-A
+    // record for one fleet node (seed->EU1, seed1->LA, seed2->SJ, seed3->NA).
+    // All four MUST be queried: `seed` is NOT a multi-A returning the fleet — it
+    // resolves to EU1 alone, so seed1/2/3 are required to reach the rest.
     "seed.dinerolabs.org",
+    "seed1.dinerolabs.org",
+    "seed2.dinerolabs.org",
+    "seed3.dinerolabs.org",
     // FALLBACK: legacy dinero-coin.com, retained for back-compat with
-    // already-deployed nodes. (seed3/seed4 were previously absent here, so MO/CN
-    // were never queried as DNS seeds — restored for full redundancy.)
+    // already-deployed nodes.
     "seed1.dinero-coin.com",
     "seed2.dinero-coin.com",
     "seed3.dinero-coin.com",
@@ -199,8 +205,9 @@ std::vector<SeedNode> getClosestSeeds(const std::vector<SeedNode>& seeds, const 
  * PRODUCTION DEPLOYMENT NOTES:
  * 
  * 1. **Domain & DNS**:
- *    - Canonical domain: dinerolabs.org (seed.dinerolabs.org, multi-A → full fleet).
- *      dinero-coin.com is kept as a fallback for already-deployed binaries.
+ *    - Canonical domain: dinerolabs.org — named per-node subdomains seed/seed1/
+ *      seed2/seed3 (single-A each), all queried in DNS_SEEDS. dinero-coin.com is
+ *      kept as a fallback for already-deployed binaries.
  *    - Set up DNS A records pointing to actual seed node IPs
  *    - Configure DNS seeds to return active node IPs
  * 
