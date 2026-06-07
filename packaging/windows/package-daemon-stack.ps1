@@ -28,7 +28,11 @@
 param(
     [string]$BuildDir = 'build-msvc-native',
     [string]$Version  = '',
-    [string]$OutputDir = ''
+    [string]$OutputDir = '',
+    # DineroLabs/dinero-sv2 release-build output. Defaults to the conventional
+    # sibling-repo layout. If the two SV2 miner binaries are present they go
+    # into bin/ alongside the daemon stack; missing → soft-warn and skip.
+    [string]$Sv2BuildDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -109,6 +113,25 @@ if ($missing.Count -gt 0) {
 }
 Write-Host "All 7 daemon/operator binaries found." -ForegroundColor Green
 
+# dinero-sv2 binaries are OPTIONAL: bundled when present, soft-warn-skip
+# when absent. Operator cuts on a builder without a Rust toolchain still
+# produce a valid ZIP without the SV2 Pool lane.
+if (-not $Sv2BuildDir) {
+    $Sv2BuildDir = (Join-Path (Split-Path $ProjectRoot -Parent) 'dinero-sv2\target\release')
+} elseif (-not [System.IO.Path]::IsPathRooted($Sv2BuildDir)) {
+    $Sv2BuildDir = Join-Path $ProjectRoot $Sv2BuildDir
+}
+$Sv2Binaries = @('dinero-sv2-miner.exe', 'dinero-sv2-gpu-miner.exe')
+$Sv2Present  = @()
+foreach ($s in $Sv2Binaries) {
+    $p = Join-Path $Sv2BuildDir $s
+    if (Test-Path $p) {
+        $Sv2Present += $s
+    } else {
+        Write-Host "  NOTE: optional SV2 binary $s not found at $Sv2BuildDir (skipping)" -ForegroundColor Yellow
+    }
+}
+
 $StageName = "dinero-v$Version-windows-x86_64-msvc"
 $StageDir  = Join-Path $OutputDir $StageName
 $BinSubDir = Join-Path $StageDir 'bin'
@@ -122,6 +145,13 @@ New-Item -Path $BinSubDir -ItemType Directory -Force | Out-Null
 Write-Host 'Copying binaries...'
 foreach ($b in $Binaries) {
     $src = Resolve-OperatorBinaryPath $b
+    $dst = Join-Path $BinSubDir $b
+    Copy-Item -Path $src -Destination $dst
+    $sz = (Get-Item $dst).Length
+    Write-Host ('  bin\{0}  {1} bytes' -f $b, $sz)
+}
+foreach ($b in $Sv2Present) {
+    $src = Join-Path $Sv2BuildDir $b
     $dst = Join-Path $BinSubDir $b
     Copy-Item -Path $src -Destination $dst
     $sz = (Get-Item $dst).Length
@@ -154,13 +184,19 @@ $readmeLines = @(
     "  dinero-stratum-worker.exe  Stratum worker client",
     "  dinero-gpu-miner.exe       GPU miner (OpenCL; runtime unvalidated on Windows)",
     "  dinero-wallet-cli.exe      Reference wallet CLI",
-    "  dinero-seeder.exe          DNS seeder / peer crawler",
+    "  dinero-seeder.exe          DNS seeder / peer crawler"
+)
+if ($Sv2Present -contains 'dinero-sv2-miner.exe') {
+    $readmeLines += "  dinero-sv2-miner.exe       Stratum V2 pool miner (CPU; DineroLabs/dinero-sv2)"
+}
+if ($Sv2Present -contains 'dinero-sv2-gpu-miner.exe') {
+    $readmeLines += "  dinero-sv2-gpu-miner.exe   Stratum V2 pool miner (GPU; OpenCL + CUDA on NVIDIA)"
+}
+$readmeLines += @(
     "",
     "Not included:",
     "  dinero-qt                  Qt6 GUI wallet (use the Windows installer)",
     "  dinero-solo-miner          Desktop/user mining tool",
-    "  dinero-sv2-miner           DineroLabs/dinero-sv2 repo",
-    "  dinero-sv2-gpu-miner       DineroLabs/dinero-sv2 repo",
     "  dinero-stratum (server)    separate binary",
     "",
     "Quick start:",
@@ -183,6 +219,9 @@ Push-Location $StageDir
 try {
     $files = @('README.txt', 'LICENSE')
     foreach ($b in $Binaries) {
+        $files += "bin/$b"
+    }
+    foreach ($b in $Sv2Present) {
         $files += "bin/$b"
     }
     foreach ($rel in $files) {

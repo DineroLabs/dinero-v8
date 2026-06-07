@@ -46,6 +46,13 @@ param(
     [string]$QtBin         = 'C:\Qt\6.9.1\msvc2022_64\bin',
     [string]$VcpkgBin      = "$env:USERPROFILE\vcpkg\installed\x64-windows\bin",
     [string]$Makensis      = 'C:\Program Files (x86)\NSIS\makensis.exe',
+    # DineroLabs/dinero-sv2 release-build output. Defaults to the conventional
+    # sibling-repo layout (..\dinero-sv2\target\release). If the two SV2 miner
+    # binaries are present, they're bundled alongside dinero-qt.exe so the
+    # qt UI's SV2 Pool tab discovers them out-of-the-box. Missing → soft-warn
+    # and skip (operator cuts without a Rust toolchain still produce a valid
+    # installer, just without the SV2 Pool lane).
+    [string]$Sv2BuildDir   = '',
     [switch]$SkipOperatorZip
 )
 
@@ -88,9 +95,23 @@ foreach ($b in $daemonBinaries) {
     }
 }
 $BuildRoot = Split-Path $DaemonBuildDir -Parent
+
+# Default the dinero-sv2 release-build dir to the conventional sibling-repo
+# layout. The qt UI's discoverSv2MinerPath() checks for these binaries
+# adjacent to dinero-qt.exe first (see dinero-qt mainwindow.cpp:494) — so
+# dropping them into the stage is all that's needed for the SV2 Pool tab
+# to work out-of-the-box on a fresh install.
+if (-not $Sv2BuildDir) {
+    $Sv2BuildDir = (Join-Path (Split-Path $ProjectRoot -Parent) 'dinero-sv2\target\release')
+} elseif (-not [System.IO.Path]::IsPathRooted($Sv2BuildDir)) {
+    $Sv2BuildDir = Join-Path $ProjectRoot $Sv2BuildDir
+}
+
 $optionalBinaries = @(
-    @{ Name = 'dinero-solo-miner'; Path = Join-Path $BuildRoot 'miner\Release\dinero-solo-miner.exe' },
-    @{ Name = 'dinero-seeder'; Path = Join-Path $BuildRoot 'seeder\Release\dinero-seeder.exe' }
+    @{ Name = 'dinero-solo-miner';     Path = Join-Path $BuildRoot 'miner\Release\dinero-solo-miner.exe' },
+    @{ Name = 'dinero-seeder';         Path = Join-Path $BuildRoot 'seeder\Release\dinero-seeder.exe' },
+    @{ Name = 'dinero-sv2-miner';      Path = Join-Path $Sv2BuildDir 'dinero-sv2-miner.exe' },
+    @{ Name = 'dinero-sv2-gpu-miner';  Path = Join-Path $Sv2BuildDir 'dinero-sv2-gpu-miner.exe' }
 )
 $windeployqt = Join-Path $QtBin 'windeployqt.exe'
 if (-not (Test-Path $windeployqt)) {
