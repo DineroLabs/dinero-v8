@@ -1,7 +1,7 @@
 {
   "schema": "din.release.bundle.v1",
   "qt": {
-    "repo": "dinero-qt",
+    "repo": "@DINERO_QT_RELEASE_REPO@",
     "version": "@PROJECT_VERSION@",
     "commit": "@DINERO_QT_GIT_FULL@",
     "build_time": "@DINERO_QT_BUILD_TIME@"

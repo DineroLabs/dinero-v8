@@ -78,6 +78,11 @@ if [[ ! -d "$APP_BUNDLE" ]]; then
     exit 1
 fi
 
+"$PROJECT_ROOT/packaging/mac/assert-v8-release-lane.sh" \
+    --version "$VERSION" \
+    --build-dir "$BUILD_DIR" \
+    --app "$APP_BUNDLE"
+
 # Verify the daemon stack the Qt app embeds. dinero-seeder is required because
 # the Cmd+K dashboard exposes a Start Seeder control; shipping the GUI without
 # the helper makes that button fail at runtime.

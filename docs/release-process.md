@@ -57,6 +57,23 @@ Dinero follows a rigorous release process that includes:
 
 ## Build Process
 
+### Source-Of-Truth Rule
+
+Official release artifacts are built from the `DineroLabs/dinero-v8`
+monorepo only. The historical standalone `dinero-qt` checkout is retired
+for release production and must not be used to build, notarize, or upload
+official Qt wallet assets.
+
+The macOS packaging lane enforces this with
+`packaging/mac/assert-v8-release-lane.sh`. That guard fails if:
+- the build directory was configured from any source root other than the
+  `dinero-v8` monorepo root;
+- the embedded `release-identity.json` does not identify `repo:
+  dinero-v8` at the current commit;
+- the Cmd+K My Node Dashboard is not compiled into the app; or
+- the AI assistant panel is not gated off for the release dashboard
+  surface.
+
 ### 1. Prepare Release Environment
 
 ```bash

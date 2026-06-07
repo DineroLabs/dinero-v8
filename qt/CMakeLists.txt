@@ -104,10 +104,12 @@ if(NOT PROJECT_IS_TOP_LEVEL)
   # Monorepo: qt/ lives inside the dinero tree; miner/ is a peer of qt/.
   set(_DEFAULT_DINERO_SOURCE_ROOT "${CMAKE_SOURCE_DIR}")
   set(_DEFAULT_DINERO_SOLO_MINER_SOURCE_ROOT "${CMAKE_SOURCE_DIR}/miner")
+  set(DINERO_QT_RELEASE_REPO "dinero-v8")
 else()
   # Standalone qt-only build (the original mode).
   set(_DEFAULT_DINERO_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../dinero")
   set(_DEFAULT_DINERO_SOLO_MINER_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../dinero-solo-miner")
+  set(DINERO_QT_RELEASE_REPO "dinero-qt")
 endif()
 
 set(DINERO_SOURCE_ROOT "${_DEFAULT_DINERO_SOURCE_ROOT}" CACHE PATH "Source checkout for bundled dinerod/gpu miner")
@@ -388,6 +390,10 @@ resolve_git_identity("${CMAKE_SOURCE_DIR}" DINERO_QT)
 resolve_git_identity("${DINERO_SOURCE_ROOT}" DINERO_SOURCE)
 resolve_git_identity("${DINERO_SOLO_MINER_SOURCE_ROOT}" DINERO_SOLO_MINER_SOURCE)
 resolve_git_identity("${DINERO_STRATUM_SOURCE_ROOT}" DINERO_STRATUM_SOURCE)
+if(DINERO_SOLO_MINER_SOURCE_ROOT STREQUAL "${DINERO_SOURCE_ROOT}/miner")
+  set(DINERO_SOLO_MINER_SOURCE_GIT_HASH "${DINERO_SOURCE_GIT_HASH}")
+  set(DINERO_SOLO_MINER_SOURCE_GIT_FULL "${DINERO_SOURCE_GIT_FULL}")
+endif()
 string(TIMESTAMP DINERO_QT_BUILD_TIME "%Y-%m-%dT%H:%M:%S+0000" UTC)
 # Use CMAKE_CURRENT_SOURCE_DIR (qt/) not CMAKE_SOURCE_DIR. In standalone
 # qt builds the two are identical, but in the monorepo CMAKE_SOURCE_DIR
@@ -720,7 +726,7 @@ if(WIN32)
   target_compile_definitions(dinero-qt PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 target_compile_definitions(dinero-qt PRIVATE
-  DINERO_QT_REPO="dinero-qt"
+  DINERO_QT_REPO="${DINERO_QT_RELEASE_REPO}"
   DINERO_QT_COMPONENT="dinero-qt"
   DINERO_QT_VERSION="${PROJECT_VERSION}"
   DINERO_QT_GIT_SHA="${DINERO_QT_GIT_HASH}"

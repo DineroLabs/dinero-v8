@@ -57,6 +57,10 @@ if [[ ! -d "$APP" ]]; then
     exit 1
 fi
 
+"$PROJECT_ROOT/packaging/mac/assert-v8-release-lane.sh" \
+    --version "$VERSION" \
+    --app "$APP"
+
 for path in \
     "$APP/Contents/MacOS/dinero-seeder" \
     "$APP/Contents/Resources/dinero-seeder" \
