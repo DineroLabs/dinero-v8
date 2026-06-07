@@ -53,8 +53,9 @@ EXPECTED_REPO_SLUG="DineroLabs/dinero-v8"   # provenance gate asserts this exact
 # Each entry: NAME|IP|SSH_KEY  (key relative to ~/.ssh). Canary is listed first.
 SEEDS=(
   "LA|172.93.160.131|dnrcalifornia.key"   # <- canary (deployed + verified before the rest)
-  "VA|173.249.195.59|dinerova_key"
-  "CN|96.9.226.98|dinerocn_key"
+  "SJ|173.249.200.59|dinerosj_key"
+  "NA|172.93.167.32|dinerona_key"
+  "EU1|92.118.190.62|dineroeu1_key"
 )
 
 REMOTE_USER="root"
