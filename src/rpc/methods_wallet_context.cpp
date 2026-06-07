@@ -7381,6 +7381,204 @@ din::Json rpc_context_wallet_importdescriptors(const ExecutionContext& ctx, cons
     return dinero::rpc_wallet_importdescriptors(params, wallet_manager);
 }
 
+// ============================================================================
+// wallet.consolidate — combine many small UTXOs of ONE script family (P2TR or
+// P2MR) into a single fresh self output. Transparent only; no family mixing.
+// Preview-by-default (dry_run); broadcast only when explicitly requested.
+// Reuses the wallet.sendtoaddress filter/fee/build/sign/broadcast machinery.
+// ============================================================================
+din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din::Json& params) {
+    din::Json result;
+    const auto log_debug = [&ctx](const std::string& msg) {
+        if (ctx.logger) ctx.logger->debug(msg); else dinero::g_logger.debug(msg);
+    };
+
+    if (!ctx.daemon || !ctx.daemon->wallet) { result["ok"] = false; result["error"] = "Wallet service not available"; return result; }
+    auto wallet_service = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+    if (!wallet_service || !wallet_service->hasActiveWallet()) { result["ok"] = false; result["error"] = "No active wallet"; return result; }
+    if (!ctx.daemon->chainstate) { result["ok"] = false; result["error"] = "Chainstate service not available"; return result; }
+    auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    if (!chainstate_service || !chainstate_service->utxoIndex()) { result["ok"] = false; result["error"] = "UTXO index not available"; return result; }
+
+    try {
+        // RPC may pass the options object directly OR wrapped in a single-element
+        // array (params == [ {...} ]). Normalize to the effective options object.
+        const din::Json& args = (params.isArray() && !params.empty() && params[0].isObject())
+                                    ? params[0] : params;
+        const auto getStr = [&](const char* k, const std::string& d) {
+            return (args.isObject() && args.isMember(k) && args[k].isString()) ? args[k].asString() : d; };
+        const auto getInt = [&](const char* k, int d) {
+            return (args.isObject() && args.isMember(k) && args[k].isNumeric()) ? args[k].asInt() : d; };
+        const auto getBool = [&](const char* k, bool d) {
+            return (args.isObject() && args.isMember(k) && args[k].isBool()) ? args[k].asBool() : d; };
+        const auto getDbl = [&](const char* k, double d) {
+            return (args.isObject() && args.isMember(k) && args[k].isNumeric()) ? args[k].asDouble() : d; };
+
+        std::string address_type = getStr("address_type", "auto");
+        std::transform(address_type.begin(), address_type.end(), address_type.begin(), ::tolower);
+        int    max_inputs        = getInt("max_inputs", 100);
+        int    min_conf          = getInt("min_confirmations", 6);
+        bool   include_unconf    = getBool("include_unconfirmed", false);
+        double max_fee_percent   = getDbl("max_fee_percent", 1.0);
+        double max_fee_din       = getDbl("max_fee_din", 1.0);
+        bool   dry_run           = getBool("dry_run", true);
+        bool   broadcast         = getBool("broadcast", false);
+        if (max_inputs < 1)   max_inputs = 1;
+        if (max_inputs > 500) max_inputs = 500;   // policy-safe cap
+
+        if (address_type == "shielded") {
+            result["ok"] = false; result["error"] = "shielded consolidation not supported in v7"; return result;
+        }
+
+        // Resolve fee_rate (una/vB): explicit numeric, else mempool estimate, else min-relay floor.
+        double fee_rate = 0.0;
+        if (args.isObject() && args.isMember("fee_rate") && args["fee_rate"].isNumeric())
+            fee_rate = args["fee_rate"].asDouble();
+        if (fee_rate <= 0.0 && ctx.daemon->mempool) {
+            auto mps = std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool);
+            if (mps) {
+                auto fe = mps->getFeeEstimator();
+                if (fe) {
+                    auto est = fe->estimateFee(dinero::policy::FeeTarget::NORMAL);
+                    if (est.is_sufficient_data && est.fee_rate > 0)
+                        fee_rate = static_cast<double>(est.fee_rate) / 1000.0;
+                }
+            }
+        }
+        if (fee_rate <= 0.0) fee_rate = 1.0;
+
+        // Let the wallet worker catch up to the tip so the UTXO table isn't stale.
+        {
+            const uint32_t tip = chainstate_service->getBlockHeight();
+            wallet_service->get().WaitForHeight(tip, std::chrono::milliseconds(5000));
+        }
+
+        // Gather + filter eligible UTXOs (same chain as wallet.sendtoaddress).
+        const int floor_conf = include_unconf ? 0 : min_conf;
+        auto raw = wallet_service->get().listUnspentUTXOs(floor_conf, 9999999);
+        auto mps = std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool);
+
+        std::vector<dinero::WalletManager::WalletUTXO> eligible;
+        for (const auto& u : raw) {
+            if (!u.spendable || !u.is_mature || u.is_confidential) continue;
+            if (u.derivation_path.empty() || u.script_pubkey.empty()) continue;
+            if (wallet_service->get().isUTXOLocked(u.txid, u.vout)) continue;
+            if (mps) {
+                OutPoint op(dinero::TxId(dinero::uint256::FromHexUnsafe(u.txid)), u.vout);
+                if (mps->mempool().isOutputSpentInMempool(op)) continue;
+            }
+            std::string reason;
+            if (!WalletUtxoIsPresentInLiveUtreexoForest(u, chainstate_service, &reason)) continue;
+            eligible.push_back(u);
+        }
+
+        // Partition by script family.
+        const auto isP2TR = [](const std::string& s){ return s.size()==68 && s.rfind("5120",0)==0; };
+        const auto isP2MR = [](const std::string& s){ return s.size()==68 && s.rfind("5320",0)==0; };
+        std::vector<dinero::WalletManager::WalletUTXO> p2tr, p2mr;
+        for (const auto& u : eligible) {
+            if (isP2TR(u.script_pubkey)) p2tr.push_back(u);
+            else if (isP2MR(u.script_pubkey)) p2mr.push_back(u);
+        }
+
+        // Choose target family (auto → larger pool; tie → p2tr).
+        std::string family;
+        std::vector<dinero::WalletManager::WalletUTXO>* pool = nullptr;
+        if (address_type == "p2mr") { family = "p2mr"; pool = &p2mr; }
+        else if (address_type == "p2tr" || address_type == "taproot") { family = "p2tr"; pool = &p2tr; }
+        else { if (p2mr.size() > p2tr.size()) { family = "p2mr"; pool = &p2mr; } else { family = "p2tr"; pool = &p2tr; } }
+        result["address_family"] = family;
+
+        // No-op cases.
+        if (pool->size() == 0) {
+            result["ok"] = true; result["dry_run"] = dry_run; result["selected_inputs"] = 0;
+            result["reason"] = "no eligible UTXOs in family"; result["txid"] = din::Json(Json::nullValue); return result;
+        }
+        if (pool->size() == 1) {
+            result["ok"] = true; result["dry_run"] = dry_run; result["selected_inputs"] = 0;
+            result["reason"] = "nothing to consolidate"; result["txid"] = din::Json(Json::nullValue); return result;
+        }
+
+        // Select up to max_inputs, smallest-value-first (sweep the most dust per tx).
+        std::sort(pool->begin(), pool->end(),
+                  [](const dinero::WalletManager::WalletUTXO& a, const dinero::WalletManager::WalletUTXO& b){
+                      return a.amount_una < b.amount_una; });
+        std::vector<dinero::WalletManager::WalletUTXO> selected(
+            pool->begin(), pool->begin() + std::min<size_t>(pool->size(), static_cast<size_t>(max_inputs)));
+
+        int64_t total_una = 0;
+        for (const auto& u : selected) total_una += static_cast<int64_t>(u.amount_una);
+
+        // Single output, no change: fee from the builder's own size/fee math.
+        const size_t n_in   = selected.size();
+        const size_t n_p2mr = (family == "p2mr") ? n_in : 0;
+        const size_t vsize  = dinero::UnsignedTxBuilder::EstimateTransactionSize(n_in, 1, n_p2mr);
+        const int64_t fee_una = static_cast<int64_t>(
+            dinero::UnsignedTxBuilder::CalculateFee(vsize, static_cast<uint64_t>(fee_rate)));
+        const int64_t output_una = total_una - fee_una;
+        const double  fee_din = static_cast<double>(fee_una) / 1e8;
+
+        if (output_una <= static_cast<int64_t>(dinero::UnsignedTxBuilder::DUST_THRESHOLD)) {
+            result["ok"] = false; result["dry_run"] = dry_run; result["fee_ok"] = false;
+            result["reason"] = "consolidation output below dust after fee";
+            result["selected_inputs"] = static_cast<int>(n_in);
+            result["input_value"] = static_cast<double>(total_una) / 1e8;
+            result["estimated_fee"] = fee_din; return result;
+        }
+
+        // Fee sanity gate: reject if fee > percent-of-value OR > absolute DIN cap (both modes).
+        const double pct = (total_una > 0) ? (100.0 * static_cast<double>(fee_una) / static_cast<double>(total_una)) : 0.0;
+        const bool gate_abs = fee_din > max_fee_din;
+        const bool gate_pct = pct > max_fee_percent;
+        if (gate_abs || gate_pct) {
+            std::ostringstream r;
+            if (gate_abs) r << "fee " << fee_din << " DIN exceeds max_fee_din " << max_fee_din;
+            else          r << "fee " << pct << "% exceeds max_fee_percent " << max_fee_percent;
+            result["ok"] = false; result["dry_run"] = dry_run; result["fee_ok"] = false; result["reason"] = r.str();
+            result["selected_inputs"] = static_cast<int>(n_in);
+            result["input_value"] = static_cast<double>(total_una) / 1e8;
+            result["estimated_fee"] = fee_din; return result;
+        }
+
+        // Fresh self destination of the target family.
+        std::string dest;
+        {
+            din::Json ap(Json::arrayValue);
+            ap.append((family == "p2mr") ? std::string("p2mr") : std::string("taproot"));
+            ap.append(std::string("consolidate"));
+            auto* gh = g_rpcRegistry.lookup("wallet.getnewaddress");
+            if (!gh) { result["ok"] = false; result["error"] = "wallet.getnewaddress handler not registered"; return result; }
+            din::Json ar = (*gh)(ctx, ap);
+            if (ar.isMember("address") && ar["address"].isString()) dest = ar["address"].asString();
+            else if (ar.isMember("result") && ar["result"].isObject() && ar["result"].isMember("address")) dest = ar["result"]["address"].asString();
+        }
+        if (dest.empty()) { result["ok"] = false; result["error"] = "Failed to derive consolidation address"; return result; }
+
+        // Dry-run: return the plan, no signing.
+        if (dry_run) {
+            result["ok"] = true; result["dry_run"] = true;
+            result["selected_inputs"] = static_cast<int>(n_in);
+            result["input_value"]   = static_cast<double>(total_una) / 1e8;
+            result["estimated_fee"] = fee_din;
+            result["output_value"]  = static_cast<double>(output_una) / 1e8;
+            result["destination"]   = dest;
+            result["fee_ok"]        = true;
+            result["txid"]  = din::Json(Json::nullValue);
+            result["rawtx"] = din::Json(Json::nullValue);
+            return result;
+        }
+
+        // EXECUTION STUB — replaced in Task 4 (build/sign/broadcast).
+        result["ok"] = false;
+        result["error"] = "consolidate execution not yet implemented";
+        log_debug("[wallet.consolidate] execution path stubbed");
+        return result;
+
+    } catch (const std::exception& e) {
+        result["ok"] = false; result["error"] = std::string("consolidate failed: ") + e.what(); return result;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // REGISTRATION FUNCTION
 // ═══════════════════════════════════════════════════════════════
@@ -7489,6 +7687,12 @@ void registerWalletMethodsContext() {
                                  RegisterMode::Overwrite,
                                  "context-aware");
     g_rpcRegistry.registerAlias("sendtoaddress", "wallet.sendtoaddress");
+
+    g_rpcRegistry.registerHandler("wallet.consolidate",
+                                 rpc_context_wallet_consolidate,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+    g_rpcRegistry.registerAlias("consolidate", "wallet.consolidate");
 
     g_rpcRegistry.registerHandler("wallet.sendmany",
                                  rpc_context_wallet_sendmany,

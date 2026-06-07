@@ -43,6 +43,7 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "wallet.abortrescan",
     "wallet.backup",
     "wallet.sendtoaddress",
+    "wallet.consolidate",
     "wallet.sendrawtransaction",
     "sendrawtransaction",
     "wallet.recordsend",
