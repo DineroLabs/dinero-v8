@@ -3311,6 +3311,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                                         // the proof that originally validated this block.
                                     } else if (!proof_request_result.proofs.empty()) {
                                         proof_msg = proof_request_result.proofs.front();
+                                        g_logger.info("[Relay] Serving bridge-generated utreexo proof for block " +
+                                                      hash.GetHex().substr(0, 16) + "...");
                                     } else if (load_transition_proof()) {
                                         auto height_result = chain_db->getBlockHeight(hash);
                                         if (!height_result.ok()) {
@@ -3424,7 +3426,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     utxoblk_msg.command = "utxoblk";
                                     utxoblk_msg.payload = payload;
                                     utxoblk_msg.checksum = 0;  // P2PManager will calculate
-                                    p2p_service->get().send_to_peer(peer_addr, utxoblk_msg);
+                                    const bool utxoblk_sent =
+                                        p2p_service->get().send_to_peer(peer_addr, utxoblk_msg);
+                                    if (!utxoblk_sent) {
+                                        g_logger.warning("[Relay] FAILED to send utreexo block " +
+                                                         hash.GetHex().substr(0, 16) + "... to " + peer_addr +
+                                                         " (send_to_peer returned false)");
+                                    }
 
                                     // Phase 9.3: Announce recent proof availability (best effort).
                                     if (proof_gossip && !proof_data.isEmpty()) {
@@ -3475,10 +3483,12 @@ bool DaemonApp::Init(int argc, char** argv) {
                                                       " dels=" + std::to_string(proof_data.spend_proof.targets.size()) +
                                                       " spent_outs=" + std::to_string(proof_data.spent_outputs.size()));
                                     }
-                                    g_logger.info("[Relay] Sent utreexo block " + hash.GetHex().substr(0, 16) +
-                                                  "... to " + peer_addr +
-                                                  " (block=" + std::to_string(block_size) +
-                                                  " proof=" + std::to_string(proof_size) + " bytes)");
+                                    if (utxoblk_sent) {
+                                        g_logger.info("[Relay] Sent utreexo block " + hash.GetHex().substr(0, 16) +
+                                                      "... to " + peer_addr +
+                                                      " (block=" + std::to_string(block_size) +
+                                                      " proof=" + std::to_string(proof_size) + " bytes)");
+                                    }
                                 }
                             }
                         }
