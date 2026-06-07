@@ -90,4 +90,18 @@ rpc_result "generatetoaddress" "[1,\"$CONFIRM_ADDR\"]" >/dev/null
 GTX="$(rpc_result "blockchain.gettransaction" "[\"$TXID\"]" | jq -c '.')"
 echo "$GTX" | jq -e '.' >/dev/null || fail "consolidation tx not found after mining: $TXID"
 
+# --- regression: high fee_rate must still produce a SINGLE output (no dust change) ---
+# (a scaling fee margin used to cross the dust threshold at fee_rate>=50 and add a 2nd output)
+# Replenish mature P2TR coinbase UTXOs (earlier consolidations spent the matured ones;
+# coinbase maturity is 100, so mine a batch then advance the tip past maturity).
+rpc_result "generatetoaddress" "[60,\"$P2TR_ADDR\"]" >/dev/null
+rpc_result "generatetoaddress" "[100,\"$CONFIRM_ADDR\"]" >/dev/null
+HIFEE="$(rpc_result "wallet.consolidate" '[{"address_type":"p2tr","dry_run":false,"broadcast":false,"min_confirmations":1,"max_inputs":40,"fee_rate":60,"max_fee_percent":100,"max_fee_din":1000000}]' | jq -c '.')"
+echo "$HIFEE" | jq -e '.ok == true' >/dev/null || fail "hi-fee sign-only not ok: $HIFEE"
+HIRAW="$(echo "$HIFEE" | jq -r '.rawtx')"
+[ -n "$HIRAW" ] && [ "$HIRAW" != "null" ] || fail "hi-fee missing rawtx: $HIFEE"
+DECODED="$(rpc_result "wallet.decoderawtransaction" "[\"$HIRAW\"]" | jq -c '.')"
+NOUT="$(echo "$DECODED" | jq -r '(.vout // .outputs) | length')"
+[ "$NOUT" = "1" ] || fail "hi-fee tx must have exactly 1 output, got $NOUT: $DECODED"
+
 pass "wallet.consolidate signs without broadcast and broadcasts a confirmable tx"

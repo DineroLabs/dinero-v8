@@ -7515,14 +7515,15 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
         const size_t vsize  = dinero::UnsignedTxBuilder::EstimateTransactionSize(n_in, 1, n_p2mr);
         // Safety margin: the builder's no-change branch reports final_fee = (inputs - output -
         // est_fee). With output = total - fee exactly, that residual is 0, tripping the signer's
-        // "Fee is zero" guard. Add one extra output's worth (a few tens of una, well under dust)
-        // so the residual — hence the reported fee — is strictly positive, while the actual
+        // "Fee is zero" guard. Add a small FIXED constant (must NOT scale with fee_rate — a scaling
+        // margin reaches the 546-una dust threshold at high fee_rate and arms a 2nd, dust change
+        // output) so the residual — hence the reported fee — is strictly positive, while the actual
         // on-chain fee stays at/above min-relay.
         const int64_t fee_una = static_cast<int64_t>(
             dinero::UnsignedTxBuilder::CalculateFee(vsize, static_cast<uint64_t>(fee_rate)))
-            + static_cast<int64_t>(dinero::UnsignedTxBuilder::CalculateFee(
-                  dinero::UnsignedTxBuilder::EstimateTransactionSize(0, 1, 0),
-                  static_cast<uint64_t>(fee_rate)));
+            // +10 una keeps the builder's no-change residual strictly positive (signer rejects
+            // fee==0) while staying far below the 546-una dust threshold so we never get a change output.
+            + 10;
         const int64_t output_una = total_una - fee_una;
         const double  fee_din = static_cast<double>(fee_una) / 1e8;
 
