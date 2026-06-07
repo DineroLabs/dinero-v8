@@ -6081,7 +6081,10 @@ void ChainstateService::HandleNotFoundFromPeer(const std::string& peer_addr,
     auto* ctx = DaemonContext::instance();
     if (ctx && ctx->block_download) {
         for (const auto& h : notfound_hashes) {
-            ctx->block_download->OnBlockNotFound(h);
+            // Pass the peer so the scheduler can mark it body-incapable for this
+            // height and stop re-requesting from it (issue #241). peer_addr must
+            // match PeerInfo::to_string() used in the send_getdata callback.
+            ctx->block_download->OnBlockNotFound(h, peer_addr);
         }
     }
 }

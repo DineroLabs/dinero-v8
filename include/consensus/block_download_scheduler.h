@@ -37,6 +37,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <string>
 #include <cstdint>
 
 namespace dinero {
@@ -124,6 +125,27 @@ public:
      * @param hash Hash of the block the peer doesn't have
      */
     void OnBlockNotFound(const uint256& hash);
+
+    /**
+     * Same as above, but records WHICH peer returned NOTFOUND (issue #241).
+     * A peer that NOTFOUNDs a block at height H is treated as lacking block
+     * *bodies* at all heights <= H — e.g. AssumeUTXO snapshot peers advertise
+     * the full chain tip yet lack pre-snapshot bodies — and is excluded from
+     * subsequent getdata for those heights, so a from-genesis catch-up no
+     * longer wedges when the peer set includes such peers.
+     */
+    void OnBlockNotFound(const uint256& hash, const std::string& peer_key);
+
+    /**
+     * Peers excluded from the *current* in-flight getdata (body-incapable for
+     * that block's height). The scheduler sets this under mutex_ immediately
+     * before invoking the send_getdata callback; the callback reads it
+     * synchronously on the same thread. Do NOT read from another thread
+     * (intentionally unlocked — single-threaded handoff during the callback).
+     */
+    const std::unordered_set<std::string>& CurrentRequestSkipPeers() const {
+        return current_request_skip_peers_;
+    }
 
     /**
      * Called when a block is received from a peer.
@@ -511,9 +533,24 @@ private:
     std::chrono::steady_clock::time_point last_notfound_rescan_{};
     static constexpr uint32_t notfound_rescan_cooldown_seconds_ = 5;
 
+    // Per-peer body-availability hint (issue #241): peer_key -> highest block
+    // height that peer returned NOTFOUND for. The peer is treated as lacking
+    // bodies at all heights <= this value (covers AssumeUTXO snapshot peers that
+    // advertise the full tip but lack pre-snapshot bodies) and is excluded from
+    // getdata for those heights. Guarded by mutex_.
+    std::unordered_map<std::string, uint32_t> peer_lacks_body_at_or_below_;
+
+    // Skip-set for the current in-flight getdata, populated under mutex_ right
+    // before each send_getdata callback (see CurrentRequestSkipPeers). mutex_.
+    std::unordered_set<std::string> current_request_skip_peers_;
+
     // ========================================================================
     // Private Helpers
     // ========================================================================
+
+    // Populate current_request_skip_peers_ for a getdata at block_height from
+    // peer_lacks_body_at_or_below_. Caller MUST hold mutex_.
+    void SetRequestSkipPeersLocked(uint32_t block_height);
 
     /**
      * Scan header chain for missing blocks.

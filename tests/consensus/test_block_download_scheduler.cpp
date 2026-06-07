@@ -16,6 +16,9 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 using dinero::BlockHeader;
@@ -795,6 +798,100 @@ int main() {
         if (!Require(sends[hashes[1]] > s1_before,
                      "#216 reorg-safety: a block whose hash != the active-chain hash at its height MUST be re-requested")) return 1;
         std::cout << "   ✅ fork block correctly re-requested" << std::endl;
+    }
+
+    {
+        std::cout << "\n8. issue #241: a peer that replied NOTFOUND is excluded from the "
+                     "re-request skip-set at/below that height (snapshot-peer wedge)..." << std::endl;
+
+        // The from-genesis IBD wedge: an AssumeUTXO/snapshot peer advertises the
+        // full chain height (so it clears the advertised-height filter) but lacks
+        // pre-snapshot block bodies, so it replies NOTFOUND. Before the fix,
+        // OnBlockNotFound only erased the in-flight entry and the next rescan
+        // re-broadcast to the SAME peer — an infinite loop. The scheduler must
+        // now remember the peer is body-incapable at/below that height and stage
+        // it into the per-request skip-set so the daemon callback drops it.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;  // index == height (hashes[0] == genesis)
+        try {
+            BuildLinearHeaders(selector, 6, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build header chain: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+
+        const std::string bad_peer = "192.0.2.7:1234";  // RFC 5737 test address
+
+        // Capture the skip-set staged for every send, keyed by requested hash.
+        // CurrentRequestSkipPeers() is read inside the callback, which fires
+        // under the scheduler lock right after the skip-set is staged.
+        std::vector<std::pair<uint256, std::unordered_set<std::string>>> sends;
+        scheduler.SetSendGetDataCallback(
+            [&scheduler, &sends](const uint256& h, uint32_t /*height*/) {
+                sends.emplace_back(h, scheduler.CurrentRequestSkipPeers());
+                return true;
+            });
+
+        scheduler.OnHeadersProcessed();
+        for (int t = 0; t < 10; ++t) scheduler.Tick();  // request the 1..6 range
+
+        // Baseline: with no NOTFOUND recorded, no peer is ever skipped.
+        for (const auto& s : sends) {
+            if (!Require(s.second.empty(),
+                         "no peer should be in the skip-set before any NOTFOUND")) {
+                return 1;
+            }
+        }
+
+        // The snapshot peer NOTFOUNDs the block at height 3.
+        scheduler.OnBlockNotFound(hashes[3], bad_peer);
+
+        // The post-NOTFOUND rescan re-requests that block. The staged skip-set
+        // for the height-3 request must now exclude the body-incapable peer.
+        sends.clear();
+        if (!Require(scheduler.ReRequestBlock(hashes[3]),
+                     "expected the NOTFOUND'd block to be re-queued")) {
+            return 1;
+        }
+        for (int t = 0; t < 10; ++t) scheduler.Tick();
+
+        bool bad_peer_skipped_at_3 = false;
+        for (const auto& s : sends) {
+            if (s.first == hashes[3] && s.second.count(bad_peer)) {
+                bad_peer_skipped_at_3 = true;
+            }
+        }
+        if (!Require(bad_peer_skipped_at_3,
+                     "#241: a peer that replied NOTFOUND for a block at height H must be "
+                     "staged into the skip-set when that block is re-requested")) {
+            return 1;
+        }
+
+        // Height gating: a request ABOVE the gap height must NOT skip the peer
+        // (it may legitimately have higher bodies, e.g. its own snapshot range).
+        scheduler.OnBlockNotFound(hashes[2], bad_peer);  // still ≤3, no change to gap
+        sends.clear();
+        if (!Require(scheduler.ReRequestBlock(hashes[5]),
+                     "expected the height-5 block to be re-queued")) {
+            return 1;
+        }
+        for (int t = 0; t < 10; ++t) scheduler.Tick();
+        bool bad_peer_skipped_at_5 = false;
+        for (const auto& s : sends) {
+            if (s.first == hashes[5] && s.second.count(bad_peer)) {
+                bad_peer_skipped_at_5 = true;
+            }
+        }
+        if (!Require(!bad_peer_skipped_at_5,
+                     "#241: a peer marked body-incapable at/below height 3 must NOT be "
+                     "skipped for a request at height 5 (gating is height-bounded)")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ NOTFOUND peer skipped at height 3, retained at height 5" << std::endl;
     }
 
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;

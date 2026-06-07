@@ -6111,7 +6111,7 @@ bool DaemonApp::Init(int argc, char** argv) {
             // Phase P.3: CSN requests MSG_UTREEXO_BLOCK (block + proof) instead of MSG_BLOCK
             bool csn_mode = GetConfig().utreexo_stateless;
             auto csn_bridge_rr_index = std::make_shared<std::atomic<size_t>>(0);
-            block_download->SetSendGetDataCallback([p2p_service, csn_mode, csn_bridge_rr_index](const uint256& block_hash, uint32_t block_height) {
+            block_download->SetSendGetDataCallback([p2p_service, csn_mode, csn_bridge_rr_index, sched = block_download.get()](const uint256& block_hash, uint32_t block_height) {
                 // Use binary format with raw bytes (not hex) to preserve correct byte order
                 uint32_t inv_type = csn_mode
                     ? static_cast<uint32_t>(dinero::InventoryType::MSG_UTREEXO_BLOCK)
@@ -6156,6 +6156,36 @@ bool DaemonApp::Init(int argc, char** argv) {
                         for (const auto& p : peers) {
                             if (peer_advertised_height(p) < block_height) {
                                 skip_below_height.insert(p.to_string());
+                            }
+                        }
+                    }
+                }
+
+                // Also skip peers the scheduler has marked body-incapable at or
+                // below this height (issue #241). AssumeUTXO/snapshot peers
+                // advertise the full chain height but lack pre-snapshot block
+                // bodies, so they clear the advertised-height filter above yet
+                // still reply NOTFOUND — which cancels the in-flight request and
+                // re-broadcasts to the same bad peers, wedging from-genesis IBD.
+                // The scheduler records these (keyed by PeerInfo::to_string())
+                // from the NOTFOUND path and stages the current skip-set under
+                // its own lock immediately before invoking this callback on the
+                // same thread, so reading it here is race-free. Same liveness
+                // guard as above: never drop to zero recipients.
+                if (sched) {
+                    const auto& body_incapable = sched->CurrentRequestSkipPeers();
+                    if (!body_incapable.empty()) {
+                        size_t remaining = 0;
+                        for (const auto& p : peers) {
+                            const std::string key = p.to_string();
+                            if (!skip_below_height.count(key) &&
+                                !body_incapable.count(key)) {
+                                ++remaining;
+                            }
+                        }
+                        if (remaining > 0) {
+                            for (const auto& key : body_incapable) {
+                                skip_below_height.insert(key);
                             }
                         }
                     }

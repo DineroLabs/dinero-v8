@@ -60,6 +60,12 @@ void BlockDownloadScheduler::OnHeadersProcessed() {
 }
 
 void BlockDownloadScheduler::OnBlockNotFound(const uint256& hash) {
+    // Delegate without acquiring the lock here (the 2-arg form locks).
+    OnBlockNotFound(hash, std::string());
+}
+
+void BlockDownloadScheduler::OnBlockNotFound(const uint256& hash,
+                                             const std::string& peer_key) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Clear from in-flight so Tick() doesn't count this toward the window
@@ -67,7 +73,23 @@ void BlockDownloadScheduler::OnBlockNotFound(const uint256& hash) {
     in_flight_blocks_.erase(hash);
 
     g_logger.info("[BlockDownloadScheduler] NOTFOUND for " +
-                 hash.GetHex().substr(0, 16) + "...");
+                 hash.GetHex().substr(0, 16) + "..." +
+                 (peer_key.empty() ? std::string() : (" from " + peer_key)));
+
+    // issue #241: record that this peer lacks the body for this block's height.
+    // A snapshot-bootstrapped peer advertises the full tip but lacks pre-snapshot
+    // bodies; one NOTFOUND marks it body-incapable at that height and below, so
+    // subsequent getdata for those heights skip it instead of re-poisoning the
+    // in-flight request (which was the catch-up wedge).
+    if (!peer_key.empty()) {
+        for (const auto& fs : missing_blocks_) {
+            if (fs.block_hash == hash) {
+                uint32_t& gap = peer_lacks_body_at_or_below_[peer_key];
+                if (fs.height > gap) gap = fs.height;
+                break;
+            }
+        }
+    }
 
     // Rate-limited rescan: rebuild missing_blocks_ from the current header
     // chain.  Stale-branch hashes won't appear in the rebuilt list, so they
@@ -82,6 +104,18 @@ void BlockDownloadScheduler::OnBlockNotFound(const uint256& hash) {
                      std::to_string(actual_tip));
         RescanFromActualTip(actual_tip);
         last_notfound_rescan_ = now;
+    }
+}
+
+// issue #241: build the skip-set for a getdata at block_height — every peer
+// known to lack bodies at or above this height. Caller MUST hold mutex_.
+void BlockDownloadScheduler::SetRequestSkipPeersLocked(uint32_t block_height) {
+    current_request_skip_peers_.clear();
+    if (block_height == 0) return;
+    for (const auto& kv : peer_lacks_body_at_or_below_) {
+        if (kv.second >= block_height) {
+            current_request_skip_peers_.insert(kv.first);
+        }
     }
 }
 
@@ -168,6 +202,7 @@ void BlockDownloadScheduler::Tick() {
         next_missing_idx_ = (gap_idx + 1) % missing_blocks_.size();
 
         if (send_getdata_callback_) {
+            SetRequestSkipPeersLocked(gap_state.height);  // #241
             send_getdata_callback_(gap_state.block_hash, gap_state.height);
             g_logger.info("[BlockDownloadScheduler] Requested stateless frontier block: " +
                           gap_state.block_hash.GetHex() +
@@ -705,6 +740,7 @@ bool BlockDownloadScheduler::RequestNextBlock() {
 
             // Send getdata via callback
             if (send_getdata_callback_) {
+                SetRequestSkipPeersLocked(fetch_state.height);  // #241
                 send_getdata_callback_(fetch_state.block_hash, fetch_state.height);
                 g_logger.info("[BlockDownloadScheduler] Requested block: " +
                              fetch_state.block_hash.GetHex() +
@@ -1075,6 +1111,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocks(size_t max_blocks) {
                 bool requested_parent = false;
                 if (!parent_in_flight && !cooldown_active && send_getdata_callback_) {
                     // Parent sits one height below the block we're trying to connect.
+                    SetRequestSkipPeersLocked(want > 0 ? want - 1 : 0);  // #241
                     send_getdata_callback_(parent_hash, want > 0 ? want - 1 : 0);
                     parent_request_times_[parent_hash] = now;
                     requested_parent = true;
