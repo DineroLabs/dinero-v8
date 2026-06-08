@@ -7,7 +7,7 @@ dinero-core (8.0.0~rc36-1) unstable; urgency=medium
       IBD scheduler fix.
     - Aligns the Debian vendored OpenSSL build with the rc36 release
       artifact lane (OpenSSL 3.5.6) and rehydrates missing vendored
-      headers from the pinned source tarball before configure.
+      headers from the pinned source tarball/rebuild before configure.
   * Packaged-service contract unchanged: dinerod + dinero-cli only,
     no Qt desktop bundle, no GPU mining runtime, no gRPC, no hardware-
     wallet HID. Desktop/operator tarballs remain release assets outside

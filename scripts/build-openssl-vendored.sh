@@ -39,14 +39,19 @@ echo -e "${BLUE}--------------------------------------------------------${NC}"
 # Download the pinned source tarball when the selected source directory is not
 # already present. OPENSSL_SOURCE_DIR remains strict: if callers pass it, they
 # are responsible for making it exist.
+has_openssl_source() {
+    [[ -f "$OPENSSL_DIR/Configure" ]] &&
+        [[ -f "$OPENSSL_DIR/include/openssl/ssl.h" || -f "$OPENSSL_DIR/include/openssl/ssl.h.in" ]]
+}
+
 ensure_openssl_source() {
-    if [[ -f "$OPENSSL_DIR/Configure" && -f "$OPENSSL_DIR/include/openssl/ssl.h" ]]; then
+    if has_openssl_source; then
         return
     fi
 
     if [[ -n "${OPENSSL_SOURCE_DIR:-}" ]]; then
         echo -e "${RED}Error: OPENSSL_SOURCE_DIR was provided but does not contain complete OpenSSL source: $OPENSSL_DIR${NC}"
-        echo -e "       Expected both Configure and include/openssl/ssl.h${NC}"
+        echo -e "       Expected Configure and include/openssl/ssl.h or ssl.h.in${NC}"
         exit 1
     fi
 
@@ -85,7 +90,7 @@ PY
 
     echo -e "${BLUE}Extracting OpenSSL ${OPENSSL_VERSION} source...${NC}"
     tar -xzf "$tarball" -C "$PROJECT_ROOT/third_party"
-    if [[ ! -f "$OPENSSL_DIR/Configure" || ! -f "$OPENSSL_DIR/include/openssl/ssl.h" ]]; then
+    if ! has_openssl_source; then
         echo -e "${RED}Error: OpenSSL extraction completed but expected source files are missing: $OPENSSL_DIR${NC}"
         exit 1
     fi
@@ -301,6 +306,10 @@ if [ -f "$OUTPUT_DIR/libcrypto.a" ] && [ -f "$OUTPUT_DIR/libssl.a" ]; then
     echo ""
     if [[ "$OS" == "Darwin" && -n "$EXISTING_TARGET" && "$(version_equal "$EXISTING_TARGET" "$OPENSSL_MACOS_DEPLOYMENT_TARGET")" != "1" ]]; then
         echo -e "${YELLOW}Warning: existing OpenSSL target (${EXISTING_TARGET}) does not match requested target (${OPENSSL_MACOS_DEPLOYMENT_TARGET})${NC}"
+        OPENSSL_REBUILD=1
+    fi
+    if [[ ! -f "${OUTPUT_DIR}/include/openssl/ssl.h" && ! -f "${OPENSSL_DIR}/include/openssl/ssl.h" ]]; then
+        echo -e "${YELLOW}Warning: existing OpenSSL libraries are missing generated headers; rebuilding${NC}"
         OPENSSL_REBUILD=1
     fi
     if [[ "${OPENSSL_REBUILD}" == "1" ]]; then
