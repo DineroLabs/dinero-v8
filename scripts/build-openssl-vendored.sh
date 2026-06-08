@@ -40,12 +40,13 @@ echo -e "${BLUE}--------------------------------------------------------${NC}"
 # already present. OPENSSL_SOURCE_DIR remains strict: if callers pass it, they
 # are responsible for making it exist.
 ensure_openssl_source() {
-    if [[ -f "$OPENSSL_DIR/Configure" ]]; then
+    if [[ -f "$OPENSSL_DIR/Configure" && -f "$OPENSSL_DIR/include/openssl/ssl.h" ]]; then
         return
     fi
 
     if [[ -n "${OPENSSL_SOURCE_DIR:-}" ]]; then
-        echo -e "${RED}Error: OPENSSL_SOURCE_DIR was provided but does not contain OpenSSL source: $OPENSSL_DIR${NC}"
+        echo -e "${RED}Error: OPENSSL_SOURCE_DIR was provided but does not contain complete OpenSSL source: $OPENSSL_DIR${NC}"
+        echo -e "       Expected both Configure and include/openssl/ssl.h${NC}"
         exit 1
     fi
 
@@ -84,8 +85,8 @@ PY
 
     echo -e "${BLUE}Extracting OpenSSL ${OPENSSL_VERSION} source...${NC}"
     tar -xzf "$tarball" -C "$PROJECT_ROOT/third_party"
-    if [[ ! -d "$OPENSSL_DIR" ]]; then
-        echo -e "${RED}Error: OpenSSL extraction completed but expected directory is missing: $OPENSSL_DIR${NC}"
+    if [[ ! -f "$OPENSSL_DIR/Configure" || ! -f "$OPENSSL_DIR/include/openssl/ssl.h" ]]; then
+        echo -e "${RED}Error: OpenSSL extraction completed but expected source files are missing: $OPENSSL_DIR${NC}"
         exit 1
     fi
 }
