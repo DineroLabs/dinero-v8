@@ -6685,38 +6685,54 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         loadTransactionHistory();
       }
     }
-  } else if (method == "consolidate") {
+  } else if (method == "wallet.consolidate") {
     // Re-enable consolidate button
     if (btnConsolidate_) {
       btnConsolidate_->setEnabled(true);
     }
 
-    if (result.isObject()) {
-      auto obj = result.toObject();
-      int txCount = obj["consolidation_txs"].toInt(obj["transactions"].toInt(0));
-      int inputsConsolidated = obj["utxos_consumed"].toInt(obj["inputs_consolidated"].toInt(0));
-      int outputsCreated = txCount;  // Each consolidation tx creates 1 output
-      double feePaid = obj["total_fees"].toDouble(obj["total_fee"].toDouble(0.0));
+    QJsonObject obj = result.toObject();
+    const bool isPreview = obj.value("dry_run").toBool(false) && obj.value("ok").toBool(false);
+    const int sel = obj.value("selected_inputs").toInt(0);
 
-      QString msg = QString("Consolidated %1 UTXOs into %2 transaction%3.\n"
-                            "Outputs created: %4\n"
-                            "Fees paid: %5 DIN\n\n"
-                            "Mine blocks to confirm.")
-        .arg(inputsConsolidated)
-        .arg(txCount)
-        .arg(txCount == 1 ? "" : "s")
-        .arg(outputsCreated)
-        .arg(feePaid, 0, 'f', 8);
-
-      QMessageBox::information(this, "Consolidation Complete", msg);
-
-      // Refresh balance and UTXO list
+    if (isPreview && sel == 0) {
+      // Daemon found nothing eligible to consolidate.
+      QMessageBox::information(this, "Consolidation",
+        "Nothing to consolidate — no eligible UTXOs.");
+    } else if (isPreview) {
+      // Dry-run plan accepted: confirm the real numbers, then broadcast.
+      const double fee = obj.value("estimated_fee").toDouble();
+      const double out = obj.value("output_value").toDouble();
+      QMessageBox box(this);
+      box.setWindowTitle("Confirm Consolidation");
+      box.setText(QString("Consolidate %1 UTXOs into one output.").arg(sel));
+      box.setInformativeText(QString("Estimated fee: %1 DIN\nResulting output: %2 DIN")
+                               .arg(fee, 0, 'f', 8).arg(out, 0, 'f', 8));
+      QPushButton* go = box.addButton("Consolidate", QMessageBox::AcceptRole);
+      box.addButton("Cancel", QMessageBox::RejectRole);
+      box.exec();
+      if (box.clickedButton() == go) {
+        QJsonObject p;
+        p["address_type"] = "auto";
+        p["dry_run"] = false;
+        p["broadcast"] = true;
+        if (btnConsolidate_) btnConsolidate_->setEnabled(false);
+        rpc_->callNamed("wallet.consolidate", p);
+      } else if (btnConsolidate_ && cachedUtxoCount_ > 50) {
+        btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
+      }
+    } else if (!obj.value("ok").toBool(true)) {
+      // Fee gate or execution error — surface the daemon's reason.
+      QMessageBox::warning(this, "Consolidation Failed",
+        obj.value("reason").toString(obj.value("error").toString("Consolidation could not be completed.")));
+    } else {
+      // Executed + broadcast.
+      const QString txid = obj.value("txid").toString();
+      QMessageBox::information(this, "Consolidation Complete",
+        txid.isEmpty() ? QString("Consolidation submitted.")
+                       : QString("Consolidation broadcast.\nTXID: %1").arg(txid));
       refresh();
       loadTransactionHistory();
-    } else {
-      QMessageBox::information(this, "Consolidation Complete",
-        "Consolidation request submitted successfully.\nMine blocks to confirm.");
-      refresh();
     }
   } else if (method == "wallet.listtransactions") {
     if (result.isArray()) {
@@ -7026,7 +7042,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     }
   }
 
-  if (method == "consolidate") {
+  if (method == "wallet.consolidate") {
     // Re-enable the consolidate button on error
     if (btnConsolidate_) {
       btnConsolidate_->setEnabled(true);
@@ -13717,11 +13733,13 @@ void MainWindow::onConsolidateUTXOs() {
     btnConsolidate_->setText("Consolidating...");
   }
 
-  // Call the consolidate RPC
+  // Preview first: dry-run plan drives the confirmation dialog, then broadcast.
   QJsonObject params;
+  params["address_type"] = "auto";
   params["max_inputs"] = maxInputs;
-  params["target_utxos"] = targetUtxos;
-  rpc_->callNamed("consolidate", params);
+  params["dry_run"] = true;
+  params["broadcast"] = false;
+  rpc_->callNamed("wallet.consolidate", params);
 }
 
 void MainWindow::onListUTXOs() {
