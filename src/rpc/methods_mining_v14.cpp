@@ -23,6 +23,7 @@
 
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "rpc/gbt_template_time.h"
 #include "rpc/longpoll_notifier.h"  // Server-side long-poll for getblocktemplate
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
@@ -341,8 +342,10 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
     result["longpollid"] = block->header.prev_block_hash.GetHex();
     result["height"] = static_cast<int>(stats.height);
 
-    // Timestamp (current time)
-    uint64_t current_time = static_cast<uint64_t>(std::time(nullptr));
+    // Timestamp: publish the exact header time used to compute ASERT bits.
+    uint64_t current_time = ::dinero::rpc::SelectGbtTemplateTime(
+        block->header.timestamp,
+        static_cast<uint64_t>(std::time(nullptr)));
     result["curtime"] = static_cast<int64_t>(current_time);
     uint64_t min_time = current_time;
     auto tip_result = chain_db->getTip();
