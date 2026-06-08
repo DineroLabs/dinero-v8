@@ -23,7 +23,7 @@ DEB_OPENSSL_VERSION := 3.5.6
 # Phase E.3 — vendored static OpenSSL.
 #
 # The packaged-service build uses USE_SYSTEM_OPENSSL=OFF and pins the
-# vendored OpenSSL line to the same version used by the rc36 release
+# vendored OpenSSL line to the same version used by the rc37 release
 # artifacts. scripts/build-openssl-vendored.sh produces the static
 # libcrypto.a/libssl.a pair before cmake configure runs. Run it as a
 # configure prerequisite — it's idempotent (skips rebuild if matching
