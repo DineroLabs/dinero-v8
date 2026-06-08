@@ -6706,6 +6706,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     const int sel = obj.value("selected_inputs").toInt(0);
 
     if (isPreview && sel == 0) {
+      pendingConsolidateParams_ = {};
       // Daemon found nothing eligible to consolidate.
       QMessageBox::information(this, "Consolidation",
         "Nothing to consolidate — no eligible UTXOs.");
@@ -6722,20 +6723,25 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       box.addButton("Cancel", QMessageBox::RejectRole);
       box.exec();
       if (box.clickedButton() == go) {
-        QJsonObject p;
-        p["address_type"] = "auto";
+        QJsonObject p = pendingConsolidateParams_;
+        if (p.isEmpty()) p["address_type"] = "auto";
         p["dry_run"] = false;
         p["broadcast"] = true;
         if (btnConsolidate_) btnConsolidate_->setEnabled(false);
         rpc_->callNamed("wallet.consolidate", p);
-      } else if (btnConsolidate_ && cachedUtxoCount_ > 50) {
-        btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
+      } else {
+        pendingConsolidateParams_ = {};
+        if (btnConsolidate_ && cachedUtxoCount_ > 50) {
+          btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
+        }
       }
     } else if (!obj.value("ok").toBool(true)) {
+      pendingConsolidateParams_ = {};
       // Fee gate or execution error — surface the daemon's reason.
       QMessageBox::warning(this, "Consolidation Failed",
         obj.value("reason").toString(obj.value("error").toString("Consolidation could not be completed.")));
     } else {
+      pendingConsolidateParams_ = {};
       // Executed + broadcast.
       const QString txid = obj.value("txid").toString();
       QMessageBox::information(this, "Consolidation Complete",
@@ -7053,6 +7059,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   }
 
   if (method == "wallet.consolidate") {
+    pendingConsolidateParams_ = {};
     // Re-enable the consolidate button on error
     if (btnConsolidate_) {
       btnConsolidate_->setEnabled(true);
@@ -13749,6 +13756,7 @@ void MainWindow::onConsolidateUTXOs() {
   params["max_inputs"] = maxInputs;
   params["dry_run"] = true;
   params["broadcast"] = false;
+  pendingConsolidateParams_ = params;
   rpc_->callNamed("wallet.consolidate", params);
 }
 
