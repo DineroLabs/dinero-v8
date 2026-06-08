@@ -323,6 +323,7 @@ private:
   QLabel* lblShieldedBalance_ = nullptr;
   QPushButton* btnConsolidate_ = nullptr;
   int cachedUtxoCount_ = 0;
+  QJsonObject pendingConsolidateParams_;
   QTextEdit* txtValidation_;
   
   // Send tab — two-axis: Action (transfer/contract/convert) x Visibility (public/confidential/private)
