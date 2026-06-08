@@ -78,9 +78,9 @@ private Q_SLOTS:
             return o;
         };
         peers.append(mk("172.93.160.131:20999", 27402, 92));
-        peers.append(mk("173.249.195.59:20999", 27402, 88));
+        peers.append(mk("172.93.167.32:20999", 27402, 88));
         peers.append(mk("173.249.200.59:20999",  27402, 75));
-        peers.append(mk("96.9.226.98:20999",    27401, 44));
+        peers.append(mk("92.118.190.62:20999",  27401, 44));
 
         p.feed("getpeerinfo", peers);
         QVERIFY(spy_peers.count() >= 1);
@@ -89,9 +89,9 @@ private Q_SLOTS:
         const auto rows = spy_peers.last().at(0).value<QVector<PeerRow>>();
         QCOMPARE(rows.size(), 4);
         QCOMPARE(rows[0].fleet_name, QString("LA"));
-        QCOMPARE(rows[1].fleet_name, QString("VA"));
+        QCOMPARE(rows[1].fleet_name, QString("NA"));
         QCOMPARE(rows[2].fleet_name, QString("SJ"));
-        QCOMPARE(rows[3].fleet_name, QString("CN"));
+        QCOMPARE(rows[3].fleet_name, QString("EU1"));
         QCOMPARE(rows[0].quality_score, 92);
 
         const auto ci = spy_chain.last().at(0).value<ChainInfo>();

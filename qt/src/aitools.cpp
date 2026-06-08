@@ -82,8 +82,8 @@ QJsonArray AiTools::toolDefinitions() const
 
     tools.append(makeToolDef(
         "get_fleet_status",
-        "Get live status of all 5 Dinero server nodes (Mac, LA, VA, MO, CN) "
-        "including height, peers, balance, CT pool size, consensus alignment, "
+        "Get live status of the current Dinero fleet (Mac, LA, SJ, NA, EU1) "
+        "including height, peers, balance, consensus alignment, "
         "and privacy lane status. Returns data from the fleet dashboard."));
 
     QJsonObject targetProp;
