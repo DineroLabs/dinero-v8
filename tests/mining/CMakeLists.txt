@@ -112,6 +112,30 @@ message(STATUS "⊘ Phase F.11 reorg safety tests DISABLED (BlockValidator API c
 message(STATUS "Phase F.11 standalone T24 removed with dead legacy mempool test path")
 
 # ============================================================================
+# getblocktemplate ASERT timestamp contract
+# ============================================================================
+
+add_executable(test_gbt_template_time
+    test_gbt_template_time.cpp
+)
+
+target_link_libraries(test_gbt_template_time PRIVATE
+    gtest
+    gtest_main
+)
+
+target_include_directories(test_gbt_template_time PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+add_test(NAME Mining_GbtTemplateTime COMMAND test_gbt_template_time)
+set_tests_properties(Mining_GbtTemplateTime
+    PROPERTIES
+    LABELS "mining;rpc;getblocktemplate;asert"
+    TIMEOUT 10
+)
+
+# ============================================================================
 # Phase W.1: Block Assembly Intelligence Tests
 # ============================================================================
 
