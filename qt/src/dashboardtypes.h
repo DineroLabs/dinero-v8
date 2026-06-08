@@ -128,7 +128,7 @@ struct PeerRow {
     bool    via_relay{false};
     QString relay_via_addr;        // "1.2.3.4:20999" of the relay we go through
     bool    is_inbound{false};
-    QString fleet_name;            // "LA"/"VA"/"MO"/"CN" if a known fleet IP, else empty
+    QString fleet_name;            // "LA"/"SJ"/"NA"/"EU1" if a known fleet IP, else empty
     qint64  height{-1};
     qint64  ping_ms{-1};            // -1 = unmeasured
     int     quality_score{-1};      // 0..100; -1 = no DPP score yet

@@ -79,6 +79,15 @@ void appendDaemonNetworkArgs(QStringList& args) {
     }
 }
 
+QStringList currentBootstrapAddnodes() {
+    return {
+        "-addnode=172.93.160.131:20999", // LA
+        "-addnode=173.249.200.59:20999", // SJ
+        "-addnode=172.93.167.32:20999",  // NA
+        "-addnode=92.118.190.62:20999",  // EU1
+    };
+}
+
 } // namespace
 
 // Temporary message handler - suppresses output until Debug Console is ready
@@ -566,11 +575,8 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
     // request UPnP/NAT-PMP mapping from the same early launcher used at app boot.
     appendDaemonNetworkArgs(args);
 
-    // CRITICAL: Add seed nodes so daemon can connect to network
-    args << "-addnode=172.93.160.131:20999";
-    args << "-addnode=173.249.195.59:20999";
-    args << "-addnode=173.249.200.59:20999";
-    args << "-addnode=96.9.226.98:20999";
+    // CRITICAL: Add current fleet bootstrap nodes so daemon can connect to network.
+    args << currentBootstrapAddnodes();
 
     // Track C: Liquidity Vault. Daemon defaults are vault=1 and
     // (as of v2.1.29) shadow=0 — credits open for real once a
@@ -760,10 +766,7 @@ int main(int argc, char** argv) {
       }
       wipeArgs << "--wipe-stale-chain";
       appendDaemonNetworkArgs(wipeArgs);
-      wipeArgs << "-addnode=172.93.160.131:20999";
-      wipeArgs << "-addnode=173.249.195.59:20999";
-      wipeArgs << "-addnode=173.249.200.59:20999";
-      wipeArgs << "-addnode=96.9.226.98:20999";
+      wipeArgs << currentBootstrapAddnodes();
 
       daemonProcess = new QProcess();
       daemonProcess->start(daemonPath, wipeArgs);

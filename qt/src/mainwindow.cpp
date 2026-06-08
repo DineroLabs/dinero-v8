@@ -220,9 +220,9 @@ QString peerHostFromEndpoint(const QString& endpoint) {
 bool isDefaultBootstrapPeerHost(const QString& host) {
   static const QSet<QString> bootstrapPeers{
       "172.93.160.131",
-      "173.249.195.59",
       "173.249.200.59",
-      "96.9.226.98",
+      "172.93.167.32",
+      "92.118.190.62",
   };
   return bootstrapPeers.contains(host.trimmed());
 }
@@ -231,9 +231,9 @@ QString peerLocationLabel(const QString& endpoint, int peerIndex) {
   const QString host = peerHostFromEndpoint(endpoint);
   static const QHash<QString, QString> knownSeedRegions{
       {"172.93.160.131", "US-West"},
-      {"173.249.195.59", "US-East"},
       {"173.249.200.59", "US-West"},
-      {"96.9.226.98", "Canada"},
+      {"172.93.167.32", "North America"},
+      {"92.118.190.62", "Europe"},
   };
 
   const QString known = knownSeedRegions.value(host);
@@ -347,7 +347,7 @@ QString p2pPortMapAllowedKey() {
 }
 
 // ─────── SV2 pool miner (dinero-sv2-miner) ───────
-// Defaults point at the reference pool on LA. Users override via Settings
+// Defaults point at the reference pool on SJ. Users override via Settings
 // or via DINERO_SV2_* env vars for custom pools.
 
 QString sv2MinerBinaryName() {
@@ -361,22 +361,32 @@ QString sv2MinerBinaryName() {
 QString sv2MinerSettingsKey() { return "mining/sv2_miner_path"; }
 QString sv2MinerEnvVar()      { return "DINERO_SV2_MINER_PATH"; }
 
-QString sv2PoolEndpointDefault()       { return "172.93.160.131:4444"; }
+QString sv2PoolEndpointDefault()       { return "173.249.200.59:4444"; }
 QString sv2PoolServerPubkeyDefault()   {
-  return "17fc0efc6f937f3dd070b9d79da8b387f05a68598ecfd646db65735be5477f5f";
+  return "bcaa90dba639e2d57baa4c6de8c88647a82f02669cb0395f0d9a44c0e4ec2931";
 }
 
 QString sv2PoolEndpoint() {
   const QString envOverride = qEnvironmentVariable("DINERO_SV2_POOL");
   if (!envOverride.isEmpty()) return envOverride.trimmed();
-  const QString saved = QSettings().value("mining/sv2_endpoint").toString().trimmed();
+  QSettings settings;
+  QString saved = settings.value("mining/sv2_endpoint").toString().trimmed();
+  if (saved.startsWith("172.93.160.131")) {
+    settings.remove("mining/sv2_endpoint");
+    saved.clear();
+  }
   return saved.isEmpty() ? sv2PoolEndpointDefault() : saved;
 }
 
 QString sv2PoolServerPubkey() {
   const QString envOverride = qEnvironmentVariable("DINERO_SV2_SERVER_PUBKEY");
   if (!envOverride.isEmpty()) return envOverride.trimmed();
-  const QString saved = QSettings().value("mining/sv2_server_pubkey").toString().trimmed();
+  QSettings settings;
+  QString saved = settings.value("mining/sv2_server_pubkey").toString().trimmed();
+  if (saved.startsWith("17fc0efc")) {
+    settings.remove("mining/sv2_server_pubkey");
+    saved.clear();
+  }
   return saved.isEmpty() ? sv2PoolServerPubkeyDefault() : saved;
 }
 
@@ -12032,9 +12042,9 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
     args << "--portmap=auto";
   }
   args << "-addnode=172.93.160.131:20999";
-  args << "-addnode=173.249.195.59:20999";
   args << "-addnode=173.249.200.59:20999";
-  args << "-addnode=96.9.226.98:20999";
+  args << "-addnode=172.93.167.32:20999";
+  args << "-addnode=92.118.190.62:20999";
 
   qDebug() << "Starting daemon:" << dinerodPath << args << "showFeedback=" << showFeedback
            << "openLogWindow=" << openLogWindow;
