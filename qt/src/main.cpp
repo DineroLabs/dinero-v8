@@ -566,11 +566,14 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
     // request UPnP/NAT-PMP mapping from the same early launcher used at app boot.
     appendDaemonNetworkArgs(args);
 
-    // CRITICAL: Add seed nodes so daemon can connect to network
-    args << "-addnode=172.93.160.131:20999";
-    args << "-addnode=173.249.195.59:20999";
-    args << "-addnode=173.249.200.59:20999";
-    args << "-addnode=96.9.226.98:20999";
+    // CRITICAL: Add seed nodes so daemon can connect to network.
+    // Live fleet as of 2026-06-08: LA, SJ, NA, EU1. (VA 173.249.195.59 and
+    // CN 96.9.226.98 retired 2026-06-07.) Matches the DNS seed set
+    // (seed1->LA, seed2->SJ, seed3->NA, seed->EU1).
+    args << "-addnode=172.93.160.131:20999";  // LA
+    args << "-addnode=173.249.200.59:20999";  // SJ
+    args << "-addnode=172.93.167.32:20999";   // NA
+    args << "-addnode=92.118.190.62:20999";   // EU1
 
     // Track C: Liquidity Vault. Daemon defaults are vault=1 and
     // (as of v2.1.29) shadow=0 — credits open for real once a
@@ -760,10 +763,11 @@ int main(int argc, char** argv) {
       }
       wipeArgs << "--wipe-stale-chain";
       appendDaemonNetworkArgs(wipeArgs);
-      wipeArgs << "-addnode=172.93.160.131:20999";
-      wipeArgs << "-addnode=173.249.195.59:20999";
-      wipeArgs << "-addnode=173.249.200.59:20999";
-      wipeArgs << "-addnode=96.9.226.98:20999";
+      // Live fleet: LA, SJ, NA, EU1 (VA + CN retired 2026-06-07).
+      wipeArgs << "-addnode=172.93.160.131:20999";  // LA
+      wipeArgs << "-addnode=173.249.200.59:20999";  // SJ
+      wipeArgs << "-addnode=172.93.167.32:20999";   // NA
+      wipeArgs << "-addnode=92.118.190.62:20999";   // EU1
 
       daemonProcess = new QProcess();
       daemonProcess->start(daemonPath, wipeArgs);
