@@ -39,7 +39,8 @@ bool AssumeUtxoLifecycle::OnSnapshotLoaded(const uint256& base_block, uint32_t b
 
 bool AssumeUtxoLifecycle::OnValidationStarted(TimePoint now) {
     std::lock_guard<std::mutex> lock(mu_);
-    if (state_ != State::SnapshotLoaded && state_ != State::ValidationStalled) return false;
+    if (state_ != State::SnapshotLoaded && state_ != State::ValidationStalled &&
+        state_ != State::ValidatingHistory) return false;
     state_ = State::ValidatingHistory;
     last_progress_time_ = now;
     has_progress_time_ = true;
@@ -180,7 +181,18 @@ void AssumeUtxoLifecycle::Disable() {
     std::lock_guard<std::mutex> lock(mu_);
     if (state_ == State::FatalMismatch) return;  // only OperatorReset leaves fatal
     state_ = State::Disabled;
-    Persist();
+    base_block_.SetNull();
+    base_height_ = 0;
+    current_height_ = 0;
+    missing_bodies_ = 0;
+    has_progress_time_ = false;
+    if (utxo_index_) {
+        utxo_index_->DeleteMetadata(kLifecycleStateKey);
+        utxo_index_->DeleteMetadata(kFatalReasonKey);
+        utxo_index_->DeleteMetadata(kFullyValidatedKey);
+        utxo_index_->DeleteMetadata(kLcBaseBlockKey);
+        utxo_index_->DeleteMetadata(kLcBaseHeightKey);
+    }
 }
 
 AssumeUtxoLifecycle::State AssumeUtxoLifecycle::GetState() const {
@@ -234,9 +246,13 @@ void AssumeUtxoLifecycle::Persist() {
     utxo_index_->SetMetadata(kLcBaseHeightKey, std::to_string(base_height_));
     if (state_ == State::FullyValidated) {
         utxo_index_->SetMetadata(kFullyValidatedKey, "true");
+    } else {
+        utxo_index_->DeleteMetadata(kFullyValidatedKey);
     }
     if (state_ == State::FatalMismatch) {
         utxo_index_->SetMetadata(kFatalReasonKey, fatal_reason_);
+    } else {
+        utxo_index_->DeleteMetadata(kFatalReasonKey);
     }
 }
 
