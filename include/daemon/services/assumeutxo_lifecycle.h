@@ -19,6 +19,10 @@ inline constexpr const char* kFatalReasonKey     = "assumeutxo_fatal_reason";
 inline constexpr const char* kFullyValidatedKey  = "assumeutxo_fully_validated";
 inline constexpr const char* kLcBaseBlockKey     = "assumeutxo_lc_base_block";
 inline constexpr const char* kLcBaseHeightKey    = "assumeutxo_lc_base_height";
+// Last durable validation-progress height. Written by OnBlockValidated on a
+// throttle (height % 100 == 0, or height == base height) so a restart resumes
+// from at most ~100 blocks back instead of zero.
+inline constexpr const char* kLcProgressHeightKey = "assumeutxo_lc_progress_height";
 
 // Required confirmation token for OperatorReset (spec: Operator Reset).
 inline constexpr const char* kResetToken = "RESET-ASSUMEUTXO-FATAL";
@@ -58,7 +62,11 @@ public:
 
     // Disabled -> SnapshotLoaded. Refused (returns false) in FatalMismatch.
     bool OnSnapshotLoaded(const uint256& base_block, uint32_t base_height);
-    // SnapshotLoaded -> ValidatingHistory (also re-entry from ValidationStalled).
+    // SnapshotLoaded -> ValidatingHistory. Also re-accepted in ValidatingHistory
+    // (worker restart re-arms the stall clock) and in ValidationStalled, where it
+    // re-arms the clock but the state REMAINS ValidationStalled — leaving a stall
+    // requires actual progress (OnBlockValidated), not just a worker restart.
+    // Call once per background-validation worker start.
     bool OnValidationStarted(TimePoint now);
     // Progress. In ValidationStalled, real progress recovers to ValidatingHistory.
     void OnBlockValidated(uint32_t height, TimePoint now);

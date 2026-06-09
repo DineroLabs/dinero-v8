@@ -34,6 +34,8 @@ bool AssumeUtxoLifecycle::OnSnapshotLoaded(const uint256& base_block, uint32_t b
     current_height_ = 0;
     missing_bodies_ = 0;
     Persist();
+    // Fresh load: any stale progress marker from a prior run is invalid.
+    if (utxo_index_) utxo_index_->DeleteMetadata(kLcProgressHeightKey);
     return true;
 }
 
@@ -41,6 +43,14 @@ bool AssumeUtxoLifecycle::OnValidationStarted(TimePoint now) {
     std::lock_guard<std::mutex> lock(mu_);
     if (state_ != State::SnapshotLoaded && state_ != State::ValidationStalled &&
         state_ != State::ValidatingHistory) return false;
+    if (state_ == State::ValidationStalled) {
+        // Spec (Stall Semantics): leaving validation_stalled requires actual
+        // progress. A worker restart only re-arms the stall clock; the stall
+        // stays visible until OnBlockValidated delivers a real block.
+        last_progress_time_ = now;
+        has_progress_time_ = true;
+        return true;
+    }
     state_ = State::ValidatingHistory;
     last_progress_time_ = now;
     has_progress_time_ = true;
@@ -58,6 +68,11 @@ void AssumeUtxoLifecycle::OnBlockValidated(uint32_t height, TimePoint now) {
     current_height_ = height;
     last_progress_time_ = now;
     has_progress_time_ = true;
+    // Durable progress marker, throttled (see kLcProgressHeightKey): every
+    // 100th block plus the base block itself, so restart resumes near here.
+    if (utxo_index_ && (height % 100 == 0 || height == base_height_)) {
+        utxo_index_->SetMetadata(kLcProgressHeightKey, std::to_string(height));
+    }
 }
 
 void AssumeUtxoLifecycle::OnMissingBodies(uint32_t count) {
@@ -134,6 +149,7 @@ bool AssumeUtxoLifecycle::OperatorReset(const std::string& confirm_token) {
         utxo_index_->DeleteMetadata(kFullyValidatedKey);
         utxo_index_->DeleteMetadata(kLcBaseBlockKey);
         utxo_index_->DeleteMetadata(kLcBaseHeightKey);
+        utxo_index_->DeleteMetadata(kLcProgressHeightKey);
     }
     return true;
 }
@@ -150,6 +166,11 @@ void AssumeUtxoLifecycle::RestoreFromPersistence(bool chainstate_matches_marker)
     }
     if (auto bh = utxo_index_->GetMetadata(kLcBaseHeightKey)) {
         base_height_ = static_cast<uint32_t>(std::stoul(bh.value()));
+    }
+    if (auto ph = utxo_index_->GetMetadata(kLcProgressHeightKey)) {
+        // Resume from the last durable progress marker (throttled writes mean
+        // this may trail actual progress by up to ~100 blocks).
+        current_height_ = static_cast<uint32_t>(std::stoul(ph.value()));
     }
 
     if (name == "fatal_mismatch") {
@@ -196,6 +217,7 @@ void AssumeUtxoLifecycle::Disable() {
         utxo_index_->DeleteMetadata(kFullyValidatedKey);
         utxo_index_->DeleteMetadata(kLcBaseBlockKey);
         utxo_index_->DeleteMetadata(kLcBaseHeightKey);
+        utxo_index_->DeleteMetadata(kLcProgressHeightKey);
     }
 }
 

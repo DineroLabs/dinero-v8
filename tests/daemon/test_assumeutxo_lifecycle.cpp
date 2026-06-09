@@ -277,6 +277,57 @@ TEST_F(AssumeUtxoLifecycleTest, StalledStateSurvivesRestart) {
     }
 }
 
+// Spec Stall Semantics: worker restart alone must not exit a stall — only real progress.
+TEST_F(AssumeUtxoLifecycleTest, WorkerRestartDoesNotExitStall) {
+    auto lc = MakeLifecycle(/*stall_timeout=*/1800s);
+    ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc->OnValidationStarted(t0_));
+    lc->OnBlockValidated(5, t0_ + 5s);
+    lc->Tick(t0_ + 5s + 1800s);
+    ASSERT_EQ(lc->GetState(), State::ValidationStalled);
+
+    // Worker restarts: clock re-arms, but the stall remains visible.
+    ASSERT_TRUE(lc->OnValidationStarted(t0_ + 4000s));
+    EXPECT_EQ(lc->GetState(), State::ValidationStalled);
+
+    // Only a genuinely validated block recovers.
+    lc->OnBlockValidated(6, t0_ + 4100s);
+    EXPECT_EQ(lc->GetState(), State::ValidatingHistory);
+}
+
+// Spec Persistence: validating_history resumes from the last durable progress
+// marker. Markers persist on a throttle (height % 100 == 0, or reaching base),
+// so a crash loses at most the last <100 blocks of progress, never the run.
+TEST_F(AssumeUtxoLifecycleTest, ProgressMarkerSurvivesRestart) {
+    constexpr uint32_t kTallBase = 250;  // > one throttle period
+    {
+        auto lc = MakeLifecycle();
+        ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kTallBase));
+        ASSERT_TRUE(lc->OnValidationStarted(t0_));
+        for (uint32_t h = 0; h <= 230; ++h) {
+            lc->OnBlockValidated(h, t0_ + std::chrono::seconds(h));
+        }
+    }
+    {
+        auto lc2 = MakeLifecycle();
+        lc2->RestoreFromPersistence(/*chainstate_matches_marker=*/true);
+        EXPECT_EQ(lc2->GetState(), State::ValidatingHistory);
+        // Throttle: persisted at h % 100 == 0 → last durable marker is 200, not 230.
+        EXPECT_EQ(lc2->GetStatus(t0_).current_validation_height, 200u);
+
+        // Resume and reach base: base height persists even off the %100 grid.
+        ASSERT_TRUE(lc2->OnValidationStarted(t0_ + 300s));
+        for (uint32_t h = 201; h <= kTallBase; ++h) {
+            lc2->OnBlockValidated(h, t0_ + 300s + std::chrono::seconds(h));
+        }
+    }
+    {
+        auto lc3 = MakeLifecycle();
+        lc3->RestoreFromPersistence(/*chainstate_matches_marker=*/true);
+        EXPECT_EQ(lc3->GetStatus(t0_).current_validation_height, kTallBase);
+    }
+}
+
 // Spec Required Test 5: fatal gates everything until explicit, token-confirmed reset.
 TEST_F(AssumeUtxoLifecycleTest, FatalStateRequiresExplicitReset) {
     {
