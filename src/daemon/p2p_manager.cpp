@@ -7,6 +7,7 @@
 #include "network/local_interfaces.h"      // Self-loop filter at dial time
 #include "network/quic_transport.h"        // Mainnet relay safety gate for encrypted QUIC transport
 #include "network/relay_hints_eviction.h"  // ShouldEvictByTtl / ShouldEvictByFailure
+#include "daemon/peer_send_health.h"       // issue #241/#214: stalled-peer eviction on send failures
 #include "network/relay_tls_keypair.h"     // Self-signed cert+key for the QUIC relay TLS layer
 #include "network/types.h"                 // Canonical P2P service flag assignments
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: dineroid signing
@@ -6270,7 +6271,22 @@ bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage&
     // send_message() acquires per-socket mutex internally to prevent
     // interleaved writes without blocking sends to OTHER peers.
     if (socket_fd >= 0) {
-        return send_message(socket_fd, message);
+        const bool sent = send_message(socket_fd, message);
+        // issue #241/#214: a peer whose socket stops draining makes every
+        // send burn the SO_SNDTIMEO window, and senders convoy on this
+        // socket's send mutex (two such nodes can gridlock each other
+        // mutually). Evict after a streak of failed sends: cleanup_peer
+        // closes the fd, queued senders fail fast, and the connection slot
+        // is recycled. A successful send resets the streak.
+        if (peer_info && dinero::RecordSendOutcomeShouldDisconnect(
+                             peer_info->consecutive_send_failures, sent)) {
+            std::cout << "[P2P] Evicting stalled peer " << peer_address
+                      << " after " << dinero::kMaxConsecutiveSendFailures
+                      << " consecutive send failures (socket not draining)"
+                      << std::endl;
+            disconnect_peer(peer_address);
+        }
+        return sent;
     }
     return false;
 }

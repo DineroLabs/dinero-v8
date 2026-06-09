@@ -10212,3 +10212,14 @@ if(BUILD_TESTING AND DINERO_BUILD_SEEDER)
 endif()
 
 # ═══════════════════════════════════════════════════════════════════════════
+
+# ─── issue #241/#214: stalled-peer eviction decision (peer_send_health) ─────
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_peer_send_health.cpp)
+  add_executable(test_peer_send_health
+    tests/daemon/test_peer_send_health.cpp
+  )
+  target_include_directories(test_peer_send_health PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME PeerSendHealth COMMAND test_peer_send_health)
+endif()

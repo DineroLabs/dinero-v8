@@ -70,6 +70,12 @@ struct PeerInfo {
     bool is_connected;
     int socket_fd;
 
+    // issue #241/#214: consecutive send_message() failures on this peer's
+    // socket (see daemon/peer_send_health.h). Reaching the threshold evicts
+    // the peer from send_to_peer — a socket that stops draining must not
+    // convoy senders on its send mutex forever.
+    std::atomic<uint32_t> consecutive_send_failures{0};
+
     // ========================================================================
     // PHASE C: Persistent Peer Database & Adaptive Keepalive
     // ========================================================================
@@ -166,6 +172,7 @@ struct PeerInfo {
           is_outbound(other.is_outbound),
           is_connected(other.is_connected),
           socket_fd(other.socket_fd),
+          consecutive_send_failures(other.consecutive_send_failures.load()),
           last_seen_unix(other.last_seen_unix),
           avg_latency_ms(other.avg_latency_ms),
           last_getaddr_sent(other.last_getaddr_sent),
