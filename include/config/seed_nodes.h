@@ -36,8 +36,7 @@ struct SeedNode {
  */
 const std::vector<SeedNode> MAINNET_SEED_IPS = {
     // Active production fleet (high availability). Port set dynamically from
-    // chainparams. VA/CN retired 2026-06; replaced by DineroNA + DineroEU1.
-    {"172.93.160.131", 0, "us-west", true},    // DineroLA  - Los Angeles
+    // chainparams. LA/VA/CN retired 2026-06; replaced by DineroNA + DineroEU1.
     {"173.249.200.59", 0, "us-west", true},    // DineroSJ  - San Jose (archival)
     {"172.93.167.32", 0, "us-east", true},     // DineroNA  - North America (archival)
     {"92.118.190.62", 0, "eu", true},          // DineroEU1 - Europe (archival)
@@ -86,25 +85,16 @@ const std::vector<SeedNode> REGTEST_SEED_IPS = {
  * These DNS names return A records with IP addresses of active Dinero nodes.
  * This provides decentralized peer discovery beyond hardcoded seed nodes.
  *
- * PRIMARY domain: dinerolabs.org (since 2026-06). dinero-coin.com is kept as a
- * fallback for already-deployed binaries hardcoded to it; retire it once the
- * dinerolabs.org-aware binary is fully rolled out.
+ * PRIMARY domain: dinerolabs.org (since 2026-06). Retired LA/VA/CN-era seed
+ * names are deliberately omitted so new binaries never bootstrap to dead nodes.
  */
 const std::vector<std::string> DNS_SEEDS = {
     // PRIMARY: dinerolabs.org named per-node seed subdomains — each a single-A
-    // record for one fleet node (seed->EU1, seed1->LA, seed2->SJ, seed3->NA).
-    // All four MUST be queried: `seed` is NOT a multi-A returning the fleet — it
-    // resolves to EU1 alone, so seed1/2/3 are required to reach the rest.
+    // record for one active fleet node (seed->EU1, seed2->SJ, seed3->NA).
+    // `seed1` pointed at retired LA and must not be compiled into new clients.
     "seed.dinerolabs.org",
-    "seed1.dinerolabs.org",
     "seed2.dinerolabs.org",
     "seed3.dinerolabs.org",
-    // FALLBACK: legacy dinero-coin.com, retained for back-compat with
-    // already-deployed nodes.
-    "seed1.dinero-coin.com",
-    "seed2.dinero-coin.com",
-    "seed3.dinero-coin.com",
-    "seed4.dinero-coin.com",
 };
 
 /**

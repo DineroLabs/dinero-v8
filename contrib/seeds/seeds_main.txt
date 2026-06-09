@@ -30,19 +30,19 @@
 # this list.
 #
 # ════════════════════════════════════════════════════════════════════
-# Initial v8.0.0 fleet
+# Current v8.0.0 fleet
 # ════════════════════════════════════════════════════════════════════
 #
-# Below are the 4 DineroLabs-operated fleet nodes (LA / VA / MO / CN).
-# These will rotate / expand as community-operated nodes prove
-# reliable. Per-release the maintainer should:
+# Below are the 3 DineroLabs-operated archival bridge nodes
+# (SJ / NA / EU1). LA, VA, MO, and CN were retired during the
+# June 2026 fleet migration. These will rotate / expand as
+# community-operated nodes prove reliable. Per-release the maintainer should:
 #
 #   - Verify each entry is still reachable.
 #   - Add 1-2 healthy community nodes (vetted via the operator-policy
 #     in contrib/seeds/POLICY.md when that lands).
 #   - Drop any entry that's been unreachable for >7 days.
 
-172.93.160.131:20999  # California (us-west, LA)
-173.249.195.59:20999  # Virginia (us-east, VA)
-96.9.226.98:20999     # Canada (ca-east)
-173.249.200.59:20999  # San Jose (us-west, SJ; replaced retired MO)
+173.249.200.59:20999  # San Jose (us-west, SJ)
+172.93.167.32:20999   # North America (NA, archival)
+92.118.190.62:20999   # Europe (EU1, archival)

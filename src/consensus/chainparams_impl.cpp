@@ -179,23 +179,18 @@ static ChainParams g_mainnet = {
     .defaultAssumeValid = "0000006f34bdfd52f0d61556175a3ccec56fc57428a1b04f7e012ee7e245c8a3",
     .assumeValidHeight = 13000,
 
-    // DNS Seeds: Domain names that return IP addresses of seed nodes
+    // DNS Seeds: Domain names that return IP addresses of active seed nodes.
     // DEPLOYMENT NOTE: Configure DNS A records:
-    //   seed.dinerolabs.org   -> multi-A: full fleet (LA/VA/CN/SJ)   [PRIMARY]
-    //   seed1.dinero-coin.com -> 172.93.160.131 (California)         [fallback]
-    //   seed2.dinero-coin.com -> 173.249.195.59 (Virginia)          [fallback]
-    //   seed3.dinero-coin.com -> 173.249.200.59 (SJ; was MO, retired)[fallback]
-    //   seed4.dinero-coin.com -> 96.9.226.98 (Canada)               [fallback]
+    //   seed.dinerolabs.org  -> 92.118.190.62   (EU1, archival)
+    //   seed2.dinerolabs.org -> 173.249.200.59  (SJ, archival)
+    //   seed3.dinerolabs.org -> 172.93.167.32   (NA, archival)
     //
-    // dinerolabs.org is the PRIMARY seed domain (listed first). dinero-coin.com is
-    // retained as a fallback for already-deployed binaries hardcoded to it; retire
-    // it once the dinerolabs.org-aware binary is fully rolled out.
+    // seed1.dinerolabs.org and the legacy dinero-coin.com seeds are omitted from
+    // new binaries because the LA/VA/CN-era endpoints were retired in June 2026.
     .vSeeds = {
-        "seed.dinerolabs.org",    // PRIMARY: dinerolabs.org (multi-A: full fleet)
-        "seed1.dinero-coin.com",  // fallback (legacy domain)
-        "seed2.dinero-coin.com",  // fallback (legacy domain)
-        "seed3.dinero-coin.com",  // fallback (legacy domain)
-        "seed4.dinero-coin.com",  // fallback (legacy domain)
+        "seed.dinerolabs.org",
+        "seed2.dinerolabs.org",
+        "seed3.dinerolabs.org",
     },
 
     // Fixed Seeds: hardcoded fallback IP:port combinations. Last-resort
