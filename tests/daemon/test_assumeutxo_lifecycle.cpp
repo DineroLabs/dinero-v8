@@ -294,6 +294,8 @@ TEST_F(AssumeUtxoLifecycleTest, FatalStateRequiresExplicitReset) {
         // New snapshot refused while fatal.
         EXPECT_FALSE(lc2->OnSnapshotLoaded(base_block_, kBaseHeight));
         EXPECT_EQ(lc2->GetState(), State::FatalMismatch);
+        // Spec Test 5: RPC still reports fatal=true after the refused load.
+        EXPECT_TRUE(lc2->GetStatus(t0_).fatal);
 
         // Wrong/missing token refused.
         EXPECT_FALSE(lc2->OperatorReset(""));
@@ -306,6 +308,12 @@ TEST_F(AssumeUtxoLifecycleTest, FatalStateRequiresExplicitReset) {
         EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kFatalReasonKey).has_value());
         // Reset must NOT mark the prior snapshot valid (spec: Operator Reset).
         EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kFullyValidatedKey).has_value());
+        // Spec Operator Reset: snapshot metadata + partial validation state cleared.
+        EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kLifecycleStateKey).has_value());
+        EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kLcBaseBlockKey).has_value());
+        EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kLcBaseHeightKey).has_value());
+        EXPECT_EQ(lc2->GetStatus(t0_).snapshot_base_height, 0u);
+        EXPECT_EQ(lc2->GetStatus(t0_).target_validation_height, 0u);
 
         // A fresh attempt is now permitted.
         EXPECT_TRUE(lc2->OnSnapshotLoaded(base_block_, kBaseHeight));
