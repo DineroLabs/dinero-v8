@@ -173,9 +173,38 @@ TEST_F(AssumeUtxoLifecycleTest, MissingBodiesCannotComplete) {
     EXPECT_EQ(lc->GetStatus(t0_ + 21s).missing_body_count, 3u);
 
     // After the stall window with no progress -> validation_stalled.
-    lc->Tick(t0_ + 20s + 1801s);
+    lc->Tick(t0_ + 20s + 1801s);  // stall clock runs from last OnBlockValidated (t0_+10s); this is 1811s elapsed
     EXPECT_EQ(lc->GetState(), State::ValidationStalled);
     EXPECT_FALSE(lc->GetStatus(t0_ + 20s + 1802s).history_fully_validated);
+}
+
+// Spec Required Test 3: stall transition, metadata, recovery, completion.
+TEST_F(AssumeUtxoLifecycleTest, StallIsLoudAndRecoverable) {
+    auto lc = MakeLifecycle(/*stall_timeout=*/1800s);
+    ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc->OnValidationStarted(t0_));
+    lc->OnBlockValidated(5, t0_ + 5s);
+
+    // Just under the window (clock runs from the last OnBlockValidated): still validating.
+    lc->Tick(t0_ + 5s + 1799s);
+    EXPECT_EQ(lc->GetState(), State::ValidatingHistory);
+
+    // Past the window: stalled, with machine-readable stall metadata.
+    lc->Tick(t0_ + 5s + 1800s);
+    EXPECT_EQ(lc->GetState(), State::ValidationStalled);
+    auto st = lc->GetStatus(t0_ + 5s + 1900s);
+    EXPECT_GE(st.stall_seconds, 1800);
+    EXPECT_FALSE(st.history_fully_validated);
+    EXPECT_TRUE(st.assumeutxo_active);  // snapshot may stay foreground-usable
+
+    // One real validated block recovers the stall.
+    lc->OnBlockValidated(6, t0_ + 4000s);
+    EXPECT_EQ(lc->GetState(), State::ValidatingHistory);
+
+    // Reaching base with full replay + match completes.
+    lc->OnBlockValidated(kBaseHeight, t0_ + 4100s);
+    EXPECT_TRUE(lc->OnReplayComplete(true, true, "aa", "aa", 0, t0_ + 4200s));
+    EXPECT_EQ(lc->GetState(), State::FullyValidated);
 }
 
 // replay_performed=false (today's availability+count scan) can never retire trust.
