@@ -218,6 +218,45 @@ TEST_F(AssumeUtxoLifecycleTest, AvailabilityScanAloneCannotComplete) {
     EXPECT_EQ(lc->GetState(), State::ValidatingHistory);
 }
 
+// Spec Required Test 4 (persistence half): restart preserves fully_validated.
+TEST_F(AssumeUtxoLifecycleTest, RetirementSurvivesRestart) {
+    {
+        auto lc = MakeLifecycle();
+        ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+        ASSERT_TRUE(lc->OnValidationStarted(t0_));
+        lc->OnBlockValidated(kBaseHeight, t0_ + 10s);
+        ASSERT_TRUE(lc->OnReplayComplete(true, true, "aa", "aa", 0, t0_ + 20s));
+        ASSERT_EQ(lc->GetState(), State::FullyValidated);
+        ASSERT_EQ(utxo_index_->GetMetadata(
+            assumeutxo::kFullyValidatedKey).value_or(""), "true");
+    }
+    {
+        auto lc2 = MakeLifecycle();
+        lc2->RestoreFromPersistence(/*chainstate_matches_marker=*/true);
+        EXPECT_EQ(lc2->GetState(), State::FullyValidated);
+        EXPECT_TRUE(lc2->GetStatus(t0_).history_fully_validated);
+        EXPECT_FALSE(lc2->GetStatus(t0_).assumeutxo_active);
+    }
+}
+
+// Spec Persistence rule: marker present + chainstate mismatch -> FATAL, not trust.
+TEST_F(AssumeUtxoLifecycleTest, RetirementMarkerWithMismatchedChainstateIsFatal) {
+    {
+        auto lc = MakeLifecycle();
+        ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+        ASSERT_TRUE(lc->OnValidationStarted(t0_));
+        lc->OnBlockValidated(kBaseHeight, t0_ + 10s);
+        ASSERT_TRUE(lc->OnReplayComplete(true, true, "aa", "aa", 0, t0_ + 20s));
+    }
+    {
+        auto lc2 = MakeLifecycle();
+        lc2->RestoreFromPersistence(/*chainstate_matches_marker=*/false);
+        EXPECT_EQ(lc2->GetState(), State::FatalMismatch);
+        EXPECT_TRUE(lc2->GetStatus(t0_).fatal);
+        EXPECT_NE(lc2->GetStatus(t0_).fatal_reason.find("marker"), std::string::npos);
+    }
+}
+
 // Spec Persistence: validation_stalled remains stalled across restart.
 TEST_F(AssumeUtxoLifecycleTest, StalledStateSurvivesRestart) {
     {
