@@ -634,7 +634,7 @@ TEST(RelayAutoRegister, KeepsBootstrapRelayWhenDynamicCandidatesFillBudget) {
                                                    sockets.back().client_fd(),
                                                    true, false, {});
     };
-    install_connected("173.249.195.59:20999");  // VA / bootstrap fleet relay
+    install_connected("173.249.200.59:20999");  // SJ / bootstrap fleet relay
     install_connected("8.8.10.1:20999");
     install_connected("9.9.20.2:20999");
     install_connected("13.13.30.3:20999");
@@ -644,7 +644,7 @@ TEST(RelayAutoRegister, KeepsBootstrapRelayWhenDynamicCandidatesFillBudget) {
 
     const auto endpoints = manager.test_configured_relay_endpoints();
     EXPECT_EQ(endpoints.size(), 5u);
-    EXPECT_TRUE(ContainsEndpoint(endpoints, "173.249.195.59:20999"));
+    EXPECT_TRUE(ContainsEndpoint(endpoints, "173.249.200.59:20999"));
 }
 
 TEST(RelayOrchestrator, RelayConnectAckLeavesVirtualPeerCreationToCallback) {

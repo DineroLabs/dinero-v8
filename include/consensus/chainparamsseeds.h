@@ -22,10 +22,9 @@ namespace dinero::consensus {
 // Mainnet fixed seed list (Phase D, v8 peer-discovery).
 // One entry per pre-release-curated reachable node.
 inline const std::vector<std::string> kFixedSeedsMainnet = {
-    "172.93.160.131:20999",   // California (us-west, LA)
-    "173.249.195.59:20999",   // Virginia (us-east, VA)
-    "96.9.226.98:20999",      // Canada (ca-east)
-    "173.249.200.59:20999",   // San Jose (us-west, SJ; replaced retired MO)
+    "173.249.200.59:20999",   // San Jose (us-west, SJ)
+    "172.93.167.32:20999",    // North America (NA, archival)
+    "92.118.190.62:20999",    // Europe (EU1, archival)
 };
 
 } // namespace dinero::consensus

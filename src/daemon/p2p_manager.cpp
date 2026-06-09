@@ -252,6 +252,23 @@ std::string ToLowerAscii(std::string value) {
     return value;
 }
 
+bool IsRetiredBootstrapPeer(const std::string& address, uint16_t port) {
+    if (port != 0 && port != 20999) {
+        return false;
+    }
+
+    const std::string host = ToLowerAscii(address);
+    return host == "172.93.160.131" ||      // retired LA
+           host == "173.249.195.59" ||      // retired VA
+           host == "96.9.226.98" ||         // retired CN
+           host == "72.18.214.120" ||       // retired MO
+           host == "seed1.dinerolabs.org" ||
+           host == "seed1.dinero-coin.com" ||
+           host == "seed2.dinero-coin.com" ||
+           host == "seed3.dinero-coin.com" ||
+           host == "seed4.dinero-coin.com";
+}
+
 std::string NodeIdHex(const std::array<uint8_t, 20>& node_id) {
     std::ostringstream out;
     out << std::hex << std::setfill('0');
@@ -2656,7 +2673,7 @@ void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
     }
     if (endpoints.empty()) return;
 
-    // Match peer->to_string() (e.g. "172.93.160.131:20999") against the
+    // Match peer->to_string() (e.g. "173.249.200.59:20999") against the
     // designated relay list (already lowercased). Both lowercased.
     std::string key = peer->to_string();
     std::transform(key.begin(), key.end(), key.begin(),
@@ -3769,11 +3786,9 @@ namespace {
 // at least one of these known-good fleet relays in their small registration set
 // so dynamic gossip cannot fill the whole budget with unvetted relays.
 constexpr std::pair<const char*, uint16_t> kMainnetRelayPeers[] = {
-    {"173.249.195.59", 20999},   // VA / us-east
-    {"172.93.160.131", 20999},   // LA / us-west
-    {"96.9.226.98", 20999},      // CN / ca-east
-    {"173.249.200.59", 20999},   // SJ / us-west (replaced retired MO)
-    {"162.200.227.214", 20999},  // Dell / operator relay
+    {"173.249.200.59", 20999},   // SJ / us-west
+    {"172.93.167.32", 20999},    // NA / us-east
+    {"92.118.190.62", 20999},    // EU1 / europe
 };
 }  // namespace
 
@@ -4317,6 +4332,12 @@ void P2PManager::stop() {
 }
 
 void P2PManager::add_seed_node(const std::string& address, uint16_t port) {
+    if (IsRetiredBootstrapPeer(address, port)) {
+        std::cout << "[P2P] Skipping retired bootstrap peer: "
+                  << address << ":" << port << std::endl;
+        return;
+    }
+
     bool inserted = false;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -4357,6 +4378,9 @@ bool P2PManager::remember_peer_address(const std::string& address,
                                        uint16_t port,
                                        const std::string& source_peer,
                                        uint64_t services) {
+    if (IsRetiredBootstrapPeer(address, port)) {
+        return false;
+    }
     if (IsLocalOrWildcardAddress(address) || port == 0) {
         return false;
     }
@@ -4704,6 +4728,9 @@ void P2PManager::connection_manager_loop() {
                 if (address.empty() || port == 0) {
                     return;
                 }
+                if (IsRetiredBootstrapPeer(address, port)) {
+                    return;
+                }
 
                 std::string peer_key = address + ":" + std::to_string(port);
 
@@ -4719,8 +4746,8 @@ void P2PManager::connection_manager_loop() {
                 }
 
                 // Resolve DNS seeds to IP and skip if already connected to that IP
-                // (prevents duplicate connections when both "seed1.dinero-coin.com" and
-                // its raw IP "172.93.160.131" appear in the seed list)
+                // (prevents duplicate connections when both a DNS seed and its
+                // raw IP appear in the seed list)
                 std::string resolved_ip = address;
                 struct sockaddr_in sa;
                 if (inet_pton(AF_INET, address.c_str(), &sa.sin_addr) <= 0) {
@@ -6512,7 +6539,7 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
     server_addr.sin_port = htons(port);
     
     if (inet_pton(AF_INET, address.c_str(), &server_addr.sin_addr) <= 0) {
-        // Not a raw IP address — try DNS resolution (supports seed1.dinero-coin.com etc.)
+        // Not a raw IP address — try DNS resolution (supports seed.dinerolabs.org etc.)
         struct addrinfo hints{}, *result = nullptr;
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
