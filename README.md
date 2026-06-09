@@ -133,48 +133,53 @@ These invariants prevent architectural drift and ensure that advanced features r
 
 ### **1. Start the Daemon**
 ```bash
-# Basic startup (v0.6.0+ with ephemeral ports)
-dinerod -regtest -rpcport=0 -wsport=0 -port=0
+# Foreground regtest node, using the v8 regtest RPC default (20996).
+dinerod -regtest -daemon=0 -server=1
 
-# Fixed ports (legacy)
-dinerod -regtest -rpcport=20998 -wsport=21000 -port=20999
-
-# Check nodeinfo.json for actual ports
+# The daemon writes the effective RPC/P2P/cookie paths here.
 cat ~/.dinero/regtest/nodeinfo.json
+```
+
+If you need fixed custom ports for a multi-node test, pass them explicitly:
+
+```bash
+dinerod -regtest -daemon=0 -server=1 -rpcport=20996 -port=20999
 ```
 
 ### **2. Create Your First Wallet**
 ```bash
-# Using new wallet RPC methods (v0.6.0+)
-dinero-cli wallet.create my_wallet password123
-dinero-cli wallet.load my_wallet password123
+# Create an HD wallet for this regtest datadir.
+dinero-cli -regtest wallet.createhd my_wallet
 ```
 
 ### **3. Generate Your First Address**
 ```bash
-# Generate new HD wallet address
-ADDRESS=$(dinero-cli wallet.getnewaddress)
+# Generate a wallet address. The RPC may return either a JSON string or
+# an object with an address field, depending on the active wallet backend.
+ADDRESS=$(dinero-cli -regtest wallet.getnewaddress | jq -r '.address // .')
 echo "New address: $ADDRESS"
 
 # Validate address ownership
-dinero-cli wallet.validateaddress $ADDRESS
+dinero-cli -regtest wallet.validateaddress "$ADDRESS"
 ```
 
 ### **4. Start Mining**
 ```bash
 # Set wallet-owned mining address
-dinero-cli mining.setaddress $ADDRESS
+dinero-cli -regtest mining.setaddress "$ADDRESS"
 
 # Verify mining configuration
-dinero-cli mining.getaddress
+dinero-cli -regtest mining.getaddress
 
-# Generate test blocks (regtest only)
-dinero-cli mining.generatetoaddress 10 $ADDRESS
+# Generate test blocks immediately (regtest only)
+dinero-cli -regtest generatetoaddress 10 "$ADDRESS"
 
 # Start mining with 1 thread
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "setgenerate", "params": [true, 1]}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli -regtest mining.start 1
+
+# Check status, then stop mining
+dinero-cli -regtest mining.info
+dinero-cli -regtest mining.stop
 ```
 
 ---
@@ -283,41 +288,30 @@ find data/ -name "*LOCK*" -type f -delete
 
 #### **Create New Wallet**
 ```bash
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "createwallet", "params": ["wallet_name"]}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli wallet.createhd wallet_name
 ```
 
 #### **Create Multiple Wallets**
 ```bash
 # Personal wallet
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "createwallet", "params": ["personal"]}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli wallet.createhd personal
 
 # Business wallet
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "createwallet", "params": ["business"]}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli wallet.createhd business
 ```
 
 ### **Generating Addresses**
 
 #### **Generate Single Address**
 ```bash
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "getnewaddress", "params": []}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli wallet.getnewaddress
 ```
 
 #### **Generate Multiple Addresses**
 ```bash
 # Generate 5 addresses
 for i in {1..5}; do
-  curl -s --user "__cookie__:$(cat data/.cookie)" \
-    --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "getnewaddress", "params": []}' \
-    -H 'content-type: text/plain;' http://127.0.0.1:20998/
-  echo ""
+  dinero-cli wallet.getnewaddress
 done
 ```
 
@@ -340,46 +334,33 @@ curl -s --user "__cookie__:$(cat data/.cookie)" \
 #### **Set Mining Address**
 ```bash
 # Replace YOUR_ADDRESS_HERE with your actual address
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "setminingaddress", "params": ["din1qq0nym82d00y4vuxv962mvhllmf76gcp6t2arjx"]}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli mining.setaddress YOUR_ADDRESS_HERE
 ```
 
 #### **Start Mining**
 ```bash
 # Start mining with 1 thread
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "setgenerate", "params": [true, 1]}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli mining.start 1
 
 # Start mining with 4 threads (adjust based on your CPU)
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "setgenerate", "params": [true, 4]}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli mining.start 4
 ```
 
 #### **Stop Mining**
 ```bash
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "setgenerate", "params": [false, 0]}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli mining.stop
 ```
 
 ### **Mining Monitoring**
 
 #### **Get Mining Info**
 ```bash
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "getmininginfo", "params": []}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli mining.info
 ```
 
 #### **Check Mining Status**
 ```bash
-# Quick mining status check
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "getmininginfo", "params": []}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/ | grep -o '"mining_enabled" : [^,]*'
+dinero-cli mining.info | jq '.mining // .is_mining // .mining_enabled'
 ```
 
 ---
@@ -434,9 +415,7 @@ curl -s --user "__cookie__:$(cat data/.cookie)" \
 #### **"No wallet is loaded" Error**
 ```bash
 # Solution: Create a wallet first
-curl -s --user "__cookie__:$(cat data/.cookie)" \
-  --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "createwallet", "params": ["default"]}' \
-  -H 'content-type: text/plain;' http://127.0.0.1:20998/
+dinero-cli wallet.createhd default
 ```
 
 #### **"Unauthorized" RPC Error**
@@ -572,17 +551,19 @@ export DINERO_NETWORK=mainnet
 # Start daemon
 ./build/bin/dinerod -datadir=./data -rpcport=20998 -port=20999 -daemon=0 -server=1
 
-# Create wallet
-curl -s --user "__cookie__:$(cat data/.cookie)" --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "createwallet", "params": ["my_wallet"]}' -H 'content-type: text/plain;' http://127.0.0.1:20998/
+# Create HD wallet
+./build/bin/dinero-cli -datadir=./data wallet.createhd my_wallet
 
 # Generate address
-curl -s --user "__cookie__:$(cat data/.cookie)" --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "getnewaddress", "params": []}' -H 'content-type: text/plain;' http://127.0.0.1:20998/
+ADDRESS=$(./build/bin/dinero-cli -datadir=./data wallet.getnewaddress | jq -r '.address // .')
 
 # Start mining
-curl -s --user "__cookie__:$(cat data/.cookie)" --data-binary '{"jsonrpc": "1.0", "id": "test", "method": "setgenerate", "params": [true, 1]}' -H 'content-type: text/plain;' http://127.0.0.1:20998/
+./build/bin/dinero-cli -datadir=./data mining.setaddress "$ADDRESS"
+./build/bin/dinero-cli -datadir=./data mining.start 1
 
 # Stop everything
-pkill -f "dinerod|dinero-"
+./build/bin/dinero-cli -datadir=./data mining.stop
+pkill -f "dinerod"
 ```
 
 ---
