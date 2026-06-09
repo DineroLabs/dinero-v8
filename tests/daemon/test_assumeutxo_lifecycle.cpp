@@ -124,6 +124,38 @@ TEST_F(AssumeUtxoLifecycleTest, DisableClearsStaleTrustMarker) {
     EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kFullyValidatedKey).has_value());
 }
 
+// Spec Required Test 1: load-time gates pass, genesis replay does not match.
+TEST_F(AssumeUtxoLifecycleTest, PoisonedSnapshotIsFatal) {
+    {
+        auto lc = MakeLifecycle();
+        ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+        ASSERT_TRUE(lc->OnValidationStarted(t0_));
+        lc->OnBlockValidated(kBaseHeight, t0_ + 10s);
+
+        // Replay recomputed a different commitment than the snapshot committed.
+        EXPECT_FALSE(lc->OnReplayComplete(/*replay_performed=*/true,
+                                          /*commitment_match=*/false,
+                                          "deadbeef", "cafebabe", 0, t0_ + 20s));
+        EXPECT_EQ(lc->GetState(), State::FatalMismatch);
+
+        const auto st = lc->GetStatus(t0_ + 21s);
+        EXPECT_TRUE(st.fatal);
+        EXPECT_FALSE(st.history_fully_validated);
+        // Log/RPC must carry both commitments (spec: Fatal Mismatch item 5).
+        EXPECT_NE(st.fatal_reason.find("deadbeef"), std::string::npos);
+        EXPECT_NE(st.fatal_reason.find("cafebabe"), std::string::npos);
+        EXPECT_NE(st.fatal_reason.find(base_block_.GetHex()), std::string::npos);
+    }
+    // Restart preserves fatal_mismatch (spec: Persistence).
+    {
+        auto lc2 = MakeLifecycle();
+        lc2->RestoreFromPersistence(/*chainstate_matches_marker=*/true);
+        EXPECT_EQ(lc2->GetState(), State::FatalMismatch);
+        EXPECT_TRUE(lc2->GetStatus(t0_).fatal);
+        EXPECT_FALSE(lc2->GetStatus(t0_).fatal_reason.empty());
+    }
+}
+
 }  // namespace dinero
 
 int main(int argc, char** argv) {
