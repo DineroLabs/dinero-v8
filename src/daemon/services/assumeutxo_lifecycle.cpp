@@ -169,9 +169,13 @@ void AssumeUtxoLifecycle::RestoreFromPersistence(bool chainstate_matches_marker)
         return;
     }
     if (name == "snapshot_loaded") { state_ = State::SnapshotLoaded; return; }
-    if (name == "validating_history" || name == "validation_stalled") {
-        // Resume as validating; worker restart re-establishes progress + stall clock.
+    if (name == "validating_history") {
         state_ = State::ValidatingHistory;
+        return;
+    }
+    if (name == "validation_stalled") {
+        // Spec (Persistence): stalled remains stalled until progress resumes.
+        state_ = State::ValidationStalled;
         return;
     }
     // Unknown value: leave Disabled.

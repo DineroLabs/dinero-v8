@@ -218,6 +218,26 @@ TEST_F(AssumeUtxoLifecycleTest, AvailabilityScanAloneCannotComplete) {
     EXPECT_EQ(lc->GetState(), State::ValidatingHistory);
 }
 
+// Spec Persistence: validation_stalled remains stalled across restart.
+TEST_F(AssumeUtxoLifecycleTest, StalledStateSurvivesRestart) {
+    {
+        auto lc = MakeLifecycle(/*stall_timeout=*/1800s);
+        ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+        ASSERT_TRUE(lc->OnValidationStarted(t0_));
+        lc->OnBlockValidated(5, t0_ + 5s);
+        lc->Tick(t0_ + 5s + 1800s);
+        ASSERT_EQ(lc->GetState(), State::ValidationStalled);
+    }
+    {
+        auto lc2 = MakeLifecycle();
+        lc2->RestoreFromPersistence(/*chainstate_matches_marker=*/true);
+        EXPECT_EQ(lc2->GetState(), State::ValidationStalled);
+        // Real progress still recovers after restart.
+        lc2->OnBlockValidated(6, t0_ + 4000s);
+        EXPECT_EQ(lc2->GetState(), State::ValidatingHistory);
+    }
+}
+
 }  // namespace dinero
 
 int main(int argc, char** argv) {
