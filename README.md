@@ -9,6 +9,10 @@ This is the canonical Dinero source repository.
 Dinero v8 is the current release lane for the daemon, CLI, Qt desktop wallet,
 NodeCore mobile runtime, bridge/proof serving, and mining components.
 
+If you are not building from source, start with [START_HERE.md](START_HERE.md)
+or the current release page. The root file list is for developers and operators
+working directly with the v8 source tree.
+
 ## Current Downloads
 
 Use the latest `v8.0.0-rc*` release from:
