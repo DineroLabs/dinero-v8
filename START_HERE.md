@@ -41,3 +41,4 @@ under `docs/archive/public-snapshot/` so the repository root stays readable.
 - Current downloads: https://github.com/DineroLabs/dinero-v8/releases
 - Website: https://dinerolabs.org
 - Explorer: https://explorer.realmoneyforfreepeople.org/
+- Wiki source: [docs/wiki/](docs/wiki/)
