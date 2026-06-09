@@ -33,8 +33,19 @@ cleanup() {
     [[ -n "${PID_B}" ]] && kill "${PID_B}" 2>/dev/null || true
     pkill -f "dinerod.*${DATA_A}" 2>/dev/null || true
     pkill -f "dinerod.*${DATA_B}" 2>/dev/null || true
+    for pid in "${PID_A}" "${PID_B}"; do
+        [[ -n "${pid}" ]] || continue
+        for _ in $(seq 1 20); do
+            kill -0 "${pid}" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -9 "${pid}" 2>/dev/null || true
+    done
     if [[ "${KEEP_ON_FAIL}" != "1" ]]; then
-        rm -rf "${DATA_A}" "${DATA_B}" "${LOG_A}" "${LOG_B}"
+        for _ in $(seq 1 5); do
+            rm -rf "${DATA_A}" "${DATA_B}" "${LOG_A}" "${LOG_B}" && break
+            sleep 0.2
+        done
     fi
 }
 trap cleanup EXIT

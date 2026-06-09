@@ -29,7 +29,7 @@ ConfigManager::ConfigManager() {
     defaults_["p2p_home_ip"] = "";      // Home IP address (to be configured)
     defaults_["p2p_external_port"] = "20999";  // External port for port forwarding
     defaults_["p2p_max_connections"] = "125";
-    defaults_["p2p_seed_nodes"] = "seed1.dinero-coin.com:20999,seed2.dinero-coin.com:20999,seed3.dinero-coin.com:20999,seed4.dinero-coin.com:20999";
+    defaults_["p2p_seed_nodes"] = "seed.dinerolabs.org:20999,seed2.dinerolabs.org:20999,seed3.dinerolabs.org:20999";
 }
 
 ConfigManager::~ConfigManager() {
@@ -209,4 +209,4 @@ std::vector<std::pair<std::string, uint16_t>> ConfigManager::getSeedNodes() cons
 // Global config manager instance
 ConfigManager g_config;
 
-} // namespace dinero 
+} // namespace dinero
