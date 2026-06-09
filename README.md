@@ -570,13 +570,13 @@ pkill -f "dinerod"
 
 ## What You Have Running
 
-At this point your local Dinero v8 node can:
+At this point you have exercised the core Dinero v8 daemon/CLI flow:
 
-- Mine CPU blocks in regtest
 - Generate wallet receive addresses
 - Create and manage HD wallets
-- Report chain, wallet, network, and mining status
-- Exercise the same daemon/CLI surfaces used by the v8 release line
+- Check chain, wallet, network, and mining status
+- Run local test mining when using regtest
+- Use the same RPC surfaces that the mainnet v8 release line exposes
 
 For mainnet or operator deployments, use the current signed release candidate
 from the Dinero v8 releases page and verify the published checksums.
