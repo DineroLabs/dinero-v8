@@ -117,46 +117,45 @@ Function EnsureVCRedist
     Abort
 FunctionEnd
 
-Function MaybeConfigureSnapshot
-  ; On fresh installs, lay down a default dinero.conf and copy the bundled
-  ; AssumeUTXO snapshot into the datadir so dinerod fast-syncs from the
-  ; compiled-in trust anchor (height 33048) instead of a from-genesis IBD.
+Function MaybeConfigureServerConfig
+  ; On fresh installs, lay down a default dinero.conf. Server/operator nodes
+  ; default to from-genesis validation; AssumeUTXO remains an explicit opt-in.
   ;
   ; Strict no-op on upgrades / configured operators:
   ;   - If $AppDataDir\dinero.conf already exists, leave it alone.
   ;   - If $AppDataDir\blockchain\ already has files, the operator chose
   ;     to start from genesis previously — don't second-guess that.
   ;
-  ; The snapshot file is staged into $INSTDIR by File /r, then moved to
-  ; $AppDataDir (the daemon's datadir) so it survives uninstall alongside
-  ; chain state, peers.dat, wallets, etc. The $INSTDIR copy is removed at
-  ; the end either way — it lived there only as installer payload.
+  ; If the installer was built with an optional snapshot payload, copy it into
+  ; the daemon datadir and write a commented opt-in line. The staged $INSTDIR
+  ; copy is removed at the end either way; it lived there only as installer
+  ; payload.
 
   IfFileExists "$AppDataDir\dinero.conf" snapshot_cleanup 0
   IfFileExists "$AppDataDir\blockchain\*.*" snapshot_cleanup 0
-  IfFileExists "$INSTDIR\utxo-snapshot-33048.dat" 0 snapshot_cleanup
 
-  DetailPrint "Copying AssumeUTXO snapshot to $AppDataDir..."
-  CopyFiles /SILENT "$INSTDIR\utxo-snapshot-33048.dat" "$AppDataDir\utxo-snapshot-33048.dat"
+  IfFileExists "$INSTDIR\utxo-snapshot-33048.dat" 0 write_config
+    DetailPrint "Copying optional AssumeUTXO snapshot to $AppDataDir..."
+    CopyFiles /SILENT "$INSTDIR\utxo-snapshot-33048.dat" "$AppDataDir\utxo-snapshot-33048.dat"
 
-  IfFileExists "$AppDataDir\utxo-snapshot-33048.dat" 0 snapshot_cleanup
-
-  DetailPrint "Writing $AppDataDir\dinero.conf (fast-sync via AssumeUTXO)..."
+write_config:
+  DetailPrint "Writing $AppDataDir\dinero.conf (full validation default)..."
   FileOpen $0 "$AppDataDir\dinero.conf" w
   FileWrite $0 "# Dinero server config -- written by Dinero-Server installer (${APP_VERSION}).$\r$\n"
   FileWrite $0 "# This file is preserved across uninstall/reinstall. Edit freely.$\r$\n"
-  FileWrite $0 "# Remove the assumeutxo_snapshot line to force a from-genesis sync.$\r$\n"
+  FileWrite $0 "# Full validation from genesis is the server default.$\r$\n"
+  FileWrite $0 "# To fast-bootstrap from a trusted snapshot, provide one explicitly and uncomment:$\r$\n"
+  FileWrite $0 "# assumeutxo_snapshot=$AppDataDir\utxo-snapshot-33048.dat$\r$\n"
   FileWrite $0 "listen=1$\r$\n"
   FileWrite $0 "rpcbind=127.0.0.1$\r$\n"
   FileWrite $0 "rpcallowip=127.0.0.1$\r$\n"
-  FileWrite $0 "assumeutxo_snapshot=$AppDataDir\utxo-snapshot-33048.dat$\r$\n"
   FileClose $0
 
-  snapshot_cleanup:
+snapshot_cleanup:
     ; The bundled snapshot lived in $INSTDIR only as installer payload.
-    ; The datadir copy (if we placed one) is the authoritative file the
-    ; daemon reads. Remove the install-dir copy so it isn't carried around
-    ; for the lifetime of the install.
+    ; The datadir copy (if we placed one) is available for operator opt-in.
+    ; Remove the install-dir copy so it is not carried around for the lifetime
+    ; of the install.
     Delete "$INSTDIR\utxo-snapshot-33048.dat"
 FunctionEnd
 
@@ -181,7 +180,7 @@ Section "Dinero Server (required)" SecCore
 
   CreateDirectory "$AppDataDir"
 
-  Call MaybeConfigureSnapshot
+  Call MaybeConfigureServerConfig
 
   ; Register dinerod as a real Windows Service. The --service flag makes
   ; dinerod enter StartServiceCtrlDispatcher(), while --datadir points the

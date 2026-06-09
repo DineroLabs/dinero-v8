@@ -11,6 +11,7 @@
 # Usage:
 #   .\packaging\windows\build-server-installer.ps1 -Version 8.0.0-rc27
 #   .\packaging\windows\build-server-installer.ps1 -Version 8.0.0-rc27 -SkipBuild
+#   .\packaging\windows\build-server-installer.ps1 -Version 8.0.0-rc27 -IncludeAssumeUTXOSnapshot
 
 [CmdletBinding()]
 param(
@@ -24,6 +25,7 @@ param(
     [string]$VcRedistPath       = '',
     [string]$SnapshotPath       = '',
     [string]$SnapshotReleaseTag = 'v8.0.0-rc28',
+    [switch]$IncludeAssumeUTXOSnapshot,
     [switch]$SkipBuild
 )
 
@@ -257,9 +259,13 @@ $vcRedist = Resolve-VcRedist
 Copy-Item $vcRedist (Join-Path $Stage 'vc_redist.x64.exe')
 Write-Host '  vc_redist.x64.exe'
 
-$snapshot = Resolve-Snapshot
-Copy-Item $snapshot (Join-Path $Stage 'utxo-snapshot-33048.dat')
-Write-Host '  utxo-snapshot-33048.dat'
+if ($IncludeAssumeUTXOSnapshot -or $SnapshotPath) {
+    $snapshot = Resolve-Snapshot
+    Copy-Item $snapshot (Join-Path $Stage 'utxo-snapshot-33048.dat')
+    Write-Host '  utxo-snapshot-33048.dat (operator opt-in payload)'
+} else {
+    Write-Host 'Skipping AssumeUTXO snapshot payload; server installs default to from-genesis validation.'
+}
 
 $totalSize = (Get-ChildItem $Stage -Recurse | Measure-Object Length -Sum).Sum
 $fileCount = (Get-ChildItem $Stage -Recurse -File).Count

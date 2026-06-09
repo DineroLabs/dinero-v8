@@ -10,25 +10,31 @@ The older private development repository remains private because its historical 
 
 ---
 
-**v3.0.0-alpha1 - Stateless Validation & Lightning Integration**
+**v8.0.0 Release Candidate Line - Monorepo Core, Qt, NodeCore, and Mining**
 
-[![Release](https://img.shields.io/badge/release-v3.0.0--alpha1-orange)](https://github.com/Trucker2827/Dinero-Coin/releases)
-[![Protocol](https://img.shields.io/badge/protocol-v3.0-blue)](docs/PROJECT_STATUS.md)
+[![Release](https://img.shields.io/badge/release-v8.0.0--rc-blue)](https://github.com/DineroLabs/dinero-v8/releases)
+[![Protocol](https://img.shields.io/badge/protocol-v8.0-blue)](docs/PROJECT_STATUS.md)
 [![Tests](https://img.shields.io/badge/tests-65%2F65-brightgreen)](docs/consensus/)
-[![Status](https://img.shields.io/badge/status-alpha-orange)](docs/V3_ALPHA1_CUT_CRITERIA.md)
+[![Status](https://img.shields.io/badge/status-release--candidate-blue)](https://github.com/DineroLabs/dinero-v8/releases)
 [![Wallet Safety](https://img.shields.io/badge/wallet-exchange--grade-gold)](docs/wallet/WALLET_CHAOS_TEST_RESULTS.md)
 
 A real, mineable cryptocurrency with **stateless validation (Utreexo), Lightning integration, mobile support**, and **100+ formally verified protocol properties**.
 
-### What's New in v3.0
+### v8 Sync Defaults
 
-- 🎯 **Stateless Validation** - Full nodes without UTXO database (Utreexo)
-- 🌐 **Proof Network** - Efficient proof distribution (cache, routing, gossip, compression)
-- ⚡ **Lightning Integration** - Stateless watchtower, proof-based channel validation
-- 📱 **Mobile Profile** - Compiler-enforced resource limits for iOS/Android
-- 🔄 **Sync Validation** - Resumable sync, cache eviction handling, network partition recovery
+- **Server / operator nodes (`dinerod`)** default to full validation from genesis.
+- **AssumeUTXO snapshot bootstrap** is available as an explicit fast-sync opt-in via configuration or RPC.
+- **Mobile NodeCore / DineroDPI local validation** may use a bundled snapshot anchor for viable phone UX, then validates forward with headers, chainwork, Utreexo roots, and accumulator state.
 
-**Protocol Status:** [PROJECT_STATUS.md](docs/PROJECT_STATUS.md) - All v3.0 phases complete ✅
+### What's New in v8
+
+- 🎯 **Utreexo validation** - Local validation with compact accumulator state
+- 🌐 **Bridge proof network** - Historical Utreexo proof serving for mobile clients
+- ⛏️ **Solo and SV2 mining** - CPU/GPU solo mining plus SV2 pool mining backends
+- 📱 **Mobile local node profile** - Snapshot-assisted bootstrap for phone-hosted validation
+- 🔄 **Release-lane consolidation** - Daemon, CLI, Qt, NodeCore, and miners in the v8 monorepo
+
+**Protocol Status:** [PROJECT_STATUS.md](docs/PROJECT_STATUS.md)
 
 ## 📋 Table of Contents
 
@@ -80,7 +86,7 @@ DineroCoin v2.0.1 marks the **completion and sealing** of the protocol core thro
 ### Key Resources
 
 - 📖 **[Release Notes](RELEASE_v2.0.1_DRAFT.md)** - Comprehensive documentation
-- 🔍 **[GitHub Release](https://github.com/Trucker2827/Dinero-Coin/releases/tag/v2.0.1-dinero-rings)** - Official release page
+- 🔍 **Historical v2 release material** - superseded by the v8 release lane
 - 📚 **[Ring Documentation](docs/consensus/)** - All ring specifications
 - 🔒 **[Ring 7 Semantics](docs/consensus/RING7_SCRIPT_SEMANTICS.md)** - Frozen script semantics
 - 📝 **[Governance Model](docs/consensus/RING8_GOVERNANCE.md)** - Change management
@@ -88,9 +94,8 @@ DineroCoin v2.0.1 marks the **completion and sealing** of the protocol core thro
 ### Independent Verification
 
 ```bash
-git clone https://github.com/Trucker2827/Dinero-Coin.git
-cd Dinero-Coin
-git checkout v2.0.1-dinero-rings
+git clone https://github.com/DineroLabs/dinero-v8.git
+cd dinero-v8
 cmake -S . -B build && cmake --build build
 ctest --test-dir build -R "Ring" --output-on-failure
 # Expected: 46/46 tests passed (100%)
@@ -645,14 +650,13 @@ You now have a **REAL, WORKING cryptocurrency** that you can:
 
 ## 📞 Support & Community
 
-- **GitHub Repository:** https://github.com/Trucker2827/Dinero-Coin
-- **Issue Tracker:** https://github.com/Trucker2827/Dinero-Coin/issues
+- **GitHub Repository:** https://github.com/DineroLabs/dinero-v8
+- **Issue Tracker:** https://github.com/DineroLabs/dinero-v8/issues
 - **Documentation:** https://docs.dinero-coin.com
 - **Security:** security@dinero-coin.com
 
 ---
 
-*Last updated: January 11, 2026*
-*DineroCoin Version: **v3.0.0-alpha1** (Stateless Validation & Lightning Integration)*
-*⚠️ Alpha Release - Testnet Use Only*
-*Release: [v3.0.0-alpha1](https://github.com/Trucker2827/Dinero-Coin/releases) (pending)*
+*Last updated: June 9, 2026*
+*Dinero Version: **v8.0.0 release candidate line***
+*Release artifacts: [DineroLabs/dinero-v8 releases](https://github.com/DineroLabs/dinero-v8/releases)*
