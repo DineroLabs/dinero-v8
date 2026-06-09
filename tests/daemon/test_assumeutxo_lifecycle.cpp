@@ -156,6 +156,39 @@ TEST_F(AssumeUtxoLifecycleTest, PoisonedSnapshotIsFatal) {
     }
 }
 
+// Spec Required Test 2: missing bodies are never success.
+TEST_F(AssumeUtxoLifecycleTest, MissingBodiesCannotComplete) {
+    auto lc = MakeLifecycle(/*stall_timeout=*/1800s);
+    ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc->OnValidationStarted(t0_));
+    lc->OnBlockValidated(10, t0_ + 10s);
+
+    // Scan finished but 3 bodies were unavailable; commitment "matched" anyway.
+    EXPECT_FALSE(lc->OnReplayComplete(/*replay_performed=*/true,
+                                      /*commitment_match=*/true,
+                                      "aa", "aa",
+                                      /*missing_body_count=*/3, t0_ + 20s));
+    EXPECT_EQ(lc->GetState(), State::ValidatingHistory);
+    EXPECT_FALSE(lc->GetStatus(t0_ + 21s).history_fully_validated);
+    EXPECT_EQ(lc->GetStatus(t0_ + 21s).missing_body_count, 3u);
+
+    // After the stall window with no progress -> validation_stalled.
+    lc->Tick(t0_ + 20s + 1801s);
+    EXPECT_EQ(lc->GetState(), State::ValidationStalled);
+    EXPECT_FALSE(lc->GetStatus(t0_ + 20s + 1802s).history_fully_validated);
+}
+
+// replay_performed=false (today's availability+count scan) can never retire trust.
+TEST_F(AssumeUtxoLifecycleTest, AvailabilityScanAloneCannotComplete) {
+    auto lc = MakeLifecycle();
+    ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc->OnValidationStarted(t0_));
+    lc->OnBlockValidated(kBaseHeight, t0_ + 10s);
+    EXPECT_FALSE(lc->OnReplayComplete(/*replay_performed=*/false,
+                                      /*commitment_match=*/true, "aa", "aa", 0, t0_ + 20s));
+    EXPECT_EQ(lc->GetState(), State::ValidatingHistory);
+}
+
 }  // namespace dinero
 
 int main(int argc, char** argv) {
