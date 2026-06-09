@@ -3046,6 +3046,34 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_metadata_lifecycle.cp
   message(STATUS "✅ AssumeUTXO metadata lifecycle test enabled")
 endif()
 
+# AssumeUTXO fatal-state-machine lifecycle tests (docs/design/assumeutxo-fatal-state-machine.md)
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_lifecycle.cpp)
+  add_executable(test_assumeutxo_lifecycle
+    tests/daemon/test_assumeutxo_lifecycle.cpp
+    src/daemon/services/assumeutxo_lifecycle.cpp
+  )
+  add_dependencies(test_assumeutxo_lifecycle gtest)
+  target_link_libraries(test_assumeutxo_lifecycle PRIVATE
+    dinero_chainstate
+    dinero_wallet
+    gtest
+    sqlite3
+    ${CMAKE_DL_LIBS}
+  )
+  link_zstd_if_needed(test_assumeutxo_lifecycle)
+  target_include_directories(test_assumeutxo_lifecycle PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  add_test(NAME AssumeUtxoLifecycle COMMAND test_assumeutxo_lifecycle)
+  set_tests_properties(AssumeUtxoLifecycle PROPERTIES
+    LABELS "daemon;assumeutxo;state-machine"
+    TIMEOUT 60
+  )
+  message(STATUS "✅ AssumeUTXO lifecycle state-machine test enabled")
+endif()
+
 # Doctor Diagnostic Command Tests (Phase 4)
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_doctor.cpp)
   add_executable(test_doctor
