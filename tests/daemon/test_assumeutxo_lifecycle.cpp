@@ -277,6 +277,41 @@ TEST_F(AssumeUtxoLifecycleTest, StalledStateSurvivesRestart) {
     }
 }
 
+// Spec Required Test 5: fatal gates everything until explicit, token-confirmed reset.
+TEST_F(AssumeUtxoLifecycleTest, FatalStateRequiresExplicitReset) {
+    {
+        auto lc = MakeLifecycle();
+        ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+        ASSERT_TRUE(lc->OnValidationStarted(t0_));
+        lc->OnReplayComplete(true, /*commitment_match=*/false, "aa", "bb", 0, t0_ + 10s);
+        ASSERT_EQ(lc->GetState(), State::FatalMismatch);
+    }
+    {
+        auto lc2 = MakeLifecycle();
+        lc2->RestoreFromPersistence(true);
+        ASSERT_EQ(lc2->GetState(), State::FatalMismatch);
+
+        // New snapshot refused while fatal.
+        EXPECT_FALSE(lc2->OnSnapshotLoaded(base_block_, kBaseHeight));
+        EXPECT_EQ(lc2->GetState(), State::FatalMismatch);
+
+        // Wrong/missing token refused.
+        EXPECT_FALSE(lc2->OperatorReset(""));
+        EXPECT_FALSE(lc2->OperatorReset("yes"));
+        EXPECT_EQ(lc2->GetState(), State::FatalMismatch);
+
+        // Correct token resets to Disabled and clears persisted fatal state.
+        EXPECT_TRUE(lc2->OperatorReset(assumeutxo::kResetToken));
+        EXPECT_EQ(lc2->GetState(), State::Disabled);
+        EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kFatalReasonKey).has_value());
+        // Reset must NOT mark the prior snapshot valid (spec: Operator Reset).
+        EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kFullyValidatedKey).has_value());
+
+        // A fresh attempt is now permitted.
+        EXPECT_TRUE(lc2->OnSnapshotLoaded(base_block_, kBaseHeight));
+    }
+}
+
 }  // namespace dinero
 
 int main(int argc, char** argv) {
