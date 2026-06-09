@@ -568,16 +568,18 @@ pkill -f "dinerod"
 
 ---
 
-## 🚀 **Congratulations!**
+## What You Have Running
 
-You now have a **REAL, WORKING cryptocurrency** that you can:
-- ✅ **Mine** with your CPU
-- ✅ **Generate addresses** for receiving coins
-- ✅ **Create wallets** for managing funds
-- ✅ **Monitor** blockchain status
-- ✅ **Use** just like Bitcoin!
+At this point your local Dinero v8 node can:
 
-**Your Dinero system is production-ready and follows all the same security standards as major cryptocurrencies!** 🎉
+- Mine CPU blocks in regtest
+- Generate wallet receive addresses
+- Create and manage HD wallets
+- Report chain, wallet, network, and mining status
+- Exercise the same daemon/CLI surfaces used by the v8 release line
+
+For mainnet or operator deployments, use the current signed release candidate
+from the Dinero v8 releases page and verify the published checksums.
 
 ---
 
