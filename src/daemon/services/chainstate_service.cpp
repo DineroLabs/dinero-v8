@@ -11881,7 +11881,26 @@ void ChainstateService::BackgroundValidationWorker() {
             // with a fresh engine. Replaying from 0 each pass is acceptable:
             // passes beyond the first only happen while bodies are missing,
             // and the final (complete) pass is the one whose digest counts.
-            replay.emplace();
+            try {
+                replay.emplace();
+            } catch (const std::exception& e) {
+                // Engine construction failure (e.g. the :memory: nullifier
+                // sqlite open under fd exhaustion) is a transient LOCAL
+                // resource problem — operational retry, NOT proof that the
+                // snapshot cannot be trusted. Mirror the missing-bodies wait.
+                logger_->warning(std::string("[BackgroundValidation] replay engine "
+                                 "construction failed (") + e.what() +
+                                 ") — operational, retrying next pass in 30s");
+                for (int i = 0; i < 30 && !bg_validation_should_stop_; ++i) {
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+                assumeutxo_lifecycle_->Tick(std::chrono::steady_clock::now());
+                if (bg_validation_should_stop_) {
+                    OnBackgroundValidationComplete(false, "Validation stopped by user");
+                    return;
+                }
+                continue;
+            }
             replay_poisoned = false;
             replay_poison_reason.clear();
             for (uint32_t height = 0; height <= target_height; ++height) {
@@ -11962,6 +11981,9 @@ void ChainstateService::BackgroundValidationWorker() {
             if (blocks_skipped == 0) break;
 
             assumeutxo_lifecycle_->OnMissingBodies(blocks_skipped);
+            // Release the partially-fed replay set (up to ~30MB at mainnet
+            // scale) during the backfill wait; the next pass re-creates it.
+            replay.reset();
             logger_->warning("[BackgroundValidation] " + std::to_string(blocks_skipped) +
                              "/" + std::to_string(target_height + 1) +
                              " bodies unavailable — waiting for backfill (spec: missing"
