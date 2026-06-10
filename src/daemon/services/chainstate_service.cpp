@@ -2869,6 +2869,14 @@ bool ChainstateService::Start() {
             }
             assumeutxo_lifecycle_->RestoreFromPersistence(chainstate_matches);
         }
+        if (assumeutxo_lifecycle_->GetState() ==
+            assumeutxo::AssumeUtxoLifecycle::State::Disabled) {
+            // Legacy upgrade: assumed state persisted by a pre-lifecycle binary
+            // has no lifecycle record. Enter the machine now so a later
+            // mismatch can persist fatal_mismatch (spec Fatal items 1/2/6).
+            assumeutxo_lifecycle_->OnSnapshotLoaded(restored_base_block,
+                                                    restored_base_height);
+        }
         const bool lifecycle_fatal_at_restore =
             assumeutxo_lifecycle_->GetState() ==
             assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch;
