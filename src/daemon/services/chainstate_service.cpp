@@ -8132,9 +8132,15 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
 
         logger_->info("[LoadSnapshot] Pass 1/2: Reading UTXOs and computing checksum...");
 
-        // Pass 1: Read all UTXOs into memory, computing checksum
+        // Pass 1: Read all UTXOs into memory, computing checksum.
+        // records_digest accumulates the canonical content commitment
+        // (SHA256 over sorted UTXO records, same encoding as SerializeUtxoRecord)
+        // so the replay engine can verify it after replaying genesis→base.
+        // Records are stored in the file in sorted-outpoint order (ExportSnapshot
+        // sorts before writing), so streaming order == canonical order.
         std::unordered_map<OutPoint, UTXOEntry> utxo_map;
         utxo_map.reserve(header.utxo_count);
+        consensus::StreamingUtxoDigest records_digest;
 
         for (uint64_t i = 0; i < header.utxo_count; ++i) {
             // Read txid (32 bytes, raw internal byte order)
@@ -8179,6 +8185,15 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             entry.scriptPubKey = std::move(spk);
             entry.height = height;
             entry.isCoinbase = (is_coinbase != 0);
+
+            // Accumulate content commitment BEFORE moves invalidate the fields.
+            // Parse-fidelity: TxId(temp_txid).AsUint256().data == temp_txid.data
+            // (TxId wraps uint256 by value); AmountUna::Una(v).v == v; isCoinbase
+            // bool→uint8 is 0/1, matching ExportSnapshot's exclusive 0/1 write.
+            // Using AddRecord (not AddRecordBytes) for symmetry with the replay
+            // engine's ComputeUtxoRecordsDigest which also goes through
+            // SerializeUtxoRecord — both sides normalise through the same path.
+            records_digest.AddRecord(outpoint, entry);
 
             utxo_map.emplace(std::move(outpoint), std::move(entry));
 
@@ -8256,6 +8271,10 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
 
         result.checksum_valid = true;
         logger_->info("[LoadSnapshot] Checksum verified successfully");
+
+        // Finalize the content commitment (file is valid; digest is stable here).
+        // Stored as the expected commitment for the replay engine (Task 3/7).
+        const std::string snapshot_commitment_hex = records_digest.Finalize().GetHex();
 
         std::optional<consensus::UtreexoForest> snapshot_forest;
         if (has_v3_utreexo_section) {
@@ -8351,6 +8370,24 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                 "(blockchain.resetassumeutxofatal or wipe datadir)";
             logger_->error("[LoadSnapshot] " + result.error_message);
             return result;
+        }
+
+        // Persist the expected content commitment so the replay engine (Task 7)
+        // can compare its recomputed digest after replaying genesis→base.
+        // Placed after the fatal-return gate so a mid-import fatal never strands
+        // a stale commitment. kExpectedCommitmentKey is always written; the
+        // utreexo root key is only written for v3 snapshots (v2 has no root).
+        if (utxo_index_) {
+            utxo_index_->SetMetadata(assumeutxo::kExpectedCommitmentKey,
+                                     snapshot_commitment_hex);
+            if (has_v3_utreexo_section) {
+                utxo_index_->SetMetadata(assumeutxo::kExpectedUtreexoRootKey,
+                                         utreexo_section.utreexo_root.GetHex());
+            }
+            logger_->info("[LoadSnapshot] Expected commitment persisted ("
+                         + snapshot_commitment_hex.substr(0, 16) + "..."
+                         + (has_v3_utreexo_section ? ", utreexo root stored" : ", v2 no utreexo root")
+                         + ")");
         }
 
         if (snapshot_forest.has_value()) {
