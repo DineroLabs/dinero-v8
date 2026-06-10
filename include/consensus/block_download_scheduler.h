@@ -458,13 +458,25 @@ public:
      * Register a predicate that answers "does this node already have the body
      * for (hash, height)?" — used by EnableBackfill to skip existing bodies.
      * The callback is invoked under mutex_ during EnableBackfill only.
+     *
+     * Lock-order contract: the callback is invoked under the scheduler
+     * mutex_; the callback must not re-enter the scheduler nor acquire any
+     * lock that is ever held while calling scheduler methods. The daemon
+     * wires a pure metadata probe (ChainDB point lookup + flat-file stat,
+     * no application lock) which trivially satisfies this.
      */
     void SetHasBlockBodyCallback(std::function<bool(const uint256&, uint32_t)> cb);
 
     /**
      * Queue canonical heights [start_height, end_height] whose bodies are
      * missing, for low-priority backfill.  Idempotent: re-calling with the
-     * same (range, anchor) is a no-op (progress is preserved).
+     * same (range, anchor) is a no-op (progress is preserved).  Calling with
+     * a DIFFERENT (range, anchor) while enabled first performs the full
+     * DisableBackfill cleanup — old queue entries are erased from
+     * in_flight_blocks_ before repopulating, so a direct base change with
+     * requests on the wire cannot leak in-flight slots.  A refused call
+     * (anchor not known / height mismatch) therefore also leaves backfill
+     * DISABLED, so the caller's periodic re-arm genuinely retries.
      *
      * end_anchor_hash is the trust root (the AssumeUTXO snapshot base block
      * hash): the walk anchors on THAT header by hash and follows parent
@@ -652,16 +664,28 @@ private:
     // NEVER invoked under mutex_.
     void ServiceBackfillLocked();
 
+    // DisableBackfill's body: erase the active backfill queue's hashes from
+    // in_flight_blocks_ (so the shared window stays truthful) and reset all
+    // backfill state/accounting. Caller MUST hold mutex_. Shared by
+    // DisableBackfill and by EnableBackfill's (range, anchor)-change path so
+    // a re-Enable with requests on the wire never leaks in-flight slots.
+    void DisableBackfillLocked();
+
     // Collect the header-chain entries for heights [start_height,
     // anchor->height] into out_ascending (ascending height order) with a
     // SINGLE backward walk over parent links from the CALLER-RESOLVED anchor
-    // entry. Taking the anchor entry (not a height) keeps the walk pinned to
-    // the caller's chain: EnableBackfill resolves it by the snapshot base
-    // HASH (the best chain may diverge below the base), while
-    // ScanForMissingBlocks passes the best header it already holds. One walk
-    // instead of per-height GetHeaderAtHeight() also avoids the O(n²) #241
-    // scan bug class. Caller MUST hold mutex_. Returns false if anchor is
-    // null or the range is degenerate.
+    // entry (one walk instead of per-height GetHeaderAtHeight() — avoids the
+    // O(n²) #241 scan bug class). Caller MUST hold mutex_. Returns false if
+    // anchor is null or the range is degenerate.
+    //
+    // LIFETIME CAVEAT: this walks raw HeaderIndexEntry parent pointers
+    // WITHOUT the header chain's own lock — safe only for BEST-CHAIN anchors
+    // (best-chain entries are never evicted; ScanForMissingBlocks passes
+    // GetBestHeader()). A possibly-SIDE-BRANCH anchor (the AssumeUTXO
+    // snapshot base) can be freed by HeaderChainSelector::EvictBranch from
+    // another thread mid-walk, so EnableBackfill must NOT use this — it uses
+    // HeaderChainSelector::CollectAncestorsByHash, which copies (hash,
+    // height) under the header chain's internal mutex.
     bool CollectCanonicalHeadersLocked(
         uint32_t start_height, const HeaderIndexEntry* anchor,
         std::vector<const HeaderIndexEntry*>& out_ascending) const;

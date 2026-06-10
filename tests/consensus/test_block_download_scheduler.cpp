@@ -1554,6 +1554,116 @@ int main() {
                   << std::endl;
     }
 
+    {
+        std::cout << "\n16. assumeutxo backfill: re-Enable with a different (range, anchor) "
+                     "releases the old queue's in-flight slots (no leak on a direct base "
+                     "change), and a refused re-Enable leaves backfill disabled..." << std::endl;
+
+        // Topology: genesis + heights 1..8, snapshot base = 8, tip sync idle.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 8, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(8);
+
+        std::vector<std::pair<uint256, uint32_t>> requests;  // (hash, height)
+        scheduler.SetSendGetDataCallback([&requests](const uint256& h, uint32_t height) {
+            requests.emplace_back(h, height);
+        });
+
+        scheduler.OnHeadersProcessed();  // tip sync: nothing missing
+        scheduler.EnableBackfill(1, 8, hashes[8]);
+        scheduler.Tick();  // 8 backfill bodies staged + dispatched (< max_in_flight 16)
+        if (!Require(requests.size() == 8,
+                     "case 16 setup: expected 8 backfill requests on the wire, got " +
+                         std::to_string(requests.size()))) {
+            return 1;
+        }
+        if (!Require(scheduler.GetInFlightCount() == 8,
+                     "case 16 setup: expected 8 in-flight slots before the base change")) {
+            return 1;
+        }
+
+        // ── The base change under test ─────────────────────────────────────────
+        // A reset + new (shorter) snapshot between two periodic ticks re-Enables
+        // with a different (range, anchor) WITHOUT an intervening DisableBackfill.
+        // The old 8 REQUESTED hashes are still on the wire; EnableBackfill must
+        // perform the Disable cleanup itself or those hashes leak in
+        // in_flight_blocks_ forever (the bodies will never be OnBlockReceived-
+        // routed once backfill_expected_ is rebuilt), permanently shrinking the
+        // shared download window.
+        scheduler.EnableBackfill(1, 6, hashes[6]);
+
+        auto prog = scheduler.GetBackfillProgress();
+        if (!Require(prog.enabled, "re-Enable with new anchor must enable")) return 1;
+        if (!Require(prog.end_height == 6, "re-Enable must adopt the new range")) return 1;
+        if (!Require(prog.total == 6, "new queue must cover heights 1..6")) return 1;
+
+        // (a) ZERO leaked slots: the new queue is staged but not yet dispatched,
+        // so the shared in-flight window must be completely empty.
+        if (!Require(scheduler.GetInFlightCount() == 0,
+                     "re-Enable with a different (range, anchor) leaked in-flight slots: "
+                     "expected 0, got " + std::to_string(scheduler.GetInFlightCount()))) {
+            return 1;
+        }
+        // (b) Every OLD wire hash must have left the in-flight set — including
+        // heights 7..8, which the new range does not even cover.
+        for (const auto& rq : requests) {
+            if (!Require(!scheduler.IsBlockInFlight(rq.first),
+                         "old backfill hash at height " + std::to_string(rq.second) +
+                         " still tracked in-flight after the base change")) {
+                return 1;
+            }
+        }
+
+        // (c) The next Tick services exactly the NEW queue (heights 1..6).
+        requests.clear();
+        scheduler.Tick();
+        std::vector<uint32_t> got;
+        for (const auto& rq : requests) got.push_back(rq.second);
+        std::sort(got.begin(), got.end());
+        const std::vector<uint32_t> want{1, 2, 3, 4, 5, 6};
+        if (!Require(got == want,
+                     "Tick after the base change must request exactly heights 1..6, got " +
+                         std::to_string(got.size()) + " requests")) {
+            return 1;
+        }
+
+        // ── Refused re-Enable leaves backfill DISABLED (carryover 2) ──────────
+        // Anchor exists but at the wrong height (caller-bug shape; the unknown-
+        // anchor shape behaves identically): the refusal must tear down the
+        // active queue and leave enabled == false so the periodic re-arm
+        // genuinely retries — and must release the 6 in-flight slots staged
+        // above (same no-leak contract on the refusal path).
+        scheduler.EnableBackfill(1, 7, hashes[6]);
+        if (!Require(!scheduler.GetBackfillProgress().enabled,
+                     "refused re-Enable must leave backfill disabled (retry-able)")) {
+            return 1;
+        }
+        if (!Require(scheduler.GetInFlightCount() == 0,
+                     "refused re-Enable leaked in-flight slots: expected 0, got " +
+                         std::to_string(scheduler.GetInFlightCount()))) {
+            return 1;
+        }
+        // The periodic retry then re-arms cleanly.
+        scheduler.EnableBackfill(1, 6, hashes[6]);
+        if (!Require(scheduler.GetBackfillProgress().enabled &&
+                         scheduler.GetBackfillProgress().total == 6,
+                     "periodic re-arm after a refusal must re-enable cleanly")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ base change released all 8 old in-flight slots; new queue "
+                     "serviced 1..6; refused re-Enable left backfill disabled and clean"
+                  << std::endl;
+    }
+
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
     return 0;
 }

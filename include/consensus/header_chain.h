@@ -24,6 +24,8 @@
 #include <set>
 #include <cstdint>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 namespace dinero {
 namespace consensus {
@@ -210,6 +212,31 @@ public:
      * @return Header entry, or nullptr if not found
      */
     const HeaderIndexEntry* GetHeader(const uint256& hash) const;
+
+    /**
+     * @brief Atomically resolve an anchor by hash and copy its ancestor
+     *        (hash, height) pairs for heights [start_height, anchor height],
+     *        ascending — all under the internal mutex.
+     *
+     * Exists for callers that must walk a possibly-SIDE-BRANCH anchor (the
+     * AssumeUTXO backfill base): raw HeaderIndexEntry pointers returned by
+     * GetHeader() can be freed by side-branch eviction (EvictBranch, which
+     * runs under THIS class's mutex — not the caller's) the moment this
+     * lock is released, so following parent pointers outside the lock is a
+     * use-after-free hazard. Copying under the lock removes it. Best-chain
+     * walks don't need this (best-chain entries are never evicted).
+     *
+     * @param anchor_hash      Anchor block hash (resolved by hash, never height)
+     * @param start_height     Lowest height to include
+     * @param anchor_height_out Set to the anchor's height when it exists
+     * @param out_ascending    Cleared, then filled ascending; left empty if
+     *                         start_height > anchor height
+     * @return true iff the anchor hash is known
+     */
+    bool CollectAncestorsByHash(const uint256& anchor_hash,
+                                uint32_t start_height,
+                                uint32_t& anchor_height_out,
+                                std::vector<std::pair<uint256, uint32_t>>& out_ascending) const;
 
     /**
      * @brief Get header at specific height on best chain

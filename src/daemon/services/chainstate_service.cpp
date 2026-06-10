@@ -11984,34 +11984,39 @@ void ChainstateService::BackgroundValidationWorker() {
             // are missing, so passes beyond the first are rare and bounded).
             std::vector<uint256> canonical_hashes_fallback;
             if (header_chain_selector_ && !assumeutxo_base_block_.IsNull()) {
-                const auto* anchor =
-                    header_chain_selector_->GetHeader(assumeutxo_base_block_);
-                if (!anchor) {
+                // Resolve + walk + copy under the header chain's OWN mutex
+                // (CollectAncestorsByHash): the snapshot base may be a
+                // childless side-branch tip, which EvictBranch (running under
+                // the header chain's lock on another thread when the
+                // side-branch budget is full) can free — raw GetHeader()
+                // pointers and their parent links do not survive that, so an
+                // unlocked walk here would be a use-after-free. Failure paths
+                // stay fail-safe: an unknown/mismatched anchor leaves the
+                // table empty (missing bodies skip/stall, never replay
+                // another chain).
+                uint32_t anchor_height = 0;
+                std::vector<std::pair<uint256, uint32_t>> branch;
+                const bool anchor_known =
+                    header_chain_selector_->CollectAncestorsByHash(
+                        assumeutxo_base_block_, 0, anchor_height, branch);
+                if (!anchor_known) {
                     logger_->error("[BackgroundValidation] snapshot base header " +
                                    assumeutxo_base_block_.GetHex().substr(0, 16) +
                                    "... not in header chain — fallback table empty "
                                    "(missing bodies will skip/stall, never replay "
                                    "another chain)");
-                } else if (anchor->height != target_height) {
+                } else if (anchor_height != target_height) {
                     logger_->error("[BackgroundValidation] snapshot base header " +
                                    assumeutxo_base_block_.GetHex().substr(0, 16) +
-                                   "... has height " + std::to_string(anchor->height) +
+                                   "... has height " + std::to_string(anchor_height) +
                                    " but validation target is " +
                                    std::to_string(target_height) +
                                    " — fallback table empty");
                 } else {
                     canonical_hashes_fallback.resize(
                         static_cast<size_t>(target_height) + 1);
-                    // Walk backward from the base anchor to 0 in a single
-                    // pass. Parent pointers are immutable for below-base
-                    // entries (append-only chain, no reorgs that deep) — no
-                    // locking needed here; matches the same pattern used at
-                    // ~:6520 and EnsureHeaderBranchIndexed.
-                    const auto* walk = anchor;
-                    while (walk) {
-                        canonical_hashes_fallback[walk->height] = walk->hash;
-                        if (walk->height == 0) break;
-                        walk = walk->parent;
+                    for (const auto& [hash, height] : branch) {
+                        canonical_hashes_fallback[height] = hash;
                     }
                 }
             }
