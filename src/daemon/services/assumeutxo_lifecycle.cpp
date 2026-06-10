@@ -150,6 +150,8 @@ bool AssumeUtxoLifecycle::OperatorReset(const std::string& confirm_token) {
         utxo_index_->DeleteMetadata(kLcBaseBlockKey);
         utxo_index_->DeleteMetadata(kLcBaseHeightKey);
         utxo_index_->DeleteMetadata(kLcProgressHeightKey);
+        utxo_index_->DeleteMetadata(kExpectedCommitmentKey);
+        utxo_index_->DeleteMetadata(kExpectedUtreexoRootKey);
     }
     return true;
 }
@@ -218,6 +220,8 @@ void AssumeUtxoLifecycle::Disable() {
         utxo_index_->DeleteMetadata(kLcBaseBlockKey);
         utxo_index_->DeleteMetadata(kLcBaseHeightKey);
         utxo_index_->DeleteMetadata(kLcProgressHeightKey);
+        utxo_index_->DeleteMetadata(kExpectedCommitmentKey);
+        utxo_index_->DeleteMetadata(kExpectedUtreexoRootKey);
     }
 }
 

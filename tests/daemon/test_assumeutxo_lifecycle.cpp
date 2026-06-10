@@ -465,6 +465,19 @@ TEST_F(AssumeUtxoLifecycleTest, DefaultStallTimeoutIsThirtyMinutes) {
     EXPECT_EQ(lc.GetState(), State::ValidationStalled);
 }
 
+// Reset/disable must not strand a stale expected commitment.
+TEST_F(AssumeUtxoLifecycleTest, ResetClearsExpectedCommitmentKeys) {
+    utxo_index_->SetMetadata(assumeutxo::kExpectedCommitmentKey, "aa");
+    utxo_index_->SetMetadata(assumeutxo::kExpectedUtreexoRootKey, "bb");
+    auto lc = MakeLifecycle();
+    ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc->OnValidationStarted(t0_));
+    lc->OnReplayComplete(true, false, "x", "y", 0, t0_ + 10s);
+    ASSERT_TRUE(lc->OperatorReset(assumeutxo::kResetToken));
+    EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kExpectedCommitmentKey).has_value());
+    EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kExpectedUtreexoRootKey).has_value());
+}
+
 }  // namespace dinero
 
 int main(int argc, char** argv) {
