@@ -12,9 +12,13 @@
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 
+#include <atomic>
+#include <chrono>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <thread>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -892,6 +896,133 @@ int main() {
         }
 
         std::cout << "   ✅ NOTFOUND peer skipped at height 3, retained at height 5" << std::endl;
+    }
+
+    {
+        std::cout << "\n9. issue #241/#214: a blocking send callback must not wedge other "
+                     "scheduler threads (send must happen outside mutex_)..." << std::endl;
+
+        // Live-fleet wedge signature (rc37 cold-IBD reproduction): the
+        // send_getdata callback ultimately reaches a blocking ::send() on a
+        // peer socket. If a peer stops draining its socket (half-dead
+        // connection, full 128KB send buffer), the send blocks indefinitely.
+        // When the scheduler invokes the callback while holding mutex_, that
+        // one blocked send wedges EVERY peer handler thread (OnNewBlock ->
+        // Tick) and the tick loop on the scheduler mutex: block ingest stops,
+        // the tip freezes, and the process looks healthy. Observed live:
+        // 437 OnNewBlock ENTRY vs 385 EXIT (52 threads parked), sendto()
+        // blocked across the whole sample, tip frozen at height 385.
+        //
+        // Contract under test: while one thread's send callback is parked
+        // (simulating the blocked sendto), other threads must still be able
+        // to enter the scheduler.
+        dcs::HeaderChainSelector selector;
+        try {
+            BuildLinearHeaders(selector, 8);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build linear header chain: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+
+        std::promise<void> callback_parked;
+        auto callback_parked_seen = callback_parked.get_future();
+        std::atomic<bool> release_send{false};
+        std::atomic<bool> first_send{true};
+        scheduler.SetSendGetDataCallback([&](const uint256&, uint32_t) {
+            // Park only the first send: simulates sendto() blocked forever on
+            // a peer with a full TCP send buffer.
+            if (first_send.exchange(false)) {
+                callback_parked.set_value();
+                while (!release_send.load()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            }
+        });
+
+        scheduler.OnHeadersProcessed();
+
+        std::thread ticker([&scheduler]() { scheduler.Tick(); });
+
+        bool parked = callback_parked_seen.wait_for(std::chrono::seconds(5)) ==
+                      std::future_status::ready;
+        if (!parked) {
+            release_send.store(true);
+            ticker.join();
+            if (!Require(false, "send callback was never invoked (test setup broken)")) {
+                return 1;
+            }
+        }
+
+        // A second thread (a peer handler delivering a block, the tick loop,
+        // an RPC status probe) must not be blocked behind the parked send.
+        auto probe = std::async(std::launch::async, [&scheduler]() {
+            (void)scheduler.GetInFlightCount();
+            (void)scheduler.IsFullySynchronized();
+        });
+        const bool scheduler_responsive =
+            probe.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+
+        release_send.store(true);
+        ticker.join();
+        probe.wait();
+
+        if (!Require(scheduler_responsive,
+                     "#241/#214: scheduler mutex_ must not be held across the send "
+                     "callback — one blocked peer send wedges all block ingest")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ scheduler stayed responsive while a send callback was blocked"
+                  << std::endl;
+    }
+
+    {
+        std::cout << "\n10. issue #241 perf: ScanForMissingBlocks must be linear in the "
+                     "header window (no per-height tip walk)..." << std::endl;
+
+        // Live profile on a from-genesis sync (~39k headers): the scan called
+        // GetHeaderAtHeight(h) for every missing height, and each call walked
+        // parent pointers from the best header — O(n^2) total, re-run on
+        // EVERY headers message, all under the scheduler mutex_. One core
+        // pinned at 100% in GetHeaderAtHeight; block ingest throttled to
+        // ~7 blocks/min. The scan must instead walk the header chain once.
+        //
+        // Budget: a linear scan of 60k headers is ~milliseconds. The O(n^2)
+        // version is billions of pointer derefs (seconds to minutes). 5s is
+        // >100x headroom for slow CI while still failing the quadratic scan.
+        dcs::HeaderChainSelector selector;
+        try {
+            BuildLinearHeaders(selector, 60000);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build 60k header chain: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+        scheduler.SetSendGetDataCallback([](const uint256&, uint32_t) {});
+
+        const auto t0 = std::chrono::steady_clock::now();
+        scheduler.OnHeadersProcessed();  // triggers ScanForMissingBlocks
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0);
+
+        if (!Require(scheduler.GetMissingBlockCount() == 60000,
+                     "scan must queue all 60000 missing blocks (got " +
+                         std::to_string(scheduler.GetMissingBlockCount()) + ")")) {
+            return 1;
+        }
+        if (!Require(elapsed < std::chrono::seconds(5),
+                     "ScanForMissingBlocks took " + std::to_string(elapsed.count()) +
+                         "ms for 60k headers — quadratic per-height tip walk is back")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ 60k-header scan completed in " << elapsed.count() << "ms"
+                  << std::endl;
     }
 
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;

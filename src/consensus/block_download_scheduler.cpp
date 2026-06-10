@@ -107,16 +107,54 @@ void BlockDownloadScheduler::OnBlockNotFound(const uint256& hash,
     }
 }
 
-// issue #241: build the skip-set for a getdata at block_height — every peer
-// known to lack bodies at or above this height. Caller MUST hold mutex_.
-void BlockDownloadScheduler::SetRequestSkipPeersLocked(uint32_t block_height) {
-    current_request_skip_peers_.clear();
-    if (block_height == 0) return;
-    for (const auto& kv : peer_lacks_body_at_or_below_) {
-        if (kv.second >= block_height) {
-            current_request_skip_peers_.insert(kv.first);
+// issue #241/#214: per-thread handoff slot for the skip-set of the getdata
+// currently being dispatched (read by the daemon send callback on the same
+// thread). thread_local because sends are dispatched outside mutex_.
+thread_local std::unordered_set<std::string>
+    BlockDownloadScheduler::current_request_skip_peers_;
+
+// issue #241: stage a getdata with its skip-set snapshot — every peer known
+// to lack bodies at or above this height. Caller MUST hold mutex_. The send
+// itself happens in DispatchDeferredSends(), after the lock is released
+// (issue #241/#214: a blocking peer-socket send under mutex_ wedged every
+// scheduler entry point — peer handler threads, the tick loop — freezing
+// block ingest while the process looked healthy).
+void BlockDownloadScheduler::StageGetdataLocked(const uint256& block_hash,
+                                                uint32_t block_height) {
+    DeferredGetdata deferred;
+    deferred.block_hash = block_hash;
+    deferred.height = block_height;
+    if (block_height > 0) {
+        for (const auto& kv : peer_lacks_body_at_or_below_) {
+            if (kv.second >= block_height) {
+                deferred.skip_peers.insert(kv.first);
+            }
         }
     }
+    deferred_sends_.push_back(std::move(deferred));
+}
+
+// issue #241/#214: drain staged getdata sends and invoke the network callback
+// WITHOUT holding mutex_, so a peer socket that stops draining (full send
+// buffer, half-dead connection) can only block this one dispatching thread —
+// never the scheduler itself. Caller MUST NOT hold mutex_.
+void BlockDownloadScheduler::DispatchDeferredSends() {
+    std::vector<DeferredGetdata> sends;
+    SendGetDataCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sends.swap(deferred_sends_);
+        callback = send_getdata_callback_;
+    }
+    if (!callback) {
+        return;
+    }
+    for (auto& deferred : sends) {
+        // Same-thread handoff to the callback (see CurrentRequestSkipPeers).
+        current_request_skip_peers_ = std::move(deferred.skip_peers);
+        callback(deferred.block_hash, deferred.height);
+    }
+    current_request_skip_peers_.clear();
 }
 
 bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
@@ -158,8 +196,18 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
 }
 
 void BlockDownloadScheduler::Tick() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        TickLocked();
+    }
+    // issue #241/#214: getdata sends staged by TickLocked() go out here, after
+    // mutex_ release. A peer socket that stops draining (blocking send) can
+    // then only park THIS caller thread — other peer handler threads, the
+    // tick loop, and status probes still enter the scheduler freely.
+    DispatchDeferredSends();
+}
 
+void BlockDownloadScheduler::TickLocked() {
     // FIX 2 (issue #186): central deferral. While a snapshot bootstrap is
     // pending, request no new blocks regardless of which call site invoked
     // Tick() — this keeps the UTXO set empty so the snapshot can load. The
@@ -202,8 +250,7 @@ void BlockDownloadScheduler::Tick() {
         next_missing_idx_ = (gap_idx + 1) % missing_blocks_.size();
 
         if (send_getdata_callback_) {
-            SetRequestSkipPeersLocked(gap_state.height);  // #241
-            send_getdata_callback_(gap_state.block_hash, gap_state.height);
+            StageGetdataLocked(gap_state.block_hash, gap_state.height);  // #241/#214
             g_logger.info("[BlockDownloadScheduler] Requested stateless frontier block: " +
                           gap_state.block_hash.GetHex() +
                           " (height " + std::to_string(gap_state.height) + ")");
@@ -655,14 +702,26 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
         return;
     }
 
-    size_t preserved_count = 0;
-    for (uint32_t height = start_height; height <= best_height; ++height) {
-        const HeaderIndexEntry* entry = header_chain_->GetHeaderAtHeight(height);
-        if (!entry) {
-            g_logger.warning("[BlockDownloadScheduler] Missing header at height " +
-                            std::to_string(height));
-            continue;
+    // issue #241 perf: collect the [start_height, best_height] window with ONE
+    // backward walk over parent pointers instead of GetHeaderAtHeight(h) per
+    // height — each of those calls walks from the best header, making the scan
+    // O(n^2). On a from-genesis sync (~39k headers) that pinned a core inside
+    // this loop under mutex_ on EVERY headers message and throttled ingest to
+    // a few blocks/min. Parent links are append-only/immutable once added, the
+    // same invariant GetBestHeader()'s raw-pointer return already relies on.
+    std::vector<const HeaderIndexEntry*> window;
+    window.reserve(best_height - start_height + 1);
+    for (const HeaderIndexEntry* e = best_header; e && e->height >= start_height;
+         e = e->parent) {
+        window.push_back(e);
+        if (e->height == start_height) {
+            break;  // height 0 entries make `e->height >= start_height` never false
         }
+    }
+
+    size_t preserved_count = 0;
+    for (auto rit = window.rbegin(); rit != window.rend(); ++rit) {
+        const HeaderIndexEntry* entry = *rit;
 
         // Restore preserved status from previous scan.
         auto it = preserved.find(entry->hash);
@@ -673,7 +732,7 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
             }
             preserved_count++;
         } else {
-            missing_blocks_.emplace_back(entry->hash, height);
+            missing_blocks_.emplace_back(entry->hash, entry->height);
         }
         expected_blocks_.insert(entry->hash);
     }
@@ -738,10 +797,9 @@ bool BlockDownloadScheduler::RequestNextBlock() {
             // Advance cursor past this entry
             next_missing_idx_ = (idx + 1) % n;
 
-            // Send getdata via callback
+            // Stage getdata for dispatch after mutex_ release (#241/#214)
             if (send_getdata_callback_) {
-                SetRequestSkipPeersLocked(fetch_state.height);  // #241
-                send_getdata_callback_(fetch_state.block_hash, fetch_state.height);
+                StageGetdataLocked(fetch_state.block_hash, fetch_state.height);  // #241
                 g_logger.info("[BlockDownloadScheduler] Requested block: " +
                              fetch_state.block_hash.GetHex() +
                              " (height " + std::to_string(fetch_state.height) + ")");
@@ -1111,8 +1169,8 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocks(size_t max_blocks) {
                 bool requested_parent = false;
                 if (!parent_in_flight && !cooldown_active && send_getdata_callback_) {
                     // Parent sits one height below the block we're trying to connect.
-                    SetRequestSkipPeersLocked(want > 0 ? want - 1 : 0);  // #241
-                    send_getdata_callback_(parent_hash, want > 0 ? want - 1 : 0);
+                    // Staged for dispatch after mutex_ release (#241/#214).
+                    StageGetdataLocked(parent_hash, want > 0 ? want - 1 : 0);  // #241
                     parent_request_times_[parent_hash] = now;
                     requested_parent = true;
                 }

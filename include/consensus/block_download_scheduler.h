@@ -138,10 +138,11 @@ public:
 
     /**
      * Peers excluded from the *current* in-flight getdata (body-incapable for
-     * that block's height). The scheduler sets this under mutex_ immediately
+     * that block's height). DispatchDeferredSends() sets this immediately
      * before invoking the send_getdata callback; the callback reads it
-     * synchronously on the same thread. Do NOT read from another thread
-     * (intentionally unlocked — single-threaded handoff during the callback).
+     * synchronously on the same thread. thread_local (issue #241/#214: sends
+     * are dispatched outside mutex_, so concurrent dispatching threads each
+     * carry their own handoff slot). Only meaningful inside the callback.
      */
     const std::unordered_set<std::string>& CurrentRequestSkipPeers() const {
         return current_request_skip_peers_;
@@ -540,17 +541,44 @@ private:
     // getdata for those heights. Guarded by mutex_.
     std::unordered_map<std::string, uint32_t> peer_lacks_body_at_or_below_;
 
-    // Skip-set for the current in-flight getdata, populated under mutex_ right
-    // before each send_getdata callback (see CurrentRequestSkipPeers). mutex_.
-    std::unordered_set<std::string> current_request_skip_peers_;
+    // Skip-set for the current in-flight getdata, set by DispatchDeferredSends
+    // immediately before each send_getdata callback and read synchronously by
+    // that callback on the same thread (see CurrentRequestSkipPeers).
+    // thread_local because sends are dispatched OUTSIDE mutex_ (issue
+    // #241/#214) and concurrent Tick() callers must not race on it.
+    static thread_local std::unordered_set<std::string> current_request_skip_peers_;
+
+    // issue #241/#214: a getdata staged under mutex_ for dispatch after the
+    // lock is released. Invoking the send callback under mutex_ let one
+    // blocked peer-socket send() wedge every scheduler entry point (peer
+    // handler threads via OnNewBlock -> Tick, the tick loop, status probes)
+    // — the silent-stall / frozen-tip signature. The skip-set is snapshotted
+    // at staging time so the daemon wiring sees the same exclusions it would
+    // have seen under the lock.
+    struct DeferredGetdata {
+        uint256 block_hash;
+        uint32_t height = 0;
+        std::unordered_set<std::string> skip_peers;
+    };
+    std::vector<DeferredGetdata> deferred_sends_;  // guarded by mutex_
 
     // ========================================================================
     // Private Helpers
     // ========================================================================
 
-    // Populate current_request_skip_peers_ for a getdata at block_height from
-    // peer_lacks_body_at_or_below_. Caller MUST hold mutex_.
-    void SetRequestSkipPeersLocked(uint32_t block_height);
+    // Stage a getdata for block_hash/block_height into deferred_sends_ with
+    // its skip-set snapshot (from peer_lacks_body_at_or_below_). Caller MUST
+    // hold mutex_. The actual send happens in DispatchDeferredSends().
+    void StageGetdataLocked(const uint256& block_hash, uint32_t block_height);
+
+    // Drain deferred_sends_ (briefly re-acquiring mutex_ to swap it out) and
+    // invoke send_getdata_callback_ for each entry WITHOUT holding mutex_.
+    // Caller MUST NOT hold mutex_.
+    void DispatchDeferredSends();
+
+    // Tick() body. Caller MUST hold mutex_. Network sends are staged via
+    // StageGetdataLocked and dispatched by Tick() after the lock is released.
+    void TickLocked();
 
     /**
      * Scan header chain for missing blocks.
