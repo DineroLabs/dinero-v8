@@ -1616,8 +1616,15 @@ void ChainstateService::ClearAssumeUTXOState(bool clear_persisted_metadata) {
 void ChainstateService::EnsureAssumeUtxoLifecycle() {
     std::lock_guard<std::mutex> lock(assumeutxo_lifecycle_init_mutex_);
     if (!assumeutxo_lifecycle_) {
+        // Config knob: assumeutxo_bg_stall_timeout (seconds). Default 1800 (30 min
+        // per spec). Clamped to ≥1 s so tests/regression configs can use small
+        // values without underflowing the stall clock.
+        const int stall_timeout_s = config_
+            ? config_->GetInt("assumeutxo_bg_stall_timeout", 1800)
+            : 1800;
         assumeutxo_lifecycle_ = std::make_unique<assumeutxo::AssumeUtxoLifecycle>(
-            utxo_index_.get(), logger_ ? &logger_->get() : nullptr);
+            utxo_index_.get(), logger_ ? &logger_->get() : nullptr,
+            std::chrono::seconds(std::max(1, stall_timeout_s)));
     }
 }
 
@@ -8127,6 +8134,32 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         logger_->info("[LoadSnapshot] Snapshot header validated: height=" + std::to_string(header.block_height) +
                      ", hash=" + header.block_hash.GetHex().substr(0, 16) + "..., UTXOs=" + std::to_string(header.utxo_count));
 
+        // Pre-mutation re-entry tighten: refuse before BulkLoad/SetAssumeUTXOState
+        // if the lifecycle is already active for a DIFFERENT base hash+height.
+        // Belt-and-braces: the post-mutation check at the OnSnapshotLoaded call
+        // below is the braces.  FatalMismatch is excluded here because it is
+        // gated at the very top of this function and cannot be reached at this
+        // point; the header was NOT available at the top gate, so this is the
+        // earliest pre-mutation placement for a header-aware check.
+        {
+            const auto lc_state = assumeutxo_lifecycle_->GetState();
+            if (lc_state != assumeutxo::AssumeUtxoLifecycle::State::Disabled &&
+                lc_state != assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
+                const auto st = assumeutxo_lifecycle_->GetStatus(
+                    std::chrono::steady_clock::now());
+                if (st.snapshot_base_block != header.block_hash ||
+                    st.snapshot_base_height != header.block_height) {
+                    result.error_message =
+                        "another snapshot lifecycle is active (base height " +
+                        std::to_string(st.snapshot_base_height) +
+                        "); reset or let validation finish before loading a different snapshot";
+                    logger_->error("[LoadSnapshot] " + result.error_message);
+                    return result;
+                }
+                // same base: benign rehydrate, continue
+            }
+        }
+
         SnapshotUtreexoSection utreexo_section;
         std::vector<uint8_t> serialized_forest;
 
@@ -8370,20 +8403,40 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
 
         SetAssumeUTXOState(header.block_hash, header.block_height, /*persist_metadata=*/true);
 
-        // Drive the fatal state machine: Disabled -> SnapshotLoaded. A refusal
-        // here can only mean fatal_mismatch was entered concurrently (the gate
-        // at the top of this function refuses before any mutation otherwise) —
-        // fail the load. A 'false' from a non-fatal state is the benign startup
-        // rehydrate of an already-restored in-flight lifecycle; keep going.
-        if (!assumeutxo_lifecycle_->OnSnapshotLoaded(header.block_hash, header.block_height) &&
-            assumeutxo_lifecycle_->GetState() ==
-                assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
-            result.success = false;
-            result.error_message =
-                "node is in assumeutxo fatal_mismatch state; operator reset required "
-                "(blockchain.resetassumeutxofatal or wipe datadir)";
-            logger_->error("[LoadSnapshot] " + result.error_message);
-            return result;
+        // Drive the fatal state machine: Disabled -> SnapshotLoaded.
+        // Belt-and-braces re-entry tighten: the pre-mutation check above blocks
+        // different-base loads before any mutation, but OnSnapshotLoaded is the
+        // authoritative lifecycle gate and handles concurrent fatal transitions.
+        // Priority:
+        //   1. FatalMismatch (concurrent transition between the top gate and here):
+        //      always fatal — state machine has irrevocably condemned this node.
+        //   2. Different base (should have been caught pre-mutation, but guard anyway):
+        //      fail with a clear operator message.
+        //   3. Same base: benign rehydrate — startup is re-driving the lifecycle
+        //      for an already-active snapshot; keep going.
+        if (!assumeutxo_lifecycle_->OnSnapshotLoaded(header.block_hash, header.block_height)) {
+            if (assumeutxo_lifecycle_->GetState() ==
+                    assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
+                result.success = false;
+                result.error_message =
+                    "node is in assumeutxo fatal_mismatch state; operator reset required "
+                    "(blockchain.resetassumeutxofatal or wipe datadir)";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            const auto st = assumeutxo_lifecycle_->GetStatus(
+                std::chrono::steady_clock::now());
+            const bool same_base = (st.snapshot_base_block == header.block_hash &&
+                                    st.snapshot_base_height == header.block_height);
+            if (!same_base) {
+                result.error_message =
+                    "another snapshot lifecycle is active (base height " +
+                    std::to_string(st.snapshot_base_height) +
+                    "); reset or let validation finish before loading a different snapshot";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            // same base, non-fatal: benign rehydrate, lifecycle state preserved
         }
 
         // Persist the expected content commitment so the replay engine (Task 7)
