@@ -20,11 +20,15 @@
 // those belong to header acceptance, outside the replay engine's contract.
 //
 // Genesis handling (mirrors fuzzer AND production ConnectTip): genesis
-// (height 0) is UTXO-neutral (OP_RETURN-only outputs, zero subsidy) and is
-// pre-applied by the daemon during early init, never connected through
-// ConnectBlock (chainstate_service.cpp "Early init block" path). The
-// deterministic chain therefore starts at height 1 over an empty fresh set;
-// chain[i] is the block at height i+1.
+// (height 0) is NOT UTXO-neutral — genesis coinbase outputs ARE persisted in
+// ChainDB (genesis_init.cpp) and carried into the live ConsensusUTXOSet via
+// BulkLoad, so ExportSnapshot includes them. SeedGenesis mirrors that seeding:
+// every genesis coinbase output is inserted as a coin at height 0 / coinbase=true,
+// INCLUDING OP_RETURN outputs that normal ConnectBlock would skip. This was
+// discovered during Task 8 e2e regression (regtest genesis carries a 100-DIN
+// OP_RETURN record at height 0 that caused every honest snapshot to mismatch
+// before the fix). The deterministic chain here starts at height 1 over a
+// fresh set seeded via SeedGenesis; chain[i] is the block at height i+1.
 //
 // SHIELDED COVERAGE: this chain is transparent-only (building consensus-valid
 // shielded bundles in a unit test is heavyweight). The engine's genesis-fresh
@@ -196,6 +200,38 @@ TEST(AssumeUtxoReplay, TamperedBlockFailsValidation) {
     std::string err2;
     EXPECT_FALSE(engine.ConnectAndAdvance(chain[3], 4, chain[3].GetHash(), err2));
     EXPECT_FALSE(err2.empty());
+}
+
+// Genesis coins are part of the committed set (Task 8 e2e finding): seeding
+// must add the records to the digest WITHOUT adding utreexo leaves.
+// Neuter check (per plan): swapping EXPECT_NE → EXPECT_EQ on RecordsDigestHex
+// causes the test to fail (digests differ because b has genesis records, a
+// does not), confirming the assertion is live.
+TEST(AssumeUtxoReplay, SeedGenesisAddsRecordsNotLeaves) {
+    // Build a minimal synthetic genesis block (height 0): one coinbase tx.
+    // Genesis is never passed through ConnectBlock, so no ComputeUtreexoRootPure
+    // needed — utreexo_root can remain zeroed.
+    Block genesis;
+    genesis.header.version = 1;
+    genesis.header.prev_block_hash = uint256{};
+    genesis.header.timestamp = 1772841600ULL;
+    genesis.header.difficulty = 0x1d00ffff;
+    genesis.header.nonce = 0;
+    genesis.header.ZeroReserved();
+    genesis.vtx.push_back(MakeCoinbase(0));
+    genesis.header.merkle_root = genesis.vtx[0].GetTxid().AsUint256();
+
+    assumeutxo::AssumeUtxoReplayEngine a;  // unseeded
+    assumeutxo::AssumeUtxoReplayEngine b;  // seeded
+    std::string err;
+    ASSERT_TRUE(b.SeedGenesis(genesis, err)) << err;
+
+    // Record was added: digests differ between unseeded and seeded engines.
+    EXPECT_NE(a.RecordsDigestHex(), b.RecordsDigestHex());
+    // Exactly the genesis coinbase outputs were recorded.
+    EXPECT_EQ(b.UtxoCount(), genesis.vtx[0].vout.size());
+    // No utreexo leaves were added: forest roots are identical (both empty).
+    EXPECT_EQ(a.UtreexoRootHex(), b.UtreexoRootHex());
 }
 
 }  // namespace dinero

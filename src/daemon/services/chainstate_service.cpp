@@ -2898,29 +2898,63 @@ bool ChainstateService::Start() {
         }
         auto height_meta = utxo_index_->GetMetadata(assumeutxo::kBaseHeightKey);
         uint32_t restored_base_height = 0;
+        bool height_parse_ok = true;
         if (height_meta) {
-            restored_base_height = std::stoul(height_meta.value());
+            bool parse_ok = false;
+            try {
+                size_t pos = 0;
+                unsigned long v = std::stoul(height_meta.value(), &pos);
+                if (pos == height_meta.value().size() && v <= UINT32_MAX) {
+                    restored_base_height = static_cast<uint32_t>(v);
+                    parse_ok = true;
+                }
+            } catch (...) {}
+            if (!parse_ok) {
+                logger_->error("[AssumeUTXO restore] corrupt kBaseHeightKey metadata: \"" +
+                               height_meta.value() + "\"; treating assumed-state as corrupt");
+                height_parse_ok = false;
+            }
         }
 
-        SetAssumeUTXOState(restored_base_block, restored_base_height, /*persist_metadata=*/false);
+        // Only activate assumed mode if the height parsed cleanly; corrupt
+        // metadata is treated as a chainstate mismatch and goes fatal below.
+        if (height_parse_ok) {
+            SetAssumeUTXOState(restored_base_block, restored_base_height, /*persist_metadata=*/false);
+        }
 
         // Fatal-state-machine restore (spec: Persistence). chainstate_matches:
         // the persisted base must still be what the consensus UTXO set says.
         EnsureAssumeUtxoLifecycle();
         {
-            bool chainstate_matches = true;
-            if (consensus_utxo_set_) {
-                chainstate_matches =
-                    (consensus_utxo_set_->GetBestBlock() == restored_base_block &&
-                     consensus_utxo_set_->GetHeight() == restored_base_height);
-            }
-            if (!chainstate_matches && chain_db_ && restored_base_height > 0) {
-                // The set may legitimately sit past the base (chain advanced) or
-                // be pending the file rehydrate below; the marker is still honest
-                // if the persisted base block is on our recorded chain.
-                auto base_hash_result = chain_db_->getBlockHashByHeight(restored_base_height);
-                chainstate_matches = base_hash_result.ok() &&
-                                     base_hash_result.value() == restored_base_block;
+            // Corrupt height parse is a fatal mismatch (fail-closed idiom matching
+            // the else-branch; lifecycle will persist fatal_mismatch).
+            bool chainstate_matches = height_parse_ok;
+            if (chainstate_matches) {
+                if (consensus_utxo_set_) {
+                    chainstate_matches =
+                        (consensus_utxo_set_->GetBestBlock() == restored_base_block &&
+                         consensus_utxo_set_->GetHeight() == restored_base_height);
+                }
+                if (!chainstate_matches && chain_db_ && restored_base_height > 0) {
+                    // The set may legitimately sit past the base (chain advanced) or
+                    // be pending the file rehydrate below; the marker is still honest
+                    // if the persisted base block is on our recorded chain.
+                    auto base_hash_result = chain_db_->getBlockHashByHeight(restored_base_height);
+                    if (base_hash_result.ok()) {
+                        // Successful lookup: hash mismatch IS evidence of tampering.
+                        chainstate_matches =
+                            (base_hash_result.value() == restored_base_block);
+                    } else {
+                        // Index unavailable (pruned/cold) is NOT evidence of tampering.
+                        // Retain the marker; let IsCanonicalStateAligned catch real
+                        // divergence. Log loudly so operators can investigate.
+                        logger_->warning("[AssumeUTXO restore] cannot verify fully_validated "
+                                         "marker (height index unavailable at " +
+                                         std::to_string(restored_base_height) +
+                                         "); retaining marker");
+                        chainstate_matches = true;
+                    }
+                }
             }
             assumeutxo_lifecycle_->RestoreFromPersistence(chainstate_matches);
         }
@@ -3067,8 +3101,19 @@ bool ChainstateService::Start() {
                     chainstate_matches = false;
                 } else if (chain_db_ && h > 0) {
                     auto hash_result = chain_db_->getBlockHashByHeight(h);
-                    chainstate_matches = hash_result.ok() &&
-                        hash_result.value() == uint256::FromHexUnsafe(bb.value());
+                    if (hash_result.ok()) {
+                        // Successful lookup: hash mismatch IS evidence of tampering.
+                        chainstate_matches =
+                            (hash_result.value() == uint256::FromHexUnsafe(bb.value()));
+                    } else {
+                        // Index unavailable (pruned/cold) is NOT evidence of tampering.
+                        // Retain the marker; let IsCanonicalStateAligned catch real
+                        // divergence. Log loudly so operators can investigate.
+                        logger_->warning("[AssumeUTXO restore] cannot verify fully_validated "
+                                         "marker (height index unavailable at " +
+                                         std::to_string(h) + "); retaining marker");
+                        // chainstate_matches stays true
+                    }
                 }
             }
         }
