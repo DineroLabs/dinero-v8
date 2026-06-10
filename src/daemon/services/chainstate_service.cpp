@@ -8137,14 +8137,23 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // Pre-mutation re-entry tighten: refuse before BulkLoad/SetAssumeUTXOState
         // if the lifecycle is already active for a DIFFERENT base hash+height.
         // Belt-and-braces: the post-mutation check at the OnSnapshotLoaded call
-        // below is the braces.  FatalMismatch is excluded here because it is
-        // gated at the very top of this function and cannot be reached at this
-        // point; the header was NOT available at the top gate, so this is the
-        // earliest pre-mutation placement for a header-aware check.
+        // below is the braces.  The top gate handles FatalMismatch in the common
+        // (non-concurrent) case; this belt ALSO catches the concurrent-transition
+        // window pre-mutation where a background worker may go fatal between the
+        // top gate and here.  The header was NOT available at the top gate, so
+        // this is the earliest pre-mutation placement for a header-aware check.
         {
             const auto lc_state = assumeutxo_lifecycle_->GetState();
-            if (lc_state != assumeutxo::AssumeUtxoLifecycle::State::Disabled &&
-                lc_state != assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
+            // Top gate handles the common case; catch any concurrent fatal
+            // transition that occurred between the top gate and this point.
+            if (lc_state == assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
+                result.error_message =
+                    "node is in assumeutxo fatal_mismatch state; operator reset required "
+                    "(blockchain.resetassumeutxofatal or wipe datadir)";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            if (lc_state != assumeutxo::AssumeUtxoLifecycle::State::Disabled) {
                 const auto st = assumeutxo_lifecycle_->GetStatus(
                     std::chrono::steady_clock::now());
                 if (st.snapshot_base_block != header.block_hash ||
@@ -8432,7 +8441,9 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                 result.error_message =
                     "another snapshot lifecycle is active (base height " +
                     std::to_string(st.snapshot_base_height) +
-                    "); reset or let validation finish before loading a different snapshot";
+                    "); reset or let validation finish before loading a different snapshot"
+                    " (post-import refusal: snapshot state was imported before the conflict"
+                    " was detected; restart will quarantine it)";
                 logger_->error("[LoadSnapshot] " + result.error_message);
                 return result;
             }
