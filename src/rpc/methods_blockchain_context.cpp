@@ -360,6 +360,58 @@ static din::Json buildSnapshotBootstrapDiagnostics(
         snapshot["snapshot_base_block"] = chainstate->GetAssumeUTXOBaseBlock().GetHex();
     }
 
+    // Fatal-state-machine contract (docs/design/assumeutxo-fatal-state-machine.md).
+    // Fetch lifecycle status once; reused for fields + next_action override below.
+    using LcStatus = dinero::assumeutxo::AssumeUtxoLifecycle::Status;
+    using LState   = dinero::assumeutxo::AssumeUtxoLifecycle::State;
+    auto* lc = chainstate->GetAssumeUtxoLifecycle();
+    LcStatus lc_st;
+    if (lc) {
+        lc_st = lc->GetStatus(std::chrono::steady_clock::now());
+        snapshot["history_validation_state"] =
+            dinero::assumeutxo::AssumeUtxoLifecycle::StateName(lc_st.state);
+        snapshot["history_fully_validated"] = lc_st.history_fully_validated;
+        snapshot["fatal"] = lc_st.fatal;
+        snapshot["fatal_reason"] = lc_st.fatal_reason;
+        // Defensive OR: never read false while legacy state says the node depends on assumed state.
+        snapshot["assumeutxo_active"] = lc_st.assumeutxo_active || chainstate->IsAssumeUTXOActive();
+        snapshot["current_validation_height"] = lc_st.current_validation_height;
+        snapshot["target_validation_height"] = lc_st.target_validation_height;
+        snapshot["missing_body_count"] = lc_st.missing_body_count;
+        snapshot["stall_seconds"] = static_cast<Json::Int64>(lc_st.stall_seconds);
+        if (lc_st.snapshot_base_height > 0) {
+            snapshot["snapshot_base_height"] = lc_st.snapshot_base_height;
+            snapshot["snapshot_base_block"] = lc_st.snapshot_base_block.GetHex();
+        }
+        if (lc_st.target_validation_height > 0) {
+            snapshot["progress_percent"] =
+                (static_cast<double>(lc_st.current_validation_height) /
+                 static_cast<double>(lc_st.target_validation_height)) * 100.0;
+        } else {
+            snapshot["progress_percent"] = 0.0;
+        }
+        // only meaningful while history validation is active — spec contract field
+        if (lc_st.state == LState::ValidatingHistory ||
+            lc_st.state == LState::ValidationStalled) {
+            // Lifecycle clock is steady_clock; approximate wall-clock last progress
+            // as now - stall_seconds (exact enough for dashboards; spec contract key).
+            const auto last_progress_sys =
+                std::chrono::system_clock::now() - std::chrono::seconds(lc_st.stall_seconds);
+            const auto t = std::chrono::system_clock::to_time_t(last_progress_sys);
+            std::tm tm{};
+#ifdef _WIN32
+            const bool tm_ok = (gmtime_s(&tm, &t) == 0);
+#else
+            const bool tm_ok = (gmtime_r(&t, &tm) != nullptr);
+#endif
+            if (tm_ok) {
+                char buf[32];
+                std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+                snapshot["last_progress_time"] = std::string(buf);
+            }
+        }
+    }
+
     const auto validation_progress = chainstate->GetBackgroundValidationProgress();
     snapshot["background_validation_status"] = backgroundValidationStatusToString(validation_progress.status);
     snapshot["background_validation_progress_percent"] = validation_progress.progress_percent;
@@ -451,6 +503,7 @@ static din::Json buildSnapshotBootstrapDiagnostics(
     }
     snapshot["trust_gate_mode"] = trust_gate_mode;
 
+    // Legacy next_action heuristics (fallback when lifecycle is Disabled).
     if (manifest_required && !manifest_present) {
         snapshot["next_action"] = "Manifest is required; provide assumeutxo_manifest or <snapshot>.manifest.json before loading.";
     } else if (!configured_snapshot_path.empty() && !snapshot_exists) {
@@ -465,6 +518,17 @@ static din::Json buildSnapshotBootstrapDiagnostics(
         snapshot["next_action"] = "Set assumeutxo_snapshot in config or use loadtxoutset <path> for fast bootstrap.";
     } else {
         snapshot["next_action"] = "Snapshot bootstrap configuration appears ready.";
+    }
+
+    // Lifecycle verdict wins when the machine is not Disabled.
+    if (lc && lc_st.state != LState::Disabled) {
+        snapshot["next_action"] = lc_st.next_action;
+        // Honesty note: fatal halts mining/templates; wallet send is not yet fully gated.
+        if (lc_st.fatal) {
+            snapshot["fatal_scope_note"] =
+                "safe mode halts mining/templates; wallet send paths are not yet gated "
+                "— treat balances as provisional";
+        }
     }
 
     return snapshot;
@@ -1913,6 +1977,72 @@ static din::Json rpc_context_getbackgroundvalidationprogress(const ExecutionCont
         result["error"]["message"] = std::string("getbackgroundvalidationprogress failed: ") + e.what();
     }
 
+    return result;
+}
+
+/**
+ * blockchain.resetassumeutxofatal - Explicit operator reset of fatal_mismatch state
+ * (docs/design/assumeutxo-fatal-state-machine.md: Operator Reset).
+ *
+ * Requires: {"confirm": "RESET-ASSUMEUTXO-FATAL"} or positional ["RESET-ASSUMEUTXO-FATAL"].
+ * Also clears persisted AssumeUTXO metadata so post-reset restarts do not recreate
+ * the legacy-upgrade hole. Writes an audit log entry on success.
+ *
+ * Returns on success: {"reset": true, "next_action": "...", "audit": "..."}
+ * Returns on failure: {"error": "..."}
+ */
+static din::Json rpc_context_resetassumeutxofatal(const ExecutionContext& ctx, const din::Json& params) {
+    din::Json result;
+
+    if (!ctx.daemon || !ctx.daemon->chainstate) {
+        result["error"] = "Chainstate service not available";
+        return result;
+    }
+    auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    if (!chainstate) {
+        result["error"] = "Failed to cast chainstate service";
+        return result;
+    }
+
+    // Extract confirmation token.
+    // Supported forms:
+    //   {"confirm": "RESET-ASSUMEUTXO-FATAL"}          — named object
+    //   ["RESET-ASSUMEUTXO-FATAL"]                     — positional string
+    //   [{"confirm": "RESET-ASSUMEUTXO-FATAL"}]        — array wrapping named object
+    std::string confirm;
+    if (params.isObject() && params.isMember("confirm")) {
+        confirm = params["confirm"].asString();
+    } else if (params.isArray() && params.size() >= 1) {
+        if (params[0].isString()) {
+            confirm = params[0].asString();
+        } else if (params[0].isObject() && params[0].isMember("confirm")) {
+            confirm = params[0]["confirm"].asString();
+        }
+    }
+
+    // Capture prior fatal_reason BEFORE reset (OperatorReset clears it).
+    auto* lc = chainstate->GetAssumeUtxoLifecycle();
+    const auto pre_st = lc->GetStatus(std::chrono::steady_clock::now());
+    if (!pre_st.fatal) {
+        result["error"] = "Node is not in assumeutxo fatal_mismatch state";
+        return result;
+    }
+    const std::string prior_reason = pre_st.fatal_reason;
+
+    if (!chainstate->ResetAssumeUtxoFatalState(confirm)) {
+        result["error"] = std::string("Reset refused: pass {\"confirm\": \"") +
+                          dinero::assumeutxo::kResetToken + "\"}";
+        return result;
+    }
+
+    // Audit trail: durable daemon-log entry (spec: Operator Reset audit requirement).
+    const std::string audit_msg =
+        "[AUDIT] assumeutxo fatal reset via RPC; prior reason: " + prior_reason;
+    dinero::g_logger.info(audit_msg);
+
+    result["reset"] = true;
+    result["next_action"] = "Fatal state cleared and assumed UTXO state wiped. Node remains in SAFE MODE — run safemode.exit to resume, then load a snapshot or sync from genesis.";
+    result["audit"] = audit_msg;
     return result;
 }
 
@@ -3690,6 +3820,14 @@ void registerBlockchainMethodsContext() {
                                  RegisterMode::Overwrite,
                                  "context-aware");
     g_rpcRegistry.registerAlias("getsnapshotbootstrapstatus", "blockchain.getsnapshotbootstrapstatus");
+
+    // AssumeUTXO fatal state machine: operator reset RPC
+    // (docs/design/assumeutxo-fatal-state-machine.md: Operator Reset).
+    g_rpcRegistry.registerHandler("blockchain.resetassumeutxofatal",
+                                 rpc_context_resetassumeutxofatal,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+    g_rpcRegistry.registerAlias("resetassumeutxofatal", "blockchain.resetassumeutxofatal");
 
     g_rpcRegistry.registerHandler("blockchain.getpruninginfo",
                                  rpc_context_getpruninginfo,

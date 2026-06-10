@@ -1609,6 +1609,68 @@ void ChainstateService::ClearAssumeUTXOState(bool clear_persisted_metadata) {
     }
 }
 
+// AssumeUTXO fatal state machine (docs/design/assumeutxo-fatal-state-machine.md).
+// Lazy: utxo_index_ must exist before the lifecycle can persist, and call sites
+// span startup restore, LoadSnapshot, and the background-validation worker.
+void ChainstateService::EnsureAssumeUtxoLifecycle() {
+    std::lock_guard<std::mutex> lock(assumeutxo_lifecycle_init_mutex_);
+    if (!assumeutxo_lifecycle_) {
+        assumeutxo_lifecycle_ = std::make_unique<assumeutxo::AssumeUtxoLifecycle>(
+            utxo_index_.get(), logger_ ? &logger_->get() : nullptr);
+    }
+}
+
+assumeutxo::AssumeUtxoLifecycle* ChainstateService::GetAssumeUtxoLifecycle() {
+    EnsureAssumeUtxoLifecycle();
+    return assumeutxo_lifecycle_.get();
+}
+
+bool ChainstateService::ResetAssumeUtxoFatalState(const std::string& confirm_token) {
+    EnsureAssumeUtxoLifecycle();
+    if (!assumeutxo_lifecycle_->OperatorReset(confirm_token)) {
+        return false;
+    }
+
+    // Wipe the bulk-loaded assumed UTXO set (spec: Reset must clear assumed UTXO state).
+    // OperatorReset already deleted lifecycle metadata keys; ClearAll drops all wallet_utxos
+    // and utxo_metadata rows from the DB.  Best-effort: log and continue if it fails.
+    if (utxo_index_) {
+        if (!utxo_index_->ClearAll()) {
+            if (logger_) {
+                logger_->error("[AssumeUTXO] ClearAll failed during reset — "
+                               "Manual intervention required - delete wallet.db");
+            }
+        }
+    }
+
+    // A finished-but-unjoined worker handle would std::terminate the daemon
+    // when StartBackgroundValidation re-creates the thread on the documented
+    // recovery flow (reset -> safemode.exit -> load snapshot). Join it first;
+    // never under bg_validation_mutex_ (the worker takes that mutex).
+    if (bg_validation_thread_ && bg_validation_thread_->joinable()) {
+        bg_validation_should_stop_ = true;
+        bg_validation_thread_->join();
+        bg_validation_thread_.reset();
+        bg_validation_should_stop_ = false;
+    }
+
+    // Reset legacy in-memory background-validation state so a post-reset restart
+    // does not see stale InProgress/Failed status (spec FIX 3).
+    {
+        std::lock_guard<std::mutex> lock(bg_validation_mutex_);
+        bg_validation_status_ = BackgroundValidationStatus::NotStarted;
+        bg_validation_error_.clear();
+        bg_validation_current_height_ = 0;
+        bg_validation_blocks_validated_ = 0;
+    }
+
+    // Clear in-memory flags + belt-and-braces metadata-key wipe.
+    // ClearAll already dropped utxo_metadata rows; this also resets assumeutxo_active_
+    // and the base-block/height in-memory fields.
+    ClearAssumeUTXOState(/*clear_persisted_metadata=*/true);
+    return true;
+}
+
 // Phase 8: Set validation mode (stateful vs stateless)
 void ChainstateService::setValidationMode(consensus::ValidationMode mode) {
     pending_validation_mode_ = mode;  // Store for deferred application
@@ -2833,12 +2895,54 @@ bool ChainstateService::Start() {
 
         SetAssumeUTXOState(restored_base_block, restored_base_height, /*persist_metadata=*/false);
 
+        // Fatal-state-machine restore (spec: Persistence). chainstate_matches:
+        // the persisted base must still be what the consensus UTXO set says.
+        EnsureAssumeUtxoLifecycle();
+        {
+            bool chainstate_matches = true;
+            if (consensus_utxo_set_) {
+                chainstate_matches =
+                    (consensus_utxo_set_->GetBestBlock() == restored_base_block &&
+                     consensus_utxo_set_->GetHeight() == restored_base_height);
+            }
+            if (!chainstate_matches && chain_db_ && restored_base_height > 0) {
+                // The set may legitimately sit past the base (chain advanced) or
+                // be pending the file rehydrate below; the marker is still honest
+                // if the persisted base block is on our recorded chain.
+                auto base_hash_result = chain_db_->getBlockHashByHeight(restored_base_height);
+                chainstate_matches = base_hash_result.ok() &&
+                                     base_hash_result.value() == restored_base_block;
+            }
+            assumeutxo_lifecycle_->RestoreFromPersistence(chainstate_matches);
+        }
+        if (assumeutxo_lifecycle_->GetState() ==
+            assumeutxo::AssumeUtxoLifecycle::State::Disabled) {
+            // Legacy upgrade: assumed state persisted by a pre-lifecycle binary
+            // has no lifecycle record. Enter the machine now so a later
+            // mismatch can persist fatal_mismatch (spec Fatal items 1/2/6).
+            assumeutxo_lifecycle_->OnSnapshotLoaded(restored_base_block,
+                                                    restored_base_height);
+        }
+        const bool lifecycle_fatal_at_restore =
+            assumeutxo_lifecycle_->GetState() ==
+            assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch;
+        if (lifecycle_fatal_at_restore) {
+            // Spec (Fatal Mismatch Semantics): fatal persists across restart and
+            // gates snapshot loads + background validation until operator reset.
+            logger_->error("[AssumeUTXO restore] Persisted lifecycle state is FATAL_MISMATCH — "
+                           "skipping snapshot rehydrate and background validation; "
+                           "operator reset required (blockchain.resetassumeutxofatal)");
+            EnterSafeMode("assumeutxo fatal (restored from persistence): " +
+                          assumeutxo_lifecycle_->GetStatus(
+                              std::chrono::steady_clock::now()).fatal_reason);
+        }
+
         logger_->info("⚠️  AssumeUTXO mode ACTIVE (restored from metadata)");
         logger_->info("⚠️  Snapshot base height: " + std::to_string(assumeutxo_base_height_));
         logger_->info("⚠️  Snapshot base block: " + assumeutxo_base_block_.GetHex());
 
         bool snapshot_rehydrated_from_file = false;
-        if (consensus_utxo_set_ &&
+        if (!lifecycle_fatal_at_restore && consensus_utxo_set_ &&
             (consensus_utxo_set_->GetBestBlock() != assumeutxo_base_block_ ||
              consensus_utxo_set_->GetHeight() != assumeutxo_base_height_)) {
             const std::string snapshot_path =
@@ -2883,7 +2987,8 @@ bool ChainstateService::Start() {
         }
 
         // Check if background validation needs to be resumed
-        if (bg_validation_status_ != BackgroundValidationStatus::Completed &&
+        if (!lifecycle_fatal_at_restore &&
+            bg_validation_status_ != BackgroundValidationStatus::Completed &&
             bg_validation_status_ != BackgroundValidationStatus::Failed &&
             !snapshot_rehydrated_from_file) {
 
@@ -2893,6 +2998,8 @@ bool ChainstateService::Start() {
 
             // Resume background validation
             StartBackgroundValidation();
+        } else if (lifecycle_fatal_at_restore) {
+            logger_->error("⛔ Background validation NOT resumed: assumeutxo lifecycle is fatal_mismatch");
         } else {
             logger_->info("✅ Background validation already complete");
         }
@@ -2926,6 +3033,31 @@ bool ChainstateService::Start() {
         // Node is ready - snapshot already loaded
         services_ready_ = true;
         logger_->info("════════════════════════════════════════════════════════════════");
+    } else {
+        // Not in assumed mode, but a fully_validated or fatal_mismatch lifecycle
+        // record may still be persisted; restore it (marker-vs-chainstate check
+        // uses the persisted lc base, verified against chaindb when available).
+        EnsureAssumeUtxoLifecycle();
+        bool chainstate_matches = true;
+        if (auto bh = utxo_index_->GetMetadata(assumeutxo::kLcBaseHeightKey)) {
+            if (auto bb = utxo_index_->GetMetadata(assumeutxo::kLcBaseBlockKey)) {
+                const uint32_t h = static_cast<uint32_t>(std::stoul(bh.value()));
+                if (chain_db_ && h > 0) {
+                    auto hash_result = chain_db_->getBlockHashByHeight(h);
+                    chainstate_matches = hash_result.ok() &&
+                        hash_result.value() == uint256::FromHexUnsafe(bb.value());
+                }
+            }
+        }
+        assumeutxo_lifecycle_->RestoreFromPersistence(chainstate_matches);
+        if (assumeutxo_lifecycle_->GetState() ==
+            assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
+            logger_->error("[AssumeUTXO restore] Persisted lifecycle state is FATAL_MISMATCH — "
+                           "operator reset required (blockchain.resetassumeutxofatal)");
+            EnterSafeMode("assumeutxo fatal (restored from persistence): " +
+                          assumeutxo_lifecycle_->GetStatus(
+                              std::chrono::steady_clock::now()).fatal_reason);
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -3316,6 +3448,15 @@ void ChainstateService::Stop() {
         bg_validation_should_stop_ = true;
         bg_validation_thread_->join();
         logger_->info("[ChainstateService] Background validation thread stopped");
+    }
+
+    // Lifecycle caches the raw UTXOIndex*; destroy it first (Task 8's RPC
+    // accessor must never observe a lifecycle with a dangling index).
+    // The bg validation worker is already joined above, so no concurrent
+    // access to assumeutxo_lifecycle_ is possible at this point.
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(assumeutxo_lifecycle_init_mutex_);
+        assumeutxo_lifecycle_.reset();
     }
 
     // Reset instances (ONE DB: chain_manager and chain_db owned globally, not here)
@@ -7765,6 +7906,19 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
     result.bytes_read = 0;
     result.checksum_valid = false;
 
+    // Fatal gate, hoisted ahead of EVERY mutation (spec: fatal_mismatch refuses
+    // all snapshot loads until explicit operator reset). Even the genesis-only
+    // Clear() below must not run while fatal.
+    EnsureAssumeUtxoLifecycle();
+    if (assumeutxo_lifecycle_->GetState() ==
+        assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
+        result.error_message =
+            "node is in assumeutxo fatal_mismatch state; operator reset required "
+            "(blockchain.resetassumeutxofatal or wipe datadir)";
+        logger_->error("[LoadSnapshot] " + result.error_message);
+        return result;
+    }
+
     if (!consensus_utxo_set_) {
         result.error_message = "Consensus UTXO set not available";
         return result;
@@ -8202,6 +8356,22 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         logger_->info("[LoadSnapshot] Pass 2 complete: Loaded " + std::to_string(result.utxos_imported) + " UTXOs into consensus set");
 
         SetAssumeUTXOState(header.block_hash, header.block_height, /*persist_metadata=*/true);
+
+        // Drive the fatal state machine: Disabled -> SnapshotLoaded. A refusal
+        // here can only mean fatal_mismatch was entered concurrently (the gate
+        // at the top of this function refuses before any mutation otherwise) —
+        // fail the load. A 'false' from a non-fatal state is the benign startup
+        // rehydrate of an already-restored in-flight lifecycle; keep going.
+        if (!assumeutxo_lifecycle_->OnSnapshotLoaded(header.block_hash, header.block_height) &&
+            assumeutxo_lifecycle_->GetState() ==
+                assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
+            result.success = false;
+            result.error_message =
+                "node is in assumeutxo fatal_mismatch state; operator reset required "
+                "(blockchain.resetassumeutxofatal or wipe datadir)";
+            logger_->error("[LoadSnapshot] " + result.error_message);
+            return result;
+        }
 
         if (snapshot_forest.has_value()) {
             // CRITICAL: BulkLoad rebuilt the forest from scratch (sorted outpoint adds),
@@ -11515,6 +11685,11 @@ void ChainstateService::StartBackgroundValidation() {
     bg_validation_error_ = "";
     bg_validation_should_stop_ = false;
 
+    // Arm the fatal state machine's stall clock. In validation_stalled this
+    // only re-arms the clock — the stall stays visible until real progress.
+    EnsureAssumeUtxoLifecycle();
+    assumeutxo_lifecycle_->OnValidationStarted(std::chrono::steady_clock::now());
+
     // Launch worker thread
     bg_validation_thread_ = std::make_unique<std::thread>(&ChainstateService::BackgroundValidationWorker, this);
 }
@@ -11553,82 +11728,97 @@ void ChainstateService::BackgroundValidationWorker() {
             return;
         }
 
+        EnsureAssumeUtxoLifecycle();
+
         const uint32_t target_height = assumeutxo_base_height_;
         const uint32_t log_interval = std::max(1u, target_height / 100);  // Log every 1%
 
-        // Validate blocks from genesis (height 0) to snapshot base height.
-        // In AssumeUTXO mode with a fresh chaindb, historical blocks 1..N may not
-        // be stored yet (chaindb was cleared or never downloaded). Skip unavailable
-        // blocks — the UTXO set verification below is the authoritative check.
+        // First-time-only progress tracking: re-scanning an already-validated
+        // height is not "actual progress" (spec Stall Semantics) — only a
+        // height never validated this run (and beyond the durable marker from
+        // a previous run) feeds the lifecycle's stall clock.
+        const uint32_t resume_height = assumeutxo_lifecycle_
+            ->GetStatus(std::chrono::steady_clock::now()).current_validation_height;
+        std::vector<bool> height_validated(static_cast<size_t>(target_height) + 1, false);
+        // Gate on resume_height > 0: on a fresh run the marker is 0 (genesis),
+        // and we want genesis itself to produce a real OnBlockValidated signal
+        // on the first pass rather than be pre-marked as already done.
+        if (resume_height > 0) {
+            for (uint32_t h = 0; h <= target_height && h <= resume_height; ++h) {
+                height_validated[h] = true;  // claimed by the durable progress marker
+            }
+        }
+
+        // Spec: missing bodies are NEVER skippable success. Re-scan until all
+        // bodies are present (bodies backfill as IBD proceeds) or we are told
+        // to stop; Tick() drives the loud-stall transition while we wait.
         uint32_t blocks_skipped = 0;
-        for (uint32_t height = 0; height <= target_height; ++height) {
-            // Check if we should stop
+        while (true) {
+            blocks_skipped = 0;
+            for (uint32_t height = 0; height <= target_height; ++height) {
+                if (bg_validation_should_stop_) {
+                    logger_->warning("[BackgroundValidation] Validation stopped by request");
+                    OnBackgroundValidationComplete(false, "Validation stopped by user");
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(bg_validation_mutex_);
+                    bg_validation_current_height_ = height;
+                }
+                auto hash_result = chain_db_->getBlockHashByHeight(height);
+                if (!hash_result.ok()) { blocks_skipped++; continue; }
+                auto block_result = getBlockByHash(hash_result.value());
+                if (!block_result.ok()) { blocks_skipped++; continue; }
+                if (!height_validated[height]) {
+                    height_validated[height] = true;
+                    {
+                        std::lock_guard<std::mutex> lock(bg_validation_mutex_);
+                        bg_validation_blocks_validated_++;
+                    }
+                    assumeutxo_lifecycle_->OnBlockValidated(height, std::chrono::steady_clock::now());
+                }
+                if (height % log_interval == 0 || height == target_height) {
+                    double percent = (static_cast<double>(height) /
+                                      static_cast<double>(target_height)) * 100.0;
+                    logger_->info("[BackgroundValidation] Progress: " + std::to_string(height) +
+                                "/" + std::to_string(target_height) + " (" +
+                                std::to_string(static_cast<int>(percent)) + "%)");
+                }
+            }
+            if (blocks_skipped == 0) break;
+
+            assumeutxo_lifecycle_->OnMissingBodies(blocks_skipped);
+            logger_->warning("[BackgroundValidation] " + std::to_string(blocks_skipped) +
+                             "/" + std::to_string(target_height + 1) +
+                             " bodies unavailable — waiting for backfill (spec: missing"
+                             " bodies are not success); re-scan in 30s");
+            for (int i = 0; i < 30 && !bg_validation_should_stop_; ++i) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+            assumeutxo_lifecycle_->Tick(std::chrono::steady_clock::now());
             if (bg_validation_should_stop_) {
-                logger_->warning("[BackgroundValidation] Validation stopped by request");
                 OnBackgroundValidationComplete(false, "Validation stopped by user");
                 return;
             }
-
-            {
-                std::lock_guard<std::mutex> lock(bg_validation_mutex_);
-                bg_validation_current_height_ = height;
-            }
-
-            // Get block hash at this height
-            auto hash_result = chain_db_->getBlockHashByHeight(height);
-            if (!hash_result.ok()) {
-                // Block not in chaindb yet (fresh chaindb or pruned) — skip availability check.
-                // The snapshot checksum + UTXO verification below is the authoritative safety net.
-                blocks_skipped++;
-                continue;
-            }
-
-            const uint256& block_hash = hash_result.value();
-
-            // Get block data
-            auto block_result = getBlockByHash(block_hash);
-            if (!block_result.ok()) {
-                // Block header known but body not stored — also skip.
-                blocks_skipped++;
-                continue;
-            }
-
-            const Block& block = block_result.value();
-            (void)block;  // Retrieval itself is the availability scan in this phase.
-
-            // Update progress
-            {
-                std::lock_guard<std::mutex> lock(bg_validation_mutex_);
-                bg_validation_current_height_ = height;
-                bg_validation_blocks_validated_++;
-            }
-
-            // Log progress
-            if (height % log_interval == 0 || height == target_height) {
-                double percent = (static_cast<double>(height) / static_cast<double>(target_height)) * 100.0;
-                logger_->info("[BackgroundValidation] Progress: " + std::to_string(height) +
-                            "/" + std::to_string(target_height) + " (" +
-                            std::to_string(static_cast<int>(percent)) + "%)");
-            }
         }
+        assumeutxo_lifecycle_->OnMissingBodies(0);
+        logger_->info("[BackgroundValidation] All bodies present; verifying UTXO set integrity...");
 
-        if (blocks_skipped > 0) {
-            logger_->warning("[BackgroundValidation] Block availability scan: " +
-                            std::to_string(blocks_skipped) + "/" + std::to_string(target_height + 1) +
-                            " blocks not in chaindb (fresh chaindb or pruned) — skipped.");
-        }
-        logger_->info("[BackgroundValidation] Block availability scan complete, verifying UTXO set integrity...");
-
-        // Verify UTXO sets match
-        if (!VerifyUTXOSetMatch()) {
+        const bool match = VerifyUTXOSetMatch();
+        // replay_performed=false: this pass is availability+count verification
+        // only. The lifecycle will NOT enter fully_validated from it (honest
+        // mode until the real replay engine lands — see plan Scope decision).
+        assumeutxo_lifecycle_->OnReplayComplete(
+            /*replay_performed=*/false, match,
+            /*expected_commitment=*/"(snapshot utxo count)",
+            /*recomputed_commitment=*/match ? "(count match)" : "(count mismatch)",
+            /*missing_body_count=*/0, std::chrono::steady_clock::now());
+        if (!match) {
             std::string error = "UTXO set mismatch at snapshot height " + std::to_string(target_height);
             logger_->error("[BackgroundValidation] CRITICAL: " + error);
-            logger_->error("[BackgroundValidation] Snapshot is INVALID - possible attack or corruption");
             OnBackgroundValidationComplete(false, error);
             return;
         }
-
-        // Success!
         OnBackgroundValidationComplete(true, "");
 
     } catch (const std::exception& e) {
@@ -11733,6 +11923,13 @@ bool ChainstateService::VerifyUTXOSetMatch() {
 }
 
 void ChainstateService::OnBackgroundValidationComplete(bool success, const std::string& error) {
+    // Deadlock guard: EnterSafeMode() -> MiningService::stopMining() joins
+    // mining threads. Nothing mining-side takes bg_validation_mutex_ today,
+    // but joining threads while holding it is fragile — so the failure branch
+    // gathers state and logs under the lock, then acts AFTER releasing it.
+    bool enter_fatal = false;
+    std::string fatal_error;
+    {
     std::lock_guard<std::mutex> lock(bg_validation_mutex_);
 
     if (success) {
@@ -11760,9 +11957,18 @@ void ChainstateService::OnBackgroundValidationComplete(bool success, const std::
             }
         }
 
-        if (chaindb_caught_up) {
-            logger_->info("[BackgroundValidation] ChainDB at snapshot height — exiting AssumeUTXO mode");
+        const bool lifecycle_fully_validated =
+            assumeutxo_lifecycle_ &&
+            assumeutxo_lifecycle_->GetState() ==
+                assumeutxo::AssumeUtxoLifecycle::State::FullyValidated;
+        if (chaindb_caught_up && lifecycle_fully_validated) {
+            logger_->info("[BackgroundValidation] ChainDB at snapshot height and history "
+                          "fully validated — exiting AssumeUTXO mode");
             ClearAssumeUTXOState(/*clear_persisted_metadata=*/true);
+        } else if (chaindb_caught_up) {
+            logger_->info("[BackgroundValidation] ChainDB caught up but historical replay "
+                          "is not complete — keeping AssumeUTXO trust marker (spec: only a "
+                          "completed genesis-to-base comparison retires trust)");
         } else {
             logger_->info("[BackgroundValidation] ChainDB below snapshot height — keeping AssumeUTXO mode active until tip catches up");
         }
@@ -11777,49 +11983,59 @@ void ChainstateService::OnBackgroundValidationComplete(bool success, const std::
             logger_->info("[BackgroundValidation] Snapshot validated but still behind network tip — staying in SnapshotBootstrap");
         }
 
+    } else if (bg_validation_should_stop_.load()) {
+        // Operational stop (daemon shutdown joins the worker via
+        // bg_validation_should_stop_). NOT a proof failure: the lifecycle
+        // stays validating_history/validation_stalled in persistence and
+        // resumes at next startup. Going fatal here would brick every node
+        // that restarts mid-validation.
+        bg_validation_status_ = BackgroundValidationStatus::Failed;
+        bg_validation_error_ = error;
+        logger_->warning("[BackgroundValidation] Stopped by request before completion (" +
+                         error + "); validation will resume at next startup");
     } else {
         // All hard background-validation failures converge here, including
         // explicit verification failures and worker exceptions.
         bg_validation_status_ = BackgroundValidationStatus::Failed;
         bg_validation_error_ = error;
 
+        // Spec (Fatal Mismatch Semantics): a mismatch is NOT an automatic
+        // rollback-to-genesis. Persist fatal, halt assumed-state decisions via
+        // safe mode, and require explicit operator reset. The previous
+        // auto-rollback (ClearAll + ClearAssumeUTXOState) is intentionally GONE.
+        const std::string snapshot_path =
+            config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
         logger_->error("═══════════════════════════════════════════════════════════════════════");
-        logger_->error("❌ BACKGROUND VALIDATION FAILED");
-        logger_->error("═══════════════════════════════════════════════════════════════════════");
+        logger_->error("❌ BACKGROUND VALIDATION FAILED — ENTERING FATAL STATE");
         logger_->error("Error: " + error);
-        logger_->error("Snapshot is INVALID or corrupted");
-        logger_->error("Node cannot continue in AssumeUTXO mode");
+        logger_->error("Snapshot base height: " + std::to_string(assumeutxo_base_height_));
+        logger_->error("Snapshot base hash:   " + assumeutxo_base_block_.GetHex());
+        logger_->error("Snapshot asset:       " +
+                       (snapshot_path.empty() ? std::string("(no assumeutxo_snapshot configured)")
+                                              : snapshot_path));
+        logger_->error("Node was serving from state that failed later proof.");
+        logger_->error("Balances/confirmations derived while assumed are PROVISIONAL.");
+        logger_->error("Operator reset required: blockchain.resetassumeutxofatal");
+        logger_->error("  (or wipe the datadir and resync from genesis).");
         logger_->error("═══════════════════════════════════════════════════════════════════════");
-        logger_->error("");
-        logger_->error("🔄 AUTOMATIC ROLLBACK INITIATED");
-        logger_->error("Reverting to traditional sync from genesis...");
-        logger_->error("");
 
-        // Automatic Rollback: Clear UTXO set and exit AssumeUTXO mode
-        // Node will automatically resync from genesis
+        enter_fatal = true;
+        fatal_error = error;
+    }
+    }  // release bg_validation_mutex_ before EnterSafeMode (joins mining threads)
 
-        // Step 1: Clear UTXO index (deletes all UTXOs and metadata)
-        logger_->info("[Rollback] Step 1: Clearing UTXO database and metadata...");
-        if (utxo_index_ && utxo_index_->ClearAll()) {
-            logger_->info("[Rollback] ✓ UTXO database and metadata cleared");
-        } else {
-            logger_->error("[Rollback] ✗ Failed to clear UTXO database");
-            logger_->error("[Rollback] ⚠️  Manual intervention required - delete wallet.db");
+    if (enter_fatal) {
+        EnsureAssumeUtxoLifecycle();
+        if (assumeutxo_lifecycle_->GetState() !=
+            assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
+            // Worker exceptions / operational failures that bypassed
+            // OnReplayComplete still converge to fatal here.
+            assumeutxo_lifecycle_->OnReplayComplete(
+                /*replay_performed=*/false, /*commitment_match=*/false,
+                "(background validation)", fatal_error, 0,
+                std::chrono::steady_clock::now());
         }
-
-        // Step 2: Exit AssumeUTXO mode
-        logger_->info("[Rollback] Step 2: Exiting AssumeUTXO mode...");
-        ClearAssumeUTXOState(/*clear_persisted_metadata=*/true);
-        logger_->info("[Rollback] ✓ AssumeUTXO mode disabled");
-
-        logger_->error("");
-        logger_->error("═══════════════════════════════════════════════════════════════════════");
-        logger_->error("✅ ROLLBACK COMPLETE");
-        logger_->error("═══════════════════════════════════════════════════════════════════════");
-        logger_->info("Node will now sync from genesis using traditional IBD");
-        logger_->info("This will take several hours to complete");
-        logger_->info("You may restart the node with a different snapshot if available");
-        logger_->error("═══════════════════════════════════════════════════════════════════════");
+        EnterSafeMode("assumeutxo fatal: " + fatal_error);
     }
 }
 
