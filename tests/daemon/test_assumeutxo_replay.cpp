@@ -25,6 +25,12 @@
 // ConnectBlock (chainstate_service.cpp "Early init block" path). The
 // deterministic chain therefore starts at height 1 over an empty fresh set;
 // chain[i] is the block at height i+1.
+//
+// SHIELDED COVERAGE: this chain is transparent-only (building consensus-valid
+// shielded bundles in a unit test is heavyweight). The engine's genesis-fresh
+// shielded state (CommitmentTree/NullifierSet/AnchorHistory wired via
+// setShieldedState) is exercised end-to-end by the Task 8 regtest integration
+// test, which replays real shielded blocks through the engine.
 // ============================================================================
 
 #include <gtest/gtest.h>
@@ -152,6 +158,9 @@ TEST(AssumeUtxoReplay, ReplayReproducesDirectDigest) {
     EXPECT_EQ(engine.Height(), 20u);
     EXPECT_EQ(engine.UtxoCount(), direct.GetUTXOs().size());
     EXPECT_FALSE(engine.UtreexoRootHex().empty());
+    // ConnectBlock proved computed root == header root at every block, so the
+    // tip header's utreexo_root IS the expected final forest root.
+    EXPECT_EQ(engine.UtreexoRootHex(), chain.back().header.utreexo_root.GetHex());
 }
 
 // A tampered block must fail ConnectBlock with a non-empty error, and the

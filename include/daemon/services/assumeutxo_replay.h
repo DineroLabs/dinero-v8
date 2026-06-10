@@ -2,6 +2,9 @@
 
 #include "consensus/block_validation.h"
 #include "consensus/consensus_utxo_set.h"
+#include "consensus/shielded/anchor_history.h"
+#include "consensus/shielded/commitment_tree.h"
+#include "consensus/shielded/nullifier_set.h"
 #include "consensus/utxo_set_digest.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
@@ -25,6 +28,16 @@ namespace dinero::assumeutxo {
 // (the worker, tests) start replay at height 1 against the fresh empty set.
 // The first ConnectAndAdvance accepts any starting height; subsequent calls
 // must be strictly ascending.
+//
+// SHIELDED STATE: the engine owns genesis-fresh shielded pool state
+// (CommitmentTree, NullifierSet, AnchorHistory — same trio production
+// ConnectTip wires via BlockValidator::setShieldedState) and replays it
+// from genesis alongside the transparent set. Without it, a stateful
+// BlockValidator hard-rejects EVERY shielded transaction ("Shielded state
+// unavailable"), turning honest post-activation history (mainnet shielded
+// activation: height 8650; registry snapshot bases: 13000/33048) into a
+// false fatal. The records digest commits only the transparent set
+// (shielded commitment scope: see plan Task 10 accounting).
 class AssumeUtxoReplayEngine {
 public:
     AssumeUtxoReplayEngine();
@@ -50,6 +63,12 @@ public:
 private:
     std::unique_ptr<consensus::ConsensusUTXOSet> set_;
     std::unique_ptr<consensus::BlockValidator> validator_;
+    // Genesis-fresh shielded pool state (see class comment). ConnectBlock
+    // mutates these through the raw pointers handed to setShieldedState,
+    // so they must outlive every ConnectAndAdvance call.
+    std::unique_ptr<consensus::shielded::CommitmentTree> shielded_tree_;
+    std::unique_ptr<consensus::shielded::NullifierSet> shielded_nullifiers_;
+    std::unique_ptr<consensus::shielded::AnchorHistory> shielded_anchor_history_;
     uint32_t last_height_ = 0;
     bool any_connected_ = false;
 };

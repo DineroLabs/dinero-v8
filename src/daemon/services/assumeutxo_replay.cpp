@@ -1,12 +1,34 @@
 #include "daemon/services/assumeutxo_replay.h"
 
 #include <cstring>
+#include <stdexcept>
 
 namespace dinero::assumeutxo {
 
 AssumeUtxoReplayEngine::AssumeUtxoReplayEngine()
     : set_(std::make_unique<consensus::ConsensusUTXOSet>()),
-      validator_(std::make_unique<consensus::BlockValidator>(set_.get())) {}
+      validator_(std::make_unique<consensus::BlockValidator>(set_.get())),
+      shielded_tree_(std::make_unique<consensus::shielded::CommitmentTree>()),
+      shielded_nullifiers_(std::make_unique<consensus::shielded::NullifierSet>()),
+      shielded_anchor_history_(std::make_unique<consensus::shielded::AnchorHistory>()) {
+    // NullifierSet is sqlite-backed; un-opened, Contains() always returns
+    // false (double-spends invisible) and Insert() always returns false
+    // (treated as already-present). Open an ephemeral in-memory db — replay
+    // state is never persisted.
+    if (shielded_nullifiers_->Open(":memory:") !=
+        consensus::shielded::NullifierSet::OpenResult::Ok) {
+        throw std::runtime_error(
+            "AssumeUtxoReplayEngine: failed to open in-memory nullifier set");
+    }
+    // Same wiring as production ConnectTip (chainstate_service.cpp): without
+    // shielded state a stateful validator rejects every shielded tx with
+    // "Shielded state unavailable" — a false fatal on honest history.
+    validator_->setShieldedState(shielded_tree_.get(), shielded_nullifiers_.get(),
+                                 shielded_anchor_history_.get());
+    // Pin the mode: replay must never route through the script-skipping
+    // STATELESS path even if the BlockValidator default changes.
+    validator_->setValidationMode(consensus::ValidationMode::STATEFUL);
+}
 
 AssumeUtxoReplayEngine::~AssumeUtxoReplayEngine() = default;
 
