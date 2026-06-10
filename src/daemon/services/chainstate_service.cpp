@@ -40,6 +40,7 @@
 #include "consensus/consensus_write_batch.h"  // Phase 3a: atomic persistence scaffold
 #include "consensus/proof_gossip.h"  // Phase 9.3+: Tip-proof prewarm
 #include "consensus/assume_utxo.h"  // Snapshot trust anchors (optional hard gate)
+#include "consensus/utxo_set_digest.h"  // Canonical per-UTXO record serializer (Task 2)
 #include "consensus/active_chain_ancestry.h"  // Active-chain hash lookup by height
 #include "consensus/block_index.h"   // REORG FIX: For global FindBlockIndex fallback
 #include "consensus/block_lifecycle.h"  // BLOCK_HAVE_DATA status flag
@@ -7780,40 +7781,19 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
         }
         std::sort(sorted_outpoints.begin(), sorted_outpoints.end());
 
-        // Write UTXOs in deterministic order and compute checksum
+        // Write UTXOs in deterministic order and compute checksum.
+        // Uses the shared canonical serializer so the record encoding is
+        // defined in exactly one place (consensus::SerializeUtxoRecord) and
+        // is identical to what the digest engine (ComputeUtxoRecordsDigest)
+        // uses for the AssumeUTXO content commitment.
         uint64_t exported = 0;
         for (const auto& outpoint : sorted_outpoints) {
             const auto& entry = all_utxos.at(outpoint);
-            // Write txid (32 bytes)
-            const auto& txid_data = outpoint.txid.AsUint256().data;
-            file.write(reinterpret_cast<const char*>(txid_data), 32);
-            sha256.Write(reinterpret_cast<const uint8_t*>(txid_data), 32);
-
-            // Write vout
-            file.write(reinterpret_cast<const char*>(&outpoint.vout), sizeof(outpoint.vout));
-            sha256.Write(reinterpret_cast<const uint8_t*>(&outpoint.vout), sizeof(outpoint.vout));
-
-            // Write value (AmountUna.v is uint64_t)
-            file.write(reinterpret_cast<const char*>(&entry.value.v), sizeof(entry.value.v));
-            sha256.Write(reinterpret_cast<const uint8_t*>(&entry.value.v), sizeof(entry.value.v));
-
-            // Write scriptPubKey length
-            uint32_t script_len = static_cast<uint32_t>(entry.scriptPubKey.size());
-            file.write(reinterpret_cast<const char*>(&script_len), sizeof(script_len));
-            sha256.Write(reinterpret_cast<const uint8_t*>(&script_len), sizeof(script_len));
-
-            // Write scriptPubKey
-            file.write(reinterpret_cast<const char*>(entry.scriptPubKey.data()), script_len);
-            sha256.Write(reinterpret_cast<const uint8_t*>(entry.scriptPubKey.data()), script_len);
-
-            // Write height
-            file.write(reinterpret_cast<const char*>(&entry.height), sizeof(entry.height));
-            sha256.Write(reinterpret_cast<const uint8_t*>(&entry.height), sizeof(entry.height));
-
-            // Write isCoinbase
-            uint8_t is_coinbase = entry.isCoinbase ? 1 : 0;
-            file.write(reinterpret_cast<const char*>(&is_coinbase), 1);
-            sha256.Write(reinterpret_cast<const uint8_t*>(&is_coinbase), 1);
+            const std::vector<uint8_t> record =
+                consensus::SerializeUtxoRecord(outpoint, entry);
+            file.write(reinterpret_cast<const char*>(record.data()),
+                       static_cast<std::streamsize>(record.size()));
+            sha256.Write(record.data(), record.size());
 
             exported++;
             if (exported % 10000 == 0) {
