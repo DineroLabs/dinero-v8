@@ -6,6 +6,7 @@
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
 #include "consensus/block_index.h"  // Phase 41: BlockIndex graph for reorg logic
 #include "consensus/utxo_snapshot.h"  // Phase 42: AssumeUTXO snapshot structures
+#include "daemon/services/assumeutxo_lifecycle.h"  // AssumeUTXO fatal state machine
 #include "consensus/block_validation.h"  // Reorg fix: Production consensus validator
 #include "consensus/consensus_utxo_set.h"  // Phase 2: Pure in-memory UTXO set
 #include "consensus/shielded/anchor_history.h"
@@ -296,6 +297,10 @@ public:
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }
     uint256 GetAssumeUTXOBaseBlock() const { return assumeutxo_base_block_; }
     uint32_t GetAssumeUTXOBaseHeight() const { return assumeutxo_base_height_; }
+
+    // Fatal-state-machine lifecycle (docs/design/assumeutxo-fatal-state-machine.md).
+    // Never nullptr after Initialize(); guarded internally.
+    assumeutxo::AssumeUtxoLifecycle* GetAssumeUtxoLifecycle();
 
     // Phase 44: Background Validation (makes AssumeUTXO production-safe)
     enum class BackgroundValidationStatus {
@@ -998,6 +1003,12 @@ private:
     std::unique_ptr<std::thread> bg_validation_thread_;  // Background validation worker
     std::atomic<bool> bg_validation_should_stop_{false}; // Signal to stop worker
     mutable std::mutex bg_validation_mutex_;       // Protects background validation state
+
+    // AssumeUTXO fatal state machine; lazily constructed once utxo_index_
+    // exists (EnsureAssumeUtxoLifecycle()).
+    std::unique_ptr<assumeutxo::AssumeUtxoLifecycle> assumeutxo_lifecycle_;
+    std::mutex assumeutxo_lifecycle_init_mutex_;
+    void EnsureAssumeUtxoLifecycle();
 
     // Phase 45: IBD state (snapshot-accelerated initial block download)
     IBDStatus ibd_status_ = IBDStatus::NotInIBD;   // Current IBD status

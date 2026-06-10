@@ -867,6 +867,7 @@ add_library(dinero_core STATIC
   src/daemon/services/config_service.cpp
   src/daemon/services/wallet_service.cpp
   src/daemon/services/chainstate_service.cpp
+  src/daemon/services/assumeutxo_lifecycle.cpp  # AssumeUTXO fatal state machine
   src/daemon/services/mempool_service.cpp
   src/daemon/services/metrics_service.cpp
   src/daemon/services/p2p_service.cpp
