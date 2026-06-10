@@ -19,13 +19,20 @@ namespace dinero::assumeutxo {
 // Owns a fresh ConsensusUTXOSet + BlockValidator; never touches the live
 // chainstate. Single-threaded use by BackgroundValidationWorker.
 //
-// GENESIS HANDLING: genesis (height 0) is UTXO-neutral in Dinero — its
-// outputs are OP_RETURN-only and GetBlockSubsidy(0) == 0, so it contributes
-// no UTXOs and no utreexo leaves. Production mirrors this: ConnectTip's
-// early-init path sets genesis as tip directly without ConnectBlock, and the
-// deterministic consensus fuzzer likewise starts applying at height 1 over
-// an empty set. Therefore genesis is treated as PRE-APPLIED here: callers
-// (the worker, tests) start replay at height 1 against the fresh empty set.
+// GENESIS HANDLING: genesis (height 0) is never validated — production
+// ConnectTip's early-init path installs genesis as tip without ConnectBlock.
+// But genesis is NOT UTXO-neutral in the canonical set: genesis_init.cpp
+// persists EVERY genesis coinbase output as a ChainDB coin (height 0,
+// coinbase=true, INCLUDING OP_RETURN outputs that normal ConnectBlock
+// skips), and the startup BulkLoad (PersistentUTXOAdapter::LoadInitialState)
+// carries them into the live consensus set that ExportSnapshot exports.
+// The replayed set must be seeded identically or every honest snapshot
+// mismatches its own commitment (found by the Task 8 e2e: regtest genesis
+// carries a 100-DIN OP_RETURN record at height 0). Callers seed via
+// SeedGenesis(genesis_block), then start ConnectAndAdvance at height 1.
+// Genesis outputs are NOT inserted into the utreexo forest — production's
+// height-0 checkpoint is an empty forest and the live forest is rebuilt
+// from block replay only, so it excludes genesis as well.
 // The first ConnectAndAdvance accepts any starting height; subsequent calls
 // must be strictly ascending.
 //
@@ -43,10 +50,17 @@ public:
     AssumeUtxoReplayEngine();
     ~AssumeUtxoReplayEngine();
 
+    // Seed the genesis block's coinbase outputs into the replay set exactly
+    // as genesis_init.cpp persists them to ChainDB (height 0, coinbase=true,
+    // OP_RETURN outputs INCLUDED, no utreexo leaves — see class comment).
+    // Call once per engine, before any ConnectAndAdvance. Returns false with
+    // `error` set only on a duplicate-coin insert (engine misuse).
+    bool SeedGenesis(const Block& genesis_block, std::string& error);
+
     // Validate + apply one block through the normal connection path
     // (full BlockValidator::ConnectBlock — verify_root enforced).
     // Heights must be fed strictly ascending (start at 1; genesis is
-    // pre-applied, see class comment). Returns false with `error` set on
+    // seeded via SeedGenesis, see class comment). Returns false with `error` set on
     // validation failure (the spec's "hard validation failure proving the
     // snapshot cannot be trusted" when the block came from the canonical
     // chain below the base).

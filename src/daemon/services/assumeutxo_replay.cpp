@@ -32,6 +32,37 @@ AssumeUtxoReplayEngine::AssumeUtxoReplayEngine()
 
 AssumeUtxoReplayEngine::~AssumeUtxoReplayEngine() = default;
 
+bool AssumeUtxoReplayEngine::SeedGenesis(const Block& genesis_block, std::string& error) {
+    // Mirror genesis_init.cpp's ChainDB seeding: every output of the genesis
+    // coinbase becomes a coin at height 0 with coinbase=true, INCLUDING
+    // OP_RETURN outputs (ConnectBlock's ProcessTransaction skips those, which
+    // is exactly why genesis cannot go through ConnectAndAdvance). No utreexo
+    // leaves are added — the live forest excludes genesis too (the height-0
+    // checkpoint is an empty forest).
+    if (genesis_block.vtx.empty()) {
+        return true;  // no coinbase -> nothing to seed
+    }
+    const Transaction& genesis_tx = genesis_block.vtx[0];
+    const TxId txid = genesis_tx.GetTxid();
+    for (uint32_t vout = 0; vout < genesis_tx.vout.size(); ++vout) {
+        const TxOutput& output = genesis_tx.vout[vout];
+        const OutPoint outpoint(txid, vout);
+        const consensus::UTXOEntry entry(
+            output.value,
+            output.scriptPubKey,
+            /*height=*/0,
+            /*isCoinbase=*/true,
+            output.is_confidential,
+            output.commitment);
+        if (!set_->AddCoin(outpoint, entry)) {
+            error = "SeedGenesis: duplicate genesis coin " +
+                    txid.AsUint256().GetHex() + ":" + std::to_string(vout);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool AssumeUtxoReplayEngine::ConnectAndAdvance(const Block& block, uint32_t height,
                                                const uint256& block_hash,
                                                std::string& error) {

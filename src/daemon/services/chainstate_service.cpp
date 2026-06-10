@@ -11934,11 +11934,16 @@ void ChainstateService::BackgroundValidationWorker() {
                                      "missing body pending re-download");
                     continue;
                 }
-                // Genesis (height 0) is UTXO-neutral and pre-applied in the
-                // engine — production ConnectTip's early-init path likewise
-                // installs genesis as tip without running ConnectBlock. The
-                // engine therefore replays heights 1..base only; height 0
-                // still counts for availability/progress below.
+                // Genesis (height 0) is never validated — production
+                // ConnectTip's early-init path likewise installs genesis as
+                // tip without running ConnectBlock. But the canonical UTXO
+                // set is NOT genesis-neutral: genesis_init.cpp persists every
+                // genesis coinbase output (OP_RETURN included) as a height-0
+                // coin, and the startup BulkLoad carries them into the live
+                // set that ExportSnapshot commits to. Seed the engine
+                // identically or every honest snapshot fails its own
+                // commitment (caught by the Task 8 e2e). Height 0 also counts
+                // for availability/progress below.
                 //
                 // blocks_skipped == 0 gate: the engine requires strictly
                 // ascending heights, so once any body this pass is missing
@@ -11947,6 +11952,18 @@ void ChainstateService::BackgroundValidationWorker() {
                 // MISCLASSIFIED as poison (missing bodies are never fatal).
                 // The rest of the pass continues as an availability scan;
                 // the rescan loop restarts the engine for the next pass.
+                if (height == 0 && blocks_skipped == 0) {
+                    std::string seed_err;
+                    if (!replay->SeedGenesis(blk, seed_err)) {
+                        // Impossible by construction (fresh engine, single
+                        // seed per pass): indicates engine misuse, and a
+                        // retry would fail identically — not transient.
+                        replay_poisoned = true;
+                        replay_poison_reason =
+                            "genesis seeding failed during replay: " + seed_err;
+                        break;
+                    }
+                }
                 if (height >= 1 && blocks_skipped == 0) {
                     std::string connect_err;
                     if (!replay->ConnectAndAdvance(blk, height, hash_result.value(),
