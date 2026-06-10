@@ -11952,6 +11952,52 @@ void ChainstateService::BackgroundValidationWorker() {
             }
             replay_poisoned = false;
             replay_poison_reason.clear();
+
+            // ── Header-chain fallback table (hoisted, O(target_height) per pass) ──
+            // Backfilled block bodies arrive via the scheduler WITHOUT
+            // height-index writes (only ConnectTip writes the canonical index,
+            // by design — so canonical-write invariants are untouched). When
+            // the height index misses a backfilled body, the header chain below
+            // the snapshot base IS canonical by construction: LoadSnapshot
+            // verifies the base header is on the best header chain (chainstate_
+            // service.cpp:8114-8118), and a header's ancestors at each height
+            // are unique (no two blocks at the same height on the same chain).
+            // The body-hash check below still guards integrity — a corrupt or
+            // misrouted body is caught by hash mismatch and treated as missing.
+            //
+            // Perf: GetHeaderAtHeight walks from best_header O(n) per call
+            // (GetAncestor linear walk). Calling it inside the height loop for
+            // heights 0..target_height would cost
+            //   sum_{h=0}^{T}(best_height-h) ≈ T*best_height
+            // ≈ 33k × 40k = 1.3B pointer steps per pass — the same O(n²)
+            // trap as the pre-#241 scanner. Strategy: ONE call to
+            // GetHeaderAtHeight(target_height) then a SINGLE backward walk via
+            // ->parent fills the entire table in O(target_height) total. Each
+            // per-height lookup is then O(1) from the vector. The table is
+            // rebuilt once per rescan pass (the while(true) loop only retries
+            // when bodies are missing, so passes beyond the first are rare and
+            // bounded).
+            std::vector<uint256> canonical_hashes_fallback;
+            if (header_chain_selector_) {
+                const auto* hcs_tip =
+                    header_chain_selector_->GetHeaderAtHeight(target_height);
+                if (hcs_tip) {
+                    canonical_hashes_fallback.resize(
+                        static_cast<size_t>(target_height) + 1);
+                    // Walk backward from target_height to 0 in a single pass.
+                    // Parent pointers are immutable for below-base entries
+                    // (append-only chain, no reorgs that deep) — no locking
+                    // needed here; matches the same pattern used at ~:6520 and
+                    // EnsureHeaderBranchIndexed.
+                    const auto* walk = hcs_tip;
+                    while (walk) {
+                        canonical_hashes_fallback[walk->height] = walk->hash;
+                        if (walk->height == 0) break;
+                        walk = walk->parent;
+                    }
+                }
+            }
+
             for (uint32_t height = 0; height <= target_height; ++height) {
                 if (bg_validation_should_stop_) {
                     logger_->warning("[BackgroundValidation] Validation stopped by request");
@@ -11962,9 +12008,21 @@ void ChainstateService::BackgroundValidationWorker() {
                     std::lock_guard<std::mutex> lock(bg_validation_mutex_);
                     bg_validation_current_height_ = height;
                 }
+                // Try the height index first (populated by ConnectTip /
+                // --reindex). On miss, fall back to the canonical header-chain
+                // table built above (backfilled bodies lack index entries).
                 auto hash_result = chain_db_->getBlockHashByHeight(height);
-                if (!hash_result.ok()) { blocks_skipped++; continue; }
-                auto block_result = getBlockByHash(hash_result.value());
+                uint256 canonical_hash;
+                if (hash_result.ok()) {
+                    canonical_hash = hash_result.value();
+                } else if (height < canonical_hashes_fallback.size() &&
+                           !canonical_hashes_fallback[height].IsNull()) {
+                    canonical_hash = canonical_hashes_fallback[height];
+                } else {
+                    blocks_skipped++;
+                    continue;
+                }
+                auto block_result = getBlockByHash(canonical_hash);
                 if (!block_result.ok()) { blocks_skipped++; continue; }
                 const Block& blk = block_result.value();
                 // The stored body must actually be the canonical block:
@@ -11973,12 +12031,12 @@ void ChainstateService::BackgroundValidationWorker() {
                 // mis-stored local body would otherwise be replayed as if
                 // canonical. A mismatch is LOCAL corruption (heal by
                 // re-download), not snapshot poison: treat as missing body.
-                if (blk.GetHash() != hash_result.value()) {
+                if (blk.GetHash() != canonical_hash) {
                     blocks_skipped++;
                     logger_->warning("[BackgroundValidation] body at height " +
                                      std::to_string(height) + " hashes to " +
                                      blk.GetHash().GetHex() + " but canonical hash is " +
-                                     hash_result.value().GetHex() +
+                                     canonical_hash.GetHex() +
                                      " — local block-store corruption; treating as a "
                                      "missing body pending re-download");
                     continue;
@@ -12015,7 +12073,7 @@ void ChainstateService::BackgroundValidationWorker() {
                 }
                 if (height >= 1 && blocks_skipped == 0) {
                     std::string connect_err;
-                    if (!replay->ConnectAndAdvance(blk, height, hash_result.value(),
+                    if (!replay->ConnectAndAdvance(blk, height, canonical_hash,
                                                    connect_err)) {
                         // A canonical-chain block below the snapshot base
                         // failed real validation: the snapshot's chain is
