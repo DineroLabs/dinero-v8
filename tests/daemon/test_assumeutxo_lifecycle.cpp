@@ -447,6 +447,24 @@ TEST_F(AssumeUtxoLifecycleTest, OperatorResetThenClearAllWipesIndexAndMetadata) 
     }
 }
 
+// Spec Stall Semantics: server default stall timeout is 30 minutes. Pin it —
+// every other test injects an explicit timeout, so without this a default
+// change would pass the suite unnoticed.
+TEST_F(AssumeUtxoLifecycleTest, DefaultStallTimeoutIsThirtyMinutes) {
+    // Default-constructed timeout (no injection).
+    assumeutxo::AssumeUtxoLifecycle lc(utxo_index_.get(), /*logger=*/nullptr);
+    ASSERT_TRUE(lc.OnSnapshotLoaded(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc.OnValidationStarted(t0_));
+    lc.OnBlockValidated(5, t0_ + 5s);
+
+    // 1799s after last progress: not yet stalled.
+    lc.Tick(t0_ + 5s + 1799s);
+    EXPECT_EQ(lc.GetState(), State::ValidatingHistory);
+    // 1800s: stalled — pins the 30-minute default.
+    lc.Tick(t0_ + 5s + 1800s);
+    EXPECT_EQ(lc.GetState(), State::ValidationStalled);
+}
+
 }  // namespace dinero
 
 int main(int argc, char** argv) {
