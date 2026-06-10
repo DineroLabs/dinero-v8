@@ -3404,6 +3404,15 @@ void ChainstateService::Stop() {
         logger_->info("[ChainstateService] Background validation thread stopped");
     }
 
+    // Lifecycle caches the raw UTXOIndex*; destroy it first (Task 8's RPC
+    // accessor must never observe a lifecycle with a dangling index).
+    // The bg validation worker is already joined above, so no concurrent
+    // access to assumeutxo_lifecycle_ is possible at this point.
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(assumeutxo_lifecycle_init_mutex_);
+        assumeutxo_lifecycle_.reset();
+    }
+
     // Reset instances (ONE DB: chain_manager and chain_db owned globally, not here)
     utxo_index_.reset();
 
@@ -11678,6 +11687,22 @@ void ChainstateService::BackgroundValidationWorker() {
         const uint32_t target_height = assumeutxo_base_height_;
         const uint32_t log_interval = std::max(1u, target_height / 100);  // Log every 1%
 
+        // First-time-only progress tracking: re-scanning an already-validated
+        // height is not "actual progress" (spec Stall Semantics) — only a
+        // height never validated this run (and beyond the durable marker from
+        // a previous run) feeds the lifecycle's stall clock.
+        const uint32_t resume_height = assumeutxo_lifecycle_
+            ->GetStatus(std::chrono::steady_clock::now()).current_validation_height;
+        std::vector<bool> height_validated(static_cast<size_t>(target_height) + 1, false);
+        // Gate on resume_height > 0: on a fresh run the marker is 0 (genesis),
+        // and we want genesis itself to produce a real OnBlockValidated signal
+        // on the first pass rather than be pre-marked as already done.
+        if (resume_height > 0) {
+            for (uint32_t h = 0; h <= target_height && h <= resume_height; ++h) {
+                height_validated[h] = true;  // claimed by the durable progress marker
+            }
+        }
+
         // Spec: missing bodies are NEVER skippable success. Re-scan until all
         // bodies are present (bodies backfill as IBD proceeds) or we are told
         // to stop; Tick() drives the loud-stall transition while we wait.
@@ -11698,12 +11723,14 @@ void ChainstateService::BackgroundValidationWorker() {
                 if (!hash_result.ok()) { blocks_skipped++; continue; }
                 auto block_result = getBlockByHash(hash_result.value());
                 if (!block_result.ok()) { blocks_skipped++; continue; }
-                {
-                    std::lock_guard<std::mutex> lock(bg_validation_mutex_);
-                    bg_validation_current_height_ = height;
-                    bg_validation_blocks_validated_++;
+                if (!height_validated[height]) {
+                    height_validated[height] = true;
+                    {
+                        std::lock_guard<std::mutex> lock(bg_validation_mutex_);
+                        bg_validation_blocks_validated_++;
+                    }
+                    assumeutxo_lifecycle_->OnBlockValidated(height, std::chrono::steady_clock::now());
                 }
-                assumeutxo_lifecycle_->OnBlockValidated(height, std::chrono::steady_clock::now());
                 if (height % log_interval == 0 || height == target_height) {
                     double percent = (static_cast<double>(height) /
                                       static_cast<double>(target_height)) * 100.0;
