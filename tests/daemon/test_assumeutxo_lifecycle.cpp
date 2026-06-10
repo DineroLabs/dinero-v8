@@ -478,6 +478,51 @@ TEST_F(AssumeUtxoLifecycleTest, ResetClearsExpectedCommitmentKeys) {
     EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kExpectedUtreexoRootKey).has_value());
 }
 
+// Spec Allowed Transitions: validation_stalled -> fully_validated is forbidden
+// without resumed progress. Promotion requires ValidatingHistory; fatal stays
+// reachable from Stalled.
+TEST_F(AssumeUtxoLifecycleTest, StalledCannotPromoteDirectlyToFullyValidated) {
+    auto lc = MakeLifecycle(/*stall_timeout=*/1800s);
+    ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc->OnValidationStarted(t0_));
+    lc->OnBlockValidated(5, t0_ + 5s);
+    lc->Tick(t0_ + 5s + 1800s);
+    ASSERT_EQ(lc->GetState(), State::ValidationStalled);
+
+    // Direct completion from Stalled: refused, state unchanged.
+    EXPECT_FALSE(lc->OnReplayComplete(true, true, "aa", "aa", 0, t0_ + 4000s));
+    EXPECT_EQ(lc->GetState(), State::ValidationStalled);
+
+    // Fatal must STILL be reachable from Stalled (mismatch discovered late).
+    lc->OnReplayComplete(true, /*commitment_match=*/false, "aa", "bb", 0, t0_ + 4100s);
+    EXPECT_EQ(lc->GetState(), State::FatalMismatch);
+}
+
+// Hand-corrupted numeric metadata must fail safe (fatal), not crash startup.
+TEST_F(AssumeUtxoLifecycleTest, CorruptHeightMetadataGoesFatalNotThrow) {
+    {
+        auto lc = MakeLifecycle();
+        ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+        ASSERT_TRUE(lc->OnValidationStarted(t0_));
+    }
+    utxo_index_->SetMetadata(assumeutxo::kLcBaseHeightKey, "not-a-number");
+    auto lc2 = MakeLifecycle();
+    EXPECT_NO_THROW(lc2->RestoreFromPersistence(true));
+    EXPECT_EQ(lc2->GetState(), State::FatalMismatch);
+    EXPECT_NE(lc2->GetStatus(t0_).fatal_reason.find("corrupt"), std::string::npos);
+}
+
+// Disable() must clear the expected-commitment keys (twin of the reset test).
+TEST_F(AssumeUtxoLifecycleTest, DisableClearsExpectedCommitmentKeys) {
+    utxo_index_->SetMetadata(assumeutxo::kExpectedCommitmentKey, "aa");
+    utxo_index_->SetMetadata(assumeutxo::kExpectedUtreexoRootKey, "bb");
+    auto lc = MakeLifecycle();
+    ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+    lc->Disable();
+    EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kExpectedCommitmentKey).has_value());
+    EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kExpectedUtreexoRootKey).has_value());
+}
+
 }  // namespace dinero
 
 int main(int argc, char** argv) {

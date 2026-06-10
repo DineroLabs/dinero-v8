@@ -3042,8 +3042,22 @@ bool ChainstateService::Start() {
         bool chainstate_matches = true;
         if (auto bh = utxo_index_->GetMetadata(assumeutxo::kLcBaseHeightKey)) {
             if (auto bb = utxo_index_->GetMetadata(assumeutxo::kLcBaseBlockKey)) {
-                const uint32_t h = static_cast<uint32_t>(std::stoul(bh.value()));
-                if (chain_db_ && h > 0) {
+                uint32_t h = 0;
+                bool parse_ok = false;
+                try {
+                    size_t pos = 0;
+                    unsigned long v = std::stoul(bh.value(), &pos);
+                    if (pos == bh.value().size() && v <= UINT32_MAX) {
+                        h = static_cast<uint32_t>(v);
+                        parse_ok = true;
+                    }
+                } catch (...) {}
+                if (!parse_ok) {
+                    // Corrupt metadata: treat as chainstate mismatch (fail-safe;
+                    // lifecycle's own RestoreFromPersistence will go fatal on the
+                    // same key). No crash.
+                    chainstate_matches = false;
+                } else if (chain_db_ && h > 0) {
                     auto hash_result = chain_db_->getBlockHashByHeight(h);
                     chainstate_matches = hash_result.ok() &&
                         hash_result.value() == uint256::FromHexUnsafe(bb.value());
