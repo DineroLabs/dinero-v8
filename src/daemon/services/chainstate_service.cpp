@@ -1630,8 +1630,32 @@ bool ChainstateService::ResetAssumeUtxoFatalState(const std::string& confirm_tok
     if (!assumeutxo_lifecycle_->OperatorReset(confirm_token)) {
         return false;
     }
-    // Clear persisted metadata so post-reset restarts don't recreate the
-    // legacy-upgrade hole (spec: Operator Reset + reset-scope requirement).
+
+    // Wipe the bulk-loaded assumed UTXO set (spec: Reset must clear assumed UTXO state).
+    // OperatorReset already deleted lifecycle metadata keys; ClearAll drops all wallet_utxos
+    // and utxo_metadata rows from the DB.  Best-effort: log and continue if it fails.
+    if (utxo_index_) {
+        if (!utxo_index_->ClearAll()) {
+            if (logger_) {
+                logger_->error("[AssumeUTXO] ClearAll failed during reset — "
+                               "Manual intervention required - delete wallet.db");
+            }
+        }
+    }
+
+    // Reset legacy in-memory background-validation state so a post-reset restart
+    // does not see stale InProgress/Failed status (spec FIX 3).
+    {
+        std::lock_guard<std::mutex> lock(bg_validation_mutex_);
+        bg_validation_status_ = BackgroundValidationStatus::NotStarted;
+        bg_validation_error_.clear();
+        bg_validation_current_height_ = 0;
+        bg_validation_blocks_validated_ = 0;
+    }
+
+    // Clear in-memory flags + belt-and-braces metadata-key wipe.
+    // ClearAll already dropped utxo_metadata rows; this also resets assumeutxo_active_
+    // and the base-block/height in-memory fields.
     ClearAssumeUTXOState(/*clear_persisted_metadata=*/true);
     return true;
 }

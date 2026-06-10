@@ -373,7 +373,8 @@ static din::Json buildSnapshotBootstrapDiagnostics(
         snapshot["history_fully_validated"] = lc_st.history_fully_validated;
         snapshot["fatal"] = lc_st.fatal;
         snapshot["fatal_reason"] = lc_st.fatal_reason;
-        snapshot["assumeutxo_active"] = lc_st.assumeutxo_active;  // lifecycle overrides legacy bool
+        // Defensive OR: never read false while legacy state says the node depends on assumed state.
+        snapshot["assumeutxo_active"] = lc_st.assumeutxo_active || chainstate->IsAssumeUTXOActive();
         snapshot["current_validation_height"] = lc_st.current_validation_height;
         snapshot["target_validation_height"] = lc_st.target_validation_height;
         snapshot["missing_body_count"] = lc_st.missing_body_count;
@@ -381,6 +382,23 @@ static din::Json buildSnapshotBootstrapDiagnostics(
         if (lc_st.snapshot_base_height > 0) {
             snapshot["snapshot_base_height"] = lc_st.snapshot_base_height;
             snapshot["snapshot_base_block"] = lc_st.snapshot_base_block.GetHex();
+        }
+        if (lc_st.target_validation_height > 0) {
+            snapshot["progress_percent"] =
+                (static_cast<double>(lc_st.current_validation_height) /
+                 static_cast<double>(lc_st.target_validation_height)) * 100.0;
+        } else {
+            snapshot["progress_percent"] = 0.0;
+        }
+        // Lifecycle clock is steady_clock; approximate wall-clock last progress
+        // as now - stall_seconds (exact enough for dashboards; spec contract key).
+        {
+            const auto last_progress_sys =
+                std::chrono::system_clock::now() - std::chrono::seconds(lc_st.stall_seconds);
+            const auto t = std::chrono::system_clock::to_time_t(last_progress_sys);
+            char buf[32];
+            std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&t));
+            snapshot["last_progress_time"] = std::string(buf);
         }
     }
 
@@ -2013,7 +2031,7 @@ static din::Json rpc_context_resetassumeutxofatal(const ExecutionContext& ctx, c
     dinero::g_logger.info(audit_msg);
 
     result["reset"] = true;
-    result["next_action"] = "Fatal state cleared. Load a snapshot or sync from genesis.";
+    result["next_action"] = "Fatal state cleared and assumed UTXO state wiped. Node remains in SAFE MODE — run safemode.exit to resume, then load a snapshot or sync from genesis.";
     result["audit"] = audit_msg;
     return result;
 }
