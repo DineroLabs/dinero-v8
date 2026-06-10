@@ -452,8 +452,12 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_replay_e2e.sh)
             "DINEROD=$<TARGET_FILE:dinerod>"
             bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_replay_e2e.sh
     )
+    # NOTE: deliberately NOT labeled "integration" — the CI ctest lane runs
+    # --label-exclude 'integration|...', so that label would silently drop the
+    # keystone replay e2e from CI (same trap documented for P2PStalenessRecovery
+    # below). This test gates spec Required Tests 1+4 end-to-end.
     set_tests_properties(AssumeUtxoReplayE2E PROPERTIES
-        LABELS "assumeutxo;replay;e2e;integration"
+        LABELS "assumeutxo;replay;e2e"
         TIMEOUT 600
     )
     message(STATUS "  ✓ AssumeUtxoReplayE2E registered")

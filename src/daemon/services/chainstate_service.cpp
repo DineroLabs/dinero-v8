@@ -2916,8 +2916,12 @@ bool ChainstateService::Start() {
             }
         }
 
-        // Only activate assumed mode if the height parsed cleanly; corrupt
-        // metadata is treated as a chainstate mismatch and goes fatal below.
+        // Only activate assumed mode if the height parsed cleanly. Precision
+        // note: chainstate_matches=false reaches EnterFatal only when the
+        // persisted lifecycle record is fully_validated (RestoreFromPersistence
+        // consults the flag solely in that branch); for other/absent records
+        // the fail-closed outcome is that SetAssumeUTXOState is skipped, so
+        // assumed mode never activates and validation cannot start.
         if (height_parse_ok) {
             SetAssumeUTXOState(restored_base_block, restored_base_height, /*persist_metadata=*/false);
         }
@@ -2926,8 +2930,8 @@ bool ChainstateService::Start() {
         // the persisted base must still be what the consensus UTXO set says.
         EnsureAssumeUtxoLifecycle();
         {
-            // Corrupt height parse is a fatal mismatch (fail-closed idiom matching
-            // the else-branch; lifecycle will persist fatal_mismatch).
+            // Corrupt height parse: see the precision note above — fatal when a
+            // fully_validated record exists, otherwise fail-closed by inactivation.
             bool chainstate_matches = height_parse_ok;
             if (chainstate_matches) {
                 if (consensus_utxo_set_) {
