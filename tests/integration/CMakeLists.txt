@@ -440,6 +440,29 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_p2pservice_network_control.sh)
     message(STATUS "  ✓ P2PServiceNetworkControl registered")
 endif()
 
+# AssumeUTXO replay engine keystone e2e (plan 2026-06-10 Task 8):
+# real genesis->base replay retires the trust marker (spec Required Test 4),
+# poisoned snapshot goes fatal_mismatch and survives restart (Required Test 1),
+# operator reset recovers, different-base re-entry refused, and a persisted
+# stall recovers across restarts through the real worker.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_replay_e2e.sh)
+    add_test(
+        NAME AssumeUtxoReplayE2E
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_replay_e2e.sh
+    )
+    # NOTE: deliberately NOT labeled "integration" — the CI ctest lane runs
+    # --label-exclude 'integration|...', so that label would silently drop the
+    # keystone replay e2e from CI (same trap documented for P2PStalenessRecovery
+    # below). This test gates spec Required Tests 1+4 end-to-end.
+    set_tests_properties(AssumeUtxoReplayE2E PROPERTIES
+        LABELS "assumeutxo;replay;e2e"
+        TIMEOUT 600
+    )
+    message(STATUS "  ✓ AssumeUtxoReplayE2E registered")
+endif()
+
 # issue #214: two-node integration repro of in-daemon staleness recovery.
 # CONTROL (recovery off -> stays stuck) vs EXPERIMENT (recovery on -> re-getheaders
 # and catches up). Needs the DINERO_TEST_* regtest hooks built into dinerod.

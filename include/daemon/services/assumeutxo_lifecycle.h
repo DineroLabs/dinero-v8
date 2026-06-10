@@ -23,6 +23,11 @@ inline constexpr const char* kLcBaseHeightKey    = "assumeutxo_lc_base_height";
 // throttle (height % 100 == 0, or height == base height) so a restart resumes
 // from at most ~100 blocks back instead of zero.
 inline constexpr const char* kLcProgressHeightKey = "assumeutxo_lc_progress_height";
+// Expected content commitment (SHA256 over sorted UTXO records) persisted by
+// LoadSnapshot so the replay engine can verify its recomputed digest.
+inline constexpr const char* kExpectedCommitmentKey  = "assumeutxo_expected_commitment";
+// v3 utreexo root (hex) persisted by LoadSnapshot. Only present for v3 snapshots.
+inline constexpr const char* kExpectedUtreexoRootKey = "assumeutxo_expected_utreexo_root";
 
 // Required confirmation token for OperatorReset (spec: Operator Reset).
 inline constexpr const char* kResetToken = "RESET-ASSUMEUTXO-FATAL";

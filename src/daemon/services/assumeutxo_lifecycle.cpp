@@ -9,6 +9,17 @@ constexpr const char* kStateNames[] = {
     "disabled", "snapshot_loaded", "validating_history",
     "validation_stalled", "fatal_mismatch", "fully_validated",
 };
+// ParseU32: safe alternative to std::stoul for persisted height values.
+// Returns false (without throwing) if the string is non-numeric or out of range.
+bool ParseU32(const std::string& s, uint32_t& out) {
+    try {
+        size_t pos = 0;
+        unsigned long v = std::stoul(s, &pos);
+        if (pos != s.size() || v > UINT32_MAX) return false;
+        out = static_cast<uint32_t>(v);
+        return true;
+    } catch (...) { return false; }
+}
 }  // namespace
 
 const char* AssumeUtxoLifecycle::StateName(State s) {
@@ -105,6 +116,11 @@ bool AssumeUtxoLifecycle::OnReplayComplete(bool replay_performed, bool commitmen
         // Stay validating_history until the real replay engine reports.
         return false;
     }
+    if (state_ != State::ValidatingHistory) {
+        // Spec: leaving validation_stalled requires actual progress
+        // (OnBlockValidated) before completion can be claimed.
+        return false;
+    }
     state_ = State::FullyValidated;
     Persist();
     if (logger_) logger_->info(
@@ -150,6 +166,8 @@ bool AssumeUtxoLifecycle::OperatorReset(const std::string& confirm_token) {
         utxo_index_->DeleteMetadata(kLcBaseBlockKey);
         utxo_index_->DeleteMetadata(kLcBaseHeightKey);
         utxo_index_->DeleteMetadata(kLcProgressHeightKey);
+        utxo_index_->DeleteMetadata(kExpectedCommitmentKey);
+        utxo_index_->DeleteMetadata(kExpectedUtreexoRootKey);
     }
     return true;
 }
@@ -165,12 +183,22 @@ void AssumeUtxoLifecycle::RestoreFromPersistence(bool chainstate_matches_marker)
         base_block_ = uint256::FromHexUnsafe(bb.value());
     }
     if (auto bh = utxo_index_->GetMetadata(kLcBaseHeightKey)) {
-        base_height_ = static_cast<uint32_t>(std::stoul(bh.value()));
+        uint32_t h = 0;
+        if (!ParseU32(bh.value(), h)) {
+            EnterFatal("corrupt lifecycle metadata: non-numeric height value", TimePoint{});
+            return;
+        }
+        base_height_ = h;
     }
     if (auto ph = utxo_index_->GetMetadata(kLcProgressHeightKey)) {
         // Resume from the last durable progress marker (throttled writes mean
         // this may trail actual progress by up to ~100 blocks).
-        current_height_ = static_cast<uint32_t>(std::stoul(ph.value()));
+        uint32_t progress_h = 0;
+        if (!ParseU32(ph.value(), progress_h)) {
+            EnterFatal("corrupt lifecycle metadata: non-numeric height value", TimePoint{});
+            return;
+        }
+        current_height_ = progress_h;
     }
 
     if (name == "fatal_mismatch") {
@@ -218,6 +246,8 @@ void AssumeUtxoLifecycle::Disable() {
         utxo_index_->DeleteMetadata(kLcBaseBlockKey);
         utxo_index_->DeleteMetadata(kLcBaseHeightKey);
         utxo_index_->DeleteMetadata(kLcProgressHeightKey);
+        utxo_index_->DeleteMetadata(kExpectedCommitmentKey);
+        utxo_index_->DeleteMetadata(kExpectedUtreexoRootKey);
     }
 }
 
