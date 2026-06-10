@@ -3074,6 +3074,46 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_lifecycle.cpp)
   message(STATUS "✅ AssumeUTXO lifecycle state-machine test enabled")
 endif()
 
+# AssumeUTXO replay engine: real ConnectBlock over a fresh consensus set
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
+  add_executable(test_assumeutxo_replay
+    tests/daemon/test_assumeutxo_replay.cpp
+    src/daemon/services/assumeutxo_replay.cpp
+    src/consensus/utxo_set_digest.cpp
+    src/daemon/config.cpp  # GetConfig() referenced by consensus_write_batch.obj
+    tests/stubs/mempool_test_stubs.cpp  # Mempool hooks pulled in via dinero_core
+    tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault
+  )
+  add_dependencies(test_assumeutxo_replay gtest)
+  target_link_libraries(test_assumeutxo_replay PRIVATE
+    dinero_core
+    dinero_consensus
+    dinero_crypto
+    secp256k1
+    ${ROCKSDB_LIBRARY}
+    ${SQLITE3_LIBRARIES}
+    $<TARGET_FILE:gtest>
+  )
+  if(TARGET bulletproofs_ffi)
+    target_link_libraries(test_assumeutxo_replay PRIVATE bulletproofs_ffi)
+    if(TARGET build_bulletproofs_ffi)
+      add_dependencies(test_assumeutxo_replay build_bulletproofs_ffi)
+    endif()
+  endif()
+  link_zstd_if_needed(test_assumeutxo_replay)
+  target_include_directories(test_assumeutxo_replay BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME AssumeUtxoReplay COMMAND test_assumeutxo_replay)
+  set_tests_properties(AssumeUtxoReplay PROPERTIES
+    LABELS "daemon;assumeutxo;replay"
+    TIMEOUT 120
+  )
+  message(STATUS "✅ AssumeUTXO replay engine test enabled")
+endif()
+
 # ─── Canonical UTXO records digest (AssumeUTXO content commitment) ───────────
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utxo_set_digest.cpp)
   add_executable(test_utxo_set_digest
