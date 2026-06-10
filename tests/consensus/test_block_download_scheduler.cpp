@@ -1425,6 +1425,125 @@ int main() {
                      "entry demoted to MISSING and retried" << std::endl;
     }
 
+    {
+        std::cout << "\n15. ScanForMissingBlocks preserves backfill in-flight hashes "
+                     "across rescans (shared window stays truthful)..." << std::endl;
+
+        // Mirror case 12's topology: genesis + heights 1..40, snapshot base = 20.
+        // Tip sync (21..40) is fully drained via the 3-tick sequence, leaving the
+        // backfill queue (1..20) with max_in_flight (16) REQUESTED entries and
+        // 4 MISSING.  A headers-processed rescan (ScanForMissingBlocks with no
+        // new tip work) must NOT wipe the backfill hashes from in_flight_blocks_.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 40, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(20);  // snapshot base = 20
+
+        std::vector<std::pair<uint256, uint32_t>> requests;  // (hash, height)
+        scheduler.SetSendGetDataCallback([&requests](const uint256& h, uint32_t height) {
+            requests.emplace_back(h, height);
+        });
+
+        scheduler.OnHeadersProcessed();   // tip sync: heights 21..40 missing
+        scheduler.EnableBackfill(1, 20);  // pre-base bodies 1..20
+
+        // Tick #1: tip sync fills the window (16 blocks REQUESTED).
+        scheduler.Tick();
+        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
+                     "case 15 setup: expected tip to fill the window (tick 1)")) {
+            return 1;
+        }
+        auto first_window = requests;
+        requests.clear();
+        for (const auto& rq : first_window) {
+            if (!scheduler.OnBlockReceived(MakeBlockForHash(selector, rq.first))) {
+                std::cerr << "   ❌ case 15: failed to drain tip block at height "
+                          << rq.second << std::endl;
+                return 1;
+            }
+        }
+
+        // Tick #2: the remaining 4 tip blocks REQUESTED.
+        scheduler.Tick();
+        if (!Require(requests.size() == 4,
+                     "case 15 setup: expected 4 remaining tip requests (tick 2)")) {
+            return 1;
+        }
+        auto second_window = requests;
+        requests.clear();
+        for (const auto& rq : second_window) {
+            if (!scheduler.OnBlockReceived(MakeBlockForHash(selector, rq.first))) {
+                std::cerr << "   ❌ case 15: failed to drain remaining tip block at height "
+                          << rq.second << std::endl;
+                return 1;
+            }
+        }
+
+        // Tick #3: tip idle → backfill services up to max_in_flight (16 REQUESTED,
+        // 4 MISSING remain in the 20-entry backfill queue).
+        scheduler.Tick();
+        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
+                     "case 15 setup: expected backfill to fill the window (tick 3)")) {
+            return 1;
+        }
+
+        // Capture one in-flight backfill hash for IsBlockInFlight probing.
+        const uint256 backfill_hash = requests.front().first;
+        const size_t in_flight_before = scheduler.GetInFlightCount();
+        if (!Require(in_flight_before == scheduler.GetMaxInFlight(),
+                     "case 15 setup: expected full window before rescan")) {
+            return 1;
+        }
+
+        requests.clear();  // reset send counter for assertion (c)
+
+        // ── The rescan under test ──────────────────────────────────────────────
+        // OnHeadersProcessed() triggers ScanForMissingBlocks. No new tip work
+        // changes (best_height == 40, local_tip == 20) so the scan re-walks
+        // heights 21..40 and rebuilds tip-REQUESTED entries — but the bug path
+        // calls in_flight_blocks_.clear() without re-adding backfill hashes.
+        scheduler.OnHeadersProcessed();
+
+        // (a) in-flight count must be unchanged: backfill hashes share the window.
+        const size_t in_flight_after = scheduler.GetInFlightCount();
+        if (!Require(in_flight_after == in_flight_before,
+                     "ScanForMissingBlocks must preserve backfill in-flight count "
+                     "(before=" + std::to_string(in_flight_before) +
+                     " after=" + std::to_string(in_flight_after) + ")")) {
+            return 1;
+        }
+
+        // (b) the specific backfill hash must still be tracked as in-flight.
+        if (!Require(scheduler.IsBlockInFlight(backfill_hash),
+                     "ScanForMissingBlocks must preserve IsBlockInFlight for "
+                     "a backfill hash that was REQUESTED before the rescan")) {
+            return 1;
+        }
+
+        // (c) a further Tick must stage NO additional backfill getdata: the cap
+        // (in_flight == max_in_flight) blocks all new requests.  Only meaningful
+        // because the backfill range (20) exceeds max_in_flight (16), leaving
+        // 4 MISSING entries that an undercounting scan would re-stage.
+        scheduler.Tick();
+        if (!Require(requests.empty(),
+                     "Tick after truthful rescan must stage 0 new backfill getdata "
+                     "(cap is full); got " + std::to_string(requests.size()))) {
+            return 1;
+        }
+
+        std::cout << "   ✅ in_flight preserved across rescan (before=" << in_flight_before
+                  << " after=" << in_flight_after
+                  << "); IsBlockInFlight still true; 0 extra sends after Tick"
+                  << std::endl;
+    }
+
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
     return 0;
 }

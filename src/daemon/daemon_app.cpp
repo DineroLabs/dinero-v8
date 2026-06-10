@@ -5526,7 +5526,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                         }
 
                         // During IBD/catch-up, block connection is handled by the scheduler's
-                        // TryConnectStoredBlocks() drainer (called from Tick()).
+                        // TryConnectStoredBlocksLocked() drainer (called from Tick()).
                         // Do NOT send out-of-order blocks to ChainstateService here —
                         // they would always fail with missing-parent since the chain
                         // tip is far behind the download frontier.

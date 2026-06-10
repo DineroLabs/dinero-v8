@@ -200,7 +200,7 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
     // AssumeUTXO backfill routing (Task 2): a pre-base body is verified and
     // stored EXACTLY like a tip block (same helper), but is store-only — it
     // never enters tip-connect bookkeeping (received_blocks_, expected_blocks_,
-    // TryConnectStoredBlocks inputs). The background validation worker reads
+    // TryConnectStoredBlocksLocked inputs). The background validation worker reads
     // it back from flat-file storage via the canonical header chain.
     if (backfill_expected_.count(block_hash) > 0) {
         FilePosition stored_pos;
@@ -558,7 +558,7 @@ void BlockDownloadScheduler::TickLocked() {
     // This is the primary block connection mechanism during IBD —
     // blocks are stored out-of-order by the scheduler, then connected
     // sequentially here as contiguous runs become available.
-    TryConnectStoredBlocks();
+    TryConnectStoredBlocksLocked();
 
     // Backfill is strictly lower priority: only when tip sync has nothing
     // MISSING or REQUESTED do we spend request slots on history. Its sends
@@ -966,6 +966,14 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
         expected_blocks_.insert(entry->hash);
     }
 
+    // Backfill in-flight hashes share the window: preserve them across rescans
+    // (the rescan only restructures TIP work; backfill requests stay on the wire).
+    for (const auto& fs : backfill_blocks_) {
+        if (fs.status == FetchStatus::REQUESTED) {
+            in_flight_blocks_.insert(fs.block_hash);
+        }
+    }
+
     g_logger.info("[BlockDownloadScheduler] Queued " + std::to_string(missing_blocks_.size()) +
                  " blocks for download (" + std::to_string(preserved_count) + " preserved states)");
 }
@@ -1203,7 +1211,7 @@ bool BlockDownloadScheduler::StoreBlock(const Block& block, FilePosition& out_po
     //
     // This writes the block to blk*.dat files via BlockStorage.
     // IMPORTANT: This does NOT activate chainstate or update UTXO set.
-    // Block connection is done by TryConnectStoredBlocks() in height order.
+    // Block connection is done by TryConnectStoredBlocksLocked() in height order.
 
     uint256 block_hash = block.GetHash();
 
@@ -1244,7 +1252,7 @@ bool BlockDownloadScheduler::StoreBlock(const Block& block, FilePosition& out_po
 // Block Connection Drainer
 // ============================================================================
 
-size_t BlockDownloadScheduler::TryConnectStoredBlocks(size_t max_blocks) {
+size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
     if (!connect_block_callback_ || !block_storage_) {
         return 0;
     }

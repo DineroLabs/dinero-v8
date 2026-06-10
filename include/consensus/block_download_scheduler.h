@@ -75,7 +75,7 @@ struct BlockFetchState {
 };
 
 // Result classification for scheduler-driven chainstate connection.
-// This is richer than a bool so TryConnectStoredBlocks can make deterministic
+// This is richer than a bool so TryConnectStoredBlocksLocked can make deterministic
 // recovery decisions without re-request loops.
 enum class ConnectBlockResult {
     CONNECTED,           // Block is now on the active chain
@@ -337,7 +337,7 @@ public:
 
     /**
      * Callback type for querying the actual chainstate tip height.
-     * Used by TryConnectStoredBlocks to enforce strict tip+1 ordering.
+     * Used by TryConnectStoredBlocksLocked to enforce strict tip+1 ordering.
      */
     using GetTipHeightCallback = std::function<uint32_t()>;
 
@@ -363,7 +363,7 @@ public:
 
     /**
      * Set callback for connecting stored blocks to chainstate.
-     * Called by TryConnectStoredBlocks() for each block in height order.
+     * Called by TryConnectStoredBlocksLocked() for each block in height order.
      */
     void SetConnectBlockCallback(ConnectBlockCallback callback) {
         connect_block_callback_ = callback;
@@ -400,20 +400,6 @@ public:
         stateless_mode_ = enabled;
     }
 
-    /**
-     * Try to connect stored blocks to chainstate in strict height order.
-     *
-     * Queries actual chainstate tip, then only connects block at tip+1.
-     * If missing_blocks_ has a gap (doesn't cover tip+1), rescans the
-     * header chain from the actual tip to fill the gap.
-     *
-     * On connection failure (missing parent), requests the PARENT hash
-     * via SendGetData — never re-requests the same child block.
-     *
-     * @param max_blocks Maximum blocks to connect per call (0 = unlimited)
-     * @return Number of blocks successfully connected
-     */
-    size_t TryConnectStoredBlocks(size_t max_blocks = 32);
 
     /**
      * Set callback for disconnecting peer.
@@ -623,6 +609,15 @@ private:
     // Private Helpers
     // ========================================================================
 
+    // Try to connect stored blocks to chainstate in strict height order.
+    // Queries actual chainstate tip, then only connects block at tip+1.
+    // If missing_blocks_ has a gap (doesn't cover tip+1), rescans the
+    // header chain from the actual tip to fill the gap.
+    // On connection failure (missing parent), requests the PARENT hash
+    // via SendGetData — never re-requests the same child block.
+    // Caller MUST hold mutex_.
+    size_t TryConnectStoredBlocksLocked(size_t max_blocks = 32);
+
     // Stage a getdata for block_hash/block_height into deferred_sends_ with
     // its skip-set snapshot (from peer_lacks_body_at_or_below_). Caller MUST
     // hold mutex_. The actual send happens in DispatchDeferredSends().
@@ -722,7 +717,7 @@ private:
 
     // Non-locking helpers for use within methods that already hold mutex_.
     // The public IsBlockInFlight/IsBlockExpected/etc. acquire mutex_ and
-    // must NOT be called from Tick() or TryConnectStoredBlocks() which
+    // must NOT be called from Tick() or TryConnectStoredBlocksLocked() which
     // already hold it (std::mutex is non-recursive → deadlock).
     bool isBlockInFlightLocked(const uint256& hash) const {
         return in_flight_blocks_.count(hash) > 0;
