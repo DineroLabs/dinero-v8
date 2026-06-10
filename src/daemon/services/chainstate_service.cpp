@@ -11952,6 +11952,75 @@ void ChainstateService::BackgroundValidationWorker() {
             }
             replay_poisoned = false;
             replay_poison_reason.clear();
+
+            // ── Header-chain fallback table (hoisted, O(target_height) per pass) ──
+            // Backfilled block bodies arrive via the scheduler WITHOUT
+            // height-index writes (only ConnectTip writes the canonical index,
+            // by design — so canonical-write invariants are untouched). When
+            // the height index misses a backfilled body, the table below
+            // resolves the canonical hash — and it MUST anchor on the
+            // snapshot base block HASH (assumeutxo_base_block_, the trust
+            // root), never on the best header chain by height. LoadSnapshot's
+            // base gate is existence-only (a GetHeader map lookup — side
+            // branches pass), so the BEST header chain can diverge below the
+            // base: a side-branch snapshot at load, or a majority-work header
+            // fork arriving during the validation window. A height-anchored
+            // walk (GetHeaderAtHeight) would then yield the FORK's hashes and
+            // this worker would replay the fork completely into a persisted
+            // false fatal_mismatch on an honest node. Anchoring on the base
+            // hash + ancestor uniqueness (each header has exactly one parent
+            // chain) pins every per-height entry to the snapshot's own chain
+            // regardless of what the best chain does. The body-hash check
+            // below still guards integrity — a corrupt or misrouted body is
+            // caught by hash mismatch and treated as missing.
+            //
+            // Perf: ONE by-hash anchor lookup (O(1) map), then a SINGLE
+            // backward walk via ->parent fills the entire table in
+            // O(target_height) total — per-height GetHeaderAtHeight calls
+            // would be the same O(n²) trap as the pre-#241 scanner
+            // (≈ 33k × 40k = 1.3B pointer steps per pass). Each per-height
+            // lookup is then O(1) from the vector. The table is rebuilt once
+            // per rescan pass (the while(true) loop only retries when bodies
+            // are missing, so passes beyond the first are rare and bounded).
+            std::vector<uint256> canonical_hashes_fallback;
+            if (header_chain_selector_ && !assumeutxo_base_block_.IsNull()) {
+                // Resolve + walk + copy under the header chain's OWN mutex
+                // (CollectAncestorsByHash): the snapshot base may be a
+                // childless side-branch tip, which EvictBranch (running under
+                // the header chain's lock on another thread when the
+                // side-branch budget is full) can free — raw GetHeader()
+                // pointers and their parent links do not survive that, so an
+                // unlocked walk here would be a use-after-free. Failure paths
+                // stay fail-safe: an unknown/mismatched anchor leaves the
+                // table empty (missing bodies skip/stall, never replay
+                // another chain).
+                uint32_t anchor_height = 0;
+                std::vector<std::pair<uint256, uint32_t>> branch;
+                const bool anchor_known =
+                    header_chain_selector_->CollectAncestorsByHash(
+                        assumeutxo_base_block_, 0, anchor_height, branch);
+                if (!anchor_known) {
+                    logger_->error("[BackgroundValidation] snapshot base header " +
+                                   assumeutxo_base_block_.GetHex().substr(0, 16) +
+                                   "... not in header chain — fallback table empty "
+                                   "(missing bodies will skip/stall, never replay "
+                                   "another chain)");
+                } else if (anchor_height != target_height) {
+                    logger_->error("[BackgroundValidation] snapshot base header " +
+                                   assumeutxo_base_block_.GetHex().substr(0, 16) +
+                                   "... has height " + std::to_string(anchor_height) +
+                                   " but validation target is " +
+                                   std::to_string(target_height) +
+                                   " — fallback table empty");
+                } else {
+                    canonical_hashes_fallback.resize(
+                        static_cast<size_t>(target_height) + 1);
+                    for (const auto& [hash, height] : branch) {
+                        canonical_hashes_fallback[height] = hash;
+                    }
+                }
+            }
+
             for (uint32_t height = 0; height <= target_height; ++height) {
                 if (bg_validation_should_stop_) {
                     logger_->warning("[BackgroundValidation] Validation stopped by request");
@@ -11962,9 +12031,21 @@ void ChainstateService::BackgroundValidationWorker() {
                     std::lock_guard<std::mutex> lock(bg_validation_mutex_);
                     bg_validation_current_height_ = height;
                 }
+                // Try the height index first (populated by ConnectTip /
+                // --reindex). On miss, fall back to the canonical header-chain
+                // table built above (backfilled bodies lack index entries).
                 auto hash_result = chain_db_->getBlockHashByHeight(height);
-                if (!hash_result.ok()) { blocks_skipped++; continue; }
-                auto block_result = getBlockByHash(hash_result.value());
+                uint256 canonical_hash;
+                if (hash_result.ok()) {
+                    canonical_hash = hash_result.value();
+                } else if (height < canonical_hashes_fallback.size() &&
+                           !canonical_hashes_fallback[height].IsNull()) {
+                    canonical_hash = canonical_hashes_fallback[height];
+                } else {
+                    blocks_skipped++;
+                    continue;
+                }
+                auto block_result = getBlockByHash(canonical_hash);
                 if (!block_result.ok()) { blocks_skipped++; continue; }
                 const Block& blk = block_result.value();
                 // The stored body must actually be the canonical block:
@@ -11973,12 +12054,12 @@ void ChainstateService::BackgroundValidationWorker() {
                 // mis-stored local body would otherwise be replayed as if
                 // canonical. A mismatch is LOCAL corruption (heal by
                 // re-download), not snapshot poison: treat as missing body.
-                if (blk.GetHash() != hash_result.value()) {
+                if (blk.GetHash() != canonical_hash) {
                     blocks_skipped++;
                     logger_->warning("[BackgroundValidation] body at height " +
                                      std::to_string(height) + " hashes to " +
                                      blk.GetHash().GetHex() + " but canonical hash is " +
-                                     hash_result.value().GetHex() +
+                                     canonical_hash.GetHex() +
                                      " — local block-store corruption; treating as a "
                                      "missing body pending re-download");
                     continue;
@@ -12015,7 +12096,7 @@ void ChainstateService::BackgroundValidationWorker() {
                 }
                 if (height >= 1 && blocks_skipped == 0) {
                     std::string connect_err;
-                    if (!replay->ConnectAndAdvance(blk, height, hash_result.value(),
+                    if (!replay->ConnectAndAdvance(blk, height, canonical_hash,
                                                    connect_err)) {
                         // A canonical-chain block below the snapshot base
                         // failed real validation: the snapshot's chain is

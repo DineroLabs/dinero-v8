@@ -7,8 +7,10 @@
 #                  PLUS cross-restart stall recovery: peerless load stalls in
 #                  ~15s (proves --assumeutxo_bg_stall_timeout CLI delivery),
 #                  the stall persists across a peerless restart (no silent
-#                  promotion), and a complete replay pass after bodies arrive
-#                  retires the trust marker.
+#                  promotion), and connecting the source peer heals the stall
+#                  UNATTENDED: the daemon's P2P body backfill fetches heights
+#                  1..base via getdata and the worker's complete replay pass
+#                  retires the trust marker — no operator RPC, no restart.
 #   Scenario B   = Test 1 (poisoned snapshot is fatal: load-time gates pass —
 #                  regtest has no compiled-in anchor, simulating a compromised
 #                  binary — but the genesis replay recomputes an honest digest
@@ -29,14 +31,17 @@
 #     nodes are therefore seeded with a copy of the source's headers/ store
 #     (the production "headers-first, no bodies yet" state) taken while the
 #     source is stopped.
-#   * The daemon has NO P2P backfill of pre-base bodies yet: after a snapshot
-#     load publishes the tip at the base, the download scheduler reports
-#     is_fully_synchronized and never requests heights 1..base. Bodies are
-#     delivered through the node's real block-acceptance path via submitblock.
-#   * Stored (not connected) bodies do not populate ChainDB's canonical
-#     height->hash index, which the background worker requires. A restart
-#     with --reindex (the documented operator remedy) rebuilds the index from
-#     the flatfiles; the worker's complete pass then runs the real replay.
+#   * Pre-base bodies arrive via the daemon's REAL P2P backfill: the
+#     services tick loop (5s) arms the download scheduler for heights
+#     1..base — anchored on the snapshot base HASH — whenever the lifecycle
+#     is validating history, and disarms it once it is not (retired/fatal/
+#     reset). Backfill shares the tip window's 16-slot in-flight cap.
+#     Progress is surfaced in getsnapshotbootstrapstatus as
+#     backfill_enabled/_total/_completed/_in_flight.
+#   * Backfilled bodies are stored, not connected; the background worker's
+#     header-chain fallback lookup finds them without ChainDB's canonical
+#     height->hash index, so NO --reindex restart and NO submitblock crutch
+#     is needed — the whole heal is unattended P2P.
 #
 set -euo pipefail
 
@@ -152,20 +157,16 @@ wait_status() {  # <rpcport> <datadir> <jq-bool-expr over snapshot_bootstrap> <t
     fail "$desc"
 }
 
-deliver_bodies() {  # <dst_rpcport> <dst_datadir> <from_h> <to_h>
-    # The daemon has no P2P backfill of pre-base bodies (see TOPOLOGY NOTES):
-    # push the source's canonical blocks through the node's REAL block
-    # acceptance path (submitblock -> BlockAcceptor -> flatfile storage).
-    local port="$1" datadir="$2" from="$3" to="$4" h bh hex
-    info "delivering bodies $from..$to via submitblock (no P2P pre-base backfill exists)"
-    for h in $(seq "$from" "$to"); do
-        bh="$(rpc "$SRC_RPC" "$SRC_DIR" getblockhash "[$h]" | jq -re '.result')" \
-            || fail "source getblockhash $h failed"
-        hex="$(rpc "$SRC_RPC" "$SRC_DIR" getblock "[\"$bh\",0]" | jq -re '.result')" \
-            || fail "source getblock $h failed"
-        rpc "$port" "$datadir" submitblock "[\"$hex\"]" >/dev/null \
-            || fail "submitblock height $h failed"
+connect_source() {  # <rpcport> <datadir> <node-desc> — addnode + wait for the link
+    local port="$1" datadir="$2" desc="$3" i conns=0
+    rpc "$port" "$datadir" addnode "[\"127.0.0.1:${SRC_P2P}\",\"add\"]" >/dev/null || true
+    rpc "$port" "$datadir" addnode "[\"127.0.0.1:${SRC_P2P}\",\"onetry\"]" >/dev/null || true
+    for i in $(seq 1 30); do
+        conns="$(rpc "$port" "$datadir" getconnectioncount | jq -r '.result // 0')"
+        [[ "$conns" -ge 1 ]] && return 0
+        sleep 1
     done
+    fail "$desc could not connect to the source peer"
 }
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -243,33 +244,69 @@ wait_status "$AD_RPC" "$AD_DIR" \
     '.history_validation_state == "validation_stalled" and .fatal == false and .history_fully_validated == false' \
     120 "D2: stall persists across peerless restart"
 
-# D3 + A: connect the source peer (headers/handshake machinery), deliver the
-# pre-base bodies through real block acceptance, rebuild the canonical height
-# index (--reindex), and let the worker's COMPLETE replay pass recover the
-# persisted stall and retire the trust marker.
-rpc "$AD_RPC" "$AD_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"add\"]" >/dev/null || true
-rpc "$AD_RPC" "$AD_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"onetry\"]" >/dev/null || true
-for i in $(seq 1 30); do
-    CONNS="$(rpc "$AD_RPC" "$AD_DIR" getconnectioncount | jq -r '.result // 0')"
-    [[ "$CONNS" -ge 1 ]] && break
+# D3 + A: connect the source peer and do NOTHING else. The tick loop has
+# already armed backfill (the lifecycle is validating/stalled and the base
+# header is on the seeded chain); with a peer attached the scheduler's
+# getdata fetches heights 1..base, the worker's header-chain fallback finds
+# the stored bodies, and the COMPLETE replay pass recovers the persisted
+# stall and retires the trust marker — unattended, no submitblock, no
+# --reindex, no restart.
+connect_source "$AD_RPC" "$AD_DIR" "nodeAD"
+pass "source peer connected — heal is now pure P2P backfill"
+
+# A: wait for retirement while watching the backfill surface every second:
+#   * backfill_enabled must be observed true while validating (tick-loop arm)
+#   * backfill_completed must progress (real bodies arriving via getdata)
+#   * backfill_in_flight must never exceed the shared 16-slot window cap
+#     (exceeding it is the e2e-visible symptom of the case-17
+#     oversubscription bug)
+BF_SEEN_ENABLED=0; BF_MAX_COMPLETED=0; BF_TOTAL_SEEN=0; BF_CAP_VIOLATION=""
+A_DONE=0
+for i in $(seq 1 240); do
+    ST="$(snap_status "$AD_RPC" "$AD_DIR")"
+    if jq -e '.backfill_enabled == true' <<<"$ST" >/dev/null 2>&1; then
+        BF_SEEN_ENABLED=1
+        BF_C="$(jq -r '.backfill_completed // 0' <<<"$ST")"
+        BF_T="$(jq -r '.backfill_total // 0' <<<"$ST")"
+        BF_F="$(jq -r '.backfill_in_flight // 0' <<<"$ST")"
+        [[ "$BF_C" -gt "$BF_MAX_COMPLETED" ]] && BF_MAX_COMPLETED="$BF_C"
+        [[ "$BF_T" -gt "$BF_TOTAL_SEEN" ]] && BF_TOTAL_SEEN="$BF_T"
+        [[ "$BF_F" -gt 16 ]] && BF_CAP_VIOLATION="backfill_in_flight=$BF_F at sample $i"
+    fi
+    # Trust-marker retirement = history_fully_validated (lifecycle state
+    # "fully_validated"). NOTE: assumeutxo_active stays TRUE here by design —
+    # ChainstateService keeps AssumeUTXO mode until ChainDB catches up to the
+    # base via ConnectTip (backfilled bodies are stored, not connected; the
+    # old assertion of active==false was an artifact of the --reindex crutch
+    # rebuilding ChainDB). The spec's trust retirement is the lifecycle flag.
+    if jq -e '.history_fully_validated == true and .history_validation_state == "fully_validated" and .fatal == false' \
+            <<<"$ST" >/dev/null 2>&1; then
+        A_DONE=1
+        break
+    fi
     sleep 1
 done
-[[ "${CONNS:-0}" -ge 1 ]] || fail "nodeAD could not connect to the source peer"
-pass "source peer connected (P2P handshake works; pre-base body backfill is RPC-driven, see header)"
+[[ "$A_DONE" == "1" ]] || {
+    printf '[FAIL] last status: %s\n' "$(snap_status "$AD_RPC" "$AD_DIR")" >&2
+    fail "A: unattended P2P backfill did not retire the trust marker within 240s (backfill_enabled seen: $BF_SEEN_ENABLED, max completed: $BF_MAX_COMPLETED/$BF_TOTAL_SEEN)"
+}
+pass "A: real genesis->base replay via P2P backfill retires the trust marker (history_fully_validated)"
+[[ "$BF_SEEN_ENABLED" == "1" ]] \
+    || fail "A: backfill_enabled was never true while validating — tick-loop arm missing"
+[[ "$BF_MAX_COMPLETED" -gt 0 ]] \
+    || fail "A: backfill_completed never progressed above 0 — bodies did not arrive via backfill getdata"
+[[ -z "$BF_CAP_VIOLATION" ]] \
+    || fail "A: backfill exceeded the shared 16-slot in-flight cap: $BF_CAP_VIOLATION"
+pass "A: backfill surface healthy (enabled seen, completed=$BF_MAX_COMPLETED/total=$BF_TOTAL_SEEN, in_flight <= 16 across all samples)"
 
-deliver_bodies "$AD_RPC" "$AD_DIR" 1 "$BASE"
-
-stop_node "$AD_DIR"
-start_node "$AD_DIR" "$AD_RPC" "$AD_P2P" "$AD_WS" "$AD_DIR/daemon3.log" \
-    --reindex --assumeutxo_bg_stall_timeout=15 --assumeutxo_snapshot="$SNAP"
-
-wait_status "$AD_RPC" "$AD_DIR" \
-    '.history_fully_validated == true and .assumeutxo_active == false and .fatal == false' \
-    240 "A: real genesis->base replay retires the trust marker (fully_validated, assumeutxo_active=false)"
+# A: the 5s tick loop must DISARM backfill once the lifecycle stops
+# validating (retirement) — backfill_enabled flips to false.
+wait_status "$AD_RPC" "$AD_DIR" '.backfill_enabled == false' 30 \
+    "A: backfill disarmed after retirement (periodic tick disarm)"
 
 # A: retirement survives a plain restart (spec Persistence / Required Test 4).
 stop_node "$AD_DIR"
-start_node "$AD_DIR" "$AD_RPC" "$AD_P2P" "$AD_WS" "$AD_DIR/daemon4.log" \
+start_node "$AD_DIR" "$AD_RPC" "$AD_P2P" "$AD_WS" "$AD_DIR/daemon3.log" \
     --assumeutxo_snapshot="$SNAP"
 wait_status "$AD_RPC" "$AD_DIR" \
     '.history_fully_validated == true and .fatal == false' \
@@ -309,20 +346,23 @@ jq -e '.result.coins_loaded >= 1' <<<"$LOAD_RES" >/dev/null \
     || fail "loadtxoutset MUST accept the poisoned snapshot (gates pass): $LOAD_RES"
 pass "poisoned snapshot accepted at load time (no compiled-in regtest anchor; checksum repaired)"
 
-deliver_bodies "$B_RPC" "$B_DIR" 1 "$BASE"
-
-stop_node "$B_DIR"
-start_node "$B_DIR" "$B_RPC" "$B_P2P" "$B_WS" "$B_DIR/daemon2.log" \
-    --reindex --assumeutxo_bg_stall_timeout=15 --assumeutxo_snapshot="$POISON"
+# The poison flipped a UTXO record VALUE, not the base hash: the poisoned
+# node's header chain is the honest one, so its tick-loop-armed backfill
+# (anchored on the snapshot base HASH — same hash) downloads the HONEST
+# chain's bodies from the source over real P2P. The replay then completes
+# against honest history and the recomputed digest mismatches the poisoned
+# commitment -> fatal. Unattended discovery: no submitblock, no --reindex.
+connect_source "$B_RPC" "$B_DIR" "nodeB"
+pass "B: source peer connected — poisoned node backfills honest bodies via P2P"
 
 wait_status "$B_RPC" "$B_DIR" \
     '.fatal == true and .history_fully_validated == false and (.fatal_reason | contains("mismatch"))' \
-    240 "B: poisoned snapshot drives fatal with mismatch reason after real replay"
+    240 "B: poisoned snapshot drives fatal with mismatch reason after real replay over backfilled bodies"
 info "fatal_reason: $(snap_status "$B_RPC" "$B_DIR" | jq -r '.fatal_reason')"
 
 # Fatal survives restart (spec Required Test 1).
 stop_node "$B_DIR"
-start_node "$B_DIR" "$B_RPC" "$B_P2P" "$B_WS" "$B_DIR/daemon3.log" \
+start_node "$B_DIR" "$B_RPC" "$B_P2P" "$B_WS" "$B_DIR/daemon2.log" \
     --assumeutxo_snapshot="$POISON"
 wait_status "$B_RPC" "$B_DIR" '.fatal == true' 60 "B: fatal survives restart"
 

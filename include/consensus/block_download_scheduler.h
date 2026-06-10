@@ -49,6 +49,7 @@ namespace consensus {
 
 // Forward declarations
 class HeaderChainSelector;
+struct HeaderIndexEntry;
 
 // ============================================================================
 // Block Fetch State
@@ -74,7 +75,7 @@ struct BlockFetchState {
 };
 
 // Result classification for scheduler-driven chainstate connection.
-// This is richer than a bool so TryConnectStoredBlocks can make deterministic
+// This is richer than a bool so TryConnectStoredBlocksLocked can make deterministic
 // recovery decisions without re-request loops.
 enum class ConnectBlockResult {
     CONNECTED,           // Block is now on the active chain
@@ -336,7 +337,7 @@ public:
 
     /**
      * Callback type for querying the actual chainstate tip height.
-     * Used by TryConnectStoredBlocks to enforce strict tip+1 ordering.
+     * Used by TryConnectStoredBlocksLocked to enforce strict tip+1 ordering.
      */
     using GetTipHeightCallback = std::function<uint32_t()>;
 
@@ -362,7 +363,7 @@ public:
 
     /**
      * Set callback for connecting stored blocks to chainstate.
-     * Called by TryConnectStoredBlocks() for each block in height order.
+     * Called by TryConnectStoredBlocksLocked() for each block in height order.
      */
     void SetConnectBlockCallback(ConnectBlockCallback callback) {
         connect_block_callback_ = callback;
@@ -399,20 +400,6 @@ public:
         stateless_mode_ = enabled;
     }
 
-    /**
-     * Try to connect stored blocks to chainstate in strict height order.
-     *
-     * Queries actual chainstate tip, then only connects block at tip+1.
-     * If missing_blocks_ has a gap (doesn't cover tip+1), rescans the
-     * header chain from the actual tip to fill the gap.
-     *
-     * On connection failure (missing parent), requests the PARENT hash
-     * via SendGetData — never re-requests the same child block.
-     *
-     * @param max_blocks Maximum blocks to connect per call (0 = unlimited)
-     * @return Number of blocks successfully connected
-     */
-    size_t TryConnectStoredBlocks(size_t max_blocks = 32);
 
     /**
      * Set callback for disconnecting peer.
@@ -447,6 +434,74 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         stale_request_timeout_seconds_ = secs;
     }
+
+    // ========================================================================
+    // AssumeUTXO pre-base body backfill (spec Release Gate item 2)
+    // ========================================================================
+    //
+    // Separate low-priority queue: never touches missing_blocks_ or
+    // IsFullySynchronized (fast-bootstrap nodes stay "synced" while history
+    // backfills). Serviced by Tick() only when tip sync has no pending work
+    // (Task 2). Queue population + accounting live here (Task 1).
+
+    /** Progress snapshot returned by GetBackfillProgress(). */
+    struct BackfillProgress {
+        bool enabled = false;
+        uint32_t start_height = 0;
+        uint32_t end_height = 0;
+        uint64_t total = 0;        ///< bodies missing at Enable time
+        uint64_t completed = 0;    ///< bodies received+stored since Enable
+        uint64_t in_flight = 0;    ///< bodies currently in-flight
+    };
+
+    /**
+     * Register a predicate that answers "does this node already have the body
+     * for (hash, height)?" — used by EnableBackfill to skip existing bodies.
+     * The callback is invoked under mutex_ during EnableBackfill only.
+     *
+     * Lock-order contract: the callback is invoked under the scheduler
+     * mutex_; the callback must not re-enter the scheduler nor acquire any
+     * lock that is ever held while calling scheduler methods. The daemon
+     * wires a pure metadata probe (ChainDB point lookup + flat-file stat,
+     * no application lock) which trivially satisfies this.
+     */
+    void SetHasBlockBodyCallback(std::function<bool(const uint256&, uint32_t)> cb);
+
+    /**
+     * Queue canonical heights [start_height, end_height] whose bodies are
+     * missing, for low-priority backfill.  Idempotent: re-calling with the
+     * same (range, anchor) is a no-op (progress is preserved).  Calling with
+     * a DIFFERENT (range, anchor) while enabled first performs the full
+     * DisableBackfill cleanup — old queue entries are erased from
+     * in_flight_blocks_ before repopulating, so a direct base change with
+     * requests on the wire cannot leak in-flight slots.  A refused call
+     * (anchor not known / height mismatch) therefore also leaves backfill
+     * DISABLED, so the caller's periodic re-arm genuinely retries.
+     *
+     * end_anchor_hash is the trust root (the AssumeUTXO snapshot base block
+     * hash): the walk anchors on THAT header by hash and follows parent
+     * links, never on the best chain by height. The snapshot load gate is
+     * existence-only — the best header chain may diverge below the base
+     * (side-branch snapshot, or a majority-work header fork during the
+     * validation window), and a height-anchored walk would queue the FORK's
+     * bodies. If no header with end_anchor_hash exists at end_height,
+     * backfill is NOT enabled (caller re-arms periodically).
+     *
+     * Population uses a single backward walk over parent pointers rather than
+     * per-height GetHeaderAtHeight() calls (avoids O(n²) on a 33k-range).
+     */
+    void EnableBackfill(uint32_t start_height, uint32_t end_height,
+                        const uint256& end_anchor_hash);
+
+    /**
+     * Clear the backfill queue and reset all backfill accounting.
+     * In-flight entries are removed from in_flight_blocks_ so the main
+     * window accounting stays correct (no orphaned in-flight counts).
+     */
+    void DisableBackfill();
+
+    /** Return a snapshot of current backfill progress (thread-safe). */
+    BackfillProgress GetBackfillProgress() const;
 
     /**
      * Get the local chainstate tip height.
@@ -562,9 +617,29 @@ private:
     };
     std::vector<DeferredGetdata> deferred_sends_;  // guarded by mutex_
 
+    // ── AssumeUTXO backfill private state ────────────────────────────────────
+    // Backfill queue entries reuse BlockFetchState (hash, height, status,
+    // request_time) but live in their own vector with their own cursor so they
+    // never pollute missing_blocks_, in_flight_blocks_, or expected_blocks_.
+    std::vector<BlockFetchState> backfill_blocks_;
+    size_t next_backfill_idx_ = 0;
+    std::unordered_set<uint256> backfill_expected_;  // routing in OnBlockReceived (Task 2)
+    BackfillProgress backfill_progress_;
+    uint256 backfill_anchor_hash_;  // trust root the active queue was walked from
+    std::function<bool(const uint256&, uint32_t)> has_block_body_;
+
     // ========================================================================
     // Private Helpers
     // ========================================================================
+
+    // Try to connect stored blocks to chainstate in strict height order.
+    // Queries actual chainstate tip, then only connects block at tip+1.
+    // If missing_blocks_ has a gap (doesn't cover tip+1), rescans the
+    // header chain from the actual tip to fill the gap.
+    // On connection failure (missing parent), requests the PARENT hash
+    // via SendGetData — never re-requests the same child block.
+    // Caller MUST hold mutex_.
+    size_t TryConnectStoredBlocksLocked(size_t max_blocks = 32);
 
     // Stage a getdata for block_hash/block_height into deferred_sends_ with
     // its skip-set snapshot (from peer_lacks_body_at_or_below_). Caller MUST
@@ -579,6 +654,50 @@ private:
     // Tick() body. Caller MUST hold mutex_. Network sends are staged via
     // StageGetdataLocked and dispatched by Tick() after the lock is released.
     void TickLocked();
+
+    // AssumeUTXO backfill servicing (Task 2). Caller MUST hold mutex_.
+    // Strictly lower priority than tip sync: yields whenever ANY tip-queue
+    // entry is MISSING or REQUESTED, shares the global in-flight window
+    // (in_flight_blocks_/max_in_flight_) with tip sync, and stages sends
+    // through the same #241 deferred-dispatch path (StageGetdataLocked →
+    // DispatchDeferredSends after mutex_ release) — the send callback is
+    // NEVER invoked under mutex_.
+    void ServiceBackfillLocked();
+
+    // DisableBackfill's body: erase the active backfill queue's hashes from
+    // in_flight_blocks_ (so the shared window stays truthful) and reset all
+    // backfill state/accounting. Caller MUST hold mutex_. Shared by
+    // DisableBackfill and by EnableBackfill's (range, anchor)-change path so
+    // a re-Enable with requests on the wire never leaks in-flight slots.
+    void DisableBackfillLocked();
+
+    // Collect the header-chain entries for heights [start_height,
+    // anchor->height] into out_ascending (ascending height order) with a
+    // SINGLE backward walk over parent links from the CALLER-RESOLVED anchor
+    // entry (one walk instead of per-height GetHeaderAtHeight() — avoids the
+    // O(n²) #241 scan bug class). Caller MUST hold mutex_. Returns false if
+    // anchor is null or the range is degenerate.
+    //
+    // LIFETIME CAVEAT: this walks raw HeaderIndexEntry parent pointers
+    // WITHOUT the header chain's own lock — safe only for BEST-CHAIN anchors
+    // (best-chain entries are never evicted; ScanForMissingBlocks passes
+    // GetBestHeader()). A possibly-SIDE-BRANCH anchor (the AssumeUTXO
+    // snapshot base) can be freed by HeaderChainSelector::EvictBranch from
+    // another thread mid-walk, so EnableBackfill must NOT use this — it uses
+    // HeaderChainSelector::CollectAncestorsByHash, which copies (hash,
+    // height) under the header chain's internal mutex.
+    bool CollectCanonicalHeadersLocked(
+        uint32_t start_height, const HeaderIndexEntry* anchor,
+        std::vector<const HeaderIndexEntry*>& out_ascending) const;
+
+    // Shared verify+persist core for the tip and backfill receive paths
+    // (Task 2 DRY): header-match validation, then flat-file write. Caller
+    // MUST hold mutex_. track_received: the tip path records the hash in
+    // received_blocks_ (parent-known checks + the #216 stale-timeout guard);
+    // backfill bodies pass false — they are store-only and must never enter
+    // connect bookkeeping.
+    bool StoreVerifiedBlockLocked(const Block& block, FilePosition& out_pos,
+                                  bool track_received);
 
     /**
      * Scan header chain for missing blocks.
@@ -606,9 +725,11 @@ private:
      *
      * @param block Block to store
      * @param out_pos Output: file position where block was stored
+     * @param track_received Record the hash in received_blocks_ (tip path
+     *        only; backfill bodies are store-only and pass false)
      * @return true if stored successfully
      */
-    bool StoreBlock(const Block& block, FilePosition& out_pos);
+    bool StoreBlock(const Block& block, FilePosition& out_pos, bool track_received);
 
     /**
      * Rescan header chain from the actual chainstate tip.
@@ -632,7 +753,7 @@ private:
 
     // Non-locking helpers for use within methods that already hold mutex_.
     // The public IsBlockInFlight/IsBlockExpected/etc. acquire mutex_ and
-    // must NOT be called from Tick() or TryConnectStoredBlocks() which
+    // must NOT be called from Tick() or TryConnectStoredBlocksLocked() which
     // already hold it (std::mutex is non-recursive → deadlock).
     bool isBlockInFlightLocked(const uint256& hash) const {
         return in_flight_blocks_.count(hash) > 0;

@@ -412,6 +412,22 @@ static din::Json buildSnapshotBootstrapDiagnostics(
         }
     }
 
+    // AssumeUTXO pre-base body backfill progress. The scheduler is
+    // daemon-owned; RPC reaches it directly via ctx.daemon->block_download —
+    // the same route the IBD diagnostics in this file already use — so no
+    // ChainstateService relay/copy is needed (least-invasive of the two
+    // routes the plan offered). GetBackfillProgress() is a mutex-guarded
+    // struct copy, safe from the RPC thread.
+    if (ctx.daemon && ctx.daemon->block_download) {
+        const auto bp = ctx.daemon->block_download->GetBackfillProgress();
+        snapshot["backfill_enabled"] = bp.enabled;
+        if (bp.enabled) {
+            snapshot["backfill_total"] = static_cast<Json::UInt64>(bp.total);
+            snapshot["backfill_completed"] = static_cast<Json::UInt64>(bp.completed);
+            snapshot["backfill_in_flight"] = static_cast<Json::UInt64>(bp.in_flight);
+        }
+    }
+
     const auto validation_progress = chainstate->GetBackgroundValidationProgress();
     snapshot["background_validation_status"] = backgroundValidationStatusToString(validation_progress.status);
     snapshot["background_validation_progress_percent"] = validation_progress.progress_percent;

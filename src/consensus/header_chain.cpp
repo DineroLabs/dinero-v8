@@ -347,6 +347,52 @@ const HeaderIndexEntry* HeaderChainSelector::GetHeader(const uint256& hash) cons
     return it->second.get();
 }
 
+bool HeaderChainSelector::GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = header_index_.find(hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+    out = *it->second;
+    // The parent pointer is only valid under this lock (EvictBranch can free
+    // the parent entry); never let a copy carry it out.
+    out.parent = nullptr;
+    return true;
+}
+
+bool HeaderChainSelector::CollectAncestorsByHash(
+        const uint256& anchor_hash,
+        uint32_t start_height,
+        uint32_t& anchor_height_out,
+        std::vector<std::pair<uint256, uint32_t>>& out_ascending) const {
+    // Resolve + walk + copy entirely under mutex_: EvictBranch (also under
+    // mutex_) can free side-branch entries, so neither the anchor pointer nor
+    // its parent links may escape this critical section.
+    std::lock_guard<std::mutex> lock(mutex_);
+    out_ascending.clear();
+
+    auto it = header_index_.find(anchor_hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+    const HeaderIndexEntry* anchor = it->second.get();
+    anchor_height_out = anchor->height;
+    if (start_height > anchor->height) {
+        return true;  // anchor known, range degenerate — caller decides
+    }
+
+    out_ascending.reserve(anchor->height - start_height + 1);
+    for (const HeaderIndexEntry* e = anchor; e && e->height >= start_height;
+         e = e->parent) {
+        out_ascending.emplace_back(e->hash, e->height);
+        if (e->height == start_height) {
+            break;  // height-0 guard: `e->height >= 0` is never false (unsigned)
+        }
+    }
+    std::reverse(out_ascending.begin(), out_ascending.end());
+    return true;
+}
+
 const HeaderIndexEntry* HeaderChainSelector::GetHeaderAtHeight(uint32_t height) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!best_header_) {

@@ -80,14 +80,49 @@ void BlockDownloadScheduler::OnBlockNotFound(const uint256& hash,
     // A snapshot-bootstrapped peer advertises the full tip but lacks pre-snapshot
     // bodies; one NOTFOUND marks it body-incapable at that height and below, so
     // subsequent getdata for those heights skip it instead of re-poisoning the
-    // in-flight request (which was the catch-up wedge).
+    // in-flight request (which was the catch-up wedge). The hash→height lookup
+    // spans BOTH queues — the demotion map is shared, and AssumeUTXO backfill
+    // heights are exactly the pre-snapshot bodies such peers lack.
     if (!peer_key.empty()) {
+        uint32_t notfound_height = 0;
+        bool height_known = false;
         for (const auto& fs : missing_blocks_) {
             if (fs.block_hash == hash) {
-                uint32_t& gap = peer_lacks_body_at_or_below_[peer_key];
-                if (fs.height > gap) gap = fs.height;
+                notfound_height = fs.height;
+                height_known = true;
                 break;
             }
+        }
+        if (!height_known) {
+            for (const auto& fs : backfill_blocks_) {
+                if (fs.block_hash == hash) {
+                    notfound_height = fs.height;
+                    height_known = true;
+                    break;
+                }
+            }
+        }
+        if (height_known) {
+            uint32_t& gap = peer_lacks_body_at_or_below_[peer_key];
+            if (notfound_height > gap) gap = notfound_height;
+        }
+    }
+
+    // Backfill NOTFOUND: flip the entry back to MISSING so the next service
+    // pass retries it via another (non-demoted) peer, and release the
+    // in-flight accounting. Mirrors the tip path's NOTFOUND handling: the
+    // shared in_flight_blocks_ entry was already erased above; tip entries
+    // are re-queued by the rescan below / the stale sweep, while backfill
+    // entries are owned here.
+    for (auto& fs : backfill_blocks_) {
+        if (fs.block_hash == hash) {
+            if (fs.status == FetchStatus::REQUESTED) {
+                fs.status = FetchStatus::MISSING;
+                if (backfill_progress_.in_flight > 0) {
+                    backfill_progress_.in_flight--;
+                }
+            }
+            break;
         }
     }
 
@@ -159,25 +194,47 @@ void BlockDownloadScheduler::DispatchDeferredSends() {
 
 bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
     std::lock_guard<std::mutex> lock(mutex_);
-    g_logger.info("[BlockDownloadScheduler] OnBlockReceived: " + block.GetHash().GetHex());
+    const uint256 block_hash = block.GetHash();
+    g_logger.info("[BlockDownloadScheduler] OnBlockReceived: " + block_hash.GetHex());
 
-    // Validate block against header
-    if (!ValidateBlockAgainstHeader(block)) {
-        g_logger.warning("[BlockDownloadScheduler] Block validation failed: " +
-                        block.GetHash().GetHex());
-        return false;
+    // AssumeUTXO backfill routing (Task 2): a pre-base body is verified and
+    // stored EXACTLY like a tip block (same helper), but is store-only — it
+    // never enters tip-connect bookkeeping (received_blocks_, expected_blocks_,
+    // TryConnectStoredBlocksLocked inputs). The background validation worker reads
+    // it back from flat-file storage via the canonical header chain.
+    if (backfill_expected_.count(block_hash) > 0) {
+        FilePosition stored_pos;
+        if (!StoreVerifiedBlockLocked(block, stored_pos, /*track_received=*/false)) {
+            return false;
+        }
+        for (auto& fs : backfill_blocks_) {
+            if (fs.block_hash == block_hash) {
+                if (fs.status == FetchStatus::REQUESTED &&
+                    backfill_progress_.in_flight > 0) {
+                    backfill_progress_.in_flight--;
+                }
+                fs.status = FetchStatus::RECEIVED;
+                fs.stored_pos = stored_pos;
+                break;
+            }
+        }
+        backfill_progress_.completed++;
+        in_flight_blocks_.erase(block_hash);
+        backfill_expected_.erase(block_hash);
+        g_logger.info("[BlockDownloadScheduler] Backfill body stored: " +
+                      block_hash.GetHex().substr(0, 16) + "... (" +
+                      std::to_string(backfill_progress_.completed) + "/" +
+                      std::to_string(backfill_progress_.total) + ")");
+        return true;
     }
 
-    // Store block (but do NOT activate chainstate)
+    // Tip path: validate + store, then enter connect bookkeeping.
     FilePosition stored_pos;
-    if (!StoreBlock(block, stored_pos)) {
-        g_logger.error("[BlockDownloadScheduler] Failed to store block: " +
-                      block.GetHash().GetHex());
+    if (!StoreVerifiedBlockLocked(block, stored_pos, /*track_received=*/true)) {
         return false;
     }
 
     // Mark block as received and record its storage position
-    uint256 block_hash = block.GetHash();
     for (auto& fetch_state : missing_blocks_) {
         if (fetch_state.block_hash == block_hash) {
             fetch_state.status = FetchStatus::RECEIVED;
@@ -314,6 +371,32 @@ void BlockDownloadScheduler::TickLocked() {
                              ", waited " + std::to_string(elapsed) + "s)");
                 fetch_state.status = FetchStatus::MISSING;
                 in_flight_blocks_.erase(fetch_state.block_hash);
+            }
+        }
+    }
+
+    // Same #216-lineage stale sweep for the backfill queue: a REQUESTED
+    // backfill body that never arrived must return to MISSING so another peer
+    // is tried, and must release its slot in the SHARED in-flight window —
+    // otherwise stale backfill requests would silently shrink the tip-sync
+    // window. Lives here (not in ServiceBackfillLocked) so slots are released
+    // even on ticks where backfill yields to tip work. No #216 "already have"
+    // guard: backfill bodies are store-only and never connect, so the
+    // parallel-connect race that guard covers cannot occur.
+    for (auto& fs : backfill_blocks_) {
+        if (fs.status == FetchStatus::REQUESTED) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                now - fs.request_time).count();
+            if (elapsed >= stale_request_timeout_seconds_) {
+                g_logger.info("[BlockDownloadScheduler] Stale backfill request expired: " +
+                              fs.block_hash.GetHex().substr(0, 16) +
+                              "... (height " + std::to_string(fs.height) +
+                              ", waited " + std::to_string(elapsed) + "s)");
+                fs.status = FetchStatus::MISSING;
+                in_flight_blocks_.erase(fs.block_hash);
+                if (backfill_progress_.in_flight > 0) {
+                    backfill_progress_.in_flight--;
+                }
             }
         }
     }
@@ -475,7 +558,78 @@ void BlockDownloadScheduler::TickLocked() {
     // This is the primary block connection mechanism during IBD —
     // blocks are stored out-of-order by the scheduler, then connected
     // sequentially here as contiguous runs become available.
-    TryConnectStoredBlocks();
+    TryConnectStoredBlocksLocked();
+
+    // Backfill is strictly lower priority: only when tip sync has nothing
+    // MISSING or REQUESTED do we spend request slots on history. Its sends
+    // are staged into deferred_sends_ and ride the same post-lock dispatch
+    // in Tick() as tip getdata (#241/#214).
+    ServiceBackfillLocked();
+}
+
+// AssumeUTXO backfill servicing (Task 2). Caller MUST hold mutex_. See the
+// header declaration for the priority/cap/staging contract.
+void BlockDownloadScheduler::ServiceBackfillLocked() {
+    if (!backfill_progress_.enabled || backfill_blocks_.empty()) {
+        return;
+    }
+    // Honor the central deferral (issue #186) even if a future call site
+    // reaches here without TickLocked()'s early return.
+    if (defer_check_ && defer_check_()) {
+        return;
+    }
+
+    // Tip sync busy? (ANY MISSING or REQUESTED tip block) → yield. Backfill
+    // is history repair; the tip window gets every slot first.
+    for (const auto& fs : missing_blocks_) {
+        if (fs.status == FetchStatus::MISSING ||
+            fs.status == FetchStatus::REQUESTED) {
+            return;
+        }
+    }
+
+    // Shared global in-flight cap with tip sync: backfill hashes live in
+    // in_flight_blocks_ too, so tip work resuming next tick sees a truthful
+    // window (and backfill can never oversubscribe the peer pipeline).
+    const size_t max_window = static_cast<size_t>(max_in_flight_);
+    const auto now = std::chrono::steady_clock::now();
+    const size_t n = backfill_blocks_.size();
+    // Cursor fairness: resume where the last service pass stopped instead of
+    // rescanning from index 0 (snapshot the cursor — it advances inside the
+    // loop, so indexing off the live value would skip/revisit entries).
+    const size_t start = next_backfill_idx_;
+    size_t staged = 0;
+    for (size_t i = 0; i < n && in_flight_blocks_.size() < max_window; ++i) {
+        const size_t idx = (start + i) % n;
+        auto& fs = backfill_blocks_[idx];
+        if (fs.status != FetchStatus::MISSING) {
+            continue;
+        }
+
+        fs.status = FetchStatus::REQUESTED;
+        fs.request_time = now;  // re-armed by the stale sweep in TickLocked()
+        in_flight_blocks_.insert(fs.block_hash);
+        backfill_progress_.in_flight++;
+        next_backfill_idx_ = (idx + 1) % n;
+
+        if (send_getdata_callback_) {
+            // #241 reuse: StageGetdataLocked snapshots the skip-set (every
+            // peer known to lack bodies at/above this height) and defers the
+            // send; Tick() dispatches after mutex_ release.
+            StageGetdataLocked(fs.block_hash, fs.height);
+            staged++;
+        } else {
+            g_logger.warning("[BlockDownloadScheduler] send_getdata_callback not set (backfill)");
+        }
+    }
+
+    if (staged > 0) {
+        g_logger.info("[BlockDownloadScheduler] Backfill: staged " +
+                      std::to_string(staged) + " getdata (in_flight=" +
+                      std::to_string(backfill_progress_.in_flight) +
+                      ", completed=" + std::to_string(backfill_progress_.completed) +
+                      "/" + std::to_string(backfill_progress_.total) + ")");
+    }
 }
 
 // ============================================================================
@@ -611,6 +765,137 @@ dinero::SyncPhase BlockDownloadScheduler::GetCurrentPhase() const {
 // Private Helpers
 // ============================================================================
 
+// ============================================================================
+// AssumeUTXO pre-base body backfill — queue population + accounting (Task 1)
+// ============================================================================
+
+void BlockDownloadScheduler::SetHasBlockBodyCallback(
+        std::function<bool(const uint256&, uint32_t)> cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    has_block_body_ = std::move(cb);
+}
+
+void BlockDownloadScheduler::EnableBackfill(uint32_t start_height,
+                                             uint32_t end_height,
+                                             const uint256& end_anchor_hash) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Idempotent: same (range, anchor) while already enabled → preserve
+    // in-progress state.
+    if (backfill_progress_.enabled &&
+        backfill_progress_.start_height == start_height &&
+        backfill_progress_.end_height == end_height &&
+        backfill_anchor_hash_ == end_anchor_hash) {
+        return;
+    }
+
+    // (range, anchor) DIFFERS from the active state (or backfill is off):
+    // perform the full DisableBackfill cleanup FIRST. Two contracts hang on
+    // this ordering:
+    //   1. No in-flight leak on a direct base change: the old queue's
+    //      REQUESTED hashes are erased from in_flight_blocks_ before the new
+    //      queue is populated — re-Enable with requests on the wire cannot
+    //      strand slots in the shared window (the wiring's Disable-on-every-
+    //      non-validating-tick covers fatal/reset/retire, but a reset + new
+    //      snapshot between two ticks would re-Enable directly).
+    //   2. A REFUSED Enable (anchor not yet known) leaves enabled == false,
+    //      so the caller's periodic re-arm genuinely retries instead of
+    //      being swallowed by the idempotency check against stale state.
+    DisableBackfillLocked();
+
+    // Resolve the anchor BY HASH, never by height. end_anchor_hash is the
+    // AssumeUTXO snapshot base block hash — the trust root. The snapshot
+    // load gate is existence-only (any known header passes, side branches
+    // included), so the BEST header chain may diverge below the base; a
+    // GetHeaderAtHeight(end_height) anchor would then walk the FORK and
+    // queue the fork's bodies for download — feeding the validation worker a
+    // complete fork replay and a persisted false fatal_mismatch. Anchoring
+    // on the hash pins the walk to the snapshot's own chain regardless of
+    // what the best chain does. The height check is explicit: a wired-up
+    // mismatch is a caller bug we want loud.
+    //
+    // The resolve + walk + copy happen atomically under the HEADER CHAIN's
+    // own mutex (CollectAncestorsByHash), not just ours: the base may be a
+    // childless side-branch tip, which EvictBranch (running under the header
+    // chain's lock on another thread) can free mid-walk if we held only the
+    // scheduler mutex_ — raw GetHeader() pointers don't survive that.
+    uint32_t anchor_height = 0;
+    std::vector<std::pair<uint256, uint32_t>> window;
+    const bool anchor_known =
+        header_chain_ && header_chain_->CollectAncestorsByHash(
+                             end_anchor_hash, start_height, anchor_height, window);
+    if (!anchor_known || anchor_height != end_height) {
+        // Do NOT enable: the caller's periodic re-arm retries once headers
+        // for the snapshot branch arrive.
+        g_logger.warning("[BlockDownloadScheduler] EnableBackfill: anchor " +
+                         end_anchor_hash.GetHex().substr(0, 16) +
+                         "... not found at height " + std::to_string(end_height) +
+                         (anchor_known ? " (header exists at height " +
+                                             std::to_string(anchor_height) + ")"
+                                       : " (header unknown)") +
+                         " — backfill not enabled");
+        return;
+    }
+    if (window.empty()) {
+        // Degenerate range — refuse, queue stays empty.
+        g_logger.warning("[BlockDownloadScheduler] EnableBackfill: no canonical headers for "
+                         "range " + std::to_string(start_height) + ".." +
+                         std::to_string(end_height));
+        return;
+    }
+
+    backfill_progress_.enabled = true;
+    backfill_progress_.start_height = start_height;
+    backfill_progress_.end_height = end_height;
+    backfill_anchor_hash_ = end_anchor_hash;
+
+    for (const auto& [hash, height] : window) {
+        if (has_block_body_ && has_block_body_(hash, height)) {
+            continue;  // body already present; skip
+        }
+        backfill_blocks_.emplace_back(hash, height);
+        backfill_expected_.insert(hash);
+    }
+    backfill_progress_.total = backfill_blocks_.size();
+
+    g_logger.info("[BlockDownloadScheduler] EnableBackfill: range=" +
+                  std::to_string(start_height) + ".." + std::to_string(end_height) +
+                  " missing=" + std::to_string(backfill_progress_.total));
+}
+
+void BlockDownloadScheduler::DisableBackfill() {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Already disabled and empty → silent no-op. The daemon disarms on every
+    // periodic tick while not validating (covers retirement, fatal AND reset
+    // with zero extra plumbing), so this must not log every 5 seconds on
+    // every non-assumeutxo node.
+    if (!backfill_progress_.enabled && backfill_blocks_.empty()) {
+        return;
+    }
+
+    DisableBackfillLocked();
+    g_logger.info("[BlockDownloadScheduler] DisableBackfill");
+}
+
+void BlockDownloadScheduler::DisableBackfillLocked() {
+    // Release any in-flight accounting so the main window stays consistent.
+    for (const auto& fs : backfill_blocks_) {
+        in_flight_blocks_.erase(fs.block_hash);
+    }
+    backfill_blocks_.clear();
+    backfill_expected_.clear();
+    next_backfill_idx_ = 0;
+    backfill_progress_ = BackfillProgress{};
+    backfill_anchor_hash_ = uint256();
+}
+
+BlockDownloadScheduler::BackfillProgress
+BlockDownloadScheduler::GetBackfillProgress() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return backfill_progress_;
+}
+
 void BlockDownloadScheduler::ScanForMissingBlocks() {
     if (!header_chain_) {
         return;
@@ -646,6 +931,20 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
     expected_blocks_.clear();
     in_flight_blocks_.clear();
     next_missing_idx_ = 0;
+
+    // Backfill in-flight hashes share the window: preserve them across rescans
+    // (the rescan only restructures TIP work; backfill requests stay on the wire).
+    // This re-add MUST sit immediately after the clear, before ANY early return:
+    // the "Already synchronized" exit below is the NORMAL steady state of a
+    // snapshot-loaded node at tip, and skipping the re-add there dropped the
+    // outstanding backfill hashes from the cap authority on every headers
+    // message — the next service pass then staged another full cap's worth
+    // (2x oversubscription).
+    for (const auto& fs : backfill_blocks_) {
+        if (fs.status == FetchStatus::REQUESTED) {
+            in_flight_blocks_.insert(fs.block_hash);
+        }
+    }
 
     // Get best header
     const HeaderIndexEntry* best_header = header_chain_->GetBestHeader();
@@ -703,26 +1002,20 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
     }
 
     // issue #241 perf: collect the [start_height, best_height] window with ONE
-    // backward walk over parent pointers instead of GetHeaderAtHeight(h) per
-    // height — each of those calls walks from the best header, making the scan
-    // O(n^2). On a from-genesis sync (~39k headers) that pinned a core inside
-    // this loop under mutex_ on EVERY headers message and throttled ingest to
-    // a few blocks/min. Parent links are append-only/immutable once added, the
-    // same invariant GetBestHeader()'s raw-pointer return already relies on.
+    // backward walk over parent pointers (shared helper) instead of
+    // GetHeaderAtHeight(h) per height — each of those calls walks from the
+    // best header, making the scan O(n^2). On a from-genesis sync (~39k
+    // headers) that pinned a core inside this loop under mutex_ on EVERY
+    // headers message and throttled ingest to a few blocks/min. Tip sync's
+    // anchor IS the best header (already resolved above), so the total stays
+    // linear.
     std::vector<const HeaderIndexEntry*> window;
-    window.reserve(best_height - start_height + 1);
-    for (const HeaderIndexEntry* e = best_header; e && e->height >= start_height;
-         e = e->parent) {
-        window.push_back(e);
-        if (e->height == start_height) {
-            break;  // height 0 entries make `e->height >= start_height` never false
-        }
+    if (!CollectCanonicalHeadersLocked(start_height, best_header, window)) {
+        return;
     }
 
     size_t preserved_count = 0;
-    for (auto rit = window.rbegin(); rit != window.rend(); ++rit) {
-        const HeaderIndexEntry* entry = *rit;
-
+    for (const HeaderIndexEntry* entry : window) {
         // Restore preserved status from previous scan.
         auto it = preserved.find(entry->hash);
         if (it != preserved.end()) {
@@ -739,6 +1032,38 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
 
     g_logger.info("[BlockDownloadScheduler] Queued " + std::to_string(missing_blocks_.size()) +
                  " blocks for download (" + std::to_string(preserved_count) + " preserved states)");
+}
+
+// Single-backward-walk collector for the header window
+// [start_height, anchor->height], ascending order (carryover from Task 1
+// review; used by ScanForMissingBlocks with a BEST-CHAIN anchor). Parent
+// links down to start_height: O(anchor->height - start_height) total.
+// Calling GetHeaderAtHeight(h) per height instead would be O(n²), the #241
+// scan bug (commit 9bc061782).
+//
+// LIFETIME: walks raw parent pointers WITHOUT the header chain's lock —
+// valid only for best-chain anchors (never evicted). EnableBackfill's
+// possibly-side-branch anchor must NOT come through here; it uses
+// HeaderChainSelector::CollectAncestorsByHash (copies under the header
+// chain's own mutex, immune to concurrent EvictBranch).
+bool BlockDownloadScheduler::CollectCanonicalHeadersLocked(
+        uint32_t start_height, const HeaderIndexEntry* anchor,
+        std::vector<const HeaderIndexEntry*>& out_ascending) const {
+    out_ascending.clear();
+    if (!anchor || start_height > anchor->height) {
+        return false;
+    }
+
+    out_ascending.reserve(anchor->height - start_height + 1);
+    for (const HeaderIndexEntry* e = anchor; e && e->height >= start_height;
+         e = e->parent) {
+        out_ascending.push_back(e);
+        if (e->height == start_height) {
+            break;  // height-0 guard: `e->height >= 0` is never false (unsigned)
+        }
+    }
+    std::reverse(out_ascending.begin(), out_ascending.end());
+    return true;
 }
 
 std::optional<BlockDownloadScheduler::StatelessFrontier>
@@ -876,16 +1201,20 @@ bool BlockDownloadScheduler::ValidateBlockAgainstHeader(const Block& block) {
     // Get block hash
     uint256 block_hash = block.GetHash();
 
-    // Find corresponding header
-    const HeaderIndexEntry* header = header_chain_->GetHeader(block_hash);
-    if (!header) {
+    // Find corresponding header. COPY the entry out under the header chain's
+    // lock: backfill routes side-branch snapshot-chain hashes through here,
+    // and EvictBranch (which runs under the header chain's mutex, NOT this
+    // class's mutex_) can free a raw GetHeader() pointer concurrently —
+    // same use-after-free class as the EnableBackfill anchor walk (C4).
+    HeaderIndexEntry header;
+    if (!header_chain_->GetHeaderCopy(block_hash, header)) {
         g_logger.warning("[BlockDownloadScheduler] No header found for block: " +
                         block_hash.GetHex());
         return false;
     }
 
     // Validate hash matches (redundant but explicit)
-    if (block_hash != header->hash) {
+    if (block_hash != header.hash) {
         g_logger.error("[BlockDownloadScheduler] Block hash mismatch!");
         return false;
     }
@@ -894,7 +1223,7 @@ bool BlockDownloadScheduler::ValidateBlockAgainstHeader(const Block& block) {
     // Phase N.4.1: For skeleton, just compare header fields
     // Phase N.4.2: Will compute merkle root from transactions
     uint256 block_merkle = block.header.merkle_root;
-    uint256 header_merkle = header->header.merkle_root;
+    uint256 header_merkle = header.header.merkle_root;
 
     if (block_merkle != header_merkle) {
         g_logger.error("[BlockDownloadScheduler] Merkle root mismatch!");
@@ -911,12 +1240,36 @@ bool BlockDownloadScheduler::ValidateBlockAgainstHeader(const Block& block) {
     return true;
 }
 
-bool BlockDownloadScheduler::StoreBlock(const Block& block, FilePosition& out_pos) {
+// Shared verify+persist core for the tip and backfill receive paths (Task 2
+// DRY): header-match validation, then flat-file write. Caller MUST hold
+// mutex_. track_received=false for backfill bodies (store-only — they must
+// never enter received_blocks_ / connect bookkeeping).
+bool BlockDownloadScheduler::StoreVerifiedBlockLocked(const Block& block,
+                                                      FilePosition& out_pos,
+                                                      bool track_received) {
+    if (!ValidateBlockAgainstHeader(block)) {
+        g_logger.warning("[BlockDownloadScheduler] Block validation failed: " +
+                        block.GetHash().GetHex());
+        return false;
+    }
+
+    // Store block (but do NOT activate chainstate)
+    if (!StoreBlock(block, out_pos, track_received)) {
+        g_logger.error("[BlockDownloadScheduler] Failed to store block: " +
+                      block.GetHash().GetHex());
+        return false;
+    }
+
+    return true;
+}
+
+bool BlockDownloadScheduler::StoreBlock(const Block& block, FilePosition& out_pos,
+                                        bool track_received) {
     // Phase N.4.4: Store block to flat file storage
     //
     // This writes the block to blk*.dat files via BlockStorage.
     // IMPORTANT: This does NOT activate chainstate or update UTXO set.
-    // Block connection is done by TryConnectStoredBlocks() in height order.
+    // Block connection is done by TryConnectStoredBlocksLocked() in height order.
 
     uint256 block_hash = block.GetHash();
 
@@ -943,7 +1296,12 @@ bool BlockDownloadScheduler::StoreBlock(const Block& block, FilePosition& out_po
                  ", size=" + std::to_string(out_pos.size) + ")");
 
     // Track that we've received this block (for parent-known checks).
-    received_blocks_.insert(block_hash);
+    // Backfill bodies pass track_received=false: they are store-only and must
+    // not enter the tip path's connect bookkeeping (received_blocks_ also
+    // feeds the #216 stale-timeout "already have" guard).
+    if (track_received) {
+        received_blocks_.insert(block_hash);
+    }
 
     return true;
 }
@@ -952,7 +1310,7 @@ bool BlockDownloadScheduler::StoreBlock(const Block& block, FilePosition& out_po
 // Block Connection Drainer
 // ============================================================================
 
-size_t BlockDownloadScheduler::TryConnectStoredBlocks(size_t max_blocks) {
+size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
     if (!connect_block_callback_ || !block_storage_) {
         return 0;
     }

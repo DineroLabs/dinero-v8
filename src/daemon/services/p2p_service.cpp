@@ -638,6 +638,33 @@ void P2PService::StartSchedulerTickLoop() {
 
         while (scheduler_tick_running_.load(std::memory_order_relaxed)) {
             if (auto* ctx = DaemonContext::instance()) {
+                // AssumeUTXO body backfill: while the lifecycle is validating
+                // history, keep the backfill queue armed for heights 1..base,
+                // anchored on the snapshot base HASH (the trust root — the
+                // best header chain may diverge below the base, so a height
+                // anchor could walk a fork). Disarm on every non-validating
+                // tick: covers retirement (FullyValidated), fatal AND
+                // operator reset with zero extra plumbing. EnableBackfill is
+                // idempotent for the same (range, anchor) so this 5s re-arm
+                // is cheap; it is also the RETRY for an Enable the scheduler
+                // refused while the base header was not yet known (a refused
+                // Enable leaves backfill disabled by contract). This loop —
+                // not the OnHeaders handler — is the arm site because it
+                // keeps firing after header traffic stops, which is exactly
+                // when a snapshot-loaded node sits validating history.
+                if (ctx->block_download && ctx->chainstate) {
+                    if (auto* lc = ctx->chainstate->GetAssumeUtxoLifecycle()) {
+                        const auto st = lc->GetStatus(std::chrono::steady_clock::now());
+                        const bool validating =
+                            st.assumeutxo_active && !st.history_fully_validated && !st.fatal;
+                        if (validating && st.snapshot_base_height > 0) {
+                            ctx->block_download->EnableBackfill(
+                                1, st.snapshot_base_height, st.snapshot_base_block);
+                        } else {
+                            ctx->block_download->DisableBackfill();
+                        }
+                    }
+                }
                 if (ctx->block_download) {
                     ctx->block_download->Tick();
                 }

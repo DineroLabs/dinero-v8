@@ -2445,6 +2445,19 @@ bool DaemonApp::Init(int argc, char** argv) {
         return ctx_.chainstate && ctx_.chainstate->IsSnapshotBootstrapPending();
     });
 
+    // AssumeUTXO body backfill: EnableBackfill consults this predicate to
+    // skip bodies already on disk. hasBlockByHash is a pure metadata probe
+    // (ChainDB flatfile-position lookup + file-size stat via
+    // storage::HasArchivalBlockBody) — it never reads the body. Lock-order
+    // contract (see SetHasBlockBodyCallback doc): invoked under the
+    // scheduler mutex_; this accessor takes NO application lock (RocksDB
+    // point Get + filesystem stat only), so it cannot re-enter the scheduler
+    // nor acquire a lock that is ever held around scheduler calls.
+    block_download->SetHasBlockBodyCallback(
+        [this](const uint256& hash, uint32_t /*height*/) -> bool {
+            return ctx_.chainstate && ctx_.chainstate->hasBlockByHash(hash);
+        });
+
     // Seed the scheduler from the validated active chain tip, not the raw
     // ChainDB storage tip. ChainDB can be ahead during restart recovery when
     // blocks are stored on disk but chainstate has not replayed them yet.
@@ -5526,7 +5539,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                         }
 
                         // During IBD/catch-up, block connection is handled by the scheduler's
-                        // TryConnectStoredBlocks() drainer (called from Tick()).
+                        // TryConnectStoredBlocksLocked() drainer (called from Tick()).
                         // Do NOT send out-of-order blocks to ChainstateService here —
                         // they would always fail with missing-parent since the chain
                         // tip is far behind the download frontier.

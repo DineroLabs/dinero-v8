@@ -12,6 +12,7 @@
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -1022,6 +1023,736 @@ int main() {
         }
 
         std::cout << "   ✅ 60k-header scan completed in " << elapsed.count() << "ms"
+                  << std::endl;
+    }
+
+
+    {
+        std::cout << "\n11. assumeutxo backfill: EnableBackfill queues exactly the missing "
+                     "pre-base heights, skips bodies already present, exposes progress; "
+                     "backfill never flips IsFullySynchronized..." << std::endl;
+
+        // Topology: genesis + heights 1..8.  SetLocalTipHeight(8) simulates an
+        // AssumeUTXO snapshot loaded at base=8 — tip sync is fully satisfied,
+        // but pre-base bodies 1..8 need to be backfilled.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;  // hashes[i] == header hash at height i
+        try {
+            BuildLinearHeaders(selector, 8, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(8);   // snapshot base = 8
+        scheduler.OnHeadersProcessed();   // tip sync: nothing missing
+
+        // Node already has bodies at heights 3 and 5 (e.g. partial prior backfill).
+        scheduler.SetHasBlockBodyCallback([](const uint256& /*hash*/, uint32_t height) -> bool {
+            return height == 3 || height == 5;
+        });
+
+        std::vector<uint32_t> requested_heights;
+        scheduler.SetSendGetDataCallback([&](const uint256& /*hash*/, uint32_t height) {
+            requested_heights.push_back(height);
+        });
+
+        if (!Require(scheduler.IsFullySynchronized(), "pre: should be synced at tip after snapshot")) {
+            return 1;
+        }
+
+        // Regression (anchor-by-hash): EnableBackfill with a WRONG anchor hash
+        // for end_height must refuse to enable. A height-anchored walk would
+        // silently feed a diverged best chain's hashes to the downloader; the
+        // hash anchor makes that impossible.
+        scheduler.EnableBackfill(1, 8, hashes[7]);  // hashes[7] is height 7, not 8
+        if (!Require(!scheduler.GetBackfillProgress().enabled,
+                     "EnableBackfill with wrong anchor hash must leave backfill disabled")) {
+            return 1;
+        }
+
+        scheduler.EnableBackfill(1, 8, hashes[8]);   // heights 1..base, anchored on base hash
+
+        auto prog = scheduler.GetBackfillProgress();
+        if (!Require(prog.enabled, "backfill not enabled after EnableBackfill")) return 1;
+        // 8 heights total, 2 already present (3 and 5) → 6 missing
+        if (!Require(prog.total == 6,
+                     "expected 6 missing (1,2,4,6,7,8), got " + std::to_string(prog.total))) {
+            return 1;
+        }
+        if (!Require(prog.completed == 0, "no bodies completed yet")) return 1;
+        if (!Require(prog.start_height == 1, "start_height must be 1")) return 1;
+        if (!Require(prog.end_height == 8, "end_height must be 8")) return 1;
+
+        // Backfill must NOT flip IsFullySynchronized (it lives in its own queue).
+        if (!Require(scheduler.IsFullySynchronized(),
+                     "backfill must not flip IsFullySynchronized")) {
+            return 1;
+        }
+
+        // Idempotent re-enable with the same range must not duplicate the queue.
+        scheduler.EnableBackfill(1, 8, hashes[8]);
+        if (!Require(scheduler.GetBackfillProgress().total == 6,
+                     "idempotent re-enable must not duplicate queue")) {
+            return 1;
+        }
+
+        // DisableBackfill resets all state.
+        scheduler.DisableBackfill();
+        if (!Require(!scheduler.GetBackfillProgress().enabled, "disable failed")) return 1;
+        if (!Require(scheduler.GetBackfillProgress().total == 0, "total should be 0 after disable")) return 1;
+
+        // After disable, IsFullySynchronized must still hold.
+        if (!Require(scheduler.IsFullySynchronized(),
+                     "IsFullySynchronized must remain true after DisableBackfill")) {
+            return 1;
+        }
+
+        // Task 2: with tip sync idle (snapshot tip == best header, nothing in
+        // missing_blocks_), Tick SERVICES the backfill queue and requests
+        // exactly the 6 missing pre-base heights via the staged-dispatch path.
+        scheduler.EnableBackfill(1, 8, hashes[8]);
+        scheduler.Tick();
+        std::vector<uint32_t> got = requested_heights;
+        std::sort(got.begin(), got.end());
+        const std::vector<uint32_t> want{1, 2, 4, 6, 7, 8};
+        if (!Require(got == want,
+                     "Tick must service the backfill queue (Task 2): expected exactly "
+                     "the 6 missing heights {1,2,4,6,7,8}, got " +
+                         std::to_string(got.size()) + " requests")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ backfill total=" << scheduler.GetBackfillProgress().total
+                  << " IsFullySynchronized preserved, 6 heights serviced when tip idle"
+                  << std::endl;
+    }
+
+
+    {
+        std::cout << "\n12. assumeutxo backfill: serviced ONLY when tip sync is idle "
+                     "(yields to MISSING and REQUESTED tip work) and respects the "
+                     "shared in-flight cap..." << std::endl;
+
+        // Topology: genesis + heights 1..40. Snapshot base = 20: tip sync owns
+        // 21..40 (20 blocks), backfill owns 1..20 (20 blocks > max_in_flight 16,
+        // so the shared cap is observable).
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 40, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(20);  // snapshot base = 20
+
+        std::vector<std::pair<uint256, uint32_t>> requests;  // (hash, height)
+        scheduler.SetSendGetDataCallback([&requests](const uint256& h, uint32_t height) {
+            requests.emplace_back(h, height);
+        });
+
+        scheduler.OnHeadersProcessed();   // tip sync: heights 21..40 missing
+        scheduler.EnableBackfill(1, 20, hashes[20]);  // pre-base bodies 1..20, anchored on base hash
+
+        // Tick #1: tip sync fills the window. NO backfill height (<=20) may be
+        // requested while ANY tip entry is MISSING or REQUESTED.
+        scheduler.Tick();
+        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
+                     "expected tip sync to fill the window first")) {
+            return 1;
+        }
+        for (const auto& rq : requests) {
+            if (!Require(rq.second > 20,
+                         "backfill serviced while tip sync pending (height " +
+                             std::to_string(rq.second) + ")")) {
+                return 1;
+            }
+        }
+        if (!Require(scheduler.GetBackfillProgress().in_flight == 0,
+                     "backfill in_flight must stay 0 while tip sync is busy")) {
+            return 1;
+        }
+
+        // Drain the first window of tip blocks.
+        auto first_window = requests;
+        requests.clear();
+        for (const auto& rq : first_window) {
+            if (!scheduler.OnBlockReceived(MakeBlockForHash(selector, rq.first))) {
+                std::cerr << "   ❌ failed to inject tip block at height " << rq.second << std::endl;
+                return 1;
+            }
+        }
+
+        // Tick #2: the remaining 4 tip blocks become REQUESTED in this same
+        // tick; backfill must STILL yield (REQUESTED tip work counts as busy).
+        scheduler.Tick();
+        if (!Require(requests.size() == 4, "expected the 4 remaining tip requests")) {
+            return 1;
+        }
+        for (const auto& rq : requests) {
+            if (!Require(rq.second > 20,
+                         "backfill serviced while tip blocks are REQUESTED (height " +
+                             std::to_string(rq.second) + ")")) {
+                return 1;
+            }
+        }
+        auto second_window = requests;
+        requests.clear();
+        for (const auto& rq : second_window) {
+            if (!scheduler.OnBlockReceived(MakeBlockForHash(selector, rq.first))) {
+                std::cerr << "   ❌ failed to inject tip block at height " << rq.second << std::endl;
+                return 1;
+            }
+        }
+
+        // Tick #3: tip queue fully RECEIVED → idle. Backfill is now serviced,
+        // capped at max_in_flight by the SHARED in-flight window.
+        scheduler.Tick();
+        if (!Require(!requests.empty(), "backfill not serviced after tip idle")) {
+            return 1;
+        }
+        for (const auto& rq : requests) {
+            if (!Require(rq.second <= 20,
+                         "non-backfill height requested after tip idle (height " +
+                             std::to_string(rq.second) + ")")) {
+                return 1;
+            }
+        }
+        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
+                     "backfill must fill exactly up to the shared in-flight cap (got " +
+                         std::to_string(requests.size()) + ")")) {
+            return 1;
+        }
+        if (!Require(scheduler.GetInFlightCount() == scheduler.GetMaxInFlight(),
+                     "backfill requests must share the global in-flight accounting")) {
+            return 1;
+        }
+        if (!Require(scheduler.GetBackfillProgress().in_flight == scheduler.GetMaxInFlight(),
+                     "backfill progress in_flight must track its staged requests")) {
+            return 1;
+        }
+        if (!Require(scheduler.IsFullySynchronized(),
+                     "backfill servicing must not flip IsFullySynchronized")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ backfill yielded to tip MISSING+REQUESTED, then filled "
+                  << requests.size() << "/" << scheduler.GetMaxInFlight()
+                  << " shared window slots" << std::endl;
+    }
+
+    {
+        std::cout << "\n13. assumeutxo backfill: received backfill block is stored-only — "
+                     "completion accounting without connect bookkeeping..." << std::endl;
+
+        // Setup as case 11 with tip at 4 == snapshot base; tip sync is idle so
+        // backfill is serviced immediately.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 4, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(4);   // snapshot base = 4
+        scheduler.OnHeadersProcessed();   // tip sync: nothing missing
+
+        std::vector<std::pair<uint256, uint32_t>> requests;
+        scheduler.SetSendGetDataCallback([&requests](const uint256& h, uint32_t height) {
+            requests.emplace_back(h, height);
+        });
+
+        if (!Require(scheduler.IsFullySynchronized(), "pre: synced at snapshot tip")) {
+            return 1;
+        }
+
+        scheduler.EnableBackfill(1, 4, hashes[4]);
+        scheduler.Tick();
+        if (!Require(requests.size() == 4, "expected all 4 backfill bodies requested")) {
+            return 1;
+        }
+        {
+            const auto prog = scheduler.GetBackfillProgress();
+            if (!Require(prog.total == 4 && prog.in_flight == 4 && prog.completed == 0,
+                         "post-request progress must be total=4 in_flight=4 completed=0")) {
+                return 1;
+            }
+        }
+
+        // Deliver each backfill body: OnBlockReceived must return true, progress
+        // must increment per body, IsFullySynchronized must stay true throughout,
+        // and the body must never enter tip-connect bookkeeping.
+        uint64_t delivered = 0;
+        for (const auto& rq : requests) {
+            if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, rq.first)),
+                         "backfill OnBlockReceived must return true (height " +
+                             std::to_string(rq.second) + ")")) {
+                return 1;
+            }
+            delivered++;
+            const auto prog = scheduler.GetBackfillProgress();
+            if (!Require(prog.completed == delivered,
+                         "completed must increment per stored body (want " +
+                             std::to_string(delivered) + ", got " +
+                             std::to_string(prog.completed) + ")")) {
+                return 1;
+            }
+            if (!Require(scheduler.IsFullySynchronized(),
+                         "IsFullySynchronized must stay true throughout backfill")) {
+                return 1;
+            }
+            // Store-only contract: no tip-connect bookkeeping for backfill bodies.
+            if (!Require(!scheduler.HasReceivedBlock(rq.first),
+                         "backfill body must NOT enter received_blocks_ (tip bookkeeping)")) {
+                return 1;
+            }
+            if (!Require(!scheduler.IsBlockExpected(rq.first),
+                         "backfill body must NOT enter expected_blocks_ (tip bookkeeping)")) {
+                return 1;
+            }
+            if (!Require(!scheduler.IsBlockInFlight(rq.first),
+                         "received backfill body must leave the shared in-flight set")) {
+                return 1;
+            }
+            if (!Require(scheduler.GetQueuedBlockCount() == 0 &&
+                             scheduler.GetMissingBlockCount() == 0,
+                         "backfill receive must not touch the tip queue")) {
+                return 1;
+            }
+        }
+
+        const auto prog = scheduler.GetBackfillProgress();
+        if (!Require(prog.enabled, "progress.enabled stays true after completion")) return 1;
+        if (!Require(prog.in_flight == 0, "in_flight must drain to 0 on completion")) return 1;
+        if (!Require(prog.total == prog.completed && prog.total == 4,
+                     "completion must reach total==completed==4")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ 4/4 backfill bodies stored-only, accounting completed"
+                  << std::endl;
+    }
+
+    {
+        std::cout << "\n14. assumeutxo backfill: NOTFOUND demotes the peer for backfill "
+                     "heights too (#241 shared map) and flips the entry back to MISSING..."
+                  << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;  // index == height
+        try {
+            BuildLinearHeaders(selector, 4, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(4);   // snapshot base = 4; tip sync idle
+        scheduler.OnHeadersProcessed();
+
+        const std::string bad_peer = "192.0.2.9:5678";  // RFC 5737 test address
+
+        // Mirror case 8's observation: capture the staged skip-set for every
+        // send via CurrentRequestSkipPeers(), keyed by requested height.
+        std::vector<std::pair<uint32_t, std::unordered_set<std::string>>> sends;
+        scheduler.SetSendGetDataCallback(
+            [&scheduler, &sends](const uint256& /*h*/, uint32_t height) {
+                sends.emplace_back(height, scheduler.CurrentRequestSkipPeers());
+            });
+
+        scheduler.EnableBackfill(1, 4, hashes[4]);
+        scheduler.Tick();
+        if (!Require(sends.size() == 4, "expected all 4 backfill bodies requested")) {
+            return 1;
+        }
+        for (const auto& s : sends) {
+            if (!Require(s.second.empty(),
+                         "no peer should be in the skip-set before any NOTFOUND")) {
+                return 1;
+            }
+        }
+        if (!Require(scheduler.GetBackfillProgress().in_flight == 4,
+                     "setup: 4 backfill requests in flight")) {
+            return 1;
+        }
+
+        // The snapshot peer NOTFOUNDs the backfill block at height 3: the entry
+        // must flip back to MISSING and release the in-flight accounting.
+        scheduler.OnBlockNotFound(hashes[3], bad_peer);
+        if (!Require(scheduler.GetBackfillProgress().in_flight == 3,
+                     "NOTFOUND must release the backfill in-flight slot")) {
+            return 1;
+        }
+        if (!Require(!scheduler.IsBlockInFlight(hashes[3]),
+                     "NOTFOUND must clear the shared in-flight entry")) {
+            return 1;
+        }
+
+        // Force the stale sweep (#216 lineage, now covering backfill_blocks_)
+        // so heights 1, 2, 4 also return to MISSING and get re-requested.
+        scheduler.SetStaleRequestTimeoutSeconds(0);
+        sends.clear();
+        scheduler.Tick();
+
+        if (!Require(sends.size() == 4,
+                     "stale sweep + NOTFOUND demotion must re-request all 4 backfill "
+                     "heights (got " + std::to_string(sends.size()) + ")")) {
+            return 1;
+        }
+        // #241 height-bounded gating over the SHARED demotion map: the peer that
+        // NOTFOUND'd height 3 must be skipped for every backfill request at
+        // height <= 3 (including the height-2 request) and must NOT be skipped
+        // at height 4.
+        for (const auto& s : sends) {
+            if (s.first <= 3) {
+                if (!Require(s.second.count(bad_peer) > 0,
+                             "#241: NOTFOUND peer must be in the skip-set for backfill "
+                             "height " + std::to_string(s.first))) {
+                    return 1;
+                }
+            } else {
+                if (!Require(s.second.count(bad_peer) == 0,
+                             "#241: NOTFOUND peer must NOT be skipped above its gap "
+                             "(height " + std::to_string(s.first) + ")")) {
+                    return 1;
+                }
+            }
+        }
+        if (!Require(scheduler.GetBackfillProgress().in_flight == 4,
+                     "re-requests must restore in-flight accounting")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ NOTFOUND peer skipped at backfill heights <=3, retained at 4; "
+                     "entry demoted to MISSING and retried" << std::endl;
+    }
+
+    {
+        std::cout << "\n15. ScanForMissingBlocks preserves backfill in-flight hashes "
+                     "across rescans (shared window stays truthful)..." << std::endl;
+
+        // Mirror case 12's topology: genesis + heights 1..40, snapshot base = 20.
+        // Tip sync (21..40) is fully drained via the 3-tick sequence, leaving the
+        // backfill queue (1..20) with max_in_flight (16) REQUESTED entries and
+        // 4 MISSING.  A headers-processed rescan (ScanForMissingBlocks with no
+        // new tip work) must NOT wipe the backfill hashes from in_flight_blocks_.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 40, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(20);  // snapshot base = 20
+
+        std::vector<std::pair<uint256, uint32_t>> requests;  // (hash, height)
+        scheduler.SetSendGetDataCallback([&requests](const uint256& h, uint32_t height) {
+            requests.emplace_back(h, height);
+        });
+
+        scheduler.OnHeadersProcessed();   // tip sync: heights 21..40 missing
+        scheduler.EnableBackfill(1, 20, hashes[20]);  // pre-base bodies 1..20, anchored on base hash
+
+        // Tick #1: tip sync fills the window (16 blocks REQUESTED).
+        scheduler.Tick();
+        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
+                     "case 15 setup: expected tip to fill the window (tick 1)")) {
+            return 1;
+        }
+        auto first_window = requests;
+        requests.clear();
+        for (const auto& rq : first_window) {
+            if (!scheduler.OnBlockReceived(MakeBlockForHash(selector, rq.first))) {
+                std::cerr << "   ❌ case 15: failed to drain tip block at height "
+                          << rq.second << std::endl;
+                return 1;
+            }
+        }
+
+        // Tick #2: the remaining 4 tip blocks REQUESTED.
+        scheduler.Tick();
+        if (!Require(requests.size() == 4,
+                     "case 15 setup: expected 4 remaining tip requests (tick 2)")) {
+            return 1;
+        }
+        auto second_window = requests;
+        requests.clear();
+        for (const auto& rq : second_window) {
+            if (!scheduler.OnBlockReceived(MakeBlockForHash(selector, rq.first))) {
+                std::cerr << "   ❌ case 15: failed to drain remaining tip block at height "
+                          << rq.second << std::endl;
+                return 1;
+            }
+        }
+
+        // Tick #3: tip idle → backfill services up to max_in_flight (16 REQUESTED,
+        // 4 MISSING remain in the 20-entry backfill queue).
+        scheduler.Tick();
+        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
+                     "case 15 setup: expected backfill to fill the window (tick 3)")) {
+            return 1;
+        }
+
+        // Capture one in-flight backfill hash for IsBlockInFlight probing.
+        const uint256 backfill_hash = requests.front().first;
+        const size_t in_flight_before = scheduler.GetInFlightCount();
+        if (!Require(in_flight_before == scheduler.GetMaxInFlight(),
+                     "case 15 setup: expected full window before rescan")) {
+            return 1;
+        }
+
+        requests.clear();  // reset send counter for assertion (c)
+
+        // ── The rescan under test ──────────────────────────────────────────────
+        // OnHeadersProcessed() triggers ScanForMissingBlocks. No new tip work
+        // changes (best_height == 40, local_tip == 20) so the scan re-walks
+        // heights 21..40 and rebuilds tip-REQUESTED entries — but the bug path
+        // calls in_flight_blocks_.clear() without re-adding backfill hashes.
+        scheduler.OnHeadersProcessed();
+
+        // (a) in-flight count must be unchanged: backfill hashes share the window.
+        const size_t in_flight_after = scheduler.GetInFlightCount();
+        if (!Require(in_flight_after == in_flight_before,
+                     "ScanForMissingBlocks must preserve backfill in-flight count "
+                     "(before=" + std::to_string(in_flight_before) +
+                     " after=" + std::to_string(in_flight_after) + ")")) {
+            return 1;
+        }
+
+        // (b) the specific backfill hash must still be tracked as in-flight.
+        if (!Require(scheduler.IsBlockInFlight(backfill_hash),
+                     "ScanForMissingBlocks must preserve IsBlockInFlight for "
+                     "a backfill hash that was REQUESTED before the rescan")) {
+            return 1;
+        }
+
+        // (c) a further Tick must stage NO additional backfill getdata: the cap
+        // (in_flight == max_in_flight) blocks all new requests.  Only meaningful
+        // because the backfill range (20) exceeds max_in_flight (16), leaving
+        // 4 MISSING entries that an undercounting scan would re-stage.
+        scheduler.Tick();
+        if (!Require(requests.empty(),
+                     "Tick after truthful rescan must stage 0 new backfill getdata "
+                     "(cap is full); got " + std::to_string(requests.size()))) {
+            return 1;
+        }
+
+        std::cout << "   ✅ in_flight preserved across rescan (before=" << in_flight_before
+                  << " after=" << in_flight_after
+                  << "); IsBlockInFlight still true; 0 extra sends after Tick"
+                  << std::endl;
+    }
+
+    {
+        std::cout << "\n16. assumeutxo backfill: re-Enable with a different (range, anchor) "
+                     "releases the old queue's in-flight slots (no leak on a direct base "
+                     "change), and a refused re-Enable leaves backfill disabled..." << std::endl;
+
+        // Topology: genesis + heights 1..8, snapshot base = 8, tip sync idle.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 8, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(8);
+
+        std::vector<std::pair<uint256, uint32_t>> requests;  // (hash, height)
+        scheduler.SetSendGetDataCallback([&requests](const uint256& h, uint32_t height) {
+            requests.emplace_back(h, height);
+        });
+
+        scheduler.OnHeadersProcessed();  // tip sync: nothing missing
+        scheduler.EnableBackfill(1, 8, hashes[8]);
+        scheduler.Tick();  // 8 backfill bodies staged + dispatched (< max_in_flight 16)
+        if (!Require(requests.size() == 8,
+                     "case 16 setup: expected 8 backfill requests on the wire, got " +
+                         std::to_string(requests.size()))) {
+            return 1;
+        }
+        if (!Require(scheduler.GetInFlightCount() == 8,
+                     "case 16 setup: expected 8 in-flight slots before the base change")) {
+            return 1;
+        }
+
+        // ── The base change under test ─────────────────────────────────────────
+        // A reset + new (shorter) snapshot between two periodic ticks re-Enables
+        // with a different (range, anchor) WITHOUT an intervening DisableBackfill.
+        // The old 8 REQUESTED hashes are still on the wire; EnableBackfill must
+        // perform the Disable cleanup itself or those hashes leak in
+        // in_flight_blocks_ forever (the bodies will never be OnBlockReceived-
+        // routed once backfill_expected_ is rebuilt), permanently shrinking the
+        // shared download window.
+        scheduler.EnableBackfill(1, 6, hashes[6]);
+
+        auto prog = scheduler.GetBackfillProgress();
+        if (!Require(prog.enabled, "re-Enable with new anchor must enable")) return 1;
+        if (!Require(prog.end_height == 6, "re-Enable must adopt the new range")) return 1;
+        if (!Require(prog.total == 6, "new queue must cover heights 1..6")) return 1;
+
+        // (a) ZERO leaked slots: the new queue is staged but not yet dispatched,
+        // so the shared in-flight window must be completely empty.
+        if (!Require(scheduler.GetInFlightCount() == 0,
+                     "re-Enable with a different (range, anchor) leaked in-flight slots: "
+                     "expected 0, got " + std::to_string(scheduler.GetInFlightCount()))) {
+            return 1;
+        }
+        // (b) Every OLD wire hash must have left the in-flight set — including
+        // heights 7..8, which the new range does not even cover.
+        for (const auto& rq : requests) {
+            if (!Require(!scheduler.IsBlockInFlight(rq.first),
+                         "old backfill hash at height " + std::to_string(rq.second) +
+                         " still tracked in-flight after the base change")) {
+                return 1;
+            }
+        }
+
+        // (c) The next Tick services exactly the NEW queue (heights 1..6).
+        requests.clear();
+        scheduler.Tick();
+        std::vector<uint32_t> got;
+        for (const auto& rq : requests) got.push_back(rq.second);
+        std::sort(got.begin(), got.end());
+        const std::vector<uint32_t> want{1, 2, 3, 4, 5, 6};
+        if (!Require(got == want,
+                     "Tick after the base change must request exactly heights 1..6, got " +
+                         std::to_string(got.size()) + " requests")) {
+            return 1;
+        }
+
+        // ── Refused re-Enable leaves backfill DISABLED (carryover 2) ──────────
+        // Anchor exists but at the wrong height (caller-bug shape; the unknown-
+        // anchor shape behaves identically): the refusal must tear down the
+        // active queue and leave enabled == false so the periodic re-arm
+        // genuinely retries — and must release the 6 in-flight slots staged
+        // above (same no-leak contract on the refusal path).
+        scheduler.EnableBackfill(1, 7, hashes[6]);
+        if (!Require(!scheduler.GetBackfillProgress().enabled,
+                     "refused re-Enable must leave backfill disabled (retry-able)")) {
+            return 1;
+        }
+        if (!Require(scheduler.GetInFlightCount() == 0,
+                     "refused re-Enable leaked in-flight slots: expected 0, got " +
+                         std::to_string(scheduler.GetInFlightCount()))) {
+            return 1;
+        }
+        // The periodic retry then re-arms cleanly.
+        scheduler.EnableBackfill(1, 6, hashes[6]);
+        if (!Require(scheduler.GetBackfillProgress().enabled &&
+                         scheduler.GetBackfillProgress().total == 6,
+                     "periodic re-arm after a refusal must re-enable cleanly")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ base change released all 8 old in-flight slots; new queue "
+                     "serviced 1..6; refused re-Enable left backfill disabled and clean"
+                  << std::endl;
+    }
+
+    {
+        std::cout << "\n17. ScanForMissingBlocks 'Already synchronized' early return "
+                     "must preserve backfill in-flight hashes (steady-state snapshot "
+                     "node at tip)..." << std::endl;
+
+        // Case 15 covers the FULL-scan path (new tip work re-walks the window
+        // and re-adds backfill hashes at the end of the function). This case
+        // hits the EARLY-RETURN path instead: local_tip == best header height,
+        // so ScanForMissingBlocks clears in_flight_blocks_ and then bails at
+        // "Already synchronized" — the NORMAL steady state of every snapshot-
+        // loaded node at tip. If the backfill re-add sits after that return,
+        // every headers message drops the outstanding backfill hashes from the
+        // cap authority and the next Tick stages MORE getdata on top of the 16
+        // already on the wire (2x oversubscription class; e2e in_flight=29).
+        //
+        // Topology: genesis + heights 1..20, snapshot base = 20, tip AT base.
+        // Backfill range (20) > max_in_flight (16) so an undercounting scan
+        // leaves 4 MISSING entries for the next Tick to over-stage.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 20, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(20);  // tip == best header: synchronized
+
+        std::vector<std::pair<uint256, uint32_t>> requests;  // (hash, height)
+        scheduler.SetSendGetDataCallback([&requests](const uint256& h, uint32_t height) {
+            requests.emplace_back(h, height);
+        });
+
+        scheduler.OnHeadersProcessed();  // takes the "Already synchronized" return
+        scheduler.EnableBackfill(1, 20, hashes[20]);  // pre-base bodies 1..20
+
+        // Tick #1: tip idle → backfill fills the window (16 REQUESTED, 4 MISSING).
+        scheduler.Tick();
+        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
+                     "case 17 setup: expected backfill to fill the window, got " +
+                         std::to_string(requests.size()))) {
+            return 1;
+        }
+        const uint256 backfill_hash = requests.front().first;
+        const size_t in_flight_before = scheduler.GetInFlightCount();
+        if (!Require(in_flight_before == scheduler.GetMaxInFlight(),
+                     "case 17 setup: expected full window before rescan")) {
+            return 1;
+        }
+        requests.clear();
+
+        // ── The rescan under test ──────────────────────────────────────────────
+        // local_tip (20) == best header (20) → start_height > best_height →
+        // ScanForMissingBlocks hits the "Already synchronized" early return
+        // AFTER clearing in_flight_blocks_.
+        scheduler.OnHeadersProcessed();
+
+        // (a) in-flight count must be unchanged: backfill hashes stay in the
+        // cap authority even when the scan exits early.
+        const size_t in_flight_after = scheduler.GetInFlightCount();
+        if (!Require(in_flight_after == in_flight_before,
+                     "'Already synchronized' rescan must preserve backfill in-flight "
+                     "count (before=" + std::to_string(in_flight_before) +
+                     " after=" + std::to_string(in_flight_after) + ")")) {
+            return 1;
+        }
+
+        // (b) the specific backfill hash must still be tracked as in-flight.
+        if (!Require(scheduler.IsBlockInFlight(backfill_hash),
+                     "'Already synchronized' rescan must preserve IsBlockInFlight "
+                     "for a REQUESTED backfill hash")) {
+            return 1;
+        }
+
+        // (c) a further Tick must stage ZERO additional getdata: the cap is
+        // full (16/16). An undercounting scan would stage the 4 leftover
+        // MISSING entries here → 20 outstanding vs cap 16.
+        scheduler.Tick();
+        if (!Require(requests.empty(),
+                     "Tick after 'Already synchronized' rescan must stage 0 new "
+                     "getdata (cap is full); got " + std::to_string(requests.size()))) {
+            return 1;
+        }
+
+        std::cout << "   ✅ in_flight preserved across the early-return rescan (before="
+                  << in_flight_before << " after=" << in_flight_after
+                  << "); IsBlockInFlight still true; 0 extra sends after Tick"
                   << std::endl;
     }
 
