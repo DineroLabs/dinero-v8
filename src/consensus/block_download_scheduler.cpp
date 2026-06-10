@@ -702,14 +702,26 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
         return;
     }
 
-    size_t preserved_count = 0;
-    for (uint32_t height = start_height; height <= best_height; ++height) {
-        const HeaderIndexEntry* entry = header_chain_->GetHeaderAtHeight(height);
-        if (!entry) {
-            g_logger.warning("[BlockDownloadScheduler] Missing header at height " +
-                            std::to_string(height));
-            continue;
+    // issue #241 perf: collect the [start_height, best_height] window with ONE
+    // backward walk over parent pointers instead of GetHeaderAtHeight(h) per
+    // height — each of those calls walks from the best header, making the scan
+    // O(n^2). On a from-genesis sync (~39k headers) that pinned a core inside
+    // this loop under mutex_ on EVERY headers message and throttled ingest to
+    // a few blocks/min. Parent links are append-only/immutable once added, the
+    // same invariant GetBestHeader()'s raw-pointer return already relies on.
+    std::vector<const HeaderIndexEntry*> window;
+    window.reserve(best_height - start_height + 1);
+    for (const HeaderIndexEntry* e = best_header; e && e->height >= start_height;
+         e = e->parent) {
+        window.push_back(e);
+        if (e->height == start_height) {
+            break;  // height 0 entries make `e->height >= start_height` never false
         }
+    }
+
+    size_t preserved_count = 0;
+    for (auto rit = window.rbegin(); rit != window.rend(); ++rit) {
+        const HeaderIndexEntry* entry = *rit;
 
         // Restore preserved status from previous scan.
         auto it = preserved.find(entry->hash);
@@ -720,7 +732,7 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
             }
             preserved_count++;
         } else {
-            missing_blocks_.emplace_back(entry->hash, height);
+            missing_blocks_.emplace_back(entry->hash, entry->height);
         }
         expected_blocks_.insert(entry->hash);
     }
