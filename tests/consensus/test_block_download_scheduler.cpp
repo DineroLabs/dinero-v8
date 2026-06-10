@@ -1062,7 +1062,17 @@ int main() {
             return 1;
         }
 
-        scheduler.EnableBackfill(1, 8);   // heights 1..base
+        // Regression (anchor-by-hash): EnableBackfill with a WRONG anchor hash
+        // for end_height must refuse to enable. A height-anchored walk would
+        // silently feed a diverged best chain's hashes to the downloader; the
+        // hash anchor makes that impossible.
+        scheduler.EnableBackfill(1, 8, hashes[7]);  // hashes[7] is height 7, not 8
+        if (!Require(!scheduler.GetBackfillProgress().enabled,
+                     "EnableBackfill with wrong anchor hash must leave backfill disabled")) {
+            return 1;
+        }
+
+        scheduler.EnableBackfill(1, 8, hashes[8]);   // heights 1..base, anchored on base hash
 
         auto prog = scheduler.GetBackfillProgress();
         if (!Require(prog.enabled, "backfill not enabled after EnableBackfill")) return 1;
@@ -1082,7 +1092,7 @@ int main() {
         }
 
         // Idempotent re-enable with the same range must not duplicate the queue.
-        scheduler.EnableBackfill(1, 8);
+        scheduler.EnableBackfill(1, 8, hashes[8]);
         if (!Require(scheduler.GetBackfillProgress().total == 6,
                      "idempotent re-enable must not duplicate queue")) {
             return 1;
@@ -1102,7 +1112,7 @@ int main() {
         // Task 2: with tip sync idle (snapshot tip == best header, nothing in
         // missing_blocks_), Tick SERVICES the backfill queue and requests
         // exactly the 6 missing pre-base heights via the staged-dispatch path.
-        scheduler.EnableBackfill(1, 8);
+        scheduler.EnableBackfill(1, 8, hashes[8]);
         scheduler.Tick();
         std::vector<uint32_t> got = requested_heights;
         std::sort(got.begin(), got.end());
@@ -1146,7 +1156,7 @@ int main() {
         });
 
         scheduler.OnHeadersProcessed();   // tip sync: heights 21..40 missing
-        scheduler.EnableBackfill(1, 20);  // pre-base bodies 1..20
+        scheduler.EnableBackfill(1, 20, hashes[20]);  // pre-base bodies 1..20, anchored on base hash
 
         // Tick #1: tip sync fills the window. NO backfill height (<=20) may be
         // requested while ANY tip entry is MISSING or REQUESTED.
@@ -1263,7 +1273,7 @@ int main() {
             return 1;
         }
 
-        scheduler.EnableBackfill(1, 4);
+        scheduler.EnableBackfill(1, 4, hashes[4]);
         scheduler.Tick();
         if (!Require(requests.size() == 4, "expected all 4 backfill bodies requested")) {
             return 1;
@@ -1358,7 +1368,7 @@ int main() {
                 sends.emplace_back(height, scheduler.CurrentRequestSkipPeers());
             });
 
-        scheduler.EnableBackfill(1, 4);
+        scheduler.EnableBackfill(1, 4, hashes[4]);
         scheduler.Tick();
         if (!Require(sends.size() == 4, "expected all 4 backfill bodies requested")) {
             return 1;
@@ -1452,7 +1462,7 @@ int main() {
         });
 
         scheduler.OnHeadersProcessed();   // tip sync: heights 21..40 missing
-        scheduler.EnableBackfill(1, 20);  // pre-base bodies 1..20
+        scheduler.EnableBackfill(1, 20, hashes[20]);  // pre-base bodies 1..20, anchored on base hash
 
         // Tick #1: tip sync fills the window (16 blocks REQUESTED).
         scheduler.Tick();

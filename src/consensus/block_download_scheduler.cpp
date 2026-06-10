@@ -776,13 +776,43 @@ void BlockDownloadScheduler::SetHasBlockBodyCallback(
 }
 
 void BlockDownloadScheduler::EnableBackfill(uint32_t start_height,
-                                             uint32_t end_height) {
+                                             uint32_t end_height,
+                                             const uint256& end_anchor_hash) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Idempotent: same range while already enabled → preserve in-progress state.
+    // Idempotent: same (range, anchor) while already enabled → preserve
+    // in-progress state.
     if (backfill_progress_.enabled &&
         backfill_progress_.start_height == start_height &&
-        backfill_progress_.end_height == end_height) {
+        backfill_progress_.end_height == end_height &&
+        backfill_anchor_hash_ == end_anchor_hash) {
+        return;
+    }
+
+    // Resolve the anchor BY HASH, never by height. end_anchor_hash is the
+    // AssumeUTXO snapshot base block hash — the trust root. The snapshot
+    // load gate is existence-only (any known header passes, side branches
+    // included), so the BEST header chain may diverge below the base; a
+    // GetHeaderAtHeight(end_height) anchor would then walk the FORK and
+    // queue the fork's bodies for download — feeding the validation worker a
+    // complete fork replay and a persisted false fatal_mismatch. Anchoring
+    // on the hash plus ancestor-uniqueness pins the walk to the snapshot's
+    // own chain regardless of what the best chain does. The height check is
+    // redundant with the hash equality but explicit: a wired-up mismatch is
+    // a caller bug we want loud.
+    const HeaderIndexEntry* anchor =
+        header_chain_ ? header_chain_->GetHeader(end_anchor_hash) : nullptr;
+    if (!anchor || anchor->height != end_height ||
+        anchor->hash != end_anchor_hash) {
+        // Do NOT enable: the caller's periodic re-arm retries once headers
+        // for the snapshot branch arrive.
+        g_logger.warning("[BlockDownloadScheduler] EnableBackfill: anchor " +
+                         end_anchor_hash.GetHex().substr(0, 16) +
+                         "... not found at height " + std::to_string(end_height) +
+                         (anchor ? " (header exists at height " +
+                                       std::to_string(anchor->height) + ")"
+                                 : " (header unknown)") +
+                         " — backfill not enabled");
         return;
     }
 
@@ -794,17 +824,16 @@ void BlockDownloadScheduler::EnableBackfill(uint32_t start_height,
     backfill_progress_.enabled = true;
     backfill_progress_.start_height = start_height;
     backfill_progress_.end_height = end_height;
+    backfill_anchor_hash_ = end_anchor_hash;
 
-    // Single backward walk via the shared helper: GetHeaderAtHeight(h) walks
-    // parent pointers from the best header — O(n) PER CALL — so calling it
-    // per height over a 33k-range would be O(n²), the exact bug class the
-    // #241 walk in ScanForMissingBlocks (commit 9bc061782, on this branch
-    // post-#271) fixed. One anchor lookup + parent links keeps this linear:
-    // O(best_height - start_height).
+    // Single backward walk from the hash-resolved anchor via the shared
+    // helper: parent links down to start_height, O(end - start) total —
+    // per-height GetHeaderAtHeight() calls would be O(n²), the exact bug
+    // class the #241 walk in ScanForMissingBlocks (commit 9bc061782, on this
+    // branch post-#271) fixed.
     std::vector<const HeaderIndexEntry*> window;
-    if (!CollectCanonicalHeadersLocked(start_height, end_height, window)) {
-        // No header chain, degenerate range, or headers not yet available for
-        // the full range — queue stays empty.
+    if (!CollectCanonicalHeadersLocked(start_height, anchor, window)) {
+        // Degenerate range — queue stays empty.
         g_logger.warning("[BlockDownloadScheduler] EnableBackfill: no canonical headers for "
                          "range " + std::to_string(start_height) + ".." +
                          std::to_string(end_height));
@@ -836,6 +865,7 @@ void BlockDownloadScheduler::DisableBackfill() {
     backfill_expected_.clear();
     next_backfill_idx_ = 0;
     backfill_progress_ = BackfillProgress{};
+    backfill_anchor_hash_ = uint256();
 
     g_logger.info("[BlockDownloadScheduler] DisableBackfill");
 }
@@ -942,11 +972,11 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
     // GetHeaderAtHeight(h) per height — each of those calls walks from the
     // best header, making the scan O(n^2). On a from-genesis sync (~39k
     // headers) that pinned a core inside this loop under mutex_ on EVERY
-    // headers message and throttled ingest to a few blocks/min. The anchor
-    // lookup at best_height is O(1) (zero parent steps from the best header),
-    // so the total stays linear.
+    // headers message and throttled ingest to a few blocks/min. Tip sync's
+    // anchor IS the best header (already resolved above), so the total stays
+    // linear.
     std::vector<const HeaderIndexEntry*> window;
-    if (!CollectCanonicalHeadersLocked(start_height, best_height, window)) {
+    if (!CollectCanonicalHeadersLocked(start_height, best_header, window)) {
         return;
     }
 
@@ -978,26 +1008,22 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
                  " blocks for download (" + std::to_string(preserved_count) + " preserved states)");
 }
 
-// Shared single-backward-walk collector for the canonical header window
-// [start_height, end_height], ascending order (carryover from Task 1 review;
-// used by ScanForMissingBlocks and EnableBackfill). ONE GetHeaderAtHeight()
-// anchor lookup — itself O(best_height - end_height) since it walks parent
-// pointers from the best header — then parent links down to start_height:
-// O(best_height - start_height) total. Calling GetHeaderAtHeight(h) per
-// height instead would be O(n²), the #241 scan bug (commit 9bc061782).
-// Parent links are append-only/immutable once added — the same invariant
-// GetBestHeader()'s raw-pointer return already relies on.
+// Shared single-backward-walk collector for the header window
+// [start_height, anchor->height], ascending order (carryover from Task 1
+// review; used by ScanForMissingBlocks and EnableBackfill). The CALLER
+// resolves the anchor entry — by best header for tip sync, by the snapshot
+// base HASH for backfill (the best chain may diverge below the base, so a
+// height lookup here would pin the wrong chain). Parent links down to
+// start_height: O(anchor->height - start_height) total. Calling
+// GetHeaderAtHeight(h) per height instead would be O(n²), the #241 scan bug
+// (commit 9bc061782). Parent links are append-only/immutable once added —
+// the same invariant GetBestHeader()'s raw-pointer return already relies on.
 bool BlockDownloadScheduler::CollectCanonicalHeadersLocked(
-        uint32_t start_height, uint32_t end_height,
+        uint32_t start_height, const HeaderIndexEntry* anchor,
         std::vector<const HeaderIndexEntry*>& out_ascending) const {
     out_ascending.clear();
-    if (!header_chain_ || start_height > end_height) {
+    if (!anchor || start_height > anchor->height) {
         return false;
-    }
-
-    const HeaderIndexEntry* anchor = header_chain_->GetHeaderAtHeight(end_height);
-    if (!anchor) {
-        return false;  // headers not yet available for the full range
     }
 
     out_ascending.reserve(anchor->height - start_height + 1);

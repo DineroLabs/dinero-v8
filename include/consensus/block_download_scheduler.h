@@ -464,12 +464,22 @@ public:
     /**
      * Queue canonical heights [start_height, end_height] whose bodies are
      * missing, for low-priority backfill.  Idempotent: re-calling with the
-     * same range is a no-op (progress is preserved).
+     * same (range, anchor) is a no-op (progress is preserved).
+     *
+     * end_anchor_hash is the trust root (the AssumeUTXO snapshot base block
+     * hash): the walk anchors on THAT header by hash and follows parent
+     * links, never on the best chain by height. The snapshot load gate is
+     * existence-only — the best header chain may diverge below the base
+     * (side-branch snapshot, or a majority-work header fork during the
+     * validation window), and a height-anchored walk would queue the FORK's
+     * bodies. If no header with end_anchor_hash exists at end_height,
+     * backfill is NOT enabled (caller re-arms periodically).
      *
      * Population uses a single backward walk over parent pointers rather than
      * per-height GetHeaderAtHeight() calls (avoids O(n²) on a 33k-range).
      */
-    void EnableBackfill(uint32_t start_height, uint32_t end_height);
+    void EnableBackfill(uint32_t start_height, uint32_t end_height,
+                        const uint256& end_anchor_hash);
 
     /**
      * Clear the backfill queue and reset all backfill accounting.
@@ -603,6 +613,7 @@ private:
     size_t next_backfill_idx_ = 0;
     std::unordered_set<uint256> backfill_expected_;  // routing in OnBlockReceived (Task 2)
     BackfillProgress backfill_progress_;
+    uint256 backfill_anchor_hash_;  // trust root the active queue was walked from
     std::function<bool(const uint256&, uint32_t)> has_block_body_;
 
     // ========================================================================
@@ -641,17 +652,18 @@ private:
     // NEVER invoked under mutex_.
     void ServiceBackfillLocked();
 
-    // Collect the canonical header-chain entries for heights
-    // [start_height, end_height] into out_ascending (ascending height order)
-    // with a SINGLE backward walk: one GetHeaderAtHeight() anchor lookup,
-    // then parent-pointer links down to start_height. GetHeaderAtHeight(h)
-    // itself walks from the best header — O(best - h) PER CALL — so a
-    // per-height loop would be O(n²), the #241 scan bug class. Shared by
-    // ScanForMissingBlocks and EnableBackfill. Caller MUST hold mutex_.
-    // Returns false if header_chain_ is null, the range is degenerate, or no
-    // header exists at end_height.
+    // Collect the header-chain entries for heights [start_height,
+    // anchor->height] into out_ascending (ascending height order) with a
+    // SINGLE backward walk over parent links from the CALLER-RESOLVED anchor
+    // entry. Taking the anchor entry (not a height) keeps the walk pinned to
+    // the caller's chain: EnableBackfill resolves it by the snapshot base
+    // HASH (the best chain may diverge below the base), while
+    // ScanForMissingBlocks passes the best header it already holds. One walk
+    // instead of per-height GetHeaderAtHeight() also avoids the O(n²) #241
+    // scan bug class. Caller MUST hold mutex_. Returns false if anchor is
+    // null or the range is degenerate.
     bool CollectCanonicalHeadersLocked(
-        uint32_t start_height, uint32_t end_height,
+        uint32_t start_height, const HeaderIndexEntry* anchor,
         std::vector<const HeaderIndexEntry*>& out_ascending) const;
 
     // Shared verify+persist core for the tip and backfill receive paths

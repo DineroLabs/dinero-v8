@@ -11957,39 +11957,57 @@ void ChainstateService::BackgroundValidationWorker() {
             // Backfilled block bodies arrive via the scheduler WITHOUT
             // height-index writes (only ConnectTip writes the canonical index,
             // by design — so canonical-write invariants are untouched). When
-            // the height index misses a backfilled body, the header chain below
-            // the snapshot base IS canonical by construction: LoadSnapshot
-            // verifies the base header is on the best header chain (chainstate_
-            // service.cpp:8114-8118), and a header's ancestors at each height
-            // are unique (no two blocks at the same height on the same chain).
-            // The body-hash check below still guards integrity — a corrupt or
-            // misrouted body is caught by hash mismatch and treated as missing.
+            // the height index misses a backfilled body, the table below
+            // resolves the canonical hash — and it MUST anchor on the
+            // snapshot base block HASH (assumeutxo_base_block_, the trust
+            // root), never on the best header chain by height. LoadSnapshot's
+            // base gate is existence-only (a GetHeader map lookup — side
+            // branches pass), so the BEST header chain can diverge below the
+            // base: a side-branch snapshot at load, or a majority-work header
+            // fork arriving during the validation window. A height-anchored
+            // walk (GetHeaderAtHeight) would then yield the FORK's hashes and
+            // this worker would replay the fork completely into a persisted
+            // false fatal_mismatch on an honest node. Anchoring on the base
+            // hash + ancestor uniqueness (each header has exactly one parent
+            // chain) pins every per-height entry to the snapshot's own chain
+            // regardless of what the best chain does. The body-hash check
+            // below still guards integrity — a corrupt or misrouted body is
+            // caught by hash mismatch and treated as missing.
             //
-            // Perf: GetHeaderAtHeight walks from best_header O(n) per call
-            // (GetAncestor linear walk). Calling it inside the height loop for
-            // heights 0..target_height would cost
-            //   sum_{h=0}^{T}(best_height-h) ≈ T*best_height
-            // ≈ 33k × 40k = 1.3B pointer steps per pass — the same O(n²)
-            // trap as the pre-#241 scanner. Strategy: ONE call to
-            // GetHeaderAtHeight(target_height) then a SINGLE backward walk via
-            // ->parent fills the entire table in O(target_height) total. Each
-            // per-height lookup is then O(1) from the vector. The table is
-            // rebuilt once per rescan pass (the while(true) loop only retries
-            // when bodies are missing, so passes beyond the first are rare and
-            // bounded).
+            // Perf: ONE by-hash anchor lookup (O(1) map), then a SINGLE
+            // backward walk via ->parent fills the entire table in
+            // O(target_height) total — per-height GetHeaderAtHeight calls
+            // would be the same O(n²) trap as the pre-#241 scanner
+            // (≈ 33k × 40k = 1.3B pointer steps per pass). Each per-height
+            // lookup is then O(1) from the vector. The table is rebuilt once
+            // per rescan pass (the while(true) loop only retries when bodies
+            // are missing, so passes beyond the first are rare and bounded).
             std::vector<uint256> canonical_hashes_fallback;
-            if (header_chain_selector_) {
-                const auto* hcs_tip =
-                    header_chain_selector_->GetHeaderAtHeight(target_height);
-                if (hcs_tip) {
+            if (header_chain_selector_ && !assumeutxo_base_block_.IsNull()) {
+                const auto* anchor =
+                    header_chain_selector_->GetHeader(assumeutxo_base_block_);
+                if (!anchor) {
+                    logger_->error("[BackgroundValidation] snapshot base header " +
+                                   assumeutxo_base_block_.GetHex().substr(0, 16) +
+                                   "... not in header chain — fallback table empty "
+                                   "(missing bodies will skip/stall, never replay "
+                                   "another chain)");
+                } else if (anchor->height != target_height) {
+                    logger_->error("[BackgroundValidation] snapshot base header " +
+                                   assumeutxo_base_block_.GetHex().substr(0, 16) +
+                                   "... has height " + std::to_string(anchor->height) +
+                                   " but validation target is " +
+                                   std::to_string(target_height) +
+                                   " — fallback table empty");
+                } else {
                     canonical_hashes_fallback.resize(
                         static_cast<size_t>(target_height) + 1);
-                    // Walk backward from target_height to 0 in a single pass.
-                    // Parent pointers are immutable for below-base entries
-                    // (append-only chain, no reorgs that deep) — no locking
-                    // needed here; matches the same pattern used at ~:6520 and
-                    // EnsureHeaderBranchIndexed.
-                    const auto* walk = hcs_tip;
+                    // Walk backward from the base anchor to 0 in a single
+                    // pass. Parent pointers are immutable for below-base
+                    // entries (append-only chain, no reorgs that deep) — no
+                    // locking needed here; matches the same pattern used at
+                    // ~:6520 and EnsureHeaderBranchIndexed.
+                    const auto* walk = anchor;
                     while (walk) {
                         canonical_hashes_fallback[walk->height] = walk->hash;
                         if (walk->height == 0) break;
