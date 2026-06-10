@@ -476,3 +476,7 @@ If the scheduler is NOT reachable from RPC context without invasive plumbing, ex
 - Wallet-send safe-mode gating (spec Fatal 3/4 completion).
 - Backfill bandwidth shaping for mainnet scale (current: yields to tip sync + global in-flight cap; revisit with fleet data — YAGNI now).
 - The pre-existing dinero-main issues (shielded fee, harness defects) — still unfiled.
+
+## Register addition (Task 5 review finding 1 — mandatory)
+
+- **Connect backfilled history / ChainDB catch-up so legacy assumeutxo mode exits.** Backfilled bodies are stored, never connected: the canonical height→hash index stays missing for 1..base, ChainDB never reaches base, and the legacy operational mode (and RPC `assumeutxo_active`, via the #269 defensive OR) never exits on the unattended path — deviating from spec Required Test 4's `assumeutxo_active == false` (definition at spec :269: "true while the node still depends on assumed state"; after a matched replay the state is proven, not assumed). Safe-direction deviation (over-claims dependence). The exit gate at `chainstate_service.cpp:12371` is one-shot inside `OnBackgroundValidationComplete` and also needs a re-fire path (ConnectTip hook or periodic check) once ChainDB can catch up.
