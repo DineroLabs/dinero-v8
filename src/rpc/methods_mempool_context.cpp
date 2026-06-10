@@ -1015,6 +1015,16 @@ din::Json rpc_context_mempool_getfeehistogram(const ExecutionContext& ctx, const
  */
 din::Json rpc_context_mempool_sendrawtransaction(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
+    // spec Fatal §3: broadcasting depends on mempool/chainstate trust.
+    // Gate before any chainstate or mempool work.
+    if (ctx.daemon && ctx.daemon->chainstate) {
+        auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (cs && cs->IsInSafeMode()) {
+            result["error"] = "disabled while node is in safe mode: " + cs->GetSafeModeReason();
+            result["safe_mode"] = true;
+            return result;
+        }
+    }
 
     if (params.empty() || !params[0].is<std::string>()) {
         result["error"] = "Usage: mempool.sendrawtransaction \"rawtx_hex\" [maxfeerate]";

@@ -539,11 +539,13 @@ static din::Json buildSnapshotBootstrapDiagnostics(
     // Lifecycle verdict wins when the machine is not Disabled.
     if (lc && lc_st.state != LState::Disabled) {
         snapshot["next_action"] = lc_st.next_action;
-        // Honesty note: fatal halts mining/templates; wallet send is not yet fully gated.
+        // Honesty note: fatal halts mining/templates and wallet send/spend paths;
+        // display (balances/confirmations) is not gated — spec item 4 partial.
         if (lc_st.fatal) {
             snapshot["fatal_scope_note"] =
-                "safe mode halts mining/templates; wallet send paths are not yet gated "
-                "— treat balances as provisional";
+                "safe mode halts mining/templates and wallet send/spend paths; "
+                "balances/confirmations derived from the assumed state remain visible "
+                "(display is not gated) — treat them as provisional";
         }
     }
 
