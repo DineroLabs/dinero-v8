@@ -49,6 +49,7 @@ namespace consensus {
 
 // Forward declarations
 class HeaderChainSelector;
+struct HeaderIndexEntry;
 
 // ============================================================================
 // Block Fetch State
@@ -636,6 +637,37 @@ private:
     // StageGetdataLocked and dispatched by Tick() after the lock is released.
     void TickLocked();
 
+    // AssumeUTXO backfill servicing (Task 2). Caller MUST hold mutex_.
+    // Strictly lower priority than tip sync: yields whenever ANY tip-queue
+    // entry is MISSING or REQUESTED, shares the global in-flight window
+    // (in_flight_blocks_/max_in_flight_) with tip sync, and stages sends
+    // through the same #241 deferred-dispatch path (StageGetdataLocked →
+    // DispatchDeferredSends after mutex_ release) — the send callback is
+    // NEVER invoked under mutex_.
+    void ServiceBackfillLocked();
+
+    // Collect the canonical header-chain entries for heights
+    // [start_height, end_height] into out_ascending (ascending height order)
+    // with a SINGLE backward walk: one GetHeaderAtHeight() anchor lookup,
+    // then parent-pointer links down to start_height. GetHeaderAtHeight(h)
+    // itself walks from the best header — O(best - h) PER CALL — so a
+    // per-height loop would be O(n²), the #241 scan bug class. Shared by
+    // ScanForMissingBlocks and EnableBackfill. Caller MUST hold mutex_.
+    // Returns false if header_chain_ is null, the range is degenerate, or no
+    // header exists at end_height.
+    bool CollectCanonicalHeadersLocked(
+        uint32_t start_height, uint32_t end_height,
+        std::vector<const HeaderIndexEntry*>& out_ascending) const;
+
+    // Shared verify+persist core for the tip and backfill receive paths
+    // (Task 2 DRY): header-match validation, then flat-file write. Caller
+    // MUST hold mutex_. track_received: the tip path records the hash in
+    // received_blocks_ (parent-known checks + the #216 stale-timeout guard);
+    // backfill bodies pass false — they are store-only and must never enter
+    // connect bookkeeping.
+    bool StoreVerifiedBlockLocked(const Block& block, FilePosition& out_pos,
+                                  bool track_received);
+
     /**
      * Scan header chain for missing blocks.
      * Updates missing_blocks_ queue.
@@ -662,9 +694,11 @@ private:
      *
      * @param block Block to store
      * @param out_pos Output: file position where block was stored
+     * @param track_received Record the hash in received_blocks_ (tip path
+     *        only; backfill bodies are store-only and pass false)
      * @return true if stored successfully
      */
-    bool StoreBlock(const Block& block, FilePosition& out_pos);
+    bool StoreBlock(const Block& block, FilePosition& out_pos, bool track_received);
 
     /**
      * Rescan header chain from the actual chainstate tip.
