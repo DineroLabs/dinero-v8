@@ -1643,6 +1643,17 @@ bool ChainstateService::ResetAssumeUtxoFatalState(const std::string& confirm_tok
         }
     }
 
+    // A finished-but-unjoined worker handle would std::terminate the daemon
+    // when StartBackgroundValidation re-creates the thread on the documented
+    // recovery flow (reset -> safemode.exit -> load snapshot). Join it first;
+    // never under bg_validation_mutex_ (the worker takes that mutex).
+    if (bg_validation_thread_ && bg_validation_thread_->joinable()) {
+        bg_validation_should_stop_ = true;
+        bg_validation_thread_->join();
+        bg_validation_thread_.reset();
+        bg_validation_should_stop_ = false;
+    }
+
     // Reset legacy in-memory background-validation state so a post-reset restart
     // does not see stale InProgress/Failed status (spec FIX 3).
     {

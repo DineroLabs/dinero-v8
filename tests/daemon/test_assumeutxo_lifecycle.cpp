@@ -371,6 +371,82 @@ TEST_F(AssumeUtxoLifecycleTest, FatalStateRequiresExplicitReset) {
     }
 }
 
+// Regression coverage for ResetAssumeUtxoFatalState (service-level).
+//
+// Service-level infeasibility verdict: ChainstateService::Init() requires
+// LoggerService, ConfigService, and block_storage — all heavy production types
+// with no lightweight test stubs.  No existing test constructs a
+// ChainstateService (test_daemon_invariants.cpp explicitly skips such tests).
+// Constructing one within ~100 lines is not feasible.  bg_validation_thread_ is
+// private with no public accessor, so the join assertion from FIX 1 cannot be
+// expressed at this level; that gap is carried into Task 9.
+//
+// What IS testable here: the two UTXOIndex-level operations that
+// ResetAssumeUtxoFatalState calls (OperatorReset + ClearAll), sequenced as the
+// service does, with assertions on state, metadata, and UTXO count.
+TEST_F(AssumeUtxoLifecycleTest, OperatorResetThenClearAllWipesIndexAndMetadata) {
+    // 1. Drive lifecycle into FatalMismatch (replicates service's precondition).
+    {
+        auto lc = MakeLifecycle();
+        ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+        ASSERT_TRUE(lc->OnValidationStarted(t0_));
+        lc->OnBlockValidated(kBaseHeight, t0_ + 10s);
+        ASSERT_FALSE(lc->OnReplayComplete(/*replay_performed=*/true,
+                                          /*commitment_match=*/false,
+                                          "deadbeef", "cafebabe", 0, t0_ + 20s));
+        ASSERT_EQ(lc->GetState(), State::FatalMismatch);
+    }
+
+    // 2. Seed a UTXO into the index so GetUTXOCount() == 0 assertion is non-vacuous.
+    {
+        WalletUTXO dummy(
+            TxId(uint256::FromHexUnsafe(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+            /*vout=*/0,
+            AmountUna::DIN(1),
+            /*spk=*/std::vector<uint8_t>{0x51},  // OP_1 (minimal scriptPubKey)
+            /*path=*/"coinbase",
+            /*height=*/1,
+            /*is_coinbase=*/true);
+        ASSERT_TRUE(utxo_index_->AddUTXO(dummy));
+        const auto count_before = utxo_index_->GetUTXOCount();
+        ASSERT_TRUE(count_before.isOk());
+        ASSERT_GT(count_before.value(), 0u);
+    }
+
+    // 3. Restore and OperatorReset (lifecycle step of ResetAssumeUtxoFatalState).
+    {
+        auto lc2 = MakeLifecycle();
+        lc2->RestoreFromPersistence(/*chainstate_matches_marker=*/true);
+        ASSERT_EQ(lc2->GetState(), State::FatalMismatch);
+
+        // Correct token transitions to Disabled and clears lifecycle metadata.
+        ASSERT_TRUE(lc2->OperatorReset(assumeutxo::kResetToken));
+        EXPECT_EQ(lc2->GetState(), State::Disabled);
+        EXPECT_FALSE(lc2->GetStatus(t0_).fatal);
+
+        // 4. ClearAll (UTXOIndex step of ResetAssumeUtxoFatalState).
+        ASSERT_TRUE(utxo_index_->ClearAll());
+
+        // 5. Assert all critical state is wiped (mirrors service postconditions).
+        EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kFatalReasonKey).has_value());
+        EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kLifecycleStateKey).has_value());
+        EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kLcBaseBlockKey).has_value());
+        EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kLcBaseHeightKey).has_value());
+        EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kFullyValidatedKey).has_value());
+
+        // UTXO table wiped: the seeded dummy UTXO must be gone.
+        const auto count_after = utxo_index_->GetUTXOCount();
+        ASSERT_TRUE(count_after.isOk());
+        EXPECT_EQ(count_after.value(), 0u);
+
+        // bg_validation_thread_ join correctness (FIX 1) cannot be asserted here —
+        // the thread member is private in ChainstateService with no public accessor,
+        // and at this fixture level no background thread was ever started.  Task 9
+        // carries this as a known coverage gap.
+    }
+}
+
 }  // namespace dinero
 
 int main(int argc, char** argv) {

@@ -390,15 +390,25 @@ static din::Json buildSnapshotBootstrapDiagnostics(
         } else {
             snapshot["progress_percent"] = 0.0;
         }
-        // Lifecycle clock is steady_clock; approximate wall-clock last progress
-        // as now - stall_seconds (exact enough for dashboards; spec contract key).
-        {
+        // only meaningful while history validation is active — spec contract field
+        if (lc_st.state == LState::ValidatingHistory ||
+            lc_st.state == LState::ValidationStalled) {
+            // Lifecycle clock is steady_clock; approximate wall-clock last progress
+            // as now - stall_seconds (exact enough for dashboards; spec contract key).
             const auto last_progress_sys =
                 std::chrono::system_clock::now() - std::chrono::seconds(lc_st.stall_seconds);
             const auto t = std::chrono::system_clock::to_time_t(last_progress_sys);
-            char buf[32];
-            std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&t));
-            snapshot["last_progress_time"] = std::string(buf);
+            std::tm tm{};
+#ifdef _WIN32
+            const bool tm_ok = (gmtime_s(&tm, &t) == 0);
+#else
+            const bool tm_ok = (gmtime_r(&t, &tm) != nullptr);
+#endif
+            if (tm_ok) {
+                char buf[32];
+                std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+                snapshot["last_progress_time"] = std::string(buf);
+            }
         }
     }
 
