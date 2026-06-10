@@ -366,6 +366,30 @@ start_node "$B_DIR" "$B_RPC" "$B_P2P" "$B_WS" "$B_DIR/daemon2.log" \
     --assumeutxo_snapshot="$POISON"
 wait_status "$B_RPC" "$B_DIR" '.fatal == true' 60 "B: fatal survives restart"
 
+# B-GATE: wallet send/spend paths must be refused while in safe mode (spec Fatal
+# Mismatch Semantics §3).  The gate must fire BEFORE all downstream checks
+# (address validation, balance, UTXO selection) so it returns the safe-mode
+# error regardless of wallet state or funds.
+#
+# RED (ungated code): wallet.sendtoaddress on a fatal+safe-mode node passes the
+#   active-wallet check (regtest auto-creates a default wallet) and fails at
+#   address validation — {"result":{"error":"Invalid address: unsupported format"}}
+#   — which is NOT a safe-mode refusal.  (Observed empirically 2026-06-10.)
+# GREEN (gated code): returns {"result":{"error":"disabled while node is in
+#   safe mode: assumeutxo fatal: ..."}} before any address/balance check.
+#   (Observed empirically 2026-06-10.)
+#
+# We pass syntactically-valid params (address + amount) so no params-count
+# short-circuit fires before the gate.
+SEND_RES="$(rpc "$B_RPC" "$B_DIR" wallet.sendtoaddress \
+    '["din1q0000000000000000000000000000000000000", 0.001]' || echo '{}')"
+if jq -e '(.result.error // .error.message // "") | test("disabled while node is in safe mode")' \
+        <<<"$SEND_RES" >/dev/null 2>&1; then
+    pass "B-GATE: wallet.sendtoaddress refused with safe-mode error (gate fires before wallet/balance check)"
+else
+    fail "B-GATE: wallet.sendtoaddress did not return safe-mode refusal; got: $SEND_RES"
+fi
+
 # B2: explicit operator reset with confirm token clears fatal.
 RESET_RES="$(rpc "$B_RPC" "$B_DIR" resetassumeutxofatal '[{"confirm":"RESET-ASSUMEUTXO-FATAL"}]')"
 jq -e '.result.reset == true' <<<"$RESET_RES" >/dev/null \

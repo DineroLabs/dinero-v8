@@ -116,6 +116,28 @@ std::string BuildStandardDerivationPath(uint32_t purpose, int account, int chang
            std::to_string(index);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RefuseIfSafeMode — safe-mode gate for all send/spend handlers.
+// Spec: docs/design/assumeutxo-fatal-state-machine.md, Fatal Mismatch
+// Semantics §3: "Stop accepting new foreground wallet/payment/mining decisions
+// that depend on the assumed state."
+//
+// Returns true when safe mode is active and result["error"] has been set.
+// MUST be invoked as the very first statement in each gated handler (before any
+// wallet-availability, params, or balance checks) so the refusal fires even
+// with no active wallet and zero balance.
+// ─────────────────────────────────────────────────────────────────────────────
+static bool RefuseIfSafeMode(const ExecutionContext& ctx, din::Json& result) {
+    if (!ctx.daemon || !ctx.daemon->chainstate) return false;
+    auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    if (cs && cs->IsInSafeMode()) {
+        result["error"] = "disabled while node is in safe mode: " + cs->GetSafeModeReason();
+        result["safe_mode"] = true;
+        return true;
+    }
+    return false;
+}
+
 struct RescanReadiness {
     bool ok;
     std::string reason;
@@ -2409,6 +2431,7 @@ din::Json rpc_context_wallet_passphrasechange(const ExecutionContext& ctx, const
  */
 din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
+    if (RefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
 
     const auto log_info = [&ctx](const std::string& msg) {
         if (ctx.logger) {
@@ -3208,6 +3231,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
  */
 din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
+    if (RefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
 
     // params[0] = { "address1": amount1, "address2": amount2, ... }
     // params[1] = optional fee_rate
@@ -4931,6 +4955,11 @@ din::Json rpc_context_wallet_dumpprivkey(const ExecutionContext& ctx, const din:
  */
 din::Json rpc_context_wallet_createfundedpsbt(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
+    // spec Fatal §3: UTXO selection consults the assumed UTXO set; gate before
+    // any wallet or chainstate access.  Note: the eventual broadcast path is
+    // also gated at mempool.sendrawtransaction — this gate covers the funding
+    // step itself so the unsigned PSBT is not built on untrusted state.
+    if (RefuseIfSafeMode(ctx, result)) return result;
 
     if (!ctx.daemon || !ctx.daemon->wallet) {
         result["error"] = "Wallet service not available";
@@ -5785,6 +5814,11 @@ din::Json rpc_context_wallet_getrawtransaction(const ExecutionContext& ctx, cons
  * Returns: txid if accepted
  */
 din::Json rpc_context_wallet_sendrawtransaction(const ExecutionContext& ctx, const din::Json& params) {
+    // spec Fatal §3: gate before forwarding so the caller sees the safe-mode
+    // error even though mempool.sendrawtransaction also gates internally.
+    din::Json result;
+    if (RefuseIfSafeMode(ctx, result)) return result;
+
     // Phase 38: Wallet MUST route through mempool.sendrawtransaction
     // This ensures wallet doesn't bypass mempool policy validation
 
@@ -7389,6 +7423,7 @@ din::Json rpc_context_wallet_importdescriptors(const ExecutionContext& ctx, cons
 // ============================================================================
 din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
+    if (RefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
     const auto log_debug = [&ctx](const std::string& msg) {
         if (ctx.logger) ctx.logger->debug(msg); else dinero::g_logger.debug(msg);
     };

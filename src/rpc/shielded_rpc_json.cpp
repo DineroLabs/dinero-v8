@@ -47,6 +47,19 @@ using namespace dinero;
 namespace ops  = dinero::wallet::shielded_ops;
 using din::Json;
 
+// spec Fatal §3: gate shielded spend handlers.  Returns true when safe mode is
+// active and err["error"] has been populated.  Call before AcquireWallet.
+static bool ShieldedRefuseIfSafeMode(const ExecutionContext& ctx, Json& err) {
+    if (!ctx.daemon || !ctx.daemon->chainstate) return false;
+    auto cs = std::dynamic_pointer_cast<ChainstateService>(ctx.daemon->chainstate);
+    if (cs && cs->IsInSafeMode()) {
+        err["error"] = "disabled while node is in safe mode: " + cs->GetSafeModeReason();
+        err["safe_mode"] = true;
+        return true;
+    }
+    return false;
+}
+
 WalletManager* AcquireWallet(const ExecutionContext& ctx, Json& err, bool require_unlocked = true) {
     if (!ctx.daemon || !ctx.daemon->wallet) {
         err["error"] = "Wallet not available";
@@ -146,6 +159,7 @@ void StoreCachedShieldedAddress(WalletManager& wm,
 // ---------------------------------------------------------------------------
 Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
     Json result;
+    if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
@@ -380,6 +394,7 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
 // ---------------------------------------------------------------------------
 Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     Json result;
+    if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
@@ -523,6 +538,7 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
 // ---------------------------------------------------------------------------
 Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
     Json result;
+    if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;

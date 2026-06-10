@@ -12,6 +12,7 @@
 #include "wallet/transaction.h"  // For Transaction deserialization
 #include "wallet/wallet_manager.h"  // For per-wallet Lightning access
 #include "daemon/services/wallet_service.h"  // For WalletService
+#include "daemon/services/chainstate_service.h"  // spec Fatal §3: safe-mode gate
 #include "common/logger.h"
 #include <memory>
 #include <string>
@@ -1329,6 +1330,19 @@ static din::Json rpc_ln_getpayment(const ExecutionContext& ctx, const din::Json&
  * - change_sats: Change amount returned to wallet (if any)
  */
 static din::Json rpc_wallet_fundchannel(const ExecutionContext& ctx, const din::Json& params) {
+    // spec Fatal §3: UTXO selection and signing depend on assumed state.
+    {
+        din::Json gate_result;
+        if (ctx.daemon && ctx.daemon->chainstate) {
+            auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+            if (cs && cs->IsInSafeMode()) {
+                gate_result["error"] = "disabled while node is in safe mode: " + cs->GetSafeModeReason();
+                gate_result["safe_mode"] = true;
+                return gate_result;
+            }
+        }
+    }
+
     // Validate daemon context
     const DaemonContext* daemon_ctx = ctx.daemon;
     if (!daemon_ctx) {
