@@ -1025,6 +1025,93 @@ int main() {
                   << std::endl;
     }
 
+
+    {
+        std::cout << "\n11. assumeutxo backfill: EnableBackfill queues exactly the missing "
+                     "pre-base heights, skips bodies already present, exposes progress; "
+                     "backfill never flips IsFullySynchronized..." << std::endl;
+
+        // Topology: genesis + heights 1..8.  SetLocalTipHeight(8) simulates an
+        // AssumeUTXO snapshot loaded at base=8 — tip sync is fully satisfied,
+        // but pre-base bodies 1..8 need to be backfilled.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;  // hashes[i] == header hash at height i
+        try {
+            BuildLinearHeaders(selector, 8, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(8);   // snapshot base = 8
+        scheduler.OnHeadersProcessed();   // tip sync: nothing missing
+
+        // Node already has bodies at heights 3 and 5 (e.g. partial prior backfill).
+        scheduler.SetHasBlockBodyCallback([](const uint256& /*hash*/, uint32_t height) -> bool {
+            return height == 3 || height == 5;
+        });
+
+        std::vector<uint32_t> requested_heights;
+        scheduler.SetSendGetDataCallback([&](const uint256& /*hash*/, uint32_t height) {
+            requested_heights.push_back(height);
+        });
+
+        if (!Require(scheduler.IsFullySynchronized(), "pre: should be synced at tip after snapshot")) {
+            return 1;
+        }
+
+        scheduler.EnableBackfill(1, 8);   // heights 1..base
+
+        auto prog = scheduler.GetBackfillProgress();
+        if (!Require(prog.enabled, "backfill not enabled after EnableBackfill")) return 1;
+        // 8 heights total, 2 already present (3 and 5) → 6 missing
+        if (!Require(prog.total == 6,
+                     "expected 6 missing (1,2,4,6,7,8), got " + std::to_string(prog.total))) {
+            return 1;
+        }
+        if (!Require(prog.completed == 0, "no bodies completed yet")) return 1;
+        if (!Require(prog.start_height == 1, "start_height must be 1")) return 1;
+        if (!Require(prog.end_height == 8, "end_height must be 8")) return 1;
+
+        // Backfill must NOT flip IsFullySynchronized (it lives in its own queue).
+        if (!Require(scheduler.IsFullySynchronized(),
+                     "backfill must not flip IsFullySynchronized")) {
+            return 1;
+        }
+
+        // Idempotent re-enable with the same range must not duplicate the queue.
+        scheduler.EnableBackfill(1, 8);
+        if (!Require(scheduler.GetBackfillProgress().total == 6,
+                     "idempotent re-enable must not duplicate queue")) {
+            return 1;
+        }
+
+        // DisableBackfill resets all state.
+        scheduler.DisableBackfill();
+        if (!Require(!scheduler.GetBackfillProgress().enabled, "disable failed")) return 1;
+        if (!Require(scheduler.GetBackfillProgress().total == 0, "total should be 0 after disable")) return 1;
+
+        // After disable, IsFullySynchronized must still hold.
+        if (!Require(scheduler.IsFullySynchronized(),
+                     "IsFullySynchronized must remain true after DisableBackfill")) {
+            return 1;
+        }
+
+        // Tick must NOT service the backfill queue (Task 1: queue + accounting only;
+        // servicing is Task 2). Verify no requests are issued.
+        scheduler.EnableBackfill(1, 8);
+        scheduler.Tick();
+        if (!Require(requested_heights.empty(),
+                     "Tick must not service backfill queue in Task 1 (no servicing yet)")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ backfill total=" << scheduler.GetBackfillProgress().total
+                  << " IsFullySynchronized preserved" << std::endl;
+    }
+
+
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
     return 0;
 }

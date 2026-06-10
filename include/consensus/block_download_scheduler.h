@@ -448,6 +448,52 @@ public:
         stale_request_timeout_seconds_ = secs;
     }
 
+    // ========================================================================
+    // AssumeUTXO pre-base body backfill (spec Release Gate item 2)
+    // ========================================================================
+    //
+    // Separate low-priority queue: never touches missing_blocks_ or
+    // IsFullySynchronized (fast-bootstrap nodes stay "synced" while history
+    // backfills). Serviced by Tick() only when tip sync has no pending work
+    // (Task 2). Queue population + accounting live here (Task 1).
+
+    /** Progress snapshot returned by GetBackfillProgress(). */
+    struct BackfillProgress {
+        bool enabled = false;
+        uint32_t start_height = 0;
+        uint32_t end_height = 0;
+        uint64_t total = 0;        ///< bodies missing at Enable time
+        uint64_t completed = 0;    ///< bodies received+stored since Enable
+        uint64_t in_flight = 0;    ///< bodies currently in-flight
+    };
+
+    /**
+     * Register a predicate that answers "does this node already have the body
+     * for (hash, height)?" — used by EnableBackfill to skip existing bodies.
+     * The callback is invoked under mutex_ during EnableBackfill only.
+     */
+    void SetHasBlockBodyCallback(std::function<bool(const uint256&, uint32_t)> cb);
+
+    /**
+     * Queue canonical heights [start_height, end_height] whose bodies are
+     * missing, for low-priority backfill.  Idempotent: re-calling with the
+     * same range is a no-op (progress is preserved).
+     *
+     * Population uses a single backward walk over parent pointers rather than
+     * per-height GetHeaderAtHeight() calls (avoids O(n²) on a 33k-range).
+     */
+    void EnableBackfill(uint32_t start_height, uint32_t end_height);
+
+    /**
+     * Clear the backfill queue and reset all backfill accounting.
+     * In-flight entries are removed from in_flight_blocks_ so the main
+     * window accounting stays correct (no orphaned in-flight counts).
+     */
+    void DisableBackfill();
+
+    /** Return a snapshot of current backfill progress (thread-safe). */
+    BackfillProgress GetBackfillProgress() const;
+
     /**
      * Get the local chainstate tip height.
      */
@@ -561,6 +607,16 @@ private:
         std::unordered_set<std::string> skip_peers;
     };
     std::vector<DeferredGetdata> deferred_sends_;  // guarded by mutex_
+
+    // ── AssumeUTXO backfill private state ────────────────────────────────────
+    // Backfill queue entries reuse BlockFetchState (hash, height, status,
+    // request_time) but live in their own vector with their own cursor so they
+    // never pollute missing_blocks_, in_flight_blocks_, or expected_blocks_.
+    std::vector<BlockFetchState> backfill_blocks_;
+    size_t next_backfill_idx_ = 0;
+    std::unordered_set<uint256> backfill_expected_;  // routing in OnBlockReceived (Task 2)
+    BackfillProgress backfill_progress_;
+    std::function<bool(const uint256&, uint32_t)> has_block_body_;
 
     // ========================================================================
     // Private Helpers

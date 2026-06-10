@@ -611,6 +611,103 @@ dinero::SyncPhase BlockDownloadScheduler::GetCurrentPhase() const {
 // Private Helpers
 // ============================================================================
 
+// ============================================================================
+// AssumeUTXO pre-base body backfill — queue population + accounting (Task 1)
+// ============================================================================
+
+void BlockDownloadScheduler::SetHasBlockBodyCallback(
+        std::function<bool(const uint256&, uint32_t)> cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    has_block_body_ = std::move(cb);
+}
+
+void BlockDownloadScheduler::EnableBackfill(uint32_t start_height,
+                                             uint32_t end_height) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Idempotent: same range while already enabled → preserve in-progress state.
+    if (backfill_progress_.enabled &&
+        backfill_progress_.start_height == start_height &&
+        backfill_progress_.end_height == end_height) {
+        return;
+    }
+
+    // Full reset before (re-)populating.
+    backfill_blocks_.clear();
+    backfill_expected_.clear();
+    next_backfill_idx_ = 0;
+    backfill_progress_ = BackfillProgress{};
+    backfill_progress_.enabled = true;
+    backfill_progress_.start_height = start_height;
+    backfill_progress_.end_height = end_height;
+
+    if (!header_chain_ || start_height > end_height) {
+        // No header chain yet, or degenerate range — queue stays empty.
+        return;
+    }
+
+    // Single backward walk: get the anchor at end_height ONCE, then follow
+    // parent pointers to start_height.  This is O(best_height - start_height)
+    // rather than O((end-start)^2) from calling GetHeaderAtHeight(h) per
+    // height (each call walks from best_header — the same O(n²) bug class
+    // that commit 9bc061782 fixed in ScanForMissingBlocks on the main branch,
+    // but which is NOT yet on this branch's base — so we must avoid it here).
+    // Parent links are append-only/immutable once added; the same invariant
+    // GetBestHeader()'s raw-pointer return already relies on.
+    const HeaderIndexEntry* anchor = header_chain_->GetHeaderAtHeight(end_height);
+    if (!anchor) {
+        // Headers not yet available for the full range; queue stays empty.
+        g_logger.warning("[BlockDownloadScheduler] EnableBackfill: no header at end_height=" +
+                         std::to_string(end_height));
+        return;
+    }
+
+    // Collect entries from end_height down to start_height (reverse order),
+    // then process forward so backfill_blocks_ is in ascending-height order.
+    std::vector<const HeaderIndexEntry*> window;
+    window.reserve(anchor->height - start_height + 1);
+    for (const HeaderIndexEntry* e = anchor; e && e->height >= start_height;
+         e = e->parent) {
+        window.push_back(e);
+        if (e->height == start_height) break;  // guard: avoid underflow at h==0
+    }
+
+    for (auto rit = window.rbegin(); rit != window.rend(); ++rit) {
+        const HeaderIndexEntry* entry = *rit;
+        if (has_block_body_ && has_block_body_(entry->hash, entry->height)) {
+            continue;  // body already present; skip
+        }
+        backfill_blocks_.emplace_back(entry->hash, entry->height);
+        backfill_expected_.insert(entry->hash);
+    }
+    backfill_progress_.total = backfill_blocks_.size();
+
+    g_logger.info("[BlockDownloadScheduler] EnableBackfill: range=" +
+                  std::to_string(start_height) + ".." + std::to_string(end_height) +
+                  " missing=" + std::to_string(backfill_progress_.total));
+}
+
+void BlockDownloadScheduler::DisableBackfill() {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Release any in-flight accounting so the main window stays consistent.
+    for (const auto& fs : backfill_blocks_) {
+        in_flight_blocks_.erase(fs.block_hash);
+    }
+    backfill_blocks_.clear();
+    backfill_expected_.clear();
+    next_backfill_idx_ = 0;
+    backfill_progress_ = BackfillProgress{};
+
+    g_logger.info("[BlockDownloadScheduler] DisableBackfill");
+}
+
+BlockDownloadScheduler::BackfillProgress
+BlockDownloadScheduler::GetBackfillProgress() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return backfill_progress_;
+}
+
 void BlockDownloadScheduler::ScanForMissingBlocks() {
     if (!header_chain_) {
         return;
