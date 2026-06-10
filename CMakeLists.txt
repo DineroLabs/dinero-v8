@@ -910,6 +910,7 @@ add_library(dinero_core STATIC
   src/consensus/proof_gossip.cpp
   src/consensus/block_download_scheduler.cpp
   src/consensus/assume_utxo.cpp
+  src/consensus/utxo_set_digest.cpp
   src/consensus/parallel_block_validator.cpp
   src/consensus/validation_worker_pool.cpp
   src/consensus/validation_queue.cpp

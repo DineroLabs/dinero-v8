@@ -3074,6 +3074,34 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_lifecycle.cpp)
   message(STATUS "✅ AssumeUTXO lifecycle state-machine test enabled")
 endif()
 
+# ─── Canonical UTXO records digest (AssumeUTXO content commitment) ───────────
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utxo_set_digest.cpp)
+  add_executable(test_utxo_set_digest
+    tests/consensus/test_utxo_set_digest.cpp
+    src/consensus/utxo_set_digest.cpp
+  )
+  add_dependencies(test_utxo_set_digest gtest)
+  target_link_libraries(test_utxo_set_digest PRIVATE
+    dinero_chainstate
+    dinero_wallet
+    gtest
+    sqlite3
+    ${CMAKE_DL_LIBS}
+  )
+  link_zstd_if_needed(test_utxo_set_digest)
+  target_include_directories(test_utxo_set_digest PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  add_test(NAME UtxoSetDigest COMMAND test_utxo_set_digest)
+  set_tests_properties(UtxoSetDigest PROPERTIES
+    LABELS "consensus;assumeutxo;digest"
+    TIMEOUT 60
+  )
+  message(STATUS "✅ UTXO records digest test enabled")
+endif()
+
 # Doctor Diagnostic Command Tests (Phase 4)
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_doctor.cpp)
   add_executable(test_doctor
