@@ -7,6 +7,7 @@
 #include "daemon/services/chainstate_restart_import.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/assumeutxo_state.h"
+#include "daemon/services/assumeutxo_replay.h"  // genesis->base replay engine (background validation)
 #include "daemon/services/config_service.h"
 #include "daemon/config.h"
 #include "daemon/services/p2p_service.h"  // Phase C.1 v2: For block broadcasting
@@ -11844,12 +11845,45 @@ void ChainstateService::BackgroundValidationWorker() {
             }
         }
 
+        // Real genesis->base replay (spec Completion Criteria): every
+        // canonical block below the base is connected through the normal
+        // BlockValidator path into an isolated in-memory consensus set; the
+        // resulting records digest is compared against the commitment
+        // persisted at snapshot load.
+        //
+        // Replay state is in-memory only — it cannot survive daemon
+        // restarts, so every run replays from genesis. The height_validated
+        // pre-mark vector above governs ONLY lifecycle progress signals
+        // (OnBlockValidated / blocks_validated counter): ConnectAndAdvance
+        // runs for EVERY height >= 1 each pass regardless of the durable
+        // resume marker, but only genuinely new heights feed the stall clock.
+        //
+        // (std::optional because the engine is intentionally non-movable;
+        // emplace() re-creates it fresh for each rescan pass.)
+        std::optional<assumeutxo::AssumeUtxoReplayEngine> replay;
+        bool replay_poisoned = false;        // set when ConnectBlock refuses
+        std::string replay_poison_reason;
+
+        // Memory expectation: the replay set holds all sub-base UTXOs in
+        // memory a second time (bounded by the snapshot's own count).
+        logger_->info("[BackgroundValidation] replay engine active: in-memory replay set "
+                      "(expected ~" + std::to_string(assumeutxo_base_height_) +
+                      " blocks; UTXO count bounded by snapshot)");
+
         // Spec: missing bodies are NEVER skippable success. Re-scan until all
         // bodies are present (bodies backfill as IBD proceeds) or we are told
         // to stop; Tick() drives the loud-stall transition while we wait.
         uint32_t blocks_skipped = 0;
         while (true) {
             blocks_skipped = 0;
+            // Engine heights must ascend strictly from 1 within one engine
+            // lifetime, so each rescan pass restarts the replay from genesis
+            // with a fresh engine. Replaying from 0 each pass is acceptable:
+            // passes beyond the first only happen while bodies are missing,
+            // and the final (complete) pass is the one whose digest counts.
+            replay.emplace();
+            replay_poisoned = false;
+            replay_poison_reason.clear();
             for (uint32_t height = 0; height <= target_height; ++height) {
                 if (bg_validation_should_stop_) {
                     logger_->warning("[BackgroundValidation] Validation stopped by request");
@@ -11864,6 +11898,50 @@ void ChainstateService::BackgroundValidationWorker() {
                 if (!hash_result.ok()) { blocks_skipped++; continue; }
                 auto block_result = getBlockByHash(hash_result.value());
                 if (!block_result.ok()) { blocks_skipped++; continue; }
+                const Block& blk = block_result.value();
+                // The stored body must actually be the canonical block:
+                // ConnectBlock trusts the (height, hash) it is handed and
+                // never re-derives the block's hash itself, so a corrupt or
+                // mis-stored local body would otherwise be replayed as if
+                // canonical. A mismatch is LOCAL corruption (heal by
+                // re-download), not snapshot poison: treat as missing body.
+                if (blk.GetHash() != hash_result.value()) {
+                    blocks_skipped++;
+                    logger_->warning("[BackgroundValidation] body at height " +
+                                     std::to_string(height) + " hashes to " +
+                                     blk.GetHash().GetHex() + " but canonical hash is " +
+                                     hash_result.value().GetHex() +
+                                     " — local block-store corruption; treating as a "
+                                     "missing body pending re-download");
+                    continue;
+                }
+                // Genesis (height 0) is UTXO-neutral and pre-applied in the
+                // engine — production ConnectTip's early-init path likewise
+                // installs genesis as tip without running ConnectBlock. The
+                // engine therefore replays heights 1..base only; height 0
+                // still counts for availability/progress below.
+                //
+                // blocks_skipped == 0 gate: the engine requires strictly
+                // ascending heights, so once any body this pass is missing
+                // the pass can no longer produce a valid digest — feeding a
+                // post-gap block would trip the ascending check and be
+                // MISCLASSIFIED as poison (missing bodies are never fatal).
+                // The rest of the pass continues as an availability scan;
+                // the rescan loop restarts the engine for the next pass.
+                if (height >= 1 && blocks_skipped == 0) {
+                    std::string connect_err;
+                    if (!replay->ConnectAndAdvance(blk, height, hash_result.value(),
+                                                   connect_err)) {
+                        // A canonical-chain block below the snapshot base
+                        // failed real validation: the snapshot's chain is
+                        // invalid — spec: hard validation failure => fatal.
+                        replay_poisoned = true;
+                        replay_poison_reason = "block " + std::to_string(height) +
+                                               " failed validation during replay: " +
+                                               connect_err;
+                        break;  // out of the height loop; handled below
+                    }
+                }
                 if (!height_validated[height]) {
                     height_validated[height] = true;
                     {
@@ -11880,6 +11958,7 @@ void ChainstateService::BackgroundValidationWorker() {
                                 std::to_string(static_cast<int>(percent)) + "%)");
                 }
             }
+            if (replay_poisoned) break;
             if (blocks_skipped == 0) break;
 
             assumeutxo_lifecycle_->OnMissingBodies(blocks_skipped);
@@ -11896,22 +11975,73 @@ void ChainstateService::BackgroundValidationWorker() {
                 return;
             }
         }
-        assumeutxo_lifecycle_->OnMissingBodies(0);
-        logger_->info("[BackgroundValidation] All bodies present; verifying UTXO set integrity...");
+        if (replay_poisoned) {
+            logger_->error("[BackgroundValidation] CRITICAL: " + replay_poison_reason);
+            assumeutxo_lifecycle_->OnReplayComplete(
+                /*replay_performed=*/true, /*commitment_match=*/false,
+                "(canonical chain below base)", replay_poison_reason,
+                0, std::chrono::steady_clock::now());
+            OnBackgroundValidationComplete(false, replay_poison_reason);
+            return;
+        }
 
-        const bool match = VerifyUTXOSetMatch();
-        // replay_performed=false: this pass is availability+count verification
-        // only. The lifecycle will NOT enter fully_validated from it (honest
-        // mode until the real replay engine lands — see plan Scope decision).
+        assumeutxo_lifecycle_->OnMissingBodies(0);
+        logger_->info("[BackgroundValidation] All bodies replayed; comparing content commitment...");
+
+        // Fast pre-check (legacy): UTXO count vs snapshot metadata. A count
+        // mismatch folds into commitment_match=false below — fatal via
+        // OnReplayComplete, same severity as the pre-replay worker gave it.
+        const bool count_ok = VerifyUTXOSetMatch();
+
+        // Real commitment comparison (spec Completion Criteria items 2-3).
+        const std::optional<std::string> expected_commitment =
+            utxo_index_ ? utxo_index_->GetMetadata(assumeutxo::kExpectedCommitmentKey)
+                        : std::optional<std::string>{};
+        if (!expected_commitment) {
+            if (!count_ok) {
+                // No commitment to compare, but the durable set already fails
+                // the snapshot's own count — keep the pre-replay fatal
+                // semantics (any mismatch => fatal).
+                std::string error = "UTXO set mismatch at snapshot height " +
+                                    std::to_string(target_height);
+                logger_->error("[BackgroundValidation] CRITICAL: " + error);
+                assumeutxo_lifecycle_->OnReplayComplete(
+                    /*replay_performed=*/true, /*commitment_match=*/false,
+                    "(snapshot utxo count)", "(count mismatch)",
+                    /*missing_body_count=*/0, std::chrono::steady_clock::now());
+                OnBackgroundValidationComplete(false, error);
+                return;
+            }
+            // Legacy load (pre-commitment binary) — replay ran, but there is
+            // nothing trustworthy to compare against. Stay in
+            // validating_history; never claim fully_validated. Operator remedy:
+            // reload the snapshot with a current binary, or full resync.
+            logger_->warning("[BackgroundValidation] no expected commitment persisted "
+                             "(snapshot loaded by a pre-replay binary) — cannot retire "
+                             "trust assumption; reload snapshot or resync to proceed");
+            OnBackgroundValidationComplete(true, "");
+            return;
+        }
+
+        const std::string recomputed = replay->RecordsDigestHex();
+        const bool commitment_match = count_ok &&
+            (recomputed == expected_commitment.value());
+        // Defense-in-depth: utreexo root comparison when the v3 root was stored.
+        bool root_match = true;
+        if (auto expected_root = utxo_index_->GetMetadata(assumeutxo::kExpectedUtreexoRootKey)) {
+            root_match = (replay->UtreexoRootHex() == expected_root.value());
+        }
+
         assumeutxo_lifecycle_->OnReplayComplete(
-            /*replay_performed=*/false, match,
-            /*expected_commitment=*/"(snapshot utxo count)",
-            /*recomputed_commitment=*/match ? "(count match)" : "(count mismatch)",
+            /*replay_performed=*/true,
+            commitment_match && root_match,
+            expected_commitment.value(),
+            recomputed + (root_match ? "" : " (utreexo root mismatch)"),
             /*missing_body_count=*/0, std::chrono::steady_clock::now());
-        if (!match) {
-            std::string error = "UTXO set mismatch at snapshot height " + std::to_string(target_height);
-            logger_->error("[BackgroundValidation] CRITICAL: " + error);
-            OnBackgroundValidationComplete(false, error);
+
+        if (!(commitment_match && root_match)) {
+            OnBackgroundValidationComplete(false,
+                "replay commitment mismatch at base height " + std::to_string(target_height));
             return;
         }
         OnBackgroundValidationComplete(true, "");
