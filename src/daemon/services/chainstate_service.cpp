@@ -1625,6 +1625,17 @@ assumeutxo::AssumeUtxoLifecycle* ChainstateService::GetAssumeUtxoLifecycle() {
     return assumeutxo_lifecycle_.get();
 }
 
+bool ChainstateService::ResetAssumeUtxoFatalState(const std::string& confirm_token) {
+    EnsureAssumeUtxoLifecycle();
+    if (!assumeutxo_lifecycle_->OperatorReset(confirm_token)) {
+        return false;
+    }
+    // Clear persisted metadata so post-reset restarts don't recreate the
+    // legacy-upgrade hole (spec: Operator Reset + reset-scope requirement).
+    ClearAssumeUTXOState(/*clear_persisted_metadata=*/true);
+    return true;
+}
+
 // Phase 8: Set validation mode (stateful vs stateless)
 void ChainstateService::setValidationMode(consensus::ValidationMode mode) {
     pending_validation_mode_ = mode;  // Store for deferred application

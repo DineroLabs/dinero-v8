@@ -302,6 +302,12 @@ public:
     // Never nullptr after Initialize(); guarded internally.
     assumeutxo::AssumeUtxoLifecycle* GetAssumeUtxoLifecycle();
 
+    // Operator reset for fatal_mismatch: atomically calls lifecycle OperatorReset
+    // then clears persisted AssumeUTXO metadata so post-reset restarts don't
+    // recreate the legacy-upgrade hole. Returns false if the token is wrong or
+    // the lifecycle is not in FatalMismatch; true on success.
+    bool ResetAssumeUtxoFatalState(const std::string& confirm_token);
+
     // Phase 44: Background Validation (makes AssumeUTXO production-safe)
     enum class BackgroundValidationStatus {
         NotStarted,     // No validation in progress
