@@ -11988,6 +11988,19 @@ void ChainstateService::BackgroundValidationWorker() {
         assumeutxo_lifecycle_->OnMissingBodies(0);
         logger_->info("[BackgroundValidation] All bodies replayed; comparing content commitment...");
 
+        // A complete engine replay pass (every height 1..target connected
+        // through real validation) is indisputable progress — recover a
+        // persisted/announced stall before evaluating completion, else the
+        // lifecycle would refuse fully_validated from ValidationStalled
+        // (cross-restart pre-marking can suppress all per-height signals).
+        // Cannot loop: this fires at most once per COMPLETE pass, and a
+        // complete pass always terminates (completion or fatal).
+        if (assumeutxo_lifecycle_->GetState() ==
+            assumeutxo::AssumeUtxoLifecycle::State::ValidationStalled) {
+            assumeutxo_lifecycle_->OnBlockValidated(
+                target_height, std::chrono::steady_clock::now());
+        }
+
         // Fast pre-check (legacy): UTXO count vs snapshot metadata. A count
         // mismatch folds into commitment_match=false below — fatal via
         // OnReplayComplete, same severity as the pre-replay worker gave it.
