@@ -347,6 +347,19 @@ const HeaderIndexEntry* HeaderChainSelector::GetHeader(const uint256& hash) cons
     return it->second.get();
 }
 
+bool HeaderChainSelector::GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = header_index_.find(hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+    out = *it->second;
+    // The parent pointer is only valid under this lock (EvictBranch can free
+    // the parent entry); never let a copy carry it out.
+    out.parent = nullptr;
+    return true;
+}
+
 bool HeaderChainSelector::CollectAncestorsByHash(
         const uint256& anchor_hash,
         uint32_t start_height,

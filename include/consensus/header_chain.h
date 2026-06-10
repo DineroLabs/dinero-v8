@@ -214,6 +214,23 @@ public:
     const HeaderIndexEntry* GetHeader(const uint256& hash) const;
 
     /**
+     * @brief Look up a header by hash and copy the entry out under the lock.
+     *
+     * Exists for callers that may hit SIDE-BRANCH entries (e.g. the AssumeUTXO
+     * backfill receive path validating snapshot-chain bodies): raw pointers
+     * returned by GetHeader() can be freed by side-branch eviction
+     * (EvictBranch, which runs under THIS class's mutex — not the caller's)
+     * the moment this lock is released. Copying under the lock removes the
+     * use-after-free hazard. The copied entry's parent pointer is nulled —
+     * it must not be followed (same eviction hazard).
+     *
+     * @param hash Block hash to lookup
+     * @param out  Filled with a by-value copy of the entry (parent == nullptr)
+     * @return true iff the hash is known
+     */
+    bool GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const;
+
+    /**
      * @brief Atomically resolve an anchor by hash and copy its ancestor
      *        (hash, height) pairs for heights [start_height, anchor height],
      *        ascending — all under the internal mutex.

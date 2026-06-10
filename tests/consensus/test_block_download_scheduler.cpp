@@ -1664,6 +1664,98 @@ int main() {
                   << std::endl;
     }
 
+    {
+        std::cout << "\n17. ScanForMissingBlocks 'Already synchronized' early return "
+                     "must preserve backfill in-flight hashes (steady-state snapshot "
+                     "node at tip)..." << std::endl;
+
+        // Case 15 covers the FULL-scan path (new tip work re-walks the window
+        // and re-adds backfill hashes at the end of the function). This case
+        // hits the EARLY-RETURN path instead: local_tip == best header height,
+        // so ScanForMissingBlocks clears in_flight_blocks_ and then bails at
+        // "Already synchronized" — the NORMAL steady state of every snapshot-
+        // loaded node at tip. If the backfill re-add sits after that return,
+        // every headers message drops the outstanding backfill hashes from the
+        // cap authority and the next Tick stages MORE getdata on top of the 16
+        // already on the wire (2x oversubscription class; e2e in_flight=29).
+        //
+        // Topology: genesis + heights 1..20, snapshot base = 20, tip AT base.
+        // Backfill range (20) > max_in_flight (16) so an undercounting scan
+        // leaves 4 MISSING entries for the next Tick to over-stage.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 20, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(20);  // tip == best header: synchronized
+
+        std::vector<std::pair<uint256, uint32_t>> requests;  // (hash, height)
+        scheduler.SetSendGetDataCallback([&requests](const uint256& h, uint32_t height) {
+            requests.emplace_back(h, height);
+        });
+
+        scheduler.OnHeadersProcessed();  // takes the "Already synchronized" return
+        scheduler.EnableBackfill(1, 20, hashes[20]);  // pre-base bodies 1..20
+
+        // Tick #1: tip idle → backfill fills the window (16 REQUESTED, 4 MISSING).
+        scheduler.Tick();
+        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
+                     "case 17 setup: expected backfill to fill the window, got " +
+                         std::to_string(requests.size()))) {
+            return 1;
+        }
+        const uint256 backfill_hash = requests.front().first;
+        const size_t in_flight_before = scheduler.GetInFlightCount();
+        if (!Require(in_flight_before == scheduler.GetMaxInFlight(),
+                     "case 17 setup: expected full window before rescan")) {
+            return 1;
+        }
+        requests.clear();
+
+        // ── The rescan under test ──────────────────────────────────────────────
+        // local_tip (20) == best header (20) → start_height > best_height →
+        // ScanForMissingBlocks hits the "Already synchronized" early return
+        // AFTER clearing in_flight_blocks_.
+        scheduler.OnHeadersProcessed();
+
+        // (a) in-flight count must be unchanged: backfill hashes stay in the
+        // cap authority even when the scan exits early.
+        const size_t in_flight_after = scheduler.GetInFlightCount();
+        if (!Require(in_flight_after == in_flight_before,
+                     "'Already synchronized' rescan must preserve backfill in-flight "
+                     "count (before=" + std::to_string(in_flight_before) +
+                     " after=" + std::to_string(in_flight_after) + ")")) {
+            return 1;
+        }
+
+        // (b) the specific backfill hash must still be tracked as in-flight.
+        if (!Require(scheduler.IsBlockInFlight(backfill_hash),
+                     "'Already synchronized' rescan must preserve IsBlockInFlight "
+                     "for a REQUESTED backfill hash")) {
+            return 1;
+        }
+
+        // (c) a further Tick must stage ZERO additional getdata: the cap is
+        // full (16/16). An undercounting scan would stage the 4 leftover
+        // MISSING entries here → 20 outstanding vs cap 16.
+        scheduler.Tick();
+        if (!Require(requests.empty(),
+                     "Tick after 'Already synchronized' rescan must stage 0 new "
+                     "getdata (cap is full); got " + std::to_string(requests.size()))) {
+            return 1;
+        }
+
+        std::cout << "   ✅ in_flight preserved across the early-return rescan (before="
+                  << in_flight_before << " after=" << in_flight_after
+                  << "); IsBlockInFlight still true; 0 extra sends after Tick"
+                  << std::endl;
+    }
+
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
     return 0;
 }

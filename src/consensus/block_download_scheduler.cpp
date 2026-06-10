@@ -932,6 +932,20 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
     in_flight_blocks_.clear();
     next_missing_idx_ = 0;
 
+    // Backfill in-flight hashes share the window: preserve them across rescans
+    // (the rescan only restructures TIP work; backfill requests stay on the wire).
+    // This re-add MUST sit immediately after the clear, before ANY early return:
+    // the "Already synchronized" exit below is the NORMAL steady state of a
+    // snapshot-loaded node at tip, and skipping the re-add there dropped the
+    // outstanding backfill hashes from the cap authority on every headers
+    // message — the next service pass then staged another full cap's worth
+    // (2x oversubscription).
+    for (const auto& fs : backfill_blocks_) {
+        if (fs.status == FetchStatus::REQUESTED) {
+            in_flight_blocks_.insert(fs.block_hash);
+        }
+    }
+
     // Get best header
     const HeaderIndexEntry* best_header = header_chain_->GetBestHeader();
     if (!best_header) {
@@ -1014,14 +1028,6 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
             missing_blocks_.emplace_back(entry->hash, entry->height);
         }
         expected_blocks_.insert(entry->hash);
-    }
-
-    // Backfill in-flight hashes share the window: preserve them across rescans
-    // (the rescan only restructures TIP work; backfill requests stay on the wire).
-    for (const auto& fs : backfill_blocks_) {
-        if (fs.status == FetchStatus::REQUESTED) {
-            in_flight_blocks_.insert(fs.block_hash);
-        }
     }
 
     g_logger.info("[BlockDownloadScheduler] Queued " + std::to_string(missing_blocks_.size()) +
@@ -1195,16 +1201,20 @@ bool BlockDownloadScheduler::ValidateBlockAgainstHeader(const Block& block) {
     // Get block hash
     uint256 block_hash = block.GetHash();
 
-    // Find corresponding header
-    const HeaderIndexEntry* header = header_chain_->GetHeader(block_hash);
-    if (!header) {
+    // Find corresponding header. COPY the entry out under the header chain's
+    // lock: backfill routes side-branch snapshot-chain hashes through here,
+    // and EvictBranch (which runs under the header chain's mutex, NOT this
+    // class's mutex_) can free a raw GetHeader() pointer concurrently —
+    // same use-after-free class as the EnableBackfill anchor walk (C4).
+    HeaderIndexEntry header;
+    if (!header_chain_->GetHeaderCopy(block_hash, header)) {
         g_logger.warning("[BlockDownloadScheduler] No header found for block: " +
                         block_hash.GetHex());
         return false;
     }
 
     // Validate hash matches (redundant but explicit)
-    if (block_hash != header->hash) {
+    if (block_hash != header.hash) {
         g_logger.error("[BlockDownloadScheduler] Block hash mismatch!");
         return false;
     }
@@ -1213,7 +1223,7 @@ bool BlockDownloadScheduler::ValidateBlockAgainstHeader(const Block& block) {
     // Phase N.4.1: For skeleton, just compare header fields
     // Phase N.4.2: Will compute merkle root from transactions
     uint256 block_merkle = block.header.merkle_root;
-    uint256 header_merkle = header->header.merkle_root;
+    uint256 header_merkle = header.header.merkle_root;
 
     if (block_merkle != header_merkle) {
         g_logger.error("[BlockDownloadScheduler] Merkle root mismatch!");
