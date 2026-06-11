@@ -58,6 +58,12 @@ namespace network {
     class BridgeNode;
     class StatelessNode;  // CSN reorg support
 }
+
+// AssumeUTXO mode exit: forward declaration of the genesis->base replay engine
+// (full type included by chainstate_service.cpp for PromoteValidatedHistory).
+namespace assumeutxo {
+    class AssumeUtxoReplayEngine;
+}
 namespace pool {
     class PoolManager;  // Pool accounting lifecycle callbacks
 }
@@ -1138,6 +1144,17 @@ private:
     void BackgroundValidationWorker();  // Main validation loop (runs in thread)
     bool VerifyUTXOSetMatch();          // Verify UTXO sets match at snapshot height
     void OnBackgroundValidationComplete(bool success, const std::string& error);
+
+    // Promote replay-proven history 1..base into ChainDB so the assumeutxo
+    // exit gate (chaindb tip >= base) can fire: height index per block, undo
+    // for the audited tail window, bulk coin-CF reconcile from the proven set,
+    // tip-anchored markers from the engine state, then a durable tip at base.
+    // Idempotent: safe to re-run after a crash (worker re-runs replay first).
+    // Returns false (with error populated) on any write failure — caller
+    // treats that as OPERATIONAL (retry next pass), never as snapshot-fatal.
+    bool PromoteValidatedHistory(const assumeutxo::AssumeUtxoReplayEngine& engine,
+                                 const std::vector<uint256>& canonical_hashes,
+                                 std::string& error);
 
     // Phase 46: Pruning helpers
     bool PruneBlocksUpToHeight(uint32_t height);  // Execute pruning operation
