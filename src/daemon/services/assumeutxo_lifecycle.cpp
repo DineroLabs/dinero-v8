@@ -145,6 +145,17 @@ void AssumeUtxoLifecycle::Tick(TimePoint now) {
     }
 }
 
+void AssumeUtxoLifecycle::ForceFatal(const std::string& reason) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (state_ == State::FatalMismatch) return;  // keep the FIRST (root-cause) reason
+    // EnterFatal's Persist() writes kLifecycleStateKey="fatal_mismatch" +
+    // kFatalReasonKey and DELETES kFullyValidatedKey (state != FullyValidated
+    // else-arm), and RestoreFromPersistence dispatches the fatal_mismatch
+    // branch FIRST — so a prior fully_validated record cannot shadow this
+    // across a restart.
+    EnterFatal(reason, TimePoint{});
+}
+
 bool AssumeUtxoLifecycle::OperatorReset(const std::string& confirm_token) {
     std::lock_guard<std::mutex> lock(mu_);
     if (state_ != State::FatalMismatch) return false;

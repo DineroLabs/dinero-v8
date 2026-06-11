@@ -988,6 +988,13 @@ private:
     bool assumeutxo_active_ = false;           // True if loaded from snapshot
     uint256 assumeutxo_base_block_;            // Block hash where UTXO set was snapshotted
     uint32_t assumeutxo_base_height_ = 0;      // Height where UTXO set was snapshotted
+    // Snapshot base height once history was PROMOTED into ChainDB (or restored
+    // as fully_validated). NEVER cleared by ClearAssumeUTXOState: the
+    // fork-below-base fatal rule (spec: Fatal Mismatch Semantics) is not
+    // mode-scoped — undo below the audited tail does not exist even after the
+    // assumeutxo markers are gone, so ActivateBestChain must keep refusing
+    // (fatally) any reorg whose fork point dips below this height. 0 = unset.
+    uint32_t promoted_base_height_ = 0;
 
     // FIX 2 (issue #186) + rc24.1 single-flight guard: deferred snapshot-bootstrap
     // state machine (peeked at startup; block download is deferred while Pending

@@ -2990,6 +2990,15 @@ bool ChainstateService::Start() {
             }
             assumeutxo_lifecycle_->RestoreFromPersistence(chainstate_matches);
         }
+        // Re-arm the never-cleared below-base fork guard: a FullyValidated
+        // record means history was promoted (or its promotion is about to be
+        // re-attempted) at the persisted lc base height (kLcBaseHeightKey,
+        // ParseU32'd by RestoreFromPersistence into the lifecycle's base).
+        if (assumeutxo_lifecycle_->GetState() ==
+            assumeutxo::AssumeUtxoLifecycle::State::FullyValidated) {
+            promoted_base_height_ = assumeutxo_lifecycle_->GetStatus(
+                std::chrono::steady_clock::now()).snapshot_base_height;
+        }
         if (assumeutxo_lifecycle_->GetState() ==
             assumeutxo::AssumeUtxoLifecycle::State::Disabled) {
             // Legacy upgrade: assumed state persisted by a pre-lifecycle binary
@@ -3150,6 +3159,15 @@ bool ChainstateService::Start() {
             }
         }
         assumeutxo_lifecycle_->RestoreFromPersistence(chainstate_matches);
+        // Re-arm the never-cleared below-base fork guard on a PROMOTED node:
+        // assumeutxo mode already exited (no assumed-state markers), but a
+        // below-base fork is still spec-fatal — restore the boundary from the
+        // FullyValidated lifecycle record's persisted base height.
+        if (assumeutxo_lifecycle_->GetState() ==
+            assumeutxo::AssumeUtxoLifecycle::State::FullyValidated) {
+            promoted_base_height_ = assumeutxo_lifecycle_->GetStatus(
+                std::chrono::steady_clock::now()).snapshot_base_height;
+        }
         if (assumeutxo_lifecycle_->GetState() ==
             assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
             logger_->error("[AssumeUTXO restore] Persisted lifecycle state is FATAL_MISMATCH — "
@@ -6814,6 +6832,57 @@ void ChainstateService::ActivateBestChain() {
         logger_->error("INVARIANT D2 VIOLATION: Fork point height is negative (" +
                       std::to_string(fork_point->height) + ")");
         return;
+    }
+
+    // ── Fork-below-base fatal guard ────────────────────────────────────────
+    // Spec (assumeutxo-fatal-state-machine.md, Fatal Mismatch Semantics): a
+    // higher-work chain diverging BELOW the snapshot base must go fatal — not
+    // a silent reorg. Mechanically: undo below the base may not exist
+    // (promotion persists only the audited tail), so a disconnect below base
+    // would fail anyway; classify it as the proof failure it is.
+    //
+    // CONDITION: the spec's rule is NOT mode-scoped — after promotion the
+    // exit gate clears assumeutxo_active_/assumeutxo_base_height_
+    // (ClearAssumeUTXOState nulls them), but a below-base fork is STILL
+    // fatal, so the guard keys off max(live base, promoted_base_height_)
+    // where promoted_base_height_ is never cleared (set on promotion success
+    // and restored at startup from the FullyValidated lifecycle record).
+    //
+    // fork_point != active_tip_: divergence means a non-empty disconnect path
+    // (the disconnect walk below stops at fork_point). A pure extension from
+    // a tip that happens to sit below base (fork_point == active_tip_, e.g. a
+    // transient genesis-tip window during bootstrap) disconnects nothing and
+    // is NOT a reorg below base — going fatal there would brick honest nodes.
+    //
+    // LOCKS: activation_mutex_ is held (function entry). ForceFatal takes
+    // only the lifecycle's leaf mu_; EnsureAssumeUtxoLifecycle takes only
+    // assumeutxo_lifecycle_init_mutex_ (leaf). EnterSafeMode under
+    // activation_mutex_ has in-function precedent: the misalignment branch
+    // and the deep-reorg branch of this same function already call it while
+    // holding the lock.
+    {
+        const uint32_t effective_base = std::max(
+            assumeutxo_active_ ? assumeutxo_base_height_ : 0u,
+            promoted_base_height_);
+        if (fork_point && fork_point != active_tip_ && effective_base > 0 &&
+            fork_point->height < static_cast<int>(effective_base)) {
+            const std::string reason =
+                "reorg below assumeutxo base: fork height " +
+                std::to_string(fork_point->height) + " < base " +
+                std::to_string(effective_base) +
+                " — higher-work divergence below the snapshot base "
+                "(spec: fatal, not reorg)";
+            if (logger_) logger_->error("[ActivateBestChain] FATAL: " + reason);
+            EnsureAssumeUtxoLifecycle();
+            // ForceFatal, not OnReplayComplete: the mismatch path of
+            // OnReplayComplete is refused from FullyValidated (state guard
+            // requires Validating/Stalled), and a post-promotion below-base
+            // fork must STILL persist fatal — ForceFatal is the direct entry
+            // usable from any non-fatal state.
+            assumeutxo_lifecycle_->ForceFatal(reason);
+            EnterSafeMode("assumeutxo fatal: " + reason);
+            return;
+        }
     }
 
     // Build disconnect path (from active_tip down to fork)
@@ -11950,6 +12019,12 @@ void ChainstateService::BackgroundValidationWorker() {
         // Spec: missing bodies are NEVER skippable success. Re-scan until all
         // bodies are present (bodies backfill as IBD proceeds) or we are told
         // to stop; Tick() drives the loud-stall transition while we wait.
+        //
+        // canonical_hashes_fallback is declared OUTSIDE the rescan loop
+        // (rebuilt fresh each pass) so the COMPLETING pass's hash-anchored
+        // table survives to the promotion call after the loop —
+        // PromoteValidatedHistory requires it as the height-index source.
+        std::vector<uint256> canonical_hashes_fallback;
         uint32_t blocks_skipped = 0;
         while (true) {
             blocks_skipped = 0;
@@ -11960,6 +12035,12 @@ void ChainstateService::BackgroundValidationWorker() {
             // and the final (complete) pass is the one whose digest counts.
             try {
                 replay.emplace();
+                // Capture exactly the undo tail the startup audit
+                // (VerifyActiveChainUndoCoverage, window=1024) will check
+                // after promotion. Must follow EVERY emplace(): the window
+                // is per-engine state and the engine is re-created per pass.
+                replay->SetUndoTailWindow(
+                    std::min<uint32_t>(kStartupUndoAuditWindow, target_height));
             } catch (const std::exception& e) {
                 // Engine construction failure (e.g. the :memory: nullifier
                 // sqlite open under fd exhaustion) is a transient LOCAL
@@ -12010,7 +12091,7 @@ void ChainstateService::BackgroundValidationWorker() {
             // lookup is then O(1) from the vector. The table is rebuilt once
             // per rescan pass (the while(true) loop only retries when bodies
             // are missing, so passes beyond the first are rare and bounded).
-            std::vector<uint256> canonical_hashes_fallback;
+            canonical_hashes_fallback.clear();
             if (header_chain_selector_ && !assumeutxo_base_block_.IsNull()) {
                 // Resolve + walk + copy under the header chain's OWN mutex
                 // (CollectAncestorsByHash): the snapshot base may be a
@@ -12242,17 +12323,72 @@ void ChainstateService::BackgroundValidationWorker() {
             root_match = (replay->UtreexoRootHex() == expected_root.value());
         }
 
-        assumeutxo_lifecycle_->OnReplayComplete(
-            /*replay_performed=*/true,
-            commitment_match && root_match,
-            expected_commitment.value(),
-            recomputed + (root_match ? "" : " (utreexo root mismatch)"),
-            /*missing_body_count=*/0, std::chrono::steady_clock::now());
+        const bool lifecycle_promoted_to_fully_validated =
+            assumeutxo_lifecycle_->OnReplayComplete(
+                /*replay_performed=*/true,
+                commitment_match && root_match,
+                expected_commitment.value(),
+                recomputed + (root_match ? "" : " (utreexo root mismatch)"),
+                /*missing_body_count=*/0, std::chrono::steady_clock::now());
 
         if (!(commitment_match && root_match)) {
             OnBackgroundValidationComplete(false,
                 "replay commitment mismatch at base height " + std::to_string(target_height));
             return;
+        }
+
+        // ── Promotion (assumeutxo mode exit) ────────────────────────────────
+        // History is now replay-proven; promote it into ChainDB so the exit
+        // gate in OnBackgroundValidationComplete (chaindb tip >= base AND
+        // lifecycle FullyValidated) can fire and clear the assumeutxo mode.
+        //
+        // Eligibility: the lifecycle promoted to FullyValidated just now, OR
+        // it was ALREADY FullyValidated from a prior run (crash window: the
+        // FullyValidated record persisted but the promotion writes did not
+        // land — OnReplayComplete refuses re-entry from FullyValidated, so
+        // gating on the return alone would strand such a node in assumeutxo
+        // mode forever). Either way the commitment matched THIS pass.
+        //
+        // LOCKS HELD HERE: none. The worker's bg_validation_mutex_ uses are
+        // all scoped guards released above; lifecycle mu_ is internal to each
+        // lifecycle call. PromoteValidatedHistory takes activation_mutex_ for
+        // its whole body — see its lock-ordering proof.
+        const bool lifecycle_fully_validated_now =
+            lifecycle_promoted_to_fully_validated ||
+            assumeutxo_lifecycle_->GetState() ==
+                assumeutxo::AssumeUtxoLifecycle::State::FullyValidated;
+        if (lifecycle_fully_validated_now) {
+            // Cheap idempotence guard: if the ChainDB tip is already at/above
+            // the base (previous promotion landed, or the canonical chain
+            // advanced past base), promotion is done — and on such a re-run
+            // canonical_hashes_fallback may legitimately be empty (the height
+            // index served every lookup), so don't even call.
+            bool tip_below_base = true;
+            {
+                auto tip_result = chain_db_->getTip();
+                if (tip_result.status() == Status::Ok &&
+                    static_cast<uint32_t>(tip_result.value().height) >= target_height) {
+                    tip_below_base = false;
+                }
+            }
+            if (tip_below_base) {
+                std::string promote_err;
+                if (!PromoteValidatedHistory(*replay, canonical_hashes_fallback,
+                                             promote_err)) {
+                    // OPERATIONAL failure (disk, db): retry next pass — never
+                    // fatal. History remains proven; only the writes failed.
+                    logger_->warning("[BackgroundValidation] promotion failed (" +
+                                     promote_err +
+                                     ") — will retry; assumeutxo mode remains active");
+                    OnBackgroundValidationComplete(true, "");  // gate simply won't fire yet
+                    return;
+                }
+                logger_->info("[Promotion] complete — ChainDB tip at base; "
+                              "exit gate eligible");
+            }
+            // Arm the never-cleared below-base fork guard (survives
+            // ClearAssumeUTXOState, which nulls assumeutxo_base_height_).
+            promoted_base_height_ = target_height;
         }
         OnBackgroundValidationComplete(true, "");
 
@@ -12292,9 +12428,10 @@ bool ChainstateService::PromoteValidatedHistory(
     //
     // Lock-ordering proof (no cycle):
     //   acquisition order is activation_mutex_ only; the worker holds nothing
-    //   at the Task-3 call site (between OnReplayComplete and
-    //   OnBackgroundValidationComplete — no bg_validation_mutex_ or
-    //   assumeutxo_lifecycle_init_mutex_ are held).
+    //   at the BackgroundValidationWorker call site (the promotion block
+    //   between OnReplayComplete and OnBackgroundValidationComplete — its
+    //   bg_validation_mutex_ uses are all scoped guards released earlier, and
+    //   no assumeutxo_lifecycle_init_mutex_ or lifecycle mu_ is held).
     //   ActivateBestChain/ConnectTip (under activation_mutex_) never take
     //   bg_validation_mutex_ or assumeutxo_lifecycle_init_mutex_, so the
     //   hierarchy is bg_validation (if any) -> activation, with no reverse
