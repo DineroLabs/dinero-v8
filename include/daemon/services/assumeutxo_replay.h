@@ -9,8 +9,10 @@
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 
+#include <deque>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace dinero::assumeutxo {
 
@@ -74,6 +76,34 @@ public:
     // Utreexo root of the replayed forest, hex (compare vs v3 snapshot root).
     std::string UtreexoRootHex() const;
 
+    // =========================================================================
+    // Promotion inputs (Task 1)
+    // =========================================================================
+
+    // Per-block undo captured for the last `window` connected heights.
+    // Ring semantics: older entries are dropped as new heights connect.
+    // 0 = off (default). Size for kStartupUndoAuditWindow (1024) so that
+    // PromoteValidatedHistory can persist exactly the audited tail.
+    // Below-base disconnects are fatal-guarded, so deeper undo is never read.
+    struct CapturedUndo {
+        uint32_t height = 0;
+        uint256 block_hash;
+        consensus::BlockUndo undo;
+    };
+    void SetUndoTailWindow(uint32_t window);
+    const std::deque<CapturedUndo>& UndoTail() const { return undo_tail_; }
+
+    // Proven UTXO map (by const-ref; valid until the next ConnectAndAdvance).
+    // OutPoint is in dinero:: (not dinero::consensus::); UTXOEntry is in
+    // dinero::consensus:: — both are in scope from within dinero::assumeutxo.
+    const std::unordered_map<OutPoint, consensus::UTXOEntry>& ProvenUtxos() const;
+    // Forest and shielded state at the tip of the replay (const pointers;
+    // remain valid for the lifetime of the engine).
+    const consensus::UtreexoForest* Forest() const;
+    const consensus::shielded::CommitmentTree* ShieldedTree() const;
+    const consensus::shielded::NullifierSet* ShieldedNullifiers() const;
+    const consensus::shielded::AnchorHistory* ShieldedAnchors() const;
+
 private:
     std::unique_ptr<consensus::ConsensusUTXOSet> set_;
     std::unique_ptr<consensus::BlockValidator> validator_;
@@ -85,6 +115,9 @@ private:
     std::unique_ptr<consensus::shielded::AnchorHistory> shielded_anchor_history_;
     uint32_t last_height_ = 0;
     bool any_connected_ = false;
+    // Undo tail ring (populated when undo_tail_window_ > 0).
+    uint32_t undo_tail_window_ = 0;
+    std::deque<CapturedUndo> undo_tail_;
 };
 
 }  // namespace dinero::assumeutxo
