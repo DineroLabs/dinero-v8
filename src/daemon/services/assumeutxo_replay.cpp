@@ -71,13 +71,53 @@ bool AssumeUtxoReplayEngine::ConnectAndAdvance(const Block& block, uint32_t heig
                 std::to_string(height) + " after " + std::to_string(last_height_) + ")";
         return false;
     }
-    consensus::BlockUndo undo;  // replay does not persist undo
+    consensus::BlockUndo undo;
     if (!validator_->ConnectBlock(block, height, block_hash, undo, error)) {
         return false;
+    }
+    // Capture undo for the audited tail window (ring semantics: drop oldest
+    // when the deque exceeds the window). BlockUndo is movable — utreexo_delta,
+    // spent_coins, and optional fields all move without extra allocation.
+    if (undo_tail_window_ > 0) {
+        // CRITICAL: strip the pre-block UTXO-set snapshot ConnectBlock attaches
+        // when the backend supports snapshot/restore — it deep-copies the whole
+        // set + serialized forest (~30MB at mainnet scale); retaining 1024 of
+        // them would OOM the final pass. The flatfile undo format never
+        // serializes it (BlockUndo::Serialize), and disconnect durability uses
+        // spent_coins + frontier + the UD sidecar, never this snapshot.
+        undo.pre_block_snapshot.reset();
+        undo_tail_.push_back(CapturedUndo{height, block_hash, std::move(undo)});
+        while (undo_tail_.size() > undo_tail_window_) undo_tail_.pop_front();
     }
     last_height_ = height;
     any_connected_ = true;
     return true;
+}
+
+void AssumeUtxoReplayEngine::SetUndoTailWindow(uint32_t window) {
+    undo_tail_window_ = window;
+    undo_tail_.clear();
+}
+
+const std::unordered_map<OutPoint, consensus::UTXOEntry>&
+AssumeUtxoReplayEngine::ProvenUtxos() const {
+    return set_->GetUTXOs();
+}
+
+const consensus::UtreexoForest* AssumeUtxoReplayEngine::Forest() const {
+    return &set_->GetForest();
+}
+
+const consensus::shielded::CommitmentTree* AssumeUtxoReplayEngine::ShieldedTree() const {
+    return shielded_tree_.get();
+}
+
+const consensus::shielded::NullifierSet* AssumeUtxoReplayEngine::ShieldedNullifiers() const {
+    return shielded_nullifiers_.get();
+}
+
+const consensus::shielded::AnchorHistory* AssumeUtxoReplayEngine::ShieldedAnchors() const {
+    return shielded_anchor_history_.get();
 }
 
 uint64_t AssumeUtxoReplayEngine::UtxoCount() const { return set_->GetUTXOs().size(); }

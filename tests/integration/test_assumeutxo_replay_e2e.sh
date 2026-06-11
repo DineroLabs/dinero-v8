@@ -16,6 +16,13 @@
 #                  binary — but the genesis replay recomputes an honest digest
 #                  that mismatches the poisoned commitment). Fatal survives
 #                  restart; B2 = explicit operator reset recovers.
+#   Scenario F   = post-promotion below-base fork (#280): after scenario A's
+#                  node exits assumeutxo mode (promotion), a higher-work chain
+#                  whose fork point lies BELOW the snapshot base must drive
+#                  fatal + safe mode, never a silent reorg (the guard keys off
+#                  the never-cleared promoted base height). The fork node is a
+#                  full source-datadir copy taken at height 50, which then
+#                  mines its own longer chain.
 #   Scenario C   = re-entry: loading a DIFFERENT snapshot mid-lifecycle is
 #                  refused. C1: the live RPC path refuses (the consensus set is
 #                  populated by the active snapshot, so the empty-set
@@ -47,15 +54,17 @@ set -euo pipefail
 
 DINEROD="${DINEROD:?set DINEROD to the dinerod binary path}"
 BASE_PORT="${BASE_PORT:-36500}"
-RUN_SCENARIOS="${RUN_SCENARIOS:-AD B C}"
+RUN_SCENARIOS="${RUN_SCENARIOS:-AD B C F}"
 
 SRC_RPC=$((BASE_PORT + 0));  SRC_P2P=$((BASE_PORT + 100)); SRC_WS=$((BASE_PORT + 200))
 AD_RPC=$((BASE_PORT + 1));   AD_P2P=$((BASE_PORT + 101));  AD_WS=$((BASE_PORT + 201))
 B_RPC=$((BASE_PORT + 2));    B_P2P=$((BASE_PORT + 102));   B_WS=$((BASE_PORT + 202))
 C_RPC=$((BASE_PORT + 3));    C_P2P=$((BASE_PORT + 103));   C_WS=$((BASE_PORT + 203))
+F_RPC=$((BASE_PORT + 4));    F_P2P=$((BASE_PORT + 104));   F_WS=$((BASE_PORT + 204))
 
 WORK="$(mktemp -d -t dinero_replay_e2e_XXXXXX)"
 SRC_DIR="$WORK/source"; AD_DIR="$WORK/nodeAD"; B_DIR="$WORK/nodeB"; C_DIR="$WORK/nodeC"
+F_DIR="$WORK/nodeF"; F_SEED="$WORK/source_at_50"; FORK_H=50
 SNAP="$WORK/utxo-snapshot.dat"; SNAP2="$WORK/utxo-snapshot-2.dat"; POISON="$WORK/poisoned.dat"
 HEADERS_AT_BASE="$WORK/headers_at_base"
 KEEP_ON_FAIL="${KEEP_ON_FAIL:-0}"
@@ -65,7 +74,7 @@ info() { printf '[INFO] %s\n' "$*"; }
 pass() { printf '[PASS] %s\n' "$*"; }
 fail() {
     printf '[FAIL] %s\n' "$*" >&2
-    for d in "$SRC_DIR" "$AD_DIR" "$B_DIR" "$C_DIR"; do
+    for d in "$SRC_DIR" "$AD_DIR" "$B_DIR" "$C_DIR" "$F_DIR"; do
         for lg in "$d"/daemon*.log; do
             [[ -f "$lg" ]] || continue
             printf -- '--- tail %s ---\n' "$lg" >&2
@@ -175,8 +184,19 @@ connect_source() {  # <rpcport> <datadir> <node-desc> — addnode + wait for the
 info "=== Setup: source node mines chain, exports snapshot at tip ==="
 start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/daemon.log"
 
-rpc "$SRC_RPC" "$SRC_DIR" generate '[101]' | jq -e '.result.blocks | length == 101' >/dev/null \
-    || fail "source failed to mine 101 blocks"
+# Mine in two legs with a full-datadir copy at height FORK_H (50): scenario F
+# needs a node whose chain ends BELOW the snapshot base so it can mine a
+# competing fork whose fork point is below base. The copy must be taken with
+# the source STOPPED (consistent stores).
+rpc "$SRC_RPC" "$SRC_DIR" generate "[$FORK_H]" | jq -e ".result.blocks | length == $FORK_H" >/dev/null \
+    || fail "source failed to mine first $FORK_H blocks"
+stop_node "$SRC_DIR"
+cp -R "$SRC_DIR" "$F_SEED"
+rm -f "$F_SEED"/daemon*.log "$F_SEED"/.cookie "$F_SEED"/regtest/.cookie 2>/dev/null || true
+start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/daemon1b.log"
+rpc "$SRC_RPC" "$SRC_DIR" generate "[$((101 - FORK_H))]" \
+    | jq -e ".result.blocks | length == $((101 - FORK_H))" >/dev/null \
+    || fail "source failed to mine blocks $((FORK_H + 1))..101"
 
 # Shielded tx below the base (spec SHOULD): replay must validate it through
 # the engine's genesis-fresh shielded state. Soft requirement: record outcome.
@@ -274,11 +294,8 @@ for i in $(seq 1 240); do
         [[ "$BF_F" -gt 16 ]] && BF_CAP_VIOLATION="backfill_in_flight=$BF_F at sample $i"
     fi
     # Trust-marker retirement = history_fully_validated (lifecycle state
-    # "fully_validated"). NOTE: assumeutxo_active stays TRUE here by design —
-    # ChainstateService keeps AssumeUTXO mode until ChainDB catches up to the
-    # base via ConnectTip (backfilled bodies are stored, not connected; the
-    # old assertion of active==false was an artifact of the --reindex crutch
-    # rebuilding ChainDB). The spec's trust retirement is the lifecycle flag.
+    # "fully_validated"). Mode exit (assumeutxo_active false) follows via
+    # promotion (#280) and is asserted separately below (A-EXIT).
     if jq -e '.history_fully_validated == true and .history_validation_state == "fully_validated" and .fatal == false' \
             <<<"$ST" >/dev/null 2>&1; then
         A_DONE=1
@@ -304,13 +321,39 @@ pass "A: backfill surface healthy (enabled seen, completed=$BF_MAX_COMPLETED/tot
 wait_status "$AD_RPC" "$AD_DIR" '.backfill_enabled == false' 30 \
     "A: backfill disarmed after retirement (periodic tick disarm)"
 
-# A: retirement survives a plain restart (spec Persistence / Required Test 4).
+# A-EXIT (spec Required Test 4 restored by promotion, #280): after the worker
+# promotes the replay-proven history into ChainDB (tip reaches base), the
+# OnBackgroundValidationComplete exit gate clears AssumeUTXO mode — the legacy
+# mode FULLY exits, not just the lifecycle flag. fully_validated is reported
+# first (OnReplayComplete), then promotion runs (5-15s), then the gate fires;
+# generous timeout for slow disks.
+wait_status "$AD_RPC" "$AD_DIR" '.assumeutxo_active == false' 60 \
+    "A-EXIT: assumeutxo_active false after promotion (spec Test 4)"
+
+# Promotion side effects: the canonical height index now serves pre-base
+# heights (getblockhash answers from ChainDB's height->hash index).
+H1="$(rpc "$AD_RPC" "$AD_DIR" getblockhash '[1]')"
+jq -e '.result | type == "string" and test("^[0-9a-fA-F]{64}$")' <<<"$H1" >/dev/null \
+    || fail "A-EXIT: getblockhash 1 not served from promoted height index: $H1"
+pass "A-EXIT: getblockhash 1 served from promoted height index: $(jq -r '.result' <<<"$H1")"
+
+# A: retirement + mode exit survive a plain restart (spec Persistence /
+# Required Test 4). Restart-clean: startup audits (strict archival + undo
+# tail + alignment) must pass with tip at base and NO assumeutxo tolerance
+# active, and the daemon must NOT enter safe mode.
 stop_node "$AD_DIR"
 start_node "$AD_DIR" "$AD_RPC" "$AD_P2P" "$AD_WS" "$AD_DIR/daemon3.log" \
     --assumeutxo_snapshot="$SNAP"
 wait_status "$AD_RPC" "$AD_DIR" \
-    '.history_fully_validated == true and .fatal == false' \
-    60 "A: fully_validated survives restart"
+    '.history_fully_validated == true and .assumeutxo_active == false and .fatal == false' \
+    60 "A: fully_validated + mode exit survive restart"
+grep -q "Strict archival audit passed" "$AD_DIR/daemon3.log" \
+    || fail "A: restarted daemon did not log the strict-archival pass line (promotion must leave flatfile coverage genesis->tip)"
+pass "A: strict archival startup audit passed on the promoted datadir"
+if grep -q "SAFE MODE ACTIVATED" "$AD_DIR/daemon3.log"; then
+    fail "A: restarted promoted daemon entered safe mode: $(grep -m1 'SAFE MODE ACTIVATED' "$AD_DIR/daemon3.log")"
+fi
+pass "A: no safe-mode entry on the restarted promoted daemon"
 stop_node "$AD_DIR"
 fi
 
@@ -472,6 +515,99 @@ if rpc "$C_RPC" "$C_DIR" getsnapshotbootstrapstatus 2>/dev/null \
     fail "C2: node reached fully_validated after a refused different-base rehydrate"
 fi
 stop_node "$C_DIR"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════
+# Scenario F: post-promotion below-base fork goes fatal, never reorg (#280)
+# ═════════════════════════════════════════════════════════════════════════
+if [[ " $RUN_SCENARIOS " == *" F "* ]]; then
+info "=== Scenario F: below-base higher-work fork is fatal on the promoted node ==="
+[[ " $RUN_SCENARIOS " == *" AD "* ]] \
+    || fail "scenario F requires scenario AD (it reuses AD's promoted datadir)"
+
+# Fork node: full source datadir copied at height FORK_H (< base). It mines
+# its own chain from there — its block FORK_H+1 differs from the canonical
+# one (different timestamp), so the fork point is FORK_H < base.
+cp -R "$F_SEED" "$F_DIR"
+start_node "$F_DIR" "$F_RPC" "$F_P2P" "$F_WS" "$F_DIR/daemon.log"
+F_H="$(rpc "$F_RPC" "$F_DIR" getblockcount | jq -r '.result // 0')"
+[[ "$F_H" -eq "$FORK_H" ]] \
+    || fail "F: fork node expected height $FORK_H from the seed copy, got $F_H"
+
+# Outwork every canonical tip in this test (base+5 after scenario C): regtest
+# difficulty is flat, so more blocks = more work. 70 blocks -> fork tip 120.
+FORK_TIP=$((FORK_H + 70))
+rpc "$F_RPC" "$F_DIR" generate '[70]' | jq -e '.result.blocks | length == 70' >/dev/null \
+    || fail "F: fork node failed to mine 70 fork blocks"
+pass "F: fork node mined a higher-work chain diverging at height $FORK_H (tip $FORK_TIP)"
+
+# Restart the PROMOTED scenario-A node. Mode already exited; the below-base
+# guard keys off promoted_base_height_, restored at startup from the
+# FullyValidated lifecycle record (it survives ClearAssumeUTXOState).
+start_node "$AD_DIR" "$AD_RPC" "$AD_P2P" "$AD_WS" "$AD_DIR/daemon4.log" \
+    --assumeutxo_snapshot="$SNAP"
+wait_status "$AD_RPC" "$AD_DIR" \
+    '.history_fully_validated == true and .assumeutxo_active == false and .fatal == false' \
+    60 "F: promoted node restarted clean (mode exited) before fork arrival"
+
+# Feed the fork via ordered submitblock (BlockAcceptor path). NOT pure P2P:
+# the download scheduler DOES header-sync and fetch a higher-work fork from a
+# peer, but it stores fork bodies to flatfiles without writing chain_db
+# header metadata, so ActivateBestChain's header-branch import
+# (HasStoredBlockBody, RequireFlatfiles) never sees them — a pre-existing
+# deep-fork body-ingestion gap, observed empirically 2026-06-10 (70 bodies
+# "StoreBlock success" yet missing_bodies stuck at 69). The guard under test
+# lives in ActivateBestChain and is delivery-transport-independent;
+# submitblock stores bodies WITH metadata and exercises it deterministically.
+# Empirically fatal fires at fork height base+1 (work first exceeds the
+# canonical tip's); the loop breaks there.
+F_FATAL_SEEN=0
+for h in $(seq $((FORK_H + 1)) "$FORK_TIP"); do
+    FH="$(rpc "$F_RPC" "$F_DIR" getblockhash "[$h]" | jq -r '.result')"
+    FHEX="$(rpc "$F_RPC" "$F_DIR" getblock "[\"$FH\", 0]" | jq -r '.result')"
+    SUB="$(rpc "$AD_RPC" "$AD_DIR" submitblock "[\"$FHEX\"]")"
+    SUB_ERR="$(jq -r '.result.error // empty' <<<"$SUB")"
+    if jq -e '.fatal == true' <<<"$(snap_status "$AD_RPC" "$AD_DIR")" >/dev/null 2>&1; then
+        F_FATAL_SEEN=1
+        info "F: fatal observed after submitting fork block at height $h"
+        break
+    fi
+    [[ -z "$SUB_ERR" ]] \
+        || fail "F: submitblock of fork block at height $h refused before fatal: $SUB"
+done
+[[ "$F_FATAL_SEEN" == "1" ]] \
+    || fail "F: promoted node never went fatal while ingesting the below-base fork up to height $FORK_TIP"
+
+# Spec (Fatal Mismatch Semantics): a higher-work divergence BELOW the base is
+# fatal + safe mode, never a silent reorg — even after promotion cleared the
+# live assumeutxo fields.
+wait_status "$AD_RPC" "$AD_DIR" \
+    '.fatal == true and (.fatal_reason | contains("below assumeutxo base"))' \
+    30 "F: below-base higher-work fork drives fatal (not reorg) on the promoted node"
+info "F fatal_reason: $(snap_status "$AD_RPC" "$AD_DIR" | jq -r '.fatal_reason')"
+grep -q "SAFE MODE ACTIVATED" "$AD_DIR/daemon4.log" \
+    || fail "F: promoted node did not enter safe mode on the below-base fork"
+pass "F: safe mode entered on below-base fork"
+# Never-reorg: the active chain must not have switched onto the fork.
+AD_H="$(rpc "$AD_RPC" "$AD_DIR" getblockcount | jq -r '.result // 0')"
+[[ "$AD_H" -lt "$FORK_TIP" ]] \
+    || fail "F: promoted node REORGED onto the below-base fork (height $AD_H)"
+pass "F: no reorg onto the fork (active height $AD_H < fork tip $FORK_TIP)"
+# Stricter no-disconnect proof: the canonical block just above the fork point
+# must be unchanged — a guard placed after the disconnect walk (partial
+# disconnect before fatal) would alter it even if the tip stayed below the
+# fork tip. The source's hash at FORK_H+1 is canonical by construction.
+CANON_51="$(rpc "$SRC_RPC" "$SRC_DIR" getblockhash "[$((FORK_H + 1))]" | jq -r '.result // empty')"
+AD_51="$(rpc "$AD_RPC" "$AD_DIR" getblockhash "[$((FORK_H + 1))]" | jq -r '.result // empty')"
+[[ -n "$CANON_51" && "$AD_51" == "$CANON_51" ]] \
+    || fail "F: canonical block at $((FORK_H + 1)) changed (disconnect below base occurred): ad=$AD_51 canon=$CANON_51"
+pass "F: no disconnect below base (canonical block at $((FORK_H + 1)) unchanged)"
+# Coverage note: F exercises the post-restart guard variant (effective_base
+# from promoted_base_height_ restored off the persisted FullyValidated
+# record). The live same-process variant (set at promotion success) and the
+# pre-promotion mode-active branch remain unit/e2e-uncovered — registered.
+stop_node "$AD_DIR"
+stop_node "$F_DIR"
 fi
 
 info "shielded-tx coverage: $SHIELDED_NOTE"

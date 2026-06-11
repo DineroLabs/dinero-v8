@@ -549,6 +549,47 @@ TEST_F(AssumeUtxoLifecycleTest, CompletePassRecoversPersistedStallThenPromotes) 
     }
 }
 
+// A below-base divergence discovered AFTER retirement must still go fatal.
+// OnReplayComplete refuses the mismatch path from FullyValidated (state guard
+// requires Validating/Stalled), so the fork guard needs a direct fatal entry.
+TEST_F(AssumeUtxoLifecycleTest, ForceFatalWorksFromFullyValidated) {
+    auto lc = MakeLifecycle();
+    ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc->OnValidationStarted(t0_));
+    lc->OnBlockValidated(kBaseHeight, t0_ + 10s);
+    ASSERT_TRUE(lc->OnReplayComplete(true, true, "aa", "aa", 0, t0_ + 20s));
+    ASSERT_EQ(lc->GetState(), State::FullyValidated);
+
+    lc->ForceFatal("reorg below assumeutxo base: test");
+    EXPECT_EQ(lc->GetState(), State::FatalMismatch);
+    EXPECT_NE(lc->GetStatus(t0_).fatal_reason.find("below assumeutxo base"), std::string::npos);
+    // Restart preserves (fatal beats the stale fully_validated marker):
+    // RestoreFromPersistence dispatches on kLifecycleStateKey and checks the
+    // "fatal_mismatch" branch FIRST, before the "fully_validated" branch — and
+    // EnterFatal's Persist() additionally DELETES kFullyValidatedKey (the
+    // state != FullyValidated else-arm), so no stale trust marker survives.
+    EXPECT_FALSE(utxo_index_->GetMetadata(assumeutxo::kFullyValidatedKey).has_value());
+    auto lc2 = MakeLifecycle();
+    lc2->RestoreFromPersistence(true);
+    EXPECT_EQ(lc2->GetState(), State::FatalMismatch);
+}
+
+// ForceFatal is a no-op when already fatal: the FIRST recorded reason is the
+// forensic root cause and must not be overwritten by later cascading callers.
+TEST_F(AssumeUtxoLifecycleTest, ForceFatalDoesNotOverwriteExistingFatalReason) {
+    auto lc = MakeLifecycle();
+    ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc->OnValidationStarted(t0_));
+    lc->OnReplayComplete(true, /*commitment_match=*/false, "aa", "bb", 0, t0_ + 10s);
+    ASSERT_EQ(lc->GetState(), State::FatalMismatch);
+    const std::string original_reason = lc->GetStatus(t0_).fatal_reason;
+    ASSERT_FALSE(original_reason.empty());
+
+    lc->ForceFatal("second fatal: must not clobber");
+    EXPECT_EQ(lc->GetState(), State::FatalMismatch);
+    EXPECT_EQ(lc->GetStatus(t0_).fatal_reason, original_reason);
+}
+
 }  // namespace dinero
 
 int main(int argc, char** argv) {

@@ -85,6 +85,12 @@ public:
                           uint32_t missing_body_count, TimePoint now);
     // Stall detection: ValidatingHistory -> ValidationStalled after timeout.
     void Tick(TimePoint now);
+    // Direct fatal entry, usable from ANY non-fatal state (including
+    // FullyValidated, where OnReplayComplete's mismatch path is refused by
+    // the state guard). Needed for post-promotion proof failures, e.g. a
+    // higher-work fork below the snapshot base (spec: fatal, not reorg).
+    // No-op if already FatalMismatch (the first reason is the root cause).
+    void ForceFatal(const std::string& reason);
     // FatalMismatch -> Disabled, only with the exact confirmation token.
     bool OperatorReset(const std::string& confirm_token);
     // Startup rehydration. chainstate_matches_marker: caller verified the

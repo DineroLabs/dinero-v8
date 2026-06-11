@@ -86,6 +86,35 @@ constexpr const char* kStartupCatchupSource = "startup-catchup";
 constexpr uint32_t kInvMsgBlock = 2u;
 constexpr uint32_t kInvMsgUtreexoBlock = 0x50000002u;
 
+// Startup undo audit window: the number of active-chain blocks (tail) that
+// VerifyActiveChainUndoCoverage checks at startup. PromoteValidatedHistory uses
+// the same constant to gate promotion: the engine's undo tail must cover
+// [max(1, base-1023)..base] before the tip is committed, so the first
+// post-promotion restart passes the audit without a recovery marker.
+constexpr uint32_t kStartupUndoAuditWindow = 1024;
+
+// Convert a consensus::UTXOEntry to the storage Coin format used by ChainDB.
+// MUST stay byte-identical to PersistentUTXOAdapter::ToDbCoin
+// (include/storage/persistent_utxo_adapter.h, private static) —
+// drift breaks promotion/adapter equivalence (coins promoted here are later
+// read back via LoadInitialState which calls FromDbCoin on the same rows).
+// ToDbCoin cannot be called from here because it is private.
+Coin UtxoEntryToDbCoin(const consensus::UTXOEntry& entry) {
+    Coin coin;
+    coin.amount = entry.value.GetUna();
+    coin.script_pubkey.reserve(entry.scriptPubKey.size() * 2);
+    for (uint8_t byte : entry.scriptPubKey) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", byte);
+        coin.script_pubkey += buf;
+    }
+    coin.height = static_cast<int>(entry.height);
+    coin.coinbase = entry.isCoinbase;
+    coin.is_confidential = entry.is_confidential;
+    coin.commitment = entry.commitment;
+    return coin;
+}
+
 uint32_t BlockGetDataInventoryType() {
     return GetConfig().utreexo_stateless ? kInvMsgUtreexoBlock : kInvMsgBlock;
 }
@@ -2444,7 +2473,6 @@ bool ChainstateService::Start() {
     // covers any plausible reorg horizon, and matches Bitcoin Core's
     // assumption that a deeper reorg requires a full reindex anyway.
     // Uses height 0 + 1 lower bound check internally.
-    constexpr uint32_t kStartupUndoAuditWindow = 1024;
     if (!VerifyActiveChainUndoCoverage(height, kStartupUndoAuditWindow)) {
         logger_->error("[ChainstateService] Startup undo audit detected an unreadable "
                        "undo entry on the active chain — chainstate_recovery.marker has "
@@ -2962,6 +2990,15 @@ bool ChainstateService::Start() {
             }
             assumeutxo_lifecycle_->RestoreFromPersistence(chainstate_matches);
         }
+        // Re-arm the never-cleared below-base fork guard: a FullyValidated
+        // record means history was promoted (or its promotion is about to be
+        // re-attempted) at the persisted lc base height (kLcBaseHeightKey,
+        // ParseU32'd by RestoreFromPersistence into the lifecycle's base).
+        if (assumeutxo_lifecycle_->GetState() ==
+            assumeutxo::AssumeUtxoLifecycle::State::FullyValidated) {
+            promoted_base_height_ = assumeutxo_lifecycle_->GetStatus(
+                std::chrono::steady_clock::now()).snapshot_base_height;
+        }
         if (assumeutxo_lifecycle_->GetState() ==
             assumeutxo::AssumeUtxoLifecycle::State::Disabled) {
             // Legacy upgrade: assumed state persisted by a pre-lifecycle binary
@@ -3122,6 +3159,15 @@ bool ChainstateService::Start() {
             }
         }
         assumeutxo_lifecycle_->RestoreFromPersistence(chainstate_matches);
+        // Re-arm the never-cleared below-base fork guard on a PROMOTED node:
+        // assumeutxo mode already exited (no assumed-state markers), but a
+        // below-base fork is still spec-fatal — restore the boundary from the
+        // FullyValidated lifecycle record's persisted base height.
+        if (assumeutxo_lifecycle_->GetState() ==
+            assumeutxo::AssumeUtxoLifecycle::State::FullyValidated) {
+            promoted_base_height_ = assumeutxo_lifecycle_->GetStatus(
+                std::chrono::steady_clock::now()).snapshot_base_height;
+        }
         if (assumeutxo_lifecycle_->GetState() ==
             assumeutxo::AssumeUtxoLifecycle::State::FatalMismatch) {
             logger_->error("[AssumeUTXO restore] Persisted lifecycle state is FATAL_MISMATCH — "
@@ -6786,6 +6832,57 @@ void ChainstateService::ActivateBestChain() {
         logger_->error("INVARIANT D2 VIOLATION: Fork point height is negative (" +
                       std::to_string(fork_point->height) + ")");
         return;
+    }
+
+    // ── Fork-below-base fatal guard ────────────────────────────────────────
+    // Spec (assumeutxo-fatal-state-machine.md, Fatal Mismatch Semantics): a
+    // higher-work chain diverging BELOW the snapshot base must go fatal — not
+    // a silent reorg. Mechanically: undo below the base may not exist
+    // (promotion persists only the audited tail), so a disconnect below base
+    // would fail anyway; classify it as the proof failure it is.
+    //
+    // CONDITION: the spec's rule is NOT mode-scoped — after promotion the
+    // exit gate clears assumeutxo_active_/assumeutxo_base_height_
+    // (ClearAssumeUTXOState nulls them), but a below-base fork is STILL
+    // fatal, so the guard keys off max(live base, promoted_base_height_)
+    // where promoted_base_height_ is never cleared (set on promotion success
+    // and restored at startup from the FullyValidated lifecycle record).
+    //
+    // fork_point != active_tip_: divergence means a non-empty disconnect path
+    // (the disconnect walk below stops at fork_point). A pure extension from
+    // a tip that happens to sit below base (fork_point == active_tip_, e.g. a
+    // transient genesis-tip window during bootstrap) disconnects nothing and
+    // is NOT a reorg below base — going fatal there would brick honest nodes.
+    //
+    // LOCKS: activation_mutex_ is held (function entry). ForceFatal takes
+    // only the lifecycle's leaf mu_; EnsureAssumeUtxoLifecycle takes only
+    // assumeutxo_lifecycle_init_mutex_ (leaf). EnterSafeMode under
+    // activation_mutex_ has in-function precedent: the misalignment branch
+    // and the deep-reorg branch of this same function already call it while
+    // holding the lock.
+    {
+        const uint32_t effective_base = std::max(
+            assumeutxo_active_ ? assumeutxo_base_height_ : 0u,
+            promoted_base_height_);
+        if (fork_point && fork_point != active_tip_ && effective_base > 0 &&
+            fork_point->height < static_cast<int>(effective_base)) {
+            const std::string reason =
+                "reorg below assumeutxo base: fork height " +
+                std::to_string(fork_point->height) + " < base " +
+                std::to_string(effective_base) +
+                " — higher-work divergence below the snapshot base "
+                "(spec: fatal, not reorg)";
+            if (logger_) logger_->error("[ActivateBestChain] FATAL: " + reason);
+            EnsureAssumeUtxoLifecycle();
+            // ForceFatal, not OnReplayComplete: the mismatch path of
+            // OnReplayComplete is refused from FullyValidated (state guard
+            // requires Validating/Stalled), and a post-promotion below-base
+            // fork must STILL persist fatal — ForceFatal is the direct entry
+            // usable from any non-fatal state.
+            assumeutxo_lifecycle_->ForceFatal(reason);
+            EnterSafeMode("assumeutxo fatal: " + reason);
+            return;
+        }
     }
 
     // Build disconnect path (from active_tip down to fork)
@@ -11922,6 +12019,12 @@ void ChainstateService::BackgroundValidationWorker() {
         // Spec: missing bodies are NEVER skippable success. Re-scan until all
         // bodies are present (bodies backfill as IBD proceeds) or we are told
         // to stop; Tick() drives the loud-stall transition while we wait.
+        //
+        // canonical_hashes_fallback is declared OUTSIDE the rescan loop
+        // (rebuilt fresh each pass) so the COMPLETING pass's hash-anchored
+        // table survives to the promotion call after the loop —
+        // PromoteValidatedHistory requires it as the height-index source.
+        std::vector<uint256> canonical_hashes_fallback;
         uint32_t blocks_skipped = 0;
         while (true) {
             blocks_skipped = 0;
@@ -11932,6 +12035,12 @@ void ChainstateService::BackgroundValidationWorker() {
             // and the final (complete) pass is the one whose digest counts.
             try {
                 replay.emplace();
+                // Capture exactly the undo tail the startup audit
+                // (VerifyActiveChainUndoCoverage, window=1024) will check
+                // after promotion. Must follow EVERY emplace(): the window
+                // is per-engine state and the engine is re-created per pass.
+                replay->SetUndoTailWindow(
+                    std::min<uint32_t>(kStartupUndoAuditWindow, target_height));
             } catch (const std::exception& e) {
                 // Engine construction failure (e.g. the :memory: nullifier
                 // sqlite open under fd exhaustion) is a transient LOCAL
@@ -11982,7 +12091,7 @@ void ChainstateService::BackgroundValidationWorker() {
             // lookup is then O(1) from the vector. The table is rebuilt once
             // per rescan pass (the while(true) loop only retries when bodies
             // are missing, so passes beyond the first are rare and bounded).
-            std::vector<uint256> canonical_hashes_fallback;
+            canonical_hashes_fallback.clear();
             if (header_chain_selector_ && !assumeutxo_base_block_.IsNull()) {
                 // Resolve + walk + copy under the header chain's OWN mutex
                 // (CollectAncestorsByHash): the snapshot base may be a
@@ -12214,17 +12323,72 @@ void ChainstateService::BackgroundValidationWorker() {
             root_match = (replay->UtreexoRootHex() == expected_root.value());
         }
 
-        assumeutxo_lifecycle_->OnReplayComplete(
-            /*replay_performed=*/true,
-            commitment_match && root_match,
-            expected_commitment.value(),
-            recomputed + (root_match ? "" : " (utreexo root mismatch)"),
-            /*missing_body_count=*/0, std::chrono::steady_clock::now());
+        const bool lifecycle_promoted_to_fully_validated =
+            assumeutxo_lifecycle_->OnReplayComplete(
+                /*replay_performed=*/true,
+                commitment_match && root_match,
+                expected_commitment.value(),
+                recomputed + (root_match ? "" : " (utreexo root mismatch)"),
+                /*missing_body_count=*/0, std::chrono::steady_clock::now());
 
         if (!(commitment_match && root_match)) {
             OnBackgroundValidationComplete(false,
                 "replay commitment mismatch at base height " + std::to_string(target_height));
             return;
+        }
+
+        // ── Promotion (assumeutxo mode exit) ────────────────────────────────
+        // History is now replay-proven; promote it into ChainDB so the exit
+        // gate in OnBackgroundValidationComplete (chaindb tip >= base AND
+        // lifecycle FullyValidated) can fire and clear the assumeutxo mode.
+        //
+        // Eligibility: the lifecycle promoted to FullyValidated just now, OR
+        // it was ALREADY FullyValidated from a prior run (crash window: the
+        // FullyValidated record persisted but the promotion writes did not
+        // land — OnReplayComplete refuses re-entry from FullyValidated, so
+        // gating on the return alone would strand such a node in assumeutxo
+        // mode forever). Either way the commitment matched THIS pass.
+        //
+        // LOCKS HELD HERE: none. The worker's bg_validation_mutex_ uses are
+        // all scoped guards released above; lifecycle mu_ is internal to each
+        // lifecycle call. PromoteValidatedHistory takes activation_mutex_ for
+        // its whole body — see its lock-ordering proof.
+        const bool lifecycle_fully_validated_now =
+            lifecycle_promoted_to_fully_validated ||
+            assumeutxo_lifecycle_->GetState() ==
+                assumeutxo::AssumeUtxoLifecycle::State::FullyValidated;
+        if (lifecycle_fully_validated_now) {
+            // Cheap idempotence guard: if the ChainDB tip is already at/above
+            // the base (previous promotion landed, or the canonical chain
+            // advanced past base), promotion is done — and on such a re-run
+            // canonical_hashes_fallback may legitimately be empty (the height
+            // index served every lookup), so don't even call.
+            bool tip_below_base = true;
+            {
+                auto tip_result = chain_db_->getTip();
+                if (tip_result.status() == Status::Ok &&
+                    static_cast<uint32_t>(tip_result.value().height) >= target_height) {
+                    tip_below_base = false;
+                }
+            }
+            if (tip_below_base) {
+                std::string promote_err;
+                if (!PromoteValidatedHistory(*replay, canonical_hashes_fallback,
+                                             promote_err)) {
+                    // OPERATIONAL failure (disk, db): retry next pass — never
+                    // fatal. History remains proven; only the writes failed.
+                    logger_->warning("[BackgroundValidation] promotion failed (" +
+                                     promote_err +
+                                     ") — will retry; assumeutxo mode remains active");
+                    OnBackgroundValidationComplete(true, "");  // gate simply won't fire yet
+                    return;
+                }
+                logger_->info("[Promotion] complete — ChainDB tip at base; "
+                              "exit gate eligible");
+            }
+            // Arm the never-cleared below-base fork guard (survives
+            // ClearAssumeUTXOState, which nulls assumeutxo_base_height_).
+            promoted_base_height_ = target_height;
         }
         OnBackgroundValidationComplete(true, "");
 
@@ -12233,6 +12397,638 @@ void ChainstateService::BackgroundValidationWorker() {
         logger_->error("[BackgroundValidation] " + error);
         OnBackgroundValidationComplete(false, error);
     }
+}
+
+bool ChainstateService::PromoteValidatedHistory(
+        const assumeutxo::AssumeUtxoReplayEngine& engine,
+        const std::vector<uint256>& canonical_hashes,
+        std::string& error) {
+    // ═══════════════════════════════════════════════════════════════════════
+    // AssumeUTXO mode exit (promotion): replay-proven history 1..base becomes
+    // canonical ChainDB state so the existing exit gate
+    // (OnBackgroundValidationComplete: chaindb tip >= base + FullyValidated)
+    // can fire.
+    //
+    // THE NON-NEGOTIABLE ORDERING INVARIANT: setTip(base) is the LAST write
+    // and the ONLY one that makes the rest observable to the startup audits
+    // (VerifyActiveChainUndoCoverage / IsCanonicalStateAligned /
+    // VerifyConsensusJournalAtActiveTip all key off the persisted tip).
+    // Every write before it is invisible-until-tip and idempotently
+    // re-runnable: a crash mid-promotion leaves the tip below base, the
+    // worker re-runs replay+promotion on restart, and each put overwrites
+    // its previous value with identical bytes (the proven history is
+    // deterministic). Failure anywhere returns error+false — the caller
+    // treats that as OPERATIONAL (retry next pass), never snapshot-fatal.
+    //
+    // LOCKING: activation_mutex_ is held for the entire method so the tip
+    // check and all subsequent writes are atomic w.r.t. ConnectTip. Without
+    // it, ConnectTip could advance the canonical tip between our tip read and
+    // the coin reconcile, causing promotion to delete post-base coin deltas
+    // and regress the persisted tip.
+    //
+    // Lock-ordering proof (no cycle):
+    //   acquisition order is activation_mutex_ only; the worker holds nothing
+    //   at the BackgroundValidationWorker call site (the promotion block
+    //   between OnReplayComplete and OnBackgroundValidationComplete — its
+    //   bg_validation_mutex_ uses are all scoped guards released earlier, and
+    //   no assumeutxo_lifecycle_init_mutex_ or lifecycle mu_ is held).
+    //   ActivateBestChain/ConnectTip (under activation_mutex_) never take
+    //   bg_validation_mutex_ or assumeutxo_lifecycle_init_mutex_, so the
+    //   hierarchy is bg_validation (if any) -> activation, with no reverse
+    //   edge; deadlock is structurally impossible.
+    // ═══════════════════════════════════════════════════════════════════════
+    if (!chain_db_) { error = "chaindb unavailable"; return false; }
+    if (!block_storage_) { error = "block storage unavailable"; return false; }
+
+    const uint32_t base = assumeutxo_base_height_;
+    const uint256 base_hash = assumeutxo_base_block_;
+    if (base == 0 || base_hash.IsNull()) {
+        error = "no assumeutxo base recorded";
+        return false;
+    }
+
+    // Serialise all writes against ConnectTip (see locking comment above).
+    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
+
+    // Defensive ordering guard (the caller also gates on this): once the
+    // ChainDB tip is at/above the base — either a previous promotion landed
+    // or post-base ConnectTip batches already advanced the canonical tip —
+    // the bulk coin reconcile below would clobber post-base coin deltas with
+    // base-state coins. Refuse to write; the exit gate's tip condition is
+    // already satisfied.
+    {
+        auto tip_result = chain_db_->getTip();
+        if (tip_result.status() == Status::Ok &&
+            static_cast<uint32_t>(tip_result.value().height) >= base) {
+            if (logger_) {
+                logger_->warning("[Promotion] ChainDB tip already at height " +
+                                 std::to_string(tip_result.value().height) +
+                                 " >= base " + std::to_string(base) +
+                                 " — skipping promotion writes (exit gate already eligible)");
+            }
+            return true;
+        }
+    }
+
+    // The hash-anchored canonical table is the promotion's source of truth
+    // for the height index — it MUST cover 0..base and agree with the base.
+    if (canonical_hashes.size() < static_cast<size_t>(base) + 1) {
+        error = "canonical hash table incomplete (" +
+                std::to_string(canonical_hashes.size()) + " entries for base " +
+                std::to_string(base) + ")";
+        return false;
+    }
+    if (canonical_hashes[base] != base_hash) {
+        error = "canonical hash table not anchored on the snapshot base";
+        return false;
+    }
+    for (uint32_t h = 1; h <= base; ++h) {
+        if (canonical_hashes[h].IsNull()) {
+            error = "canonical hash table has a null entry at height " + std::to_string(h);
+            return false;
+        }
+    }
+
+    // ── Pre-write undo-tail coverage gate ─────────────────────────────────────
+    // Require the engine's undo tail to cover [max(1, base-1023)..base]
+    // contiguously (ascending, no gaps, last == base).
+    //
+    // Rationale: VerifyActiveChainUndoCoverage (called by Start() with
+    // kStartupUndoAuditWindow=1024) checks exactly this window at the next
+    // restart. If the tail is under-provisioned, the audit fires immediately
+    // after promotion and writes a recovery marker that blocks chain advance.
+    // Refusing promotion here surfaces the gap before it hits disk.
+    {
+        const uint32_t window_start = (base >= kStartupUndoAuditWindow)
+            ? (base - kStartupUndoAuditWindow + 1u)
+            : 1u;
+        const auto& undo_tail = engine.UndoTail();
+        if (undo_tail.empty() || undo_tail.back().height != base) {
+            error = "undo tail does not cover the startup audit window — promotion refused";
+            return false;
+        }
+        // Verify contiguous descending coverage from base back to window_start.
+        bool coverage_ok = false;
+        uint32_t expect = base;
+        for (auto it = undo_tail.rbegin(); it != undo_tail.rend(); ++it) {
+            if (it->height != expect) break;
+            if (expect == window_start) { coverage_ok = true; break; }
+            --expect;
+        }
+        if (!coverage_ok) {
+            error = "undo tail does not cover the startup audit window — promotion refused";
+            return false;
+        }
+    }
+
+    if (logger_) {
+        logger_->info("[Promotion] promoting replay-proven history 1.." + std::to_string(base) +
+                      " into ChainDB (height index, undo tail, coin reconcile, tip)");
+    }
+
+    ChainWriteToken token;
+    constexpr size_t kPromotionBatchOps = 4096;  // chunked batches (reindexer idiom)
+
+    // Chunk-commit helper: commit the staged batch (sync=false — durability
+    // is anchored by the final sync'd setTip; pre-tip writes are
+    // invisible-until-tip and re-runnable).
+    auto commit_chunk = [&](rocksdb::WriteBatch& batch, size_t& ops,
+                            const char* what) -> bool {
+        // Pre-tip writes are invisible-until-tip and idempotently re-runnable
+        // (see ordering invariant, method header). Aborting here is safe.
+        if (bg_validation_should_stop_.load()) {
+            error = "shutdown requested during promotion";
+            return false;
+        }
+        if (ops == 0) return true;
+        const auto st = chain_db_->writeBatch(token, std::move(batch), /*sync=*/false);
+        batch = rocksdb::WriteBatch();
+        ops = 0;
+        if (st != Status::Ok) {
+            error = std::string("writeBatch failed during ") + what + " (status=" +
+                    std::to_string(static_cast<int>(st)) + ")";
+            return false;
+        }
+        return true;
+    };
+
+    // ── 1) Height index 1..base (idempotent puts, chunked) ─────────────────
+    // canonical_hashes[h] is the worker's hash-anchored table (anchored on
+    // the snapshot base hash, never the best header chain by height).
+    {
+        rocksdb::WriteBatch batch;
+        size_t ops = 0;
+        for (uint32_t h = 1; h <= base; ++h) {
+            const auto st = chain_db_->putHeightIndex(
+                token, static_cast<int>(h), canonical_hashes[h], &batch);
+            if (st != Status::Ok) {
+                error = "putHeightIndex failed at height " + std::to_string(h);
+                return false;
+            }
+            if (++ops >= kPromotionBatchOps && !commit_chunk(batch, ops, "height-index")) {
+                return false;
+            }
+        }
+        if (!commit_chunk(batch, ops, "height-index")) return false;
+    }
+    if (logger_) {
+        logger_->info("[Promotion] stage 1 complete: height index 1.." + std::to_string(base) + " written");
+    }
+
+    // ── 2) Undo tail: flatfile + locator + UD sidecar for the audited window ──
+    // Mirrors ConnectTip's hoisted undo persistence (slice 3): the flatfile
+    // write hits disk BEFORE the ChainDB metadata that points at it commits
+    // (per chunk), so committed undo_file/pos/size always reference durable
+    // bytes. The flatfile is the source of truth — reuse a readable existing
+    // entry, write a fresh one otherwise (orphaned entries from a crashed
+    // earlier attempt are harmless waste; no committed metadata references
+    // them).
+    {
+        const bool stateless = GetConfig().utreexo_stateless;
+        rocksdb::WriteBatch batch;
+        size_t ops = 0;
+        for (const auto& captured : engine.UndoTail()) {
+            if (captured.height == 0 || captured.height > base) {
+                error = "undo tail entry out of range at height " +
+                        std::to_string(captured.height);
+                return false;
+            }
+            const uint256& bh = captured.block_hash;
+            if (canonical_hashes[captured.height] != bh) {
+                error = "undo tail hash disagrees with canonical table at height " +
+                        std::to_string(captured.height);
+                return false;
+            }
+
+            // Existing-undo check (ConnectTip idiom: trust the flatfile, not
+            // in-memory metadata alone).
+            uint32_t undo_file = 0;
+            uint32_t undo_pos = 0;
+            uint32_t undo_size = 0;
+            const auto existing_undo = ReadStoredUndo(bh);
+            const auto meta_result = chain_db_->getHeaderMetadata(bh);
+            const bool locator_present =
+                meta_result.status() == Status::Ok && meta_result.value().undo_size > 0;
+            const bool need_flatfile_undo =
+                !(existing_undo.status() == Status::Ok && locator_present);
+            if (need_flatfile_undo) {
+                // BlockUndoToUndoRecord needs the block body to derive the
+                // created-outpoint list (disconnect symmetry) — read the
+                // stored canonical body the replay already validated.
+                auto block_result = ReadStoredBlock(bh);
+                if (block_result.status() != Status::Ok) {
+                    error = "undo tail: stored body unavailable at height " +
+                            std::to_string(captured.height);
+                    return false;
+                }
+                const dinero::UndoRecord undo_record =
+                    BlockUndoToUndoRecord(captured.undo, block_result.value());
+                const std::vector<uint8_t> undo_bytes = undo_record.Serialize();
+                auto undo_pos_result = block_storage_->writeUndo(bh, undo_bytes);
+                if (undo_pos_result.status() != Status::Ok) {
+                    error = "undo tail: writeUndo failed at height " +
+                            std::to_string(captured.height) + " (status=" +
+                            std::to_string(static_cast<int>(undo_pos_result.status())) + ")";
+                    return false;
+                }
+                const auto& pos = undo_pos_result.value();
+                if (pos.offset > std::numeric_limits<uint32_t>::max()) {
+                    error = "undo tail: flatfile offset overflow at height " +
+                            std::to_string(captured.height);
+                    return false;
+                }
+                undo_file = pos.file_number;
+                undo_pos = static_cast<uint32_t>(pos.offset);
+                undo_size = pos.size;
+            } else {
+                undo_file = meta_result.value().undo_file;
+                undo_pos = meta_result.value().undo_pos;
+                undo_size = meta_result.value().undo_size;
+            }
+
+            // Surgical locator update (sets BLOCK_HAVE_UNDO, preserves
+            // topology/chainwork/body positions — ConnectTip D.2 idiom),
+            // with the same NotFound fallback to a full block-index stamp.
+            CBlockIndex* idx = FindBlockIndex(bh);
+            if (idx) {
+                idx->undo_file = undo_file;
+                idx->undo_pos = undo_pos;
+                idx->undo_size = undo_size;
+                idx->status |= BLOCK_HAVE_UNDO;
+            }
+            auto bi_status = chain_db_->updateUndoLocator(
+                token, bh, undo_file, undo_pos, undo_size, &batch);
+            if (bi_status == Status::NotFound && idx) {
+                bi_status = chain_db_->updateBlockIndex(token, idx, &batch);
+            }
+            if (bi_status != Status::Ok) {
+                error = "undo tail: undo locator stamp failed at height " +
+                        std::to_string(captured.height) + " (status=" +
+                        std::to_string(static_cast<int>(bi_status)) + ")";
+                return false;
+            }
+            ++ops;
+
+            // UD:<hash> utreexo delta sidecar — mandatory disconnect material
+            // for every utreexo-active block in stateful mode (the startup
+            // audit CheckBlockDisconnectMaterialDurable demands it). Same
+            // serialization + key as ConnectTip's fold-in.
+            if (consensus::IsUtreexoActive(captured.height) && !stateless) {
+                if (!captured.undo.utreexo_delta.has_value()) {
+                    error = "undo tail: missing utreexo delta at height " +
+                            std::to_string(captured.height);
+                    return false;
+                }
+                std::string delta_blob;
+                std::string delta_error;
+                if (!SerializeUtreexoDelta(*captured.undo.utreexo_delta, delta_blob,
+                                           delta_error)) {
+                    error = "undo tail: serialize utreexo delta failed at height " +
+                            std::to_string(captured.height) + ": " + delta_error;
+                    return false;
+                }
+                batch.Put(MakeUtreexoDeltaUndoKey(bh), delta_blob);
+                ++ops;
+            }
+
+            if (ops >= kPromotionBatchOps && !commit_chunk(batch, ops, "undo-tail")) {
+                return false;
+            }
+        }
+        if (!commit_chunk(batch, ops, "undo-tail")) return false;
+    }
+    if (logger_) {
+        logger_->info("[Promotion] stage 2 complete: undo tail written");
+    }
+
+    // ── 3) Bulk coin reconcile: coin CF must END equal to the proven set ───
+    // Pre-promotion the coin CF holds only the genesis seed (genesis_init)
+    // — LoadSnapshot populates the consensus set, never ChainDB. Delete
+    // every row absent from the proven set (genesis coins the pre-base
+    // history spent), then put every proven entry. Same end-state as the
+    // reindexer's per-block delete/put rebuild, computed in one pass.
+    {
+        const auto& proven = engine.ProvenUtxos();
+
+        std::vector<std::pair<uint256, uint32_t>> stale;
+        const auto fe_status = chain_db_->forEachUTXO(
+            [&](const uint256& txid, uint32_t vout, const Coin& /*coin*/) -> bool {
+                if (proven.find(OutPoint(TxId(txid), vout)) == proven.end()) {
+                    stale.emplace_back(txid, vout);
+                }
+                return true;
+            });
+        if (fe_status != Status::Ok) {
+            error = "coin reconcile: forEachUTXO failed (status=" +
+                    std::to_string(static_cast<int>(fe_status)) + ")";
+            return false;
+        }
+
+        rocksdb::WriteBatch batch;
+        size_t ops = 0;
+        for (const auto& [txid, vout] : stale) {
+            const auto st = chain_db_->deleteCoin(token, txid, vout, &batch);
+            if (st != Status::Ok) {
+                error = "coin reconcile: deleteCoin failed";
+                return false;
+            }
+            if (++ops >= kPromotionBatchOps && !commit_chunk(batch, ops, "coin-delete")) {
+                return false;
+            }
+        }
+
+        for (const auto& [outpoint, entry] : proven) {
+            // Conversion via file-local helper (byte-identical to
+            // PersistentUTXOAdapter::ToDbCoin — see UtxoEntryToDbCoin above).
+            const Coin coin = UtxoEntryToDbCoin(entry);
+            const auto st = chain_db_->putCoin(
+                token, outpoint.txid.AsUint256(), outpoint.vout, coin, &batch);
+            if (st != Status::Ok) {
+                error = "coin reconcile: putCoin failed";
+                return false;
+            }
+            if (++ops >= kPromotionBatchOps && !commit_chunk(batch, ops, "coin-put")) {
+                return false;
+            }
+        }
+        if (!commit_chunk(batch, ops, "coin-reconcile")) return false;
+    }
+    if (logger_) {
+        logger_->info("[Promotion] stage 3 complete: coin CF reconciled");
+    }
+
+    // ── Nullifier content — serialized ONCE; reused by stage 4a (row writes)
+    // and the journal preimage (section 5).  Rows written ≡ hash input by
+    // construction, eliminating any risk of a malformed-row error on the
+    // second call silently hashing an empty preimage → journal mismatch.
+    //
+    // engine.ShieldedNullifiers() is guaranteed non-null: the engine ctor
+    // constructs the trio unconditionally (make_unique) and throws
+    // std::runtime_error if Open(":memory:") fails — the unique_ptr is never
+    // empty at this call site.
+    const auto nullifier_content = engine.ShieldedNullifiers()->SerializeContent();
+    // Stream-error guard: SerializeContent returns empty on sqlite error
+    // (e.g. malformed row — see nullifier_set.cpp). If the set is non-empty
+    // but serialization produced nothing, we would silently drop all
+    // nullifiers and promote a corrupted state.
+    if (nullifier_content.empty() && engine.ShieldedNullifiers()->Size() > 0) {
+        error = "shielded promotion: nullifier serialization returned empty for non-empty set";
+        return false;
+    }
+    constexpr size_t kHeaderBytes = 4 + 2 + 8;
+    constexpr size_t kRowBytes = 4 + 32;
+    constexpr uint32_t kSerializeContentTag = 0x4653434E;  // 'NSCF' LE-reconstructed
+    uint32_t tag_read = 0;
+    if (nullifier_content.size() >= 4) {
+        for (int i = 0; i < 4; ++i) {
+            tag_read |= static_cast<uint32_t>(nullifier_content[i]) << (i * 8);
+        }
+    }
+    uint64_t row_count = 0;
+    if (!nullifier_content.empty()) {
+        if (nullifier_content.size() < kHeaderBytes || tag_read != kSerializeContentTag) {
+            error = "shielded promotion: nullifier SerializeContent header malformed";
+            return false;
+        }
+        for (int i = 0; i < 8; ++i) {
+            row_count |= static_cast<uint64_t>(nullifier_content[6 + i]) << (i * 8);
+        }
+        if (nullifier_content.size() - kHeaderBytes != row_count * kRowBytes) {
+            error = "shielded promotion: nullifier SerializeContent size mismatch";
+            return false;
+        }
+    }
+
+    // ── 4a) Shielded nullifier rows from the engine's proven set (chunked) ──
+    // ChainDB is the authoritative on-disk nullifier store (startup rebuilds
+    // the sqlite cache from these rows). Parsed from nullifier_content above —
+    // same byte format LoadShieldedState's mode-C migration parses:
+    //   tag 'NSCF' (4) || version (2) || count_LE_u64 (8) ||
+    //     per row: height_LE_u32 (4) || nullifier_bytes (32)
+    {
+        rocksdb::WriteBatch batch;
+        size_t ops = 0;
+        for (uint64_t i = 0; i < row_count; ++i) {
+            const size_t off = kHeaderBytes + i * kRowBytes;
+            uint32_t height = 0;
+            for (int j = 0; j < 4; ++j) {
+                height |= static_cast<uint32_t>(nullifier_content[off + j]) << (j * 8);
+            }
+            const uint8_t* nf = &nullifier_content[off + 4];
+            const auto st = chain_db_->putShieldedNullifier(token, height, nf, &batch);
+            if (st != Status::Ok) {
+                error = "shielded promotion: putShieldedNullifier failed";
+                return false;
+            }
+            if (++ops >= kPromotionBatchOps && !commit_chunk(batch, ops, "nullifiers")) {
+                return false;
+            }
+        }
+        if (!commit_chunk(batch, ops, "nullifiers")) return false;
+    }
+    if (logger_) {
+        logger_->info("[Promotion] stage 4a complete: " + std::to_string(row_count) +
+                      " nullifier rows written");
+    }
+
+    // ── 4b) Tip-anchored singles at base (one batch) + 5) journal row ──────
+    // All from the ENGINE's proven state at the base — the same containers a
+    // post-promotion restart loads back (frontier blob, anchor history blob,
+    // nullifier rows above) and verifies against the markers
+    // (VerifyOrBootstrapShieldedTipMarker / IsCanonicalStateAligned at
+    // tip=base). The forest fields come from the LIVE consensus set: under
+    // the tip<base gate the live tip IS the snapshot base, and startup
+    // restores the forest from the checkpoint LoadSnapshot persisted at the
+    // base — the same serialized forest object the live set holds now (the
+    // replay verified the engine's root equals it).
+    {
+        rocksdb::WriteBatch batch;
+
+        // ForestTipMarker — height + block hash + forest root (mirror
+        // ConnectTip slice 2; the base checkpoint itself was persisted by
+        // LoadSnapshot).
+        {
+            ChainDB::ForestTipMarker forest_marker;
+            forest_marker.height = static_cast<int32_t>(base);
+            forest_marker.block_hash = base_hash;
+            const consensus::UtreexoHash commitment = engine.Forest()->getCommitment();
+            if (commitment.size() == 32) {
+                std::memcpy(forest_marker.forest_root.data, commitment.data(), 32);
+            } else {
+                forest_marker.forest_root.SetNull();
+            }
+            const auto st = chain_db_->putForestTipMarker(token, forest_marker, &batch);
+            if (st != Status::Ok) {
+                error = "promotion: putForestTipMarker failed";
+                return false;
+            }
+        }
+
+        // Shielded frontier + anchor history blobs (DSRH inputs; mirror
+        // ConnectTip's option-1 fold-in keys).
+        {
+            const auto frontier_bytes = engine.ShieldedTree()->SerializeFrontier();
+            const std::string frontier_blob(frontier_bytes.begin(), frontier_bytes.end());
+            auto st = chain_db_->putUtreexoMeta(token, "shielded_frontier",
+                                                frontier_blob, &batch);
+            if (st != Status::Ok) {
+                error = "promotion: shielded frontier blob stage failed";
+                return false;
+            }
+            const auto anchor_bytes = engine.ShieldedAnchors()->SerializeBytes();
+            const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
+            st = chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
+                                           anchor_blob, &batch);
+            if (st != Status::Ok) {
+                error = "promotion: anchor history blob stage failed";
+                return false;
+            }
+        }
+
+        // ShieldedTipMarker at base from the engine's state.
+        {
+            ChainDB::ShieldedTipMarker marker;
+            marker.height = static_cast<int32_t>(base);
+            marker.block_hash = base_hash;
+            const auto root = engine.ShieldedTree()->Root();
+            if (root.size() == 32) {
+                std::memcpy(marker.shielded_root.data, root.data(), 32);
+            } else {
+                marker.shielded_root.SetNull();
+            }
+            marker.tree_size = engine.ShieldedTree()->Size();
+            marker.nullifier_count = engine.ShieldedNullifiers()->Size();
+            const auto st = chain_db_->putShieldedTipMarker(token, marker, &batch);
+            if (st != Status::Ok) {
+                error = "promotion: putShieldedTipMarker failed";
+                return false;
+            }
+        }
+
+        // 5) Consensus journal row at base (same key/value shape as
+        // ConsensusWriteBatch::AttachJournalRowToBatch, same flag gate as
+        // VerifyConsensusJournalAtActiveTip). The DSRH v2 preimage is
+        // composed from what a post-promotion restart at tip=base will hold
+        // live: the forest restored from the base checkpoint (== the live
+        // consensus set's forest under the tip<base gate) + the ENGINE's
+        // shielded containers (loaded back from the rows/blobs staged
+        // above). Layout mirrors ComputeShieldedReorgStateHash (DSR2).
+        if (consensus::ConsensusWriteBatch::IsEnabled(*this)) {
+            std::vector<uint8_t> preimage;
+            preimage.reserve(128);
+            preimage.push_back('D'); preimage.push_back('S');
+            preimage.push_back('R'); preimage.push_back('2');
+            preimage.push_back(2);
+            auto append_le64 = [&](uint64_t v) {
+                for (int i = 0; i < 8; ++i) {
+                    preimage.push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
+                }
+            };
+            if (consensus_utxo_set_) {
+                const auto& forest = consensus_utxo_set_->GetForest();
+                const auto commitment = forest.getCommitment();
+                if (commitment.size() == 32) {
+                    preimage.insert(preimage.end(), commitment.begin(), commitment.end());
+                } else {
+                    preimage.insert(preimage.end(), 32, 0);
+                }
+                append_le64(forest.getNumLeaves());
+                preimage.push_back(forest.isCanonicalEmptyRoots() ? 1 : 0);
+            } else {
+                preimage.insert(preimage.end(), 32 + 8 + 1, 0);
+            }
+            {
+                const auto root = engine.ShieldedTree()->Root();
+                if (root.size() == 32) {
+                    preimage.insert(preimage.end(), root.begin(), root.end());
+                } else {
+                    preimage.insert(preimage.end(), 32, 0);
+                }
+                append_le64(engine.ShieldedTree()->Size());
+            }
+            {
+                // Reuse the single serialization from above — rows written ≡ hash input by construction.
+                preimage.insert(preimage.end(), nullifier_content.begin(), nullifier_content.end());
+            }
+            {
+                const auto anchor_bytes = engine.ShieldedAnchors()->SerializeBytes();
+                preimage.insert(preimage.end(), anchor_bytes.begin(), anchor_bytes.end());
+            }
+            crypto::CSHA256 hasher;
+            hasher.Write(preimage.data(), preimage.size());
+            uint8_t digest[32];
+            hasher.Finalize(digest);
+            uint256 state_hash;
+            std::memcpy(state_hash.data, digest, 32);
+
+            char height_be_hex[9];
+            std::snprintf(height_be_hex, sizeof(height_be_hex), "%08x", base);
+            const std::string journal_key =
+                std::string("consensus_journal:") + height_be_hex + ":" +
+                base_hash.GetHex();
+            const auto st = chain_db_->putUtreexoMeta(token, journal_key,
+                                                      state_hash.GetHex(), &batch);
+            if (st != Status::Ok) {
+                error = "promotion: consensus journal row stage failed";
+                return false;
+            }
+        }
+
+        const auto st = chain_db_->writeBatch(token, std::move(batch), /*sync=*/true);
+        if (st != Status::Ok) {
+            error = "promotion: tip-anchored marker batch commit failed (status=" +
+                    std::to_string(static_cast<int>(st)) + ")";
+            return false;
+        }
+    }
+    if (logger_) {
+        logger_->info("[Promotion] stage 4b/5 complete: tip-anchored markers and journal row committed");
+    }
+
+    // ── 6) Durable setTip(base) — THE LAST WRITE (see ordering invariant) ──
+    // Work comes from the header-chain block index for the base (the same
+    // chainwork-hex source ConnectTip uses); fall back to the persisted
+    // header metadata when the in-memory entry is unavailable.
+    {
+        arith_uint256 base_work;
+        bool have_work = false;
+        if (CBlockIndex* base_index = FindBlockIndex(base_hash)) {
+            try {
+                base_work = ChainworkFromHex(base_index->chainwork);
+                have_work = true;
+            } catch (const std::exception& e) {
+                if (logger_) {
+                    logger_->warning(std::string("[Promotion] invalid chainwork hex on base "
+                                                 "block index: ") + e.what());
+                }
+            }
+        }
+        if (!have_work) {
+            auto work_result = chain_db_->getBlockWork(base_hash);
+            if (work_result.status() != Status::Ok) {
+                error = "promotion: cannot resolve chainwork for the base block";
+                return false;
+            }
+            base_work = work_result.value();
+        }
+        // Direct (non-batched) setTip writes with sync=true (chain_db.cpp
+        // Phase E.1.c) — the single fsync that makes the promotion visible.
+        const auto st = chain_db_->setTip(token, base_hash,
+                                          static_cast<int>(base), base_work);
+        if (st != Status::Ok) {
+            error = "promotion: setTip(base) failed (status=" +
+                    std::to_string(static_cast<int>(st)) + ")";
+            return false;
+        }
+    }
+
+    if (logger_) {
+        logger_->info("[Promotion] complete: ChainDB tip now at base height " +
+                      std::to_string(base) + " (" + base_hash.GetHex().substr(0, 16) +
+                      "...) — height index, undo tail, coin CF and tip-anchored "
+                      "markers promoted from the proven replay");
+    }
+    return true;
 }
 
 bool ChainstateService::VerifyUTXOSetMatch() {

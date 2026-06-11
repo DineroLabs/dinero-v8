@@ -234,6 +234,52 @@ TEST(AssumeUtxoReplay, SeedGenesisAddsRecordsNotLeaves) {
     EXPECT_EQ(a.UtreexoRootHex(), b.UtreexoRootHex());
 }
 
+// Promotion inputs: the engine captures undo for the requested tail window only.
+TEST(AssumeUtxoReplay, CapturesUndoTailWindow) {
+    const auto chain = BuildDeterministicChain(10);
+    ASSERT_EQ(chain.size(), 10u);
+    assumeutxo::AssumeUtxoReplayEngine engine;
+    engine.SetUndoTailWindow(3);   // capture undo for the last 3 connected heights
+    std::string err;
+    // genesis pre-applied per engine contract; replay 1..9
+    // chain[h-1] is the block built for height h (builder: chain[i] -> height i+1)
+    for (uint32_t h = 1; h < chain.size(); ++h) {
+        ASSERT_TRUE(engine.ConnectAndAdvance(chain[h-1], h, chain[h-1].GetHash(), err)) << err;
+    }
+    const auto& tail = engine.UndoTail();          // ordered ascending by height
+    ASSERT_EQ(tail.size(), 3u);
+    EXPECT_EQ(tail.front().height, 7u);
+    EXPECT_EQ(tail.back().height, 9u);
+    // CRITICAL memory guard: ConnectBlock attaches a full pre-block UTXO-set
+    // snapshot to undo when the backend supports snapshot/restore (~30MB at
+    // mainnet scale). The ring must strip it — 1024 retained snapshots would
+    // OOM the final pass (~30GB). The flatfile undo format never serializes
+    // it; disconnect durability relies on spent_coins + frontier + UD sidecar.
+    for (const auto& cu : tail) {
+        EXPECT_FALSE(cu.undo.pre_block_snapshot.has_value());
+    }
+    // Each captured undo must be non-trivial for blocks that spend (our builder's
+    // coinbase-only blocks have empty spent sets — assert the struct is present
+    // and heights are right; spend-bearing undo content is e2e territory).
+}
+
+// Promotion inputs: proven-set access for the bulk coin reconcile.
+TEST(AssumeUtxoReplay, ExposesProvenSetAndStateRefs) {
+    const auto chain = BuildDeterministicChain(5);
+    ASSERT_EQ(chain.size(), 5u);
+    assumeutxo::AssumeUtxoReplayEngine engine;
+    std::string err;
+    // chain[h-1] is the block built for height h
+    for (uint32_t h = 1; h < chain.size(); ++h) {
+        ASSERT_TRUE(engine.ConnectAndAdvance(chain[h-1], h, chain[h-1].GetHash(), err)) << err;
+    }
+    EXPECT_EQ(engine.ProvenUtxos().size(), engine.UtxoCount());
+    EXPECT_NE(engine.Forest(), nullptr);
+    EXPECT_NE(engine.ShieldedTree(), nullptr);
+    EXPECT_NE(engine.ShieldedNullifiers(), nullptr);
+    EXPECT_NE(engine.ShieldedAnchors(), nullptr);
+}
+
 }  // namespace dinero
 
 int main(int argc, char** argv) {

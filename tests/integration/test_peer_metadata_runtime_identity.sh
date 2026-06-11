@@ -31,8 +31,16 @@ cleanup() {
     [[ -n "${PID_B}" ]] && kill "${PID_B}" 2>/dev/null || true
     pkill -f "dinerod.*${DATA_A}" 2>/dev/null || true
     pkill -f "dinerod.*${DATA_B}" 2>/dev/null || true
+    # Wait for the daemons to actually exit before deleting their datadirs:
+    # rm -rf racing a still-writing daemon intermittently fails with
+    # "Directory not empty", turning an all-assertions-passed run into a
+    # ctest failure (the only failure mode this test has shown).
+    for _i in $(seq 1 20); do
+        pgrep -f "dinerod.*(${DATA_A}|${DATA_B})" >/dev/null 2>&1 || break
+        sleep 0.5
+    done
     if [[ "${KEEP_ON_FAIL}" != "1" ]]; then
-        rm -rf "${DATA_A}" "${DATA_B}" "${LOG_A}" "${LOG_B}"
+        rm -rf "${DATA_A}" "${DATA_B}" "${LOG_A}" "${LOG_B}" 2>/dev/null || true
     fi
 }
 trap cleanup EXIT
