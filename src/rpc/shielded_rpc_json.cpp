@@ -171,14 +171,26 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
     }
 
     // ── Parse params ──────────────────────────────────────────────────
-    double   amount_din = 0;
-    uint64_t fee_una    = 1000;  // conservative default; one P2TR input + change ≈ 154 vbytes
+    // Issue #273: when the caller does NOT pass a fee, the provisional
+    // default below is only a starting point — the handler measures the
+    // final tx (v6 bundle counts in BASE serialization, so vsize is
+    // kilobytes) and raises the fee to the mempool's size-based floor.
+    // An explicitly-passed fee is always respected verbatim.
+    double   amount_din   = 0;
+    uint64_t fee_una      = 1000;  // provisional default (auto-sized below)
+    bool     fee_explicit = false;
     if (params.isObject()) {
         if (params.isMember("amount"))  amount_din = params["amount"].asDouble();
-        if (params.isMember("fee_una")) fee_una    = static_cast<uint64_t>(params["fee_una"].asInt64());
+        if (params.isMember("fee_una")) {
+            fee_una      = static_cast<uint64_t>(params["fee_una"].asInt64());
+            fee_explicit = true;
+        }
     } else if (params.isArray()) {
         if (params.size() >= 1) amount_din = params[0].asDouble();
-        if (params.size() >= 2) fee_una    = static_cast<uint64_t>(params[1].asInt64());
+        if (params.size() >= 2) {
+            fee_una      = static_cast<uint64_t>(params[1].asInt64());
+            fee_explicit = true;
+        }
     }
     if (amount_din <= 0) {
         result["error"] = "invalid_params";
@@ -186,7 +198,6 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
         return result;
     }
     const uint64_t value_una = static_cast<uint64_t>(amount_din * 1e8);
-    const uint64_t needed    = value_una + fee_una;
 
     // ── Tip height for note metadata ──────────────────────────────────
     uint32_t tip_height = 0;
@@ -204,161 +215,204 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
     }
     const auto& mempool = mempool_service->mempool();
 
-    // ── Greedy UTXO selection ─────────────────────────────────────────
-    auto utxos = wm->listUnspentUTXOs(1, 9999999);
-    utxos.erase(std::remove_if(utxos.begin(), utxos.end(),
-        [&](const dinero::WalletManager::WalletUTXO& u) {
-            OutPoint op(dinero::TxId(uint256::FromHexUnsafe(u.txid)), u.vout);
-            return mempool.isOutputSpentInMempool(op) ||
-                   wm->isUTXOLocked(u.txid, u.vout);
-        }), utxos.end());
-    std::sort(utxos.begin(), utxos.end(),
-              [](const auto& a, const auto& b) { return a.amount_una > b.amount_una; });
+    // ── Build + sign as a function of the fee ─────────────────────────
+    // Issue #273 two-pass sizing: pass 1 (persist=false) builds and signs
+    // a throwaway tx with the provisional fee purely to measure the final
+    // vsize (the shielded bundle and the input witnesses both count).
+    // Pass 2 rebuilds with the size-adequate fee and persists the note.
+    // On failure, fills `result` and returns false.
+    struct BuiltShieldTx {
+        dinero::Transaction     signed_tx;
+        ops::AttachShieldResult attach;
+        uint64_t                change_una = 0;
+        size_t                  n_inputs = 0;
+    };
+    auto build_signed_shield_tx = [&](uint64_t fee, bool persist,
+                                      BuiltShieldTx& out) -> bool {
+        const uint64_t needed = value_una + fee;
 
-    std::vector<dinero::WalletManager::WalletUTXO> selected;
-    uint64_t total_in = 0;
-    for (const auto& u : utxos) {
-        selected.push_back(u);
-        total_in += u.amount_una;
-        if (total_in >= needed) break;
-    }
-    if (total_in < needed) {
-        result["error"] = "insufficient_funds";
-        result["error_message"] = "selected " + std::to_string(total_in) +
-            " una < needed " + std::to_string(needed);
-        return result;
-    }
-    const uint64_t change_una = total_in - needed;
+        // ── Greedy UTXO selection ─────────────────────────────────────
+        auto utxos = wm->listUnspentUTXOs(1, 9999999);
+        utxos.erase(std::remove_if(utxos.begin(), utxos.end(),
+            [&](const dinero::WalletManager::WalletUTXO& u) {
+                OutPoint op(dinero::TxId(uint256::FromHexUnsafe(u.txid)), u.vout);
+                return mempool.isOutputSpentInMempool(op) ||
+                       wm->isUTXOLocked(u.txid, u.vout);
+            }), utxos.end());
+        std::sort(utxos.begin(), utxos.end(),
+                  [](const auto& a, const auto& b) { return a.amount_una > b.amount_una; });
 
-    // ── Build canonical UTXO list + assemble unsigned transparent envelope ──
-    std::vector<dinero::CanonicalWalletUTXO> canon_utxos;
-    canon_utxos.reserve(selected.size());
-    for (const auto& u : selected) {
-        dinero::CanonicalWalletUTXO c;
-        c.txid        = dinero::uint256::FromHexUnsafe(u.txid);
-        c.vout        = u.vout;
-        c.value       = dinero::AmountUna::Una(u.amount_una);
-        c.path        = u.derivation_path;
-        c.height      = u.height;
-        c.is_coinbase = u.is_coinbase;
-        if (!u.script_pubkey.empty()) {
-            c.spk.reserve(u.script_pubkey.size() / 2);
-            for (size_t i = 0; i + 1 < u.script_pubkey.size(); i += 2) {
-                c.spk.push_back(static_cast<uint8_t>(
-                    std::stoi(u.script_pubkey.substr(i, 2), nullptr, 16)));
+        std::vector<dinero::WalletManager::WalletUTXO> selected;
+        uint64_t total_in = 0;
+        for (const auto& u : utxos) {
+            selected.push_back(u);
+            total_in += u.amount_una;
+            if (total_in >= needed) break;
+        }
+        if (total_in < needed) {
+            result["error"] = "insufficient_funds";
+            result["error_message"] = "selected " + std::to_string(total_in) +
+                " una < needed " + std::to_string(needed);
+            return false;
+        }
+        const uint64_t change_una = total_in - needed;
+
+        // ── Build canonical UTXO list + assemble unsigned transparent envelope ──
+        std::vector<dinero::CanonicalWalletUTXO> canon_utxos;
+        canon_utxos.reserve(selected.size());
+        for (const auto& u : selected) {
+            dinero::CanonicalWalletUTXO c;
+            c.txid        = dinero::uint256::FromHexUnsafe(u.txid);
+            c.vout        = u.vout;
+            c.value       = dinero::AmountUna::Una(u.amount_una);
+            c.path        = u.derivation_path;
+            c.height      = u.height;
+            c.is_coinbase = u.is_coinbase;
+            if (!u.script_pubkey.empty()) {
+                c.spk.reserve(u.script_pubkey.size() / 2);
+                for (size_t i = 0; i + 1 < u.script_pubkey.size(); i += 2) {
+                    c.spk.push_back(static_cast<uint8_t>(
+                        std::stoi(u.script_pubkey.substr(i, 2), nullptr, 16)));
+                }
+            }
+            canon_utxos.push_back(std::move(c));
+        }
+
+        dinero::Transaction tx;
+        tx.version         = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        tx.witness_version = 0;  // SegWit — TransactionSigner emits witness data
+        tx.lockTime        = 0;
+        for (const auto& c : canon_utxos) {
+            dinero::TxInput in;
+            in.prevout.txid = dinero::TxId(c.txid);
+            in.prevout.vout = c.vout;
+            in.sequence     = 0xfffffffe;  // RBF
+            tx.vin.push_back(in);
+        }
+        std::string change_address;
+        if (change_una > 0) {
+            change_address = wm->getNewAddress("change", "taproot");
+            if (change_address.empty()) {
+                result["error"] = "no_change_address";
+                return false;
+            }
+            dinero::TxOutput change_out;
+            change_out.value = dinero::AmountUna::Una(change_una);
+            change_out.scriptPubKey = dinero::TransactionBuilder::AddressToScriptPubKey(change_address);
+            if (change_out.scriptPubKey.empty()) {
+                result["error"] = "invalid_change_address";
+                return false;
+            }
+            tx.vout.push_back(change_out);
+        }
+        tx.SetExplicitFee(fee);
+
+        // ── Attach the shielded output bundle (one output, value_balance=+value_una) ──
+        auto attach_rc = ops::AttachShieldOutputBundle(tx, value_una, *wm,
+                                                       tip_height, persist);
+        if (attach_rc.status != ops::OpStatus::Ok) {
+            result["error"] = "attach_bundle_failed";
+            result["error_message"] = attach_rc.error;
+            return false;
+        }
+
+        // ── Sign transparent inputs ───────────────────────────────────
+        dinero::UnsignedTransaction unsigned_tx;
+        unsigned_tx.tx              = tx;
+        unsigned_tx.fee             = fee;
+        unsigned_tx.change_amount   = change_una;
+        unsigned_tx.change_address  = change_address;
+        unsigned_tx.selected_utxos  = canon_utxos;
+        unsigned_tx.signals_rbf     = true;
+
+        bool any_p2mr = false;
+        std::map<std::string, std::string> path_to_key;
+        for (const auto& c : canon_utxos) {
+            if (dinero::consensus::pq::IsP2MRScript(c.spk)) {
+                any_p2mr = true;
+            } else {
+                auto pk_opt = wm->deriveKeyForScriptPubKey([&]() {
+                    std::ostringstream s;
+                    s << std::hex << std::setfill('0');
+                    for (uint8_t b : c.spk) s << std::setw(2) << static_cast<int>(b);
+                    return s.str();
+                }());
+                if (pk_opt && !pk_opt->empty()) {
+                    std::ostringstream hexs;
+                    hexs << std::hex << std::setfill('0');
+                    for (uint8_t b : *pk_opt) hexs << std::setw(2) << static_cast<int>(b);
+                    path_to_key[c.path] = hexs.str();
+                } else if (!c.path.empty()) {
+                    std::string k = wm->getPrivateKeyForPath(c.path);
+                    if (!k.empty()) path_to_key[c.path] = k;
+                }
             }
         }
-        canon_utxos.push_back(std::move(c));
-    }
 
-    dinero::Transaction tx;
-    tx.version         = dinero::Transaction::TX_VERSION_SHIELDED_V2;
-    tx.witness_version = 0;  // SegWit — TransactionSigner emits witness data
-    tx.lockTime        = 0;
-    for (const auto& c : canon_utxos) {
-        dinero::TxInput in;
-        in.prevout.txid = dinero::TxId(c.txid);
-        in.prevout.vout = c.vout;
-        in.sequence     = 0xfffffffe;  // RBF
-        tx.vin.push_back(in);
-    }
-    std::string change_address;
-    if (change_una > 0) {
-        change_address = wm->getNewAddress("change", "taproot");
-        if (change_address.empty()) {
-            result["error"] = "no_change_address";
-            return result;
-        }
-        dinero::TxOutput change_out;
-        change_out.value = dinero::AmountUna::Una(change_una);
-        change_out.scriptPubKey = dinero::TransactionBuilder::AddressToScriptPubKey(change_address);
-        if (change_out.scriptPubKey.empty()) {
-            result["error"] = "invalid_change_address";
-            return result;
-        }
-        tx.vout.push_back(change_out);
-    }
-    tx.SetExplicitFee(fee_una);
-
-    // ── Attach the shielded output bundle (one output, value_balance=+value_una) ──
-    auto attach_rc = ops::AttachShieldOutputBundle(tx, value_una, *wm, tip_height);
-    if (attach_rc.status != ops::OpStatus::Ok) {
-        result["error"] = "attach_bundle_failed";
-        result["error_message"] = attach_rc.error;
-        return result;
-    }
-
-    // ── Sign transparent inputs ───────────────────────────────────────
-    dinero::UnsignedTransaction unsigned_tx;
-    unsigned_tx.tx              = tx;
-    unsigned_tx.fee             = fee_una;
-    unsigned_tx.change_amount   = change_una;
-    unsigned_tx.change_address  = change_address;
-    unsigned_tx.selected_utxos  = canon_utxos;
-    unsigned_tx.signals_rbf     = true;
-
-    bool any_p2mr = false;
-    std::map<std::string, std::string> path_to_key;
-    for (const auto& c : canon_utxos) {
-        if (dinero::consensus::pq::IsP2MRScript(c.spk)) {
-            any_p2mr = true;
+        std::unique_ptr<dinero::KeyProvider> kp;
+        std::unique_ptr<dinero::wallet::V7P2MRStore> p2mr_store;
+        if (any_p2mr) {
+            auto master = wm->GetV7PqMasterKey();
+            if (!master) {
+                result["error"] = "wallet_locked_p2mr";
+                return false;
+            }
+            const std::string store_path = wm->GetV7P2MRStorePath();
+            if (store_path.empty()) {
+                result["error"] = "p2mr_store_path_missing";
+                return false;
+            }
+            p2mr_store = std::make_unique<dinero::wallet::V7P2MRStore>();
+            if (p2mr_store->Open(store_path) != dinero::wallet::V7P2MRStore::OpenResult::Ok) {
+                result["error"] = "p2mr_store_open_failed";
+                return false;
+            }
+            dinero::wallet::WalletKeyProvider::Config cfg;
+            cfg.legacy_keys_by_path = path_to_key;
+            cfg.p2mr_store          = p2mr_store.get();
+            cfg.wallet_id           = 1;
+            std::memcpy(cfg.master_key.data(), master->data(), cfg.master_key.size());
+            OPENSSL_cleanse(const_cast<uint8_t*>(master->data()), master->size());
+            kp = std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));
         } else {
-            auto pk_opt = wm->deriveKeyForScriptPubKey([&]() {
-                std::ostringstream s;
-                s << std::hex << std::setfill('0');
-                for (uint8_t b : c.spk) s << std::setw(2) << static_cast<int>(b);
-                return s.str();
-            }());
-            if (pk_opt && !pk_opt->empty()) {
-                std::ostringstream hexs;
-                hexs << std::hex << std::setfill('0');
-                for (uint8_t b : *pk_opt) hexs << std::setw(2) << static_cast<int>(b);
-                path_to_key[c.path] = hexs.str();
-            } else if (!c.path.empty()) {
-                std::string k = wm->getPrivateKeyForPath(c.path);
-                if (!k.empty()) path_to_key[c.path] = k;
-            }
+            kp = std::make_unique<dinero::MapKeyProvider>(path_to_key);
         }
+
+        auto sign_result = dinero::TransactionSigner::Sign(unsigned_tx, *kp);
+        if (!sign_result.success) {
+            result["error"] = "sign_failed";
+            result["error_message"] = sign_result.error;
+            return false;
+        }
+
+        out.signed_tx  = sign_result.signed_tx.tx;
+        out.attach     = attach_rc;
+        out.change_una = change_una;
+        out.n_inputs   = canon_utxos.size();
+        return true;
+    };
+
+    // ── Issue #273: size-aware fee when the caller didn't pass one ────
+    uint64_t final_fee = fee_una;
+    bool fee_autosized = false;
+    if (!fee_explicit) {
+        BuiltShieldTx probe;
+        if (!build_signed_shield_tx(fee_una, /*persist=*/false, probe)) {
+            return result;
+        }
+        const double min_fee_rate = mempool_service->mempool().getMinFeeRate();
+        const uint64_t required = ops::RequiredFeeForTx(probe.signed_tx, min_fee_rate);
+        if (required > final_fee) final_fee = required;
+        fee_autosized = true;
     }
 
-    std::unique_ptr<dinero::KeyProvider> kp;
-    std::unique_ptr<dinero::wallet::V7P2MRStore> p2mr_store;
-    if (any_p2mr) {
-        auto master = wm->GetV7PqMasterKey();
-        if (!master) {
-            result["error"] = "wallet_locked_p2mr";
-            return result;
-        }
-        const std::string store_path = wm->GetV7P2MRStorePath();
-        if (store_path.empty()) {
-            result["error"] = "p2mr_store_path_missing";
-            return result;
-        }
-        p2mr_store = std::make_unique<dinero::wallet::V7P2MRStore>();
-        if (p2mr_store->Open(store_path) != dinero::wallet::V7P2MRStore::OpenResult::Ok) {
-            result["error"] = "p2mr_store_open_failed";
-            return result;
-        }
-        dinero::wallet::WalletKeyProvider::Config cfg;
-        cfg.legacy_keys_by_path = path_to_key;
-        cfg.p2mr_store          = p2mr_store.get();
-        cfg.wallet_id           = 1;
-        std::memcpy(cfg.master_key.data(), master->data(), cfg.master_key.size());
-        OPENSSL_cleanse(const_cast<uint8_t*>(master->data()), master->size());
-        kp = std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));
-    } else {
-        kp = std::make_unique<dinero::MapKeyProvider>(path_to_key);
-    }
-
-    auto sign_result = dinero::TransactionSigner::Sign(unsigned_tx, *kp);
-    if (!sign_result.success) {
-        result["error"] = "sign_failed";
-        result["error_message"] = sign_result.error;
+    BuiltShieldTx built;
+    if (!build_signed_shield_tx(final_fee, /*persist=*/true, built)) {
         return result;
     }
 
     // ── Submit to mempool ─────────────────────────────────────────────
-    const dinero::Transaction& signed_tx = sign_result.signed_tx.tx;
+    const dinero::Transaction& signed_tx = built.signed_tx;
     auto submit = mempool_service->mempool().submitTransaction(
         signed_tx, "rpc:wallet.shield", true);
     if (!submit.accepted()) {
@@ -367,17 +421,21 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
         result["reject_reason"] = submit.message;
         // Bundle is already attached; surfacing the txid helps debugging.
         result["txid"] = signed_tx.GetTxid().AsUint256().GetHex();
+        result["fee_autosized"] = fee_autosized;
+        result["vsize"] = static_cast<int64_t>(signed_tx.GetVirtualSize());
         return result;
     }
 
     result["status"]         = "shielded";
     result["txid"]           = signed_tx.GetTxid().AsUint256().GetHex();
-    result["commitment_hex"] = HashToHex(attach_rc.commitment);
+    result["commitment_hex"] = HashToHex(built.attach.commitment);
     result["value_una"]      = static_cast<int64_t>(value_una);
-    result["fee_una"]        = static_cast<int64_t>(fee_una);
-    result["change_una"]     = static_cast<int64_t>(change_una);
-    result["bundle_bytes"]   = static_cast<int64_t>(attach_rc.bundle_bytes);
-    result["inputs"]         = static_cast<int>(canon_utxos.size());
+    result["fee_una"]        = static_cast<int64_t>(final_fee);
+    result["fee_autosized"]  = fee_autosized;
+    result["vsize"]          = static_cast<int64_t>(signed_tx.GetVirtualSize());
+    result["change_una"]     = static_cast<int64_t>(built.change_una);
+    result["bundle_bytes"]   = static_cast<int64_t>(built.attach.bundle_bytes);
+    result["inputs"]         = static_cast<int>(built.n_inputs);
     result["tree_size"]      = static_cast<int64_t>(ops::GetShieldedTreeSize(*wm));
     return result;
 }
@@ -406,14 +464,23 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     }
 
     // ── Parse params ──────────────────────────────────────────────────
-    double   amount_din = 0;
-    uint64_t fee_una    = 1000;  // conservative default
+    // Issue #273: no explicit fee → provisional default, auto-sized below
+    // against the measured tx vsize. Explicit fee → respected verbatim.
+    double   amount_din   = 0;
+    uint64_t fee_una      = 1000;  // provisional default (auto-sized below)
+    bool     fee_explicit = false;
     if (params.isObject()) {
         if (params.isMember("amount"))  amount_din = params["amount"].asDouble();
-        if (params.isMember("fee_una")) fee_una    = static_cast<uint64_t>(params["fee_una"].asInt64());
+        if (params.isMember("fee_una")) {
+            fee_una      = static_cast<uint64_t>(params["fee_una"].asInt64());
+            fee_explicit = true;
+        }
     } else if (params.isArray()) {
         if (params.size() >= 1) amount_din = params[0].asDouble();
-        if (params.size() >= 2) fee_una    = static_cast<uint64_t>(params[1].asInt64());
+        if (params.size() >= 2) {
+            fee_una      = static_cast<uint64_t>(params[1].asInt64());
+            fee_explicit = true;
+        }
     }
     if (amount_din <= 0) {
         result["error"] = "invalid_params";
@@ -440,19 +507,27 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     const auto& note = *note_opt;
     const uint64_t note_value = note.value_una;
 
-    // Dust + fee feasibility: transparent vout = note_value - fee_una.
-    if (fee_una >= note_value) {
-        result["error"] = "fee_too_large";
-        result["error_message"] = "fee >= note value";
-        return result;
-    }
     constexpr uint64_t kDustThreshold = 546;
-    const uint64_t recipient_una = note_value - fee_una;
-    if (recipient_una < kDustThreshold) {
-        result["error"] = "dust_recipient";
-        result["error_message"] = "note_value - fee_una < dust threshold (546 una)";
-        return result;
-    }
+    // Dust + fee feasibility: transparent vout = note_value - fee.
+    // Fills `result` and returns false when the fee doesn't fit the note.
+    auto validate_fee = [&](uint64_t fee, bool autosized) -> bool {
+        if (fee >= note_value) {
+            result["error"] = "fee_too_large";
+            result["error_message"] = autosized
+                ? "note too small to cover size-based fee (need " +
+                  std::to_string(fee) + " una, note " +
+                  std::to_string(note_value) + " una)"
+                : "fee >= note value";
+            return false;
+        }
+        if (note_value - fee < kDustThreshold) {
+            result["error"] = "dust_recipient";
+            result["error_message"] = "note_value - fee_una < dust threshold (546 una)";
+            return false;
+        }
+        return true;
+    };
+    if (!validate_fee(fee_una, false)) return result;
 
     // ── Allocate a fresh self-controlled recipient address ────────────
     const std::string recipient_addr = wm->getNewAddress("unshield-out", "taproot");
@@ -467,8 +542,6 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     }
 
     // ── Build unsigned envelope: empty vin, single transparent vout ───
-    dinero::Transaction tx;
-    tx.version         = dinero::Transaction::TX_VERSION_SHIELDED_V2;
     // Force SegWit-shape (witness_version=0) so the serializer emits the
     // 0x00 0x01 marker after version. Without it, an empty-vin tx
     // (vin_count=0x00) followed by vout_count=0x01 is structurally
@@ -477,18 +550,50 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     // marker present, parse is unambiguous: marker is consumed, vin_count
     // is read as 0, vout_count is read as 1. Witness section emits zero
     // stacks (one per input → none).
-    tx.witness_version = 0;
-    tx.lockTime        = 0;
+    auto make_envelope = [&](uint64_t fee) -> dinero::Transaction {
+        dinero::Transaction tx;
+        tx.version         = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        tx.witness_version = 0;
+        tx.lockTime        = 0;
+        dinero::TxOutput recipient_out;
+        recipient_out.value = dinero::AmountUna::Una(note_value - fee);
+        recipient_out.scriptPubKey = recipient_spk;
+        tx.vout.push_back(std::move(recipient_out));
+        tx.SetExplicitFee(fee);
+        return tx;
+    };
 
-    dinero::TxOutput recipient_out;
-    recipient_out.value = dinero::AmountUna::Una(recipient_una);
-    recipient_out.scriptPubKey = std::move(recipient_spk);
-    tx.vout.push_back(std::move(recipient_out));
+    // ── Issue #273: size-aware fee when the caller didn't pass one ────
+    // Pass 1 (persist=false): throwaway build with the provisional fee to
+    // measure the final vsize — the v6 bundle counts in BASE serialization,
+    // so the spend proof alone pushes vsize into kilobytes. Then rebuild
+    // once with the size-adequate fee (the explicit-fee field is fixed
+    // 8 bytes, so the fee value cannot change the size).
+    uint64_t final_fee = fee_una;
+    bool fee_autosized = false;
+    if (!fee_explicit) {
+        dinero::Transaction probe = make_envelope(fee_una);
+        auto probe_rc = ops::AttachUnshieldInputBundle(probe, note.leaf_index,
+                                                       fee_una, *wm,
+                                                       /*persist=*/false);
+        if (probe_rc.status != ops::OpStatus::Ok) {
+            result["error"] = "attach_unshield_failed";
+            result["error_message"] = probe_rc.error;
+            return result;
+        }
+        const double min_fee_rate = mempool_service->mempool().getMinFeeRate();
+        const uint64_t required = ops::RequiredFeeForTx(probe, min_fee_rate);
+        if (required > final_fee) final_fee = required;
+        fee_autosized = true;
+        if (!validate_fee(final_fee, true)) return result;
+    }
+    const uint64_t recipient_una = note_value - final_fee;
 
-    tx.SetExplicitFee(fee_una);
+    dinero::Transaction tx = make_envelope(final_fee);
 
     // ── Attach the bundle (one spend, zero outputs, value_balance = -note_value) ──
-    auto attach_rc = ops::AttachUnshieldInputBundle(tx, note.leaf_index, fee_una, *wm);
+    auto attach_rc = ops::AttachUnshieldInputBundle(tx, note.leaf_index,
+                                                    final_fee, *wm);
     if (attach_rc.status != ops::OpStatus::Ok) {
         result["error"] = "attach_unshield_failed";
         result["error_message"] = attach_rc.error;
@@ -503,6 +608,8 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
         result["reject_code"] = TxRejectCodeToString(submit.code);
         result["reject_reason"] = submit.message;
         result["txid"] = tx.GetTxid().AsUint256().GetHex();
+        result["fee_autosized"] = fee_autosized;
+        result["vsize"] = static_cast<int64_t>(tx.GetVirtualSize());
         return result;
     }
 
@@ -511,7 +618,9 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     result["nullifier_hex"]     = HashToHex(attach_rc.nullifier);
     result["anchor_hex"]        = HashToHex(attach_rc.anchor);
     result["note_value_una"]    = static_cast<int64_t>(note_value);
-    result["fee_una"]           = static_cast<int64_t>(fee_una);
+    result["fee_una"]           = static_cast<int64_t>(final_fee);
+    result["fee_autosized"]     = fee_autosized;
+    result["vsize"]             = static_cast<int64_t>(tx.GetVirtualSize());
     result["recipient_address"] = recipient_addr;
     result["recipient_una"]     = static_cast<int64_t>(recipient_una);
     result["bundle_bytes"]      = static_cast<int64_t>(attach_rc.bundle_bytes);
@@ -550,13 +659,21 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
     }
 
     // ── Parse params ──────────────────────────────────────────────────
-    uint64_t fee_una = 1000;  // conservative default
+    // Issue #273: no explicit fee → provisional default, auto-sized below
+    // against the measured tx vsize. Explicit fee → respected verbatim.
+    // Array form always carries the fee in slot 0; use the object form to
+    // omit the fee and get auto-sizing.
+    uint64_t fee_una      = 1000;  // provisional default (auto-sized below)
+    bool     fee_explicit = false;
     bool     have_amount = false;
     uint64_t amount_una = 0;
     std::string recipient_address;
     std::string recipient_memo;
     if (params.isObject()) {
-        if (params.isMember("fee_una")) fee_una = static_cast<uint64_t>(params["fee_una"].asInt64());
+        if (params.isMember("fee_una")) {
+            fee_una      = static_cast<uint64_t>(params["fee_una"].asInt64());
+            fee_explicit = true;
+        }
         if (params.isMember("amount_una")) {
             have_amount = true;
             amount_una = static_cast<uint64_t>(params["amount_una"].asInt64());
@@ -568,7 +685,10 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
             recipient_memo = params["memo"].asString();
         }
     } else if (params.isArray()) {
-        if (params.size() >= 1) fee_una = static_cast<uint64_t>(params[0].asInt64());
+        if (params.size() >= 1) {
+            fee_una      = static_cast<uint64_t>(params[0].asInt64());
+            fee_explicit = true;
+        }
         if (params.size() >= 2) {
             have_amount = true;
             amount_una = static_cast<uint64_t>(params[1].asInt64());
@@ -600,15 +720,19 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
     }
 
     // ── Build empty-vin / empty-vout v6 envelope ──────────────────────
-    dinero::Transaction tx;
-    tx.version         = dinero::Transaction::TX_VERSION_SHIELDED_V2;
     // Empty-vin AND empty-vout: force the SegWit marker so the
     // serializer doesn't ambiguity-collide vin_count=0x00 with the
     // BIP141 0x00 0x01 marker. With marker present, parse is
     // unambiguous regardless of vin/vout cardinality.
-    tx.witness_version = 0;
-    tx.lockTime        = 0;
-    tx.SetExplicitFee(fee_una);
+    auto make_envelope = [](uint64_t fee) -> dinero::Transaction {
+        dinero::Transaction tx;
+        tx.version         = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        tx.witness_version = 0;
+        tx.lockTime        = 0;
+        tx.SetExplicitFee(fee);
+        return tx;
+    };
+    const double min_fee_rate = mempool_service->mempool().getMinFeeRate();
 
     if (!have_amount) {
         // ── Wave 3d fast path: refresh smallest single note. ──────────
@@ -619,8 +743,42 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
                                       "supply amount_una to use multi-note selection (Wave 3e)";
             return result;
         }
+
+        // ── Issue #273: size-aware fee when the caller didn't pass one.
+        // Pass 1 (persist=false): throwaway build with the provisional
+        // fee to measure the final vsize, then re-select against the
+        // size-adequate fee and rebuild once.
+        uint64_t final_fee = fee_una;
+        bool fee_autosized = false;
+        if (!fee_explicit) {
+            dinero::Transaction probe = make_envelope(fee_una);
+            auto probe_rc = ops::AttachTransferInputBundle(
+                probe, note_opt->leaf_index, fee_una, *wm, /*persist=*/false);
+            if (probe_rc.status != ops::OpStatus::Ok) {
+                result["error"] = "attach_transfer_failed";
+                result["error_message"] = probe_rc.error;
+                return result;
+            }
+            const uint64_t required = ops::RequiredFeeForTx(probe, min_fee_rate);
+            if (required > final_fee) final_fee = required;
+            fee_autosized = true;
+            if (final_fee != fee_una) {
+                note_opt = ops::SelectTransferNote(*wm, final_fee + 1);
+                if (!note_opt) {
+                    result["error"] = "insufficient_single_note";
+                    result["error_message"] =
+                        "no single unspent confirmed shielded note > size-based fee (" +
+                        std::to_string(final_fee) + " una); supply amount_una to use "
+                        "multi-note selection (Wave 3e)";
+                    return result;
+                }
+            }
+        }
         const auto& note = *note_opt;
-        auto attach_rc = ops::AttachTransferInputBundle(tx, note.leaf_index, fee_una, *wm);
+
+        dinero::Transaction tx = make_envelope(final_fee);
+        auto attach_rc = ops::AttachTransferInputBundle(tx, note.leaf_index,
+                                                        final_fee, *wm);
         if (attach_rc.status != ops::OpStatus::Ok) {
             result["error"] = "attach_transfer_failed";
             result["error_message"] = attach_rc.error;
@@ -633,6 +791,8 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
             result["reject_code"] = TxRejectCodeToString(submit.code);
             result["reject_reason"] = submit.message;
             result["txid"] = tx.GetTxid().AsUint256().GetHex();
+            result["fee_autosized"] = fee_autosized;
+            result["vsize"] = static_cast<int64_t>(tx.GetVirtualSize());
             return result;
         }
         result["status"]                = "transferred";
@@ -644,7 +804,9 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
         result["spend_value_una"]       = static_cast<int64_t>(note.value_una);
         result["out_commitment_hex"]    = HashToHex(attach_rc.out_commitment);
         result["out_value_una"]         = static_cast<int64_t>(attach_rc.out_value_una);
-        result["fee_una"]               = static_cast<int64_t>(fee_una);
+        result["fee_una"]               = static_cast<int64_t>(final_fee);
+        result["fee_autosized"]         = fee_autosized;
+        result["vsize"]                 = static_cast<int64_t>(tx.GetVirtualSize());
         result["bundle_bytes"]          = static_cast<int64_t>(attach_rc.bundle_bytes);
         return result;
     }
@@ -652,31 +814,66 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
     // ── Multi-spend path, possibly with change. Selects notes covering
     // ── amount + fee. If `address` was supplied, route through the
     // ── addressed-transfer helper; otherwise create self-controlled notes.
-    const uint64_t target = amount_una + fee_una;
-    auto picks_opt = ops::SelectTransferNotesForValue(*wm, target);
-    if (!picks_opt) {
-        result["error"] = "insufficient_balance";
-        result["error_message"] = "available unspent confirmed shielded balance < amount + fee";
-        return result;
-    }
-    const auto& picks = *picks_opt;
+    // Selection is a function of the fee; re-run after auto-sizing.
+    std::vector<dinero::wallet::ShieldedNote> picks;
     uint64_t spend_sum = 0;
-    Json spend_indices = din::arr();
-    Json spend_values  = din::arr();
     std::vector<uint64_t> leaf_indices;
-    leaf_indices.reserve(picks.size());
-    for (const auto& n : picks) {
-        spend_sum += n.value_una;
-        spend_indices.append(static_cast<int64_t>(n.leaf_index));
-        spend_values.append(static_cast<int64_t>(n.value_una));
-        leaf_indices.push_back(n.leaf_index);
-    }
-    const uint64_t change = spend_sum - target;
+    auto select_for_fee = [&](uint64_t fee, bool autosized) -> bool {
+        auto picks_opt = ops::SelectTransferNotesForValue(*wm, amount_una + fee);
+        if (!picks_opt) {
+            result["error"] = "insufficient_balance";
+            result["error_message"] = autosized
+                ? "available unspent confirmed shielded balance < amount + "
+                  "size-based fee (" + std::to_string(fee) + " una)"
+                : "available unspent confirmed shielded balance < amount + fee";
+            return false;
+        }
+        picks = std::move(*picks_opt);
+        spend_sum = 0;
+        leaf_indices.clear();
+        leaf_indices.reserve(picks.size());
+        for (const auto& n : picks) {
+            spend_sum += n.value_una;
+            leaf_indices.push_back(n.leaf_index);
+        }
+        return true;
+    };
+    if (!select_for_fee(fee_una, false)) return result;
 
     if (!recipient_address.empty()) {
         // ── Addressed transfer: route the requested amount to recipient.
+        // Issue #273 two-pass sizing (see Wave 3d path above).
+        uint64_t final_fee = fee_una;
+        bool fee_autosized = false;
+        if (!fee_explicit) {
+            dinero::Transaction probe = make_envelope(fee_una);
+            auto probe_rc = ops::AttachAddressedTransferInputBundle(
+                probe, leaf_indices, recipient_address, amount_una, fee_una, *wm,
+                recipient_memo.empty() ? nullptr : &recipient_memo,
+                /*persist=*/false);
+            if (probe_rc.status != ops::OpStatus::Ok) {
+                result["error"] = "attach_transfer_failed";
+                result["error_message"] = probe_rc.error;
+                return result;
+            }
+            const uint64_t required = ops::RequiredFeeForTx(probe, min_fee_rate);
+            if (required > final_fee) final_fee = required;
+            fee_autosized = true;
+            if (final_fee != fee_una && !select_for_fee(final_fee, true)) {
+                return result;
+            }
+        }
+        const uint64_t change = spend_sum - amount_una - final_fee;
+        Json spend_indices = din::arr();
+        Json spend_values  = din::arr();
+        for (const auto& n : picks) {
+            spend_indices.append(static_cast<int64_t>(n.leaf_index));
+            spend_values.append(static_cast<int64_t>(n.value_una));
+        }
+
+        dinero::Transaction tx = make_envelope(final_fee);
         auto attach_rc = ops::AttachAddressedTransferInputBundle(
-            tx, leaf_indices, recipient_address, amount_una, fee_una, *wm,
+            tx, leaf_indices, recipient_address, amount_una, final_fee, *wm,
             recipient_memo.empty() ? nullptr : &recipient_memo);
         if (attach_rc.status != ops::OpStatus::Ok) {
             result["error"] = "attach_transfer_failed";
@@ -690,6 +887,8 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
             result["reject_code"] = TxRejectCodeToString(submit.code);
             result["reject_reason"] = submit.message;
             result["txid"] = tx.GetTxid().AsUint256().GetHex();
+            result["fee_autosized"] = fee_autosized;
+            result["vsize"] = static_cast<int64_t>(tx.GetVirtualSize());
             return result;
         }
         Json spend_nulls = din::arr();
@@ -700,7 +899,9 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
         result["recipient_address"]     = recipient_address;
         result["recipient_commitment"]  = HashToHex(attach_rc.recipient_commitment);
         result["amount_una"]            = static_cast<int64_t>(amount_una);
-        result["fee_una"]               = static_cast<int64_t>(fee_una);
+        result["fee_una"]               = static_cast<int64_t>(final_fee);
+        result["fee_autosized"]         = fee_autosized;
+        result["vsize"]                 = static_cast<int64_t>(tx.GetVirtualSize());
         result["change_una"]            = static_cast<int64_t>(change);
         result["had_change"]            = attach_rc.had_change;
         if (attach_rc.had_change) {
@@ -714,13 +915,50 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
         return result;
     }
 
-    std::vector<uint64_t> output_values{amount_una};
-    if (change > 0) {
-        output_values.push_back(change);
+    // ── Self-controlled multi-transfer (Wave 3e). Issue #273 two-pass
+    // sizing: output values depend on the fee (change shrinks as the fee
+    // grows), so recompute them per pass.
+    auto output_values_for_fee = [&](uint64_t fee) -> std::vector<uint64_t> {
+        std::vector<uint64_t> output_values{amount_una};
+        const uint64_t change = spend_sum - amount_una - fee;
+        if (change > 0) {
+            output_values.push_back(change);
+        }
+        return output_values;
+    };
+
+    uint64_t final_fee = fee_una;
+    bool fee_autosized = false;
+    if (!fee_explicit) {
+        dinero::Transaction probe = make_envelope(fee_una);
+        auto probe_rc = ops::AttachMultiTransferInputBundle(
+            probe, leaf_indices, output_values_for_fee(fee_una), fee_una, *wm,
+            /*persist=*/false);
+        if (probe_rc.status != ops::OpStatus::Ok) {
+            result["error"] = "attach_transfer_failed";
+            result["error_message"] = probe_rc.error;
+            return result;
+        }
+        const uint64_t required = ops::RequiredFeeForTx(probe, min_fee_rate);
+        if (required > final_fee) final_fee = required;
+        fee_autosized = true;
+        if (final_fee != fee_una && !select_for_fee(final_fee, true)) {
+            return result;
+        }
+    }
+    const uint64_t change = spend_sum - amount_una - final_fee;
+    Json spend_indices = din::arr();
+    Json spend_values  = din::arr();
+    for (const auto& n : picks) {
+        spend_indices.append(static_cast<int64_t>(n.leaf_index));
+        spend_values.append(static_cast<int64_t>(n.value_una));
     }
 
+    const std::vector<uint64_t> output_values = output_values_for_fee(final_fee);
+
+    dinero::Transaction tx = make_envelope(final_fee);
     auto attach_rc = ops::AttachMultiTransferInputBundle(tx, leaf_indices,
-                                                        output_values, fee_una, *wm);
+                                                        output_values, final_fee, *wm);
     if (attach_rc.status != ops::OpStatus::Ok) {
         result["error"] = "attach_transfer_failed";
         result["error_message"] = attach_rc.error;
@@ -733,6 +971,8 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
         result["reject_code"] = TxRejectCodeToString(submit.code);
         result["reject_reason"] = submit.message;
         result["txid"] = tx.GetTxid().AsUint256().GetHex();
+        result["fee_autosized"] = fee_autosized;
+        result["vsize"] = static_cast<int64_t>(tx.GetVirtualSize());
         return result;
     }
 
@@ -758,7 +998,9 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
     result["out_values_una"]      = out_values;
     result["amount_una"]          = static_cast<int64_t>(amount_una);
     result["change_una"]          = static_cast<int64_t>(change);
-    result["fee_una"]             = static_cast<int64_t>(fee_una);
+    result["fee_una"]             = static_cast<int64_t>(final_fee);
+    result["fee_autosized"]       = fee_autosized;
+    result["vsize"]               = static_cast<int64_t>(tx.GetVirtualSize());
     result["bundle_bytes"]        = static_cast<int64_t>(attach_rc.bundle_bytes);
     return result;
 }

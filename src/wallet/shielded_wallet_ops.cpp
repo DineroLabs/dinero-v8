@@ -15,6 +15,7 @@
 
 #include <openssl/rand.h>
 #include <openssl/crypto.h>
+#include <cmath>
 #include <cstring>
 
 namespace dinero::wallet::shielded_ops {
@@ -116,6 +117,17 @@ ShieldResult Shield(ShieldParams params,
     OPENSSL_cleanse(secret_key.data(), secret_key.size());
 
     return out;
+}
+
+// ── Issue #273: size-aware fee floor ─────────────────────────────────
+
+uint64_t RequiredFeeForTx(const dinero::Transaction& tx, double min_fee_rate) {
+    if (min_fee_rate <= 0.0) {
+        return kFeeSizingMarginUna;
+    }
+    const double floor_fee =
+        std::ceil(min_fee_rate * static_cast<double>(tx.GetVirtualSize()));
+    return static_cast<uint64_t>(floor_fee) + kFeeSizingMarginUna;
 }
 
 AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,

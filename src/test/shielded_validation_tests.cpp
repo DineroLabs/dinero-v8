@@ -26,9 +26,11 @@
 #include "primitives/transaction.h"
 #include "wallet/shielded_wallet_ops.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -757,6 +759,85 @@ TEST_F(ShieldedValidationFixture, UnshieldHelperProducesValidatorAcceptedTx) {
     ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
     EXPECT_EQ(ValidateShieldedBundle(decoded, ctx),
               ShieldedValidationError::Ok);
+}
+
+// Issue #273 regression: the shielded RPC handlers used a fixed default
+// fee (1000 una) chosen before the bundle attaches. Since v6 bundles
+// count in BASE serialization, the final GetVirtualSize() — the
+// mempool's fee-rate denominator — lands in the kilobytes, so the fixed
+// default underpays DEFAULT_MIN_FEE_RATE (1 una/vbyte) and the mempool
+// rejects. The fix measures the built tx and raises the fee to
+// RequiredFeeForTx(); this test mirrors that two-pass decision logic
+// against the real unshield bundle builder. Fails (final fee below the
+// mempool floor) if the size-aware computation is dropped back to the
+// fixed default.
+TEST_F(ShieldedValidationFixture, SizeAwareFeeCoversMempoolFloorForUnshield) {
+    constexpr uint64_t kNoteValue      = 100'000'000;  // 1 DIN
+    constexpr uint64_t kProvisionalFee = 1000;  // old fixed RPC default
+    constexpr double   kMinFeeRate     = 1.0;   // Mempool::DEFAULT_MIN_FEE_RATE
+
+    // Plant a note in the wallet-side tree.
+    const Hash sk         = MakeHash(0xA0, 0xF3);
+    const Hash randomness = MakeHash(0xA1, 0xF3);
+    const Hash pk         = PoseidonHash2(sk, Hash{});
+    const Hash d          = MakeHash(0xA2, 0xF3);
+    const uint64_t leaf_idx =
+        tree.Append(NoteCommitment(d, pk, ValueAsHash(kNoteValue), randomness));
+    auto path = tree.GetAuthPath(leaf_idx);
+    ASSERT_TRUE(path.has_value());
+
+    wallet::shielded_ops::UnshieldNoteInput note;
+    note.secret_key  = sk;
+    note.randomness  = randomness;
+    note.d           = d;
+    note.anchor      = tree.Root();
+    note.leaf_index  = leaf_idx;
+    note.value_una   = kNoteValue;
+    note.merkle_path = path->siblings;
+
+    // The RPC builds v6 (bundle-committing) txs — the version where the
+    // bundle counts in base serialization and blows up the vsize.
+    auto make_envelope = [&](uint64_t fee) {
+        auto tx = MakeUnshieldEnvelope(kNoteValue - fee, fee, /*seed=*/0xF3);
+        tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        tx.witness_version = 0;
+        return tx;
+    };
+
+    // Pass 1 (probe): build with the legacy fixed default.
+    auto probe = make_envelope(kProvisionalFee);
+    auto probe_built =
+        wallet::shielded_ops::BuildUnshieldBundleForTx(probe, note, kProvisionalFee);
+    ASSERT_EQ(probe_built.status, wallet::shielded_ops::OpStatus::Ok)
+        << "probe build failed: " << probe_built.error;
+
+    const auto mempool_floor = [&](const dinero::Transaction& tx) {
+        return static_cast<uint64_t>(
+            std::ceil(kMinFeeRate * static_cast<double>(tx.GetVirtualSize())));
+    };
+
+    // The #273 bug, demonstrated: the fixed default underpays the floor.
+    EXPECT_LT(kProvisionalFee, mempool_floor(probe))
+        << "expected the v6 bundle to push vsize above the fixed default fee";
+
+    // Decision logic (as the fixed RPC handlers run it): measure, raise.
+    const uint64_t required =
+        wallet::shielded_ops::RequiredFeeForTx(probe, kMinFeeRate);
+    EXPECT_GE(required, mempool_floor(probe));
+    const uint64_t final_fee = std::max<uint64_t>(kProvisionalFee, required);
+
+    // Pass 2: rebuild once with the size-adequate fee. The explicit-fee
+    // field is fixed-width, so the fee value must not move the vsize.
+    auto tx = make_envelope(final_fee);
+    auto built = wallet::shielded_ops::BuildUnshieldBundleForTx(tx, note, final_fee);
+    ASSERT_EQ(built.status, wallet::shielded_ops::OpStatus::Ok)
+        << "final build failed: " << built.error;
+
+    // Regression gate: the final tx satisfies the mempool's criterion
+    // fee / vsize >= min_rate.
+    EXPECT_GE(final_fee, mempool_floor(tx))
+        << "size-aware fee still underpays: fee=" << final_fee
+        << " vsize=" << tx.GetVirtualSize();
 }
 
 TEST_F(ShieldedValidationFixture, UnshieldHelperRejectsFeeGteValue) {

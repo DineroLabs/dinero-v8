@@ -116,9 +116,13 @@ echo "$ZERO_RES" | jq -e '.result.error == "invalid_params" or .error != null' >
 pass "zero-amount unshield rejected"
 
 # ── Shield 1 DIN, mine, confirm note ───────────────────────────────────
-info "Shielding 1 DIN"
-SHIELD_RES="$(rpc_result "wallet.shield" '[1.0, 10000]')"
+# No explicit fee: exercises issue #273 size-aware fee auto-sizing on the
+# shield side (the fixed 1000-una default underpaid the mempool floor).
+info "Shielding 1 DIN (auto-sized fee)"
+SHIELD_RES="$(rpc_result "wallet.shield" '[1.0]')"
 SHIELD_TXID="$(jq -r '.result.txid' <<<"${SHIELD_RES}")"
+SHIELD_AUTOSIZED="$(jq -r '.result.fee_autosized' <<<"${SHIELD_RES}")"
+[[ "${SHIELD_AUTOSIZED}" == "true" ]] || fail "shield fee not auto-sized: ${SHIELD_RES}"
 [[ -n "${SHIELD_TXID}" && "${SHIELD_TXID}" != "null" ]] || fail "shield missing txid: ${SHIELD_RES}"
 rpc_result "generatetoaddress" "[1,\"${MINER_ADDR}\"]" >/dev/null
 
@@ -128,9 +132,9 @@ TREE_SIZE="$(jq -r '.result.tree_size' <<<"${BAL_AFTER_SHIELD}")"
 (( TREE_SIZE >= 1 )) || fail "expected tree_size >= 1: ${BAL_AFTER_SHIELD}"
 pass "shield confirmed, tree_size=${TREE_SIZE}"
 
-# ── Happy path: unshield 1 DIN ─────────────────────────────────────────
-info "Calling wallet.unshield(1.0 DIN, fee=10000 una)"
-UNSHIELD_RES="$(rpc_result "wallet.unshield" '[1.0, 10000]')"
+# ── Happy path: unshield 1 DIN with auto-sized fee (issue #273) ────────
+info "Calling wallet.unshield(1.0 DIN, fee auto-sized)"
+UNSHIELD_RES="$(rpc_result "wallet.unshield" '[1.0]')"
 echo "${UNSHIELD_RES}" | jq -e '.result.status == "unshielded"' >/dev/null \
     || fail "wallet.unshield did not return status=unshielded: ${UNSHIELD_RES}"
 
@@ -138,11 +142,19 @@ UNSHIELD_TXID="$(jq -r '.result.txid' <<<"${UNSHIELD_RES}")"
 NULLIFIER="$(jq -r '.result.nullifier_hex' <<<"${UNSHIELD_RES}")"
 RECIPIENT="$(jq -r '.result.recipient_address' <<<"${UNSHIELD_RES}")"
 RECIPIENT_UNA="$(jq -r '.result.recipient_una' <<<"${UNSHIELD_RES}")"
+FEE_OUT="$(jq -r '.result.fee_una' <<<"${UNSHIELD_RES}")"
+AUTOSIZED="$(jq -r '.result.fee_autosized' <<<"${UNSHIELD_RES}")"
+VSIZE_OUT="$(jq -r '.result.vsize' <<<"${UNSHIELD_RES}")"
 [[ -n "${UNSHIELD_TXID}" && "${UNSHIELD_TXID}" != "null" ]] || fail "missing txid: ${UNSHIELD_RES}"
 [[ -n "${NULLIFIER}" && "${NULLIFIER}" != "null" ]] || fail "missing nullifier: ${UNSHIELD_RES}"
 [[ -n "${RECIPIENT}" && "${RECIPIENT}" != "null" ]] || fail "missing recipient: ${UNSHIELD_RES}"
-(( RECIPIENT_UNA == 99990000 )) || fail "expected recipient_una=99990000, got ${RECIPIENT_UNA}"
-pass "unshield returned status=unshielded, txid=${UNSHIELD_TXID:0:16}…, recipient=${RECIPIENT:0:20}…"
+[[ "${AUTOSIZED}" == "true" ]] || fail "expected fee_autosized=true: ${UNSHIELD_RES}"
+# Size-aware fee invariant: fee covers the mempool floor (1 una/vbyte on
+# regtest), and the transparent vout is exactly note_value - fee.
+(( FEE_OUT >= VSIZE_OUT )) || fail "auto-sized fee ${FEE_OUT} < vsize ${VSIZE_OUT}"
+(( RECIPIENT_UNA == 100000000 - FEE_OUT )) \
+    || fail "expected recipient_una=$((100000000 - FEE_OUT)) (note - fee), got ${RECIPIENT_UNA}"
+pass "unshield returned status=unshielded, txid=${UNSHIELD_TXID:0:16}…, fee=${FEE_OUT} (vsize=${VSIZE_OUT}), recipient=${RECIPIENT:0:20}…"
 
 # ── Verify tx is in mempool ────────────────────────────────────────────
 MEMPOOL="$(rpc_result "getrawmempool" '[]')"
@@ -152,7 +164,7 @@ pass "unshield tx in mempool"
 
 # ── Negative test: double-spend (note now pending-spent) ───────────────
 info "Negative case: second unshield against the same note"
-DOUBLE_RES="$(rpc_call "wallet.unshield" '[1.0, 10000]')"
+DOUBLE_RES="$(rpc_call "wallet.unshield" '[1.0]')"
 echo "$DOUBLE_RES" | jq -e '.result.error == "insufficient_single_note" or .error != null' >/dev/null 2>&1 \
     || fail "second unshield should hit insufficient_single_note: ${DOUBLE_RES}"
 pass "double-spend rejected (note marked pending-spent)"

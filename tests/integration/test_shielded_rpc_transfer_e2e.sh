@@ -117,8 +117,9 @@ echo "$ZERO_RES" | jq -e '.result.error == "invalid_params" or .error != null' >
 pass "zero-fee transfer rejected"
 
 # ── Shield 1 DIN, mine, confirm note ───────────────────────────────────
-info "Shielding 1 DIN"
-SHIELD_RES="$(rpc_result "wallet.shield" '[1.0, 10000]')"
+# No explicit fee: exercises issue #273 size-aware fee auto-sizing.
+info "Shielding 1 DIN (auto-sized fee)"
+SHIELD_RES="$(rpc_result "wallet.shield" '[1.0]')"
 SHIELD_TXID="$(jq -r '.result.txid' <<<"${SHIELD_RES}")"
 [[ -n "${SHIELD_TXID}" && "${SHIELD_TXID}" != "null" ]] || fail "shield missing txid: ${SHIELD_RES}"
 rpc_result "generatetoaddress" "[1,\"${MINER_ADDR}\"]" >/dev/null
@@ -129,10 +130,11 @@ BAL_BEFORE_UNA="$(jq -r '.result.balance_una // 0' <<<"${BAL_AFTER_SHIELD}")"
 (( TREE_SIZE_BEFORE >= 1 )) || fail "expected tree_size >= 1: ${BAL_AFTER_SHIELD}"
 pass "shield confirmed, tree_size=${TREE_SIZE_BEFORE}, balance_una=${BAL_BEFORE_UNA}"
 
-# ── Happy path: transfer (self) ────────────────────────────────────────
-TRANSFER_FEE=10000
-info "Calling wallet.transfer(fee=${TRANSFER_FEE} una)"
-TRANSFER_RES="$(rpc_result "wallet.transfer" "[${TRANSFER_FEE}]")"
+# ── Happy path: transfer (self) with auto-sized fee (issue #273) ───────
+# Object form with no fee_una → the handler measures the built tx and
+# raises the fee to the mempool's vsize-based floor.
+info "Calling wallet.transfer (fee auto-sized)"
+TRANSFER_RES="$(rpc_result "wallet.transfer" '{}')"
 echo "${TRANSFER_RES}" | jq -e '.result.status == "transferred"' >/dev/null \
     || fail "wallet.transfer did not return status=transferred: ${TRANSFER_RES}"
 
@@ -141,12 +143,17 @@ SPEND_NULL="$(jq -r '.result.spend_nullifier_hex' <<<"${TRANSFER_RES}")"
 SPEND_VALUE="$(jq -r '.result.spend_value_una' <<<"${TRANSFER_RES}")"
 OUT_VALUE="$(jq -r '.result.out_value_una' <<<"${TRANSFER_RES}")"
 OUT_COMMIT="$(jq -r '.result.out_commitment_hex' <<<"${TRANSFER_RES}")"
+TRANSFER_FEE="$(jq -r '.result.fee_una' <<<"${TRANSFER_RES}")"
+AUTOSIZED="$(jq -r '.result.fee_autosized' <<<"${TRANSFER_RES}")"
+VSIZE_OUT="$(jq -r '.result.vsize' <<<"${TRANSFER_RES}")"
 [[ -n "${TRANSFER_TXID}" && "${TRANSFER_TXID}" != "null" ]] || fail "missing txid: ${TRANSFER_RES}"
 [[ -n "${SPEND_NULL}" && "${SPEND_NULL}" != "null" ]] || fail "missing nullifier: ${TRANSFER_RES}"
 [[ -n "${OUT_COMMIT}" && "${OUT_COMMIT}" != "null" ]] || fail "missing out commitment: ${TRANSFER_RES}"
+[[ "${AUTOSIZED}" == "true" ]] || fail "expected fee_autosized=true: ${TRANSFER_RES}"
+(( TRANSFER_FEE >= VSIZE_OUT )) || fail "auto-sized fee ${TRANSFER_FEE} < vsize ${VSIZE_OUT}"
 (( OUT_VALUE == SPEND_VALUE - TRANSFER_FEE )) \
     || fail "expected out_value_una = spend_value_una - fee (${SPEND_VALUE} - ${TRANSFER_FEE} = $((SPEND_VALUE - TRANSFER_FEE))), got ${OUT_VALUE}"
-pass "transfer returned status=transferred, txid=${TRANSFER_TXID:0:16}…, in=${SPEND_VALUE} out=${OUT_VALUE} fee=${TRANSFER_FEE}"
+pass "transfer returned status=transferred, txid=${TRANSFER_TXID:0:16}…, in=${SPEND_VALUE} out=${OUT_VALUE} fee=${TRANSFER_FEE} (vsize=${VSIZE_OUT})"
 
 # ── Verify tx is in mempool ────────────────────────────────────────────
 MEMPOOL="$(rpc_result "getrawmempool" '[]')"
@@ -156,7 +163,7 @@ pass "transfer tx in mempool"
 
 # ── Negative test: double-spend (note now pending-spent) ───────────────
 info "Negative case: second transfer against the same note"
-DOUBLE_RES="$(rpc_call "wallet.transfer" "[${TRANSFER_FEE}]")"
+DOUBLE_RES="$(rpc_call "wallet.transfer" '{}')"
 echo "$DOUBLE_RES" | jq -e '.result.error == "insufficient_single_note" or .error != null' >/dev/null 2>&1 \
     || fail "second transfer should hit insufficient_single_note: ${DOUBLE_RES}"
 pass "double-spend rejected (note marked pending-spent)"

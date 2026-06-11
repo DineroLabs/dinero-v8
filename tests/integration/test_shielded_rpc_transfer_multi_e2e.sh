@@ -118,12 +118,12 @@ echo "$ZERO_RES" | jq -e '.result.error == "invalid_params" or .error != null' >
     || fail "amount=0 should be rejected: ${ZERO_RES}"
 pass "zero amount rejected"
 
-# ── Shield 0.5 DIN twice ───────────────────────────────────────────────
+# ── Shield 0.5 DIN twice (auto-sized fees — issue #273) ────────────────
 info "Shielding 0.5 DIN (note A)"
-rpc_result "wallet.shield" '[0.5, 10000]' >/dev/null
+rpc_result "wallet.shield" '[0.5]' >/dev/null
 rpc_result "generatetoaddress" "[1,\"${MINER_ADDR}\"]" >/dev/null
 info "Shielding 0.5 DIN (note B)"
-rpc_result "wallet.shield" '[0.5, 10000]' >/dev/null
+rpc_result "wallet.shield" '[0.5]' >/dev/null
 rpc_result "generatetoaddress" "[1,\"${MINER_ADDR}\"]" >/dev/null
 
 BAL_BEFORE="$(rpc_result "wallet.shieldedbalance" '[]')"
@@ -140,14 +140,13 @@ echo "$INSUF_RES" | jq -e '.result.error == "insufficient_balance" or .error != 
     || fail "amount > balance should be rejected: ${INSUF_RES}"
 pass "amount > balance rejected"
 
-# ── Happy path: amount=0.7 DIN, fee=20000 ──────────────────────────────
-# Multi-spend bundles (2+ spends) are larger than single-spend; need fee
-# >= 1 una/byte (BIP141 vsize). 2-spend / 2-output bundle is ~11kB → fee
-# of 20000 una clears with buffer.
-TRANSFER_FEE=20000
+# ── Happy path: amount=0.7 DIN, fee auto-sized (issue #273) ────────────
+# Multi-spend bundles (2+ spends) are tens of kB of base bytes; the
+# handler measures the built tx and raises the fee to the mempool's
+# vsize-based floor (1 una/vbyte on regtest). Object form omits fee_una.
 TRANSFER_AMOUNT=70000000   # 0.7 DIN in una
-info "Calling wallet.transfer(fee=${TRANSFER_FEE}, amount_una=${TRANSFER_AMOUNT})"
-TRANSFER_RES="$(rpc_result "wallet.transfer" "[${TRANSFER_FEE}, ${TRANSFER_AMOUNT}]")"
+info "Calling wallet.transfer(amount_una=${TRANSFER_AMOUNT}, fee auto-sized)"
+TRANSFER_RES="$(rpc_result "wallet.transfer" "{\"amount_una\": ${TRANSFER_AMOUNT}}")"
 echo "${TRANSFER_RES}" | jq -e '.result.status == "transferred" and .result.wave == "3e"' >/dev/null \
     || fail "wallet.transfer (multi) did not return status=transferred wave=3e: ${TRANSFER_RES}"
 
@@ -157,13 +156,17 @@ OUT_COUNT="$(jq -r '.result.out_count' <<<"${TRANSFER_RES}")"
 AMOUNT_OUT="$(jq -r '.result.amount_una' <<<"${TRANSFER_RES}")"
 CHANGE_OUT="$(jq -r '.result.change_una' <<<"${TRANSFER_RES}")"
 FEE_OUT="$(jq -r '.result.fee_una' <<<"${TRANSFER_RES}")"
+AUTOSIZED="$(jq -r '.result.fee_autosized' <<<"${TRANSFER_RES}")"
+VSIZE_OUT="$(jq -r '.result.vsize' <<<"${TRANSFER_RES}")"
 [[ -n "${TRANSFER_TXID}" && "${TRANSFER_TXID}" != "null" ]] || fail "missing txid: ${TRANSFER_RES}"
 (( SPEND_COUNT >= 2 )) || fail "expected multi-spend (>=2 notes), got spend_count=${SPEND_COUNT}"
 (( OUT_COUNT == 2 )) || fail "expected 2 outputs (recipient + change), got out_count=${OUT_COUNT}"
 (( AMOUNT_OUT == TRANSFER_AMOUNT )) || fail "expected amount_una=${TRANSFER_AMOUNT}, got ${AMOUNT_OUT}"
 (( CHANGE_OUT > 0 )) || fail "expected positive change, got ${CHANGE_OUT}"
-(( FEE_OUT == TRANSFER_FEE )) || fail "expected fee=${TRANSFER_FEE}, got ${FEE_OUT}"
-pass "transfer (multi) returned spend_count=${SPEND_COUNT} out_count=${OUT_COUNT} amount=${AMOUNT_OUT} change=${CHANGE_OUT} fee=${FEE_OUT}"
+[[ "${AUTOSIZED}" == "true" ]] || fail "expected fee_autosized=true: ${TRANSFER_RES}"
+(( FEE_OUT >= VSIZE_OUT )) || fail "auto-sized fee ${FEE_OUT} < vsize ${VSIZE_OUT}"
+TRANSFER_FEE="${FEE_OUT}"
+pass "transfer (multi) returned spend_count=${SPEND_COUNT} out_count=${OUT_COUNT} amount=${AMOUNT_OUT} change=${CHANGE_OUT} fee=${FEE_OUT} (vsize=${VSIZE_OUT})"
 
 # ── In mempool ─────────────────────────────────────────────────────────
 MEMPOOL="$(rpc_result "getrawmempool" '[]')"
@@ -172,7 +175,7 @@ jq -e --arg txid "${TRANSFER_TXID}" '.result | index($txid) != null' <<<"${MEMPO
 pass "transfer tx in mempool"
 
 # ── Double-spend: both notes pending-spent → insufficient ─────────────
-DOUBLE_RES="$(rpc_call "wallet.transfer" "[${TRANSFER_FEE}, ${TRANSFER_AMOUNT}]")"
+DOUBLE_RES="$(rpc_call "wallet.transfer" "{\"amount_una\": ${TRANSFER_AMOUNT}}")"
 echo "$DOUBLE_RES" | jq -e '.result.error == "insufficient_balance" or .error != null' >/dev/null 2>&1 \
     || fail "second transfer should hit insufficient_balance: ${DOUBLE_RES}"
 pass "double-spend rejected (notes pending-spent)"
