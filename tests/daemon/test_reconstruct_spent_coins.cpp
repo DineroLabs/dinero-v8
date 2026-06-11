@@ -280,6 +280,56 @@ void test03_ReconstructSpentCoinsFailsLoudOnMissingCoin(const std::filesystem::p
     std::cout << "  [✓] missing coin fails loud with named outpoint" << std::endl;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// #4 — corrupt scriptPubKey hex in the coin row is fatal, not a
+//      silent empty-spk undo entry (util::HexToBytes swallows the
+//      unhex failure; the helper must use util::unhex and fail loud)
+// ─────────────────────────────────────────────────────────────────
+void test04_ReconstructSpentCoinsFailsLoudOnCorruptSpkHex(const std::filesystem::path& root) {
+    ChainDB db;
+    require(db.init(root / "t04") == Status::Ok, "t04: ChainDB::init failed");
+    ChainWriteToken token = ChainWriteToken::CreateForTesting();
+
+    const uint256 corrupt_txid = uint256::FromHexUnsafe(
+        "55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee");
+    const uint32_t corrupt_vout = 2;
+
+    // Coin row with non-hex script_pubkey ("zz" is even-length but not hex;
+    // also exercises the odd-length arm implicitly via the same unhex path).
+    Coin coin;
+    coin.amount = 4242;
+    coin.script_pubkey = "zz";  // INVALID hex
+    coin.height = 13;
+    coin.coinbase = false;
+    require(db.putCoin(token, corrupt_txid, corrupt_vout, coin) == Status::Ok,
+            "t04: putCoin failed");
+
+    const Block block = MakeBlock({
+        MakeCoinbaseTx(4),
+        MakeSpendTx(corrupt_txid, corrupt_vout, 1, {0x51}),
+    });
+
+    ChainstateService svc;
+    svc.setChainDB(&db);
+
+    std::vector<dinero::SpentCoin> spent;
+    std::string error;
+    const Status st = svc.ReconstructSpentCoinsFromChainDb(block, 70, spent, error);
+    require(st != Status::Ok, "t04: corrupt spk hex must NOT return Ok "
+            "(silent empty-spk undo entry)");
+    require(spent.empty(), "t04: out_spent must be cleared on failure, has " +
+            std::to_string(spent.size()) + " entries");
+    require(error.find("scriptPubKey") != std::string::npos,
+            "t04: error must mention scriptPubKey: " + error);
+    require(error.find(corrupt_txid.GetHex()) != std::string::npos,
+            "t04: error must contain the offending txid hex: " + error);
+    require(error.find(std::to_string(corrupt_vout)) != std::string::npos,
+            "t04: error must contain the offending vout: " + error);
+
+    std::cout << "  [✓] corrupt scriptPubKey hex fails loud with named outpoint"
+              << std::endl;
+}
+
 }  // namespace
 
 int main() {
@@ -288,10 +338,11 @@ int main() {
     test01_ReconstructSpentCoinsReadsChainDbRows(root);
     test02_ReconstructSpentCoinsIntraBlockFallback(root);
     test03_ReconstructSpentCoinsFailsLoudOnMissingCoin(root);
+    test04_ReconstructSpentCoinsFailsLoudOnCorruptSpkHex(root);
 
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
 
-    std::cout << "[PASS] ReconstructSpentCoinsFromChainDb: 3/3 cases" << std::endl;
+    std::cout << "[PASS] ReconstructSpentCoinsFromChainDb: 4/4 cases" << std::endl;
     return 0;
 }

@@ -55,7 +55,7 @@
 #include "p2p_manager.h"             // Phase C.1 v2: For P2PMessage::create_inv(), create_block()
 #include "crypto/sha256.h"           // Phase 42: For snapshot checksum computation
 #include "common/serialization.h"    // VectorWriter/Reader for delta sidecar persistence
-#include "util/hex.h"                // #274: util::HexToBytes for ChainDB hex spk decode
+#include "util/hex.h"                // #274: util::unhex for ChainDB hex spk decode
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -9693,11 +9693,25 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
             auto coin_result = chain_db_->getCoin(prev_txid, prev_vout);
             if (coin_result.status() == Status::Ok) {
                 const auto& coin = coin_result.value();
+                // ChainDB stores spk as hex. util::HexToBytes SILENTLY
+                // returns an empty vector on odd-length/non-hex input —
+                // an empty scriptPubKey in the undo would corrupt the
+                // restored coin on disconnect. Decode via util::unhex
+                // and fail loud on corrupt rows instead.
+                std::vector<unsigned char> spk_bytes;
+                if (!util::unhex(coin.script_pubkey, spk_bytes)) {
+                    out_error = "ReconstructSpentCoinsFromChainDb: spent coin "
+                                "row has corrupt scriptPubKey hex: " +
+                                prev_txid.GetHex() + ":" +
+                                std::to_string(prev_vout);
+                    out_spent.clear();
+                    return Status::Corruption;
+                }
                 out_spent.emplace_back(
                     prev_txid,
                     prev_vout,
                     coin.amount,
-                    util::HexToBytes(coin.script_pubkey),  // ChainDB stores spk as hex
+                    std::vector<uint8_t>(spk_bytes.begin(), spk_bytes.end()),
                     coin.coinbase,
                     static_cast<uint32_t>(coin.height),
                     coin.is_confidential,
@@ -10679,24 +10693,43 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // fire safe mode. Hoisting it here closes that crash window.
     auto existing_undo = ReadStoredUndo(tip_to_connect->hash);
 
-    // #274: expected spent count = one entry per non-coinbase input — the
-    // same structural formula CheckBlockDisconnectMaterialDurable enforces
-    // at publish time. A stored undo with a mismatched spent list (e.g.
-    // persisted by a stateless node before this fix) is INVALID and must
-    // not be reused.
+    // #274: this gate must mirror EVERY structural check the publish
+    // invariant (CheckBlockDisconnectMaterialDurable) applies to a decoded
+    // undo — count, non-empty created, and the shielded-frontier coupling.
+    // A stored undo that passes a weaker gate here gets reused, persisted,
+    // and then aborts at publish time anyway.
+    //   - expected spent count = one entry per non-coinbase input.
+    //   - block_has_shielded uses the SAME predicate as the invariant:
+    //     tx.IsShielded() over ALL txs (coinbase included).
+    bool block_has_shielded = false;
     uint64_t expected_spent_count = 0;
-    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
-        expected_spent_count += block.vtx[tx_idx].vin.size();
+    for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+        const auto& tx = block.vtx[tx_idx];
+        if (tx.IsShielded()) block_has_shielded = true;
+        if (tx_idx > 0) {  // skip coinbase
+            expected_spent_count += tx.vin.size();
+        }
     }
 
     const bool existing_undo_valid = existing_undo.status() == Status::Ok &&
-        existing_undo.value().spent.size() == expected_spent_count;
+        existing_undo.value().spent.size() == expected_spent_count &&
+        !existing_undo.value().created.empty() &&
+        (!block_has_shielded ||
+         existing_undo.value().pre_block_shielded_frontier.has_value());
     if (existing_undo.status() == Status::Ok && !existing_undo_valid && logger_) {
-        logger_->warning("[ConnectTip] Rejecting stored undo record with spent count mismatch at height=" +
+        std::string why;
+        if (existing_undo.value().spent.size() != expected_spent_count) {
+            why = "spent count mismatch (expected " +
+                  std::to_string(expected_spent_count) + " got " +
+                  std::to_string(existing_undo.value().spent.size()) + ")";
+        } else if (existing_undo.value().created.empty()) {
+            why = "created vector empty (every block creates coinbase outputs)";
+        } else {
+            why = "missing pre_block_shielded_frontier for shielded block";
+        }
+        logger_->warning("[ConnectTip] Rejecting stored undo record at height=" +
                       std::to_string(tip_to_connect->height) +
-                      ": expected " + std::to_string(expected_spent_count) +
-                      " got " + std::to_string(existing_undo.value().spent.size()) +
-                      " - rebuilding");
+                      ": " + why + " - rebuilding");
     }
 
     dinero::UndoRecord undo_record;
