@@ -438,6 +438,41 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_header_metadata_recovery.cpp)
   message(STATUS "✅ Header metadata recovery regression guard enabled")
 endif()
 
+# #274: stateless ConnectBlock cannot populate BlockUndo.spent_coins, so
+# ConnectTip reconstructs the spent list from ChainDB coin rows. Pins
+# ChainstateService::ReconstructSpentCoinsFromChainDb (full-fidelity ChainDB
+# read-back, intra-block fallback, fail-loud on missing coin).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_reconstruct_spent_coins.cpp)
+  add_executable(test_reconstruct_spent_coins
+    tests/daemon/test_reconstruct_spent_coins.cpp
+    tests/stubs/mempool_test_stubs.cpp  # no-op Mempool seams (chainstate_service.obj refs)
+    tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault isolation seams
+    src/daemon/config.cpp               # GetConfig() — referenced by chainstate_service.obj
+  )
+  target_link_libraries(test_reconstruct_spent_coins PRIVATE
+    dinero_core
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_reconstruct_spent_coins)
+  target_link_directories(test_reconstruct_spent_coins PRIVATE /opt/homebrew/lib)
+  if(APPLE)
+    target_link_libraries(test_reconstruct_spent_coins PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_include_directories(test_reconstruct_spent_coins PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME ReconstructSpentCoins COMMAND test_reconstruct_spent_coins)
+  set_tests_properties(ReconstructSpentCoins PROPERTIES
+    LABELS "daemon;undo;stateless;regression"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ Stateless undo spent-coin reconstruction test enabled (#274)")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reindexer_anchor_seed.cpp)
   # Commit #1 of the offline --rebuild-undo-range series: tests that
   # BlockReindexer::seedFromAnchor() correctly populates in-memory state

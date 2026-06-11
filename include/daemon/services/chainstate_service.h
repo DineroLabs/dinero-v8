@@ -726,6 +726,18 @@ public:
         return ReadStoredUndo(hash);
     }
 
+    // #274: stateless ConnectBlock cannot populate BlockUndo.spent_coins (no UTXO
+    // set), so ConnectTip reconstructs the spent list from ChainDB coin rows —
+    // the only source carrying full fidelity (height + coinbase flag, which
+    // utreexo proofs do not commit to). Must run BEFORE the unified batch stages
+    // the deleteCoin calls, while the rows still exist. Same-block spends fall
+    // back to the block body (rows not yet written). Any other miss is fatal to
+    // the connect: a short undo would make the tip undisconnectable.
+    Status ReconstructSpentCoinsFromChainDb(const Block& block,
+                                            uint32_t height,
+                                            std::vector<dinero::SpentCoin>& out_spent,
+                                            std::string& out_error) const;
+
 private:
     struct ShieldedStateSnapshot {
         uint256 root;

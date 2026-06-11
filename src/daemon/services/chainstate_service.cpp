@@ -55,6 +55,7 @@
 #include "p2p_manager.h"             // Phase C.1 v2: For P2PMessage::create_inv(), create_block()
 #include "crypto/sha256.h"           // Phase 42: For snapshot checksum computation
 #include "common/serialization.h"    // VectorWriter/Reader for delta sidecar persistence
+#include "util/hex.h"                // #274: util::HexToBytes for ChainDB hex spk decode
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -9659,6 +9660,85 @@ consensus::BlockUndo UndoRecordToBlockUndo(const dinero::UndoRecord& undo_record
 }
 
 } // anonymous namespace
+
+// #274: stateless ConnectBlock cannot populate BlockUndo.spent_coins (no UTXO
+// set), so ConnectTip reconstructs the spent list from ChainDB coin rows —
+// the only source carrying full fidelity (height + coinbase flag, which
+// utreexo proofs do not commit to). Must run BEFORE the unified batch stages
+// the deleteCoin calls, while the rows still exist. Same-block spends fall
+// back to the block body (rows not yet written). Any other miss is fatal to
+// the connect: a short undo would make the tip undisconnectable.
+Status ChainstateService::ReconstructSpentCoinsFromChainDb(
+    const Block& block,
+    uint32_t height,
+    std::vector<dinero::SpentCoin>& out_spent,
+    std::string& out_error) const {
+    out_spent.clear();
+    out_error.clear();
+
+    if (!chain_db_) {
+        out_error = "ReconstructSpentCoinsFromChainDb: chain_db_ is null";
+        return Status::Internal;
+    }
+
+    // Iterate non-coinbase txs (tx_idx >= 1) and their inputs in block order.
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        const auto& tx = block.vtx[tx_idx];
+        for (const auto& input : tx.vin) {
+            const uint256 prev_txid = input.prevout.txid.AsUint256();
+            const uint32_t prev_vout = input.prevout.vout;
+
+            // Primary source: the ChainDB coin row (plain getCoin — the row
+            // must still exist because this runs before deleteCoin staging).
+            auto coin_result = chain_db_->getCoin(prev_txid, prev_vout);
+            if (coin_result.status() == Status::Ok) {
+                const auto& coin = coin_result.value();
+                out_spent.emplace_back(
+                    prev_txid,
+                    prev_vout,
+                    coin.amount,
+                    util::HexToBytes(coin.script_pubkey),  // ChainDB stores spk as hex
+                    coin.coinbase,
+                    static_cast<uint32_t>(coin.height),
+                    coin.is_confidential,
+                    coin.commitment);
+                continue;
+            }
+
+            // Intra-block fallback: the spent output was created by an EARLIER
+            // tx in this same block, so its coin row was never written.
+            bool found_intra_block = false;
+            for (size_t prev_idx = 0; prev_idx < tx_idx; ++prev_idx) {
+                const auto& prev_tx = block.vtx[prev_idx];
+                if (prev_tx.GetTxid().AsUint256() != prev_txid) continue;
+                if (prev_vout >= prev_tx.vout.size()) break;  // malformed — fail loud below
+                const auto& out = prev_tx.vout[prev_vout];
+                out_spent.emplace_back(
+                    prev_txid,
+                    prev_vout,
+                    out.value.GetUna(),
+                    out.scriptPubKey,
+                    /*is_coinbase=*/prev_idx == 0,
+                    height,  // created in this very block
+                    out.is_confidential,
+                    out.commitment);
+                found_intra_block = true;
+                break;
+            }
+            if (found_intra_block) continue;
+
+            // Neither source has it: a short undo would make this tip
+            // undisconnectable, so the connect must abort.
+            out_error = "ReconstructSpentCoinsFromChainDb: outpoint " +
+                        prev_txid.GetHex() + ":" + std::to_string(prev_vout) +
+                        " absent from ChainDB and not created intra-block";
+            out_spent.clear();
+            return Status::NotFound;
+        }
+    }
+
+    return Status::Ok;
+}
 
 // ============================================================================
 // Reorg Fix: Production-Correct DisconnectTip
