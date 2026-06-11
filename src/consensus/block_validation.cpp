@@ -1536,6 +1536,19 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         // Set computed root from header (already proven valid by proof verification)
         computed_utreexo_root = block.header.utreexo_root;
 
+        // #274: mirror the normal path's undo population (see Phase 2 success
+        // block below). Without the frontier, a shielded block's undo cannot
+        // restore the commitment tree on disconnect and the ConnectTip publish
+        // invariant refuses the tip. Moving is safe here: success is committed
+        // (block_connect_success below), so restore_on_failure never reads the
+        // moved-from local. Do NOT set undo.pre_block_snapshot — stateless
+        // mode has no UTXO snapshot.
+        if (!pre_block_shielded_frontier.empty()) {
+            undo.pre_block_shielded_frontier = std::move(pre_block_shielded_frontier);
+        } else {
+            undo.pre_block_shielded_frontier.reset();
+        }
+
         block_connect_success = true;
         std::cout << "✅ [STATELESS] Block " << height
                   << " validated via proofs — skipping forest-clone path" << std::endl;
