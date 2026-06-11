@@ -593,6 +593,19 @@ AD_H="$(rpc "$AD_RPC" "$AD_DIR" getblockcount | jq -r '.result // 0')"
 [[ "$AD_H" -lt "$FORK_TIP" ]] \
     || fail "F: promoted node REORGED onto the below-base fork (height $AD_H)"
 pass "F: no reorg onto the fork (active height $AD_H < fork tip $FORK_TIP)"
+# Stricter no-disconnect proof: the canonical block just above the fork point
+# must be unchanged — a guard placed after the disconnect walk (partial
+# disconnect before fatal) would alter it even if the tip stayed below the
+# fork tip. The source's hash at FORK_H+1 is canonical by construction.
+CANON_51="$(rpc "$SRC_RPC" "$SRC_DIR" getblockhash "[$((FORK_H + 1))]" | jq -r '.result // empty')"
+AD_51="$(rpc "$AD_RPC" "$AD_DIR" getblockhash "[$((FORK_H + 1))]" | jq -r '.result // empty')"
+[[ -n "$CANON_51" && "$AD_51" == "$CANON_51" ]] \
+    || fail "F: canonical block at $((FORK_H + 1)) changed (disconnect below base occurred): ad=$AD_51 canon=$CANON_51"
+pass "F: no disconnect below base (canonical block at $((FORK_H + 1)) unchanged)"
+# Coverage note: F exercises the post-restart guard variant (effective_base
+# from promoted_base_height_ restored off the persisted FullyValidated
+# record). The live same-process variant (set at promotion success) and the
+# pre-promotion mode-active branch remain unit/e2e-uncovered — registered.
 stop_node "$AD_DIR"
 stop_node "$F_DIR"
 fi
