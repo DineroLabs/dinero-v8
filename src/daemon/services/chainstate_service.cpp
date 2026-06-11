@@ -10678,14 +10678,79 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // DisconnectTip would later trip "missing undo data for active tip" and
     // fire safe mode. Hoisting it here closes that crash window.
     auto existing_undo = ReadStoredUndo(tip_to_connect->hash);
+
+    // #274: expected spent count = one entry per non-coinbase input — the
+    // same structural formula CheckBlockDisconnectMaterialDurable enforces
+    // at publish time. A stored undo with a mismatched spent list (e.g.
+    // persisted by a stateless node before this fix) is INVALID and must
+    // not be reused.
+    uint64_t expected_spent_count = 0;
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        expected_spent_count += block.vtx[tx_idx].vin.size();
+    }
+
+    const bool existing_undo_valid = existing_undo.status() == Status::Ok &&
+        existing_undo.value().spent.size() == expected_spent_count;
+    if (existing_undo.status() == Status::Ok && !existing_undo_valid && logger_) {
+        logger_->warning("[ConnectTip] Rejecting stored undo record with spent count mismatch at height=" +
+                      std::to_string(tip_to_connect->height) +
+                      ": expected " + std::to_string(expected_spent_count) +
+                      " got " + std::to_string(existing_undo.value().spent.size()) +
+                      " - rebuilding");
+    }
+
     dinero::UndoRecord undo_record;
-    if (existing_undo.status() == Status::Ok) {
+    if (existing_undo_valid) {
         undo_record = existing_undo.value();
         if (logger_) {
             logger_->debug("[ConnectTip] Reusing existing undo record from BlockAcceptor/legacy storage");
         }
     } else {
         undo_record = BlockUndoToUndoRecord(block_undo, block);
+
+        // #274: stateless (CSN) ConnectBlock has no UTXO set and leaves
+        // BlockUndo.spent_coins empty, so a freshly built undo_record on a
+        // stateless node has spent.size()==0 while the block carries
+        // spends. Reconstruct the spent list from ChainDB coin rows (rows
+        // are still live — the unified batch that deletes them commits
+        // later in ConnectTip). On stateful nodes ConnectBlock populates
+        // exactly one entry per non-coinbase input, so this is a no-op.
+        if (undo_record.spent.size() != expected_spent_count) {
+            std::string recon_error;
+            const auto recon_status = ReconstructSpentCoinsFromChainDb(
+                block, tip_to_connect->height, undo_record.spent, recon_error);
+            if (recon_status != Status::Ok ||
+                undo_record.spent.size() != expected_spent_count) {
+                if (recon_status == Status::Ok && recon_error.empty()) {
+                    recon_error = "reconstructed spent count mismatch: expected " +
+                                  std::to_string(expected_spent_count) +
+                                  " got " + std::to_string(undo_record.spent.size());
+                }
+                if (logger_) {
+                    logger_->error("[ConnectTip] CRITICAL: Failed to reconstruct spent coins for stateless undo: " + recon_error);
+                    logger_->error("[ConnectTip] Undo spent list is required for rollback safety - aborting connection");
+                }
+                std::cout << "❌ [ConnectTip] undo spent reconstruction FAILED - aborting to prevent inconsistent state" << std::endl;
+
+                if (active_batch.has_value()) active_batch->Abort();
+                std::string rollback_error;
+                if (!block_validator_->DisconnectBlock(block, tip_to_connect->height, block_undo, rollback_error)) {
+                    if (logger_) {
+                        logger_->error("[ConnectTip] FATAL: Rollback failed: " + rollback_error);
+                        logger_->error("[ConnectTip] Database is now inconsistent - manual recovery required");
+                    }
+                } else {
+                    if (logger_) logger_->info("[ConnectTip] Rollback successful - state restored");
+                }
+                return fail("undo-spent-reconstruction-failed: " + recon_error);
+            }
+            if (logger_) {
+                logger_->info("[ConnectTip] Reconstructed " +
+                              std::to_string(undo_record.spent.size()) +
+                              " spent coins from ChainDB for stateless undo (height=" +
+                              std::to_string(tip_to_connect->height) + ")");
+            }
+        }
     }
 
     // CORRECTNESS: the flatfile is the source of truth, not the in-memory
@@ -10703,7 +10768,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // produced the "missing undo data for active tip" safe-mode fire on
     // Mac 2026-04-20 during a two-miner sibling race at height 3417.
     const bool need_flatfile_undo = block_storage_ &&
-        (tip_to_connect->undo_size == 0 || existing_undo.status() != Status::Ok);
+        (tip_to_connect->undo_size == 0 || !existing_undo_valid);
     if (need_flatfile_undo) {
         const std::vector<uint8_t> undo_bytes = undo_record.Serialize();
         auto undo_pos_result = block_storage_->writeUndo(tip_to_connect->hash, undo_bytes);
