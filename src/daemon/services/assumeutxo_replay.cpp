@@ -79,6 +79,13 @@ bool AssumeUtxoReplayEngine::ConnectAndAdvance(const Block& block, uint32_t heig
     // when the deque exceeds the window). BlockUndo is movable — utreexo_delta,
     // spent_coins, and optional fields all move without extra allocation.
     if (undo_tail_window_ > 0) {
+        // CRITICAL: strip the pre-block UTXO-set snapshot ConnectBlock attaches
+        // when the backend supports snapshot/restore — it deep-copies the whole
+        // set + serialized forest (~30MB at mainnet scale); retaining 1024 of
+        // them would OOM the final pass. The flatfile undo format never
+        // serializes it (BlockUndo::Serialize), and disconnect durability uses
+        // spent_coins + frontier + the UD sidecar, never this snapshot.
+        undo.pre_block_snapshot.reset();
         undo_tail_.push_back(CapturedUndo{height, block_hash, std::move(undo)});
         while (undo_tail_.size() > undo_tail_window_) undo_tail_.pop_front();
     }

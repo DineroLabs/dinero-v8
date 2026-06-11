@@ -250,6 +250,14 @@ TEST(AssumeUtxoReplay, CapturesUndoTailWindow) {
     ASSERT_EQ(tail.size(), 3u);
     EXPECT_EQ(tail.front().height, 7u);
     EXPECT_EQ(tail.back().height, 9u);
+    // CRITICAL memory guard: ConnectBlock attaches a full pre-block UTXO-set
+    // snapshot to undo when the backend supports snapshot/restore (~30MB at
+    // mainnet scale). The ring must strip it — 1024 retained snapshots would
+    // OOM the final pass (~30GB). The flatfile undo format never serializes
+    // it; disconnect durability relies on spent_coins + frontier + UD sidecar.
+    for (const auto& cu : tail) {
+        EXPECT_FALSE(cu.undo.pre_block_snapshot.has_value());
+    }
     // Each captured undo must be non-trivial for blocks that spend (our builder's
     // coinbase-only blocks have empty spent sets — assert the struct is present
     // and heights are right; spend-bearing undo content is e2e territory).

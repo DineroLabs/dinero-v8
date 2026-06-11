@@ -93,7 +93,9 @@ public:
     void SetUndoTailWindow(uint32_t window);
     const std::deque<CapturedUndo>& UndoTail() const { return undo_tail_; }
 
-    // Proven UTXO map (by const-ref; valid until the next ConnectAndAdvance).
+    // Proven UTXO map (by const-ref; the reference is valid for the engine's
+    // lifetime — it aliases the live set, so CONTENTS change on each
+    // ConnectAndAdvance; read it only at replay completion).
     // OutPoint is in dinero:: (not dinero::consensus::); UTXOEntry is in
     // dinero::consensus:: — both are in scope from within dinero::assumeutxo.
     const std::unordered_map<OutPoint, consensus::UTXOEntry>& ProvenUtxos() const;
