@@ -153,6 +153,10 @@ size_t PersistentUTXOAdapter::GetPersistentUTXOCount() const {
 // Type Conversion
 // =============================================================================
 
+// NOTE: PromoteValidatedHistory (chainstate_service.cpp) contains a file-local
+// helper UtxoEntryToDbCoin that MUST remain byte-identical to this function.
+// Both encode scriptPubKey as lowercase zero-padded hex, same field order.
+// If you change this function, update UtxoEntryToDbCoin to match.
 Coin PersistentUTXOAdapter::ToDbCoin(const consensus::UTXOEntry& entry) {
     Coin coin;
     coin.amount = entry.value.GetUna();

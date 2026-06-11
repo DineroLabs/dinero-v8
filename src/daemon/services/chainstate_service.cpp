@@ -86,6 +86,35 @@ constexpr const char* kStartupCatchupSource = "startup-catchup";
 constexpr uint32_t kInvMsgBlock = 2u;
 constexpr uint32_t kInvMsgUtreexoBlock = 0x50000002u;
 
+// Startup undo audit window: the number of active-chain blocks (tail) that
+// VerifyActiveChainUndoCoverage checks at startup. PromoteValidatedHistory uses
+// the same constant to gate promotion: the engine's undo tail must cover
+// [max(1, base-1023)..base] before the tip is committed, so the first
+// post-promotion restart passes the audit without a recovery marker.
+constexpr uint32_t kStartupUndoAuditWindow = 1024;
+
+// Convert a consensus::UTXOEntry to the storage Coin format used by ChainDB.
+// MUST stay byte-identical to PersistentUTXOAdapter::ToDbCoin
+// (include/storage/persistent_utxo_adapter.h, private static) —
+// drift breaks promotion/adapter equivalence (coins promoted here are later
+// read back via LoadInitialState which calls FromDbCoin on the same rows).
+// ToDbCoin cannot be called from here because it is private.
+Coin UtxoEntryToDbCoin(const consensus::UTXOEntry& entry) {
+    Coin coin;
+    coin.amount = entry.value.GetUna();
+    coin.script_pubkey.reserve(entry.scriptPubKey.size() * 2);
+    for (uint8_t byte : entry.scriptPubKey) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", byte);
+        coin.script_pubkey += buf;
+    }
+    coin.height = static_cast<int>(entry.height);
+    coin.coinbase = entry.isCoinbase;
+    coin.is_confidential = entry.is_confidential;
+    coin.commitment = entry.commitment;
+    return coin;
+}
+
 uint32_t BlockGetDataInventoryType() {
     return GetConfig().utreexo_stateless ? kInvMsgUtreexoBlock : kInvMsgBlock;
 }
@@ -2444,7 +2473,6 @@ bool ChainstateService::Start() {
     // covers any plausible reorg horizon, and matches Bitcoin Core's
     // assumption that a deeper reorg requires a full reindex anyway.
     // Uses height 0 + 1 lower bound check internally.
-    constexpr uint32_t kStartupUndoAuditWindow = 1024;
     if (!VerifyActiveChainUndoCoverage(height, kStartupUndoAuditWindow)) {
         logger_->error("[ChainstateService] Startup undo audit detected an unreadable "
                        "undo entry on the active chain — chainstate_recovery.marker has "
@@ -12255,6 +12283,22 @@ bool ChainstateService::PromoteValidatedHistory(
     // its previous value with identical bytes (the proven history is
     // deterministic). Failure anywhere returns error+false — the caller
     // treats that as OPERATIONAL (retry next pass), never snapshot-fatal.
+    //
+    // LOCKING: activation_mutex_ is held for the entire method so the tip
+    // check and all subsequent writes are atomic w.r.t. ConnectTip. Without
+    // it, ConnectTip could advance the canonical tip between our tip read and
+    // the coin reconcile, causing promotion to delete post-base coin deltas
+    // and regress the persisted tip.
+    //
+    // Lock-ordering proof (no cycle):
+    //   acquisition order is activation_mutex_ only; the worker holds nothing
+    //   at the Task-3 call site (between OnReplayComplete and
+    //   OnBackgroundValidationComplete — no bg_validation_mutex_ or
+    //   assumeutxo_lifecycle_init_mutex_ are held).
+    //   ActivateBestChain/ConnectTip (under activation_mutex_) never take
+    //   bg_validation_mutex_ or assumeutxo_lifecycle_init_mutex_, so the
+    //   hierarchy is bg_validation (if any) -> activation, with no reverse
+    //   edge; deadlock is structurally impossible.
     // ═══════════════════════════════════════════════════════════════════════
     if (!chain_db_) { error = "chaindb unavailable"; return false; }
     if (!block_storage_) { error = "block storage unavailable"; return false; }
@@ -12265,6 +12309,9 @@ bool ChainstateService::PromoteValidatedHistory(
         error = "no assumeutxo base recorded";
         return false;
     }
+
+    // Serialise all writes against ConnectTip (see locking comment above).
+    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
 
     // Defensive ordering guard (the caller also gates on this): once the
     // ChainDB tip is at/above the base — either a previous promotion landed
@@ -12510,20 +12557,9 @@ bool ChainstateService::PromoteValidatedHistory(
         }
 
         for (const auto& [outpoint, entry] : proven) {
-            dinero::Coin coin;
-            coin.amount = entry.value.GetUna();
-            // ChainDB stores scriptPubKey as a hex string (putCoin idiom from
-            // ConnectTip / the reindexer rebuild).
-            std::ostringstream spk_hex;
-            for (uint8_t byte : entry.scriptPubKey) {
-                spk_hex << std::hex << std::setfill('0') << std::setw(2)
-                        << static_cast<int>(byte);
-            }
-            coin.script_pubkey = spk_hex.str();
-            coin.height = entry.height;
-            coin.coinbase = entry.isCoinbase;
-            coin.is_confidential = entry.is_confidential;
-            coin.commitment = entry.commitment;
+            // Conversion via file-local helper (byte-identical to
+            // PersistentUTXOAdapter::ToDbCoin — see UtxoEntryToDbCoin above).
+            const Coin coin = UtxoEntryToDbCoin(entry);
             const auto st = chain_db_->putCoin(
                 token, outpoint.txid.AsUint256(), outpoint.vout, coin, &batch);
             if (st != Status::Ok) {
@@ -12546,6 +12582,15 @@ bool ChainstateService::PromoteValidatedHistory(
     //     per row: height_LE_u32 (4) || nullifier_bytes (32)
     {
         const auto bytes = engine.ShieldedNullifiers()->SerializeContent();
+        // Stream-error guard: SerializeContent returns empty on sqlite error
+        // (e.g. malformed row — see nullifier_set.cpp). If the set is non-empty
+        // but serialization produced nothing, we would silently drop all
+        // nullifiers and promote a corrupted state.
+        if (bytes.empty() && engine.ShieldedNullifiers() != nullptr &&
+                engine.ShieldedNullifiers()->Size() > 0) {
+            error = "shielded promotion: nullifier serialization returned empty for non-empty set";
+            return false;
+        }
         constexpr size_t kHeaderBytes = 4 + 2 + 8;
         constexpr size_t kRowBytes = 4 + 32;
         constexpr uint32_t kSerializeContentTag = 0x4653434E;  // 'NSCF' LE-reconstructed
@@ -12737,6 +12782,38 @@ bool ChainstateService::PromoteValidatedHistory(
         if (st != Status::Ok) {
             error = "promotion: tip-anchored marker batch commit failed (status=" +
                     std::to_string(static_cast<int>(st)) + ")";
+            return false;
+        }
+    }
+
+    // ── Pre-setTip undo-tail coverage gate ────────────────────────────────────
+    // Require the engine's undo tail to cover [max(1, base-1023)..base]
+    // contiguously (ascending, no gaps, last == base).
+    //
+    // Rationale: VerifyActiveChainUndoCoverage (called by Start() with
+    // kStartupUndoAuditWindow=1024) checks exactly this window at the next
+    // restart. If the tail is under-provisioned, the audit fires immediately
+    // after promotion and writes a recovery marker that blocks chain advance.
+    // Refusing promotion here surfaces the gap before it hits disk.
+    {
+        const uint32_t window_start = (base >= kStartupUndoAuditWindow)
+            ? (base - kStartupUndoAuditWindow + 1u)
+            : 1u;
+        const auto& undo_tail = engine.UndoTail();
+        if (undo_tail.empty() || undo_tail.back().height != base) {
+            error = "undo tail does not cover the startup audit window — promotion refused";
+            return false;
+        }
+        // Verify contiguous descending coverage from base back to window_start.
+        bool coverage_ok = false;
+        uint32_t expect = base;
+        for (auto it = undo_tail.rbegin(); it != undo_tail.rend(); ++it) {
+            if (it->height != expect) break;
+            if (expect == window_start) { coverage_ok = true; break; }
+            --expect;
+        }
+        if (!coverage_ok) {
+            error = "undo tail does not cover the startup audit window — promotion refused";
             return false;
         }
     }
