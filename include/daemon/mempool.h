@@ -385,6 +385,7 @@ public:
     void setMaxSize(size_t max_size) { m_max_size = max_size; }
     void setMaxAge(std::chrono::hours max_age) { m_max_age = max_age; }
     void setMinFeeRate(double min_fee_rate) { m_min_fee_rate = min_fee_rate; }
+    double getMinFeeRate() const { return m_min_fee_rate; }
 
     /**
      * Enable/disable RBF (Replace-By-Fee)

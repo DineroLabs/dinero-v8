@@ -150,6 +150,24 @@ std::vector<ShieldedNote> ListShieldedNotes(dinero::WalletManager& wallet, bool 
 uint64_t GetShieldedBalance(dinero::WalletManager& wallet);
 uint64_t GetShieldedTreeSize(dinero::WalletManager& wallet);
 
+// ── Issue #273: size-aware fee floor ─────────────────────────────────
+
+/// Safety margin (una) added on top of the exact mempool floor by
+/// RequiredFeeForTx. The explicit-fee field is fixed-width (8 bytes) so
+/// the fee VALUE cannot move the vsize, but proof bytes can drift a few
+/// bytes between two otherwise-identical builds.
+inline constexpr uint64_t kFeeSizingMarginUna = 16;
+
+/**
+ * Minimum fee (una) the mempool will accept for `tx` at `min_fee_rate`
+ * (una/vbyte), plus kFeeSizingMarginUna. The mempool's acceptance
+ * criterion is `fee / tx.GetVirtualSize() >= min_fee_rate`, so this is
+ * `ceil(min_fee_rate * vsize) + margin`. Measure on the FINAL tx shape
+ * (bundle attached, witnesses signed) — the v6 shielded bundle counts in
+ * base serialization, so attaching it grows vsize by kilobytes.
+ */
+uint64_t RequiredFeeForTx(const dinero::Transaction& tx, double min_fee_rate);
+
 // ── Phase 3 wave 3b: shield-side bundle attachment ───────────────────
 
 struct AttachShieldResult {
@@ -185,11 +203,16 @@ AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
  * Wallet-manager-backed wrapper around `BuildShieldBundleForTx` that ALSO
  * persists the new note to the wallet's pending-note store. RPC handler
  * (`wallet.shield`) uses this; tests use the pure helper above.
+ *
+ * `persist=false` is the dry-run mode for size-aware fee measurement
+ * (issue #273): build + attach only, do NOT store the pending note. The
+ * resulting tx is for measurement and must be discarded.
  */
 AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
                                             uint64_t value_una,
                                             dinero::WalletManager& wallet,
-                                            uint32_t current_height);
+                                            uint32_t current_height,
+                                            bool persist = true);
 
 // ── Phase 3 wave 3c: unshield-side bundle attachment ─────────────────
 
@@ -246,11 +269,16 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
  *
  * Returns `InvalidParams` if the note is missing, unconfirmed, already
  * spent (or pending-spent), or has insufficient value.
+ *
+ * `persist=false` is the dry-run mode for size-aware fee measurement
+ * (issue #273): build + attach only, do NOT mark the note pending-spent.
+ * The resulting tx is for measurement and must be discarded.
  */
 AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
                                                uint64_t note_leaf_index,
                                                uint64_t fee_una,
-                                               dinero::WalletManager& wallet);
+                                               dinero::WalletManager& wallet,
+                                               bool persist = true);
 
 /**
  * Coin selector for unshield: returns the smallest unspent confirmed note
@@ -304,11 +332,16 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
  * the auth path, calls the pure helper, marks the old note pending-spent,
  * and registers the new self-output via `AddPendingNote` so the wallet
  * tree picks it up at confirmation time.
+ *
+ * `persist=false` is the dry-run mode for size-aware fee measurement
+ * (issue #273): build + attach only — no pending-spent mark, no pending
+ * note. The resulting tx is for measurement and must be discarded.
  */
 AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
                                                uint64_t note_leaf_index,
                                                uint64_t fee_una,
-                                               dinero::WalletManager& wallet);
+                                               dinero::WalletManager& wallet,
+                                               bool persist = true);
 
 /**
  * Coin selector for transfer: smallest unspent confirmed note with
@@ -364,13 +397,18 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
  * builds auth paths (all anchored at the wallet-tree root), calls the
  * pure helper, marks every spent note pending-spent, and persists every
  * new self-output as a pending note.
+ *
+ * `persist=false` is the dry-run mode for size-aware fee measurement
+ * (issue #273): build + attach only — no pending-spent marks, no pending
+ * notes. The resulting tx is for measurement and must be discarded.
  */
 AttachMultiTransferResult AttachMultiTransferInputBundle(
     dinero::Transaction& tx,
     const std::vector<uint64_t>& note_leaf_indices,
     const std::vector<uint64_t>& output_values,
     uint64_t fee_una,
-    dinero::WalletManager& wallet);
+    dinero::WalletManager& wallet,
+    bool persist = true);
 
 /**
  * Greedy multi-note coin selector. Picks the smallest unspent confirmed
@@ -440,6 +478,10 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
  * `recipient_address`, builds the bundle, marks spends pending-spent,
  * and persists the legacy-style change note (if any) via
  * `AddPendingNote`.
+ *
+ * `persist=false` is the dry-run mode for size-aware fee measurement
+ * (issue #273): build + attach only — no pending-spent marks, no pending
+ * change note. The resulting tx is for measurement and must be discarded.
  */
 AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     dinero::Transaction& tx,
@@ -448,6 +490,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     uint64_t recipient_value_una,
     uint64_t fee_una,
     dinero::WalletManager& wallet,
-    const std::string* recipient_memo_utf8 = nullptr);
+    const std::string* recipient_memo_utf8 = nullptr,
+    bool persist = true);
 
 } // namespace dinero::wallet::shielded_ops

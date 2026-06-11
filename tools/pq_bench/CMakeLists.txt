@@ -115,6 +115,11 @@ set_target_properties(p2mr_address_test PROPERTIES
 set(SHIELDED_WALLET_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/wallet/shielded_derivation.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/bip32_deriver.cpp
+    # dinero_tx_primitives' Transaction::Serialize needs the serializer, which
+    # no library owns (test targets compile it directly — repo idiom). Needed
+    # since shielded_wallet_ops::RequiredFeeForTx pulled GetWeight into
+    # libdinero_shielded (#273 size-aware fees).
+    ${CMAKE_SOURCE_DIR}/src/primitives/transaction_serializer.cpp
 )
 
 # V7 Shielded pool round-trip tests.
@@ -122,7 +127,7 @@ add_executable(shielded_pool_test
     shielded_pool_test.cpp
     ${SHIELDED_WALLET_TEST_SOURCES}
 )
-target_link_libraries(shielded_pool_test PRIVATE dinero_shielded dinero_crypto secp256k1 OpenSSL::Crypto sqlite3)
+target_link_libraries(shielded_pool_test PRIVATE dinero_shielded dinero_tx_primitives dinero_crypto secp256k1 OpenSSL::Crypto sqlite3)
 target_include_directories(shielded_pool_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
@@ -137,7 +142,7 @@ add_executable(shielded_adversarial_test
     shielded_adversarial_test.cpp
     ${SHIELDED_WALLET_TEST_SOURCES}
 )
-target_link_libraries(shielded_adversarial_test PRIVATE dinero_shielded dinero_crypto secp256k1 OpenSSL::Crypto sqlite3)
+target_link_libraries(shielded_adversarial_test PRIVATE dinero_shielded dinero_tx_primitives dinero_crypto secp256k1 OpenSSL::Crypto sqlite3)
 set_target_properties(shielded_adversarial_test PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON

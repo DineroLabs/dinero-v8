@@ -114,9 +114,9 @@ RECIPIENT_ADDR="$(jq -r '.result.address' <<<"${RECIPIENT_RES}")"
 [[ "${RECIPIENT_ADDR}" =~ ^rdins1 ]] || fail "expected rdins1… recipient, got ${RECIPIENT_ADDR}"
 pass "recipient address ${RECIPIENT_ADDR:0:24}…"
 
-# Shield 1 DIN to self.
+# Shield 1 DIN to self (auto-sized fee — issue #273).
 info "Shielding 1 DIN"
-rpc_result "wallet.shield" '[1.0, 10000]' >/dev/null
+rpc_result "wallet.shield" '[1.0]' >/dev/null
 rpc_result "generatetoaddress" "[1,\"${MINER_ADDR}\"]" >/dev/null
 
 BAL_BEFORE="$(rpc_result "wallet.shieldedbalance" '[]')"
@@ -139,11 +139,10 @@ echo "${BAD_HRP_RES}" | jq -e '.result.error == "attach_transfer_failed"' >/dev/
     || fail "din1p HRP should be rejected by addressed transfer: ${BAD_HRP_RES}"
 pass "non-shielded HRP rejected by addressed transfer"
 
-# Happy path: addressed transfer with change.
-info "Calling wallet.transfer to recipient address"
-TRANSFER_FEE=20000
+# Happy path: addressed transfer with change, fee auto-sized (issue #273).
+info "Calling wallet.transfer to recipient address (fee auto-sized)"
 TRANSFER_AMOUNT=70000000   # 0.7 DIN
-T_RES="$(rpc_result "wallet.transfer" "{\"fee_una\": ${TRANSFER_FEE}, \"amount_una\": ${TRANSFER_AMOUNT}, \"address\": \"${RECIPIENT_ADDR}\"}")"
+T_RES="$(rpc_result "wallet.transfer" "{\"amount_una\": ${TRANSFER_AMOUNT}, \"address\": \"${RECIPIENT_ADDR}\"}")"
 echo "${T_RES}" | jq -e '.result.status == "transferred" and .result.wave == "3d-addressed"' >/dev/null \
     || fail "expected transferred/3d-addressed: ${T_RES}"
 
@@ -151,9 +150,14 @@ T_TXID="$(jq -r '.result.txid' <<<"${T_RES}")"
 HAD_CHANGE="$(jq -r '.result.had_change' <<<"${T_RES}")"
 CHANGE_UNA="$(jq -r '.result.change_una' <<<"${T_RES}")"
 SPEND_COUNT="$(jq -r '.result.spend_count' <<<"${T_RES}")"
+TRANSFER_FEE="$(jq -r '.result.fee_una' <<<"${T_RES}")"
+AUTOSIZED="$(jq -r '.result.fee_autosized' <<<"${T_RES}")"
+VSIZE_OUT="$(jq -r '.result.vsize' <<<"${T_RES}")"
 [[ -n "${T_TXID}" && "${T_TXID}" != "null" ]] || fail "missing txid: ${T_RES}"
 (( SPEND_COUNT >= 1 )) || fail "expected >= 1 spend, got ${SPEND_COUNT}"
-pass "addressed transfer txid=${T_TXID:0:16}… spends=${SPEND_COUNT} change=${CHANGE_UNA}"
+[[ "${AUTOSIZED}" == "true" ]] || fail "expected fee_autosized=true: ${T_RES}"
+(( TRANSFER_FEE >= VSIZE_OUT )) || fail "auto-sized fee ${TRANSFER_FEE} < vsize ${VSIZE_OUT}"
+pass "addressed transfer txid=${T_TXID:0:16}… spends=${SPEND_COUNT} change=${CHANGE_UNA} fee=${TRANSFER_FEE} (vsize=${VSIZE_OUT})"
 
 # Verify in mempool.
 MP="$(rpc_result "getrawmempool" '[]')"

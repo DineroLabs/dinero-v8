@@ -115,8 +115,9 @@ RECIPIENT_ADDR="$(jq -r '.result.address' <<<"${RECIPIENT_RES}")"
 [[ "${RECIPIENT_ADDR}" =~ ^rdins1 ]] || fail "expected rdins1… recipient, got ${RECIPIENT_ADDR}"
 pass "recipient address (account 0 j=1) ${RECIPIENT_ADDR:0:24}…"
 
+# Auto-sized fee — issue #273.
 info "Shielding 1 DIN"
-rpc_result "wallet.shield" '[1.0, 10000]' >/dev/null
+rpc_result "wallet.shield" '[1.0]' >/dev/null
 rpc_result "generatetoaddress" "[1,\"${MINER_ADDR}\"]" >/dev/null
 
 BAL_BEFORE="$(rpc_result "wallet.shieldedbalance" '[]')"
@@ -125,15 +126,19 @@ BAL_BEFORE_UNA="$(jq -r '.result.balance_una // 0' <<<"${BAL_BEFORE}")"
 (( TREE_BEFORE >= 1 )) || fail "expected tree_size >= 1, got ${TREE_BEFORE}"
 pass "shield confirmed; tree=${TREE_BEFORE}, balance=${BAL_BEFORE_UNA}"
 
-TRANSFER_FEE=20000
 TRANSFER_AMOUNT=70000000
-info "Calling wallet.transfer to self via account 0 j=1"
-T_RES="$(rpc_result "wallet.transfer" "{\"fee_una\": ${TRANSFER_FEE}, \"amount_una\": ${TRANSFER_AMOUNT}, \"address\": \"${RECIPIENT_ADDR}\"}")"
+info "Calling wallet.transfer to self via account 0 j=1 (fee auto-sized — issue #273)"
+T_RES="$(rpc_result "wallet.transfer" "{\"amount_una\": ${TRANSFER_AMOUNT}, \"address\": \"${RECIPIENT_ADDR}\"}")"
 echo "${T_RES}" | jq -e '.result.status == "transferred" and .result.wave == "3d-addressed"' >/dev/null \
     || fail "expected transferred/3d-addressed: ${T_RES}"
 T_TXID="$(jq -r '.result.txid' <<<"${T_RES}")"
 HAD_CHANGE="$(jq -r '.result.had_change' <<<"${T_RES}")"
-pass "addressed transfer txid=${T_TXID:0:16}… had_change=${HAD_CHANGE}"
+TRANSFER_FEE="$(jq -r '.result.fee_una' <<<"${T_RES}")"
+AUTOSIZED="$(jq -r '.result.fee_autosized' <<<"${T_RES}")"
+VSIZE_OUT="$(jq -r '.result.vsize' <<<"${T_RES}")"
+[[ "${AUTOSIZED}" == "true" ]] || fail "expected fee_autosized=true: ${T_RES}"
+(( TRANSFER_FEE >= VSIZE_OUT )) || fail "auto-sized fee ${TRANSFER_FEE} < vsize ${VSIZE_OUT}"
+pass "addressed transfer txid=${T_TXID:0:16}… had_change=${HAD_CHANGE} fee=${TRANSFER_FEE} (vsize=${VSIZE_OUT})"
 
 # Mine the transfer block — receive-side scan runs here.
 rpc_result "generatetoaddress" "[1,\"${MINER_ADDR}\"]" >/dev/null

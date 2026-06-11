@@ -529,7 +529,8 @@ std::optional<ShieldedNote> SelectUnshieldNote(dinero::WalletManager& wallet,
 AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
                                                uint64_t note_leaf_index,
                                                uint64_t fee_una,
-                                               dinero::WalletManager& wallet) {
+                                               dinero::WalletManager& wallet,
+                                               bool persist) {
     std::lock_guard<std::mutex> lock(g_runtime_mutex);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
@@ -589,7 +590,10 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
 
     // Mark pending-spent (spent=1, spent_height=0). Mempool eviction hook +
     // wallet startup sweep will roll this back if the tx never mines.
-    if (!g_runtime->store.MarkSpentByNullifier(built.nullifier,
+    // Skipped in dry-run mode (persist=false): issue #273 fee measurement
+    // discards this tx, so no wallet state may change.
+    if (persist &&
+        !g_runtime->store.MarkSpentByNullifier(built.nullifier,
                                                /*spent_height=*/0)) {
         AttachUnshieldResult err{};
         err.status = OpStatus::StoreError;
@@ -603,7 +607,8 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
 AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
                                             uint64_t value_una,
                                             dinero::WalletManager& wallet,
-                                            uint32_t current_height) {
+                                            uint32_t current_height,
+                                            bool persist) {
     std::lock_guard<std::mutex> lock(g_runtime_mutex);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
@@ -616,6 +621,13 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
     // Pure builder does all the cryptographic work + bundle attachment.
     auto built = BuildShieldBundleForTx(tx, value_una);
     if (built.status != OpStatus::Ok) {
+        return built;
+    }
+
+    // Dry-run mode (issue #273 fee measurement): build/attach only, the
+    // tx is discarded — do not persist the pending note.
+    if (!persist) {
+        OPENSSL_cleanse(built.nullifier_key.data(), built.nullifier_key.size());
         return built;
     }
 
@@ -648,7 +660,8 @@ std::optional<ShieldedNote> SelectTransferNote(dinero::WalletManager& wallet,
 AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
                                                uint64_t note_leaf_index,
                                                uint64_t fee_una,
-                                               dinero::WalletManager& wallet) {
+                                               dinero::WalletManager& wallet,
+                                               bool persist) {
     std::lock_guard<std::mutex> lock(g_runtime_mutex);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
@@ -703,6 +716,13 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
 
     auto built = BuildTransferBundleForTx(tx, input, fee_una);
     if (built.status != OpStatus::Ok) {
+        return built;
+    }
+
+    // Dry-run mode (issue #273 fee measurement): build/attach only, the
+    // tx is discarded — no pending-spent mark, no pending note.
+    if (!persist) {
+        OPENSSL_cleanse(built.out_secret_key.data(), built.out_secret_key.size());
         return built;
     }
 
@@ -773,7 +793,8 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
     const std::vector<uint64_t>& note_leaf_indices,
     const std::vector<uint64_t>& output_values,
     uint64_t fee_una,
-    dinero::WalletManager& wallet) {
+    dinero::WalletManager& wallet,
+    bool persist) {
     std::lock_guard<std::mutex> lock(g_runtime_mutex);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
@@ -840,6 +861,15 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
         return built;
     }
 
+    // Dry-run mode (issue #273 fee measurement): build/attach only, the
+    // tx is discarded — no pending-spent marks, no pending notes.
+    if (!persist) {
+        for (auto& m : built.outputs) {
+            OPENSSL_cleanse(m.secret_key.data(), m.secret_key.size());
+        }
+        return built;
+    }
+
     // Mark every spent note pending-spent.
     for (const auto& nullifier : built.spend_nullifiers) {
         if (!g_runtime->store.MarkSpentByNullifier(nullifier, /*spent_height=*/0)) {
@@ -887,7 +917,8 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     uint64_t recipient_value_una,
     uint64_t fee_una,
     dinero::WalletManager& wallet,
-    const std::string* recipient_memo_utf8) {
+    const std::string* recipient_memo_utf8,
+    bool persist) {
     std::lock_guard<std::mutex> lock(g_runtime_mutex);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
@@ -984,6 +1015,14 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
         tx, spends, recipient, change_value, fee_una,
         have_memo ? &memo_buf : nullptr);
     if (built.status != OpStatus::Ok) {
+        return built;
+    }
+
+    // Dry-run mode (issue #273 fee measurement): build/attach only, the
+    // tx is discarded — no pending-spent marks, no pending change note.
+    if (!persist) {
+        OPENSSL_cleanse(built.change_secret_key.data(),
+                        built.change_secret_key.size());
         return built;
     }
 
