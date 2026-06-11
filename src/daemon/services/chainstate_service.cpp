@@ -55,6 +55,7 @@
 #include "p2p_manager.h"             // Phase C.1 v2: For P2PMessage::create_inv(), create_block()
 #include "crypto/sha256.h"           // Phase 42: For snapshot checksum computation
 #include "common/serialization.h"    // VectorWriter/Reader for delta sidecar persistence
+#include "util/hex.h"                // #274: util::unhex for ChainDB hex spk decode
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -9660,6 +9661,99 @@ consensus::BlockUndo UndoRecordToBlockUndo(const dinero::UndoRecord& undo_record
 
 } // anonymous namespace
 
+// #274: stateless ConnectBlock cannot populate BlockUndo.spent_coins (no UTXO
+// set), so ConnectTip reconstructs the spent list from ChainDB coin rows —
+// the only source carrying full fidelity (height + coinbase flag, which
+// utreexo proofs do not commit to). Must run BEFORE the unified batch stages
+// the deleteCoin calls, while the rows still exist. Same-block spends fall
+// back to the block body (rows not yet written). Any other miss is fatal to
+// the connect: a short undo would make the tip undisconnectable.
+Status ChainstateService::ReconstructSpentCoinsFromChainDb(
+    const Block& block,
+    uint32_t height,
+    std::vector<dinero::SpentCoin>& out_spent,
+    std::string& out_error) const {
+    out_spent.clear();
+    out_error.clear();
+
+    if (!chain_db_) {
+        out_error = "ReconstructSpentCoinsFromChainDb: chain_db_ is null";
+        return Status::Internal;
+    }
+
+    // Iterate non-coinbase txs (tx_idx >= 1) and their inputs in block order.
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        const auto& tx = block.vtx[tx_idx];
+        for (const auto& input : tx.vin) {
+            const uint256 prev_txid = input.prevout.txid.AsUint256();
+            const uint32_t prev_vout = input.prevout.vout;
+
+            // Primary source: the ChainDB coin row (plain getCoin — the row
+            // must still exist because this runs before deleteCoin staging).
+            auto coin_result = chain_db_->getCoin(prev_txid, prev_vout);
+            if (coin_result.status() == Status::Ok) {
+                const auto& coin = coin_result.value();
+                // ChainDB stores spk as hex. util::HexToBytes SILENTLY
+                // returns an empty vector on odd-length/non-hex input —
+                // an empty scriptPubKey in the undo would corrupt the
+                // restored coin on disconnect. Decode via util::unhex
+                // and fail loud on corrupt rows instead.
+                std::vector<unsigned char> spk_bytes;
+                if (!util::unhex(coin.script_pubkey, spk_bytes)) {
+                    out_error = "ReconstructSpentCoinsFromChainDb: spent coin "
+                                "row has corrupt scriptPubKey hex: " +
+                                prev_txid.GetHex() + ":" +
+                                std::to_string(prev_vout);
+                    out_spent.clear();
+                    return Status::Corruption;
+                }
+                out_spent.emplace_back(
+                    prev_txid,
+                    prev_vout,
+                    coin.amount,
+                    std::vector<uint8_t>(spk_bytes.begin(), spk_bytes.end()),
+                    coin.coinbase,
+                    static_cast<uint32_t>(coin.height),
+                    coin.is_confidential,
+                    coin.commitment);
+                continue;
+            }
+
+            // Intra-block fallback: the spent output was created by an EARLIER
+            // tx in this same block, so its coin row was never written.
+            bool found_intra_block = false;
+            for (size_t prev_idx = 0; prev_idx < tx_idx; ++prev_idx) {
+                const auto& prev_tx = block.vtx[prev_idx];
+                if (prev_tx.GetTxid().AsUint256() != prev_txid) continue;
+                if (prev_vout >= prev_tx.vout.size()) break;  // malformed — fail loud below
+                const auto& out = prev_tx.vout[prev_vout];
+                out_spent.emplace_back(
+                    prev_txid,
+                    prev_vout,
+                    out.value.GetUna(),
+                    out.scriptPubKey,
+                    /*is_coinbase=*/prev_idx == 0,
+                    height,  // created in this very block
+                    out.is_confidential,
+                    out.commitment);
+                found_intra_block = true;
+                break;
+            }
+            if (found_intra_block) continue;
+
+            // Neither source has it: a short undo would make this tip
+            // undisconnectable, so the connect must abort.
+            out_error = "ReconstructSpentCoinsFromChainDb: outpoint " +
+                        prev_txid.GetHex() + ":" + std::to_string(prev_vout) +
+                        " absent from ChainDB and not created intra-block";
+            out_spent.clear();
+            return Status::NotFound;
+        }
+    }
+
+    return Status::Ok;
+}
+
 // ============================================================================
 // Reorg Fix: Production-Correct DisconnectTip
 // ============================================================================
@@ -10598,14 +10692,98 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // DisconnectTip would later trip "missing undo data for active tip" and
     // fire safe mode. Hoisting it here closes that crash window.
     auto existing_undo = ReadStoredUndo(tip_to_connect->hash);
+
+    // #274: this gate must mirror EVERY structural check the publish
+    // invariant (CheckBlockDisconnectMaterialDurable) applies to a decoded
+    // undo — count, non-empty created, and the shielded-frontier coupling.
+    // A stored undo that passes a weaker gate here gets reused, persisted,
+    // and then aborts at publish time anyway.
+    //   - expected spent count = one entry per non-coinbase input.
+    //   - block_has_shielded uses the SAME predicate as the invariant:
+    //     tx.IsShielded() over ALL txs (coinbase included).
+    bool block_has_shielded = false;
+    uint64_t expected_spent_count = 0;
+    for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+        const auto& tx = block.vtx[tx_idx];
+        if (tx.IsShielded()) block_has_shielded = true;
+        if (tx_idx > 0) {  // skip coinbase
+            expected_spent_count += tx.vin.size();
+        }
+    }
+
+    const bool existing_undo_valid = existing_undo.status() == Status::Ok &&
+        existing_undo.value().spent.size() == expected_spent_count &&
+        !existing_undo.value().created.empty() &&
+        (!block_has_shielded ||
+         existing_undo.value().pre_block_shielded_frontier.has_value());
+    if (existing_undo.status() == Status::Ok && !existing_undo_valid && logger_) {
+        std::string why;
+        if (existing_undo.value().spent.size() != expected_spent_count) {
+            why = "spent count mismatch (expected " +
+                  std::to_string(expected_spent_count) + " got " +
+                  std::to_string(existing_undo.value().spent.size()) + ")";
+        } else if (existing_undo.value().created.empty()) {
+            why = "created vector empty (every block creates coinbase outputs)";
+        } else {
+            why = "missing pre_block_shielded_frontier for shielded block";
+        }
+        logger_->warning("[ConnectTip] Rejecting stored undo record at height=" +
+                      std::to_string(tip_to_connect->height) +
+                      ": " + why + " - rebuilding");
+    }
+
     dinero::UndoRecord undo_record;
-    if (existing_undo.status() == Status::Ok) {
+    if (existing_undo_valid) {
         undo_record = existing_undo.value();
         if (logger_) {
             logger_->debug("[ConnectTip] Reusing existing undo record from BlockAcceptor/legacy storage");
         }
     } else {
         undo_record = BlockUndoToUndoRecord(block_undo, block);
+
+        // #274: stateless (CSN) ConnectBlock has no UTXO set and leaves
+        // BlockUndo.spent_coins empty, so a freshly built undo_record on a
+        // stateless node has spent.size()==0 while the block carries
+        // spends. Reconstruct the spent list from ChainDB coin rows (rows
+        // are still live — the unified batch that deletes them commits
+        // later in ConnectTip). On stateful nodes ConnectBlock populates
+        // exactly one entry per non-coinbase input, so this is a no-op.
+        if (undo_record.spent.size() != expected_spent_count) {
+            std::string recon_error;
+            const auto recon_status = ReconstructSpentCoinsFromChainDb(
+                block, tip_to_connect->height, undo_record.spent, recon_error);
+            if (recon_status != Status::Ok ||
+                undo_record.spent.size() != expected_spent_count) {
+                if (recon_status == Status::Ok && recon_error.empty()) {
+                    recon_error = "reconstructed spent count mismatch: expected " +
+                                  std::to_string(expected_spent_count) +
+                                  " got " + std::to_string(undo_record.spent.size());
+                }
+                if (logger_) {
+                    logger_->error("[ConnectTip] CRITICAL: Failed to reconstruct spent coins for stateless undo: " + recon_error);
+                    logger_->error("[ConnectTip] Undo spent list is required for rollback safety - aborting connection");
+                }
+                std::cout << "❌ [ConnectTip] undo spent reconstruction FAILED - aborting to prevent inconsistent state" << std::endl;
+
+                if (active_batch.has_value()) active_batch->Abort();
+                std::string rollback_error;
+                if (!block_validator_->DisconnectBlock(block, tip_to_connect->height, block_undo, rollback_error)) {
+                    if (logger_) {
+                        logger_->error("[ConnectTip] FATAL: Rollback failed: " + rollback_error);
+                        logger_->error("[ConnectTip] Database is now inconsistent - manual recovery required");
+                    }
+                } else {
+                    if (logger_) logger_->info("[ConnectTip] Rollback successful - state restored");
+                }
+                return fail("undo-spent-reconstruction-failed: " + recon_error);
+            }
+            if (logger_) {
+                logger_->info("[ConnectTip] Reconstructed " +
+                              std::to_string(undo_record.spent.size()) +
+                              " spent coins from ChainDB for stateless undo (height=" +
+                              std::to_string(tip_to_connect->height) + ")");
+            }
+        }
     }
 
     // CORRECTNESS: the flatfile is the source of truth, not the in-memory
@@ -10623,7 +10801,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // produced the "missing undo data for active tip" safe-mode fire on
     // Mac 2026-04-20 during a two-miner sibling race at height 3417.
     const bool need_flatfile_undo = block_storage_ &&
-        (tip_to_connect->undo_size == 0 || existing_undo.status() != Status::Ok);
+        (tip_to_connect->undo_size == 0 || !existing_undo_valid);
     if (need_flatfile_undo) {
         const std::vector<uint8_t> undo_bytes = undo_record.Serialize();
         auto undo_pos_result = block_storage_->writeUndo(tip_to_connect->hash, undo_bytes);

@@ -16,6 +16,7 @@
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/utreexo_accumulator.h"
 #include "consensus/chainparams.h"
+#include "consensus/shielded/commitment_tree.h"
 #include "consensus/subsidy.h"
 #include "primitives/transaction.h"
 #include "primitives/block.h"
@@ -466,6 +467,50 @@ TEST(BlockValidationInvariants, SnapshotCapableEmptyStateRestoresOnFailure) {
     ASSERT_FALSE(ok);
     EXPECT_EQ(utxo_set.restore_calls, 1u)
         << "Snapshot-capable backend must restore even empty snapshots on failure";
+}
+
+// ============================================================================
+// #274: STATELESS early-return must populate pre_block_shielded_frontier
+// ============================================================================
+// ConnectBlockInternal captures the pre-block shielded frontier early, but
+// the STATELESS-mode early return ("skipping forest-clone path") used to
+// return true WITHOUT copying it into undo. On a CSN node a shielded block
+// then persisted an undo lacking the frontier, and the ConnectTip publish
+// invariant refused the tip (regtest abort).
+
+TEST(BlockValidationInvariants, StatelessEarlyReturnStoresShieldedFrontierInUndo) {
+    ConsensusUTXOSet utxo_set;
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+
+    // Attach a shielded commitment tree (frontier source). NullifierSet is
+    // not needed for a coinbase-only block.
+    shielded::CommitmentTree tree;
+    validator.setShieldedState(&tree, nullptr);
+
+    // Coinbase-only block: no spends => no proofs required => reaches the
+    // STATELESS early return after coinbase reward validation.
+    Block block = MakeCoinbaseBlock(1, uint256());
+
+    BlockUndo undo;
+    std::string error;
+    bool ok = validator.ConnectBlock(block, 1, MakeTestHash(274), undo, error, nullptr);
+    ASSERT_TRUE(ok) << "Coinbase-only stateless block must connect: " << error;
+
+    // #274 regression: the frontier must be present so DisconnectBlock can
+    // restore the commitment tree and the publish invariant accepts the tip.
+    EXPECT_TRUE(undo.pre_block_shielded_frontier.has_value())
+        << "STATELESS early return must store pre_block_shielded_frontier in undo";
+
+    // The stored frontier must round-trip: it is the serialized pre-block tree.
+    if (undo.pre_block_shielded_frontier.has_value()) {
+        EXPECT_EQ(*undo.pre_block_shielded_frontier, tree.SerializeFrontier())
+            << "Stored frontier must equal the pre-block tree frontier";
+    }
+
+    // Stateless mode has no UTXO snapshot — must NOT be set (memory landmine).
+    EXPECT_FALSE(undo.pre_block_snapshot.has_value())
+        << "STATELESS early return must not store a UTXO snapshot";
 }
 
 // Entry point
