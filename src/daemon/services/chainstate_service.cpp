@@ -12352,6 +12352,38 @@ bool ChainstateService::PromoteValidatedHistory(
         }
     }
 
+    // ── Pre-write undo-tail coverage gate ─────────────────────────────────────
+    // Require the engine's undo tail to cover [max(1, base-1023)..base]
+    // contiguously (ascending, no gaps, last == base).
+    //
+    // Rationale: VerifyActiveChainUndoCoverage (called by Start() with
+    // kStartupUndoAuditWindow=1024) checks exactly this window at the next
+    // restart. If the tail is under-provisioned, the audit fires immediately
+    // after promotion and writes a recovery marker that blocks chain advance.
+    // Refusing promotion here surfaces the gap before it hits disk.
+    {
+        const uint32_t window_start = (base >= kStartupUndoAuditWindow)
+            ? (base - kStartupUndoAuditWindow + 1u)
+            : 1u;
+        const auto& undo_tail = engine.UndoTail();
+        if (undo_tail.empty() || undo_tail.back().height != base) {
+            error = "undo tail does not cover the startup audit window — promotion refused";
+            return false;
+        }
+        // Verify contiguous descending coverage from base back to window_start.
+        bool coverage_ok = false;
+        uint32_t expect = base;
+        for (auto it = undo_tail.rbegin(); it != undo_tail.rend(); ++it) {
+            if (it->height != expect) break;
+            if (expect == window_start) { coverage_ok = true; break; }
+            --expect;
+        }
+        if (!coverage_ok) {
+            error = "undo tail does not cover the startup audit window — promotion refused";
+            return false;
+        }
+    }
+
     if (logger_) {
         logger_->info("[Promotion] promoting replay-proven history 1.." + std::to_string(base) +
                       " into ChainDB (height index, undo tail, coin reconcile, tip)");
@@ -12365,6 +12397,12 @@ bool ChainstateService::PromoteValidatedHistory(
     // invisible-until-tip and re-runnable).
     auto commit_chunk = [&](rocksdb::WriteBatch& batch, size_t& ops,
                             const char* what) -> bool {
+        // Pre-tip writes are invisible-until-tip and idempotently re-runnable
+        // (see ordering invariant, method header). Aborting here is safe.
+        if (bg_validation_should_stop_.load()) {
+            error = "shutdown requested during promotion";
+            return false;
+        }
         if (ops == 0) return true;
         const auto st = chain_db_->writeBatch(token, std::move(batch), /*sync=*/false);
         batch = rocksdb::WriteBatch();
@@ -12395,6 +12433,9 @@ bool ChainstateService::PromoteValidatedHistory(
             }
         }
         if (!commit_chunk(batch, ops, "height-index")) return false;
+    }
+    if (logger_) {
+        logger_->info("[Promotion] stage 1 complete: height index 1.." + std::to_string(base) + " written");
     }
 
     // ── 2) Undo tail: flatfile + locator + UD sidecar for the audited window ──
@@ -12519,6 +12560,9 @@ bool ChainstateService::PromoteValidatedHistory(
         }
         if (!commit_chunk(batch, ops, "undo-tail")) return false;
     }
+    if (logger_) {
+        logger_->info("[Promotion] stage 2 complete: undo tail written");
+    }
 
     // ── 3) Bulk coin reconcile: coin CF must END equal to the proven set ───
     // Pre-promotion the coin CF holds only the genesis seed (genesis_init)
@@ -12572,57 +12616,68 @@ bool ChainstateService::PromoteValidatedHistory(
         }
         if (!commit_chunk(batch, ops, "coin-reconcile")) return false;
     }
+    if (logger_) {
+        logger_->info("[Promotion] stage 3 complete: coin CF reconciled");
+    }
+
+    // ── Nullifier content — serialized ONCE; reused by stage 4a (row writes)
+    // and the journal preimage (section 5).  Rows written ≡ hash input by
+    // construction, eliminating any risk of a malformed-row error on the
+    // second call silently hashing an empty preimage → journal mismatch.
+    //
+    // engine.ShieldedNullifiers() is guaranteed non-null: the engine ctor
+    // constructs the trio unconditionally (make_unique) and throws
+    // std::runtime_error if Open(":memory:") fails — the unique_ptr is never
+    // empty at this call site.
+    const auto nullifier_content = engine.ShieldedNullifiers()->SerializeContent();
+    // Stream-error guard: SerializeContent returns empty on sqlite error
+    // (e.g. malformed row — see nullifier_set.cpp). If the set is non-empty
+    // but serialization produced nothing, we would silently drop all
+    // nullifiers and promote a corrupted state.
+    if (nullifier_content.empty() && engine.ShieldedNullifiers()->Size() > 0) {
+        error = "shielded promotion: nullifier serialization returned empty for non-empty set";
+        return false;
+    }
+    constexpr size_t kHeaderBytes = 4 + 2 + 8;
+    constexpr size_t kRowBytes = 4 + 32;
+    constexpr uint32_t kSerializeContentTag = 0x4653434E;  // 'NSCF' LE-reconstructed
+    uint32_t tag_read = 0;
+    if (nullifier_content.size() >= 4) {
+        for (int i = 0; i < 4; ++i) {
+            tag_read |= static_cast<uint32_t>(nullifier_content[i]) << (i * 8);
+        }
+    }
+    uint64_t row_count = 0;
+    if (!nullifier_content.empty()) {
+        if (nullifier_content.size() < kHeaderBytes || tag_read != kSerializeContentTag) {
+            error = "shielded promotion: nullifier SerializeContent header malformed";
+            return false;
+        }
+        for (int i = 0; i < 8; ++i) {
+            row_count |= static_cast<uint64_t>(nullifier_content[6 + i]) << (i * 8);
+        }
+        if (nullifier_content.size() - kHeaderBytes != row_count * kRowBytes) {
+            error = "shielded promotion: nullifier SerializeContent size mismatch";
+            return false;
+        }
+    }
 
     // ── 4a) Shielded nullifier rows from the engine's proven set (chunked) ──
     // ChainDB is the authoritative on-disk nullifier store (startup rebuilds
-    // the sqlite cache from these rows). Enumerate the engine's :memory:
-    // NullifierSet via SerializeContent — same byte format LoadShieldedState's
-    // mode-C migration parses:
+    // the sqlite cache from these rows). Parsed from nullifier_content above —
+    // same byte format LoadShieldedState's mode-C migration parses:
     //   tag 'NSCF' (4) || version (2) || count_LE_u64 (8) ||
     //     per row: height_LE_u32 (4) || nullifier_bytes (32)
     {
-        const auto bytes = engine.ShieldedNullifiers()->SerializeContent();
-        // Stream-error guard: SerializeContent returns empty on sqlite error
-        // (e.g. malformed row — see nullifier_set.cpp). If the set is non-empty
-        // but serialization produced nothing, we would silently drop all
-        // nullifiers and promote a corrupted state.
-        if (bytes.empty() && engine.ShieldedNullifiers() != nullptr &&
-                engine.ShieldedNullifiers()->Size() > 0) {
-            error = "shielded promotion: nullifier serialization returned empty for non-empty set";
-            return false;
-        }
-        constexpr size_t kHeaderBytes = 4 + 2 + 8;
-        constexpr size_t kRowBytes = 4 + 32;
-        constexpr uint32_t kSerializeContentTag = 0x4653434E;  // 'NSCF' LE-reconstructed
-        uint32_t tag_read = 0;
-        if (bytes.size() >= 4) {
-            for (int i = 0; i < 4; ++i) {
-                tag_read |= static_cast<uint32_t>(bytes[i]) << (i * 8);
-            }
-        }
-        uint64_t row_count = 0;
-        if (!bytes.empty()) {
-            if (bytes.size() < kHeaderBytes || tag_read != kSerializeContentTag) {
-                error = "shielded promotion: nullifier SerializeContent header malformed";
-                return false;
-            }
-            for (int i = 0; i < 8; ++i) {
-                row_count |= static_cast<uint64_t>(bytes[6 + i]) << (i * 8);
-            }
-            if (bytes.size() - kHeaderBytes != row_count * kRowBytes) {
-                error = "shielded promotion: nullifier SerializeContent size mismatch";
-                return false;
-            }
-        }
         rocksdb::WriteBatch batch;
         size_t ops = 0;
         for (uint64_t i = 0; i < row_count; ++i) {
             const size_t off = kHeaderBytes + i * kRowBytes;
             uint32_t height = 0;
             for (int j = 0; j < 4; ++j) {
-                height |= static_cast<uint32_t>(bytes[off + j]) << (j * 8);
+                height |= static_cast<uint32_t>(nullifier_content[off + j]) << (j * 8);
             }
-            const uint8_t* nf = &bytes[off + 4];
+            const uint8_t* nf = &nullifier_content[off + 4];
             const auto st = chain_db_->putShieldedNullifier(token, height, nf, &batch);
             if (st != Status::Ok) {
                 error = "shielded promotion: putShieldedNullifier failed";
@@ -12633,6 +12688,10 @@ bool ChainstateService::PromoteValidatedHistory(
             }
         }
         if (!commit_chunk(batch, ops, "nullifiers")) return false;
+    }
+    if (logger_) {
+        logger_->info("[Promotion] stage 4a complete: " + std::to_string(row_count) +
+                      " nullifier rows written");
     }
 
     // ── 4b) Tip-anchored singles at base (one batch) + 5) journal row ──────
@@ -12751,8 +12810,8 @@ bool ChainstateService::PromoteValidatedHistory(
                 append_le64(engine.ShieldedTree()->Size());
             }
             {
-                const auto nf_bytes = engine.ShieldedNullifiers()->SerializeContent();
-                preimage.insert(preimage.end(), nf_bytes.begin(), nf_bytes.end());
+                // Reuse the single serialization from above — rows written ≡ hash input by construction.
+                preimage.insert(preimage.end(), nullifier_content.begin(), nullifier_content.end());
             }
             {
                 const auto anchor_bytes = engine.ShieldedAnchors()->SerializeBytes();
@@ -12785,37 +12844,8 @@ bool ChainstateService::PromoteValidatedHistory(
             return false;
         }
     }
-
-    // ── Pre-setTip undo-tail coverage gate ────────────────────────────────────
-    // Require the engine's undo tail to cover [max(1, base-1023)..base]
-    // contiguously (ascending, no gaps, last == base).
-    //
-    // Rationale: VerifyActiveChainUndoCoverage (called by Start() with
-    // kStartupUndoAuditWindow=1024) checks exactly this window at the next
-    // restart. If the tail is under-provisioned, the audit fires immediately
-    // after promotion and writes a recovery marker that blocks chain advance.
-    // Refusing promotion here surfaces the gap before it hits disk.
-    {
-        const uint32_t window_start = (base >= kStartupUndoAuditWindow)
-            ? (base - kStartupUndoAuditWindow + 1u)
-            : 1u;
-        const auto& undo_tail = engine.UndoTail();
-        if (undo_tail.empty() || undo_tail.back().height != base) {
-            error = "undo tail does not cover the startup audit window — promotion refused";
-            return false;
-        }
-        // Verify contiguous descending coverage from base back to window_start.
-        bool coverage_ok = false;
-        uint32_t expect = base;
-        for (auto it = undo_tail.rbegin(); it != undo_tail.rend(); ++it) {
-            if (it->height != expect) break;
-            if (expect == window_start) { coverage_ok = true; break; }
-            --expect;
-        }
-        if (!coverage_ok) {
-            error = "undo tail does not cover the startup audit window — promotion refused";
-            return false;
-        }
+    if (logger_) {
+        logger_->info("[Promotion] stage 4b/5 complete: tip-anchored markers and journal row committed");
     }
 
     // ── 6) Durable setTip(base) — THE LAST WRITE (see ordering invariant) ──
