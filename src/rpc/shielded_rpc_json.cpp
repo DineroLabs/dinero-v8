@@ -226,9 +226,11 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
         ops::AttachShieldResult attach;
         uint64_t                change_una = 0;
         size_t                  n_inputs = 0;
+        std::string             change_address;  // LOW #273: reuse across probes/final
     };
     auto build_signed_shield_tx = [&](uint64_t fee, bool persist,
-                                      BuiltShieldTx& out) -> bool {
+                                      BuiltShieldTx& out,
+                                      const std::string& reuse_change_addr = {}) -> bool {
         const uint64_t needed = value_una + fee;
 
         // ── Greedy UTXO selection ─────────────────────────────────────
@@ -291,7 +293,11 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
         }
         std::string change_address;
         if (change_una > 0) {
-            change_address = wm->getNewAddress("change", "taproot");
+            if (!reuse_change_addr.empty()) {
+                change_address = reuse_change_addr;
+            } else {
+                change_address = wm->getNewAddress("change", "taproot");
+            }
             if (change_address.empty()) {
                 result["error"] = "no_change_address";
                 return false;
@@ -385,29 +391,94 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
             return false;
         }
 
-        out.signed_tx  = sign_result.signed_tx.tx;
-        out.attach     = attach_rc;
-        out.change_una = change_una;
-        out.n_inputs   = canon_utxos.size();
+        out.signed_tx      = sign_result.signed_tx.tx;
+        out.attach         = attach_rc;
+        out.change_una     = change_una;
+        out.n_inputs       = canon_utxos.size();
+        out.change_address = change_address;  // LOW #273: callers may reuse
         return true;
     };
 
     // ── Issue #273: size-aware fee when the caller didn't pass one ────
+    // Cheap helper: counts how many transparent inputs greedy selection
+    // picks for `fee` WITHOUT signing. Used to detect shape changes between
+    // probes so we never do an extra ZK build in the shape-stable case.
+    auto count_inputs_for_fee = [&](uint64_t fee) -> size_t {
+        const uint64_t needed = value_una + fee;
+        auto utxos = wm->listUnspentUTXOs(1, 9999999);
+        utxos.erase(std::remove_if(utxos.begin(), utxos.end(),
+            [&](const dinero::WalletManager::WalletUTXO& u) {
+                OutPoint op(dinero::TxId(uint256::FromHexUnsafe(u.txid)), u.vout);
+                return mempool.isOutputSpentInMempool(op) ||
+                       wm->isUTXOLocked(u.txid, u.vout);
+            }), utxos.end());
+        std::sort(utxos.begin(), utxos.end(),
+                  [](const auto& a, const auto& b) { return a.amount_una > b.amount_una; });
+        size_t count = 0;
+        uint64_t total_in = 0;
+        for (const auto& u : utxos) {
+            ++count;
+            total_in += u.amount_una;
+            if (total_in >= needed) return count;
+        }
+        return 0;  // insufficient (caught by the signed build below)
+    };
+
     uint64_t final_fee = fee_una;
     bool fee_autosized = false;
+    std::string probe_change_addr;  // LOW #273: reuse change address from first probe
     if (!fee_explicit) {
-        BuiltShieldTx probe;
-        if (!build_signed_shield_tx(fee_una, /*persist=*/false, probe)) {
+        const double min_fee_rate = mempool_service->mempool().getMinFeeRate();
+
+        // Pass 1 (persist=false): measure the provisional tx to get the
+        // vsize-based required fee.
+        BuiltShieldTx probe1;
+        if (!build_signed_shield_tx(fee_una, /*persist=*/false, probe1)) {
             return result;
         }
-        const double min_fee_rate = mempool_service->mempool().getMinFeeRate();
-        const uint64_t required = ops::RequiredFeeForTx(probe.signed_tx, min_fee_rate);
-        if (required > final_fee) final_fee = required;
+        probe_change_addr = probe1.change_address;  // reuse in all subsequent builds
         fee_autosized = true;
+
+        const uint64_t required1 = ops::RequiredFeeForTx(probe1.signed_tx, min_fee_rate);
+        if (required1 > fee_una) {
+            final_fee = required1;
+
+            // Check whether the fee raise pushes `needed = value_una + fee`
+            // past a UTXO boundary, adding a transparent input. If so the
+            // probe vsize is stale and the final tx would underpay.
+            const size_t n0 = probe1.n_inputs;
+            const size_t n1 = count_inputs_for_fee(final_fee);
+            if (n1 != n0) {
+                // Shape changed: run pass 1b with the updated input set so
+                // the final fee covers the larger tx.
+                BuiltShieldTx probe2;
+                if (!build_signed_shield_tx(final_fee, /*persist=*/false, probe2,
+                                            probe_change_addr)) {
+                    return result;
+                }
+                const uint64_t required2 = ops::RequiredFeeForTx(probe2.signed_tx,
+                                                                   min_fee_rate);
+                final_fee = std::max(final_fee, required2);
+
+                // Pass 3 must be the persist build. If the shape would shift
+                // again at final_fee, we cannot resolve in three passes.
+                if (count_inputs_for_fee(final_fee) != probe2.n_inputs) {
+                    result["error"] = "fee_sizing_did_not_converge";
+                    result["error_message"] =
+                        "fee sizing did not converge in 3 passes; "
+                        "pass fee_una explicitly";
+                    return result;
+                }
+            }
+            // else: shape stable — the selection at final_fee uses the same
+            // inputs as probe1, so required1 is still the correct fee.
+        }
+        // else: provisional fee already covers; pass 2 uses the same inputs.
     }
 
     BuiltShieldTx built;
-    if (!build_signed_shield_tx(final_fee, /*persist=*/true, built)) {
+    if (!build_signed_shield_tx(final_fee, /*persist=*/true, built,
+                                probe_change_addr)) {
         return result;
     }
 
@@ -842,10 +913,15 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
 
     if (!recipient_address.empty()) {
         // ── Addressed transfer: route the requested amount to recipient.
-        // Issue #273 two-pass sizing (see Wave 3d path above).
+        // Issue #273 convergence: pass 1 probes the initial selection; if
+        // raising the fee changes the note count (shape), pass 1b re-probes
+        // the updated selection; pass 3 is always the persist build. Error
+        // if the shape would change a second time (cap).
         uint64_t final_fee = fee_una;
         bool fee_autosized = false;
         if (!fee_explicit) {
+            // Pass 1: probe with the current selection (leaf_indices from
+            // select_for_fee(fee_una) above).
             dinero::Transaction probe = make_envelope(fee_una);
             auto probe_rc = ops::AttachAddressedTransferInputBundle(
                 probe, leaf_indices, recipient_address, amount_una, fee_una, *wm,
@@ -856,12 +932,48 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
                 result["error_message"] = probe_rc.error;
                 return result;
             }
-            const uint64_t required = ops::RequiredFeeForTx(probe, min_fee_rate);
-            if (required > final_fee) final_fee = required;
+            const uint64_t required1 = ops::RequiredFeeForTx(probe, min_fee_rate);
             fee_autosized = true;
-            if (final_fee != fee_una && !select_for_fee(final_fee, true)) {
-                return result;
+
+            if (required1 > fee_una) {
+                final_fee = required1;
+                const size_t n0 = leaf_indices.size();
+                if (!select_for_fee(final_fee, true)) return result;
+
+                if (leaf_indices.size() != n0) {
+                    // Shape changed (more notes needed). Pass 1b: re-probe
+                    // with the updated selection to get the correct fee for
+                    // the bigger bundle.
+                    dinero::Transaction probe2 = make_envelope(final_fee);
+                    auto probe_rc2 = ops::AttachAddressedTransferInputBundle(
+                        probe2, leaf_indices, recipient_address, amount_una,
+                        final_fee, *wm,
+                        recipient_memo.empty() ? nullptr : &recipient_memo,
+                        /*persist=*/false);
+                    if (probe_rc2.status != ops::OpStatus::Ok) {
+                        result["error"] = "attach_transfer_failed";
+                        result["error_message"] = probe_rc2.error;
+                        return result;
+                    }
+                    const uint64_t required2 = ops::RequiredFeeForTx(probe2, min_fee_rate);
+                    final_fee = std::max(final_fee, required2);
+
+                    // Pass 3 must be the persist build; re-select to verify
+                    // convergence.
+                    const size_t n1 = leaf_indices.size();
+                    if (!select_for_fee(final_fee, true)) return result;
+                    if (leaf_indices.size() != n1) {
+                        result["error"] = "fee_sizing_did_not_converge";
+                        result["error_message"] =
+                            "fee sizing did not converge in 3 passes; "
+                            "pass fee_una explicitly";
+                        return result;
+                    }
+                }
+                // else: shape stable after fee raise — selection unchanged,
+                // required1 is still the correct fee for the persist build.
             }
+            // else: provisional fee already covers; selection unchanged.
         }
         const uint64_t change = spend_sum - amount_una - final_fee;
         Json spend_indices = din::arr();
@@ -915,9 +1027,9 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
         return result;
     }
 
-    // ── Self-controlled multi-transfer (Wave 3e). Issue #273 two-pass
-    // sizing: output values depend on the fee (change shrinks as the fee
-    // grows), so recompute them per pass.
+    // ── Self-controlled multi-transfer (Wave 3e). Issue #273 convergence:
+    // output values depend on the fee (change shrinks as the fee grows), so
+    // recompute them per pass. Same three-pass cap as the addressed path.
     auto output_values_for_fee = [&](uint64_t fee) -> std::vector<uint64_t> {
         std::vector<uint64_t> output_values{amount_una};
         const uint64_t change = spend_sum - amount_una - fee;
@@ -930,6 +1042,7 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
     uint64_t final_fee = fee_una;
     bool fee_autosized = false;
     if (!fee_explicit) {
+        // Pass 1: probe with the current selection.
         dinero::Transaction probe = make_envelope(fee_una);
         auto probe_rc = ops::AttachMultiTransferInputBundle(
             probe, leaf_indices, output_values_for_fee(fee_una), fee_una, *wm,
@@ -939,12 +1052,43 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
             result["error_message"] = probe_rc.error;
             return result;
         }
-        const uint64_t required = ops::RequiredFeeForTx(probe, min_fee_rate);
-        if (required > final_fee) final_fee = required;
+        const uint64_t required1 = ops::RequiredFeeForTx(probe, min_fee_rate);
         fee_autosized = true;
-        if (final_fee != fee_una && !select_for_fee(final_fee, true)) {
-            return result;
+
+        if (required1 > fee_una) {
+            final_fee = required1;
+            const size_t n0 = leaf_indices.size();
+            if (!select_for_fee(final_fee, true)) return result;
+
+            if (leaf_indices.size() != n0) {
+                // Shape changed (more notes needed). Pass 1b: re-probe with
+                // the updated selection so the final fee covers the bigger bundle.
+                dinero::Transaction probe2 = make_envelope(final_fee);
+                auto probe_rc2 = ops::AttachMultiTransferInputBundle(
+                    probe2, leaf_indices, output_values_for_fee(final_fee), final_fee,
+                    *wm, /*persist=*/false);
+                if (probe_rc2.status != ops::OpStatus::Ok) {
+                    result["error"] = "attach_transfer_failed";
+                    result["error_message"] = probe_rc2.error;
+                    return result;
+                }
+                const uint64_t required2 = ops::RequiredFeeForTx(probe2, min_fee_rate);
+                final_fee = std::max(final_fee, required2);
+
+                // Pass 3 must be the persist build; verify convergence.
+                const size_t n1 = leaf_indices.size();
+                if (!select_for_fee(final_fee, true)) return result;
+                if (leaf_indices.size() != n1) {
+                    result["error"] = "fee_sizing_did_not_converge";
+                    result["error_message"] =
+                        "fee sizing did not converge in 3 passes; "
+                        "pass fee_una explicitly";
+                    return result;
+                }
+            }
+            // else: shape stable after fee raise — required1 is still correct.
         }
+        // else: provisional fee covers; selection unchanged.
     }
     const uint64_t change = spend_sum - amount_una - final_fee;
     Json spend_indices = din::arr();
