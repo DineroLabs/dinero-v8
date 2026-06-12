@@ -122,8 +122,18 @@ din::Json rpc_context_economics_getinfo(const ExecutionContext& ctx, const din::
     result["initial_reward_din"] = formatDIN(dinero::ConsensusSubsidy::INITIAL_SUBSIDY);
     result["halving_interval"] = static_cast<int>(dinero::ConsensusSubsidy::HALVING_INTERVAL);
     result["halving_count"] = 33;
-    result["block_time_seconds"] = 180;  // 3 minutes
-    result["halving_time_years"] = "~7.5";
+    // Derive from consensus (chainparams target_spacing) instead of hardcoding —
+    // mainnet is 120s (2 min). A hardcoded 180 was wrong and also contradicted
+    // target_spacing_seconds returned later in this same handler.
+    const int block_time_seconds = static_cast<int>(dinero::Params().target_spacing);
+    result["block_time_seconds"] = block_time_seconds;
+    // Halving horizon derived from the real block time so it cannot drift again:
+    //   HALVING_INTERVAL blocks x target_spacing / seconds-per-year.
+    const double halving_years = static_cast<double>(dinero::ConsensusSubsidy::HALVING_INTERVAL) *
+                                 block_time_seconds / (365.25 * 86400.0);
+    std::ostringstream halving_ss;
+    halving_ss << "~" << std::fixed << std::setprecision(1) << halving_years;
+    result["halving_time_years"] = halving_ss.str();
 
     // Current chain status (requires context)
     if (ctx.daemon && ctx.daemon->chainstate) {
