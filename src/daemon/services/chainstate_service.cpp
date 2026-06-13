@@ -56,6 +56,8 @@
 #include "crypto/sha256.h"           // Phase 42: For snapshot checksum computation
 #include "common/serialization.h"    // VectorWriter/Reader for delta sidecar persistence
 #include "util/hex.h"                // #274: util::unhex for ChainDB hex spk decode
+#include "util/thread_util.h"        // #298: SetThreadName for gdb backtraces
+#include <unistd.h>                  // #298: getpid() for the hang-watchdog log hint
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -12164,7 +12166,64 @@ bool ChainstateService::IsBackgroundValidationComplete() const {
     return bg_validation_status_ == BackgroundValidationStatus::Completed;
 }
 
+void ChainstateService::CheckHangWatchdog() {
+    // #298 diagnose-only no-progress watchdog. Called every ~5s from the p2p
+    // scheduler tick thread (INDEPENDENT of the bg-validation worker, so it
+    // survives a wedge of that worker — the actual incident). Single-caller,
+    // so the watchdog_* state below needs no lock.
+    const BackgroundValidationProgress progress = GetBackgroundValidationProgress();
+
+    // Only meaningful while background validation is actually running. A
+    // fully-synced (or not-yet-started) node legitimately sees no height
+    // change for >15min, so gate strictly on InProgress and re-arm otherwise.
+    if (progress.status != BackgroundValidationStatus::InProgress) {
+        watchdog_initialized_ = false;
+        return;
+    }
+
+    const CBlockIndex* tip = GetActiveTip();
+    const uint32_t fg_height = tip ? tip->height : 0;
+    const uint32_t bg_height = progress.current_height;
+    const auto now = std::chrono::steady_clock::now();
+
+    // First observation this run, OR either height advanced => progress.
+    if (!watchdog_initialized_ ||
+        bg_height != watchdog_last_bg_height_ ||
+        fg_height != watchdog_last_fg_height_) {
+        watchdog_initialized_ = true;
+        watchdog_last_bg_height_ = bg_height;
+        watchdog_last_fg_height_ = fg_height;
+        watchdog_last_progress_time_ = now;
+        return;
+    }
+
+    const auto stalled_min = std::chrono::duration_cast<std::chrono::minutes>(
+        now - watchdog_last_progress_time_).count();
+    if (stalled_min < kHangWatchdogMinutes) {
+        return;
+    }
+
+    // Re-arm for another full interval so we emit at most one marker per
+    // kHangWatchdogMinutes of continued wedge (not on every 5s tick).
+    watchdog_last_progress_time_ = now;
+
+    uint32_t missing_bodies = 0;
+    if (assumeutxo_lifecycle_) {
+        missing_bodies = assumeutxo_lifecycle_->GetStatus(now).missing_body_count;
+    }
+
+    if (logger_) {
+        logger_->error("[Watchdog] #298 NO PROGRESS for " + std::to_string(stalled_min) +
+                       "min: bg_height=" + std::to_string(bg_height) +
+                       " fg_tip=" + std::to_string(fg_height) +
+                       " missing_bodies=" + std::to_string(missing_bodies) +
+                       " — possible wedge; capture: gdb -p " + std::to_string(::getpid()) +
+                       " -batch -ex 'thread apply all bt'");
+    }
+}
+
 void ChainstateService::BackgroundValidationWorker() {
+    util::SetThreadName("din-bgvalidate");  // #298: readable gdb backtraces
     logger_->info("[BackgroundValidation] Worker thread started");
 
     try {
