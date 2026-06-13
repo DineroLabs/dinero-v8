@@ -752,13 +752,56 @@ static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsol
 
     qDebug() << "Daemon not detected (or unresponsive), attempting to start fresh...";
 
-    QProcess* daemonProc = startDaemon(datadir, debugConsole);
-    if (daemonProc && daemonProc->state() != QProcess::NotRunning) {
-        qDebug() << "✅ Successfully started daemon";
-        qDebug() << "═══════════════════════════════════════════════════════";
-    } else if (!daemonProc) {
+    // Bounded spawn retry (#295 follow-up). On a quick relaunch the previous
+    // session's daemon may still be releasing port 20998 / the datadir LOCK
+    // for a second or two, so a fresh dinerod exits 1 ("port in use") on the
+    // first attempt and then succeeds. Without a retry the caller fired a
+    // scary "daemon exited before the wallet could connect" dialog on every
+    // such start, even though the GUI connected fine moments later. Retry a
+    // few times — only fall through (and let the caller fail loud) on a
+    // genuinely persistent failure.
+    constexpr int kMaxSpawnAttempts = 3;
+    QProcess* daemonProc = nullptr;
+    for (int attempt = 1; attempt <= kMaxSpawnAttempts; ++attempt) {
+        daemonProc = startDaemon(datadir, debugConsole);
+
+        if (daemonProc && daemonProc->state() != QProcess::NotRunning) {
+            qDebug() << "✅ Successfully started daemon";
+            qDebug() << "═══════════════════════════════════════════════════════";
+            return daemonProc;
+        }
+
+        // Genesis mismatch is a real, non-transient condition the caller
+        // handles with its own wipe-and-restart flow — never retry it.
+        if (daemonProc && daemonProc->exitCode() == GENESIS_MISMATCH_EXIT_CODE) {
+            return daemonProc;
+        }
+
+        if (attempt < kMaxSpawnAttempts) {
+            const int code = daemonProc ? daemonProc->exitCode() : -1;
+            qWarning() << "Daemon spawn attempt" << attempt << "of" << kMaxSpawnAttempts
+                       << "failed (exit code" << code << "); likely a prior daemon "
+                          "still releasing the port — retrying after a short wait";
+            if (daemonProc) { delete daemonProc; daemonProc = nullptr; }
+
+            // The previous daemon may have just finished settling and become
+            // healthy — adopt it rather than spawning again.
+            if (isDaemonRunning(500) && isDaemonHealthy(2000)) {
+                qDebug() << "✅ A healthy daemon became available; adopting it";
+                return nullptr;  // not ours
+            }
+
+            // Clear any stale instance and give the port + LOCK time to free.
+            killStaleDinerodForDatadir(datadir);
+            killStaleOrphanSeeders();
+            QThread::msleep(1500);
+        }
+    }
+
+    if (!daemonProc) {
         qWarning() << "═══════════════════════════════════════════════════════";
-        qWarning() << "❌ ERROR: Failed to auto-start daemon";
+        qWarning() << "❌ ERROR: Failed to auto-start daemon after"
+                   << kMaxSpawnAttempts << "attempts";
         qWarning() << "";
         qWarning() << "Possible causes:";
         qWarning() << "  1. Another daemon instance is already running with this datadir";
@@ -771,7 +814,7 @@ static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsol
         qWarning() << "  - Start dinerod manually: ./dinerod --datadir" << datadir;
         qWarning() << "═══════════════════════════════════════════════════════";
     }
-    return daemonProc;
+    return daemonProc;  // null or last dead process → caller fails loud (genuine failure)
 }
 
 // macOS: running from a mounted DMG is common and makes orphaned child
