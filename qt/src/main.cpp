@@ -82,7 +82,6 @@ void appendDaemonNetworkArgs(QStringList& args) {
 
 QStringList currentBootstrapAddnodes() {
     return {
-        "-addnode=172.93.160.131:20999", // LA
         "-addnode=173.249.200.59:20999", // SJ
         "-addnode=172.93.167.32:20999",  // NA
         "-addnode=92.118.190.62:20999",  // EU1

@@ -16,7 +16,6 @@ namespace dinero::qt::dashboard {
 
 namespace {
 QString fleetNameFor(const QString& addr) {
-    if (addr.startsWith("172.93.160.131")) return "LA";
     if (addr.startsWith("173.249.200.59"))  return "SJ";
     if (addr.startsWith("172.93.167.32"))  return "NA";
     if (addr.startsWith("92.118.190.62"))  return "EU1";
