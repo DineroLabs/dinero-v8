@@ -57,7 +57,15 @@
 #include "common/serialization.h"    // VectorWriter/Reader for delta sidecar persistence
 #include "util/hex.h"                // #274: util::unhex for ChainDB hex spk decode
 #include "util/thread_util.h"        // #298: SetThreadName for gdb backtraces
-#include <unistd.h>                  // #298: getpid() for the hang-watchdog log hint
+// #298: process id for the hang-watchdog gdb-capture log hint. <unistd.h> is
+// POSIX-only and breaks the MSVC/Windows build (C1083); guard it like
+// datadir_guard.cpp does.
+#ifdef _WIN32
+#include <windows.h>
+#include <processthreadsapi.h>       // GetCurrentProcessId()
+#else
+#include <unistd.h>                  // getpid()
+#endif
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -12217,7 +12225,14 @@ void ChainstateService::CheckHangWatchdog() {
                        "min: bg_height=" + std::to_string(bg_height) +
                        " fg_tip=" + std::to_string(fg_height) +
                        " missing_bodies=" + std::to_string(missing_bodies) +
-                       " — possible wedge; capture: gdb -p " + std::to_string(::getpid()) +
+                       " — possible wedge; capture: gdb -p " +
+                       std::to_string(
+#ifdef _WIN32
+                           static_cast<long>(::GetCurrentProcessId())
+#else
+                           static_cast<long>(::getpid())
+#endif
+                           ) +
                        " -batch -ex 'thread apply all bt'");
     }
 }
