@@ -1,3 +1,13 @@
+dinero-core (8.0.0-1) unstable; urgency=medium
+
+  * v8.0.0 stable release. AssumeUTXO trust model complete:
+    validation<->backfill reconciliation (#298) on top of background
+    full-replay trust retirement and fatal-on-dishonest-snapshot. Plus
+    shielded size-aware fees (#273), stateless undo integrity (#274),
+    deb packaging (#293), and GUI lifecycle hardening (#295).
+
+ -- Dinero Labs <team@dinerolabs.org>  Sat, 13 Jun 2026 07:41:44 +0000
+
 dinero-core (8.0.0~rc38-1) unstable; urgency=medium
 
   * rc38: AssumeUTXO lifecycle completion, shielded size-aware fees (#273),
