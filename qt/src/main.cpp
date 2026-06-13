@@ -12,6 +12,7 @@
 #include <iostream>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QTimer>
 #include <QMutex>
 #include <QPointer>
@@ -381,6 +382,31 @@ static void assignDaemonToWinJobObject(QProcess* daemonProc) {
 #endif
 }
 
+// Set when the app is quitting on purpose (aboutToQuit). The unexpected-
+// daemon-exit handler checks this so a daemon we terminate during shutdown
+// doesn't trigger a "daemon exited unexpectedly" dialog.
+static bool g_quittingCleanly = false;
+
+// Last N lines of dinerod's debug.log for fail-loud error dialogs.
+// dinerod writes its real diagnostics there (its stdout/stderr is
+// forwarded to the parent terminal, which doesn't exist for a
+// double-clicked .app bundle).
+static QString daemonLogTail(const QString& datadir, int maxLines = 20) {
+    QFile log(QDir(datadir).filePath("debug.log"));
+    if (!log.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return QStringLiteral("(no debug.log found in %1)").arg(datadir);
+    }
+    // debug.log can be large; read only the trailing 64 KiB.
+    const qint64 kTailBytes = 64 * 1024;
+    if (log.size() > kTailBytes) {
+        log.seek(log.size() - kTailBytes);
+    }
+    const QStringList lines = QString::fromUtf8(log.readAll())
+                                  .split('\n', Qt::SkipEmptyParts);
+    const int start = qMax(0, static_cast<int>(lines.size()) - maxLines);
+    return lines.mid(start).join('\n');
+}
+
 static void gracefulShutdownDaemon(QProcess* daemonProc) {
     if (!daemonProc) return;
     if (daemonProc->state() != QProcess::Running) {
@@ -548,6 +574,58 @@ static void killStaleDinerodForDatadir(const QString& datadir) {
 #endif
 }
 
+// Sweep orphaned dinero-seeder processes (issue #295: an rc37 seeder
+// survived 3 days holding 127.0.0.1:20998, so the fresh dinerod could
+// never bind RPC and the GUI waited forever). The seeder is normally a
+// child of dinerod; one whose parent is gone (PPID == 1) is by
+// definition stale, so killing it can't break a live opt-in seeder.
+static void killStaleOrphanSeeders() {
+#ifndef Q_OS_WIN
+    QProcess pgrep;
+    pgrep.start("pgrep", QStringList() << "-f" << "dinero-seeder");
+    if (!pgrep.waitForFinished(2000)) {
+        pgrep.kill();
+        return;
+    }
+    const QStringList lines = QString::fromUtf8(pgrep.readAllStandardOutput())
+                                  .split('\n', Qt::SkipEmptyParts);
+    QList<qint64> orphans;
+    for (const QString& pidStr : lines) {
+        bool ok = false;
+        qint64 pid = pidStr.trimmed().toLongLong(&ok);
+        if (!ok || pid <= 0) continue;
+        QProcess ps;
+        ps.start("ps", QStringList() << "-p" << QString::number(pid) << "-o" << "ppid=");
+        if (!ps.waitForFinished(1000)) {
+            ps.kill();
+            continue;
+        }
+        const qint64 ppid = QString::fromUtf8(ps.readAllStandardOutput())
+                                .trimmed().toLongLong();
+        if (ppid == 1) orphans.append(pid);
+    }
+    if (orphans.isEmpty()) return;
+    qWarning() << "Found orphaned dinero-seeder PIDs, terminating:" << orphans;
+    for (qint64 pid : orphans) {
+        ::kill(static_cast<pid_t>(pid), SIGTERM);
+    }
+    for (int i = 0; i < 15; ++i) {  // 3s grace
+        QThread::msleep(200);
+        QList<qint64> remaining;
+        for (qint64 pid : orphans) {
+            if (::kill(static_cast<pid_t>(pid), 0) == 0) remaining.append(pid);
+        }
+        if (remaining.isEmpty()) return;
+        orphans = remaining;
+    }
+    qWarning() << "Orphaned dinero-seeder PIDs did not exit on SIGTERM, sending SIGKILL:" << orphans;
+    for (qint64 pid : orphans) {
+        ::kill(static_cast<pid_t>(pid), SIGKILL);
+    }
+    QThread::msleep(200);
+#endif
+}
+
 // Start the daemon in the background (returns QProcess* for output capture)
 static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debugConsole) {
     QString daemonPath = defaultDaemonPath();
@@ -561,8 +639,10 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
     qDebug() << "Starting daemon:" << daemonPath;
     qDebug() << "Data directory:" << datadir;
 
-    // Create daemon process
-    QProcess* daemonProc = new QProcess();
+    // Create daemon process. Parented to the application instance so the
+    // QProcess object itself can never outlive the app (#295); actual child
+    // teardown happens in the aboutToQuit handler / post-exec shutdown.
+    QProcess* daemonProc = new QProcess(QCoreApplication::instance());
 
     // Build arguments WITH SEED NODES
     QStringList args;
@@ -630,17 +710,10 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
 
         // Check if daemon exited early (genesis mismatch or other error)
         if (daemonProc->state() == QProcess::NotRunning) {
-            int exitCode = daemonProc->exitCode();
-            qWarning() << "Daemon exited early with code:" << exitCode;
-
-            if (exitCode == GENESIS_MISMATCH_EXIT_CODE) {
-                // Don't delete — caller handles genesis mismatch
-                return daemonProc;
-            }
-
-            // Other early exit — clean up
-            delete daemonProc;
-            return nullptr;
+            qWarning() << "Daemon exited early with code:" << daemonProc->exitCode();
+            // Don't delete — caller inspects the exit code and fails loud
+            // (#295: silently dropping this left the GUI waiting forever).
+            return daemonProc;
         }
 
         if (isDaemonRunning(100)) {
@@ -673,16 +746,18 @@ static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsol
 
     // Sweep any orphan dinerod from a prior force-quit Qt session that
     // shares our datadir. Without this, the spawn below races with the
-    // orphan over port 20998 and the LOCK file.
+    // orphan over port 20998 and the LOCK file. Also sweep orphaned
+    // dinero-seeder processes that can squat the RPC port (#295).
     killStaleDinerodForDatadir(datadir);
+    killStaleOrphanSeeders();
 
     qDebug() << "Daemon not detected (or unresponsive), attempting to start fresh...";
 
     QProcess* daemonProc = startDaemon(datadir, debugConsole);
-    if (daemonProc) {
+    if (daemonProc && daemonProc->state() != QProcess::NotRunning) {
         qDebug() << "✅ Successfully started daemon";
         qDebug() << "═══════════════════════════════════════════════════════";
-    } else {
+    } else if (!daemonProc) {
         qWarning() << "═══════════════════════════════════════════════════════";
         qWarning() << "❌ ERROR: Failed to auto-start daemon";
         qWarning() << "";
@@ -698,6 +773,67 @@ static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsol
         qWarning() << "═══════════════════════════════════════════════════════";
     }
     return daemonProc;
+}
+
+// macOS: running from a mounted DMG is common and makes orphaned child
+// processes stickier (#295). Offer the conventional "Move to Applications"
+// drag-install hint once; "Don't show again" persists via QSettings.
+#ifdef Q_OS_MAC
+static void maybeOfferMoveToApplications() {
+    if (!QCoreApplication::applicationDirPath().startsWith(QStringLiteral("/Volumes/"))) {
+        return;
+    }
+    const QString suppressKey = QStringLiteral("ui/dmg_install_prompt_suppressed_v1");
+    QSettings settings;
+    if (settings.value(suppressKey, false).toBool()) {
+        return;
+    }
+    QMessageBox box;
+    box.setIcon(QMessageBox::Information);
+    box.setWindowTitle("Running from Disk Image");
+    box.setText("Dinero is running directly from the disk image.");
+    box.setInformativeText(
+        "For best results, drag Dinero.app into your Applications folder "
+        "and launch it from there. Running from the mounted disk image can "
+        "leave background processes behind after quitting.");
+    auto* dontShowAgain = new QCheckBox("Don't show this again", &box);
+    box.setCheckBox(dontShowAgain);
+    box.setStandardButtons(QMessageBox::Ok);
+    box.exec();
+    if (dontShowAgain->isChecked()) {
+        settings.setValue(suppressKey, true);
+    }
+}
+#endif
+
+// Pre-spawn port check (#295): if something accepts TCP on the daemon RPC
+// port but does not answer HTTP, it is a squatter (e.g. an orphaned
+// dinero-seeder) — a fresh dinerod will fail to bind and exit. Ask the
+// user instead of silently entering an endless "waiting" state.
+// Returns false if the user chose to quit.
+static bool confirmRpcPortSquatter() {
+    if (!isDaemonRunning(500)) {
+        return true;  // Port free — normal startup.
+    }
+    if (isDaemonHealthy(3000)) {
+        return true;  // Usable daemon — ensureDaemonRunning() connects to it.
+    }
+    QMessageBox box;
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle("Port Already in Use");
+    box.setText("Port 20998 is already in use — another Dinero process may be running.");
+    box.setInformativeText(
+        "Something is listening on the daemon RPC port (127.0.0.1:20998) but "
+        "is not responding like a Dinero daemon. This is usually a leftover "
+        "Dinero process from a previous session.\n\n"
+        "Dinero will try to clean up stale processes and continue, but if the "
+        "port stays occupied the daemon cannot start. You can also quit and "
+        "check what holds the port (lsof -i :20998).");
+    QPushButton* continueBtn = box.addButton("Continue", QMessageBox::AcceptRole);
+    box.addButton("Quit", QMessageBox::RejectRole);
+    box.setDefaultButton(continueBtn);
+    box.exec();
+    return box.clickedButton() == continueBtn;
 }
 
 int main(int argc, char** argv) {
@@ -731,6 +867,16 @@ int main(int argc, char** argv) {
       datadir = args[i].mid(9); // Extract value after "-datadir="
       break;
     }
+  }
+
+#ifdef Q_OS_MAC
+  // One-time drag-install hint when launched from a mounted DMG (#295).
+  maybeOfferMoveToApplications();
+#endif
+
+  // Fail loud if a non-daemon process is squatting the RPC port (#295).
+  if (!confirmRpcPortSquatter()) {
+    return 0;
   }
 
   // Auto-launch daemon if not already running
@@ -768,7 +914,7 @@ int main(int argc, char** argv) {
       appendDaemonNetworkArgs(wipeArgs);
       wipeArgs << currentBootstrapAddnodes();
 
-      daemonProcess = new QProcess();
+      daemonProcess = new QProcess(QCoreApplication::instance());
       daemonProcess->start(daemonPath, wipeArgs);
 
       if (!daemonProcess->waitForStarted(5000)) {
@@ -803,6 +949,80 @@ int main(int argc, char** argv) {
       delete daemonProcess;
       return 0;
     }
+  }
+
+  // Fail loud on any other early daemon exit (#295): previously this was
+  // a qWarning the user never saw, leaving the GUI in an endless
+  // "waiting" state when e.g. the RPC port could not be bound.
+  if (daemonProcess && daemonProcess->state() == QProcess::NotRunning) {
+    const int exitCode = daemonProcess->exitCode();
+    QMessageBox box;
+    box.setIcon(QMessageBox::Critical);
+    box.setWindowTitle("Daemon Failed to Start");
+    box.setText(QString("The Dinero daemon (dinerod) exited during startup "
+                        "with exit code %1.").arg(exitCode));
+    box.setInformativeText(
+      "Common causes:\n"
+      "  • Port 20998 is already in use by another process\n"
+      "  • Another Dinero instance is using the same data directory\n\n"
+      "See the daemon log below for details (Show Details).");
+    box.setDetailedText(QString("Last lines of %1/debug.log:\n\n%2")
+                            .arg(datadir, daemonLogTail(datadir)));
+    QPushButton* continueBtn =
+        box.addButton("Continue Anyway", QMessageBox::AcceptRole);
+    box.addButton("Quit", QMessageBox::RejectRole);
+    box.setDefaultButton(continueBtn);
+    box.exec();
+
+    const bool keepGoing = box.clickedButton() == continueBtn;
+    delete daemonProcess;  // already dead — nothing to shut down
+    daemonProcess = nullptr;
+    if (!keepGoing) {
+      return 1;
+    }
+  }
+
+  // Child lifecycle (#295): make sure every quit path (menu Quit, Cmd+Q,
+  // window close, app-level quit) tears the daemon down. aboutToQuit fires
+  // for all of them; the post-exec gracefulShutdownDaemon() call below is
+  // kept as an idempotent backstop (it no-ops once the daemon is stopped).
+  QPointer<QProcess> daemonProcessGuard(daemonProcess);
+  QObject::connect(&app, &QCoreApplication::aboutToQuit, [daemonProcessGuard]() {
+    g_quittingCleanly = true;
+    if (daemonProcessGuard) {
+      gracefulShutdownDaemon(daemonProcessGuard.data());
+    }
+  });
+
+  // Fail loud if our daemon dies AFTER startup but before/while the GUI is
+  // using it (#295). Suppressed during intentional shutdown.
+  if (daemonProcess) {
+    QObject::connect(daemonProcess,
+                     qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+                     [datadir](int exitCode, QProcess::ExitStatus status) {
+      if (g_quittingCleanly) {
+        return;
+      }
+      if (status == QProcess::NormalExit && exitCode == 0) {
+        // Clean stop (e.g. the GUI's Stop Daemon button sent `stop` via
+        // RPC). The connection UI already reflects this; no error dialog.
+        qDebug() << "Daemon exited cleanly (user-requested stop)";
+        return;
+      }
+      qWarning() << "Daemon exited unexpectedly with code:" << exitCode;
+      QMessageBox box;
+      box.setIcon(QMessageBox::Critical);
+      box.setWindowTitle("Daemon Stopped Unexpectedly");
+      box.setText(QString("The Dinero daemon (dinerod) exited unexpectedly "
+                          "with exit code %1.").arg(exitCode));
+      box.setInformativeText(
+        "The wallet is no longer connected to the network. You can restart "
+        "the daemon from the toolbar (Start Daemon) or quit and relaunch.\n\n"
+        "See the daemon log below for details (Show Details).");
+      box.setDetailedText(QString("Last lines of %1/debug.log:\n\n%2")
+                              .arg(datadir, daemonLogTail(datadir)));
+      box.exec();
+    });
   }
 
 #ifdef HAVE_QT_QUICK
