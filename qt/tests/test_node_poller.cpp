@@ -77,7 +77,10 @@ private Q_SLOTS:
             o["inbound"]       = false;
             return o;
         };
-        peers.append(mk("172.93.160.131:20999", 27402, 92));
+        // 203.0.113.7 is a non-fleet peer (TEST-NET-3, reserved) — verifies an
+        // unknown host gets no fleet label, including the retired LA address
+        // which is no longer a recognized fleet node.
+        peers.append(mk("203.0.113.7:20999", 27402, 92));
         peers.append(mk("172.93.167.32:20999", 27402, 88));
         peers.append(mk("173.249.200.59:20999",  27402, 75));
         peers.append(mk("92.118.190.62:20999",  27401, 44));
@@ -88,7 +91,7 @@ private Q_SLOTS:
 
         const auto rows = spy_peers.last().at(0).value<QVector<PeerRow>>();
         QCOMPARE(rows.size(), 4);
-        QCOMPARE(rows[0].fleet_name, QString("LA"));
+        QCOMPARE(rows[0].fleet_name, QString());
         QCOMPARE(rows[1].fleet_name, QString("NA"));
         QCOMPARE(rows[2].fleet_name, QString("SJ"));
         QCOMPARE(rows[3].fleet_name, QString("EU1"));

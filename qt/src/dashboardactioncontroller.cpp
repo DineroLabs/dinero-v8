@@ -103,8 +103,7 @@ bool DashboardActionController::isBannableEndpoint(const QString& endpoint) {
 
 bool DashboardActionController::isFleetEndpoint(const QString& endpoint) {
     const QString host = endpointHost(endpoint);
-    return host == QStringLiteral("172.93.160.131") ||
-           host == QStringLiteral("173.249.200.59") ||
+    return host == QStringLiteral("173.249.200.59") ||
            host == QStringLiteral("172.93.167.32") ||
            host == QStringLiteral("92.118.190.62");
 }

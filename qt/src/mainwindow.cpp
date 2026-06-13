@@ -220,7 +220,6 @@ QString peerHostFromEndpoint(const QString& endpoint) {
 
 bool isDefaultBootstrapPeerHost(const QString& host) {
   static const QSet<QString> bootstrapPeers{
-      "172.93.160.131",
       "173.249.200.59",
       "172.93.167.32",
       "92.118.190.62",
@@ -231,7 +230,6 @@ bool isDefaultBootstrapPeerHost(const QString& host) {
 QString peerLocationLabel(const QString& endpoint, int peerIndex) {
   const QString host = peerHostFromEndpoint(endpoint);
   static const QHash<QString, QString> knownSeedRegions{
-      {"172.93.160.131", "US-West"},
       {"173.249.200.59", "US-West"},
       {"172.93.167.32", "North America"},
       {"92.118.190.62", "Europe"},
@@ -12196,7 +12194,6 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   if (allowPortMapping) {
     args << "--portmap=auto";
   }
-  args << "-addnode=172.93.160.131:20999";
   args << "-addnode=173.249.200.59:20999";
   args << "-addnode=172.93.167.32:20999";
   args << "-addnode=92.118.190.62:20999";
