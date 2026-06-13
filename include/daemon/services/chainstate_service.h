@@ -1059,6 +1059,10 @@ private:
     std::mutex bg_validation_wait_mutex_;
     std::atomic<bool> bg_validation_body_arrived_{false};
     std::map<uint32_t, bool> bg_requested_heights_;
+    // #298: armed only while validation is waiting for re-requested gap bodies
+    // (backfill stalled). The scheduler's per-store wake callback no-ops unless
+    // this is set, so bulk backfill's ~40k stores don't each trigger a re-scan.
+    std::atomic<bool> bg_validation_awaiting_bodies_{false};
 
     // #298 hang-watchdog state. Touched ONLY by CheckHangWatchdog(), which is
     // called from the single p2p scheduler tick thread — so it needs no lock.

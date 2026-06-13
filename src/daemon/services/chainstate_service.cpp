@@ -12244,6 +12244,12 @@ void ChainstateService::BackgroundValidationWorker() {
         bg_validation_body_arrived_.store(false);
         if (auto* ctx = DaemonContext::instance(); ctx && ctx->block_download) {
             ctx->block_download->SetOnBackfillBodyStored([this]{
+                // #298: only wake validation when it is genuinely WAITING for
+                // re-requested gap bodies. During bulk backfill a body is
+                // stored ~40k times; waking (and full-rescanning) on each would
+                // be pathological. When not awaiting, validation paces itself
+                // on the 30s cv timeout and picks up batches.
+                if (!bg_validation_awaiting_bodies_.load()) return;
                 bg_validation_body_arrived_.store(true);
                 bg_validation_cv_.notify_one();
             });
@@ -12577,26 +12583,50 @@ void ChainstateService::BackgroundValidationWorker() {
                                  "bodies; relying on 30s backstop");
                 sched_unwired_logged = true;
             }
-            for (size_t i = 0; i < missing.size(); ++i) {
-                uint256 hash = missing[i].canonical_hash;
-                if (hash.IsNull() && sched) {
-                    uint256 derived;
-                    if (sched->GetExpectedHashAtHeight(missing[i].height, derived)) {
-                        hash = derived;
-                    }
-                }
-                entry_hash[i] = hash;
-                if (!hash.IsNull()) {
-                    want.emplace_back(hash, missing[i].height);
-                    entry_requested[i] = 1;
-                    // Mark outstanding so the read-success path can log the
-                    // body's arrival exactly once on a later pass.
-                    bg_requested_heights_[missing[i].height] = true;
-                }
+            // #298 refinement: only re-request once backfill has reported its
+            // window COMPLETE (completed >= total) yet validation still finds
+            // gaps — that is the exact stuck condition the reconciliation edge
+            // exists for (the original bug: completed==39942/39942 but 2909
+            // bodies unreadable, nothing re-arming the fetch). Re-requesting
+            // earlier is actively harmful:
+            //   • completed==0 while foreground IBD starves the tip-idle-gated
+            //     backfill drain  → re-requesting all 39942 every pass churns
+            //     the scheduler and starves the fetch (observed: store=0,
+            //     200k+ re-requests, foreground stalled).
+            //   • completed climbing (backfill mid-window) → the bodies are
+            //     already on the way; just wait.
+            // After a re-request the scheduler drops `completed` below `total`
+            // for the re-queued heights, so this naturally self-paces: one
+            // re-request burst per window-completion-with-gaps, then wait for
+            // the re-fetch to land.
+            bool backfill_window_complete = false;
+            if (sched) {
+                const auto bf = sched->GetBackfillProgress();
+                backfill_window_complete =
+                    (bf.total > 0 && bf.completed >= bf.total);
             }
             size_t requeued = 0;
-            if (sched && !want.empty()) {
-                requeued = sched->RequestMissingBackfillBodies(want);
+            if (sched && backfill_window_complete) {
+                for (size_t i = 0; i < missing.size(); ++i) {
+                    uint256 hash = missing[i].canonical_hash;
+                    if (hash.IsNull()) {
+                        uint256 derived;
+                        if (sched->GetExpectedHashAtHeight(missing[i].height, derived)) {
+                            hash = derived;
+                        }
+                    }
+                    entry_hash[i] = hash;
+                    if (!hash.IsNull()) {
+                        want.emplace_back(hash, missing[i].height);
+                        entry_requested[i] = 1;
+                        // Mark outstanding so the read-success path can log the
+                        // body's arrival exactly once on a later pass.
+                        bg_requested_heights_[missing[i].height] = true;
+                    }
+                }
+                if (!want.empty()) {
+                    requeued = sched->RequestMissingBackfillBodies(want);
+                }
             }
 
             // Per-skipped-height instrumentation (issue #298). Log the first 20
@@ -12633,11 +12663,15 @@ void ChainstateService::BackgroundValidationWorker() {
                              "/" + std::to_string(target_height + 1) +
                              " bodies unavailable — waiting for backfill (spec: missing"
                              " bodies are not success); re-scan in 30s or on body store");
-            // #298 signalable wait (wake-on-store): a newly stored relevant body
-            // flips bg_validation_body_arrived_ and notifies the cv, waking this
-            // worker immediately; 30s remains a backstop. The stop paths set
-            // bg_validation_should_stop_ under bg_validation_wait_mutex_ then
-            // notify, so shutdown never waits the full 30s (no lost wakeup).
+            // #298 signalable wait (wake-on-store): when backfill has STALLED we
+            // re-requested specific gap bodies and want to resume the instant
+            // they land — arm the wake. During active backfill we did NOT
+            // re-request; leave the wake disarmed so the ~40k stores don't each
+            // trigger a full re-scan, and pace on the 30s backstop instead.
+            // The stop paths set bg_validation_should_stop_ under
+            // bg_validation_wait_mutex_ then notify, so shutdown never waits the
+            // full 30s (no lost wakeup).
+            bg_validation_awaiting_bodies_.store(backfill_window_complete);
             {
                 std::unique_lock<std::mutex> lk(bg_validation_wait_mutex_);
                 bg_validation_cv_.wait_for(lk, std::chrono::seconds(30), [this]{
@@ -12645,6 +12679,7 @@ void ChainstateService::BackgroundValidationWorker() {
                            bg_validation_body_arrived_.exchange(false);
                 });
             }
+            bg_validation_awaiting_bodies_.store(false);
             assumeutxo_lifecycle_->Tick(std::chrono::steady_clock::now());
             if (bg_validation_should_stop_) {
                 OnBackgroundValidationComplete(false, "Validation stopped by user");
