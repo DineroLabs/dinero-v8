@@ -503,6 +503,23 @@ public:
     /** Return a snapshot of current backfill progress (thread-safe). */
     BackfillProgress GetBackfillProgress() const;
 
+    // #298: validation discovered pre-base heights with no readable body. For
+    // each (hash,height): if the body is already durably stored (HasBlockBody
+    // callback) skip it; otherwise (re)insert it into the backfill fetch set as
+    // MISSING so the next Tick()/drain re-issues a getdata — even when the
+    // original backfill window already reported itself complete. Returns the
+    // number actually re-queued. This is the reconciliation edge that stops the
+    // one-shot window from stranding heights validation later reports unreadable.
+    size_t RequestMissingBackfillBodies(
+        const std::vector<std::pair<uint256, uint32_t>>& want);
+
+    // #298 wake-on-store: invoked (outside mutex_) immediately after a backfill
+    // body is verified, stored, and counted. Lets the background validation
+    // worker re-attempt reads on delivery instead of polling. The callback must
+    // NOT re-enter the scheduler; it is fired after the scheduler mutex_ is
+    // released so it may safely touch its own mutex/condvar.
+    void SetOnBackfillBodyStored(std::function<void()> cb);
+
     /**
      * Get the local chainstate tip height.
      */
@@ -628,6 +645,13 @@ private:
     uint256 backfill_anchor_hash_;  // trust root the active queue was walked from
     std::function<bool(const uint256&, uint32_t)> has_block_body_;
 
+    // #298: fired (outside mutex_) after each successful backfill body store so
+    // the validation worker can re-read on delivery instead of polling.
+    std::function<void()> on_backfill_body_stored_;
+    // #298 diag: timestamp of the most recent successful backfill store. Seeded
+    // at construction so the "since_progress" diag never prints a bogus age.
+    std::chrono::steady_clock::time_point backfill_last_progress_;
+
     // ========================================================================
     // Private Helpers
     // ========================================================================
@@ -654,6 +678,11 @@ private:
     // Tick() body. Caller MUST hold mutex_. Network sends are staged via
     // StageGetdataLocked and dispatched by Tick() after the lock is released.
     void TickLocked();
+
+    // #298 diag: log a one-line snapshot of backfill state (enabled, window,
+    // completed/total, in_flight, count of MISSING entries, seconds since the
+    // last successful store). Caller MUST hold mutex_.
+    void LogBackfillDiagLocked() const;
 
     // AssumeUTXO backfill servicing (Task 2). Caller MUST hold mutex_.
     // Strictly lower priority than tip sync: yields whenever ANY tip-queue

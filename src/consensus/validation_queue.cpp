@@ -8,6 +8,7 @@
 #include "consensus/chainparams.h"             // GetActiveChain
 #include "primitives/transaction.h"
 #include "vault/vault_runtime.h"               // Track C: vault block-event hook
+#include "util/thread_util.h"                  // #298: SetThreadName for gdb backtraces
 #include <iostream>
 #include <chrono>
 #include <algorithm>
@@ -261,6 +262,7 @@ bool ValidationQueue::enqueueJob(const std::shared_ptr<BlockValidationJob>& job)
 // ========== Validation Thread ==========
 
 void ValidationQueue::validationThreadFunc() {
+    util::SetThreadName("din-blockproc");  // #298: readable gdb backtraces
     while (!shutdown_.load()) {
         std::shared_ptr<BlockValidationJob> job = popNextJob();
 
@@ -341,6 +343,7 @@ void ValidationQueue::validationThreadFunc() {
 // ========== Applier Thread ==========
 
 void ValidationQueue::applierThreadFunc() {
+    util::SetThreadName("din-blkapply");  // #298: readable gdb backtraces
     while (!shutdown_.load()) {
         std::shared_ptr<BlockValidationJob> job = popNextValidatedJob();
 

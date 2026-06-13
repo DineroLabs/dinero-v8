@@ -1756,6 +1756,169 @@ int main() {
                   << std::endl;
     }
 
+    {
+        std::cout << "\n18. #298 RequestMissingBackfillBodies re-queues pre-base bodies "
+                     "validation reports unreadable — including after the one-shot window "
+                     "reported itself complete — skips durable ones, and the re-delivery "
+                     "round-trips through the backfill path (not the tip path)..."
+                  << std::endl;
+
+        // Topology: genesis + heights 1..4, snapshot base = 4, tip sync idle.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;  // index == height
+        try {
+            BuildLinearHeaders(selector, 4, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(4);   // snapshot base = 4; tip sync idle
+        scheduler.OnHeadersProcessed();
+
+        std::vector<std::pair<uint256, uint32_t>> requests;  // (hash, height)
+        scheduler.SetSendGetDataCallback([&requests](const uint256& h, uint32_t height) {
+            requests.emplace_back(h, height);
+        });
+
+        // Wake-on-store counter (#2): must fire once per stored backfill body.
+        std::atomic<int> wake_count{0};
+        scheduler.SetOnBackfillBodyStored([&wake_count]() { wake_count.fetch_add(1); });
+
+        // Controllable HasBlockBody oracle: a height is "durable" iff present here.
+        // Empty during EnableBackfill so the full 1..4 queue is populated.
+        std::unordered_set<uint32_t> durable_heights;
+        scheduler.SetHasBlockBodyCallback(
+            [&durable_heights](const uint256&, uint32_t height) -> bool {
+                return durable_heights.count(height) > 0;
+            });
+
+        // ── Part A: drive the window to completion (the #298 false-complete) ──
+        scheduler.EnableBackfill(1, 4, hashes[4]);
+        scheduler.Tick();
+        if (!Require(requests.size() == 4, "case 18 setup: expected 4 backfill requests")) {
+            return 1;
+        }
+        for (const auto& rq : requests) {
+            if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, rq.first)),
+                         "case 18 setup: backfill body delivery must store")) {
+                return 1;
+            }
+        }
+        {
+            const auto prog = scheduler.GetBackfillProgress();
+            if (!Require(prog.completed == 4 && prog.total == 4,
+                         "case 18 setup: window must reach completed==total==4")) {
+                return 1;
+            }
+        }
+        if (!Require(wake_count.load() == 4,
+                     "#298 wake-on-store must fire once per delivered backfill body (got " +
+                         std::to_string(wake_count.load()) + ")")) {
+            return 1;
+        }
+
+        // Validation discovers height 1's body is unreadable. The entry is still
+        // RECEIVED in the completed window → found path (RECEIVED→MISSING flip).
+        requests.clear();
+        if (!Require(scheduler.RequestMissingBackfillBodies({{hashes[1], 1}}) == 1,
+                     "#298: an unreadable completed body must be re-queued (found path)")) {
+            return 1;
+        }
+        {
+            const auto prog = scheduler.GetBackfillProgress();
+            if (!Require(prog.enabled, "#298: re-request keeps backfill enabled")) return 1;
+            if (!Require(prog.completed == 3,
+                         "#298: RECEIVED→MISSING flip must un-count completed (4→3)")) {
+                return 1;
+            }
+            if (!Require(prog.total == 4, "#298: found path must not grow total")) return 1;
+        }
+
+        scheduler.Tick();  // drain must re-issue getdata for the re-queued body
+        {
+            bool got_h1 = false;
+            for (const auto& rq : requests) if (rq.second == 1) got_h1 = true;
+            if (!Require(got_h1 && requests.size() == 1,
+                         "#298: Tick must re-request exactly the re-queued height-1 body "
+                         "(the one-shot window had already gone idle)")) {
+                return 1;
+            }
+        }
+
+        // Re-delivery MUST route through the backfill path again (not the tip
+        // path). This is the regression for the RECEIVED entry having erased
+        // itself from backfill_expected_ on its first store: without re-arming
+        // that routing, the re-delivered block falls through to the tip path,
+        // never re-counts completed, pollutes received_blocks_, and loops.
+        const int wake_before_redelivery = wake_count.load();
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[1])),
+                     "#298: re-delivered backfill body must store")) {
+            return 1;
+        }
+        {
+            const auto prog = scheduler.GetBackfillProgress();
+            if (!Require(prog.completed == 4,
+                         "#298: re-delivery must route to the BACKFILL path (completed 3→4); "
+                         "if it routed to the tip path this stays 3")) {
+                return 1;
+            }
+        }
+        if (!Require(!scheduler.HasReceivedBlock(hashes[1]),
+                     "#298: a re-delivered backfill body must NOT pollute tip "
+                     "received_blocks_ (store-only contract preserved)")) {
+            return 1;
+        }
+        if (!Require(wake_count.load() == wake_before_redelivery + 1,
+                     "#298 wake-on-store must fire on the re-delivery store too")) {
+            return 1;
+        }
+
+        // ── Part B: window cleared → emplace path + durable-skip ──────────────
+        scheduler.DisableBackfill();
+        if (!Require(!scheduler.GetBackfillProgress().enabled, "case 18: disable failed")) {
+            return 1;
+        }
+        durable_heights = {2};  // height 2 is now durably stored
+
+        requests.clear();
+        // height 1 unreadable (emplace into a cleared queue), height 2 durable (skip).
+        if (!Require(
+                scheduler.RequestMissingBackfillBodies({{hashes[1], 1}, {hashes[2], 2}}) == 1,
+                "#298: only the unreadable height re-queued; the durable one is skipped")) {
+            return 1;
+        }
+        if (!Require(scheduler.GetBackfillProgress().enabled,
+                     "#298: re-arming a cleared window must set enabled=true")) {
+            return 1;
+        }
+
+        scheduler.Tick();
+        {
+            bool got_h1 = false, got_h2 = false;
+            for (const auto& rq : requests) {
+                if (rq.second == 1) got_h1 = true;
+                if (rq.second == 2) got_h2 = true;
+            }
+            if (!Require(got_h1, "#298: emplace path must re-request the unreadable body")) {
+                return 1;
+            }
+            if (!Require(!got_h2, "#298: a durable body must NOT be re-requested")) {
+                return 1;
+            }
+            if (!Require(requests.size() == 1,
+                         "#298: exactly one getdata (the unreadable body), got " +
+                             std::to_string(requests.size()))) {
+                return 1;
+            }
+        }
+
+        std::cout << "   ✅ unreadable bodies re-queued (found + emplace paths), durable "
+                     "skipped, re-delivery round-tripped through backfill, wake fired"
+                  << std::endl;
+    }
+
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
     return 0;
 }

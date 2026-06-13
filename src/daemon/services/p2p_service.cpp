@@ -6,6 +6,7 @@
 #include "daemon/services/address_manager_service.h"
 #include "daemon/services/peer_scoring_service.h"
 #include "daemon/daemon_context.h"
+#include "util/thread_util.h"  // #298: SetThreadName for gdb backtraces
 #include "config/seed_nodes.h"
 #include "consensus/chainparams.h"
 #include "consensus/block_download_scheduler.h"
@@ -627,6 +628,7 @@ void P2PService::StartSchedulerTickLoop() {
     }
 
     scheduler_tick_thread_ = std::thread([this]() {
+        util::SetThreadName("din-sched");  // #298: readable gdb backtraces
         if (logger_interface_) {
             logger_interface_->info("[P2PService] Scheduler tick loop started (interval=" +
                                     std::to_string(scheduler_tick_interval_.count()) + "ms)");
@@ -670,6 +672,18 @@ void P2PService::StartSchedulerTickLoop() {
                 }
                 if (ctx->parallel_block_download) {
                     ctx->parallel_block_download->processQueue();
+                }
+
+                // #298 no-progress hang watchdog. Hosted HERE, in the
+                // always-running scheduler tick loop, on purpose: it is
+                // INDEPENDENT of the bg-validation thread, so it still fires
+                // when that thread is the one parked (the incident). The
+                // lifecycle stall watchdog is driven only from inside the
+                // bg-validation worker's Tick(), so it goes silent if that
+                // worker wedges; this one does not. Diagnose only — it never
+                // restarts anything.
+                if (ctx->chainstate) {
+                    ctx->chainstate->CheckHangWatchdog();
                 }
 
                 // P1 reorg fix: Periodic ActivateBestChain safety net (every 30s).

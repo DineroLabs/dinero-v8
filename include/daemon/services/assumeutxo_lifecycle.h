@@ -103,11 +103,24 @@ public:
     State GetState() const;
     Status GetStatus(TimePoint now) const;
 
+    // #298 Machine-readable stuck reason for monitoring/RPC. Returns
+    // "missing-pre-base-bodies:<n>" while stalled on unavailable pre-base
+    // bodies, "" otherwise.
+    std::string StallReason() const;
+
     static const char* StateName(State s);
 
 private:
     void Persist() /* callers hold mu_ */;
     void EnterFatal(const std::string& reason, TimePoint now);
+    // #298 Centralized state mutation: logs the transition at INFO (callers
+    // hold mu_) then assigns. No-op if next == state_ (byte-identical to the
+    // prior direct assignments). Pure diagnostics — does not Persist().
+    void SetState(State next, const std::string& reason) /* callers hold mu_ */;
+
+    // #298 Stall watchdog: how long a persistent stall waits between loud
+    // diagnostic emissions (throttled so the log isn't flooded each Tick).
+    static constexpr auto kStallDiagInterval = std::chrono::minutes(5);
 
     UTXOIndex* utxo_index_;       // not owned
     Logger* logger_;              // not owned, may be null
@@ -122,6 +135,9 @@ private:
     std::string fatal_reason_;
     TimePoint last_progress_time_{};
     bool has_progress_time_ = false;
+    // #298 Throttle for the stall watchdog's loud diagnostic (see Tick).
+    TimePoint last_diag_emit_time_{};
+    bool has_diag_emit_time_ = false;
 };
 
 }  // namespace dinero::assumeutxo

@@ -26,6 +26,14 @@ const char* AssumeUtxoLifecycle::StateName(State s) {
     return kStateNames[static_cast<int>(s)];
 }
 
+void AssumeUtxoLifecycle::SetState(State next, const std::string& reason) {
+    if (next == state_) return;  // no-op: byte-identical to a same-value assign
+    if (logger_) logger_->info(
+        std::string("[AssumeUtxoLifecycle] #298 state ") + StateName(state_) +
+        " -> " + StateName(next) + " (" + reason + ")");
+    state_ = next;
+}
+
 AssumeUtxoLifecycle::AssumeUtxoLifecycle(UTXOIndex* utxo_index, Logger* logger,
                                          std::chrono::seconds stall_timeout)
     : utxo_index_(utxo_index), logger_(logger), stall_timeout_(stall_timeout) {}
@@ -39,7 +47,7 @@ bool AssumeUtxoLifecycle::OnSnapshotLoaded(const uint256& base_block, uint32_t b
         return false;
     }
     if (state_ != State::Disabled) return false;
-    state_ = State::SnapshotLoaded;
+    SetState(State::SnapshotLoaded, "snapshot loaded, fast bootstrap active");
     base_block_ = base_block;
     base_height_ = base_height;
     current_height_ = 0;
@@ -62,7 +70,7 @@ bool AssumeUtxoLifecycle::OnValidationStarted(TimePoint now) {
         has_progress_time_ = true;
         return true;
     }
-    state_ = State::ValidatingHistory;
+    SetState(State::ValidatingHistory, "validation worker started");
     last_progress_time_ = now;
     has_progress_time_ = true;
     Persist();
@@ -73,7 +81,8 @@ void AssumeUtxoLifecycle::OnBlockValidated(uint32_t height, TimePoint now) {
     std::lock_guard<std::mutex> lock(mu_);
     if (state_ != State::ValidatingHistory && state_ != State::ValidationStalled) return;
     if (state_ == State::ValidationStalled) {
-        state_ = State::ValidatingHistory;  // real progress recovers a stall
+        SetState(State::ValidatingHistory,
+                 "real progress recovered stall");  // real progress recovers a stall
         Persist();
     }
     current_height_ = height;
@@ -121,20 +130,53 @@ bool AssumeUtxoLifecycle::OnReplayComplete(bool replay_performed, bool commitmen
         // (OnBlockValidated) before completion can be claimed.
         return false;
     }
-    state_ = State::FullyValidated;
+    SetState(State::FullyValidated, "replay performed + commitment match + no missing bodies");
     Persist();
-    if (logger_) logger_->info(
-        "[AssumeUtxoLifecycle] fully_validated: snapshot trust assumption retired at height " +
-        std::to_string(base_height_));
+    if (logger_) {
+        logger_->info(
+            "[AssumeUtxoLifecycle] fully_validated: snapshot trust assumption retired at height " +
+            std::to_string(base_height_));
+        // #298 Greppable proof of a clean retirement (replay_performed,
+        // commitment_match, and missing_bodies==0 are guaranteed here by the
+        // guards above that already returned on any failing condition).
+        logger_->info(
+            "[AssumeUtxoLifecycle] #298 fully_validated PROOF: replay_performed=1 "
+            "commitment_match=1 missing_bodies=0 height=" + std::to_string(base_height_));
+    }
     return true;
 }
 
 void AssumeUtxoLifecycle::Tick(TimePoint now) {
     std::lock_guard<std::mutex> lock(mu_);
+
+    // #298 Stall watchdog: while a stall persists (validation_stalled, or
+    // validating_history still blocked on missing pre-base bodies), emit a
+    // LOUD diagnostic throttled to once per kStallDiagInterval so a silent
+    // indefinite stall becomes operator-visible. Purely diagnostic — it does
+    // NOT change state. Runs before the early-return below precisely because
+    // that guard skips validation_stalled. has_progress_time_ guards against a
+    // bogus epoch-to-now duration on a stall restored from persistence.
+    const bool stall_diag_eligible =
+        (state_ == State::ValidationStalled) ||
+        (state_ == State::ValidatingHistory && missing_bodies_ > 0);
+    if (stall_diag_eligible && has_progress_time_ &&
+        now - last_progress_time_ > kStallDiagInterval &&
+        (!has_diag_emit_time_ || now - last_diag_emit_time_ >= kStallDiagInterval)) {
+        last_diag_emit_time_ = now;
+        has_diag_emit_time_ = true;
+        if (logger_) logger_->error(
+            "[AssumeUtxoLifecycle] #298 STALL DIAGNOSTIC: validation_stalled for " +
+            std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
+                now - last_progress_time_).count()) +
+            "s missing_bodies=" + std::to_string(missing_bodies_) +
+            " current_height=" + std::to_string(current_height_) + "/" +
+            std::to_string(base_height_) + " reason=missing-pre-base-bodies");
+    }
+
     if (state_ != State::ValidatingHistory || !has_progress_time_) return;
     if (current_height_ >= base_height_ && missing_bodies_ == 0) return;
     if (now - last_progress_time_ >= stall_timeout_) {
-        state_ = State::ValidationStalled;
+        SetState(State::ValidationStalled, "stall timeout exceeded with no progress");
         Persist();
         if (logger_) logger_->error(
             "[AssumeUtxoLifecycle] validation_stalled: no historical block validated for " +
@@ -267,6 +309,14 @@ AssumeUtxoLifecycle::State AssumeUtxoLifecycle::GetState() const {
     return state_;
 }
 
+std::string AssumeUtxoLifecycle::StallReason() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (state_ == State::ValidationStalled && missing_bodies_ > 0) {
+        return "missing-pre-base-bodies:" + std::to_string(missing_bodies_);
+    }
+    return "";
+}
+
 AssumeUtxoLifecycle::Status AssumeUtxoLifecycle::GetStatus(TimePoint now) const {
     std::lock_guard<std::mutex> lock(mu_);
     Status st;
@@ -324,7 +374,7 @@ void AssumeUtxoLifecycle::Persist() {
 }
 
 void AssumeUtxoLifecycle::EnterFatal(const std::string& reason, TimePoint /*now*/) {
-    state_ = State::FatalMismatch;
+    SetState(State::FatalMismatch, reason);
     fatal_reason_ = reason;
     Persist();
     if (logger_) {

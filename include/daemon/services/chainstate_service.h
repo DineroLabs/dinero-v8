@@ -26,6 +26,7 @@
 #include <thread>  // Phase 44: For background validation worker
 #include <atomic>  // Phase 44: For thread-safe stop signal
 #include <mutex>   // Phase 44: For background validation state protection
+#include <condition_variable>  // #298: wake-on-store for background validation
 
 // Phase C.1.5: Forward declaration for P2P message handlers
 struct P2PMessage;
@@ -337,6 +338,16 @@ public:
     BackgroundValidationProgress GetBackgroundValidationProgress() const;
     // Check if background validation is complete and successful
     bool IsBackgroundValidationComplete() const;
+
+    // #298 no-progress hang watchdog. Call from an always-running periodic
+    // loop that is INDEPENDENT of the bg-validation worker thread (the p2p
+    // scheduler tick loop). Emits one loud, timestamped ERROR marker when
+    // NEITHER the bg-validation height NOR the foreground tip height has
+    // advanced for > kHangWatchdogMinutes while validation is in progress —
+    // turning a silent multi-hour wedge into a capturable gdb hint. Diagnose
+    // only; never restarts anything. Cheap and lock-light; safe to call ~5s.
+    static constexpr int kHangWatchdogMinutes = 15;
+    void CheckHangWatchdog();
 
     // Phase 45: Snapshot-accelerated IBD (Initial Block Download fast sync)
     enum class IBDStatus {
@@ -1034,6 +1045,32 @@ private:
     std::unique_ptr<std::thread> bg_validation_thread_;  // Background validation worker
     std::atomic<bool> bg_validation_should_stop_{false}; // Signal to stop worker
     mutable std::mutex bg_validation_mutex_;       // Protects background validation state
+
+    // #298 wake-on-store: a newly stored backfill body fires the scheduler's
+    // SetOnBackfillBodyStored callback, which flips bg_validation_body_arrived_
+    // and notifies bg_validation_cv_ so the worker re-reads immediately instead
+    // of polling a fixed 30s. The stop paths set bg_validation_should_stop_
+    // under bg_validation_wait_mutex_ then notify, so shutdown never waits the
+    // full backstop (no lost-wakeup race). bg_requested_heights_ is touched
+    // only by the worker thread (the callback only flips the atomic+cv), so it
+    // needs no lock: it records heights reported missing/re-requested so a
+    // height that later becomes readable logs "body arrived" exactly once.
+    std::condition_variable bg_validation_cv_;
+    std::mutex bg_validation_wait_mutex_;
+    std::atomic<bool> bg_validation_body_arrived_{false};
+    std::map<uint32_t, bool> bg_requested_heights_;
+    // #298: armed only while validation is waiting for re-requested gap bodies
+    // (backfill stalled). The scheduler's per-store wake callback no-ops unless
+    // this is set, so bulk backfill's ~40k stores don't each trigger a re-scan.
+    std::atomic<bool> bg_validation_awaiting_bodies_{false};
+
+    // #298 hang-watchdog state. Touched ONLY by CheckHangWatchdog(), which is
+    // called from the single p2p scheduler tick thread — so it needs no lock.
+    // Tracks the last bg/foreground heights seen making progress and when.
+    bool watchdog_initialized_ = false;
+    uint32_t watchdog_last_bg_height_ = 0;
+    uint32_t watchdog_last_fg_height_ = 0;
+    std::chrono::steady_clock::time_point watchdog_last_progress_time_{};
 
     // AssumeUTXO fatal state machine; lazily constructed once utxo_index_
     // exists (EnsureAssumeUtxoLifecycle()).
