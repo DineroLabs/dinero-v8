@@ -163,6 +163,7 @@ private Q_SLOTS:
   void onConnectionStatusMessage(QString message, QString level);
   void onBlockchainSyncUpdate(int blocks, int headers);
   void maybeAutoStartDaemon();
+  void onStartupWatchdogTimeout();  // #295: fail loud after 60s without RPC
 
 private:
   void setupUI();
@@ -489,6 +490,7 @@ private:
   class QProcess* daemonProcess_;
   bool suppressErrorDialogs_;  // Suppress error dialogs during daemon startup
   bool autoStartDaemonAttempted_ = false;
+  bool daemonStopRequested_ = false;  // #295: user pressed Stop Daemon — suppress exit dialog
 
   // Debug console - live log viewer
   dinero::DebugConsole* debugConsole_;

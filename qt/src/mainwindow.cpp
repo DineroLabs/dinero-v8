@@ -54,6 +54,7 @@
 #include <QMessageBox>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QTcpSocket>
 #include <QSpinBox>
 #include <QProgressBar>
 #include <QStandardPaths>
@@ -1875,6 +1876,10 @@ MainWindow::MainWindow(QWidget* parent)
   // Release builds should feel self-contained: if no local daemon is already
   // reachable, make one silent attempt to start the bundled dinerod.
   QTimer::singleShot(1500, this, &MainWindow::maybeAutoStartDaemon);
+
+  // #295: visible timeout on the startup wait. If RPC never comes up the
+  // user previously stared at "Connecting..." forever with no explanation.
+  QTimer::singleShot(60000, this, &MainWindow::onStartupWatchdogTimeout);
 
   // Cmd+K dashboard. The AI assistant surface is temporarily hidden by
   // kShowAiAssistantPanel, but the shortcut remains the dashboard entry point.
@@ -11885,6 +11890,67 @@ void MainWindow::onExportSeed() {
   rpc_->call("wallet.exportseed", QJsonArray{});
 }
 
+// Last ~20 lines of dinerod's debug.log for fail-loud error dialogs (#295).
+static QString daemonDebugLogTail(const QString& datadir, int maxLines = 20) {
+  QFile log(QDir(datadir).filePath("debug.log"));
+  if (!log.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return QStringLiteral("(no debug.log found in %1)").arg(datadir);
+  }
+  const qint64 kTailBytes = 64 * 1024;
+  if (log.size() > kTailBytes) {
+    log.seek(log.size() - kTailBytes);
+  }
+  const QStringList lines = QString::fromUtf8(log.readAll())
+                                .split('\n', Qt::SkipEmptyParts);
+  const int start = qMax(0, static_cast<int>(lines.size()) - maxLines);
+  return lines.mid(start).join('\n');
+}
+
+void MainWindow::onStartupWatchdogTimeout() {
+  if (shuttingDown_ || !connectionMgr_ || connectionMgr_->isConnected()) {
+    return;
+  }
+  if (daemonStopRequested_) {
+    return;  // User explicitly stopped the daemon — waiting is expected.
+  }
+
+  QString datadir = rpc_ ? rpc_->datadir() : QString();
+  if (datadir.trimmed().isEmpty()) {
+    datadir = defaultDineroDataDir();
+  }
+  const QString logPath = QDir(datadir).filePath("debug.log");
+
+  qWarning() << "Startup watchdog: no daemon RPC connection after 60s";
+
+  QMessageBox box(this);
+  box.setIcon(QMessageBox::Warning);
+  box.setWindowTitle("Still Waiting for Daemon");
+  box.setText("Dinero has been waiting 60 seconds for the daemon (dinerod) "
+              "and is still not connected — the daemon may have failed.");
+  box.setInformativeText(
+    "Common causes:\n"
+    "  • Port 20998 is held by another process (lsof -i :20998)\n"
+    "  • Another Dinero instance is using the same data directory\n\n"
+    "You can keep waiting, open the daemon log, or quit.");
+  box.setDetailedText(QString("Last lines of %1:\n\n%2")
+                          .arg(logPath, daemonDebugLogTail(datadir)));
+  QPushButton* showLogBtn = box.addButton("Show Log", QMessageBox::ActionRole);
+  QPushButton* waitBtn = box.addButton("Keep Waiting", QMessageBox::AcceptRole);
+  box.addButton("Quit", QMessageBox::DestructiveRole);
+  box.setDefaultButton(waitBtn);
+  box.exec();
+
+  if (box.clickedButton() == showLogBtn) {
+    QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
+    // Re-arm: the user is investigating, keep the watchdog alive.
+    QTimer::singleShot(60000, this, &MainWindow::onStartupWatchdogTimeout);
+  } else if (box.clickedButton() == waitBtn) {
+    QTimer::singleShot(60000, this, &MainWindow::onStartupWatchdogTimeout);
+  } else {
+    close();
+  }
+}
+
 void MainWindow::maybeAutoStartDaemon() {
   if (autoStartDaemonAttempted_ || !connectionMgr_) {
     return;
@@ -12033,11 +12099,93 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
 
   const QString datadir = rpc_->datadir();
 
+  // #295: pre-spawn port check. If something already listens on the RPC
+  // port, a fresh dinerod cannot bind and will exit — ask the user instead
+  // of failing silently. The listener might be a usable existing daemon,
+  // so offer to connect to it.
+  {
+    QTcpSocket probe;
+    probe.connectToHost("127.0.0.1", 20998);
+    const bool portInUse = probe.waitForConnected(500);
+    probe.abort();
+    if (portInUse && showFeedback) {
+      QMessageBox box(this);
+      box.setIcon(QMessageBox::Warning);
+      box.setWindowTitle("Port Already in Use");
+      box.setText("Port 20998 is already in use — another Dinero process "
+                  "may be running.");
+      box.setInformativeText(
+        "If an existing Dinero daemon is running, the wallet can connect to "
+        "it directly instead of starting a new one. If the port is held by a "
+        "stale process, starting a new daemon will fail until it is cleared "
+        "(lsof -i :20998).");
+      QPushButton* connectBtn =
+          box.addButton("Connect to Existing", QMessageBox::AcceptRole);
+      QPushButton* startBtn =
+          box.addButton("Start Anyway", QMessageBox::ActionRole);
+      box.addButton("Cancel", QMessageBox::RejectRole);
+      box.setDefaultButton(connectBtn);
+      box.exec();
+      if (box.clickedButton() == connectBtn) {
+        suppressErrorDialogs_ = false;
+        rpc_->loadCookie();
+        connectionMgr_->connectToDaemon();
+        return true;
+      }
+      if (box.clickedButton() != startBtn) {
+        suppressErrorDialogs_ = false;
+        return false;
+      }
+    }
+  }
+
   const bool allowPortMapping = maybeShowP2PNetworkNotice();
 
   if (!daemonProcess_) {
     daemonProcess_ = new QProcess(this);
+    // #295: fail loud if the daemon dies before RPC ever came up. Without
+    // this the GUI sat in "Connecting..." forever when e.g. the RPC port
+    // was squatted by an orphaned process. Connected once per QProcess
+    // (the object is reused across restarts).
+    connect(daemonProcess_,
+            qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            this, [this](int exitCode, QProcess::ExitStatus status) {
+      if (shuttingDown_ || daemonStopRequested_) {
+        return;
+      }
+      if (connectionMgr_ && connectionMgr_->isConnected()) {
+        return;  // RPC was up; ConnectionManager surfaces the disconnect.
+      }
+      if (status == QProcess::NormalExit && exitCode == 0) {
+        return;  // Clean external stop (e.g. dinero-cli stop).
+      }
+      QString dir = rpc_ ? rpc_->datadir() : QString();
+      if (dir.trimmed().isEmpty()) {
+        dir = defaultDineroDataDir();
+      }
+      qWarning() << "Daemon exited before RPC came up, code:" << exitCode;
+      QMessageBox box(this);
+      box.setIcon(QMessageBox::Critical);
+      box.setWindowTitle("Daemon Failed");
+      box.setText(QString("The Dinero daemon (dinerod) exited before the "
+                          "wallet could connect (exit code %1).").arg(exitCode));
+      box.setInformativeText(
+        "Common causes:\n"
+        "  • Port 20998 is already in use by another process\n"
+        "  • Another Dinero instance is using the same data directory\n\n"
+        "See the daemon log below for details (Show Details).");
+      box.setDetailedText(QString("Last lines of %1/debug.log:\n\n%2")
+                              .arg(dir, daemonDebugLogTail(dir)));
+      box.exec();
+      if (lblConnectionStatus_) {
+        lblConnectionStatus_->setText("Daemon failed to start");
+        lblConnectionStatus_->setStyleSheet(headerPillStyle());
+      }
+      btnStartDaemon_->setVisible(true);
+      btnStopDaemon_->setVisible(false);
+    });
   }
+  daemonStopRequested_ = false;
 
   QStringList args = {
     QString("--datadir=%1").arg(datadir),
@@ -12157,6 +12305,9 @@ void MainWindow::onStopDaemon() {
   if (reply != QMessageBox::Yes) {
     return;
   }
+
+  // #295: user-requested stop — keep the unexpected-exit dialog quiet.
+  daemonStopRequested_ = true;
 
   stopLocalStratumServer();
 
