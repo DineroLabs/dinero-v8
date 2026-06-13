@@ -204,6 +204,20 @@ sync_headers() {
         echo -e "       and no prebuilt headers (${dst}/openssl)${NC}" >&2
         exit 1
     fi
+    if [[ ! -f "${OPENSSL_DIR}/include/openssl/ssl.h" ]]; then
+        # Source header dir exists but contains only *.h.in templates: a
+        # freshly extracted tarball has no generated headers until
+        # Configure+make run. Never replace a complete prebuilt header set
+        # with this incomplete source set (issue #293: doing so deleted the
+        # committed prebuilt headers and broke the .deb cmake configure).
+        if [[ -d "${dst}/openssl" ]]; then
+            echo -e "${YELLOW}Warning: OpenSSL source headers at ${OPENSSL_DIR}/include/openssl are not generated (no ssl.h); keeping existing headers at ${dst}/openssl${NC}"
+            return 0
+        fi
+        echo -e "${RED}Error: OpenSSL source headers at ${OPENSSL_DIR}/include/openssl are not generated (no ssl.h)" >&2
+        echo -e "       and no prebuilt headers (${dst}/openssl)${NC}" >&2
+        exit 1
+    fi
     rm -rf "${dst}"
     mkdir -p "${dst}"
     cp -R "${OPENSSL_DIR}/include/openssl" "${dst}/openssl"

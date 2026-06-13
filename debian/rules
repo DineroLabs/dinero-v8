@@ -34,9 +34,24 @@ DEB_OPENSSL_VERSION := 3.5.6
 # libcrypto.so.3 / libssl.so.3 in NEEDED via gRPC's transitive link.
 # (gRPC itself remains system-linked for now; full bundling is
 # tracked as a Phase E.3 follow-up.)
+#
+# Issue #293: do NOT run the build script when the committed prebuilt
+# slice is already complete. On a clean checkout the script downloads
+# the OpenSSL source tarball and its header sync then clobbers the
+# committed prebuilt headers with the ungenerated *.h.in source set,
+# breaking cmake configure (cmake/ThirdParty.cmake "Vendored OpenSSL
+# headers not found") and contaminating the tree. The prebuilt subdir
+# matches scripts/build-openssl-vendored.sh's default_output_dir on
+# Linux: prebuilt/linux-$(uname -m).
 override_dh_auto_configure:
-	@echo "→ Building vendored OpenSSL $(DEB_OPENSSL_VERSION) (idempotent)"
-	OPENSSL_VERSION=$(DEB_OPENSSL_VERSION) ./scripts/build-openssl-vendored.sh
+	@prebuilt="third_party/openssl-$(DEB_OPENSSL_VERSION)/prebuilt/linux-$$(uname -m)"; \
+	if [ -f "$$prebuilt/libssl.a" ] && [ -f "$$prebuilt/libcrypto.a" ] && \
+	   [ -f "$$prebuilt/include/openssl/ssl.h" ]; then \
+	  echo "→ Vendored OpenSSL $(DEB_OPENSSL_VERSION) prebuilt present at $$prebuilt — skipping build script"; \
+	else \
+	  echo "→ Building vendored OpenSSL $(DEB_OPENSSL_VERSION)"; \
+	  OPENSSL_VERSION=$(DEB_OPENSSL_VERSION) ./scripts/build-openssl-vendored.sh; \
+	fi
 	dh_auto_configure -- \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_INSTALL_PREFIX=/usr \
