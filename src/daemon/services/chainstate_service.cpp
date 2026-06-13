@@ -1687,8 +1687,21 @@ bool ChainstateService::ResetAssumeUtxoFatalState(const std::string& confirm_tok
     // recovery flow (reset -> safemode.exit -> load snapshot). Join it first;
     // never under bg_validation_mutex_ (the worker takes that mutex).
     if (bg_validation_thread_ && bg_validation_thread_->joinable()) {
-        bg_validation_should_stop_ = true;
+        // #298: set the stop flag under bg_validation_wait_mutex_ so it cannot
+        // land in the worker's predicate-eval/block window (lost wakeup) — then
+        // notify so the signalable rescan wait returns at once instead of
+        // sleeping the 30s backstop while we join.
+        {
+            std::lock_guard<std::mutex> wlk(bg_validation_wait_mutex_);
+            bg_validation_should_stop_ = true;
+        }
+        bg_validation_cv_.notify_all();
         bg_validation_thread_->join();
+        // #298: clear the wake callback now that the worker is gone, so a late
+        // backfill store cannot invoke the [this] capture after teardown.
+        if (auto* ctx = DaemonContext::instance(); ctx && ctx->block_download) {
+            ctx->block_download->SetOnBackfillBodyStored(nullptr);
+        }
         bg_validation_thread_.reset();
         bg_validation_should_stop_ = false;
     }
@@ -3564,8 +3577,20 @@ void ChainstateService::Stop() {
     // Phase 44: Gracefully shutdown background validation thread
     if (bg_validation_thread_ && bg_validation_thread_->joinable()) {
         logger_->info("[ChainstateService] Stopping background validation thread...");
-        bg_validation_should_stop_ = true;
+        // #298: set stop under bg_validation_wait_mutex_ then notify so the
+        // worker's signalable rescan wait returns immediately (no lost wakeup,
+        // no 30s shutdown stall).
+        {
+            std::lock_guard<std::mutex> wlk(bg_validation_wait_mutex_);
+            bg_validation_should_stop_ = true;
+        }
+        bg_validation_cv_.notify_all();
         bg_validation_thread_->join();
+        // #298: drop the wake callback so a late backfill store cannot fire the
+        // [this] capture after this service is torn down.
+        if (auto* ctx = DaemonContext::instance(); ctx && ctx->block_download) {
+            ctx->block_download->SetOnBackfillBodyStored(nullptr);
+        }
         logger_->info("[ChainstateService] Background validation thread stopped");
     }
 
@@ -12148,6 +12173,23 @@ void ChainstateService::BackgroundValidationWorker() {
             return;
         }
 
+        // #298 wake-on-store: register the scheduler callback so a freshly
+        // stored pre-base body wakes this worker immediately (the 30s rescan
+        // becomes a backstop, not the primary cadence). The callback only
+        // touches the atomic + cv, so it is safe to fire from the scheduler's
+        // post-store path. The stop paths clear this callback after join() to
+        // avoid a use-after-free on [this] if a body lands during shutdown.
+        // Clear any stale wake left set when a previous worker exited via the
+        // should_stop short-circuit, so the first rescan wait of this run is
+        // not skipped on the reset→reload recovery path.
+        bg_validation_body_arrived_.store(false);
+        if (auto* ctx = DaemonContext::instance(); ctx && ctx->block_download) {
+            ctx->block_download->SetOnBackfillBodyStored([this]{
+                bg_validation_body_arrived_.store(true);
+                bg_validation_cv_.notify_one();
+            });
+        }
+
         EnsureAssumeUtxoLifecycle();
 
         const uint32_t target_height = assumeutxo_base_height_;
@@ -12204,8 +12246,23 @@ void ChainstateService::BackgroundValidationWorker() {
         // PromoteValidatedHistory requires it as the height-index source.
         std::vector<uint256> canonical_hashes_fallback;
         uint32_t blocks_skipped = 0;
+
+        // #298 reconciliation: per-skipped-height record. reason classifies why
+        // the body was unreadable; canonical_hash is the header-anchored hash
+        // when we had one (Null for NoCanonicalHash). After each pass these feed
+        // the targeted re-request and the per-height diagnostics (issue #298).
+        enum class MissReason { NoCanonicalHash, NoBodyForHash, HashMismatch };
+        struct MissingEntry {
+            uint32_t height;
+            uint256 canonical_hash;  // Null when reason == NoCanonicalHash
+            MissReason reason;
+        };
+        // Log the scheduler-unwired warning at most once for this worker run.
+        bool sched_unwired_logged = false;
+
         while (true) {
             blocks_skipped = 0;
+            std::vector<MissingEntry> missing;  // #298: per-pass missing heights
             // Engine heights must ascend strictly from 1 within one engine
             // lifetime, so each rescan pass restarts the replay from genesis
             // with a fresh engine. Replaying from 0 each pass is acceptable:
@@ -12330,10 +12387,17 @@ void ChainstateService::BackgroundValidationWorker() {
                     canonical_hash = canonical_hashes_fallback[height];
                 } else {
                     blocks_skipped++;
+                    missing.push_back({height, uint256(),
+                                       MissReason::NoCanonicalHash});  // #298
                     continue;
                 }
                 auto block_result = getBlockByHash(canonical_hash);
-                if (!block_result.ok()) { blocks_skipped++; continue; }
+                if (!block_result.ok()) {
+                    blocks_skipped++;
+                    missing.push_back({height, canonical_hash,
+                                       MissReason::NoBodyForHash});  // #298
+                    continue;
+                }
                 const Block& blk = block_result.value();
                 // The stored body must actually be the canonical block:
                 // ConnectBlock trusts the (height, hash) it is handed and
@@ -12343,6 +12407,8 @@ void ChainstateService::BackgroundValidationWorker() {
                 // re-download), not snapshot poison: treat as missing body.
                 if (blk.GetHash() != canonical_hash) {
                     blocks_skipped++;
+                    missing.push_back({height, canonical_hash,
+                                       MissReason::HashMismatch});  // #298
                     logger_->warning("[BackgroundValidation] body at height " +
                                      std::to_string(height) + " hashes to " +
                                      blk.GetHash().GetHex() + " but canonical hash is " +
@@ -12350,6 +12416,14 @@ void ChainstateService::BackgroundValidationWorker() {
                                      " — local block-store corruption; treating as a "
                                      "missing body pending re-download");
                     continue;
+                }
+                // #298: this height is readable now. If a prior pass reported it
+                // missing and re-requested it, log the arrival exactly once.
+                if (auto req_it = bg_requested_heights_.find(height);
+                    req_it != bg_requested_heights_.end() && req_it->second) {
+                    logger_->info("[BackgroundValidation] #298 body arrived height=" +
+                                  std::to_string(height));
+                    req_it->second = false;
                 }
                 // Genesis (height 0) is never validated — production
                 // ConnectTip's early-init path likewise installs genesis as
@@ -12418,12 +12492,99 @@ void ChainstateService::BackgroundValidationWorker() {
             // Release the partially-fed replay set (up to ~30MB at mainnet
             // scale) during the backfill wait; the next pass re-creates it.
             replay.reset();
+
+            // ── #298 deterministic reconciliation: targeted re-request ──
+            // Background validation used to discover missing pre-base bodies
+            // and do nothing but sleep — a permanent stall when the one-shot
+            // backfill window had already reported itself complete. Build a
+            // {hash,height} want-list and re-queue it on the scheduler so the
+            // next Tick re-issues getdata for exactly those bodies. For each
+            // missing entry: re-derive the canonical hash from the active
+            // header chain when we never had one (do NOT trust a stale
+            // height→hash); otherwise re-request the header-anchored hash we
+            // recorded. Per-height diagnostics (issue #298 spec) are emitted
+            // below AFTER reconciliation so the `requested` field is accurate.
+            std::vector<std::pair<uint256, uint32_t>> want;
+            want.reserve(missing.size());
+            std::vector<uint8_t> entry_requested(missing.size(), 0);
+            std::vector<uint256> entry_hash(missing.size());  // resolved hash
+            auto* recon_ctx = DaemonContext::instance();
+            consensus::BlockDownloadScheduler* sched =
+                (recon_ctx && recon_ctx->block_download)
+                    ? recon_ctx->block_download.get() : nullptr;
+            if (!sched && !sched_unwired_logged) {
+                logger_->warning("[BackgroundValidation] #298 block-download "
+                                 "scheduler unwired — cannot re-request missing "
+                                 "bodies; relying on 30s backstop");
+                sched_unwired_logged = true;
+            }
+            for (size_t i = 0; i < missing.size(); ++i) {
+                uint256 hash = missing[i].canonical_hash;
+                if (hash.IsNull() && sched) {
+                    uint256 derived;
+                    if (sched->GetExpectedHashAtHeight(missing[i].height, derived)) {
+                        hash = derived;
+                    }
+                }
+                entry_hash[i] = hash;
+                if (!hash.IsNull()) {
+                    want.emplace_back(hash, missing[i].height);
+                    entry_requested[i] = 1;
+                    // Mark outstanding so the read-success path can log the
+                    // body's arrival exactly once on a later pass.
+                    bg_requested_heights_[missing[i].height] = true;
+                }
+            }
+            size_t requeued = 0;
+            if (sched && !want.empty()) {
+                requeued = sched->RequestMissingBackfillBodies(want);
+            }
+
+            // Per-skipped-height instrumentation (issue #298). Log the first 20
+            // distinct missing heights in full; always log the gap-summary.
+            uint32_t min_h = std::numeric_limits<uint32_t>::max();
+            uint32_t max_h = 0;
+            size_t detail_logged = 0;
+            for (size_t i = 0; i < missing.size(); ++i) {
+                const MissingEntry& e = missing[i];
+                min_h = std::min(min_h, e.height);
+                max_h = std::max(max_h, e.height);
+                if (detail_logged >= 20) continue;
+                ++detail_logged;
+                const bool header_exists = !entry_hash[i].IsNull();
+                const bool body_in_store = (e.reason == MissReason::HashMismatch);
+                const bool read_failed   = (e.reason == MissReason::NoBodyForHash);
+                logger_->info(std::string("[BackgroundValidation] #298 gap") +
+                              " height=" + std::to_string(e.height) +
+                              " expected=" + (header_exists
+                                  ? entry_hash[i].GetHex().substr(0, 16) : "NONE") +
+                              " header_exists=" + (header_exists ? "1" : "0") +
+                              " body_in_store=" + (body_in_store ? "1" : "0") +
+                              " read_failed=" + (read_failed ? "1" : "0") +
+                              " requested=" + (entry_requested[i] ? "1" : "0"));
+            }
+            if (missing.empty()) { min_h = 0; }
+            logger_->info(std::string("[BackgroundValidation] #298 gap-summary:") +
+                          " missing=" + std::to_string(missing.size()) +
+                          " min_height=" + std::to_string(min_h) +
+                          " max_height=" + std::to_string(max_h) +
+                          " requeued=" + std::to_string(requeued));
+
             logger_->warning("[BackgroundValidation] " + std::to_string(blocks_skipped) +
                              "/" + std::to_string(target_height + 1) +
                              " bodies unavailable — waiting for backfill (spec: missing"
-                             " bodies are not success); re-scan in 30s");
-            for (int i = 0; i < 30 && !bg_validation_should_stop_; ++i) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
+                             " bodies are not success); re-scan in 30s or on body store");
+            // #298 signalable wait (wake-on-store): a newly stored relevant body
+            // flips bg_validation_body_arrived_ and notifies the cv, waking this
+            // worker immediately; 30s remains a backstop. The stop paths set
+            // bg_validation_should_stop_ under bg_validation_wait_mutex_ then
+            // notify, so shutdown never waits the full 30s (no lost wakeup).
+            {
+                std::unique_lock<std::mutex> lk(bg_validation_wait_mutex_);
+                bg_validation_cv_.wait_for(lk, std::chrono::seconds(30), [this]{
+                    return bg_validation_should_stop_.load() ||
+                           bg_validation_body_arrived_.exchange(false);
+                });
             }
             assumeutxo_lifecycle_->Tick(std::chrono::steady_clock::now());
             if (bg_validation_should_stop_) {

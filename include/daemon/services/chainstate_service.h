@@ -26,6 +26,7 @@
 #include <thread>  // Phase 44: For background validation worker
 #include <atomic>  // Phase 44: For thread-safe stop signal
 #include <mutex>   // Phase 44: For background validation state protection
+#include <condition_variable>  // #298: wake-on-store for background validation
 
 // Phase C.1.5: Forward declaration for P2P message handlers
 struct P2PMessage;
@@ -1034,6 +1035,20 @@ private:
     std::unique_ptr<std::thread> bg_validation_thread_;  // Background validation worker
     std::atomic<bool> bg_validation_should_stop_{false}; // Signal to stop worker
     mutable std::mutex bg_validation_mutex_;       // Protects background validation state
+
+    // #298 wake-on-store: a newly stored backfill body fires the scheduler's
+    // SetOnBackfillBodyStored callback, which flips bg_validation_body_arrived_
+    // and notifies bg_validation_cv_ so the worker re-reads immediately instead
+    // of polling a fixed 30s. The stop paths set bg_validation_should_stop_
+    // under bg_validation_wait_mutex_ then notify, so shutdown never waits the
+    // full backstop (no lost-wakeup race). bg_requested_heights_ is touched
+    // only by the worker thread (the callback only flips the atomic+cv), so it
+    // needs no lock: it records heights reported missing/re-requested so a
+    // height that later becomes readable logs "body arrived" exactly once.
+    std::condition_variable bg_validation_cv_;
+    std::mutex bg_validation_wait_mutex_;
+    std::atomic<bool> bg_validation_body_arrived_{false};
+    std::map<uint32_t, bool> bg_requested_heights_;
 
     // AssumeUTXO fatal state machine; lazily constructed once utxo_index_
     // exists (EnsureAssumeUtxoLifecycle()).
