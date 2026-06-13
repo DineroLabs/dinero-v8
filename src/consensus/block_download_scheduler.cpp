@@ -18,7 +18,8 @@ namespace consensus {
 BlockDownloadScheduler::BlockDownloadScheduler(HeaderChainSelector* header_chain,
                                                dinero::BlockStorage* block_storage)
     : header_chain_(header_chain)
-    , block_storage_(block_storage) {
+    , block_storage_(block_storage)
+    , backfill_last_progress_(std::chrono::steady_clock::now()) {  // #298 diag seed
 
     if (!header_chain_) {
         g_logger.error("BlockDownloadScheduler: header_chain is null");
@@ -193,7 +194,7 @@ void BlockDownloadScheduler::DispatchDeferredSends() {
 }
 
 bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     const uint256 block_hash = block.GetHash();
     g_logger.info("[BlockDownloadScheduler] OnBlockReceived: " + block_hash.GetHex());
 
@@ -219,12 +220,32 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
             }
         }
         backfill_progress_.completed++;
+        backfill_last_progress_ = std::chrono::steady_clock::now();  // #298 diag
         in_flight_blocks_.erase(block_hash);
         backfill_expected_.erase(block_hash);
         g_logger.info("[BlockDownloadScheduler] Backfill body stored: " +
                       block_hash.GetHex().substr(0, 16) + "... (" +
                       std::to_string(backfill_progress_.completed) + "/" +
                       std::to_string(backfill_progress_.total) + ")");
+
+        // #298: backfill window just reached completed==total → log a one-line
+        // snapshot of the idle transition (helps post-mortem a stalled backfill).
+        if (backfill_progress_.total > 0 &&
+            backfill_progress_.completed == backfill_progress_.total) {
+            LogBackfillDiagLocked();
+        }
+
+        // #298 wake-on-store: notify the background validation worker that a
+        // pre-base body landed so it can re-attempt its read without polling.
+        // Copy the std::function and invoke it AFTER releasing mutex_ — the
+        // worker's callback touches its own mutex/condvar, and we must never
+        // hold the scheduler lock across a foreign callback (re-entrancy /
+        // lock-order deadlock guard, same discipline as the #241 send path).
+        std::function<void()> wake = on_backfill_body_stored_;
+        lock.unlock();
+        if (wake) {
+            wake();
+        }
         return true;
     }
 
@@ -894,6 +915,105 @@ BlockDownloadScheduler::BackfillProgress
 BlockDownloadScheduler::GetBackfillProgress() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return backfill_progress_;
+}
+
+void BlockDownloadScheduler::SetOnBackfillBodyStored(std::function<void()> cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    on_backfill_body_stored_ = std::move(cb);
+}
+
+// #298 diag: one-line backfill state snapshot. Caller MUST hold mutex_.
+void BlockDownloadScheduler::LogBackfillDiagLocked() const {
+    size_t missing = 0;
+    for (const auto& fs : backfill_blocks_) {
+        if (fs.status == FetchStatus::MISSING) ++missing;
+    }
+    const auto since = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - backfill_last_progress_).count();
+    g_logger.info(std::string("[BlockDownloadScheduler] #298 backfill-diag:") +
+                  " enabled=" + (backfill_progress_.enabled ? "1" : "0") +
+                  " window=[" + std::to_string(backfill_progress_.start_height) +
+                  "," + std::to_string(backfill_progress_.end_height) + "]" +
+                  " completed=" + std::to_string(backfill_progress_.completed) +
+                  "/" + std::to_string(backfill_progress_.total) +
+                  " in_flight=" + std::to_string(backfill_progress_.in_flight) +
+                  " missing=" + std::to_string(missing) +
+                  " since_progress=" + std::to_string(since) + "s");
+}
+
+// #298: backfill-aware targeted re-request. See the header for the contract.
+// The backfill drain (ServiceBackfillLocked) gates ONLY on enabled + a non-empty
+// queue + no pending tip work + the shared in-flight cap + entry status==MISSING
+// — it has NO completed<total / "window done" gate — so a re-queued MISSING entry
+// is drained on the next Tick with no change to the drain itself. The only thing
+// that could strand a re-queue is `enabled==false` after a one-shot window went
+// idle/disabled, which is why we (re)assert enabled below.
+size_t BlockDownloadScheduler::RequestMissingBackfillBodies(
+        const std::vector<std::pair<uint256, uint32_t>>& want) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // #298 diag: snapshot state at the top of every reconciliation call.
+    LogBackfillDiagLocked();
+
+    size_t requeued = 0;
+    for (const auto& [hash, height] : want) {
+        // Already durably stored? Validation can read it → nothing to do.
+        if (has_block_body_ && has_block_body_(hash, height)) {
+            continue;
+        }
+
+        // Find the existing entry: the window may still hold it as RECEIVED
+        // after reporting itself complete (the #298 false-complete scenario).
+        bool found = false;
+        for (auto& fs : backfill_blocks_) {
+            if (fs.block_hash == hash) {
+                if (fs.status == FetchStatus::REQUESTED &&
+                    backfill_progress_.in_flight > 0) {
+                    backfill_progress_.in_flight--;  // mirror in_flight bookkeeping
+                }
+                // A RECEIVED entry already counted toward completed; it is no
+                // longer durable, so uncount it — keeps the completed==total
+                // idle signal honest (the false-complete is exactly #298).
+                if (fs.status == FetchStatus::RECEIVED &&
+                    backfill_progress_.completed > 0) {
+                    backfill_progress_.completed--;
+                }
+                fs.status = FetchStatus::MISSING;
+                fs.stored_pos = FilePosition();
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            // Window already cleared: re-create a fresh MISSING entry so the
+            // next service pass fetches it, and grow total to match.
+            backfill_blocks_.emplace_back(hash, height);
+            backfill_progress_.total++;
+        }
+
+        // CRITICAL (both paths): re-arm OnBlockReceived routing. A RECEIVED body
+        // erased itself from backfill_expected_ on store (OnBlockReceived), so
+        // without this the re-delivered block would fall through to the TIP path
+        // — never re-counted, polluting received_blocks_, and looping forever as
+        // ServiceBackfillLocked re-requests a never-completing entry. Inserting
+        // is a no-op for MISSING/REQUESTED entries (still in the set).
+        backfill_expected_.insert(hash);
+        in_flight_blocks_.erase(hash);  // release any stale shared-window slot
+
+        ++requeued;
+        g_logger.info("[BlockDownloadScheduler] #298 re-request backfill body height=" +
+                      std::to_string(height) + " hash=" +
+                      hash.GetHex().substr(0, 16) + " (reason=validation-gap)");
+    }
+
+    // A one-shot window may have gone idle (or been disabled). Re-arming a fetch
+    // means backfill is live again, so ServiceBackfillLocked won't early-return.
+    if (requeued > 0) {
+        backfill_progress_.enabled = true;
+    }
+
+    return requeued;
 }
 
 void BlockDownloadScheduler::ScanForMissingBlocks() {
