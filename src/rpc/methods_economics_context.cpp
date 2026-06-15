@@ -124,7 +124,7 @@ din::Json rpc_context_economics_getinfo(const ExecutionContext& ctx, const din::
     result["halving_count"] = 33;
     // Derive from consensus (chainparams target_spacing) instead of hardcoding —
     // mainnet is 120s (2 min). A hardcoded 180 was wrong and also contradicted
-    // target_spacing_seconds returned later in this same handler.
+    // target_spacing_seconds reported by the getconsensusinfo handler.
     const int block_time_seconds = static_cast<int>(dinero::Params().target_spacing);
     result["block_time_seconds"] = block_time_seconds;
     // Halving horizon derived from the real block time so it cannot drift again:
