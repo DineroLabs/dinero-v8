@@ -47,7 +47,9 @@ cache_value() {
     ' "$cache"
 }
 
-require_dir "$PROJECT_ROOT/.git"
+# .git is a directory in a normal clone but a regular file (gitdir pointer) in a
+# git worktree; accept either so release builds can run from a worktree.
+[[ -e "$PROJECT_ROOT/.git" ]] || fail "missing required git metadata: $PROJECT_ROOT/.git"
 require_file "$PROJECT_ROOT/qt/src/mainwindow.cpp"
 require_file "$PROJECT_ROOT/qt/src/cmdkpanel.cpp"
 require_file "$PROJECT_ROOT/qt/src/mynodedashboard.cpp"
