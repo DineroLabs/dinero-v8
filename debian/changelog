@@ -1,3 +1,15 @@
+dinero-core (8.0.1-1) unstable; urgency=medium
+
+  * v8.0.1 stable point release on top of v8.0.0.
+    - rpc(economics): getinfo now reports the real 120s block time,
+      derived from target_spacing instead of a stale constant (#294).
+    - qt: retry daemon spawn on transient early exit instead of raising a
+      false startup alarm (#306).
+    - win: guard POSIX unistd.h/getpid in the hang-watchdog log hint so the
+      MSVC build compiles; no effect on the Linux/macOS runtime (#305).
+
+ -- Dinero Labs <team@dinerolabs.org>  Fri, 19 Jun 2026 16:24:29 -0400
+
 dinero-core (8.0.0-1) unstable; urgency=medium
 
   * v8.0.0 stable release. AssumeUTXO trust model complete:
