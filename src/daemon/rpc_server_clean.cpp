@@ -44,6 +44,11 @@ public:
             return false;
         }
 
+        // #295: don't let spawned children (e.g. dinero-seeder) inherit the RPC
+        // listen socket — an orphaned child would keep port 20998 bound after the
+        // daemon exits and block the next daemon from starting.
+        compat_set_cloexec(m_server_socket);
+
         // Set socket options
         int opt = 1;
         if (setsockopt(m_server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {

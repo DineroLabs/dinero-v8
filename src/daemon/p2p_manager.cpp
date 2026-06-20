@@ -68,6 +68,8 @@
     #include <netdb.h>
 #endif
 
+#include "compat/net_compat.h"  // compat_set_cloexec (#295)
+
 // P2P Protocol constants
 static const uint32_t PROTOCOL_VERSION = 70016;  // Utreexo support
 
@@ -6424,7 +6426,12 @@ int P2PManager::create_listen_socket() {
         std::cerr << "socket() failed: " << strerror(errno) << std::endl;
         return -1;
     }
-    
+
+    // #295: don't let spawned children (e.g. dinero-seeder) inherit the P2P
+    // listen socket — an orphaned child would keep port 20999 bound after the
+    // daemon exits and block the next daemon from binding.
+    compat_set_cloexec(socket_fd);
+
     // Enable socket reuse
     int opt = 1;
     if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt)) < 0) {
@@ -6524,6 +6531,9 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
     if (socket_fd < 0) {
         return -1;
     }
+
+    // #295: keep outbound peer sockets out of spawned children too.
+    compat_set_cloexec(socket_fd);
 
     // ✅ TCP KEEPALIVE: Keep sockets alive through NAT/firewalls
     int keepalive = 1;

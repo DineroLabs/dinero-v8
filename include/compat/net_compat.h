@@ -51,6 +51,14 @@
       return ioctlsocket(fd, FIONBIO, &mode);
   }
 
+  // Windows equivalent of FD_CLOEXEC: clear the socket handle's inherit flag so
+  // spawned child processes don't inherit the daemon's listen sockets. See the
+  // POSIX compat_set_cloexec above for the rationale (#295).
+  inline int compat_set_cloexec(int fd) {
+      return SetHandleInformation(reinterpret_cast<HANDLE>(static_cast<intptr_t>(fd)),
+                                  HANDLE_FLAG_INHERIT, 0) ? 0 : -1;
+  }
+
   // Socket-error helpers — winsock keeps its own error state separate from
   // errno, so callsites that compared errno after a socket call must route
   // through these instead.
@@ -127,6 +135,17 @@
       int flags = fcntl(fd, F_GETFL, 0);
       if (flags < 0) return -1;
       return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
+
+  // Prevent child processes from inheriting this socket. Without FD_CLOEXEC, a
+  // child the daemon spawns (e.g. dinero-seeder) inherits the daemon's listen
+  // sockets; when the daemon exits, the orphaned child keeps those FDs open and
+  // squats the RPC/P2P ports, so the next daemon can't bind ("daemon exited
+  // before the wallet could connect"). #295.
+  inline int compat_set_cloexec(int fd) {
+      int flags = fcntl(fd, F_GETFD, 0);
+      if (flags < 0) return -1;
+      return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
   }
 
   inline int compat_sock_errno() { return errno; }
