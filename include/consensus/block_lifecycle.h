@@ -304,6 +304,15 @@ void PropagateInvalidToDescendants(CBlockIndex* pindex);
 bool IsBlockInvalid(const uint256& block_hash);
 bool HasInvalidAncestor(const CBlockIndex* pindex);
 
+// #309: true iff every block on the branch from pindex back to the first
+// connected (BLOCK_VALID_CHAIN) ancestor has its body (BLOCK_HAVE_DATA). This is
+// the whole-branch-data precondition for treating a not-yet-validated side branch
+// as a reorg candidate: full per-block validation is deferred to the reorg
+// ConnectTip walk, but the walk can only succeed if no body is missing. A partial
+// branch (a body gap above the connected base) must NOT be a candidate, else the
+// reorg connect-walks into the gap and aborts. Genesis-with-data counts as a base.
+bool BranchHasDataToConnectedBase(const CBlockIndex* pindex);
+
 // In-flight tracking
 void MarkBlockInFlight(const uint256& block_hash, uint64_t peer_id);
 void MarkBlockReceived(const uint256& block_hash);

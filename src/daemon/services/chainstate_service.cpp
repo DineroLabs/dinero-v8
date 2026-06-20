@@ -9040,12 +9040,8 @@ void ChainstateService::RemoveCandidate(CBlockIndex* block_index) {
 // and apply them in order. Genesis counts as a connected base. Returns false on
 // a body gap above the base or if the branch never roots in the valid chain.
 bool ChainstateService::HasBranchDataToConnectedBase(CBlockIndex* block_index) {
-    for (CBlockIndex* cur = block_index; cur; cur = cur->pprev) {
-        if (cur->status & BLOCK_VALID_CHAIN) return true;   // reached connected base
-        if (!(cur->status & BLOCK_HAVE_DATA)) return false; // body gap above the base
-        if (cur->IsGenesis()) return true;                  // genesis with data == base
-    }
-    return false; // ran off the top without a connected base
+    // Delegates to the free predicate (unit-tested in test_reorg_candidate_eligibility).
+    return dinero::BranchHasDataToConnectedBase(block_index);
 }
 
 // #309: a block is a reorg candidate if it has its body, is not failed, and its
