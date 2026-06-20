@@ -43,6 +43,12 @@ cleanup() {
         cp -f "$B_DIR/node.log" /tmp/wedge-B.log 2>/dev/null || true
         echo -e "${YEL}Preserved logs: /tmp/wedge-A.log /tmp/wedge-B.log${NC}"
     fi
+    if [ "${KEEP_DATADIR:-0}" = "1" ]; then
+        # Preserve the loser datadir for a post-wedge reindex experiment.
+        rm -rf /tmp/wedge-A-datadir 2>/dev/null || true
+        cp -a "$A_DIR" /tmp/wedge-A-datadir 2>/dev/null || true
+        echo -e "${YEL}Preserved loser datadir: /tmp/wedge-A-datadir (rpc was $A_RPC, p2p $A_P2P)${NC}"
+    fi
     echo -e "${YEL}Cleaning up...${NC}"
     [ -n "$A_PID" ] && kill -TERM "$A_PID" 2>/dev/null || true
     [ -n "$B_PID" ] && kill -TERM "$B_PID" 2>/dev/null || true
