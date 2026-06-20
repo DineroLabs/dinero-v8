@@ -212,6 +212,24 @@ inline int64_t GetKnownAncestryTimestamp(
     return 0;
 }
 
+// #314: robust fallback for the ASERT time anchor (block 1's timestamp).
+// On a node resynced from an AssumeUTXO snapshot, block 1 (pre-snapshot) is not
+// in ChainDB's height index until background backfill reaches it, so the ChainDB
+// lookups below return 0. Falling back to genesis.nTime yields a WRONG anchor
+// (~37h too early on mainnet) -> getblocktemplate produces too-easy difficulty
+// -> solo blocks rejected bad-diffbits, while validation (which resolves block 1
+// via the in-memory header ancestry) uses the correct time. Return block 1's
+// verified timestamp here so template == validation regardless of backfill state.
+inline int64_t CanonicalAsertAnchorTimeFallback() {
+    // Block 1 (000000194ff6bff58b929bc41978ef1b329a1d3737598eac86a57ec481c4d643)
+    // mainnet timestamp = the time anchor the live network's ASERT runs on.
+    static constexpr int64_t kMainnetAsertAnchorTime = 1776518061;
+    if (dinero::Params().name == "mainnet") {
+        return kMainnetAsertAnchorTime;
+    }
+    return static_cast<int64_t>(dinero::Params().genesis.nTime);
+}
+
 template <typename ChainDBType>
 inline int64_t GetCanonicalAsertAnchorTime(
     ChainDBType* chain_db,
@@ -226,7 +244,7 @@ inline int64_t GetCanonicalAsertAnchorTime(
         return block1_time;
     }
 
-    return static_cast<int64_t>(dinero::Params().genesis.nTime);
+    return CanonicalAsertAnchorTimeFallback();  // #314: not genesis.nTime
 }
 
 inline int64_t GetCanonicalAsertAnchorTime(
@@ -243,7 +261,7 @@ inline int64_t GetCanonicalAsertAnchorTime(
         return block1_time;
     }
 
-    return static_cast<int64_t>(dinero::Params().genesis.nTime);
+    return CanonicalAsertAnchorTimeFallback();  // #314: not genesis.nTime
 }
 
 template <typename ChainDBType>
