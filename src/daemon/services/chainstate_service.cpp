@@ -10535,6 +10535,48 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
 // Reorg Fix: Production-Correct ConnectTip
 // ============================================================================
 
+namespace {
+// #309/I2 SAFETY: classify a BlockValidator::ConnectBlock failure as an
+// UNAMBIGUOUS consensus-rule violation. Used to decide whether a speculative
+// reorg-branch block may be marked permanently invalid (BLOCK_FAILED_VALID).
+//
+// Asymmetry that drives this allowlist: over-marking a VALID block (because an
+// OPERATIONAL failure — validation timeout / CPU budget, storage commit failure,
+// missing UTXO, unavailable proofs/accumulator — was misread as invalidity)
+// permanently forks the node off the network with no recovery but a chain wipe.
+// Under-marking only costs a recoverable retry loop. So this returns true ONLY
+// for errors that can come from no cause other than the block violating a
+// consensus rule. Anything ambiguous or operational (timeout, "Failed to commit
+// UTXO ...", "Input UTXO not found", missing-utreexo-data / stateless-*-requires-*
+// / requires-accumulator, utreexo-{leaf-missing,add-failed,remove-failed}) is
+// deliberately NOT listed and is treated as operational (never marked).
+bool IsUnambiguousConsensusViolation(const std::string& err) {
+    static const char* kConsensusPrefixes[] = {
+        "bad-witness-commitment",
+        "missing-witness-commitment",
+        "bad-timestamp",
+        "bad-header-size",
+        "FATAL: Header size",
+        "bad-utreexo-root",
+        "double-spend-in-block",
+        "Coinbase pays too much",
+        "Block has no transactions",
+        "Stateless validation: Script validation failed",
+        "utreexo-phase3-height-limit-exceeded",
+        "shielded-delta-accounting-mismatch",
+        "shielded-bundle-decode-failed",
+        "shielded-block-validation-failed",
+    };
+    for (const char* p : kConsensusPrefixes) {
+        if (err.rfind(p, 0) == 0) return true;  // prefix match
+    }
+    // Reason-tagged consensus failures (proof/root violations).
+    if (err.find("ROOT_MISMATCH") != std::string::npos) return true;
+    if (err.find("PROOF_INVALID") != std::string::npos) return true;
+    return false;
+}
+}  // namespace
+
 bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out_error,
                                    bool* out_consensus_invalid) {
     auto fail = [&](const std::string& reason) {
@@ -10798,10 +10840,16 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         }
         if (logger_) logger_->error("[ConnectTip] BlockValidator::ConnectBlock failed: " + error);
         std::cout << "❌ [ConnectTip] BlockValidator::ConnectBlock FAILED: " << error << std::endl;
-        // #309/I2: this is a consensus-rule violation (BlockValidator::ConnectBlock
-        // is consensus-only). Signal it so the reorg driver permanently rejects a
-        // consensus-invalid speculative branch rather than looping on it.
-        if (out_consensus_invalid) *out_consensus_invalid = true;
+        // #309/I2: BlockValidator::ConnectBlock returns false for BOTH consensus
+        // violations AND operational faults (validation timeout, "Failed to commit
+        // UTXO ...", missing UTXO/proofs). Signal "consensus-invalid" ONLY for an
+        // unambiguous consensus-rule violation, so the reorg driver never marks a
+        // valid block permanently failed on a transient fault (which would fork the
+        // node off the network). Operational failures fall through as a plain,
+        // retryable connect failure.
+        if (out_consensus_invalid && IsUnambiguousConsensusViolation(error)) {
+            *out_consensus_invalid = true;
+        }
         return fail("connect-block-failed: " + error);
     }
 
