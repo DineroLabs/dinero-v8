@@ -32,6 +32,8 @@
     #include <fcntl.h>
 #endif
 
+#include "compat/net_compat.h"  // compat_set_cloexec (#295)
+
 // Admin-only RPC methods that can corrupt state or expose secrets.
 // These are rejected when the server runs in read-only mode (--rpc-readonly).
 static const std::unordered_set<std::string> ADMIN_METHODS = {
@@ -1004,7 +1006,13 @@ int HttpRpcServer::create_server_socket() {
         std::cerr << "Failed to create socket" << std::endl;
         return -1;
     }
-    
+
+    // #295: don't let spawned children (e.g. dinero-seeder) inherit the RPC
+    // listen socket — an orphaned child would keep port 20998 bound after the
+    // daemon exits and block the next daemon from starting. This is the LIVE RPC
+    // server (RPCService::Start -> HttpRpcServer); rpc_server_clean.cpp is unused.
+    compat_set_cloexec(server_socket);
+
     // Set socket options
     int opt = 1;
     if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, 
