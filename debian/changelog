@@ -1,3 +1,19 @@
+dinero-core (8.0.3-1) unstable; urgency=medium
+
+  * v8.0.3 stable point release on top of v8.0.2. Two consensus fixes
+    (both Windows-verified + canary-proven on a live fleet node):
+    - consensus(reorg): a miner whose tip block loses the chainwork race no
+      longer wedges on its own minority fork; the node now reorgs to the
+      higher-work P2P-learned branch (eligibility + body-position metadata),
+      with consensus-invalid speculative branches marked failed and the
+      pre-reorg tip restored on abort (#310, fixes #309).
+    - consensus(asert): getblocktemplate no longer returns too-easy difficulty
+      on an AssumeUTXO-snapshot-resynced node; the ASERT anchor-time fallback
+      uses block 1's real timestamp instead of genesis, so the template matches
+      validation regardless of backfill state (#315, fixes #314).
+
+ -- Dinero Labs <team@dinerolabs.org>  Sun, 21 Jun 2026 01:00:00 -0500
+
 dinero-core (8.0.2-1) unstable; urgency=medium
 
   * v8.0.2 stable point release on top of v8.0.1.
