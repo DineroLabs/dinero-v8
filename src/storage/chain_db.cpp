@@ -2272,6 +2272,14 @@ rocksdb::Options ChainDB::getDefaultOptions() const {
     // DO NOT set prefix extractors - not needed for correctness
     // DO NOT set advanced I/O options - may not be compiled in
 
+    // Bound the open-file cache. RocksDB defaults to -1 (unlimited), so a chain
+    // with many SST files (e.g. 1200+) keeps ~all of them open, pushing the
+    // process FD count past FD_SETSIZE (1024). The RPC server's select() loop
+    // then fails ("Select error") on any listen socket whose fd >= 1024, so RPC
+    // never comes up and the wallet can't connect. Capping this keeps the FD
+    // count bounded as the chain grows. (RocksDB reopens cold SSTs on demand.)
+    options.max_open_files = 512;
+
     return options;
 }
 
