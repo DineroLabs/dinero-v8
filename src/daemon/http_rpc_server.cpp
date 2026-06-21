@@ -30,7 +30,10 @@
     #include <arpa/inet.h>
     #include <unistd.h>
     #include <fcntl.h>
+    #include <poll.h>
 #endif
+#include <cerrno>
+#include <cstring>
 
 #include "compat/net_compat.h"  // compat_set_cloexec (#295)
 
@@ -254,30 +257,49 @@ void HttpRpcServer::server_loop() {
     running_ = true;
     
     while (!shutdown_requested_) {
-        // Accept connections with timeout
+        // Accept connections with timeout. Use poll() rather than select():
+        // select() cannot handle a file descriptor >= FD_SETSIZE (1024), and a
+        // daemon with a large chaindb / many wallets can push the listen socket
+        // past that, making select() fail immediately ("Select error") so RPC
+        // never serves. poll() has no such limit. (Pairs with the bounded
+        // chaindb max_open_files; either alone fixes the symptom.)
+#ifndef _WIN32
+        struct pollfd pfd;
+        pfd.fd = server_socket;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        int activity = poll(&pfd, 1, 1000);  // 1000 ms timeout
+
+        if (activity < 0) {
+            if (errno == EINTR) continue;
+            if (!shutdown_requested_) {
+                std::cerr << "poll() error in RPC server: " << std::strerror(errno) << std::endl;
+            }
+            break;
+        }
+        if (activity == 0) {
+            continue;  // timeout — re-check shutdown flag
+        }
+        if (pfd.revents & POLLIN) {
+#else
         fd_set read_fds;
         FD_ZERO(&read_fds);
         FD_SET(server_socket, &read_fds);
-        
         struct timeval timeout;
         timeout.tv_sec = 1;
         timeout.tv_usec = 0;
-        
         int activity = select(server_socket + 1, &read_fds, nullptr, nullptr, &timeout);
-        
         if (activity < 0) {
             if (!shutdown_requested_) {
                 std::cerr << "Select error in RPC server" << std::endl;
             }
             break;
         }
-        
         if (activity == 0) {
-            // Timeout, check shutdown flag
             continue;
         }
-        
         if (FD_ISSET(server_socket, &read_fds)) {
+#endif
             struct sockaddr_in client_addr;
             socklen_t client_len = sizeof(client_addr);
             
