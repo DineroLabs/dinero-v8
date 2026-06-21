@@ -4881,6 +4881,57 @@ bool ChainstateService::HasStoredBlockBody(const uint256& hash) const {
         storage::ArchivalReadMode::RequireFlatfiles);
 }
 
+// #309: the scheduler stores not-yet-connected bodies (e.g. a competing
+// side-branch above the active tip) to flatfiles but, lacking a ChainDB handle,
+// cannot record where the body lives. HasArchivalBlockBody resolves a body via
+// the header metadata's {file_number,data_pos,data_size}, so without this the
+// import loop perpetually re-requests already-downloaded blocks and the branch
+// tip never becomes a reorg candidate. Mirror block_acceptor's metadata write
+// for the store-only case, preserving any existing undo reference.
+void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const FilePosition& pos) {
+    if (!chain_db_) return;
+    if (pos.offset > std::numeric_limits<uint32_t>::max()) {
+        if (logger_) logger_->warning("[#309] PersistStoredBodyPosition: data offset exceeds uint32 for " +
+                                      hash.GetHex().substr(0, 16));
+        return;
+    }
+    ChainDB::PersistedHeaderMetadata metadata;
+    auto md_result = chain_db_->getHeaderMetadata(hash);
+    if (md_result.status() == Status::Ok) {
+        metadata = md_result.value();
+        if ((metadata.status_flags & BLOCK_HAVE_DATA) && metadata.data_size > 0) {
+            return;  // body position already recorded
+        }
+    } else {
+        // No metadata row yet: the competing header may live only in the in-memory
+        // block index (added by the better-branch import path, never persisted).
+        // Build the row from the index so the stored body becomes discoverable.
+        CBlockIndex* idx = FindBlockIndex(hash);
+        if (!idx) {
+            return;  // truly unknown header; nothing to record
+        }
+        metadata.parent_hash = idx->pprev ? idx->pprev->hash : uint256();
+        metadata.height = static_cast<int32_t>(idx->height);
+        metadata.chainwork = ChainworkFromHex(idx->chainwork);
+        metadata.status_flags = idx->status | BLOCK_VALID_HEADER;
+    }
+    metadata.file_number = pos.file_number;
+    metadata.data_pos = static_cast<uint32_t>(pos.offset);
+    metadata.data_size = pos.size;
+    metadata.status_flags |= BLOCK_HAVE_DATA;
+    ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    Status st = chain_db_->putHeaderMetadataPreservingExistingUndo(token, hash, metadata, nullptr);
+    if (logger_) {
+        if (st != Status::Ok) {
+            logger_->warning("[#309] PersistStoredBodyPosition: putHeaderMetadata failed for " +
+                             hash.GetHex().substr(0, 16));
+        } else {
+            logger_->info("[#309] persisted body position at height " +
+                          std::to_string(metadata.height) + " " + hash.GetHex().substr(0, 16));
+        }
+    }
+}
+
 StatusOr<Block> ChainstateService::ReadStoredBlock(const uint256& hash) const {
     if (!chain_db_) {
         return Status::Internal;
@@ -6819,8 +6870,9 @@ void ChainstateService::ActivateBestChain() {
         return; // Stay on current chain
     }
 
-    // Final safety: P0 invariant — candidate must be fully eligible before reorg.
-    if (!IsEligibleForCandidacy(best_candidate->status)) {
+    // Final safety: P0 invariant — candidate must be reorg-eligible (whole-branch
+    // data; #309 — validation is performed per-block during the ConnectTip walk).
+    if (!IsReorgCandidateEligible(best_candidate)) {
         if (logger_) {
             logger_->warning("[ActivateBestChain] Best candidate at height " +
                             std::to_string(best_candidate->height) +
@@ -7369,6 +7421,13 @@ void ChainstateService::ActivateBestChain() {
         if (logger_) logger_->info("[ActivateBestChain] Reorg marker set: " + reorg_marker);
     }
 
+    // #309/I3: remember the pre-reorg active tip. If the reorg aborts midway
+    // (disconnect or connect failure) the active chain has been partially torn
+    // down; re-registering this tip as a candidate lets the next ActivateBestChain
+    // pass reorg back to it (the failed branch is removed / marked invalid), so
+    // the node returns to its original chain instead of stranding at the fork.
+    CBlockIndex* pre_reorg_tip = active_tip_;
+
     // Disconnect old chain
     for (auto* block_index : disconnect_path) {
         if (!DisconnectTip(block_index)) {
@@ -7396,6 +7455,9 @@ void ChainstateService::ActivateBestChain() {
                     utxo_index_->SetMetadata("reorg_in_progress", "");
                 }
             }
+
+            // #309/I3: re-register the pre-reorg tip so the next pass restores it.
+            if (pre_reorg_tip) AddCandidate(pre_reorg_tip);
 
             RecordActivationFailure(
                 utxo_index_.get(),
@@ -7474,7 +7536,8 @@ void ChainstateService::ActivateBestChain() {
                   << ", hash=" << block_index->hash.GetHex().substr(0, 16) << "..." << std::endl;
 
         std::string connect_error;
-        if (!ConnectTip(block_index, &connect_error)) {
+        bool consensus_invalid = false;
+        if (!ConnectTip(block_index, &connect_error, &consensus_invalid)) {
             bool recovered = false;
             const bool missing_utxo = connect_error.find("Input UTXO not found") != std::string::npos;
             if (missing_utxo && logger_) {
@@ -7542,6 +7605,24 @@ void ChainstateService::ActivateBestChain() {
                 if (logger_) logger_->info("[ActivateBestChain] Wallet transaction rolled back after connect failure");
             }
 
+            // #309/I2: a consensus-rule violation (BlockValidator::ConnectBlock
+            // rejected this block) on a speculative reorg branch must be marked
+            // permanently invalid — otherwise a peer that feeds an invalid
+            // heavier-work branch loops the reorg forever (the eligibility
+            // relaxation made such branches reorg-targetable). The repairable
+            // missing-utxo / operational cases are excluded (handled above) so we
+            // never poison a valid chain into a false fork.
+            if (consensus_invalid && !missing_utxo && block_index) {
+                if (logger_) logger_->warning("[ActivateBestChain] REORG ABORT: consensus-invalid block at height " +
+                                              std::to_string(block_index->height) +
+                                              " — marking BLOCK_FAILED_VALID (#309/I2)");
+                block_index->status |= BLOCK_FAILED_VALID;
+                if (chain_db_) {
+                    ChainWriteToken token = ChainWriteToken::CreateForTesting();
+                    chain_db_->setHeaderStatusBits(token, block_index->hash, BLOCK_FAILED_VALID);
+                }
+            }
+
             // Connect failures are operational/runtime faults, not consensus
             // invalidity. Remove only from candidate set to avoid immediate
             // retry loops without poisoning block validity flags.
@@ -7555,6 +7636,12 @@ void ChainstateService::ActivateBestChain() {
                     utxo_index_->SetMetadata("reorg_in_progress", "");
                 }
             }
+
+            // #309/I3: re-register the pre-reorg tip so the next ActivateBestChain
+            // pass reorgs back to it (the failed branch is removed / marked invalid),
+            // restoring the original chain instead of stranding at the fork point.
+            if (pre_reorg_tip) AddCandidate(pre_reorg_tip);
+
             RecordActivationFailure(
                 utxo_index_.get(),
                 connect_error.empty()
@@ -8908,8 +8995,10 @@ void ChainstateService::AddCandidate(CBlockIndex* block_index) {
     if (!block_index) return;
 
     // P0 invariant: single eligibility gate for all candidate paths.
-    // Requires BLOCK_HAVE_DATA + BLOCK_VALID_CHAIN + no failure flags.
-    if (!IsEligibleForCandidacy(block_index->status)) {
+    // #309: a not-yet-connected side branch with whole-branch data is a valid
+    // reorg target (validation deferred to the ConnectTip walk), so use the
+    // reorg-candidacy predicate rather than requiring BLOCK_VALID_CHAIN up front.
+    if (!IsReorgCandidateEligible(block_index)) {
         if (logger_) {
             logger_->debug("[AddCandidate] Rejected: status=" + std::to_string(block_index->status) +
                           " height=" + std::to_string(block_index->height) +
@@ -8946,6 +9035,27 @@ void ChainstateService::RemoveCandidate(CBlockIndex* block_index) {
     candidates_.erase(block_index);
 }
 
+// #309: walk ancestors until a connected (BLOCK_VALID_CHAIN) base. Every block
+// above the base must have its body so the reorg ConnectTip walk can validate
+// and apply them in order. Genesis counts as a connected base. Returns false on
+// a body gap above the base or if the branch never roots in the valid chain.
+bool ChainstateService::HasBranchDataToConnectedBase(CBlockIndex* block_index) {
+    // Delegates to the free predicate (unit-tested in test_reorg_candidate_eligibility).
+    return dinero::BranchHasDataToConnectedBase(block_index);
+}
+
+// #309: a block is a reorg candidate if it has its body, is not failed, and its
+// whole branch back to a connected base has bodies present. Already-connected
+// (BLOCK_VALID_CHAIN) blocks are trivially eligible. Per-block consensus
+// validation is deferred to the reorg ConnectTip walk.
+bool ChainstateService::IsReorgCandidateEligible(CBlockIndex* block_index) {
+    if (!block_index) return false;
+    if (block_index->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) return false;
+    if (!(block_index->status & BLOCK_HAVE_DATA)) return false;
+    if (block_index->status & BLOCK_VALID_CHAIN) return true;
+    return HasBranchDataToConnectedBase(block_index);
+}
+
 CBlockIndex* ChainstateService::GetBestCandidate() {
     if (candidates_.empty()) return nullptr;
 
@@ -8979,7 +9089,7 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
     std::vector<CBlockIndex*> incompatible;
     std::vector<CBlockIndex*> invalid;
     for (CBlockIndex* candidate : candidates_) {
-        if (!candidate || !IsEligibleForCandidacy(candidate->status) ||
+        if (!candidate || !IsReorgCandidateEligible(candidate) ||
             HasInvalidAncestor(candidate)) {
             invalid.push_back(candidate);
             continue;
@@ -10421,7 +10531,50 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
 // Reorg Fix: Production-Correct ConnectTip
 // ============================================================================
 
-bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out_error) {
+namespace {
+// #309/I2 SAFETY: classify a BlockValidator::ConnectBlock failure as an
+// UNAMBIGUOUS consensus-rule violation. Used to decide whether a speculative
+// reorg-branch block may be marked permanently invalid (BLOCK_FAILED_VALID).
+//
+// Asymmetry that drives this allowlist: over-marking a VALID block (because an
+// OPERATIONAL failure — validation timeout / CPU budget, storage commit failure,
+// missing UTXO, unavailable proofs/accumulator — was misread as invalidity)
+// permanently forks the node off the network with no recovery but a chain wipe.
+// Under-marking only costs a recoverable retry loop. So this returns true ONLY
+// for errors that can come from no cause other than the block violating a
+// consensus rule. Anything ambiguous or operational (timeout, "Failed to commit
+// UTXO ...", "Input UTXO not found", missing-utreexo-data / stateless-*-requires-*
+// / requires-accumulator, utreexo-{leaf-missing,add-failed,remove-failed}) is
+// deliberately NOT listed and is treated as operational (never marked).
+bool IsUnambiguousConsensusViolation(const std::string& err) {
+    static const char* kConsensusPrefixes[] = {
+        "bad-witness-commitment",
+        "missing-witness-commitment",
+        "bad-timestamp",
+        "bad-header-size",
+        "FATAL: Header size",
+        "bad-utreexo-root",
+        "double-spend-in-block",
+        "Coinbase pays too much",
+        "Block has no transactions",
+        "Stateless validation: Script validation failed",
+        "utreexo-phase3-height-limit-exceeded",
+        "shielded-delta-accounting-mismatch",
+        "shielded-bundle-decode-failed",
+        "shielded-block-validation-failed",
+    };
+    for (const char* p : kConsensusPrefixes) {
+        if (err.rfind(p, 0) == 0) return true;  // prefix match
+    }
+    // Reason-tagged consensus failures (proof/root violations).
+    if (err.find("ROOT_MISMATCH") != std::string::npos) return true;
+    if (err.find("PROOF_INVALID") != std::string::npos) return true;
+    return false;
+}
+}  // namespace
+
+bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out_error,
+                                   bool* out_consensus_invalid) {
     auto fail = [&](const std::string& reason) {
         if (out_error) {
             *out_error = reason;
@@ -10683,6 +10836,16 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         }
         if (logger_) logger_->error("[ConnectTip] BlockValidator::ConnectBlock failed: " + error);
         std::cout << "❌ [ConnectTip] BlockValidator::ConnectBlock FAILED: " << error << std::endl;
+        // #309/I2: BlockValidator::ConnectBlock returns false for BOTH consensus
+        // violations AND operational faults (validation timeout, "Failed to commit
+        // UTXO ...", missing UTXO/proofs). Signal "consensus-invalid" ONLY for an
+        // unambiguous consensus-rule violation, so the reorg driver never marks a
+        // valid block permanently failed on a transient fault (which would fork the
+        // node off the network). Operational failures fall through as a plain,
+        // retryable connect failure.
+        if (out_consensus_invalid && IsUnambiguousConsensusViolation(error)) {
+            *out_consensus_invalid = true;
+        }
         return fail("connect-block-failed: " + error);
     }
 

@@ -36,6 +36,7 @@ namespace dinero {
 // Phase 39 Step 2: Forward declaration (header deleted)
 class ChainManager;
 class BlockStorage;
+struct FilePosition;  // #309: storage/block_storage.h
 
 namespace consensus {
     class WalletUTXOAdapter;  // v2.2.0: Forward declare adapter (breaks header dependency)
@@ -191,13 +192,29 @@ public:
     void RemoveCandidate(class CBlockIndex* block_index);
     class CBlockIndex* GetBestCandidate();
 
+    // #309: candidate eligibility for reorg targets. A not-yet-validated side
+    // branch is a legitimate reorg target if its whole branch back to a connected
+    // (BLOCK_VALID_CHAIN) base has block bodies present; full per-block validation
+    // is deferred to the reorg ConnectTip walk (the Bitcoin Core model). Requiring
+    // BLOCK_VALID_CHAIN up front wedged a node on its own minority fork because a
+    // multi-block side branch can never pre-validate (its parent's UTXO state is
+    // not applied until connected).
+    bool IsReorgCandidateEligible(class CBlockIndex* block_index);
+    bool HasBranchDataToConnectedBase(class CBlockIndex* block_index);
+
     // Phase 41: Reorg Execution
     // Find common ancestor of two chains
     class CBlockIndex* FindFork(class CBlockIndex* a, class CBlockIndex* b);
     // Disconnect blocks from old chain
     bool DisconnectTip(class CBlockIndex* tip_to_disconnect);
     // Connect blocks to new chain
-    bool ConnectTip(class CBlockIndex* tip_to_connect, std::string* out_error = nullptr);
+    // out_consensus_invalid (#309/I2): set true ONLY when the failure came from
+    // BlockValidator::ConnectBlock (a consensus-rule violation), so the reorg
+    // driver can permanently reject a consensus-invalid speculative branch
+    // (mark BLOCK_FAILED_VALID) instead of looping, while leaving operational
+    // failures (missing-utxo, I/O) un-poisoned.
+    bool ConnectTip(class CBlockIndex* tip_to_connect, std::string* out_error = nullptr,
+                    bool* out_consensus_invalid = nullptr);
 
     // CSN reorg: Bookkeeping-only connect (no ConnectBlock, no forest mutation).
     // Writes coin changes, tip pointer, height index, notifications.
@@ -475,6 +492,13 @@ public:
     std::string getBlock(uint32_t height) const;
     bool hasBlockByHash(const uint256& hash) const;
     bool hasReadableBlockByHash(const uint256& hash) const;
+    // #309: record a stored body's flatfile position (file/pos/size) + BLOCK_HAVE_DATA
+    // in the block's existing ChainDB header metadata, so a stored-but-not-yet-
+    // connected block (competing side-branch above the active tip) is recognized
+    // by HasArchivalBlockBody / the import loop. No-op if header metadata is absent
+    // or the body position is already recorded. Wired from the scheduler's
+    // SetPersistBodyPositionCallback (invoked outside the scheduler mutex).
+    void PersistStoredBodyPosition(const uint256& hash, const FilePosition& pos);
     bool hasFlatfileBlockByHash(const uint256& hash) const;
     StatusOr<Block> getBlockByHash(const uint256& hash) const;
     uint64_t getLegacyBodyFallbackReadCount() const;

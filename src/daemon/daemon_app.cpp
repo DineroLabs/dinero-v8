@@ -2458,6 +2458,19 @@ bool DaemonApp::Init(int argc, char** argv) {
             return ctx_.chainstate && ctx_.chainstate->hasBlockByHash(hash);
         });
 
+    // #309: persist a stored body's flatfile position to ChainDB metadata so a
+    // not-yet-connected competing side-branch block is recognized by
+    // HasArchivalBlockBody / the import loop (the scheduler has no ChainDB
+    // handle of its own). Invoked OUTSIDE the scheduler mutex (see
+    // SetPersistBodyPositionCallback doc), so taking chainstate/ChainDB locks
+    // here is safe.
+    block_download->SetPersistBodyPositionCallback(
+        [this](const uint256& hash, const FilePosition& pos) {
+            if (ctx_.chainstate) {
+                ctx_.chainstate->PersistStoredBodyPosition(hash, pos);
+            }
+        });
+
     // Seed the scheduler from the validated active chain tip, not the raw
     // ChainDB storage tip. ChainDB can be ahead during restart recovery when
     // blocks are stored on disk but chainstate has not replayed them yet.

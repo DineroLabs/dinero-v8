@@ -270,6 +270,17 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
     in_flight_blocks_.erase(block_hash);
     expected_blocks_.erase(block_hash);
 
+    // #309: persist the stored body's position metadata so a not-yet-connected
+    // block (a competing side-branch above the active tip) is recognized by
+    // HasArchivalBlockBody / the import loop and its branch tip can become a
+    // reorg candidate. Invoked OUTSIDE the scheduler mutex (the callback writes
+    // ChainDB / may take application locks), mirroring the wake-on-store path.
+    auto persist = persist_body_position_callback_;
+    lock.unlock();
+    if (persist) {
+        persist(block_hash, stored_pos);
+    }
+
     return true;
 }
 

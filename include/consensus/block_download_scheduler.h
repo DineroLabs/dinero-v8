@@ -468,6 +468,19 @@ public:
     void SetHasBlockBodyCallback(std::function<bool(const uint256&, uint32_t)> cb);
 
     /**
+     * #309: persist body-position metadata for a stored-but-not-yet-connected
+     * block (e.g. a competing side-branch above the active tip) so
+     * HasArchivalBlockBody / the import loop recognize the stored body and the
+     * branch tip can become a reorg candidate. Unlike the probe above, this is
+     * invoked OUTSIDE the scheduler mutex (after unlock in OnBlockReceived), so
+     * the callback MAY take application locks and write ChainDB.
+     */
+    void SetPersistBodyPositionCallback(
+        std::function<void(const uint256&, const FilePosition&)> cb) {
+        persist_body_position_callback_ = std::move(cb);
+    }
+
+    /**
      * Queue canonical heights [start_height, end_height] whose bodies are
      * missing, for low-priority backfill.  Idempotent: re-calling with the
      * same (range, anchor) is a no-op (progress is preserved).  Calling with
@@ -584,6 +597,8 @@ private:
 
     // P2P callbacks
     SendGetDataCallback send_getdata_callback_;
+    // #309: invoked outside mutex_ to persist a stored body's position metadata.
+    std::function<void(const uint256&, const FilePosition&)> persist_body_position_callback_;
     DisconnectPeerCallback disconnect_peer_callback_;
     ConnectBlockCallback connect_block_callback_;
     GetTipHeightCallback get_tip_height_callback_;

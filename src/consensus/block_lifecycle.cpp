@@ -106,6 +106,16 @@ bool HasInvalidAncestor(const CBlockIndex* pindex) {
     return false;
 }
 
+// #309: whole-branch-data check — see header for rationale.
+bool BranchHasDataToConnectedBase(const CBlockIndex* pindex) {
+    for (const CBlockIndex* cur = pindex; cur; cur = cur->pprev) {
+        if (cur->status & BLOCK_VALID_CHAIN) return true;   // reached connected base
+        if (!(cur->status & BLOCK_HAVE_DATA)) return false; // body gap above the base
+        if (cur->IsGenesis()) return true;                  // genesis with data == base
+    }
+    return false; // ran off the top without a connected base
+}
+
 /**
  * Mark block as in-flight (requested from peer)
  */

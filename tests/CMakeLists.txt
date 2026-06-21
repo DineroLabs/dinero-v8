@@ -9292,6 +9292,36 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_fork_choice.cpp)
   add_test(NAME ForkChoiceTest COMMAND test_fork_choice)
 endif()
 
+# #309: reorg-candidate whole-branch-data eligibility (connect-abort prevention)
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reorg_candidate_eligibility.cpp)
+  add_executable(test_reorg_candidate_eligibility
+    tests/consensus/test_reorg_candidate_eligibility.cpp
+    src/common/logger.cpp
+    src/common/json_logger.cpp
+  )
+  target_link_libraries(test_reorg_candidate_eligibility PRIVATE
+    dinero_core        # block_lifecycle.cpp (BranchHasDataToConnectedBase)
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    secp256k1
+  )
+  link_zstd_if_needed(test_reorg_candidate_eligibility)
+  target_include_directories(test_reorg_candidate_eligibility PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_reorg_candidate_eligibility PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME ReorgCandidateEligibilityTest COMMAND test_reorg_candidate_eligibility)
+endif()
+
 # DISABLED: Requires IConsensusUTXOSet interface refactor (BlockValidator constructor changed)
 # Mining Maturity Test - End-to-End Coinbase Flow
 if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_mining_maturity.cpp)
