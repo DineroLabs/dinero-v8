@@ -20,6 +20,12 @@
   !define VERSION "0.0.0-dev"
 !endif
 
+; Bundled AssumeUTXO snapshot filename. Passed in by build-server-installer.ps1
+; (/DSNAPSHOT_FILE=...). Defaults to the current height-47176 trust anchor.
+!ifndef SNAPSHOT_FILE
+  !define SNAPSHOT_FILE "utxo-snapshot-47176.dat"
+!endif
+
 !define APP_NAME       "Dinero Server"
 !define APP_DIRNAME    "Dinero-Server"
 !define APP_VERSION    "${VERSION}"
@@ -120,7 +126,7 @@ FunctionEnd
 Function MaybeConfigureSnapshot
   ; On fresh installs, lay down a default dinero.conf and copy the bundled
   ; AssumeUTXO snapshot into the datadir so dinerod fast-syncs from the
-  ; compiled-in trust anchor (height 33048) instead of a from-genesis IBD.
+  ; compiled-in trust anchor instead of a from-genesis IBD.
   ;
   ; Strict no-op on upgrades / configured operators:
   ;   - If $AppDataDir\dinero.conf already exists, leave it alone.
@@ -134,12 +140,12 @@ Function MaybeConfigureSnapshot
 
   IfFileExists "$AppDataDir\dinero.conf" snapshot_cleanup 0
   IfFileExists "$AppDataDir\blockchain\*.*" snapshot_cleanup 0
-  IfFileExists "$INSTDIR\utxo-snapshot-33048.dat" 0 snapshot_cleanup
+  IfFileExists "$INSTDIR\${SNAPSHOT_FILE}" 0 snapshot_cleanup
 
   DetailPrint "Copying AssumeUTXO snapshot to $AppDataDir..."
-  CopyFiles /SILENT "$INSTDIR\utxo-snapshot-33048.dat" "$AppDataDir\utxo-snapshot-33048.dat"
+  CopyFiles /SILENT "$INSTDIR\${SNAPSHOT_FILE}" "$AppDataDir\${SNAPSHOT_FILE}"
 
-  IfFileExists "$AppDataDir\utxo-snapshot-33048.dat" 0 snapshot_cleanup
+  IfFileExists "$AppDataDir\${SNAPSHOT_FILE}" 0 snapshot_cleanup
 
   DetailPrint "Writing $AppDataDir\dinero.conf (fast-sync via AssumeUTXO)..."
   FileOpen $0 "$AppDataDir\dinero.conf" w
@@ -149,7 +155,7 @@ Function MaybeConfigureSnapshot
   FileWrite $0 "listen=1$\r$\n"
   FileWrite $0 "rpcbind=127.0.0.1$\r$\n"
   FileWrite $0 "rpcallowip=127.0.0.1$\r$\n"
-  FileWrite $0 "assumeutxo_snapshot=$AppDataDir\utxo-snapshot-33048.dat$\r$\n"
+  FileWrite $0 "assumeutxo_snapshot=$AppDataDir\${SNAPSHOT_FILE}$\r$\n"
   FileClose $0
 
   snapshot_cleanup:
@@ -157,7 +163,7 @@ Function MaybeConfigureSnapshot
     ; The datadir copy (if we placed one) is the authoritative file the
     ; daemon reads. Remove the install-dir copy so it isn't carried around
     ; for the lifetime of the install.
-    Delete "$INSTDIR\utxo-snapshot-33048.dat"
+    Delete "$INSTDIR\${SNAPSHOT_FILE}"
 FunctionEnd
 
 Section "Dinero Server (required)" SecCore
