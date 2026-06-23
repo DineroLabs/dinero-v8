@@ -155,12 +155,15 @@ void ShieldedWidget::setupUI() {
     root->addWidget(shieldBox);
 
     // ── Transfer (any-recipient) ──
-    auto* transferBox = new QGroupBox("Send shielded (to dins/tdins/rdins address)");
+    // Title/placeholder are made network-aware in applyActiveHrp() once the
+    // receive address loads; the generic title here is the pre-load fallback.
+    transferBox_ = new QGroupBox("Send shielded");
+    QGroupBox* transferBox = transferBox_;
     {
         auto* g = new QGridLayout(transferBox);
         g->addWidget(new QLabel("Recipient:"), 0, 0);
         transferAddressEdit_ = new QLineEdit;
-        transferAddressEdit_->setPlaceholderText("rdins1… / tdins1… / dins1…");
+        transferAddressEdit_->setPlaceholderText("shielded address");
         g->addWidget(transferAddressEdit_, 0, 1, 1, 4);
 
         g->addWidget(new QLabel("Amount (DIN):"), 1, 0);
@@ -343,6 +346,7 @@ void ShieldedWidget::onAddressBookActivated(int idx) {
     currentJ_ = entry.j;
     currentAddress_ = entry.address;
     addressLabel_->setText(QString("[account=0  j=%1]\n%2").arg(entry.j).arg(entry.address));
+    applyActiveHrp();
 }
 
 void ShieldedWidget::onAmountDinChanged(const QString& text) {
@@ -399,6 +403,17 @@ QString ShieldedWidget::hrpFromAddress(const QString& addr) {
     if (addr.startsWith("tdins1")) return "tdins";
     if (addr.startsWith("dins1"))  return "dins";
     return "unknown";
+}
+
+void ShieldedWidget::applyActiveHrp() {
+    const QString hrp = hrpFromAddress(currentAddress_);
+    if (hrp == "unknown") return;  // address not loaded yet — keep generic labels
+    if (transferBox_) {
+        transferBox_->setTitle(QString("Send shielded (to %1 address)").arg(hrp));
+    }
+    if (transferAddressEdit_) {
+        transferAddressEdit_->setPlaceholderText(hrp + QStringLiteral("1…"));
+    }
 }
 
 void ShieldedWidget::loadAddressBook() {
@@ -602,6 +617,7 @@ void ShieldedWidget::updateReceiveAddress(const QJsonValue& result) {
     if (!currentAddress_.isEmpty()) {
         recordIssuedAddress(static_cast<uint64_t>(j), currentAddress_);
     }
+    applyActiveHrp();
 }
 
 void ShieldedWidget::onRpcResult(const QString& method, const QJsonValue& result) {
