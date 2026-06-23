@@ -1,3 +1,21 @@
+dinero-core (8.0.5-1) unstable; urgency=medium
+
+  * v8.0.5 stable point release on top of v8.0.4 — shielded wallet fixes.
+    - wallet/shielded: the shielded note tree no longer re-appends chain leaves
+      on rescan/restart. A confirmed note's leaf_index (and its position-dependent
+      nullifier) stays fixed instead of drifting, so shielded spends build valid
+      proofs and are accepted across restarts. Wallets corrupted by the prior bug
+      self-heal on first open (dedup the tree to canonical order, recompute
+      nullifiers). Fixes shielded sends being mempool-rejected after a restart
+      (#324).
+    - wallet/shielded: an explicit fee below the mempool's size-based floor is now
+      rejected up front with a clear error, before the spend is persisted, instead
+      of building a tx the mempool rejects (#322).
+    - qt/shielded: the "Send shielded" labels show only the active network's
+      address prefix (dins on mainnet) instead of listing dins/tdins/rdins (#320).
+
+ -- Dinero Labs <team@dinerolabs.org>  Tue, 23 Jun 2026 18:00:00 -0500
+
 dinero-core (8.0.4-1) unstable; urgency=medium
 
   * v8.0.4 stable point release on top of v8.0.3.
