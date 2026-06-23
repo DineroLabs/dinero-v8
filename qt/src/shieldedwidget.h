@@ -56,6 +56,10 @@ private:
     void saveAddressBook() const;
     QString settingsWalletScope() const;
     static QString hrpFromAddress(const QString& addr);
+    // Make the "Send shielded" title + placeholder show only the active
+    // network's prefix (dins on mainnet, tdins testnet, rdins regtest),
+    // derived from the loaded receive address, instead of listing all three.
+    void applyActiveHrp();
 
     RpcClient* rpc_;
 
@@ -91,6 +95,7 @@ private:
     QLabel* shieldResultLabel_ = nullptr;
 
     // Transfer form
+    QGroupBox* transferBox_ = nullptr;
     QLineEdit* transferAddressEdit_ = nullptr;
     QLineEdit* transferAmountUnaEdit_ = nullptr;
     QLineEdit* transferAmountDinEdit_ = nullptr;
