@@ -44,6 +44,61 @@ constexpr const char* kCreateLeavesSql =
     "  created_height  INTEGER NOT NULL"
     ");";
 
+// #324 one-time heal: older daemons re-appended every chain leaf on each
+// rescan/restart (AppendChainLeaf deduped on leaf_index, which grew every
+// pass), so shielded_tree_leaves accumulated exact duplicates appended AFTER
+// the originals — doubling the tree and drifting note leaf positions, which
+// corrupts spend Merkle paths. The distinct originals therefore occupy
+// leaf_index 0..N-1 (N = distinct commitments); everything at leaf_index >= N
+// is a duplicate. Drop the duplicates and re-point notes at the canonical
+// (first-occurrence) leaf. Idempotent and a no-op once clean.
+void DedupChainLeaves(sqlite3* db) {
+    if (!db) return;
+    // Cheap guard: only act when duplicates are present.
+    bool has_dups = false;
+    sqlite3_stmt* g = nullptr;
+    if (sqlite3_prepare_v2(db,
+            "SELECT (SELECT COUNT(*) FROM shielded_tree_leaves) > "
+            "(SELECT COUNT(DISTINCT commitment) FROM shielded_tree_leaves)",
+            -1, &g, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(g) == SQLITE_ROW) has_dups = (sqlite3_column_int(g, 0) != 0);
+        sqlite3_finalize(g);
+    }
+    if (!has_dups) return;
+    // Duplication compounds across restarts (the tree grows between re-appends),
+    // so duplicates are NOT a clean block after the originals. Rebuild the tree
+    // canonically: the distinct commitments in first-occurrence order
+    // (MIN(leaf_index) = the order they were first scanned = consensus order),
+    // renumbered 0..N-1. A TEMP table with an INTEGER PRIMARY KEY gets
+    // sequential ids in the inserted (ORDER BY) order without window functions.
+    const char* sql =
+        "BEGIN;"
+        "DROP TABLE IF EXISTS _shielded_canon;"
+        "CREATE TEMP TABLE _shielded_canon ("
+        "  new_li INTEGER PRIMARY KEY, commitment BLOB, h INTEGER);"
+        "INSERT INTO _shielded_canon (commitment, h) "
+        "  SELECT commitment, MIN(created_height) FROM shielded_tree_leaves "
+        "  GROUP BY commitment ORDER BY MIN(leaf_index);"
+        // Re-point notes at the canonical 0-based leaf (rowid is 1-based).
+        "UPDATE shielded_notes SET leaf_index = ("
+        "  SELECT c.new_li - 1 FROM _shielded_canon c "
+        "  WHERE c.commitment = shielded_notes.commitment) "
+        "WHERE leaf_index IS NOT NULL AND EXISTS ("
+        "  SELECT 1 FROM _shielded_canon c "
+        "  WHERE c.commitment = shielded_notes.commitment);"
+        // Replace the leaf table with the canonical 0..N-1 set.
+        "DELETE FROM shielded_tree_leaves;"
+        "INSERT INTO shielded_tree_leaves (leaf_index, commitment, created_height) "
+        "  SELECT new_li - 1, commitment, h FROM _shielded_canon;"
+        "DROP TABLE _shielded_canon;"
+        "COMMIT;";
+    char* err = nullptr;
+    if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
+    }
+}
+
 bool ColumnExists(sqlite3* db, const char* table, const char* column) {
     sqlite3_stmt* stmt = nullptr;
     const std::string sql = "PRAGMA table_info(" + std::string(table) + ")";
@@ -158,6 +213,8 @@ ShieldedNoteStore::OpenResult ShieldedNoteStore::Open(const std::string& path) {
             return OpenResult::SchemaError;
         }
     }
+    // #324: heal wallets corrupted by the pre-fix re-append-on-rescan bug.
+    DedupChainLeaves(db_);
     return OpenResult::Ok;
 }
 
@@ -453,6 +510,26 @@ bool ShieldedNoteStore::AppendChainLeaf(const sh::Hash& commitment,
                                         uint64_t leaf_index,
                                         uint32_t created_height) {
     if (!db_) return false;
+    // #324: a commitment already present in the tree must NEVER be re-appended
+    // at a new leaf_index on rescan/restart. The table's only UNIQUE key is
+    // leaf_index (PRIMARY KEY), which grows every rescan (GetChainLeafCount),
+    // so `INSERT OR IGNORE` never caught the duplicate — the same commitment
+    // got re-inserted at a fresh index, doubling the tree and drifting every
+    // note's leaf position, corrupting spend Merkle paths. Dedup on commitment
+    // as an idempotent no-op: return success WITHOUT inserting so the caller's
+    // count-delta check (new_count == leaf_index+1) is false and it skips the
+    // in-memory tree append.
+    {
+        sqlite3_stmt* chk = nullptr;
+        const char* q =
+            "SELECT 1 FROM shielded_tree_leaves WHERE commitment = ? LIMIT 1";
+        if (sqlite3_prepare_v2(db_, q, -1, &chk, nullptr) == SQLITE_OK) {
+            BindHash(chk, 1, commitment);
+            const bool exists = (sqlite3_step(chk) == SQLITE_ROW);
+            sqlite3_finalize(chk);
+            if (exists) return true;
+        }
+    }
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "INSERT OR IGNORE INTO shielded_tree_leaves (leaf_index, commitment, created_height) "
