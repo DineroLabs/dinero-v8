@@ -821,7 +821,9 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
         // size-adequate fee and rebuild once.
         uint64_t final_fee = fee_una;
         bool fee_autosized = false;
-        if (!fee_explicit) {
+        {
+            // #273/#322: measure the size-based required fee via a throwaway
+            // (persist=false) build — for BOTH the explicit- and auto-fee cases.
             dinero::Transaction probe = make_envelope(fee_una);
             auto probe_rc = ops::AttachTransferInputBundle(
                 probe, note_opt->leaf_index, fee_una, *wm, /*persist=*/false);
@@ -831,17 +833,35 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
                 return result;
             }
             const uint64_t required = ops::RequiredFeeForTx(probe, min_fee_rate);
-            if (required > final_fee) final_fee = required;
-            fee_autosized = true;
-            if (final_fee != fee_una) {
-                note_opt = ops::SelectTransferNote(*wm, final_fee + 1);
-                if (!note_opt) {
-                    result["error"] = "insufficient_single_note";
+            if (fee_explicit) {
+                // #322: a too-low EXPLICIT fee must be rejected up front, before
+                // the spend is persisted — otherwise the mempool rejects the
+                // broadcast and the optimistic spend is left stuck (#321).
+                if (fee_una < required) {
+                    result["error"] = "fee_too_low";
                     result["error_message"] =
-                        "no single unspent confirmed shielded note > size-based fee (" +
-                        std::to_string(final_fee) + " una); supply amount_una to use "
-                        "multi-note selection (Wave 3e)";
+                        "fee_una " + std::to_string(fee_una) + " is below the "
+                        "size-based minimum " + std::to_string(required) +
+                        " una for this " + std::to_string(probe.GetVirtualSize()) +
+                        "-byte shielded tx (shielded txs are large; raise the fee "
+                        "or omit fee_una to auto-size)";
+                    result["required_fee_una"] = static_cast<Json::Int64>(required);
+                    result["vsize"] = static_cast<Json::Int64>(probe.GetVirtualSize());
                     return result;
+                }
+            } else {
+                if (required > final_fee) final_fee = required;
+                fee_autosized = true;
+                if (final_fee != fee_una) {
+                    note_opt = ops::SelectTransferNote(*wm, final_fee + 1);
+                    if (!note_opt) {
+                        result["error"] = "insufficient_single_note";
+                        result["error_message"] =
+                            "no single unspent confirmed shielded note > size-based fee (" +
+                            std::to_string(final_fee) + " una); supply amount_una to use "
+                            "multi-note selection (Wave 3e)";
+                        return result;
+                    }
                 }
             }
         }
@@ -974,6 +994,34 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
                 // required1 is still the correct fee for the persist build.
             }
             // else: provisional fee already covers; selection unchanged.
+        } else {
+            // #322: explicit fee — measure the size-based floor and reject a
+            // too-low fee BEFORE persisting the spend. Otherwise the mempool
+            // rejects the broadcast and the optimistic spend is left stuck
+            // (#321). Uses the selection from select_for_fee(fee_una) above.
+            dinero::Transaction probe = make_envelope(fee_una);
+            auto probe_rc = ops::AttachAddressedTransferInputBundle(
+                probe, leaf_indices, recipient_address, amount_una, fee_una, *wm,
+                recipient_memo.empty() ? nullptr : &recipient_memo,
+                /*persist=*/false);
+            if (probe_rc.status != ops::OpStatus::Ok) {
+                result["error"] = "attach_transfer_failed";
+                result["error_message"] = probe_rc.error;
+                return result;
+            }
+            const uint64_t required = ops::RequiredFeeForTx(probe, min_fee_rate);
+            if (fee_una < required) {
+                result["error"] = "fee_too_low";
+                result["error_message"] =
+                    "fee_una " + std::to_string(fee_una) + " is below the "
+                    "size-based minimum " + std::to_string(required) + " una for "
+                    "this " + std::to_string(probe.GetVirtualSize()) +
+                    "-byte shielded tx (shielded txs are large; raise the fee or "
+                    "omit fee_una to auto-size)";
+                result["required_fee_una"] = static_cast<Json::Int64>(required);
+                result["vsize"] = static_cast<Json::Int64>(probe.GetVirtualSize());
+                return result;
+            }
         }
         const uint64_t change = spend_sum - amount_una - final_fee;
         Json spend_indices = din::arr();
