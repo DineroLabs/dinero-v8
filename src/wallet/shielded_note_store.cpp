@@ -6,7 +6,9 @@
 #include "wallet/shielded_note_store.h"
 
 #include <sqlite3.h>
+#include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace dinero::wallet {
 
@@ -43,6 +45,11 @@ constexpr const char* kCreateLeavesSql =
     "  commitment      BLOB NOT NULL,"
     "  created_height  INTEGER NOT NULL"
     ");";
+
+// Defined later in this translation unit; forward-declared so the #324 heal
+// below can bind/read hashes and reuse them.
+void BindHash(sqlite3_stmt* s, int idx, const sh::Hash& h);
+bool ReadHash(sqlite3_stmt* s, int col, sh::Hash& out);
 
 // #324 one-time heal: older daemons re-appended every chain leaf on each
 // rescan/restart (AppendChainLeaf deduped on leaf_index, which grew every
@@ -96,6 +103,42 @@ void DedupChainLeaves(sqlite3* db) {
     if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
         sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return;
+    }
+    // The nullifier is position-dependent: nullifier = ComputeNullifier(sk,
+    // leaf_index). The corrupted wallet stored each note's nullifier for its
+    // pre-dedup (drifted) leaf, so after renumbering leaf_index above it no
+    // longer matches what the spend builder computes (MarkSpentByNullifier
+    // would miss the row). Recompute every confirmed note's nullifier for its
+    // now-canonical leaf — exactly what ConfirmNote does.
+    struct NoteFix { sh::Hash sk; uint64_t li; sh::Hash commitment; };
+    std::vector<NoteFix> fixes;
+    sqlite3_stmt* sel = nullptr;
+    if (sqlite3_prepare_v2(db,
+            "SELECT secret_key, leaf_index, commitment FROM shielded_notes "
+            "WHERE confirmed = 1 AND leaf_index IS NOT NULL",
+            -1, &sel, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(sel) == SQLITE_ROW) {
+            NoteFix f{};
+            if (ReadHash(sel, 0, f.sk) &&
+                ReadHash(sel, 2, f.commitment)) {
+                f.li = static_cast<uint64_t>(sqlite3_column_int64(sel, 1));
+                fixes.push_back(f);
+            }
+        }
+        sqlite3_finalize(sel);
+    }
+    for (auto& f : fixes) {
+        const sh::Hash nf = sh::ComputeNullifier(f.sk, f.li);
+        sqlite3_stmt* up = nullptr;
+        if (sqlite3_prepare_v2(db,
+                "UPDATE shielded_notes SET nullifier = ? WHERE commitment = ?",
+                -1, &up, nullptr) == SQLITE_OK) {
+            BindHash(up, 1, nf);
+            BindHash(up, 2, f.commitment);
+            sqlite3_step(up);
+            sqlite3_finalize(up);
+        }
     }
 }
 
