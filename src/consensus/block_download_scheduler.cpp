@@ -193,6 +193,45 @@ void BlockDownloadScheduler::DispatchDeferredSends() {
     current_request_skip_peers_.clear();
 }
 
+void BlockDownloadScheduler::NotifyGetDataDispatched(const uint256& block_hash,
+                                                     size_t recipient_count) {
+    if (recipient_count > 0) {
+        return;  // getdata reached at least one peer — normal path
+    }
+    // Zero-recipient send: the staged getdata was dispatched but the daemon's
+    // per-block peer selection filtered out EVERY peer (CSN bridge filter +
+    // body-incapable skip-set leaving no eligible recipient). RequestNextBlock()
+    // already marked this block REQUESTED and inserted it into in_flight_blocks_,
+    // so it counts against max_in_flight_ — yet no peer will respond. The stale
+    // sweep only reclaims it after a full timeout, then it is re-sent to zero
+    // peers again; max_in_flight_ such phantoms pin the entire window with the
+    // tip frozen (observed live: scheduler in_flight=16, per-peer inflight=0,
+    // height stuck). Revert to MISSING now so the slot frees and the next Tick()
+    // retries it (against a hopefully-eligible peer).
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& fs : missing_blocks_) {
+        if (fs.block_hash == block_hash && fs.status == FetchStatus::REQUESTED) {
+            fs.status = FetchStatus::MISSING;
+            in_flight_blocks_.erase(block_hash);
+            g_logger.warning("[BlockDownloadScheduler] getdata reached 0 peers; "
+                             "released phantom in-flight (height " +
+                             std::to_string(fs.height) + "): " +
+                             block_hash.GetHex().substr(0, 16) + "...");
+            return;
+        }
+    }
+    for (auto& fs : backfill_blocks_) {
+        if (fs.block_hash == block_hash && fs.status == FetchStatus::REQUESTED) {
+            fs.status = FetchStatus::MISSING;
+            in_flight_blocks_.erase(block_hash);
+            if (backfill_progress_.in_flight > 0) {
+                backfill_progress_.in_flight--;
+            }
+            return;
+        }
+    }
+}
+
 bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
     std::unique_lock<std::mutex> lock(mutex_);
     const uint256 block_hash = block.GetHash();
@@ -296,6 +335,63 @@ void BlockDownloadScheduler::Tick() {
     DispatchDeferredSends();
 }
 
+void BlockDownloadScheduler::MaybeRunStallWatchdogLocked(
+    std::chrono::steady_clock::time_point now) {
+    // Initialize progress tracking on first run (don't fire before any work has
+    // had a chance to make progress).
+    if (watchdog_last_progress_time_.time_since_epoch().count() == 0) {
+        watchdog_last_progress_time_ = now;
+        watchdog_last_progress_height_ = local_tip_height_;
+        return;
+    }
+    // Tip advanced since last check? Healthy — reset the stall timer.
+    if (local_tip_height_ > watchdog_last_progress_height_) {
+        watchdog_last_progress_height_ = local_tip_height_;
+        watchdog_last_progress_time_ = now;
+        return;
+    }
+    // Only a stall if there is still tip work queued (MISSING or REQUESTED).
+    bool pending = false;
+    for (const auto& fs : missing_blocks_) {
+        if (fs.status == FetchStatus::MISSING || fs.status == FetchStatus::REQUESTED) {
+            pending = true;
+            break;
+        }
+    }
+    if (!pending) {
+        watchdog_last_progress_time_ = now;  // nothing queued → not stalled
+        return;
+    }
+    const int64_t stall_elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+        now - watchdog_last_progress_time_).count();
+    const int64_t since_fire = std::chrono::duration_cast<std::chrono::seconds>(
+        now - watchdog_last_fire_).count();
+    if (stall_elapsed < static_cast<int64_t>(stall_watchdog_seconds_) ||
+        since_fire < static_cast<int64_t>(stall_watchdog_seconds_)) {
+        return;  // not stalled long enough, or fired too recently (rate-limit)
+    }
+    // STALL: tip frozen with blocks queued for stall_watchdog_seconds_, despite
+    // the per-block retry/stale-sweep machinery. Force-recover regardless of the
+    // specific cause (phantom in-flight, skip-set poisoning, peer-selection
+    // wedge): drop the body-incapable skip-set so every peer is eligible again,
+    // and reset all REQUESTED entries to MISSING so the next request round goes
+    // out UNFILTERED. This is the "shouldn't depend on a human noticing" net.
+    g_logger.warning("[BlockDownloadScheduler] stall watchdog: no tip progress for " +
+                     std::to_string(stall_elapsed) + "s with blocks queued — clearing "
+                     "skip-set (" + std::to_string(peer_lacks_body_at_or_below_.size()) +
+                     " demoted peers) and resetting in-flight for unfiltered retry");
+    peer_lacks_body_at_or_below_.clear();
+    for (auto& fs : missing_blocks_) {
+        if (fs.status == FetchStatus::REQUESTED) {
+            fs.status = FetchStatus::MISSING;
+            in_flight_blocks_.erase(fs.block_hash);
+        }
+    }
+    next_missing_idx_ = 0;
+    watchdog_last_fire_ = now;
+    watchdog_last_progress_time_ = now;  // give recovery a full window before re-firing
+}
+
 void BlockDownloadScheduler::TickLocked() {
     // FIX 2 (issue #186): central deferral. While a snapshot bootstrap is
     // pending, request no new blocks regardless of which call site invoked
@@ -304,6 +400,12 @@ void BlockDownloadScheduler::TickLocked() {
     // abandoned (→ full IBD resumes).
     if (defer_check_ && defer_check_()) {
         return;
+    }
+
+    // Defense-in-depth stall net: recover if the tip has been frozen with work
+    // queued for too long, regardless of the underlying cause.
+    if (stall_watchdog_seconds_ > 0) {
+        MaybeRunStallWatchdogLocked(std::chrono::steady_clock::now());
     }
 
     // Restart bootstrap: HeaderChainSelector may already contain a persisted

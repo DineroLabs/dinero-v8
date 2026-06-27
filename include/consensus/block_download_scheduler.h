@@ -240,6 +240,21 @@ public:
     bool HasSendGetDataCallback() const { return static_cast<bool>(send_getdata_callback_); }
 
     /**
+     * Daemon hook: report how many peers a staged getdata was actually sent to.
+     * Called right after the send_getdata_callback_ dispatch (which runs outside
+     * mutex_). recipient_count == 0 means the request reached NO peer — e.g. the
+     * daemon's per-block peer selection (CSN bridge filter + body-incapable
+     * skip-set) filtered out every capable peer. RequestNextBlock() had already
+     * marked the block REQUESTED and inserted it into in_flight_blocks_ (counting
+     * against max_in_flight_), but no peer will respond, so the entry would pin a
+     * phantom in-flight slot. max_in_flight_ such phantoms wedge the whole
+     * download window with the tip frozen (observed: scheduler in_flight=16,
+     * per-peer inflight=0). On 0 recipients this reverts the block to MISSING so
+     * the slot frees and the next Tick() retries it. No-op when recipient_count>0.
+     */
+    void NotifyGetDataDispatched(const uint256& block_hash, size_t recipient_count);
+
+    /**
      * Re-request a block that failed validation.
      * Resets the block's status from REQUESTED/RECEIVED back to MISSING
      * so the next Tick() will request it again.
@@ -435,6 +450,26 @@ public:
         stale_request_timeout_seconds_ = secs;
     }
 
+    // Stall watchdog (defense-in-depth net): if the tip makes no progress for
+    // this many seconds while blocks are still queued, Tick() force-recovers —
+    // clears the per-peer body-incapable skip-set and resets all in-flight
+    // requests to MISSING for an unfiltered retry. Catches any download-stall
+    // class (phantom in-flight, skip-set poisoning, peer-selection wedge) without
+    // a human noticing. Default well above the 30s stale-request timeout so it is
+    // a true last resort, not a competitor to normal retry. 0 disables it. Also a
+    // test seam (set small to exercise deterministically).
+    void SetStallWatchdogSeconds(uint32_t secs) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stall_watchdog_seconds_ = secs;
+    }
+
+    // Test accessor: number of peers currently demoted in the body-incapable
+    // skip-set (peer_lacks_body_at_or_below_). Used to assert watchdog recovery.
+    size_t GetSkipSetSizeForTest() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return peer_lacks_body_at_or_below_.size();
+    }
+
     // ========================================================================
     // AssumeUTXO pre-base body backfill (spec Release Gate item 2)
     // ========================================================================
@@ -616,6 +651,15 @@ private:
     // Non-const so tests can force the timeout to fire (see SetStaleRequestTimeoutSeconds).
     uint32_t stale_request_timeout_seconds_ = 30;
 
+    // Stall watchdog (see SetStallWatchdogSeconds). Tracks tip progress; when no
+    // progress occurs for stall_watchdog_seconds_ while work is still queued,
+    // Tick() force-recovers (clear skip-set + reset in-flight to MISSING). All
+    // guarded by mutex_ (only touched inside TickLocked).
+    uint32_t stall_watchdog_seconds_ = 90;
+    uint32_t watchdog_last_progress_height_ = 0;
+    std::chrono::steady_clock::time_point watchdog_last_progress_time_{};
+    std::chrono::steady_clock::time_point watchdog_last_fire_{};
+
     // NOTFOUND rescan rate-limit: at most one RescanFromActualTip per this
     // many seconds when NOTFOUND responses arrive in bursts.
     std::chrono::steady_clock::time_point last_notfound_rescan_{};
@@ -693,6 +737,12 @@ private:
     // Tick() body. Caller MUST hold mutex_. Network sends are staged via
     // StageGetdataLocked and dispatched by Tick() after the lock is released.
     void TickLocked();
+
+    // Stall watchdog, run at the top of TickLocked(). Tracks tip progress and,
+    // on no-progress-with-work-queued for stall_watchdog_seconds_, force-recovers
+    // (clear skip-set + reset in-flight to MISSING). Rate-limited. Caller MUST
+    // hold mutex_.
+    void MaybeRunStallWatchdogLocked(std::chrono::steady_clock::time_point now);
 
     // #298 diag: log a one-line snapshot of backfill state (enabled, window,
     // completed/total, in_flight, count of MISSING entries, seconds since the

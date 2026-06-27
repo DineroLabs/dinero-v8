@@ -6204,10 +6204,24 @@ bool DaemonApp::Init(int argc, char** argv) {
                         size_t remaining = 0;
                         for (const auto& p : peers) {
                             const std::string key = p.to_string();
-                            if (!skip_below_height.count(key) &&
-                                !body_incapable.count(key)) {
-                                ++remaining;
+                            if (skip_below_height.count(key) ||
+                                body_incapable.count(key)) {
+                                continue;
                             }
+                            // The liveness guard must count only peers that can
+                            // ACTUALLY serve this block. In CSN mode the send set
+                            // below is restricted to NODE_UTREEXO_BRIDGE peers, so a
+                            // non-bridge peer (e.g. a lone non-bridge seed) must not
+                            // satisfy this guard — otherwise body_incapable gets
+                            // applied, demoting every bridge peer, the bridge-filtered
+                            // send set empties, and block download wedges with phantom
+                            // in-flight (scheduler in_flight pinned, 0 actually sent).
+                            if (csn_mode &&
+                                !p2p_service->get().peer_has_service_flags(
+                                    key, ServiceFlags::NODE_UTREEXO_BRIDGE)) {
+                                continue;
+                            }
+                            ++remaining;
                         }
                         if (remaining > 0) {
                             for (const auto& key : body_incapable) {
@@ -6295,6 +6309,16 @@ bool DaemonApp::Init(int argc, char** argv) {
                              ") for block " + block_hash.GetHex() +
                              " to " + std::to_string(sent) + "/" +
                              std::to_string(eligible) + " eligible peers");
+
+                // Phantom in-flight guard: tell the scheduler how many peers this
+                // getdata actually reached. If 0 (every capable peer filtered out
+                // by the CSN bridge filter + body-incapable skip-set), the
+                // scheduler must release the in-flight slot it pre-reserved in
+                // RequestNextBlock() — otherwise max_in_flight such zero-recipient
+                // sends pin the whole download window and freeze the tip.
+                if (sched) {
+                    sched->NotifyGetDataDispatched(block_hash, static_cast<size_t>(sent));
+                }
             });
 
             // BlockDownloadScheduler → ConnectBlock (drains stored blocks to chainstate in order)
