@@ -1919,6 +1919,122 @@ int main() {
                   << std::endl;
     }
 
+    {
+        std::cout << "\nN. zero-recipient getdata must not pin a phantom in-flight slot "
+                     "(window-wedge regression)..." << std::endl;
+
+        // Live failure (v8.0.5, CSN wallet): with a lone non-bridge peer present,
+        // the daemon callback resolved every getdata to 0 recipients (bridge
+        // filter + body-incapable skip-set), yet RequestNextBlock() had already
+        // reserved the in-flight slots. max_in_flight (16) such phantoms filled
+        // the window and wedged all queued blocks; the tip froze (scheduler
+        // in_flight=16, per-peer inflight=0). NotifyGetDataDispatched(h, 0) must
+        // release the phantom slot so the window recovers.
+        dcs::HeaderChainSelector selector;
+        try {
+            BuildLinearHeaders(selector, 40);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build header chain: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+
+        std::vector<uint256> requested;
+        scheduler.SetSendGetDataCallback([&requested](const uint256& h, uint32_t) {
+            requested.push_back(h);
+        });
+
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();  // fills the in-flight window up to max_in_flight
+
+        const size_t window = scheduler.GetMaxInFlight();
+        if (!Require(scheduler.GetInFlightCount() == window,
+                     "setup: Tick should fill the window to max_in_flight (" +
+                         std::to_string(window) + "), got " +
+                         std::to_string(scheduler.GetInFlightCount()))) {
+            return 1;
+        }
+        if (!Require(requested.size() == window,
+                     "setup: one getdata staged per in-flight slot")) {
+            return 1;
+        }
+
+        // Simulate the daemon callback reporting ZERO recipients for every staged
+        // getdata — the exact live stall signature.
+        for (const auto& h : requested) {
+            scheduler.NotifyGetDataDispatched(h, /*recipient_count=*/0);
+        }
+
+        // Regression invariant: phantom in-flight must be released, not pin the
+        // window. Pre-fix this stayed at `window` and the node never recovered.
+        if (!Require(scheduler.GetInFlightCount() == 0,
+                     "zero-recipient getdata must release the in-flight slot; in_flight=" +
+                         std::to_string(scheduler.GetInFlightCount()) +
+                         " (window still wedged)")) {
+            return 1;
+        }
+
+        // The freed window must be usable again: the next Tick re-issues getdata
+        // (with eligible peers, recipients>0 → real progress resumes).
+        requested.clear();
+        scheduler.Tick();
+        if (!Require(!requested.empty(),
+                     "after releasing phantoms, Tick must re-issue getdata (window recovered)")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ released " << window
+                  << " phantom in-flight slots from zero-recipient sends; window recovered, "
+                     "re-requested="
+                  << requested.size() << std::endl;
+    }
+
+    {
+        std::cout << "\nN+1. stall watchdog clears poisoned skip-set + resets in-flight when "
+                     "the tip is frozen with work queued..." << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 20, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build header chain: " << e.what() << std::endl;
+            return 1;
+        }
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+        std::vector<uint256> requested;
+        scheduler.SetSendGetDataCallback([&requested](const uint256& h, uint32_t) {
+            requested.push_back(h);
+        });
+
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();  // initializes the watchdog progress baseline + requests blocks
+
+        // Poison the body-incapable skip-set, as a NOTFOUND from a peer would.
+        scheduler.OnBlockNotFound(hashes[5], "peerA");
+        if (!Require(scheduler.GetSkipSetSizeForTest() == 1,
+                     "setup: skip-set should hold the demoted peer")) {
+            return 1;
+        }
+
+        // Tip never advances (frozen) while blocks stay queued. Arm a 1s watchdog
+        // and let it elapse, then Tick: it must force-recover.
+        scheduler.SetStallWatchdogSeconds(1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        scheduler.Tick();
+
+        if (!Require(scheduler.GetSkipSetSizeForTest() == 0,
+                     "stall watchdog must clear the poisoned skip-set; size=" +
+                         std::to_string(scheduler.GetSkipSetSizeForTest()))) {
+            return 1;
+        }
+        std::cout << "   ✅ watchdog cleared skip-set + reset in-flight after frozen-tip stall"
+                  << std::endl;
+    }
+
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
     return 0;
 }
