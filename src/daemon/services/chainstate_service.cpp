@@ -7999,7 +7999,12 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
         header.block_hash = tip.hash;
         header.block_height = tip.height;
         header.timestamp = std::time(nullptr);
-        header.version = SNAPSHOT_VERSION_V3;  // v3 carries Utreexo bootstrap data
+        // v4: this exporter always appends BOTH the v3 Utreexo section and the
+        // v4 shielded section below. The header version MUST be V4 so LoadSnapshot's
+        // `has_v4_shielded_section = (version >= V4)` gate reads the shielded payload;
+        // stamping V3 makes the reader skip the SHLD bytes and then misread the
+        // trailing checksum → every snapshot fails to load.
+        header.version = SNAPSHOT_VERSION_V4;
 
         // Get consensus UTXO set (all UTXOs on chain, not just wallet-owned)
         const auto& all_utxos = consensus_utxo_set_->GetUTXOs();
