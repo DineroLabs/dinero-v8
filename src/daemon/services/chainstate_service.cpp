@@ -8918,15 +8918,72 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                 logger_->error("[LoadSnapshot] " + result.error_message);
                 return result;
             }
-            // NOTE: nullifier-set restore is deferred. The payload IS carried in the
-            // snapshot (shielded_nullifier_buf, written by ExportSnapshot) but is not
-            // yet re-inserted into the sqlite-backed NullifierSet here. Until that
-            // lands, a snapshot node relies on background validation to repopulate
-            // nullifiers — flagged for the consensus owner (foreground double-spend
-            // coverage of pre-snapshot shielded notes is a trust-model decision).
-            logger_->warning("⚠️  [LoadSnapshot] v4 shielded state restored (frontier+anchors); "
-                             "nullifier restore deferred (" +
-                             std::to_string(shielded_section.nullifier_bytes) + "B carried)");
+            // Restore the nullifier set from the carried NSCF payload (see
+            // NullifierSet::SerializeContent): 'NSCF'(u32) | version(u16) |
+            // count(u64) | count x [ height(u32) | nullifier(32) ]. Re-inserting
+            // is mandatory: an empty nullifier set on a snapshot node is
+            // fail-OPEN — the commitment tree is append-only, so an already-spent
+            // pre-snapshot note still has a valid membership proof against the
+            // current root, and a node with an empty set would ACCEPT a re-spend
+            // (shielded double-spend / inflation / consensus split). Full nodes
+            // reject via their populated set.
+            if (!shielded_nullifier_buf.empty()) {
+                const std::vector<uint8_t>& nb = shielded_nullifier_buf;
+                auto rd_u16 = [&nb](size_t o) -> uint16_t {
+                    return static_cast<uint16_t>(nb[o] | (static_cast<uint16_t>(nb[o + 1]) << 8));
+                };
+                auto rd_u32 = [&nb](size_t o) -> uint32_t {
+                    return static_cast<uint32_t>(nb[o]) | (static_cast<uint32_t>(nb[o + 1]) << 8) |
+                           (static_cast<uint32_t>(nb[o + 2]) << 16) | (static_cast<uint32_t>(nb[o + 3]) << 24);
+                };
+                auto rd_u64 = [&nb](size_t o) -> uint64_t {
+                    uint64_t v = 0;
+                    for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(nb[o + i]) << (i * 8);
+                    return v;
+                };
+                constexpr uint32_t kNscfTag        = 0x4653434E;  // 'NSCF'
+                constexpr size_t   kNscfHeaderSize = 14;          // tag(4)+ver(2)+count(8)
+                constexpr size_t   kEntrySize      = 4 + 32;      // height(4)+nullifier(32)
+                if (nb.size() < kNscfHeaderSize || rd_u32(0) != kNscfTag) {
+                    result.error_message = "v4 shielded nullifier payload: bad NSCF header";
+                    logger_->error("[LoadSnapshot] " + result.error_message);
+                    return result;
+                }
+                const uint16_t nver = rd_u16(4);
+                if (nver != 1) {
+                    result.error_message = "v4 shielded nullifier payload: unsupported NSCF version " +
+                                           std::to_string(nver);
+                    logger_->error("[LoadSnapshot] " + result.error_message);
+                    return result;
+                }
+                const uint64_t ncount = rd_u64(6);
+                if (nb.size() != kNscfHeaderSize + ncount * kEntrySize) {
+                    result.error_message = "v4 shielded nullifier payload: size mismatch (count=" +
+                                           std::to_string(ncount) + ", bytes=" + std::to_string(nb.size()) + ")";
+                    logger_->error("[LoadSnapshot] " + result.error_message);
+                    return result;
+                }
+                size_t off = kNscfHeaderSize;
+                uint64_t inserted = 0;
+                for (uint64_t i = 0; i < ncount; ++i) {
+                    const uint32_t h = rd_u32(off); off += 4;
+                    consensus::shielded::Hash nf{};
+                    std::memcpy(nf.data(), nb.data() + off, 32); off += 32;
+                    if (shielded_nullifiers_.Insert(nf, h)) ++inserted;
+                }
+                logger_->info("[LoadSnapshot] v4 nullifier set restored: " +
+                              std::to_string(inserted) + "/" + std::to_string(ncount) + " entries");
+            }
+
+            // Persist the restored shielded state to ChainDB immediately, so a
+            // restart before the first post-snapshot ConnectTip re-reads THIS
+            // state (frontier + anchor history) instead of an empty tree and
+            // re-wedges / drops into safe mode on a shielded-tip misalignment.
+            if (!PersistShieldedState()) {
+                logger_->warning("⚠️  [LoadSnapshot] v4 shielded state restored but PersistShieldedState() "
+                                 "failed — a restart before the first ConnectTip may re-read stale state");
+            }
+            logger_->warning("⚠️  [LoadSnapshot] v4 shielded state restored (frontier + anchor history + nullifiers)");
         }
 
         logger_->warning("⚠️  AssumeUTXO mode ACTIVE - UTXO set loaded from snapshot at height " +
