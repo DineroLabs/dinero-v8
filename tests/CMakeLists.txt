@@ -1368,6 +1368,18 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   message(STATUS "Shielded validation tests enabled")
 endif()
 
+# Shielded tip-consistency invariant — pure classifier unit tests.
+if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_consistency_tests.cpp)
+  add_executable(test_shielded_consistency src/test/shielded_consistency_tests.cpp)
+  add_dependencies(test_shielded_consistency gtest dinero_shielded)
+  target_link_libraries(test_shielded_consistency PRIVATE GTest::gtest GTest::gtest_main dinero_shielded)
+  target_include_directories(test_shielded_consistency BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  add_test(NAME ShieldedConsistency COMMAND test_shielded_consistency)
+  set_tests_properties(ShieldedConsistency PROPERTIES LABELS "shielded;consensus;mandatory" TIMEOUT 300)
+endif()
+
 # M3 PR B: native ShieldedProverKit C ABI for iOS
 if(TARGET dinero_shielded_prover_kit AND TARGET gtest)
   add_executable(test_shielded_prover_kit

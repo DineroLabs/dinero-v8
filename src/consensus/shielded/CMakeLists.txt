@@ -18,6 +18,7 @@ add_library(dinero_shielded STATIC
     range_proof.cpp
     shielded_validation.cpp
     shielded_commitment.cpp
+    shielded_consistency.cpp
     shielded_circuit.cpp
     shielded_serialization.cpp
     shielded_output_feed.cpp
