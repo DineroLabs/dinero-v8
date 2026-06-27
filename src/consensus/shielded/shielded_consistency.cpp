@@ -38,7 +38,9 @@ ShieldedConsistencyReport ClassifyShieldedConsistency(const ShieldedConsistencyI
     }
 
     // 2. Tip-height/hash mismatch (a lagging marker is classified before triple checks).
-    if (in.marker_height != static_cast<int32_t>(in.active_height) ||
+    //    Compare widened to int64 so a uint32 height above INT32_MAX can't alias a
+    //    negative int32 marker_height into a false match/mismatch.
+    if (static_cast<int64_t>(in.marker_height) != static_cast<int64_t>(in.active_height) ||
         in.marker_hash != in.active_hash) {
         set(ShieldedConsistency::TipHeightMismatch,
             "tip marker height/hash disagrees with active tip.");

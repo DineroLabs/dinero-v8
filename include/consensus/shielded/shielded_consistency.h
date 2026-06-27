@@ -57,9 +57,10 @@ struct ShieldedConsistencyReport {
     }
 };
 
-// Pure: no I/O, no side effects. Order of checks: tip-height first (a lagging
-// marker is classified as TipHeightMismatch even if triples would differ),
-// then marker-presence, then tree_size, root, nullifier_count.
+// Pure: no I/O, no side effects. Order of checks: marker-presence first (a
+// missing marker can't be compared to the tip), then tip-height (a lagging
+// marker is TipHeightMismatch even if triples would differ), then tree_size,
+// root, nullifier_count.
 ShieldedConsistencyReport ClassifyShieldedConsistency(const ShieldedConsistencyInputs& in);
 
 }  // namespace dinero::consensus::shielded
