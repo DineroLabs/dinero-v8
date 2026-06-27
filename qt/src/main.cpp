@@ -88,6 +88,41 @@ QStringList currentBootstrapAddnodes() {
     };
 }
 
+// Bundled AssumeUTXO snapshot shipped in the app's Resources. On a FRESH datadir
+// the embedded daemon is pointed at it so a new wallet fast-syncs to the snapshot
+// height instead of syncing from genesis — the slow path that maximizes exposure
+// to the block-download catch-up. The daemon verifies the file's SHA256 against
+// its compiled-in trust anchor (consensus/assume_utxo.cpp) before trusting it.
+constexpr char kBundledSnapshotFile[] = "utxo-snapshot-52066.dat";
+
+void appendAssumeUtxoSnapshotArgIfFresh(QStringList& args, const QString& datadir) {
+    if (datadir.isEmpty()) {
+        return;
+    }
+    // "Fresh" = no chain data written yet (block flatfiles + chaindb absent).
+    // On an existing datadir we must NOT pass the snapshot (the node is past it).
+    const bool fresh = !QDir(datadir + "/blocks").exists() &&
+                       !QDir(datadir + "/blockchain").exists();
+    if (!fresh) {
+        return;
+    }
+    // macOS bundle layout: applicationDirPath() == <app>/Contents/MacOS, so the
+    // snapshot lives one level up under Resources. Resolves to nonexistent in dev
+    // builds (no bundled .dat) → we simply sync normally there.
+    const QString snapshotPath =
+        QFileInfo(QCoreApplication::applicationDirPath() + "/../Resources/" +
+                  QString::fromLatin1(kBundledSnapshotFile))
+            .absoluteFilePath();
+    if (!QFile::exists(snapshotPath)) {
+        qWarning() << "Fresh datadir but bundled AssumeUTXO snapshot not found at"
+                   << snapshotPath << "— daemon will sync from genesis";
+        return;
+    }
+    qInfo() << "Fresh datadir: fast-syncing from bundled AssumeUTXO snapshot"
+            << snapshotPath;
+    args << QString("--assumeutxo_snapshot=%1").arg(snapshotPath);
+}
+
 } // namespace
 
 // Temporary message handler - suppresses output until Debug Console is ready
@@ -656,6 +691,10 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
 
     // CRITICAL: Add current fleet bootstrap nodes so daemon can connect to network.
     args << currentBootstrapAddnodes();
+
+    // Fresh wallet: fast-sync from the bundled AssumeUTXO snapshot rather than
+    // syncing from genesis (removes the long, catch-up-stall-prone first run).
+    appendAssumeUtxoSnapshotArgIfFresh(args, datadir);
 
     // Track C: Liquidity Vault. Daemon defaults are vault=1 and
     // (as of v2.1.29) shadow=0 — credits open for real once a

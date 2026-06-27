@@ -133,6 +133,23 @@ mkdir -p "$STAGE_DIR/dinero-qt.app/Contents/Resources"
 cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-seeder"
 chmod +x "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-seeder"
 
+# Bundle the AssumeUTXO snapshot so a FRESH wallet fast-syncs from it instead of
+# syncing from genesis (the slow, catch-up-stall-prone first run). qt/src/main.cpp
+# passes --assumeutxo_snapshot pointing at this file on a fresh datadir, and the
+# daemon verifies its SHA256 against the compiled-in trust anchor before use.
+# The .dat is NOT committed to git (~19 MB) — place it at $DINERO_SNAPSHOT_DAT or
+# the default path below (e.g. the published release asset) before packaging.
+# Missing → the wallet still works, just syncs from genesis (logged); build does
+# not fail.
+SNAPSHOT_DAT="${DINERO_SNAPSHOT_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/utxo-snapshot-52066.dat}"
+if [[ -f "$SNAPSHOT_DAT" ]]; then
+    echo "Bundling AssumeUTXO snapshot: $(basename "$SNAPSHOT_DAT") ($(stat -f%z "$SNAPSHOT_DAT") bytes)"
+    cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/utxo-snapshot-52066.dat"
+else
+    echo "WARNING: AssumeUTXO snapshot not found at $SNAPSHOT_DAT — fresh wallets will sync from genesis." >&2
+    echo "         Set DINERO_SNAPSHOT_DAT or place the .dat there to bundle fast-sync." >&2
+fi
+
 # Embed the standalone daemon stack alongside the .app for users who
 # want the CLI tools without launching the Qt UI. Mirrors what the
 # Linux tarball + Windows installer ship.

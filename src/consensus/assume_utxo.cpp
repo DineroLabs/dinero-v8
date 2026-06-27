@@ -74,6 +74,21 @@ const std::vector<AssumeUTXOSnapshot> AssumeUTXORegistry::snapshots_ = {
         139147,
         "Mainnet height 47176 v3 trust anchor"
     ),
+    // Mainnet height 52066 v3 trust anchor (generated 2026-06-27 from the fleet
+    // at the 5-node consensus tip; buries past ship time). First fast-sync anchor
+    // above 50k, refreshing past 47176 — bundled in the desktop wallet installers
+    // so fresh GUI users fast-sync instead of syncing from genesis. Format: v3
+    // UTXO snapshot with embedded serialized Utreexo forest.
+    // Snapshot file: utxo-snapshot-52066.dat (18,998,718 bytes)
+    // Utreexo root (block header utreexo_root, bound at load): 24600286297902c4ecaeac7c0c2aeb692e8d2cff3f05e7eb5da228ca62c7e727
+    AssumeUTXOSnapshot(
+        "43c6b2929c6f0a908adab94cd3020489a1188d358a14cdcbe0f52ed4d0073b78",
+        "00000062d706de662828aec89c3748efbe96f266f53f5b4b202cfa5f76886005",
+        52066,
+        "0x000000000000000000000000000000000000000000000000000005bc3738cf61",
+        153812,
+        "Mainnet height 52066 v3 trust anchor"
+    ),
 };
 
 std::optional<AssumeUTXOSnapshot> AssumeUTXORegistry::GetSnapshot(uint32_t height) {

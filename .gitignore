@@ -252,3 +252,4 @@ third_party/*/target/
 *.xcuserstate
 xcuserdata/
 *.xcuserdatad/
+packaging/mac/snapshot/
