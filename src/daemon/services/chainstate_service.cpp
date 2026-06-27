@@ -8983,6 +8983,14 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                 logger_->warning("⚠️  [LoadSnapshot] v4 shielded state restored but PersistShieldedState() "
                                  "failed — a restart before the first ConnectTip may re-read stale state");
             }
+            // Persist the shielded tip marker at the snapshot base. Without it, a
+            // restart before the first post-snapshot ConnectTip hits
+            // VerifyOrBootstrapShieldedTipMarker → "marker NotFound + shielded
+            // activity exists" → refuses to start (fail-safe, but won't boot).
+            if (!PersistShieldedTipMarker(header.block_hash, header.block_height)) {
+                logger_->warning("⚠️  [LoadSnapshot] failed to persist shielded tip marker at snapshot base " +
+                                 std::to_string(header.block_height));
+            }
             logger_->warning("⚠️  [LoadSnapshot] v4 shielded state restored (frontier + anchor history + nullifiers)");
         }
 
