@@ -8116,6 +8116,70 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
             sha256.Write(reinterpret_cast<const uint8_t*>(serialized_forest.data()), serialized_forest.size());
         }
 
+        // v4 extension: shielded-pool bootstrap payload. Without it a
+        // snapshot-bootstrapped node starts with an EMPTY shielded commitment
+        // tree, so the first post-snapshot shielded spend fails AnchorInvalid and
+        // the chain wedges. Carries the frontier + anchor-history + nullifier set
+        // at the snapshot base, mirroring the utreexo section above. Covered by
+        // the same trailing checksum (written into sha256 before Finalize).
+        SnapshotShieldedSection shielded_section;
+        const std::vector<uint8_t> ser_frontier    = shielded_tree_.SerializeFrontier();
+        const std::vector<uint8_t> ser_anchors      = shielded_anchor_history_.SerializeBytes();
+        const std::vector<uint8_t> ser_nullifiers   = shielded_nullifiers_.SerializeContent();
+        shielded_section.frontier_bytes       = ser_frontier.size();
+        shielded_section.anchor_history_bytes = ser_anchors.size();
+        shielded_section.nullifier_bytes      = ser_nullifiers.size();
+        {
+            const consensus::shielded::Hash sroot = shielded_tree_.Root();
+            std::memcpy(shielded_section.commitment_root.begin(), sroot.data(), 32);
+        }
+        if (shielded_section.frontier_bytes + shielded_section.anchor_history_bytes +
+            shielded_section.nullifier_bytes > SNAPSHOT_V4_MAX_SHIELDED_BYTES) {
+            result.error_message = "Serialized shielded payload exceeds max v4 snapshot size cap";
+            logger_->error("[ExportSnapshot] " + result.error_message);
+            return result;
+        }
+
+        file.write(reinterpret_cast<const char*>(&shielded_section.magic), sizeof(shielded_section.magic));
+        sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.magic), sizeof(shielded_section.magic));
+
+        file.write(reinterpret_cast<const char*>(&shielded_section.version), sizeof(shielded_section.version));
+        sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.version), sizeof(shielded_section.version));
+
+        file.write(reinterpret_cast<const char*>(&shielded_section.frontier_bytes), sizeof(shielded_section.frontier_bytes));
+        sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.frontier_bytes), sizeof(shielded_section.frontier_bytes));
+
+        file.write(reinterpret_cast<const char*>(&shielded_section.anchor_history_bytes), sizeof(shielded_section.anchor_history_bytes));
+        sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.anchor_history_bytes), sizeof(shielded_section.anchor_history_bytes));
+
+        file.write(reinterpret_cast<const char*>(&shielded_section.nullifier_bytes), sizeof(shielded_section.nullifier_bytes));
+        sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.nullifier_bytes), sizeof(shielded_section.nullifier_bytes));
+
+        file.write(reinterpret_cast<const char*>(&shielded_section.reserved), sizeof(shielded_section.reserved));
+        sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.reserved), sizeof(shielded_section.reserved));
+
+        file.write(reinterpret_cast<const char*>(shielded_section.commitment_root.data), 32);
+        sha256.Write(reinterpret_cast<const uint8_t*>(shielded_section.commitment_root.data), 32);
+
+        if (!ser_frontier.empty()) {
+            file.write(reinterpret_cast<const char*>(ser_frontier.data()), ser_frontier.size());
+            sha256.Write(ser_frontier.data(), ser_frontier.size());
+        }
+        if (!ser_anchors.empty()) {
+            file.write(reinterpret_cast<const char*>(ser_anchors.data()), ser_anchors.size());
+            sha256.Write(ser_anchors.data(), ser_anchors.size());
+        }
+        if (!ser_nullifiers.empty()) {
+            file.write(reinterpret_cast<const char*>(ser_nullifiers.data()), ser_nullifiers.size());
+            sha256.Write(ser_nullifiers.data(), ser_nullifiers.size());
+        }
+
+        logger_->info("[ExportSnapshot] v4 shielded section: frontier=" +
+                      std::to_string(shielded_section.frontier_bytes) + "B anchors=" +
+                      std::to_string(shielded_section.anchor_history_bytes) + "B nullifiers=" +
+                      std::to_string(shielded_section.nullifier_bytes) + "B root=" +
+                      shielded_section.commitment_root.GetHex().substr(0, 16) + "...");
+
         // Finalize checksum and write it
         uint8_t checksum_bytes[32];
         sha256.Finalize(checksum_bytes);
@@ -8313,14 +8377,23 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             return result;
         }
 
-        // Verify version (v2 legacy + v3 with Utreexo section)
-        if (header.version != SNAPSHOT_VERSION_V2 && header.version != SNAPSHOT_VERSION_V3) {
+        // Verify version (v2 legacy + v3 with Utreexo section + v4 with shielded section)
+        if (header.version != SNAPSHOT_VERSION_V2 && header.version != SNAPSHOT_VERSION_V3 &&
+            header.version != SNAPSHOT_VERSION_V4) {
             result.error_message = "Unsupported snapshot version: " + std::to_string(header.version) +
                                   " (supported: " + std::to_string(SNAPSHOT_VERSION_V2) +
-                                  ", " + std::to_string(SNAPSHOT_VERSION_V3) + ")";
+                                  ", " + std::to_string(SNAPSHOT_VERSION_V3) +
+                                  ", " + std::to_string(SNAPSHOT_VERSION_V4) + ")";
             return result;
         }
         const bool has_v3_utreexo_section = (header.version >= SNAPSHOT_VERSION_V3);
+        const bool has_v4_shielded_section = (header.version >= SNAPSHOT_VERSION_V4);
+        // v4 shielded-pool bootstrap payload (parsed after the utreexo section,
+        // restored after the forest). Buffers stay empty for v2/v3 snapshots.
+        SnapshotShieldedSection shielded_section;
+        std::vector<uint8_t> shielded_frontier_buf;
+        std::vector<uint8_t> shielded_anchor_buf;
+        std::vector<uint8_t> shielded_nullifier_buf;
 
         // CRITICAL: Bitcoin Core requirement - verify snapshot base block exists in our chain
         // This prevents loading snapshots from unknown/untrusted chains
@@ -8576,6 +8649,61 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                          ", leaves=" + std::to_string(utreexo_section.forest_leaves));
         }
 
+        if (has_v4_shielded_section) {
+            logger_->info("[LoadSnapshot] Reading v4 shielded snapshot section...");
+
+            file.read(reinterpret_cast<char*>(&shielded_section.magic), sizeof(shielded_section.magic));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.magic), sizeof(shielded_section.magic));
+            file.read(reinterpret_cast<char*>(&shielded_section.version), sizeof(shielded_section.version));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.version), sizeof(shielded_section.version));
+            file.read(reinterpret_cast<char*>(&shielded_section.frontier_bytes), sizeof(shielded_section.frontier_bytes));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.frontier_bytes), sizeof(shielded_section.frontier_bytes));
+            file.read(reinterpret_cast<char*>(&shielded_section.anchor_history_bytes), sizeof(shielded_section.anchor_history_bytes));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.anchor_history_bytes), sizeof(shielded_section.anchor_history_bytes));
+            file.read(reinterpret_cast<char*>(&shielded_section.nullifier_bytes), sizeof(shielded_section.nullifier_bytes));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.nullifier_bytes), sizeof(shielded_section.nullifier_bytes));
+            file.read(reinterpret_cast<char*>(&shielded_section.reserved), sizeof(shielded_section.reserved));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&shielded_section.reserved), sizeof(shielded_section.reserved));
+            file.read(reinterpret_cast<char*>(shielded_section.commitment_root.data), 32);
+            sha256.Write(reinterpret_cast<const uint8_t*>(shielded_section.commitment_root.data), 32);
+
+            if (shielded_section.magic != SNAPSHOT_V4_SHIELDED_MAGIC) {
+                result.error_message = "Invalid v4 shielded section magic";
+                return result;
+            }
+            if (shielded_section.version != SNAPSHOT_V4_SHIELDED_SECTION_VERSION) {
+                result.error_message = "Unsupported v4 shielded section version: " +
+                                       std::to_string(shielded_section.version);
+                return result;
+            }
+            if (shielded_section.frontier_bytes + shielded_section.anchor_history_bytes +
+                shielded_section.nullifier_bytes > SNAPSHOT_V4_MAX_SHIELDED_BYTES) {
+                result.error_message = "v4 shielded payload exceeds configured cap";
+                return result;
+            }
+
+            shielded_frontier_buf.resize(static_cast<size_t>(shielded_section.frontier_bytes));
+            if (!shielded_frontier_buf.empty()) {
+                file.read(reinterpret_cast<char*>(shielded_frontier_buf.data()), shielded_frontier_buf.size());
+                sha256.Write(shielded_frontier_buf.data(), shielded_frontier_buf.size());
+            }
+            shielded_anchor_buf.resize(static_cast<size_t>(shielded_section.anchor_history_bytes));
+            if (!shielded_anchor_buf.empty()) {
+                file.read(reinterpret_cast<char*>(shielded_anchor_buf.data()), shielded_anchor_buf.size());
+                sha256.Write(shielded_anchor_buf.data(), shielded_anchor_buf.size());
+            }
+            shielded_nullifier_buf.resize(static_cast<size_t>(shielded_section.nullifier_bytes));
+            if (!shielded_nullifier_buf.empty()) {
+                file.read(reinterpret_cast<char*>(shielded_nullifier_buf.data()), shielded_nullifier_buf.size());
+                sha256.Write(shielded_nullifier_buf.data(), shielded_nullifier_buf.size());
+            }
+
+            logger_->info("[LoadSnapshot] v4 shielded section: frontier=" +
+                          std::to_string(shielded_section.frontier_bytes) + "B anchors=" +
+                          std::to_string(shielded_section.anchor_history_bytes) + "B nullifiers=" +
+                          std::to_string(shielded_section.nullifier_bytes) + "B");
+        }
+
         // Read stored checksum from file
         uint8_t stored_checksum[32];
         file.read(reinterpret_cast<char*>(stored_checksum), 32);
@@ -8758,6 +8886,47 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             }
         } else {
             logger_->warning("[LoadSnapshot] Legacy v2 snapshot loaded (no embedded forest payload)");
+        }
+
+        // v4: restore the shielded-pool state so post-snapshot shielded
+        // transactions validate. Without this the commitment tree starts empty,
+        // so the first post-snapshot shielded spend fails AnchorInvalid and the
+        // chain wedges (e.g. mainnet block 50038 on sub-50038 snapshots).
+        if (has_v4_shielded_section) {
+            shielded_tree_ = consensus::shielded::CommitmentTree();
+            if (!shielded_frontier_buf.empty() &&
+                !shielded_tree_.DeserializeFrontier(shielded_frontier_buf.data(),
+                                                    shielded_frontier_buf.size())) {
+                result.error_message = "Failed to restore shielded commitment-tree frontier from snapshot";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            // Consensus binding: the restored tree root MUST match the root the
+            // snapshot recorded (and, transitively, the chain at the base height).
+            {
+                const consensus::shielded::Hash restored_root = shielded_tree_.Root();
+                if (std::memcmp(restored_root.data(), shielded_section.commitment_root.data, 32) != 0) {
+                    result.error_message = "Restored shielded tree root does not match snapshot commitment_root";
+                    logger_->error("[LoadSnapshot] " + result.error_message);
+                    return result;
+                }
+            }
+            if (!shielded_anchor_buf.empty() &&
+                shielded_anchor_history_.DeserializeBytes(shielded_anchor_buf) !=
+                    consensus::shielded::AnchorHistory::IoResult::Ok) {
+                result.error_message = "Failed to restore shielded anchor history from snapshot";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            // NOTE: nullifier-set restore is deferred. The payload IS carried in the
+            // snapshot (shielded_nullifier_buf, written by ExportSnapshot) but is not
+            // yet re-inserted into the sqlite-backed NullifierSet here. Until that
+            // lands, a snapshot node relies on background validation to repopulate
+            // nullifiers — flagged for the consensus owner (foreground double-spend
+            // coverage of pre-snapshot shielded notes is a trust-model decision).
+            logger_->warning("⚠️  [LoadSnapshot] v4 shielded state restored (frontier+anchors); "
+                             "nullifier restore deferred (" +
+                             std::to_string(shielded_section.nullifier_bytes) + "B carried)");
         }
 
         logger_->warning("⚠️  AssumeUTXO mode ACTIVE - UTXO set loaded from snapshot at height " +
