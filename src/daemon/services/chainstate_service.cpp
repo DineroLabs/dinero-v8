@@ -6824,6 +6824,37 @@ void ChainstateService::ActivateBestChain() {
         return;
     }
 
+    // ── AssumeUTXO floor: never reorg to a below-base-TIP candidate ──────────
+    // A snapshot-bootstrapped node's active chain is anchored at the trusted
+    // snapshot base. A candidate whose TIP is below that base can never be a
+    // legitimately-better chain than the active chain — it is a block
+    // re-materialized from genesis by background validation (the node re-deriving
+    // its own assumed-trusted history), NOT a competing chain. Selecting it would
+    // attempt to reorg the active tip down below the base, which the
+    // fork-below-base guard then treats as fatal — spuriously here, driven only
+    // by the base-relative chainwork a snapshot node computes for its pre-base
+    // history. So: while the active chain is at/above the base, ignore any
+    // candidate whose tip is below the base. A GENUINE higher-work below-base
+    // divergence still has its TIP ABOVE the base (a real longer chain), so it is
+    // NOT excluded here — it falls through to the normal work comparison and the
+    // existing fork-below-base fatal guard.
+    {
+        const uint32_t assumeutxo_floor = std::max(
+            assumeutxo_active_ ? assumeutxo_base_height_ : 0u, promoted_base_height_);
+        if (assumeutxo_floor > 0 && active_tip_ &&
+            static_cast<uint32_t>(active_tip_->height) >= assumeutxo_floor &&
+            static_cast<uint32_t>(best_candidate->height) < assumeutxo_floor) {
+            if (logger_) {
+                logger_->info("[ActivateBestChain] Ignoring below-base candidate (height=" +
+                              std::to_string(best_candidate->height) +
+                              " < AssumeUTXO base " + std::to_string(assumeutxo_floor) +
+                              ") — re-materialized ancestor, not a valid reorg target; "
+                              "staying on active tip @" + std::to_string(active_tip_->height));
+            }
+            return;
+        }
+    }
+
     // Compare best candidate with active tip
     bool needs_activation = false;
 
