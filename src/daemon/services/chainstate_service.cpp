@@ -3050,9 +3050,25 @@ bool ChainstateService::Start() {
         logger_->info("⚠️  Snapshot base block: " + assumeutxo_base_block_.GetHex());
 
         bool snapshot_rehydrated_from_file = false;
-        if (!lifecycle_fatal_at_restore && consensus_utxo_set_ &&
-            (consensus_utxo_set_->GetBestBlock() != assumeutxo_base_block_ ||
-             consensus_utxo_set_->GetHeight() != assumeutxo_base_height_)) {
+        // On restart the Utreexo forest checkpoint may have already restored the
+        // consensus UTXO set to a height AT OR ABOVE the snapshot base (the node
+        // advanced past the snapshot before shutdown). That is the correct, fully
+        // bootstrapped state. Re-running LoadSnapshot here would Clear() it and
+        // reset the forest back to the base, then force a forward replay that a
+        // pruned/headers-only node cannot complete (no block bodies) — stranding
+        // the forest one block behind the ChainDB UTXO set, which trips the
+        // utreexo-proof-coverage safety fuse into SAFE MODE on the next restart.
+        // Only rehydrate when the set is genuinely NOT yet bootstrapped: strictly
+        // below the snapshot base, or exactly at the base height but bound to the
+        // wrong block (corruption). Never when it is validly advanced past the base.
+        const uint32_t restored_utxo_height =
+            consensus_utxo_set_ ? static_cast<uint32_t>(consensus_utxo_set_->GetHeight()) : 0;
+        const bool utxo_set_not_bootstrapped =
+            consensus_utxo_set_ &&
+            (restored_utxo_height < assumeutxo_base_height_ ||
+             (restored_utxo_height == assumeutxo_base_height_ &&
+              consensus_utxo_set_->GetBestBlock() != assumeutxo_base_block_));
+        if (!lifecycle_fatal_at_restore && utxo_set_not_bootstrapped) {
             const std::string snapshot_path =
                 config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
 
