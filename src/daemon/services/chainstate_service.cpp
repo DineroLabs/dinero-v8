@@ -3068,6 +3068,46 @@ bool ChainstateService::Start() {
             (restored_utxo_height < assumeutxo_base_height_ ||
              (restored_utxo_height == assumeutxo_base_height_ &&
               consensus_utxo_set_->GetBestBlock() != assumeutxo_base_block_));
+
+        // Different-base belt on the startup-rehydrate fast path.
+        // When the consensus set is already validly bootstrapped at our persisted
+        // base, the rehydrate below is skipped — so a DIFFERENT-base snapshot
+        // configured by the operator would otherwise be silently ignored and the
+        // node would keep running on a chain it no longer intends. That is unsafe:
+        // a mismatched/attacker-swapped assumeutxo_snapshot must fail loudly. The
+        // LoadSnapshot active-lifecycle belt that normally catches this is bypassed
+        // here (we never reach LoadSnapshot when already bootstrapped), so mirror
+        // it: peek the configured snapshot's base and refuse to start if it differs
+        // from the base this node bootstrapped from. We do NOT Clear() — the node's
+        // state is good; the reload path's clear-before-load would corrupt it.
+        // Scoped to an ACTIVE (mid-lifecycle, non-fatal, non-disabled) lifecycle,
+        // exactly like the LoadSnapshot belt it mirrors: a fully-promoted/disabled
+        // node has already validated genesis->tip and its snapshot config is moot,
+        // so a stale different-base path there must NOT block startup.
+        if (!lifecycle_fatal_at_restore && !utxo_set_not_bootstrapped &&
+            assumeutxo_lifecycle_ &&
+            assumeutxo_lifecycle_->GetState() !=
+                assumeutxo::AssumeUtxoLifecycle::State::Disabled) {
+            const std::string configured_snapshot =
+                config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
+            if (!configured_snapshot.empty()) {
+                consensus::SnapshotMetadata peek;
+                std::string perr;
+                if (ReadSnapshotHeaderPreview(configured_snapshot, peek, perr) &&
+                    peek.magic == consensus::SNAPSHOT_MAGIC &&
+                    (peek.block_height != assumeutxo_base_height_ ||
+                     peek.block_hash != assumeutxo_base_block_)) {
+                    logger_->error(
+                        "[AssumeUTXO restore] another snapshot lifecycle is active (base height " +
+                        std::to_string(assumeutxo_base_height_) +
+                        "); configured assumeutxo_snapshot has a different base (height " +
+                        std::to_string(peek.block_height) +
+                        ") — reset or let validation finish before loading a different snapshot");
+                    return false;
+                }
+            }
+        }
+
         if (!lifecycle_fatal_at_restore && utxo_set_not_bootstrapped) {
             const std::string snapshot_path =
                 config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
