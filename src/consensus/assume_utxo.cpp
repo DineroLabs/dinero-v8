@@ -74,20 +74,29 @@ const std::vector<AssumeUTXOSnapshot> AssumeUTXORegistry::snapshots_ = {
         139147,
         "Mainnet height 47176 v3 trust anchor"
     ),
-    // Mainnet height 52066 v3 trust anchor (generated 2026-06-27 from the fleet
-    // at the 5-node consensus tip; buries past ship time). First fast-sync anchor
-    // above 50k, refreshing past 47176 — bundled in the desktop wallet installers
-    // so fresh GUI users fast-sync instead of syncing from genesis. Format: v3
-    // UTXO snapshot with embedded serialized Utreexo forest.
-    // Snapshot file: utxo-snapshot-52066.dat (18,998,718 bytes)
-    // Utreexo root (block header utreexo_root, bound at load): 24600286297902c4ecaeac7c0c2aeb692e8d2cff3f05e7eb5da228ca62c7e727
+    // Mainnet height 52241 v4 trust anchor (generated 2026-06-27 from the fleet/
+    // Dell consensus tip; buries past ship time). Bundled in the desktop wallet
+    // installers so fresh GUI users fast-sync instead of syncing from genesis.
+    // Format: v4 UXTO + UTRX (Utreexo) + SHLD (shielded pool) snapshot — carries
+    // the shielded commitment-tree frontier + anchor history + nullifier set so a
+    // snapshot-bootstrapped node restores correct shielded state (tree_size=10,
+    // nullifier_count=4 at dump time, root 6c45517648d707f4…) instead of an empty
+    // tree that wedges on the first post-snapshot shielded spend.
+    // Snapshot file: utxo-snapshot-52241.dat (19,068,210 bytes)
+    //
+    // ⚠️ 52241 SUPERSEDES the earlier 52066 v3 AssumeUTXO anchor (removed) because
+    // v3 snapshots did NOT carry shielded state. Production AssumeUTXO anchors
+    // after the shielded activation height (8650) MUST be v4+ and include the SHLD
+    // section. Do NOT re-add a v3/no-shielded anchor as a production fast-sync path
+    // (e.g. "cleaning up" by restoring 52066 because it looks older/smaller) — that
+    // re-opens the empty-shielded-state wedge for every fresh snapshot-synced node.
     AssumeUTXOSnapshot(
-        "43c6b2929c6f0a908adab94cd3020489a1188d358a14cdcbe0f52ed4d0073b78",
-        "00000062d706de662828aec89c3748efbe96f266f53f5b4b202cfa5f76886005",
-        52066,
-        "0x000000000000000000000000000000000000000000000000000005bc3738cf61",
-        153812,
-        "Mainnet height 52066 v3 trust anchor"
+        "23d987253c3eefb9d8521d6c4086350e0ac5d96e80296be4b31dbd15382063f6",
+        "00000088a18ee05d5fdeaa452a1efaa1845b2d6feb8a3046c139262b7f4c2a7a",
+        52241,
+        "0x000000000000000000000000000000000000000000000000000005bd7927cfe5",
+        154337,
+        "Mainnet height 52241 v4 trust anchor (UXTO+UTRX+SHLD)"
     ),
 };
 
