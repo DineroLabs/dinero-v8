@@ -106,16 +106,26 @@ void appendAssumeUtxoSnapshotArgIfFresh(QStringList& args, const QString& datadi
     if (!fresh) {
         return;
     }
-    // macOS bundle layout: applicationDirPath() == <app>/Contents/MacOS, so the
-    // snapshot lives one level up under Resources. Resolves to nonexistent in dev
-    // builds (no bundled .dat) → we simply sync normally there.
-    const QString snapshotPath =
-        QFileInfo(QCoreApplication::applicationDirPath() + "/../Resources/" +
-                  QString::fromLatin1(kBundledSnapshotFile))
-            .absoluteFilePath();
-    if (!QFile::exists(snapshotPath)) {
-        qWarning() << "Fresh datadir but bundled AssumeUTXO snapshot not found at"
-                   << snapshotPath << "— daemon will sync from genesis";
+    // Locate the bundled snapshot across platform install layouts:
+    //  - macOS .app: applicationDirPath() == <app>/Contents/MacOS → ../Resources/<file>
+    //  - Windows / Linux: bundled next to the executable (install root)
+    // Resolves to nonexistent in dev builds (no bundled .dat) → we simply sync normally.
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString file = QString::fromLatin1(kBundledSnapshotFile);
+    const QStringList candidates = {
+        QFileInfo(appDir + "/../Resources/" + file).absoluteFilePath(),  // macOS .app bundle
+        QFileInfo(appDir + "/" + file).absoluteFilePath(),               // Windows/Linux next-to-exe
+    };
+    QString snapshotPath;
+    for (const QString& candidate : candidates) {
+        if (QFile::exists(candidate)) {
+            snapshotPath = candidate;
+            break;
+        }
+    }
+    if (snapshotPath.isEmpty()) {
+        qWarning() << "Fresh datadir but bundled AssumeUTXO snapshot" << file
+                   << "not found (looked in" << candidates << ") — daemon will sync from genesis";
         return;
     }
     qInfo() << "Fresh datadir: fast-syncing from bundled AssumeUTXO snapshot"
