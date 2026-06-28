@@ -34,60 +34,36 @@ AssumeUTXOSnapshot::AssumeUTXOSnapshot(
 //=============================================================================
 
 const std::vector<AssumeUTXOSnapshot> AssumeUTXORegistry::snapshots_ = {
-    // Mainnet height 13000 v1 trust anchor (generated 2026-05-03 from LA copy)
-    // Format: v3 UTXO snapshot with embedded serialized Utreexo forest.
-    // Snapshot file: utxo-snapshot-13000.dat (4,775,358 bytes)
-    // Utreexo root: eca67bc825cadefab2561f48e82a00342016d1f3ad905bb277283d38de0bd54c
+    // ⚠️ NO v3/no-shielded anchors. The earlier 13000/33048/47176/52066 v3 anchors
+    // were REMOVED: their snapshots carry no shielded state, so any node fast-syncing
+    // from one (all are above the shielded activation height 8650) starts with an
+    // empty shielded commitment tree and wedges on the first post-snapshot shielded
+    // spend. Every AssumeUTXO trust anchor after activation MUST be v4+ and include
+    // the SHLD section. Do NOT re-add a v3 anchor as a fast-sync path.
+    //
+    // Mainnet height 52241 v4 trust anchor (generated 2026-06-27 from the fleet/
+    // Dell consensus tip; buries past ship time). Bundled in the desktop wallet
+    // installers so fresh GUI users fast-sync instead of syncing from genesis.
+    // Format: v4 UXTO + UTRX (Utreexo) + SHLD (shielded pool) snapshot — carries
+    // the shielded commitment-tree frontier + anchor history + nullifier set so a
+    // snapshot-bootstrapped node restores correct shielded state (tree_size=10,
+    // nullifier_count=4 at dump time, root 6c45517648d707f4…) instead of an empty
+    // tree that wedges on the first post-snapshot shielded spend.
+    // Snapshot file: utxo-snapshot-52241.dat (19,068,210 bytes)
+    //
+    // ⚠️ 52241 SUPERSEDES the earlier 52066 v3 AssumeUTXO anchor (removed) because
+    // v3 snapshots did NOT carry shielded state. Production AssumeUTXO anchors
+    // after the shielded activation height (8650) MUST be v4+ and include the SHLD
+    // section. Do NOT re-add a v3/no-shielded anchor as a production fast-sync path
+    // (e.g. "cleaning up" by restoring 52066 because it looks older/smaller) — that
+    // re-opens the empty-shielded-state wedge for every fresh snapshot-synced node.
     AssumeUTXOSnapshot(
-        "04afcb937b07ccab469dd6ade5151cd06431b30111d813c4392303cc7b1b2426",
-        "0000006f34bdfd52f0d61556175a3ccec56fc57428a1b04f7e012ee7e245c8a3",
-        13000,
-        "0x000000000000000000000000000000000000000000000000000001198ed06efa",
-        38700,
-        "Mainnet height 13000 v1 trust anchor"
-    ),
-    // Mainnet height 33048 v3 trust anchor (generated 2026-05-31 from the fleet;
-    // base block buried >140 deep + verified canonical at dump time). Near-tip
-    // anchor for rc24 fast-sync (#186). Format: v3 UTXO snapshot with embedded
-    // serialized Utreexo forest.
-    // Snapshot file: utxo-snapshot-33048.dat (12,181,041 bytes)
-    // Utreexo root: bb89dc73ef0099f7a69d24ef0a190b19c0d6278044995ea3c9a993408fdbdd85
-    AssumeUTXOSnapshot(
-        "7ccd9ffb72c2e30ea7c47a42d4c22678fd7d4f8708e73eee83d4a90dfb9ae868",
-        "00000015f97a45f358fee1562317c05590b042b190e288a60ad7218b7e4efffa",
-        33048,
-        "0x000000000000000000000000000000000000000000000000000003974f5b3616",
-        98735,
-        "Mainnet height 33048 v3 trust anchor"
-    ),
-    // Mainnet height 47176 v3 trust anchor (generated 2026-06-20 from the fleet
-    // at the 4-node consensus tip; buried by ship time). Refreshes the near-tip
-    // fast-sync anchor past 33048. Format: v3 UTXO snapshot with embedded
-    // serialized Utreexo forest.
-    // Snapshot file: utxo-snapshot-47176.dat (17,189,900 bytes)
-    // Utreexo root (block header utreexo_root, bound at load): 5f2f4a22587b8825490d77be6d27998c099a07d1261f37dbf4af74be2abe0569
-    AssumeUTXOSnapshot(
-        "d537408c09420d842015bc54473da62abe5ca9158f09a1f7582a55d7b9099985",
-        "00000067a1f415ba54d2eb098cdfe0bdefdb4592f54aeb37a95ab14e2e40aee9",
-        47176,
-        "0x00000000000000000000000000000000000000000000000000000562288792e4",
-        139147,
-        "Mainnet height 47176 v3 trust anchor"
-    ),
-    // Mainnet height 52066 v3 trust anchor (generated 2026-06-27 from the fleet
-    // at the 5-node consensus tip; buries past ship time). First fast-sync anchor
-    // above 50k, refreshing past 47176 — bundled in the desktop wallet installers
-    // so fresh GUI users fast-sync instead of syncing from genesis. Format: v3
-    // UTXO snapshot with embedded serialized Utreexo forest.
-    // Snapshot file: utxo-snapshot-52066.dat (18,998,718 bytes)
-    // Utreexo root (block header utreexo_root, bound at load): 24600286297902c4ecaeac7c0c2aeb692e8d2cff3f05e7eb5da228ca62c7e727
-    AssumeUTXOSnapshot(
-        "43c6b2929c6f0a908adab94cd3020489a1188d358a14cdcbe0f52ed4d0073b78",
-        "00000062d706de662828aec89c3748efbe96f266f53f5b4b202cfa5f76886005",
-        52066,
-        "0x000000000000000000000000000000000000000000000000000005bc3738cf61",
-        153812,
-        "Mainnet height 52066 v3 trust anchor"
+        "23d987253c3eefb9d8521d6c4086350e0ac5d96e80296be4b31dbd15382063f6",
+        "00000088a18ee05d5fdeaa452a1efaa1845b2d6feb8a3046c139262b7f4c2a7a",
+        52241,
+        "0x000000000000000000000000000000000000000000000000000005bd7927cfe5",
+        154337,
+        "Mainnet height 52241 v4 trust anchor (UXTO+UTRX+SHLD)"
     ),
 };
 

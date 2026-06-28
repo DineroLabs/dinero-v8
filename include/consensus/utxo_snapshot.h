@@ -67,12 +67,24 @@ constexpr uint32_t SNAPSHOT_MAGIC = 0x4F545855;  // "UTXO" in little-endian
 // Snapshot format version (v2: 128-byte headers)
 constexpr uint32_t SNAPSHOT_VERSION_V2 = 2;
 constexpr uint32_t SNAPSHOT_VERSION_V3 = 3;
-constexpr uint32_t SNAPSHOT_VERSION = SNAPSHOT_VERSION_V3;
+// v4 adds the shielded-pool bootstrap section (frontier + anchor history +
+// nullifiers). Without it a snapshot-bootstrapped node starts with an EMPTY
+// shielded commitment tree, so the first post-snapshot shielded spend fails
+// ShieldedValidationError::AnchorInvalid and the chain wedges. v2/v3 snapshots
+// still load (they just remain affected by that bug — no shielded payload).
+constexpr uint32_t SNAPSHOT_VERSION_V4 = 4;
+constexpr uint32_t SNAPSHOT_VERSION = SNAPSHOT_VERSION_V4;
 
 // Optional v3 section carrying the accumulator bootstrap payload.
 constexpr uint32_t SNAPSHOT_V3_UTREEXO_MAGIC = 0x58525455;  // "UTRX" in little-endian
 constexpr uint32_t SNAPSHOT_V3_UTREEXO_SECTION_VERSION = 1;
 constexpr uint64_t SNAPSHOT_V3_MAX_FOREST_BYTES = (1ULL << 30);  // 1 GiB hard cap
+
+// Optional v4 section carrying the shielded-pool bootstrap payload. Appended
+// after the v3 utreexo section and covered by the same trailing SHA256 checksum.
+constexpr uint32_t SNAPSHOT_V4_SHIELDED_MAGIC = 0x444C4853;  // "SHLD" in little-endian
+constexpr uint32_t SNAPSHOT_V4_SHIELDED_SECTION_VERSION = 1;
+constexpr uint64_t SNAPSHOT_V4_MAX_SHIELDED_BYTES = (1ULL << 30);  // 1 GiB hard cap
 
 // Snapshot header size (fixed)
 constexpr size_t SNAPSHOT_HEADER_SIZE = 68;
@@ -121,6 +133,35 @@ struct SnapshotUtreexoSection {
         , forest_leaves(0)
         , reserved(0)
         , utreexo_root()
+    {}
+};
+
+/**
+ * Optional v4 section metadata for shielded-pool bootstrap.
+ *
+ * Carries the state needed to validate post-snapshot shielded transactions:
+ *   - the shielded commitment-tree frontier (CommitmentTree::SerializeFrontier)
+ *   - the anchor-history window      (AnchorHistory::SerializeBytes)
+ *   - the nullifier set              (NullifierSet::SerializeContent; 0 = omitted)
+ * Header is followed by the three payloads in that order.
+ */
+struct SnapshotShieldedSection {
+    uint32_t magic;                 // SNAPSHOT_V4_SHIELDED_MAGIC
+    uint32_t version;               // SNAPSHOT_V4_SHIELDED_SECTION_VERSION
+    uint64_t frontier_bytes;        // serialized commitment-tree frontier size
+    uint64_t anchor_history_bytes;  // serialized anchor-history size
+    uint64_t nullifier_bytes;       // serialized nullifier-set size (0 if omitted)
+    uint64_t reserved;              // reserved for future fields
+    uint256  commitment_root;       // shielded tree root at snapshot base (sanity)
+
+    SnapshotShieldedSection()
+        : magic(SNAPSHOT_V4_SHIELDED_MAGIC)
+        , version(SNAPSHOT_V4_SHIELDED_SECTION_VERSION)
+        , frontier_bytes(0)
+        , anchor_history_bytes(0)
+        , nullifier_bytes(0)
+        , reserved(0)
+        , commitment_root()
     {}
 };
 
