@@ -6845,11 +6845,15 @@ void ChainstateService::ActivateBestChain() {
             static_cast<uint32_t>(active_tip_->height) >= assumeutxo_floor &&
             static_cast<uint32_t>(best_candidate->height) < assumeutxo_floor) {
             if (logger_) {
-                logger_->info("[ActivateBestChain] Ignoring below-base candidate (height=" +
-                              std::to_string(best_candidate->height) +
-                              " < AssumeUTXO base " + std::to_string(assumeutxo_floor) +
-                              ") — re-materialized ancestor, not a valid reorg target; "
-                              "staying on active tip @" + std::to_string(active_tip_->height));
+                // debug, not info: background validation re-materializes the
+                // trusted genesis->base history continuously, so this fires once
+                // per re-materialized ancestor (thousands of times over a sync) —
+                // a routine, benign event, not something operators need at INFO.
+                logger_->debug("[ActivateBestChain] Ignoring below-base candidate (height=" +
+                               std::to_string(best_candidate->height) +
+                               " < AssumeUTXO base " + std::to_string(assumeutxo_floor) +
+                               ") — re-materialized ancestor, not a valid reorg target; "
+                               "staying on active tip @" + std::to_string(active_tip_->height));
             }
             return;
         }
