@@ -41,29 +41,37 @@ const std::vector<AssumeUTXOSnapshot> AssumeUTXORegistry::snapshots_ = {
     // spend. Every AssumeUTXO trust anchor after activation MUST be v4+ and include
     // the SHLD section. Do NOT re-add a v3 anchor as a fast-sync path.
     //
-    // Mainnet height 52241 v4 trust anchor (generated 2026-06-27 from the fleet/
-    // Dell consensus tip; buries past ship time). Bundled in the desktop wallet
-    // installers so fresh GUI users fast-sync instead of syncing from genesis.
-    // Format: v4 UXTO + UTRX (Utreexo) + SHLD (shielded pool) snapshot — carries
-    // the shielded commitment-tree frontier + anchor history + nullifier set so a
+    // Mainnet height 52287 v4 trust anchor (generated 2026-06-28 by dumptxoutset
+    // on an rsync'd copy of the production full-genesis-validated 126G archival
+    // node, Dell /var/lib/dinero, sitting at the canonical fleet tip 52287).
+    // Bundled in the desktop wallet installers so fresh GUI
+    // users fast-sync instead of syncing from genesis. Format: v4 UXTO + UTRX
+    // (Utreexo) + SHLD (shielded pool) snapshot — carries the shielded
+    // commitment-tree frontier + anchor history + nullifier set so a
     // snapshot-bootstrapped node restores correct shielded state (tree_size=10,
-    // nullifier_count=4 at dump time, root 6c45517648d707f4…) instead of an empty
-    // tree that wedges on the first post-snapshot shielded spend.
-    // Snapshot file: utxo-snapshot-52241.dat (19,068,210 bytes)
+    // nullifier_count=4, root 6c45517648d707f4…) instead of an empty tree that
+    // wedges on the first post-snapshot shielded spend.
+    // Snapshot file: utxo-snapshot-52287.dat (19,085,326 bytes)
     //
-    // ⚠️ 52241 SUPERSEDES the earlier 52066 v3 AssumeUTXO anchor (removed) because
-    // v3 snapshots did NOT carry shielded state. Production AssumeUTXO anchors
-    // after the shielded activation height (8650) MUST be v4+ and include the SHLD
-    // section. Do NOT re-add a v3/no-shielded anchor as a production fast-sync path
-    // (e.g. "cleaning up" by restoring 52066 because it looks older/smaller) — that
-    // re-opens the empty-shielded-state wedge for every fresh snapshot-synced node.
+    // Cross-validated against fleet consensus at the dump height (the only thing
+    // that makes a bootstrap source shippable — provenance is irrelevant once the
+    // content matches independently-validated full nodes):
+    //   • tip block hash == fleet canonical 000000739c14918aae… @ 52287
+    //   • daemon.shieldedstatehash == fleet bc1260e9f704d779… (shielded consensus)
+    //   • full-genesis-validated source ⇒ canonical UTXO set (154475 coins)
+    //
+    // ⚠️ 52287 SUPERSEDES the 52241 v4 anchor (fresher tip, fewer blocks for a new
+    // node to replay). Both are v4+SHLD; the older 52241 is retired only because a
+    // closer-to-tip anchor is strictly better for fast-sync. As always: production
+    // AssumeUTXO anchors after the shielded activation height (8650) MUST be v4+
+    // and include the SHLD section — never re-add a v3/no-shielded anchor.
     AssumeUTXOSnapshot(
-        "23d987253c3eefb9d8521d6c4086350e0ac5d96e80296be4b31dbd15382063f6",
-        "00000088a18ee05d5fdeaa452a1efaa1845b2d6feb8a3046c139262b7f4c2a7a",
-        52241,
-        "0x000000000000000000000000000000000000000000000000000005bd7927cfe5",
-        154337,
-        "Mainnet height 52241 v4 trust anchor (UXTO+UTRX+SHLD)"
+        "48f7672cc855c83cd8968fddab85a87d4cd8c41aa8562c91bff475a318db399c",
+        "000000739c14918aae1985948b1d800cbab8473edf117c155ba9ada186cba71e",
+        52287,
+        "0x000000000000000000000000000000000000000000000000000005bdb4f5fd56",
+        154475,
+        "Mainnet height 52287 v4 trust anchor (UXTO+UTRX+SHLD)"
     ),
 };
 

@@ -93,7 +93,7 @@ QStringList currentBootstrapAddnodes() {
 // height instead of syncing from genesis — the slow path that maximizes exposure
 // to the block-download catch-up. The daemon verifies the file's SHA256 against
 // its compiled-in trust anchor (consensus/assume_utxo.cpp) before trusting it.
-constexpr char kBundledSnapshotFile[] = "utxo-snapshot-52241.dat";
+constexpr char kBundledSnapshotFile[] = "utxo-snapshot-52287.dat";
 
 void appendAssumeUtxoSnapshotArgIfFresh(QStringList& args, const QString& datadir) {
     if (datadir.isEmpty()) {
