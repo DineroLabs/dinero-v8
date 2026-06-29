@@ -50,11 +50,25 @@ param(
     # DineroLabs/dinero-sv2 release-build output. Defaults to the conventional
     # sibling-repo layout (..\dinero-sv2\target\release). If the two SV2 miner
     # binaries are present, they're bundled alongside dinero-qt.exe so the
-    # qt UI's SV2 Pool tab discovers them out-of-the-box. Missing → soft-warn
+    # qt UI's SV2 Pool tab discovers them out-of-the-box. Missing -> soft-warn
     # and skip (operator cuts without a Rust toolchain still produce a valid
     # installer, just without the SV2 Pool lane).
     [string]$Sv2BuildDir   = '',
-    [switch]$SkipOperatorZip
+    [switch]$SkipOperatorZip,
+    # AssumeUTXO snapshot bundled next to dinero-qt.exe so a FRESH GUI datadir
+    # fast-syncs instead of syncing from genesis (qt/src/main.cpp finds it next
+    # to the exe; the daemon verifies its sha256 against the compiled-in trust
+    # anchor at load, so the installer is just transport). HEIGHT-AGNOSTIC: when
+    # -SnapshotFileName is empty it's auto-derived from qt/src/main.cpp's
+    # kBundledSnapshotFile, so the bundled file always matches what the GUI looks
+    # for - no drift when the ship anchor height changes. Source precedence:
+    # -SnapshotPath (local) > cached in dist\ > download from -SnapshotReleaseTag.
+    # Unresolvable (offline / no path) -> soft-warn + ship WITHOUT it (valid
+    # installer; fresh users just sync from genesis). -NoSnapshot forces skip.
+    [string]$SnapshotFileName   = '',
+    [string]$SnapshotPath       = '',
+    [string]$SnapshotReleaseTag = '',
+    [switch]$NoSnapshot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,7 +89,46 @@ if (-not $QtRepoDir) {
     $QtRepoDir = Join-Path $ProjectRoot 'qt'
 }
 
-$Stage = Join-Path $ScriptDir 'dist\installer-stage'
+$Stage   = Join-Path $ScriptDir 'dist\installer-stage'
+$DistDir = Join-Path $ScriptDir 'dist'
+
+# Height-agnostic: derive the bundled-snapshot filename from the GUI's compiled-in
+# kBundledSnapshotFile so the installer always bundles exactly what dinero-qt looks
+# for on a fresh datadir (no manual sync when the ship anchor height changes).
+if (-not $SnapshotFileName -and -not $NoSnapshot) {
+    $qtMain = Join-Path $ProjectRoot 'qt\src\main.cpp'
+    if (Test-Path $qtMain) {
+        $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotFile\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
+        if ($m) {
+            $SnapshotFileName = $m.Matches[0].Groups[1].Value
+            Write-Host "Bundled-snapshot filename (from qt/src/main.cpp): $SnapshotFileName"
+        }
+    }
+}
+
+function Resolve-BundledSnapshot {
+    # Returns an absolute path to the snapshot to bundle, or $null to ship without
+    # one (soft-fail - a valid installer that genesis-syncs). The daemon verifies
+    # the file's sha256 against its compiled-in trust anchor at load, so transport
+    # integrity here is not security-critical.
+    if ($NoSnapshot -or -not $SnapshotFileName) { return $null }
+    if ($SnapshotPath) {
+        if (Test-Path $SnapshotPath) { return (Resolve-Path $SnapshotPath).Path }
+        Write-Host "WARN: -SnapshotPath not found ($SnapshotPath) - shipping WITHOUT bundled snapshot" -ForegroundColor Yellow
+        return $null
+    }
+    if (-not (Test-Path $DistDir)) { New-Item $DistDir -ItemType Directory | Out-Null }
+    $cached = Join-Path $DistDir $SnapshotFileName
+    if (Test-Path $cached) { return $cached }
+    if ($SnapshotReleaseTag) {
+        $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$SnapshotReleaseTag/$SnapshotFileName"
+        Write-Host "Downloading AssumeUTXO snapshot from $url..."
+        try { Invoke-WebRequest $url -OutFile $cached -ErrorAction Stop; return $cached }
+        catch { Write-Host "WARN: snapshot download failed ($_) - shipping WITHOUT bundled snapshot" -ForegroundColor Yellow; return $null }
+    }
+    Write-Host "WARN: no -SnapshotPath/-SnapshotReleaseTag and no cached $SnapshotFileName - shipping WITHOUT bundled snapshot (fresh users sync from genesis)" -ForegroundColor Yellow
+    return $null
+}
 
 Write-Host '----------------------------------------------------------'
 Write-Host "Building Dinero installer -- v$Version"
@@ -99,7 +152,7 @@ $BuildRoot = Split-Path $DaemonBuildDir -Parent
 
 # Default the dinero-sv2 release-build dir to the conventional sibling-repo
 # layout. The qt UI's discoverSv2MinerPath() checks for these binaries
-# adjacent to dinero-qt.exe first (see dinero-qt mainwindow.cpp:494) — so
+# adjacent to dinero-qt.exe first (see dinero-qt mainwindow.cpp:494) - so
 # dropping them into the stage is all that's needed for the SV2 Pool tab
 # to work out-of-the-box on a fresh install.
 if (-not $Sv2BuildDir) {
@@ -184,6 +237,19 @@ try {
     & $windeployqt --release --no-translations (Join-Path $Stage 'dinero-qt.exe')
 } finally {
     $ErrorActionPreference = $oldEAP
+}
+
+# Bundle the AssumeUTXO snapshot next to dinero-qt.exe. The NSI ships the whole
+# stage (File /r installer-stage\*.*) into INSTDIR, where qt/src/main.cpp looks
+# for kBundledSnapshotFile on a fresh datadir -> fresh GUI users fast-sync instead
+# of syncing from genesis. Optional + soft: a cut without a resolvable snapshot
+# still produces a valid installer (genesis-sync fallback).
+$snap = Resolve-BundledSnapshot
+if ($snap) {
+    Copy-Item $snap (Join-Path $Stage $SnapshotFileName)
+    Write-Host ("Bundled AssumeUTXO snapshot: {0} ({1:N1} MB)" -f $SnapshotFileName, ((Get-Item $snap).Length / 1MB))
+} else {
+    Write-Host "No AssumeUTXO snapshot bundled - fresh GUI users will sync from genesis." -ForegroundColor Yellow
 }
 
 $totalSize = (Get-ChildItem $Stage -Recurse | Measure-Object Length -Sum).Sum
