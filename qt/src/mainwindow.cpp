@@ -12157,6 +12157,31 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
       if (status == QProcess::NormalExit && exitCode == 0) {
         return;  // Clean external stop (e.g. dinero-cli stop).
       }
+      // Auto-retry transient launch races before alarming the user. On a large
+      // datadir a prior dinerod can still be flushing state / holding the datadir
+      // lock or P2P port when we relaunch, so the freshly-started process exits
+      // non-zero; a short delay lets the old one finish and the retry then
+      // succeeds silently. Only a persistent failure (retries exhausted) surfaces
+      // the "Daemon Failed" dialog. Counter resets on successful connect and on
+      // a user-initiated start.
+      static constexpr int kMaxDaemonLaunchRetries = 3;
+      if (daemonLaunchRetries_ < kMaxDaemonLaunchRetries) {
+        ++daemonLaunchRetries_;
+        qWarning() << "Daemon exited (code" << exitCode << ") before RPC came up — retry"
+                   << daemonLaunchRetries_ << "of" << kMaxDaemonLaunchRetries
+                   << "in 2.5s (likely a transient datadir-lock / port race)";
+        if (lblConnectionStatus_) {
+          lblConnectionStatus_->setText("Starting daemon… (retry)");
+          lblConnectionStatus_->setStyleSheet(headerPillStyle());
+        }
+        QTimer::singleShot(2500, this, [this]() {
+          if (!shuttingDown_ && !daemonStopRequested_ &&
+              (!connectionMgr_ || !connectionMgr_->isConnected())) {
+            startDaemonWithOptions(false, false);
+          }
+        });
+        return;
+      }
       QString dir = rpc_ ? rpc_->datadir() : QString();
       if (dir.trimmed().isEmpty()) {
         dir = defaultDineroDataDir();
@@ -12286,6 +12311,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
 }
 
 void MainWindow::onStartDaemon() {
+  daemonLaunchRetries_ = 0;  // fresh user-initiated start — full retry budget
   startDaemonWithOptions(true, true);
 }
 
@@ -15070,6 +15096,7 @@ void MainWindow::onToggleAiPanel() {
 
 void MainWindow::onDaemonConnected() {
   qDebug() << "MainWindow: Daemon connected ✅";
+  daemonLaunchRetries_ = 0;  // connected — reset the launch-retry budget
   autoLoadDefaultAttempted_ = false;
   walletReorgInfoSupported_ = true;
 
