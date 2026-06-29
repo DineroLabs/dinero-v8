@@ -491,6 +491,7 @@ private:
   bool suppressErrorDialogs_;  // Suppress error dialogs during daemon startup
   bool autoStartDaemonAttempted_ = false;
   bool daemonStopRequested_ = false;  // #295: user pressed Stop Daemon — suppress exit dialog
+  int daemonLaunchRetries_ = 0;  // auto-retry transient launch races (datadir lock / port held by a slow-exiting prior daemon) before showing the failure dialog
 
   // Debug console - live log viewer
   dinero::DebugConsole* debugConsole_;
