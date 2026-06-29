@@ -16,16 +16,16 @@ namespace dinero::p2p {
 // node into a shielded-blind state. These tests pin the live anchor against
 // accidental mutation and guard against reintroducing the v3 anchors.
 
-TEST(MainnetCheckpoints, AssumeUTXOSnapshot52241NeverChanges) {
-    auto snapshot = dinero::consensus::AssumeUTXORegistry::GetSnapshot(52241);
+TEST(MainnetCheckpoints, AssumeUTXOSnapshot52287NeverChanges) {
+    auto snapshot = dinero::consensus::AssumeUTXORegistry::GetSnapshot(52287);
     ASSERT_TRUE(snapshot.has_value())
-        << "CRITICAL: h=52241 v4 AssumeUTXO registry entry missing";
+        << "CRITICAL: h=52287 v4 AssumeUTXO registry entry missing";
     EXPECT_EQ(snapshot->snapshot_hash.GetHex(),
-              "23d987253c3eefb9d8521d6c4086350e0ac5d96e80296be4b31dbd15382063f6");
+              "48f7672cc855c83cd8968fddab85a87d4cd8c41aa8562c91bff475a318db399c");
     EXPECT_EQ(snapshot->block_hash.GetHex(),
-              "00000088a18ee05d5fdeaa452a1efaa1845b2d6feb8a3046c139262b7f4c2a7a");
-    EXPECT_EQ(snapshot->height, 52241u);
-    EXPECT_EQ(snapshot->utxo_count, 154337u);
+              "000000739c14918aae1985948b1d800cbab8473edf117c155ba9ada186cba71e");
+    EXPECT_EQ(snapshot->height, 52287u);
+    EXPECT_EQ(snapshot->utxo_count, 154475u);
 }
 
 TEST(MainnetCheckpoints, V3AnchorsRemoved) {
