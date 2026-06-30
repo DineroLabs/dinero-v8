@@ -4127,15 +4127,53 @@ std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(int min_c
                 TxId chain_txid(uint256::FromHexUnsafe(utxo.txid));
                 auto chain_utxo = utxo_index_->GetUTXO(chain_txid, utxo.vout);
                 if (!chain_utxo.has_value()) {
-                    // UTXO is no longer in the chain UTXO set — mark spent in wallet
-                    // DB so it won't appear again, then skip it from the result.
-                    exec(db_, ("UPDATE utxos SET is_spent = 1 WHERE txid = '" +
-                               utxo.txid + "' AND vout = " + std::to_string(utxo.vout) +
-                               " AND wallet_id = " + std::to_string(current_wallet_id_)).c_str());
-                    continue;
+                    // A snapshot-anchored coin (recorded from the AssumeUTXO
+                    // snapshot) is committed in the utreexo accumulator and is
+                    // NEVER enumerable in the live utxo_index_. Do NOT infer it
+                    // spent — this read-path was wiping fast-synced wallets'
+                    // pre-snapshot balances. Genuine spends above the base still
+                    // arrive via the input-gated block-connect paths.
+                    bool anchored = false;
+                    {
+                        sqlite3_stmt* astmt = nullptr;
+                        const char* asql = "SELECT snapshot_anchored FROM utxos "
+                                           "WHERE txid = ? AND vout = ? AND wallet_id = ? LIMIT 1";
+                        if (sqlite3_prepare_v2(db_, asql, -1, &astmt, nullptr) == SQLITE_OK) {
+                            sqlite3_bind_text(astmt, 1, utxo.txid.c_str(), -1, SQLITE_TRANSIENT);
+                            sqlite3_bind_int(astmt, 2, static_cast<int>(utxo.vout));
+                            sqlite3_bind_int(astmt, 3, current_wallet_id_);
+                            if (sqlite3_step(astmt) == SQLITE_ROW) {
+                                anchored = sqlite3_column_int(astmt, 0) != 0;
+                            }
+                            sqlite3_finalize(astmt);
+                        }
+                        // If the column doesn't exist (legacy wallet), prepare
+                        // fails and anchored stays false → original behavior.
+                    }
+                    if (!anchored) {
+                        // Cross-store mismatch: the coin is in the wallet DB but
+                        // absent from the in-memory chain UTXO index, and it is NOT
+                        // a snapshot-anchored coin.
+                        //
+                        // SECURITY (fund-loss fix, audit Fix 2): a const READ method
+                        // must NEVER mutate fund state. The previous code persisted
+                        // `UPDATE utxos SET is_spent=1` here, which irreversibly
+                        // zeroed legitimate balances on the first listunspent. We now
+                        // treat the mismatch as non-destructive: skip the coin from
+                        // THIS result set (so coin-selection won't try to spend an
+                        // output the chainstate can't currently see) but leave the DB
+                        // untouched, so the coin reappears once utxo_index_ is
+                        // populated.
+                        logCorruptRow("utxos", "chain-mismatch",
+                                      "wallet UTXO absent from chain index; skipping "
+                                      "(read-only, no state mutation)");
+                        continue;
+                    }
+                    // anchored: valid snapshot coin — keep it (transparent, not CT).
+                } else {
+                    // Propagate CT flag from chain UTXO set into wallet UTXO view
+                    utxo.is_confidential = chain_utxo->is_confidential;
                 }
-                // Propagate CT flag from chain UTXO set into wallet UTXO view
-                utxo.is_confidential = chain_utxo->is_confidential;
             } catch (const std::exception&) {
                 // If the txid is malformed we can't validate — skip to be safe.
                 logCorruptRow("utxos", "txid", "failed to parse txid for chain UTXO validation");
@@ -5721,11 +5759,18 @@ int WalletManager::rescanUtxoSet(
     WLOG_INFO("rescanUtxoSet: scanning snapshot UTXO set against " +
               std::to_string(watch_scripts.size()) + " watch script(s)");
 
+    // Ensure the snapshot_anchored column exists (idempotent; older wallet DBs
+    // predate it). Coins flagged anchored are trusted by the balance read path
+    // so its "not in live utxo_index_ => spent" inference never re-clobbers them
+    // (snapshot UTXOs live in the utreexo accumulator, never the live index).
+    sqlite3_exec(db_, "ALTER TABLE utxos ADD COLUMN snapshot_anchored INTEGER NOT NULL DEFAULT 0",
+                 nullptr, nullptr, nullptr);
+
     int recorded = 0;
     exec(db_, "BEGIN TRANSACTION");
 
     // Per-coin sink: identical insert path to rescanBlockchain (hex-encode the
-    // scriptPubKey, extractAddressFromScript, INSERT OR IGNORE INTO utxos).
+    // scriptPubKey, extractAddressFromScript, upsert INTO utxos).
     auto sink = [&](const UtxoSetEntry& e) {
         if (watch_scripts.find(e.script_pubkey) == watch_scripts.end()) {
             return;  // not ours
@@ -5745,10 +5790,32 @@ int WalletManager::rescanUtxoSet(
             address = "script:" + script_pubkey_hex.substr(0, 16);
         }
 
+        // A coin present in the snapshot UTXO set is UNSPENT by definition. If a
+        // row already exists (e.g. the wallet's block-replay history, or a prior
+        // failed block-rescan that wrongly flagged it is_spent=1), an INSERT OR
+        // IGNORE would leave the stale is_spent intact and the balance reads 0.
+        // Upsert instead: un-spend the row and refresh authoritative fields.
+        // Coinbase maturity is judged against the snapshot base height.
+        int is_mature = 1;
+        if (e.is_coinbase && snapshot_height < e.height + 100) {
+            is_mature = 0;
+        }
+
         const char* insert_sql = R"(
-            INSERT OR IGNORE INTO utxos
-            (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            INSERT INTO utxos
+            (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, is_mature, snapshot_anchored, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?)
+            ON CONFLICT(txid, vout) DO UPDATE SET
+                is_spent = 0,
+                spent_txid = NULL,
+                spent_height = NULL,
+                wallet_id = excluded.wallet_id,
+                amount = excluded.amount,
+                script_pubkey = excluded.script_pubkey,
+                height = excluded.height,
+                is_coinbase = excluded.is_coinbase,
+                is_mature = excluded.is_mature,
+                snapshot_anchored = 1
         )";
 
         sqlite3_stmt* stmt = nullptr;
@@ -5762,6 +5829,7 @@ int WalletManager::rescanUtxoSet(
             sqlite3_bind_text(stmt, bind_index++, script_pubkey_hex.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.height));
             sqlite3_bind_int(stmt, bind_index++, e.is_coinbase ? 1 : 0);
+            sqlite3_bind_int(stmt, bind_index++, is_mature);
             sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
 
             if (sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0) {
@@ -5778,10 +5846,13 @@ int WalletManager::rescanUtxoSet(
     WLOG_INFO("rescanUtxoSet: recorded " + std::to_string(recorded) +
               " owned UTXO(s) from snapshot UTXO set");
 
-    // Advance the wallet's scanned-height watermark so a later block-replay
-    // rescan/catch-up starts ABOVE the snapshot height. Otherwise it would try
-    // to replay (or clear) pre-snapshot heights whose block bodies are absent,
-    // fighting the coins we just recorded. Advance-only: never regress.
+    // Advance the wallet's scanned-height watermark to the snapshot base so a
+    // later block-replay catch-up starts ABOVE the snapshot height instead of at
+    // 0. Replaying pre-snapshot heights (whose block bodies are absent on a
+    // fast-synced node) would re-spend/clear the coins we just recorded. Persist
+    // unconditionally to sync_meta (the catch-up keys off last_scanned_height,
+    // not the tip), and also bump the tip if the wallet is behind.
+    persistScanHeight(snapshot_height);
     if (snapshot_height > current_blockchain_height_) {
         setBlockchainHeight(snapshot_height);
     }

@@ -113,7 +113,12 @@ void WriteVec(std::vector<uint8_t>& out, const std::vector<uint8_t>& v) {
 bool ReadVec(const uint8_t*& p, const uint8_t* end, std::vector<uint8_t>& out) {
     uint64_t len = 0;
     if (!ReadCompactSize(p, end, len)) return false;
-    if (p + len > end) return false;
+    // SECURITY: compare against remaining bytes WITHOUT pointer arithmetic.
+    // `p + len > end` can overflow the pointer when `len` is attacker-controlled
+    // (up to 2^64-1), wrapping below `end` and passing the check, after which
+    // assign() reads/allocates out of bounds. `end - p` is the true remaining
+    // byte count (p <= end is guaranteed by ReadCompactSize).
+    if (len > static_cast<uint64_t>(end - p)) return false;
     out.assign(p, p + len);
     p += len;
     return true;
@@ -174,6 +179,16 @@ BundleDecodeError DeserializeShieldedBundle(const uint8_t* data,
 
     uint64_t num_spends = 0;
     if (!ReadCompactSize(p, end, num_spends)) return BundleDecodeError::Truncated;
+    // SECURITY (remote-OOM fix): cap the count against the bytes actually
+    // remaining BEFORE resize(). A ShieldedSpend serializes to at least
+    // kMinSpendBytes (nullifier 32 + anchor 32 + cv 33 + a 1-byte CompactSize
+    // zk_proof length), so a count larger than remaining/kMinSpendBytes cannot
+    // possibly be backed by data — reject instead of resizing to an
+    // attacker-chosen 2^64-scale vector.
+    constexpr uint64_t kMinSpendBytes = 32 + 32 + 33 + 1;
+    if (num_spends > static_cast<uint64_t>(end - p) / kMinSpendBytes) {
+        return BundleDecodeError::Truncated;
+    }
     out->spends.resize(static_cast<size_t>(num_spends));
     for (size_t i = 0; i < num_spends; ++i) {
         auto& s = out->spends[i];
@@ -185,6 +200,14 @@ BundleDecodeError DeserializeShieldedBundle(const uint8_t* data,
 
     uint64_t num_outputs = 0;
     if (!ReadCompactSize(p, end, num_outputs)) return BundleDecodeError::Truncated;
+    // SECURITY (remote-OOM fix): cap the count against remaining bytes BEFORE
+    // resize(). A ShieldedOutput serializes to at least kMinOutputBytes
+    // (commitment 32 + cv 33 + 1-byte CompactSize encrypted_note len + 1-byte
+    // CompactSize zk_proof len).
+    constexpr uint64_t kMinOutputBytes = 32 + 33 + 1 + 1;
+    if (num_outputs > static_cast<uint64_t>(end - p) / kMinOutputBytes) {
+        return BundleDecodeError::Truncated;
+    }
     out->outputs.resize(static_cast<size_t>(num_outputs));
     for (size_t i = 0; i < num_outputs; ++i) {
         auto& o = out->outputs[i];
