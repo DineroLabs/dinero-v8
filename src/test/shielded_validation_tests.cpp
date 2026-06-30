@@ -262,20 +262,16 @@ TEST_F(ShieldedValidationFixture, HistoricalAnchorAccepted) {
 
     // Tree is currently empty, so current root != old_root_at_100.
     // Without history, this would fail with AnchorInvalid (per the
-    // previous test). With history wired in, the anchor check must
-    // pass — the validator then proceeds to binding sig + proof
-    // checks. We compute a valid binding sig over the bundle so the
-    // validator reaches the proof-verify stage; the junk proof bytes
-    // get rejected there → ProofInvalid. That's the signal the anchor
-    // check passed.
+    // previous test). With history wired in, the anchor check (step 2)
+    // must pass — the validator then proceeds to the range-proof gate
+    // (step 3). This stub bundle carries no range proof, so post-
+    // inflation-fix it is rejected there with RangeProofInvalid. Reaching
+    // RangeProofInvalid (rather than AnchorInvalid) is precisely the
+    // signal that the historical anchor was accepted.
     ShieldedBundle bundle;
     bundle.spends.push_back(MakeSpendStub(0x40, old_root_at_100));
-    // Wave 2: validation skips binding-sig check for bundles without
-    // aggregated_range_proof, so leaving binding_sig zero-init is fine
-    // for these legacy fixtures. Wave 2 path is exercised by the new
-    // CrossBundleBalance tests.
     EXPECT_EQ(ValidateShieldedBundle(bundle, ctx),
-              ShieldedValidationError::ProofInvalid);
+              ShieldedValidationError::RangeProofInvalid);
 }
 
 TEST_F(ShieldedValidationFixture, AnchorNotInHistoryStillRejected) {
@@ -298,6 +294,10 @@ TEST_F(ShieldedValidationFixture, AnchorNotInHistoryStillRejected) {
 // proofs verify and whose value_balance is zero (pure transfer).
 // Returns the constructed bundle. Mutates `tree` to contain the
 // note being spent at index 0.
+// Fixed transparent-envelope sighash the happy bundle's binding sig is signed
+// over. Callers that validate the bundle must set ctx.tx_sighash to this value.
+const Hash kHappyBundleSighash = MakeHash(0x77, 0xF1);
+
 ShieldedBundle BuildHappyBundle(CommitmentTree& tree_ref) {
     const Hash sk         = MakeHash(0x70, 0xF1);
     const Hash spend_val  = ValueAsHash(100'000'000);  // 1 DIN
@@ -336,31 +336,37 @@ ShieldedBundle BuildHappyBundle(CommitmentTree& tree_ref) {
     auto output_proof = ProveOutput(ow, opi, nullptr);
     EXPECT_FALSE(output_proof.empty());
 
-    ShieldedBundle bundle;
-    bundle.value_balance = 0;  // pure transfer
-    ShieldedSpend s;
-    s.nullifier = spi.nullifier;
-    s.anchor    = spi.anchor;
-    s.zk_proof  = std::move(spend_proof);
-    bundle.spends.push_back(std::move(s));
+    // Wave 1B/2 + inflation fix: route through the real bundle builder so the
+    // bundle carries a non-empty aggregated range proof AND a valid Schnorr
+    // binding sig. Post-activation an empty range proof is rejected outright
+    // (RangeProofInvalid), so the legacy proof-less hand-assembly — which
+    // relied on the validator skipping both new checks — is no longer valid.
+    shielded::PlannedSpend ps;
+    ps.nullifier   = spi.nullifier;
+    ps.anchor      = spi.anchor;
+    ps.value_una   = 100'000'000;
+    ps.rcv         = MakeHash(0x74, 0xF1);
+    ps.spend_proof = std::move(spend_proof);
+    ps.nonce       = MakeHash(0x75, 0xF1);
 
-    ShieldedOutput o;
-    o.commitment      = opi.commitment;
-    o.encrypted_note  = std::vector<uint8_t>(96, 0xAA);
-    o.zk_proof        = std::move(output_proof);
-    bundle.outputs.push_back(std::move(o));
+    shielded::PlannedOutput po;
+    po.commitment     = opi.commitment;
+    po.value_una      = 100'000'000;
+    po.rcv            = MakeHash(0x76, 0xF1);
+    po.encrypted_note = std::vector<uint8_t>(96, 0xAA);
+    po.output_proof   = std::move(output_proof);
+    po.nonce          = MakeHash(0x78, 0xF1);
 
-    // v0 binding tag: SHA-256 of canonical bytes with binding_sig zeroed.
-    // Wave 2: validation skips binding-sig check for bundles without
-    // aggregated_range_proof, so leaving binding_sig zero-init is fine
-    // for these legacy fixtures. Wave 2 path is exercised by the new
-    // CrossBundleBalance tests.
+    ShieldedBundle bundle{};
+    EXPECT_EQ(shielded::BuildShieldedBundle({ps}, {po}, kHappyBundleSighash, bundle),
+              shielded::BundleBuildResult::Ok);
     return bundle;
 }
 
 TEST_F(ShieldedValidationFixture, HappyPathBundleAccepted) {
     auto bundle = BuildHappyBundle(tree);
     ctx.transparent_value_delta = 0;
+    ctx.tx_sighash              = kHappyBundleSighash;  // matches binding sig
     EXPECT_EQ(ValidateShieldedBundle(bundle, ctx),
               ShieldedValidationError::Ok);
 }
@@ -369,27 +375,22 @@ TEST_F(ShieldedValidationFixture, TamperedSpendProofRejected) {
     auto bundle = BuildHappyBundle(tree);
     ASSERT_FALSE(bundle.spends[0].zk_proof.empty());
     bundle.spends[0].zk_proof[10] ^= 0xFF;  // corrupt proof bytes
-    // Simulate a sophisticated attacker who also recomputes the
-    // binding tag after tampering — proof check is still the
-    // backstop, so we get ProofInvalid (not BindingSigInvalid).
-    // Wave 2: validation skips binding-sig check for bundles without
-    // aggregated_range_proof, so leaving binding_sig zero-init is fine
-    // for these legacy fixtures. Wave 2 path is exercised by the new
-    // CrossBundleBalance tests.
+    // Corrupting zk_proof leaves the range proof + binding sig (over cv /
+    // value_balance / sighash, not the zk_proof bytes) valid, so validation
+    // passes those gates and reaches the ZK proof-verify backstop -> ProofInvalid.
+    ctx.transparent_value_delta = 0;
+    ctx.tx_sighash              = kHappyBundleSighash;
     EXPECT_EQ(ValidateShieldedBundle(bundle, ctx),
               ShieldedValidationError::ProofInvalid);
 }
 
 TEST_F(ShieldedValidationFixture, ValueBalanceMismatchRejected) {
-    auto bundle = BuildHappyBundle(tree);
-    bundle.value_balance = 0;
-    ctx.transparent_value_delta = 1'000;  // disagree with bundle
-    // value_balance change invalidates the binding tag — recompute so
-    // the test exercises ValueBalanceMismatch, not BindingSigInvalid.
-    // Wave 2: validation skips binding-sig check for bundles without
-    // aggregated_range_proof, so leaving binding_sig zero-init is fine
-    // for these legacy fixtures. Wave 2 path is exercised by the new
-    // CrossBundleBalance tests.
+    auto bundle = BuildHappyBundle(tree);  // value_balance == 0 (pure transfer)
+    ctx.transparent_value_delta = 1'000;   // disagree with bundle
+    // transparent_value_delta is not part of the binding sighash, so the range
+    // proof + binding sig still verify; validation reaches the value-balance
+    // arithmetic -> ValueBalanceMismatch.
+    ctx.tx_sighash              = kHappyBundleSighash;
     EXPECT_EQ(ValidateShieldedBundle(bundle, ctx),
               ShieldedValidationError::ValueBalanceMismatch);
 }
