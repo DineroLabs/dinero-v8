@@ -67,6 +67,10 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "vault.withdraw",
     "vault.processnext",
     "vault.setoperator",
+    // Seeder process lifecycle — fork/execv a child process. Must NOT be callable
+    // by read-only RPC clients (security fix: seeder.start RCE vector).
+    "seeder.start",
+    "seeder.stop",
 };
 
 bool HttpRpcServer::isAdminMethod(const std::string& method) {
