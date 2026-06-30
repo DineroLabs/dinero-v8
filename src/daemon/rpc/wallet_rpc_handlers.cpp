@@ -111,39 +111,22 @@ Json::Value wallet_validateaddress(const Json::Value& params, dinero::WalletMana
                 // Convert 5-bit to 8-bit (exclude version byte and 6-byte checksum)
                 std::vector<uint8_t> data_slice(data.begin()+1, data.end()-6);
                 if (bech32::convertbits(program, data_slice, 5, 8, false)) {
-                    // BIP173: v0 must be bech32 with a 20 (P2WPKH) or 32 (P2WSH) byte program.
-                    // BIP350: v1..v16 (incl. Taproot v1) must be bech32m, program 2..40 bytes.
-                    bool v0_ok = (witver == 0 &&
-                                  encoding == bech32::Encoding::BECH32 &&
-                                  (program.size() == 20 || program.size() == 32));
-                    bool vN_ok = (witver >= 1 && witver <= 16 &&
-                                  encoding == bech32::Encoding::BECH32M &&
-                                  program.size() >= 2 && program.size() <= 40);
-
-                    if (v0_ok || vN_ok) {
+                    // BIP173: v0 must be 20 (P2WPKH) or 32 (P2WSH)
+                    // TODO: Add support for Bech32m (witver >= 1) when needed
+                    if (witver == 0 && (program.size() == 20 || program.size() == 32)) {
                         result["isvalid"] = true;
                         result["iswitness"] = true;
-                        result["isscript"] = (witver == 0 && program.size() == 32);
+                        result["isscript"] = (program.size() == 32);
                         result["witness_version"] = witver;
-
+                        
                         // Convert program to hex
                         std::ostringstream oss;
                         for (uint8_t byte : program) {
                             oss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(byte);
                         }
                         result["witness_program"] = oss.str();
-
-                        // Canonical scriptPubKey: OP_<witver> OP_PUSHBYTES_<n> <program>.
-                        // OP_0 = 0x00; OP_1..OP_16 = 0x51..0x60. Taproot => 5120<program>.
-                        std::ostringstream spk;
-                        int op = (witver == 0) ? 0x00 : (0x50 + witver);
-                        spk << std::hex << std::setfill('0') << std::setw(2) << op;
-                        spk << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(program.size());
-                        for (uint8_t byte : program) {
-                            spk << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(byte);
-                        }
-                        result["scriptPubKey"] = spk.str();
                     } else if (witver >= 1) {
+                        // Explicitly reject Bech32m (witver >= 1) for now
                         result["isvalid"] = false;
                         result["witness_version"] = witver;
                         AddressValidationMetrics::getInstance().recordFailure(
