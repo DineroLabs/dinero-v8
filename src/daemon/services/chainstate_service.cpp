@@ -34,6 +34,8 @@
 #include "consensus/filter_commitment.h"  // DNRF coinbase filter commitment validation
 #include "consensus/adapters/wallet_utxo_adapter.h"  // v2.2.0: Consensus interface adapter (kept for wallet)
 #include "consensus/consensus_utxo_set.h"  // Phase 2: Pure in-memory UTXO set (owns forest)
+#include "daemon/services/wallet_service.h"  // Snapshot wallet rescan: reach active wallet
+#include "wallet/wallet_manager.h"            // Snapshot wallet rescan: rescanUtxoSet
 #include "storage/persistent_utxo_adapter.h"  // Phase 2: Bridges consensus to ChainDB
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: For forest rebuild from UTXO set
 #include "consensus/utreexo_activation.h"  // Phase 3.2: For IsUtreexoActive() in reorg sanity check
@@ -9123,6 +9125,44 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             if (ctx->prune) {
                 ctx->prune->enableHeadersOnlyMode();
                 logger_->info("[LoadSnapshot] PruneService → headers-only (no block data stored)");
+            }
+        }
+
+        // Make snapshot-loaded coins visible to the active wallet.
+        //
+        // The snapshot's pre-base coins have no block bodies (the node is in
+        // headers-only mode), so the wallet's block-replay rescan can never see
+        // them. Scan the just-loaded in-memory consensus UTXO set directly and
+        // record any coins owned by the wallet. This runs once per snapshot load
+        // and is idempotent (INSERT OR IGNORE), covering both the loadtxoutset
+        // RPC and the assumeutxo auto-bootstrap (both converge on LoadSnapshot).
+        if (auto* ctx = DaemonContext::instance()) {
+            if (ctx->wallet && ctx->wallet->hasActiveWallet() && consensus_utxo_set_) {
+                try {
+                    auto& wallet = ctx->wallet->get();
+                    const auto& utxos = consensus_utxo_set_->GetUTXOs();
+                    const uint32_t snap_height = header.block_height;
+                    int recorded = wallet.rescanUtxoSet(
+                        [&](const std::function<void(const dinero::WalletManager::UtxoSetEntry&)>& sink) {
+                            for (const auto& [outpoint, entry] : utxos) {
+                                dinero::WalletManager::UtxoSetEntry e;
+                                // Canonical txid hex matches the wallet's block-replay
+                                // convention (TxId::AsUint256().GetHex()).
+                                e.txid_hex = outpoint.txid.AsUint256().GetHex();
+                                e.vout = outpoint.vout;
+                                e.amount_una = entry.value.GetUna();
+                                e.script_pubkey = entry.scriptPubKey;
+                                e.height = entry.height;
+                                e.is_coinbase = entry.isCoinbase;
+                                sink(e);
+                            }
+                        },
+                        snap_height);
+                    logger_->info("[LoadSnapshot] Wallet UTXO-set rescan recorded " +
+                                 std::to_string(recorded) + " owned coin(s) from snapshot set");
+                } catch (const std::exception& we) {
+                    logger_->warning(std::string("[LoadSnapshot] Wallet UTXO-set rescan failed: ") + we.what());
+                }
             }
         }
 
