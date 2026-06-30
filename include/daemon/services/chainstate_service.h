@@ -36,6 +36,7 @@ namespace dinero {
 // Phase 39 Step 2: Forward declaration (header deleted)
 class ChainManager;
 class BlockStorage;
+class WalletManager;  // Snapshot wallet rescan (see RescanWalletFromSnapshotUTXOs)
 struct FilePosition;  // #309: storage/block_storage.h
 
 namespace consensus {
@@ -128,6 +129,15 @@ public:
     // Phase 2: Direct access to consensus UTXO set
     consensus::IConsensusUTXOSet* GetConsensusUTXOSet() { return consensus_utxo_set_.get(); }
     const consensus::IConsensusUTXOSet* GetConsensusUTXOSet() const { return consensus_utxo_set_.get(); }
+
+    // Scan the in-memory snapshot (AssumeUTXO) UTXO set for coins owned by
+    // `wallet` and record them into the wallet's local UTXO table, advancing the
+    // wallet's scan watermark to `base_height`. Complements the block-replay
+    // rescan, which cannot see pre-base coins (no block bodies in headers-only
+    // mode). Idempotent. Returns the number of owned coins recorded, or -1 if no
+    // snapshot UTXO set is loaded. Used by both the LoadSnapshot completion hook
+    // and the wallet-opened-after-snapshot trigger in WalletService.
+    int RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height);
 
     // v7 shielded pool state accessors.
     consensus::shielded::CommitmentTree* GetShieldedCommitmentTree() { return &shielded_tree_; }

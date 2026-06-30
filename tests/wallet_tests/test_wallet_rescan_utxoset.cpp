@@ -123,6 +123,61 @@ int main() {
 
     fs::remove_all(dir);
 
+    // ────────────────────────────────────────────────────────────────────────
+    // ORDERING scenario: snapshot loaded FIRST while the wallet has no matching
+    // script (mirrors a node fast-syncing wallet-absent), THEN the wallet
+    // registers its watch_script. Only the SECOND trigger (rescan after the
+    // script exists) makes the pre-snapshot coin visible — the node is
+    // headers-only below the base, so block-replay can never recover it.
+    // This is what WalletService runs when a wallet becomes active while an
+    // AssumeUTXO snapshot is already loaded.
+    // ────────────────────────────────────────────────────────────────────────
+    std::cout << "\n--- ordering: snapshot loaded before wallet registers script ---" << std::endl;
+    fs::path dir2 = fs::temp_directory_path() /
+        ("rescan_utxoset_order_" + std::to_string(::getpid()));
+    fs::remove_all(dir2);
+    fs::create_directories(dir2);
+
+    try {
+        WalletManager wallet(dir2);
+        wallet.create("late_wallet");
+        wallet.open("late_wallet");
+
+        auto producer = [&](const std::function<void(const WalletManager::UtxoSetEntry&)>& sink) {
+            WalletManager::UtxoSetEntry owned;
+            owned.txid_hex = "3333333333333333333333333333333333333333333333333333333333333333";
+            owned.vout = 0;
+            owned.amount_una = kAmount;
+            owned.script_pubkey = owned_spk;
+            owned.height = kCoinHeight;
+            owned.is_coinbase = false;
+            sink(owned);
+        };
+
+        // FIRST snapshot-load while the wallet has no matching watch_script:
+        // exactly what the LoadSnapshot hook does when the wallet isn't watching
+        // this script yet. Nothing should be recorded.
+        int early = wallet.rescanUtxoSet(producer, kSnapshotHeight);
+        check(early == 0, "snapshot rescan before watch_script records nothing");
+        check(wallet.getBalance().utxo_count == 0, "coin invisible until script registered");
+
+        // Wallet now registers its script (open/import/restore completes).
+        wallet.addWatchScript(owned_spk, "m/86'/0'/0'/0/0", false);
+
+        // SECOND trigger (the new WalletService path): rescan the already-loaded
+        // snapshot UTXO set now that the wallet is watching the script.
+        int late = wallet.rescanUtxoSet(producer, kSnapshotHeight);
+        check(late == 1, "second trigger after script registration records the coin");
+        check(wallet.getBalance().utxo_count == 1, "coin now visible to late-opened wallet");
+        check(wallet.getBalance().total > 0.0, "balance non-zero for late-opened wallet");
+
+    } catch (const std::exception& e) {
+        std::cerr << "  ✗ FAIL: exception: " << e.what() << std::endl;
+        ++g_failures;
+    }
+
+    fs::remove_all(dir2);
+
     if (g_failures == 0) {
         std::cout << "\n✓ All rescanUtxoSet checks passed." << std::endl;
         return 0;

@@ -8325,6 +8325,31 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
     return result;
 }
 
+int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height) {
+    if (!consensus_utxo_set_) {
+        return -1;  // no in-memory snapshot UTXO set loaded
+    }
+
+    // The concrete ConsensusUTXOSet exposes the raw OutPoint→UTXOEntry map; the
+    // coins are keyed by TxId, whose AsUint256().GetHex() is the same canonical
+    // txid string the wallet's block-replay rescan uses for spent-marking.
+    const auto& utxos = consensus_utxo_set_->GetUTXOs();
+    return wallet.rescanUtxoSet(
+        [&](const std::function<void(const dinero::WalletManager::UtxoSetEntry&)>& sink) {
+            for (const auto& [outpoint, entry] : utxos) {
+                dinero::WalletManager::UtxoSetEntry e;
+                e.txid_hex = outpoint.txid.AsUint256().GetHex();
+                e.vout = outpoint.vout;
+                e.amount_una = entry.value.GetUna();
+                e.script_pubkey = entry.scriptPubKey;
+                e.height = entry.height;
+                e.is_coinbase = entry.isCoinbase;
+                sink(e);
+            }
+        },
+        base_height);
+}
+
 consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::filesystem::path& snapshot_path) {
     using namespace consensus;
     // rc24.1 single-flight: LoadSnapshot mutates the consensus UTXO set in place
@@ -9137,29 +9162,14 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // and is idempotent (INSERT OR IGNORE), covering both the loadtxoutset
         // RPC and the assumeutxo auto-bootstrap (both converge on LoadSnapshot).
         if (auto* ctx = DaemonContext::instance()) {
-            if (ctx->wallet && ctx->wallet->hasActiveWallet() && consensus_utxo_set_) {
+            if (ctx->wallet && ctx->wallet->hasActiveWallet()) {
                 try {
-                    auto& wallet = ctx->wallet->get();
-                    const auto& utxos = consensus_utxo_set_->GetUTXOs();
-                    const uint32_t snap_height = header.block_height;
-                    int recorded = wallet.rescanUtxoSet(
-                        [&](const std::function<void(const dinero::WalletManager::UtxoSetEntry&)>& sink) {
-                            for (const auto& [outpoint, entry] : utxos) {
-                                dinero::WalletManager::UtxoSetEntry e;
-                                // Canonical txid hex matches the wallet's block-replay
-                                // convention (TxId::AsUint256().GetHex()).
-                                e.txid_hex = outpoint.txid.AsUint256().GetHex();
-                                e.vout = outpoint.vout;
-                                e.amount_una = entry.value.GetUna();
-                                e.script_pubkey = entry.scriptPubKey;
-                                e.height = entry.height;
-                                e.is_coinbase = entry.isCoinbase;
-                                sink(e);
-                            }
-                        },
-                        snap_height);
-                    logger_->info("[LoadSnapshot] Wallet UTXO-set rescan recorded " +
-                                 std::to_string(recorded) + " owned coin(s) from snapshot set");
+                    int recorded = RescanWalletFromSnapshotUTXOs(ctx->wallet->get(),
+                                                                 header.block_height);
+                    if (recorded >= 0) {
+                        logger_->info("[LoadSnapshot] Wallet UTXO-set rescan recorded " +
+                                     std::to_string(recorded) + " owned coin(s) from snapshot set");
+                    }
                 } catch (const std::exception& we) {
                     logger_->warning(std::string("[LoadSnapshot] Wallet UTXO-set rescan failed: ") + we.what());
                 }
