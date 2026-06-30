@@ -1877,7 +1877,12 @@ MainWindow::MainWindow(QWidget* parent)
 
   // #295: visible timeout on the startup wait. If RPC never comes up the
   // user previously stared at "Connecting..." forever with no explanation.
-  QTimer::singleShot(60000, this, &MainWindow::onStartupWatchdogTimeout);
+  // Bumped 60s -> 100s: a fast-synced node loading all wallets + the catch-up
+  // scan can legitimately take ~80s to be RPC-ready, and the old 60s watchdog
+  // nagged with "Still Waiting for Daemon" before it connected. The handler
+  // no-ops if already connected, so this only delays the alert for a GENUINE
+  // hang (now after 100s instead of 60s).
+  QTimer::singleShot(100000, this, &MainWindow::onStartupWatchdogTimeout);
 
   // Cmd+K dashboard. The AI assistant surface is temporarily hidden by
   // kShowAiAssistantPanel, but the shortcut remains the dashboard entry point.
@@ -11918,12 +11923,12 @@ void MainWindow::onStartupWatchdogTimeout() {
   }
   const QString logPath = QDir(datadir).filePath("debug.log");
 
-  qWarning() << "Startup watchdog: no daemon RPC connection after 60s";
+  qWarning() << "Startup watchdog: no daemon RPC connection after 100s";
 
   QMessageBox box(this);
   box.setIcon(QMessageBox::Warning);
   box.setWindowTitle("Still Waiting for Daemon");
-  box.setText("Dinero has been waiting 60 seconds for the daemon (dinerod) "
+  box.setText("Dinero has been waiting 100 seconds for the daemon (dinerod) "
               "and is still not connected — the daemon may have failed.");
   box.setInformativeText(
     "Common causes:\n"
@@ -11941,9 +11946,9 @@ void MainWindow::onStartupWatchdogTimeout() {
   if (box.clickedButton() == showLogBtn) {
     QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
     // Re-arm: the user is investigating, keep the watchdog alive.
-    QTimer::singleShot(60000, this, &MainWindow::onStartupWatchdogTimeout);
+    QTimer::singleShot(100000, this, &MainWindow::onStartupWatchdogTimeout);
   } else if (box.clickedButton() == waitBtn) {
-    QTimer::singleShot(60000, this, &MainWindow::onStartupWatchdogTimeout);
+    QTimer::singleShot(100000, this, &MainWindow::onStartupWatchdogTimeout);
   } else {
     close();
   }
@@ -12003,6 +12008,11 @@ bool MainWindow::maybeShowP2PNetworkNotice() {
   }
   return true;
 }
+
+// Defined in main.cpp: sweep any orphaned dinerod/dinero-seeder squatting the
+// RPC port (127.0.0.1:20998). Used by the daemon-restart retry below so a held
+// port can't make every retry fail and surface the "Daemon Failed" dialog.
+void killStaleDinerodByPort();
 
 bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   if (daemonProcess_ && daemonProcess_->state() == QProcess::Running) {
@@ -12170,6 +12180,11 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
         qWarning() << "Daemon exited (code" << exitCode << ") before RPC came up — retry"
                    << daemonLaunchRetries_ << "of" << kMaxDaemonLaunchRetries
                    << "in 2.5s (likely a transient datadir-lock / port race)";
+        // Our daemon exited non-zero before RPC ever came up — almost always an
+        // orphaned dinerod/dinero-seeder still squatting RPC port 20998 (#295).
+        // We are NOT connected here, so the port-holder is blocking us (not a
+        // healthy daemon to adopt); clear it so the retry below can actually bind.
+        killStaleDinerodByPort();
         if (lblConnectionStatus_) {
           lblConnectionStatus_->setText("Starting daemon… (retry)");
           lblConnectionStatus_->setStyleSheet(headerPillStyle());
