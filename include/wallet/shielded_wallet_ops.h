@@ -196,8 +196,14 @@ struct AttachShieldResult {
  *   - Witness fields LEFT UNSET (sign transparent inputs AFTER this call;
  *     BIP143 sighash does not commit to shielded_bundle_bytes, so order is OK).
  */
+// `cv_bound`: when true, emit cv-bound (0x03/0x04) proofs that bind the
+// Pedersen value commitment to the in-circuit note value (audit Critical #1).
+// The caller decides this from the tx's expected mining height vs
+// Params().shielded_cv_binding_activation_height (see the Attach* wrappers).
+// Default false = legacy (0x01/0x02), correct while activation is inert.
 AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
-                                          uint64_t value_una);
+                                          uint64_t value_una,
+                                          bool cv_bound = false);
 
 /**
  * Wallet-manager-backed wrapper around `BuildShieldBundleForTx` that ALSO
@@ -258,7 +264,8 @@ struct AttachUnshieldResult {
  */
 AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
                                               const UnshieldNoteInput& note,
-                                              uint64_t fee_una);
+                                              uint64_t fee_una,
+                                              bool cv_bound = false);
 
 /**
  * Wallet-bound wrapper around `BuildUnshieldBundleForTx`. Looks up the
@@ -325,7 +332,8 @@ struct AttachTransferResult {
  */
 AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
                                               const UnshieldNoteInput& note,
-                                              uint64_t fee_una);
+                                              uint64_t fee_una,
+                                              bool cv_bound = false);
 
 /**
  * Wallet-bound wrapper. Looks up the note at `note_leaf_index`, builds
@@ -390,7 +398,8 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
     dinero::Transaction& tx,
     const std::vector<UnshieldNoteInput>& spends,
     const std::vector<uint64_t>& output_values,
-    uint64_t fee_una);
+    uint64_t fee_una,
+    bool cv_bound = false);
 
 /**
  * Wallet-bound wrapper. Looks up each note at the supplied leaf indices,
@@ -471,7 +480,8 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     const AddressedRecipient& recipient,
     uint64_t change_value_una,
     uint64_t fee_una,
-    const std::array<uint8_t, 512>* recipient_memo = nullptr);
+    const std::array<uint8_t, 512>* recipient_memo = nullptr,
+    bool cv_bound = false);
 
 /**
  * Wallet-bound wrapper. Looks up `note_leaf_indices`, decodes
