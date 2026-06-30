@@ -219,6 +219,40 @@ bool WalletService::Start() {
             EnsureRuntimeWalletBindings();
         }
 
+        // Snapshot UTXO-set rescan for a wallet that becomes active AFTER an
+        // AssumeUTXO snapshot was already loaded (e.g. fast-sync the node, THEN
+        // open/import/restore the wallet). In that order the LoadSnapshot hook
+        // ran wallet-absent, so the pre-base coins were never recorded — and the
+        // block-replay catch-up below cannot recover them because the node is
+        // headers-only with no block bodies under the snapshot base height.
+        //
+        // Gate: only when an AssumeUTXO snapshot is loaded (IsAssumeUTXOActive()),
+        // never on a normal full node with real block bodies. Idempotent
+        // (INSERT OR IGNORE + advance-only watermark), so a redundant run on a
+        // wallet that was already present at LoadSnapshot time is harmless.
+        if (wallet_mgr_->hasActiveWallet() && chainstate_ && chainstate_->IsAssumeUTXOActive()) {
+            try {
+                uint32_t base_height = chainstate_->GetAssumeUTXOBaseHeight();
+                int recorded = chainstate_->RescanWalletFromSnapshotUTXOs(*wallet_mgr_, base_height);
+                if (recorded > 0) {
+                    logger_interface_->info("[WalletService] Snapshot UTXO-set rescan recorded "
+                        + std::to_string(recorded) + " owned coin(s) from AssumeUTXO base height "
+                        + std::to_string(base_height));
+                }
+                // The rescan advanced the wallet's scan watermark to the snapshot
+                // base; refresh wallet_scan_height so the block-replay catch-up
+                // below starts ABOVE the base instead of futilely replaying
+                // pre-base heights whose block bodies are absent.
+                uint32_t advanced = wallet_mgr_->getCurrentBlockchainHeight();
+                if (advanced > wallet_scan_height) {
+                    wallet_scan_height = advanced;
+                    needs_catchup_scan = (wallet_scan_height < actual_blockchain_height);
+                }
+            } catch (const std::exception& e) {
+                logger_interface_->warning(std::string("[WalletService] Snapshot UTXO-set rescan failed: ") + e.what());
+            }
+        }
+
         // Trigger catch-up scan if wallet is behind blockchain
         // This happens AFTER wallet is opened so rescan has an active wallet
         // We manually trigger WalletNotify for each missed block

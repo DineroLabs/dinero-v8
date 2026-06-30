@@ -5672,6 +5672,123 @@ bool WalletManager::rescanBlockchain(int start_height,
     return true;
 }
 
+// ============================================================================
+// UTXO-set rescan (AssumeUTXO / snapshot bootstrap)
+// ============================================================================
+// Complements rescanBlockchain(): the block-replay rescan matches outputs from
+// block transaction bodies, but a snapshot-bootstrapped node has no pre-snapshot
+// block bodies, so coins received before the snapshot height are invisible to
+// the wallet. This scans the loaded chainstate UTXO set directly and records any
+// coins owned by this wallet, reusing the exact insert logic of rescanBlockchain.
+// ============================================================================
+int WalletManager::rescanUtxoSet(
+    const std::function<void(const std::function<void(const UtxoSetEntry&)>&)>& produce,
+    uint32_t snapshot_height) {
+    if (!db_) {
+        WLOG_ERR("rescanUtxoSet: wallet database not initialized");
+        return 0;
+    }
+    if (current_wallet_id_ == -1) {
+        WLOG_WARN("rescanUtxoSet: no active wallet (current_wallet_id_ == -1)");
+        return 0;
+    }
+
+    // Load watch_scripts into memory for fast matching (same source as the
+    // block-replay rescan at rescanBlockchain()).
+    std::set<std::vector<uint8_t>> watch_scripts;
+    {
+        const char* sql = "SELECT script_pubkey FROM watch_scripts";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                const void* blob = sqlite3_column_blob(stmt, 0);
+                int blob_size = sqlite3_column_bytes(stmt, 0);
+                if (blob && blob_size > 0) {
+                    watch_scripts.emplace(
+                        static_cast<const uint8_t*>(blob),
+                        static_cast<const uint8_t*>(blob) + blob_size);
+                }
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    if (watch_scripts.empty()) {
+        WLOG_WARN("rescanUtxoSet: no watch_scripts registered - nothing to match");
+        // Still advance the watermark below so catch-up starts above the snapshot.
+    }
+
+    WLOG_INFO("rescanUtxoSet: scanning snapshot UTXO set against " +
+              std::to_string(watch_scripts.size()) + " watch script(s)");
+
+    int recorded = 0;
+    exec(db_, "BEGIN TRANSACTION");
+
+    // Per-coin sink: identical insert path to rescanBlockchain (hex-encode the
+    // scriptPubKey, extractAddressFromScript, INSERT OR IGNORE INTO utxos).
+    auto sink = [&](const UtxoSetEntry& e) {
+        if (watch_scripts.find(e.script_pubkey) == watch_scripts.end()) {
+            return;  // not ours
+        }
+
+        std::string script_pubkey_hex;
+        script_pubkey_hex.reserve(e.script_pubkey.size() * 2);
+        static constexpr char kHex[] = "0123456789abcdef";
+        for (uint8_t b : e.script_pubkey) {
+            script_pubkey_hex.push_back(kHex[(b >> 4) & 0x0F]);
+            script_pubkey_hex.push_back(kHex[b & 0x0F]);
+        }
+
+        std::string address = extractAddressFromScript(e.script_pubkey);
+        if (address.empty()) {
+            // Preserve row integrity even for unknown script templates.
+            address = "script:" + script_pubkey_hex.substr(0, 16);
+        }
+
+        const char* insert_sql = R"(
+            INSERT OR IGNORE INTO utxos
+            (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        )";
+
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            int bind_index = 1;
+            sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
+            sqlite3_bind_text(stmt, bind_index++, e.txid_hex.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.vout));
+            sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, bind_index++, static_cast<int64_t>(e.amount_una));
+            sqlite3_bind_text(stmt, bind_index++, script_pubkey_hex.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.height));
+            sqlite3_bind_int(stmt, bind_index++, e.is_coinbase ? 1 : 0);
+            sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
+
+            if (sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0) {
+                recorded++;
+            }
+            sqlite3_finalize(stmt);
+        }
+    };
+
+    produce(sink);
+
+    exec(db_, "COMMIT");
+
+    WLOG_INFO("rescanUtxoSet: recorded " + std::to_string(recorded) +
+              " owned UTXO(s) from snapshot UTXO set");
+
+    // Advance the wallet's scanned-height watermark so a later block-replay
+    // rescan/catch-up starts ABOVE the snapshot height. Otherwise it would try
+    // to replay (or clear) pre-snapshot heights whose block bodies are absent,
+    // fighting the coins we just recorded. Advance-only: never regress.
+    if (snapshot_height > current_blockchain_height_) {
+        setBlockchainHeight(snapshot_height);
+    }
+
+    return recorded;
+}
+
 void WalletManager::loadBlockchainHeight() {
     if (!db_) {
         WLOG_WARN("Cannot load blockchain height: database not initialized");

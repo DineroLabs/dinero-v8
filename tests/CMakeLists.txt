@@ -4108,6 +4108,36 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet_tests/test_wallet_determinism.cpp)
   message(STATUS "  ✓ Phase A3 test registered: test_wallet_determinism")
 endif()
 
+# Snapshot/AssumeUTXO UTXO-set rescan visibility regression
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet_tests/test_wallet_rescan_utxoset.cpp)
+  add_executable(test_wallet_rescan_utxoset
+    tests/wallet_tests/test_wallet_rescan_utxoset.cpp
+    src/common/logger.cpp
+    src/daemon/lightning_stubs.cpp
+    tests/stubs/mempool_test_stubs.cpp
+  )
+  target_link_libraries(test_wallet_rescan_utxoset PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::Crypto
+    secp256k1
+    RocksDB::rocksdb
+    sqlite3
+  )
+  target_link_directories(test_wallet_rescan_utxoset PRIVATE /opt/homebrew/lib)
+  if(APPLE)
+    target_link_libraries(test_wallet_rescan_utxoset PRIVATE "-framework Security")
+  endif()
+  target_include_directories(test_wallet_rescan_utxoset PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME WalletRescanUtxoSet COMMAND test_wallet_rescan_utxoset)
+  message(STATUS "  ✓ Snapshot rescan test registered: test_wallet_rescan_utxoset")
+endif()
+
 # ════════════════════════════════════════════════════════════════════════════
 # Wallet Sidecar Migration Idempotence Test (Week 1 migration safety gate)
 # Verifies wallet.conf -> wallet_state.db one-time migration is idempotent

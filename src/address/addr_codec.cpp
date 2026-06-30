@@ -79,6 +79,47 @@ std::string EncodeBech32Address(const Destination& d, const std::string& hrp) {
     return Address::createBech32P2WPKH(d.pubkey_hash, hrp);
 }
 
+WitnessAddressInfo DecodeWitnessAddress(const std::string& s, const std::string& hrp) {
+    WitnessAddressInfo info;
+
+    // bech32::Decode validates HRP match, checksum, program length bounds, and
+    // detects bech32 vs bech32m encoding.
+    auto decoded = bech32::Decode(hrp, s);
+    if (!decoded.has_value()) {
+        return info;  // HRP mismatch, bad checksum, or malformed program
+    }
+
+    const int witver = decoded->witver;
+    const std::vector<uint8_t>& program = decoded->program;
+    const bech32::Encoding enc = decoded->encoding;
+
+    if (witver == 0) {
+        // SegWit v0: P2WPKH (20) or P2WSH (32), must be bech32 (not bech32m).
+        if (enc != bech32::Encoding::BECH32) return info;
+        if (program.size() != 20 && program.size() != 32) return info;
+    } else if (witver >= 1 && witver <= 16) {
+        // SegWit v1..v16 (incl. Taproot v1): must be bech32m, program 2..40 bytes.
+        if (enc != bech32::Encoding::BECH32M) return info;
+        if (program.size() < 2 || program.size() > 40) return info;
+    } else {
+        return info;  // invalid witness version
+    }
+
+    // Canonical scriptPubKey: OP_<witver> OP_PUSHBYTES_<n> <program>.
+    // OP_0 = 0x00; OP_1..OP_16 = 0x51..0x60. For taproot this yields 0x5120<program>.
+    info.script_pubkey.reserve(2 + program.size());
+    info.script_pubkey.push_back(witver == 0 ? static_cast<uint8_t>(0x00)
+                                             : static_cast<uint8_t>(0x50 + witver));
+    info.script_pubkey.push_back(static_cast<uint8_t>(program.size()));
+    info.script_pubkey.insert(info.script_pubkey.end(), program.begin(), program.end());
+
+    info.is_valid = true;
+    info.is_witness = true;
+    info.witness_version = witver;
+    info.witness_program = program;
+    return info;
+}
+
 ParsedAddress DecodeAddressAuto(const std::string& s) {
     const auto& hrp = HrpForActiveNetworkRef();
 

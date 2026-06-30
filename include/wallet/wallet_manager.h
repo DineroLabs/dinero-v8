@@ -14,6 +14,7 @@
 #endif
 #include <map>
 #include <set>  // Phase 35: UTXO locking
+#include <functional>  // rescanUtxoSet producer/sink
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Event-driven wallet updates
 #include "wallet/keystore.h"  // Week 1 Day 5: WalletKeyStore interface
 #include "wallet/key_identity.h"  // Week 1 Day 5: KeyID type
@@ -536,6 +537,32 @@ public:
                           int gap_limit = 20,
                           dinero::ChainDB* chain_db = nullptr,
                           dinero::BlockStorage* block_storage = nullptr);
+
+    // A single UTXO-set coin to match against this wallet's watch_scripts.
+    struct UtxoSetEntry {
+        std::string txid_hex;                 // canonical txid hex (consensus convention)
+        uint32_t vout = 0;
+        uint64_t amount_una = 0;              // value in una
+        std::vector<uint8_t> script_pubkey;   // raw scriptPubKey bytes
+        uint32_t height = 0;
+        bool is_coinbase = false;
+    };
+
+    // Rescan a UTXO set (e.g. an AssumeUTXO snapshot's chainstate) for coins
+    // owned by this wallet, complementing the block-replay rescan which cannot
+    // see pre-snapshot coins (their block bodies are absent).
+    //
+    // `produce` is invoked with a sink callback; call sink(entry) once per coin
+    // in the set. Coins whose scriptPubKey is in watch_scripts are recorded into
+    // the local utxos table (idempotent: INSERT OR IGNORE on the PRIMARY KEY, so
+    // re-running is safe). If snapshot_height exceeds the wallet's current scan
+    // height, the watermark is advanced so a later block-replay rescan starts
+    // above the snapshot instead of clearing/refetching pre-snapshot heights.
+    //
+    // Returns the number of owned UTXOs newly recorded.
+    int rescanUtxoSet(
+        const std::function<void(const std::function<void(const UtxoSetEntry&)>&)>& produce,
+        uint32_t snapshot_height = 0);
 
     // Transaction recording for real-time updates
     // Phase 36: Added height parameter for reorg handling

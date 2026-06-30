@@ -38,6 +38,7 @@
 #include "consensus/pq/p2mr_consensus.h"  // Phase 10: IsP2MRScript
 #include "consensus/script_interpreter.h" // Phase 10: SignatureHashTaproot, ScriptExecutionContext
 #include "wallet/p2mr_address.h"          // Phase 10: DecodeP2MRAddress for address validation
+#include "address/addr_codec.h"           // Taproot/bech32m-aware validateaddress decode
 #include <openssl/crypto.h>               // Phase 10: OPENSSL_cleanse
 #include <cstring>                        // Phase 10: std::memcpy for master key stamp
 #include "wallet/coin_selection.h"        // Phase 1.1: Frozen coin selection engine
@@ -2237,15 +2238,32 @@ din::Json rpc_context_wallet_validateaddress(const ExecutionContext& ctx, const 
 
     std::string address = params[0].as<std::string>();
 
-    // Basic validation (simplified - should use proper bech32 decoder)
-    bool valid = address.length() >= 20 &&
-                 (address.substr(0, 4) == "din1" || address.substr(0, 5) == "tdin1");
+    // Proper bech32/bech32m decode for the active network. Handles SegWit v0
+    // (P2WPKH/P2WSH) and v1 Taproot (BIP350/bech32m), populating scriptPubKey.
+    const std::string& hrp = dinero::HrpForActiveNetworkRef();
+    dinero::WitnessAddressInfo info = dinero::DecodeWitnessAddress(address, hrp);
 
-    result["isvalid"] = valid;
+    result["isvalid"] = info.is_valid;
     result["address"] = address;
+    result["ismine"] = false;
+
+    if (info.is_valid) {
+        auto to_hex = [](const std::vector<uint8_t>& v) {
+            std::string out;
+            out.reserve(v.size() * 2);
+            static constexpr char kHex[] = "0123456789abcdef";
+            for (uint8_t b : v) { out.push_back(kHex[(b >> 4) & 0xF]); out.push_back(kHex[b & 0xF]); }
+            return out;
+        };
+        result["iswitness"] = info.is_witness;
+        result["isscript"] = (info.witness_version == 0 && info.witness_program.size() == 32);
+        result["witness_version"] = info.witness_version;
+        result["witness_program"] = to_hex(info.witness_program);
+        // For taproot this is 5120<32-byte program>.
+        result["scriptPubKey"] = to_hex(info.script_pubkey);
+    }
 
     if (!ctx.daemon || !ctx.daemon->wallet) {
-        result["ismine"] = false;
         return result;
     }
 
