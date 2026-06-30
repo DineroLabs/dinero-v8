@@ -8685,9 +8685,26 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             file.read(reinterpret_cast<char*>(&script_len), sizeof(script_len));
             sha256.Write(reinterpret_cast<const uint8_t*>(&script_len), sizeof(script_len));
 
+            // SECURITY (OOM fix): bound the per-UTXO scriptPubKey length and verify
+            // the length read itself succeeded. A truncated/corrupt snapshot could
+            // otherwise present a near-4GB length here, sizing a zero-filled vector
+            // and exhausting memory before any read failure is observed. A valid
+            // scriptPubKey cannot exceed MAX_SCRIPT_SIZE; cap generously at 10 KiB.
+            constexpr uint32_t kMaxSnapshotScriptLen = 10 * 1024;
+            if (!file || script_len > kMaxSnapshotScriptLen) {
+                result.error_message =
+                    "Snapshot UTXO scriptPubKey length invalid or exceeds cap";
+                return result;
+            }
+
             // Read scriptPubKey
             std::vector<uint8_t> spk(script_len);
             file.read(reinterpret_cast<char*>(spk.data()), script_len);
+            if (!file) {
+                result.error_message =
+                    "Snapshot truncated while reading UTXO scriptPubKey";
+                return result;
+            }
             sha256.Write(reinterpret_cast<const uint8_t*>(spk.data()), script_len);
 
             // Read height
