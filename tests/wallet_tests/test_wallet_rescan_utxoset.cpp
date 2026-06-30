@@ -111,10 +111,21 @@ int main() {
         check(wallet.getCurrentBlockchainHeight() == kSnapshotHeight,
               "scan-height watermark advanced to snapshot height");
 
-        // Idempotency: re-running records nothing new and does not double-count.
+        // Idempotency: re-running must never create a duplicate row or
+        // double-count the balance. Under PR #338 the sink upserts
+        // (ON CONFLICT(txid, vout) DO UPDATE SET is_spent=0, snapshot_anchored=1,
+        // refresh authoritative fields) instead of the old INSERT OR IGNORE, so a
+        // second pass UPDATES the SAME row in place — sqlite3_changes() reports 1
+        // changed row, which is intentional (it un-spends/refreshes a coin that
+        // may have been mis-flagged is_spent=1 by a prior block-replay rescan).
+        // The invariant that actually matters is no duplication: the coin is the
+        // SAME row, so utxo_count and the total balance are unchanged.
+        const double bal_total_before = bal.total;
         int recorded2 = wallet.rescanUtxoSet(producer, kSnapshotHeight);
-        check(recorded2 == 0, "re-run records 0 new coins (INSERT OR IGNORE)");
-        check(wallet.getBalance().utxo_count == 1, "utxo_count still 1 after re-run");
+        check(recorded2 == 1, "re-run refreshes the existing row in place (upsert, not a new coin)");
+        auto bal2 = wallet.getBalance();
+        check(bal2.utxo_count == 1, "utxo_count still 1 after re-run (no duplicate row)");
+        check(bal2.total == bal_total_before, "balance unchanged after re-run (no double-count)");
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ FAIL: exception: " << e.what() << std::endl;
