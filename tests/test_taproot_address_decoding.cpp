@@ -155,6 +155,90 @@ int main() {
     }
     std::cout << std::endl;
 
+    // ────────────────────────────────────────────────────────────────────────
+    // Regression vector (mainnet): a real Taproot address must decode to
+    // witness v1 / 32-byte program / scriptPubKey 0x5120<program>, and
+    // DecodeWitnessAddress (used by validateaddress) must report it valid.
+    // ────────────────────────────────────────────────────────────────────────
+    const std::string kMainnetTaproot =
+        "din1ptpxnfhtshccyd4pc2p3xpakkyszaspa280k86weklqlffryacp0s95ewsl";
+    const std::string kExpectedProgramHex =
+        "584d34dd70be3046d438506260f6d62405d807aa3bec7d3b36f83e948c9dc05f";
+    const std::string kExpectedScriptHex = "5120" + kExpectedProgramHex;
+
+    auto to_hex = [](const std::vector<uint8_t>& v) {
+        std::string out;
+        out.reserve(v.size() * 2);
+        static constexpr char kHex[] = "0123456789abcdef";
+        for (uint8_t b : v) { out.push_back(kHex[(b >> 4) & 0xF]); out.push_back(kHex[b & 0xF]); }
+        return out;
+    };
+
+    // Switch to mainnet HRP ("din") for this real-world vector.
+    dinero::SelectParams(dinero::Chain::MAINNET);
+
+    std::cout << "[TEST 5] Decode real mainnet Taproot address (BIP350 vector)" << std::endl;
+    try {
+        std::vector<uint8_t> program = dinero::DecodeTaprootWitnessProgram(kMainnetTaproot);
+        std::vector<uint8_t> spk = dinero::CreateP2TRScriptPubKey(program);
+        if (program.size() == 32 && to_hex(program) == kExpectedProgramHex &&
+            to_hex(spk) == kExpectedScriptHex) {
+            std::cout << "  ✓ program=" << to_hex(program) << std::endl;
+            std::cout << "  ✓ scriptPubKey=" << to_hex(spk) << std::endl;
+            passed++;
+        } else {
+            std::cerr << "  ✗ FAIL: program=" << to_hex(program)
+                      << " spk=" << to_hex(spk) << std::endl;
+            failed++;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "  ✗ FAIL: " << e.what() << std::endl;
+        failed++;
+    }
+    std::cout << std::endl;
+
+    std::cout << "[TEST 6] DecodeWitnessAddress (validateaddress path) on Taproot vector" << std::endl;
+    {
+        dinero::WitnessAddressInfo info = dinero::DecodeWitnessAddress(kMainnetTaproot, "din");
+        if (info.is_valid && info.is_witness && info.witness_version == 1 &&
+            info.witness_program.size() == 32 &&
+            to_hex(info.witness_program) == kExpectedProgramHex &&
+            to_hex(info.script_pubkey) == kExpectedScriptHex) {
+            std::cout << "  ✓ isvalid + v1 + scriptPubKey=" << to_hex(info.script_pubkey) << std::endl;
+            passed++;
+        } else {
+            std::cerr << "  ✗ FAIL: valid=" << info.is_valid
+                      << " witver=" << info.witness_version
+                      << " spk=" << to_hex(info.script_pubkey) << std::endl;
+            failed++;
+        }
+    }
+    std::cout << std::endl;
+
+    std::cout << "[TEST 7] DecodeWitnessAddress still handles v0 and rejects junk" << std::endl;
+    {
+        // Valid v0 P2WPKH for mainnet (round-trip via encoder).
+        std::vector<uint8_t> h20(20);
+        for (int i = 0; i < 20; i++) h20[i] = static_cast<uint8_t>(i + 1);
+        std::string v0 = bech32::Encode("din", 0, h20, bech32::Encoding::BECH32);
+        dinero::WitnessAddressInfo v0info = dinero::DecodeWitnessAddress(v0, "din");
+        bool v0_ok = v0info.is_valid && v0info.witness_version == 0 &&
+                     v0info.script_pubkey.size() == 22 &&
+                     v0info.script_pubkey[0] == 0x00 && v0info.script_pubkey[1] == 0x14;
+        // Junk and wrong-HRP must be rejected.
+        bool junk_ok = !dinero::DecodeWitnessAddress("not_an_address", "din").is_valid;
+        bool hrp_ok = !dinero::DecodeWitnessAddress(kMainnetTaproot, "tdin").is_valid;
+        if (v0_ok && junk_ok && hrp_ok) {
+            std::cout << "  ✓ v0 decodes, junk + wrong-HRP rejected" << std::endl;
+            passed++;
+        } else {
+            std::cerr << "  ✗ FAIL: v0_ok=" << v0_ok << " junk_ok=" << junk_ok
+                      << " hrp_ok=" << hrp_ok << std::endl;
+            failed++;
+        }
+    }
+    std::cout << std::endl;
+
     // Summary
     std::cout << "========================================" << std::endl;
     std::cout << "Test Results:" << std::endl;
