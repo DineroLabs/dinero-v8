@@ -117,6 +117,20 @@ std::string BuildStandardDerivationPath(uint32_t purpose, int account, int chang
            std::to_string(index);
 }
 
+// AddressRowIsTaproot — authoritative taproot test for an address row. Decodes
+// the address as bech32m (witness version 1 = P2TR) instead of the old
+// string-prefix shortcut (rfind("din1p")), which guessed the type from the
+// encoding char — the same fragile pattern that previously mis-handled taproot.
+// Honors the explicit stored type first, then falls back to a real decode.
+bool AddressRowIsTaproot(const dinero::AddressRow& addr_row) {
+    if (addr_row.type == "p2tr" || addr_row.type == "taproot") {
+        return true;
+    }
+    const auto info = dinero::DecodeWitnessAddress(
+        addr_row.address, dinero::HrpForActiveNetworkRef());
+    return info.is_valid && info.witness_version == 1;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // RefuseIfSafeMode — safe-mode gate for all send/spend handlers.
 // Spec: docs/design/assumeutxo-fatal-state-machine.md, Fatal Mismatch
@@ -1334,12 +1348,7 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
             if (addr_row.account < 0) {
                 return "imported";
             }
-            const bool is_taproot_prefix =
-                (addr_row.address.rfind("din1p", 0) == 0) ||
-                (addr_row.address.rfind("tdin1p", 0) == 0) ||
-                (addr_row.address.rfind("rdin1p", 0) == 0);
-            const bool is_taproot =
-                (addr_row.type == "p2tr" || addr_row.type == "taproot") || is_taproot_prefix;
+            const bool is_taproot = AddressRowIsTaproot(addr_row);
             const int purpose = is_taproot ? 86 : 84;
             return BuildStandardDerivationPath(
                 static_cast<uint32_t>(purpose),
@@ -1713,12 +1722,7 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
             if (addr_row.account < 0) {
                 return "imported";
             }
-            const bool is_taproot_prefix =
-                (addr_row.address.rfind("din1p", 0) == 0) ||
-                (addr_row.address.rfind("tdin1p", 0) == 0) ||
-                (addr_row.address.rfind("rdin1p", 0) == 0);
-            const bool is_taproot =
-                (addr_row.type == "p2tr" || addr_row.type == "taproot") || is_taproot_prefix;
+            const bool is_taproot = AddressRowIsTaproot(addr_row);
             const int purpose = is_taproot ? 86 : 84;
             return BuildStandardDerivationPath(
                 static_cast<uint32_t>(purpose),
@@ -6886,12 +6890,7 @@ din::Json rpc_context_wallet_listaddresseswithbalances(const ExecutionContext& c
             if (addr_row.account < 0) {
                 return "imported";
             }
-            const bool is_taproot_prefix =
-                (addr_row.address.rfind("din1p", 0) == 0) ||
-                (addr_row.address.rfind("tdin1p", 0) == 0) ||
-                (addr_row.address.rfind("rdin1p", 0) == 0);
-            const bool is_taproot =
-                (addr_row.type == "p2tr" || addr_row.type == "taproot") || is_taproot_prefix;
+            const bool is_taproot = AddressRowIsTaproot(addr_row);
             const int purpose = is_taproot ? 86 : 84;
             return BuildStandardDerivationPath(
                 static_cast<uint32_t>(purpose),
