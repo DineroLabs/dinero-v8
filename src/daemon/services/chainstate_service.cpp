@@ -8876,8 +8876,17 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                                        std::to_string(shielded_section.version);
                 return result;
             }
-            if (shielded_section.frontier_bytes + shielded_section.anchor_history_bytes +
-                shielded_section.nullifier_bytes > SNAPSHOT_V4_MAX_SHIELDED_BYTES) {
+            // SECURITY (integer-overflow fix): bound EACH attacker-controlled
+            // uint64 field individually before summing. The previous
+            // `a + b + c > CAP` summed three uint64 values that could wrap past
+            // the cap (e.g. each ~2^63) and pass the check. With each field
+            // individually <= CAP (1 GiB), the sum is <= 3 GiB and cannot wrap a
+            // uint64.
+            if (shielded_section.frontier_bytes      > SNAPSHOT_V4_MAX_SHIELDED_BYTES ||
+                shielded_section.anchor_history_bytes > SNAPSHOT_V4_MAX_SHIELDED_BYTES ||
+                shielded_section.nullifier_bytes      > SNAPSHOT_V4_MAX_SHIELDED_BYTES ||
+                (shielded_section.frontier_bytes + shielded_section.anchor_history_bytes +
+                 shielded_section.nullifier_bytes) > SNAPSHOT_V4_MAX_SHIELDED_BYTES) {
                 result.error_message = "v4 shielded payload exceeds configured cap";
                 return result;
             }
