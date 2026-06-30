@@ -188,6 +188,12 @@ echo "Producing $ZIP_PATH..."
 ditto -c -k --sequesterRsrc --keepParent "$STAGE_DIR/dinero-qt.app" "$ZIP_PATH"
 
 # Produce the user-facing DMG.
+# Drag-to-install affordance: an "Applications" shortcut inside the DMG so the
+# user drags dinero-qt.app straight onto it in the same window. Everything (the
+# daemon, CLI, miners, seeder, and the AssumeUTXO snapshot) is embedded INSIDE
+# dinero-qt.app; the loose binaries beside it are optional standalone copies for
+# advanced users and are not needed to install or run the wallet.
+ln -sfn /Applications "$STAGE_DIR/Applications"
 DMG_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-arm64.dmg"
 echo "Producing $DMG_PATH..."
 hdiutil create \
