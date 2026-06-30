@@ -606,8 +606,21 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
     };
 
     try {
-        // RPC access control: reject admin methods in read-only mode
-        if (readonly_mode_ && isAdminMethod(method)) {
+        // RPC access control: reject admin methods in read-only mode.
+        //
+        // SECURITY (readonly-bypass fix): the admin check must run on the CANONICAL
+        // method name, not the raw request method. Short aliases (e.g.
+        // "sendtoaddress" -> "wallet.sendtoaddress", "consolidate" ->
+        // "wallet.consolidate") would otherwise slip past ADMIN_METHODS, which only
+        // lists the canonical "wallet.*" names. Resolve the alias FIRST, then check
+        // both the raw and the canonical name.
+        std::string admin_check_method = method;
+        if (rpc_registry_ != nullptr) {
+            if (const RpcAliasInfo* alias_info = rpc_registry_->getAliasInfo(method)) {
+                admin_check_method = alias_info->canonical_name;
+            }
+        }
+        if (readonly_mode_ && (isAdminMethod(method) || isAdminMethod(admin_check_method))) {
             return dinero::rpc::RpcError(dinero::rpc::RPC_FORBIDDEN,
                 "Method '" + method + "' is admin-only (server running in read-only mode)");
         }
