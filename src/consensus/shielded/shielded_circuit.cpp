@@ -149,8 +149,17 @@ void EnforceCvBinding(R1CS& cs, Variable val, const Hash& rcv_blind,
     Variable rcv_var = cs.alloc(Scalar(rcv_blind.data()));  // == HashToScalar, defined below
     std::vector<zk::zkvm::Variable> rcv_bits = gadgets::to_bits(cs, rcv_var, 256, prefix + "_cvrcvbits");
 
+    // SOUNDNESS (Critical #1 review item 1): rcv is PROVER-CHOSEN, so it must
+    // use the identity-safe fixed-base path — NOT ec_scalar_mul_gen, whose
+    // guarded ec_add_unsafe accumulation is unsound when a window drives the
+    // running accumulator through the identity (e.g. an rcv with a 0x00 window
+    // byte). ec_scalar_mul_gen's identity-UNSAFE form exists only to preserve
+    // the Schnorr/Taproot verifying key; the cv-bound circuit is a NEW VK, so
+    // we use the identity-safe ec_scalar_mul_fixed with G's affine coordinates
+    // (byte-identical generator to ec_scalar_mul_gen / libsecp's ecmult_gen).
     ECPoint val_V = zk::zkvm::ec_scalar_mul_fixed(cs, val_bits256, vx, vy, prefix + "_valV");
-    ECPoint rcv_G = zk::zkvm::ec_scalar_mul_gen(cs, rcv_bits, prefix + "_rcvG");
+    ECPoint rcv_G = zk::zkvm::ec_scalar_mul_fixed(
+        cs, rcv_bits, zk::zkvm::secp256k1_Gx(), zk::zkvm::secp256k1_Gy(), prefix + "_rcvG");
     ECPoint cv_circ = zk::zkvm::ec_add_complete(cs, val_V, rcv_G, prefix + "_cvadd");
 
     Variable eq = zk::zkvm::ec_equal(cs, cv_circ, cv_pub, prefix + "_cveq");

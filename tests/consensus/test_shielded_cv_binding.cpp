@@ -117,6 +117,34 @@ TEST(ShieldedCvBinding, HonestCvBoundOutputVerifies) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// 1b. Identity-safety regression (Critical #1 review item 1): a prover-chosen
+//     rcv whose LOW byte is 0x00 drives the rcv·G windowed accumulator through
+//     the identity at window 0. Before routing rcv·G through the identity-safe
+//     ec_scalar_mul_fixed, the in-circuit rcv·G was computed WRONG for such
+//     blinds, so this honest proof would NOT have been producible/verifiable.
+// ─────────────────────────────────────────────────────────────────────────
+TEST(ShieldedCvBinding, HonestCvBoundOutputZeroLowByteBlindVerifies) {
+    ASSERT_TRUE(PedersenGeneratorsReady());
+    const uint64_t value = 100'000'000;  // low byte 0x00 → exercises val·V identity path too
+    OutputWitness w{};
+    w.value = ValueAsHash(value);
+    w.public_key = MakeHash(0x12, 0x10);
+    w.randomness = MakeHash(0x13, 0x10);
+    // Blind with low byte 0x00 (and a non-zero higher byte so it isn't tiny).
+    w.rcv = Hash{};
+    w.rcv[30] = 0x55;  // rcv[31] (the LSB / window-0 byte) stays 0x00
+
+    OutputPublicInputs pub{};
+    pub.commitment = NoteCommitment(w.d, w.public_key, w.value, w.randomness);
+    pub.cv = Commit(w.rcv, value);
+
+    auto proof = ProveOutput(w, pub, nullptr, true, /*cv_bound=*/true);
+    ASSERT_FALSE(proof.empty())
+        << "rcv with 0x00 low byte must still produce a valid cv-bound proof";
+    EXPECT_TRUE(VerifyOutput(proof, pub, nullptr, true, /*cv_bound=*/true));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // 2. The exploit: cv commits to 0 while the note encodes 1,000,000.
 //    (a) The cv-bound circuit is UNSATISFIABLE — the attacker cannot even
 //        produce a cv-bound proof (ProveOutput returns empty).
