@@ -30,6 +30,7 @@
  */
 
 #include "consensus/shielded/commitment_tree.h"
+#include "consensus/shielded/shielded_tx.h"  // ValueCommitment (33-byte cv)
 
 #include <array>
 #include <cstdint>
@@ -61,23 +62,41 @@ struct SpendWitness {
 struct SpendPublicInputs {
     Hash     nullifier;
     Hash     anchor;     ///< commitment tree root
+    /// Audit Critical #1 (cv-binding): the bundle's 33-byte Pedersen value
+    /// commitment for this spend. Bound to the in-circuit note value when
+    /// `cv_bound` is enabled (post-activation). Ignored by the legacy
+    /// (pre-activation) circuit, which leaves it default-zero.
+    ValueCommitment cv{};
 };
 
 /**
  * Build the R1CS for a spend proof. Allocates variables, adds
  * constraints, returns the constraint system ready for Spartan.
+ *
+ * `cv_bound` selects the circuit version:
+ *   - false: the LEGACY circuit (audit Critical #1 still open). Emits a
+ *     byte-for-byte identical R1CS to the pre-fix circuit so pre-activation
+ *     proofs keep verifying under the same verifying key.
+ *   - true:  the cv-BOUND circuit. Adds `cv` (the Pedersen value commitment)
+ *     as a public-input EC point and `rcv` (its blinding) as a witness, and
+ *     constrains cv == val·V + rcv·G with the SAME `val` that feeds the note
+ *     commitment and 64-bit range check. Closes the mint-from-nothing hole.
  */
 zk::zkvm::R1CS BuildSpendCircuit(const SpendWitness& witness,
-                                  const SpendPublicInputs& pub);
+                                  const SpendPublicInputs& pub,
+                                  bool cv_bound = false);
 
 /**
  * Generate a Spartan proof for a spend.
- * Returns serialized proof bytes.
+ * Returns serialized proof bytes. `cv_bound` must match the consensus rule
+ * at the spending height (see BuildSpendCircuit). cv-bound proofs carry a
+ * distinct version byte from legacy proofs.
  */
 std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
                                  const SpendPublicInputs& pub,
                                  secp256k1_context_struct* ctx,
-                                 bool bind_public_inputs = true);
+                                 bool bind_public_inputs = true,
+                                 bool cv_bound = false);
 
 /**
  * Verify a spend proof against public inputs.
@@ -90,7 +109,8 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
 bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
                  const SpendPublicInputs& pub,
                  secp256k1_context_struct* ctx,
-                 bool bind_public_inputs = true);
+                 bool bind_public_inputs = true,
+                 bool cv_bound = false);
 
 // NOTE: audit-only transcript-desync provers (ProveSpend_AuditDesync /
 // ProveOutput_AuditDesync) used by the public-input-binding regression tests are
@@ -109,19 +129,25 @@ struct OutputWitness {
 
 struct OutputPublicInputs {
     Hash commitment;
+    /// Audit Critical #1 (cv-binding): the bundle's 33-byte Pedersen value
+    /// commitment for this output. See SpendPublicInputs::cv.
+    ValueCommitment cv{};
 };
 
 zk::zkvm::R1CS BuildOutputCircuit(const OutputWitness& witness,
-                                   const OutputPublicInputs& pub);
+                                   const OutputPublicInputs& pub,
+                                   bool cv_bound = false);
 
 std::vector<uint8_t> ProveOutput(const OutputWitness& witness,
                                   const OutputPublicInputs& pub,
                                   secp256k1_context_struct* ctx,
-                                  bool bind_public_inputs = true);
+                                  bool bind_public_inputs = true,
+                                  bool cv_bound = false);
 
 bool VerifyOutput(const std::vector<uint8_t>& proof_bytes,
                   const OutputPublicInputs& pub,
                   secp256k1_context_struct* ctx,
-                  bool bind_public_inputs = true);
+                  bool bind_public_inputs = true,
+                  bool cv_bound = false);
 
 } // namespace dinero::consensus::shielded

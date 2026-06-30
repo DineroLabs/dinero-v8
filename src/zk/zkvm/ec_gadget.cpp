@@ -4,6 +4,10 @@
 
 #include "zk/zkvm/ec_gadget.h"
 #include <cassert>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <utility>
 
 namespace dinero {
 namespace zk {
@@ -667,9 +671,15 @@ ECPoint ec_scalar_mul(R1CS& cs, const std::vector<Variable>& scalar_bits,
 // Fixed-base scalar multiplication: k * G (windowed)
 // ---------------------------------------------------------------------------
 
-// Precomputed table for fixed-base scalar mul.
-// table[i][j] = j * 256^i * G for i=0..31, j=0..255
-// Computed once, cached.
+// Precomputed table for fixed-base scalar mul against an arbitrary base B.
+// table[i][j] = j * 256^i * B for i=0..31, j=0..255
+// Computed once per distinct base, cached.
+//
+// Generalized from the original G-only table so the shielded cv-binding
+// circuit can multiply by the Pedersen *value* generator V as well as the
+// standard generator G. The standard-G instance is exposed via
+// fixed_base_table()/ec_scalar_mul_gen() and is byte-for-byte identical to
+// the previous G-only table (so taproot/Schnorr circuits are unaffected).
 struct FixedBaseTable {
     static constexpr int WINDOW_BITS = 8;
     static constexpr int WINDOW_COUNT = 32;
@@ -677,11 +687,9 @@ struct FixedBaseTable {
 
     WitnessPoint entries[WINDOW_COUNT][WINDOW_SIZE];
 
-    FixedBaseTable() {
-        WitnessPoint G = {secp256k1_Gx(), secp256k1_Gy(), false};
-
-        // Compute base_i = 256^i * G for each window
-        WitnessPoint base = G;
+    explicit FixedBaseTable(const WitnessPoint& base_point) {
+        // Compute base_i = 256^i * base for each window
+        WitnessPoint base = base_point;
         for (int i = 0; i < WINDOW_COUNT; ++i) {
             entries[i][0] = {Uint256(), Uint256(), true}; // 0 * base = identity
             entries[i][1] = base; // 1 * base
@@ -697,15 +705,31 @@ struct FixedBaseTable {
 };
 
 static const FixedBaseTable& fixed_base_table() {
-    static FixedBaseTable table;
+    static FixedBaseTable table(WitnessPoint{secp256k1_Gx(), secp256k1_Gy(), false});
     return table;
 }
 
-ECPoint ec_scalar_mul_gen(R1CS& cs, const std::vector<Variable>& scalar_bits,
-                           const std::string& label) {
-    assert(scalar_bits.size() == 256);
-
-    const auto& table = fixed_base_table();
+// Shared accumulation core: windowed fixed-base multiply against `table`.
+// Used by both the standard-generator path (ec_scalar_mul_gen) and the
+// arbitrary-base path (ec_scalar_mul_fixed). The constraint *structure* is
+// fixed by which scalar-bit Variables are the const-zero variable (those
+// windows are skipped), NOT by the witness values — so prover and verifier
+// emit an identical R1CS as long as they pass the same bit Variables.
+// `identity_safe` selects the accumulation strategy:
+//   - false (the standard-generator path, ec_scalar_mul_gen): the original
+//     fast guarded ec_add_unsafe accumulation. Sound ONLY when the running
+//     accumulator is never the identity — true for the random/hash-derived
+//     scalars Schnorr/taproot use, where the lowest window byte is non-zero.
+//     Kept byte-for-byte identical so existing verifying keys don't change.
+//   - true (the arbitrary-base path, ec_scalar_mul_fixed): identity-safe
+//     ec_add_complete accumulation. REQUIRED for structured scalars (e.g. a
+//     note value like 100,000,000 = 0x05F5E100, whose low byte is 0x00 →
+//     window 0 selects the identity → the running accumulator starts at O).
+static ECPoint ec_scalar_mul_with_table(R1CS& cs,
+                                         const std::vector<Variable>& scalar_bits,
+                                         const FixedBaseTable& table,
+                                         const std::string& label,
+                                         bool identity_safe) {
     const Variable zero = cs.const_zero();
 
     // Process 32 windows of 8 bits each.
@@ -809,6 +833,17 @@ ECPoint ec_scalar_mul_gen(R1CS& cs, const std::vector<Variable>& scalar_bits,
         selected_pt.y = sel_y;
         selected_pt.is_identity = indicators[0];
 
+        if (identity_safe) {
+            // Identity-safe: ec_add_complete handles acc==O, selected==O, and
+            // acc==selected. Structure is independent of witness values, so
+            // prover and verifier emit identical R1CS.
+            if (!acc_initialized) {
+                acc = ec_identity(cs, wl + "_acc0");
+                acc_initialized = true;
+            }
+            acc = ec_add_complete(cs, acc, selected_pt, wl + "_cadd");
+            continue;
+        }
         if (!acc_initialized) {
             acc = selected_pt;
             acc_initialized = true;
@@ -848,6 +883,44 @@ ECPoint ec_scalar_mul_gen(R1CS& cs, const std::vector<Variable>& scalar_bits,
     }
 
     return acc;
+}
+
+ECPoint ec_scalar_mul_gen(R1CS& cs, const std::vector<Variable>& scalar_bits,
+                           const std::string& label) {
+    assert(scalar_bits.size() == 256);
+    // identity_safe=false: preserve the exact original constraint structure so
+    // taproot/Schnorr verifying keys are unchanged.
+    return ec_scalar_mul_with_table(cs, scalar_bits, fixed_base_table(), label,
+                                    /*identity_safe=*/false);
+}
+
+ECPoint ec_scalar_mul_fixed(R1CS& cs, const std::vector<Variable>& scalar_bits,
+                            const Uint256& base_x, const Uint256& base_y,
+                            const std::string& label) {
+    assert(scalar_bits.size() == 256);
+    // Cache one windowed table per distinct base point. The base is a fixed
+    // circuit constant (e.g. the Pedersen value generator V), so the table is
+    // built at most once per process and reused across every proof/verify.
+    static std::mutex cache_mu;
+    static std::map<std::pair<Uint256, Uint256>, std::unique_ptr<FixedBaseTable>> cache;
+    const FixedBaseTable* table = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(cache_mu);
+        const auto key = std::make_pair(base_x, base_y);
+        auto it = cache.find(key);
+        if (it == cache.end()) {
+            it = cache.emplace(
+                     key,
+                     std::make_unique<FixedBaseTable>(
+                         WitnessPoint{base_x, base_y, false}))
+                     .first;
+        }
+        table = it->second.get();
+    }
+    // identity_safe=true: arbitrary bases are multiplied by structured scalars
+    // (note values), which can drive the accumulator through the identity.
+    return ec_scalar_mul_with_table(cs, scalar_bits, *table, label,
+                                    /*identity_safe=*/true);
 }
 
 } // namespace zkvm
