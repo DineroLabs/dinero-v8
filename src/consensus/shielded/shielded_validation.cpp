@@ -120,7 +120,27 @@ ShieldedValidationError ValidateShieldedBundle(
     //    The activation gate keeps shielded txs unreachable on
     //    mainnet/testnet until both this AND the binding sig below
     //    are mandatory at every site.
-    if (PedersenGeneratorsReady() && !bundle.aggregated_range_proof.empty()) {
+    // CONFIRMED-CRIT (shielded inflation): an EMPTY aggregated_range_proof must
+    // NEVER bypass the range-proof check post-activation. At/above the
+    // input-binding activation height (chainparams CONFIRMED-CRIT-05: the height
+    // from which real shielded value exists and every legitimate bundle — built
+    // by bundle_builder — carries a non-empty range proof + binding sig), a valid
+    // NON-EMPTY range proof is MANDATORY: reject when absent/empty. Below that
+    // height we preserve the EXACT pre-fix opportunistic behavior so no historical
+    // block is retroactively rejected (consensus-safe; no real shielded value
+    // existed there). PedersenGeneratorsReady() remains an operational precondition
+    // for the cryptographic verify only — it does not gate the empty rejection.
+    if (ctx.block_height >= ctx.shielded_input_binding_activation_height) {
+        if (bundle.aggregated_range_proof.empty()) {
+            return ShieldedValidationError::RangeProofInvalid;
+        }
+        if (PedersenGeneratorsReady()) {
+            const auto rc = VerifyBundleRangeProofs(bundle);
+            if (rc != RangeProofResult::Ok) {
+                return ShieldedValidationError::RangeProofInvalid;
+            }
+        }
+    } else if (PedersenGeneratorsReady() && !bundle.aggregated_range_proof.empty()) {
         const auto rc = VerifyBundleRangeProofs(bundle);
         if (rc != RangeProofResult::Ok) {
             return ShieldedValidationError::RangeProofInvalid;
@@ -148,7 +168,19 @@ ShieldedValidationError ValidateShieldedBundle(
     // test fixtures) skip both new checks, preserving compatibility
     // until activation. The activation gate prevents pre-cv bundles
     // from existing on mainnet/testnet.
-    if (PedersenGeneratorsReady() && !bundle.aggregated_range_proof.empty()) {
+    // CONFIRMED-CRIT (shielded inflation): the Schnorr binding signature is
+    // MANDATORY at/above the input-binding activation height. The empty range
+    // proof (which previously gated BOTH checks) is already rejected above, so an
+    // attacker can no longer skip this by sending an empty proof. Below the
+    // activation height we preserve the exact pre-fix opportunistic behavior.
+    if (ctx.block_height >= ctx.shielded_input_binding_activation_height) {
+        if (PedersenGeneratorsReady()) {
+            const auto rc = VerifyBinding(bundle, ctx.tx_sighash);
+            if (rc != BindingSigResult::Ok) {
+                return ShieldedValidationError::BindingSigInvalid;
+            }
+        }
+    } else if (PedersenGeneratorsReady() && !bundle.aggregated_range_proof.empty()) {
         const auto rc = VerifyBinding(bundle, ctx.tx_sighash);
         if (rc != BindingSigResult::Ok) {
             return ShieldedValidationError::BindingSigInvalid;
