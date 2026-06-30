@@ -4151,11 +4151,22 @@ std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(int min_c
                         // fails and anchored stays false → original behavior.
                     }
                     if (!anchored) {
-                        // UTXO is no longer in the chain UTXO set — mark spent in wallet
-                        // DB so it won't appear again, then skip it from the result.
-                        exec(db_, ("UPDATE utxos SET is_spent = 1 WHERE txid = '" +
-                                   utxo.txid + "' AND vout = " + std::to_string(utxo.vout) +
-                                   " AND wallet_id = " + std::to_string(current_wallet_id_)).c_str());
+                        // Cross-store mismatch: the coin is in the wallet DB but
+                        // absent from the in-memory chain UTXO index, and it is NOT
+                        // a snapshot-anchored coin.
+                        //
+                        // SECURITY (fund-loss fix, audit Fix 2): a const READ method
+                        // must NEVER mutate fund state. The previous code persisted
+                        // `UPDATE utxos SET is_spent=1` here, which irreversibly
+                        // zeroed legitimate balances on the first listunspent. We now
+                        // treat the mismatch as non-destructive: skip the coin from
+                        // THIS result set (so coin-selection won't try to spend an
+                        // output the chainstate can't currently see) but leave the DB
+                        // untouched, so the coin reappears once utxo_index_ is
+                        // populated.
+                        logCorruptRow("utxos", "chain-mismatch",
+                                      "wallet UTXO absent from chain index; skipping "
+                                      "(read-only, no state mutation)");
                         continue;
                     }
                     // anchored: valid snapshot coin — keep it (transparent, not CT).
