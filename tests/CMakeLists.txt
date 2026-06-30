@@ -1442,6 +1442,39 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   message(STATUS "Shielded validation tests enabled")
 endif()
 
+# Audit Critical #1 — shielded cv-binding regression suite.
+# cv-bound proofs add ~430k EC constraints, so honest prove/verify cases are
+# slow; the TIMEOUT is generous accordingly.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
+  add_executable(test_shielded_cv_binding
+    tests/consensus/test_shielded_cv_binding.cpp
+  )
+  add_dependencies(test_shielded_cv_binding gtest dinero_shielded)
+  target_link_libraries(test_shielded_cv_binding PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_shielded
+    dinero_wallet
+    dinero_zk
+    sqlite3
+  )
+  target_include_directories(test_shielded_cv_binding BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/sqlite-amalgamation-3480000
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_cv_binding PRIVATE "-framework Security")
+  endif()
+  add_test(NAME ShieldedCvBinding COMMAND test_shielded_cv_binding)
+  set_tests_properties(ShieldedCvBinding PROPERTIES
+    LABELS "shielded;consensus;cv-binding;mandatory"
+    TIMEOUT 1800
+  )
+  message(STATUS "Shielded cv-binding tests enabled")
+endif()
+
 # M3 PR B: native ShieldedProverKit C ABI for iOS
 if(TARGET dinero_shielded_prover_kit AND TARGET gtest)
   add_executable(test_shielded_prover_kit

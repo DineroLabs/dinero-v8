@@ -167,6 +167,24 @@ ECPoint ec_scalar_mul_gen(R1CS& cs, const std::vector<Variable>& scalar_bits,
                            const std::string& label = "esmg");
 
 /**
+ * Fixed-base scalar multiplication against an ARBITRARY constant base B:
+ * result = k * B, where B = (base_x, base_y) is an affine, non-identity
+ * secp256k1 point supplied as a circuit constant.
+ *
+ * Uses the same 8-bit windowed table machinery as ec_scalar_mul_gen, but
+ * builds (and process-caches) a precomputed table for the given base. Pass
+ * the scalar as 256 boolean bit Variables (bit 0 = LSB); windows whose bits
+ * are all the const-zero Variable are skipped, so a low-width scalar padded
+ * with cs.const_zero() in its high bits costs only the active windows.
+ *
+ * Introduced for the shielded cv-binding circuit, which multiplies the
+ * 64-bit note value by the Pedersen value generator V.
+ */
+ECPoint ec_scalar_mul_fixed(R1CS& cs, const std::vector<Variable>& scalar_bits,
+                            const Uint256& base_x, const Uint256& base_y,
+                            const std::string& label = "esmf");
+
+/**
  * Extract witness x-coordinate from an ECPoint (for testing).
  */
 Uint256 ec_witness_x(R1CS& cs, const ECPoint& P);

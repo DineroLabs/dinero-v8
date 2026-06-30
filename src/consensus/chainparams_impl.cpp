@@ -90,6 +90,12 @@ static ChainParams g_mainnet = {
     // shielded value existed under it), blocks >= 32300 require the bound rule.
     .shielded_input_binding_activation_height = 32300,
 
+    // Audit Critical #1: shielded cv-binding activation. FLAG FOR HUMAN:
+    // UINT32_MAX = never activate (fix wired + tested but inert on mainnet)
+    // until a human picks a real height and coordinates the fleet upgrade.
+    // A wrong boundary splits the chain.
+    .shielded_cv_binding_activation_height = UINT32_MAX,
+
     .genesis = {
         .nVersion = 1,
         .nTime = 1776384000,  // 2026-04-17 00:00:00 UTC — v7 Genesis Restart
@@ -357,6 +363,12 @@ static ChainParams g_regtest = {
     // CONFIRMED-CRIT-05: bound shielded-proof rule active from genesis on regtest, so
     // tests exercise the secure rule end-to-end.
     .shielded_input_binding_activation_height = 0,
+
+    // Audit Critical #1: cv-binding left inert (UINT32_MAX) on regtest so the
+    // existing shielded test corpus, which produces legacy (non-cv) proofs,
+    // keeps validating. The cv-binding boundary is exercised directly by
+    // test_shielded_cv_binding via a hand-built ValidationContext.
+    .shielded_cv_binding_activation_height = UINT32_MAX,
 
     .genesis = CreateRegtestGenesis()
 };

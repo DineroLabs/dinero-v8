@@ -123,6 +123,15 @@ struct ValidationContext {
     /// default, so direct-construction unit tests exercise the bound rule.
     uint32_t                shielded_input_binding_activation_height = 0;
 
+    /// Audit Critical #1: blocks at/above this height require cv-bound shielded
+    /// proofs (circuit enforces cv == val·V + rcv·G; version bytes 0x03/0x04).
+    /// Below it, legacy proofs (0x01/0x02) verify under the old circuit so the
+    /// pre-activation notes stay spendable. Defaulted member (NOT a ctor param)
+    /// — default UINT32_MAX = "never cv-bind", so direct-construction unit tests
+    /// (which build legacy proofs) are unaffected. Consensus callers set it via
+    /// BuildShieldedValidationContext from chainparams.
+    uint32_t                shielded_cv_binding_activation_height = UINT32_MAX;
+
     constexpr ValidationContext(
         const NullifierSet*    nullifier_set,
         const CommitmentTree*  commitment_tree,
@@ -203,7 +212,11 @@ ValidationContext BuildShieldedValidationContext(
     // Default UINT32_MAX (never bind) is a safe fallback for any caller that has not
     // yet been updated — such a caller would use the old rule, never silently accept a
     // forgery under the new rule. Real consensus callers pass the chainparams value.
-    uint32_t                     shielded_input_binding_activation_height = UINT32_MAX);
+    uint32_t                     shielded_input_binding_activation_height = UINT32_MAX,
+    // Audit Critical #1: from chainparams.shielded_cv_binding_activation_height.
+    // Default UINT32_MAX (never cv-bind) keeps un-updated callers on the legacy
+    // circuit; real consensus callers pass the chainparams value.
+    uint32_t                     shielded_cv_binding_activation_height = UINT32_MAX);
 
 // (Phase 2's ComputeBindingTag — SHA-256 structural tag — was replaced
 // by the Phase 3 wave 2 Schnorr binding signature. See binding_sig.h
