@@ -8326,11 +8326,71 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
 }
 
 int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height) {
+    // PRIMARY PATH: read the configured snapshot .dat directly. On a utreexo node
+    // the in-memory consensus_utxo_set_ does NOT hold the snapshot's UTXOs (they
+    // are committed in the accumulator, not individually enumerable), so iterating
+    // it records zero owned coins. The .dat file is the authoritative full UTXO
+    // set the wallet's pre-snapshot coins actually live in. Format per entry:
+    // txid(32) | vout(u32) | value(u64) | script_len(u32) | script | height(u32) | coinbase(u8)
+    const std::string snapshot_dat_path =
+        config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
+    if (!snapshot_dat_path.empty()) {
+        std::ifstream snap(snapshot_dat_path, std::ios::binary);
+        if (snap.is_open()) {
+            consensus::SnapshotMetadata header;
+            snap.read(reinterpret_cast<char*>(&header.magic), sizeof(header.magic));
+            snap.read(reinterpret_cast<char*>(&header.version), sizeof(header.version));
+            snap.read(reinterpret_cast<char*>(header.block_hash.data), 32);
+            snap.read(reinterpret_cast<char*>(&header.block_height), sizeof(header.block_height));
+            snap.read(reinterpret_cast<char*>(&header.utxo_count), sizeof(header.utxo_count));
+            snap.read(reinterpret_cast<char*>(&header.timestamp), sizeof(header.timestamp));
+            snap.read(reinterpret_cast<char*>(&header.reserved), sizeof(header.reserved));
+            if (snap && header.magic == consensus::SNAPSHOT_MAGIC) {
+                const uint64_t utxo_count = header.utxo_count;
+                return wallet.rescanUtxoSet(
+                    [&](const std::function<void(const dinero::WalletManager::UtxoSetEntry&)>& sink) {
+                        for (uint64_t i = 0; i < utxo_count; ++i) {
+                            uint256 txid;
+                            snap.read(reinterpret_cast<char*>(txid.data), 32);
+                            uint32_t vout = 0;
+                            snap.read(reinterpret_cast<char*>(&vout), sizeof(vout));
+                            uint64_t value_raw = 0;
+                            snap.read(reinterpret_cast<char*>(&value_raw), sizeof(value_raw));
+                            uint32_t script_len = 0;
+                            snap.read(reinterpret_cast<char*>(&script_len), sizeof(script_len));
+                            if (!snap || script_len > 100000u) {
+                                break;  // truncated/corrupt — stop the scan
+                            }
+                            std::vector<uint8_t> spk(script_len);
+                            snap.read(reinterpret_cast<char*>(spk.data()), script_len);
+                            uint32_t height = 0;
+                            snap.read(reinterpret_cast<char*>(&height), sizeof(height));
+                            uint8_t is_coinbase = 0;
+                            snap.read(reinterpret_cast<char*>(&is_coinbase), 1);
+                            if (!snap) {
+                                break;
+                            }
+                            dinero::WalletManager::UtxoSetEntry e;
+                            e.txid_hex = txid.GetHex();
+                            e.vout = vout;
+                            e.amount_una = value_raw;
+                            e.script_pubkey = std::move(spk);
+                            e.height = height;
+                            e.is_coinbase = (is_coinbase != 0);
+                            sink(e);
+                        }
+                    },
+                    base_height);
+            }
+        }
+    }
+
+    // FALLBACK PATH: in-memory consensus UTXO set (full-set / non-utreexo builds).
     if (!consensus_utxo_set_) {
         return -1;  // no in-memory snapshot UTXO set loaded
     }
 
-    // The concrete ConsensusUTXOSet exposes the raw OutPoint→UTXOEntry map; the
+    // The concrete ConsensusUTXOSet exposes the raw OutPoint->UTXOEntry map; the
     // coins are keyed by TxId, whose AsUint256().GetHex() is the same canonical
     // txid string the wallet's block-replay rescan uses for spent-marking.
     const auto& utxos = consensus_utxo_set_->GetUTXOs();
