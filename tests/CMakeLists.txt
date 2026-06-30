@@ -602,6 +602,43 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_empty_rangeproof_inf
   )
 endif()
 
+# Security regression: untrusted CompactSize counts in the shielded-bundle
+# deserializer must be capped before resize() (remote-OOM fix).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_serialization_oom.cpp)
+  add_executable(test_shielded_serialization_oom
+    tests/consensus/test_shielded_serialization_oom.cpp
+  )
+  target_link_libraries(test_shielded_serialization_oom PRIVATE
+    dinero_shielded
+    dinero_consensus
+    dinero_zk
+    dinero_crypto
+    OpenSSL::Crypto
+    OpenSSL::SSL
+    pthread
+    sqlite3
+  )
+  link_zstd_if_needed(test_shielded_serialization_oom)
+  target_include_directories(test_shielded_serialization_oom PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_serialization_oom PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(
+    NAME ShieldedSerializationOOM
+    COMMAND test_shielded_serialization_oom
+  )
+  set_tests_properties(ShieldedSerializationOOM PROPERTIES
+    LABELS "shielded;security;serialization;oom"
+    TIMEOUT 120
+  )
+endif()
+
 # Shielded canonical state + recovery gate
 if(TARGET shielded_pool_test AND TARGET shielded_adversarial_test)
   add_test(
