@@ -239,15 +239,16 @@ bool WalletService::Start() {
                         + std::to_string(recorded) + " owned coin(s) from AssumeUTXO base height "
                         + std::to_string(base_height));
                 }
-                // The rescan advanced the wallet's scan watermark to the snapshot
-                // base; refresh wallet_scan_height so the block-replay catch-up
-                // below starts ABOVE the base instead of futilely replaying
-                // pre-base heights whose block bodies are absent.
-                uint32_t advanced = wallet_mgr_->getCurrentBlockchainHeight();
-                if (advanced > wallet_scan_height) {
-                    wallet_scan_height = advanced;
-                    needs_catchup_scan = (wallet_scan_height < actual_blockchain_height);
+                // Floor the wallet's scan watermark at the snapshot base so the
+                // catch-up below starts at base+1, replaying only heights that
+                // HAVE block bodies. getCurrentBlockchainHeight() returns the
+                // wallet tip (0 on a fast-synced wallet), which would leave the
+                // catch-up replaying from 0 and re-spending the pre-base coins we
+                // just recorded — use base_height directly instead.
+                if (base_height > wallet_scan_height) {
+                    wallet_scan_height = base_height;
                 }
+                needs_catchup_scan = (wallet_scan_height < actual_blockchain_height);
             } catch (const std::exception& e) {
                 logger_interface_->warning(std::string("[WalletService] Snapshot UTXO-set rescan failed: ") + e.what());
             }
