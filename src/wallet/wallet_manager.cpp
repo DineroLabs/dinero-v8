@@ -4127,11 +4127,22 @@ std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(int min_c
                 TxId chain_txid(uint256::FromHexUnsafe(utxo.txid));
                 auto chain_utxo = utxo_index_->GetUTXO(chain_txid, utxo.vout);
                 if (!chain_utxo.has_value()) {
-                    // UTXO is no longer in the chain UTXO set — mark spent in wallet
-                    // DB so it won't appear again, then skip it from the result.
-                    exec(db_, ("UPDATE utxos SET is_spent = 1 WHERE txid = '" +
-                               utxo.txid + "' AND vout = " + std::to_string(utxo.vout) +
-                               " AND wallet_id = " + std::to_string(current_wallet_id_)).c_str());
+                    // Cross-store mismatch: the coin is in the wallet DB but absent
+                    // from the in-memory chain UTXO index. This is NON-AUTHORITATIVE
+                    // here — e.g. after an AssumeUTXO bootstrap, snapshot-era coins
+                    // live only in the `utxos` table and never enter utxo_index_.
+                    //
+                    // SECURITY (fund-loss fix): a const READ method must NEVER mutate
+                    // fund state. The previous code persisted `UPDATE utxos SET
+                    // is_spent=1` here, which irreversibly zeroed legitimate
+                    // snapshot-era balances on the first listunspent. We now treat
+                    // the mismatch as non-destructive: skip the coin from THIS
+                    // result set (so coin-selection won't try to spend an output the
+                    // chainstate can't currently see) but leave the DB untouched, so
+                    // the coin reappears once utxo_index_ is populated.
+                    logCorruptRow("utxos", "chain-mismatch",
+                                  "wallet UTXO absent from chain index; skipping "
+                                  "(read-only, no state mutation)");
                     continue;
                 }
                 // Propagate CT flag from chain UTXO set into wallet UTXO view
