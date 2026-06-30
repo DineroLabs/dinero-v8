@@ -1083,6 +1083,55 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
             const auto& utreexo_data = block.utreexo.value();
 
+            // ═════════════════════════════════════════════════════════════════
+            // COINBASE-MATURITY DEFERRAL (interim consensus-split mitigation)
+            // ═════════════════════════════════════════════════════════════════
+            // The STATEFUL path enforces COINBASE_MATURITY using UTXOEntry's
+            // height + isCoinbase fields (see ValidateTransaction, the
+            // `if (utxo.isCoinbase)` maturity gate below). The STATELESS path
+            // CANNOT: the Utreexo leaf hash commits to neither the creating
+            // height nor an is_coinbase flag, and SpentOutputData carries
+            // neither — so there is no data here from which to identify a
+            // coinbase spend or compute its confirmation depth.
+            //
+            // The original code papered over this by constructing each input
+            // UTXOEntry with `is_coinbase = false`, which made the maturity gate
+            // pass vacuously while pretending "maturity validated by proof". It
+            // is not: a miner spending an IMMATURE coinbase produced a block that
+            // stateful nodes REJECT but stateless nodes ACCEPTED → consensus
+            // split along the stateful/stateless line.
+            //
+            // FIX (NON-FORKING): stop pretending. A stateless node does NOT act
+            // as an independent consensus validator for the maturity rule while
+            // it lacks the data to check it; it DEFERS this single rule to
+            // consensus / most-work — following the chain produced by
+            // maturity-enforcing stateful miners and bridge full nodes (which DO
+            // maintain a UTXO DB and reject immature-coinbase spends) rather than
+            // independently vouching a block as fully consensus-valid. We record
+            // the deferral as program state (stateless_maturity_unverified_) so
+            // higher layers / RPC never represent this node as a full independent
+            // validator of maturity, and emit a one-time auditable warning.
+            //
+            // This rejects NO block a stateful node accepts (no new return false)
+            // and changes NO rule a stateful node enforces — it only removes the
+            // false "I validated maturity" assertion from the stateless path.
+            //
+            // FOLLOW-UP (tracked): the durable cryptographic fix is a future
+            // hard-fork that commits is_coinbase + creating-height into the
+            // Utreexo leaf hash, so stateless nodes can verify maturity from the
+            // proof itself. That changes the accumulator/leaf format and would
+            // invalidate the shipped AssumeUTXO snapshot, so it MUST be done at a
+            // separate activation height — out of scope for this non-forking gate.
+            if (!tx.vin.empty() && !stateless_maturity_unverified_) {
+                stateless_maturity_unverified_ = true;
+                std::cout << "⚠️  [CONSENSUS] STATELESS mode cannot independently "
+                             "validate the coinbase-maturity rule (leaf commits to "
+                             "neither height nor is_coinbase). Deferring this rule to "
+                             "consensus/most-work; this node does NOT vouch blocks as "
+                             "fully consensus-valid for maturity. First observed at "
+                             "height " << height << "." << std::endl;
+            }
+
             // Build vector of all UTXOs for this transaction (needed for BIP341 Taproot sighash)
             fee_input_utxos.reserve(tx.vin.size());
 
@@ -1099,8 +1148,10 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                 fee_input_utxos.emplace_back(
                     AmountUna::Una(spent_output.value),
                     spent_output.scriptPubKey,
-                    0,      // height unknown in stateless mode
-                    false,  // assume not coinbase (maturity validated by proof)
+                    0,      // height: UNKNOWN in stateless mode (leaf does not commit it)
+                    false,  // is_coinbase: UNKNOWN in stateless mode — maturity is NOT
+                            // validated here; it is deferred to consensus (see the
+                            // COINBASE-MATURITY DEFERRAL note + FOLLOW-UP above).
                     spent_output.is_confidential,
                     spent_output.commitment
                 );

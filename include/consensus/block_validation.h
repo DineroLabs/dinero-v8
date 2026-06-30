@@ -72,6 +72,29 @@ public:
     // Phase 8: Get current validation mode
     ValidationMode getValidationMode() const { return validation_mode_; }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Stateless coinbase-maturity DEFERRAL (interim consensus-split mitigation)
+    // ─────────────────────────────────────────────────────────────────────────
+    // In STATELESS mode the node CANNOT independently validate the coinbase
+    // maturity rule (COINBASE_MATURITY): the Utreexo leaf commits to neither the
+    // creating height nor an is_coinbase flag, and SpentOutputData carries
+    // neither. The stateful path enforces maturity at block_validation.cpp
+    // (UTXOEntry.isCoinbase / height); the stateless path structurally cannot.
+    //
+    // Rather than silently PRETEND the rule was checked (the original bug), a
+    // stateless validator explicitly DEFERS this single rule to consensus /
+    // most-work — i.e. it follows the chain produced by maturity-enforcing
+    // stateful miners and bridge full nodes instead of independently vouching a
+    // block as fully consensus-valid for maturity. This flag records that the
+    // node processed a stateless spend-block WITHOUT independently validating
+    // coinbase maturity, so higher layers / RPC must not represent this node as
+    // a full independent validator of that rule.
+    //
+    // NON-FORKING: this changes no consensus rule a stateful node enforces and
+    // rejects no block a stateful node accepts. The durable cryptographic fix is
+    // the future leaf-format hard fork (see FOLLOW-UP in block_validation.cpp).
+    bool statelessMaturityUnverified() const { return stateless_maturity_unverified_; }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // CONSENSUS-CRITICAL: Utreexo Enforcement (NO BYPASS)
     // ═══════════════════════════════════════════════════════════════════════════
@@ -274,6 +297,11 @@ private:
     IConsensusUTXOSet* consensus_utxo_set_;  // Phase 2: Pure consensus UTXO set (owns forest)
     IBDConfig ibd_config_;  // Phase 5: IBD mode (stateful vs stateless)
     ValidationMode validation_mode_ = ValidationMode::STATEFUL;  // Phase 8: Validation mode (default: stateful)
+
+    // Set true the first time the STATELESS path processes a spend-block whose
+    // coinbase-maturity rule could not be independently validated (deferred to
+    // consensus). See statelessMaturityUnverified() above. Latches; never reset.
+    bool stateless_maturity_unverified_ = false;
 
     // Intra-block UTXO overlay: tracks outputs created by earlier transactions
     // in the same block, enabling transaction chaining within a single block.

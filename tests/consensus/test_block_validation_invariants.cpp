@@ -268,6 +268,111 @@ TEST(BlockValidationInvariants, StatelessDoubleSpendTrackingExists) {
 }
 
 // ============================================================================
+// CONSENSUS-SPLIT GATE: Stateless coinbase-maturity deferral
+// ============================================================================
+// The STATEFUL path enforces COINBASE_MATURITY (height - utxo.height >= 100)
+// using UTXOEntry.isCoinbase + height. The STATELESS path CANNOT: the Utreexo
+// leaf commits to neither height nor an is_coinbase flag, and SpentOutputData
+// carries neither. The original code silently passed maturity by constructing
+// inputs with is_coinbase=false ("maturity validated by proof") — a lie that
+// let stateless nodes ACCEPT immature-coinbase-spending blocks that stateful
+// nodes REJECT (consensus split).
+//
+// The non-forking fix: a stateless validator does NOT independently validate
+// the maturity rule; it DEFERS to consensus/most-work and records that it did
+// so via statelessMaturityUnverified(). These tests pin that behaviour:
+//   - the flag LATCHES when the stateless path processes a spend-block, and
+//   - the STATEFUL path NEVER sets it (it really does validate maturity).
+// They fail if a future change reverts to silently asserting maturity in the
+// stateless path (flag would stay false) or leaks the deferral into stateful
+// mode (flag would turn true).
+
+// Build a minimal stateless spend-block: coinbase + one tx spending one outpoint,
+// with matching Utreexo spent_outputs metadata and seeded root_before.
+static Block MakeStatelessSpendBlock(const ConsensusUTXOSet& utxo_set, uint32_t height) {
+    Block block;
+    block.header.version = 1;
+    block.header.prev_block_hash = uint256();
+    block.header.timestamp = 1772496000 + height * 120;
+    block.header.difficulty = 0x1d00ffff;
+    block.header.nonce = 0;
+    block.header.ZeroReserved();
+
+    Transaction coinbase = MakeCoinbase(height);
+    block.vtx.push_back(coinbase);
+
+    Transaction tx;
+    tx.version = 1;
+    tx.witness_version = 1;
+    TxInput input;
+    input.prevout.txid = MakeTestTxId(7);
+    input.prevout.vout = 0;
+    input.sequence = 0xfffffffe;
+    tx.vin.push_back(input);
+    TxOutput out;
+    out.value = AmountUna::Una(1000);
+    out.scriptPubKey = {0x51, 0x20};
+    out.scriptPubKey.resize(34, 0x00);
+    tx.vout.push_back(out);
+    block.vtx.push_back(tx);
+
+    BlockUtreexoData utreexo_data;
+    utreexo_data.accumulator_root_before = utxo_set.GetForest().getCommitment();
+    SpentOutputData so(5000, std::vector<uint8_t>(34, 0x00));
+    so.scriptPubKey[0] = 0x51;
+    so.scriptPubKey[1] = 0x20;
+    utreexo_data.spent_outputs.push_back(so);
+    block.utreexo = utreexo_data;
+
+    block.header.merkle_root = coinbase.GetTxid().AsUint256();
+    return block;
+}
+
+TEST(BlockValidationInvariants, StatelessMaturityDeferralLatchesOnSpendBlock) {
+    ConsensusUTXOSet utxo_set;
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+
+    // Fresh validator has not deferred anything yet.
+    EXPECT_FALSE(validator.statelessMaturityUnverified())
+        << "Deferral flag must start unset";
+
+    Block block = MakeStatelessSpendBlock(utxo_set, 2);
+    BlockUndo undo;
+    std::string error;
+    // The block may be rejected later (e.g. by script validation — no real
+    // signatures in a unit test). That is irrelevant: the deferral is recorded
+    // when the stateless spend path is entered, BEFORE script checks. The point
+    // is that the node did NOT independently validate coinbase maturity.
+    (void)validator.ConnectBlock(block, 2, MakeTestHash(701), undo, error, nullptr);
+
+    EXPECT_TRUE(validator.statelessMaturityUnverified())
+        << "Stateless validator that processed a spend-block must record that it "
+           "did NOT independently validate coinbase maturity (deferred to consensus)";
+}
+
+TEST(BlockValidationInvariants, StatefulModeNeverDefersMaturity) {
+    ConsensusUTXOSet utxo_set;
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATEFUL);
+
+    EXPECT_FALSE(validator.statelessMaturityUnverified())
+        << "Deferral flag must start unset";
+
+    // Run the same spend-block through the STATEFUL path. It will be rejected
+    // (no UTXOs in the set), but the stateful path enforces maturity for real and
+    // must NEVER set the stateless deferral flag.
+    Block block = MakeStatelessSpendBlock(utxo_set, 2);
+    BlockUndo undo;
+    std::string error;
+    (void)validator.ConnectBlock(block, 2, MakeTestHash(702), undo, error, nullptr);
+
+    EXPECT_FALSE(validator.statelessMaturityUnverified())
+        << "STATEFUL validator validates maturity for real — it must never set the "
+           "stateless maturity-deferral flag";
+}
+
+// ============================================================================
 // INV-4: Snapshot restore produces correct UTXO count
 // ============================================================================
 // After Restore() in DisconnectBlock, the UTXO count must match the snapshot.
