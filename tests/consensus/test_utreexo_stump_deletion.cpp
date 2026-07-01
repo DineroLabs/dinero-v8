@@ -26,7 +26,7 @@ static UtreexoHash makeLeaf(uint64_t id, uint64_t value) {
     std::memcpy(txid.data, &id, sizeof(id));
     std::vector<uint8_t> spk = {0x51, 0x20};
     spk.resize(34, 0x00);
-    return HashUTXO(txid, 0, value, spk);
+    return HashUTXOLegacy(txid, 0, value, spk);
 }
 
 static int tests_passed = 0;

@@ -13,6 +13,7 @@
 #include "consensus/block_filter.h"       // BIP158 GCS filter construction
 #include "consensus/utreexo_activation.h"  // For FullRulesActive()
 #include "consensus/utreexo_canonical_roots_activation.h"  // Apr 13 2026 Stage 3 fork
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/block_validation.h"  // For BlockValidator::ComputeUtreexoRootPure
 #include "consensus/script.h"  // For Script::pushInt64 (BIP34 height encoding)
 // Phase 39: chain_manager.h deleted (ChainManager removed)
@@ -1389,6 +1390,24 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
 
             std::vector<consensus::UtreexoHash> proof_targets;
             std::vector<consensus::SpentOutputData> spent_outputs;
+            std::unordered_map<OutPoint, std::pair<consensus::SpentOutputData, size_t>> intra_block_outputs;
+
+            for (size_t tx_idx = 0; tx_idx < block->vtx.size(); ++tx_idx) {
+                const auto& tx = block->vtx[tx_idx];
+                const TxId txid = tx.GetTxid();
+                for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+                    const auto& output = tx.vout[vout];
+                    consensus::SpentOutputData spent_output;
+                    spent_output.value = output.value.GetUna();
+                    spent_output.scriptPubKey = output.scriptPubKey;
+                    spent_output.is_confidential = output.is_confidential;
+                    spent_output.commitment = output.commitment;
+                    spent_output.created_height = height;
+                    spent_output.is_coinbase = tx.IsCoinbase();
+                    intra_block_outputs.emplace(OutPoint(txid, vout),
+                                                std::make_pair(std::move(spent_output), tx_idx));
+                }
+            }
 
             for (size_t i = 0; i < block->vtx.size(); ++i) {
                 if (i == 0) {
@@ -1397,6 +1416,13 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
                 const Transaction& tx = block->vtx[i];
                 for (const auto& input : tx.vin) {
                     OutPoint outpoint(input.prevout.txid, input.prevout.vout);
+                    auto intra_block_it = intra_block_outputs.find(outpoint);
+                    if (intra_block_it != intra_block_outputs.end() &&
+                        intra_block_it->second.second < i) {
+                        spent_outputs.push_back(intra_block_it->second.first);
+                        continue;
+                    }
+
                     auto utxo_opt = utxo_provider_->GetUTXO(outpoint);
                     if (!utxo_opt.has_value()) {
                         continue;
@@ -1405,25 +1431,30 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
                     const uint64_t consensus_value =
                         utxo.is_confidential ? 0 : utxo.value.GetUna();
 
-                    proof_targets.push_back(consensus::HashUTXO(
+                    proof_targets.push_back(consensus::HashUTXOForCreationHeight(
                         input.prevout.txid.AsUint256(),
                         input.prevout.vout,
                         consensus_value,
-                        utxo.scriptPubKey
+                        utxo.scriptPubKey,
+                        utxo.height,
+                        utxo.isCoinbase
                     ));
 
                     spent_outputs.emplace_back(
                         consensus_value,
                         utxo.scriptPubKey,
+                        utxo.height,
+                        utxo.isCoinbase,
                         utxo.is_confidential,
                         utxo.commitment
                     );
                 }
             }
 
-            consensus::BlockUtreexoProof batch_proof;
-            batch_proof.targets = proof_targets;
-            batch_proof.proof_hashes = utreexo_forest_->generateBatchProof(proof_targets);
+            consensus::BlockUtreexoProof batch_proof =
+                utreexo_forest_->generateBlockProof(
+                    proof_targets,
+                    consensus::GetUtreexoProofFormatVersion(height));
             utreexo_data.spend_proof = batch_proof;
             utreexo_data.spent_outputs = spent_outputs;
             block->utreexo = utreexo_data;

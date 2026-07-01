@@ -406,7 +406,7 @@ int main(int argc, char* argv[]) {
     }
 
     // [P4] utreexo_root = v2 single-leaf forest commitment
-    consensus::UtreexoHash leaf = consensus::HashUTXO(
+    consensus::UtreexoHash leaf = consensus::HashUTXOLegacy(
         p_txid, 0, p_amt, p_spk);
     consensus::UtreexoForest premine_forest;
     premine_forest.add(leaf);

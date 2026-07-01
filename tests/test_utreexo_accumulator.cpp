@@ -45,7 +45,7 @@ Hash256 createDummyUTXO(int index) {
     scriptPubKey.push_back(0x88); // OP_EQUALVERIFY
     scriptPubKey.push_back(0xac); // OP_CHECKSIG
 
-    return HashUTXO(txid, 0, 10000000000ULL, scriptPubKey);  // 100 DIN
+    return HashUTXOLegacy(txid, 0, 10000000000ULL, scriptPubKey);  // 100 DIN
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

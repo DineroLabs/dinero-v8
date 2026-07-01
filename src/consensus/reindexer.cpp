@@ -13,6 +13,7 @@
 #include "consensus/utreexo_activation.h"   // IsUtreexoActive
 #include "consensus/utreexo_canonical_roots_activation.h"  // canonical-roots gate
 #include "consensus/utreexo_delta.h"        // UtreexoDelta
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/undo.h"                 // UndoRecord, SpentCoin, CreatedOut
 #include "storage/chain_db.h"
 #include "storage/archival_block_reader.h"
@@ -814,11 +815,13 @@ Status BlockReindexer::applyBlockToForest(const Block& block, uint32_t height,
                     std::stoi(coin.script_pubkey.substr(i, 2), nullptr, 16)));
             }
 
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 input.prevout.txid.AsUint256(),
                 input.prevout.vout,
                 LeafAmountForCoin(coin),
-                spk_bytes
+                spk_bytes,
+                static_cast<uint32_t>(coin.height),
+                coin.coinbase
             );
 
             auto pos_opt = snapshot.findLeafPosition(leafHash);
@@ -852,11 +855,13 @@ Status BlockReindexer::applyBlockToForest(const Block& block, uint32_t height,
             if (intra_block_spends.count(op)) continue;
 
             const auto& output = tx.vout[n];
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 txid.AsUint256(),
                 static_cast<uint32_t>(n),
                 LeafAmountForOutput(output),
-                std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end())
+                std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end()),
+                height,
+                tx.IsCoinbase()
             );
             uint64_t position = snapshot.add(leafHash);
             if (position == UINT64_MAX) {

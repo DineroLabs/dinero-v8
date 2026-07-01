@@ -459,7 +459,8 @@ public:
     bool ValidateUtreexoTx(
         const Transaction& tx,
         const std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>>& input_proofs,
-        const consensus::UtreexoHash& accumulator_root
+        const consensus::UtreexoHash& accumulator_root,
+        uint32_t validation_height = 0
     );
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -554,7 +555,9 @@ public:
         const uint256& txid,
         uint32_t vout,
         uint64_t value,
-        const std::vector<uint8_t>& script_pub_key
+        const std::vector<uint8_t>& script_pub_key,
+        uint32_t created_height = 0,
+        bool is_coinbase = false
     );
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -583,9 +586,14 @@ public:
      *
      * @param block The block to replay
      * @param spend_targets Leaf hashes of UTXOs spent in this block
+     * @param spent_outputs Optional per-input metadata used for consensus rule checks
      * @return true if forest was successfully advanced
      */
-    bool ReplayBlock(const Block& block, const std::vector<consensus::UtreexoHash>& spend_targets);
+    bool ReplayBlock(
+        const Block& block,
+        uint32_t block_height,
+        const std::vector<consensus::UtreexoHash>& spend_targets,
+        const std::vector<consensus::SpentOutputData>* spent_outputs = nullptr);
 
     /**
      * @brief Get raw pointer to the underlying forest

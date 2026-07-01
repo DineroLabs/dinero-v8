@@ -11,6 +11,7 @@
 #include "consensus/outpoint.h"
 #include "consensus/subsidy.h"  // Canonical monetary policy
 #include "consensus/utreexo_accumulator.h"  // For UtreexoForest
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/chainparams.h"
 #include "consensus/pow.hpp"
 #include "consensus/merkle_root.h"  // For ComputeMerkleRoot (Phase 11a.2)
@@ -71,7 +72,8 @@ std::unordered_set<dinero::OutPoint> CollectEphemeralOutputs(const dinero::Block
 }
 
 std::unordered_map<dinero::OutPoint, dinero::consensus::SpentOutputData> CollectIntraBlockSpentOutputs(
-    const dinero::Block& block
+    const dinero::Block& block,
+    uint32_t height
 ) {
     std::unordered_map<dinero::OutPoint, dinero::consensus::SpentOutputData> outputs;
 
@@ -81,6 +83,8 @@ std::unordered_map<dinero::OutPoint, dinero::consensus::SpentOutputData> Collect
             dinero::consensus::SpentOutputData spent_output;
             spent_output.value = tx.vout[vout].value.GetUna();
             spent_output.scriptPubKey = tx.vout[vout].scriptPubKey;
+            spent_output.created_height = height;
+            spent_output.is_coinbase = tx.IsCoinbase();
             spent_output.is_confidential = tx.vout[vout].is_confidential;
             spent_output.commitment = tx.vout[vout].commitment;
             outputs.emplace(dinero::OutPoint(txid, vout), std::move(spent_output));
@@ -501,7 +505,7 @@ din::Json handle_generatetoaddress(
                         utreexo_data.accumulator_root_before = proof_forest->getCommitment();
 
                         const auto ephemeral_outputs = CollectEphemeralOutputs(block);
-                        const auto intra_block_spent_outputs = CollectIntraBlockSpentOutputs(block);
+                        const auto intra_block_spent_outputs = CollectIntraBlockSpentOutputs(block, height);
                         std::vector<dinero::consensus::UtreexoHash> proof_targets;
 
                         for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
@@ -525,6 +529,8 @@ din::Json handle_generatetoaddress(
                                     const auto& coin = coin_result.value();
                                     spent.value = coin.amount;
                                     spent.scriptPubKey = util::HexToBytes(coin.script_pubkey);
+                                    spent.created_height = static_cast<uint32_t>(coin.height);
+                                    spent.is_coinbase = coin.coinbase;
                                     spent.is_confidential = coin.is_confidential;
                                     spent.commitment = coin.commitment;
                                 }
@@ -535,15 +541,19 @@ din::Json handle_generatetoaddress(
                                     continue;
                                 }
 
-                                proof_targets.push_back(dinero::consensus::HashUTXO(
+                                proof_targets.push_back(dinero::consensus::HashUTXOForCreationHeight(
                                     input.prevout.txid.AsUint256(),
                                     input.prevout.vout,
                                     spent.value,
-                                    spent.scriptPubKey));
+                                    spent.scriptPubKey,
+                                    spent.created_height,
+                                    spent.is_coinbase));
                             }
                         }
 
-                        utreexo_data.spend_proof = proof_forest->generateBlockProof(proof_targets);
+                        utreexo_data.spend_proof = proof_forest->generateBlockProof(
+                            proof_targets,
+                            dinero::consensus::GetUtreexoProofFormatVersion(height));
                         if (utreexo_data.spend_proof.targets.size() != proof_targets.size() ||
                             utreexo_data.spend_proof.positions.size() != proof_targets.size()) {
                             throw std::runtime_error(

@@ -176,8 +176,30 @@ UtreexoHash HashNode(const UtreexoHash& left, const UtreexoHash& right);
  * Domain tag is 19 bytes ASCII, active from genesis (no legacy mode).
  * See: DINERO-UTREEXO-SPEC.md §3
  */
-UtreexoHash HashUTXO(const uint256& txid, uint32_t vout,
+UtreexoHash HashUTXOLegacy(const uint256& txid, uint32_t vout,
                  uint64_t amount, const std::vector<uint8_t>& scriptPubKey);
+
+/**
+ * @brief Hash a UTXO leaf with authenticated maturity metadata.
+ *
+ * Experimental v2 leaf format:
+ * Leaf = SHA256("DINERO-UTXO-LEAF-v2" || txid || vout || amount ||
+ *               scriptPubKey || created_height || flags)
+ *
+ * flags bit 0 = coinbase. Binding created_height + coinbase status lets a
+ * stateless verifier enforce coinbase maturity from proof-supplied metadata:
+ * dishonest metadata computes a different leaf and fails the accumulator proof.
+ */
+UtreexoHash HashUTXOV2(const uint256& txid, uint32_t vout,
+                 uint64_t amount, const std::vector<uint8_t>& scriptPubKey,
+                 uint32_t created_height, bool is_coinbase);
+
+/**
+ * @brief Hash a UTXO using the leaf format active when it was created.
+ */
+UtreexoHash HashUTXOForCreationHeight(const uint256& txid, uint32_t vout,
+                 uint64_t amount, const std::vector<uint8_t>& scriptPubKey,
+                 uint32_t created_height, bool is_coinbase);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Utreexo Proof: Merkle path proving UTXO existence
@@ -411,6 +433,8 @@ public:
      * @return Complete BlockUtreexoProof ready for stateless verification
      */
     BlockUtreexoProof generateBlockProof(const std::vector<UtreexoHash>& targets) const;
+    BlockUtreexoProof generateBlockProof(const std::vector<UtreexoHash>& targets,
+                                         uint8_t format_version) const;
 
     // ───────────────────────────────────────────────────────────────────────
     // Queries
@@ -807,6 +831,8 @@ private:
 struct SpentOutputData {
     uint64_t value;                  // Amount in una
     std::vector<uint8_t> scriptPubKey;  // Locking script
+    uint32_t created_height = 0;
+    bool is_coinbase = false;
     bool is_confidential = false;
     std::vector<uint8_t> commitment;
 
@@ -816,6 +842,13 @@ struct SpentOutputData {
     SpentOutputData(uint64_t v, const std::vector<uint8_t>& spk, bool confidential,
                     const std::vector<uint8_t>& commit)
         : value(v), scriptPubKey(spk), is_confidential(confidential), commitment(commit) {}
+    SpentOutputData(uint64_t v, const std::vector<uint8_t>& spk, uint32_t h,
+                    bool coinbase)
+        : value(v), scriptPubKey(spk), created_height(h), is_coinbase(coinbase) {}
+    SpentOutputData(uint64_t v, const std::vector<uint8_t>& spk, uint32_t h,
+                    bool coinbase, bool confidential, const std::vector<uint8_t>& commit)
+        : value(v), scriptPubKey(spk), created_height(h), is_coinbase(coinbase),
+          is_confidential(confidential), commitment(commit) {}
 
     /**
      * @brief Serialize to bytes
@@ -831,8 +864,15 @@ struct SpentOutputData {
     /**
      * @brief Get size in bytes
      */
-    size_t size() const {
-        return 8 + 4 + scriptPubKey.size() + 1 + 4 + commitment.size();
+    size_t size(uint8_t format_version = 5) const {
+        size_t total = 8 + 4 + scriptPubKey.size();
+        if (format_version >= 6) {
+            total += 4 + 1;
+        }
+        if (format_version >= 5) {
+            total += 1 + 4 + commitment.size();
+        }
+        return total;
     }
 };
 
@@ -854,8 +894,9 @@ struct BlockUtreexoProof {
     std::vector<uint64_t> positions;        // Leaf positions in forest (one per target, same order)
     std::vector<UtreexoHash> proof_hashes;  // Authentication path nodes (Merkle proof data)
     uint64_t numLeaves;                     // Total leaves in forest at proof generation time
+    uint8_t format_version;                 // Serialized proof/spent-output metadata version
 
-    BlockUtreexoProof() : numLeaves(0) {}
+    BlockUtreexoProof() : numLeaves(0), format_version(5) {}
 
     /**
      * @brief Serialize proof to bytes
@@ -1041,7 +1082,7 @@ struct BlockUtreexoData {
     size_t size() const {
         size_t spent_outputs_size = 0;
         for (const auto& spent : spent_outputs) {
-            spent_outputs_size += spent.size();
+            spent_outputs_size += spent.size(spend_proof.format_version);
         }
         return 32 + spend_proof.size() + spent_outputs_size;  // root + proof + spent_outputs
     }
@@ -1113,15 +1154,16 @@ struct UtreexoTransitionProof {
     static UtreexoTransitionProof generate(
         const UtreexoForest& forest_before,
         const Block& block,
-        const BlockUtreexoProof& spend_proof);
+        const BlockUtreexoProof& spend_proof,
+        uint32_t block_height = 0);
 
     /**
      * Compute canonical addition hashes from block transactions.
      * MUST match forest-clone PASS 2 in ConnectBlockInternal.
-     * Iterates all txs, all outputs, computes HashUTXO for each.
+     * Iterates all txs, all outputs, computes the activation-aware leaf for each.
      * No OP_RETURN skip (matches forest behavior).
      */
-    static std::vector<UtreexoHash> computeAdditionHashes(const Block& block);
+    static std::vector<UtreexoHash> computeAdditionHashes(const Block& block, uint32_t block_height = 0);
 
     // ═══════════════════════════════════════════════════════════════════════
     // Serialization

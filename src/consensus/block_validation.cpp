@@ -15,6 +15,7 @@ extern "C" {
 #include "consensus/outpoint.h"            // Phase M.2: Binary OutPoint comparison
 #include "consensus/utreexo_activation.h"   // Phase 3: Utreexo activation rule
 #include "consensus/utreexo_canonical_roots_activation.h"  // Apr 13 2026 Stage 3 fork
+#include "consensus/utreexo_maturity_leaf_activation.h"  // Utreexo maturity-bound leaf fork
 #include "consensus/utreexo_phase_guard.h"  // Phase 3: Safety guards (prevent prod deployment)
 #include "consensus/utreexo_delta.h"        // Phase 4: Delta-based undo for efficient reorgs
 #include "consensus/header_consensus.h"     // Phase 3: Header size enforcement
@@ -225,6 +226,25 @@ uint64_t GetUtreexoLeafAmount(const SpentOutputData& spent_output) {
     return spent_output.is_confidential ? 0 : spent_output.value;
 }
 
+struct BlockOutputRef {
+    const TxOutput* output;
+    bool is_coinbase;
+    size_t tx_index;
+};
+
+bool SpentOutputMatchesBlockOutput(
+    const SpentOutputData& spent,
+    const TxOutput& output,
+    uint32_t created_height,
+    bool is_coinbase) {
+    return spent.value == GetUtreexoLeafAmount(output) &&
+           spent.scriptPubKey == output.scriptPubKey &&
+           spent.is_confidential == output.is_confidential &&
+           spent.commitment == output.commitment &&
+           spent.created_height == created_height &&
+           spent.is_coinbase == is_coinbase;
+}
+
 }  // namespace
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -381,11 +401,13 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
             const uint64_t leaf_value = GetUtreexoLeafAmount(utxo);
 
             // Hash the UTXO being spent
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 input.prevout.txid.AsUint256(),
                 input.prevout.vout,
                 leaf_value,
-                utxo.scriptPubKey
+                utxo.scriptPubKey,
+                utxo.height,
+                utxo.isCoinbase
             );
 
             // Find leaf position
@@ -430,11 +452,13 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
             const uint64_t leaf_value = GetUtreexoLeafAmount(output);
 
             // Hash the new UTXO
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 txid.AsUint256(),
                 static_cast<uint32_t>(n),
                 leaf_value,
-                std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end())
+                std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end()),
+                height,
+                tx.IsCoinbase()
             );
 
             {
@@ -557,11 +581,13 @@ bool BlockValidator::ComputeUtreexoRootPureFromForest(
                 return false;
             }
             const uint64_t leaf_value = GetUtreexoLeafAmount(*utxo);
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 input.prevout.txid.AsUint256(),
                 input.prevout.vout,
                 leaf_value,
-                utxo->scriptPubKey);
+                utxo->scriptPubKey,
+                utxo->height,
+                utxo->isCoinbase);
             auto pos_opt = snapshot.findLeafPosition(leafHash);
             if (!pos_opt.has_value()) {
                 error = "utreexo-leaf-missing-in-fork-view: " + op.ToString();
@@ -583,12 +609,14 @@ bool BlockValidator::ComputeUtreexoRootPureFromForest(
 
             const auto& output = tx.vout[n];
             const uint64_t leaf_value = GetUtreexoLeafAmount(output);
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 txid.AsUint256(),
                 static_cast<uint32_t>(n),
                 leaf_value,
                 std::vector<uint8_t>(output.scriptPubKey.begin(),
-                                     output.scriptPubKey.end()));
+                                     output.scriptPubKey.end()),
+                height,
+                tx.IsCoinbase());
             uint64_t pos = snapshot.add(leafHash);
             if (pos == UINT64_MAX) {
                 error = "utreexo-add-failed-from-forest: capacity or duplicate";
@@ -1040,9 +1068,46 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // Stateless mode relies solely on Utreexo proofs — this adds defense in depth.
     // ═════════════════════════════════════════════════════════════════════════
     std::unordered_set<OutPoint> spent_in_block;
+    std::unordered_map<OutPoint, BlockOutputRef> stateless_intra_block_outputs;
+
+    if (validation_mode_ == ValidationMode::STATELESS) {
+        for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+            const auto& tx = block.vtx[tx_idx];
+            const TxId txid = tx.GetTxid();
+            for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+                stateless_intra_block_outputs.emplace(OutPoint(txid, vout),
+                                                      BlockOutputRef{&tx.vout[vout], tx.IsCoinbase(), tx_idx});
+            }
+        }
+    }
 
     // Clear intra-block UTXO overlay for this block (enables tx chaining)
     intra_block_utxos_.clear();
+
+    if (validation_mode_ == ValidationMode::STATELESS && block.utreexo.has_value()) {
+        const auto& utreexo_data = block.utreexo.value();
+        size_t spent_index = 0;
+        for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+            for (const auto& input : block.vtx[tx_idx].vin) {
+                if (spent_index >= utreexo_data.spent_outputs.size()) {
+                    break;
+                }
+                const OutPoint prevout(input.prevout.txid, input.prevout.vout);
+                auto ephemeral_it = stateless_intra_block_outputs.find(prevout);
+                if (ephemeral_it != stateless_intra_block_outputs.end() &&
+                    ephemeral_it->second.tx_index < tx_idx &&
+                    !SpentOutputMatchesBlockOutput(
+                        utreexo_data.spent_outputs[spent_index],
+                        *ephemeral_it->second.output,
+                        height,
+                        ephemeral_it->second.is_coinbase)) {
+                    error = "utreexo-ephemeral-spent-output-mismatch (PROOF_OUTPOINT_MISMATCH)";
+                    return false;
+                }
+                spent_index++;
+            }
+        }
+    }
 
     // Process all non-coinbase transactions
     for (size_t i = 1; i < block.vtx.size(); i++) {
@@ -1082,55 +1147,35 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             }
 
             const auto& utreexo_data = block.utreexo.value();
+            const uint8_t expected_proof_format = GetUtreexoProofFormatVersion(height);
+            if (utreexo_data.spend_proof.format_version != expected_proof_format) {
+                error = "stateless-validation-proof-format-mismatch: expected v" +
+                        std::to_string(expected_proof_format) + ", got v" +
+                        std::to_string(utreexo_data.spend_proof.format_version) +
+                        " (INVALID_PROOF)";
+                return false;
+            }
 
             // ═════════════════════════════════════════════════════════════════
-            // COINBASE-MATURITY DEFERRAL (interim consensus-split mitigation)
+            // COINBASE-MATURITY: v2 enforcement plus legacy deferral
             // ═════════════════════════════════════════════════════════════════
-            // The STATEFUL path enforces COINBASE_MATURITY using UTXOEntry's
-            // height + isCoinbase fields (see ValidateTransaction, the
-            // `if (utxo.isCoinbase)` maturity gate below). The STATELESS path
-            // CANNOT: the Utreexo leaf hash commits to neither the creating
-            // height nor an is_coinbase flag, and SpentOutputData carries
-            // neither — so there is no data here from which to identify a
-            // coinbase spend or compute its confirmation depth.
-            //
-            // The original code papered over this by constructing each input
-            // UTXOEntry with `is_coinbase = false`, which made the maturity gate
-            // pass vacuously while pretending "maturity validated by proof". It
-            // is not: a miner spending an IMMATURE coinbase produced a block that
-            // stateful nodes REJECT but stateless nodes ACCEPTED → consensus
-            // split along the stateful/stateless line.
-            //
-            // FIX (NON-FORKING): stop pretending. A stateless node does NOT act
-            // as an independent consensus validator for the maturity rule while
-            // it lacks the data to check it; it DEFERS this single rule to
-            // consensus / most-work — following the chain produced by
-            // maturity-enforcing stateful miners and bridge full nodes (which DO
-            // maintain a UTXO DB and reject immature-coinbase spends) rather than
-            // independently vouching a block as fully consensus-valid. We record
-            // the deferral as program state (stateless_maturity_unverified_) so
-            // higher layers / RPC never represent this node as a full independent
-            // validator of maturity, and emit a one-time auditable warning.
-            //
-            // This rejects NO block a stateful node accepts (no new return false)
-            // and changes NO rule a stateful node enforces — it only removes the
-            // false "I validated maturity" assertion from the stateless path.
-            //
-            // FOLLOW-UP (tracked): the durable cryptographic fix is a future
-            // hard-fork that commits is_coinbase + creating-height into the
-            // Utreexo leaf hash, so stateless nodes can verify maturity from the
-            // proof itself. That changes the accumulator/leaf format and would
-            // invalidate the shipped AssumeUTXO snapshot, so it MUST be done at a
-            // separate activation height — out of scope for this non-forking gate.
-            if (!tx.vin.empty() && !stateless_maturity_unverified_) {
+            // For v2 leaves, created_height and is_coinbase are committed by the
+            // Utreexo leaf hash/root, so the stateless path can enforce the same
+            // height-created_height >= COINBASE_MATURITY rule as stateful nodes.
+            // Legacy leaves do not authenticate those fields; during the unsafe
+            // window they keep the v8.0.11 soft-deferral latch instead of making
+            // a false full-validation claim or hard-rejecting honest spends.
+            auto defer_legacy_maturity = [&]() {
+                if (stateless_maturity_unverified_) {
+                    return;
+                }
                 stateless_maturity_unverified_ = true;
                 std::cout << "⚠️  [CONSENSUS] STATELESS mode cannot independently "
-                             "validate the coinbase-maturity rule (leaf commits to "
-                             "neither height nor is_coinbase). Deferring this rule to "
-                             "consensus/most-work; this node does NOT vouch blocks as "
-                             "fully consensus-valid for maturity. First observed at "
-                             "height " << height << "." << std::endl;
-            }
+                             "validate coinbase maturity for a legacy Utreexo leaf "
+                             "before/inside the activation grace window. Deferring this "
+                             "rule to consensus/most-work; first observed at height "
+                          << height << "." << std::endl;
+            };
 
             // Build vector of all UTXOs for this transaction (needed for BIP341 Taproot sighash)
             fee_input_utxos.reserve(tx.vin.size());
@@ -1144,14 +1189,41 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
                 const auto& spent_output = utreexo_data.spent_outputs[temp_spent_idx];
                 temp_spent_idx++;
+                const auto& input = tx.vin[input_idx];
+                const OutPoint prevout(input.prevout.txid, input.prevout.vout);
+                auto ephemeral_it = stateless_intra_block_outputs.find(prevout);
+                if (ephemeral_it != stateless_intra_block_outputs.end() &&
+                    ephemeral_it->second.tx_index < i &&
+                    !SpentOutputMatchesBlockOutput(
+                        spent_output,
+                        *ephemeral_it->second.output,
+                        height,
+                        ephemeral_it->second.is_coinbase)) {
+                    error = "utreexo-ephemeral-spent-output-mismatch (PROOF_OUTPOINT_MISMATCH)";
+                    return false;
+                }
+
+                const bool v2_leaf = IsUtreexoMaturityLeafActive(spent_output.created_height);
+                const auto maturity_status = EvaluateUtreexoStatelessMaturity(
+                    height,
+                    spent_output.created_height,
+                    spent_output.is_coinbase);
+                if (maturity_status == UtreexoStatelessMaturityStatus::IMMATURE_COINBASE) {
+                    error = "stateless-coinbase-maturity-violation: created_height=" +
+                            std::to_string(spent_output.created_height) +
+                            ", spend_height=" + std::to_string(height) +
+                            " (COINBASE_IMMATURE)";
+                    return false;
+                }
+                if (maturity_status == UtreexoStatelessMaturityStatus::LEGACY_DEFERRED) {
+                    defer_legacy_maturity();
+                }
 
                 fee_input_utxos.emplace_back(
                     AmountUna::Una(spent_output.value),
                     spent_output.scriptPubKey,
-                    0,      // height: UNKNOWN in stateless mode (leaf does not commit it)
-                    false,  // is_coinbase: UNKNOWN in stateless mode — maturity is NOT
-                            // validated here; it is deferred to consensus (see the
-                            // COINBASE-MATURITY DEFERRAL note + FOLLOW-UP above).
+                    v2_leaf ? spent_output.created_height : 0,
+                    v2_leaf && spent_output.is_coinbase,
                     spent_output.is_confidential,
                     spent_output.commitment
                 );
@@ -1448,6 +1520,16 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         std::vector<UtreexoHash> expected_targets;
         size_t spend_count = 0;
         size_t spent_outputs_index = 0;
+        std::unordered_map<OutPoint, BlockOutputRef> expected_intra_block_outputs;
+
+        for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+            const auto& tx = block.vtx[tx_idx];
+            const TxId txid = tx.GetTxid();
+            for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+                expected_intra_block_outputs.emplace(OutPoint(txid, vout),
+                                                     BlockOutputRef{&tx.vout[vout], tx.IsCoinbase(), tx_idx});
+            }
+        }
 
         // Iterate through transactions and their inputs
         for (size_t i = 0; i < block.vtx.size(); i++) {
@@ -1473,14 +1555,30 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     const auto& spent_output = utreexo_data.spent_outputs[spent_outputs_index];
                     spent_outputs_index++;
                     const uint64_t leaf_value = GetUtreexoLeafAmount(spent_output);
+                    const OutPoint prevout(input.prevout.txid, input.prevout.vout);
+                    auto intra_it = expected_intra_block_outputs.find(prevout);
+                    if (intra_it != expected_intra_block_outputs.end() &&
+                        intra_it->second.tx_index < i) {
+                        if (!SpentOutputMatchesBlockOutput(
+                                spent_output,
+                                *intra_it->second.output,
+                                height,
+                                intra_it->second.is_coinbase)) {
+                            error = "utreexo-ephemeral-spent-output-mismatch (PROOF_OUTPOINT_MISMATCH)";
+                            return false;
+                        }
+                        continue;
+                    }
 
                     // Compute leaf hash for this spent UTXO
                     // Phase M.4: input.prevout.txid is TxId, extract uint256 for HashUTXO
-                    UtreexoHash leaf_hash = HashUTXO(
+                    UtreexoHash leaf_hash = HashUTXOForCreationHeight(
                         input.prevout.txid.AsUint256(),
                         input.prevout.vout,
                         leaf_value,
-                        spent_output.scriptPubKey
+                        spent_output.scriptPubKey,
+                        spent_output.created_height,
+                        spent_output.is_coinbase
                     );
 
                     expected_targets.push_back(leaf_hash);
@@ -1623,7 +1721,8 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         auto transition = UtreexoTransitionProof::generate(
             consensus_utxo_set_->GetForest(),
             block,
-            utreexo_data.spend_proof);
+            utreexo_data.spend_proof,
+            height);
 
         if (!transition.verify()) {
             // Defense-in-depth cross-check: warn but don't block consensus.
@@ -1730,11 +1829,13 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
                     // Hash the UTXO being spent (using proof data)
                     // Phase M.4: input.prevout.txid is TxId, extract uint256 for HashUTXO
-                    leafHash = HashUTXO(
+                    leafHash = HashUTXOForCreationHeight(
                         input.prevout.txid.AsUint256(),
                         input.prevout.vout,
                         leaf_value,
-                        spent_output.scriptPubKey
+                        spent_output.scriptPubKey,
+                        spent_output.created_height,
+                        spent_output.is_coinbase
                     );
                 } else {
                     // STATEFUL PATH: Look up UTXO from consensus set (Phase 2: pure in-memory)
@@ -1750,11 +1851,13 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     // Hash the UTXO being spent
                     // Phase M.4: input.prevout.txid is TxId, extract uint256 for HashUTXO
                     // Phase M.6.2: Extract raw value from AmountUna
-                    leafHash = HashUTXO(
+                    leafHash = HashUTXOForCreationHeight(
                         input.prevout.txid.AsUint256(),
                         input.prevout.vout,
                         leaf_value,
-                        utxo.scriptPubKey
+                        utxo.scriptPubKey,
+                        utxo.height,
+                        utxo.isCoinbase
                     );
                 }
 
@@ -1811,11 +1914,13 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                 // Hash the new UTXO
                 // Phase M.4: txid is TxId, extract uint256 for HashUTXO
                 // Phase M.6.2: Extract raw value from AmountUna
-                UtreexoHash leafHash = HashUTXO(
+                UtreexoHash leafHash = HashUTXOForCreationHeight(
                     txid.AsUint256(),
                     static_cast<uint32_t>(n),
                     leaf_value,
-                    std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end())
+                    std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end()),
+                    height,
+                    tx.IsCoinbase()
                 );
 
                 {

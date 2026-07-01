@@ -12,11 +12,13 @@
  */
 
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/interfaces/iutxo_provider.h"
 #include "network/bridge_node.h"
 #include "network/stateless_node.h"
 #include "primitives/transaction.h"
 #include "primitives/hash_domains.h"
+#include "consensus/chainparams.h"
 #include <iostream>
 #include <cassert>
 #include <vector>
@@ -52,9 +54,10 @@ class MockUTXOProvider : public IUTXOProvider {
 public:
     void AddTestUTXO(const TxId& txid, uint32_t vout,
                      uint64_t value, const std::vector<uint8_t>& script,
-                     uint32_t height = 1) {
+                     uint32_t height = 1,
+                     bool is_coinbase = false) {
         OutPoint op(txid, vout);
-        UTXOEntry entry(AmountUna::Una(value), script, height, false);
+        UTXOEntry entry(AmountUna::Una(value), script, height, is_coinbase);
         utxos_[op] = entry;
     }
 
@@ -113,7 +116,7 @@ static TestUTXO makeTestUTXO(uint64_t id, uint32_t vout, uint64_t value) {
     u.value = value;
     u.scriptPubKey = {0x51, 0x20};  // P2TR prefix
     u.scriptPubKey.resize(34, 0x00);
-    u.leafHash = HashUTXO(u.txid.AsUint256(), u.vout, u.value, u.scriptPubKey);
+    u.leafHash = HashUTXOLegacy(u.txid.AsUint256(), u.vout, u.value, u.scriptPubKey);
     u.forest_position = 0;
     return u;
 }
@@ -177,7 +180,7 @@ static void test_generate_proofs_for_tx() {
         TEST_ASSERT(spent.scriptPubKey == utxo.scriptPubKey,
                     "SpentOutputData script should match UTXO");
 
-        UtreexoHash leaf = HashUTXO(utxo.txid.AsUint256(), utxo.vout,
+        UtreexoHash leaf = HashUTXOLegacy(utxo.txid.AsUint256(), utxo.vout,
                                      utxo.value, utxo.scriptPubKey);
         bool valid = proof.verify(leaf, roots);
         TEST_ASSERT(valid, "Individual proof should verify against forest roots");
@@ -547,7 +550,7 @@ static void test_multiple_outputs_same_tx() {
         u.value = 1000 * (vout + 1);
         u.scriptPubKey = {0x51, 0x20};
         u.scriptPubKey.resize(34, 0x00);
-        u.leafHash = HashUTXO(u.txid.AsUint256(), u.vout, u.value, u.scriptPubKey);
+        u.leafHash = HashUTXOLegacy(u.txid.AsUint256(), u.vout, u.value, u.scriptPubKey);
         u.forest_position = forest.add(u.leafHash);
         mock_utxo->AddTestUTXO(u.txid, u.vout, u.value, u.scriptPubKey);
         utxos.push_back(u);
@@ -665,10 +668,62 @@ static void test_tampered_spent_output_data() {
 }
 
 // ============================================================================
+// Test 12: Coinbase maturity enforced in tx proof validation
+// ============================================================================
+
+static void test_validate_utreexo_tx_rejects_immature_coinbase() {
+    std::cout << "Test 12: ValidateUtreexoTx rejects immature coinbase..." << std::endl;
+
+    const uint32_t activation = GetUtreexoMaturityLeafActivationHeight();
+    TEST_ASSERT(activation > 0, "Regtest maturity leaf activation must be non-zero for this test");
+
+    UtreexoForest forest;
+    auto mock_utxo = std::make_shared<MockUTXOProvider>();
+
+    TestUTXO coinbase = makeTestUTXO(900, 0, 100'00000000ULL);
+    coinbase.leafHash = HashUTXOForCreationHeight(
+        coinbase.txid.AsUint256(),
+        coinbase.vout,
+        coinbase.value,
+        coinbase.scriptPubKey,
+        activation,
+        true);
+    coinbase.forest_position = forest.add(coinbase.leafHash);
+    mock_utxo->AddTestUTXO(
+        coinbase.txid,
+        coinbase.vout,
+        coinbase.value,
+        coinbase.scriptPubKey,
+        activation,
+        true);
+
+    BridgeNode bridge(mock_utxo, &forest);
+    StatelessNode csn(&forest);
+    Transaction tx = buildSpendingTx({coinbase});
+    auto proofs = bridge.GenerateProofsForTransaction(tx);
+    TEST_ASSERT(proofs.has_value(), "Proof generation should succeed for coinbase UTXO");
+    TEST_ASSERT((*proofs)[0].second.created_height == activation,
+                "SpentOutputData must carry coinbase creation height");
+    TEST_ASSERT((*proofs)[0].second.is_coinbase,
+                "SpentOutputData must carry coinbase flag");
+
+    const auto root = forest.getCommitment();
+    bool valid = csn.ValidateUtreexoTx(tx, *proofs, root, activation + 99);
+    TEST_ASSERT(!valid, "CSN mempool path must reject immature coinbase input");
+
+    valid = csn.ValidateUtreexoTx(tx, *proofs, root, activation + 100);
+    TEST_ASSERT(valid, "CSN mempool path must accept coinbase input at maturity boundary");
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
 int main() {
+    SelectParams(Chain::REGTEST);
+
     std::cout << std::endl;
     std::cout << "═══════════════════════════════════════════════════" << std::endl;
     std::cout << "  Phase #4: Utreexo TX Relay Test Suite" << std::endl;
@@ -685,6 +740,7 @@ int main() {
     test_multiple_outputs_same_tx();
     test_proof_serialization_roundtrip();
     test_tampered_spent_output_data();
+    test_validate_utreexo_tx_rejects_immature_coinbase();
 
     std::cout << std::endl;
     std::cout << "═══════════════════════════════════════════════════" << std::endl;

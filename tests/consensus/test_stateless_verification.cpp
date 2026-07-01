@@ -13,6 +13,7 @@
  */
 
 #include "consensus/stateless_verification.h"
+#include "consensus/chainparams.h"
 #include "consensus/utxo_snapshot_state.h"
 #include "consensus/utreexo_accumulator.h"
 #include "consensus/outpoint.h"
@@ -254,15 +255,26 @@ bool TestDoubleSpendDetection() {
     SpentOutputData spent2(1000000, RandomScriptPubKey());
     std::vector<SpentOutputData> spent_outputs = {spent1, spent2};
 
+    std::vector<UtreexoHash> targets;
+    targets.reserve(2);
+    targets.push_back(HashUTXOLegacy(shared_txid.AsUint256(), 0, spent1.value, spent1.scriptPubKey));
+    targets.push_back(HashUTXOLegacy(shared_txid.AsUint256(), 0, spent2.value, spent2.scriptPubKey));
+
+    UtreexoForest forest;
+    for (const auto& target : targets) {
+        forest.add(target);
+    }
+    std::vector<UtreexoHash> roots = forest.getRoots();
+
     StatelessContext ctx;
     ctx.spent_outputs = spent_outputs.data();
     ctx.spent_count = static_cast<uint32_t>(spent_outputs.size());
-    ctx.roots = nullptr;
-    ctx.num_roots = 0;
-    ctx.num_leaves = 0;
+    ctx.roots = roots.data();
+    ctx.num_roots = static_cast<uint8_t>(roots.size());
+    ctx.num_leaves = forest.getNumLeaves();
     ctx.height = 10;
 
-    BlockUtreexoProof proof;
+    BlockUtreexoProof proof = forest.generateBlockProof(targets);
 
     // Verify - should fail with DOUBLE_SPEND
     VerifyResult result = VerifyBlockStateless(block, ctx, proof);
@@ -414,6 +426,8 @@ bool TestVerifyResultPOD() {
 // Main
 // =============================================================================
 int main() {
+    SelectParams(Chain::MAINNET);
+
     std::cout << "════════════════════════════════════════════════════════════════" << std::endl;
     std::cout << "Phase 2.2: Stateless Block Verification Tests" << std::endl;
     std::cout << "════════════════════════════════════════════════════════════════" << std::endl;

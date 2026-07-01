@@ -15,16 +15,21 @@
 #include "consensus/block_validation.h"
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/chainparams.h"
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/subsidy.h"
+#include "network/bridge_node.h"
+#include "network/stateless_node.h"
 #include "primitives/transaction.h"
 #include "primitives/block.h"
 #include "primitives/amount.h"
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <cstring>
+#include <memory>
 #include <unordered_map>
 
 using namespace dinero;
@@ -268,28 +273,21 @@ TEST(BlockValidationInvariants, StatelessDoubleSpendTrackingExists) {
 }
 
 // ============================================================================
-// CONSENSUS-SPLIT GATE: Stateless coinbase-maturity deferral
+// CONSENSUS-SPLIT GATE: Stateless coinbase maturity
 // ============================================================================
 // The STATEFUL path enforces COINBASE_MATURITY (height - utxo.height >= 100)
-// using UTXOEntry.isCoinbase + height. The STATELESS path CANNOT: the Utreexo
-// leaf commits to neither height nor an is_coinbase flag, and SpentOutputData
-// carries neither. The original code silently passed maturity by constructing
-// inputs with is_coinbase=false ("maturity validated by proof") — a lie that
-// let stateless nodes ACCEPT immature-coinbase-spending blocks that stateful
-// nodes REJECT (consensus split).
-//
-// The non-forking fix: a stateless validator does NOT independently validate
-// the maturity rule; it DEFERS to consensus/most-work and records that it did
-// so via statelessMaturityUnverified(). These tests pin that behaviour:
-//   - the flag LATCHES when the stateless path processes a spend-block, and
-//   - the STATEFUL path NEVER sets it (it really does validate maturity).
-// They fail if a future change reverts to silently asserting maturity in the
-// stateless path (flag would stay false) or leaks the deferral into stateful
-// mode (flag would turn true).
+// using UTXOEntry.isCoinbase + height. Before the maturity-bound leaf fork, the
+// STATELESS path cannot verify that rule independently and must soft-defer. At
+// and after the fork, v2 leaves authenticate created_height + is_coinbase, so
+// the live stateless ConnectBlock path must enforce the rule itself.
 
 // Build a minimal stateless spend-block: coinbase + one tx spending one outpoint,
 // with matching Utreexo spent_outputs metadata and seeded root_before.
-static Block MakeStatelessSpendBlock(const ConsensusUTXOSet& utxo_set, uint32_t height) {
+static Block MakeStatelessSpendBlock(const ConsensusUTXOSet& utxo_set,
+                                     uint32_t height,
+                                     uint32_t spent_created_height = 0,
+                                     bool spent_is_coinbase = false,
+                                     uint8_t proof_format = 0) {
     Block block;
     block.header.version = 1;
     block.header.prev_block_hash = uint256();
@@ -318,7 +316,10 @@ static Block MakeStatelessSpendBlock(const ConsensusUTXOSet& utxo_set, uint32_t 
 
     BlockUtreexoData utreexo_data;
     utreexo_data.accumulator_root_before = utxo_set.GetForest().getCommitment();
-    SpentOutputData so(5000, std::vector<uint8_t>(34, 0x00));
+    utreexo_data.spend_proof.format_version =
+        proof_format == 0 ? GetUtreexoProofFormatVersion(height) : proof_format;
+    SpentOutputData so(5000, std::vector<uint8_t>(34, 0x00),
+                       spent_created_height, spent_is_coinbase);
     so.scriptPubKey[0] = 0x51;
     so.scriptPubKey[1] = 0x20;
     utreexo_data.spent_outputs.push_back(so);
@@ -326,6 +327,276 @@ static Block MakeStatelessSpendBlock(const ConsensusUTXOSet& utxo_set, uint32_t 
 
     block.header.merkle_root = coinbase.GetTxid().AsUint256();
     return block;
+}
+
+static std::vector<uint8_t> MakeMatrixScript(uint8_t tag) {
+    std::vector<uint8_t> script = {0x51, 0x20};
+    script.resize(34, tag);
+    return script;
+}
+
+static void SeedCpfpFunding(
+    ConsensusUTXOSet& utxo_set,
+    OutPoint& funding_outpoint,
+    UTXOEntry& funding_utxo,
+    UtreexoHash& funding_leaf) {
+    funding_outpoint = OutPoint(MakeTestTxId(9001), 0);
+    funding_utxo = UTXOEntry(
+        AmountUna::Una(50'00000000ULL),
+        MakeMatrixScript(0x42),
+        GetUtreexoMaturityLeafActivationHeight(),
+        false);
+    ASSERT_TRUE(utxo_set.AddCoin(funding_outpoint, funding_utxo));
+    funding_leaf = HashUTXOForCreationHeight(
+        funding_outpoint.txid.AsUint256(),
+        funding_outpoint.vout,
+        funding_utxo.value.GetUna(),
+        funding_utxo.scriptPubKey,
+        funding_utxo.height,
+        funding_utxo.isCoinbase);
+    ASSERT_NE(utxo_set.GetForest().add(funding_leaf), UINT64_MAX);
+}
+
+static Block MakeCpfpMatrixBlock(uint32_t height, const OutPoint& funding_outpoint) {
+    const auto script = MakeMatrixScript(0x42);
+    Block block = MakeCoinbaseBlock(height, MakeTestHash(8000));
+
+    Transaction parent;
+    parent.version = 2;
+    parent.lockTime = 0;
+    parent.witness_version = 1;
+    TxInput parent_input;
+    parent_input.prevout.txid = funding_outpoint.txid;
+    parent_input.prevout.vout = funding_outpoint.vout;
+    parent_input.sequence = 0xfffffffe;
+    parent.vin.push_back(parent_input);
+    TxOutput parent_output;
+    parent_output.value = AmountUna::Una(49'99900000ULL);
+    parent_output.scriptPubKey = script;
+    parent.vout.push_back(parent_output);
+    block.vtx.push_back(parent);
+
+    Transaction child;
+    child.version = 2;
+    child.lockTime = 0;
+    child.witness_version = 1;
+    TxInput child_input;
+    child_input.prevout.txid = parent.GetTxid();
+    child_input.prevout.vout = 0;
+    child_input.sequence = 0xfffffffe;
+    child.vin.push_back(child_input);
+    TxOutput child_output;
+    child_output.value = AmountUna::Una(49'99800000ULL);
+    child_output.scriptPubKey = script;
+    child.vout.push_back(child_output);
+    block.vtx.push_back(child);
+
+    block.header.merkle_root = block.vtx[0].GetTxid().AsUint256();
+    return block;
+}
+
+static BlockUtreexoData BuildMinerLikeCpfpUtreexoData(
+    ConsensusUTXOSet& utxo_set,
+    const Block& block,
+    uint32_t height) {
+    BlockUtreexoData data;
+    data.accumulator_root_before = utxo_set.GetForest().getCommitment();
+
+    std::unordered_map<OutPoint, SpentOutputData> intra_block_outputs;
+    for (const auto& tx : block.vtx) {
+        const TxId txid = tx.GetTxid();
+        for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+            const auto& output = tx.vout[vout];
+            SpentOutputData spent;
+            spent.value = output.value.GetUna();
+            spent.scriptPubKey = output.scriptPubKey;
+            spent.is_confidential = output.is_confidential;
+            spent.commitment = output.commitment;
+            spent.created_height = height;
+            spent.is_coinbase = tx.IsCoinbase();
+            intra_block_outputs.emplace(OutPoint(txid, vout), std::move(spent));
+        }
+    }
+
+    std::vector<UtreexoHash> targets;
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        for (const auto& input : block.vtx[tx_idx].vin) {
+            const OutPoint prevout(input.prevout.txid, input.prevout.vout);
+            auto intra_it = intra_block_outputs.find(prevout);
+            if (intra_it != intra_block_outputs.end()) {
+                data.spent_outputs.push_back(intra_it->second);
+                continue;
+            }
+
+            auto utxo = utxo_set.GetUTXO(prevout);
+            EXPECT_TRUE(utxo.has_value());
+            if (!utxo.has_value()) {
+                continue;
+            }
+
+            const uint64_t leaf_value = utxo->is_confidential ? 0 : utxo->value.GetUna();
+            targets.push_back(HashUTXOForCreationHeight(
+                input.prevout.txid.AsUint256(),
+                input.prevout.vout,
+                leaf_value,
+                utxo->scriptPubKey,
+                utxo->height,
+                utxo->isCoinbase));
+            data.spent_outputs.emplace_back(
+                leaf_value,
+                utxo->scriptPubKey,
+                utxo->height,
+                utxo->isCoinbase,
+                utxo->is_confidential,
+                utxo->commitment);
+        }
+    }
+
+    data.spend_proof = utxo_set.GetForest().generateBlockProof(
+        targets,
+        GetUtreexoProofFormatVersion(height));
+    return data;
+}
+
+static BlockUtreexoData BuildBridgeCpfpUtreexoData(
+    ConsensusUTXOSet& utxo_set,
+    const Block& block,
+    uint32_t height) {
+    auto provider = std::shared_ptr<IUTXOProvider>(
+        std::shared_ptr<void>{},
+        static_cast<IUTXOProvider*>(&utxo_set));
+    network::BridgeNode bridge(provider, &utxo_set.GetForest());
+    return bridge.GenerateProofForBlock(block, height);
+}
+
+static void ExpectCpfpProducerDataShape(const BlockUtreexoData& data, const char* label) {
+    EXPECT_EQ(data.spent_outputs.size(), 2u) << label;
+    EXPECT_EQ(data.spend_proof.targets.size(), 1u) << label;
+}
+
+static void RunCpfpConnectBlockMatrixCase(
+    const char* label,
+    const std::function<BlockUtreexoData(ConsensusUTXOSet&, const Block&, uint32_t)>& producer) {
+    ConsensusUTXOSet utxo_set;
+    OutPoint funding_outpoint;
+    UTXOEntry funding_utxo;
+    UtreexoHash funding_leaf;
+    SeedCpfpFunding(utxo_set, funding_outpoint, funding_utxo, funding_leaf);
+
+    const uint32_t height = GetUtreexoMaturityLeafActivationHeight() + 1;
+    Block block = MakeCpfpMatrixBlock(height, funding_outpoint);
+    BlockUtreexoData data = producer(utxo_set, block, height);
+    ExpectCpfpProducerDataShape(data, label);
+    block.utreexo = data;
+
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+    uint256 computed_root;
+    std::string root_error;
+    ASSERT_TRUE(validator.ComputeUtreexoRootPure(block, height, computed_root, root_error))
+        << label << ": " << root_error;
+    block.header.utreexo_root = computed_root;
+
+    BlockUndo undo;
+    std::string error;
+    (void)validator.ConnectBlock(block, height, MakeTestHash(9100), undo, error, nullptr);
+
+    EXPECT_EQ(error.find("utreexo-proof-target-mismatch"), std::string::npos) << label << ": " << error;
+    EXPECT_EQ(error.find("utreexo-ephemeral-spent-output-mismatch"), std::string::npos) << label << ": " << error;
+    EXPECT_EQ(error.find("utreexo-spent-outputs-count-mismatch"), std::string::npos) << label << ": " << error;
+    EXPECT_EQ(error.find("utreexo-insufficient-spent-outputs"), std::string::npos) << label << ": " << error;
+    EXPECT_EQ(error.find("bad-utreexo-root"), std::string::npos) << label << ": " << error;
+    EXPECT_EQ(error.find("PROOF_INVALID"), std::string::npos) << label << ": " << error;
+    EXPECT_EQ(error.find("stateless-coinbase-maturity-violation"), std::string::npos) << label << ": " << error;
+}
+
+static void RunCpfpConnectBlockRejectsLiedChildMetadataCase(
+    const char* label,
+    const std::function<BlockUtreexoData(ConsensusUTXOSet&, const Block&, uint32_t)>& producer) {
+    ConsensusUTXOSet utxo_set;
+    OutPoint funding_outpoint;
+    UTXOEntry funding_utxo;
+    UtreexoHash funding_leaf;
+    SeedCpfpFunding(utxo_set, funding_outpoint, funding_utxo, funding_leaf);
+
+    const uint32_t height = GetUtreexoMaturityLeafActivationHeight() + 1;
+    Block block = MakeCpfpMatrixBlock(height, funding_outpoint);
+    BlockUtreexoData data = producer(utxo_set, block, height);
+    ExpectCpfpProducerDataShape(data, label);
+    block.utreexo = data;
+
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+    uint256 computed_root;
+    std::string root_error;
+    ASSERT_TRUE(validator.ComputeUtreexoRootPure(block, height, computed_root, root_error))
+        << label << ": " << root_error;
+    block.header.utreexo_root = computed_root;
+
+    ASSERT_GT(data.spent_outputs.size(), 1u) << label;
+    data.spent_outputs[1].scriptPubKey[2] ^= 0x7f;
+    block.utreexo = data;
+
+    BlockUndo undo;
+    std::string error;
+    const bool ok = validator.ConnectBlock(block, height, MakeTestHash(9101), undo, error, nullptr);
+
+    EXPECT_FALSE(ok) << label;
+    EXPECT_NE(error.find("utreexo-ephemeral-spent-output-mismatch"), std::string::npos)
+        << label << ": " << error;
+}
+
+static void RunCpfpReplayBlockMatrixCase(
+    const char* label,
+    const std::function<BlockUtreexoData(ConsensusUTXOSet&, const Block&, uint32_t)>& producer) {
+    ConsensusUTXOSet producer_set;
+    OutPoint funding_outpoint;
+    UTXOEntry funding_utxo;
+    UtreexoHash funding_leaf;
+    SeedCpfpFunding(producer_set, funding_outpoint, funding_utxo, funding_leaf);
+
+    const uint32_t height = GetUtreexoMaturityLeafActivationHeight() + 1;
+    Block block = MakeCpfpMatrixBlock(height, funding_outpoint);
+    BlockUtreexoData data = producer(producer_set, block, height);
+    ExpectCpfpProducerDataShape(data, label);
+
+    UtreexoForest expected_after = producer_set.GetForest();
+    auto position = expected_after.findLeafPosition(funding_leaf);
+    ASSERT_TRUE(position.has_value()) << label;
+    auto proof = expected_after.prove(*position);
+    ASSERT_TRUE(proof.has_value()) << label;
+    ASSERT_TRUE(expected_after.remove(funding_leaf, *proof)) << label;
+    const TxId coinbase_txid = block.vtx[0].GetTxid();
+    ASSERT_NE(expected_after.add(HashUTXOForCreationHeight(
+        coinbase_txid.AsUint256(),
+        0,
+        block.vtx[0].vout[0].value.GetUna(),
+        block.vtx[0].vout[0].scriptPubKey,
+        height,
+        true)), UINT64_MAX) << label;
+    const TxId child_txid = block.vtx[2].GetTxid();
+    ASSERT_NE(expected_after.add(HashUTXOForCreationHeight(
+        child_txid.AsUint256(),
+        0,
+        block.vtx[2].vout[0].value.GetUna(),
+        block.vtx[2].vout[0].scriptPubKey,
+        height,
+        false)), UINT64_MAX) << label;
+    const auto expected_root = expected_after.getCommitment();
+    ASSERT_EQ(expected_root.size(), 32u) << label;
+    std::memcpy(block.header.utreexo_root.begin(), expected_root.data(), 32);
+
+    UtreexoForest replay_forest;
+    ASSERT_NE(replay_forest.add(funding_leaf), UINT64_MAX) << label;
+    network::StatelessNode node(&replay_forest);
+    node.SyncToForestState(GetUtreexoMaturityLeafActivationHeight());
+
+    EXPECT_TRUE(node.ReplayBlock(
+        block,
+        height,
+        data.spend_proof.targets,
+        &data.spent_outputs)) << label;
+    EXPECT_EQ(replay_forest.getCommitment(), expected_root) << label;
 }
 
 TEST(BlockValidationInvariants, StatelessMaturityDeferralLatchesOnSpendBlock) {
@@ -349,6 +620,106 @@ TEST(BlockValidationInvariants, StatelessMaturityDeferralLatchesOnSpendBlock) {
     EXPECT_TRUE(validator.statelessMaturityUnverified())
         << "Stateless validator that processed a spend-block must record that it "
            "did NOT independently validate coinbase maturity (deferred to consensus)";
+}
+
+TEST(BlockValidationInvariants, StatelessRejectsImmatureV2CoinbaseOnLiveConnectPath) {
+    ConsensusUTXOSet utxo_set;
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+
+    const uint32_t activation = GetUtreexoMaturityLeafActivationHeight();
+    ASSERT_GT(activation, 0u);
+    constexpr uint32_t kCoinbaseMaturity = 100;
+    const uint32_t coinbase_height = activation;
+    const uint32_t spend_height = coinbase_height + kCoinbaseMaturity - 1;
+
+    Block block = MakeStatelessSpendBlock(
+        utxo_set,
+        spend_height,
+        coinbase_height,
+        true,
+        GetUtreexoProofFormatVersion(spend_height));
+    BlockUndo undo;
+    std::string error;
+    const bool ok = validator.ConnectBlock(block, spend_height, MakeTestHash(703), undo, error, nullptr);
+
+    EXPECT_FALSE(ok) << "Immature v2 coinbase spend must be rejected on the live stateless path";
+    EXPECT_NE(error.find("stateless-coinbase-maturity-violation"), std::string::npos)
+        << "Expected maturity rejection before script/proof validation, got: " << error;
+    EXPECT_FALSE(validator.statelessMaturityUnverified())
+        << "v2 maturity metadata is authenticated; it must be enforced, not deferred";
+}
+
+TEST(BlockValidationInvariants, StatelessRejectsProofFormatDowngradeFromTrustedHeight) {
+    ConsensusUTXOSet utxo_set;
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+
+    const uint32_t activation = GetUtreexoMaturityLeafActivationHeight();
+    ASSERT_GT(activation, 0u);
+
+    Block block = MakeStatelessSpendBlock(
+        utxo_set,
+        activation,
+        activation,
+        true,
+        5);
+    BlockUndo undo;
+    std::string error;
+    const bool ok = validator.ConnectBlock(block, activation, MakeTestHash(704), undo, error, nullptr);
+
+    EXPECT_FALSE(ok) << "Post-activation proof format is chosen by trusted block height";
+    EXPECT_NE(error.find("stateless-validation-proof-format-mismatch"), std::string::npos)
+        << "Expected trusted-height format rejection, got: " << error;
+}
+
+TEST(BlockValidationInvariants, StatelessLegacyLeafGraceWindowSoftDefers) {
+    ConsensusUTXOSet utxo_set;
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+
+    const uint32_t activation = GetUtreexoMaturityLeafActivationHeight();
+    ASSERT_GT(activation, 0u);
+    const uint32_t spend_height = activation + 50;
+
+    Block block = MakeStatelessSpendBlock(
+        utxo_set,
+        spend_height,
+        activation - 1,
+        true,
+        GetUtreexoProofFormatVersion(spend_height));
+    BlockUndo undo;
+    std::string error;
+    (void)validator.ConnectBlock(block, spend_height, MakeTestHash(705), undo, error, nullptr);
+
+    EXPECT_TRUE(validator.statelessMaturityUnverified())
+        << "Legacy leaves inside the grace window must soft-defer maturity";
+    EXPECT_EQ(error.find("stateless-validation-proof-format-mismatch"), std::string::npos)
+        << "Honest v6 grace-window legacy spends must not be treated as format downgrades";
+}
+
+TEST(BlockValidationInvariants, StatelessCpfpConnectBlockAcceptsMinerProducedConvention) {
+    RunCpfpConnectBlockMatrixCase("miner-produced", BuildMinerLikeCpfpUtreexoData);
+}
+
+TEST(BlockValidationInvariants, StatelessCpfpConnectBlockAcceptsBridgeProducedConvention) {
+    RunCpfpConnectBlockMatrixCase("bridge-produced", BuildBridgeCpfpUtreexoData);
+}
+
+TEST(BlockValidationInvariants, StatelessCpfpConnectBlockRejectsLiedMinerChildMetadata) {
+    RunCpfpConnectBlockRejectsLiedChildMetadataCase("miner-produced", BuildMinerLikeCpfpUtreexoData);
+}
+
+TEST(BlockValidationInvariants, StatelessCpfpConnectBlockRejectsLiedBridgeChildMetadata) {
+    RunCpfpConnectBlockRejectsLiedChildMetadataCase("bridge-produced", BuildBridgeCpfpUtreexoData);
+}
+
+TEST(BlockValidationInvariants, StatelessCpfpReplayBlockAcceptsMinerProducedConvention) {
+    RunCpfpReplayBlockMatrixCase("miner-produced", BuildMinerLikeCpfpUtreexoData);
+}
+
+TEST(BlockValidationInvariants, StatelessCpfpReplayBlockAcceptsBridgeProducedConvention) {
+    RunCpfpReplayBlockMatrixCase("bridge-produced", BuildBridgeCpfpUtreexoData);
 }
 
 TEST(BlockValidationInvariants, StatefulModeNeverDefersMaturity) {

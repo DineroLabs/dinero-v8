@@ -98,6 +98,7 @@ constexpr const char* kActivationFailureStreakKey = "activation_failure_streak";
 constexpr const char* kStartupCatchupSource = "startup-catchup";
 constexpr uint32_t kInvMsgBlock = 2u;
 constexpr uint32_t kInvMsgUtreexoBlock = 0x50000002u;
+constexpr char kCsnReplayDataMagic[] = {'C', 'S', 'N', '2'};
 
 // Startup undo audit window: the number of active-chain blocks (tail) that
 // VerifyActiveChainUndoCoverage checks at startup. PromoteValidatedHistory uses
@@ -126,6 +127,77 @@ Coin UtxoEntryToDbCoin(const consensus::UTXOEntry& entry) {
     coin.is_confidential = entry.is_confidential;
     coin.commitment = entry.commitment;
     return coin;
+}
+
+struct CsnReplayData {
+    std::vector<consensus::UtreexoHash> spend_targets;
+    std::vector<consensus::SpentOutputData> spent_outputs;
+    bool has_spent_outputs = false;
+};
+
+bool ReadU32LE(const std::string& data, size_t& offset, uint32_t& out) {
+    if (offset + 4 > data.size()) {
+        return false;
+    }
+    out = static_cast<uint8_t>(data[offset]) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(data[offset + 1])) << 8) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(data[offset + 2])) << 16) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(data[offset + 3])) << 24);
+    offset += 4;
+    return true;
+}
+
+bool DecodeCsnReplayData(const std::string& blob, CsnReplayData& out) {
+    size_t offset = 0;
+    const bool v2 =
+        blob.size() >= 4 &&
+        std::memcmp(blob.data(), kCsnReplayDataMagic, 4) == 0;
+    if (v2) {
+        offset = 4;
+    }
+
+    uint32_t target_count = 0;
+    if (!ReadU32LE(blob, offset, target_count)) {
+        return false;
+    }
+    if (target_count > 1'000'000u || offset + static_cast<size_t>(target_count) * 32 > blob.size()) {
+        return false;
+    }
+
+    out.spend_targets.clear();
+    out.spend_targets.reserve(target_count);
+    for (uint32_t i = 0; i < target_count; ++i) {
+        out.spend_targets.emplace_back(blob.begin() + offset, blob.begin() + offset + 32);
+        offset += 32;
+    }
+
+    if (!v2) {
+        return offset == blob.size();
+    }
+
+    uint32_t spent_count = 0;
+    if (!ReadU32LE(blob, offset, spent_count) || offset >= blob.size()) {
+        return false;
+    }
+    const uint8_t format_version = static_cast<uint8_t>(blob[offset++]);
+    if (spent_count > 1'000'000u) {
+        return false;
+    }
+
+    std::vector<uint8_t> bytes(blob.begin(), blob.end());
+    out.spent_outputs.clear();
+    out.spent_outputs.reserve(spent_count);
+    for (uint32_t i = 0; i < spent_count; ++i) {
+        const size_t before = offset;
+        auto spent = consensus::SpentOutputData::deserialize(bytes, offset, format_version);
+        if (offset <= before) {
+            return false;
+        }
+        out.spent_outputs.push_back(std::move(spent));
+    }
+
+    out.has_spent_outputs = true;
+    return offset == blob.size();
 }
 
 uint32_t BlockGetDataInventoryType() {
@@ -2263,8 +2335,10 @@ bool ChainstateService::Start() {
             }
 
             std::vector<consensus::UtreexoHash> spend_targets;
+            const std::vector<consensus::SpentOutputData>* spent_outputs = nullptr;
             if (block_result.value().utreexo.has_value()) {
                 spend_targets = block_result.value().utreexo->spend_proof.targets;
+                spent_outputs = &block_result.value().utreexo->spent_outputs;
             } else {
                 bool has_spends = false;
                 for (size_t txi = 1; txi < block_result.value().vtx.size() && !has_spends; ++txi) {
@@ -2276,7 +2350,7 @@ bool ChainstateService::Start() {
                 }
             }
 
-            if (!replay_node.ReplayBlock(block_result.value(), spend_targets)) {
+            if (!replay_node.ReplayBlock(block_result.value(), idx->height, spend_targets, spent_outputs)) {
                 return fail_recovery("forest-replay-failed-at-height-" +
                                      std::to_string(idx->height));
             }
@@ -7220,19 +7294,27 @@ void ChainstateService::ActivateBestChain() {
             }
             const Block& replay_block = block_r.value();
 
-            // Load spend targets for this block from CF7 (utreexo)
+            // Load spend targets + optional spent-output metadata for this block
+            // from CF7 (utreexo). Older records are hash-only; v2 records also
+            // carry the metadata needed to enforce stateless coinbase maturity.
             std::vector<consensus::UtreexoHash> spend_targets;
+            std::vector<consensus::SpentOutputData> replay_spent_outputs;
+            const std::vector<consensus::SpentOutputData>* spent_outputs = nullptr;
+            if (replay_block.utreexo.has_value()) {
+                spent_outputs = &replay_block.utreexo->spent_outputs;
+            }
             auto st_result = chain_db_->getCSNSpendTargets(block_index->hash);
             if (st_result.status() == Status::Ok && st_result.value().size() >= 4) {
-                const std::string& targets_blob = st_result.value();
-                uint32_t count = 0;
-                std::memcpy(&count, targets_blob.data(), 4);
-                size_t offset = 4;
-                for (uint32_t i = 0; i < count && offset + 32 <= targets_blob.size(); i++) {
-                    consensus::UtreexoHash h(targets_blob.begin() + offset,
-                                              targets_blob.begin() + offset + 32);
-                    spend_targets.push_back(std::move(h));
-                    offset += 32;
+                CsnReplayData replay_data;
+                if (!DecodeCsnReplayData(st_result.value(), replay_data)) {
+                    if (logger_) logger_->error("[ABC-CSN] Malformed CSN replay data for height " +
+                                                std::to_string(block_index->height));
+                    return;
+                }
+                spend_targets = std::move(replay_data.spend_targets);
+                if (!spent_outputs && replay_data.has_spent_outputs) {
+                    replay_spent_outputs = std::move(replay_data.spent_outputs);
+                    spent_outputs = &replay_spent_outputs;
                 }
                 if (logger_) logger_->info("[ABC-CSN] Loaded " + std::to_string(spend_targets.size()) +
                                            " spend targets for height " + std::to_string(block_index->height));
@@ -7243,7 +7325,7 @@ void ChainstateService::ActivateBestChain() {
             }
 
             // Replay block through forest via StatelessNode (sole forest mutator)
-            if (!stateless_node_->ReplayBlock(replay_block, spend_targets)) {
+            if (!stateless_node_->ReplayBlock(replay_block, block_index->height, spend_targets, spent_outputs)) {
                 if (logger_) logger_->error("[ABC-CSN] ReplayBlock failed at height " +
                                             std::to_string(block_index->height));
                 return;
@@ -11204,7 +11286,10 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
 
                 // Generate transition proof while forest is at pre-block state
                 auto tp = consensus::UtreexoTransitionProof::generate(
-                    consensus_utxo_set_->GetForest(), block, proof_data.spend_proof);
+                    consensus_utxo_set_->GetForest(),
+                    block,
+                    proof_data.spend_proof,
+                    tip_to_connect->height);
                 bridge_node_->SetCachedTransitionProof(tip_to_connect->hash, tp);
                 precache_success = true;
             } catch (const std::exception& e) {
@@ -11244,7 +11329,11 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 logger_->info("[ConnectTip] Stateless replay path: advancing shared forest from stored proof data at height " +
                               std::to_string(tip_to_connect->height));
             }
-            if (!stateless_node_->ReplayBlock(block, block.utreexo->spend_proof.targets)) {
+            if (!stateless_node_->ReplayBlock(
+                    block,
+                    tip_to_connect->height,
+                    block.utreexo->spend_proof.targets,
+                    &block.utreexo->spent_outputs)) {
                 if (logger_) {
                     logger_->error("[ConnectTip] Stateless replay failed at height " +
                                    std::to_string(tip_to_connect->height));

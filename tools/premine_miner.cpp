@@ -212,7 +212,7 @@ static PremineCoinbase build_premine_coinbase() {
 static uint256 compute_utreexo_commitment(const uint256& txid, uint32_t vout,
                                           uint64_t amount,
                                           const std::vector<uint8_t>& scriptPubKey) {
-    consensus::UtreexoHash leaf_hash = consensus::HashUTXO(txid, vout, amount, scriptPubKey);
+    consensus::UtreexoHash leaf_hash = consensus::HashUTXOLegacy(txid, vout, amount, scriptPubKey);
     consensus::UtreexoForest forest;
     forest.add(leaf_hash);
     consensus::UtreexoHash commitment = forest.getCommitment();
@@ -382,7 +382,7 @@ int main(int argc, char** argv) {
     std::printf("  [3/5] Computing Utreexo commitment v2...\n");
 
     // Also compute and display the raw leaf hash for reference
-    consensus::UtreexoHash leaf_hash_raw = consensus::HashUTXO(
+    consensus::UtreexoHash leaf_hash_raw = consensus::HashUTXOLegacy(
         coinbase.txid, 0, PREMINE_AMOUNT_UNA, coinbase.scriptPubKey);
     std::printf("        Leaf:     ");
     for (uint8_t b : leaf_hash_raw)
