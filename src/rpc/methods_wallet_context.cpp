@@ -30,6 +30,7 @@
 #include "wallet/wallet_manager.h"
 #include "wallet/hd_wallet.h"
 #include "wallet/transaction_builder.h"  // Phase 33: Transaction building
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include <iostream>  // For std::cerr debug logging
 #include "wallet/unsigned_tx_builder.h"   // v0.14.0: Unsigned TX construction
 #include "wallet/transaction_signer.h"    // v0.14.0: Transaction signing (Taproot, PSBT, HW wallet ready)
@@ -247,11 +248,13 @@ bool WalletUtxoIsPresentInLiveUtreexoForest(
                 std::stoi(utxo.script_pubkey.substr(i, 2), nullptr, 16)));
         }
 
-        const auto leaf_hash = dinero::consensus::HashUTXO(
+        const auto leaf_hash = dinero::consensus::HashUTXOForCreationHeight(
             txid_u256,
             utxo.vout,
             static_cast<uint64_t>(utxo.amount_una),
-            script_pubkey);
+            script_pubkey,
+            utxo.height,
+            utxo.is_coinbase);
 
         if (!forest->findLeafPosition(leaf_hash).has_value()) {
             if (reason) {
@@ -3841,6 +3844,8 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
                             entry["amount_una"] = static_cast<int64_t>(utxo.amount_una);
                             entry["amount_unas"] = static_cast<int64_t>(utxo.amount_una);
                             entry["script_pubkey"] = utxo.script_pubkey;
+                            entry["created_height"] = static_cast<uint64_t>(utxo.height);
+                            entry["coinbase"] = utxo.is_coinbase;
                             break;
                         }
                     }

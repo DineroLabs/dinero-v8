@@ -13,6 +13,7 @@
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "primitives/uint256.h"
 #include "primitives/hash_domains.h"
 #include "storage/chain_db.h"
@@ -495,12 +496,13 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
 
             const dinero::WalletUTXO& utxo = utxo_opt.value();
 
-            // Compute leaf hash from chainstate UTXO data
-            dinero::consensus::UtreexoHash leaf_hash = dinero::consensus::HashUTXO(
+            dinero::consensus::UtreexoHash leaf_hash = dinero::consensus::HashUTXOForCreationHeight(
                 txid_uint256,
                 vout,
                 utxo.value.GetUna(),  // AmountUna -> uint64_t
-                utxo.spk               // scriptPubKey bytes
+                utxo.spk,              // scriptPubKey bytes
+                static_cast<uint32_t>(utxo.height),
+                utxo.is_coinbase
             );
 
             // Parse proof structure

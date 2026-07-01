@@ -52,7 +52,7 @@ static UTXOData makeUTXO(uint64_t id, uint32_t vout, uint64_t amount) {
     utxo.amount = amount;
     utxo.scriptPubKey = {0x51, 0x20};
     utxo.scriptPubKey.resize(34, 0x00);
-    utxo.leafHash = HashUTXO(
+    utxo.leafHash = HashUTXOLegacy(
         utxo.txid.AsUint256(), utxo.vout, utxo.amount, utxo.scriptPubKey);
     return utxo;
 }

@@ -12,6 +12,7 @@
 #include "daemon/services/chainstate_service.h"
 #include "network/bridge_node.h"
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "common/logger.h"
 #include "common/ilogger.h"
 #include "consensus/outpoint.h"
@@ -106,11 +107,13 @@ static void AttachUtreexoProofs(din::Json& result,
         input_obj["vout"] = tx.vin[i].prevout.vout;
 
         // Compute leaf hash so the client can verify independently
-        auto leaf_hash = dinero::consensus::HashUTXO(
+        auto leaf_hash = dinero::consensus::HashUTXOForCreationHeight(
             tx.vin[i].prevout.txid.AsUint256(),
             tx.vin[i].prevout.vout,
             spent_output.value,
-            spent_output.scriptPubKey);
+            spent_output.scriptPubKey,
+            spent_output.created_height,
+            spent_output.is_coinbase);
         input_obj["leaf_hash"] = BytesToHex(leaf_hash.data(), leaf_hash.size());
 
         input_obj["position"] = static_cast<din::Json::UInt64>(proof.position);
@@ -124,6 +127,8 @@ static void AttachUtreexoProofs(din::Json& result,
         input_obj["value"] = static_cast<din::Json::UInt64>(spent_output.value);
         input_obj["script_pubkey"] = BytesToHex(spent_output.scriptPubKey.data(),
                                                 spent_output.scriptPubKey.size());
+        input_obj["created_height"] = static_cast<din::Json::UInt64>(spent_output.created_height);
+        input_obj["coinbase"] = spent_output.is_coinbase;
 
         inputs_json.append(input_obj);
     }

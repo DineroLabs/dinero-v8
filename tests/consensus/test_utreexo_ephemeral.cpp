@@ -178,10 +178,12 @@ TEST(UtreexoEphemeral, IntraBlockChainedSpendProducesValidRoot) {
     utxo_set.AddCoin(prev_outpoint, prev_utxo);
 
     // Add to forest (so the oracle can find and remove it)
-    UtreexoHash prev_leaf = HashUTXO(
+    UtreexoHash prev_leaf = HashUTXOForCreationHeight(
         prev_txid.AsUint256(), 0,
         prev_utxo.value.GetUna(),
-        prev_utxo.scriptPubKey
+        prev_utxo.scriptPubKey,
+        prev_utxo.height,
+        prev_utxo.isCoinbase
     );
     utxo_set.GetForest().add(prev_leaf);
 
@@ -285,10 +287,12 @@ TEST(UtreexoEphemeral, EphemeralSkipChangesRoot) {
 
     utxo_set.AddCoin(prev_outpoint, prev_utxo);
 
-    UtreexoHash prev_leaf = HashUTXO(
+    UtreexoHash prev_leaf = HashUTXOForCreationHeight(
         prev_txid.AsUint256(), 0,
         prev_utxo.value.GetUna(),
-        prev_utxo.scriptPubKey
+        prev_utxo.scriptPubKey,
+        prev_utxo.height,
+        prev_utxo.isCoinbase
     );
     utxo_set.GetForest().add(prev_leaf);
 
@@ -383,11 +387,13 @@ TEST(UtreexoEphemeral, ConfidentialPrevoutUsesConsensusVisibleZero) {
     // Match consensus insertion semantics: confidential outputs commit to
     // value=0 in the Utreexo leaf, even if wallet-side metadata remembers the
     // unblinded amount.
-    UtreexoHash prev_leaf = HashUTXO(
+    UtreexoHash prev_leaf = HashUTXOForCreationHeight(
         prev_txid.AsUint256(),
         0,
         0,
-        prev_utxo.scriptPubKey);
+        prev_utxo.scriptPubKey,
+        prev_utxo.height,
+        prev_utxo.isCoinbase);
     ASSERT_NE(utxo_set.GetForest().add(prev_leaf), UINT64_MAX);
 
     uint32_t height = 250;
@@ -448,10 +454,12 @@ TEST(UtreexoEphemeral, DeterministicRoot) {
 
     utxo_set.AddCoin(prev_outpoint, prev_utxo);
 
-    UtreexoHash prev_leaf = HashUTXO(
+    UtreexoHash prev_leaf = HashUTXOForCreationHeight(
         prev_txid.AsUint256(), 0,
         prev_utxo.value.GetUna(),
-        prev_utxo.scriptPubKey
+        prev_utxo.scriptPubKey,
+        prev_utxo.height,
+        prev_utxo.isCoinbase
     );
     utxo_set.GetForest().add(prev_leaf);
 

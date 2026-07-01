@@ -501,7 +501,7 @@ PrefixExpectation FinalizeAndApplyReferenceBlock(dinero::Block& block,
             auto it = state.utxos.find(key);
             Require(it != state.utxos.end(), "reference pre-block UTXO missing for forest removal");
 
-            const auto leaf_hash = dinero::consensus::HashUTXO(
+            const auto leaf_hash = dinero::consensus::HashUTXOLegacy(
                 input.prevout.txid.AsUint256(),
                 input.prevout.vout,
                 it->second.is_confidential ? 0 : it->second.amount,
@@ -521,7 +521,7 @@ PrefixExpectation FinalizeAndApplyReferenceBlock(dinero::Block& block,
                 continue;
             }
             const auto& output = tx.vout[vout];
-            const auto leaf_hash = dinero::consensus::HashUTXO(
+            const auto leaf_hash = dinero::consensus::HashUTXOLegacy(
                 txid,
                 vout,
                 output.is_confidential ? 0 : output.value.GetUna(),

@@ -24,6 +24,7 @@
  */
 
 #include "consensus/consensus_utxo_set.h"
+#include "consensus/chainparams.h"
 #include "consensus/consensus_invariants.h"
 #include "consensus/block_undo.h"
 #include "consensus/outpoint.h"
@@ -973,6 +974,8 @@ bool PropertyBasedEconomicTester::Run(int steps) {
 // ============================================================================
 
 int main(int argc, char* argv[]) {
+    SelectParams(Chain::REGTEST);
+
     unsigned seed = static_cast<unsigned>(std::time(nullptr));
     int steps = DEFAULT_STEPS;
 

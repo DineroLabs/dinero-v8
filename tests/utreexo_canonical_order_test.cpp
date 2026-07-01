@@ -104,7 +104,7 @@ struct MockUTXO {
     std::vector<uint8_t> script_pubkey;
 
     UtreexoHash hash() const {
-        return HashUTXO(txid, vout, value, script_pubkey);
+        return HashUTXOLegacy(txid, vout, value, script_pubkey);
     }
 };
 

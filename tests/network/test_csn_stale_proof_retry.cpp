@@ -9,6 +9,7 @@
  */
 
 #include "consensus/interfaces/iutxo_provider.h"
+#include "consensus/chainparams.h"
 #include "consensus/utreexo_accumulator.h"
 #include "network/bridge_node.h"
 #include "network/stateless_node.h"
@@ -135,7 +136,7 @@ std::vector<TrackedUTXO> extractUTXOsFromBlock(const Block& block) {
             u.vout = static_cast<uint32_t>(n);
             u.value = tx.vout[n].value.GetUna();
             u.scriptPubKey = tx.vout[n].scriptPubKey;
-            u.leafHash = HashUTXO(txid.AsUint256(), u.vout, u.value, u.scriptPubKey);
+            u.leafHash = HashUTXOLegacy(txid.AsUint256(), u.vout, u.value, u.scriptPubKey);
             result.push_back(u);
         }
     }
@@ -264,6 +265,8 @@ void test_stale_proof_retries_immediately() {
 }  // namespace
 
 int main() {
+    SelectParams(Chain::REGTEST);
+
     std::cout << std::endl;
     std::cout << "═══════════════════════════════════════════════════" << std::endl;
     std::cout << "  CSN Stale Proof Retry Regression" << std::endl;

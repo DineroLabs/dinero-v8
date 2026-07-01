@@ -11,6 +11,7 @@
 
 #include "consensus/utreexo_accumulator.h"
 #include "consensus/utreexo_canonical_roots_activation.h"  // Apr 13 2026 Stage 3 fork — cloneForHeight
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/utreexo_stump.h"
 #include "consensus/script_interpreter.h"  // For SHA256_Hash
 #include "consensus/outpoint.h"            // For OutPoint (ephemeral UTXO scan)
@@ -73,8 +74,8 @@ bool parse_block_proof_end(const std::vector<uint8_t>& data, size_t proof_offset
     size_t cursor = proof_offset;
     const uint8_t version = data[cursor];
 
-    // Version 4/5: [version][numLeaves][numTargets][targets][positions][numProofHashes][proofHashes]
-    if (version == 4 || version == 5) {
+    // Version 4/5/6: [version][numLeaves][numTargets][targets][positions][numProofHashes][proofHashes]
+    if (version == 4 || version == 5 || version == 6) {
         if (!checked_add_size_t(cursor, 1, cursor)) return false;   // version
         if (!checked_add_size_t(cursor, 8, cursor)) return false;   // numLeaves
 
@@ -213,7 +214,7 @@ UtreexoHash HashNode(const UtreexoHash& left, const UtreexoHash& right) {
     return SHA256_Hash(combined);
 }
 
-UtreexoHash HashUTXO(const uint256& txid, uint32_t vout,
+UtreexoHash HashUTXOLegacy(const uint256& txid, uint32_t vout,
                  uint64_t amount, const std::vector<uint8_t>& scriptPubKey) {
     // Domain-separated UTXO leaf hash (consensus-critical, active from genesis):
     // SHA256("DINERO-UTXO-LEAF-v1" || txid || vout || amount || scriptPubKey)
@@ -263,6 +264,68 @@ UtreexoHash HashUTXO(const uint256& txid, uint32_t vout,
     data.insert(data.end(), scriptPubKey.begin(), scriptPubKey.end());
 
     return SHA256_Hash(data);
+}
+
+UtreexoHash HashUTXOV2(const uint256& txid, uint32_t vout,
+                 uint64_t amount, const std::vector<uint8_t>& scriptPubKey,
+                 uint32_t created_height, bool is_coinbase) {
+    // Experimental maturity-bound UTXO leaf hash:
+    // SHA256("DINERO-UTXO-LEAF-v2" || txid || vout || amount ||
+    //        scriptPubKey || created_height || flags)
+    static const char* DOMAIN_TAG = "DINERO-UTXO-LEAF-v2"; // 19 bytes
+    std::vector<uint8_t> data;
+
+    data.insert(data.end(), DOMAIN_TAG, DOMAIN_TAG + 19);
+    data.insert(data.end(), txid.data, txid.data + 32);
+
+    data.push_back(vout & 0xFF);
+    data.push_back((vout >> 8) & 0xFF);
+    data.push_back((vout >> 16) & 0xFF);
+    data.push_back((vout >> 24) & 0xFF);
+
+    data.push_back(amount & 0xFF);
+    data.push_back((amount >> 8) & 0xFF);
+    data.push_back((amount >> 16) & 0xFF);
+    data.push_back((amount >> 24) & 0xFF);
+    data.push_back((amount >> 32) & 0xFF);
+    data.push_back((amount >> 40) & 0xFF);
+    data.push_back((amount >> 48) & 0xFF);
+    data.push_back((amount >> 56) & 0xFF);
+
+    uint64_t scriptLen = scriptPubKey.size();
+    if (scriptLen < 253) {
+        data.push_back(static_cast<uint8_t>(scriptLen));
+    } else if (scriptLen <= 0xFFFF) {
+        data.push_back(0xFD);
+        data.push_back(scriptLen & 0xFF);
+        data.push_back((scriptLen >> 8) & 0xFF);
+    } else {
+        data.push_back(0xFE);
+        data.push_back(scriptLen & 0xFF);
+        data.push_back((scriptLen >> 8) & 0xFF);
+        data.push_back((scriptLen >> 16) & 0xFF);
+        data.push_back((scriptLen >> 24) & 0xFF);
+    }
+    data.insert(data.end(), scriptPubKey.begin(), scriptPubKey.end());
+
+    data.push_back(created_height & 0xFF);
+    data.push_back((created_height >> 8) & 0xFF);
+    data.push_back((created_height >> 16) & 0xFF);
+    data.push_back((created_height >> 24) & 0xFF);
+
+    uint8_t flags = is_coinbase ? 0x01 : 0x00;
+    data.push_back(flags);
+
+    return SHA256_Hash(data);
+}
+
+UtreexoHash HashUTXOForCreationHeight(const uint256& txid, uint32_t vout,
+                 uint64_t amount, const std::vector<uint8_t>& scriptPubKey,
+                 uint32_t created_height, bool is_coinbase) {
+    if (IsUtreexoMaturityLeafActive(created_height)) {
+        return HashUTXOV2(txid, vout, amount, scriptPubKey, created_height, is_coinbase);
+    }
+    return HashUTXOLegacy(txid, vout, amount, scriptPubKey);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -407,6 +470,14 @@ std::vector<uint8_t> SpentOutputData::serialize(uint8_t format_version) const {
     // 3. ScriptPubKey bytes
     data.insert(data.end(), scriptPubKey.begin(), scriptPubKey.end());
 
+    if (format_version >= 6) {
+        data.push_back(created_height & 0xFF);
+        data.push_back((created_height >> 8) & 0xFF);
+        data.push_back((created_height >> 16) & 0xFF);
+        data.push_back((created_height >> 24) & 0xFF);
+        data.push_back(is_coinbase ? 0x01 : 0x00);
+    }
+
     if (format_version >= 5) {
         // 4. Confidential flags
         data.push_back(is_confidential ? 0x01 : 0x00);
@@ -456,6 +527,21 @@ SpentOutputData SpentOutputData::deserialize(const std::vector<uint8_t>& data, s
     spent.scriptPubKey = std::vector<uint8_t>(data.begin() + offset, data.begin() + offset + spk_len);
     offset += spk_len;
 
+    if (format_version >= 6) {
+        if (data.size() < offset + 5) {
+            offset = start_offset;
+            return spent;
+        }
+
+        spent.created_height =
+            static_cast<uint32_t>(data[offset]) |
+            (static_cast<uint32_t>(data[offset + 1]) << 8) |
+            (static_cast<uint32_t>(data[offset + 2]) << 16) |
+            (static_cast<uint32_t>(data[offset + 3]) << 24);
+        offset += 4;
+        spent.is_coinbase = (data[offset++] & 0x01) != 0;
+    }
+
     if (format_version >= 5) {
         if (data.size() < offset + 5) {
             offset = start_offset;
@@ -500,7 +586,7 @@ std::vector<uint8_t> BlockUtreexoProof::serialize() const {
     // ─────────────────────────────────────────────────
 
     // 1. Version (1 byte)
-    data.push_back(5);  // Version 5 = stateless format + CT spent-output metadata
+    data.push_back(format_version);  // Version 6 = stateless format + maturity-bound metadata
 
     // 2. numLeaves (8 bytes) - total leaves in forest at proof time
     data.push_back(numLeaves & 0xFF);
@@ -571,11 +657,12 @@ BlockUtreexoProof BlockUtreexoProof::deserialize(const std::vector<uint8_t>& dat
     // Check version byte
     uint8_t version = data[0];
 
-    if (version == 4 || version == 5) {
+    if (version == 4 || version == 5 || version == 6) {
         // ─────────────────────────────────────────────────────────────────────
         // Version 4/5: Stateless proof format with positions
         // ─────────────────────────────────────────────────────────────────────
         offset = 1;  // Skip version byte
+        proof.format_version = version;
 
         // Minimum size: version(1) + numLeaves(8) + numTargets(4) + numProofHashes(4) = 17
         if (data.size() < 17) {
@@ -2199,6 +2286,14 @@ BlockUtreexoProof UtreexoForest::generateBlockProof(const std::vector<UtreexoHas
     return block_proof;
 }
 
+BlockUtreexoProof UtreexoForest::generateBlockProof(
+    const std::vector<UtreexoHash>& targets,
+    uint8_t format_version) const {
+    BlockUtreexoProof proof = generateBlockProof(targets);
+    proof.format_version = format_version;
+    return proof;
+}
+
 UtreexoHash UtreexoForest::parentHash(const UtreexoHash& left, const UtreexoHash& right) const {
     return HashNode(left, right);
 }
@@ -3228,7 +3323,8 @@ void UtreexoForest::rebuildRoots() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 std::vector<UtreexoHash> UtreexoTransitionProof::computeAdditionHashes(
-    const dinero::Block& block
+    const dinero::Block& block,
+    uint32_t block_height
 ) {
     // Pre-scan: identify intra-block ephemeral UTXOs (outputs created and
     // spent within the same block).  These never enter the Utreexo forest.
@@ -3263,11 +3359,13 @@ std::vector<UtreexoHash> UtreexoTransitionProof::computeAdditionHashes(
 
             const auto& output = tx.vout[n];
 
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 txid.AsUint256(),
                 static_cast<uint32_t>(n),
                 output.value.GetUna(),
-                std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end())
+                std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end()),
+                block_height,
+                tx.IsCoinbase()
             );
 
             additions.push_back(leafHash);
@@ -3280,7 +3378,8 @@ std::vector<UtreexoHash> UtreexoTransitionProof::computeAdditionHashes(
 UtreexoTransitionProof UtreexoTransitionProof::generate(
     const UtreexoForest& forest_before,
     const dinero::Block& block,
-    const BlockUtreexoProof& spend_proof
+    const BlockUtreexoProof& spend_proof,
+    uint32_t block_height
 ) {
     UtreexoTransitionProof tp;
 
@@ -3311,7 +3410,7 @@ UtreexoTransitionProof UtreexoTransitionProof::generate(
     tp.roots_after_deletions = snapshot.getIndexedRoots();
 
     // PASS 2: ADD ALL new outputs
-    tp.addition_hashes = computeAdditionHashes(block);
+    tp.addition_hashes = computeAdditionHashes(block, block_height);
     for (const auto& leafHash : tp.addition_hashes) {
         if (snapshot.add(leafHash) == UINT64_MAX) {
             std::cerr << "[TP-GEN] add() failed while building transition proof (duplicate/capacity)" << std::endl;

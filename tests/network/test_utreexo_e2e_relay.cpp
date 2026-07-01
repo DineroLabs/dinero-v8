@@ -20,6 +20,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "primitives/hash_domains.h"
+#include "consensus/chainparams.h"
 #include "storage/chain_db.h"
 #include <iostream>
 #include <cassert>
@@ -157,7 +158,7 @@ static std::vector<TrackedUTXO> extractUTXOsFromBlock(const Block& block) {
             u.vout = static_cast<uint32_t>(n);
             u.value = tx.vout[n].value.GetUna();
             u.scriptPubKey = tx.vout[n].scriptPubKey;
-            u.leafHash = HashUTXO(txid.AsUint256(), u.vout, u.value, u.scriptPubKey);
+            u.leafHash = HashUTXOLegacy(txid.AsUint256(), u.vout, u.value, u.scriptPubKey);
             result.push_back(u);
         }
     }
@@ -818,6 +819,8 @@ static void test_csn_to_csn_tx_relay() {
 // ============================================================================
 
 int main() {
+    SelectParams(Chain::REGTEST);
+
     std::cout << std::endl;
     std::cout << "═══════════════════════════════════════════════════" << std::endl;
     std::cout << "  E2E Integration: Bridge→CSN Block Sync + TX Relay" << std::endl;

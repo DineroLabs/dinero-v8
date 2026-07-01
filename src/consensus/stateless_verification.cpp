@@ -10,6 +10,7 @@
 
 #include "consensus/stateless_verification.h"
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "primitives/transaction.h"
 #include <cstring>
 
@@ -30,8 +31,57 @@ VerifyResult VerifyBlockStateless(
         return VerifyResult::Fail(VerifyError::INVALID_COINBASE);
     }
 
-    // Verify Utreexo proof matches expected roots
-    // NOTE: proof.targets should match spent outputs in block
+    const uint8_t expected_format_version = GetUtreexoProofFormatVersion(ctx.height);
+    if (proof.format_version != expected_format_version) {
+        return VerifyResult::Fail(VerifyError::INVALID_PROOF);
+    }
+
+    std::vector<UtreexoHash> expected_targets;
+    expected_targets.reserve(ctx.spent_count);
+    uint32_t target_spent_index = 0;
+    bool maturity_deferred = false;
+
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); tx_idx++) {
+        const Transaction& tx = block.vtx[tx_idx];
+        for (const TxInput& input : tx.vin) {
+            if (target_spent_index >= ctx.spent_count) {
+                return VerifyResult::Fail(VerifyError::MISSING_INPUT);
+            }
+
+            const SpentOutputData& spent = ctx.spent_outputs[target_spent_index++];
+            if (proof.format_version >= 6) {
+                if (EvaluateUtreexoStatelessMaturity(
+                        ctx.height,
+                        spent.created_height,
+                        spent.is_coinbase) == UtreexoStatelessMaturityStatus::LEGACY_DEFERRED) {
+                    maturity_deferred = true;
+                }
+                expected_targets.push_back(HashUTXOForCreationHeight(
+                    input.prevout.txid.AsUint256(),
+                    input.prevout.vout,
+                    spent.value,
+                    spent.scriptPubKey,
+                    spent.created_height,
+                    spent.is_coinbase));
+            } else {
+                expected_targets.push_back(HashUTXOLegacy(
+                    input.prevout.txid.AsUint256(),
+                    input.prevout.vout,
+                    spent.value,
+                    spent.scriptPubKey));
+            }
+        }
+    }
+
+    if (target_spent_index != ctx.spent_count) {
+        return VerifyResult::Fail(VerifyError::MISSING_INPUT);
+    }
+
+    if (proof.targets != expected_targets) {
+        return VerifyResult::Fail(VerifyError::INVALID_PROOF);
+    }
+
+    // Verify Utreexo proof matches expected roots.
     if (!proof.isEmpty()) {
         // Build expected roots vector for verification
         std::vector<UtreexoHash> expected_roots;
@@ -98,8 +148,17 @@ VerifyResult VerifyBlockStateless(
                 const SpentOutputData& spent = ctx.spent_outputs[spent_index];
                 spent_index++;
 
-                // Check coinbase maturity (conceptually - we don't have height info)
-                // For light clients, this is verified via the Utreexo proof structure
+                if (proof.format_version >= 6) {
+                    const auto maturity_status = EvaluateUtreexoStatelessMaturity(
+                        ctx.height,
+                        spent.created_height,
+                        spent.is_coinbase);
+                    if (maturity_status == UtreexoStatelessMaturityStatus::LEGACY_DEFERRED) {
+                        maturity_deferred = true;
+                    } else if (maturity_status == UtreexoStatelessMaturityStatus::IMMATURE_COINBASE) {
+                        return VerifyResult::Fail(VerifyError::COINBASE_IMMATURE);
+                    }
+                }
 
                 total_input_value += spent.value;
                 inputs_spent++;
@@ -143,7 +202,7 @@ VerifyResult VerifyBlockStateless(
     // is left to the caller since computing the new root requires
     // simulating the full accumulator update
 
-    return VerifyResult::Ok(fees, outputs_created, inputs_spent);
+    return VerifyResult::Ok(fees, outputs_created, inputs_spent, maturity_deferred);
 }
 
 // ============================================================================
@@ -244,7 +303,20 @@ UtreexoHash ComputeUTXOLeafHash(
 
     // Use the existing HashUTXO function
     std::vector<uint8_t> script_vec(script, script + script_len);
-    return HashUTXO(txid, vout, value, script_vec);
+    return HashUTXOLegacy(txid, vout, value, script_vec);
+}
+
+UtreexoHash ComputeUTXOLeafHashV2(
+    const uint256& txid,
+    uint32_t vout,
+    uint64_t value,
+    const uint8_t* script,
+    uint32_t script_len,
+    uint32_t created_height,
+    bool is_coinbase) noexcept {
+
+    std::vector<uint8_t> script_vec(script, script + script_len);
+    return HashUTXOV2(txid, vout, value, script_vec, created_height, is_coinbase);
 }
 
 } // namespace consensus

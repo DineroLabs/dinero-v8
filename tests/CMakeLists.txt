@@ -8319,6 +8319,38 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_stateless_proof_minimal.cpp)
 endif()
 
 # ============================================================================
+# Experimental: Utreexo Maturity-Bound Leaf Proof
+# ============================================================================
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utreexo_maturity_bound_leaf_experiment.cpp)
+  add_executable(test_utreexo_maturity_bound_leaf_experiment
+    tests/consensus/test_utreexo_maturity_bound_leaf_experiment.cpp
+  )
+  target_link_libraries(test_utreexo_maturity_bound_leaf_experiment PRIVATE
+    dinero_consensus
+    ${OPENSSL_CRYPTO_LIBRARY}
+    ${OPENSSL_SSL_LIBRARY}
+  )
+  link_zstd_if_needed(test_utreexo_maturity_bound_leaf_experiment)
+  target_include_directories(test_utreexo_maturity_bound_leaf_experiment PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${OPENSSL_INCLUDE_DIR}
+  )
+  if(APPLE)
+    target_link_libraries(test_utreexo_maturity_bound_leaf_experiment PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME UtreexoMaturityBoundLeafExperiment
+    COMMAND test_utreexo_maturity_bound_leaf_experiment)
+  set_tests_properties(UtreexoMaturityBoundLeafExperiment PROPERTIES
+    LABELS "consensus;utreexo;stateless;experiment"
+    TIMEOUT 10
+  )
+endif()
+
+# ============================================================================
 # E.2: Fee Policy Configuration Verification (Economics Layer)
 # ============================================================================
 # NOTE: This is CONFIG verification, not behavior testing.

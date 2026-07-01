@@ -29,7 +29,7 @@ int main() {
 
     uint64_t amount = dinero::premine::PREMINE_AMOUNT_UNA;
 
-    UtreexoHash leaf_hash = HashUTXO(coinbase_txid, 0, amount, scriptPubKey);
+    UtreexoHash leaf_hash = HashUTXOLegacy(coinbase_txid, 0, amount, scriptPubKey);
 
     std::cout << "=== Premine Commitment v2 ===" << std::endl;
     std::cout << "Leaf hash (bare):  ";
