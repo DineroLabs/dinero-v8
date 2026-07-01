@@ -1763,31 +1763,60 @@ Variable fe_equal(R1CS& cs, const FieldElement& a, const FieldElement& b,
 
 void fe_assert_less_than_p(R1CS& cs, const FieldElement& a,
                             const std::string& label) {
-    // a < p iff a + (2^256 - p) < 2^256 (no overflow)
-    // 2^256 - p = 0x1000003D1
-    // So: a + 0x1000003D1 must not overflow 256 bits.
+    // Sound canonicity: a < p iff computing (a - p) as an unsigned 256-bit
+    // subtraction borrows out of the top limb. Each limb's borrow is PINNED to
+    // a's (range-checked) limbs by a linear constraint, so a malicious prover
+    // cannot forge the final borrow (the previous implementation only asserted a
+    // witness-derived no_overflow flag == 1 without binding it to a — unsound).
     //
-    // Compute a + C where C = 0x1000003D1.
-    // If the result fits in 256 bits, a < p.
-    Uint256 a_val = fe_witness_value(cs, a);
-    Uint256 c_val;
-    c_val.limbs[0] = SECP256K1_P_LOW_DEFICIT;
+    // Per limb i: a_i - p_i - borrow_in + borrow_out*2^64 - diff_i = 0
+    // with diff_i range-checked in [0, 2^64) and borrow_out boolean. The final
+    // borrow_out must be 1 (the subtraction underflowed) iff a < p.
+    //
+    // PRECONDITION: a's limbs MUST already be range-checked to [0, 2^64) (as
+    // fe_alloc_uint256 / all fe_* outputs guarantee). Soundness depends on it:
+    // an over-large limb breaks both the no-field-wrap bound and the unique
+    // borrow-interval argument, and could let a >= p pass. Do NOT call this on a
+    // FieldElement whose limbs are not range-checked.
+    using dinero::compat::i128;
+    using dinero::compat::i128_zext_u64;
+    using dinero::compat::lo64;
 
-    Uint256 sum = uint256_add(a_val, c_val);
-    bool overflow = sum < a_val;
+    const Uint256 a_val = fe_witness_value(cs, a);
+    const Uint256 p_u = uint256_p();
+    const auto& p_limbs = p_limb_scalars();
+    const Scalar B = scalar_pow2_64();
 
-    // Allocate the no-overflow flag
-    Variable no_overflow = cs.alloc(overflow ? Scalar::zero() : Scalar::one());
-    gadgets::enforce_boolean(cs, no_overflow, label + "_nof");
+    Variable borrow_in = gadgets::constant(cs, Scalar::zero(), label + "_b0");
+    uint64_t borrow_w = 0;
+    for (int i = 0; i < 4; ++i) {
+        // Witness: a_i - p_i - borrow_in (may be negative => borrow_out = 1).
+        i128 d = i128_zext_u64(a_val.limbs[i]) - i128_zext_u64(p_u.limbs[i])
+                 - i128(int64_t(borrow_w));
+        uint64_t borrow_out = (lo64(d >> 64) != 0) ? 1u : 0u;  // sign bit => underflow
+        uint64_t diff_w = lo64(d);                             // d mod 2^64
 
-    // Allocate sum limbs with range check to prove it fits in 256 bits
-    FieldElement sum_fe = fe_alloc_uint256(cs, sum, label + "_sum");
+        Variable diff_v = cs.alloc(Scalar(diff_w));
+        range_check_limb(cs, diff_v, 64, label + "_d" + std::to_string(i));
+        Variable borrow_out_v = cs.alloc(borrow_out ? Scalar::one() : Scalar::zero());
+        gadgets::enforce_boolean(cs, borrow_out_v, label + "_bo" + std::to_string(i));
 
-    // Constrain: a + C = sum + overflow * 2^256
-    // (overflow must be 0 for a < p)
-    // At limb level with carry chain... for simplicity, just assert no_overflow = 1
-    gadgets::assert_equal(cs, no_overflow, gadgets::constant(cs, Scalar::one(), label + "_1"),
-                          label + "_check");
+        // a_i - p_i - borrow_in + borrow_out*2^64 - diff_i == 0
+        LinearCombination lc;
+        lc = lc + LinearCombination(a.limbs[i]);
+        lc = lc - LinearCombination::constant(p_limbs[i]);
+        lc = lc - LinearCombination(borrow_in);
+        lc = lc + LinearCombination(B, borrow_out_v);
+        lc = lc - LinearCombination(diff_v);
+        cs.enforce_zero(lc, label + "_eq" + std::to_string(i));
+
+        borrow_in = borrow_out_v;
+        borrow_w = borrow_out;
+    }
+
+    // a < p iff the full-width subtraction a - p borrowed.
+    cs.enforce_equal(LinearCombination(borrow_in),
+                     LinearCombination::constant(Scalar::one()), label + "_ltp");
 }
 
 Variable fe_pack(R1CS& cs, const FieldElement& a,

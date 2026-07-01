@@ -1475,6 +1475,60 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
   message(STATUS "Shielded cv-binding tests enabled")
 endif()
 
+# cv-binding audit 2026-07-01: ec_add_complete selector-binding regression test
+if(TARGET dinero_zk AND TARGET gtest)
+  add_executable(test_ec_add_complete_binding
+    tests/zk/test_ec_add_complete_binding.cpp
+  )
+  add_dependencies(test_ec_add_complete_binding gtest dinero_zk)
+  target_link_libraries(test_ec_add_complete_binding PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_zk
+  )
+  target_include_directories(test_ec_add_complete_binding BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_ec_add_complete_binding PRIVATE "-framework Security")
+  endif()
+  add_test(NAME EcAddCompleteBinding COMMAND test_ec_add_complete_binding)
+  set_tests_properties(EcAddCompleteBinding PROPERTIES
+    LABELS "zk;shielded;cv-binding;mandatory"
+    TIMEOUT 300
+  )
+  message(STATUS "ec_add_complete binding regression test enabled")
+endif()
+
+# cv-binding audit 2026-07-01: sound fe_assert_less_than_p canonicity check
+if(TARGET dinero_zk AND TARGET gtest)
+  add_executable(test_fe_less_than_p
+    tests/zk/test_fe_less_than_p.cpp
+  )
+  add_dependencies(test_fe_less_than_p gtest dinero_zk)
+  target_link_libraries(test_fe_less_than_p PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_zk
+  )
+  target_include_directories(test_fe_less_than_p BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_fe_less_than_p PRIVATE "-framework Security")
+  endif()
+  add_test(NAME FeLessThanP COMMAND test_fe_less_than_p)
+  set_tests_properties(FeLessThanP PROPERTIES
+    LABELS "zk;shielded;cv-binding;mandatory"
+    TIMEOUT 300
+  )
+  message(STATUS "fe_assert_less_than_p canonicity test enabled")
+endif()
+
 # M3 PR B: native ShieldedProverKit C ABI for iOS
 if(TARGET dinero_shielded_prover_kit AND TARGET gtest)
   add_executable(test_shielded_prover_kit
