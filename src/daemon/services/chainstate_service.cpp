@@ -49,6 +49,7 @@
 #include "consensus/block_lifecycle.h"  // BLOCK_HAVE_DATA status flag
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_validation.h"
+#include "consensus/shielded/shielded_epoch.h"
 #include "storage/archival_block_reader.h"
 #include "storage/block_storage.h"
 #include "pool/pool_manager.h"  // Pool accounting lifecycle wiring
@@ -10325,6 +10326,7 @@ dinero::UndoRecord BlockUndoToUndoRecord(const consensus::BlockUndo& block_undo,
     // Note: Utreexo delta is persisted separately as a sidecar key (UD:<blockhash>)
     // so legacy UndoRecord format remains backward-compatible.
     undo.pre_block_shielded_frontier = block_undo.pre_block_shielded_frontier;
+    undo.pre_reset_shielded_epoch    = block_undo.pre_reset_shielded_epoch;
 
     return undo;
 }
@@ -10348,8 +10350,42 @@ consensus::BlockUndo UndoRecordToBlockUndo(const dinero::UndoRecord& undo_record
 
     // Note: utreexo_delta is loaded from sidecar key (UD:<blockhash>) in DisconnectTip.
     block_undo.pre_block_shielded_frontier = undo_record.pre_block_shielded_frontier;
+    block_undo.pre_reset_shielded_epoch    = undo_record.pre_reset_shielded_epoch;
 
     return block_undo;
+}
+
+// Re-put every nullifier from a shielded epoch reset snapshot into `batch`.
+// Parses the snapshot's NSCF nullifier blob via a temp in-memory NullifierSet
+// (reusing the tested DeserializeContent + ForEach) and stages a
+// putShieldedNullifier for each row. Used by DisconnectTip when reorging across
+// the cutover: the connect at H purged the entire ChainDB nullifier CF, so the
+// pre-reset rows must be re-materialized from the undo snapshot — self-contained
+// (independent of whether the in-memory set was restored). Returns false on a
+// parse or DB error.
+bool RePutShieldedEpochSnapshotNullifiers(
+    ChainDB* chain_db,
+    const ChainWriteToken& token,
+    const consensus::shielded::ShieldedEpochSnapshot& snapshot,
+    rocksdb::WriteBatch& batch) {
+    consensus::shielded::NullifierSet tmp;
+    if (tmp.Open(":memory:") != consensus::shielded::NullifierSet::OpenResult::Ok) {
+        return false;
+    }
+    if (!tmp.DeserializeContent(snapshot.nullifiers)) {
+        return false;
+    }
+    bool put_ok = true;
+    const bool scan_ok = tmp.ForEach(
+        [&](uint32_t nf_height, const uint8_t* nf_32) -> bool {
+            if (chain_db->putShieldedNullifier(token, nf_height, nf_32, &batch) !=
+                Status::Ok) {
+                put_ok = false;
+                return false;
+            }
+            return true;
+        });
+    return scan_ok && put_ok;
 }
 
 } // anonymous namespace
@@ -10581,6 +10617,21 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
                 logger_->error("[DisconnectTip-CSN] Failed to stage shielded nullifier rollback, status=" +
                                std::to_string(static_cast<int>(delete_count.status())));
                 return false;
+            }
+
+            // Shielded epoch reset disconnect (CSN mirror of the full-mode path):
+            // the connect at H purged the whole nullifier CF, so deleteAboveHeight
+            // cannot restore the pre-reset rows. This lightweight path does NOT
+            // call DisconnectBlock, so re-put directly from the undo snapshot
+            // (parsed into a temp set) into coin_batch so ChainDB — the
+            // authoritative rehydration source — matches the pre-reset pool.
+            if (undo.pre_reset_shielded_epoch.has_value()) {
+                if (!RePutShieldedEpochSnapshotNullifiers(
+                        chain_db_, token, *undo.pre_reset_shielded_epoch, coin_batch)) {
+                    logger_->error("[DisconnectTip-CSN] Failed to re-put shielded epoch "
+                                   "reset nullifier rows during disconnect across cutover");
+                    return false;
+                }
             }
         }
 
@@ -11029,6 +11080,24 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             logger_->error("[DisconnectTip] Failed to stage shielded nullifier rollback, status=" +
                            std::to_string(static_cast<int>(delete_count.status())));
             return false;
+        }
+
+        // Shielded epoch reset (hard-fork cutover) disconnect: the connect at H
+        // PURGED the entire ChainDB nullifier CF, so the deleteAboveHeight above
+        // cannot restore the pre-reset rows. Re-materialize them from the undo
+        // snapshot into rollback_batch so ChainDB — the authoritative store
+        // startup rehydrates from — matches the pool DisconnectBlock just
+        // restored in memory. Without this, connecting new blocks
+        // (chaindb_count>0) then restarting would let Mode-B rehydration wipe the
+        // restored rows and resurrect the gap.
+        if (block_undo.pre_reset_shielded_epoch.has_value()) {
+            if (!RePutShieldedEpochSnapshotNullifiers(
+                    chain_db_, token, *block_undo.pre_reset_shielded_epoch,
+                    rollback_batch)) {
+                logger_->error("[DisconnectTip] Failed to re-put shielded epoch reset "
+                               "nullifier rows during disconnect across cutover");
+                return false;
+            }
         }
     }
 
@@ -12001,6 +12070,36 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 }
             }
         }
+        // Shielded epoch reset (hard-fork cutover): purge the AUTHORITATIVE
+        // ChainDB nullifier set so a restart's rehydration cannot resurrect the
+        // pre-cutover pool. Staged into utxo_batch so it commits atomically with
+        // setTip. The frontier/anchor blobs staged above already reflect the
+        // (empty) state ConnectBlock reset in memory, so only the nullifier CF
+        // needs an explicit purge. Block H is shielded-empty by the wall rule,
+        // so the staging loop above added nothing.
+        if (consensus::shielded::IsShieldedEpochResetHeight(
+                static_cast<uint32_t>(tip_to_connect->height),
+                dinero::Params().shielded_epoch_reset_height)) {
+            const auto purged =
+                chain_db_->deleteAllShieldedNullifiers(token, &utxo_batch);
+            if (!purged.ok()) {
+                if (active_batch.has_value()) active_batch->Abort();
+                if (logger_) {
+                    logger_->error("[ConnectTip] Failed to stage shielded epoch "
+                                   "reset nullifier purge at height " +
+                                   std::to_string(tip_to_connect->height));
+                }
+                std::string rollback_error;
+                if (!block_validator_->DisconnectBlock(block, tip_to_connect->height,
+                                                      block_undo, rollback_error)) {
+                    if (logger_) {
+                        logger_->error("[ConnectTip] FATAL: Rollback failed: " + rollback_error);
+                    }
+                }
+                return fail("shielded-epoch-reset-nullifier-purge-stage-failed");
+            }
+        }
+
         // Track that nullifier staging completed (or that the block had
         // no shielded txs — both shapes leave the batch consistent).
         ccb.MarkShieldedNullifiersStaged();

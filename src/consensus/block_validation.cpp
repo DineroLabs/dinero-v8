@@ -3,6 +3,7 @@
 #include "dinero/compat/int128.hpp"
 #include "consensus/shielded/anchor_history.h"
 #include "consensus/shielded/binding_sig.h"
+#include "consensus/shielded/shielded_epoch.h"
 #include "consensus/shielded/shielded_tx.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_block_validation.h"
@@ -2208,6 +2209,34 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             return false;
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        // Shielded epoch reset (hard-fork cutover). See shielded_epoch.h.
+        // ─────────────────────────────────────────────────────────────────────
+        // At exactly the reset height the pre-cutover pool is discarded to a
+        // fresh empty epoch, making every old note unspendable. The cutover
+        // block must be shielded-empty (wall rule) so the reset has nothing to
+        // race — a spend would have no valid new-epoch anchor and an output
+        // would land in a pool about to be wiped. Capture the full pre-reset
+        // pool into the undo record FIRST (so a reorg disconnecting across the
+        // cutover can restore the old epoch), THEN discard it. This runs before
+        // ValidateBlockShielded/ApplyBlockShielded — the only shielded state
+        // mutations — so the reset is the first thing to touch the pool at H.
+        const uint32_t shielded_reset_height =
+            dinero::Params().shielded_epoch_reset_height;
+        if (shld::IsShieldedEpochResetHeight(height, shielded_reset_height)) {
+            if (!bundles.empty()) {
+                error = "shielded-tx-at-epoch-reset-height";
+                return false;
+            }
+            if (shielded_anchor_history_) {
+                auto* anchors =
+                    static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
+                undo.pre_reset_shielded_epoch =
+                    shld::CaptureShieldedEpoch(*tree, *anchors, *nullifiers);
+                shld::ResetShieldedEpoch(*tree, *anchors, *nullifiers);
+            }
+        }
+
         if (!bundles.empty()) {
             shld::BlockShieldedContext bctx;
             bctx.existing_nullifiers = nullifiers;
@@ -2316,7 +2345,24 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
             return false;
         }
 
-        if (shielded_tree_ && undo.pre_block_shielded_frontier.has_value()) {
+        if (shielded_tree_ && undo.pre_reset_shielded_epoch.has_value()) {
+            // Reorg disconnecting across the shielded epoch cutover. The frontier
+            // + RollbackAbove path below CANNOT undo a reset — RollbackAbove only
+            // deletes rows, it can't re-add the wiped nullifiers/anchors. Restore
+            // the full pre-reset pool from the snapshot instead.
+            auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
+            auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
+            auto* anchors = static_cast<shielded::AnchorHistory*>(shielded_anchor_history_);
+            if (!nullifiers || !anchors) {
+                error = "shielded epoch reset restore: missing state containers";
+                return false;
+            }
+            if (!shielded::RestoreShieldedEpoch(*undo.pre_reset_shielded_epoch,
+                                                *tree, *anchors, *nullifiers)) {
+                error = "Failed to restore shielded epoch reset snapshot";
+                return false;
+            }
+        } else if (shielded_tree_ && undo.pre_block_shielded_frontier.has_value()) {
             auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
             auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
             const auto& frontier = *undo.pre_block_shielded_frontier;
@@ -2479,7 +2525,25 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
         }
     }
 
-    if (shielded_tree_ && undo.pre_block_shielded_frontier.has_value()) {
+    if (shielded_tree_ && undo.pre_reset_shielded_epoch.has_value()) {
+        // Reorg across the epoch cutover on the legacy disconnect path — restore
+        // the full pre-reset pool from the snapshot (RollbackAbove can't undo a
+        // reset). See the snapshot-path branch above.
+        auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
+        auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
+        auto* anchors = static_cast<shielded::AnchorHistory*>(shielded_anchor_history_);
+        if (!nullifiers || !anchors) {
+            restore_legacy_on_failure();
+            error = "shielded epoch reset restore: missing state containers (legacy)";
+            return false;
+        }
+        if (!shielded::RestoreShieldedEpoch(*undo.pre_reset_shielded_epoch,
+                                            *tree, *anchors, *nullifiers)) {
+            restore_legacy_on_failure();
+            error = "Failed to restore shielded epoch reset snapshot (legacy)";
+            return false;
+        }
+    } else if (shielded_tree_ && undo.pre_block_shielded_frontier.has_value()) {
         auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
         auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
         const auto& frontier = *undo.pre_block_shielded_frontier;

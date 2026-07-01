@@ -23,6 +23,7 @@
 #include "consensus/shielded/commitment_tree.h"  // Hash type
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -105,6 +106,16 @@ public:
      * malformed payload or DB error (leaving the set cleared).
      */
     bool DeserializeContent(const std::vector<uint8_t>& bytes);
+
+    /**
+     * Visit every (block_height, nullifier) in ascending (height, nullifier)
+     * order. Returning false from the visitor aborts the scan early. Used by the
+     * shielded epoch reset's reorg undo to re-put the restored nullifier rows
+     * into the authoritative ChainDB set on a disconnect across the cutover.
+     * Returns false on a DB error.
+     */
+    using Visitor = std::function<bool(uint32_t height, const uint8_t* nullifier_32)>;
+    bool ForEach(const Visitor& visit) const;
 
 private:
     sqlite3* db_ = nullptr;
