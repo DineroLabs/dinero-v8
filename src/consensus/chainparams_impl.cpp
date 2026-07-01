@@ -462,6 +462,32 @@ void SelectParams(Chain chain) {
         default:
             throw std::invalid_argument("Unknown chain");
     }
+
+    // cv-binding audit invariant (NECESSARY, not sufficient): cv-binding must
+    // not activate before input-binding. The cv circuit is only meaningful when
+    // public-input binding is on (VerifySpendProof passes `bind` and `cv_bound`
+    // separately; if cv activated first, the cv circuit would run with
+    // bind_public_inputs=false and a prover could present an arbitrary cv,
+    // defeating cv-binding entirely). So enforce cv_bound => bind.
+    //
+    // ⚠️ RESIDUAL ACTIVATION-WINDOW GAP (NOT closed by this check): because
+    // input-binding is fixed historically (mainnet 32300), any future cv height
+    // is > input height, leaving the window [input_height, cv_height) where
+    // balance is enforced over cv but cv is NOT yet bound to the note value. In
+    // that window an output can commit cm(val=X) while cv=Commit(0) — the binding
+    // sig balances it at zero cost and the note stays spendable after activation
+    // (mint-from-nothing across the transition). Activating cv-binding does NOT
+    // retroactively close this. The ONLY full closures are cv_height==input_height
+    // (impossible now) or a coordinated cutover / shielded-pool reset at
+    // activation that treats pre-activation shielded value as suspect. This MUST
+    // be handled in the cv-binding activation plan, not here. (cv=UINT32_MAX
+    // dormant today, so the window does not exist yet.)
+    if (g_active->shielded_cv_binding_activation_height <
+        g_active->shielded_input_binding_activation_height) {
+        throw std::runtime_error(
+            "invalid chainparams: shielded_cv_binding_activation_height must be >= "
+            "shielded_input_binding_activation_height");
+    }
 }
 
 Chain GetActiveChain() {

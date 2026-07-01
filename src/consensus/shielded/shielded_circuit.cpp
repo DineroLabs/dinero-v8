@@ -82,14 +82,25 @@ bool ValueGenCoords(Uint256& vx, Uint256& vy) {
 // (set_xquad == secp256k1_fe_sqrt == raising to (p+1)/4, the same root the
 // in-circuit bip340_lift_x computes; the parity bit then matches _load.)
 bool LoadCvPoint(const ValueCommitment& cv, Uint256& out_x, Uint256& out_y) {
-    // x must be a valid field element on the curve (parse contract). We don't
-    // re-check on-curve here; a bogus cv yields a point the in-circuit
-    // val·V+rcv·G can never equal, so the proof fails closed.
-    Uint256 x(cv.data() + 1);  // big-endian 32 bytes
     using zk::zkvm::uint256_mul_mod_p;
     using zk::zkvm::uint256_add_mod_p;
     using zk::zkvm::uint256_sub_mod_p;
     using zk::zkvm::uint256_p;
+
+    // cv-binding audit hardening: validate cv explicitly (canonical, on-curve,
+    // valid prefix) and fail closed on any violation, instead of relying on the
+    // downstream binding-signature parse to reject it. The fail-closed sentinel
+    // (0,0) is not on secp256k1, so a bogus cv can never equal the in-circuit
+    // val·V + rcv·G. Returns false so callers may reject explicitly too.
+    auto fail = [&]() -> bool { out_x = Uint256(uint64_t(0)); out_y = Uint256(uint64_t(0)); return false; };
+
+    // Compressed Pedersen-commitment prefix: 0x08 (even y) / 0x09 (odd y).
+    if (cv[0] != 0x08 && cv[0] != 0x09) return fail();
+
+    Uint256 x(cv.data() + 1);  // big-endian 32 bytes
+    // Canonicity: x must be a reduced field element (< p).
+    if (!(x < uint256_p())) return fail();
+
     Uint256 x2 = uint256_mul_mod_p(x, x);
     Uint256 x3 = uint256_mul_mod_p(x2, x);
     Uint256 rhs = uint256_add_mod_p(x3, Uint256(uint64_t(7)));
@@ -110,6 +121,11 @@ bool LoadCvPoint(const ValueCommitment& cv, Uint256& out_x, Uint256& out_y) {
         }
         base = uint256_mul_mod_p(base, base);
     }
+    // On-curve: the candidate y must satisfy y^2 == x^3 + 7. If rhs is a
+    // non-residue (x not on the curve), the (p+1)/4 exponentiation yields a
+    // y with y^2 != rhs — reject rather than emit an off-curve point.
+    if (!(uint256_mul_mod_p(y, y) == rhs)) return fail();
+
     if (cv[0] & 1) {
         y = uint256_sub_mod_p(uint256_p(), y);
     }
