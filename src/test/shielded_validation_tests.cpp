@@ -678,6 +678,67 @@ TEST_F(ShieldedValidationFixture, ShieldHelperRejectsWrongVersion) {
     EXPECT_TRUE(tx.shielded_bundle_bytes.empty());
 }
 
+// ── Audit Critical #1: wallet emits cv-bound proofs when requested ──────
+// A wallet-built shield bundle with cv_bound=true carries a 0x04 (cv-bound)
+// output proof whose cv == the bundle's published cv, and verifies under the
+// full consensus validator at a post-activation height.
+TEST_F(ShieldedValidationFixture, ShieldHelperCvBoundProducesValidatorAcceptedTx) {
+    constexpr uint64_t kShieldValue = 100'000'000;
+    constexpr uint64_t kFee         = 10'000;
+
+    auto tx = MakeShieldEnvelope(kFee);
+    auto built = wallet::shielded_ops::BuildShieldBundleForTx(
+        tx, kShieldValue, /*cv_bound=*/true);
+    ASSERT_EQ(built.status, wallet::shielded_ops::OpStatus::Ok)
+        << "build failed: " << built.error;
+
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    ASSERT_EQ(decoded.outputs.size(), 1u);
+    // cv-bound output proof version byte is 0x04 (legacy is 0x02).
+    ASSERT_FALSE(decoded.outputs[0].zk_proof.empty());
+    EXPECT_EQ(decoded.outputs[0].zk_proof[0], 0x04);
+
+    // Validate at a post-activation height (cv-binding active from genesis here).
+    ctx.shielded_cv_binding_activation_height = 0;
+    ctx.shielded_input_binding_activation_height = 0;
+    ctx.transparent_value_delta = static_cast<int64_t>(kShieldValue);
+    ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok);
+}
+
+// Migration boundary: a LEGACY (cv_bound=false) wallet bundle is REJECTED once
+// cv-binding has activated — this is exactly why the wallet must emit cv-bound
+// proofs at/above the activation height (and why the cv_bound wiring matters).
+TEST_F(ShieldedValidationFixture, ShieldHelperLegacyRejectedWhenCvBindingActive) {
+    constexpr uint64_t kShieldValue = 100'000'000;
+    constexpr uint64_t kFee         = 10'000;
+
+    auto tx = MakeShieldEnvelope(kFee);
+    auto built = wallet::shielded_ops::BuildShieldBundleForTx(
+        tx, kShieldValue, /*cv_bound=*/false);  // legacy 0x02
+    ASSERT_EQ(built.status, wallet::shielded_ops::OpStatus::Ok);
+
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    ASSERT_EQ(decoded.outputs.size(), 1u);
+    EXPECT_EQ(decoded.outputs[0].zk_proof[0], 0x02);
+
+    // Pre-activation: legacy proof accepted.
+    ctx.shielded_cv_binding_activation_height = UINT32_MAX;
+    ctx.shielded_input_binding_activation_height = 0;
+    ctx.transparent_value_delta = static_cast<int64_t>(kShieldValue);
+    ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok);
+
+    // Post-activation: same legacy bundle rejected (cv-bound 0x04 required).
+    ctx.shielded_cv_binding_activation_height = 0;
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx),
+              ShieldedValidationError::ProofInvalid);
+}
+
 // ── Phase 3 wave 3c: unshield-side wallet helper ────────────────────
 
 namespace {
@@ -760,6 +821,56 @@ TEST_F(ShieldedValidationFixture, UnshieldHelperProducesValidatorAcceptedTx) {
     ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
     EXPECT_EQ(ValidateShieldedBundle(decoded, ctx),
               ShieldedValidationError::Ok);
+}
+
+// ── Audit Critical #1: wallet emits a cv-bound SPEND proof (0x03) ───────
+// Exercises the spend-side reorder: the cv handed to ProveSpend is byte-
+// identical to the bundle's published cv, so the cv-bound bundle verifies at
+// a post-activation height.
+TEST_F(ShieldedValidationFixture, UnshieldHelperCvBoundProducesValidatorAcceptedTx) {
+    constexpr uint64_t kNoteValue = 100'000'000;
+    constexpr uint64_t kFee       = 10'000;
+    constexpr uint64_t kRecipient = kNoteValue - kFee;
+
+    const Hash sk         = MakeHash(0xB0, 0xC2);
+    const Hash randomness = MakeHash(0xB1, 0xC2);
+    const Hash pk         = PoseidonHash2(sk, Hash{});
+    const Hash d          = MakeHash(0xB2, 0xC2);
+    const Hash value_hash = ValueAsHash(kNoteValue);
+
+    const Hash spend_cm = NoteCommitment(d, pk, value_hash, randomness);
+    const uint64_t leaf_idx = tree.Append(spend_cm);
+    auto path = tree.GetAuthPath(leaf_idx);
+    ASSERT_TRUE(path.has_value());
+
+    wallet::shielded_ops::UnshieldNoteInput note;
+    note.secret_key  = sk;
+    note.randomness  = randomness;
+    note.d           = d;
+    note.anchor      = tree.Root();
+    note.leaf_index  = leaf_idx;
+    note.value_una   = kNoteValue;
+    note.merkle_path = path->siblings;
+
+    auto tx = MakeUnshieldEnvelope(kRecipient, kFee, /*recipient_seed=*/0xBB);
+    auto built = wallet::shielded_ops::BuildUnshieldBundleForTx(
+        tx, note, kFee, /*cv_bound=*/true);
+    ASSERT_EQ(built.status, wallet::shielded_ops::OpStatus::Ok)
+        << "build failed: " << built.error;
+
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    ASSERT_EQ(decoded.spends.size(), 1u);
+    ASSERT_FALSE(decoded.spends[0].zk_proof.empty());
+    // cv-bound spend proof version byte is 0x03 (legacy is 0x01).
+    EXPECT_EQ(decoded.spends[0].zk_proof[0], 0x03);
+
+    ctx.shielded_cv_binding_activation_height = 0;
+    ctx.shielded_input_binding_activation_height = 0;
+    ctx.transparent_value_delta = -static_cast<int64_t>(kNoteValue);
+    ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok);
 }
 
 // Issue #273 regression: the shielded RPC handlers used a fixed default
