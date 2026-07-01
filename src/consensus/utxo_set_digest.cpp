@@ -50,6 +50,15 @@ std::vector<uint8_t> SerializeUtxoRecord(const OutPoint& outpoint, const UTXOEnt
     return out;
 }
 
+bool UtxoRecordIsSnapshotSafe(const UTXOEntry& entry) {
+    // SerializeUtxoRecord omits is_confidential/commitment (#281). That is only
+    // sound while both are empty, which v7 (transparent-only) guarantees for
+    // every UTXO. Refuse anything carrying confidential data so the exporter
+    // fails closed instead of writing a record whose confidential fields are
+    // unbound by the content commitment.
+    return !entry.is_confidential && entry.commitment.empty();
+}
+
 uint256 ComputeUtxoRecordsDigest(const std::unordered_map<OutPoint, UTXOEntry>& utxos) {
     // Sort outpoints for deterministic order — same sort ExportSnapshot uses.
     std::vector<OutPoint> sorted;

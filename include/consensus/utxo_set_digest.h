@@ -18,6 +18,15 @@ namespace dinero::consensus {
 // (docs/design/assumeutxo-fatal-state-machine.md, Anchor Binding).
 std::vector<uint8_t> SerializeUtxoRecord(const OutPoint& outpoint, const UTXOEntry& entry);
 
+// Fail-closed guard for the snapshot content commitment (#281).
+// SerializeUtxoRecord intentionally omits UTXOEntry.is_confidential/commitment.
+// That is only sound while those fields are consensus-forced empty (v7 is
+// transparent-only). This returns false for any UTXO carrying confidential
+// data, so the exporter can refuse rather than emit a record whose confidential
+// fields are unbound by the digest. Must be re-evaluated (and the record
+// encoding extended) before any confidential/shielded UTXO lane is enabled.
+bool UtxoRecordIsSnapshotSafe(const UTXOEntry& entry);
+
 // SHA256 over all records in sorted-outpoint order (operator< on OutPoint).
 // Pure content function: independent of container iteration order.
 uint256 ComputeUtxoRecordsDigest(const std::unordered_map<OutPoint, UTXOEntry>& utxos);
