@@ -1315,6 +1315,30 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/commitment_tree_tests.cpp)
   message(STATUS "Shielded commitment-tree tests enabled")
 endif()
 
+# shielded-epoch-reset fork (cutover) — reset transformation tests
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_epoch_reset.cpp)
+  add_executable(test_shielded_epoch_reset
+    tests/consensus/test_shielded_epoch_reset.cpp
+  )
+  add_dependencies(test_shielded_epoch_reset gtest dinero_shielded)
+  target_link_libraries(test_shielded_epoch_reset PRIVATE
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+    dinero_shielded
+  )
+  target_include_directories(test_shielded_epoch_reset BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ShieldedEpochReset COMMAND test_shielded_epoch_reset)
+  set_tests_properties(ShieldedEpochReset PROPERTIES
+    LABELS "shielded;consensus;cv-binding;mandatory"
+    TIMEOUT 30
+  )
+  message(STATUS "Shielded epoch-reset tests enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/nullifier_set_tests.cpp)
   add_executable(test_nullifier_set
     src/test/nullifier_set_tests.cpp

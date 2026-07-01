@@ -223,6 +223,16 @@ struct ChainParams {
     // ===========================================================================
     uint32_t shielded_cv_binding_activation_height = UINT32_MAX;
 
+    // Shielded epoch reset (hard-fork cutover). At this height the shielded pool
+    // is reset to a fresh empty epoch (tree/anchor-history/nullifiers discarded),
+    // making all pre-cutover notes unspendable. MUST equal
+    // shielded_cv_binding_activation_height (cv-binding activates from block 1 of
+    // the new epoch) — SelectParams enforces this. Discarding the weak pool at the
+    // reset is what closes the [input_binding, cv) mint window instead of carrying
+    // it forward. Defaulted UINT32_MAX (dormant) on every network; a real mainnet
+    // height MUST be chosen by a human + fleet-coordinated before it ships.
+    uint32_t shielded_epoch_reset_height = UINT32_MAX;
+
     // Genesis block parameters
     GenesisParams genesis;
 

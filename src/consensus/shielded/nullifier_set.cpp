@@ -6,6 +6,7 @@
 #include "consensus/shielded/nullifier_set.h"
 
 #include <sqlite3.h>
+#include <algorithm>
 #include <cstring>
 
 namespace dinero::consensus::shielded {
@@ -164,6 +165,38 @@ std::vector<uint8_t> NullifierSet::SerializeContent() const {
         return std::vector<uint8_t>{};
     }
     return out;
+}
+
+bool NullifierSet::DeserializeContent(const std::vector<uint8_t>& bytes) {
+    if (!db_) return false;
+    Clear();                          // start from a clean table
+    if (bytes.empty()) return true;   // empty content == empty set (valid)
+
+    constexpr uint32_t kTag = 0x4653434E;  // 'NSCF' little-endian
+    size_t off = 0;
+    auto need = [&](size_t n) { return off + n <= bytes.size(); };
+    auto read_u16 = [&]() { uint16_t v = 0; for (int i = 0; i < 2; ++i) v |= static_cast<uint16_t>(bytes[off++]) << (i * 8); return v; };
+    auto read_u32 = [&]() { uint32_t v = 0; for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>(bytes[off++]) << (i * 8); return v; };
+    auto read_u64 = [&]() { uint64_t v = 0; for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(bytes[off++]) << (i * 8); return v; };
+
+    if (!need(4 + 2 + 8)) return false;
+    const uint32_t tag = read_u32();
+    const uint16_t version = read_u16();
+    const uint64_t count = read_u64();
+    if (tag != kTag || version != 1) { Clear(); return false; }
+
+    for (uint64_t i = 0; i < count; ++i) {
+        if (!need(4 + HASH_BYTES)) { Clear(); return false; }
+        const uint32_t height = read_u32();
+        Hash nf{};
+        std::copy(bytes.begin() + static_cast<std::ptrdiff_t>(off),
+                  bytes.begin() + static_cast<std::ptrdiff_t>(off + HASH_BYTES),
+                  nf.begin());
+        off += HASH_BYTES;
+        if (!Insert(nf, height)) { Clear(); return false; }
+    }
+    if (off != bytes.size()) { Clear(); return false; }  // trailing garbage
+    return true;
 }
 
 } // namespace dinero::consensus::shielded

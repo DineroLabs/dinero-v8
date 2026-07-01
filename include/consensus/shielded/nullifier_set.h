@@ -97,6 +97,15 @@ public:
      */
     std::vector<uint8_t> SerializeContent() const;
 
+    /**
+     * Replace the entire set with the content produced by SerializeContent().
+     * Clears the table first, then re-inserts every (block_height, nullifier).
+     * Used by the shielded epoch reset's reorg undo to restore the pre-cutover
+     * nullifier set when a reorg crosses the cutover height. Returns false on a
+     * malformed payload or DB error (leaving the set cleared).
+     */
+    bool DeserializeContent(const std::vector<uint8_t>& bytes);
+
 private:
     sqlite3* db_ = nullptr;
 };

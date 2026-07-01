@@ -989,6 +989,58 @@ TEST(BlockValidationInvariants, StatelessEarlyReturnStoresShieldedFrontierInUndo
         << "STATELESS early return must not store a UTXO snapshot";
 }
 
+// The shielded epoch reset snapshot must survive undo serialization (it is
+// persisted to the undo flatfile and reloaded on a reorg across the cutover).
+// Both the binary (Serialize/Deserialize) and JSON (ToJson/FromJson) forms.
+TEST(BlockValidationInvariants, BlockUndoEpochSnapshotRoundTrips) {
+    BlockUndo undo(61000);
+    shielded::ShieldedEpochSnapshot snap;
+    snap.tree_frontier  = {0x01, 0x02, 0x03};
+    snap.anchor_history = {0xAA, 0xBB, 0xCC, 0xDD};
+    snap.nullifiers     = {0x4E, 0x43, 0x53, 0x46, 0x99, 0x00, 0x7F};
+    undo.pre_reset_shielded_epoch = snap;
+
+    const auto bytes = undo.Serialize();
+    const BlockUndo back = BlockUndo::Deserialize(bytes);
+    ASSERT_TRUE(back.pre_reset_shielded_epoch.has_value());
+    EXPECT_EQ(back.height, 61000u);
+    EXPECT_EQ(back.pre_reset_shielded_epoch->tree_frontier,  snap.tree_frontier);
+    EXPECT_EQ(back.pre_reset_shielded_epoch->anchor_history, snap.anchor_history);
+    EXPECT_EQ(back.pre_reset_shielded_epoch->nullifiers,     snap.nullifiers);
+
+    const BlockUndo jback = BlockUndo::FromJson(undo.ToJson());
+    ASSERT_TRUE(jback.pre_reset_shielded_epoch.has_value());
+    EXPECT_EQ(jback.pre_reset_shielded_epoch->tree_frontier,  snap.tree_frontier);
+    EXPECT_EQ(jback.pre_reset_shielded_epoch->anchor_history, snap.anchor_history);
+    EXPECT_EQ(jback.pre_reset_shielded_epoch->nullifiers,     snap.nullifiers);
+}
+
+// The reset happens on exactly one block; every other undo must leave the field
+// nullopt. Also: an OLD undo record (written before this field existed) ends
+// right after the frontier — Deserialize must tolerate that and yield nullopt,
+// not read past the end.
+TEST(BlockValidationInvariants, BlockUndoWithoutEpochSnapshotIsBackwardCompatible) {
+    BlockUndo undo(100);
+    undo.pre_block_shielded_frontier = std::vector<uint8_t>{0x07, 0x08, 0x09};
+    const auto bytes = undo.Serialize();
+
+    const BlockUndo back = BlockUndo::Deserialize(bytes);
+    EXPECT_FALSE(back.pre_reset_shielded_epoch.has_value());
+    ASSERT_TRUE(back.pre_block_shielded_frontier.has_value());
+    EXPECT_EQ(*back.pre_block_shielded_frontier, *undo.pre_block_shielded_frontier);
+
+    // Simulate an old record: drop the trailing epoch-absent flag byte so the
+    // stream ends exactly where the pre-field format ended.
+    ASSERT_FALSE(bytes.empty());
+    ASSERT_EQ(bytes.back(), 0x00) << "final byte is the epoch-absent flag";
+    const std::vector<uint8_t> old_format(bytes.begin(), bytes.end() - 1);
+    const BlockUndo old_back = BlockUndo::Deserialize(old_format);
+    EXPECT_FALSE(old_back.pre_reset_shielded_epoch.has_value());
+    ASSERT_TRUE(old_back.pre_block_shielded_frontier.has_value())
+        << "dropping the epoch flag must not disturb the frontier field";
+    EXPECT_EQ(*old_back.pre_block_shielded_frontier, *undo.pre_block_shielded_frontier);
+}
+
 // Entry point
 int main(int argc, char** argv) {
     dinero::SelectParams(dinero::Chain::REGTEST);
