@@ -72,7 +72,15 @@ std::string BlockUndo::ToJson() const {
     if (pre_block_shielded_frontier.has_value()) {
         root["pre_block_shielded_frontier"] = BytesToHex(*pre_block_shielded_frontier);
     }
-    
+
+    if (pre_reset_shielded_epoch.has_value()) {
+        Json::Value ep;
+        ep["tree_frontier"]  = BytesToHex(pre_reset_shielded_epoch->tree_frontier);
+        ep["anchor_history"] = BytesToHex(pre_reset_shielded_epoch->anchor_history);
+        ep["nullifiers"]     = BytesToHex(pre_reset_shielded_epoch->nullifiers);
+        root["pre_reset_shielded_epoch"] = ep;
+    }
+
     Json::StreamWriterBuilder writer;
     writer["indentation"] = "";  // Compact JSON
     return Json::writeString(writer, root);
@@ -132,7 +140,16 @@ BlockUndo BlockUndo::FromJson(const std::string& json_str) {
         undo.pre_block_shielded_frontier =
             HexToBytes(root["pre_block_shielded_frontier"].asString());
     }
-    
+
+    if (root.isMember("pre_reset_shielded_epoch")) {
+        const Json::Value& ep = root["pre_reset_shielded_epoch"];
+        shielded::ShieldedEpochSnapshot snap;
+        snap.tree_frontier  = HexToBytes(ep["tree_frontier"].asString());
+        snap.anchor_history = HexToBytes(ep["anchor_history"].asString());
+        snap.nullifiers     = HexToBytes(ep["nullifiers"].asString());
+        undo.pre_reset_shielded_epoch = std::move(snap);
+    }
+
     return undo;
 }
 
@@ -233,6 +250,16 @@ std::vector<uint8_t> BlockUndo::Serialize() const {
         WriteBytes(data, *pre_block_shielded_frontier);
     }
 
+    // Shielded epoch reset snapshot (present only on the reset block). Appended
+    // after the frontier so old undo records — which end after the frontier —
+    // deserialize with this left as nullopt.
+    data.push_back(pre_reset_shielded_epoch.has_value() ? 1 : 0);
+    if (pre_reset_shielded_epoch.has_value()) {
+        WriteBytes(data, pre_reset_shielded_epoch->tree_frontier);
+        WriteBytes(data, pre_reset_shielded_epoch->anchor_history);
+        WriteBytes(data, pre_reset_shielded_epoch->nullifiers);
+    }
+
     return data;
 }
 
@@ -274,7 +301,18 @@ BlockUndo BlockUndo::Deserialize(const std::vector<uint8_t>& data) {
             undo.pre_block_shielded_frontier = ReadBytes(ptr);
         }
     }
-    
+
+    if (ptr < end) {
+        const bool has_reset_epoch = (*ptr++ != 0);
+        if (has_reset_epoch && ptr < end) {
+            shielded::ShieldedEpochSnapshot snap;
+            snap.tree_frontier  = ReadBytes(ptr);
+            snap.anchor_history = ReadBytes(ptr);
+            snap.nullifiers     = ReadBytes(ptr);
+            undo.pre_reset_shielded_epoch = std::move(snap);
+        }
+    }
+
     return undo;
 }
 

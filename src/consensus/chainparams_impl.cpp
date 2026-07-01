@@ -488,6 +488,16 @@ void SelectParams(Chain chain) {
             "invalid chainparams: shielded_cv_binding_activation_height must be >= "
             "shielded_input_binding_activation_height");
     }
+
+    // The shielded epoch reset must coincide with cv-binding activation: the pool
+    // is discarded and cv-binding is enforced from block 1 of the new epoch, so no
+    // window can exist where balance is enforced over cv while cv is still unbound.
+    if (g_active->shielded_epoch_reset_height !=
+        g_active->shielded_cv_binding_activation_height) {
+        throw std::runtime_error(
+            "invalid chainparams: shielded_epoch_reset_height must equal "
+            "shielded_cv_binding_activation_height");
+    }
 }
 
 Chain GetActiveChain() {

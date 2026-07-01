@@ -11,6 +11,7 @@ add_library(dinero_shielded STATIC
     anchor_history.cpp
     commitment_tree.cpp
     nullifier_set.cpp
+    shielded_epoch.cpp
     binding_sig.cpp
     bundle_builder.cpp
     pedersen_commit.cpp
