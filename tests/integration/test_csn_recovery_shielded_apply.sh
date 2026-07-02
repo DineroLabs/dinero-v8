@@ -191,6 +191,7 @@ wait_height "$RPC_C" "$DATADIR_CSN" "$POST_H" "$SYNC_TIMEOUT" \
     || fail "CSN did not sync the subsequent shielded spend to ${POST_H} (anchor-invalid on recovery-built state? got $(height "$RPC_C" "$DATADIR_CSN"))"
 [[ "$(besthash "$RPC_C" "$DATADIR_CSN")" == "$B_TIP2" ]] || fail "CSN tip hash != bridge after subsequent spend"
 C_SH2=$(statehash "$RPC_C" "$DATADIR_CSN")
+[[ -n "$C_SH2" && -n "$B_SH2" ]] || fail "empty shieldedStateHash after subsequent spend (bridge=${B_SH2} csn=${C_SH2})"
 [[ "$C_SH2" == "$B_SH2" ]] || fail "CSN shieldedStateHash != bridge after subsequent spend (bridge=${B_SH2} csn=${C_SH2})"
 pass "CSN accepted a subsequent shielded spend on the recovery-built state (no anchor-invalid; hash still matches)"
 
