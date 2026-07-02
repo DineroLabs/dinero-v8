@@ -1216,6 +1216,28 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_spend_sync.sh)
     message(STATUS "  ✓ CSNShieldedSpendSync registered")
 endif()
 
+# CSN ConnectTip stateless-recovery shielded-apply (#356). Deterministically
+# reaches ConnectTip's crash-recovery/replay branch (guard current_commitment ==
+# accumulator_root_before, INFO "Stateless replay path") via the regtest-only
+# fault-injection hook (DINERO_DEBUG_ABORT_AFTER_STORE_HEIGHT): a CSN stores a
+# shielded-bearing block H (an unshield/nullifier block) then _exit(70) before
+# connecting it; on restart ActivateBestChain connects H through the recovery
+# branch. Asserts the branch fired for H, and that the recovery-applied shielded
+# state converges with the full node (shieldedStateHash) and accepts a subsequent
+# shielded spend. Neuter-proven (reverting the branch's apply diverges/stalls).
+# Two-node bridge+CSN, restart, long timeout.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_recovery_shielded_apply.sh)
+    add_test(
+        NAME CSNRecoveryShieldedApply
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_recovery_shielded_apply.sh
+    )
+    set_tests_properties(CSNRecoveryShieldedApply PROPERTIES
+        LABELS "integration;shielded;stateless;csn;recovery;crash;canonical-state"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ CSNRecoveryShieldedApply registered")
+endif()
+
 # CSN shielded REORG invertibility (the e2e teeth). A stateless node must survive
 # a reorg whose disconnected AND replayed branches carry real shielded spends and
 # end byte-identical to a full node. Leg A: reorg invertibility (CSN sh==bridge);

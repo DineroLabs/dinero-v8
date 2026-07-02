@@ -1534,6 +1534,96 @@ bool ChainstateService::PersistShieldedTipMarker(const uint256& tip_hash, uint32
     return chain_db_->putShieldedTipMarker(token, marker) == Status::Ok;
 }
 
+// #356: Shared shielded-apply funnel for the stateless replay/recovery connect
+// path. Extracted verbatim from the ABC-CSN reorg replay loop's inline
+// delta-recompute + pre-block frontier capture + ApplyBlockShieldedSection
+// sequence (PR #355), gated by the marker-height guard so a SECOND caller (the
+// ConnectTip crash-recovery branch) can share it without double-applying.
+bool ChainstateService::ApplyStatelessReplayShielded(
+    const Block& block, uint32_t height,
+    consensus::BlockUndo& undo_out, bool& applied_out, std::string& error,
+    const std::vector<consensus::SpentOutputData>* fallback_spent_outputs) {
+    applied_out = false;
+
+    if (!block_validator_) {
+        error = "shielded apply impossible: block validator not wired";
+        return false;
+    }
+    if (!chain_db_) {
+        error = "shielded apply impossible: chain db not wired";
+        return false;
+    }
+
+    // Read the authoritative pool height from the persisted marker. In the
+    // ABC-CSN reorg replay loop this is unreachable-NotFound: disconnect stages
+    // the marker at the fork point and genesis persists it, so the marker is
+    // always present and always exactly at height-1 there. A NotFound / read
+    // failure therefore signals a broken invariant rather than a benign miss —
+    // fail loud rather than silently skip (which would leave shielded state
+    // unadvanced on a path that requires the apply).
+    const auto marker_result = chain_db_->getShieldedTipMarker();
+    if (marker_result.status() != Status::Ok) {
+        error = "failed to read ShieldedTipMarker for stateless replay apply (status=" +
+                std::to_string(static_cast<int>(marker_result.status())) + ")";
+        return false;
+    }
+    const uint32_t marker_height =
+        static_cast<uint32_t>(marker_result.value().height);
+
+    switch (StatelessReplayShieldedDecision(marker_height, height)) {
+        case StatelessReplayShieldedAction::Skip:
+            // Pool already at/ahead of this block — a second apply would
+            // double-count note commitments / nullifiers. Leave state and
+            // undo_out untouched.
+            applied_out = false;
+            return true;
+        case StatelessReplayShieldedAction::GapFail:
+            error = "shielded pool marker height " + std::to_string(marker_height) +
+                    " is behind block height-1 (block=" + std::to_string(height) +
+                    ") — contiguous-recovery invariant broken";
+            return false;
+        case StatelessReplayShieldedAction::Apply:
+            break;  // fall through to apply below
+    }
+
+    // Recompute deltas EXACTLY as the forward STATELESS per-tx loop did (bit-
+    // identity pinned by ShieldedBlockSectionDeltaParity). fallback_spent_outputs
+    // is consulted only when block.utreexo is absent.
+    std::vector<int64_t> replay_deltas;
+    if (!block_validator_->ComputeShieldedDeltasForStoredBlock(
+            block, height, replay_deltas, error, fallback_spent_outputs)) {
+        error = "shielded delta recompute failed: " + error;
+        return false;
+    }
+
+    undo_out.height = height;
+    // #356 Task 3 rider: the ConnectTip stateless-recovery call site
+    // constructs a default consensus::BlockUndo and never sets block_hash
+    // (unlike the ABC-CSN reorg-replay caller, which pre-sets it from
+    // block_index->hash before calling in). Set it here, in the shared
+    // funnel, so both callers get a correctly-identified undo record.
+    undo_out.block_hash = block.GetHash();
+    // Capture the pre-block frontier BEFORE the apply (mirrors the capture at
+    // the top of ConnectBlockInternal) so the undo record can restore the
+    // commitment tree on a later disconnect.
+    {
+        std::vector<uint8_t> pre_frontier =
+            block_validator_->SerializeShieldedFrontier();
+        if (!pre_frontier.empty()) {
+            undo_out.pre_block_shielded_frontier = std::move(pre_frontier);
+        }
+    }
+
+    if (!block_validator_->ApplyBlockShieldedSection(
+            block, height, replay_deltas, undo_out, error)) {
+        error = "shielded apply failed: " + error;
+        return false;
+    }
+
+    applied_out = true;
+    return true;
+}
+
 // Phase 3b step 6: deleted RecoverShieldedStateFromTipMarker,
 // RestoreShieldedFrontierFromUndoBlock, ReplayShieldedBlockForward.
 // These three helpers formed a closed maze whose only purpose was
@@ -7426,50 +7516,36 @@ void ChainstateService::ActivateBestChain() {
             // (bit-identity pinned by the ShieldedBlockSectionDeltaParity
             // suite); ApplyBlockShieldedSection fires the epoch reset at H,
             // validates, applies, and records the anchor root.
-            if (!block_validator_) {
-                if (logger_) logger_->error("[ABC-CSN] shielded apply impossible at height " +
-                                            std::to_string(block_index->height) +
-                                            ": block validator not wired — ABORTING REORG");
-                return;
-            }
-            std::vector<int64_t> replay_deltas;
-            std::string serr;
-            if (!block_validator_->ComputeShieldedDeltasForStoredBlock(
-                    replay_block, static_cast<uint32_t>(block_index->height),
-                    replay_deltas, serr,
-                    /*fallback_spent_outputs=*/spent_outputs)) {
-                if (logger_) logger_->error("[ABC-CSN] shielded delta recompute failed at height " +
-                                            std::to_string(block_index->height) + ": " + serr);
-                return;  // abort reorg, same style as the surrounding failures
-            }
-            if (logger_ && !replay_deltas.empty()) {
-                logger_->info("[ABC-CSN] Recomputed " + std::to_string(replay_deltas.size()) +
-                              " shielded delta(s) at height " + std::to_string(block_index->height) +
-                              " from " + (replay_block.utreexo.has_value()
-                                              ? std::string("block.utreexo")
-                                              : std::string("csn-replay-data")) +
-                              " spent-output metadata");
-            }
+            // #356: route the delta-recompute + pre-block frontier capture +
+            // ApplyBlockShieldedSection through the shared ApplyStatelessReplay-
+            // Shielded funnel (also used by the ConnectTip crash-recovery
+            // branch). In this contiguous replay loop the disconnect leg rolled
+            // the shielded marker back to the fork point and each
+            // CommitConnectedBlockBookkeeping advances it by one, so the marker
+            // is ALWAYS exactly at height-1 here and the guard's Apply branch
+            // always fires. A Skip/GapFail would mean the marker diverged from
+            // the replay cursor — a broken invariant — so treat "did not apply"
+            // as a loud abort rather than silently leaving shielded state
+            // unadvanced (silent skip is wrong for the reorg loop, whose
+            // correctness relies on always-apply).
+            // block_hash is set inside ApplyStatelessReplayShielded on the apply
+            // path; this loop aborts on non-apply, so no preset is needed here.
             consensus::BlockUndo replay_shielded_undo;
-            replay_shielded_undo.height = static_cast<uint32_t>(block_index->height);
-            replay_shielded_undo.block_hash = block_index->hash;
-            // Capture the pre-block frontier BEFORE the apply (mirrors the
-            // capture at the top of ConnectBlockInternal) so the undo record
-            // can restore the commitment tree on a later disconnect.
-            {
-                std::vector<uint8_t> pre_frontier =
-                    block_validator_->SerializeShieldedFrontier();
-                if (!pre_frontier.empty()) {
-                    replay_shielded_undo.pre_block_shielded_frontier =
-                        std::move(pre_frontier);
-                }
-            }
-            if (!block_validator_->ApplyBlockShieldedSection(
+            std::string serr;
+            bool shielded_applied = false;
+            if (!ApplyStatelessReplayShielded(
                     replay_block, static_cast<uint32_t>(block_index->height),
-                    replay_deltas, replay_shielded_undo, serr)) {
-                if (logger_) logger_->error("[ABC-CSN] shielded apply failed at height " +
+                    replay_shielded_undo, shielded_applied, serr,
+                    /*fallback_spent_outputs=*/spent_outputs)) {
+                if (logger_) logger_->error("[ABC-CSN] shielded replay apply failed at height " +
                                             std::to_string(block_index->height) + ": " + serr);
                 return;  // abort reorg, same style as the surrounding failures
+            }
+            if (!shielded_applied) {
+                if (logger_) logger_->error("[ABC-CSN] shielded replay guard did NOT apply at "
+                                            "height " + std::to_string(block_index->height) +
+                                            " (marker not at height-1) — ABORTING REORG");
+                return;  // broken contiguous-replay invariant
             }
             // Bookkeeping: coins, undo record, shielded persistence, tip,
             // height index, checkpoint, notify. replay_shielded_undo carries
@@ -11638,16 +11714,38 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 return fail("stateless-replay-failed");
             }
 
+            // #356: route the delta-recompute + pre-block frontier capture +
+            // ApplyBlockShieldedSection through the shared ApplyStatelessReplay-
+            // Shielded funnel (also used by the ABC-CSN reorg replay loop) so
+            // this crash-recovery branch's shielded-bearing blocks actually get
+            // their note commitments and nullifiers applied instead of silently
+            // skipping them. The guard reads the persisted ShieldedTipMarker: if
+            // the pool is already at/ahead of this block (applied_out=false) we
+            // pass nullptr into bookkeeping exactly as before; a gap behind
+            // height-1 is a loud failure, not a silent skip.
+            consensus::BlockUndo replay_undo;
+            bool shielded_applied = false;
+            std::string shielded_err;
+            if (!ApplyStatelessReplayShielded(block, tip_to_connect->height, replay_undo,
+                                              shielded_applied, shielded_err)) {
+                if (logger_) {
+                    logger_->error("[ConnectTip] Stateless recovery shielded apply failed at height " +
+                                   std::to_string(tip_to_connect->height) + ": " + shielded_err);
+                }
+                return fail("stateless-recovery-shielded-apply-failed: " + shielded_err);
+            }
+
             std::string bookkeeping_error;
-            // No shielded apply precedes this branch (it does not call
-            // ConnectBlock / ApplyBlockShieldedSection), so there is no
-            // BlockUndo shielded snapshot to hand in — nullptr is correct
-            // here, not a shortcut. Transparent-only blocks still get a
-            // full UndoRecord (spent/created coins); for a shielded-bearing
-            // block the bookkeeping's loud-failure guard skips the undo
-            // write so a later disconnect fails loudly instead of silently
-            // skipping the shielded rollback.
-            if (!CommitConnectedBlockBookkeeping(tip_to_connect, block, /*shielded_undo=*/nullptr,
+            // When shielded_applied is true, replay_undo carries the real
+            // pre_block_shielded_frontier (and pre_reset_shielded_epoch, if
+            // this block is the epoch-reset height) captured by the funnel
+            // above, so CommitConnectedBlockBookkeeping's skip_undo_write
+            // guard does NOT fire and the UndoRecord persists the shielded
+            // snapshot needed for a later disconnect. When shielded_applied
+            // is false (pool already at/ahead of this block), nullptr
+            // preserves prior behavior for this already-applied block.
+            if (!CommitConnectedBlockBookkeeping(tip_to_connect, block,
+                                                 shielded_applied ? &replay_undo : nullptr,
                                                  &bookkeeping_error)) {
                 if (logger_) {
                     logger_->error("[ConnectTip] Stateless replay bookkeeping failed at height " +
@@ -13086,28 +13184,36 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // carry the pre-block shielded frontier, or a later DisconnectTip-CSN
     // would call DisconnectBlockShieldedSection with both optionals empty —
     // a silent no-op that leaves the shielded pool un-rolled-back (silent
-    // corruption). ConnectTip's stateless-replay recovery branch passes
-    // shielded_undo=nullptr because it never runs ApplyBlockShieldedSection
-    // (a separately-tracked pre-existing gap); for a shielded-bearing block
-    // arriving through that branch we therefore SKIP the undo write
-    // entirely, so a future disconnect of this block hits the loud
-    // "Missing undo data" failure (the pre-Task-6 behavior) instead of
-    // silently skipping the shielded rollback. Coins/tip/shielded staging
-    // below proceed unchanged.
+    // corruption). #356: ConnectTip's stateless-replay recovery branch now
+    // routes through ApplyStatelessReplayShielded before calling us, and
+    // hands in a real BlockUndo (shielded_applied ? &replay_undo : nullptr)
+    // — it only passes nullptr when the guard there determined the shielded
+    // pool is already at/ahead of this block (nothing to apply, nothing to
+    // undo). So the SKIP arm below still exists as defense-in-depth: if a
+    // shielded-bearing block ever arrives here with shielded_undo=nullptr or
+    // missing pre_block_shielded_frontier (e.g. a future caller that doesn't
+    // go through the funnel), we SKIP the undo write entirely, so a future
+    // disconnect of this block hits the loud "Missing undo data" failure
+    // (the pre-Task-6 behavior) instead of silently skipping the shielded
+    // rollback. Coins/tip/shielded staging below proceed unchanged.
     //
     // SECOND ARM (epoch-reset block): the reset block at H is shielded-EMPTY
     // by the wall rule, so block_has_shielded==false and the arm above never
     // fires for it. But the reset undo needs pre_reset_shielded_epoch (the
     // pre-cutover pool snapshot) — DisconnectBlockShieldedSection restores the
     // discarded epoch from it; RollbackAbove cannot re-add rows the reset
-    // wiped. ConnectTip's stateless recovery branch reaches here with
-    // shielded_undo=nullptr, so it would write a reset undo with NO snapshot;
-    // a later DisconnectTip-CSN of H would then no-op the shielded rollback
-    // (both optionals empty) and retreat below H with the post-reset EMPTY
-    // pool — every pre-reset nullifier gone, a silent double-spend/fork
-    // window. So for the reset block we ALSO skip the undo write unless the
-    // real snapshot is in hand, mirroring the regen-refusal guard's rationale
-    // (see ~10877): a snapshot-less reset undo must never be persisted.
+    // wiped. When ApplyStatelessReplayShielded applies at the reset height,
+    // ApplyBlockShieldedSection fills pre_reset_shielded_epoch into the undo
+    // it returns, so ConnectTip's recovery branch hands in a snapshot-bearing
+    // undo here too. If a caller ever reaches here with shielded_undo=nullptr
+    // (or a missing snapshot) for a reset block, it would write a reset undo
+    // with NO snapshot; a later DisconnectTip-CSN of H would then no-op the
+    // shielded rollback (both optionals empty) and retreat below H with the
+    // post-reset EMPTY pool — every pre-reset nullifier gone, a silent
+    // double-spend/fork window. So for the reset block we ALSO skip the undo
+    // write unless the real snapshot is in hand, mirroring the regen-refusal
+    // guard's rationale (see ~10877): a snapshot-less reset undo must never
+    // be persisted.
     const bool at_reset = consensus::shielded::IsShieldedEpochResetHeight(
         static_cast<uint32_t>(block_index->height),
         dinero::Params().shielded_epoch_reset_height);
@@ -13434,12 +13540,15 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // that is no longer true. A replay-connected reset block gets a real
     // UndoRecord written above WHENEVER the snapshot is available: the ABC-CSN
     // replay caller hands in a `shielded_undo` whose pre_reset_shielded_epoch
-    // is populated (Task 5's ApplyBlockShieldedSection fills it) as it crosses
-    // the reset height. The guarantee that a disconnect back across the cutover
-    // is safe does NOT rest on every caller supplying the snapshot — ConnectTip's
-    // stateless recovery branch reaches bookkeeping with shielded_undo=nullptr
-    // and CANNOT. Instead it rests on REFUSAL: the skip_undo_write guard above
-    // declines to persist a snapshot-less reset undo, and the DisconnectTip-CSN
+    // is populated (ApplyBlockShieldedSection fills it) as it crosses the reset
+    // height. Since #356, ConnectTip's stateless recovery branch ALSO applies
+    // shielded state (via ApplyStatelessReplayShielded → ApplyBlockShieldedSection)
+    // before calling here, so when it connects the reset block it hands in a
+    // snapshot-bearing undo too. The guarantee that a disconnect back across the
+    // cutover is safe does NOT rely on every caller supplying the snapshot — it
+    // rests on REFUSAL as defense-in-depth: if a caller ever reaches here with a
+    // snapshot-less reset undo (nullptr, or a Skip that applied nothing), the
+    // skip_undo_write guard above declines to persist it and the DisconnectTip-CSN
     // reader refuses to disconnect H off a snapshot-less record — so a stateless
     // node either disconnects across the cutover from a real snapshot or fails
     // loudly, never silently drops the pre-cutover pool.
