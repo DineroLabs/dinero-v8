@@ -7528,8 +7528,9 @@ void ChainstateService::ActivateBestChain() {
             // as a loud abort rather than silently leaving shielded state
             // unadvanced (silent skip is wrong for the reorg loop, whose
             // correctness relies on always-apply).
+            // block_hash is set inside ApplyStatelessReplayShielded on the apply
+            // path; this loop aborts on non-apply, so no preset is needed here.
             consensus::BlockUndo replay_shielded_undo;
-            replay_shielded_undo.block_hash = block_index->hash;
             std::string serr;
             bool shielded_applied = false;
             if (!ApplyStatelessReplayShielded(
@@ -13539,12 +13540,15 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // that is no longer true. A replay-connected reset block gets a real
     // UndoRecord written above WHENEVER the snapshot is available: the ABC-CSN
     // replay caller hands in a `shielded_undo` whose pre_reset_shielded_epoch
-    // is populated (Task 5's ApplyBlockShieldedSection fills it) as it crosses
-    // the reset height. The guarantee that a disconnect back across the cutover
-    // is safe does NOT rest on every caller supplying the snapshot — ConnectTip's
-    // stateless recovery branch reaches bookkeeping with shielded_undo=nullptr
-    // and CANNOT. Instead it rests on REFUSAL: the skip_undo_write guard above
-    // declines to persist a snapshot-less reset undo, and the DisconnectTip-CSN
+    // is populated (ApplyBlockShieldedSection fills it) as it crosses the reset
+    // height. Since #356, ConnectTip's stateless recovery branch ALSO applies
+    // shielded state (via ApplyStatelessReplayShielded → ApplyBlockShieldedSection)
+    // before calling here, so when it connects the reset block it hands in a
+    // snapshot-bearing undo too. The guarantee that a disconnect back across the
+    // cutover is safe does NOT rely on every caller supplying the snapshot — it
+    // rests on REFUSAL as defense-in-depth: if a caller ever reaches here with a
+    // snapshot-less reset undo (nullptr, or a Skip that applied nothing), the
+    // skip_undo_write guard above declines to persist it and the DisconnectTip-CSN
     // reader refuses to disconnect H off a snapshot-less record — so a stateless
     // node either disconnects across the cutover from a real snapshot or fails
     // loudly, never silently drops the pre-cutover pool.

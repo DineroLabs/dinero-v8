@@ -2091,9 +2091,12 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
         // stateless recovery branch (#356). The BlockIndex population below
         // this point is in-memory bookkeeping only — irrelevant to what a
         // restarted process observes, since recovery rebuilds it from the
-        // ChainDB metadata just committed. Inert unless the env var is set
-        // AND matches this height. _exit(70) bypasses destructors so nothing
-        // else commits/flushes.
+        // ChainDB metadata just committed. Inert unless we are on regtest AND
+        // the env var is set AND it matches this height. The regtest gate means
+        // this debug facility cannot fire on mainnet/testnet even if the env
+        // var leaks into a production environment. _exit(70) bypasses
+        // destructors so nothing else commits/flushes.
+        if (dinero::Params().name == "regtest") {
         if (const char* abort_height_env = std::getenv("DINERO_DEBUG_ABORT_AFTER_STORE_HEIGHT")) {
             errno = 0;
             char* parse_end = nullptr;
@@ -2108,6 +2111,7 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                 std::fflush(nullptr);
                 _exit(70);
             }
+        }
         }
 
         // ========================================================================
