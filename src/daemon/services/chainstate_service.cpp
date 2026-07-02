@@ -1597,6 +1597,12 @@ bool ChainstateService::ApplyStatelessReplayShielded(
     }
 
     undo_out.height = height;
+    // #356 Task 3 rider: the ConnectTip stateless-recovery call site
+    // constructs a default consensus::BlockUndo and never sets block_hash
+    // (unlike the ABC-CSN reorg-replay caller, which pre-sets it from
+    // block_index->hash before calling in). Set it here, in the shared
+    // funnel, so both callers get a correctly-identified undo record.
+    undo_out.block_hash = block.GetHash();
     // Capture the pre-block frontier BEFORE the apply (mirrors the capture at
     // the top of ConnectBlockInternal) so the undo record can restore the
     // commitment tree on a later disconnect.

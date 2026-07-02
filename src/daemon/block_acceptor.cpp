@@ -53,6 +53,10 @@ extern void notifyWalletNewBlock(int height, const std::string& blockHash, const
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <cstdlib>  // getenv, strtol — regtest fault-injection hook (#356 Task 3)
+#include <cerrno>   // errno for strtol error checking
+#include <cstdio>   // fflush
+#include <unistd.h> // _exit (POSIX)
 
 using namespace dinero;
 
@@ -2075,6 +2079,34 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
         }
 
         LOG_INFO("✅ Block metadata committed atomically at height " + std::to_string(height));
+
+        // Regtest-only fault-injection: abort AFTER the block body + header +
+        // metadata (BLOCK_HAVE_DATA, file/pos/size) are durably committed to
+        // ChainDB via the atomic writeBatch above — i.e. the block is stored
+        // AND indexed — but BEFORE it is connected (ConnectBlock is always
+        // called with updateTip=false from AcceptBlockFromRPC; the caller's
+        // subsequent ActivateBestChain()->ConnectTip() call is what actually
+        // advances the tip). This deterministically reproduces the
+        // crash-between-store-and-connect state that drives ConnectTip's
+        // stateless recovery branch (#356). The BlockIndex population below
+        // this point is in-memory bookkeeping only — irrelevant to what a
+        // restarted process observes, since recovery rebuilds it from the
+        // ChainDB metadata just committed. Inert unless the env var is set
+        // AND matches this height. _exit(70) bypasses destructors so nothing
+        // else commits/flushes.
+        if (const char* __abort_h = std::getenv("DINERO_DEBUG_ABORT_AFTER_STORE_HEIGHT")) {
+            errno = 0;
+            char* __end = nullptr;
+            const long __want = std::strtol(__abort_h, &__end, 10);
+            if (__end != __abort_h && errno == 0 && __want >= 0 &&
+                static_cast<long>(height) == __want) {
+                LOG_ERROR("💥 [DEBUG] DINERO_DEBUG_ABORT_AFTER_STORE_HEIGHT=" +
+                          std::string(__abort_h) + " — aborting after block store+index at height " +
+                          std::to_string(height) + " (pre-connect) for #356 recovery test");
+                std::fflush(nullptr);
+                _exit(70);
+            }
+        }
 
         // ========================================================================
         // Phase 41: Populate BlockIndex for automatic fork selection
