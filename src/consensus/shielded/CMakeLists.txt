@@ -24,6 +24,7 @@ add_library(dinero_shielded STATIC
     shielded_output_feed.cpp
     shielded_witness.cpp
     shielded_block_validation.cpp
+    shielded_block_section.cpp
     # Wallet-layer shielded operations (note store + shield/unshield handlers).
     # Lives in dinero_shielded rather than dinero_wallet to avoid circular deps.
     ${CMAKE_SOURCE_DIR}/src/wallet/shielded_note_store.cpp

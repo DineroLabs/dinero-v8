@@ -1339,6 +1339,30 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_epoch_reset.cpp)
   message(STATUS "Shielded epoch-reset tests enabled")
 endif()
 
+# ConnectBlockShieldedSection — shared connect-tail free function (Piece 0).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_block_section.cpp)
+  add_executable(test_shielded_block_section
+    tests/consensus/test_shielded_block_section.cpp
+  )
+  add_dependencies(test_shielded_block_section gtest dinero_shielded)
+  target_link_libraries(test_shielded_block_section PRIVATE
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+    dinero_shielded
+  )
+  target_include_directories(test_shielded_block_section BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ShieldedBlockSection COMMAND test_shielded_block_section)
+  set_tests_properties(ShieldedBlockSection PROPERTIES
+    LABELS "shielded;consensus;mandatory"
+    TIMEOUT 30
+  )
+  message(STATUS "Shielded block-section tests enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/nullifier_set_tests.cpp)
   add_executable(test_nullifier_set
     src/test/nullifier_set_tests.cpp
