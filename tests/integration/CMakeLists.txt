@@ -1221,7 +1221,7 @@ endif()
 # end byte-identical to a full node. Leg A: reorg invertibility (CSN sh==bridge);
 # Leg B: double-spend of a note whose nullifier entered CSN state via a replayed
 # block is rejected (nullifier-duplicate); Leg C: reorg across the epoch-reset
-# height (XFAIL — known CSN anchor-history divergence); Leg D: a second reorg
+# height converges (gates the bookkeeping reset RecordRoot fix); Leg D: a second reorg
 # disconnects replay-connected blocks with no "Missing undo data". Uses the
 # deterministic shielded_tx_builder so a note's nullifier is reproducible across
 # branches. Two-node bridge+CSN, long timeout.

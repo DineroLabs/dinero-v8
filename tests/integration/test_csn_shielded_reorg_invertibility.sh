@@ -98,8 +98,6 @@ FAILED=0
 declare -a SUMMARY
 leg_pass()  { echo "  [PASS] $1"; SUMMARY+=("PASS  $1"); }
 leg_fail()  { echo "  [FAIL] $1"; SUMMARY+=("FAIL  $1"); FAILED=1; }
-leg_xfail() { echo "  [XFAIL] (known defect) $1"; SUMMARY+=("XFAIL $1"); }
-leg_xpass() { echo "  [XPASS] $1"; SUMMARY+=("XPASS $1"); FAILED=1; }   # defect fixed → alert
 info()      { echo "$1"; }
 
 # ── raw JSON-RPC over cookie auth ───────────────────────────────────────────
@@ -330,7 +328,7 @@ pkill -9 -f "dinerod.*${DC1}" 2>/dev/null || true
 sleep 1
 
 # =============================================================================
-#  PAIR 2  (epoch reset at H):  Leg C — reorg across the cutover (XFAIL)
+#  PAIR 2  (epoch reset at H):  Leg C — reorg across the cutover
 # =============================================================================
 RB2=$((45000 + RANDOM % 400)); PB2=$((RB2+1)); RC2=$((RB2+2)); PC2=$((RB2+3))
 DB2=$(mktemp -d -t dinero_csnreorgC_bridge_XXXXXX); DC2=$(mktemp -d -t dinero_csnreorgC_csn_XXXXXX)
