@@ -642,6 +642,112 @@ bool BlockValidator::ConnectBlock(const Block& block, uint32_t height, const uin
     return ValidateAndApplyBlock(block, height, block_hash, undo, error, cpu_monitor);
 }
 
+// v7 shielded-pool block-level validation + atomic state apply. Extracted from
+// ConnectBlockInternal so BOTH the stateful path and the STATELESS/CSN path can
+// invoke it: a stateless node must build the same shielded tree / anchor history
+// / nullifier set as a full node, or it cannot validate shielded spends (the
+// anchor is absent) and its shielded double-spend detection is silently
+// non-functional. See the call sites in ConnectBlockInternal.
+bool BlockValidator::ApplyBlockShieldedSection(
+    const Block& block, uint32_t height,
+    const std::vector<int64_t>& pending_shielded_deltas,
+    BlockUndo& undo, std::string& error) {
+    if (!(shielded_tree_ && shielded_nullifiers_)) {
+        return true;  // shielded state not wired — nothing to apply
+    }
+    namespace shld = dinero::consensus::shielded;
+    auto* tree = static_cast<shld::CommitmentTree*>(shielded_tree_);
+    auto* nullifiers = static_cast<shld::NullifierSet*>(shielded_nullifiers_);
+
+    // Collect shielded bundles in block tx order.
+    std::vector<shld::ShieldedBundle> bundles;
+    std::vector<int64_t> deltas;
+    size_t shielded_tx_index = 0;
+    for (size_t i = 1; i < block.vtx.size(); ++i) {
+        const auto& tx = block.vtx[i];
+        if (tx.IsShielded()) {
+            shld::ShieldedBundle bundle;
+            auto dec = shld::DeserializeShieldedBundle(
+                tx.shielded_bundle_bytes, &bundle);
+            if (dec != shld::BundleDecodeError::Ok) {
+                error = "shielded-bundle-decode-failed at tx " +
+                    std::to_string(i) + " (code " +
+                    std::to_string(static_cast<int>(dec)) + ")";
+                return false;
+            }
+            if (shielded_tx_index >= pending_shielded_deltas.size()) {
+                error = "shielded-delta-accounting-mismatch";
+                return false;
+            }
+            bundles.push_back(std::move(bundle));
+            deltas.push_back(pending_shielded_deltas[shielded_tx_index++]);
+        }
+    }
+    if (shielded_tx_index != pending_shielded_deltas.size()) {
+        error = "shielded-delta-accounting-mismatch";
+        return false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Shielded epoch reset (hard-fork cutover). See shielded_epoch.h.
+    // ─────────────────────────────────────────────────────────────────────
+    // At exactly the reset height the pre-cutover pool is discarded to a fresh
+    // empty epoch, making every old note unspendable. The cutover block must be
+    // shielded-empty (wall rule) so the reset has nothing to race. Capture the
+    // full pre-reset pool into the undo record FIRST (so a reorg disconnecting
+    // across the cutover can restore the old epoch), THEN discard it.
+    const uint32_t shielded_reset_height =
+        dinero::Params().shielded_epoch_reset_height;
+    if (shld::IsShieldedEpochResetHeight(height, shielded_reset_height)) {
+        if (!bundles.empty()) {
+            error = "shielded-tx-at-epoch-reset-height";
+            return false;
+        }
+        if (!shielded_anchor_history_) {
+            error = "shielded-epoch-reset-missing-anchor-state";
+            return false;
+        }
+        auto* anchors =
+            static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
+        undo.pre_reset_shielded_epoch =
+            shld::CaptureShieldedEpoch(*tree, *anchors, *nullifiers);
+        const auto& snap = *undo.pre_reset_shielded_epoch;
+        if ((nullifiers->Size() > 0 && snap.nullifiers.empty()) ||
+            (tree->Size() > 0 && snap.tree_frontier.empty())) {
+            error = "shielded-epoch-reset-capture-failed";
+            return false;
+        }
+        shld::ResetShieldedEpoch(*tree, *anchors, *nullifiers);
+    }
+
+    if (!bundles.empty()) {
+        shld::BlockShieldedContext bctx;
+        bctx.existing_nullifiers = nullifiers;
+        bctx.pre_block_tree = tree;
+        bctx.block_height = height;
+
+        auto berr = shld::ValidateBlockShielded(bundles, deltas, bctx);
+        if (berr != shld::BlockValidationError::Ok) {
+            error = "shielded-block-validation-failed (code " +
+                std::to_string(static_cast<int>(berr)) + ")";
+            return false;
+        }
+
+        // Deterministic apply: commitments + nullifiers in block tx order.
+        shld::ApplyBlockShielded(bundles, tree, nullifiers, height);
+    }
+
+    // Record the post-block tree root in the AnchorHistory window once per
+    // connected block, AFTER any of this block's shielded outputs have been
+    // appended. Gate on shielded activation height.
+    if (shielded_anchor_history_ &&
+        height >= dinero::Params().shielded_activation_height) {
+        static_cast<shld::AnchorHistory*>(shielded_anchor_history_)
+            ->RecordRoot(height, tree->Root());
+    }
+    return true;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // INTERNAL IMPLEMENTATION - Shared by ApplyBlock and ValidateAndApplyBlock
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1700,6 +1806,16 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             undo.pre_block_shielded_frontier.reset();
         }
 
+        // Apply shielded state on the stateless path too — a CSN must build the
+        // same commitment tree / anchor history / nullifier set as a full node,
+        // or it cannot validate shielded spends (anchor absent) and its shielded
+        // double-spend detection is non-functional. The stateful path calls the
+        // same helper after its Utreexo commit; stateless has no forest commit to
+        // order against, so calling it here (before the early return) is correct.
+        if (!ApplyBlockShieldedSection(block, height, pending_shielded_deltas, undo, error)) {
+            return false;
+        }
+
         block_connect_success = true;
         std::cout << "✅ [STATELESS] Block " << height
                   << " validated via proofs — skipping forest-clone path" << std::endl;
@@ -2175,127 +2291,12 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // the Utreexo state is committed. Shielded state mutations are the last
     // consensus-critical writes before block connect succeeds.
     // ═════════════════════════════════════════════════════════════════════════
-    if (shielded_tree_ && shielded_nullifiers_) {
-        namespace shld = dinero::consensus::shielded;
-        auto* tree = static_cast<shld::CommitmentTree*>(shielded_tree_);
-        auto* nullifiers = static_cast<shld::NullifierSet*>(shielded_nullifiers_);
-
-        // Collect shielded bundles in block tx order.
-        std::vector<shld::ShieldedBundle> bundles;
-        std::vector<int64_t> deltas;
-        size_t shielded_tx_index = 0;
-        for (size_t i = 1; i < block.vtx.size(); ++i) {
-            const auto& tx = block.vtx[i];
-            if (tx.IsShielded()) {
-                shld::ShieldedBundle bundle;
-                auto dec = shld::DeserializeShieldedBundle(
-                    tx.shielded_bundle_bytes, &bundle);
-                if (dec != shld::BundleDecodeError::Ok) {
-                    error = "shielded-bundle-decode-failed at tx " +
-                        std::to_string(i) + " (code " +
-                        std::to_string(static_cast<int>(dec)) + ")";
-                    return false;
-                }
-                if (shielded_tx_index >= pending_shielded_deltas.size()) {
-                    error = "shielded-delta-accounting-mismatch";
-                    return false;
-                }
-                bundles.push_back(std::move(bundle));
-                deltas.push_back(pending_shielded_deltas[shielded_tx_index++]);
-            }
-        }
-        if (shielded_tx_index != pending_shielded_deltas.size()) {
-            error = "shielded-delta-accounting-mismatch";
-            return false;
-        }
-
-        // ─────────────────────────────────────────────────────────────────────
-        // Shielded epoch reset (hard-fork cutover). See shielded_epoch.h.
-        // ─────────────────────────────────────────────────────────────────────
-        // At exactly the reset height the pre-cutover pool is discarded to a
-        // fresh empty epoch, making every old note unspendable. The cutover
-        // block must be shielded-empty (wall rule) so the reset has nothing to
-        // race — a spend would have no valid new-epoch anchor and an output
-        // would land in a pool about to be wiped. Capture the full pre-reset
-        // pool into the undo record FIRST (so a reorg disconnecting across the
-        // cutover can restore the old epoch), THEN discard it. This runs before
-        // ValidateBlockShielded/ApplyBlockShielded — the only shielded state
-        // mutations — so the reset is the first thing to touch the pool at H.
-        const uint32_t shielded_reset_height =
-            dinero::Params().shielded_epoch_reset_height;
-        if (shld::IsShieldedEpochResetHeight(height, shielded_reset_height)) {
-            if (!bundles.empty()) {
-                error = "shielded-tx-at-epoch-reset-height";
-                return false;
-            }
-            // The reset clears all three structures; anchor history must be
-            // present or we would silently skip a consensus rule (and diverge
-            // from the reindexer, which resets unconditionally). Fail loud.
-            if (!shielded_anchor_history_) {
-                error = "shielded-epoch-reset-missing-anchor-state";
-                return false;
-            }
-            auto* anchors =
-                static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
-            undo.pre_reset_shielded_epoch =
-                shld::CaptureShieldedEpoch(*tree, *anchors, *nullifiers);
-            // Guard against a swallowed serialize error: SerializeContent /
-            // SerializeFrontier return an EMPTY vector on a backend error,
-            // whereas a legitimately empty structure serializes to a non-empty
-            // header/blob. If the pre-reset pool held state but the snapshot
-            // came back empty, a later reorg across the cutover would restore
-            // the tree/anchors while re-inserting ZERO nullifiers — a
-            // double-spend. Refuse the connect rather than persist a lossy
-            // snapshot.
-            const auto& snap = *undo.pre_reset_shielded_epoch;
-            if ((nullifiers->Size() > 0 && snap.nullifiers.empty()) ||
-                (tree->Size() > 0 && snap.tree_frontier.empty())) {
-                error = "shielded-epoch-reset-capture-failed";
-                return false;
-            }
-            shld::ResetShieldedEpoch(*tree, *anchors, *nullifiers);
-        }
-
-        if (!bundles.empty()) {
-            shld::BlockShieldedContext bctx;
-            bctx.existing_nullifiers = nullifiers;
-            bctx.pre_block_tree = tree;
-            bctx.block_height = height;
-
-            auto berr = shld::ValidateBlockShielded(bundles, deltas, bctx);
-            if (berr != shld::BlockValidationError::Ok) {
-                error = "shielded-block-validation-failed (code " +
-                    std::to_string(static_cast<int>(berr)) + ")";
-                return false;
-            }
-
-            // Deterministic apply: commitments + nullifiers in block tx order.
-            shld::ApplyBlockShielded(bundles, tree, nullifiers, height);
-        }
-
-        // Phase 1 of shielded reorg invertibility plan (gap #4): record
-        // the post-block tree root in the AnchorHistory window once per
-        // connected block, AFTER any of this block's shielded outputs
-        // have been appended to the tree. Matches the contract spelled
-        // out in include/consensus/shielded/anchor_history.h ("Caller
-        // MUST invoke this exactly once per connected block") and the
-        // behavior previously implemented by
-        // ChainstateService::ReplayShieldedBlockForward (deleted in
-        // phase 3b step 6 — option 1 made the recovery maze obsolete).
-        // Without this, live-built chains
-        // had an empty AnchorHistory and accepted only exact-tip-root
-        // shielded spends, while reindexed/recovered chains accepted
-        // anchors anywhere in the kDepth=100 window.
-        //
-        // Gate on shielded activation height — pre-activation blocks
-        // can't carry shielded txs and recording a constant empty-tree
-        // root for every pre-activation block would just churn the
-        // window with redundant entries.
-        if (shielded_anchor_history_ &&
-            height >= dinero::Params().shielded_activation_height) {
-            static_cast<shielded::AnchorHistory*>(shielded_anchor_history_)
-                ->RecordRoot(height, tree->Root());
-        }
+    // v7 shielded pool apply (see ApplyBlockShieldedSection). Runs here on the
+    // stateful path AFTER the Utreexo commit; the STATELESS path calls the same
+    // helper before its early return above so a CSN builds identical shielded
+    // state (tree/anchors/nullifiers) and can validate shielded spends.
+    if (!ApplyBlockShieldedSection(block, height, pending_shielded_deltas, undo, error)) {
+        return false;
     }
 
     // ═════════════════════════════════════════════════════════════════════════

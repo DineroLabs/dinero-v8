@@ -1199,6 +1199,23 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_stateless.sh)
     message(STATUS "  ✓ ShieldedEpochResetStateless registered")
 endif()
 
+# CSN shielded-spend sync regression: a stateless node must build the shielded
+# tree/anchors/nullifiers during sync so it can validate a shielded spend
+# (previously it early-returned before the shielded-apply section and failed
+# anchor-invalid). Bridge mines a shield+unshield chain; the stateless node syncs
+# it and its shieldedStateHash must match the full node's. Two-node, long timeout.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_spend_sync.sh)
+    add_test(
+        NAME CSNShieldedSpendSync
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_spend_sync.sh
+    )
+    set_tests_properties(CSNShieldedSpendSync PROPERTIES
+        LABELS "integration;shielded;stateless;csn;canonical-state"
+        TIMEOUT 600
+    )
+    message(STATUS "  ✓ CSNShieldedSpendSync registered")
+endif()
+
 # Companion to ShieldedReorgInvertibility. Same property assertion
 # (composite state hash invariance) but exercised through the copy-
 # then-reindex code path that the in-place reindex test cannot
