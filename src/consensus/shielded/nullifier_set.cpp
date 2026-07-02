@@ -199,4 +199,32 @@ bool NullifierSet::DeserializeContent(const std::vector<uint8_t>& bytes) {
     return true;
 }
 
+bool NullifierSet::ForEach(const Visitor& visit) const {
+    if (!db_) return false;
+    if (!visit) return false;
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT block_height, nullifier FROM nullifiers "
+        "ORDER BY block_height ASC, nullifier ASC";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    bool ok = true;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const auto height = static_cast<uint32_t>(sqlite3_column_int(stmt, 0));
+        const void* blob = sqlite3_column_blob(stmt, 1);
+        const int blob_len = sqlite3_column_bytes(stmt, 1);
+        if (blob == nullptr || blob_len != static_cast<int>(HASH_BYTES)) {
+            ok = false;
+            break;
+        }
+        if (!visit(height, static_cast<const uint8_t*>(blob))) {
+            break;
+        }
+    }
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
 } // namespace dinero::consensus::shielded

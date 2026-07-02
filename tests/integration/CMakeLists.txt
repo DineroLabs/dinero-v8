@@ -1162,6 +1162,25 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_reorg_invertibility.sh)
     message(STATUS "  ✓ ShieldedReorgInvertibility registered")
 endif()
 
+# Shielded epoch reset (hard-fork cutover) boundary acceptance test. Drives a
+# regtest daemon (cutover forced low via --consensus-shielded-epoch-reset-height)
+# across the reset with a populated pre-cutover pool, then asserts: pre-cutover
+# notes are unspendable; reorg-across-H is a perfect inverse; restart rehydrates
+# the identical state (the ChainDB nullifier purge persisted — no resurrection);
+# and reindex reproduces the live shieldedStateHash (no live-vs-reindex split).
+# Mines >100 blocks (wallet coinbase maturity) + reindex, so allow a long timeout.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_boundary.sh)
+    add_test(
+        NAME ShieldedEpochResetBoundary
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_boundary.sh
+    )
+    set_tests_properties(ShieldedEpochResetBoundary PROPERTIES
+        LABELS "integration;shielded;reorg;restart;reindex;epoch-reset;canonical-state"
+        TIMEOUT 600
+    )
+    message(STATUS "  ✓ ShieldedEpochResetBoundary registered")
+endif()
+
 # Companion to ShieldedReorgInvertibility. Same property assertion
 # (composite state hash invariance) but exercised through the copy-
 # then-reindex code path that the in-place reindex test cannot

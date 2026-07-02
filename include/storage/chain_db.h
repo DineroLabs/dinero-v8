@@ -392,6 +392,15 @@ public:
         uint32_t height,
         rocksdb::WriteBatch* wb = nullptr);
 
+    // Delete EVERY nullifier row (all heights). Used by the shielded epoch
+    // reset (hard-fork cutover) to purge the authoritative ChainDB nullifier
+    // set so a restart's rehydration cannot resurrect the pre-cutover pool.
+    // Stage into the same WriteBatch as the cutover block's setTip so the
+    // purge is atomic with the tip advance. Returns the count of rows deleted.
+    StatusOr<uint64_t> deleteAllShieldedNullifiers(
+        const ChainWriteToken& token,
+        rocksdb::WriteBatch* wb = nullptr);
+
     // Iterate every nullifier row in ascending (height, nullifier)
     // order. Used at startup to populate NullifierSet's in-memory
     // map and by SerializeContent to produce the DSRH preimage.

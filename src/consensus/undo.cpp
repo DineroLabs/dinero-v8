@@ -93,6 +93,16 @@ std::vector<uint8_t> UndoRecord::Serialize() const {
         write_bytes(*pre_block_shielded_frontier);
     }
 
+    // [v4 optional trailer] shielded epoch reset snapshot (reset block only).
+    // Appended after the frontier trailer so older readers that stop after the
+    // frontier are unaffected, and older blobs deserialize with this nullopt.
+    result.push_back(pre_reset_shielded_epoch.has_value() ? 1 : 0);
+    if (pre_reset_shielded_epoch.has_value()) {
+        write_bytes(pre_reset_shielded_epoch->tree_frontier);
+        write_bytes(pre_reset_shielded_epoch->anchor_history);
+        write_bytes(pre_reset_shielded_epoch->nullifiers);
+    }
+
     return result;
 }
 
@@ -195,6 +205,17 @@ UndoRecord UndoRecord::Deserialize(const std::vector<uint8_t>& data) {
         const bool has_pre_block_shielded_frontier = (data[offset++] != 0);
         if (has_pre_block_shielded_frontier) {
             result.pre_block_shielded_frontier = read_bytes();
+        }
+    }
+
+    if (offset < data.size()) {
+        const bool has_reset_epoch = (data[offset++] != 0);
+        if (has_reset_epoch) {
+            consensus::shielded::ShieldedEpochSnapshot snap;
+            snap.tree_frontier  = read_bytes();
+            snap.anchor_history = read_bytes();
+            snap.nullifiers     = read_bytes();
+            result.pre_reset_shielded_epoch = std::move(snap);
         }
     }
 
