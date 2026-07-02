@@ -44,6 +44,7 @@
 #include <cstring>                        // Phase 10: std::memcpy for master key stamp
 #include "wallet/coin_selection.h"        // Phase 1.1: Frozen coin selection engine
 #include "wallet/canonical_wallet_utxo.h" // Phase M.3: Canonical UTXO type
+#include "wallet/wallet_spendability.h"   // #353: exclude accumulator-anchored coins from selection
 #include "wallet/transaction.h"           // STEP 2: Transaction construction
 #include "mempool/mempool.h"              // STEP 2: Mempool policy testing
 #include "storage/archival_block_reader.h"
@@ -2891,6 +2892,31 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
             result["error"] = "No spendable UTXOs available";
             return result;
         }
+
+        // #353: exclude coins that are NOT in the node's active UTXO set (accumulator-
+        // anchored / recovered-but-un-provable — e.g. pre-snapshot coins on an AssumeUTXO
+        // node). If coin-selection picks one, the node rejects the whole tx ("input not in
+        // active UTXO set"). We use the same authoritative check gettxout uses
+        // (ChainDB::getCoin). Anchored coins stay visible in the balance; they're just not
+        // offered for spending. A null check (no ChainDB) keeps legacy all-spendable behavior.
+        dinero::wallet::SpendableInActiveSetFn in_active_set = nullptr;
+        if (ctx.daemon && ctx.daemon->chainstate) {
+            if (dinero::ChainDB* chain_db = ctx.daemon->chainstate->GetChainDB()) {
+                in_active_set = [chain_db](const dinero::uint256& txid, uint32_t vout) {
+                    return chain_db->getCoin(txid, vout).ok();
+                };
+            }
+        }
+        auto spendability = dinero::wallet::PartitionBySpendability(available_utxos, in_active_set);
+        if (spendability.spendable.empty()) {
+            result["error"] = spendability.anchored.empty()
+                ? "No spendable UTXOs available"
+                : "No spendable coins in the node's active set: all candidate coins are "
+                  "recovered/anchored and not yet spendable on this node. Spend recent coins "
+                  "via Coin Control, or enable backfill to make them spendable (see #353).";
+            return result;
+        }
+        available_utxos = spendability.spendable;
 
         // Phase M.3: CoinSelector now uses CanonicalWalletUTXO directly (no conversion needed)
         // Use frozen CoinSelector engine (BnB + privacy heuristics)
