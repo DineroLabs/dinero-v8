@@ -1339,6 +1339,32 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_epoch_reset.cpp)
   message(STATUS "Shielded epoch-reset tests enabled")
 endif()
 
+# #356: pure marker-guard decision for ApplyStatelessReplayShielded. Header-only
+# free function — no dinero library link needed, just gtest. Named so the
+# ShieldedBlockSection ctest gate regex also runs it.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_stateless_replay_shielded_decision.cpp)
+  add_executable(test_stateless_replay_shielded_decision
+    tests/consensus/test_stateless_replay_shielded_decision.cpp
+  )
+  add_dependencies(test_stateless_replay_shielded_decision gtest)
+  target_link_libraries(test_stateless_replay_shielded_decision PRIVATE
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+  )
+  target_include_directories(test_stateless_replay_shielded_decision BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ShieldedBlockSectionStatelessReplayDecision
+           COMMAND test_stateless_replay_shielded_decision)
+  set_tests_properties(ShieldedBlockSectionStatelessReplayDecision PROPERTIES
+    LABELS "shielded;consensus;mandatory"
+    TIMEOUT 30
+  )
+  message(STATUS "Stateless-replay shielded-decision tests enabled")
+endif()
+
 # ConnectBlockShieldedSection — shared connect-tail free function (Piece 0).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_block_section.cpp)
   add_executable(test_shielded_block_section

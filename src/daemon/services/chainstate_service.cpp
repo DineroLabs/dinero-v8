@@ -1534,6 +1534,90 @@ bool ChainstateService::PersistShieldedTipMarker(const uint256& tip_hash, uint32
     return chain_db_->putShieldedTipMarker(token, marker) == Status::Ok;
 }
 
+// #356: Shared shielded-apply funnel for the stateless replay/recovery connect
+// path. Extracted verbatim from the ABC-CSN reorg replay loop's inline
+// delta-recompute + pre-block frontier capture + ApplyBlockShieldedSection
+// sequence (PR #355), gated by the marker-height guard so a SECOND caller (the
+// ConnectTip crash-recovery branch) can share it without double-applying.
+bool ChainstateService::ApplyStatelessReplayShielded(
+    const Block& block, uint32_t height,
+    consensus::BlockUndo& undo_out, bool& applied_out, std::string& error,
+    const std::vector<consensus::SpentOutputData>* fallback_spent_outputs) {
+    applied_out = false;
+
+    if (!block_validator_) {
+        error = "shielded apply impossible: block validator not wired";
+        return false;
+    }
+    if (!chain_db_) {
+        error = "shielded apply impossible: chain db not wired";
+        return false;
+    }
+
+    // Read the authoritative pool height from the persisted marker. In the
+    // ABC-CSN reorg replay loop this is unreachable-NotFound: disconnect stages
+    // the marker at the fork point and genesis persists it, so the marker is
+    // always present and always exactly at height-1 there. A NotFound / read
+    // failure therefore signals a broken invariant rather than a benign miss —
+    // fail loud rather than silently skip (which would leave shielded state
+    // unadvanced on a path that requires the apply).
+    const auto marker_result = chain_db_->getShieldedTipMarker();
+    if (marker_result.status() != Status::Ok) {
+        error = "failed to read ShieldedTipMarker for stateless replay apply (status=" +
+                std::to_string(static_cast<int>(marker_result.status())) + ")";
+        return false;
+    }
+    const uint32_t marker_height =
+        static_cast<uint32_t>(marker_result.value().height);
+
+    switch (StatelessReplayShieldedDecision(marker_height, height)) {
+        case StatelessReplayShieldedAction::Skip:
+            // Pool already at/ahead of this block — a second apply would
+            // double-count note commitments / nullifiers. Leave state and
+            // undo_out untouched.
+            applied_out = false;
+            return true;
+        case StatelessReplayShieldedAction::GapFail:
+            error = "shielded pool marker height " + std::to_string(marker_height) +
+                    " is behind block height-1 (block=" + std::to_string(height) +
+                    ") — contiguous-recovery invariant broken";
+            return false;
+        case StatelessReplayShieldedAction::Apply:
+            break;  // fall through to apply below
+    }
+
+    // Recompute deltas EXACTLY as the forward STATELESS per-tx loop did (bit-
+    // identity pinned by ShieldedBlockSectionDeltaParity). fallback_spent_outputs
+    // is consulted only when block.utreexo is absent.
+    std::vector<int64_t> replay_deltas;
+    if (!block_validator_->ComputeShieldedDeltasForStoredBlock(
+            block, height, replay_deltas, error, fallback_spent_outputs)) {
+        error = "shielded delta recompute failed: " + error;
+        return false;
+    }
+
+    undo_out.height = height;
+    // Capture the pre-block frontier BEFORE the apply (mirrors the capture at
+    // the top of ConnectBlockInternal) so the undo record can restore the
+    // commitment tree on a later disconnect.
+    {
+        std::vector<uint8_t> pre_frontier =
+            block_validator_->SerializeShieldedFrontier();
+        if (!pre_frontier.empty()) {
+            undo_out.pre_block_shielded_frontier = std::move(pre_frontier);
+        }
+    }
+
+    if (!block_validator_->ApplyBlockShieldedSection(
+            block, height, replay_deltas, undo_out, error)) {
+        error = "shielded apply failed: " + error;
+        return false;
+    }
+
+    applied_out = true;
+    return true;
+}
+
 // Phase 3b step 6: deleted RecoverShieldedStateFromTipMarker,
 // RestoreShieldedFrontierFromUndoBlock, ReplayShieldedBlockForward.
 // These three helpers formed a closed maze whose only purpose was
@@ -7426,50 +7510,35 @@ void ChainstateService::ActivateBestChain() {
             // (bit-identity pinned by the ShieldedBlockSectionDeltaParity
             // suite); ApplyBlockShieldedSection fires the epoch reset at H,
             // validates, applies, and records the anchor root.
-            if (!block_validator_) {
-                if (logger_) logger_->error("[ABC-CSN] shielded apply impossible at height " +
-                                            std::to_string(block_index->height) +
-                                            ": block validator not wired — ABORTING REORG");
-                return;
-            }
-            std::vector<int64_t> replay_deltas;
-            std::string serr;
-            if (!block_validator_->ComputeShieldedDeltasForStoredBlock(
-                    replay_block, static_cast<uint32_t>(block_index->height),
-                    replay_deltas, serr,
-                    /*fallback_spent_outputs=*/spent_outputs)) {
-                if (logger_) logger_->error("[ABC-CSN] shielded delta recompute failed at height " +
-                                            std::to_string(block_index->height) + ": " + serr);
-                return;  // abort reorg, same style as the surrounding failures
-            }
-            if (logger_ && !replay_deltas.empty()) {
-                logger_->info("[ABC-CSN] Recomputed " + std::to_string(replay_deltas.size()) +
-                              " shielded delta(s) at height " + std::to_string(block_index->height) +
-                              " from " + (replay_block.utreexo.has_value()
-                                              ? std::string("block.utreexo")
-                                              : std::string("csn-replay-data")) +
-                              " spent-output metadata");
-            }
+            // #356: route the delta-recompute + pre-block frontier capture +
+            // ApplyBlockShieldedSection through the shared ApplyStatelessReplay-
+            // Shielded funnel (also used by the ConnectTip crash-recovery
+            // branch). In this contiguous replay loop the disconnect leg rolled
+            // the shielded marker back to the fork point and each
+            // CommitConnectedBlockBookkeeping advances it by one, so the marker
+            // is ALWAYS exactly at height-1 here and the guard's Apply branch
+            // always fires. A Skip/GapFail would mean the marker diverged from
+            // the replay cursor — a broken invariant — so treat "did not apply"
+            // as a loud abort rather than silently leaving shielded state
+            // unadvanced (silent skip is wrong for the reorg loop, whose
+            // correctness relies on always-apply).
             consensus::BlockUndo replay_shielded_undo;
-            replay_shielded_undo.height = static_cast<uint32_t>(block_index->height);
             replay_shielded_undo.block_hash = block_index->hash;
-            // Capture the pre-block frontier BEFORE the apply (mirrors the
-            // capture at the top of ConnectBlockInternal) so the undo record
-            // can restore the commitment tree on a later disconnect.
-            {
-                std::vector<uint8_t> pre_frontier =
-                    block_validator_->SerializeShieldedFrontier();
-                if (!pre_frontier.empty()) {
-                    replay_shielded_undo.pre_block_shielded_frontier =
-                        std::move(pre_frontier);
-                }
-            }
-            if (!block_validator_->ApplyBlockShieldedSection(
+            std::string serr;
+            bool shielded_applied = false;
+            if (!ApplyStatelessReplayShielded(
                     replay_block, static_cast<uint32_t>(block_index->height),
-                    replay_deltas, replay_shielded_undo, serr)) {
-                if (logger_) logger_->error("[ABC-CSN] shielded apply failed at height " +
+                    replay_shielded_undo, shielded_applied, serr,
+                    /*fallback_spent_outputs=*/spent_outputs)) {
+                if (logger_) logger_->error("[ABC-CSN] shielded replay apply failed at height " +
                                             std::to_string(block_index->height) + ": " + serr);
                 return;  // abort reorg, same style as the surrounding failures
+            }
+            if (!shielded_applied) {
+                if (logger_) logger_->error("[ABC-CSN] shielded replay guard did NOT apply at "
+                                            "height " + std::to_string(block_index->height) +
+                                            " (marker not at height-1) — ABORTING REORG");
+                return;  // broken contiguous-replay invariant
             }
             // Bookkeeping: coins, undo record, shielded persistence, tip,
             // height index, checkpoint, notify. replay_shielded_undo carries
