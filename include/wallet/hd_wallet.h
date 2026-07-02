@@ -10,6 +10,7 @@
 #include <ctime>
 #include "primitives/uint256.h"
 #include "wallet/canonical_wallet_utxo.h"  // Phase M.3: THE canonical UTXO type
+#include "wallet/wallet_spendability.h"     // #353: exclude accumulator-anchored coins from selection
 
 // Forward declarations
 namespace dinero {
@@ -122,10 +123,12 @@ public:
     std::string address;
     uint64_t value;
   };
-  bool CreateTransaction(const std::vector<TxOutput>& outputs, uint64_t fee_rate, std::string& tx_hex_out, std::string& error_out);
+  bool CreateTransaction(const std::vector<TxOutput>& outputs, uint64_t fee_rate, std::string& tx_hex_out, std::string& error_out,
+                         const dinero::wallet::SpendableInActiveSetFn& in_active_set = nullptr);
 
   // PSBT creation with proper BIP32 metadata (for hardware wallet signing)
-  bool CreatePSBT(const std::vector<TxOutput>& outputs, uint64_t fee_rate, class dinero::PSBT& psbt_out, std::string& error_out);
+  bool CreatePSBT(const std::vector<TxOutput>& outputs, uint64_t fee_rate, class dinero::PSBT& psbt_out, std::string& error_out,
+                  const dinero::wallet::SpendableInActiveSetFn& in_active_set = nullptr);
 
   // Fill PSBT with BIP32 derivation paths and wallet metadata
   void FillPSBT(class dinero::PSBT& psbt);

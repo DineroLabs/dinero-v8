@@ -65,6 +65,7 @@
 #include <sstream>  // P2P sync fix: For parsing pipe-separated headers
 #include "storage/archival_block_reader.h"
 #include "storage/chain_db.h"  // ONE DB: Direct ChainDB construction
+#include "wallet/wallet_spendability.h"  // #353: pool payouts skip accumulator-anchored coins
 #include "storage/block_storage.h"  // Block storage for reindex operation
 #include "storage/disk_space_monitor.h"  // Phase E.2.b: Disk space monitoring
 #include "p2p/network_limits_monitor.h"  // Phase E.2.c: Network limits monitoring
@@ -1092,7 +1093,19 @@ bool DaemonApp::Init(int argc, char** argv) {
             std::string tx_hex;
             std::string create_error;
             constexpr uint64_t kPoolPayoutFeeRate = 2;
-            if (!hd_wallet->CreateTransaction(outputs, kPoolPayoutFeeRate, tx_hex, create_error)) {
+            // #353: don't let a payout select an accumulator-anchored coin the node can't
+            // spend (would silently stall the automated payout). Source the same check
+            // gettxout uses; null if no ChainDB → legacy behavior.
+            dinero::wallet::SpendableInActiveSetFn payout_in_active_set = nullptr;
+            if (ctx_.chainstate) {
+                if (dinero::ChainDB* cdb = ctx_.chainstate->GetChainDB()) {
+                    payout_in_active_set = [cdb](const dinero::uint256& txid, uint32_t vout) {
+                        return cdb->getCoin(txid, vout).ok();
+                    };
+                }
+            }
+            if (!hd_wallet->CreateTransaction(outputs, kPoolPayoutFeeRate, tx_hex, create_error,
+                                              payout_in_active_set)) {
                 g_logger.error("[Pool] payout callback failed to create transaction: " + create_error);
                 return false;
             }

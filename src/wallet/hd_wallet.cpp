@@ -1265,7 +1265,8 @@ std::vector<dinero::CanonicalWalletUTXO> HDWallet::ListUTXOs(uint32_t min_confir
   return result;
 }
 
-bool HDWallet::CreateTransaction(const std::vector<TxOutput>& outputs, uint64_t fee_rate, std::string& tx_hex_out, std::string& error_out) {
+bool HDWallet::CreateTransaction(const std::vector<TxOutput>& outputs, uint64_t fee_rate, std::string& tx_hex_out, std::string& error_out,
+                                 const dinero::wallet::SpendableInActiveSetFn& in_active_set) {
   if (!utxo_index_) {
     error_out = "No UTXO index connected";
     return false;
@@ -1286,7 +1287,25 @@ bool HDWallet::CreateTransaction(const std::vector<TxOutput>& outputs, uint64_t 
     error_out = "No spendable UTXOs available";
     return false;
   }
-  
+
+  // #353: only offer coins the node can actually spend. `in_active_set` is the consensus
+  // check (ChainDB::getCoin) injected by the caller; accumulator-anchored / recovered
+  // coins are kept in the wallet but excluded from selection so the node doesn't reject
+  // the tx ("input not in active UTXO set"). Null check == legacy all-spendable.
+  // NOTE: "spendable" here == present in the FLAT active UTXO set. When the proof-attach
+  // spend path (#353 fix #2) lands, this must widen to active-set OR proof-available, or
+  // it will wrongly exclude recovered coins that become spendable via proof.
+  {
+    auto part = dinero::wallet::PartitionBySpendability(available_utxos, in_active_set);
+    available_utxos = part.spendable;
+    if (available_utxos.empty()) {
+      error_out = part.anchored.empty()
+        ? "No spendable UTXOs available"
+        : "No spendable coins in the node's active set (candidates are recovered/anchored; see #353)";
+      return false;
+    }
+  }
+
   // Use coin selection to pick inputs
   auto coin_result = dinero::CoinSelector::SelectCoins(
     available_utxos,
@@ -2190,7 +2209,8 @@ std::string HDWallet::GetAccountXpub(uint32_t account) const {
 #include "wallet/psbt.h"
 
 bool HDWallet::CreatePSBT(const std::vector<TxOutput>& outputs, uint64_t fee_rate,
-                          dinero::PSBT& psbt_out, std::string& error_out) {
+                          dinero::PSBT& psbt_out, std::string& error_out,
+                          const dinero::wallet::SpendableInActiveSetFn& in_active_set) {
     if (!utxo_index_) {
         error_out = "No UTXO index connected";
         return false;
@@ -2210,6 +2230,20 @@ bool HDWallet::CreatePSBT(const std::vector<TxOutput>& outputs, uint64_t fee_rat
     if (available_utxos.empty()) {
         error_out = "No spendable UTXOs available";
         return false;
+    }
+
+    // #353: exclude accumulator-anchored coins the node can't spend (see CreateTransaction).
+    // Null check == legacy all-spendable; PSBT callers can inject the consensus check.
+    // NOTE: widen to active-set OR proof-available when the proof-attach path (#2) lands.
+    {
+        auto part = dinero::wallet::PartitionBySpendability(available_utxos, in_active_set);
+        available_utxos = part.spendable;
+        if (available_utxos.empty()) {
+            error_out = part.anchored.empty()
+                ? "No spendable UTXOs available"
+                : "No spendable coins in the node's active set (candidates are recovered/anchored; see #353)";
+            return false;
+        }
     }
 
     // Use coin selection
