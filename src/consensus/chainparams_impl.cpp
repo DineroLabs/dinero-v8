@@ -90,11 +90,16 @@ static ChainParams g_mainnet = {
     // shielded value existed under it), blocks >= 32300 require the bound rule.
     .shielded_input_binding_activation_height = 32300,
 
-    // Audit Critical #1: shielded cv-binding activation. FLAG FOR HUMAN:
-    // UINT32_MAX = never activate (fix wired + tested but inert on mainnet)
-    // until a human picks a real height and coordinates the fleet upgrade.
-    // A wrong boundary splits the chain.
-    .shielded_cv_binding_activation_height = UINT32_MAX,
+    // Shielded cv-binding activation + shielded epoch reset (hard-fork cutover),
+    // MAINNET. Both MUST be equal (SelectParams invariant) and >= the input-
+    // binding activation (32300). At height 61000 the shielded pool is discarded
+    // to a fresh empty epoch (pre-cutover notes become unspendable) and cv-binding
+    // is enforced from block 1 of the new epoch — closing the [input_binding, cv)
+    // mint window by discarding the pre-cv-binding weak pool rather than carrying
+    // it forward. The fork-aware binary MUST be deployed to every fleet node
+    // BEFORE height 61000; a node still on an older binary at the cutover splits.
+    .shielded_cv_binding_activation_height = 61000,
+    .shielded_epoch_reset_height = 61000,
 
     .genesis = {
         .nVersion = 1,
