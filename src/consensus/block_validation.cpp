@@ -2318,44 +2318,19 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
             return false;
         }
 
-        if (shielded_tree_ && undo.pre_reset_shielded_epoch.has_value()) {
-            // Reorg disconnecting across the shielded epoch cutover. The frontier
-            // + RollbackAbove path below CANNOT undo a reset — RollbackAbove only
-            // deletes rows, it can't re-add the wiped nullifiers/anchors. Restore
-            // the full pre-reset pool from the snapshot instead.
+        if (shielded_tree_ && shielded_nullifiers_) {
+            // Both branches (cutover-snapshot restore vs frontier +
+            // RollbackAbove) live in the shared free function so this path
+            // and the legacy path below run byte-identical shielded-undo
+            // logic. See shielded_block_section.cpp for the recipe.
             auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
             auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
             auto* anchors = static_cast<shielded::AnchorHistory*>(shielded_anchor_history_);
-            if (!nullifiers || !anchors) {
-                error = "shielded epoch reset restore: missing state containers";
+            if (!shielded::DisconnectBlockShieldedSection(
+                    height, undo.pre_reset_shielded_epoch,
+                    undo.pre_block_shielded_frontier, *tree, *nullifiers,
+                    anchors, error)) {
                 return false;
-            }
-            if (!shielded::RestoreShieldedEpoch(*undo.pre_reset_shielded_epoch,
-                                                *tree, *anchors, *nullifiers)) {
-                error = "Failed to restore shielded epoch reset snapshot";
-                return false;
-            }
-        } else if (shielded_tree_ && undo.pre_block_shielded_frontier.has_value()) {
-            auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
-            auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
-            const auto& frontier = *undo.pre_block_shielded_frontier;
-            if (!tree->DeserializeFrontier(frontier.data(), frontier.size())) {
-                error = "Failed to restore shielded frontier snapshot";
-                return false;
-            }
-            if (nullifiers && height > 0) {
-                nullifiers->RollbackAbove(height - 1);
-            }
-            // Apr 28 2026: anchor history was being rolled back ONLY on
-            // startup recovery (chainstate_service.cpp), never on a normal
-            // reorg path. A block's shielded txs that recorded anchors
-            // would leave those anchors visible after DisconnectBlock,
-            // letting a reorged-out anchor act as a valid spend reference
-            // on the canonical chain. Roll it back symmetrically with the
-            // nullifier set.
-            if (shielded_anchor_history_ && height > 0) {
-                static_cast<shielded::AnchorHistory*>(shielded_anchor_history_)
-                    ->RollbackAbove(height - 1);
             }
         }
 
@@ -2498,39 +2473,19 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
         }
     }
 
-    if (shielded_tree_ && undo.pre_reset_shielded_epoch.has_value()) {
-        // Reorg across the epoch cutover on the legacy disconnect path — restore
-        // the full pre-reset pool from the snapshot (RollbackAbove can't undo a
-        // reset). See the snapshot-path branch above.
+    if (shielded_tree_ && shielded_nullifiers_) {
+        // Same shared free function as the snapshot path above; only the
+        // on-failure rollback (restore_legacy_on_failure) differs, which is
+        // why this copy still exists rather than sharing the branch itself.
         auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
         auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
         auto* anchors = static_cast<shielded::AnchorHistory*>(shielded_anchor_history_);
-        if (!nullifiers || !anchors) {
+        if (!shielded::DisconnectBlockShieldedSection(
+                height, undo.pre_reset_shielded_epoch,
+                undo.pre_block_shielded_frontier, *tree, *nullifiers, anchors,
+                error)) {
             restore_legacy_on_failure();
-            error = "shielded epoch reset restore: missing state containers (legacy)";
             return false;
-        }
-        if (!shielded::RestoreShieldedEpoch(*undo.pre_reset_shielded_epoch,
-                                            *tree, *anchors, *nullifiers)) {
-            restore_legacy_on_failure();
-            error = "Failed to restore shielded epoch reset snapshot (legacy)";
-            return false;
-        }
-    } else if (shielded_tree_ && undo.pre_block_shielded_frontier.has_value()) {
-        auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
-        auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
-        const auto& frontier = *undo.pre_block_shielded_frontier;
-        if (!tree->DeserializeFrontier(frontier.data(), frontier.size())) {
-            restore_legacy_on_failure();
-            error = "Failed to restore shielded frontier during legacy disconnect";
-            return false;
-        }
-        if (nullifiers && height > 0) {
-            nullifiers->RollbackAbove(height - 1);
-        }
-        if (shielded_anchor_history_ && height > 0) {
-            static_cast<shielded::AnchorHistory*>(shielded_anchor_history_)
-                ->RollbackAbove(height - 1);
         }
     }
 

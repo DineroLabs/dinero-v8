@@ -203,5 +203,152 @@ TEST(ShieldedBlockSection, AppliesShieldBundleAndRecordsPostApplyRoot) {
     EXPECT_EQ(f.anchors.Size(), 1u);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// DisconnectBlockShieldedSection — the disconnect twin. Round-trip tests
+// pair it against ConnectBlockShieldedSection, mimicking the two call sites
+// in BlockValidator::DisconnectBlock (snapshot path + legacy path both
+// delegate to the same free function, so exercising the function directly
+// covers both).
+// ─────────────────────────────────────────────────────────────────────────
+
+// (g) Ordinary-block round trip: connect a block with a shield bundle + a
+// transfer bundle (spend + output) at height N, capturing the pre-block
+// frontier the way ConnectBlockInternal does (block_validation.cpp:804-808,
+// BEFORE calling the connect funnel); then disconnect with that frontier
+// and no reset snapshot. Full pre-block state (tree root, nullifier count,
+// anchor window) must be restored exactly.
+TEST(ShieldedBlockSection, DisconnectOrdinaryBlockRestoresPreBlockStateExactly) {
+    Fixture f;
+    const uint32_t height_prev = kActivation + 4;
+    const uint32_t height = height_prev + 1;
+
+    // Pre-existing pool state before the block under test.
+    f.tree.Append(MakeHash(0x11));
+    f.anchors.RecordRoot(height_prev, f.tree.Root());
+    const Hash h0_root = f.tree.Root();
+    const uint64_t h0_tree_size = f.tree.Size();
+    const uint64_t h0_nullifier_count = f.nullifiers.Size();
+    const size_t h0_anchor_count = f.anchors.Size();
+    ASSERT_TRUE(f.anchors.Contains(h0_root));
+
+    // Mimic the connect-path capture: SerializeFrontier() BEFORE applying.
+    const std::vector<uint8_t> frontier_snapshot = f.tree.SerializeFrontier();
+
+    std::vector<ShieldedBundle> bundles{
+        MakeShieldBundle(0x01, 5),
+        MakeTransferBundle(0x99, 0x42),
+    };
+    std::vector<int64_t> deltas{5, 0};
+
+    std::optional<ShieldedEpochSnapshot> connect_snap;
+    std::string error;
+    ASSERT_TRUE(ConnectBlockShieldedSection(
+        bundles, deltas, height, kReset, kActivation,
+        f.tree, f.nullifiers, &f.anchors, connect_snap, error)) << error;
+
+    // Sanity: the block actually changed state (otherwise the round trip
+    // would trivially pass even with a broken disconnect).
+    ASSERT_NE(f.tree.Root(), h0_root);
+    ASSERT_EQ(f.nullifiers.Size(), h0_nullifier_count + 1);
+    ASSERT_EQ(f.anchors.Size(), h0_anchor_count + 1);
+    ASSERT_FALSE(connect_snap.has_value())
+        << "height is not the reset height; no pre-reset snapshot expected";
+
+    const bool ok = DisconnectBlockShieldedSection(
+        height, /*pre_reset_snapshot=*/std::nullopt, frontier_snapshot,
+        f.tree, f.nullifiers, &f.anchors, error);
+
+    ASSERT_TRUE(ok) << error;
+    EXPECT_EQ(f.tree.Root(), h0_root);
+    EXPECT_EQ(f.tree.Size(), h0_tree_size);
+    EXPECT_EQ(f.nullifiers.Size(), h0_nullifier_count);
+    EXPECT_FALSE(f.nullifiers.Contains(MakeHash(0x99)));
+    EXPECT_EQ(f.anchors.Size(), h0_anchor_count);
+    EXPECT_TRUE(f.anchors.Contains(h0_root));
+}
+
+// (h) Epoch-cutover round trip: connect the reset at height H (capturing
+// the pre-reset snapshot), then disconnect with that snapshot. The full
+// pre-cutover pool (tree, nullifiers, anchors) must be restored, not just
+// rolled back — RollbackAbove cannot undo a reset.
+TEST(ShieldedBlockSection, DisconnectAcrossEpochCutoverRestoresFullPrecutoverPool) {
+    Fixture f;
+    f.tree.Append(MakeHash(0x11));
+    const Hash pre_reset_root = f.tree.Root();
+    f.anchors.RecordRoot(kReset - 1, pre_reset_root);
+    ASSERT_TRUE(f.nullifiers.Insert(MakeHash(0xAA), kReset - 1));
+
+    const uint64_t pre_reset_tree_size = f.tree.Size();
+    const uint64_t pre_reset_nullifier_count = f.nullifiers.Size();
+    const size_t pre_reset_anchor_count = f.anchors.Size();
+
+    std::optional<ShieldedEpochSnapshot> connect_snap;
+    std::string error;
+    ASSERT_TRUE(ConnectBlockShieldedSection(
+        {}, {}, kReset, kReset, kActivation,
+        f.tree, f.nullifiers, &f.anchors, connect_snap, error)) << error;
+    ASSERT_TRUE(connect_snap.has_value());
+
+    // Sanity: the reset actually wiped the pool.
+    ASSERT_EQ(f.tree.Size(), 0u);
+    ASSERT_FALSE(f.nullifiers.Contains(MakeHash(0xAA)));
+
+    const bool ok = DisconnectBlockShieldedSection(
+        kReset, connect_snap, /*pre_block_frontier=*/std::nullopt,
+        f.tree, f.nullifiers, &f.anchors, error);
+
+    ASSERT_TRUE(ok) << error;
+    EXPECT_EQ(f.tree.Root(), pre_reset_root);
+    EXPECT_EQ(f.tree.Size(), pre_reset_tree_size);
+    EXPECT_EQ(f.nullifiers.Size(), pre_reset_nullifier_count);
+    EXPECT_TRUE(f.nullifiers.Contains(MakeHash(0xAA)));
+    EXPECT_EQ(f.anchors.Size(), pre_reset_anchor_count);
+    EXPECT_TRUE(f.anchors.Contains(pre_reset_root));
+}
+
+// (i) Neither optional set -> no shielded activity was recorded for this
+// block at connect time (e.g. shielded state was unwired, or the block
+// predates activation) -> pure no-op, state untouched.
+TEST(ShieldedBlockSection, DisconnectWithNeitherOptionalIsNoOp) {
+    Fixture f;
+    f.tree.Append(MakeHash(0x11));
+    f.anchors.RecordRoot(kActivation, f.tree.Root());
+    ASSERT_TRUE(f.nullifiers.Insert(MakeHash(0xAA), kActivation));
+
+    const Hash root_before = f.tree.Root();
+    const uint64_t tree_size_before = f.tree.Size();
+    const uint64_t nullifier_count_before = f.nullifiers.Size();
+    const size_t anchor_count_before = f.anchors.Size();
+
+    std::string error;
+    const bool ok = DisconnectBlockShieldedSection(
+        kActivation + 1, /*pre_reset_snapshot=*/std::nullopt,
+        /*pre_block_frontier=*/std::nullopt,
+        f.tree, f.nullifiers, &f.anchors, error);
+
+    EXPECT_TRUE(ok) << error;
+    EXPECT_EQ(f.tree.Root(), root_before);
+    EXPECT_EQ(f.tree.Size(), tree_size_before);
+    EXPECT_EQ(f.nullifiers.Size(), nullifier_count_before);
+    EXPECT_EQ(f.anchors.Size(), anchor_count_before);
+}
+
+// (j) Cutover disconnect with null anchors -> refused (mirrors the connect
+// side's RejectsResetWithNullAnchors: a reset restore REQUIRES anchor state
+// to write into, matching BlockValidator's existing null-container guard).
+TEST(ShieldedBlockSection, DisconnectAcrossCutoverRejectsNullAnchors) {
+    Fixture f;
+    std::optional<ShieldedEpochSnapshot> snap;
+    snap.emplace();  // any non-empty optional exercises the branch
+
+    std::string error;
+    const bool ok = DisconnectBlockShieldedSection(
+        kReset, snap, /*pre_block_frontier=*/std::nullopt,
+        f.tree, f.nullifiers, /*anchors=*/nullptr, error);
+
+    EXPECT_FALSE(ok);
+    EXPECT_EQ(error, "shielded epoch reset restore: missing state containers");
+}
+
 }  // namespace
 }  // namespace dinero::consensus::shielded::testing

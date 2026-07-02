@@ -91,4 +91,56 @@ bool ConnectBlockShieldedSection(
     return true;
 }
 
+bool DisconnectBlockShieldedSection(
+    uint32_t height,
+    const std::optional<ShieldedEpochSnapshot>& pre_reset_snapshot,
+    const std::optional<std::vector<uint8_t>>& pre_block_frontier,
+    CommitmentTree& tree,
+    NullifierSet& nullifiers,
+    AnchorHistory* anchors,
+    std::string& error) {
+    if (pre_reset_snapshot.has_value()) {
+        // Reorg disconnecting across the shielded epoch cutover. The frontier
+        // + RollbackAbove path below CANNOT undo a reset — RollbackAbove only
+        // deletes rows, it can't re-add the wiped nullifiers/anchors. Restore
+        // the full pre-reset pool from the snapshot instead.
+        if (!anchors) {
+            error = "shielded epoch reset restore: missing state containers";
+            return false;
+        }
+        if (!RestoreShieldedEpoch(*pre_reset_snapshot, tree, *anchors, nullifiers)) {
+            error = "Failed to restore shielded epoch reset snapshot";
+            return false;
+        }
+        return true;
+    }
+
+    if (pre_block_frontier.has_value()) {
+        const auto& frontier = *pre_block_frontier;
+        if (!tree.DeserializeFrontier(frontier.data(), frontier.size())) {
+            error = "Failed to restore shielded frontier snapshot";
+            return false;
+        }
+        if (height > 0) {
+            nullifiers.RollbackAbove(height - 1);
+        }
+        // Apr 28 2026: anchor history was being rolled back ONLY on startup
+        // recovery, never on a normal reorg path. A block's shielded txs
+        // that recorded anchors would leave those anchors visible after
+        // disconnect, letting a reorged-out anchor act as a valid spend
+        // reference on the canonical chain. Roll it back symmetrically with
+        // the nullifier set.
+        if (anchors && height > 0) {
+            anchors->RollbackAbove(height - 1);
+        }
+        return true;
+    }
+
+    // Neither a reset snapshot nor a pre-block frontier was captured: no
+    // shielded activity happened in this block (shielded_tree_ was unset at
+    // connect time, or the block predates shielded activation). Nothing to
+    // undo.
+    return true;
+}
+
 }  // namespace dinero::consensus::shielded

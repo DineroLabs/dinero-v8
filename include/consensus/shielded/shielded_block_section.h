@@ -43,4 +43,30 @@ bool ConnectBlockShieldedSection(
     std::optional<ShieldedEpochSnapshot>& pre_reset_snapshot_out,
     std::string& error);
 
+// Disconnect twin of ConnectBlockShieldedSection. Restores the pre-block
+// shielded pool state, mirroring the undo.pre_reset_shielded_epoch (cutover)
+// vs undo.pre_block_shielded_frontier (ordinary block) branching that both
+// copies inside BlockValidator::DisconnectBlock implement today:
+//   cutover block (pre_reset_snapshot present) -> RestoreShieldedEpoch(*pre_reset_snapshot)
+//     (RollbackAbove cannot undo a reset — it only deletes rows, it can't
+//     re-add the wiped nullifiers/anchors — so the full pre-reset pool is
+//     restored from the captured snapshot instead. Requires anchors non-null.)
+//   ordinary block (pre_block_frontier present) -> tree.DeserializeFrontier(*pre_block_frontier)
+//     + nullifiers.RollbackAbove(height - 1) + anchors->RollbackAbove(height - 1)
+//     (anchors rollback skipped when anchors is null)
+//   neither present -> no shielded activity recorded for this block -> no-op,
+//     returns true
+// Does not read or depend on BlockValidator state — callers (BlockValidator's
+// two DisconnectBlock copies today; a later stateless-node lightweight
+// disconnect path) own locating the tree/nullifiers/anchors pointers and the
+// undo record.
+bool DisconnectBlockShieldedSection(
+    uint32_t height,
+    const std::optional<ShieldedEpochSnapshot>& pre_reset_snapshot,
+    const std::optional<std::vector<uint8_t>>& pre_block_frontier,
+    CommitmentTree& tree,
+    NullifierSet& nullifiers,
+    AnchorHistory* anchors,  // nullable; required when pre_reset_snapshot is set
+    std::string& error);
+
 }  // namespace dinero::consensus::shielded
