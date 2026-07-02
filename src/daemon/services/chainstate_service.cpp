@@ -7418,6 +7418,61 @@ void ChainstateService::ActivateBestChain() {
             if (logger_) logger_->info("[ABC-CSN] Commitment verified at height " +
                                        std::to_string(block_index->height));
 
+            // Shielded apply for the replayed block. ReplayBlock only advances
+            // the Utreexo forest; without this the replayed branch's note
+            // commitments and nullifiers never enter CSN shielded state
+            // (permanent divergence + double-spend acceptance). Deltas are
+            // recomputed exactly as forward stateless validation computed them
+            // (bit-identity pinned by the ShieldedBlockSectionDeltaParity
+            // suite); ApplyBlockShieldedSection fires the epoch reset at H,
+            // validates, applies, and records the anchor root.
+            if (!block_validator_) {
+                if (logger_) logger_->error("[ABC-CSN] shielded apply impossible at height " +
+                                            std::to_string(block_index->height) +
+                                            ": block validator not wired — ABORTING REORG");
+                return;
+            }
+            std::vector<int64_t> replay_deltas;
+            std::string serr;
+            if (!block_validator_->ComputeShieldedDeltasForStoredBlock(
+                    replay_block, static_cast<uint32_t>(block_index->height),
+                    replay_deltas, serr,
+                    /*fallback_spent_outputs=*/spent_outputs)) {
+                if (logger_) logger_->error("[ABC-CSN] shielded delta recompute failed at height " +
+                                            std::to_string(block_index->height) + ": " + serr);
+                return;  // abort reorg, same style as the surrounding failures
+            }
+            if (logger_ && !replay_deltas.empty()) {
+                logger_->info("[ABC-CSN] Recomputed " + std::to_string(replay_deltas.size()) +
+                              " shielded delta(s) at height " + std::to_string(block_index->height) +
+                              " from " + (replay_block.utreexo.has_value()
+                                              ? std::string("block.utreexo")
+                                              : std::string("csn-replay-data")) +
+                              " spent-output metadata");
+            }
+            consensus::BlockUndo replay_shielded_undo;
+            replay_shielded_undo.height = static_cast<uint32_t>(block_index->height);
+            replay_shielded_undo.block_hash = block_index->hash;
+            // Capture the pre-block frontier BEFORE the apply (mirrors the
+            // capture at the top of ConnectBlockInternal) so the undo record
+            // can restore the commitment tree on a later disconnect.
+            {
+                std::vector<uint8_t> pre_frontier =
+                    block_validator_->SerializeShieldedFrontier();
+                if (!pre_frontier.empty()) {
+                    replay_shielded_undo.pre_block_shielded_frontier =
+                        std::move(pre_frontier);
+                }
+            }
+            if (!block_validator_->ApplyBlockShieldedSection(
+                    replay_block, static_cast<uint32_t>(block_index->height),
+                    replay_deltas, replay_shielded_undo, serr)) {
+                if (logger_) logger_->error("[ABC-CSN] shielded apply failed at height " +
+                                            std::to_string(block_index->height) + ": " + serr);
+                return;  // abort reorg, same style as the surrounding failures
+            }
+            // Task: undo persistence consumes replay_shielded_undo (next commit)
+
             // Bookkeeping only: coins, tip, height index, checkpoint, notify
             std::string bk_err;
             if (!CommitConnectedBlockBookkeeping(block_index, replay_block, &bk_err)) {

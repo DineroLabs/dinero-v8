@@ -701,6 +701,150 @@ bool BlockValidator::ApplyBlockShieldedSection(
         undo.pre_reset_shielded_epoch, error);
 }
 
+// ABC-CSN reorg replay: recompute pending_shielded_deltas for an already-
+// stored block. BIT-IDENTITY CONTRACT: this mirrors the forward STATELESS
+// per-tx loop in ConnectBlockInternal (the spent_outputs walk, the
+// fee_input_utxos construction, SumOutputs, ComputeValidatedTransactionFee,
+// and ValidateShieldedTransactionBundle) and must NOT re-derive any of that
+// arithmetic independently. If the forward loop changes, this must change in
+// lockstep — the delta-parity unit suite (ShieldedBlockSectionDeltaParity)
+// pins the equivalence.
+//
+// Deliberately skipped relative to the forward loop (not delta-relevant; the
+// block was fully validated when first stored): script/signature validation,
+// double-spend tracking, coinbase-maturity evaluation, ephemeral spent-output
+// cross-checks, and all UTXO/forest mutation. Nothing that feeds the delta
+// (input-value walk, output sum, fee, bundle validation) is skipped.
+bool BlockValidator::ComputeShieldedDeltasForStoredBlock(
+    const Block& block, uint32_t height,
+    std::vector<int64_t>& deltas_out, std::string& error,
+    const std::vector<SpentOutputData>* fallback_spent_outputs) {
+    deltas_out.clear();
+
+    // A block with no shielded-semantics txs produces no deltas, so it needs
+    // no spend metadata at all. This keeps legacy hash-only CSN replay
+    // records (no spent_outputs) working for transparent-only reorgs.
+    bool any_shielded = false;
+    for (size_t i = 1; i < block.vtx.size(); ++i) {
+        if (UsesShieldedValueSemantics(block.vtx[i])) {
+            any_shielded = true;
+            break;
+        }
+    }
+    if (!any_shielded) {
+        return true;
+    }
+
+    // Spent-output source: the stored block's own utreexo payload first;
+    // the CSN replay-data metadata only as fallback when that is absent.
+    const std::vector<SpentOutputData>* spent_outputs = nullptr;
+    if (block.utreexo.has_value()) {
+        spent_outputs = &block.utreexo->spent_outputs;
+    } else if (fallback_spent_outputs) {
+        spent_outputs = fallback_spent_outputs;
+    }
+    if (!spent_outputs) {
+        error = "stored-block-shielded-delta-missing-spent-outputs: block has "
+                "shielded txs but neither block.utreexo nor CSN replay data "
+                "carries spent-output metadata (height " +
+                std::to_string(height) + ")";
+        return false;
+    }
+
+    // Mirror of ConnectBlockInternal's stateless per-tx loop: one GLOBAL
+    // index over spent_outputs, consumed once per non-coinbase input in
+    // block/tx order — never reset per tx.
+    size_t global_spent_output_index = 0;
+    for (size_t i = 1; i < block.vtx.size(); i++) {
+        const Transaction& tx = block.vtx[i];
+
+        uint64_t total_input_value = 0;
+        std::vector<UTXOEntry> fee_input_utxos;
+        fee_input_utxos.reserve(tx.vin.size());
+
+        for (size_t input_idx = 0; input_idx < tx.vin.size(); input_idx++) {
+            if (global_spent_output_index >= spent_outputs->size()) {
+                error = "stored-block-shielded-delta-spent-outputs-underrun: "
+                        "consumed " +
+                        std::to_string(global_spent_output_index) +
+                        " of " + std::to_string(spent_outputs->size()) +
+                        " at tx " + std::to_string(i) + " input " +
+                        std::to_string(input_idx) + " (height " +
+                        std::to_string(height) + ")";
+                return false;
+            }
+            const auto& spent_output = (*spent_outputs)[global_spent_output_index];
+            global_spent_output_index++;
+
+            // Same accumulation the forward loop performs at its global walk.
+            total_input_value += spent_output.value;
+
+            // Same UTXOEntry construction as the forward loop's
+            // fee_input_utxos build (v2 maturity leaves carry authenticated
+            // created_height/is_coinbase; legacy leaves zero them).
+            const bool v2_leaf = IsUtreexoMaturityLeafActive(spent_output.created_height);
+            fee_input_utxos.emplace_back(
+                AmountUna::Una(spent_output.value),
+                spent_output.scriptPubKey,
+                v2_leaf ? spent_output.created_height : 0,
+                v2_leaf && spent_output.is_coinbase,
+                spent_output.is_confidential,
+                spent_output.commitment
+            );
+        }
+
+        uint64_t total_output_value = SumOutputs(tx);
+        uint64_t tx_fee = 0;
+        if (!ComputeValidatedTransactionFee(tx, fee_input_utxos, total_input_value,
+                                            total_output_value, tx_fee, error)) {
+            return false;
+        }
+        if (UsesShieldedValueSemantics(tx)) {
+            int64_t tx_delta = 0;
+            // THE SAME FUNCTION with the same inputs as the forward stateless
+            // path, with the validator's CURRENT shielded state as const
+            // context — bit-identical delta by construction. Read-only: the
+            // callee takes the state via const pointers.
+            if (!ValidateShieldedTransactionBundle(
+                    tx,
+                    height,
+                    total_input_value,
+                    total_output_value,
+                    tx_fee,
+                    static_cast<shielded::CommitmentTree*>(shielded_tree_),
+                    static_cast<shielded::NullifierSet*>(shielded_nullifiers_),
+                    static_cast<shielded::AnchorHistory*>(shielded_anchor_history_),
+                    error,
+                    &tx_delta)) {
+                return false;
+            }
+            deltas_out.push_back(tx_delta);
+        }
+    }
+
+    // Mirror of the forward loop's post-loop sanity check: every provided
+    // spent_output must have been consumed, or the metadata does not belong
+    // to this block.
+    if (global_spent_output_index != spent_outputs->size()) {
+        error = "stored-block-shielded-delta-spent-outputs-count-mismatch: "
+                "consumed " + std::to_string(global_spent_output_index) +
+                ", provided " + std::to_string(spent_outputs->size()) +
+                " (height " + std::to_string(height) + ")";
+        return false;
+    }
+
+    return true;
+}
+
+std::vector<uint8_t> BlockValidator::SerializeShieldedFrontier() const {
+    if (!shielded_tree_) {
+        return {};
+    }
+    // Same capture as the top of ConnectBlockInternal (pre-block frontier).
+    return static_cast<const shielded::CommitmentTree*>(shielded_tree_)
+        ->SerializeFrontier();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // INTERNAL IMPLEMENTATION - Shared by ApplyBlock and ValidateAndApplyBlock
 // ═══════════════════════════════════════════════════════════════════════════

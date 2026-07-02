@@ -1363,6 +1363,57 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_block_section.cpp)
   message(STATUS "Shielded block-section tests enabled")
 endif()
 
+# Task 5 (CSN shielded reorg invertibility): delta-recompute parity between
+# BlockValidator::ComputeShieldedDeltasForStoredBlock and the forward
+# STATELESS ConnectBlock per-tx loop. Needs the full consensus stack (real
+# forward connect as the oracle), the shielded prover (real bundles), and the
+# wallet Taproot signer (real BIP340 signatures so forward connect passes).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_csn_shielded_delta_parity.cpp)
+  add_executable(test_csn_shielded_delta_parity
+    tests/consensus/test_csn_shielded_delta_parity.cpp
+    tests/stubs/mempool_test_stubs.cpp  # no-op Mempool::forEachEntry etc.
+    tests/stubs/daemon_test_stubs.cpp   # BridgeNode, vault, PoolDB/Manager, extra Mempool
+    src/daemon/config.cpp               # GetConfig() — referenced by consensus_write_batch.obj
+    src/wallet/taproot_keys.cpp         # BIP340 Schnorr keygen/signing (test signing util)
+    src/wallet/taproot_tx_signer.cpp    # BIP341 Taproot sighash (test signing util)
+  )
+
+  add_dependencies(test_csn_shielded_delta_parity gtest)
+
+  target_link_libraries(test_csn_shielded_delta_parity PRIVATE
+    dinero_core
+    dinero_consensus
+    dinero_shielded
+    dinero_crypto
+    secp256k1
+    ${ROCKSDB_LIBRARY}
+    ${SQLITE3_LIBRARIES}
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+    )
+  if(TARGET bulletproofs_ffi)
+    target_link_libraries(test_csn_shielded_delta_parity PRIVATE bulletproofs_ffi)
+    if(TARGET build_bulletproofs_ffi)
+      add_dependencies(test_csn_shielded_delta_parity build_bulletproofs_ffi)
+    endif()
+  endif()
+  link_zstd_if_needed(test_csn_shielded_delta_parity)
+
+  target_include_directories(test_csn_shielded_delta_parity BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+
+  # Named so the ShieldedBlockSection ctest gate regex also runs this suite.
+  add_test(NAME ShieldedBlockSectionDeltaParity COMMAND test_csn_shielded_delta_parity)
+  set_tests_properties(ShieldedBlockSectionDeltaParity PROPERTIES
+    LABELS "shielded;consensus;mandatory"
+    TIMEOUT 300
+  )
+  message(STATUS "CSN shielded delta-parity tests enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/nullifier_set_tests.cpp)
   add_executable(test_nullifier_set
     src/test/nullifier_set_tests.cpp
