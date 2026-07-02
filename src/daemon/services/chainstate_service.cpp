@@ -7471,11 +7471,13 @@ void ChainstateService::ActivateBestChain() {
                                             std::to_string(block_index->height) + ": " + serr);
                 return;  // abort reorg, same style as the surrounding failures
             }
-            // Task: undo persistence consumes replay_shielded_undo (next commit)
-
-            // Bookkeeping only: coins, tip, height index, checkpoint, notify
+            // Bookkeeping: coins, undo record, shielded persistence, tip,
+            // height index, checkpoint, notify. replay_shielded_undo carries
+            // the pre-block frontier (and, on a cutover-crossing replay, the
+            // pre-reset epoch snapshot) into the persisted UndoRecord so a
+            // second reorg can disconnect this replay-connected block.
             std::string bk_err;
-            if (!CommitConnectedBlockBookkeeping(block_index, replay_block, &bk_err)) {
+            if (!CommitConnectedBlockBookkeeping(block_index, replay_block, &replay_shielded_undo, &bk_err)) {
                 if (logger_) logger_->error("[ABC-CSN] Bookkeeping failed at height " +
                                             std::to_string(block_index->height) + ": " + bk_err);
                 return;
@@ -11609,7 +11611,13 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             }
 
             std::string bookkeeping_error;
-            if (!CommitConnectedBlockBookkeeping(tip_to_connect, block, &bookkeeping_error)) {
+            // No shielded apply precedes this branch (it does not call
+            // ConnectBlock / ApplyBlockShieldedSection), so there is no
+            // BlockUndo shielded snapshot to hand in — nullptr is correct
+            // here, not a shortcut. The persisted UndoRecord below will
+            // still carry the block's spent/created coins.
+            if (!CommitConnectedBlockBookkeeping(tip_to_connect, block, /*shielded_undo=*/nullptr,
+                                                 &bookkeeping_error)) {
                 if (logger_) {
                     logger_->error("[ConnectTip] Stateless replay bookkeeping failed at height " +
                                    std::to_string(tip_to_connect->height) + ": " + bookkeeping_error);
@@ -13001,14 +13009,19 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
 // ============================================================================
 // Called during STATELESS reorg after ReplayBlock() has already advanced the
 // forest. Does NOT call ConnectBlock, does NOT mutate the forest. Only:
-//   1. Persist coin changes (delete spent, add created) to ChainDB
+//   1. Persist coin changes (delete spent, add created), an UndoRecord, and
+//      shielded frontier/anchor/marker/nullifier state to ChainDB — all in
+//      ONE atomic batch, so this replay-connected block is disconnectable
+//      and restart-safe exactly like a ConnectTip-connected block.
 //   2. Set canonical tip pointer
 //   3. Update height→hash index
 //   4. Save Utreexo checkpoint (forest already at correct state)
 //   5. Update active_tip_ and notify observers
 // ============================================================================
 
-bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index, const Block& block, std::string* out_error) {
+bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index, const Block& block,
+                                                         const consensus::BlockUndo* shielded_undo,
+                                                         std::string* out_error) {
     auto fail = [&](const std::string& reason) {
         if (out_error) *out_error = reason;
         return false;
@@ -13018,7 +13031,81 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
 
     ChainWriteToken token;
 
-    // 1. Persist coin changes
+    // Resolve the same spent-outputs source the ABC-CSN replay loop already
+    // loaded for this block before calling us: block.utreexo's embedded
+    // metadata when present, else the CF7 CSN-replay-data sidecar (older
+    // hash-only records carry spend metadata there instead, and ConnectTip's
+    // own stateless-replay call site always has block.utreexo populated by
+    // its gate). Needed below to build the undo record's spent list.
+    std::vector<consensus::SpentOutputData> fallback_spent_outputs_storage;
+    const std::vector<consensus::SpentOutputData>* spent_outputs_src = nullptr;
+    if (block.utreexo.has_value()) {
+        spent_outputs_src = &block.utreexo->spent_outputs;
+    } else {
+        auto st_result = chain_db_->getCSNSpendTargets(block_index->hash);
+        if (st_result.status() == Status::Ok && st_result.value().size() >= 4) {
+            CsnReplayData replay_data;
+            if (DecodeCsnReplayData(st_result.value(), replay_data) && replay_data.has_spent_outputs) {
+                fallback_spent_outputs_storage = std::move(replay_data.spent_outputs);
+                spent_outputs_src = &fallback_spent_outputs_storage;
+            }
+        }
+    }
+
+    // Build the UndoRecord for this block. Reverses the old "stateless
+    // reorg recovers by re-sync" decision (see the comment further below):
+    // every replay-connected block now gets a real UndoRecord so a SECOND
+    // reorg can disconnect it through the standard DisconnectTip-CSN path.
+    dinero::UndoRecord undo_record;
+    {
+        size_t global_input_idx = 0;
+        for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+            if (tx_idx == 0) continue;  // coinbase has no inputs to undo
+            const auto& tx = block.vtx[tx_idx];
+            for (const auto& input : tx.vin) {
+                if (!spent_outputs_src || global_input_idx >= spent_outputs_src->size()) {
+                    return fail("commit-bookkeeping-missing-spent-output-metadata");
+                }
+                const auto& so = (*spent_outputs_src)[global_input_idx++];
+                // Global-index walk: block_assembler.cpp populates
+                // spent_outputs by walking every non-coinbase tx's vin in
+                // order (intra-block spends included at their position via
+                // the same SpentOutputData shape), so this simple
+                // sequential consume — no per-tx reset — lines up with
+                // intra-block spends exactly like external ones.
+                undo_record.spent.emplace_back(
+                    input.prevout.txid.AsUint256(), input.prevout.vout,
+                    so.value, so.scriptPubKey, so.is_coinbase, so.created_height,
+                    so.is_confidential, so.commitment);
+            }
+        }
+        for (const auto& tx : block.vtx) {
+            const TxId txid = tx.GetTxid();
+            for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+                undo_record.created.emplace_back(txid.AsUint256(), vout);
+            }
+        }
+        if (shielded_undo) {
+            undo_record.pre_block_shielded_frontier = shielded_undo->pre_block_shielded_frontier;
+            undo_record.pre_reset_shielded_epoch = shielded_undo->pre_reset_shielded_epoch;
+        }
+    }
+
+    // Existing-undo idempotency check (ConnectTip/Promotion idiom): trust
+    // the flatfile, not just the in-memory locator, before deciding whether
+    // to rewrite it — a block that was previously connected-then-disconnected
+    // keeps stale undo_size/undo_file/undo_pos on the in-memory CBlockIndex.
+    auto existing_undo = ReadStoredUndo(block_index->hash);
+    const bool existing_undo_valid = existing_undo.status() == Status::Ok &&
+        existing_undo.value().spent.size() == undo_record.spent.size() &&
+        !existing_undo.value().created.empty();
+    const bool need_flatfile_undo = block_storage_ &&
+        (block_index->undo_size == 0 || !existing_undo_valid);
+    uint32_t undo_file = block_index->undo_file;
+    uint32_t undo_pos = block_index->undo_pos;
+    uint32_t undo_size = block_index->undo_size;
+
+    // 1. Persist coin changes + undo record + shielded state (ONE atomic batch)
     {
         rocksdb::WriteBatch utxo_batch;
         for (size_t tx_idx = 0; tx_idx < block.vtx.size(); tx_idx++) {
@@ -13055,6 +13142,127 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             const TxId tid = block.vtx[ti].GetTxid();
             chain_db_->putTxIndex(token, tid.AsUint256(), block_index->hash, ti, &utxo_batch);
         }
+
+        // Undo persistence: mirrors ConnectTip's shape (chainstate_service.cpp
+        // slice-3 hoist above ~line 11700). The flatfile write happens BEFORE
+        // this batch commits — the flatfile is the source of truth — then the
+        // locator (BLOCK_HAVE_UNDO + undo_file/pos/size) is staged into THIS
+        // SAME batch so "undo bytes durable" and "coin changes durable" land
+        // together, both BEFORE the tip advances in step 2 below (same
+        // crash-safety rationale as ConnectTip: a crash between undo-durable
+        // and tip-durable must never leave the tip pointing at an
+        // undisconnectable block).
+        if (need_flatfile_undo) {
+            const std::vector<uint8_t> undo_bytes = undo_record.Serialize();
+            auto undo_pos_result = block_storage_->writeUndo(block_index->hash, undo_bytes);
+            if (undo_pos_result.status() != Status::Ok) {
+                if (logger_) {
+                    logger_->error("[CommitBookkeeping] writeUndo failed at height " +
+                                  std::to_string(block_index->height));
+                }
+                return fail("commit-bookkeeping-write-undo-failed");
+            }
+            const auto& pos = undo_pos_result.value();
+            if (pos.offset > std::numeric_limits<uint32_t>::max()) {
+                return fail("commit-bookkeeping-undo-offset-overflow");
+            }
+            undo_file = pos.file_number;
+            undo_pos = static_cast<uint32_t>(pos.offset);
+            undo_size = pos.size;
+        }
+        block_index->undo_file = undo_file;
+        block_index->undo_pos = undo_pos;
+        block_index->undo_size = undo_size;
+        block_index->status |= BLOCK_HAVE_UNDO;
+        auto locator_status = chain_db_->updateUndoLocator(
+            token, block_index->hash, undo_file, undo_pos, undo_size, &utxo_batch);
+        if (locator_status == Status::NotFound) {
+            // No existing header-metadata row to preserve — fall back to the
+            // authoritative full block-index stamp (ConnectTip D.2 idiom).
+            locator_status = chain_db_->updateBlockIndex(token, block_index, &utxo_batch);
+        }
+        if (locator_status != Status::Ok) {
+            if (logger_) {
+                logger_->error("[CommitBookkeeping] undo locator stage failed at height " +
+                              std::to_string(block_index->height));
+            }
+            return fail("commit-bookkeeping-undo-locator-stage-failed");
+        }
+
+        // Shielded persistence staged with the coins (mirrors ConnectTip's
+        // Phase 3b option 1 staging block, chainstate_service.cpp
+        // ~line 12111 near putShieldedTipMarker): frontier blob, anchor
+        // history blob, ShieldedTipMarker, and this block's nullifier rows
+        // — all into the SAME utxo_batch so they commit atomically with the
+        // coin/undo changes. The in-memory shielded pool was already
+        // advanced by the replay loop's ApplyBlockShieldedSection call
+        // before this function runs, so SerializeFrontier() /
+        // CurrentShieldedStateSnapshot() below already reflect the correct
+        // post-block state.
+        {
+            const auto frontier_bytes = shielded_tree_.SerializeFrontier();
+            const std::string frontier_blob(frontier_bytes.begin(), frontier_bytes.end());
+            if (chain_db_->putUtreexoMeta(token, "shielded_frontier", frontier_blob, &utxo_batch) != Status::Ok) {
+                if (logger_) {
+                    logger_->error("[CommitBookkeeping] Failed to stage shielded frontier blob at height " +
+                                  std::to_string(block_index->height));
+                }
+                return fail("commit-bookkeeping-shielded-frontier-stage-failed");
+            }
+            const auto anchor_bytes = shielded_anchor_history_.SerializeBytes();
+            const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
+            if (chain_db_->putUtreexoMeta(token, "shielded_anchor_history", anchor_blob, &utxo_batch) != Status::Ok) {
+                if (logger_) {
+                    logger_->error("[CommitBookkeeping] Failed to stage anchor history blob at height " +
+                                  std::to_string(block_index->height));
+                }
+                return fail("commit-bookkeeping-anchor-history-stage-failed");
+            }
+            const auto shielded_snapshot = CurrentShieldedStateSnapshot();
+            ChainDB::ShieldedTipMarker shielded_marker;
+            shielded_marker.height = static_cast<int32_t>(block_index->height);
+            shielded_marker.block_hash = block_index->hash;
+            shielded_marker.shielded_root = shielded_snapshot.root;
+            shielded_marker.tree_size = shielded_snapshot.tree_size;
+            shielded_marker.nullifier_count = shielded_snapshot.nullifier_count;
+            if (chain_db_->putShieldedTipMarker(token, shielded_marker, &utxo_batch) != Status::Ok) {
+                if (logger_) {
+                    logger_->error("[CommitBookkeeping] Failed to stage ShieldedTipMarker at height " +
+                                  std::to_string(block_index->height));
+                }
+                return fail("commit-bookkeeping-shielded-tip-marker-stage-failed");
+            }
+            for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+                const auto& tx = block.vtx[tx_idx];
+                if (!tx.IsShielded()) {
+                    continue;
+                }
+                consensus::shielded::ShieldedBundle bundle;
+                const auto decode = consensus::shielded::DeserializeShieldedBundle(
+                    tx.shielded_bundle_bytes, &bundle);
+                if (decode != consensus::shielded::BundleDecodeError::Ok) {
+                    if (logger_) {
+                        logger_->error("[CommitBookkeeping] Failed to decode shielded bundle for "
+                                       "nullifier staging at height " +
+                                       std::to_string(block_index->height) +
+                                       " tx " + std::to_string(tx_idx));
+                    }
+                    return fail("commit-bookkeeping-shielded-bundle-decode-failed");
+                }
+                for (const auto& spend : bundle.spends) {
+                    if (chain_db_->putShieldedNullifier(
+                            token, static_cast<uint32_t>(block_index->height),
+                            spend.nullifier.data(), &utxo_batch) != Status::Ok) {
+                        if (logger_) {
+                            logger_->error("[CommitBookkeeping] Failed to stage shielded nullifier at height " +
+                                          std::to_string(block_index->height));
+                        }
+                        return fail("commit-bookkeeping-shielded-nullifier-stage-failed");
+                    }
+                }
+            }
+        }
+
         auto status = chain_db_->writeBatch(token, std::move(utxo_batch), true);
         if (status != Status::Ok) {
             if (logger_) {
@@ -13101,9 +13309,17 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // ShieldedTipMarker / shieldedStateHash diverge from full nodes (a split).
     // Enforce the wall (H must be shielded-empty), discard the in-memory pool,
     // and purge the authoritative nullifier CF, so the PersistShieldedState /
-    // PersistShieldedTipMarker below write the empty post-reset epoch. (A
-    // stateless reorg across the cutover recovers by re-sync, so no undo snapshot
-    // is written on this light-client path.)
+    // PersistShieldedTipMarker below write the empty post-reset epoch.
+    //
+    // New invariant (was: "stateless reorg across the cutover recovers by
+    // re-sync, so no undo snapshot is written on this light-client path"):
+    // that is no longer true. Every replay-connected block — including the
+    // reset block itself — now gets a real UndoRecord written above, with
+    // pre_reset_shielded_epoch populated from `shielded_undo` when the
+    // replay crossed the reset height (Task 5's ApplyBlockShieldedSection
+    // fills it). So a stateless node can DisconnectTip-CSN back across the
+    // cutover without a full re-sync, exactly like a ConnectTip-connected
+    // reset block.
     {
         const uint32_t reset_height = dinero::Params().shielded_epoch_reset_height;
         if (consensus::shielded::IsShieldedEpochResetHeight(
