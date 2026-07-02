@@ -2332,6 +2332,17 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
                     anchors, error)) {
                 return false;
             }
+        } else if (undo.pre_reset_shielded_epoch.has_value() ||
+                   undo.pre_block_shielded_frontier.has_value()) {
+            // The undo record carries shielded rollback state but the
+            // shielded pool pointers are not (both) wired — silently
+            // skipping here would leave the in-memory pool stale instead
+            // of loud-failing like the old cutover-only code did.
+            // Unreachable under current wiring (shielded_tree_ and
+            // shielded_nullifiers_ are always wired together), but this
+            // guard closes the gap defensively.
+            error = "shielded-undo-present-but-state-unwired";
+            return false;
         }
 
         std::cout << "✅ [Phase 2] Block " << height << " disconnected via snapshot restore" << std::endl;
@@ -2487,6 +2498,15 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
             restore_legacy_on_failure();
             return false;
         }
+    } else if (undo.pre_reset_shielded_epoch.has_value() ||
+               undo.pre_block_shielded_frontier.has_value()) {
+        // See the snapshot-path guard above: the undo record carries
+        // shielded rollback state but the shielded pool pointers are not
+        // (both) wired. Loud-fail instead of silently skipping the
+        // shielded undo. Unreachable under current wiring.
+        restore_legacy_on_failure();
+        error = "shielded-undo-present-but-state-unwired";
+        return false;
     }
 
     return true;

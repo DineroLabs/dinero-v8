@@ -50,6 +50,7 @@
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_validation.h"
 #include "consensus/shielded/shielded_epoch.h"
+#include "consensus/shielded/shielded_block_section.h"
 #include "storage/archival_block_reader.h"
 #include "storage/block_storage.h"
 #include "pool/pool_manager.h"  // Pool accounting lifecycle wiring
@@ -10625,24 +10626,31 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         rocksdb::WriteBatch coin_batch;
         const auto& undo = undo_result.value();
 
-        // Shielded epoch reset disconnect (CSN): this lightweight path does NOT
-        // call BlockValidator::DisconnectBlock, so the in-memory pool is not
-        // restored on its own. If we are disconnecting the cutover block, restore
-        // the full pre-reset pool (tree + anchors + nullifiers) from the snapshot
-        // BEFORE computing the ShieldedTipMarker and staging the frontier/anchor
-        // blobs below — otherwise the marker/frontier/anchor would be written
-        // from the wiped post-reset state, leaving on-disk state inconsistent
-        // (CF re-put has N rows, marker says 0) and wedging the next startup.
-        if (undo.pre_reset_shielded_epoch.has_value()) {
-            if (!consensus::shielded::RestoreShieldedEpoch(
-                    *undo.pre_reset_shielded_epoch, shielded_tree_,
-                    shielded_anchor_history_, shielded_nullifiers_)) {
-                if (logger_) {
-                    logger_->error("[DisconnectTip-CSN] Failed to restore shielded epoch "
-                                   "snapshot into the in-memory pool");
-                }
-                return false;
+        // Shielded pool disconnect (CSN): this lightweight path does NOT call
+        // BlockValidator::DisconnectBlock, so the in-memory pool (tree,
+        // anchors, nullifiers) is not restored on its own. Roll it back here,
+        // BEFORE computing the ShieldedTipMarker and staging the
+        // frontier/anchor blobs below — otherwise the marker/frontier/anchor
+        // would be written from the stale (pre-rollback) state, leaving
+        // on-disk state inconsistent and wedging the next startup or letting
+        // a stale anchor/nullifier set validate a double-spend.
+        //
+        // DisconnectBlockShieldedSection is the shared disconnect twin of the
+        // connect-path funnel: on the cutover block it restores the full
+        // pre-reset pool from undo.pre_reset_shielded_epoch (RollbackAbove
+        // cannot re-add rows a reset wiped); on an ordinary block it
+        // restores the pre-block frontier + rolls back nullifiers/anchors to
+        // height-1 from undo.pre_block_shielded_frontier; with neither set
+        // (no shielded activity in this block) it is a no-op.
+        std::string derr;
+        if (!consensus::shielded::DisconnectBlockShieldedSection(
+                tip_to_disconnect->height, undo.pre_reset_shielded_epoch,
+                undo.pre_block_shielded_frontier, shielded_tree_,
+                shielded_nullifiers_, &shielded_anchor_history_, derr)) {
+            if (logger_) {
+                logger_->error("[DisconnectTip-CSN] " + derr);
             }
+            return false;
         }
 
         for (const auto& created : undo.created) {
@@ -10675,19 +10683,25 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         // No more standalone fsync after the rollback batch where the
         // marker could lag behind the tip.
         {
-            // At the reset block the in-memory pool was just restored above;
-            // stage the restored frontier + anchor blobs into coin_batch (atomic
-            // with the tip retreat) so they supersede the stale pre-reset blobs.
-            // Do not depend on the non-atomic post-batch PersistShieldedState for
-            // this consensus-critical rollback.
-            if (undo.pre_reset_shielded_epoch.has_value()) {
+            // The in-memory pool was just rolled back above by
+            // DisconnectBlockShieldedSection — on the cutover block (restored
+            // from the pre-reset snapshot) or on an ordinary block (frontier
+            // deserialized + nullifiers/anchors rolled back to height-1).
+            // Whenever the pool changed, stage the rolled-back frontier +
+            // anchor blobs into coin_batch (atomic with the tip retreat) so
+            // they supersede the stale pre-disconnect blobs — a restart must
+            // not rehydrate the wrong frontier. Do not depend on the
+            // non-atomic post-batch PersistShieldedState for this
+            // consensus-critical rollback.
+            if (undo.pre_reset_shielded_epoch.has_value() ||
+                undo.pre_block_shielded_frontier.has_value()) {
                 const auto fb = shielded_tree_.SerializeFrontier();
                 const std::string frontier_blob(fb.begin(), fb.end());
                 if (chain_db_->putUtreexoMeta(token, "shielded_frontier",
                                               frontier_blob, &coin_batch) != Status::Ok) {
                     if (logger_) {
-                        logger_->error("[DisconnectTip-CSN] Failed to stage restored "
-                                       "shielded frontier at the epoch reset boundary");
+                        logger_->error("[DisconnectTip-CSN] Failed to stage rolled-back "
+                                       "shielded frontier during disconnect");
                     }
                     return false;
                 }
@@ -10696,8 +10710,8 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
                 if (chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
                                               anchor_blob, &coin_batch) != Status::Ok) {
                     if (logger_) {
-                        logger_->error("[DisconnectTip-CSN] Failed to stage restored "
-                                       "anchor history at the epoch reset boundary");
+                        logger_->error("[DisconnectTip-CSN] Failed to stage rolled-back "
+                                       "anchor history during disconnect");
                     }
                     return false;
                 }
