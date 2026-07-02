@@ -10683,6 +10683,34 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         rocksdb::WriteBatch coin_batch;
         const auto& undo = undo_result.value();
 
+        // DEFENSE-IN-DEPTH (reset-block snapshot refusal): if this is the
+        // shielded epoch-reset block, the stored undo MUST carry
+        // pre_reset_shielded_epoch — DisconnectBlockShieldedSection restores
+        // the discarded pre-cutover pool from it (RollbackAbove cannot re-add
+        // reset-wiped rows). A snapshot-less reset undo would make the shielded
+        // disconnect a silent no-op, retreating below H with the post-reset
+        // EMPTY pool (every pre-reset nullifier gone — a silent double-spend
+        // window). The bookkeeping writer + idempotency gate refuse to persist
+        // such a record, but fail loud HERE too, BEFORE any mutation
+        // (DisconnectBlockShieldedSection mutates the in-memory pool
+        // immediately, not via coin_batch), mirroring the regen-refusal
+        // guard's rationale (~10877).
+        if (consensus::shielded::IsShieldedEpochResetHeight(
+                static_cast<uint32_t>(tip_to_disconnect->height),
+                dinero::Params().shielded_epoch_reset_height) &&
+            !undo.pre_reset_shielded_epoch.has_value()) {
+            if (logger_) {
+                logger_->error("[DisconnectTip-CSN] refusing to disconnect the shielded "
+                               "epoch-reset block at height " +
+                               std::to_string(tip_to_disconnect->height) +
+                               " — the stored undo lacks pre_reset_shielded_epoch; "
+                               "disconnecting with it would silently drop the pre-cutover "
+                               "shielded pool (double-spend/fork window). The stored undo "
+                               "must carry the pre-reset snapshot.");
+            }
+            return false;
+        }
+
         // Shielded pool disconnect (CSN): this lightweight path does NOT call
         // BlockValidator::DisconnectBlock, so the in-memory pool (tree,
         // anchors, nullifiers) is not restored on its own. Roll it back here,
@@ -13037,6 +13065,16 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // Shielded-bearing predicate + expected spent count for the undo gates
     // below (mirrors ConnectTip's pre-undo scan): any non-coinbase tx
     // carrying a shielded bundle, and one spent entry per non-coinbase input.
+    //
+    // NOTE (predicate cross-reference): this pre-scan uses tx.IsShielded()
+    // (shielded version AND bundle present), whereas the delta helper /
+    // forward loop in block_validation.cpp use UsesShieldedValueSemantics
+    // (version OR bundle). The two cannot diverge on a consensus-valid block
+    // — consensus rejects mixed shapes (version without bundle or vice
+    // versa) — so block_has_shielded here agrees with the delta path on every
+    // block that reaches bookkeeping. The pre-scan starts at tx_idx=1 (not 0
+    // like ConnectTip's created-outputs loop) because consensus rejects a
+    // shielded coinbase, so tx 0 can never set block_has_shielded.
     bool block_has_shielded = false;
     uint64_t expected_spent_count = 0;
     for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
@@ -13056,13 +13094,37 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // "Missing undo data" failure (the pre-Task-6 behavior) instead of
     // silently skipping the shielded rollback. Coins/tip/shielded staging
     // below proceed unchanged.
-    const bool skip_undo_write = block_has_shielded &&
-        (shielded_undo == nullptr ||
-         !shielded_undo->pre_block_shielded_frontier.has_value());
+    //
+    // SECOND ARM (epoch-reset block): the reset block at H is shielded-EMPTY
+    // by the wall rule, so block_has_shielded==false and the arm above never
+    // fires for it. But the reset undo needs pre_reset_shielded_epoch (the
+    // pre-cutover pool snapshot) — DisconnectBlockShieldedSection restores the
+    // discarded epoch from it; RollbackAbove cannot re-add rows the reset
+    // wiped. ConnectTip's stateless recovery branch reaches here with
+    // shielded_undo=nullptr, so it would write a reset undo with NO snapshot;
+    // a later DisconnectTip-CSN of H would then no-op the shielded rollback
+    // (both optionals empty) and retreat below H with the post-reset EMPTY
+    // pool — every pre-reset nullifier gone, a silent double-spend/fork
+    // window. So for the reset block we ALSO skip the undo write unless the
+    // real snapshot is in hand, mirroring the regen-refusal guard's rationale
+    // (see ~10877): a snapshot-less reset undo must never be persisted.
+    const bool at_reset = consensus::shielded::IsShieldedEpochResetHeight(
+        static_cast<uint32_t>(block_index->height),
+        dinero::Params().shielded_epoch_reset_height);
+    const bool skip_undo_write =
+        (block_has_shielded && (shielded_undo == nullptr ||
+            !shielded_undo->pre_block_shielded_frontier.has_value())) ||
+        (at_reset && (shielded_undo == nullptr ||
+            !shielded_undo->pre_reset_shielded_epoch.has_value()));
     if (skip_undo_write && logger_) {
-        logger_->warning("[CommitBookkeeping] shielded-bearing block connected without "
-                         "shielded undo — skipping undo write so a future disconnect "
-                         "fails loudly instead of silently skipping shielded rollback; "
+        logger_->warning("[CommitBookkeeping] block connected without the required "
+                         "shielded undo (shielded-bearing block missing pre-block "
+                         "frontier, or epoch-reset block missing pre-reset snapshot) — "
+                         "skipping undo write. If no valid undo record already exists on "
+                         "disk for this block, a future DisconnectTip-CSN fails loudly "
+                         "with \"Missing undo data\" (never a silent shielded rollback "
+                         "skip); if a previously-written valid record still exists, that "
+                         "record remains readable and the disconnect succeeds correctly; "
                          "height=" + std::to_string(block_index->height));
     }
 
@@ -13141,7 +13203,15 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
         existing_undo.value().spent.size() == expected_spent_count &&
         !existing_undo.value().created.empty() &&
         (!block_has_shielded ||
-         existing_undo.value().pre_block_shielded_frontier.has_value());
+         existing_undo.value().pre_block_shielded_frontier.has_value()) &&
+        // Reset-block coupling: a stored reset undo that lacks
+        // pre_reset_shielded_epoch is stale (written by the snapshot-less
+        // recovery path). When an ABC-CSN reconnect of H arrives holding the
+        // real snapshot, treat the flatfile record as invalid so it gets
+        // rewritten with the snapshot — otherwise a later disconnect of H
+        // would read the snapshot-less record and silently skip the reset
+        // rollback.
+        (!at_reset || existing_undo.value().pre_reset_shielded_epoch.has_value());
     const bool need_flatfile_undo = !skip_undo_write && block_storage_ &&
         (block_index->undo_size == 0 || !existing_undo_valid);
     uint32_t undo_file = block_index->undo_file;
@@ -13361,13 +13431,18 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     //
     // New invariant (was: "stateless reorg across the cutover recovers by
     // re-sync, so no undo snapshot is written on this light-client path"):
-    // that is no longer true. Every replay-connected block — including the
-    // reset block itself — now gets a real UndoRecord written above, with
-    // pre_reset_shielded_epoch populated from `shielded_undo` when the
-    // replay crossed the reset height (Task 5's ApplyBlockShieldedSection
-    // fills it). So a stateless node can DisconnectTip-CSN back across the
-    // cutover without a full re-sync, exactly like a ConnectTip-connected
-    // reset block.
+    // that is no longer true. A replay-connected reset block gets a real
+    // UndoRecord written above WHENEVER the snapshot is available: the ABC-CSN
+    // replay caller hands in a `shielded_undo` whose pre_reset_shielded_epoch
+    // is populated (Task 5's ApplyBlockShieldedSection fills it) as it crosses
+    // the reset height. The guarantee that a disconnect back across the cutover
+    // is safe does NOT rest on every caller supplying the snapshot — ConnectTip's
+    // stateless recovery branch reaches bookkeeping with shielded_undo=nullptr
+    // and CANNOT. Instead it rests on REFUSAL: the skip_undo_write guard above
+    // declines to persist a snapshot-less reset undo, and the DisconnectTip-CSN
+    // reader refuses to disconnect H off a snapshot-less record — so a stateless
+    // node either disconnects across the cutover from a real snapshot or fails
+    // loudly, never silently drops the pre-cutover pool.
     {
         const uint32_t reset_height = dinero::Params().shielded_epoch_reset_height;
         if (consensus::shielded::IsShieldedEpochResetHeight(

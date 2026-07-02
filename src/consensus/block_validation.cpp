@@ -822,9 +822,9 @@ bool BlockValidator::ComputeShieldedDeltasForStoredBlock(
         }
     }
 
-    // Mirror of the forward loop's post-loop sanity check: every provided
-    // spent_output must have been consumed, or the metadata does not belong
-    // to this block.
+    // Stricter than the forward loop for the fallback source (fail-closed by
+    // design): forward only sees block.utreexo; here surplus fallback entries
+    // mean the CF7 metadata does not belong to this block.
     if (global_spent_output_index != spent_outputs->size()) {
         error = "stored-block-shielded-delta-spent-outputs-count-mismatch: "
                 "consumed " + std::to_string(global_spent_output_index) +
