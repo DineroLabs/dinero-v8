@@ -7,6 +7,7 @@
 #include "consensus/shielded/shielded_tx.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_block_validation.h"
+#include "consensus/shielded/shielded_block_section.h"
 #include "consensus/shielded/shielded_validation.h"
 extern "C" {
 #include <secp256k1.h>
@@ -676,7 +677,7 @@ bool BlockValidator::ApplyBlockShieldedSection(
                 return false;
             }
             if (shielded_tx_index >= pending_shielded_deltas.size()) {
-                error = "shielded-delta-accounting-mismatch";
+                error = "shielded-delta-accounting-mismatch-overrun";
                 return false;
             }
             bundles.push_back(std::move(bundle));
@@ -684,68 +685,20 @@ bool BlockValidator::ApplyBlockShieldedSection(
         }
     }
     if (shielded_tx_index != pending_shielded_deltas.size()) {
-        error = "shielded-delta-accounting-mismatch";
+        error = "shielded-delta-accounting-mismatch-underrun";
         return false;
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Shielded epoch reset (hard-fork cutover). See shielded_epoch.h.
-    // ─────────────────────────────────────────────────────────────────────
-    // At exactly the reset height the pre-cutover pool is discarded to a fresh
-    // empty epoch, making every old note unspendable. The cutover block must be
-    // shielded-empty (wall rule) so the reset has nothing to race. Capture the
-    // full pre-reset pool into the undo record FIRST (so a reorg disconnecting
-    // across the cutover can restore the old epoch), THEN discard it.
-    const uint32_t shielded_reset_height =
-        dinero::Params().shielded_epoch_reset_height;
-    if (shld::IsShieldedEpochResetHeight(height, shielded_reset_height)) {
-        if (!bundles.empty()) {
-            error = "shielded-tx-at-epoch-reset-height";
-            return false;
-        }
-        if (!shielded_anchor_history_) {
-            error = "shielded-epoch-reset-missing-anchor-state";
-            return false;
-        }
-        auto* anchors =
-            static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
-        undo.pre_reset_shielded_epoch =
-            shld::CaptureShieldedEpoch(*tree, *anchors, *nullifiers);
-        const auto& snap = *undo.pre_reset_shielded_epoch;
-        if ((nullifiers->Size() > 0 && snap.nullifiers.empty()) ||
-            (tree->Size() > 0 && snap.tree_frontier.empty())) {
-            error = "shielded-epoch-reset-capture-failed";
-            return false;
-        }
-        shld::ResetShieldedEpoch(*tree, *anchors, *nullifiers);
-    }
-
-    if (!bundles.empty()) {
-        shld::BlockShieldedContext bctx;
-        bctx.existing_nullifiers = nullifiers;
-        bctx.pre_block_tree = tree;
-        bctx.block_height = height;
-
-        auto berr = shld::ValidateBlockShielded(bundles, deltas, bctx);
-        if (berr != shld::BlockValidationError::Ok) {
-            error = "shielded-block-validation-failed (code " +
-                std::to_string(static_cast<int>(berr)) + ")";
-            return false;
-        }
-
-        // Deterministic apply: commitments + nullifiers in block tx order.
-        shld::ApplyBlockShielded(bundles, tree, nullifiers, height);
-    }
-
-    // Record the post-block tree root in the AnchorHistory window once per
-    // connected block, AFTER any of this block's shielded outputs have been
-    // appended. Gate on shielded activation height.
-    if (shielded_anchor_history_ &&
-        height >= dinero::Params().shielded_activation_height) {
-        static_cast<shld::AnchorHistory*>(shielded_anchor_history_)
-            ->RecordRoot(height, tree->Root());
-    }
-    return true;
+    // Epoch-reset gate + block-level validate/apply + anchor-root recording:
+    // see the single canonical implementation and its rationale comments in
+    // ConnectBlockShieldedSection (shielded_block_section.cpp).
+    auto* anchors = static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
+    return shld::ConnectBlockShieldedSection(
+        bundles, deltas, height,
+        dinero::Params().shielded_epoch_reset_height,
+        dinero::Params().shielded_activation_height,
+        *tree, *nullifiers, anchors,
+        undo.pre_reset_shielded_epoch, error);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

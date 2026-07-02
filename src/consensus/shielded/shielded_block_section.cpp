@@ -76,7 +76,15 @@ bool ConnectBlockShieldedSection(
 
     // Record the post-block tree root in the AnchorHistory window once per
     // connected block, AFTER any of this block's shielded outputs have been
-    // appended. Gate on shielded activation height.
+    // appended. Gate on shielded activation height. This fires for EVERY
+    // block at/after activation — not just blocks with shielded bundles — on
+    // purpose: a live-built node records an anchor for every block ≥
+    // activation (including empty blocks and the post-reset (H, empty_root)
+    // at the cutover), so recording only shielded-tx blocks here would
+    // produce a shorter anchor_history and thus a different DSR2
+    // shieldedStateHash between a live-built and a reindexed/replayed node —
+    // a consensus split. RecordRoot overwrites on a repeated height, so this
+    // is safe even when the block-level apply above recorded nothing.
     if (anchors && height >= activation_height) {
         anchors->RecordRoot(height, tree.Root());
     }
