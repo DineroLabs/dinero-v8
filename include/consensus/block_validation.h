@@ -283,6 +283,19 @@ private:
                               bool verify_root, std::string& error,
                               CPUBudgetMonitor* cpu_monitor = nullptr);
 
+    // v7 shielded-pool block-level validation + atomic state apply (commitment
+    // tree appends, nullifier inserts, anchor-history record, and the shielded
+    // epoch reset at the cutover). Invoked by BOTH the stateful path and the
+    // STATELESS/CSN path of ConnectBlockInternal — a CSN must build the shielded
+    // tree/anchors/nullifiers too, or it cannot validate shielded spends (anchor
+    // absent) and its shielded double-spend detection is non-functional. No-op
+    // when shielded state is not wired. Returns false (with `error` set) on a
+    // consensus failure. `pending_shielded_deltas` is the per-shielded-tx
+    // transparent value delta computed in the per-tx loop above.
+    bool ApplyBlockShieldedSection(const Block& block, uint32_t height,
+                                   const std::vector<int64_t>& pending_shielded_deltas,
+                                   BlockUndo& undo, std::string& error);
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase 2: Pure Consensus - Single Dependency
     // ═══════════════════════════════════════════════════════════════════════════
