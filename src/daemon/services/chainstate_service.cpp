@@ -1233,6 +1233,25 @@ bool ChainstateService::PersistShieldedState() const {
     constexpr const char* kAnchorHistoryMigrated  = "shielded_anchor_history_migrated_v1";
 
     if (chain_db_) {
+        // Persist the frontier to ChainDB as well as the flat file. ChainDB is
+        // the authoritative source the startup loader prefers, and — past the
+        // shielded epoch reset height — the ONLY source it accepts (the reset
+        // resurrection guard refuses the stale flat file). Every caller of
+        // PersistShieldedState writes it here, including the stateless commit
+        // path which otherwise never stages the frontier blob; without this a
+        // stateless node past the cutover has no blob and bricks on restart.
+        {
+            ChainWriteToken ftoken = ChainWriteToken::CreateForTesting();
+            const std::string frontier_blob(frontier.begin(), frontier.end());
+            const auto fput =
+                chain_db_->putUtreexoMeta(ftoken, "shielded_frontier", frontier_blob);
+            if (fput != Status::Ok && logger_) {
+                logger_->warning(
+                    "[ChainstateService] Failed to persist shielded frontier to "
+                    "ChainDB (status=" + std::to_string(static_cast<int>(fput)) +
+                    "); flat file remains");
+            }
+        }
         const auto bytes = shielded_anchor_history_.SerializeBytes();
         const std::string blob(bytes.begin(), bytes.end());
         ChainWriteToken token = ChainWriteToken::CreateForTesting();
@@ -13027,16 +13046,32 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             }
             consensus::shielded::ResetShieldedEpoch(
                 shielded_tree_, shielded_anchor_history_, shielded_nullifiers_);
-            ChainWriteToken purge_token;
-            rocksdb::WriteBatch purge_batch;
+            // Stage the CF purge AND the post-reset frontier/anchor blobs into
+            // ONE batch so they commit atomically: afterwards the nullifier CF
+            // is empty and the ChainDB frontier/anchor blobs both reflect the
+            // empty epoch together. A crash BEFORE this batch leaves the stale
+            // CF and no blobs, so the startup resurrection guard fails safe to a
+            // brick (reindex-recoverable) — never a silent resurrection. Writing
+            // the blobs here also satisfies the guard so a stateless node comes
+            // up cleanly post-cutover even if it crashes before PersistShieldedState.
+            ChainWriteToken reset_token;
+            rocksdb::WriteBatch reset_batch;
             const auto purged =
-                chain_db_->deleteAllShieldedNullifiers(purge_token, &purge_batch);
+                chain_db_->deleteAllShieldedNullifiers(reset_token, &reset_batch);
             if (!purged.ok()) {
                 return fail("shielded-epoch-reset-nullifier-purge-failed");
             }
-            if (chain_db_->writeBatch(purge_token, std::move(purge_batch), true) !=
+            const auto fb = shielded_tree_.SerializeFrontier();
+            const auto ab = shielded_anchor_history_.SerializeBytes();
+            if (chain_db_->putUtreexoMeta(reset_token, "shielded_frontier",
+                    std::string(fb.begin(), fb.end()), &reset_batch) != Status::Ok ||
+                chain_db_->putUtreexoMeta(reset_token, "shielded_anchor_history",
+                    std::string(ab.begin(), ab.end()), &reset_batch) != Status::Ok) {
+                return fail("shielded-epoch-reset-blob-stage-failed");
+            }
+            if (chain_db_->writeBatch(reset_token, std::move(reset_batch), true) !=
                 Status::Ok) {
-                return fail("shielded-epoch-reset-nullifier-purge-commit-failed");
+                return fail("shielded-epoch-reset-commit-failed");
             }
         }
     }
