@@ -16,8 +16,7 @@
 # shielded output, in the common prefix) and every spend of it yields the same
 # nullifier N.
 #
-# Legs (each prints [PASS]/[FAIL]/[XFAIL]; script exits nonzero if any hard leg
-# fails):
+# Legs (each prints [PASS]/[FAIL]; script exits nonzero if any leg fails):
 #   A  reorg invertibility  — branch X (shielded spend of N) is DISCONNECTED and
 #      branch Y (shielded spend of N) is REPLAYED on the CSN; assert the reorg
 #      disconnected >=1 block, CSN shieldedStateHash == bridge, and the CSN kept
@@ -25,9 +24,11 @@
 #   B  double-spend probe    — after A's reorg, re-spend N (whose nullifier is in
 #      CSN state via the REPLAYED block); the CSN must REJECT it (nullifier
 #      present). Neuter Task 5 => the CSN ACCEPTS it (the scary failure).
-#   C  reorg across the epoch-reset height H — KNOWN DEFECT (see below). Asserts
-#      the true invariant (post-reorg CSN hash == bridge). Marked XFAIL because
-#      the CSN reorg-across-reset path leaves a DIVERGENT anchor history today.
+#   C  reorg across the epoch-reset height H — asserts the true invariant
+#      (post-reorg CSN shieldedStateHash == bridge) for a reorg whose disconnect
+#      AND replay both cross the shielded epoch cutover. Neuter the reset_batch
+#      RecordRoot fix => the reorged CSN's anchor history is missing the
+#      (H, empty_root) entry and its hash DIVERGES (see below).
 #   D  second reorg / undo durability — after A's reorg, a SECOND reorg
 #      disconnects the replay-connected branch-Y blocks; assert it SUCCEEDS (no
 #      "Missing undo data" in the CSN log) and hashes reconverge. Neuter Task 6
@@ -37,15 +38,18 @@
 # (DSR2): binds utreexo forest commitment + shielded tree root/size + nullifier
 # set + full anchor history. It is the exact value every fleet node commits to.
 #
-# ── KNOWN DEFECT (Leg C, XFAIL) ─────────────────────────────────────────────
-# A CSN that reorgs ACROSS the epoch-reset height H ends at the correct tip with
-# a correct utreexo forest and an empty (0/0) shielded pool, but a shieldedState-
-# Hash that DIFFERS from both the bridge and a fresh CSN that syncs the same
-# branch directly — i.e. its anchor history is wrong. The full-node path is
-# invertible across H (test_shielded_epoch_reset_boundary.sh Leg B passes), so
-# this is a CSN-specific divergence in the reset-crossing disconnect/replay undo.
-# Leg C stands as the ready regression test; it fails by design until that path
-# is fixed. Do NOT downgrade it to a counts check (0/0 == 0/0 is vacuous).
+# ── ROOT CAUSE (fixed; Leg C is the regression gate) ────────────────────────
+# A CSN that reorgs ACROSS the epoch-reset height H replays the cutover block
+# through the ABC-CSN loop, which runs BOTH ApplyBlockShieldedSection (in-loop:
+# ResetShieldedEpoch + RecordRoot(H, empty_root)) AND, inside
+# CommitConnectedBlockBookkeeping, a second ResetShieldedEpoch (the reset_batch).
+# The reset_batch used to omit the post-reset RecordRoot, so it wiped the just-
+# recorded (H, empty_root) anchor — leaving the reorged CSN's anchor history one
+# entry short of the bridge and a fresh sync (identical tip/forest/counts, but a
+# DIVERGENT DSR2 shieldedStateHash — a consensus split). Fix: the reset_batch now
+# re-records (H, empty_root) after ResetShieldedEpoch, matching the live
+# ConnectBlockShieldedSection path (reset THEN RecordRoot). Do NOT downgrade Leg C
+# to a counts check (0/0 == 0/0 is vacuous); the hash equality is the teeth.
 
 set -uo pipefail
 
@@ -375,7 +379,7 @@ info "  branch Y tip=${C_YTIP_H}"
 wait_tip "$RB2" "$DB2" "$RC2" "$DC2" "$SYNC_TIMEOUT" || leg_fail "C: CSN did not converge to branch Y tip"
 sleep 2
 
-info "[Leg C] reorg across the epoch reset height (XFAIL — known CSN anchor-history defect)"
+info "[Leg C] reorg across the epoch reset height (must be invertible: CSN sh == bridge)"
 C_OK=1
 assert_disconnect "$CLOG2" "Leg C" || { echo "    Leg C never achieved disconnect>0"; C_OK=0; }
 C_BSH=$(statehash "$RB2" "$DB2"); C_CSH=$(statehash "$RC2" "$DC2")
@@ -384,12 +388,11 @@ info "    forest commit: bridge=$C_BF csn=$C_CF ($([[ "$C_BF" == "$C_CF" ]] && e
 info "    pool: bridge tree=$(tree_sz "$RB2" "$DB2") null=$(null_ct "$RB2" "$DB2") | csn tree=$(tree_sz "$RC2" "$DC2") null=$(null_ct "$RC2" "$DC2")"
 info "    shieldedStateHash: bridge=$C_BSH csn=$C_CSH"
 if [[ "$C_OK" -eq 0 ]]; then
-    leg_fail "C: reorg across H did not disconnect (harness/topology problem, not the known defect)"
+    leg_fail "C: reorg across H did not disconnect (harness/topology problem)"
 elif [[ -n "$C_BSH" && "$C_BSH" == "$C_CSH" ]]; then
-    # If this ever passes, the CSN reset-crossing reorg defect is FIXED — alert to remove XFAIL.
-    leg_xpass "C: reorg across H is now invertible (CSN sh == bridge) — remove the XFAIL marker"
+    leg_pass "C: reorg across the epoch-reset height is invertible (CSN shieldedStateHash == bridge; forest+counts match)"
 else
-    leg_xfail "C: reorg-across-H leaves a DIVERGENT CSN shieldedStateHash (b=${C_BSH} c=${C_CSH}); forest+counts match — anchor-history defect"
+    leg_fail "C: reorg-across-H leaves a DIVERGENT CSN shieldedStateHash (b=${C_BSH} c=${C_CSH}); forest+counts match — anchor-history divergence"
 fi
 
 # =============================================================================
@@ -404,5 +407,5 @@ if [[ "$FAILED" -ne 0 ]]; then
     echo "RESULT: FAIL (a hard leg failed)"
     exit 1
 fi
-echo "RESULT: PASS (Legs A/B/D green; Leg C XFAIL — known CSN reorg-across-reset anchor-history defect)"
+echo "RESULT: PASS (Legs A/B/C/D green — CSN reorg is invertible, including across the epoch-reset height)"
 exit 0
