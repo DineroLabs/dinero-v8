@@ -227,9 +227,22 @@ public:
                     bool* out_consensus_invalid = nullptr);
 
     // CSN reorg: Bookkeeping-only connect (no ConnectBlock, no forest mutation).
-    // Writes coin changes, tip pointer, height index, notifications.
-    // Used after StatelessNode::ReplayBlock() has already advanced the forest.
-    bool CommitConnectedBlockBookkeeping(class CBlockIndex* block_index, const Block& block, std::string* out_error = nullptr);
+    // Writes coin changes, an UndoRecord (spent/created + shielded fields),
+    // shielded frontier/anchor/marker/nullifier state, tip pointer, height
+    // index, notifications. Used after StatelessNode::ReplayBlock() has
+    // already advanced the forest. `shielded_undo` is the BlockUndo the
+    // caller built while applying this block's shielded section (pass
+    // nullptr when no shielded apply preceded this call, e.g. ConnectTip's
+    // stateless-replay branch) — its pre_block_shielded_frontier /
+    // pre_reset_shielded_epoch feed the persisted UndoRecord so a later
+    // DisconnectTip-CSN can roll this block back. For a shielded-bearing
+    // block with no usable shielded undo (nullptr, or frontier unset), the
+    // undo write is SKIPPED with a loud warning so a later disconnect of
+    // that block fails loudly ("Missing undo data") instead of silently
+    // skipping the shielded rollback.
+    bool CommitConnectedBlockBookkeeping(class CBlockIndex* block_index, const Block& block,
+                                         const consensus::BlockUndo* shielded_undo,
+                                         std::string* out_error = nullptr);
 
     // Phase 41: Active chain tip (replaces ChainDB getTip for consensus)
     class CBlockIndex* GetActiveTip() const { return active_tip_; }

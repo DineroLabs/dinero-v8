@@ -6,6 +6,7 @@
 #include "consensus/genesis_canonical.h"
 #include "consensus/merkle_root.h"
 #include "consensus/outpoint.h"             // OutPoint (for intra-block spend tracking)
+#include "consensus/shielded/shielded_block_section.h"
 #include "consensus/shielded/shielded_block_validation.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_validation.h"
@@ -2311,71 +2312,22 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
         }
     }
 
-    // Shielded epoch reset (hard-fork cutover) — mirror ConnectBlockInternal so a
-    // reindexed chain reconstructs the SAME post-cutover pool. Without this, a
-    // node that reindexes past the reset height rebuilds the OLD pool and forks.
-    // The cutover block must be shielded-empty (wall); capture the pre-reset pool
-    // into the undo record first (so a post-reindex reorg across H can restore
-    // it), then discard it.
-    {
-        const uint32_t reset_height = Params().shielded_epoch_reset_height;
-        if (shielded::IsShieldedEpochResetHeight(static_cast<uint32_t>(height),
-                                                 reset_height)) {
-            if (!shielded_bundles.empty()) {
-                g_logger.error("[reindex] shielded tx at epoch reset height " +
-                               std::to_string(height));
-                return Status::Invalid;
-            }
-            undo.pre_reset_shielded_epoch = shielded::CaptureShieldedEpoch(
-                shielded_tree_, shielded_anchor_history_, shielded_nullifiers_);
-            // Refuse a lossy snapshot (empty serialize on a backend error while
-            // the pool held state) — restoring it on a reorg would drop the
-            // nullifiers and re-open a double-spend. Mirrors ConnectBlockInternal.
-            const auto& snap = *undo.pre_reset_shielded_epoch;
-            if ((shielded_nullifiers_.Size() > 0 && snap.nullifiers.empty()) ||
-                (shielded_tree_.Size() > 0 && snap.tree_frontier.empty())) {
-                g_logger.error("[reindex] shielded epoch reset snapshot capture "
-                               "failed at height " + std::to_string(height));
-                return Status::Invalid;
-            }
-            shielded::ResetShieldedEpoch(
-                shielded_tree_, shielded_anchor_history_, shielded_nullifiers_);
-        }
-    }
-
-    if (!shielded_bundles.empty()) {
-        shielded::BlockShieldedContext block_ctx{
-            &shielded_nullifiers_,
-            &shielded_tree_,
-            static_cast<uint32_t>(height),
-        };
-        const auto block_validation =
-            shielded::ValidateBlockShielded(shielded_bundles, shielded_deltas, block_ctx);
-        if (block_validation != shielded::BlockValidationError::Ok) {
-            g_logger.error("[reindex] Shielded block validation failed at height " +
-                           std::to_string(height) + " code=" +
-                           std::to_string(static_cast<int>(block_validation)));
-            return Status::Invalid;
-        }
-
-        shielded::ApplyBlockShielded(
-            shielded_bundles, &shielded_tree_, &shielded_nullifiers_,
-            static_cast<uint32_t>(height));
-    }
-
-    // Record this block's post-apply tree root in the anchor window ONCE per
-    // block at/after shielded activation — mirrors ConnectBlockInternal
-    // (block_validation.cpp, the RecordRoot outside its `!bundles.empty()`
-    // block) EXACTLY. Recording only shielded-tx blocks here diverged from the
-    // live path: a live-built node records an anchor for every block ≥
-    // activation (incl. empty blocks and the post-reset (H, empty_root) at the
-    // cutover), so a reindexed node that recorded fewer entries produced a
-    // different anchor_history and thus a different DSR2 shieldedStateHash —
-    // a live-vs-reindex split. RecordRoot overwrites on a repeated height, so
-    // this is safe even though the apply above may have recorded nothing.
-    if (static_cast<uint32_t>(height) >= Params().shielded_activation_height) {
-        shielded_anchor_history_.RecordRoot(static_cast<uint32_t>(height),
-                                            shielded_tree_.Root());
+    // Epoch-reset gate + block-level validate/apply + anchor-root recording,
+    // mirroring the live ConnectBlockInternal path so a reindexed chain
+    // reconstructs the SAME post-cutover pool and anchor history (or a
+    // reindexed node forks off the live one). See the single canonical
+    // implementation and its rationale comments (including why RecordRoot
+    // fires for every block ≥ activation, not just shielded-tx blocks) in
+    // ConnectBlockShieldedSection (shielded_block_section.cpp).
+    std::string shielded_section_err;
+    if (!shielded::ConnectBlockShieldedSection(
+            shielded_bundles, shielded_deltas, static_cast<uint32_t>(height),
+            Params().shielded_epoch_reset_height,
+            Params().shielded_activation_height,
+            shielded_tree_, shielded_nullifiers_, &shielded_anchor_history_,
+            undo.pre_reset_shielded_epoch, shielded_section_err)) {
+        g_logger.error("[reindex] " + shielded_section_err);
+        return Status::Invalid;
     }
 
     // ═══════════════════════════════════════════════════════════════════

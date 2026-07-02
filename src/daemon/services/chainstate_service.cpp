@@ -50,6 +50,7 @@
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_validation.h"
 #include "consensus/shielded/shielded_epoch.h"
+#include "consensus/shielded/shielded_block_section.h"
 #include "storage/archival_block_reader.h"
 #include "storage/block_storage.h"
 #include "pool/pool_manager.h"  // Pool accounting lifecycle wiring
@@ -7417,9 +7418,66 @@ void ChainstateService::ActivateBestChain() {
             if (logger_) logger_->info("[ABC-CSN] Commitment verified at height " +
                                        std::to_string(block_index->height));
 
-            // Bookkeeping only: coins, tip, height index, checkpoint, notify
+            // Shielded apply for the replayed block. ReplayBlock only advances
+            // the Utreexo forest; without this the replayed branch's note
+            // commitments and nullifiers never enter CSN shielded state
+            // (permanent divergence + double-spend acceptance). Deltas are
+            // recomputed exactly as forward stateless validation computed them
+            // (bit-identity pinned by the ShieldedBlockSectionDeltaParity
+            // suite); ApplyBlockShieldedSection fires the epoch reset at H,
+            // validates, applies, and records the anchor root.
+            if (!block_validator_) {
+                if (logger_) logger_->error("[ABC-CSN] shielded apply impossible at height " +
+                                            std::to_string(block_index->height) +
+                                            ": block validator not wired — ABORTING REORG");
+                return;
+            }
+            std::vector<int64_t> replay_deltas;
+            std::string serr;
+            if (!block_validator_->ComputeShieldedDeltasForStoredBlock(
+                    replay_block, static_cast<uint32_t>(block_index->height),
+                    replay_deltas, serr,
+                    /*fallback_spent_outputs=*/spent_outputs)) {
+                if (logger_) logger_->error("[ABC-CSN] shielded delta recompute failed at height " +
+                                            std::to_string(block_index->height) + ": " + serr);
+                return;  // abort reorg, same style as the surrounding failures
+            }
+            if (logger_ && !replay_deltas.empty()) {
+                logger_->info("[ABC-CSN] Recomputed " + std::to_string(replay_deltas.size()) +
+                              " shielded delta(s) at height " + std::to_string(block_index->height) +
+                              " from " + (replay_block.utreexo.has_value()
+                                              ? std::string("block.utreexo")
+                                              : std::string("csn-replay-data")) +
+                              " spent-output metadata");
+            }
+            consensus::BlockUndo replay_shielded_undo;
+            replay_shielded_undo.height = static_cast<uint32_t>(block_index->height);
+            replay_shielded_undo.block_hash = block_index->hash;
+            // Capture the pre-block frontier BEFORE the apply (mirrors the
+            // capture at the top of ConnectBlockInternal) so the undo record
+            // can restore the commitment tree on a later disconnect.
+            {
+                std::vector<uint8_t> pre_frontier =
+                    block_validator_->SerializeShieldedFrontier();
+                if (!pre_frontier.empty()) {
+                    replay_shielded_undo.pre_block_shielded_frontier =
+                        std::move(pre_frontier);
+                }
+            }
+            if (!block_validator_->ApplyBlockShieldedSection(
+                    replay_block, static_cast<uint32_t>(block_index->height),
+                    replay_deltas, replay_shielded_undo, serr)) {
+                if (logger_) logger_->error("[ABC-CSN] shielded apply failed at height " +
+                                            std::to_string(block_index->height) + ": " + serr);
+                return;  // abort reorg, same style as the surrounding failures
+            }
+            // Bookkeeping: coins, undo record, shielded persistence, tip,
+            // height index, checkpoint, notify. replay_shielded_undo carries
+            // the pre-block frontier (and, on a cutover-crossing replay, the
+            // pre-reset epoch snapshot) into the persisted UndoRecord so a
+            // second reorg can disconnect this replay-connected block.
             std::string bk_err;
-            if (!CommitConnectedBlockBookkeeping(block_index, replay_block, &bk_err)) {
+            if (!CommitConnectedBlockBookkeeping(block_index, replay_block, &replay_shielded_undo, &bk_err)) {
                 if (logger_) logger_->error("[ABC-CSN] Bookkeeping failed at height " +
                                             std::to_string(block_index->height) + ": " + bk_err);
                 return;
@@ -10625,24 +10683,59 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         rocksdb::WriteBatch coin_batch;
         const auto& undo = undo_result.value();
 
-        // Shielded epoch reset disconnect (CSN): this lightweight path does NOT
-        // call BlockValidator::DisconnectBlock, so the in-memory pool is not
-        // restored on its own. If we are disconnecting the cutover block, restore
-        // the full pre-reset pool (tree + anchors + nullifiers) from the snapshot
-        // BEFORE computing the ShieldedTipMarker and staging the frontier/anchor
-        // blobs below — otherwise the marker/frontier/anchor would be written
-        // from the wiped post-reset state, leaving on-disk state inconsistent
-        // (CF re-put has N rows, marker says 0) and wedging the next startup.
-        if (undo.pre_reset_shielded_epoch.has_value()) {
-            if (!consensus::shielded::RestoreShieldedEpoch(
-                    *undo.pre_reset_shielded_epoch, shielded_tree_,
-                    shielded_anchor_history_, shielded_nullifiers_)) {
-                if (logger_) {
-                    logger_->error("[DisconnectTip-CSN] Failed to restore shielded epoch "
-                                   "snapshot into the in-memory pool");
-                }
-                return false;
+        // DEFENSE-IN-DEPTH (reset-block snapshot refusal): if this is the
+        // shielded epoch-reset block, the stored undo MUST carry
+        // pre_reset_shielded_epoch — DisconnectBlockShieldedSection restores
+        // the discarded pre-cutover pool from it (RollbackAbove cannot re-add
+        // reset-wiped rows). A snapshot-less reset undo would make the shielded
+        // disconnect a silent no-op, retreating below H with the post-reset
+        // EMPTY pool (every pre-reset nullifier gone — a silent double-spend
+        // window). The bookkeeping writer + idempotency gate refuse to persist
+        // such a record, but fail loud HERE too, BEFORE any mutation
+        // (DisconnectBlockShieldedSection mutates the in-memory pool
+        // immediately, not via coin_batch), mirroring the regen-refusal
+        // guard's rationale (~10877).
+        if (consensus::shielded::IsShieldedEpochResetHeight(
+                static_cast<uint32_t>(tip_to_disconnect->height),
+                dinero::Params().shielded_epoch_reset_height) &&
+            !undo.pre_reset_shielded_epoch.has_value()) {
+            if (logger_) {
+                logger_->error("[DisconnectTip-CSN] refusing to disconnect the shielded "
+                               "epoch-reset block at height " +
+                               std::to_string(tip_to_disconnect->height) +
+                               " — the stored undo lacks pre_reset_shielded_epoch; "
+                               "disconnecting with it would silently drop the pre-cutover "
+                               "shielded pool (double-spend/fork window). The stored undo "
+                               "must carry the pre-reset snapshot.");
             }
+            return false;
+        }
+
+        // Shielded pool disconnect (CSN): this lightweight path does NOT call
+        // BlockValidator::DisconnectBlock, so the in-memory pool (tree,
+        // anchors, nullifiers) is not restored on its own. Roll it back here,
+        // BEFORE computing the ShieldedTipMarker and staging the
+        // frontier/anchor blobs below — otherwise the marker/frontier/anchor
+        // would be written from the stale (pre-rollback) state, leaving
+        // on-disk state inconsistent and wedging the next startup or letting
+        // a stale anchor/nullifier set validate a double-spend.
+        //
+        // DisconnectBlockShieldedSection is the shared disconnect twin of the
+        // connect-path funnel: on the cutover block it restores the full
+        // pre-reset pool from undo.pre_reset_shielded_epoch (RollbackAbove
+        // cannot re-add rows a reset wiped); on an ordinary block it
+        // restores the pre-block frontier + rolls back nullifiers/anchors to
+        // height-1 from undo.pre_block_shielded_frontier; with neither set
+        // (no shielded activity in this block) it is a no-op.
+        std::string derr;
+        if (!consensus::shielded::DisconnectBlockShieldedSection(
+                tip_to_disconnect->height, undo.pre_reset_shielded_epoch,
+                undo.pre_block_shielded_frontier, shielded_tree_,
+                shielded_nullifiers_, &shielded_anchor_history_, derr)) {
+            if (logger_) {
+                logger_->error("[DisconnectTip-CSN] " + derr);
+            }
+            return false;
         }
 
         for (const auto& created : undo.created) {
@@ -10675,19 +10768,25 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         // No more standalone fsync after the rollback batch where the
         // marker could lag behind the tip.
         {
-            // At the reset block the in-memory pool was just restored above;
-            // stage the restored frontier + anchor blobs into coin_batch (atomic
-            // with the tip retreat) so they supersede the stale pre-reset blobs.
-            // Do not depend on the non-atomic post-batch PersistShieldedState for
-            // this consensus-critical rollback.
-            if (undo.pre_reset_shielded_epoch.has_value()) {
+            // The in-memory pool was just rolled back above by
+            // DisconnectBlockShieldedSection — on the cutover block (restored
+            // from the pre-reset snapshot) or on an ordinary block (frontier
+            // deserialized + nullifiers/anchors rolled back to height-1).
+            // Whenever the pool changed, stage the rolled-back frontier +
+            // anchor blobs into coin_batch (atomic with the tip retreat) so
+            // they supersede the stale pre-disconnect blobs — a restart must
+            // not rehydrate the wrong frontier. Do not depend on the
+            // non-atomic post-batch PersistShieldedState for this
+            // consensus-critical rollback.
+            if (undo.pre_reset_shielded_epoch.has_value() ||
+                undo.pre_block_shielded_frontier.has_value()) {
                 const auto fb = shielded_tree_.SerializeFrontier();
                 const std::string frontier_blob(fb.begin(), fb.end());
                 if (chain_db_->putUtreexoMeta(token, "shielded_frontier",
                                               frontier_blob, &coin_batch) != Status::Ok) {
                     if (logger_) {
-                        logger_->error("[DisconnectTip-CSN] Failed to stage restored "
-                                       "shielded frontier at the epoch reset boundary");
+                        logger_->error("[DisconnectTip-CSN] Failed to stage rolled-back "
+                                       "shielded frontier during disconnect");
                     }
                     return false;
                 }
@@ -10696,8 +10795,8 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
                 if (chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
                                               anchor_blob, &coin_batch) != Status::Ok) {
                     if (logger_) {
-                        logger_->error("[DisconnectTip-CSN] Failed to stage restored "
-                                       "anchor history at the epoch reset boundary");
+                        logger_->error("[DisconnectTip-CSN] Failed to stage rolled-back "
+                                       "anchor history during disconnect");
                     }
                     return false;
                 }
@@ -11540,7 +11639,16 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             }
 
             std::string bookkeeping_error;
-            if (!CommitConnectedBlockBookkeeping(tip_to_connect, block, &bookkeeping_error)) {
+            // No shielded apply precedes this branch (it does not call
+            // ConnectBlock / ApplyBlockShieldedSection), so there is no
+            // BlockUndo shielded snapshot to hand in — nullptr is correct
+            // here, not a shortcut. Transparent-only blocks still get a
+            // full UndoRecord (spent/created coins); for a shielded-bearing
+            // block the bookkeeping's loud-failure guard skips the undo
+            // write so a later disconnect fails loudly instead of silently
+            // skipping the shielded rollback.
+            if (!CommitConnectedBlockBookkeeping(tip_to_connect, block, /*shielded_undo=*/nullptr,
+                                                 &bookkeeping_error)) {
                 if (logger_) {
                     logger_->error("[ConnectTip] Stateless replay bookkeeping failed at height " +
                                    std::to_string(tip_to_connect->height) + ": " + bookkeeping_error);
@@ -12932,14 +13040,19 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
 // ============================================================================
 // Called during STATELESS reorg after ReplayBlock() has already advanced the
 // forest. Does NOT call ConnectBlock, does NOT mutate the forest. Only:
-//   1. Persist coin changes (delete spent, add created) to ChainDB
+//   1. Persist coin changes (delete spent, add created), an UndoRecord, and
+//      shielded frontier/anchor/marker/nullifier state to ChainDB — all in
+//      ONE atomic batch, so this replay-connected block is disconnectable
+//      and restart-safe exactly like a ConnectTip-connected block.
 //   2. Set canonical tip pointer
 //   3. Update height→hash index
 //   4. Save Utreexo checkpoint (forest already at correct state)
 //   5. Update active_tip_ and notify observers
 // ============================================================================
 
-bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index, const Block& block, std::string* out_error) {
+bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index, const Block& block,
+                                                         const consensus::BlockUndo* shielded_undo,
+                                                         std::string* out_error) {
     auto fail = [&](const std::string& reason) {
         if (out_error) *out_error = reason;
         return false;
@@ -12949,7 +13062,163 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
 
     ChainWriteToken token;
 
-    // 1. Persist coin changes
+    // Shielded-bearing predicate + expected spent count for the undo gates
+    // below (mirrors ConnectTip's pre-undo scan): any non-coinbase tx
+    // carrying a shielded bundle, and one spent entry per non-coinbase input.
+    //
+    // NOTE (predicate cross-reference): this pre-scan uses tx.IsShielded()
+    // (shielded version AND bundle present), whereas the delta helper /
+    // forward loop in block_validation.cpp use UsesShieldedValueSemantics
+    // (version OR bundle). The two cannot diverge on a consensus-valid block
+    // — consensus rejects mixed shapes (version without bundle or vice
+    // versa) — so block_has_shielded here agrees with the delta path on every
+    // block that reaches bookkeeping. The pre-scan starts at tx_idx=1 (not 0
+    // like ConnectTip's created-outputs loop) because consensus rejects a
+    // shielded coinbase, so tx 0 can never set block_has_shielded.
+    bool block_has_shielded = false;
+    uint64_t expected_spent_count = 0;
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        if (block.vtx[tx_idx].IsShielded()) block_has_shielded = true;
+        expected_spent_count += block.vtx[tx_idx].vin.size();
+    }
+
+    // LOUD-FAILURE GUARD: an UndoRecord for a shielded-bearing block MUST
+    // carry the pre-block shielded frontier, or a later DisconnectTip-CSN
+    // would call DisconnectBlockShieldedSection with both optionals empty —
+    // a silent no-op that leaves the shielded pool un-rolled-back (silent
+    // corruption). ConnectTip's stateless-replay recovery branch passes
+    // shielded_undo=nullptr because it never runs ApplyBlockShieldedSection
+    // (a separately-tracked pre-existing gap); for a shielded-bearing block
+    // arriving through that branch we therefore SKIP the undo write
+    // entirely, so a future disconnect of this block hits the loud
+    // "Missing undo data" failure (the pre-Task-6 behavior) instead of
+    // silently skipping the shielded rollback. Coins/tip/shielded staging
+    // below proceed unchanged.
+    //
+    // SECOND ARM (epoch-reset block): the reset block at H is shielded-EMPTY
+    // by the wall rule, so block_has_shielded==false and the arm above never
+    // fires for it. But the reset undo needs pre_reset_shielded_epoch (the
+    // pre-cutover pool snapshot) — DisconnectBlockShieldedSection restores the
+    // discarded epoch from it; RollbackAbove cannot re-add rows the reset
+    // wiped. ConnectTip's stateless recovery branch reaches here with
+    // shielded_undo=nullptr, so it would write a reset undo with NO snapshot;
+    // a later DisconnectTip-CSN of H would then no-op the shielded rollback
+    // (both optionals empty) and retreat below H with the post-reset EMPTY
+    // pool — every pre-reset nullifier gone, a silent double-spend/fork
+    // window. So for the reset block we ALSO skip the undo write unless the
+    // real snapshot is in hand, mirroring the regen-refusal guard's rationale
+    // (see ~10877): a snapshot-less reset undo must never be persisted.
+    const bool at_reset = consensus::shielded::IsShieldedEpochResetHeight(
+        static_cast<uint32_t>(block_index->height),
+        dinero::Params().shielded_epoch_reset_height);
+    const bool skip_undo_write =
+        (block_has_shielded && (shielded_undo == nullptr ||
+            !shielded_undo->pre_block_shielded_frontier.has_value())) ||
+        (at_reset && (shielded_undo == nullptr ||
+            !shielded_undo->pre_reset_shielded_epoch.has_value()));
+    if (skip_undo_write && logger_) {
+        logger_->warning("[CommitBookkeeping] block connected without the required "
+                         "shielded undo (shielded-bearing block missing pre-block "
+                         "frontier, or epoch-reset block missing pre-reset snapshot) — "
+                         "skipping undo write. If no valid undo record already exists on "
+                         "disk for this block, a future DisconnectTip-CSN fails loudly "
+                         "with \"Missing undo data\" (never a silent shielded rollback "
+                         "skip); if a previously-written valid record still exists, that "
+                         "record remains readable and the disconnect succeeds correctly; "
+                         "height=" + std::to_string(block_index->height));
+    }
+
+    // Build the UndoRecord for this block (unless the loud-failure guard
+    // above suppressed it). Reverses the old "stateless reorg recovers by
+    // re-sync" decision (see the comment further below): every
+    // replay-connected block now gets a real UndoRecord so a SECOND reorg
+    // can disconnect it through the standard DisconnectTip-CSN path.
+    dinero::UndoRecord undo_record;
+    if (!skip_undo_write) {
+        // Resolve the same spent-outputs source the ABC-CSN replay loop
+        // already loaded for this block before calling us: block.utreexo's
+        // embedded metadata when present, else the CF7 CSN-replay-data
+        // sidecar (older hash-only records carry spend metadata there
+        // instead, and ConnectTip's own stateless-replay call site always
+        // has block.utreexo populated by its gate).
+        std::vector<consensus::SpentOutputData> fallback_spent_outputs_storage;
+        const std::vector<consensus::SpentOutputData>* spent_outputs_src = nullptr;
+        if (block.utreexo.has_value()) {
+            spent_outputs_src = &block.utreexo->spent_outputs;
+        } else {
+            auto st_result = chain_db_->getCSNSpendTargets(block_index->hash);
+            if (st_result.status() == Status::Ok && st_result.value().size() >= 4) {
+                CsnReplayData replay_data;
+                if (DecodeCsnReplayData(st_result.value(), replay_data) && replay_data.has_spent_outputs) {
+                    fallback_spent_outputs_storage = std::move(replay_data.spent_outputs);
+                    spent_outputs_src = &fallback_spent_outputs_storage;
+                }
+            }
+        }
+
+        size_t global_input_idx = 0;
+        for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+            if (tx_idx == 0) continue;  // coinbase has no inputs to undo
+            const auto& tx = block.vtx[tx_idx];
+            for (const auto& input : tx.vin) {
+                if (!spent_outputs_src || global_input_idx >= spent_outputs_src->size()) {
+                    return fail("commit-bookkeeping-missing-spent-output-metadata");
+                }
+                const auto& so = (*spent_outputs_src)[global_input_idx++];
+                // Global-index walk: block_assembler.cpp populates
+                // spent_outputs by walking every non-coinbase tx's vin in
+                // order (intra-block spends included at their position via
+                // the same SpentOutputData shape), so this simple
+                // sequential consume — no per-tx reset — lines up with
+                // intra-block spends exactly like external ones.
+                undo_record.spent.emplace_back(
+                    input.prevout.txid.AsUint256(), input.prevout.vout,
+                    so.value, so.scriptPubKey, so.is_coinbase, so.created_height,
+                    so.is_confidential, so.commitment);
+            }
+        }
+        for (const auto& tx : block.vtx) {
+            const TxId txid = tx.GetTxid();
+            for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+                undo_record.created.emplace_back(txid.AsUint256(), vout);
+            }
+        }
+        if (shielded_undo) {
+            undo_record.pre_block_shielded_frontier = shielded_undo->pre_block_shielded_frontier;
+            undo_record.pre_reset_shielded_epoch = shielded_undo->pre_reset_shielded_epoch;
+        }
+    }
+
+    // Existing-undo idempotency check (ConnectTip/Promotion idiom): trust
+    // the flatfile, not just the in-memory locator, before deciding whether
+    // to rewrite it — a block that was previously connected-then-disconnected
+    // keeps stale undo_size/undo_file/undo_pos on the in-memory CBlockIndex.
+    // Mirrors ConnectTip's full gate including the shielded-frontier
+    // coupling: a stored undo for a shielded-bearing block that lacks
+    // pre_block_shielded_frontier is stale (written before the shielded
+    // fields existed, or by a path that couldn't supply them) and must be
+    // rewritten now that we have the real shielded undo in hand.
+    auto existing_undo = ReadStoredUndo(block_index->hash);
+    const bool existing_undo_valid = existing_undo.status() == Status::Ok &&
+        existing_undo.value().spent.size() == expected_spent_count &&
+        !existing_undo.value().created.empty() &&
+        (!block_has_shielded ||
+         existing_undo.value().pre_block_shielded_frontier.has_value()) &&
+        // Reset-block coupling: a stored reset undo that lacks
+        // pre_reset_shielded_epoch is stale (written by the snapshot-less
+        // recovery path). When an ABC-CSN reconnect of H arrives holding the
+        // real snapshot, treat the flatfile record as invalid so it gets
+        // rewritten with the snapshot — otherwise a later disconnect of H
+        // would read the snapshot-less record and silently skip the reset
+        // rollback.
+        (!at_reset || existing_undo.value().pre_reset_shielded_epoch.has_value());
+    const bool need_flatfile_undo = !skip_undo_write && block_storage_ &&
+        (block_index->undo_size == 0 || !existing_undo_valid);
+    uint32_t undo_file = block_index->undo_file;
+    uint32_t undo_pos = block_index->undo_pos;
+    uint32_t undo_size = block_index->undo_size;
+
+    // 1. Persist coin changes + undo record + shielded state (ONE atomic batch)
     {
         rocksdb::WriteBatch utxo_batch;
         for (size_t tx_idx = 0; tx_idx < block.vtx.size(); tx_idx++) {
@@ -12986,6 +13255,132 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             const TxId tid = block.vtx[ti].GetTxid();
             chain_db_->putTxIndex(token, tid.AsUint256(), block_index->hash, ti, &utxo_batch);
         }
+
+        // Undo persistence: mirrors ConnectTip's shape (chainstate_service.cpp
+        // slice-3 hoist above ~line 11700). The flatfile write happens BEFORE
+        // this batch commits — the flatfile is the source of truth — then the
+        // locator (BLOCK_HAVE_UNDO + undo_file/pos/size) is staged into THIS
+        // SAME batch so "undo bytes durable" and "coin changes durable" land
+        // together, both BEFORE the tip advances in step 2 below (same
+        // crash-safety rationale as ConnectTip: a crash between undo-durable
+        // and tip-durable must never leave the tip pointing at an
+        // undisconnectable block). Skipped wholesale (flatfile AND locator)
+        // when the loud-failure guard fired: a shielded-bearing block with
+        // no shielded undo must NOT get a shielded-field-less undo record,
+        // or a later disconnect would silently skip the shielded rollback.
+        if (!skip_undo_write) {
+            if (need_flatfile_undo) {
+                const std::vector<uint8_t> undo_bytes = undo_record.Serialize();
+                auto undo_pos_result = block_storage_->writeUndo(block_index->hash, undo_bytes);
+                if (undo_pos_result.status() != Status::Ok) {
+                    if (logger_) {
+                        logger_->error("[CommitBookkeeping] writeUndo failed at height " +
+                                      std::to_string(block_index->height));
+                    }
+                    return fail("commit-bookkeeping-write-undo-failed");
+                }
+                const auto& pos = undo_pos_result.value();
+                if (pos.offset > std::numeric_limits<uint32_t>::max()) {
+                    return fail("commit-bookkeeping-undo-offset-overflow");
+                }
+                undo_file = pos.file_number;
+                undo_pos = static_cast<uint32_t>(pos.offset);
+                undo_size = pos.size;
+            }
+            block_index->undo_file = undo_file;
+            block_index->undo_pos = undo_pos;
+            block_index->undo_size = undo_size;
+            block_index->status |= BLOCK_HAVE_UNDO;
+            auto locator_status = chain_db_->updateUndoLocator(
+                token, block_index->hash, undo_file, undo_pos, undo_size, &utxo_batch);
+            if (locator_status == Status::NotFound) {
+                // No existing header-metadata row to preserve — fall back to the
+                // authoritative full block-index stamp (ConnectTip D.2 idiom).
+                locator_status = chain_db_->updateBlockIndex(token, block_index, &utxo_batch);
+            }
+            if (locator_status != Status::Ok) {
+                if (logger_) {
+                    logger_->error("[CommitBookkeeping] undo locator stage failed at height " +
+                                  std::to_string(block_index->height));
+                }
+                return fail("commit-bookkeeping-undo-locator-stage-failed");
+            }
+        }
+
+        // Shielded persistence staged with the coins (mirrors ConnectTip's
+        // Phase 3b option 1 staging block, chainstate_service.cpp
+        // ~line 12111 near putShieldedTipMarker): frontier blob, anchor
+        // history blob, ShieldedTipMarker, and this block's nullifier rows
+        // — all into the SAME utxo_batch so they commit atomically with the
+        // coin/undo changes. The in-memory shielded pool was already
+        // advanced by the replay loop's ApplyBlockShieldedSection call
+        // before this function runs, so SerializeFrontier() /
+        // CurrentShieldedStateSnapshot() below already reflect the correct
+        // post-block state.
+        {
+            const auto frontier_bytes = shielded_tree_.SerializeFrontier();
+            const std::string frontier_blob(frontier_bytes.begin(), frontier_bytes.end());
+            if (chain_db_->putUtreexoMeta(token, "shielded_frontier", frontier_blob, &utxo_batch) != Status::Ok) {
+                if (logger_) {
+                    logger_->error("[CommitBookkeeping] Failed to stage shielded frontier blob at height " +
+                                  std::to_string(block_index->height));
+                }
+                return fail("commit-bookkeeping-shielded-frontier-stage-failed");
+            }
+            const auto anchor_bytes = shielded_anchor_history_.SerializeBytes();
+            const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
+            if (chain_db_->putUtreexoMeta(token, "shielded_anchor_history", anchor_blob, &utxo_batch) != Status::Ok) {
+                if (logger_) {
+                    logger_->error("[CommitBookkeeping] Failed to stage anchor history blob at height " +
+                                  std::to_string(block_index->height));
+                }
+                return fail("commit-bookkeeping-anchor-history-stage-failed");
+            }
+            const auto shielded_snapshot = CurrentShieldedStateSnapshot();
+            ChainDB::ShieldedTipMarker shielded_marker;
+            shielded_marker.height = static_cast<int32_t>(block_index->height);
+            shielded_marker.block_hash = block_index->hash;
+            shielded_marker.shielded_root = shielded_snapshot.root;
+            shielded_marker.tree_size = shielded_snapshot.tree_size;
+            shielded_marker.nullifier_count = shielded_snapshot.nullifier_count;
+            if (chain_db_->putShieldedTipMarker(token, shielded_marker, &utxo_batch) != Status::Ok) {
+                if (logger_) {
+                    logger_->error("[CommitBookkeeping] Failed to stage ShieldedTipMarker at height " +
+                                  std::to_string(block_index->height));
+                }
+                return fail("commit-bookkeeping-shielded-tip-marker-stage-failed");
+            }
+            for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+                const auto& tx = block.vtx[tx_idx];
+                if (!tx.IsShielded()) {
+                    continue;
+                }
+                consensus::shielded::ShieldedBundle bundle;
+                const auto decode = consensus::shielded::DeserializeShieldedBundle(
+                    tx.shielded_bundle_bytes, &bundle);
+                if (decode != consensus::shielded::BundleDecodeError::Ok) {
+                    if (logger_) {
+                        logger_->error("[CommitBookkeeping] Failed to decode shielded bundle for "
+                                       "nullifier staging at height " +
+                                       std::to_string(block_index->height) +
+                                       " tx " + std::to_string(tx_idx));
+                    }
+                    return fail("commit-bookkeeping-shielded-bundle-decode-failed");
+                }
+                for (const auto& spend : bundle.spends) {
+                    if (chain_db_->putShieldedNullifier(
+                            token, static_cast<uint32_t>(block_index->height),
+                            spend.nullifier.data(), &utxo_batch) != Status::Ok) {
+                        if (logger_) {
+                            logger_->error("[CommitBookkeeping] Failed to stage shielded nullifier at height " +
+                                          std::to_string(block_index->height));
+                        }
+                        return fail("commit-bookkeeping-shielded-nullifier-stage-failed");
+                    }
+                }
+            }
+        }
+
         auto status = chain_db_->writeBatch(token, std::move(utxo_batch), true);
         if (status != Status::Ok) {
             if (logger_) {
@@ -13032,9 +13427,22 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // ShieldedTipMarker / shieldedStateHash diverge from full nodes (a split).
     // Enforce the wall (H must be shielded-empty), discard the in-memory pool,
     // and purge the authoritative nullifier CF, so the PersistShieldedState /
-    // PersistShieldedTipMarker below write the empty post-reset epoch. (A
-    // stateless reorg across the cutover recovers by re-sync, so no undo snapshot
-    // is written on this light-client path.)
+    // PersistShieldedTipMarker below write the empty post-reset epoch.
+    //
+    // New invariant (was: "stateless reorg across the cutover recovers by
+    // re-sync, so no undo snapshot is written on this light-client path"):
+    // that is no longer true. A replay-connected reset block gets a real
+    // UndoRecord written above WHENEVER the snapshot is available: the ABC-CSN
+    // replay caller hands in a `shielded_undo` whose pre_reset_shielded_epoch
+    // is populated (Task 5's ApplyBlockShieldedSection fills it) as it crosses
+    // the reset height. The guarantee that a disconnect back across the cutover
+    // is safe does NOT rest on every caller supplying the snapshot — ConnectTip's
+    // stateless recovery branch reaches bookkeeping with shielded_undo=nullptr
+    // and CANNOT. Instead it rests on REFUSAL: the skip_undo_write guard above
+    // declines to persist a snapshot-less reset undo, and the DisconnectTip-CSN
+    // reader refuses to disconnect H off a snapshot-less record — so a stateless
+    // node either disconnects across the cutover from a real snapshot or fails
+    // loudly, never silently drops the pre-cutover pool.
     {
         const uint32_t reset_height = dinero::Params().shielded_epoch_reset_height;
         if (consensus::shielded::IsShieldedEpochResetHeight(
@@ -13046,6 +13454,22 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             }
             consensus::shielded::ResetShieldedEpoch(
                 shielded_tree_, shielded_anchor_history_, shielded_nullifiers_);
+            // Record the post-reset (H, empty_root) anchor, exactly as the live
+            // ConnectBlockShieldedSection path does after ResetShieldedEpoch (see
+            // shielded_block_section.cpp: reset THEN RecordRoot). ResetShieldedEpoch
+            // CLEARS the anchor window, but the invariant is that EVERY block at/after
+            // shielded activation contributes one anchor — including the cutover block
+            // itself, whose post-reset root is the empty-tree root. Omitting this here
+            // made the reset_batch's in-memory reset inconsistent with a live-built or
+            // forward-synced node: on the ABC-CSN reorg-replay path the in-loop
+            // ApplyBlockShieldedSection had already recorded (H, empty_root), and this
+            // second ResetShieldedEpoch wiped it without re-recording, leaving a reorged
+            // CSN's anchor history one entry short of the bridge / a fresh sync (a
+            // divergent DSR2 shieldedStateHash at an identical tip — a consensus split).
+            // RecordRoot overwrites on a repeated height, so this is idempotent whether
+            // or not the in-loop apply already recorded (H, empty_root).
+            shielded_anchor_history_.RecordRoot(
+                static_cast<uint32_t>(block_index->height), shielded_tree_.Root());
             // Stage the CF purge AND the post-reset frontier/anchor blobs into
             // ONE batch so they commit atomically: afterwards the nullifier CF
             // is empty and the ChainDB frontier/anchor blobs both reflect the

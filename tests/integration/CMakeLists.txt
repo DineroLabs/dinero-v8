@@ -1216,6 +1216,27 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_spend_sync.sh)
     message(STATUS "  ✓ CSNShieldedSpendSync registered")
 endif()
 
+# CSN shielded REORG invertibility (the e2e teeth). A stateless node must survive
+# a reorg whose disconnected AND replayed branches carry real shielded spends and
+# end byte-identical to a full node. Leg A: reorg invertibility (CSN sh==bridge);
+# Leg B: double-spend of a note whose nullifier entered CSN state via a replayed
+# block is rejected (nullifier-duplicate); Leg C: reorg across the epoch-reset
+# height converges (gates the bookkeeping reset RecordRoot fix); Leg D: a second reorg
+# disconnects replay-connected blocks with no "Missing undo data". Uses the
+# deterministic shielded_tx_builder so a note's nullifier is reproducible across
+# branches. Two-node bridge+CSN, long timeout.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_reorg_invertibility.sh)
+    add_test(
+        NAME CSNShieldedReorgInvertibility
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_reorg_invertibility.sh
+    )
+    set_tests_properties(CSNShieldedReorgInvertibility PROPERTIES
+        LABELS "integration;shielded;stateless;csn;reorg;invertibility;canonical-state"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ CSNShieldedReorgInvertibility registered")
+endif()
+
 # Companion to ShieldedReorgInvertibility. Same property assertion
 # (composite state hash invariance) but exercised through the copy-
 # then-reindex code path that the in-place reindex test cannot

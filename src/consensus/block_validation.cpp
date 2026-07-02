@@ -7,6 +7,7 @@
 #include "consensus/shielded/shielded_tx.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_block_validation.h"
+#include "consensus/shielded/shielded_block_section.h"
 #include "consensus/shielded/shielded_validation.h"
 extern "C" {
 #include <secp256k1.h>
@@ -676,7 +677,7 @@ bool BlockValidator::ApplyBlockShieldedSection(
                 return false;
             }
             if (shielded_tx_index >= pending_shielded_deltas.size()) {
-                error = "shielded-delta-accounting-mismatch";
+                error = "shielded-delta-accounting-mismatch-overrun";
                 return false;
             }
             bundles.push_back(std::move(bundle));
@@ -684,68 +685,164 @@ bool BlockValidator::ApplyBlockShieldedSection(
         }
     }
     if (shielded_tx_index != pending_shielded_deltas.size()) {
-        error = "shielded-delta-accounting-mismatch";
+        error = "shielded-delta-accounting-mismatch-underrun";
         return false;
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Shielded epoch reset (hard-fork cutover). See shielded_epoch.h.
-    // ─────────────────────────────────────────────────────────────────────
-    // At exactly the reset height the pre-cutover pool is discarded to a fresh
-    // empty epoch, making every old note unspendable. The cutover block must be
-    // shielded-empty (wall rule) so the reset has nothing to race. Capture the
-    // full pre-reset pool into the undo record FIRST (so a reorg disconnecting
-    // across the cutover can restore the old epoch), THEN discard it.
-    const uint32_t shielded_reset_height =
-        dinero::Params().shielded_epoch_reset_height;
-    if (shld::IsShieldedEpochResetHeight(height, shielded_reset_height)) {
-        if (!bundles.empty()) {
-            error = "shielded-tx-at-epoch-reset-height";
-            return false;
+    // Epoch-reset gate + block-level validate/apply + anchor-root recording:
+    // see the single canonical implementation and its rationale comments in
+    // ConnectBlockShieldedSection (shielded_block_section.cpp).
+    auto* anchors = static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
+    return shld::ConnectBlockShieldedSection(
+        bundles, deltas, height,
+        dinero::Params().shielded_epoch_reset_height,
+        dinero::Params().shielded_activation_height,
+        *tree, *nullifiers, anchors,
+        undo.pre_reset_shielded_epoch, error);
+}
+
+// ABC-CSN reorg replay: recompute pending_shielded_deltas for an already-
+// stored block. BIT-IDENTITY CONTRACT: this mirrors the forward STATELESS
+// per-tx loop in ConnectBlockInternal (the spent_outputs walk, the
+// fee_input_utxos construction, SumOutputs, ComputeValidatedTransactionFee,
+// and ValidateShieldedTransactionBundle) and must NOT re-derive any of that
+// arithmetic independently. If the forward loop changes, this must change in
+// lockstep — the delta-parity unit suite (ShieldedBlockSectionDeltaParity)
+// pins the equivalence.
+//
+// Deliberately skipped relative to the forward loop (not delta-relevant; the
+// block was fully validated when first stored): script/signature validation,
+// double-spend tracking, coinbase-maturity evaluation, ephemeral spent-output
+// cross-checks, and all UTXO/forest mutation. Nothing that feeds the delta
+// (input-value walk, output sum, fee, bundle validation) is skipped.
+bool BlockValidator::ComputeShieldedDeltasForStoredBlock(
+    const Block& block, uint32_t height,
+    std::vector<int64_t>& deltas_out, std::string& error,
+    const std::vector<SpentOutputData>* fallback_spent_outputs) {
+    deltas_out.clear();
+
+    // A block with no shielded-semantics txs produces no deltas, so it needs
+    // no spend metadata at all. This keeps legacy hash-only CSN replay
+    // records (no spent_outputs) working for transparent-only reorgs.
+    bool any_shielded = false;
+    for (size_t i = 1; i < block.vtx.size(); ++i) {
+        if (UsesShieldedValueSemantics(block.vtx[i])) {
+            any_shielded = true;
+            break;
         }
-        if (!shielded_anchor_history_) {
-            error = "shielded-epoch-reset-missing-anchor-state";
-            return false;
-        }
-        auto* anchors =
-            static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
-        undo.pre_reset_shielded_epoch =
-            shld::CaptureShieldedEpoch(*tree, *anchors, *nullifiers);
-        const auto& snap = *undo.pre_reset_shielded_epoch;
-        if ((nullifiers->Size() > 0 && snap.nullifiers.empty()) ||
-            (tree->Size() > 0 && snap.tree_frontier.empty())) {
-            error = "shielded-epoch-reset-capture-failed";
-            return false;
-        }
-        shld::ResetShieldedEpoch(*tree, *anchors, *nullifiers);
+    }
+    if (!any_shielded) {
+        return true;
     }
 
-    if (!bundles.empty()) {
-        shld::BlockShieldedContext bctx;
-        bctx.existing_nullifiers = nullifiers;
-        bctx.pre_block_tree = tree;
-        bctx.block_height = height;
+    // Spent-output source: the stored block's own utreexo payload first;
+    // the CSN replay-data metadata only as fallback when that is absent.
+    const std::vector<SpentOutputData>* spent_outputs = nullptr;
+    if (block.utreexo.has_value()) {
+        spent_outputs = &block.utreexo->spent_outputs;
+    } else if (fallback_spent_outputs) {
+        spent_outputs = fallback_spent_outputs;
+    }
+    if (!spent_outputs) {
+        error = "stored-block-shielded-delta-missing-spent-outputs: block has "
+                "shielded txs but neither block.utreexo nor CSN replay data "
+                "carries spent-output metadata (height " +
+                std::to_string(height) + ")";
+        return false;
+    }
 
-        auto berr = shld::ValidateBlockShielded(bundles, deltas, bctx);
-        if (berr != shld::BlockValidationError::Ok) {
-            error = "shielded-block-validation-failed (code " +
-                std::to_string(static_cast<int>(berr)) + ")";
-            return false;
+    // Mirror of ConnectBlockInternal's stateless per-tx loop: one GLOBAL
+    // index over spent_outputs, consumed once per non-coinbase input in
+    // block/tx order — never reset per tx.
+    size_t global_spent_output_index = 0;
+    for (size_t i = 1; i < block.vtx.size(); i++) {
+        const Transaction& tx = block.vtx[i];
+
+        uint64_t total_input_value = 0;
+        std::vector<UTXOEntry> fee_input_utxos;
+        fee_input_utxos.reserve(tx.vin.size());
+
+        for (size_t input_idx = 0; input_idx < tx.vin.size(); input_idx++) {
+            if (global_spent_output_index >= spent_outputs->size()) {
+                error = "stored-block-shielded-delta-spent-outputs-underrun: "
+                        "consumed " +
+                        std::to_string(global_spent_output_index) +
+                        " of " + std::to_string(spent_outputs->size()) +
+                        " at tx " + std::to_string(i) + " input " +
+                        std::to_string(input_idx) + " (height " +
+                        std::to_string(height) + ")";
+                return false;
+            }
+            const auto& spent_output = (*spent_outputs)[global_spent_output_index];
+            global_spent_output_index++;
+
+            // Same accumulation the forward loop performs at its global walk.
+            total_input_value += spent_output.value;
+
+            // Same UTXOEntry construction as the forward loop's
+            // fee_input_utxos build (v2 maturity leaves carry authenticated
+            // created_height/is_coinbase; legacy leaves zero them).
+            const bool v2_leaf = IsUtreexoMaturityLeafActive(spent_output.created_height);
+            fee_input_utxos.emplace_back(
+                AmountUna::Una(spent_output.value),
+                spent_output.scriptPubKey,
+                v2_leaf ? spent_output.created_height : 0,
+                v2_leaf && spent_output.is_coinbase,
+                spent_output.is_confidential,
+                spent_output.commitment
+            );
         }
 
-        // Deterministic apply: commitments + nullifiers in block tx order.
-        shld::ApplyBlockShielded(bundles, tree, nullifiers, height);
+        uint64_t total_output_value = SumOutputs(tx);
+        uint64_t tx_fee = 0;
+        if (!ComputeValidatedTransactionFee(tx, fee_input_utxos, total_input_value,
+                                            total_output_value, tx_fee, error)) {
+            return false;
+        }
+        if (UsesShieldedValueSemantics(tx)) {
+            int64_t tx_delta = 0;
+            // THE SAME FUNCTION with the same inputs as the forward stateless
+            // path, with the validator's CURRENT shielded state as const
+            // context — bit-identical delta by construction. Read-only: the
+            // callee takes the state via const pointers.
+            if (!ValidateShieldedTransactionBundle(
+                    tx,
+                    height,
+                    total_input_value,
+                    total_output_value,
+                    tx_fee,
+                    static_cast<shielded::CommitmentTree*>(shielded_tree_),
+                    static_cast<shielded::NullifierSet*>(shielded_nullifiers_),
+                    static_cast<shielded::AnchorHistory*>(shielded_anchor_history_),
+                    error,
+                    &tx_delta)) {
+                return false;
+            }
+            deltas_out.push_back(tx_delta);
+        }
     }
 
-    // Record the post-block tree root in the AnchorHistory window once per
-    // connected block, AFTER any of this block's shielded outputs have been
-    // appended. Gate on shielded activation height.
-    if (shielded_anchor_history_ &&
-        height >= dinero::Params().shielded_activation_height) {
-        static_cast<shld::AnchorHistory*>(shielded_anchor_history_)
-            ->RecordRoot(height, tree->Root());
+    // Stricter than the forward loop for the fallback source (fail-closed by
+    // design): forward only sees block.utreexo; here surplus fallback entries
+    // mean the CF7 metadata does not belong to this block.
+    if (global_spent_output_index != spent_outputs->size()) {
+        error = "stored-block-shielded-delta-spent-outputs-count-mismatch: "
+                "consumed " + std::to_string(global_spent_output_index) +
+                ", provided " + std::to_string(spent_outputs->size()) +
+                " (height " + std::to_string(height) + ")";
+        return false;
     }
+
     return true;
+}
+
+std::vector<uint8_t> BlockValidator::SerializeShieldedFrontier() const {
+    if (!shielded_tree_) {
+        return {};
+    }
+    // Same capture as the top of ConnectBlockInternal (pre-block frontier).
+    return static_cast<const shielded::CommitmentTree*>(shielded_tree_)
+        ->SerializeFrontier();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2365,45 +2462,31 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
             return false;
         }
 
-        if (shielded_tree_ && undo.pre_reset_shielded_epoch.has_value()) {
-            // Reorg disconnecting across the shielded epoch cutover. The frontier
-            // + RollbackAbove path below CANNOT undo a reset — RollbackAbove only
-            // deletes rows, it can't re-add the wiped nullifiers/anchors. Restore
-            // the full pre-reset pool from the snapshot instead.
+        if (shielded_tree_ && shielded_nullifiers_) {
+            // Both branches (cutover-snapshot restore vs frontier +
+            // RollbackAbove) live in the shared free function so this path
+            // and the legacy path below run byte-identical shielded-undo
+            // logic. See shielded_block_section.cpp for the recipe.
             auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
             auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
             auto* anchors = static_cast<shielded::AnchorHistory*>(shielded_anchor_history_);
-            if (!nullifiers || !anchors) {
-                error = "shielded epoch reset restore: missing state containers";
+            if (!shielded::DisconnectBlockShieldedSection(
+                    height, undo.pre_reset_shielded_epoch,
+                    undo.pre_block_shielded_frontier, *tree, *nullifiers,
+                    anchors, error)) {
                 return false;
             }
-            if (!shielded::RestoreShieldedEpoch(*undo.pre_reset_shielded_epoch,
-                                                *tree, *anchors, *nullifiers)) {
-                error = "Failed to restore shielded epoch reset snapshot";
-                return false;
-            }
-        } else if (shielded_tree_ && undo.pre_block_shielded_frontier.has_value()) {
-            auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
-            auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
-            const auto& frontier = *undo.pre_block_shielded_frontier;
-            if (!tree->DeserializeFrontier(frontier.data(), frontier.size())) {
-                error = "Failed to restore shielded frontier snapshot";
-                return false;
-            }
-            if (nullifiers && height > 0) {
-                nullifiers->RollbackAbove(height - 1);
-            }
-            // Apr 28 2026: anchor history was being rolled back ONLY on
-            // startup recovery (chainstate_service.cpp), never on a normal
-            // reorg path. A block's shielded txs that recorded anchors
-            // would leave those anchors visible after DisconnectBlock,
-            // letting a reorged-out anchor act as a valid spend reference
-            // on the canonical chain. Roll it back symmetrically with the
-            // nullifier set.
-            if (shielded_anchor_history_ && height > 0) {
-                static_cast<shielded::AnchorHistory*>(shielded_anchor_history_)
-                    ->RollbackAbove(height - 1);
-            }
+        } else if (undo.pre_reset_shielded_epoch.has_value() ||
+                   undo.pre_block_shielded_frontier.has_value()) {
+            // The undo record carries shielded rollback state but the
+            // shielded pool pointers are not (both) wired — silently
+            // skipping here would leave the in-memory pool stale instead
+            // of loud-failing like the old cutover-only code did.
+            // Unreachable under current wiring (shielded_tree_ and
+            // shielded_nullifiers_ are always wired together), but this
+            // guard closes the gap defensively.
+            error = "shielded-undo-present-but-state-unwired";
+            return false;
         }
 
         std::cout << "✅ [Phase 2] Block " << height << " disconnected via snapshot restore" << std::endl;
@@ -2545,40 +2628,29 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
         }
     }
 
-    if (shielded_tree_ && undo.pre_reset_shielded_epoch.has_value()) {
-        // Reorg across the epoch cutover on the legacy disconnect path — restore
-        // the full pre-reset pool from the snapshot (RollbackAbove can't undo a
-        // reset). See the snapshot-path branch above.
+    if (shielded_tree_ && shielded_nullifiers_) {
+        // Same shared free function as the snapshot path above; only the
+        // on-failure rollback (restore_legacy_on_failure) differs, which is
+        // why this copy still exists rather than sharing the branch itself.
         auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
         auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
         auto* anchors = static_cast<shielded::AnchorHistory*>(shielded_anchor_history_);
-        if (!nullifiers || !anchors) {
+        if (!shielded::DisconnectBlockShieldedSection(
+                height, undo.pre_reset_shielded_epoch,
+                undo.pre_block_shielded_frontier, *tree, *nullifiers, anchors,
+                error)) {
             restore_legacy_on_failure();
-            error = "shielded epoch reset restore: missing state containers (legacy)";
             return false;
         }
-        if (!shielded::RestoreShieldedEpoch(*undo.pre_reset_shielded_epoch,
-                                            *tree, *anchors, *nullifiers)) {
-            restore_legacy_on_failure();
-            error = "Failed to restore shielded epoch reset snapshot (legacy)";
-            return false;
-        }
-    } else if (shielded_tree_ && undo.pre_block_shielded_frontier.has_value()) {
-        auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
-        auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
-        const auto& frontier = *undo.pre_block_shielded_frontier;
-        if (!tree->DeserializeFrontier(frontier.data(), frontier.size())) {
-            restore_legacy_on_failure();
-            error = "Failed to restore shielded frontier during legacy disconnect";
-            return false;
-        }
-        if (nullifiers && height > 0) {
-            nullifiers->RollbackAbove(height - 1);
-        }
-        if (shielded_anchor_history_ && height > 0) {
-            static_cast<shielded::AnchorHistory*>(shielded_anchor_history_)
-                ->RollbackAbove(height - 1);
-        }
+    } else if (undo.pre_reset_shielded_epoch.has_value() ||
+               undo.pre_block_shielded_frontier.has_value()) {
+        // See the snapshot-path guard above: the undo record carries
+        // shielded rollback state but the shielded pool pointers are not
+        // (both) wired. Loud-fail instead of silently skipping the
+        // shielded undo. Unreachable under current wiring.
+        restore_legacy_on_failure();
+        error = "shielded-undo-present-but-state-unwired";
+        return false;
     }
 
     return true;
