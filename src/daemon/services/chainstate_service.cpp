@@ -13379,6 +13379,22 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             }
             consensus::shielded::ResetShieldedEpoch(
                 shielded_tree_, shielded_anchor_history_, shielded_nullifiers_);
+            // Record the post-reset (H, empty_root) anchor, exactly as the live
+            // ConnectBlockShieldedSection path does after ResetShieldedEpoch (see
+            // shielded_block_section.cpp: reset THEN RecordRoot). ResetShieldedEpoch
+            // CLEARS the anchor window, but the invariant is that EVERY block at/after
+            // shielded activation contributes one anchor — including the cutover block
+            // itself, whose post-reset root is the empty-tree root. Omitting this here
+            // made the reset_batch's in-memory reset inconsistent with a live-built or
+            // forward-synced node: on the ABC-CSN reorg-replay path the in-loop
+            // ApplyBlockShieldedSection had already recorded (H, empty_root), and this
+            // second ResetShieldedEpoch wiped it without re-recording, leaving a reorged
+            // CSN's anchor history one entry short of the bridge / a fresh sync (a
+            // divergent DSR2 shieldedStateHash at an identical tip — a consensus split).
+            // RecordRoot overwrites on a repeated height, so this is idempotent whether
+            // or not the in-loop apply already recorded (H, empty_root).
+            shielded_anchor_history_.RecordRoot(
+                static_cast<uint32_t>(block_index->height), shielded_tree_.Root());
             // Stage the CF purge AND the post-reset frontier/anchor blobs into
             // ONE batch so they commit atomically: afterwards the nullifier CF
             // is empty and the ChainDB frontier/anchor blobs both reflect the
