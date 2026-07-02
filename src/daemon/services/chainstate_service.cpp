@@ -11707,16 +11707,38 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 return fail("stateless-replay-failed");
             }
 
+            // #356: route the delta-recompute + pre-block frontier capture +
+            // ApplyBlockShieldedSection through the shared ApplyStatelessReplay-
+            // Shielded funnel (also used by the ABC-CSN reorg replay loop) so
+            // this crash-recovery branch's shielded-bearing blocks actually get
+            // their note commitments and nullifiers applied instead of silently
+            // skipping them. The guard reads the persisted ShieldedTipMarker: if
+            // the pool is already at/ahead of this block (applied_out=false) we
+            // pass nullptr into bookkeeping exactly as before; a gap behind
+            // height-1 is a loud failure, not a silent skip.
+            consensus::BlockUndo replay_undo;
+            bool shielded_applied = false;
+            std::string shielded_err;
+            if (!ApplyStatelessReplayShielded(block, tip_to_connect->height, replay_undo,
+                                              shielded_applied, shielded_err)) {
+                if (logger_) {
+                    logger_->error("[ConnectTip] Stateless recovery shielded apply failed at height " +
+                                   std::to_string(tip_to_connect->height) + ": " + shielded_err);
+                }
+                return fail("stateless-recovery-shielded-apply-failed: " + shielded_err);
+            }
+
             std::string bookkeeping_error;
-            // No shielded apply precedes this branch (it does not call
-            // ConnectBlock / ApplyBlockShieldedSection), so there is no
-            // BlockUndo shielded snapshot to hand in — nullptr is correct
-            // here, not a shortcut. Transparent-only blocks still get a
-            // full UndoRecord (spent/created coins); for a shielded-bearing
-            // block the bookkeeping's loud-failure guard skips the undo
-            // write so a later disconnect fails loudly instead of silently
-            // skipping the shielded rollback.
-            if (!CommitConnectedBlockBookkeeping(tip_to_connect, block, /*shielded_undo=*/nullptr,
+            // When shielded_applied is true, replay_undo carries the real
+            // pre_block_shielded_frontier (and pre_reset_shielded_epoch, if
+            // this block is the epoch-reset height) captured by the funnel
+            // above, so CommitConnectedBlockBookkeeping's skip_undo_write
+            // guard does NOT fire and the UndoRecord persists the shielded
+            // snapshot needed for a later disconnect. When shielded_applied
+            // is false (pool already at/ahead of this block), nullptr
+            // preserves prior behavior for this already-applied block.
+            if (!CommitConnectedBlockBookkeeping(tip_to_connect, block,
+                                                 shielded_applied ? &replay_undo : nullptr,
                                                  &bookkeeping_error)) {
                 if (logger_) {
                     logger_->error("[ConnectTip] Stateless replay bookkeeping failed at height " +
@@ -13155,28 +13177,36 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // carry the pre-block shielded frontier, or a later DisconnectTip-CSN
     // would call DisconnectBlockShieldedSection with both optionals empty —
     // a silent no-op that leaves the shielded pool un-rolled-back (silent
-    // corruption). ConnectTip's stateless-replay recovery branch passes
-    // shielded_undo=nullptr because it never runs ApplyBlockShieldedSection
-    // (a separately-tracked pre-existing gap); for a shielded-bearing block
-    // arriving through that branch we therefore SKIP the undo write
-    // entirely, so a future disconnect of this block hits the loud
-    // "Missing undo data" failure (the pre-Task-6 behavior) instead of
-    // silently skipping the shielded rollback. Coins/tip/shielded staging
-    // below proceed unchanged.
+    // corruption). #356: ConnectTip's stateless-replay recovery branch now
+    // routes through ApplyStatelessReplayShielded before calling us, and
+    // hands in a real BlockUndo (shielded_applied ? &replay_undo : nullptr)
+    // — it only passes nullptr when the guard there determined the shielded
+    // pool is already at/ahead of this block (nothing to apply, nothing to
+    // undo). So the SKIP arm below still exists as defense-in-depth: if a
+    // shielded-bearing block ever arrives here with shielded_undo=nullptr or
+    // missing pre_block_shielded_frontier (e.g. a future caller that doesn't
+    // go through the funnel), we SKIP the undo write entirely, so a future
+    // disconnect of this block hits the loud "Missing undo data" failure
+    // (the pre-Task-6 behavior) instead of silently skipping the shielded
+    // rollback. Coins/tip/shielded staging below proceed unchanged.
     //
     // SECOND ARM (epoch-reset block): the reset block at H is shielded-EMPTY
     // by the wall rule, so block_has_shielded==false and the arm above never
     // fires for it. But the reset undo needs pre_reset_shielded_epoch (the
     // pre-cutover pool snapshot) — DisconnectBlockShieldedSection restores the
     // discarded epoch from it; RollbackAbove cannot re-add rows the reset
-    // wiped. ConnectTip's stateless recovery branch reaches here with
-    // shielded_undo=nullptr, so it would write a reset undo with NO snapshot;
-    // a later DisconnectTip-CSN of H would then no-op the shielded rollback
-    // (both optionals empty) and retreat below H with the post-reset EMPTY
-    // pool — every pre-reset nullifier gone, a silent double-spend/fork
-    // window. So for the reset block we ALSO skip the undo write unless the
-    // real snapshot is in hand, mirroring the regen-refusal guard's rationale
-    // (see ~10877): a snapshot-less reset undo must never be persisted.
+    // wiped. When ApplyStatelessReplayShielded applies at the reset height,
+    // ApplyBlockShieldedSection fills pre_reset_shielded_epoch into the undo
+    // it returns, so ConnectTip's recovery branch hands in a snapshot-bearing
+    // undo here too. If a caller ever reaches here with shielded_undo=nullptr
+    // (or a missing snapshot) for a reset block, it would write a reset undo
+    // with NO snapshot; a later DisconnectTip-CSN of H would then no-op the
+    // shielded rollback (both optionals empty) and retreat below H with the
+    // post-reset EMPTY pool — every pre-reset nullifier gone, a silent
+    // double-spend/fork window. So for the reset block we ALSO skip the undo
+    // write unless the real snapshot is in hand, mirroring the regen-refusal
+    // guard's rationale (see ~10877): a snapshot-less reset undo must never
+    // be persisted.
     const bool at_reset = consensus::shielded::IsShieldedEpochResetHeight(
         static_cast<uint32_t>(block_index->height),
         dinero::Params().shielded_epoch_reset_height);
