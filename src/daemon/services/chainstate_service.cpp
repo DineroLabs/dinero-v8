@@ -11614,8 +11614,11 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             // No shielded apply precedes this branch (it does not call
             // ConnectBlock / ApplyBlockShieldedSection), so there is no
             // BlockUndo shielded snapshot to hand in — nullptr is correct
-            // here, not a shortcut. The persisted UndoRecord below will
-            // still carry the block's spent/created coins.
+            // here, not a shortcut. Transparent-only blocks still get a
+            // full UndoRecord (spent/created coins); for a shielded-bearing
+            // block the bookkeeping's loud-failure guard skips the undo
+            // write so a later disconnect fails loudly instead of silently
+            // skipping the shielded rollback.
             if (!CommitConnectedBlockBookkeeping(tip_to_connect, block, /*shielded_undo=*/nullptr,
                                                  &bookkeeping_error)) {
                 if (logger_) {
@@ -13031,33 +13034,66 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
 
     ChainWriteToken token;
 
-    // Resolve the same spent-outputs source the ABC-CSN replay loop already
-    // loaded for this block before calling us: block.utreexo's embedded
-    // metadata when present, else the CF7 CSN-replay-data sidecar (older
-    // hash-only records carry spend metadata there instead, and ConnectTip's
-    // own stateless-replay call site always has block.utreexo populated by
-    // its gate). Needed below to build the undo record's spent list.
-    std::vector<consensus::SpentOutputData> fallback_spent_outputs_storage;
-    const std::vector<consensus::SpentOutputData>* spent_outputs_src = nullptr;
-    if (block.utreexo.has_value()) {
-        spent_outputs_src = &block.utreexo->spent_outputs;
-    } else {
-        auto st_result = chain_db_->getCSNSpendTargets(block_index->hash);
-        if (st_result.status() == Status::Ok && st_result.value().size() >= 4) {
-            CsnReplayData replay_data;
-            if (DecodeCsnReplayData(st_result.value(), replay_data) && replay_data.has_spent_outputs) {
-                fallback_spent_outputs_storage = std::move(replay_data.spent_outputs);
-                spent_outputs_src = &fallback_spent_outputs_storage;
-            }
-        }
+    // Shielded-bearing predicate + expected spent count for the undo gates
+    // below (mirrors ConnectTip's pre-undo scan): any non-coinbase tx
+    // carrying a shielded bundle, and one spent entry per non-coinbase input.
+    bool block_has_shielded = false;
+    uint64_t expected_spent_count = 0;
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        if (block.vtx[tx_idx].IsShielded()) block_has_shielded = true;
+        expected_spent_count += block.vtx[tx_idx].vin.size();
     }
 
-    // Build the UndoRecord for this block. Reverses the old "stateless
-    // reorg recovers by re-sync" decision (see the comment further below):
-    // every replay-connected block now gets a real UndoRecord so a SECOND
-    // reorg can disconnect it through the standard DisconnectTip-CSN path.
+    // LOUD-FAILURE GUARD: an UndoRecord for a shielded-bearing block MUST
+    // carry the pre-block shielded frontier, or a later DisconnectTip-CSN
+    // would call DisconnectBlockShieldedSection with both optionals empty —
+    // a silent no-op that leaves the shielded pool un-rolled-back (silent
+    // corruption). ConnectTip's stateless-replay recovery branch passes
+    // shielded_undo=nullptr because it never runs ApplyBlockShieldedSection
+    // (a separately-tracked pre-existing gap); for a shielded-bearing block
+    // arriving through that branch we therefore SKIP the undo write
+    // entirely, so a future disconnect of this block hits the loud
+    // "Missing undo data" failure (the pre-Task-6 behavior) instead of
+    // silently skipping the shielded rollback. Coins/tip/shielded staging
+    // below proceed unchanged.
+    const bool skip_undo_write = block_has_shielded &&
+        (shielded_undo == nullptr ||
+         !shielded_undo->pre_block_shielded_frontier.has_value());
+    if (skip_undo_write && logger_) {
+        logger_->warning("[CommitBookkeeping] shielded-bearing block connected without "
+                         "shielded undo — skipping undo write so a future disconnect "
+                         "fails loudly instead of silently skipping shielded rollback; "
+                         "height=" + std::to_string(block_index->height));
+    }
+
+    // Build the UndoRecord for this block (unless the loud-failure guard
+    // above suppressed it). Reverses the old "stateless reorg recovers by
+    // re-sync" decision (see the comment further below): every
+    // replay-connected block now gets a real UndoRecord so a SECOND reorg
+    // can disconnect it through the standard DisconnectTip-CSN path.
     dinero::UndoRecord undo_record;
-    {
+    if (!skip_undo_write) {
+        // Resolve the same spent-outputs source the ABC-CSN replay loop
+        // already loaded for this block before calling us: block.utreexo's
+        // embedded metadata when present, else the CF7 CSN-replay-data
+        // sidecar (older hash-only records carry spend metadata there
+        // instead, and ConnectTip's own stateless-replay call site always
+        // has block.utreexo populated by its gate).
+        std::vector<consensus::SpentOutputData> fallback_spent_outputs_storage;
+        const std::vector<consensus::SpentOutputData>* spent_outputs_src = nullptr;
+        if (block.utreexo.has_value()) {
+            spent_outputs_src = &block.utreexo->spent_outputs;
+        } else {
+            auto st_result = chain_db_->getCSNSpendTargets(block_index->hash);
+            if (st_result.status() == Status::Ok && st_result.value().size() >= 4) {
+                CsnReplayData replay_data;
+                if (DecodeCsnReplayData(st_result.value(), replay_data) && replay_data.has_spent_outputs) {
+                    fallback_spent_outputs_storage = std::move(replay_data.spent_outputs);
+                    spent_outputs_src = &fallback_spent_outputs_storage;
+                }
+            }
+        }
+
         size_t global_input_idx = 0;
         for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
             if (tx_idx == 0) continue;  // coinbase has no inputs to undo
@@ -13095,11 +13131,18 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // the flatfile, not just the in-memory locator, before deciding whether
     // to rewrite it — a block that was previously connected-then-disconnected
     // keeps stale undo_size/undo_file/undo_pos on the in-memory CBlockIndex.
+    // Mirrors ConnectTip's full gate including the shielded-frontier
+    // coupling: a stored undo for a shielded-bearing block that lacks
+    // pre_block_shielded_frontier is stale (written before the shielded
+    // fields existed, or by a path that couldn't supply them) and must be
+    // rewritten now that we have the real shielded undo in hand.
     auto existing_undo = ReadStoredUndo(block_index->hash);
     const bool existing_undo_valid = existing_undo.status() == Status::Ok &&
-        existing_undo.value().spent.size() == undo_record.spent.size() &&
-        !existing_undo.value().created.empty();
-    const bool need_flatfile_undo = block_storage_ &&
+        existing_undo.value().spent.size() == expected_spent_count &&
+        !existing_undo.value().created.empty() &&
+        (!block_has_shielded ||
+         existing_undo.value().pre_block_shielded_frontier.has_value());
+    const bool need_flatfile_undo = !skip_undo_write && block_storage_ &&
         (block_index->undo_size == 0 || !existing_undo_valid);
     uint32_t undo_file = block_index->undo_file;
     uint32_t undo_pos = block_index->undo_pos;
@@ -13151,42 +13194,47 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
         // together, both BEFORE the tip advances in step 2 below (same
         // crash-safety rationale as ConnectTip: a crash between undo-durable
         // and tip-durable must never leave the tip pointing at an
-        // undisconnectable block).
-        if (need_flatfile_undo) {
-            const std::vector<uint8_t> undo_bytes = undo_record.Serialize();
-            auto undo_pos_result = block_storage_->writeUndo(block_index->hash, undo_bytes);
-            if (undo_pos_result.status() != Status::Ok) {
+        // undisconnectable block). Skipped wholesale (flatfile AND locator)
+        // when the loud-failure guard fired: a shielded-bearing block with
+        // no shielded undo must NOT get a shielded-field-less undo record,
+        // or a later disconnect would silently skip the shielded rollback.
+        if (!skip_undo_write) {
+            if (need_flatfile_undo) {
+                const std::vector<uint8_t> undo_bytes = undo_record.Serialize();
+                auto undo_pos_result = block_storage_->writeUndo(block_index->hash, undo_bytes);
+                if (undo_pos_result.status() != Status::Ok) {
+                    if (logger_) {
+                        logger_->error("[CommitBookkeeping] writeUndo failed at height " +
+                                      std::to_string(block_index->height));
+                    }
+                    return fail("commit-bookkeeping-write-undo-failed");
+                }
+                const auto& pos = undo_pos_result.value();
+                if (pos.offset > std::numeric_limits<uint32_t>::max()) {
+                    return fail("commit-bookkeeping-undo-offset-overflow");
+                }
+                undo_file = pos.file_number;
+                undo_pos = static_cast<uint32_t>(pos.offset);
+                undo_size = pos.size;
+            }
+            block_index->undo_file = undo_file;
+            block_index->undo_pos = undo_pos;
+            block_index->undo_size = undo_size;
+            block_index->status |= BLOCK_HAVE_UNDO;
+            auto locator_status = chain_db_->updateUndoLocator(
+                token, block_index->hash, undo_file, undo_pos, undo_size, &utxo_batch);
+            if (locator_status == Status::NotFound) {
+                // No existing header-metadata row to preserve — fall back to the
+                // authoritative full block-index stamp (ConnectTip D.2 idiom).
+                locator_status = chain_db_->updateBlockIndex(token, block_index, &utxo_batch);
+            }
+            if (locator_status != Status::Ok) {
                 if (logger_) {
-                    logger_->error("[CommitBookkeeping] writeUndo failed at height " +
+                    logger_->error("[CommitBookkeeping] undo locator stage failed at height " +
                                   std::to_string(block_index->height));
                 }
-                return fail("commit-bookkeeping-write-undo-failed");
+                return fail("commit-bookkeeping-undo-locator-stage-failed");
             }
-            const auto& pos = undo_pos_result.value();
-            if (pos.offset > std::numeric_limits<uint32_t>::max()) {
-                return fail("commit-bookkeeping-undo-offset-overflow");
-            }
-            undo_file = pos.file_number;
-            undo_pos = static_cast<uint32_t>(pos.offset);
-            undo_size = pos.size;
-        }
-        block_index->undo_file = undo_file;
-        block_index->undo_pos = undo_pos;
-        block_index->undo_size = undo_size;
-        block_index->status |= BLOCK_HAVE_UNDO;
-        auto locator_status = chain_db_->updateUndoLocator(
-            token, block_index->hash, undo_file, undo_pos, undo_size, &utxo_batch);
-        if (locator_status == Status::NotFound) {
-            // No existing header-metadata row to preserve — fall back to the
-            // authoritative full block-index stamp (ConnectTip D.2 idiom).
-            locator_status = chain_db_->updateBlockIndex(token, block_index, &utxo_batch);
-        }
-        if (locator_status != Status::Ok) {
-            if (logger_) {
-                logger_->error("[CommitBookkeeping] undo locator stage failed at height " +
-                              std::to_string(block_index->height));
-            }
-            return fail("commit-bookkeeping-undo-locator-stage-failed");
         }
 
         // Shielded persistence staged with the coins (mirrors ConnectTip's

@@ -235,7 +235,11 @@ public:
     // nullptr when no shielded apply preceded this call, e.g. ConnectTip's
     // stateless-replay branch) — its pre_block_shielded_frontier /
     // pre_reset_shielded_epoch feed the persisted UndoRecord so a later
-    // DisconnectTip-CSN can roll this block back.
+    // DisconnectTip-CSN can roll this block back. For a shielded-bearing
+    // block with no usable shielded undo (nullptr, or frontier unset), the
+    // undo write is SKIPPED with a loud warning so a later disconnect of
+    // that block fails loudly ("Missing undo data") instead of silently
+    // skipping the shielded rollback.
     bool CommitConnectedBlockBookkeeping(class CBlockIndex* block_index, const Block& block,
                                          const consensus::BlockUndo* shielded_undo,
                                          std::string* out_error = nullptr);
