@@ -1181,6 +1181,24 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_boundary.sh)
     message(STATUS "  ✓ ShieldedEpochResetBoundary registered")
 endif()
 
+# Shielded epoch reset — STATELESS / CSN path acceptance test. A bridge node
+# mines across the cutover and a stateless (--utreexo-stateless) node syncs
+# across H and restarts past it, asserting brick-safety: it does not stall at the
+# cutover (the reset applies on the stateless connect path) and restarts cleanly
+# past H (the frontier/anchor blobs persist; the resurrection guard does not
+# brick it). Two-node sync + restart, so allow a long timeout.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_stateless.sh)
+    add_test(
+        NAME ShieldedEpochResetStateless
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_stateless.sh
+    )
+    set_tests_properties(ShieldedEpochResetStateless PROPERTIES
+        LABELS "integration;shielded;stateless;csn;restart;epoch-reset;canonical-state"
+        TIMEOUT 600
+    )
+    message(STATUS "  ✓ ShieldedEpochResetStateless registered")
+endif()
+
 # Companion to ShieldedReorgInvertibility. Same property assertion
 # (composite state hash invariance) but exercised through the copy-
 # then-reindex code path that the in-place reindex test cannot
