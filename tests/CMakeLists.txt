@@ -2558,6 +2558,23 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_bip39.cpp)
   add_test(NAME BIP39 COMMAND test_bip39)
 endif()
 
+# #353: wallet spendability partition — exclude accumulator-anchored (un-spendable)
+# coins from coin-selection + spendable_balance. Pure/dependency-injected, no node.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_spendability.cpp)
+  add_executable(test_wallet_spendability
+    tests/wallet/test_wallet_spendability.cpp
+    src/wallet/wallet_spendability.cpp
+  )
+  add_dependencies(test_wallet_spendability gtest)
+  target_link_libraries(test_wallet_spendability PRIVATE $<TARGET_FILE:gtest>)
+  target_include_directories(test_wallet_spendability PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  add_test(NAME WalletSpendability COMMAND test_wallet_spendability)
+  set_tests_properties(WalletSpendability PROPERTIES LABELS "wallet;coin-selection" TIMEOUT 30)
+endif()
+
 # Wallet runtime path hygiene gate
 if(EXISTS ${CMAKE_SOURCE_DIR}/ci/check_wallet_hardcoded_paths.sh)
   add_test(

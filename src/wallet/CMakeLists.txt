@@ -36,6 +36,7 @@ add_library(dinero_wallet STATIC
   # Wallet uses Transaction from dinero_consensus (already linked)
   ${CMAKE_CURRENT_SOURCE_DIR}/transaction_deserializer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/coin_selection.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_spendability.cpp  # #353: exclude accumulator-anchored coins from spend/selection
   ${CMAKE_CURRENT_SOURCE_DIR}/bip143_signer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/transaction_builder.cpp  # Phase 33: Transaction building for wallet RPC
   ${CMAKE_CURRENT_SOURCE_DIR}/schnorr_signer.cpp  # BIP-340 Schnorr signatures for Taproot
