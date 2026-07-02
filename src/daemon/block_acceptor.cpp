@@ -2094,14 +2094,16 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
         // ChainDB metadata just committed. Inert unless the env var is set
         // AND matches this height. _exit(70) bypasses destructors so nothing
         // else commits/flushes.
-        if (const char* __abort_h = std::getenv("DINERO_DEBUG_ABORT_AFTER_STORE_HEIGHT")) {
+        if (const char* abort_height_env = std::getenv("DINERO_DEBUG_ABORT_AFTER_STORE_HEIGHT")) {
             errno = 0;
-            char* __end = nullptr;
-            const long __want = std::strtol(__abort_h, &__end, 10);
-            if (__end != __abort_h && errno == 0 && __want >= 0 &&
-                static_cast<long>(height) == __want) {
+            char* parse_end = nullptr;
+            const long want_height = std::strtol(abort_height_env, &parse_end, 10);
+            // Require the ENTIRE value to be a clean integer (parse_end at NUL),
+            // so "6garbage" does not fire at height 6.
+            if (parse_end != abort_height_env && *parse_end == '\0' && errno == 0 &&
+                want_height >= 0 && static_cast<long>(height) == want_height) {
                 LOG_ERROR("💥 [DEBUG] DINERO_DEBUG_ABORT_AFTER_STORE_HEIGHT=" +
-                          std::string(__abort_h) + " — aborting after block store+index at height " +
+                          std::string(abort_height_env) + " — aborting after block store+index at height " +
                           std::to_string(height) + " (pre-connect) for #356 recovery test");
                 std::fflush(nullptr);
                 _exit(70);
