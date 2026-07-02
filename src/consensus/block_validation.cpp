@@ -2228,13 +2228,32 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                 error = "shielded-tx-at-epoch-reset-height";
                 return false;
             }
-            if (shielded_anchor_history_) {
-                auto* anchors =
-                    static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
-                undo.pre_reset_shielded_epoch =
-                    shld::CaptureShieldedEpoch(*tree, *anchors, *nullifiers);
-                shld::ResetShieldedEpoch(*tree, *anchors, *nullifiers);
+            // The reset clears all three structures; anchor history must be
+            // present or we would silently skip a consensus rule (and diverge
+            // from the reindexer, which resets unconditionally). Fail loud.
+            if (!shielded_anchor_history_) {
+                error = "shielded-epoch-reset-missing-anchor-state";
+                return false;
             }
+            auto* anchors =
+                static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
+            undo.pre_reset_shielded_epoch =
+                shld::CaptureShieldedEpoch(*tree, *anchors, *nullifiers);
+            // Guard against a swallowed serialize error: SerializeContent /
+            // SerializeFrontier return an EMPTY vector on a backend error,
+            // whereas a legitimately empty structure serializes to a non-empty
+            // header/blob. If the pre-reset pool held state but the snapshot
+            // came back empty, a later reorg across the cutover would restore
+            // the tree/anchors while re-inserting ZERO nullifiers — a
+            // double-spend. Refuse the connect rather than persist a lossy
+            // snapshot.
+            const auto& snap = *undo.pre_reset_shielded_epoch;
+            if ((nullifiers->Size() > 0 && snap.nullifiers.empty()) ||
+                (tree->Size() > 0 && snap.tree_frontier.empty())) {
+                error = "shielded-epoch-reset-capture-failed";
+                return false;
+            }
+            shld::ResetShieldedEpoch(*tree, *anchors, *nullifiers);
         }
 
         if (!bundles.empty()) {

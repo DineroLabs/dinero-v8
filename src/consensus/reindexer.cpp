@@ -1894,6 +1894,28 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
         g_logger.info("[reindex] Persisted shielded anchor history @ height " +
                       std::to_string(final_tip_height_) + " (" +
                       std::to_string(anchor_bytes.size()) + " bytes)");
+
+        // Persist the frontier blob to the rebuilt ChainDB too — same reason as
+        // the anchor blob. Without it, a reindexed node has no "shielded_frontier"
+        // ChainDB row and the startup load falls back to the flat file; past the
+        // epoch reset height the loader now refuses that stale fallback (a
+        // resurrection guard), so a reindexed node past the cutover would fail to
+        // start. Writing the blob makes the ChainDB the authoritative source for
+        // both frontier and anchors post-reindex.
+        const auto frontier_bytes = shielded_tree_.SerializeFrontier();
+        const std::string frontier_blob(frontier_bytes.begin(),
+                                        frontier_bytes.end());
+        auto frontier_status =
+            chain_db_->putUtreexoMeta(token, "shielded_frontier", frontier_blob);
+        if (frontier_status != Status::Ok) {
+            g_logger.error("[reindex] Failed to persist shielded frontier at height " +
+                           std::to_string(final_tip_height_));
+            stats_.error = "Failed to persist shielded frontier";
+            return stats_;
+        }
+        g_logger.info("[reindex] Persisted shielded frontier @ height " +
+                      std::to_string(final_tip_height_) + " (" +
+                      std::to_string(frontier_bytes.size()) + " bytes)");
     }
 
     if (forest_ && final_tip_height_ >= 0 && IsUtreexoActive(static_cast<uint32_t>(final_tip_height_))) {
@@ -2306,6 +2328,16 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
             }
             undo.pre_reset_shielded_epoch = shielded::CaptureShieldedEpoch(
                 shielded_tree_, shielded_anchor_history_, shielded_nullifiers_);
+            // Refuse a lossy snapshot (empty serialize on a backend error while
+            // the pool held state) — restoring it on a reorg would drop the
+            // nullifiers and re-open a double-spend. Mirrors ConnectBlockInternal.
+            const auto& snap = *undo.pre_reset_shielded_epoch;
+            if ((shielded_nullifiers_.Size() > 0 && snap.nullifiers.empty()) ||
+                (shielded_tree_.Size() > 0 && snap.tree_frontier.empty())) {
+                g_logger.error("[reindex] shielded epoch reset snapshot capture "
+                               "failed at height " + std::to_string(height));
+                return Status::Invalid;
+            }
             shielded::ResetShieldedEpoch(
                 shielded_tree_, shielded_anchor_history_, shielded_nullifiers_);
         }

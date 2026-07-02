@@ -740,10 +740,19 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             return 1;
         }
         auto& mp = dinero::MutableParams();
-        mp.shielded_cv_binding_activation_height =
-            static_cast<uint32_t>(shielded_epoch_reset_override);
-        mp.shielded_epoch_reset_height =
-            static_cast<uint32_t>(shielded_epoch_reset_override);
+        const auto h = static_cast<uint32_t>(shielded_epoch_reset_override);
+        mp.shielded_cv_binding_activation_height = h;
+        mp.shielded_epoch_reset_height = h;
+        // Re-validate the invariant SelectParams enforced before this override
+        // ran: reset == cv-binding (held by construction above) AND cv-binding
+        // >= input-binding. The override must not place the cutover below
+        // input-binding and re-open the unbound-cv window the reset closes.
+        if (h < mp.shielded_input_binding_activation_height) {
+            std::cerr << "[FATAL] --consensus-shielded-epoch-reset-height=" << h
+                      << " must be >= shielded_input_binding_activation_height="
+                      << mp.shielded_input_binding_activation_height << "\n";
+            return 1;
+        }
         std::cout << "[Network] REGTEST: shielded epoch reset + cv-binding forced at height "
                   << shielded_epoch_reset_override << " (test-only)\n";
     }
