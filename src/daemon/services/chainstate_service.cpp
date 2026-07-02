@@ -6849,8 +6849,41 @@ void ChainstateService::ActivateBestChain() {
                 } else {
                     if (logger_) logger_->error("[ActivateBestChain] Self-heal failed, still misaligned: " + recheck_reason);
                 }
-            } else if (logger_) {
-                logger_->error("[ActivateBestChain] Cannot realign: consensus UTXO tip missing from block index");
+            } else {
+                // #353 fresh-snapshot-bootstrap wedge fix: utxo_tip_idx is null —
+                // the consensus UTXO best block (snapshot base) has a header in the
+                // header-chain selector but was never MATERIALIZED into the block
+                // index, so FindBlockIndex returns null and the node dead-loops on
+                // "consensus UTXO tip missing from block index". The restore path
+                // already handles exactly this (EnsureHeaderBranchIndexed +
+                // PublishActiveTip); mirror it here so a FRESH bootstrap self-heals
+                // instead of wedging in safe mode.
+                CBlockIndex* materialized = nullptr;
+                if (header_chain_selector_ && !utxo_best.IsNull()) {
+                    if (const auto* hcs_entry = header_chain_selector_->GetHeader(utxo_best)) {
+                        materialized = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
+                    }
+                }
+                if (materialized &&
+                    static_cast<uint32_t>(materialized->height) == utxo_height) {
+                    if (logger_) logger_->warning("[ActivateBestChain] Misaligned: " + alignment_reason +
+                                                 " — materialized snapshot base into block index; realigning "
+                                                 "active_tip_ to consensus UTXO tip (height=" +
+                                                 std::to_string(utxo_height) + ")");
+                    PublishActiveTip(materialized, TipPublishReason::kSelfHealRealign);
+                    std::string recheck_reason;
+                    if (IsCanonicalStateAligned(&recheck_reason)) {
+                        healed = true;
+                        if (logger_) logger_->info("[ActivateBestChain] Self-heal successful — snapshot base "
+                                                   "materialized + alignment restored");
+                    } else if (logger_) {
+                        logger_->error("[ActivateBestChain] Self-heal failed after materialize, still "
+                                       "misaligned: " + recheck_reason);
+                    }
+                } else if (logger_) {
+                    logger_->error("[ActivateBestChain] Cannot realign: consensus UTXO tip missing from "
+                                   "block index (materialize failed)");
+                }
             }
         }
 
