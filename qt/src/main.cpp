@@ -6,6 +6,7 @@
 #include <QSettings>
 #include <QTcpSocket>
 #include <QThread>
+#include <QElapsedTimer>
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
@@ -862,6 +863,39 @@ static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsol
         qDebug() << "✅ Daemon is already running and responsive";
         qDebug() << "═══════════════════════════════════════════════════════";
         return nullptr;  // We didn't start it, so we don't own it
+    }
+
+    // #341 hardening: before force-sweeping the RPC port, distinguish a WEDGED
+    // orphan from a daemon that is merely slow to finish starting. A fast-synced
+    // node loading all wallets can legitimately take ~75-90s to serve RPC (see
+    // the startup watchdog in mainwindow.cpp) — during that window it holds the
+    // port but fails the health check above, and killing it here would bounce a
+    // healthy daemon (a second GUI instance, an externally-started dinerod, or a
+    // launch race). This path runs pre-event-loop (called from main() before
+    // app.exec()), so a bounded wait does not freeze a live UI. If the port is
+    // held, wait out the startup window: adopt the daemon the moment it becomes
+    // healthy, and only fall through to the sweep if it never does (genuinely
+    // wedged/orphaned). When the port is free — the common fresh-launch case —
+    // isDaemonRunning() is false and we skip the wait entirely and spawn
+    // immediately. A squatting seeder (#295) never becomes healthy, so it still
+    // recovers — after the grace window rather than instantly.
+    if (isDaemonRunning(1000)) {
+        constexpr qint64 kStartupGraceMs = 90000;  // covers the ~75-80s slow-start
+        QElapsedTimer settle;
+        settle.start();
+        while (settle.elapsed() < kStartupGraceMs) {
+            if (isDaemonHealthy(2000)) {
+                qDebug() << "✅ Port-held daemon became healthy after"
+                         << settle.elapsed() << "ms of startup grace — adopting it "
+                            "(not sweeping)";
+                qDebug() << "═══════════════════════════════════════════════════════";
+                return nullptr;  // a healthy daemon owns the port; not ours
+            }
+            if (!isDaemonRunning(500)) break;  // it exited / freed the port → spawn
+            QThread::msleep(1000);
+        }
+        qWarning() << "RPC port still held by an unresponsive process after the "
+                      "startup grace window — treating it as wedged/orphaned and sweeping";
     }
 
     // Sweep any orphan dinerod from a prior force-quit Qt session that
