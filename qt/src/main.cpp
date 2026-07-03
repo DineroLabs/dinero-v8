@@ -6,6 +6,7 @@
 #include <QSettings>
 #include <QTcpSocket>
 #include <QThread>
+#include <QElapsedTimer>
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
@@ -618,6 +619,78 @@ static void killStaleDinerodForDatadir(const QString& datadir) {
 #endif
 }
 
+// Robust, cross-platform orphan sweep: kill any Dinero process (dinerod OR
+// dinero-seeder) holding the daemon RPC port (127.0.0.1:20998), identified by
+// PORT rather than by command-line/datadir matching. Both killStaleDinerodForDatadir
+// and killStaleOrphanSeeders match by cmdline and were complete no-ops on Windows,
+// so a force-quit/crash dinerod — OR an orphaned dinero-seeder (issue #295: a
+// seeder squats 127.0.0.1:20998 so a fresh dinerod can never bind RPC) — kept the
+// port and EVERY relaunch hit the "Daemon Failed" dialog. The caller only reaches
+// here once any running daemon is confirmed unhealthy (a healthy one is adopted
+// earlier), so the port-holder is a wedged orphan; the name check
+// (dinerod/dinero-seeder) prevents collateral kills of unrelated processes
+// (notably NOT dinero-qt itself). Non-static so the MainWindow daemon-restart
+// retry path (mainwindow.cpp) can sweep the port before re-spawning, too.
+void killStaleDinerodByPort() {
+    constexpr int kRpcPort = 20998;
+#ifdef Q_OS_WIN
+    QProcess ps;
+    ps.start("powershell", QStringList()
+        << "-NoProfile" << "-Command"
+        << QStringLiteral(
+               "Get-NetTCPConnection -State Listen -LocalPort %1 -ErrorAction SilentlyContinue | "
+               "ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; "
+               "if ($p -and ($p.Name -eq 'dinerod' -or $p.Name -eq 'dinero-seeder')) { $p.Id } }").arg(kRpcPort));
+    if (!ps.waitForFinished(4000)) { ps.kill(); return; }
+    const QStringList pidLines = QString::fromUtf8(ps.readAllStandardOutput())
+                                     .split('\n', Qt::SkipEmptyParts);
+    for (const QString& pidStr : pidLines) {
+        bool ok = false;
+        qint64 pid = pidStr.trimmed().toLongLong(&ok);
+        if (!ok || pid <= 0) continue;
+        qWarning() << "Killing orphan Dinero process (dinerod/seeder) holding RPC port" << kRpcPort << "PID" << pid;
+        QProcess tk;
+        tk.start("taskkill", QStringList() << "/F" << "/PID" << QString::number(pid));
+        tk.waitForFinished(3000);
+    }
+    QThread::msleep(500);
+#else
+    auto pidsOnPort = [&]() -> QList<qint64> {
+        QList<qint64> out;
+        QProcess lsof;
+        lsof.start("lsof", QStringList() << "-nP"
+                   << QStringLiteral("-iTCP:%1").arg(kRpcPort) << "-sTCP:LISTEN" << "-t");
+        if (!lsof.waitForFinished(2000)) { lsof.kill(); return out; }
+        const QStringList lines = QString::fromUtf8(lsof.readAllStandardOutput())
+                                      .split('\n', Qt::SkipEmptyParts);
+        for (const QString& s : lines) {
+            bool ok = false;
+            qint64 pid = s.trimmed().toLongLong(&ok);
+            if (!ok || pid <= 0) continue;
+            // Confirm the process is dinerod before killing.
+            QProcess pscomm;
+            pscomm.start("ps", QStringList() << "-p" << QString::number(pid) << "-o" << "comm=");
+            if (!pscomm.waitForFinished(1000)) { pscomm.kill(); continue; }
+            const QString comm = QString::fromUtf8(pscomm.readAllStandardOutput()).trimmed();
+            if (comm.endsWith("dinerod") || comm.endsWith("dinero-seeder")) out.append(pid);
+        }
+        return out;
+    };
+    QList<qint64> pids = pidsOnPort();
+    if (pids.isEmpty()) return;
+    for (qint64 pid : pids) {
+        qWarning() << "Killing orphan Dinero process (dinerod/seeder) holding RPC port" << kRpcPort << "PID" << pid;
+        ::kill(static_cast<pid_t>(pid), SIGTERM);
+    }
+    QThread::msleep(1500);
+    // Hard-kill any survivor still on the port.
+    for (qint64 pid : pidsOnPort()) {
+        ::kill(static_cast<pid_t>(pid), SIGKILL);
+    }
+    QThread::msleep(300);
+#endif
+}
+
 // Sweep orphaned dinero-seeder processes (issue #295: an rc37 seeder
 // survived 3 days holding 127.0.0.1:20998, so the fresh dinerod could
 // never bind RPC and the GUI waited forever). The seeder is normally a
@@ -792,12 +865,46 @@ static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsol
         return nullptr;  // We didn't start it, so we don't own it
     }
 
+    // #341 hardening: before force-sweeping the RPC port, distinguish a WEDGED
+    // orphan from a daemon that is merely slow to finish starting. A fast-synced
+    // node loading all wallets can legitimately take ~75-90s to serve RPC (see
+    // the startup watchdog in mainwindow.cpp) — during that window it holds the
+    // port but fails the health check above, and killing it here would bounce a
+    // healthy daemon (a second GUI instance, an externally-started dinerod, or a
+    // launch race). This path runs pre-event-loop (called from main() before
+    // app.exec()), so a bounded wait does not freeze a live UI. If the port is
+    // held, wait out the startup window: adopt the daemon the moment it becomes
+    // healthy, and only fall through to the sweep if it never does (genuinely
+    // wedged/orphaned). When the port is free — the common fresh-launch case —
+    // isDaemonRunning() is false and we skip the wait entirely and spawn
+    // immediately. A squatting seeder (#295) never becomes healthy, so it still
+    // recovers — after the grace window rather than instantly.
+    if (isDaemonRunning(1000)) {
+        constexpr qint64 kStartupGraceMs = 90000;  // covers the ~75-80s slow-start
+        QElapsedTimer settle;
+        settle.start();
+        while (settle.elapsed() < kStartupGraceMs) {
+            if (isDaemonHealthy(2000)) {
+                qDebug() << "✅ Port-held daemon became healthy after"
+                         << settle.elapsed() << "ms of startup grace — adopting it "
+                            "(not sweeping)";
+                qDebug() << "═══════════════════════════════════════════════════════";
+                return nullptr;  // a healthy daemon owns the port; not ours
+            }
+            if (!isDaemonRunning(500)) break;  // it exited / freed the port → spawn
+            QThread::msleep(1000);
+        }
+        qWarning() << "RPC port still held by an unresponsive process after the "
+                      "startup grace window — treating it as wedged/orphaned and sweeping";
+    }
+
     // Sweep any orphan dinerod from a prior force-quit Qt session that
     // shares our datadir. Without this, the spawn below races with the
     // orphan over port 20998 and the LOCK file. Also sweep orphaned
     // dinero-seeder processes that can squat the RPC port (#295).
     killStaleDinerodForDatadir(datadir);
     killStaleOrphanSeeders();
+    killStaleDinerodByPort();
 
     qDebug() << "Daemon not detected (or unresponsive), attempting to start fresh...";
 
@@ -843,6 +950,7 @@ static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsol
             // Clear any stale instance and give the port + LOCK time to free.
             killStaleDinerodForDatadir(datadir);
             killStaleOrphanSeeders();
+            killStaleDinerodByPort();
             QThread::msleep(1500);
         }
     }
