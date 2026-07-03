@@ -7166,6 +7166,41 @@ void ChainstateService::ActivateBestChain() {
         }
     }
 
+    // #353 bug-2 (promotion race): while an AssumeUTXO snapshot is still being
+    // background-validated, HOLD the canonical tip at the snapshot base. Promotion
+    // (PromoteValidatedHistory) reconciles the coin CF to the proven pre-base set
+    // and ends with setTip(base); it is only correct when tip <= base — its stage-3
+    // deletes every coin absent from the proven pre-base set (post-base coins
+    // included) and setTip(base) would regress a higher tip. If forward sync
+    // advances the tip past base first, promotion is skipped (tip_below_base=false
+    // in BackgroundValidationWorker) and the pre-base coins are never written into
+    // the coin CF (they stay accumulator-only: wallet-visible but gettxout-null,
+    // unspendable). So cap the activation target at base until promotion clears
+    // assumeutxo_active_. Block download + AcceptBlock are independent of
+    // ActivateBestChain, so blocks past base keep arriving and are STORED; they are
+    // connected on the normal catch-up pass once the mode exits. Only caps when the
+    // candidate genuinely descends from the snapshot base (otherwise the below-base
+    // fork guards above / the normal work comparison handle it).
+    if (assumeutxo_active_ && !assumeutxo_base_block_.IsNull() &&
+        static_cast<uint32_t>(best_candidate->height) > assumeutxo_base_height_) {
+        CBlockIndex* base_idx = dinero::FindBlockIndex(assumeutxo_base_block_);
+        CBlockIndex* ancestor = best_candidate;
+        while (ancestor &&
+               static_cast<uint32_t>(ancestor->height) > assumeutxo_base_height_) {
+            ancestor = ancestor->pprev;
+        }
+        if (base_idx && ancestor == base_idx) {
+            if (logger_) {
+                logger_->info("[ActivateBestChain] AssumeUTXO active — holding tip at snapshot base " +
+                              std::to_string(assumeutxo_base_height_) +
+                              " until background validation + promotion complete (network candidate @" +
+                              std::to_string(best_candidate->height) +
+                              " deferred; blocks stored, not connected)");
+            }
+            best_candidate = base_idx;
+        }
+    }
+
     // Compare best candidate with active tip
     bool needs_activation = false;
 
@@ -14011,6 +14046,21 @@ void ChainstateService::BackgroundValidationWorker() {
                     logger_->warning("[BackgroundValidation] Validation stopped by request");
                     OnBackgroundValidationComplete(false, "Validation stopped by user");
                     return;
+                }
+                // Regtest-only: slow the genesis->base replay so a test can
+                // deterministically win the forward-sync-past-base race that
+                // #353 bug-2 (promotion race) fixes. Inert unless on regtest AND
+                // the env var is set to a positive integer (never in production).
+                if (dinero::Params().name == "regtest") {
+                    if (const char* delay_env = std::getenv("DINERO_DEBUG_BG_VALIDATION_DELAY_MS")) {
+                        errno = 0;
+                        char* parse_end = nullptr;
+                        const long delay_ms = std::strtol(delay_env, &parse_end, 10);
+                        if (parse_end != delay_env && *parse_end == '\0' && errno == 0 &&
+                            delay_ms > 0 && delay_ms <= 60000) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+                        }
+                    }
                 }
                 {
                     std::lock_guard<std::mutex> lock(bg_validation_mutex_);
