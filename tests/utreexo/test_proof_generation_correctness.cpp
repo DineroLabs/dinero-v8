@@ -60,7 +60,7 @@ UtreexoHash makeUTXOLeaf(uint64_t utxo_id, uint64_t value) {
     scriptPubKey.push_back(0x88);
     scriptPubKey.push_back(0xac);
 
-    return HashUTXO(txid, 0, value, scriptPubKey);
+    return HashUTXOLegacy(txid, 0, value, scriptPubKey);
 }
 
 // Count unique hashes

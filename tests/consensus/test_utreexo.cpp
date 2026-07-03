@@ -69,7 +69,7 @@ UtreexoHash makeUTXOHash(uint64_t utxo_id, uint64_t value) {
     scriptPubKey.push_back(0x88);
     scriptPubKey.push_back(0xac);
 
-    return HashUTXO(txid, 0, value, scriptPubKey);
+    return HashUTXOLegacy(txid, 0, value, scriptPubKey);
 }
 
 //=============================================================================
@@ -1012,7 +1012,7 @@ void testUTXOHashFunction() {
     scriptPubKey.push_back(0xac);
 
     // Hash the UTXO
-    UtreexoHash hash1 = HashUTXO(txid, vout, amount, scriptPubKey);
+    UtreexoHash hash1 = HashUTXOLegacy(txid, vout, amount, scriptPubKey);
     assert(hash1.size() == 32);
     assert(!hash1.empty());
 
@@ -1021,19 +1021,19 @@ void testUTXOHashFunction() {
     std::cout << std::endl;
 
     // Same UTXO should produce same hash (deterministic)
-    UtreexoHash hash2 = HashUTXO(txid, vout, amount, scriptPubKey);
+    UtreexoHash hash2 = HashUTXOLegacy(txid, vout, amount, scriptPubKey);
     assert(hash1 == hash2);
     std::cout << "  ✅ Hash is deterministic" << std::endl;
 
     // Different amount should produce different hash
-    UtreexoHash hash3 = HashUTXO(txid, vout, amount + 1, scriptPubKey);
+    UtreexoHash hash3 = HashUTXOLegacy(txid, vout, amount + 1, scriptPubKey);
     assert(hash1 != hash3);
     std::cout << "  ✅ Different amount produces different hash" << std::endl;
 
     // Different scriptPubKey should produce different hash
     std::vector<uint8_t> scriptPubKey2 = scriptPubKey;
     scriptPubKey2[5] = 0xFF;
-    UtreexoHash hash4 = HashUTXO(txid, vout, amount, scriptPubKey2);
+    UtreexoHash hash4 = HashUTXOLegacy(txid, vout, amount, scriptPubKey2);
     assert(hash1 != hash4);
     std::cout << "  ✅ Different scriptPubKey produces different hash" << std::endl;
 
@@ -1152,7 +1152,7 @@ void testBlockValidationIntegration() {
     // Simulate adding UTXOs from a previous block
     std::vector<UtreexoHash> utxos;
     for (int i = 0; i < 5; i++) {
-        // Create dummy UTXO hash (would normally be HashUTXO(txid, vout, amount, scriptPubKey))
+        // Create dummy UTXO hash (would normally be HashUTXOLegacy(txid, vout, amount, scriptPubKey))
         UtreexoHash utxo = makeTestHash(900 + i);
         forest.add(utxo);
         utxos.push_back(utxo);

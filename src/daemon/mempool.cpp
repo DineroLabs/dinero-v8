@@ -18,6 +18,7 @@
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_validation.h"
+#include "consensus/shielded/shielded_epoch.h"
 #include <algorithm>
 #include <chrono>
 #include <numeric>
@@ -2166,6 +2167,22 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
         return true;
     }
 
+    // Shielded epoch reset wall: the cutover block must be shielded-empty, so no
+    // shielded tx is selectable into block H. ConnectBlock enforces this at
+    // consensus; excluding it from the template keeps a well-behaved miner from
+    // building a block that would be rejected. The tx stays in the mempool (it
+    // becomes selectable again once the tip is past H, subject to the usual
+    // anchor check against the fresh post-reset pool).
+    const uint32_t shielded_reset_height =
+        dinero::Params().shielded_epoch_reset_height;
+    if (consensus::shielded::IsShieldedEpochResetHeight(next_block_height,
+                                                        shielded_reset_height)) {
+        if (reason) {
+            *reason = "shielded tx not allowed at the epoch reset height";
+        }
+        return false;
+    }
+
     const uint32_t binding_activation =
         dinero::Params().shielded_input_binding_activation_height;
     if (next_block_height < binding_activation) {
@@ -2267,7 +2284,8 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
         transparent_delta,
         dinero::Params().shielded_activation_height,
         /*anchor_history=*/nullptr,
-        binding_activation);
+        binding_activation,
+        dinero::Params().shielded_cv_binding_activation_height);
     const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
     if (validation != consensus::shielded::ShieldedValidationError::Ok) {
         set_reason("shielded validation failed: " +
@@ -3035,7 +3053,8 @@ bool Mempool::validateTransaction(const Transaction& tx, std::string& error) con
             transparent_delta,
             dinero::Params().shielded_activation_height,
             /*anchor_history=*/nullptr,
-            dinero::Params().shielded_input_binding_activation_height);
+            dinero::Params().shielded_input_binding_activation_height,
+            dinero::Params().shielded_cv_binding_activation_height);
         const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
         if (validation != consensus::shielded::ShieldedValidationError::Ok) {
             error = "Shielded validation failed: " +

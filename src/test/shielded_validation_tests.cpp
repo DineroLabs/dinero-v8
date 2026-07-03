@@ -262,20 +262,16 @@ TEST_F(ShieldedValidationFixture, HistoricalAnchorAccepted) {
 
     // Tree is currently empty, so current root != old_root_at_100.
     // Without history, this would fail with AnchorInvalid (per the
-    // previous test). With history wired in, the anchor check must
-    // pass — the validator then proceeds to binding sig + proof
-    // checks. We compute a valid binding sig over the bundle so the
-    // validator reaches the proof-verify stage; the junk proof bytes
-    // get rejected there → ProofInvalid. That's the signal the anchor
-    // check passed.
+    // previous test). With history wired in, the anchor check (step 2)
+    // must pass — the validator then proceeds to the range-proof gate
+    // (step 3). This stub bundle carries no range proof, so post-
+    // inflation-fix it is rejected there with RangeProofInvalid. Reaching
+    // RangeProofInvalid (rather than AnchorInvalid) is precisely the
+    // signal that the historical anchor was accepted.
     ShieldedBundle bundle;
     bundle.spends.push_back(MakeSpendStub(0x40, old_root_at_100));
-    // Wave 2: validation skips binding-sig check for bundles without
-    // aggregated_range_proof, so leaving binding_sig zero-init is fine
-    // for these legacy fixtures. Wave 2 path is exercised by the new
-    // CrossBundleBalance tests.
     EXPECT_EQ(ValidateShieldedBundle(bundle, ctx),
-              ShieldedValidationError::ProofInvalid);
+              ShieldedValidationError::RangeProofInvalid);
 }
 
 TEST_F(ShieldedValidationFixture, AnchorNotInHistoryStillRejected) {
@@ -298,6 +294,10 @@ TEST_F(ShieldedValidationFixture, AnchorNotInHistoryStillRejected) {
 // proofs verify and whose value_balance is zero (pure transfer).
 // Returns the constructed bundle. Mutates `tree` to contain the
 // note being spent at index 0.
+// Fixed transparent-envelope sighash the happy bundle's binding sig is signed
+// over. Callers that validate the bundle must set ctx.tx_sighash to this value.
+const Hash kHappyBundleSighash = MakeHash(0x77, 0xF1);
+
 ShieldedBundle BuildHappyBundle(CommitmentTree& tree_ref) {
     const Hash sk         = MakeHash(0x70, 0xF1);
     const Hash spend_val  = ValueAsHash(100'000'000);  // 1 DIN
@@ -336,31 +336,37 @@ ShieldedBundle BuildHappyBundle(CommitmentTree& tree_ref) {
     auto output_proof = ProveOutput(ow, opi, nullptr);
     EXPECT_FALSE(output_proof.empty());
 
-    ShieldedBundle bundle;
-    bundle.value_balance = 0;  // pure transfer
-    ShieldedSpend s;
-    s.nullifier = spi.nullifier;
-    s.anchor    = spi.anchor;
-    s.zk_proof  = std::move(spend_proof);
-    bundle.spends.push_back(std::move(s));
+    // Wave 1B/2 + inflation fix: route through the real bundle builder so the
+    // bundle carries a non-empty aggregated range proof AND a valid Schnorr
+    // binding sig. Post-activation an empty range proof is rejected outright
+    // (RangeProofInvalid), so the legacy proof-less hand-assembly — which
+    // relied on the validator skipping both new checks — is no longer valid.
+    shielded::PlannedSpend ps;
+    ps.nullifier   = spi.nullifier;
+    ps.anchor      = spi.anchor;
+    ps.value_una   = 100'000'000;
+    ps.rcv         = MakeHash(0x74, 0xF1);
+    ps.spend_proof = std::move(spend_proof);
+    ps.nonce       = MakeHash(0x75, 0xF1);
 
-    ShieldedOutput o;
-    o.commitment      = opi.commitment;
-    o.encrypted_note  = std::vector<uint8_t>(96, 0xAA);
-    o.zk_proof        = std::move(output_proof);
-    bundle.outputs.push_back(std::move(o));
+    shielded::PlannedOutput po;
+    po.commitment     = opi.commitment;
+    po.value_una      = 100'000'000;
+    po.rcv            = MakeHash(0x76, 0xF1);
+    po.encrypted_note = std::vector<uint8_t>(96, 0xAA);
+    po.output_proof   = std::move(output_proof);
+    po.nonce          = MakeHash(0x78, 0xF1);
 
-    // v0 binding tag: SHA-256 of canonical bytes with binding_sig zeroed.
-    // Wave 2: validation skips binding-sig check for bundles without
-    // aggregated_range_proof, so leaving binding_sig zero-init is fine
-    // for these legacy fixtures. Wave 2 path is exercised by the new
-    // CrossBundleBalance tests.
+    ShieldedBundle bundle{};
+    EXPECT_EQ(shielded::BuildShieldedBundle({ps}, {po}, kHappyBundleSighash, bundle),
+              shielded::BundleBuildResult::Ok);
     return bundle;
 }
 
 TEST_F(ShieldedValidationFixture, HappyPathBundleAccepted) {
     auto bundle = BuildHappyBundle(tree);
     ctx.transparent_value_delta = 0;
+    ctx.tx_sighash              = kHappyBundleSighash;  // matches binding sig
     EXPECT_EQ(ValidateShieldedBundle(bundle, ctx),
               ShieldedValidationError::Ok);
 }
@@ -369,27 +375,22 @@ TEST_F(ShieldedValidationFixture, TamperedSpendProofRejected) {
     auto bundle = BuildHappyBundle(tree);
     ASSERT_FALSE(bundle.spends[0].zk_proof.empty());
     bundle.spends[0].zk_proof[10] ^= 0xFF;  // corrupt proof bytes
-    // Simulate a sophisticated attacker who also recomputes the
-    // binding tag after tampering — proof check is still the
-    // backstop, so we get ProofInvalid (not BindingSigInvalid).
-    // Wave 2: validation skips binding-sig check for bundles without
-    // aggregated_range_proof, so leaving binding_sig zero-init is fine
-    // for these legacy fixtures. Wave 2 path is exercised by the new
-    // CrossBundleBalance tests.
+    // Corrupting zk_proof leaves the range proof + binding sig (over cv /
+    // value_balance / sighash, not the zk_proof bytes) valid, so validation
+    // passes those gates and reaches the ZK proof-verify backstop -> ProofInvalid.
+    ctx.transparent_value_delta = 0;
+    ctx.tx_sighash              = kHappyBundleSighash;
     EXPECT_EQ(ValidateShieldedBundle(bundle, ctx),
               ShieldedValidationError::ProofInvalid);
 }
 
 TEST_F(ShieldedValidationFixture, ValueBalanceMismatchRejected) {
-    auto bundle = BuildHappyBundle(tree);
-    bundle.value_balance = 0;
-    ctx.transparent_value_delta = 1'000;  // disagree with bundle
-    // value_balance change invalidates the binding tag — recompute so
-    // the test exercises ValueBalanceMismatch, not BindingSigInvalid.
-    // Wave 2: validation skips binding-sig check for bundles without
-    // aggregated_range_proof, so leaving binding_sig zero-init is fine
-    // for these legacy fixtures. Wave 2 path is exercised by the new
-    // CrossBundleBalance tests.
+    auto bundle = BuildHappyBundle(tree);  // value_balance == 0 (pure transfer)
+    ctx.transparent_value_delta = 1'000;   // disagree with bundle
+    // transparent_value_delta is not part of the binding sighash, so the range
+    // proof + binding sig still verify; validation reaches the value-balance
+    // arithmetic -> ValueBalanceMismatch.
+    ctx.tx_sighash              = kHappyBundleSighash;
     EXPECT_EQ(ValidateShieldedBundle(bundle, ctx),
               ShieldedValidationError::ValueBalanceMismatch);
 }
@@ -677,6 +678,67 @@ TEST_F(ShieldedValidationFixture, ShieldHelperRejectsWrongVersion) {
     EXPECT_TRUE(tx.shielded_bundle_bytes.empty());
 }
 
+// ── Audit Critical #1: wallet emits cv-bound proofs when requested ──────
+// A wallet-built shield bundle with cv_bound=true carries a 0x04 (cv-bound)
+// output proof whose cv == the bundle's published cv, and verifies under the
+// full consensus validator at a post-activation height.
+TEST_F(ShieldedValidationFixture, ShieldHelperCvBoundProducesValidatorAcceptedTx) {
+    constexpr uint64_t kShieldValue = 100'000'000;
+    constexpr uint64_t kFee         = 10'000;
+
+    auto tx = MakeShieldEnvelope(kFee);
+    auto built = wallet::shielded_ops::BuildShieldBundleForTx(
+        tx, kShieldValue, /*cv_bound=*/true);
+    ASSERT_EQ(built.status, wallet::shielded_ops::OpStatus::Ok)
+        << "build failed: " << built.error;
+
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    ASSERT_EQ(decoded.outputs.size(), 1u);
+    // cv-bound output proof version byte is 0x04 (legacy is 0x02).
+    ASSERT_FALSE(decoded.outputs[0].zk_proof.empty());
+    EXPECT_EQ(decoded.outputs[0].zk_proof[0], 0x04);
+
+    // Validate at a post-activation height (cv-binding active from genesis here).
+    ctx.shielded_cv_binding_activation_height = 0;
+    ctx.shielded_input_binding_activation_height = 0;
+    ctx.transparent_value_delta = static_cast<int64_t>(kShieldValue);
+    ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok);
+}
+
+// Migration boundary: a LEGACY (cv_bound=false) wallet bundle is REJECTED once
+// cv-binding has activated — this is exactly why the wallet must emit cv-bound
+// proofs at/above the activation height (and why the cv_bound wiring matters).
+TEST_F(ShieldedValidationFixture, ShieldHelperLegacyRejectedWhenCvBindingActive) {
+    constexpr uint64_t kShieldValue = 100'000'000;
+    constexpr uint64_t kFee         = 10'000;
+
+    auto tx = MakeShieldEnvelope(kFee);
+    auto built = wallet::shielded_ops::BuildShieldBundleForTx(
+        tx, kShieldValue, /*cv_bound=*/false);  // legacy 0x02
+    ASSERT_EQ(built.status, wallet::shielded_ops::OpStatus::Ok);
+
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    ASSERT_EQ(decoded.outputs.size(), 1u);
+    EXPECT_EQ(decoded.outputs[0].zk_proof[0], 0x02);
+
+    // Pre-activation: legacy proof accepted.
+    ctx.shielded_cv_binding_activation_height = UINT32_MAX;
+    ctx.shielded_input_binding_activation_height = 0;
+    ctx.transparent_value_delta = static_cast<int64_t>(kShieldValue);
+    ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok);
+
+    // Post-activation: same legacy bundle rejected (cv-bound 0x04 required).
+    ctx.shielded_cv_binding_activation_height = 0;
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx),
+              ShieldedValidationError::ProofInvalid);
+}
+
 // ── Phase 3 wave 3c: unshield-side wallet helper ────────────────────
 
 namespace {
@@ -759,6 +821,56 @@ TEST_F(ShieldedValidationFixture, UnshieldHelperProducesValidatorAcceptedTx) {
     ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
     EXPECT_EQ(ValidateShieldedBundle(decoded, ctx),
               ShieldedValidationError::Ok);
+}
+
+// ── Audit Critical #1: wallet emits a cv-bound SPEND proof (0x03) ───────
+// Exercises the spend-side reorder: the cv handed to ProveSpend is byte-
+// identical to the bundle's published cv, so the cv-bound bundle verifies at
+// a post-activation height.
+TEST_F(ShieldedValidationFixture, UnshieldHelperCvBoundProducesValidatorAcceptedTx) {
+    constexpr uint64_t kNoteValue = 100'000'000;
+    constexpr uint64_t kFee       = 10'000;
+    constexpr uint64_t kRecipient = kNoteValue - kFee;
+
+    const Hash sk         = MakeHash(0xB0, 0xC2);
+    const Hash randomness = MakeHash(0xB1, 0xC2);
+    const Hash pk         = PoseidonHash2(sk, Hash{});
+    const Hash d          = MakeHash(0xB2, 0xC2);
+    const Hash value_hash = ValueAsHash(kNoteValue);
+
+    const Hash spend_cm = NoteCommitment(d, pk, value_hash, randomness);
+    const uint64_t leaf_idx = tree.Append(spend_cm);
+    auto path = tree.GetAuthPath(leaf_idx);
+    ASSERT_TRUE(path.has_value());
+
+    wallet::shielded_ops::UnshieldNoteInput note;
+    note.secret_key  = sk;
+    note.randomness  = randomness;
+    note.d           = d;
+    note.anchor      = tree.Root();
+    note.leaf_index  = leaf_idx;
+    note.value_una   = kNoteValue;
+    note.merkle_path = path->siblings;
+
+    auto tx = MakeUnshieldEnvelope(kRecipient, kFee, /*recipient_seed=*/0xBB);
+    auto built = wallet::shielded_ops::BuildUnshieldBundleForTx(
+        tx, note, kFee, /*cv_bound=*/true);
+    ASSERT_EQ(built.status, wallet::shielded_ops::OpStatus::Ok)
+        << "build failed: " << built.error;
+
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    ASSERT_EQ(decoded.spends.size(), 1u);
+    ASSERT_FALSE(decoded.spends[0].zk_proof.empty());
+    // cv-bound spend proof version byte is 0x03 (legacy is 0x01).
+    EXPECT_EQ(decoded.spends[0].zk_proof[0], 0x03);
+
+    ctx.shielded_cv_binding_activation_height = 0;
+    ctx.shielded_input_binding_activation_height = 0;
+    ctx.transparent_value_delta = -static_cast<int64_t>(kNoteValue);
+    ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok);
 }
 
 // Issue #273 regression: the shielded RPC handlers used a fixed default

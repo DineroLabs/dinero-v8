@@ -8,6 +8,7 @@
 #include "indexing/utxo_position_index.h"
 #include "common/logger.h"
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "storage/chain_db.h"
 #include <algorithm>
 
@@ -116,7 +117,14 @@ UTXOPositionRebuildReport UTXOPositionIndex::Rebuild(const ChainDB& chain_db,
                 return true;
             }
 
-            auto leaf_hash = consensus::HashUTXO(txid_u256, vout, coin.amount, script_pubkey);
+            auto leaf_hash = consensus::HashUTXOForCreationHeight(
+                txid_u256,
+                vout,
+                coin.amount,
+                script_pubkey,
+                static_cast<uint32_t>(coin.height),
+                coin.coinbase
+            );
             auto position = forest.findLeafPosition(leaf_hash);
             if (!position.has_value()) {
                 report.missing++;

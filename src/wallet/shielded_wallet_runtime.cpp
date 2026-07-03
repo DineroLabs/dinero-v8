@@ -9,6 +9,7 @@
 #include "wallet/shielded_wallet_ops.h"
 #include "wallet/shielded_derivation.h"
 
+#include "consensus/chainparams.h"
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/bundle_builder.h"
 #include "consensus/shielded/pedersen_generators.h"
@@ -30,6 +31,26 @@ namespace dinero::wallet::shielded_ops {
 namespace sh = consensus::shielded;
 
 namespace {
+
+// Audit Critical #1: decide whether wallet-built shielded proofs must be
+// cv-bound (0x03/0x04). A tx attached now is expected to be mined in the NEXT
+// block (tip + 1); it must be cv-bound iff that height is at/above the
+// activation height. While activation defaults to UINT32_MAX this is always
+// false (tip+1 can never reach UINT32_MAX), so the runtime behavior is
+// unchanged until a real activation height is configured.
+//
+// BOUNDARY CAVEAT: this predicts the mining height as tip+1. A tx built just
+// below the boundary but actually mined at/above the activation height (delay,
+// reorg, or simply not landing in the very next block) carries a legacy proof
+// and will be rejected at consensus (version-byte mismatch) — and vice-versa
+// for a cv-bound tx that lands in a pre-activation block. The mempool/submit
+// path re-validates at the real next-block height (ValidateShieldedBundle), so
+// such a tx is rejected (not silently mis-accepted) and must be rebuilt.
+bool CvBoundForMiningAtTip(uint32_t tip_height) {
+    const uint64_t target_height = static_cast<uint64_t>(tip_height) + 1;
+    return target_height >=
+           static_cast<uint64_t>(dinero::Params().shielded_cv_binding_activation_height);
+}
 
 struct ShieldedRuntime {
     std::string       store_path;
@@ -583,7 +604,8 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
     input.value_una   = note.value_una;
     input.merkle_path = auth_path->siblings;
 
-    auto built = BuildUnshieldBundleForTx(tx, input, fee_una);
+    const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
+    auto built = BuildUnshieldBundleForTx(tx, input, fee_una, cv_bound);
     if (built.status != OpStatus::Ok) {
         return built;
     }
@@ -619,7 +641,8 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
     }
 
     // Pure builder does all the cryptographic work + bundle attachment.
-    auto built = BuildShieldBundleForTx(tx, value_una);
+    const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
+    auto built = BuildShieldBundleForTx(tx, value_una, cv_bound);
     if (built.status != OpStatus::Ok) {
         return built;
     }
@@ -714,7 +737,8 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
     input.value_una   = note.value_una;
     input.merkle_path = auth_path->siblings;
 
-    auto built = BuildTransferBundleForTx(tx, input, fee_una);
+    const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
+    auto built = BuildTransferBundleForTx(tx, input, fee_una, cv_bound);
     if (built.status != OpStatus::Ok) {
         return built;
     }
@@ -856,7 +880,8 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
         spends.push_back(std::move(input));
     }
 
-    auto built = BuildMultiTransferBundleForTx(tx, spends, output_values, fee_una);
+    const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
+    auto built = BuildMultiTransferBundleForTx(tx, spends, output_values, fee_una, cv_bound);
     if (built.status != OpStatus::Ok) {
         return built;
     }
@@ -1011,9 +1036,10 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
         std::memcpy(memo_buf.data(), recipient_memo_utf8->data(), copy_len);
         have_memo = true;
     }
+    const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
     auto built = BuildAddressedTransferBundleForTx(
         tx, spends, recipient, change_value, fee_una,
-        have_memo ? &memo_buf : nullptr);
+        have_memo ? &memo_buf : nullptr, cv_bound);
     if (built.status != OpStatus::Ok) {
         return built;
     }

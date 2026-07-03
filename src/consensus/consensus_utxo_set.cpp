@@ -140,11 +140,13 @@ bool ConsensusUTXOSet::ProcessTransaction(const Transaction& tx, uint32_t height
             undo.AddSpentCoin(input.prevout.txid.AsUint256(), input.prevout.vout, *spent_coin);
 
             // Compute leaf hash for Utreexo
-            UtreexoHash leaf_hash = HashUTXO(
+            UtreexoHash leaf_hash = HashUTXOForCreationHeight(
                 input.prevout.txid.AsUint256(),
                 input.prevout.vout,
                 GetUtreexoLeafAmount(*spent_coin),
-                spent_coin->scriptPubKey
+                spent_coin->scriptPubKey,
+                spent_coin->height,
+                spent_coin->isCoinbase
             );
 
             // Generate proof and remove from Utreexo
@@ -188,11 +190,13 @@ bool ConsensusUTXOSet::ProcessTransaction(const Transaction& tx, uint32_t height
         }
 
         // Add to Utreexo
-        UtreexoHash leaf_hash = HashUTXO(
+        UtreexoHash leaf_hash = HashUTXOForCreationHeight(
             txid.AsUint256(),
             vout,
             GetUtreexoLeafAmount(output),
-            output.scriptPubKey
+            output.scriptPubKey,
+            height,
+            is_coinbase
         );
         {
             std::ostringstream lh;
@@ -332,11 +336,13 @@ void ConsensusUTXOSet::Restore(const UTXOSnapshot& snapshot) {
 
         for (const OutPoint& outpoint : sorted_outpoints) {
             const UTXOEntry& entry = utxos_.at(outpoint);
-            UtreexoHash leaf_hash = HashUTXO(
+            UtreexoHash leaf_hash = HashUTXOForCreationHeight(
                 outpoint.txid.AsUint256(),
                 outpoint.vout,
                 GetUtreexoLeafAmount(entry),
-                entry.scriptPubKey
+                entry.scriptPubKey,
+                entry.height,
+                entry.isCoinbase
             );
             if (forest_.add(leaf_hash) == UINT64_MAX) {
                 std::cerr << "ERROR [Restore]: Failed to rebuild Utreexo forest from snapshot UTXOs" << std::endl;
@@ -433,11 +439,13 @@ bool ConsensusUTXOSet::BulkLoad(const std::unordered_map<OutPoint, UTXOEntry>& u
 
     for (const OutPoint& outpoint : sorted_outpoints) {
         const UTXOEntry& entry = utxos.at(outpoint);
-        UtreexoHash leaf_hash = HashUTXO(
+        UtreexoHash leaf_hash = HashUTXOForCreationHeight(
             outpoint.txid.AsUint256(),
             outpoint.vout,
             GetUtreexoLeafAmount(entry),
-            entry.scriptPubKey
+            entry.scriptPubKey,
+            entry.height,
+            entry.isCoinbase
         );
         if (forest_.add(leaf_hash) == UINT64_MAX) {
             std::cerr << "ERROR: BulkLoad failed (duplicate Utreexo leaf hash or forest full)" << std::endl;

@@ -18,6 +18,7 @@
 #include "network/bridge_node.h"
 #include "consensus/proof_gossip.h"
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "storage/chain_db.h"  // Phase 11a.2: UTXO lookup for leaf_hash
 #include "common/logger.h"
 #include <sstream>
@@ -315,9 +316,15 @@ Json rpc_getutxoproof(const ExecutionContext& ctx, const Json& params) {
             spk_bytes.push_back(byte);
         }
 
-        // Compute leaf hash: SHA256(txid || vout || amount || scriptPubKey)
-        dinero::consensus::UtreexoHash leaf_hash = dinero::consensus::HashUTXO(
-            txid_u256, vout, coin.amount, spk_bytes);
+        dinero::consensus::UtreexoHash leaf_hash =
+            dinero::consensus::HashUTXOForCreationHeight(
+                txid_u256,
+                vout,
+                coin.amount,
+                spk_bytes,
+                static_cast<uint32_t>(coin.height),
+                coin.coinbase
+            );
 
         // 5. Return proof with leaf_hash, siblings, position, num_leaves,
         //    and the accumulator root + chain context the proof is valid for.
@@ -326,6 +333,8 @@ Json rpc_getutxoproof(const ExecutionContext& ctx, const Json& params) {
         result["vout"] = vout;
         result["leaf_hash"] = hashToHex(leaf_hash);  // CSN verifier needs this
         result["script_pubkey"] = coin.script_pubkey;
+        result["created_height"] = static_cast<uint64_t>(coin.height);
+        result["coinbase"] = coin.coinbase;
         result["position"] = position;
         result["num_leaves"] = forest->getNumLeaves();
         result["proof_size"] = static_cast<uint64_t>(proof.siblings.size());
@@ -507,6 +516,8 @@ Json rpc_getproofupdates(const ExecutionContext& ctx, const Json& params) {
             if (single_result.isMember("num_leaves")) proof_entry["num_leaves"] = single_result["num_leaves"];
             if (single_result.isMember("siblings")) proof_entry["siblings"] = single_result["siblings"];
             if (single_result.isMember("script_pubkey")) proof_entry["script_pubkey"] = single_result["script_pubkey"];
+            if (single_result.isMember("created_height")) proof_entry["created_height"] = single_result["created_height"];
+            if (single_result.isMember("coinbase")) proof_entry["coinbase"] = single_result["coinbase"];
 
             proofs_out.append(proof_entry);
         }

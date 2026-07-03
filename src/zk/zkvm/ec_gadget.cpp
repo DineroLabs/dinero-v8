@@ -4,6 +4,10 @@
 
 #include "zk/zkvm/ec_gadget.h"
 #include <cassert>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <utility>
 
 namespace dinero {
 namespace zk {
@@ -307,6 +311,11 @@ ECPoint ec_add_complete(R1CS& cs, const ECPoint& P, const ECPoint& Q,
 
     // For the add path: if dx == 0 (same x), use dx = 1 to avoid div-by-zero
     FieldElement dx = fe_sub(cs, Q.x, P.x, label + "_dx");
+    // cv-binding audit hardening: fe_sub does not guarantee a canonical (< p)
+    // output, and dx feeds the zero-test that drives branch selection. Pin dx
+    // canonical so the branch predicates are unconditionally a function of the
+    // true geometry (not an infeasibility argument over non-canonical aliases).
+    fe_assert_less_than_p(cs, dx, label + "_dxlt");
     // Apr 14 2026 (Bug #7 / #41) — DO NOT inline these sub-calls as arguments
     // to a single gadgets::mul() call. C++ function argument evaluation order
     // is unspecified, so on x86_64 Linux clang/gcc `gadgets::constant(..._1a)`
@@ -327,6 +336,7 @@ ECPoint ec_add_complete(R1CS& cs, const ECPoint& P, const ECPoint& Q,
     FieldElement safe_dx = fe_select(cs, dx_is_zero, one_fe, dx, label + "_sdx");
 
     FieldElement dy = fe_sub(cs, Q.y, P.y, label + "_dy");
+    fe_assert_less_than_p(cs, dy, label + "_dylt");  // pin canonical (see dx above)
     FieldElement safe_dx_inv = fe_inv(cs, safe_dx, label + "_sdxi");
     FieldElement add_lambda = fe_mul(cs, dy, safe_dx_inv, label + "_alam");
 
@@ -378,10 +388,46 @@ ECPoint ec_add_complete(R1CS& cs, const ECPoint& P, const ECPoint& Q,
     // Case flags (boolean witness variables, constrained)
     Variable is_p_inf = P.is_identity;
     Variable is_q_inf = Q.is_identity;
+    // Native witness values for the branch selectors.
     Variable is_same_pt = cs.alloc(same_point ? Scalar::one() : Scalar::zero());
     Variable is_opposite = cs.alloc(opposite ? Scalar::one() : Scalar::zero());
     gadgets::enforce_boolean(cs, is_same_pt, label + "_spt");
     gadgets::enforce_boolean(cs, is_opposite, label + "_opp");
+
+    // SOUNDNESS FIX (cv-binding audit, 2026-07-01): PIN the branch selectors to
+    // the actual P/Q geometry so a malicious prover cannot choose add/double/
+    // identity. Previously is_same_pt/is_opposite were only boolean-constrained
+    // (free witnesses) — a prover could forge the result (e.g. cv = 2*val*V, or
+    // val*V = O) => shielded mint-from-nothing, and an analogous forgery in the
+    // Schnorr circuit. dx_is_zero (P.x==Q.x) is already enforced above; enforce
+    // dy_is_zero (P.y==Q.y) the same way, then bind:
+    //   is_same_pt  == dx_is_zero AND dy_is_zero
+    //   is_opposite == dx_is_zero AND NOT dy_is_zero
+    // (For on-curve inputs, same x forces y == Q.y or y == -Q.y, so these two
+    // predicates are exhaustive.) Cross-arch (Bug #7/#41): named locals,
+    // left-to-right, so R1CS variable indices are identical Mac vs Linux.
+    Variable dy_one_c    = gadgets::constant(cs, Scalar::one(), label + "_1c");
+    Variable dy_packed   = fe_pack(cs, dy, label + "_dyp");
+    Variable dy_mul      = gadgets::mul(cs, dy_packed, dy_one_c, label + "_dym");
+    Variable dy_is_zero  = gadgets::is_zero(cs, dy_mul, label + "_dyz");
+    // Match the native predicate EXACTLY: same_point/opposite require BOTH inputs
+    // finite (native: same_x = !p_inf && !q_inf && ...). The identity cases are
+    // handled by the is_p_inf/is_q_inf selects below, which override the result.
+    // Without this gate, two identity inputs (sentinel coords equal) — which occur
+    // in honest scalar-mul accumulation, e.g. ec_add_complete(O, O) — would compute
+    // want_same=1 while the native witness sets is_same_pt=0, so enforce_equal would
+    // reject valid proofs. (Regression caught by ShieldedCvBinding honest-output tests.)
+    Variable either_inf  = gadgets::or_bits(cs, is_p_inf, is_q_inf, label + "_einf");
+    Variable neither_inf = gadgets::not_bit(cs, either_inf, label + "_ninf");
+    Variable dx_and_dy   = gadgets::and_bits(cs, dx_is_zero, dy_is_zero, label + "_dxdy");
+    Variable want_same   = gadgets::and_bits(cs, dx_and_dy, neither_inf, label + "_wspt");
+    Variable not_dy_zero = gadgets::not_bit(cs, dy_is_zero, label + "_ndyz");
+    Variable dx_and_ndy  = gadgets::and_bits(cs, dx_is_zero, not_dy_zero, label + "_dxndy");
+    Variable want_opp    = gadgets::and_bits(cs, dx_and_ndy, neither_inf, label + "_wopp");
+    cs.enforce_equal(LinearCombination(is_same_pt), LinearCombination(want_same),
+                     label + "_sptbind");
+    cs.enforce_equal(LinearCombination(is_opposite), LinearCombination(want_opp),
+                     label + "_oppbind");
 
     // Select result based on case:
     // 1. P is identity → result = Q
@@ -667,9 +713,15 @@ ECPoint ec_scalar_mul(R1CS& cs, const std::vector<Variable>& scalar_bits,
 // Fixed-base scalar multiplication: k * G (windowed)
 // ---------------------------------------------------------------------------
 
-// Precomputed table for fixed-base scalar mul.
-// table[i][j] = j * 256^i * G for i=0..31, j=0..255
-// Computed once, cached.
+// Precomputed table for fixed-base scalar mul against an arbitrary base B.
+// table[i][j] = j * 256^i * B for i=0..31, j=0..255
+// Computed once per distinct base, cached.
+//
+// Generalized from the original G-only table so the shielded cv-binding
+// circuit can multiply by the Pedersen *value* generator V as well as the
+// standard generator G. The standard-G instance is exposed via
+// fixed_base_table()/ec_scalar_mul_gen() and is byte-for-byte identical to
+// the previous G-only table (so taproot/Schnorr circuits are unaffected).
 struct FixedBaseTable {
     static constexpr int WINDOW_BITS = 8;
     static constexpr int WINDOW_COUNT = 32;
@@ -677,11 +729,9 @@ struct FixedBaseTable {
 
     WitnessPoint entries[WINDOW_COUNT][WINDOW_SIZE];
 
-    FixedBaseTable() {
-        WitnessPoint G = {secp256k1_Gx(), secp256k1_Gy(), false};
-
-        // Compute base_i = 256^i * G for each window
-        WitnessPoint base = G;
+    explicit FixedBaseTable(const WitnessPoint& base_point) {
+        // Compute base_i = 256^i * base for each window
+        WitnessPoint base = base_point;
         for (int i = 0; i < WINDOW_COUNT; ++i) {
             entries[i][0] = {Uint256(), Uint256(), true}; // 0 * base = identity
             entries[i][1] = base; // 1 * base
@@ -697,15 +747,31 @@ struct FixedBaseTable {
 };
 
 static const FixedBaseTable& fixed_base_table() {
-    static FixedBaseTable table;
+    static FixedBaseTable table(WitnessPoint{secp256k1_Gx(), secp256k1_Gy(), false});
     return table;
 }
 
-ECPoint ec_scalar_mul_gen(R1CS& cs, const std::vector<Variable>& scalar_bits,
-                           const std::string& label) {
-    assert(scalar_bits.size() == 256);
-
-    const auto& table = fixed_base_table();
+// Shared accumulation core: windowed fixed-base multiply against `table`.
+// Used by both the standard-generator path (ec_scalar_mul_gen) and the
+// arbitrary-base path (ec_scalar_mul_fixed). The constraint *structure* is
+// fixed by which scalar-bit Variables are the const-zero variable (those
+// windows are skipped), NOT by the witness values — so prover and verifier
+// emit an identical R1CS as long as they pass the same bit Variables.
+// `identity_safe` selects the accumulation strategy:
+//   - false (the standard-generator path, ec_scalar_mul_gen): the original
+//     fast guarded ec_add_unsafe accumulation. Sound ONLY when the running
+//     accumulator is never the identity — true for the random/hash-derived
+//     scalars Schnorr/taproot use, where the lowest window byte is non-zero.
+//     Kept byte-for-byte identical so existing verifying keys don't change.
+//   - true (the arbitrary-base path, ec_scalar_mul_fixed): identity-safe
+//     ec_add_complete accumulation. REQUIRED for structured scalars (e.g. a
+//     note value like 100,000,000 = 0x05F5E100, whose low byte is 0x00 →
+//     window 0 selects the identity → the running accumulator starts at O).
+static ECPoint ec_scalar_mul_with_table(R1CS& cs,
+                                         const std::vector<Variable>& scalar_bits,
+                                         const FixedBaseTable& table,
+                                         const std::string& label,
+                                         bool identity_safe) {
     const Variable zero = cs.const_zero();
 
     // Process 32 windows of 8 bits each.
@@ -809,6 +875,17 @@ ECPoint ec_scalar_mul_gen(R1CS& cs, const std::vector<Variable>& scalar_bits,
         selected_pt.y = sel_y;
         selected_pt.is_identity = indicators[0];
 
+        if (identity_safe) {
+            // Identity-safe: ec_add_complete handles acc==O, selected==O, and
+            // acc==selected. Structure is independent of witness values, so
+            // prover and verifier emit identical R1CS.
+            if (!acc_initialized) {
+                acc = ec_identity(cs, wl + "_acc0");
+                acc_initialized = true;
+            }
+            acc = ec_add_complete(cs, acc, selected_pt, wl + "_cadd");
+            continue;
+        }
         if (!acc_initialized) {
             acc = selected_pt;
             acc_initialized = true;
@@ -848,6 +925,44 @@ ECPoint ec_scalar_mul_gen(R1CS& cs, const std::vector<Variable>& scalar_bits,
     }
 
     return acc;
+}
+
+ECPoint ec_scalar_mul_gen(R1CS& cs, const std::vector<Variable>& scalar_bits,
+                           const std::string& label) {
+    assert(scalar_bits.size() == 256);
+    // identity_safe=false: preserve the exact original constraint structure so
+    // taproot/Schnorr verifying keys are unchanged.
+    return ec_scalar_mul_with_table(cs, scalar_bits, fixed_base_table(), label,
+                                    /*identity_safe=*/false);
+}
+
+ECPoint ec_scalar_mul_fixed(R1CS& cs, const std::vector<Variable>& scalar_bits,
+                            const Uint256& base_x, const Uint256& base_y,
+                            const std::string& label) {
+    assert(scalar_bits.size() == 256);
+    // Cache one windowed table per distinct base point. The base is a fixed
+    // circuit constant (e.g. the Pedersen value generator V), so the table is
+    // built at most once per process and reused across every proof/verify.
+    static std::mutex cache_mu;
+    static std::map<std::pair<Uint256, Uint256>, std::unique_ptr<FixedBaseTable>> cache;
+    const FixedBaseTable* table = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(cache_mu);
+        const auto key = std::make_pair(base_x, base_y);
+        auto it = cache.find(key);
+        if (it == cache.end()) {
+            it = cache.emplace(
+                     key,
+                     std::make_unique<FixedBaseTable>(
+                         WitnessPoint{base_x, base_y, false}))
+                     .first;
+        }
+        table = it->second.get();
+    }
+    // identity_safe=true: arbitrary bases are multiplied by structured scalars
+    // (note values), which can drive the accumulator through the identity.
+    return ec_scalar_mul_with_table(cs, scalar_bits, *table, label,
+                                    /*identity_safe=*/true);
 }
 
 } // namespace zkvm

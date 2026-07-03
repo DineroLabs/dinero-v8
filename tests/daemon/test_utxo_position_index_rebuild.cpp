@@ -1,4 +1,5 @@
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/chainparams.h"
 #include "indexing/utxo_position_index.h"
 #include "storage/chain_db.h"
 #include "storage/chain_write_token.h"
@@ -68,6 +69,8 @@ void StoreCoin(dinero::ChainDB& chain_db,
 }  // namespace
 
 int main() {
+    dinero::SelectParams(dinero::Chain::REGTEST);
+
     const fs::path test_dir =
         fs::temp_directory_path() / ("dinero-utxo-position-rebuild-" + std::to_string(::getpid()));
     fs::remove_all(test_dir);
@@ -101,9 +104,9 @@ int main() {
 
     dinero::consensus::UtreexoForest forest;
     const auto present_leaf =
-        dinero::consensus::HashUTXO(txid_present, 0, 5000, script_pubkey);
+        dinero::consensus::HashUTXOForCreationHeight(txid_present, 0, 5000, script_pubkey, 100, false);
     const auto missing_leaf =
-        dinero::consensus::HashUTXO(txid_missing, 1, 9000, script_pubkey);
+        dinero::consensus::HashUTXOForCreationHeight(txid_missing, 1, 9000, script_pubkey, 101, false);
     forest.add(present_leaf);
 
     dinero::indexing::UTXOPositionIndex index;
@@ -139,11 +142,11 @@ int main() {
     StoreCoin(chain_db, keep_txid_b, 0, 13000, script_pubkey, 104);
 
     const auto spend_leaf =
-        dinero::consensus::HashUTXO(spend_txid, 0, 11000, script_pubkey);
+        dinero::consensus::HashUTXOForCreationHeight(spend_txid, 0, 11000, script_pubkey, 102, false);
     const auto keep_leaf_a =
-        dinero::consensus::HashUTXO(keep_txid_a, 0, 12000, script_pubkey);
+        dinero::consensus::HashUTXOForCreationHeight(keep_txid_a, 0, 12000, script_pubkey, 103, false);
     const auto keep_leaf_b =
-        dinero::consensus::HashUTXO(keep_txid_b, 0, 13000, script_pubkey);
+        dinero::consensus::HashUTXOForCreationHeight(keep_txid_b, 0, 13000, script_pubkey, 104, false);
 
     forest.add(spend_leaf);
     forest.add(keep_leaf_a);

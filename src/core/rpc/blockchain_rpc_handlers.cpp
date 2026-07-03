@@ -5,6 +5,7 @@
 #include "common/logger.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
+#include "consensus/block_validation.h"
 #include "consensus/header_sync_manager.h"
 #include "consensus/chainparams.h"
 #include "consensus/target_helpers.h"
@@ -293,6 +294,32 @@ Json::Value rpc_getblockchaininfo(const Json::Value& params) {
         result["pruned"] = chainstate->GetPruningInfo().pruning_enabled;
         result["softforks"] = Json::Value(Json::objectValue);
         result["bip9_softforks"] = Json::Value(Json::objectValue);
+
+        // Consensus-validation transparency.
+        //
+        // A STATELESS (utreexo) validator structurally CANNOT independently
+        // validate the coinbase-maturity rule: the Utreexo leaf commits to
+        // neither the creating height nor an is_coinbase flag. Such a node
+        // DEFERS that single rule to consensus / most-work instead of vouching
+        // a block as fully consensus-valid. Surface that here so callers /
+        // wallets never treat a stateless node as a full independent validator
+        // of maturity. (Durable fix: future leaf-format hard fork — see
+        // FOLLOW-UP in consensus/block_validation.cpp.)
+        {
+            Json::Value cval(Json::objectValue);
+            const auto* bv = chainstate->GetBlockValidator();
+            const bool stateless = bv &&
+                bv->getValidationMode() == consensus::ValidationMode::STATELESS;
+            cval["mode"] = stateless ? "stateless" : "stateful";
+            cval["coinbase_maturity_independently_validated"] = !stateless;
+            cval["coinbase_maturity_status"] =
+                stateless ? "deferred-to-consensus" : "enforced";
+            // True once a stateless spend-block has been processed this session
+            // without independent maturity validation (latches).
+            cval["coinbase_maturity_deferral_observed"] =
+                bv ? bv->statelessMaturityUnverified() : false;
+            result["consensus_validation"] = cval;
+        }
 
         dinero::g_logger.info("Blockchain info requested");
         return result;

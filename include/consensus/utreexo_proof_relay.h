@@ -106,6 +106,12 @@ struct TxInProof {
     bool Verify(const std::vector<UtreexoHash>& roots,
                 uint64_t amount,
                 const std::vector<uint8_t>& scriptPubKey) const;
+
+    bool Verify(const std::vector<UtreexoHash>& roots,
+                uint64_t amount,
+                const std::vector<uint8_t>& scriptPubKey,
+                uint32_t created_height,
+                bool is_coinbase) const;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

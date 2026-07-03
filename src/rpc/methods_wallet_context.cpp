@@ -30,6 +30,7 @@
 #include "wallet/wallet_manager.h"
 #include "wallet/hd_wallet.h"
 #include "wallet/transaction_builder.h"  // Phase 33: Transaction building
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include <iostream>  // For std::cerr debug logging
 #include "wallet/unsigned_tx_builder.h"   // v0.14.0: Unsigned TX construction
 #include "wallet/transaction_signer.h"    // v0.14.0: Transaction signing (Taproot, PSBT, HW wallet ready)
@@ -115,6 +116,20 @@ std::string BuildStandardDerivationPath(uint32_t purpose, int account, int chang
            std::to_string(account) + "'/" +
            std::to_string(change) + "/" +
            std::to_string(index);
+}
+
+// AddressRowIsTaproot — authoritative taproot test for an address row. Decodes
+// the address as bech32m (witness version 1 = P2TR) instead of the old
+// string-prefix shortcut (rfind("din1p")), which guessed the type from the
+// encoding char — the same fragile pattern that previously mis-handled taproot.
+// Honors the explicit stored type first, then falls back to a real decode.
+bool AddressRowIsTaproot(const dinero::AddressRow& addr_row) {
+    if (addr_row.type == "p2tr" || addr_row.type == "taproot") {
+        return true;
+    }
+    const auto info = dinero::DecodeWitnessAddress(
+        addr_row.address, dinero::HrpForActiveNetworkRef());
+    return info.is_valid && info.witness_version == 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -233,11 +248,13 @@ bool WalletUtxoIsPresentInLiveUtreexoForest(
                 std::stoi(utxo.script_pubkey.substr(i, 2), nullptr, 16)));
         }
 
-        const auto leaf_hash = dinero::consensus::HashUTXO(
+        const auto leaf_hash = dinero::consensus::HashUTXOForCreationHeight(
             txid_u256,
             utxo.vout,
             static_cast<uint64_t>(utxo.amount_una),
-            script_pubkey);
+            script_pubkey,
+            utxo.height,
+            utxo.is_coinbase);
 
         if (!forest->findLeafPosition(leaf_hash).has_value()) {
             if (reason) {
@@ -1334,12 +1351,7 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
             if (addr_row.account < 0) {
                 return "imported";
             }
-            const bool is_taproot_prefix =
-                (addr_row.address.rfind("din1p", 0) == 0) ||
-                (addr_row.address.rfind("tdin1p", 0) == 0) ||
-                (addr_row.address.rfind("rdin1p", 0) == 0);
-            const bool is_taproot =
-                (addr_row.type == "p2tr" || addr_row.type == "taproot") || is_taproot_prefix;
+            const bool is_taproot = AddressRowIsTaproot(addr_row);
             const int purpose = is_taproot ? 86 : 84;
             return BuildStandardDerivationPath(
                 static_cast<uint32_t>(purpose),
@@ -1713,12 +1725,7 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
             if (addr_row.account < 0) {
                 return "imported";
             }
-            const bool is_taproot_prefix =
-                (addr_row.address.rfind("din1p", 0) == 0) ||
-                (addr_row.address.rfind("tdin1p", 0) == 0) ||
-                (addr_row.address.rfind("rdin1p", 0) == 0);
-            const bool is_taproot =
-                (addr_row.type == "p2tr" || addr_row.type == "taproot") || is_taproot_prefix;
+            const bool is_taproot = AddressRowIsTaproot(addr_row);
             const int purpose = is_taproot ? 86 : 84;
             return BuildStandardDerivationPath(
                 static_cast<uint32_t>(purpose),
@@ -3837,6 +3844,8 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
                             entry["amount_una"] = static_cast<int64_t>(utxo.amount_una);
                             entry["amount_unas"] = static_cast<int64_t>(utxo.amount_una);
                             entry["script_pubkey"] = utxo.script_pubkey;
+                            entry["created_height"] = static_cast<uint64_t>(utxo.height);
+                            entry["coinbase"] = utxo.is_coinbase;
                             break;
                         }
                     }
@@ -6886,12 +6895,7 @@ din::Json rpc_context_wallet_listaddresseswithbalances(const ExecutionContext& c
             if (addr_row.account < 0) {
                 return "imported";
             }
-            const bool is_taproot_prefix =
-                (addr_row.address.rfind("din1p", 0) == 0) ||
-                (addr_row.address.rfind("tdin1p", 0) == 0) ||
-                (addr_row.address.rfind("rdin1p", 0) == 0);
-            const bool is_taproot =
-                (addr_row.type == "p2tr" || addr_row.type == "taproot") || is_taproot_prefix;
+            const bool is_taproot = AddressRowIsTaproot(addr_row);
             const int purpose = is_taproot ? 86 : 84;
             return BuildStandardDerivationPath(
                 static_cast<uint32_t>(purpose),

@@ -3,9 +3,11 @@
 #include "dinero/compat/int128.hpp"
 #include "consensus/shielded/anchor_history.h"
 #include "consensus/shielded/binding_sig.h"
+#include "consensus/shielded/shielded_epoch.h"
 #include "consensus/shielded/shielded_tx.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_block_validation.h"
+#include "consensus/shielded/shielded_block_section.h"
 #include "consensus/shielded/shielded_validation.h"
 extern "C" {
 #include <secp256k1.h>
@@ -15,6 +17,7 @@ extern "C" {
 #include "consensus/outpoint.h"            // Phase M.2: Binary OutPoint comparison
 #include "consensus/utreexo_activation.h"   // Phase 3: Utreexo activation rule
 #include "consensus/utreexo_canonical_roots_activation.h"  // Apr 13 2026 Stage 3 fork
+#include "consensus/utreexo_maturity_leaf_activation.h"  // Utreexo maturity-bound leaf fork
 #include "consensus/utreexo_phase_guard.h"  // Phase 3: Safety guards (prevent prod deployment)
 #include "consensus/utreexo_delta.h"        // Phase 4: Delta-based undo for efficient reorgs
 #include "consensus/header_consensus.h"     // Phase 3: Header size enforcement
@@ -198,7 +201,8 @@ bool ValidateShieldedTransactionBundle(
         transparent_delta,
         Params().shielded_activation_height,
         anchor_history,
-        Params().shielded_input_binding_activation_height);
+        Params().shielded_input_binding_activation_height,
+        Params().shielded_cv_binding_activation_height);
     const auto validation = shielded::ValidateShieldedBundle(bundle, ctx);
     if (validation != shielded::ShieldedValidationError::Ok) {
         error = "Shielded validation failed: " +
@@ -222,6 +226,25 @@ uint64_t GetUtreexoLeafAmount(const TxOutput& output) {
 
 uint64_t GetUtreexoLeafAmount(const SpentOutputData& spent_output) {
     return spent_output.is_confidential ? 0 : spent_output.value;
+}
+
+struct BlockOutputRef {
+    const TxOutput* output;
+    bool is_coinbase;
+    size_t tx_index;
+};
+
+bool SpentOutputMatchesBlockOutput(
+    const SpentOutputData& spent,
+    const TxOutput& output,
+    uint32_t created_height,
+    bool is_coinbase) {
+    return spent.value == GetUtreexoLeafAmount(output) &&
+           spent.scriptPubKey == output.scriptPubKey &&
+           spent.is_confidential == output.is_confidential &&
+           spent.commitment == output.commitment &&
+           spent.created_height == created_height &&
+           spent.is_coinbase == is_coinbase;
 }
 
 }  // namespace
@@ -380,11 +403,13 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
             const uint64_t leaf_value = GetUtreexoLeafAmount(utxo);
 
             // Hash the UTXO being spent
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 input.prevout.txid.AsUint256(),
                 input.prevout.vout,
                 leaf_value,
-                utxo.scriptPubKey
+                utxo.scriptPubKey,
+                utxo.height,
+                utxo.isCoinbase
             );
 
             // Find leaf position
@@ -429,11 +454,13 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
             const uint64_t leaf_value = GetUtreexoLeafAmount(output);
 
             // Hash the new UTXO
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 txid.AsUint256(),
                 static_cast<uint32_t>(n),
                 leaf_value,
-                std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end())
+                std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end()),
+                height,
+                tx.IsCoinbase()
             );
 
             {
@@ -556,11 +583,13 @@ bool BlockValidator::ComputeUtreexoRootPureFromForest(
                 return false;
             }
             const uint64_t leaf_value = GetUtreexoLeafAmount(*utxo);
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 input.prevout.txid.AsUint256(),
                 input.prevout.vout,
                 leaf_value,
-                utxo->scriptPubKey);
+                utxo->scriptPubKey,
+                utxo->height,
+                utxo->isCoinbase);
             auto pos_opt = snapshot.findLeafPosition(leafHash);
             if (!pos_opt.has_value()) {
                 error = "utreexo-leaf-missing-in-fork-view: " + op.ToString();
@@ -582,12 +611,14 @@ bool BlockValidator::ComputeUtreexoRootPureFromForest(
 
             const auto& output = tx.vout[n];
             const uint64_t leaf_value = GetUtreexoLeafAmount(output);
-            UtreexoHash leafHash = HashUTXO(
+            UtreexoHash leafHash = HashUTXOForCreationHeight(
                 txid.AsUint256(),
                 static_cast<uint32_t>(n),
                 leaf_value,
                 std::vector<uint8_t>(output.scriptPubKey.begin(),
-                                     output.scriptPubKey.end()));
+                                     output.scriptPubKey.end()),
+                height,
+                tx.IsCoinbase());
             uint64_t pos = snapshot.add(leafHash);
             if (pos == UINT64_MAX) {
                 error = "utreexo-add-failed-from-forest: capacity or duplicate";
@@ -610,6 +641,208 @@ bool BlockValidator::ComputeUtreexoRootPureFromForest(
 // ═══════════════════════════════════════════════════════════════════════════
 bool BlockValidator::ConnectBlock(const Block& block, uint32_t height, const uint256& block_hash, BlockUndo& undo, std::string& error, CPUBudgetMonitor* cpu_monitor) {
     return ValidateAndApplyBlock(block, height, block_hash, undo, error, cpu_monitor);
+}
+
+// v7 shielded-pool block-level validation + atomic state apply. Extracted from
+// ConnectBlockInternal so BOTH the stateful path and the STATELESS/CSN path can
+// invoke it: a stateless node must build the same shielded tree / anchor history
+// / nullifier set as a full node, or it cannot validate shielded spends (the
+// anchor is absent) and its shielded double-spend detection is silently
+// non-functional. See the call sites in ConnectBlockInternal.
+bool BlockValidator::ApplyBlockShieldedSection(
+    const Block& block, uint32_t height,
+    const std::vector<int64_t>& pending_shielded_deltas,
+    BlockUndo& undo, std::string& error) {
+    if (!(shielded_tree_ && shielded_nullifiers_)) {
+        return true;  // shielded state not wired — nothing to apply
+    }
+    namespace shld = dinero::consensus::shielded;
+    auto* tree = static_cast<shld::CommitmentTree*>(shielded_tree_);
+    auto* nullifiers = static_cast<shld::NullifierSet*>(shielded_nullifiers_);
+
+    // Collect shielded bundles in block tx order.
+    std::vector<shld::ShieldedBundle> bundles;
+    std::vector<int64_t> deltas;
+    size_t shielded_tx_index = 0;
+    for (size_t i = 1; i < block.vtx.size(); ++i) {
+        const auto& tx = block.vtx[i];
+        if (tx.IsShielded()) {
+            shld::ShieldedBundle bundle;
+            auto dec = shld::DeserializeShieldedBundle(
+                tx.shielded_bundle_bytes, &bundle);
+            if (dec != shld::BundleDecodeError::Ok) {
+                error = "shielded-bundle-decode-failed at tx " +
+                    std::to_string(i) + " (code " +
+                    std::to_string(static_cast<int>(dec)) + ")";
+                return false;
+            }
+            if (shielded_tx_index >= pending_shielded_deltas.size()) {
+                error = "shielded-delta-accounting-mismatch-overrun";
+                return false;
+            }
+            bundles.push_back(std::move(bundle));
+            deltas.push_back(pending_shielded_deltas[shielded_tx_index++]);
+        }
+    }
+    if (shielded_tx_index != pending_shielded_deltas.size()) {
+        error = "shielded-delta-accounting-mismatch-underrun";
+        return false;
+    }
+
+    // Epoch-reset gate + block-level validate/apply + anchor-root recording:
+    // see the single canonical implementation and its rationale comments in
+    // ConnectBlockShieldedSection (shielded_block_section.cpp).
+    auto* anchors = static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
+    return shld::ConnectBlockShieldedSection(
+        bundles, deltas, height,
+        dinero::Params().shielded_epoch_reset_height,
+        dinero::Params().shielded_activation_height,
+        *tree, *nullifiers, anchors,
+        undo.pre_reset_shielded_epoch, error);
+}
+
+// ABC-CSN reorg replay: recompute pending_shielded_deltas for an already-
+// stored block. BIT-IDENTITY CONTRACT: this mirrors the forward STATELESS
+// per-tx loop in ConnectBlockInternal (the spent_outputs walk, the
+// fee_input_utxos construction, SumOutputs, ComputeValidatedTransactionFee,
+// and ValidateShieldedTransactionBundle) and must NOT re-derive any of that
+// arithmetic independently. If the forward loop changes, this must change in
+// lockstep — the delta-parity unit suite (ShieldedBlockSectionDeltaParity)
+// pins the equivalence.
+//
+// Deliberately skipped relative to the forward loop (not delta-relevant; the
+// block was fully validated when first stored): script/signature validation,
+// double-spend tracking, coinbase-maturity evaluation, ephemeral spent-output
+// cross-checks, and all UTXO/forest mutation. Nothing that feeds the delta
+// (input-value walk, output sum, fee, bundle validation) is skipped.
+bool BlockValidator::ComputeShieldedDeltasForStoredBlock(
+    const Block& block, uint32_t height,
+    std::vector<int64_t>& deltas_out, std::string& error,
+    const std::vector<SpentOutputData>* fallback_spent_outputs) {
+    deltas_out.clear();
+
+    // A block with no shielded-semantics txs produces no deltas, so it needs
+    // no spend metadata at all. This keeps legacy hash-only CSN replay
+    // records (no spent_outputs) working for transparent-only reorgs.
+    bool any_shielded = false;
+    for (size_t i = 1; i < block.vtx.size(); ++i) {
+        if (UsesShieldedValueSemantics(block.vtx[i])) {
+            any_shielded = true;
+            break;
+        }
+    }
+    if (!any_shielded) {
+        return true;
+    }
+
+    // Spent-output source: the stored block's own utreexo payload first;
+    // the CSN replay-data metadata only as fallback when that is absent.
+    const std::vector<SpentOutputData>* spent_outputs = nullptr;
+    if (block.utreexo.has_value()) {
+        spent_outputs = &block.utreexo->spent_outputs;
+    } else if (fallback_spent_outputs) {
+        spent_outputs = fallback_spent_outputs;
+    }
+    if (!spent_outputs) {
+        error = "stored-block-shielded-delta-missing-spent-outputs: block has "
+                "shielded txs but neither block.utreexo nor CSN replay data "
+                "carries spent-output metadata (height " +
+                std::to_string(height) + ")";
+        return false;
+    }
+
+    // Mirror of ConnectBlockInternal's stateless per-tx loop: one GLOBAL
+    // index over spent_outputs, consumed once per non-coinbase input in
+    // block/tx order — never reset per tx.
+    size_t global_spent_output_index = 0;
+    for (size_t i = 1; i < block.vtx.size(); i++) {
+        const Transaction& tx = block.vtx[i];
+
+        uint64_t total_input_value = 0;
+        std::vector<UTXOEntry> fee_input_utxos;
+        fee_input_utxos.reserve(tx.vin.size());
+
+        for (size_t input_idx = 0; input_idx < tx.vin.size(); input_idx++) {
+            if (global_spent_output_index >= spent_outputs->size()) {
+                error = "stored-block-shielded-delta-spent-outputs-underrun: "
+                        "consumed " +
+                        std::to_string(global_spent_output_index) +
+                        " of " + std::to_string(spent_outputs->size()) +
+                        " at tx " + std::to_string(i) + " input " +
+                        std::to_string(input_idx) + " (height " +
+                        std::to_string(height) + ")";
+                return false;
+            }
+            const auto& spent_output = (*spent_outputs)[global_spent_output_index];
+            global_spent_output_index++;
+
+            // Same accumulation the forward loop performs at its global walk.
+            total_input_value += spent_output.value;
+
+            // Same UTXOEntry construction as the forward loop's
+            // fee_input_utxos build (v2 maturity leaves carry authenticated
+            // created_height/is_coinbase; legacy leaves zero them).
+            const bool v2_leaf = IsUtreexoMaturityLeafActive(spent_output.created_height);
+            fee_input_utxos.emplace_back(
+                AmountUna::Una(spent_output.value),
+                spent_output.scriptPubKey,
+                v2_leaf ? spent_output.created_height : 0,
+                v2_leaf && spent_output.is_coinbase,
+                spent_output.is_confidential,
+                spent_output.commitment
+            );
+        }
+
+        uint64_t total_output_value = SumOutputs(tx);
+        uint64_t tx_fee = 0;
+        if (!ComputeValidatedTransactionFee(tx, fee_input_utxos, total_input_value,
+                                            total_output_value, tx_fee, error)) {
+            return false;
+        }
+        if (UsesShieldedValueSemantics(tx)) {
+            int64_t tx_delta = 0;
+            // THE SAME FUNCTION with the same inputs as the forward stateless
+            // path, with the validator's CURRENT shielded state as const
+            // context — bit-identical delta by construction. Read-only: the
+            // callee takes the state via const pointers.
+            if (!ValidateShieldedTransactionBundle(
+                    tx,
+                    height,
+                    total_input_value,
+                    total_output_value,
+                    tx_fee,
+                    static_cast<shielded::CommitmentTree*>(shielded_tree_),
+                    static_cast<shielded::NullifierSet*>(shielded_nullifiers_),
+                    static_cast<shielded::AnchorHistory*>(shielded_anchor_history_),
+                    error,
+                    &tx_delta)) {
+                return false;
+            }
+            deltas_out.push_back(tx_delta);
+        }
+    }
+
+    // Stricter than the forward loop for the fallback source (fail-closed by
+    // design): forward only sees block.utreexo; here surplus fallback entries
+    // mean the CF7 metadata does not belong to this block.
+    if (global_spent_output_index != spent_outputs->size()) {
+        error = "stored-block-shielded-delta-spent-outputs-count-mismatch: "
+                "consumed " + std::to_string(global_spent_output_index) +
+                ", provided " + std::to_string(spent_outputs->size()) +
+                " (height " + std::to_string(height) + ")";
+        return false;
+    }
+
+    return true;
+}
+
+std::vector<uint8_t> BlockValidator::SerializeShieldedFrontier() const {
+    if (!shielded_tree_) {
+        return {};
+    }
+    // Same capture as the top of ConnectBlockInternal (pre-block frontier).
+    return static_cast<const shielded::CommitmentTree*>(shielded_tree_)
+        ->SerializeFrontier();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1039,9 +1272,46 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // Stateless mode relies solely on Utreexo proofs — this adds defense in depth.
     // ═════════════════════════════════════════════════════════════════════════
     std::unordered_set<OutPoint> spent_in_block;
+    std::unordered_map<OutPoint, BlockOutputRef> stateless_intra_block_outputs;
+
+    if (validation_mode_ == ValidationMode::STATELESS) {
+        for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+            const auto& tx = block.vtx[tx_idx];
+            const TxId txid = tx.GetTxid();
+            for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+                stateless_intra_block_outputs.emplace(OutPoint(txid, vout),
+                                                      BlockOutputRef{&tx.vout[vout], tx.IsCoinbase(), tx_idx});
+            }
+        }
+    }
 
     // Clear intra-block UTXO overlay for this block (enables tx chaining)
     intra_block_utxos_.clear();
+
+    if (validation_mode_ == ValidationMode::STATELESS && block.utreexo.has_value()) {
+        const auto& utreexo_data = block.utreexo.value();
+        size_t spent_index = 0;
+        for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+            for (const auto& input : block.vtx[tx_idx].vin) {
+                if (spent_index >= utreexo_data.spent_outputs.size()) {
+                    break;
+                }
+                const OutPoint prevout(input.prevout.txid, input.prevout.vout);
+                auto ephemeral_it = stateless_intra_block_outputs.find(prevout);
+                if (ephemeral_it != stateless_intra_block_outputs.end() &&
+                    ephemeral_it->second.tx_index < tx_idx &&
+                    !SpentOutputMatchesBlockOutput(
+                        utreexo_data.spent_outputs[spent_index],
+                        *ephemeral_it->second.output,
+                        height,
+                        ephemeral_it->second.is_coinbase)) {
+                    error = "utreexo-ephemeral-spent-output-mismatch (PROOF_OUTPOINT_MISMATCH)";
+                    return false;
+                }
+                spent_index++;
+            }
+        }
+    }
 
     // Process all non-coinbase transactions
     for (size_t i = 1; i < block.vtx.size(); i++) {
@@ -1081,6 +1351,35 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             }
 
             const auto& utreexo_data = block.utreexo.value();
+            const uint8_t expected_proof_format = GetUtreexoProofFormatVersion(height);
+            if (utreexo_data.spend_proof.format_version != expected_proof_format) {
+                error = "stateless-validation-proof-format-mismatch: expected v" +
+                        std::to_string(expected_proof_format) + ", got v" +
+                        std::to_string(utreexo_data.spend_proof.format_version) +
+                        " (INVALID_PROOF)";
+                return false;
+            }
+
+            // ═════════════════════════════════════════════════════════════════
+            // COINBASE-MATURITY: v2 enforcement plus legacy deferral
+            // ═════════════════════════════════════════════════════════════════
+            // For v2 leaves, created_height and is_coinbase are committed by the
+            // Utreexo leaf hash/root, so the stateless path can enforce the same
+            // height-created_height >= COINBASE_MATURITY rule as stateful nodes.
+            // Legacy leaves do not authenticate those fields; during the unsafe
+            // window they keep the v8.0.11 soft-deferral latch instead of making
+            // a false full-validation claim or hard-rejecting honest spends.
+            auto defer_legacy_maturity = [&]() {
+                if (stateless_maturity_unverified_) {
+                    return;
+                }
+                stateless_maturity_unverified_ = true;
+                std::cout << "⚠️  [CONSENSUS] STATELESS mode cannot independently "
+                             "validate coinbase maturity for a legacy Utreexo leaf "
+                             "before/inside the activation grace window. Deferring this "
+                             "rule to consensus/most-work; first observed at height "
+                          << height << "." << std::endl;
+            };
 
             // Build vector of all UTXOs for this transaction (needed for BIP341 Taproot sighash)
             fee_input_utxos.reserve(tx.vin.size());
@@ -1094,12 +1393,41 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
                 const auto& spent_output = utreexo_data.spent_outputs[temp_spent_idx];
                 temp_spent_idx++;
+                const auto& input = tx.vin[input_idx];
+                const OutPoint prevout(input.prevout.txid, input.prevout.vout);
+                auto ephemeral_it = stateless_intra_block_outputs.find(prevout);
+                if (ephemeral_it != stateless_intra_block_outputs.end() &&
+                    ephemeral_it->second.tx_index < i &&
+                    !SpentOutputMatchesBlockOutput(
+                        spent_output,
+                        *ephemeral_it->second.output,
+                        height,
+                        ephemeral_it->second.is_coinbase)) {
+                    error = "utreexo-ephemeral-spent-output-mismatch (PROOF_OUTPOINT_MISMATCH)";
+                    return false;
+                }
+
+                const bool v2_leaf = IsUtreexoMaturityLeafActive(spent_output.created_height);
+                const auto maturity_status = EvaluateUtreexoStatelessMaturity(
+                    height,
+                    spent_output.created_height,
+                    spent_output.is_coinbase);
+                if (maturity_status == UtreexoStatelessMaturityStatus::IMMATURE_COINBASE) {
+                    error = "stateless-coinbase-maturity-violation: created_height=" +
+                            std::to_string(spent_output.created_height) +
+                            ", spend_height=" + std::to_string(height) +
+                            " (COINBASE_IMMATURE)";
+                    return false;
+                }
+                if (maturity_status == UtreexoStatelessMaturityStatus::LEGACY_DEFERRED) {
+                    defer_legacy_maturity();
+                }
 
                 fee_input_utxos.emplace_back(
                     AmountUna::Una(spent_output.value),
                     spent_output.scriptPubKey,
-                    0,      // height unknown in stateless mode
-                    false,  // assume not coinbase (maturity validated by proof)
+                    v2_leaf ? spent_output.created_height : 0,
+                    v2_leaf && spent_output.is_coinbase,
                     spent_output.is_confidential,
                     spent_output.commitment
                 );
@@ -1396,6 +1724,16 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         std::vector<UtreexoHash> expected_targets;
         size_t spend_count = 0;
         size_t spent_outputs_index = 0;
+        std::unordered_map<OutPoint, BlockOutputRef> expected_intra_block_outputs;
+
+        for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+            const auto& tx = block.vtx[tx_idx];
+            const TxId txid = tx.GetTxid();
+            for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+                expected_intra_block_outputs.emplace(OutPoint(txid, vout),
+                                                     BlockOutputRef{&tx.vout[vout], tx.IsCoinbase(), tx_idx});
+            }
+        }
 
         // Iterate through transactions and their inputs
         for (size_t i = 0; i < block.vtx.size(); i++) {
@@ -1421,14 +1759,30 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     const auto& spent_output = utreexo_data.spent_outputs[spent_outputs_index];
                     spent_outputs_index++;
                     const uint64_t leaf_value = GetUtreexoLeafAmount(spent_output);
+                    const OutPoint prevout(input.prevout.txid, input.prevout.vout);
+                    auto intra_it = expected_intra_block_outputs.find(prevout);
+                    if (intra_it != expected_intra_block_outputs.end() &&
+                        intra_it->second.tx_index < i) {
+                        if (!SpentOutputMatchesBlockOutput(
+                                spent_output,
+                                *intra_it->second.output,
+                                height,
+                                intra_it->second.is_coinbase)) {
+                            error = "utreexo-ephemeral-spent-output-mismatch (PROOF_OUTPOINT_MISMATCH)";
+                            return false;
+                        }
+                        continue;
+                    }
 
                     // Compute leaf hash for this spent UTXO
                     // Phase M.4: input.prevout.txid is TxId, extract uint256 for HashUTXO
-                    UtreexoHash leaf_hash = HashUTXO(
+                    UtreexoHash leaf_hash = HashUTXOForCreationHeight(
                         input.prevout.txid.AsUint256(),
                         input.prevout.vout,
                         leaf_value,
-                        spent_output.scriptPubKey
+                        spent_output.scriptPubKey,
+                        spent_output.created_height,
+                        spent_output.is_coinbase
                     );
 
                     expected_targets.push_back(leaf_hash);
@@ -1549,6 +1903,16 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             undo.pre_block_shielded_frontier.reset();
         }
 
+        // Apply shielded state on the stateless path too — a CSN must build the
+        // same commitment tree / anchor history / nullifier set as a full node,
+        // or it cannot validate shielded spends (anchor absent) and its shielded
+        // double-spend detection is non-functional. The stateful path calls the
+        // same helper after its Utreexo commit; stateless has no forest commit to
+        // order against, so calling it here (before the early return) is correct.
+        if (!ApplyBlockShieldedSection(block, height, pending_shielded_deltas, undo, error)) {
+            return false;
+        }
+
         block_connect_success = true;
         std::cout << "✅ [STATELESS] Block " << height
                   << " validated via proofs — skipping forest-clone path" << std::endl;
@@ -1571,7 +1935,8 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         auto transition = UtreexoTransitionProof::generate(
             consensus_utxo_set_->GetForest(),
             block,
-            utreexo_data.spend_proof);
+            utreexo_data.spend_proof,
+            height);
 
         if (!transition.verify()) {
             // Defense-in-depth cross-check: warn but don't block consensus.
@@ -1678,11 +2043,13 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
                     // Hash the UTXO being spent (using proof data)
                     // Phase M.4: input.prevout.txid is TxId, extract uint256 for HashUTXO
-                    leafHash = HashUTXO(
+                    leafHash = HashUTXOForCreationHeight(
                         input.prevout.txid.AsUint256(),
                         input.prevout.vout,
                         leaf_value,
-                        spent_output.scriptPubKey
+                        spent_output.scriptPubKey,
+                        spent_output.created_height,
+                        spent_output.is_coinbase
                     );
                 } else {
                     // STATEFUL PATH: Look up UTXO from consensus set (Phase 2: pure in-memory)
@@ -1698,11 +2065,13 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     // Hash the UTXO being spent
                     // Phase M.4: input.prevout.txid is TxId, extract uint256 for HashUTXO
                     // Phase M.6.2: Extract raw value from AmountUna
-                    leafHash = HashUTXO(
+                    leafHash = HashUTXOForCreationHeight(
                         input.prevout.txid.AsUint256(),
                         input.prevout.vout,
                         leaf_value,
-                        utxo.scriptPubKey
+                        utxo.scriptPubKey,
+                        utxo.height,
+                        utxo.isCoinbase
                     );
                 }
 
@@ -1759,11 +2128,13 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                 // Hash the new UTXO
                 // Phase M.4: txid is TxId, extract uint256 for HashUTXO
                 // Phase M.6.2: Extract raw value from AmountUna
-                UtreexoHash leafHash = HashUTXO(
+                UtreexoHash leafHash = HashUTXOForCreationHeight(
                     txid.AsUint256(),
                     static_cast<uint32_t>(n),
                     leaf_value,
-                    std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end())
+                    std::vector<uint8_t>(output.scriptPubKey.begin(), output.scriptPubKey.end()),
+                    height,
+                    tx.IsCoinbase()
                 );
 
                 {
@@ -2017,80 +2388,12 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // the Utreexo state is committed. Shielded state mutations are the last
     // consensus-critical writes before block connect succeeds.
     // ═════════════════════════════════════════════════════════════════════════
-    if (shielded_tree_ && shielded_nullifiers_) {
-        namespace shld = dinero::consensus::shielded;
-        auto* tree = static_cast<shld::CommitmentTree*>(shielded_tree_);
-        auto* nullifiers = static_cast<shld::NullifierSet*>(shielded_nullifiers_);
-
-        // Collect shielded bundles in block tx order.
-        std::vector<shld::ShieldedBundle> bundles;
-        std::vector<int64_t> deltas;
-        size_t shielded_tx_index = 0;
-        for (size_t i = 1; i < block.vtx.size(); ++i) {
-            const auto& tx = block.vtx[i];
-            if (tx.IsShielded()) {
-                shld::ShieldedBundle bundle;
-                auto dec = shld::DeserializeShieldedBundle(
-                    tx.shielded_bundle_bytes, &bundle);
-                if (dec != shld::BundleDecodeError::Ok) {
-                    error = "shielded-bundle-decode-failed at tx " +
-                        std::to_string(i) + " (code " +
-                        std::to_string(static_cast<int>(dec)) + ")";
-                    return false;
-                }
-                if (shielded_tx_index >= pending_shielded_deltas.size()) {
-                    error = "shielded-delta-accounting-mismatch";
-                    return false;
-                }
-                bundles.push_back(std::move(bundle));
-                deltas.push_back(pending_shielded_deltas[shielded_tx_index++]);
-            }
-        }
-        if (shielded_tx_index != pending_shielded_deltas.size()) {
-            error = "shielded-delta-accounting-mismatch";
-            return false;
-        }
-
-        if (!bundles.empty()) {
-            shld::BlockShieldedContext bctx;
-            bctx.existing_nullifiers = nullifiers;
-            bctx.pre_block_tree = tree;
-            bctx.block_height = height;
-
-            auto berr = shld::ValidateBlockShielded(bundles, deltas, bctx);
-            if (berr != shld::BlockValidationError::Ok) {
-                error = "shielded-block-validation-failed (code " +
-                    std::to_string(static_cast<int>(berr)) + ")";
-                return false;
-            }
-
-            // Deterministic apply: commitments + nullifiers in block tx order.
-            shld::ApplyBlockShielded(bundles, tree, nullifiers, height);
-        }
-
-        // Phase 1 of shielded reorg invertibility plan (gap #4): record
-        // the post-block tree root in the AnchorHistory window once per
-        // connected block, AFTER any of this block's shielded outputs
-        // have been appended to the tree. Matches the contract spelled
-        // out in include/consensus/shielded/anchor_history.h ("Caller
-        // MUST invoke this exactly once per connected block") and the
-        // behavior previously implemented by
-        // ChainstateService::ReplayShieldedBlockForward (deleted in
-        // phase 3b step 6 — option 1 made the recovery maze obsolete).
-        // Without this, live-built chains
-        // had an empty AnchorHistory and accepted only exact-tip-root
-        // shielded spends, while reindexed/recovered chains accepted
-        // anchors anywhere in the kDepth=100 window.
-        //
-        // Gate on shielded activation height — pre-activation blocks
-        // can't carry shielded txs and recording a constant empty-tree
-        // root for every pre-activation block would just churn the
-        // window with redundant entries.
-        if (shielded_anchor_history_ &&
-            height >= dinero::Params().shielded_activation_height) {
-            static_cast<shielded::AnchorHistory*>(shielded_anchor_history_)
-                ->RecordRoot(height, tree->Root());
-        }
+    // v7 shielded pool apply (see ApplyBlockShieldedSection). Runs here on the
+    // stateful path AFTER the Utreexo commit; the STATELESS path calls the same
+    // helper before its early return above so a CSN builds identical shielded
+    // state (tree/anchors/nullifiers) and can validate shielded spends.
+    if (!ApplyBlockShieldedSection(block, height, pending_shielded_deltas, undo, error)) {
+        return false;
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -2159,28 +2462,31 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
             return false;
         }
 
-        if (shielded_tree_ && undo.pre_block_shielded_frontier.has_value()) {
+        if (shielded_tree_ && shielded_nullifiers_) {
+            // Both branches (cutover-snapshot restore vs frontier +
+            // RollbackAbove) live in the shared free function so this path
+            // and the legacy path below run byte-identical shielded-undo
+            // logic. See shielded_block_section.cpp for the recipe.
             auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
             auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
-            const auto& frontier = *undo.pre_block_shielded_frontier;
-            if (!tree->DeserializeFrontier(frontier.data(), frontier.size())) {
-                error = "Failed to restore shielded frontier snapshot";
+            auto* anchors = static_cast<shielded::AnchorHistory*>(shielded_anchor_history_);
+            if (!shielded::DisconnectBlockShieldedSection(
+                    height, undo.pre_reset_shielded_epoch,
+                    undo.pre_block_shielded_frontier, *tree, *nullifiers,
+                    anchors, error)) {
                 return false;
             }
-            if (nullifiers && height > 0) {
-                nullifiers->RollbackAbove(height - 1);
-            }
-            // Apr 28 2026: anchor history was being rolled back ONLY on
-            // startup recovery (chainstate_service.cpp), never on a normal
-            // reorg path. A block's shielded txs that recorded anchors
-            // would leave those anchors visible after DisconnectBlock,
-            // letting a reorged-out anchor act as a valid spend reference
-            // on the canonical chain. Roll it back symmetrically with the
-            // nullifier set.
-            if (shielded_anchor_history_ && height > 0) {
-                static_cast<shielded::AnchorHistory*>(shielded_anchor_history_)
-                    ->RollbackAbove(height - 1);
-            }
+        } else if (undo.pre_reset_shielded_epoch.has_value() ||
+                   undo.pre_block_shielded_frontier.has_value()) {
+            // The undo record carries shielded rollback state but the
+            // shielded pool pointers are not (both) wired — silently
+            // skipping here would leave the in-memory pool stale instead
+            // of loud-failing like the old cutover-only code did.
+            // Unreachable under current wiring (shielded_tree_ and
+            // shielded_nullifiers_ are always wired together), but this
+            // guard closes the gap defensively.
+            error = "shielded-undo-present-but-state-unwired";
+            return false;
         }
 
         std::cout << "✅ [Phase 2] Block " << height << " disconnected via snapshot restore" << std::endl;
@@ -2322,22 +2628,29 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
         }
     }
 
-    if (shielded_tree_ && undo.pre_block_shielded_frontier.has_value()) {
+    if (shielded_tree_ && shielded_nullifiers_) {
+        // Same shared free function as the snapshot path above; only the
+        // on-failure rollback (restore_legacy_on_failure) differs, which is
+        // why this copy still exists rather than sharing the branch itself.
         auto* tree = static_cast<shielded::CommitmentTree*>(shielded_tree_);
         auto* nullifiers = static_cast<shielded::NullifierSet*>(shielded_nullifiers_);
-        const auto& frontier = *undo.pre_block_shielded_frontier;
-        if (!tree->DeserializeFrontier(frontier.data(), frontier.size())) {
+        auto* anchors = static_cast<shielded::AnchorHistory*>(shielded_anchor_history_);
+        if (!shielded::DisconnectBlockShieldedSection(
+                height, undo.pre_reset_shielded_epoch,
+                undo.pre_block_shielded_frontier, *tree, *nullifiers, anchors,
+                error)) {
             restore_legacy_on_failure();
-            error = "Failed to restore shielded frontier during legacy disconnect";
             return false;
         }
-        if (nullifiers && height > 0) {
-            nullifiers->RollbackAbove(height - 1);
-        }
-        if (shielded_anchor_history_ && height > 0) {
-            static_cast<shielded::AnchorHistory*>(shielded_anchor_history_)
-                ->RollbackAbove(height - 1);
-        }
+    } else if (undo.pre_reset_shielded_epoch.has_value() ||
+               undo.pre_block_shielded_frontier.has_value()) {
+        // See the snapshot-path guard above: the undo record carries
+        // shielded rollback state but the shielded pool pointers are not
+        // (both) wired. Loud-fail instead of silently skipping the
+        // shielded undo. Unreachable under current wiring.
+        restore_legacy_on_failure();
+        error = "shielded-undo-present-but-state-unwired";
+        return false;
     }
 
     return true;

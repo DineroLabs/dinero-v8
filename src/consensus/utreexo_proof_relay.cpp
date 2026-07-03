@@ -231,9 +231,25 @@ bool TxInProof::Verify(const std::vector<UtreexoHash>& roots,
                        uint64_t amount,
                        const std::vector<uint8_t>& scriptPubKey) const {
     // Compute leaf hash for this UTXO
-    UtreexoHash computedLeaf = HashUTXO(outpoint.txid.AsUint256(), outpoint.vout, amount, scriptPubKey);
+    UtreexoHash computedLeaf = HashUTXOLegacy(outpoint.txid.AsUint256(), outpoint.vout, amount, scriptPubKey);
 
     // Use the existing proof verification
+    return proof.verify(computedLeaf, roots);
+}
+
+bool TxInProof::Verify(const std::vector<UtreexoHash>& roots,
+                       uint64_t amount,
+                       const std::vector<uint8_t>& scriptPubKey,
+                       uint32_t created_height,
+                       bool is_coinbase) const {
+    UtreexoHash computedLeaf = HashUTXOForCreationHeight(
+        outpoint.txid.AsUint256(),
+        outpoint.vout,
+        amount,
+        scriptPubKey,
+        created_height,
+        is_coinbase);
+
     return proof.verify(computedLeaf, roots);
 }
 

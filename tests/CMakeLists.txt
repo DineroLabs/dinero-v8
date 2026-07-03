@@ -565,6 +565,80 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_reindex_equivalence.
   )
 endif()
 
+# Security regression: empty aggregated_range_proof must not bypass the
+# mandatory range-proof / binding-sig checks (shielded inflation fix).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_empty_rangeproof_inflation.cpp)
+  add_executable(test_shielded_empty_rangeproof_inflation
+    tests/consensus/test_shielded_empty_rangeproof_inflation.cpp
+  )
+  target_link_libraries(test_shielded_empty_rangeproof_inflation PRIVATE
+    dinero_shielded
+    dinero_consensus
+    dinero_zk
+    dinero_crypto
+    OpenSSL::Crypto
+    OpenSSL::SSL
+    pthread
+    sqlite3
+  )
+  link_zstd_if_needed(test_shielded_empty_rangeproof_inflation)
+  target_include_directories(test_shielded_empty_rangeproof_inflation PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_empty_rangeproof_inflation PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(
+    NAME ShieldedEmptyRangeProofInflation
+    COMMAND test_shielded_empty_rangeproof_inflation
+  )
+  set_tests_properties(ShieldedEmptyRangeProofInflation PROPERTIES
+    LABELS "shielded;security;inflation"
+    TIMEOUT 120
+  )
+endif()
+
+# Security regression: untrusted CompactSize counts in the shielded-bundle
+# deserializer must be capped before resize() (remote-OOM fix).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_serialization_oom.cpp)
+  add_executable(test_shielded_serialization_oom
+    tests/consensus/test_shielded_serialization_oom.cpp
+  )
+  target_link_libraries(test_shielded_serialization_oom PRIVATE
+    dinero_shielded
+    dinero_consensus
+    dinero_zk
+    dinero_crypto
+    OpenSSL::Crypto
+    OpenSSL::SSL
+    pthread
+    sqlite3
+  )
+  link_zstd_if_needed(test_shielded_serialization_oom)
+  target_include_directories(test_shielded_serialization_oom PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_serialization_oom PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(
+    NAME ShieldedSerializationOOM
+    COMMAND test_shielded_serialization_oom
+  )
+  set_tests_properties(ShieldedSerializationOOM PROPERTIES
+    LABELS "shielded;security;serialization;oom"
+    TIMEOUT 120
+  )
+endif()
+
 # Shielded canonical state + recovery gate
 if(TARGET shielded_pool_test AND TARGET shielded_adversarial_test)
   add_test(
@@ -1241,6 +1315,131 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/commitment_tree_tests.cpp)
   message(STATUS "Shielded commitment-tree tests enabled")
 endif()
 
+# shielded-epoch-reset fork (cutover) — reset transformation tests
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_epoch_reset.cpp)
+  add_executable(test_shielded_epoch_reset
+    tests/consensus/test_shielded_epoch_reset.cpp
+  )
+  add_dependencies(test_shielded_epoch_reset gtest dinero_shielded)
+  target_link_libraries(test_shielded_epoch_reset PRIVATE
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+    dinero_shielded
+  )
+  target_include_directories(test_shielded_epoch_reset BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ShieldedEpochReset COMMAND test_shielded_epoch_reset)
+  set_tests_properties(ShieldedEpochReset PROPERTIES
+    LABELS "shielded;consensus;cv-binding;mandatory"
+    TIMEOUT 30
+  )
+  message(STATUS "Shielded epoch-reset tests enabled")
+endif()
+
+# #356: pure marker-guard decision for ApplyStatelessReplayShielded. Header-only
+# free function — no dinero library link needed, just gtest. Named so the
+# ShieldedBlockSection ctest gate regex also runs it.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_stateless_replay_shielded_decision.cpp)
+  add_executable(test_stateless_replay_shielded_decision
+    tests/consensus/test_stateless_replay_shielded_decision.cpp
+  )
+  add_dependencies(test_stateless_replay_shielded_decision gtest)
+  target_link_libraries(test_stateless_replay_shielded_decision PRIVATE
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+  )
+  target_include_directories(test_stateless_replay_shielded_decision BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ShieldedBlockSectionStatelessReplayDecision
+           COMMAND test_stateless_replay_shielded_decision)
+  set_tests_properties(ShieldedBlockSectionStatelessReplayDecision PROPERTIES
+    LABELS "shielded;consensus;mandatory"
+    TIMEOUT 30
+  )
+  message(STATUS "Stateless-replay shielded-decision tests enabled")
+endif()
+
+# ConnectBlockShieldedSection — shared connect-tail free function (Piece 0).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_block_section.cpp)
+  add_executable(test_shielded_block_section
+    tests/consensus/test_shielded_block_section.cpp
+  )
+  add_dependencies(test_shielded_block_section gtest dinero_shielded)
+  target_link_libraries(test_shielded_block_section PRIVATE
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+    dinero_shielded
+  )
+  target_include_directories(test_shielded_block_section BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ShieldedBlockSection COMMAND test_shielded_block_section)
+  set_tests_properties(ShieldedBlockSection PROPERTIES
+    LABELS "shielded;consensus;mandatory"
+    TIMEOUT 30
+  )
+  message(STATUS "Shielded block-section tests enabled")
+endif()
+
+# Task 5 (CSN shielded reorg invertibility): delta-recompute parity between
+# BlockValidator::ComputeShieldedDeltasForStoredBlock and the forward
+# STATELESS ConnectBlock per-tx loop. Needs the full consensus stack (real
+# forward connect as the oracle), the shielded prover (real bundles), and the
+# wallet Taproot signer (real BIP340 signatures so forward connect passes).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_csn_shielded_delta_parity.cpp)
+  add_executable(test_csn_shielded_delta_parity
+    tests/consensus/test_csn_shielded_delta_parity.cpp
+    tests/stubs/mempool_test_stubs.cpp  # no-op Mempool::forEachEntry etc.
+    tests/stubs/daemon_test_stubs.cpp   # BridgeNode, vault, PoolDB/Manager, extra Mempool
+    src/daemon/config.cpp               # GetConfig() — referenced by consensus_write_batch.obj
+    src/wallet/taproot_keys.cpp         # BIP340 Schnorr keygen/signing (test signing util)
+    src/wallet/taproot_tx_signer.cpp    # BIP341 Taproot sighash (test signing util)
+  )
+
+  add_dependencies(test_csn_shielded_delta_parity gtest)
+
+  target_link_libraries(test_csn_shielded_delta_parity PRIVATE
+    dinero_core
+    dinero_consensus
+    dinero_shielded
+    dinero_crypto
+    secp256k1
+    ${ROCKSDB_LIBRARY}
+    ${SQLITE3_LIBRARIES}
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+    )
+  if(TARGET bulletproofs_ffi)
+    target_link_libraries(test_csn_shielded_delta_parity PRIVATE bulletproofs_ffi)
+    if(TARGET build_bulletproofs_ffi)
+      add_dependencies(test_csn_shielded_delta_parity build_bulletproofs_ffi)
+    endif()
+  endif()
+  link_zstd_if_needed(test_csn_shielded_delta_parity)
+
+  target_include_directories(test_csn_shielded_delta_parity BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+
+  # Named so the ShieldedBlockSection ctest gate regex also runs this suite.
+  add_test(NAME ShieldedBlockSectionDeltaParity COMMAND test_csn_shielded_delta_parity)
+  set_tests_properties(ShieldedBlockSectionDeltaParity PROPERTIES
+    LABELS "shielded;consensus;mandatory"
+    TIMEOUT 300
+  )
+  message(STATUS "CSN shielded delta-parity tests enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/nullifier_set_tests.cpp)
   add_executable(test_nullifier_set
     src/test/nullifier_set_tests.cpp
@@ -1366,6 +1565,93 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
     TIMEOUT 600
   )
   message(STATUS "Shielded validation tests enabled")
+endif()
+
+# Audit Critical #1 — shielded cv-binding regression suite.
+# cv-bound proofs add ~430k EC constraints, so honest prove/verify cases are
+# slow; the TIMEOUT is generous accordingly.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
+  add_executable(test_shielded_cv_binding
+    tests/consensus/test_shielded_cv_binding.cpp
+  )
+  add_dependencies(test_shielded_cv_binding gtest dinero_shielded)
+  target_link_libraries(test_shielded_cv_binding PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_shielded
+    dinero_wallet
+    dinero_zk
+    sqlite3
+  )
+  target_include_directories(test_shielded_cv_binding BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/sqlite-amalgamation-3480000
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_cv_binding PRIVATE "-framework Security")
+  endif()
+  add_test(NAME ShieldedCvBinding COMMAND test_shielded_cv_binding)
+  set_tests_properties(ShieldedCvBinding PROPERTIES
+    LABELS "shielded;consensus;cv-binding;mandatory"
+    TIMEOUT 1800
+  )
+  message(STATUS "Shielded cv-binding tests enabled")
+endif()
+
+# cv-binding audit 2026-07-01: ec_add_complete selector-binding regression test
+if(TARGET dinero_zk AND TARGET gtest)
+  add_executable(test_ec_add_complete_binding
+    tests/zk/test_ec_add_complete_binding.cpp
+  )
+  add_dependencies(test_ec_add_complete_binding gtest dinero_zk)
+  target_link_libraries(test_ec_add_complete_binding PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_zk
+  )
+  target_include_directories(test_ec_add_complete_binding BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_ec_add_complete_binding PRIVATE "-framework Security")
+  endif()
+  add_test(NAME EcAddCompleteBinding COMMAND test_ec_add_complete_binding)
+  set_tests_properties(EcAddCompleteBinding PROPERTIES
+    LABELS "zk;shielded;cv-binding;mandatory"
+    TIMEOUT 300
+  )
+  message(STATUS "ec_add_complete binding regression test enabled")
+endif()
+
+# cv-binding audit 2026-07-01: sound fe_assert_less_than_p canonicity check
+if(TARGET dinero_zk AND TARGET gtest)
+  add_executable(test_fe_less_than_p
+    tests/zk/test_fe_less_than_p.cpp
+  )
+  add_dependencies(test_fe_less_than_p gtest dinero_zk)
+  target_link_libraries(test_fe_less_than_p PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_zk
+  )
+  target_include_directories(test_fe_less_than_p BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_fe_less_than_p PRIVATE "-framework Security")
+  endif()
+  add_test(NAME FeLessThanP COMMAND test_fe_less_than_p)
+  set_tests_properties(FeLessThanP PROPERTIES
+    LABELS "zk;shielded;cv-binding;mandatory"
+    TIMEOUT 300
+  )
+  message(STATUS "fe_assert_less_than_p canonicity test enabled")
 endif()
 
 # M3 PR B: native ShieldedProverKit C ABI for iOS
@@ -8209,6 +8495,38 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_stateless_proof_minimal.cpp)
     )
   endif()
   add_test(NAME UtreexoStatelessProofMinimal COMMAND test_stateless_proof_minimal)
+endif()
+
+# ============================================================================
+# Experimental: Utreexo Maturity-Bound Leaf Proof
+# ============================================================================
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utreexo_maturity_bound_leaf_experiment.cpp)
+  add_executable(test_utreexo_maturity_bound_leaf_experiment
+    tests/consensus/test_utreexo_maturity_bound_leaf_experiment.cpp
+  )
+  target_link_libraries(test_utreexo_maturity_bound_leaf_experiment PRIVATE
+    dinero_consensus
+    ${OPENSSL_CRYPTO_LIBRARY}
+    ${OPENSSL_SSL_LIBRARY}
+  )
+  link_zstd_if_needed(test_utreexo_maturity_bound_leaf_experiment)
+  target_include_directories(test_utreexo_maturity_bound_leaf_experiment PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${OPENSSL_INCLUDE_DIR}
+  )
+  if(APPLE)
+    target_link_libraries(test_utreexo_maturity_bound_leaf_experiment PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME UtreexoMaturityBoundLeafExperiment
+    COMMAND test_utreexo_maturity_bound_leaf_experiment)
+  set_tests_properties(UtreexoMaturityBoundLeafExperiment PROPERTIES
+    LABELS "consensus;utreexo;stateless;experiment"
+    TIMEOUT 10
+  )
 endif()
 
 # ============================================================================

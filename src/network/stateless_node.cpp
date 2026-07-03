@@ -3,6 +3,7 @@
 #include "daemon/peer_connection.h"
 #include "common/logger.h"
 #include "consensus/outpoint.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/utreexo_stump.h"
 #include "crypto/sha256.h"
 #include "primitives/uint256.h"
@@ -11,6 +12,7 @@
 #include <set>
 #include <sstream>
 #include <cstring>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace dinero {
@@ -19,20 +21,21 @@ namespace network {
 namespace {
 
 std::unordered_set<OutPoint> CollectEphemeralOutputs(const Block& block) {
-    std::unordered_set<OutPoint> intra_block_outputs;
+    std::unordered_map<OutPoint, size_t> intra_block_outputs;
     std::unordered_set<OutPoint> ephemeral_outputs;
 
-    for (const auto& tx : block.vtx) {
-        const TxId txid = tx.GetTxid();
-        for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
-            intra_block_outputs.insert(OutPoint(txid, vout));
+    for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+        const TxId txid = block.vtx[tx_idx].GetTxid();
+        for (uint32_t vout = 0; vout < block.vtx[tx_idx].vout.size(); ++vout) {
+            intra_block_outputs[OutPoint(txid, vout)] = tx_idx;
         }
     }
 
     for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
         for (const auto& input : block.vtx[tx_idx].vin) {
             const OutPoint prevout(input.prevout.txid, input.prevout.vout);
-            if (intra_block_outputs.count(prevout) != 0) {
+            auto output_it = intra_block_outputs.find(prevout);
+            if (output_it != intra_block_outputs.end() && output_it->second < tx_idx) {
                 ephemeral_outputs.insert(prevout);
             }
         }
@@ -41,7 +44,33 @@ std::unordered_set<OutPoint> CollectEphemeralOutputs(const Block& block) {
     return ephemeral_outputs;
 }
 
-std::vector<consensus::UtreexoHash> ComputeCanonicalAdditionHashes(const Block& block) {
+std::unordered_map<OutPoint, consensus::SpentOutputData> CollectIntraBlockSpentOutputs(
+    const Block& block,
+    uint32_t block_height
+) {
+    std::unordered_map<OutPoint, consensus::SpentOutputData> outputs;
+
+    for (const auto& tx : block.vtx) {
+        const TxId txid = tx.GetTxid();
+        for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+            consensus::SpentOutputData spent_output;
+            spent_output.value = tx.vout[vout].value.GetUna();
+            spent_output.scriptPubKey = tx.vout[vout].scriptPubKey;
+            spent_output.is_confidential = tx.vout[vout].is_confidential;
+            spent_output.commitment = tx.vout[vout].commitment;
+            spent_output.created_height = block_height;
+            spent_output.is_coinbase = tx.IsCoinbase();
+            outputs.emplace(OutPoint(txid, vout), std::move(spent_output));
+        }
+    }
+
+    return outputs;
+}
+
+std::vector<consensus::UtreexoHash> ComputeCanonicalAdditionHashes(
+    const Block& block,
+    uint32_t block_height
+) {
     const auto ephemeral_outputs = CollectEphemeralOutputs(block);
     std::vector<consensus::UtreexoHash> additions;
 
@@ -53,16 +82,150 @@ std::vector<consensus::UtreexoHash> ComputeCanonicalAdditionHashes(const Block& 
             }
 
             const auto& output = tx.vout[vout];
-            additions.push_back(consensus::HashUTXO(
+            additions.push_back(consensus::HashUTXOForCreationHeight(
                 txid.AsUint256(),
                 vout,
                 output.value.GetUna(),
-                output.scriptPubKey
+                output.scriptPubKey,
+                block_height,
+                tx.IsCoinbase()
             ));
         }
     }
 
     return additions;
+}
+
+size_t CountNonCoinbaseInputs(const Block& block) {
+    size_t count = 0;
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        count += block.vtx[tx_idx].vin.size();
+    }
+    return count;
+}
+
+bool SpentOutputMatches(
+    const consensus::SpentOutputData& actual,
+    const consensus::SpentOutputData& expected
+) {
+    return actual.value == expected.value &&
+           actual.scriptPubKey == expected.scriptPubKey &&
+           actual.is_confidential == expected.is_confidential &&
+           actual.commitment == expected.commitment &&
+           actual.created_height == expected.created_height &&
+           actual.is_coinbase == expected.is_coinbase;
+}
+
+bool ValidateStatelessMaturityMetadata(
+    const Block& block,
+    uint32_t validation_height,
+    const std::vector<consensus::UtreexoHash>& spend_targets,
+    const std::vector<consensus::SpentOutputData>* spent_outputs,
+    const char* context
+) {
+    const size_t input_count = CountNonCoinbaseInputs(block);
+    if (input_count == 0) {
+        return true;
+    }
+    const auto ephemeral_outputs = CollectEphemeralOutputs(block);
+    const auto intra_block_spent_outputs = CollectIntraBlockSpentOutputs(block, validation_height);
+    size_t forest_input_count = 0;
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        for (const auto& input : block.vtx[tx_idx].vin) {
+            if (ephemeral_outputs.count(OutPoint(input.prevout.txid, input.prevout.vout)) == 0) {
+                forest_input_count++;
+            }
+        }
+    }
+
+    const uint32_t activation = consensus::GetUtreexoMaturityLeafActivationHeight();
+    if (!spent_outputs) {
+        if (validation_height >= activation) {
+            g_logger.error(std::string(context) +
+                           ": missing spent-output metadata at/after maturity leaf activation");
+            return false;
+        }
+        return true;
+    }
+
+    if (spend_targets.size() != forest_input_count) {
+        g_logger.error(std::string(context) +
+                       ": spend target count mismatch: expected=" +
+                       std::to_string(forest_input_count) + " got=" +
+                       std::to_string(spend_targets.size()));
+        return false;
+    }
+
+    if (spent_outputs->size() != input_count) {
+        g_logger.error(std::string(context) +
+                       ": spent-output metadata count mismatch: expected=" +
+                       std::to_string(input_count) + " got=" +
+                       std::to_string(spent_outputs->size()));
+        return false;
+    }
+
+    size_t spent_index = 0;
+    size_t target_index = 0;
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        for (const auto& input : block.vtx[tx_idx].vin) {
+            const auto& spent = (*spent_outputs)[spent_index];
+            const OutPoint prevout(input.prevout.txid, input.prevout.vout);
+            if (ephemeral_outputs.count(prevout) != 0) {
+                const auto intra_block_it = intra_block_spent_outputs.find(prevout);
+                if (intra_block_it == intra_block_spent_outputs.end() ||
+                    !SpentOutputMatches(spent, intra_block_it->second)) {
+                    g_logger.error(std::string(context) +
+                                   ": spent-output metadata does not match intra-block output at input " +
+                                   std::to_string(spent_index));
+                    return false;
+                }
+            } else {
+                const auto expected_leaf = consensus::HashUTXOForCreationHeight(
+                    input.prevout.txid.AsUint256(),
+                    input.prevout.vout,
+                    spent.value,
+                    spent.scriptPubKey,
+                    spent.created_height,
+                    spent.is_coinbase);
+                if (expected_leaf != spend_targets[target_index]) {
+                    g_logger.error(std::string(context) +
+                                   ": spent-output metadata does not match spend target at input " +
+                                   std::to_string(spent_index));
+                    return false;
+                }
+                target_index++;
+            }
+
+            const auto maturity_status = consensus::EvaluateUtreexoStatelessMaturity(
+                validation_height,
+                spent.created_height,
+                spent.is_coinbase);
+            if (maturity_status == consensus::UtreexoStatelessMaturityStatus::IMMATURE_COINBASE) {
+                g_logger.error(std::string(context) +
+                               ": immature v2 coinbase spend at input " +
+                               std::to_string(spent_index) +
+                               " created_height=" + std::to_string(spent.created_height) +
+                               " validation_height=" + std::to_string(validation_height));
+                return false;
+            }
+            if (maturity_status == consensus::UtreexoStatelessMaturityStatus::LEGACY_DEFERRED) {
+                g_logger.warning(std::string(context) +
+                                 ": legacy Utreexo leaf maturity is deferred at input " +
+                                 std::to_string(spent_index));
+            }
+            spent_index++;
+        }
+    }
+
+    if (target_index != spend_targets.size()) {
+        g_logger.error(std::string(context) +
+                       ": spend target usage mismatch: used=" +
+                       std::to_string(target_index) + " provided=" +
+                       std::to_string(spend_targets.size()));
+        return false;
+    }
+
+    return true;
 }
 
 bool ApplyAccumulatorDelta(
@@ -404,7 +567,7 @@ bool StatelessNode::ValidateUtreexoProof(
     //    ConnectBlock() in STATELESS mode assumes the canonical forest has
     //    already been advanced here, so batch validation must mutate the
     //    forest on success and leave it untouched on failure.
-    auto additions = ComputeCanonicalAdditionHashes(block);
+    auto additions = ComputeCanonicalAdditionHashes(block, proof_msg.block_height);
     consensus::UtreexoForest working_forest = *utreexo_forest_;
     if (!ApplyAccumulatorDelta(
             working_forest,
@@ -625,7 +788,8 @@ bool StatelessNode::ValidateWithTransitionProof(
 bool StatelessNode::ValidateUtreexoTx(
     const Transaction& tx,
     const std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>>& input_proofs,
-    const consensus::UtreexoHash& accumulator_root
+    const consensus::UtreexoHash& accumulator_root,
+    uint32_t validation_height
 ) {
     // Helper: hex encoding for UtreexoHash
     auto toHex = [](const consensus::UtreexoHash& h) -> std::string {
@@ -664,12 +828,31 @@ bool StatelessNode::ValidateUtreexoTx(
 
         const auto& [proof, spent_output] = input_proofs[proof_idx];
 
+        const auto maturity_status = consensus::EvaluateUtreexoStatelessMaturity(
+            validation_height,
+            spent_output.created_height,
+            spent_output.is_coinbase);
+        if (maturity_status == consensus::UtreexoStatelessMaturityStatus::IMMATURE_COINBASE) {
+            g_logger.warning("[StatelessNode-TX] Immature coinbase input rejected: created_height=" +
+                             std::to_string(spent_output.created_height) +
+                             " validation_height=" + std::to_string(validation_height));
+            return false;
+        }
+        if (maturity_status == consensus::UtreexoStatelessMaturityStatus::LEGACY_DEFERRED &&
+            validation_height >= consensus::GetUtreexoMaturityLeafActivationHeight()) {
+            g_logger.warning("[StatelessNode-TX] Legacy Utreexo leaf maturity is not provable at input " +
+                             std::to_string(proof_idx));
+            return false;
+        }
+
         // Compute leaf hash
         consensus::UtreexoHash leaf_hash = ComputeLeafHash(
             input.prevout.txid.AsUint256(),
             input.prevout.vout,
             spent_output.value,
-            spent_output.scriptPubKey
+            spent_output.scriptPubKey,
+            spent_output.created_height,
+            spent_output.is_coinbase
         );
 
         // Verify inclusion proof
@@ -798,7 +981,9 @@ std::vector<consensus::UtreexoHash> StatelessNode::ExtractTargetsFromBlock(
                     input.prevout.txid.AsUint256(),
                     input.prevout.vout,
                     spent_output.value,
-                    spent_output.scriptPubKey
+                    spent_output.scriptPubKey,
+                    spent_output.created_height,
+                    spent_output.is_coinbase
                 );
                 targets.push_back(leaf_hash);
             }
@@ -815,11 +1000,12 @@ consensus::UtreexoHash StatelessNode::ComputeLeafHash(
     const uint256& txid,
     uint32_t vout,
     uint64_t value,
-    const std::vector<uint8_t>& script_pub_key
+    const std::vector<uint8_t>& script_pub_key,
+    uint32_t created_height,
+    bool is_coinbase
 ) {
-    // Delegate to canonical HashUTXO which includes the domain tag
-    // "DINERO-UTXO-LEAF-v1" — must match miner/block_assembler for root consistency
-    return consensus::HashUTXO(txid, vout, value, script_pub_key);
+    return consensus::HashUTXOForCreationHeight(
+        txid, vout, value, script_pub_key, created_height, is_coinbase);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -851,14 +1037,28 @@ void StatelessNode::RewindToCheckpoint(uint32_t height, const consensus::Utreexo
                  }());
 }
 
-bool StatelessNode::ReplayBlock(const Block& block, const std::vector<consensus::UtreexoHash>& spend_targets) {
+bool StatelessNode::ReplayBlock(
+    const Block& block,
+    uint32_t block_height,
+    const std::vector<consensus::UtreexoHash>& spend_targets,
+    const std::vector<consensus::SpentOutputData>* spent_outputs
+) {
     try {
+        if (!ValidateStatelessMaturityMetadata(
+                block,
+                block_height,
+                spend_targets,
+                spent_outputs,
+                "[StatelessNode] ReplayBlock")) {
+            return false;
+        }
+
         // Transactional replay:
         // mutate a working copy first, verify root commitment, then commit.
         // This prevents partial forest mutation on any failure path.
         consensus::UtreexoForest working_forest = *utreexo_forest_;
 
-        const auto additions = ComputeCanonicalAdditionHashes(block);
+        const auto additions = ComputeCanonicalAdditionHashes(block, block_height);
         if (!ApplyAccumulatorDelta(
                 working_forest,
                 spend_targets,

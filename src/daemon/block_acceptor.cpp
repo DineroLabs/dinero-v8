@@ -53,6 +53,10 @@ extern void notifyWalletNewBlock(int height, const std::string& blockHash, const
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <cstdlib>  // getenv, strtol — regtest fault-injection hook (#356 Task 3)
+#include <cerrno>   // errno for strtol error checking
+#include <cstdio>   // fflush
+#include <unistd.h> // _exit (POSIX)
 
 using namespace dinero;
 
@@ -2075,6 +2079,40 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
         }
 
         LOG_INFO("✅ Block metadata committed atomically at height " + std::to_string(height));
+
+        // Regtest-only fault-injection: abort AFTER the block body + header +
+        // metadata (BLOCK_HAVE_DATA, file/pos/size) are durably committed to
+        // ChainDB via the atomic writeBatch above — i.e. the block is stored
+        // AND indexed — but BEFORE it is connected (ConnectBlock is always
+        // called with updateTip=false from AcceptBlockFromRPC; the caller's
+        // subsequent ActivateBestChain()->ConnectTip() call is what actually
+        // advances the tip). This deterministically reproduces the
+        // crash-between-store-and-connect state that drives ConnectTip's
+        // stateless recovery branch (#356). The BlockIndex population below
+        // this point is in-memory bookkeeping only — irrelevant to what a
+        // restarted process observes, since recovery rebuilds it from the
+        // ChainDB metadata just committed. Inert unless we are on regtest AND
+        // the env var is set AND it matches this height. The regtest gate means
+        // this debug facility cannot fire on mainnet/testnet even if the env
+        // var leaks into a production environment. _exit(70) bypasses
+        // destructors so nothing else commits/flushes.
+        if (dinero::Params().name == "regtest") {
+        if (const char* abort_height_env = std::getenv("DINERO_DEBUG_ABORT_AFTER_STORE_HEIGHT")) {
+            errno = 0;
+            char* parse_end = nullptr;
+            const long want_height = std::strtol(abort_height_env, &parse_end, 10);
+            // Require the ENTIRE value to be a clean integer (parse_end at NUL),
+            // so "6garbage" does not fire at height 6.
+            if (parse_end != abort_height_env && *parse_end == '\0' && errno == 0 &&
+                want_height >= 0 && static_cast<long>(height) == want_height) {
+                LOG_ERROR("💥 [DEBUG] DINERO_DEBUG_ABORT_AFTER_STORE_HEIGHT=" +
+                          std::string(abort_height_env) + " — aborting after block store+index at height " +
+                          std::to_string(height) + " (pre-connect) for #356 recovery test");
+                std::fflush(nullptr);
+                _exit(70);
+            }
+        }
+        }
 
         // ========================================================================
         // Phase 41: Populate BlockIndex for automatic fork selection

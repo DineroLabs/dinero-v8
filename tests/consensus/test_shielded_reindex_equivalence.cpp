@@ -4,6 +4,8 @@
 #include "dinero/compat/int128.hpp"
 #include "consensus/merkle_root.h"
 #include "consensus/reindexer.h"
+#include "consensus/shielded/binding_sig.h"
+#include "consensus/shielded/bundle_builder.h"
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/shielded_block_validation.h"
 #include "consensus/shielded/shielded_circuit.h"
@@ -146,6 +148,69 @@ sh::ShieldedSpend MakeProvenSpend(const TestNote& note,
     spend.zk_proof = sh::ProveSpend(witness, pub, nullptr);
     Require(!spend.zk_proof.empty(), "failed to prove shielded spend fixture");
     return spend;
+}
+
+// Inflation-fix update: the live reindexer now requires a non-empty aggregated
+// range proof + valid Schnorr binding sig on every active-height bundle. The
+// PlannedOutput/PlannedSpend variants below carry the same real Spartan proofs
+// as their MakeProven* counterparts plus the cv blind (rcv), rangeproof nonce,
+// and a `value_una` chosen so the builder-derived value_balance matches the
+// transparent delta of the carrying tx. (The cv value need not equal the note's
+// committed value — the circuit does not yet bind cv to the note value; that is
+// the out-of-scope second inflation vector. This fixture exercises the
+// range-proof + binding-sig path, not cv↔note binding.)
+sh::PlannedOutput MakePlannedOutput(const TestNote& note,
+                                    uint64_t value_una,
+                                    uint8_t blind_seed) {
+    sh::OutputWitness witness;
+    witness.value = note.value_hash;
+    witness.public_key = note.public_key;
+    witness.randomness = note.randomness;
+    witness.d = sh::Hash{};
+
+    sh::OutputPublicInputs pub;
+    pub.commitment = note.commitment;
+
+    sh::PlannedOutput po;
+    po.commitment = note.commitment;
+    po.value_una = value_una;
+    po.rcv = MakeHash(blind_seed);
+    po.encrypted_note = std::vector<uint8_t>(32, 0xAA);
+    po.output_proof = sh::ProveOutput(witness, pub, nullptr);
+    Require(!po.output_proof.empty(), "failed to prove planned shielded output");
+    po.nonce = MakeHash(static_cast<uint8_t>(blind_seed + 1));
+    return po;
+}
+
+sh::PlannedSpend MakePlannedSpend(const TestNote& note,
+                                  uint64_t leaf_index,
+                                  const sh::CommitmentTree& tree,
+                                  uint64_t value_una,
+                                  uint8_t blind_seed) {
+    auto auth_path = tree.GetAuthPath(leaf_index);
+    Require(auth_path.has_value(), "missing auth path for planned shielded spend");
+
+    sh::SpendWitness witness;
+    witness.secret_key = note.secret_key;
+    witness.leaf_index = leaf_index;
+    witness.value = note.value_hash;
+    witness.randomness = note.randomness;
+    witness.d = sh::Hash{};
+    witness.merkle_path = auth_path->siblings;
+
+    sh::SpendPublicInputs pub;
+    pub.nullifier = sh::ComputeNullifier(note.secret_key, leaf_index);
+    pub.anchor = tree.Root();
+
+    sh::PlannedSpend ps;
+    ps.nullifier = pub.nullifier;
+    ps.anchor = pub.anchor;
+    ps.value_una = value_una;
+    ps.rcv = MakeHash(blind_seed);
+    ps.spend_proof = sh::ProveSpend(witness, pub, nullptr);
+    Require(!ps.spend_proof.empty(), "failed to prove planned shielded spend");
+    ps.nonce = MakeHash(static_cast<uint8_t>(blind_seed + 1));
+    return ps;
 }
 
 struct RefOutPoint {
@@ -292,6 +357,29 @@ dinero::Transaction MakeShieldedTx(const dinero::uint256& prev_txid,
     return tx;
 }
 
+// Build a transparent shielded tx, then attach a builder-produced bundle whose
+// binding sig is signed over the tx's canonical sighash (which does not depend
+// on the bundle bytes). The supplied value_una values must yield
+// value_balance == the tx's transparent delta.
+dinero::Transaction MakeShieldedTxWithBuiltBundle(
+        const dinero::uint256& prev_txid,
+        uint32_t prev_vout,
+        uint64_t output_value,
+        uint64_t fee,
+        const std::vector<sh::PlannedSpend>& spends,
+        const std::vector<sh::PlannedOutput>& outputs,
+        uint8_t tag) {
+    dinero::Transaction tx =
+        MakeShieldedTx(prev_txid, prev_vout, output_value, fee, sh::ShieldedBundle{}, tag);
+    const sh::Hash sighash = sh::ComputeShieldedTxSighash(tx);
+    sh::ShieldedBundle bundle;
+    Require(sh::BuildShieldedBundle(spends, outputs, sighash, bundle) ==
+                sh::BundleBuildResult::Ok,
+            "BuildShieldedBundle failed for reindex fixture");
+    tx.shielded_bundle_bytes = sh::SerializeShieldedBundle(bundle);
+    return tx;
+}
+
 PrefixExpectation FinalizeAndApplyReferenceBlock(dinero::Block& block,
                                                  uint32_t height,
                                                  const dinero::uint256& prev_hash,
@@ -413,7 +501,7 @@ PrefixExpectation FinalizeAndApplyReferenceBlock(dinero::Block& block,
             auto it = state.utxos.find(key);
             Require(it != state.utxos.end(), "reference pre-block UTXO missing for forest removal");
 
-            const auto leaf_hash = dinero::consensus::HashUTXO(
+            const auto leaf_hash = dinero::consensus::HashUTXOLegacy(
                 input.prevout.txid.AsUint256(),
                 input.prevout.vout,
                 it->second.is_confidential ? 0 : it->second.amount,
@@ -433,7 +521,7 @@ PrefixExpectation FinalizeAndApplyReferenceBlock(dinero::Block& block,
                 continue;
             }
             const auto& output = tx.vout[vout];
-            const auto leaf_hash = dinero::consensus::HashUTXO(
+            const auto leaf_hash = dinero::consensus::HashUTXOLegacy(
                 txid,
                 vout,
                 output.is_confidential ? 0 : output.value.GetUna(),
@@ -566,15 +654,15 @@ int main(int argc, char** argv) {
 
         const auto note1 = MakeSpendableNote(0x10);
         // Height 2: shield from transparent into shielded pool.
+        // Transparent delta = 50 (coinbase in) - 40 (out) - 1 (fee) = +9, so the
+        // builder must derive value_balance = +9 (one output of value_una 9).
         {
-            sh::ShieldedBundle bundle;
-            bundle.value_balance = 9;
-            bundle.outputs.push_back(MakeProvenOutput(note1));
-
             dinero::Block block;
             block.vtx.push_back(MakeCoinbaseTx(2, 50, 0x12));
-            block.vtx.push_back(MakeShieldedTx(
-                blocks[0].vtx[0].GetTxid().AsUint256(), 0, 40, 1, bundle, 0x21));
+            block.vtx.push_back(MakeShieldedTxWithBuiltBundle(
+                blocks[0].vtx[0].GetTxid().AsUint256(), 0, 40, 1,
+                /*spends=*/{}, {MakePlannedOutput(note1, /*value_una=*/9, 0x30)},
+                0x21));
             expectations.push_back(FinalizeAndApplyReferenceBlock(
                 block, 2, blocks.back().GetHash(), state));
             blocks.push_back(std::move(block));
@@ -582,31 +670,30 @@ int main(int argc, char** argv) {
 
         const auto note2 = MakeSpendableNote(0x40);
         // Height 3: shielded transfer (spend note1, create note2).
+        // Transparent delta = 40 - 39 - 1 = 0, so spend/output value_una are equal.
         {
-            sh::ShieldedBundle bundle;
-            bundle.value_balance = 0;
-            bundle.spends.push_back(MakeProvenSpend(note1, 0, state.tree));
-            bundle.outputs.push_back(MakeProvenOutput(note2));
-
             dinero::Block block;
             block.vtx.push_back(MakeCoinbaseTx(3, 50, 0x13));
-            block.vtx.push_back(MakeShieldedTx(
-                blocks[1].vtx[1].GetTxid().AsUint256(), 0, 39, 1, bundle, 0x22));
+            block.vtx.push_back(MakeShieldedTxWithBuiltBundle(
+                blocks[1].vtx[1].GetTxid().AsUint256(), 0, 39, 1,
+                {MakePlannedSpend(note1, 0, state.tree, /*value_una=*/1000, 0x32)},
+                {MakePlannedOutput(note2, /*value_una=*/1000, 0x34)},
+                0x22));
             expectations.push_back(FinalizeAndApplyReferenceBlock(
                 block, 3, blocks.back().GetHash(), state));
             blocks.push_back(std::move(block));
         }
 
         // Height 4: unshield note2 back to transparent.
+        // Transparent delta = 39 - 43 - 1 = -5, so the spend's value_una = 5
+        // (no outputs) gives value_balance = 0 - 5 = -5.
         {
-            sh::ShieldedBundle bundle;
-            bundle.value_balance = -5;
-            bundle.spends.push_back(MakeProvenSpend(note2, 1, state.tree));
-
             dinero::Block block;
             block.vtx.push_back(MakeCoinbaseTx(4, 50, 0x14));
-            block.vtx.push_back(MakeShieldedTx(
-                blocks[2].vtx[1].GetTxid().AsUint256(), 0, 43, 1, bundle, 0x23));
+            block.vtx.push_back(MakeShieldedTxWithBuiltBundle(
+                blocks[2].vtx[1].GetTxid().AsUint256(), 0, 43, 1,
+                {MakePlannedSpend(note2, 1, state.tree, /*value_una=*/5, 0x36)},
+                /*outputs=*/{}, 0x23));
             expectations.push_back(FinalizeAndApplyReferenceBlock(
                 block, 4, blocks.back().GetHash(), state));
             blocks.push_back(std::move(block));

@@ -5,6 +5,7 @@
 #include "crypto/sha256.h"
 #include "consensus/outpoint.h"  // For OutPoint type
 #include "consensus/undo.h"      // For UndoRecord (spent UTXO fallback)
+#include "consensus/utreexo_maturity_leaf_activation.h"
 // Wallet header removed - bridge_node uses only IUTXOProvider interface
 #include <stdexcept>
 #include <sstream>
@@ -33,7 +34,8 @@ std::unordered_set<OutPoint> CollectEphemeralOutputs(const Block& block) {
     for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
         for (const auto& input : block.vtx[tx_idx].vin) {
             const OutPoint prevout(input.prevout.txid, input.prevout.vout);
-            if (intra_block_outputs.count(prevout) != 0) {
+            auto output_it = intra_block_outputs.find(prevout);
+            if (output_it != intra_block_outputs.end() && output_it->second < tx_idx) {
                 ephemeral_outputs.insert(prevout);
             }
         }
@@ -43,7 +45,8 @@ std::unordered_set<OutPoint> CollectEphemeralOutputs(const Block& block) {
 }
 
 std::unordered_map<OutPoint, consensus::SpentOutputData> CollectIntraBlockSpentOutputs(
-    const Block& block
+    const Block& block,
+    uint32_t block_height
 ) {
     std::unordered_map<OutPoint, consensus::SpentOutputData> outputs;
 
@@ -55,6 +58,8 @@ std::unordered_map<OutPoint, consensus::SpentOutputData> CollectIntraBlockSpentO
             spent_output.scriptPubKey = tx.vout[vout].scriptPubKey;
             spent_output.is_confidential = tx.vout[vout].is_confidential;
             spent_output.commitment = tx.vout[vout].commitment;
+            spent_output.created_height = block_height;
+            spent_output.is_coinbase = tx.IsCoinbase();
             outputs.emplace(OutPoint(txid, vout), std::move(spent_output));
         }
     }
@@ -226,7 +231,7 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
     std::vector<consensus::UtreexoHash> spend_targets;
     std::vector<uint64_t> spend_positions;
     const auto ephemeral_outputs = CollectEphemeralOutputs(block);
-    const auto intra_block_spent_outputs = CollectIntraBlockSpentOutputs(block);
+    const auto intra_block_spent_outputs = CollectIntraBlockSpentOutputs(block, block_height);
 
     // 2a. Process all transactions (skip coinbase)
     for (size_t tx_idx = 0; tx_idx < block.vtx.size(); tx_idx++) {
@@ -244,10 +249,17 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
             std::vector<uint8_t> utxo_script;
             bool utxo_is_confidential = false;
             std::vector<uint8_t> utxo_commitment;
+            uint32_t utxo_created_height = 0;
+            bool utxo_is_coinbase = false;
             const auto intra_block_it = intra_block_spent_outputs.find(outpoint);
-            if (intra_block_it != intra_block_spent_outputs.end()) {
+            if (ephemeral_outputs.count(outpoint) != 0 &&
+                intra_block_it != intra_block_spent_outputs.end()) {
                 utxo_value = intra_block_it->second.value;
                 utxo_script = intra_block_it->second.scriptPubKey;
+                utxo_is_confidential = intra_block_it->second.is_confidential;
+                utxo_commitment = intra_block_it->second.commitment;
+                utxo_created_height = intra_block_it->second.created_height;
+                utxo_is_coinbase = intra_block_it->second.is_coinbase;
             } else {
                 // Look up UTXO from current chainstate
                 std::optional<consensus::UTXOEntry> utxo_opt;
@@ -260,6 +272,8 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
                     utxo_script = utxo_opt.value().scriptPubKey;
                     utxo_is_confidential = utxo_opt.value().is_confidential;
                     utxo_commitment = utxo_opt.value().commitment;
+                    utxo_created_height = utxo_opt.value().height;
+                    utxo_is_coinbase = utxo_opt.value().isCoinbase;
                 } else {
                     // UTXO already consumed — fall back to undo record
                     if (!undo_loaded && chain_db_) {
@@ -282,6 +296,8 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
                                 utxo_script = sc.scriptPubKey;
                                 utxo_is_confidential = sc.is_confidential;
                                 utxo_commitment = sc.commitment;
+                                utxo_created_height = sc.height;
+                                utxo_is_coinbase = sc.is_coinbase;
                                 found_in_undo = true;
                                 break;
                             }
@@ -303,6 +319,8 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
             spent_output.scriptPubKey = utxo_script;
             spent_output.is_confidential = utxo_is_confidential;
             spent_output.commitment = utxo_commitment;
+            spent_output.created_height = utxo_created_height;
+            spent_output.is_coinbase = utxo_is_coinbase;
             proof_data.spent_outputs.push_back(spent_output);
 
             // Intra-block spends are ephemeral: they never exist in the
@@ -317,7 +335,9 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
                 input.prevout.txid.AsUint256(),
                 input.prevout.vout,
                 utxo_value,
-                utxo_script
+                utxo_script,
+                utxo_created_height,
+                utxo_is_coinbase
             );
 
             // Historical block proofs must use the canonical per-target sequential
@@ -343,6 +363,7 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
     proof_data.spend_proof.targets = spend_targets;
     proof_data.spend_proof.positions = spend_positions;
     proof_data.spend_proof.numLeaves = proof_forest->getNumLeaves();
+    proof_data.spend_proof.format_version = consensus::GetUtreexoProofFormatVersion(block_height);
 
     for (size_t i = 0; i < spend_positions.size(); ++i) {
         auto proof_opt = proof_forest->prove(spend_positions[i]);
@@ -417,7 +438,14 @@ BridgeNode::GenerateProofForUTXO(const uint256& txid, uint32_t vout) {
     const auto& utxo = utxo_opt.value();
 
     // Compute leaf hash
-    consensus::UtreexoHash leaf_hash = ComputeLeafHash(txid, vout, utxo.value.GetUna(), utxo.scriptPubKey);
+    consensus::UtreexoHash leaf_hash = ComputeLeafHash(
+        txid,
+        vout,
+        utxo.value.GetUna(),
+        utxo.scriptPubKey,
+        utxo.height,
+        utxo.isCoinbase
+    );
 
     // Find position
     auto position_opt = utreexo_forest_->findLeafPosition(leaf_hash);
@@ -437,6 +465,8 @@ BridgeNode::GenerateProofForUTXO(const uint256& txid, uint32_t vout) {
     spent_output.scriptPubKey = utxo.scriptPubKey;
     spent_output.is_confidential = utxo.is_confidential;
     spent_output.commitment = utxo.commitment;
+    spent_output.created_height = utxo.height;
+    spent_output.is_coinbase = utxo.isCoinbase;
 
     return std::make_pair(proof_opt.value(), spent_output);
 }
@@ -666,11 +696,18 @@ consensus::UtreexoHash BridgeNode::ComputeLeafHash(
     const uint256& txid,
     uint32_t vout,
     uint64_t value,
-    const std::vector<uint8_t>& script_pub_key
+    const std::vector<uint8_t>& script_pub_key,
+    uint32_t created_height,
+    bool is_coinbase
 ) const {
-    // Delegate to canonical HashUTXO which includes the domain tag
-    // "DINERO-UTXO-LEAF-v1" — must match miner/block_assembler for root consistency
-    return consensus::HashUTXO(txid, vout, value, script_pub_key);
+    return consensus::HashUTXOForCreationHeight(
+        txid,
+        vout,
+        value,
+        script_pub_key,
+        created_height,
+        is_coinbase
+    );
 }
 
 void BridgeNode::DeduplicateProofHashes(std::vector<consensus::UtreexoHash>& proof_hashes) const {

@@ -84,7 +84,7 @@ uint256 ComputeUtreexoRootAfterAddingOutputs(const Block& block) {
         const TxId txid = tx.GetTxid();
         for (size_t n = 0; n < tx.vout.size(); ++n) {
             const auto& output = tx.vout[n];
-            const auto leaf = consensus::HashUTXO(
+            const auto leaf = consensus::HashUTXOLegacy(
                 txid.AsUint256(),
                 static_cast<uint32_t>(n),
                 output.is_confidential ? 0 : output.value.GetUna(),

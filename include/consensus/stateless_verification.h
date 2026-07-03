@@ -32,6 +32,7 @@
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include <cstdint>
+#include <type_traits>
 
 namespace dinero {
 namespace consensus {
@@ -62,15 +63,17 @@ struct VerifyResult {
     uint64_t fees;              // Total fees if valid
     uint32_t outputs_created;   // New UTXOs created
     uint32_t inputs_spent;      // UTXOs spent
+    bool maturity_deferred;     // Coinbase maturity could not be independently verified
 
     constexpr bool valid() const { return error == VerifyError::OK; }
 
-    static constexpr VerifyResult Ok(uint64_t f, uint32_t out, uint32_t in) {
-        return {VerifyError::OK, f, out, in};
+    static constexpr VerifyResult Ok(uint64_t f, uint32_t out, uint32_t in,
+                                     bool deferred = false) {
+        return {VerifyError::OK, f, out, in, deferred};
     }
 
     static constexpr VerifyResult Fail(VerifyError e) {
-        return {e, 0, 0, 0};
+        return {e, 0, 0, 0, false};
     }
 };
 
@@ -112,6 +115,11 @@ struct StatelessContext {
 
 /**
  * VerifyBlockStateless - Pure stateless block verification
+ *
+ * Reference/test helper. Live daemon block acceptance is enforced by
+ * BlockValidator plus StatelessNode::ReplayBlock so accumulator mutation,
+ * script validation, Utreexo root transition, and reorg replay share the same
+ * consensus path.
  *
  * INVARIANTS (enforced by design):
  *   - const-correct: all parameters are const
@@ -206,6 +214,15 @@ UtreexoHash ComputeUTXOLeafHash(
     uint64_t value,
     const uint8_t* script,
     uint32_t script_len) noexcept;
+
+UtreexoHash ComputeUTXOLeafHashV2(
+    const uint256& txid,
+    uint32_t vout,
+    uint64_t value,
+    const uint8_t* script,
+    uint32_t script_len,
+    uint32_t created_height,
+    bool is_coinbase) noexcept;
 
 // ============================================================================
 // Helper: Get block subsidy (pure)

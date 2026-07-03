@@ -72,6 +72,29 @@ public:
     // Phase 8: Get current validation mode
     ValidationMode getValidationMode() const { return validation_mode_; }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Stateless coinbase-maturity DEFERRAL (interim consensus-split mitigation)
+    // ─────────────────────────────────────────────────────────────────────────
+    // In STATELESS mode the node CANNOT independently validate the coinbase
+    // maturity rule (COINBASE_MATURITY): the Utreexo leaf commits to neither the
+    // creating height nor an is_coinbase flag, and SpentOutputData carries
+    // neither. The stateful path enforces maturity at block_validation.cpp
+    // (UTXOEntry.isCoinbase / height); the stateless path structurally cannot.
+    //
+    // Rather than silently PRETEND the rule was checked (the original bug), a
+    // stateless validator explicitly DEFERS this single rule to consensus /
+    // most-work — i.e. it follows the chain produced by maturity-enforcing
+    // stateful miners and bridge full nodes instead of independently vouching a
+    // block as fully consensus-valid for maturity. This flag records that the
+    // node processed a stateless spend-block WITHOUT independently validating
+    // coinbase maturity, so higher layers / RPC must not represent this node as
+    // a full independent validator of that rule.
+    //
+    // NON-FORKING: this changes no consensus rule a stateful node enforces and
+    // rejects no block a stateful node accepts. The durable cryptographic fix is
+    // the future leaf-format hard fork (see FOLLOW-UP in block_validation.cpp).
+    bool statelessMaturityUnverified() const { return stateless_maturity_unverified_; }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // CONSENSUS-CRITICAL: Utreexo Enforcement (NO BYPASS)
     // ═══════════════════════════════════════════════════════════════════════════
@@ -260,6 +283,59 @@ private:
                               bool verify_root, std::string& error,
                               CPUBudgetMonitor* cpu_monitor = nullptr);
 
+public:
+    // v7 shielded-pool block-level validation + atomic state apply (commitment
+    // tree appends, nullifier inserts, anchor-history record, and the shielded
+    // epoch reset at the cutover). Invoked by BOTH the stateful path and the
+    // STATELESS/CSN path of ConnectBlockInternal — a CSN must build the shielded
+    // tree/anchors/nullifiers too, or it cannot validate shielded spends (anchor
+    // absent) and its shielded double-spend detection is non-functional. No-op
+    // when shielded state is not wired. Returns false (with `error` set) on a
+    // consensus failure. `pending_shielded_deltas` is the per-shielded-tx
+    // transparent value delta computed in the per-tx loop above. Public since
+    // the ABC-CSN reorg replay leg (chainstate_service.cpp) applies shielded
+    // state for replayed blocks through this same funnel.
+    bool ApplyBlockShieldedSection(const Block& block, uint32_t height,
+                                   const std::vector<int64_t>& pending_shielded_deltas,
+                                   BlockUndo& undo, std::string& error);
+
+    // ABC-CSN reorg replay: recompute `pending_shielded_deltas` for an
+    // already-stored block EXACTLY as the forward STATELESS per-tx loop in
+    // ConnectBlockInternal does: walk non-coinbase txs in block order; each
+    // input consumes one entry of `block.utreexo->spent_outputs` at a single
+    // GLOBAL index (never reset per tx), summing `spent_output.value` into the
+    // tx's total_input_value; `total_output_value = SumOutputs(tx)`; fee via
+    // ComputeValidatedTransactionFee with fee_input_utxos built from the same
+    // SpentOutputData; for shielded-semantics txs the delta comes from
+    // ValidateShieldedTransactionBundle — the same function, same inputs, with
+    // the validator's CURRENT shielded state as const context — so the result
+    // is bit-identical to forward validation by construction.
+    //
+    // Does NOT mutate any validator state, and skips script/signature
+    // validation (the block was already fully validated when first stored);
+    // it does NOT skip any delta-relevant computation.
+    //
+    // `fallback_spent_outputs` is consulted ONLY when `block.utreexo` is
+    // absent (CSN replay records can carry the spend metadata when the stored
+    // block does not). A block with no shielded txs returns true with empty
+    // deltas without requiring spend metadata (legacy hash-only replay
+    // records must not brick transparent-only reorgs). A shielded-bearing
+    // block with neither source, or whose spent_outputs underrun the block's
+    // inputs, returns false with a distinct error.
+    bool ComputeShieldedDeltasForStoredBlock(
+        const Block& block, uint32_t height,
+        std::vector<int64_t>& deltas_out, std::string& error,
+        const std::vector<SpentOutputData>* fallback_spent_outputs = nullptr);
+
+    // Serialized shielded commitment-tree frontier of the validator's CURRENT
+    // shielded state; empty when no shielded tree is wired. Mirrors the
+    // pre-block capture at the top of ConnectBlockInternal so the ABC-CSN
+    // replay leg can populate BlockUndo::pre_block_shielded_frontier BEFORE
+    // ApplyBlockShieldedSection without changing that method's signature or
+    // behavior for its existing callers.
+    std::vector<uint8_t> SerializeShieldedFrontier() const;
+
+private:
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase 2: Pure Consensus - Single Dependency
     // ═══════════════════════════════════════════════════════════════════════════
@@ -274,6 +350,11 @@ private:
     IConsensusUTXOSet* consensus_utxo_set_;  // Phase 2: Pure consensus UTXO set (owns forest)
     IBDConfig ibd_config_;  // Phase 5: IBD mode (stateful vs stateless)
     ValidationMode validation_mode_ = ValidationMode::STATEFUL;  // Phase 8: Validation mode (default: stateful)
+
+    // Set true the first time the STATELESS path processes a spend-block whose
+    // coinbase-maturity rule could not be independently validated (deferred to
+    // consensus). See statelessMaturityUnverified() above. Latches; never reset.
+    bool stateless_maturity_unverified_ = false;
 
     // Intra-block UTXO overlay: tracks outputs created by earlier transactions
     // in the same block, enabling transaction chaining within a single block.

@@ -11,6 +11,7 @@
  *   6. Tree serialization/deserialization round-trips
  */
 
+#include "consensus/shielded/bundle_builder.h"
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/nullifier_set.h"
 #include "consensus/shielded/shielded_tx.h"
@@ -68,6 +69,15 @@ static sh::BindingSignature make_sig(uint8_t fill) {
     return sig;
 }
 
+// Post inflation-fix (381804854 / "reject empty range proof + binding sig
+// post-activation"): every non-empty bundle at/above the input-binding
+// activation height (which defaults to 0 here, so always active) MUST carry a
+// non-empty aggregated range proof AND a valid Schnorr binding sig. Bundles are
+// built through the real `BuildShieldedBundle`, whose binding sig is signed over
+// this fixed transparent-envelope sighash. Every validation context that
+// validates a built bundle must therefore set `tx_sighash` to this value.
+static const sh::Hash kBundleSighash = make_hash(0x77);
+
 static sh::ValidationContext make_validation_context(
     const sh::NullifierSet* nullifier_set,
     const sh::CommitmentTree* commitment_tree,
@@ -80,7 +90,7 @@ static sh::ValidationContext make_validation_context(
         transparent_value_delta,
         /*shielded_activation_height=*/0,
         /*anchor_history=*/nullptr,
-        /*tx_sighash=*/sh::Hash{});
+        /*tx_sighash=*/kBundleSighash);
 }
 
 struct TestNote {
@@ -119,6 +129,64 @@ static sh::ShieldedOutput make_proven_output(const TestNote& note) {
     out.commitment = note.commitment;
     out.zk_proof = sh::ProveOutput(ow, opi, nullptr);
     return out;
+}
+
+// Planned-bundle helpers: route synthetic bundles through the real
+// `BuildShieldedBundle` so each carries a non-empty aggregated range proof + a
+// valid binding sig signed over `kBundleSighash`. `value_una` is the Pedersen
+// cv value (independent of the note's ZK-committed value — the circuit does not
+// yet bind cv to the note value), chosen so the builder-derived
+// value_balance = Σ(output value_una) − Σ(spend value_una) matches the carrying
+// context's transparent_value_delta.
+static sh::PlannedOutput make_planned_output(const TestNote& note,
+                                             uint64_t value_una,
+                                             uint8_t blind_seed) {
+    sh::OutputWitness ow;
+    ow.value = note.value_hash;
+    ow.public_key = note.public_key;
+    ow.randomness = note.randomness;
+    ow.d = note.diversifier;
+
+    sh::OutputPublicInputs opi;
+    opi.commitment = note.commitment;
+
+    sh::PlannedOutput po;
+    po.commitment = note.commitment;
+    po.value_una = value_una;
+    po.rcv = make_hash(blind_seed);
+    po.encrypted_note = std::vector<uint8_t>(32, 0xAA);
+    po.output_proof = sh::ProveOutput(ow, opi, nullptr);
+    po.nonce = make_hash(static_cast<uint8_t>(blind_seed + 1));
+    return po;
+}
+
+static sh::PlannedSpend make_planned_spend(const TestNote& note,
+                                           uint64_t leaf_index,
+                                           const sh::CommitmentTree& tree,
+                                           uint64_t value_una,
+                                           uint8_t blind_seed) {
+    auto path = tree.GetAuthPath(leaf_index);
+
+    sh::SpendWitness sw;
+    sw.secret_key = note.secret_key;
+    sw.leaf_index = leaf_index;
+    sw.value = note.value_hash;
+    sw.randomness = note.randomness;
+    sw.d = note.diversifier;
+    sw.merkle_path = path->siblings;
+
+    sh::SpendPublicInputs spi;
+    spi.nullifier = sh::ComputeNullifier(note.secret_key, leaf_index);
+    spi.anchor = tree.Root();
+
+    sh::PlannedSpend ps;
+    ps.nullifier = spi.nullifier;
+    ps.anchor = spi.anchor;
+    ps.value_una = value_una;
+    ps.rcv = make_hash(blind_seed);
+    ps.spend_proof = sh::ProveSpend(sw, spi, nullptr);
+    ps.nonce = make_hash(static_cast<uint8_t>(blind_seed + 1));
+    return ps;
 }
 
 int main() {
@@ -198,11 +266,14 @@ int main() {
         ns.Open(db_path);
 
         // Shield: 1 output, 0 spends. Value flows in from transparent.
-        sh::ShieldedBundle shield_bundle;
-        shield_bundle.value_balance = 1000;  // 1000 una flowing in
+        // value_balance = 1000 (one output cv of 1000) − 0 = +1000 = delta.
         const TestNote note1 = make_spendable_note(0x10);
-        sh::ShieldedOutput out1 = make_proven_output(note1);
-        shield_bundle.outputs.push_back(out1);
+        sh::ShieldedBundle shield_bundle{};
+        check(sh::BuildShieldedBundle(
+                  /*spends=*/{},
+                  {make_planned_output(note1, /*value_una=*/1000, 0x30)},
+                  kBundleSighash, shield_bundle) ==
+              sh::BundleBuildResult::Ok, "shield bundle builds");
 
         auto ctx = make_validation_context(
             &ns, &tree, /*block_height=*/5000, /*transparent_value_delta=*/1000);
@@ -215,32 +286,19 @@ int main() {
         check(ns.Size() == 0, "no nullifiers for shield-only");
 
         // Transfer: spend the shielded note, create a new one.
-        sh::ShieldedBundle transfer_bundle;
-        transfer_bundle.value_balance = 0;  // balanced transfer
+        // Balanced transfer: spend cv 1000 − output cv 1000 ⇒ value_balance 0.
         auto path1 = tree.GetAuthPath(0);
         check(path1.has_value(), "wallet auth path available for first note");
 
-        sh::SpendWitness spend_witness1;
-        spend_witness1.secret_key = note1.secret_key;
-        spend_witness1.leaf_index = 0;
-        spend_witness1.value = note1.value_hash;
-        spend_witness1.randomness = note1.randomness;
-        spend_witness1.d = note1.diversifier;
-        spend_witness1.merkle_path = path1->siblings;
-
-        sh::SpendPublicInputs spend_inputs1;
-        spend_inputs1.nullifier = sh::ComputeNullifier(note1.secret_key, 0);
-        spend_inputs1.anchor = tree.Root();
-
-        sh::ShieldedSpend spend1;
-        spend1.nullifier = spend_inputs1.nullifier;
-        spend1.anchor = spend_inputs1.anchor;
-        spend1.zk_proof = sh::ProveSpend(spend_witness1, spend_inputs1, nullptr);
-        transfer_bundle.spends.push_back(spend1);
+        sh::PlannedSpend pspend1 =
+            make_planned_spend(note1, /*leaf_index=*/0, tree, /*value_una=*/1000, 0x31);
 
         const TestNote note2 = make_spendable_note(0x40);
-        sh::ShieldedOutput out2 = make_proven_output(note2);
-        transfer_bundle.outputs.push_back(out2);
+        sh::ShieldedBundle transfer_bundle{};
+        check(sh::BuildShieldedBundle(
+                  {pspend1}, {make_planned_output(note2, /*value_una=*/1000, 0x41)},
+                  kBundleSighash, transfer_bundle) ==
+              sh::BundleBuildResult::Ok, "transfer bundle builds");
 
         ctx.transparent_value_delta = 0;
         err = sh::ValidateShieldedBundle(transfer_bundle, ctx);
@@ -250,10 +308,17 @@ int main() {
         check(tree.Size() == 2, "tree has 2 commitments after transfer");
         check(ns.Size() == 1, "1 nullifier after transfer");
 
-        // Double-spend: reuse same nullifier → must reject.
+        // Double-spend: reuse same nullifier → must reject. The nullifier
+        // check (step 1) precedes the range-proof gate, so this proof-less
+        // bundle still reaches NullifierDuplicate. It carries note1's
+        // nullifier and a non-empty zk_proof (structural check runs first).
         sh::ShieldedBundle double_spend;
         double_spend.value_balance = 0;
-        double_spend.spends.push_back(spend1);  // same nullifier!
+        sh::ShieldedSpend spend1;
+        spend1.nullifier = pspend1.nullifier;  // same nullifier!
+        spend1.anchor = pspend1.anchor;
+        spend1.zk_proof = pspend1.spend_proof;
+        double_spend.spends.push_back(spend1);
         const TestNote note3 = make_spendable_note(0x70);
         sh::ShieldedOutput out3 = make_proven_output(note3);
         double_spend.outputs.push_back(out3);
@@ -262,16 +327,18 @@ int main() {
         err = sh::ValidateShieldedBundle(double_spend, ctx);
         check(err == sh::ShieldedValidationError::NullifierDuplicate, "double-spend rejected");
 
-        // Value balance mismatch
-        sh::ShieldedBundle bad_balance;
-        bad_balance.value_balance = 999;  // claims 999
-        ctx.transparent_value_delta = 1000;  // but transparent says 1000
-        err = sh::ValidateShieldedBundle(bad_balance, ctx);
-        // Empty bundle with non-zero balance... actually empty bundle returns Ok.
-        // Let me test with a non-empty bundle.
+        // Value balance mismatch: bundle's value_balance (999, derived from a
+        // single output cv of 999) disagrees with the transparent delta (1000).
+        // transparent_value_delta is not bound by the range proof / binding sig,
+        // so validation passes those gates and reaches the value-balance check.
         const TestNote note4 = make_spendable_note(0x90);
-        sh::ShieldedOutput out4 = make_proven_output(note4);
-        bad_balance.outputs.push_back(out4);
+        sh::ShieldedBundle bad_balance{};
+        check(sh::BuildShieldedBundle(
+                  /*spends=*/{},
+                  {make_planned_output(note4, /*value_una=*/999, 0x91)},
+                  kBundleSighash, bad_balance) ==
+              sh::BundleBuildResult::Ok, "bad-balance bundle builds");
+        ctx.transparent_value_delta = 1000;  // transparent says 1000, bundle says 999
         err = sh::ValidateShieldedBundle(bad_balance, ctx);
         check(err == sh::ShieldedValidationError::ValueBalanceMismatch, "value balance mismatch rejected");
 
@@ -656,10 +723,14 @@ int main() {
         check(rc == sh::NullifierSet::OpenResult::Ok, "chain-owned nullifier DB opened");
 
         // Step 1: shield one note into the consensus-owned tree.
+        // value_balance = +1000 (one output cv of 1000) = delta.
         const TestNote note1 = make_spendable_note(0xD0);
-        sh::ShieldedBundle shield_bundle;
-        shield_bundle.value_balance = 1000;
-        shield_bundle.outputs.push_back(make_proven_output(note1));
+        sh::ShieldedBundle shield_bundle{};
+        check(sh::BuildShieldedBundle(
+                  /*spends=*/{},
+                  {make_planned_output(note1, /*value_una=*/1000, 0xD8)},
+                  kBundleSighash, shield_bundle) ==
+              sh::BundleBuildResult::Ok, "initial shield bundle builds");
 
         auto ctx = make_validation_context(
             &ns, &tree, /*block_height=*/7000, /*transparent_value_delta=*/1000);
@@ -673,28 +744,22 @@ int main() {
         const auto note1_path = tree.GetAuthPath(0);
         check(note1_path.has_value(), "auth path available before persistence");
 
-        sh::SpendWitness spend_witness1;
-        spend_witness1.secret_key = note1.secret_key;
-        spend_witness1.leaf_index = 0;
-        spend_witness1.value = note1.value_hash;
-        spend_witness1.randomness = note1.randomness;
-        spend_witness1.d = note1.diversifier;
-        spend_witness1.merkle_path = note1_path->siblings;
-
-        sh::SpendPublicInputs spend_inputs1;
-        spend_inputs1.nullifier = sh::ComputeNullifier(note1.secret_key, 0);
-        spend_inputs1.anchor = tree.Root();
-
+        // Balanced transfer (spend cv 1000 − output cv 1000 ⇒ value_balance 0)
+        // built through the real bundle builder so it carries a range proof +
+        // binding sig. `spend1` is kept for the post-reopen membership check.
+        sh::PlannedSpend pspend1 =
+            make_planned_spend(note1, /*leaf_index=*/0, tree, /*value_una=*/1000, 0xD1);
         sh::ShieldedSpend spend1;
-        spend1.nullifier = spend_inputs1.nullifier;
-        spend1.anchor = spend_inputs1.anchor;
-        spend1.zk_proof = sh::ProveSpend(spend_witness1, spend_inputs1, nullptr);
+        spend1.nullifier = pspend1.nullifier;
+        spend1.anchor = pspend1.anchor;
+        spend1.zk_proof = pspend1.spend_proof;
 
         const TestNote note2 = make_spendable_note(0xE0);
-        sh::ShieldedBundle transfer_bundle;
-        transfer_bundle.value_balance = 0;
-        transfer_bundle.spends.push_back(spend1);
-        transfer_bundle.outputs.push_back(make_proven_output(note2));
+        sh::ShieldedBundle transfer_bundle{};
+        check(sh::BuildShieldedBundle(
+                  {pspend1}, {make_planned_output(note2, /*value_una=*/1000, 0xE1)},
+                  kBundleSighash, transfer_bundle) ==
+              sh::BundleBuildResult::Ok, "pre-persist transfer bundle builds");
         ctx.block_height = 7001;
         ctx.transparent_value_delta = 0;
 
@@ -715,28 +780,21 @@ int main() {
         const auto note2_path = tree.GetAuthPath(1);
         check(note2_path.has_value(), "auth path available before persistence for next spend");
 
-        sh::SpendWitness spend_witness2;
-        spend_witness2.secret_key = note2.secret_key;
-        spend_witness2.leaf_index = 1;
-        spend_witness2.value = note2.value_hash;
-        spend_witness2.randomness = note2.randomness;
-        spend_witness2.d = note2.diversifier;
-        spend_witness2.merkle_path = note2_path->siblings;
-
-        sh::SpendPublicInputs spend_inputs2;
-        spend_inputs2.nullifier = sh::ComputeNullifier(note2.secret_key, 1);
-        spend_inputs2.anchor = expected_root;
-
-        sh::ShieldedSpend spend2;
-        spend2.nullifier = spend_inputs2.nullifier;
-        spend2.anchor = spend_inputs2.anchor;
-        spend2.zk_proof = sh::ProveSpend(spend_witness2, spend_inputs2, nullptr);
+        // Build the next transfer through the bundle builder while the live tree
+        // is still available. The spend anchors to the current root (== the
+        // expected_root that the reopened frontier restores), value_balance 0.
+        // The bundle (with its range proof + binding sig over kBundleSighash)
+        // lives in memory across the simulated restart — only the frontier is
+        // serialized — so it validates against the reopened state unchanged.
+        sh::PlannedSpend pspend2 =
+            make_planned_spend(note2, /*leaf_index=*/1, tree, /*value_una=*/1000, 0xE5);
 
         const TestNote note3 = make_spendable_note(0xF0);
-        sh::ShieldedBundle post_reopen_bundle;
-        post_reopen_bundle.value_balance = 0;
-        post_reopen_bundle.spends.push_back(spend2);
-        post_reopen_bundle.outputs.push_back(make_proven_output(note3));
+        sh::ShieldedBundle post_reopen_bundle{};
+        check(sh::BuildShieldedBundle(
+                  {pspend2}, {make_planned_output(note3, /*value_una=*/1000, 0xF1)},
+                  kBundleSighash, post_reopen_bundle) ==
+              sh::BundleBuildResult::Ok, "post-reopen transfer bundle builds");
 
         const auto frontier = tree.SerializeFrontier();
         {

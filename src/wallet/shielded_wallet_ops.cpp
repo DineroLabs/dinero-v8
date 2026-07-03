@@ -9,6 +9,7 @@
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/bundle_builder.h"
 #include "consensus/shielded/commitment_tree.h"
+#include "consensus/shielded/pedersen_commit.h"
 #include "consensus/shielded/pedersen_generators.h"
 #include "consensus/shielded/shielded_circuit.h"
 #include "consensus/shielded/shielded_serialization.h"
@@ -43,6 +44,18 @@ sh::Hash ValueToHash(uint64_t v) {
         h[31 - i] = static_cast<uint8_t>((v >> (8 * i)) & 0xFF);
     }
     return h;
+}
+
+// Audit Critical #1: compute the Pedersen value commitment cv = rcv·G + value·V
+// for a cv-bound proof's public input. This MUST be byte-identical to the cv
+// the bundle publishes, which BuildShieldedBundle forms via the SAME routine
+// (sh::PedersenCommit on the SAME (rcv, value)). Using the identical rcv +
+// value + PedersenCommit here guarantees the verifier's
+// ec_equal(val·V + rcv·G, cv_pub) holds. Returns false if the generator
+// derivation is unavailable (callers already gate on PedersenGeneratorsReady).
+bool ComputeBundleCv(const sh::Hash& rcv, uint64_t value_una,
+                     sh::ValueCommitment& cv_out) {
+    return sh::PedersenCommit(rcv, value_una, cv_out) == sh::PedersenResult::Ok;
 }
 
 } // namespace
@@ -131,7 +144,8 @@ uint64_t RequiredFeeForTx(const dinero::Transaction& tx, double min_fee_rate) {
 }
 
 AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
-                                          uint64_t value_una) {
+                                          uint64_t value_una,
+                                          bool cv_bound) {
     AttachShieldResult out;
 
     if (value_una == 0) {
@@ -167,17 +181,29 @@ AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
     sh::Hash commitment = sh::NoteCommitment(diversifier, public_key,
                                              value_hash, randomness);
 
-    // 2. Spartan output proof for the new note.
+    // 2. Spartan output proof for the new note. Generate the value-commitment
+    //    blind up front so the SAME rcv binds the proof's cv (when cv-bound)
+    //    AND forms the bundle's published cv below — they MUST be identical.
+    sh::Hash rcv = RandomHash();
+
     sh::OutputWitness ow{};
     ow.value      = value_hash;
     ow.public_key = public_key;
     ow.randomness = randomness;
     ow.d          = diversifier;
+    ow.rcv        = rcv;
 
     sh::OutputPublicInputs opi{};
     opi.commitment = commitment;
+    if (cv_bound && !ComputeBundleCv(rcv, value_una, opi.cv)) {
+        out.status = OpStatus::InternalError;
+        out.error = "cv_commit_failed";
+        OPENSSL_cleanse(secret_key.data(), secret_key.size());
+        return out;
+    }
 
-    auto output_proof = sh::ProveOutput(ow, opi, nullptr);
+    auto output_proof = sh::ProveOutput(ow, opi, nullptr,
+                                        /*bind_public_inputs=*/true, cv_bound);
     if (output_proof.empty()) {
         out.status = OpStatus::ProofError;
         out.error = "output proof generation failed";
@@ -185,11 +211,11 @@ AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
         return out;
     }
 
-    // 3. Wire one PlannedOutput.
+    // 3. Wire one PlannedOutput (SAME rcv → bundle cv == proof cv).
     sh::PlannedOutput planned{};
     planned.commitment     = commitment;
     planned.value_una      = value_una;
-    planned.rcv            = RandomHash();
+    planned.rcv            = rcv;
     planned.encrypted_note = std::vector<uint8_t>(96, 0);  // TODO Phase 5: real ECDH ciphertext
     planned.output_proof   = std::move(output_proof);
     planned.nonce          = RandomHash();
@@ -240,7 +266,8 @@ AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
 
 AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
                                               const UnshieldNoteInput& note,
-                                              uint64_t fee_una) {
+                                              uint64_t fee_una,
+                                              bool cv_bound) {
     AttachUnshieldResult out;
 
     if (note.value_una == 0) {
@@ -287,32 +314,43 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
     // 1. Reconstruct value_hash to feed the spend witness.
     sh::Hash value_hash = ValueToHash(note.value_una);
 
-    // 2. Generate the Spartan spend proof.
+    // 2. Generate the Spartan spend proof. Fresh value-commitment blind up
+    //    front so the SAME rcv binds the proof's cv (when cv-bound) AND forms
+    //    the bundle's published cv below.
+    sh::Hash rcv = RandomHash();
+
     sh::SpendWitness sw{};
     sw.secret_key  = note.secret_key;
     sw.leaf_index  = note.leaf_index;
     sw.value       = value_hash;
     sw.randomness  = note.randomness;
     sw.d           = note.d;
+    sw.rcv         = rcv;
     sw.merkle_path = note.merkle_path;
 
     sh::SpendPublicInputs spi{};
     spi.nullifier = sh::ComputeNullifier(note.secret_key, note.leaf_index);
     spi.anchor    = note.anchor;
+    if (cv_bound && !ComputeBundleCv(rcv, note.value_una, spi.cv)) {
+        out.status = OpStatus::InternalError;
+        out.error = "cv_commit_failed";
+        return out;
+    }
 
-    auto spend_proof = sh::ProveSpend(sw, spi, nullptr);
+    auto spend_proof = sh::ProveSpend(sw, spi, nullptr,
+                                      /*bind_public_inputs=*/true, cv_bound);
     if (spend_proof.empty()) {
         out.status = OpStatus::ProofError;
         out.error = "spend proof generation failed";
         return out;
     }
 
-    // 3. Wire the PlannedSpend.
+    // 3. Wire the PlannedSpend (SAME rcv → bundle cv == proof cv).
     sh::PlannedSpend planned{};
     planned.nullifier   = spi.nullifier;
     planned.anchor      = spi.anchor;
     planned.value_una   = note.value_una;
-    planned.rcv         = RandomHash();
+    planned.rcv         = rcv;
     planned.spend_proof = std::move(spend_proof);
     planned.nonce       = RandomHash();
 
@@ -413,7 +451,8 @@ UnshieldResult Unshield(UnshieldParams params,
 
 AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
                                               const UnshieldNoteInput& note,
-                                              uint64_t fee_una) {
+                                              uint64_t fee_una,
+                                              bool cv_bound) {
     AttachTransferResult out;
 
     if (note.value_una == 0) {
@@ -460,19 +499,27 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
     sh::Hash spend_value_hash = ValueToHash(note.value_una);
     sh::Hash spend_d = note.d;
 
+    sh::Hash spend_rcv = RandomHash();
     sh::SpendWitness sw{};
     sw.secret_key  = note.secret_key;
     sw.leaf_index  = note.leaf_index;
     sw.value       = spend_value_hash;
     sw.randomness  = note.randomness;
     sw.d           = spend_d;
+    sw.rcv         = spend_rcv;
     sw.merkle_path = note.merkle_path;
 
     sh::SpendPublicInputs spi{};
     spi.nullifier = sh::ComputeNullifier(note.secret_key, note.leaf_index);
     spi.anchor    = note.anchor;
+    if (cv_bound && !ComputeBundleCv(spend_rcv, note.value_una, spi.cv)) {
+        out.status = OpStatus::InternalError;
+        out.error = "cv_commit_failed";
+        return out;
+    }
 
-    auto spend_proof = sh::ProveSpend(sw, spi, nullptr);
+    auto spend_proof = sh::ProveSpend(sw, spi, nullptr,
+                                      /*bind_public_inputs=*/true, cv_bound);
     if (spend_proof.empty()) {
         out.status = OpStatus::ProofError;
         out.error = "spend proof generation failed";
@@ -484,7 +531,7 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
     planned_spend.nullifier   = spi.nullifier;
     planned_spend.anchor      = spi.anchor;
     planned_spend.value_una   = note.value_una;
-    planned_spend.rcv         = RandomHash();
+    planned_spend.rcv         = spend_rcv;
     planned_spend.spend_proof = std::move(spend_proof);
     planned_spend.nonce       = RandomHash();
 
@@ -497,16 +544,25 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
     sh::Hash out_commitment = sh::NoteCommitment(out_d, out_public_key,
                                                  out_value_hash, out_randomness);
 
+    sh::Hash out_rcv = RandomHash();
     sh::OutputWitness ow{};
     ow.value      = out_value_hash;
     ow.public_key = out_public_key;
     ow.randomness = out_randomness;
     ow.d          = out_d;
+    ow.rcv        = out_rcv;
 
     sh::OutputPublicInputs opi{};
     opi.commitment = out_commitment;
+    if (cv_bound && !ComputeBundleCv(out_rcv, out_value_una, opi.cv)) {
+        out.status = OpStatus::InternalError;
+        out.error = "cv_commit_failed";
+        OPENSSL_cleanse(out_secret_key.data(), out_secret_key.size());
+        return out;
+    }
 
-    auto output_proof = sh::ProveOutput(ow, opi, nullptr);
+    auto output_proof = sh::ProveOutput(ow, opi, nullptr,
+                                        /*bind_public_inputs=*/true, cv_bound);
     if (output_proof.empty()) {
         out.status = OpStatus::ProofError;
         out.error = "output proof generation failed";
@@ -517,7 +573,7 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
     sh::PlannedOutput planned_output{};
     planned_output.commitment     = out_commitment;
     planned_output.value_una      = out_value_una;
-    planned_output.rcv            = RandomHash();
+    planned_output.rcv            = out_rcv;
     planned_output.encrypted_note = std::vector<uint8_t>(96, 0);  // TODO Phase 5
     planned_output.output_proof   = std::move(output_proof);
     planned_output.nonce          = RandomHash();
@@ -573,7 +629,8 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
     dinero::Transaction& tx,
     const std::vector<UnshieldNoteInput>& spends,
     const std::vector<uint64_t>& output_values,
-    uint64_t fee_una) {
+    uint64_t fee_una,
+    bool cv_bound) {
     AttachMultiTransferResult out;
 
     if (spends.empty()) {
@@ -648,19 +705,27 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
     planned_spends.reserve(spends.size());
     for (const auto& s : spends) {
         sh::Hash value_hash = ValueToHash(s.value_una);
+        sh::Hash s_rcv = RandomHash();
         sh::SpendWitness sw{};
         sw.secret_key  = s.secret_key;
         sw.leaf_index  = s.leaf_index;
         sw.value       = value_hash;
         sw.randomness  = s.randomness;
         sw.d           = s.d;
+        sw.rcv         = s_rcv;
         sw.merkle_path = s.merkle_path;
 
         sh::SpendPublicInputs spi{};
         spi.nullifier = sh::ComputeNullifier(s.secret_key, s.leaf_index);
         spi.anchor    = s.anchor;
+        if (cv_bound && !ComputeBundleCv(s_rcv, s.value_una, spi.cv)) {
+            out.status = OpStatus::InternalError;
+            out.error = "cv_commit_failed";
+            return out;
+        }
 
-        auto proof = sh::ProveSpend(sw, spi, nullptr);
+        auto proof = sh::ProveSpend(sw, spi, nullptr,
+                                    /*bind_public_inputs=*/true, cv_bound);
         if (proof.empty()) {
             out.status = OpStatus::ProofError;
             out.error = "spend proof generation failed";
@@ -670,7 +735,7 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
         ps.nullifier   = spi.nullifier;
         ps.anchor      = spi.anchor;
         ps.value_una   = s.value_una;
-        ps.rcv         = RandomHash();
+        ps.rcv         = s_rcv;
         ps.spend_proof = std::move(proof);
         ps.nonce       = RandomHash();
         out.spend_nullifiers.push_back(spi.nullifier);
@@ -692,16 +757,28 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
         mat.commitment = sh::NoteCommitment(output_d, mat.public_key,
                                             value_hash, mat.randomness);
 
+        sh::Hash o_rcv = RandomHash();
         sh::OutputWitness ow{};
         ow.value      = value_hash;
         ow.public_key = mat.public_key;
         ow.randomness = mat.randomness;
         ow.d          = output_d;
+        ow.rcv        = o_rcv;
 
         sh::OutputPublicInputs opi{};
         opi.commitment = mat.commitment;
+        if (cv_bound && !ComputeBundleCv(o_rcv, value_una, opi.cv)) {
+            out.status = OpStatus::InternalError;
+            out.error = "cv_commit_failed";
+            for (auto& m : out.outputs) {
+                OPENSSL_cleanse(m.secret_key.data(), m.secret_key.size());
+            }
+            OPENSSL_cleanse(mat.secret_key.data(), mat.secret_key.size());
+            return out;
+        }
 
-        auto proof = sh::ProveOutput(ow, opi, nullptr);
+        auto proof = sh::ProveOutput(ow, opi, nullptr,
+                                     /*bind_public_inputs=*/true, cv_bound);
         if (proof.empty()) {
             out.status = OpStatus::ProofError;
             out.error = "output proof generation failed";
@@ -715,7 +792,7 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
         sh::PlannedOutput po{};
         po.commitment     = mat.commitment;
         po.value_una      = value_una;
-        po.rcv            = RandomHash();
+        po.rcv            = o_rcv;
         po.encrypted_note = std::vector<uint8_t>(96, 0);  // TODO Phase 5
         po.output_proof   = std::move(proof);
         po.nonce          = RandomHash();
@@ -772,7 +849,8 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     const AddressedRecipient& recipient,
     uint64_t change_value_una,
     uint64_t fee_una,
-    const std::array<uint8_t, 512>* recipient_memo) {
+    const std::array<uint8_t, 512>* recipient_memo,
+    bool cv_bound) {
     AttachAddressedTransferResult out;
 
     if (spends.empty()) {
@@ -820,17 +898,25 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     planned_spends.reserve(spends.size());
     for (const auto& s : spends) {
         sh::Hash value_hash = ValueToHash(s.value_una);
+        sh::Hash s_rcv = RandomHash();
         sh::SpendWitness sw{};
         sw.secret_key  = s.secret_key;
         sw.leaf_index  = s.leaf_index;
         sw.value       = value_hash;
         sw.randomness  = s.randomness;
         sw.d           = s.d;
+        sw.rcv         = s_rcv;
         sw.merkle_path = s.merkle_path;
         sh::SpendPublicInputs spi{};
         spi.nullifier = sh::ComputeNullifier(s.secret_key, s.leaf_index);
         spi.anchor    = s.anchor;
-        auto proof = sh::ProveSpend(sw, spi, nullptr);
+        if (cv_bound && !ComputeBundleCv(s_rcv, s.value_una, spi.cv)) {
+            out.status = OpStatus::InternalError;
+            out.error = "cv_commit_failed";
+            return out;
+        }
+        auto proof = sh::ProveSpend(sw, spi, nullptr,
+                                    /*bind_public_inputs=*/true, cv_bound);
         if (proof.empty()) {
             out.status = OpStatus::ProofError;
             out.error = "spend proof generation failed";
@@ -840,7 +926,7 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         ps.nullifier   = spi.nullifier;
         ps.anchor      = spi.anchor;
         ps.value_una   = s.value_una;
-        ps.rcv         = RandomHash();
+        ps.rcv         = s_rcv;
         ps.spend_proof = std::move(proof);
         ps.nonce       = RandomHash();
         out.spend_nullifiers.push_back(spi.nullifier);
@@ -863,14 +949,22 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         recipient_d_packed, recipient_pk,
         recipient_value_hash, recipient_rcm);
 
+    sh::Hash recipient_rcv = RandomHash();
     sh::OutputWitness recipient_ow{};
     recipient_ow.value      = recipient_value_hash;
     recipient_ow.public_key = recipient_pk;
     recipient_ow.randomness = recipient_rcm;
     recipient_ow.d          = recipient_d_packed;
+    recipient_ow.rcv        = recipient_rcv;
     sh::OutputPublicInputs recipient_opi{};
     recipient_opi.commitment = recipient_commitment;
-    auto recipient_proof = sh::ProveOutput(recipient_ow, recipient_opi, nullptr);
+    if (cv_bound && !ComputeBundleCv(recipient_rcv, recipient.value_una, recipient_opi.cv)) {
+        out.status = OpStatus::InternalError;
+        out.error = "cv_commit_failed";
+        return out;
+    }
+    auto recipient_proof = sh::ProveOutput(recipient_ow, recipient_opi, nullptr,
+                                           /*bind_public_inputs=*/true, cv_bound);
     if (recipient_proof.empty()) {
         out.status = OpStatus::ProofError;
         out.error = "recipient output proof generation failed";
@@ -899,7 +993,7 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     sh::PlannedOutput recipient_planned{};
     recipient_planned.commitment     = recipient_commitment;
     recipient_planned.value_una      = recipient.value_una;
-    recipient_planned.rcv            = RandomHash();
+    recipient_planned.rcv            = recipient_rcv;
     recipient_planned.encrypted_note =
         std::vector<uint8_t>(enc_bytes.begin(), enc_bytes.end());
     recipient_planned.output_proof   = std::move(recipient_proof);
@@ -924,14 +1018,23 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         change_commitment = sh::NoteCommitment(
             zero, change_public_key, change_value_hash, change_randomness);
 
+        sh::Hash change_rcv = RandomHash();
         sh::OutputWitness ow{};
         ow.value      = change_value_hash;
         ow.public_key = change_public_key;
         ow.randomness = change_randomness;
         ow.d          = zero;
+        ow.rcv        = change_rcv;
         sh::OutputPublicInputs opi{};
         opi.commitment = change_commitment;
-        auto proof = sh::ProveOutput(ow, opi, nullptr);
+        if (cv_bound && !ComputeBundleCv(change_rcv, change_value_una, opi.cv)) {
+            OPENSSL_cleanse(change_secret_key.data(), change_secret_key.size());
+            out.status = OpStatus::InternalError;
+            out.error = "cv_commit_failed";
+            return out;
+        }
+        auto proof = sh::ProveOutput(ow, opi, nullptr,
+                                     /*bind_public_inputs=*/true, cv_bound);
         if (proof.empty()) {
             OPENSSL_cleanse(change_secret_key.data(), change_secret_key.size());
             out.status = OpStatus::ProofError;
@@ -941,7 +1044,7 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         sh::PlannedOutput cpo{};
         cpo.commitment     = change_commitment;
         cpo.value_una      = change_value_una;
-        cpo.rcv            = RandomHash();
+        cpo.rcv            = change_rcv;
         cpo.encrypted_note = std::vector<uint8_t>(96, 0);  // legacy placeholder
         cpo.output_proof   = std::move(proof);
         cpo.nonce          = RandomHash();

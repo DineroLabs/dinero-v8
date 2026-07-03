@@ -1980,6 +1980,61 @@ StatusOr<uint64_t> ChainDB::deleteShieldedNullifiersAboveHeight(
     return deleted;
 }
 
+StatusOr<uint64_t> ChainDB::deleteAllShieldedNullifiers(
+    const ChainWriteToken& token,
+    rocksdb::WriteBatch* wb) {
+    if (!db_) return Status::Internal;
+    (void)token;
+
+    rocksdb::ReadOptions read_opts;
+    std::unique_ptr<rocksdb::Iterator> it(
+        db_->NewIterator(read_opts, cf_[idx_utreexo_].get()));
+
+    // Seek to the first nullifier row (bare prefix) and delete every row that
+    // carries it — the whole set, all heights.
+    std::string seek_key;
+    seek_key.push_back(static_cast<char>(kShieldedNullifierPrefix));
+
+    uint64_t deleted = 0;
+
+    if (wb != nullptr) {
+        for (it->Seek(seek_key); it->Valid(); it->Next()) {
+            const auto k = it->key();
+            if (k.size() != 37 ||
+                static_cast<uint8_t>(k.data()[0]) != kShieldedNullifierPrefix) {
+                break;  // left the prefix
+            }
+            wb->Delete(cf_[idx_utreexo_].get(), k);
+            ++deleted;
+        }
+        if (!it->status().ok()) {
+            return convertRocksDBStatus(it->status());
+        }
+        return deleted;
+    }
+
+    rocksdb::WriteBatch local_batch;
+    for (it->Seek(seek_key); it->Valid(); it->Next()) {
+        const auto k = it->key();
+        if (k.size() != 37 ||
+            static_cast<uint8_t>(k.data()[0]) != kShieldedNullifierPrefix) {
+            break;
+        }
+        local_batch.Delete(cf_[idx_utreexo_].get(), k);
+        ++deleted;
+    }
+    if (!it->status().ok()) {
+        return convertRocksDBStatus(it->status());
+    }
+    if (deleted == 0) return uint64_t{0};
+
+    rocksdb::WriteOptions opts;
+    opts.sync = true;
+    const auto status = db_->Write(opts, &local_batch);
+    if (!status.ok()) return convertRocksDBStatus(status);
+    return deleted;
+}
+
 Status ChainDB::forEachShieldedNullifier(
     const ShieldedNullifierVisitor& visit) const {
     if (!db_) return Status::Internal;

@@ -406,8 +406,12 @@ SeederRunConfig BuildRunConfig(dinero::ConfigService* config,
                                const din::Json& params) {
     const auto dir = SeederDir(config);
     SeederRunConfig cfg;
-    cfg.binary_path = JsonString(params, "binary",
-        config ? config->GetString("seeder.binary", "") : "");
+    // SECURITY (RCE fix): NEVER honor a caller-supplied "binary" path. Previously
+    // `params["binary"]` was used as the execv() target, letting any authenticated
+    // (or even --rpc-readonly) RPC caller run an arbitrary binary as the daemon
+    // user. Only the operator-configured `seeder.binary` is permitted; the
+    // caller-supplied field is ignored entirely.
+    cfg.binary_path = config ? config->GetString("seeder.binary", "") : "";
     cfg.bootstrap = JsonStringArray(params, "bootstrap");
     if (cfg.bootstrap.empty()) cfg.bootstrap = DefaultBootstrap(config);
     cfg.state_path = JsonString(params, "state_path",

@@ -102,6 +102,39 @@ TEST(UtxoSetDigest, GoldenRecordBytes) {
     EXPECT_EQ(bytes[54], 0x01);   // coinbase
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// #281: SerializeUtxoRecord omits UTXOEntry.is_confidential/commitment, so the
+// snapshot content commitment does not bind them. On v7 that is safe only
+// because those fields are consensus-forced empty (transparent-only chain).
+// UtxoRecordIsSnapshotSafe turns that "always empty" assumption into an
+// enforced, fail-closed invariant the exporter checks per UTXO: the moment a
+// confidential UTXO could exist without the record encoding having been
+// extended to bind these fields, export must refuse rather than silently
+// produce an unbound snapshot.
+// ─────────────────────────────────────────────────────────────────────────
+
+TEST(UtxoSnapshotGuard, TransparentUtxoIsSafe) {
+    UTXOEntry e = MakeEntry(5000, 10, false, {0x51});
+    // MakeEntry leaves is_confidential=false and commitment empty.
+    EXPECT_TRUE(UtxoRecordIsSnapshotSafe(e));
+}
+
+TEST(UtxoSnapshotGuard, ConfidentialFlagIsRejected) {
+    UTXOEntry e = MakeEntry(5000, 10, false, {0x51});
+    e.is_confidential = true;
+    EXPECT_FALSE(UtxoRecordIsSnapshotSafe(e))
+        << "a confidential UTXO must not be silently exported unbound (#281)";
+}
+
+TEST(UtxoSnapshotGuard, NonEmptyCommitmentIsRejected) {
+    UTXOEntry e = MakeEntry(5000, 10, false, {0x51});
+    // Even with the flag unset, a stray commitment payload would be dropped by
+    // SerializeUtxoRecord — reject it rather than export an unbound record.
+    e.commitment = {0x08, 0x01, 0x02, 0x03};
+    EXPECT_FALSE(UtxoRecordIsSnapshotSafe(e))
+        << "a non-empty commitment must not be silently dropped from the digest (#281)";
+}
+
 }  // namespace dinero::consensus
 
 int main(int argc, char** argv) {

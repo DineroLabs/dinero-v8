@@ -3210,8 +3210,13 @@ std::unique_ptr<P2PMessage> P2PMessage::deserialize(const std::vector<uint8_t>& 
     msg->checksum = checksum;
     
     // Extract payload
-    if (data.size() < 24 + payload_len) return nullptr;
-    
+    // SECURITY (OOB-read fix): compute the bound in 64-bit and cap payload_len.
+    // Previously `24 + payload_len` was evaluated in 32-bit and could wrap (e.g.
+    // payload_len ~= 0xFFFFFFF0), passing the check and then slicing ~4 GB out of
+    // bounds. Reject oversized / truncated messages before touching the buffer.
+    if (payload_len > dinero::MAX_MESSAGE_SIZE ||
+        data.size() < size_t{24} + size_t{payload_len}) return nullptr;
+
     msg->payload.assign(data.begin() + 24, data.begin() + 24 + payload_len);
     
     // Verify checksum (first 4 bytes of double-SHA256)

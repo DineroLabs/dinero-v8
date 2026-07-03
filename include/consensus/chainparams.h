@@ -207,6 +207,32 @@ struct ChainParams {
     // ===========================================================================
     uint32_t shielded_input_binding_activation_height = UINT32_MAX;
 
+    // ===========================================================================
+    // CONSENSUS: shielded cv-binding activation height (audit Critical #1).
+    // Blocks at or above this height require shielded spend/output proofs whose
+    // circuit binds the Pedersen value commitment cv to the in-circuit note
+    // value (cv == val·V + rcv·G), closing the mint-from-nothing inflation hole.
+    // Such proofs carry distinct version bytes (0x03 spend / 0x04 output);
+    // blocks below it keep verifying legacy proofs (0x01/0x02) under the old
+    // verifying key, so the ~10 pre-activation notes remain spendable.
+    //
+    // FLAG FOR HUMAN DECISION: defaulted to UINT32_MAX (never activate) on every
+    // network. A real mainnet activation height MUST be chosen by a human and
+    // coordinated across the fleet before this ships — a wrong boundary splits
+    // the chain. Until then the fix is wired and tested but inert on mainnet.
+    // ===========================================================================
+    uint32_t shielded_cv_binding_activation_height = UINT32_MAX;
+
+    // Shielded epoch reset (hard-fork cutover). At this height the shielded pool
+    // is reset to a fresh empty epoch (tree/anchor-history/nullifiers discarded),
+    // making all pre-cutover notes unspendable. MUST equal
+    // shielded_cv_binding_activation_height (cv-binding activates from block 1 of
+    // the new epoch) — SelectParams enforces this. Discarding the weak pool at the
+    // reset is what closes the [input_binding, cv) mint window instead of carrying
+    // it forward. Defaulted UINT32_MAX (dormant) on every network; a real mainnet
+    // height MUST be chosen by a human + fleet-coordinated before it ships.
+    uint32_t shielded_epoch_reset_height = UINT32_MAX;
+
     // Genesis block parameters
     GenesisParams genesis;
 

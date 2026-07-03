@@ -54,7 +54,7 @@ static UtreexoHash createDummyLeaf(int index) {
     scriptPubKey.push_back(0x88);
     scriptPubKey.push_back(0xac);
 
-    return HashUTXO(txid, 0, 10000000000ULL, scriptPubKey);
+    return HashUTXOLegacy(txid, 0, 10000000000ULL, scriptPubKey);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

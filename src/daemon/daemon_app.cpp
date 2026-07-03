@@ -155,6 +155,34 @@ void LogShutdownPhase(const char* phase,
     std::cout << std::endl;
 }
 
+void AppendU32LE(std::string& out, uint32_t value) {
+    out.push_back(static_cast<char>(value & 0xFF));
+    out.push_back(static_cast<char>((value >> 8) & 0xFF));
+    out.push_back(static_cast<char>((value >> 16) & 0xFF));
+    out.push_back(static_cast<char>((value >> 24) & 0xFF));
+}
+
+std::string SerializeCsnReplayData(
+    const std::vector<consensus::UtreexoHash>& targets,
+    const std::vector<consensus::SpentOutputData>& spent_outputs,
+    uint8_t format_version
+) {
+    std::string blob;
+    blob.append("CSN2", 4);
+    AppendU32LE(blob, static_cast<uint32_t>(targets.size()));
+    for (const auto& target : targets) {
+        blob.append(reinterpret_cast<const char*>(target.data()), target.size());
+    }
+
+    AppendU32LE(blob, static_cast<uint32_t>(spent_outputs.size()));
+    blob.push_back(static_cast<char>(format_version));
+    for (const auto& spent : spent_outputs) {
+        const auto bytes = spent.serialize(format_version);
+        blob.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    }
+    return blob;
+}
+
 std::string SanitizeHeaderStoreReason(const std::string& reason) {
     std::string sanitized;
     sanitized.reserve(reason.size());
@@ -3570,8 +3598,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     std::vector<uint8_t> payload;
                                     payload.reserve(1 + 32 + 4 + tx_size + 4 + num_proofs * 256 + 32);
 
-                                    // Version (1 byte)
-                                    payload.push_back(0x01);
+                                    // Version (1 byte): v2 carries created_height/is_coinbase metadata.
+                                    payload.push_back(0x02);
 
                                     // Txid (32 bytes)
                                     payload.insert(payload.end(), hash.begin(), hash.end());
@@ -3619,6 +3647,13 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                                         // ScriptPubKey
                                         payload.insert(payload.end(), spent.scriptPubKey.begin(), spent.scriptPubKey.end());
+
+                                        // v2 maturity metadata: created_height (4 bytes LE) + flags (bit 0 = coinbase)
+                                        payload.push_back(spent.created_height & 0xFF);
+                                        payload.push_back((spent.created_height >> 8) & 0xFF);
+                                        payload.push_back((spent.created_height >> 16) & 0xFF);
+                                        payload.push_back((spent.created_height >> 24) & 0xFF);
+                                        payload.push_back(spent.is_coinbase ? 0x01 : 0x00);
                                     }
 
                                     // Accumulator root (32 bytes)
@@ -4602,12 +4637,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                                         use_transition_proof
                                             ? pending.transition_proof->deletion_targets
                                             : pending.proof_msg.proof_data.spend_proof.targets;
-                                    std::string targets_blob;
-                                    uint32_t tcount = static_cast<uint32_t>(targets.size());
-                                    targets_blob.append(reinterpret_cast<const char*>(&tcount), 4);
-                                    for (const auto& t : targets) {
-                                        targets_blob.append(reinterpret_cast<const char*>(t.data()), t.size());
-                                    }
+                                    std::string targets_blob = SerializeCsnReplayData(
+                                        targets,
+                                        pending.proof_msg.proof_data.spent_outputs,
+                                        pending.proof_msg.proof_data.spend_proof.format_version);
                                     auto targets_status = cdb->putCSNSpendTargets(
                                         ckpt_token,
                                         pending.proof_msg.block_hash,
@@ -4869,12 +4902,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                                         use_transition_proof
                                             ? pending.transition_proof->deletion_targets
                                             : pending.proof_msg.proof_data.spend_proof.targets;
-                                    std::string targets_blob;
-                                    uint32_t tcount = static_cast<uint32_t>(targets.size());
-                                    targets_blob.append(reinterpret_cast<const char*>(&tcount), 4);
-                                    for (const auto& t : targets) {
-                                        targets_blob.append(reinterpret_cast<const char*>(t.data()), t.size());
-                                    }
+                                    std::string targets_blob = SerializeCsnReplayData(
+                                        targets,
+                                        pending.proof_msg.proof_data.spent_outputs,
+                                        pending.proof_msg.proof_data.spend_proof.format_version);
                                     auto targets_status = cdb->putCSNSpendTargets(
                                         ckpt_token,
                                         pending.proof_msg.block_hash,
@@ -4976,7 +5007,7 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                             // 1. Version
                             uint8_t version = payload[pos++];
-                            if (version != 0x01) {
+                            if (version != 0x01 && version != 0x02) {
                                 g_logger.error("[CSN-TX] Unsupported utxotx version " + std::to_string(version));
                                 return;
                             }
@@ -5086,6 +5117,20 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 consensus::SpentOutputData spent;
                                 spent.value = value;
                                 spent.scriptPubKey = std::move(scriptPubKey);
+                                if (version >= 0x02) {
+                                    if (5 > payload.size() - pos) {
+                                        complete_refresh();
+                                        g_logger.error("[CSN-TX] Truncated maturity metadata at index " + std::to_string(i));
+                                        return;
+                                    }
+                                    spent.created_height =
+                                        static_cast<uint32_t>(payload[pos]) |
+                                        (static_cast<uint32_t>(payload[pos + 1]) << 8) |
+                                        (static_cast<uint32_t>(payload[pos + 2]) << 16) |
+                                        (static_cast<uint32_t>(payload[pos + 3]) << 24);
+                                    pos += 4;
+                                    spent.is_coinbase = (payload[pos++] & 0x01) != 0;
+                                }
 
                                 input_proofs.emplace_back(std::move(proof), std::move(spent));
                             }
@@ -5101,7 +5146,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                             pos += 32;
 
                             // 7. Validate via StatelessNode
-                            if (!stateless_node->ValidateUtreexoTx(tx, input_proofs, acc_root)) {
+                            const uint32_t validation_height = stateless_node->GetSyncHeight() + 1;
+                            if (!stateless_node->ValidateUtreexoTx(tx, input_proofs, acc_root, validation_height)) {
                                 complete_refresh();
                                 g_logger.warning("[CSN-TX] utxotx proof validation failed from " + peer_addr);
                                 return;

@@ -358,13 +358,17 @@ private:
      * @param vout Output index
      * @param value Output value in una
      * @param script_pub_key Output script
+     * @param created_height Height where the UTXO was created
+     * @param is_coinbase Whether the UTXO was created by a coinbase transaction
      * @return 32-byte leaf hash
      */
     consensus::UtreexoHash ComputeLeafHash(
         const uint256& txid,
         uint32_t vout,
         uint64_t value,
-        const std::vector<uint8_t>& script_pub_key
+        const std::vector<uint8_t>& script_pub_key,
+        uint32_t created_height = 0,
+        bool is_coinbase = false
     ) const;
 
     /**
