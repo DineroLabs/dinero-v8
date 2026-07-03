@@ -448,6 +448,14 @@ if [[ " $RUN_SCENARIOS " == *" C "* ]]; then
 info "=== Scenario C: different-base snapshot refused mid-lifecycle ==="
 seed_headers "$C_DIR"
 # Long stall timeout: scenario C asserts the refusal text, not stall behavior.
+# Slow the genesis->base replay so the lifecycle stays ACTIVE (validating, not
+# promoted/Disabled) through the C2 restart — the belt only fires while the
+# lifecycle is non-Disabled. Before #353-bug-2 the lifecycle stayed active
+# "for free" because forward sync raced the tip past base and promotion never
+# ran (the bug); the fix makes promotion complete, so on a tiny regtest base
+# the lifecycle would otherwise promote+exit before C2 can restart. Keeping it
+# genuinely mid-lifecycle here is the correct way to exercise the belt.
+export DINERO_DEBUG_BG_VALIDATION_DELAY_MS=2000
 start_node "$C_DIR" "$C_RPC" "$C_P2P" "$C_WS" "$C_DIR/daemon.log" \
     --assumeutxo_bg_stall_timeout=3600
 
@@ -460,19 +468,20 @@ rpc "$SRC_RPC" "$SRC_DIR" generate '[5]' >/dev/null || fail "source could not mi
 DUMP2_RES="$(rpc "$SRC_RPC" "$SRC_DIR" dumptxoutset "[\"$SNAP2\"]")"
 jq -e '.result.coins_written >= 1' <<<"$DUMP2_RES" >/dev/null || fail "second dumptxoutset failed: $DUMP2_RES"
 
-# nodeC needs the NEW base header before C2's belt check is reachable
-# (the base-block-known gate runs first at startup) — get it over real P2P.
-# Post-base blocks connect on top of the snapshot tip, so blockcount reaches
-# the new height once synced.
+# nodeC needs the NEW base header known before C2's belt check is reachable
+# — get it over real P2P. Check HEADER height (getblockchaininfo.headers), not
+# blockcount: while the lifecycle is active the #353-bug-2 hold keeps the
+# CONNECTED tip pinned at the snapshot base, but headers sync independently, so
+# the new base header still becomes known.
 rpc "$C_RPC" "$C_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"add\"]" >/dev/null || true
 rpc "$C_RPC" "$C_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"onetry\"]" >/dev/null || true
 NEW_TIP=$((BASE + 5))
 for i in $(seq 1 60); do
-    H="$(rpc "$C_RPC" "$C_DIR" getblockcount | jq -r '.result // 0')"
+    H="$(rpc "$C_RPC" "$C_DIR" getblockchaininfo | jq -r '.result.headers // 0')"
     [[ "$H" -ge "$NEW_TIP" ]] && break
     sleep 1
 done
-[[ "${H:-0}" -ge "$NEW_TIP" ]] || fail "C: nodeC did not sync post-base blocks to height $NEW_TIP (got ${H:-0})"
+[[ "${H:-0}" -ge "$NEW_TIP" ]] || fail "C: nodeC did not sync the new base header to height $NEW_TIP (got ${H:-0})"
 
 # C1: live RPC path refuses a different-base load mid-lifecycle. The active
 # snapshot's coins populate the consensus set, so LoadSnapshot's empty-set
@@ -515,6 +524,7 @@ if rpc "$C_RPC" "$C_DIR" getsnapshotbootstrapstatus 2>/dev/null \
     fail "C2: node reached fully_validated after a refused different-base rehydrate"
 fi
 stop_node "$C_DIR"
+unset DINERO_DEBUG_BG_VALIDATION_DELAY_MS
 fi
 
 # ═════════════════════════════════════════════════════════════════════════
