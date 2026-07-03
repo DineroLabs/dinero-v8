@@ -8541,6 +8541,20 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
         uint64_t exported = 0;
         for (const auto& outpoint : sorted_outpoints) {
             const auto& entry = all_utxos.at(outpoint);
+            // #281: SerializeUtxoRecord omits is_confidential/commitment, so the
+            // content commitment does not bind them. That is sound only while
+            // those fields are consensus-forced empty (v7 is transparent-only).
+            // Fail closed rather than write a record whose confidential fields
+            // are unbound; this must be revisited (record encoding extended)
+            // before any confidential/shielded UTXO lane is enabled.
+            if (!consensus::UtxoRecordIsSnapshotSafe(entry)) {
+                result.error_message =
+                    "refusing to export UTXO with unbound confidential fields "
+                    "(is_confidential/commitment not covered by the snapshot "
+                    "content commitment; see #281): " + outpoint.ToString();
+                logger_->error("[ExportSnapshot] " + result.error_message);
+                return result;
+            }
             const std::vector<uint8_t> record =
                 consensus::SerializeUtxoRecord(outpoint, entry);
             file.write(reinterpret_cast<const char*>(record.data()),
