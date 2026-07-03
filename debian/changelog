@@ -1,3 +1,22 @@
+dinero-core (8.0.12-1) unstable; urgency=medium
+
+  * v8.0.12 — two-fork consensus release (Mac + Linux; Windows on its own lane).
+    - consensus: leaf-format Utreexo maturity fork activates at mainnet height
+      60000; shielded epoch-reset + confidential-value binding activate at
+      61000. Behavior-identical to v8.0.11 for stateful full nodes below those
+      heights. cv-binding circuit remains present but is NOT reviewed by an
+      independent cryptographer — treat with the standing caveat.
+    - assumeutxo: fresh snapshot bootstrap no longer dead-loops into safe mode
+      (#360); the promotion race is fixed so pre-snapshot coins are written to
+      the coin CF instead of being parked visible-but-unspendable (#361);
+      snapshot export fails closed on unbound confidential fields (#281/#347).
+    - csn: stateless/CSN nodes maintain correct shielded state across reorgs and
+      on the recovery connect path (#355/#356).
+    - qt: daemon-startup popup nags fixed — 100s watchdog and an RPC-port orphan
+      sweep that waits out a slow-but-healthy startup before acting (#341).
+
+ -- Dinero Labs <team@dinerolabs.org>  Fri, 03 Jul 2026 00:00:00 +0000
+
 dinero-core (8.0.5-1) unstable; urgency=medium
 
   * v8.0.5 stable point release on top of v8.0.4 — shielded wallet fixes.
