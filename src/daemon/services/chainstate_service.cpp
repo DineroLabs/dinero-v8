@@ -7198,6 +7198,18 @@ void ChainstateService::ActivateBestChain() {
                               " deferred; blocks stored, not connected)");
             }
             best_candidate = base_idx;
+        } else if (!base_idx && logger_) {
+            // base_idx null while AssumeUTXO is active should be unreachable —
+            // the fresh-bootstrap self-heal / snapshot restore materializes the
+            // base into the block index before we get here. Warn loudly if it
+            // ever happens: without the cap the tip could race past base and
+            // silently re-trigger the promotion-race bug this guard prevents.
+            // (A candidate above base that does NOT descend from the base is a
+            // competing fork; that intentionally falls through to the existing
+            // fork-below-base fatal guard, not here.)
+            logger_->warning("[ActivateBestChain] AssumeUTXO active but snapshot base not "
+                             "found in the block index — cannot hold tip at base; forward "
+                             "sync may race past base (promotion-race guard degraded)");
         }
     }
 

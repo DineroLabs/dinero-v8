@@ -275,7 +275,13 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
         }
 
         // #353 bug-2 companion: persist the backfilled body's position to
-        // ChainDB (mirror the tip path's #309 persist below). The background
+        // ChainDB (mirror the tip path's #309 persist below). Safety note: this
+        // makes a pre-base body readable but does NOT enqueue it as a reorg
+        // candidate (this path never calls AddCandidate); pre-base blocks are
+        // additionally excluded from activation by the below-base floor guard in
+        // ActivateBestChain, which relies on active_tip_ being pinned at the
+        // snapshot base — keep that invariant if the alignment logic changes.
+        // The background
         // validation worker reads pre-base bodies via RequireFlatfiles, which
         // needs getHeaderMetadata(hash).data_size > 0 — i.e. the persisted
         // body position. A body that arrives ONLY via backfill and is never
