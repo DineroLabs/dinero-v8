@@ -463,6 +463,29 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_replay_e2e.sh)
     message(STATUS "  ✓ AssumeUtxoReplayE2E registered")
 endif()
 
+# issue #353 bug 2: AssumeUTXO promotion race. Source keeps mining PAST base and
+# stays connected; the consumer's slowed genesis->base replay
+# (DINERO_DEBUG_BG_VALIDATION_DELAY_MS) lets forward sync race the tip past base.
+# Asserts the fix's hold line fires, promotion still writes the pre-base coin to
+# the coin CF (gettxout non-null — the thing the bug breaks), catch-up to base+K,
+# and clean mode exit. Neuter-proven (remove the ActivateBestChain cap -> A2 null).
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_promotion_race.sh)
+    add_test(
+        NAME AssumeUtxoPromotionRace
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_promotion_race.sh
+    )
+    # Deliberately NOT labeled "integration" — the CI ctest lane runs
+    # --label-exclude 'integration|...', which would silently drop this from CI
+    # (same trap documented for AssumeUtxoReplayE2E above).
+    set_tests_properties(AssumeUtxoPromotionRace PROPERTIES
+        LABELS "assumeutxo;replay;e2e;promotion-race"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ AssumeUtxoPromotionRace registered")
+endif()
+
 # issue #214: two-node integration repro of in-daemon staleness recovery.
 # CONTROL (recovery off -> stays stuck) vs EXPERIMENT (recovery on -> re-getheaders
 # and catches up). Needs the DINERO_TEST_* regtest hooks built into dinerod.
