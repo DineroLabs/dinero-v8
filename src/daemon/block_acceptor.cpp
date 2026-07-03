@@ -56,7 +56,11 @@ extern void notifyWalletNewBlock(int height, const std::string& blockHash, const
 #include <cstdlib>  // getenv, strtol — regtest fault-injection hook (#356 Task 3)
 #include <cerrno>   // errno for strtol error checking
 #include <cstdio>   // fflush
+#ifndef _WIN32
 #include <unistd.h> // _exit (POSIX)
+#else
+#include <process.h> // _exit (Windows CRT)
+#endif
 
 using namespace dinero;
 
