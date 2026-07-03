@@ -444,6 +444,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     bool wipe_stale_chain = false;
     long embedded_parent_pid = 0;
     uint16_t wallet_socket_port = 0;  // 0 = use default (will be set from env or default)
+    long shielded_epoch_reset_override = -1;  // <0 = unset; REGTEST test-only fork activation
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -461,6 +462,20 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         } else if (arg == "--service" || arg == "-service") {
             // Consumed by main() before entering the daemon lifecycle.
 #endif
+        } else if (arg.find("--consensus-shielded-epoch-reset-height=") == 0) {
+            // REGTEST test-only: activate the shielded epoch reset (and, per the
+            // chainparams invariant, cv-binding) at a low height so the
+            // boundary/reorg regtest can drive the hard-fork cutover. Refused on
+            // any non-regtest chain below.
+            const std::string val =
+                arg.substr(std::string("--consensus-shielded-epoch-reset-height=").size());
+            try {
+                shielded_epoch_reset_override = std::stol(val);
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid --consensus-shielded-epoch-reset-height value: "
+                          << val << "\n";
+                return 1;
+            }
         } else if (arg == "--reindex") {
             do_reindex = true;
         } else if (arg == "--reindex-chainstate") {
@@ -712,6 +727,35 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
 
     dinero::SelectParams(chain);
     std::cout << "[Network] Chain parameters initialized: " << dinero::ChainToString(chain) << "\n";
+
+    // REGTEST test-only override: force the shielded epoch reset + cv-binding
+    // activation to a low height so the boundary/reorg regtest can exercise the
+    // hard-fork cutover. Both are set to the SAME height to satisfy the
+    // SelectParams invariant (reset_height == cv_binding_activation_height).
+    // Hard-refused on any non-regtest chain — mainnet/testnet activation is set
+    // exclusively in chainparams, never via a CLI flag.
+    if (shielded_epoch_reset_override >= 0) {
+        if (chain != dinero::Chain::REGTEST) {
+            std::cerr << "[FATAL] --consensus-shielded-epoch-reset-height is REGTEST-only\n";
+            return 1;
+        }
+        auto& mp = dinero::MutableParams();
+        const auto h = static_cast<uint32_t>(shielded_epoch_reset_override);
+        mp.shielded_cv_binding_activation_height = h;
+        mp.shielded_epoch_reset_height = h;
+        // Re-validate the invariant SelectParams enforced before this override
+        // ran: reset == cv-binding (held by construction above) AND cv-binding
+        // >= input-binding. The override must not place the cutover below
+        // input-binding and re-open the unbound-cv window the reset closes.
+        if (h < mp.shielded_input_binding_activation_height) {
+            std::cerr << "[FATAL] --consensus-shielded-epoch-reset-height=" << h
+                      << " must be >= shielded_input_binding_activation_height="
+                      << mp.shielded_input_binding_activation_height << "\n";
+            return 1;
+        }
+        std::cout << "[Network] REGTEST: shielded epoch reset + cv-binding forced at height "
+                  << shielded_epoch_reset_override << " (test-only)\n";
+    }
 
     // Initialize P2P network magic from chainparams (single source of truth).
     // src/consensus/chainparams_impl.cpp owns the per-chain magic value;

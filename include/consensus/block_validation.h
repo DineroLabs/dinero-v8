@@ -283,6 +283,59 @@ private:
                               bool verify_root, std::string& error,
                               CPUBudgetMonitor* cpu_monitor = nullptr);
 
+public:
+    // v7 shielded-pool block-level validation + atomic state apply (commitment
+    // tree appends, nullifier inserts, anchor-history record, and the shielded
+    // epoch reset at the cutover). Invoked by BOTH the stateful path and the
+    // STATELESS/CSN path of ConnectBlockInternal — a CSN must build the shielded
+    // tree/anchors/nullifiers too, or it cannot validate shielded spends (anchor
+    // absent) and its shielded double-spend detection is non-functional. No-op
+    // when shielded state is not wired. Returns false (with `error` set) on a
+    // consensus failure. `pending_shielded_deltas` is the per-shielded-tx
+    // transparent value delta computed in the per-tx loop above. Public since
+    // the ABC-CSN reorg replay leg (chainstate_service.cpp) applies shielded
+    // state for replayed blocks through this same funnel.
+    bool ApplyBlockShieldedSection(const Block& block, uint32_t height,
+                                   const std::vector<int64_t>& pending_shielded_deltas,
+                                   BlockUndo& undo, std::string& error);
+
+    // ABC-CSN reorg replay: recompute `pending_shielded_deltas` for an
+    // already-stored block EXACTLY as the forward STATELESS per-tx loop in
+    // ConnectBlockInternal does: walk non-coinbase txs in block order; each
+    // input consumes one entry of `block.utreexo->spent_outputs` at a single
+    // GLOBAL index (never reset per tx), summing `spent_output.value` into the
+    // tx's total_input_value; `total_output_value = SumOutputs(tx)`; fee via
+    // ComputeValidatedTransactionFee with fee_input_utxos built from the same
+    // SpentOutputData; for shielded-semantics txs the delta comes from
+    // ValidateShieldedTransactionBundle — the same function, same inputs, with
+    // the validator's CURRENT shielded state as const context — so the result
+    // is bit-identical to forward validation by construction.
+    //
+    // Does NOT mutate any validator state, and skips script/signature
+    // validation (the block was already fully validated when first stored);
+    // it does NOT skip any delta-relevant computation.
+    //
+    // `fallback_spent_outputs` is consulted ONLY when `block.utreexo` is
+    // absent (CSN replay records can carry the spend metadata when the stored
+    // block does not). A block with no shielded txs returns true with empty
+    // deltas without requiring spend metadata (legacy hash-only replay
+    // records must not brick transparent-only reorgs). A shielded-bearing
+    // block with neither source, or whose spent_outputs underrun the block's
+    // inputs, returns false with a distinct error.
+    bool ComputeShieldedDeltasForStoredBlock(
+        const Block& block, uint32_t height,
+        std::vector<int64_t>& deltas_out, std::string& error,
+        const std::vector<SpentOutputData>* fallback_spent_outputs = nullptr);
+
+    // Serialized shielded commitment-tree frontier of the validator's CURRENT
+    // shielded state; empty when no shielded tree is wired. Mirrors the
+    // pre-block capture at the top of ConnectBlockInternal so the ABC-CSN
+    // replay leg can populate BlockUndo::pre_block_shielded_frontier BEFORE
+    // ApplyBlockShieldedSection without changing that method's signature or
+    // behavior for its existing callers.
+    std::vector<uint8_t> SerializeShieldedFrontier() const;
+
+private:
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase 2: Pure Consensus - Single Dependency
     // ═══════════════════════════════════════════════════════════════════════════

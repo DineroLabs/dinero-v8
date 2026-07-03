@@ -8,6 +8,7 @@
 #include "consensus/utreexo_accumulator.h"  // Phase 3: For Hash256
 #include "consensus/utreexo_delta.h"        // Phase 4: For delta-based undo
 #include "consensus/utxo_snapshot_state.h"  // Phase 2: For snapshot-based undo
+#include "consensus/shielded/shielded_epoch_snapshot.h"  // shielded epoch reset undo
 
 namespace dinero {
 namespace consensus {
@@ -81,6 +82,14 @@ struct BlockUndo {
     // Serialized CommitmentTree frontier before the block connected.
     // DisconnectBlock restores this and rolls nullifiers back above height-1.
     std::optional<std::vector<uint8_t>> pre_block_shielded_frontier;
+
+    // Shielded epoch reset (hard-fork cutover) undo. Populated ONLY on the
+    // reset block: the full pre-cutover pool (tree frontier + anchor history +
+    // nullifier content) captured before ResetShieldedEpoch wiped it, so a
+    // reorg disconnecting across the cutover can restore the old epoch exactly.
+    // The normal RollbackAbove path cannot undo a reset (it only deletes rows,
+    // it can't re-add the wiped ones), so DisconnectBlock uses this instead.
+    std::optional<shielded::ShieldedEpochSnapshot> pre_reset_shielded_epoch;
 
     BlockUndo() : height(0) {}
     explicit BlockUndo(uint32_t h, const uint256& hash = uint256())

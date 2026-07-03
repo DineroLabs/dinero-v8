@@ -274,14 +274,36 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
             LogBackfillDiagLocked();
         }
 
+        // #353 bug-2 companion: persist the backfilled body's position to
+        // ChainDB (mirror the tip path's #309 persist below). Safety note: this
+        // makes a pre-base body readable but does NOT enqueue it as a reorg
+        // candidate (this path never calls AddCandidate); pre-base blocks are
+        // additionally excluded from activation by the below-base floor guard in
+        // ActivateBestChain, which relies on active_tip_ being pinned at the
+        // snapshot base — keep that invariant if the alignment logic changes.
+        // The background
+        // validation worker reads pre-base bodies via RequireFlatfiles, which
+        // needs getHeaderMetadata(hash).data_size > 0 — i.e. the persisted
+        // body position. A body that arrives ONLY via backfill and is never
+        // tip-connected (e.g. while the AssumeUTXO promotion hold keeps the
+        // canonical tip at the snapshot base) is stored in the flatfile but
+        // otherwise unreadable, so genesis->base replay livelocks. Persisting
+        // here makes backfilled bodies readable regardless of whether anything
+        // connects the pre-base range. Invoked OUTSIDE mutex_, like the wake
+        // and tip paths.
+        //
         // #298 wake-on-store: notify the background validation worker that a
         // pre-base body landed so it can re-attempt its read without polling.
-        // Copy the std::function and invoke it AFTER releasing mutex_ — the
-        // worker's callback touches its own mutex/condvar, and we must never
-        // hold the scheduler lock across a foreign callback (re-entrancy /
+        // Copy the std::functions and invoke them AFTER releasing mutex_ — the
+        // callbacks touch their own mutex/condvar / write ChainDB, and we must
+        // never hold the scheduler lock across a foreign callback (re-entrancy /
         // lock-order deadlock guard, same discipline as the #241 send path).
         std::function<void()> wake = on_backfill_body_stored_;
+        auto persist = persist_body_position_callback_;
         lock.unlock();
+        if (persist) {
+            persist(block_hash, stored_pos);
+        }
         if (wake) {
             wake();
         }

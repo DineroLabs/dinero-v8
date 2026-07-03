@@ -311,6 +311,11 @@ ECPoint ec_add_complete(R1CS& cs, const ECPoint& P, const ECPoint& Q,
 
     // For the add path: if dx == 0 (same x), use dx = 1 to avoid div-by-zero
     FieldElement dx = fe_sub(cs, Q.x, P.x, label + "_dx");
+    // cv-binding audit hardening: fe_sub does not guarantee a canonical (< p)
+    // output, and dx feeds the zero-test that drives branch selection. Pin dx
+    // canonical so the branch predicates are unconditionally a function of the
+    // true geometry (not an infeasibility argument over non-canonical aliases).
+    fe_assert_less_than_p(cs, dx, label + "_dxlt");
     // Apr 14 2026 (Bug #7 / #41) — DO NOT inline these sub-calls as arguments
     // to a single gadgets::mul() call. C++ function argument evaluation order
     // is unspecified, so on x86_64 Linux clang/gcc `gadgets::constant(..._1a)`
@@ -331,6 +336,7 @@ ECPoint ec_add_complete(R1CS& cs, const ECPoint& P, const ECPoint& Q,
     FieldElement safe_dx = fe_select(cs, dx_is_zero, one_fe, dx, label + "_sdx");
 
     FieldElement dy = fe_sub(cs, Q.y, P.y, label + "_dy");
+    fe_assert_less_than_p(cs, dy, label + "_dylt");  // pin canonical (see dx above)
     FieldElement safe_dx_inv = fe_inv(cs, safe_dx, label + "_sdxi");
     FieldElement add_lambda = fe_mul(cs, dy, safe_dx_inv, label + "_alam");
 
@@ -382,10 +388,46 @@ ECPoint ec_add_complete(R1CS& cs, const ECPoint& P, const ECPoint& Q,
     // Case flags (boolean witness variables, constrained)
     Variable is_p_inf = P.is_identity;
     Variable is_q_inf = Q.is_identity;
+    // Native witness values for the branch selectors.
     Variable is_same_pt = cs.alloc(same_point ? Scalar::one() : Scalar::zero());
     Variable is_opposite = cs.alloc(opposite ? Scalar::one() : Scalar::zero());
     gadgets::enforce_boolean(cs, is_same_pt, label + "_spt");
     gadgets::enforce_boolean(cs, is_opposite, label + "_opp");
+
+    // SOUNDNESS FIX (cv-binding audit, 2026-07-01): PIN the branch selectors to
+    // the actual P/Q geometry so a malicious prover cannot choose add/double/
+    // identity. Previously is_same_pt/is_opposite were only boolean-constrained
+    // (free witnesses) — a prover could forge the result (e.g. cv = 2*val*V, or
+    // val*V = O) => shielded mint-from-nothing, and an analogous forgery in the
+    // Schnorr circuit. dx_is_zero (P.x==Q.x) is already enforced above; enforce
+    // dy_is_zero (P.y==Q.y) the same way, then bind:
+    //   is_same_pt  == dx_is_zero AND dy_is_zero
+    //   is_opposite == dx_is_zero AND NOT dy_is_zero
+    // (For on-curve inputs, same x forces y == Q.y or y == -Q.y, so these two
+    // predicates are exhaustive.) Cross-arch (Bug #7/#41): named locals,
+    // left-to-right, so R1CS variable indices are identical Mac vs Linux.
+    Variable dy_one_c    = gadgets::constant(cs, Scalar::one(), label + "_1c");
+    Variable dy_packed   = fe_pack(cs, dy, label + "_dyp");
+    Variable dy_mul      = gadgets::mul(cs, dy_packed, dy_one_c, label + "_dym");
+    Variable dy_is_zero  = gadgets::is_zero(cs, dy_mul, label + "_dyz");
+    // Match the native predicate EXACTLY: same_point/opposite require BOTH inputs
+    // finite (native: same_x = !p_inf && !q_inf && ...). The identity cases are
+    // handled by the is_p_inf/is_q_inf selects below, which override the result.
+    // Without this gate, two identity inputs (sentinel coords equal) — which occur
+    // in honest scalar-mul accumulation, e.g. ec_add_complete(O, O) — would compute
+    // want_same=1 while the native witness sets is_same_pt=0, so enforce_equal would
+    // reject valid proofs. (Regression caught by ShieldedCvBinding honest-output tests.)
+    Variable either_inf  = gadgets::or_bits(cs, is_p_inf, is_q_inf, label + "_einf");
+    Variable neither_inf = gadgets::not_bit(cs, either_inf, label + "_ninf");
+    Variable dx_and_dy   = gadgets::and_bits(cs, dx_is_zero, dy_is_zero, label + "_dxdy");
+    Variable want_same   = gadgets::and_bits(cs, dx_and_dy, neither_inf, label + "_wspt");
+    Variable not_dy_zero = gadgets::not_bit(cs, dy_is_zero, label + "_ndyz");
+    Variable dx_and_ndy  = gadgets::and_bits(cs, dx_is_zero, not_dy_zero, label + "_dxndy");
+    Variable want_opp    = gadgets::and_bits(cs, dx_and_ndy, neither_inf, label + "_wopp");
+    cs.enforce_equal(LinearCombination(is_same_pt), LinearCombination(want_same),
+                     label + "_sptbind");
+    cs.enforce_equal(LinearCombination(is_opposite), LinearCombination(want_opp),
+                     label + "_oppbind");
 
     // Select result based on case:
     // 1. P is identity → result = Q

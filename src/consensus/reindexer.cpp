@@ -6,9 +6,11 @@
 #include "consensus/genesis_canonical.h"
 #include "consensus/merkle_root.h"
 #include "consensus/outpoint.h"             // OutPoint (for intra-block spend tracking)
+#include "consensus/shielded/shielded_block_section.h"
 #include "consensus/shielded/shielded_block_validation.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_validation.h"
+#include "consensus/shielded/shielded_epoch.h"
 #include "consensus/utreexo_accumulator.h"  // HashUTXO, UtreexoForest
 #include "consensus/utreexo_activation.h"   // IsUtreexoActive
 #include "consensus/utreexo_canonical_roots_activation.h"  // canonical-roots gate
@@ -1870,6 +1872,51 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
         g_logger.info("[reindex] Persisted ShieldedTipMarker @ height " +
                       std::to_string(final_tip_height_) +
                       " root=" + marker.shielded_root.GetHex());
+
+        // Persist the anchor history to the rebuilt ChainDB — mirrors the live
+        // ConnectTip putUtreexoMeta("shielded_anchor_history"). The reindexer
+        // reconstructs anchor_history in memory (RecordRoot per block above) but
+        // otherwise never writes it to the rebuilt ChainDB, so the post-reindex
+        // startup load found no blob and fell back to a stale flat file (or an
+        // empty window). That diverged a reindexed node's anchor_history — and
+        // thus its DSR2 shieldedStateHash — from a live node's: a live-vs-reindex
+        // consensus split. Written as the ChainDB blob (load priority #1) so it
+        // supersedes any stale flat file.
+        const auto anchor_bytes = shielded_anchor_history_.SerializeBytes();
+        const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
+        auto anchor_status =
+            chain_db_->putUtreexoMeta(token, "shielded_anchor_history", anchor_blob);
+        if (anchor_status != Status::Ok) {
+            g_logger.error("[reindex] Failed to persist shielded anchor history at height " +
+                           std::to_string(final_tip_height_));
+            stats_.error = "Failed to persist shielded anchor history";
+            return stats_;
+        }
+        g_logger.info("[reindex] Persisted shielded anchor history @ height " +
+                      std::to_string(final_tip_height_) + " (" +
+                      std::to_string(anchor_bytes.size()) + " bytes)");
+
+        // Persist the frontier blob to the rebuilt ChainDB too — same reason as
+        // the anchor blob. Without it, a reindexed node has no "shielded_frontier"
+        // ChainDB row and the startup load falls back to the flat file; past the
+        // epoch reset height the loader now refuses that stale fallback (a
+        // resurrection guard), so a reindexed node past the cutover would fail to
+        // start. Writing the blob makes the ChainDB the authoritative source for
+        // both frontier and anchors post-reindex.
+        const auto frontier_bytes = shielded_tree_.SerializeFrontier();
+        const std::string frontier_blob(frontier_bytes.begin(),
+                                        frontier_bytes.end());
+        auto frontier_status =
+            chain_db_->putUtreexoMeta(token, "shielded_frontier", frontier_blob);
+        if (frontier_status != Status::Ok) {
+            g_logger.error("[reindex] Failed to persist shielded frontier at height " +
+                           std::to_string(final_tip_height_));
+            stats_.error = "Failed to persist shielded frontier";
+            return stats_;
+        }
+        g_logger.info("[reindex] Persisted shielded frontier @ height " +
+                      std::to_string(final_tip_height_) + " (" +
+                      std::to_string(frontier_bytes.size()) + " bytes)");
     }
 
     if (forest_ && final_tip_height_ >= 0 && IsUtreexoActive(static_cast<uint32_t>(final_tip_height_))) {
@@ -2265,30 +2312,22 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
         }
     }
 
-    if (!shielded_bundles.empty()) {
-        shielded::BlockShieldedContext block_ctx{
-            &shielded_nullifiers_,
-            &shielded_tree_,
-            static_cast<uint32_t>(height),
-        };
-        const auto block_validation =
-            shielded::ValidateBlockShielded(shielded_bundles, shielded_deltas, block_ctx);
-        if (block_validation != shielded::BlockValidationError::Ok) {
-            g_logger.error("[reindex] Shielded block validation failed at height " +
-                           std::to_string(height) + " code=" +
-                           std::to_string(static_cast<int>(block_validation)));
-            return Status::Invalid;
-        }
-
-        shielded::ApplyBlockShielded(
-            shielded_bundles, &shielded_tree_, &shielded_nullifiers_,
-            static_cast<uint32_t>(height));
-
-        // Phase 3 wave 1: anchor depth window — record this block's
-        // post-apply tree root so spends in the next ≤kDepth blocks
-        // can reference it as their anchor.
-        shielded_anchor_history_.RecordRoot(static_cast<uint32_t>(height),
-                                            shielded_tree_.Root());
+    // Epoch-reset gate + block-level validate/apply + anchor-root recording,
+    // mirroring the live ConnectBlockInternal path so a reindexed chain
+    // reconstructs the SAME post-cutover pool and anchor history (or a
+    // reindexed node forks off the live one). See the single canonical
+    // implementation and its rationale comments (including why RecordRoot
+    // fires for every block ≥ activation, not just shielded-tx blocks) in
+    // ConnectBlockShieldedSection (shielded_block_section.cpp).
+    std::string shielded_section_err;
+    if (!shielded::ConnectBlockShieldedSection(
+            shielded_bundles, shielded_deltas, static_cast<uint32_t>(height),
+            Params().shielded_epoch_reset_height,
+            Params().shielded_activation_height,
+            shielded_tree_, shielded_nullifiers_, &shielded_anchor_history_,
+            undo.pre_reset_shielded_epoch, shielded_section_err)) {
+        g_logger.error("[reindex] " + shielded_section_err);
+        return Status::Invalid;
     }
 
     // ═══════════════════════════════════════════════════════════════════

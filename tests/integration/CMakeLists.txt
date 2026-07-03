@@ -463,6 +463,29 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_replay_e2e.sh)
     message(STATUS "  ✓ AssumeUtxoReplayE2E registered")
 endif()
 
+# issue #353 bug 2: AssumeUTXO promotion race. Source keeps mining PAST base and
+# stays connected; the consumer's slowed genesis->base replay
+# (DINERO_DEBUG_BG_VALIDATION_DELAY_MS) lets forward sync race the tip past base.
+# Asserts the fix's hold line fires, promotion still writes the pre-base coin to
+# the coin CF (gettxout non-null — the thing the bug breaks), catch-up to base+K,
+# and clean mode exit. Neuter-proven (remove the ActivateBestChain cap -> A2 null).
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_promotion_race.sh)
+    add_test(
+        NAME AssumeUtxoPromotionRace
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_promotion_race.sh
+    )
+    # Deliberately NOT labeled "integration" — the CI ctest lane runs
+    # --label-exclude 'integration|...', which would silently drop this from CI
+    # (same trap documented for AssumeUtxoReplayE2E above).
+    set_tests_properties(AssumeUtxoPromotionRace PROPERTIES
+        LABELS "assumeutxo;replay;e2e;promotion-race"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ AssumeUtxoPromotionRace registered")
+endif()
+
 # issue #214: two-node integration repro of in-daemon staleness recovery.
 # CONTROL (recovery off -> stays stuck) vs EXPERIMENT (recovery on -> re-getheaders
 # and catches up). Needs the DINERO_TEST_* regtest hooks built into dinerod.
@@ -1160,6 +1183,103 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_reorg_invertibility.sh)
         TIMEOUT 300
     )
     message(STATUS "  ✓ ShieldedReorgInvertibility registered")
+endif()
+
+# Shielded epoch reset (hard-fork cutover) boundary acceptance test. Drives a
+# regtest daemon (cutover forced low via --consensus-shielded-epoch-reset-height)
+# across the reset with a populated pre-cutover pool, then asserts: pre-cutover
+# notes are unspendable; reorg-across-H is a perfect inverse; restart rehydrates
+# the identical state (the ChainDB nullifier purge persisted — no resurrection);
+# and reindex reproduces the live shieldedStateHash (no live-vs-reindex split).
+# Mines >100 blocks (wallet coinbase maturity) + reindex, so allow a long timeout.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_boundary.sh)
+    add_test(
+        NAME ShieldedEpochResetBoundary
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_boundary.sh
+    )
+    set_tests_properties(ShieldedEpochResetBoundary PROPERTIES
+        LABELS "integration;shielded;reorg;restart;reindex;epoch-reset;canonical-state"
+        TIMEOUT 600
+    )
+    message(STATUS "  ✓ ShieldedEpochResetBoundary registered")
+endif()
+
+# Shielded epoch reset — STATELESS / CSN path acceptance test. A bridge node
+# mines across the cutover and a stateless (--utreexo-stateless) node syncs
+# across H and restarts past it, asserting brick-safety: it does not stall at the
+# cutover (the reset applies on the stateless connect path) and restarts cleanly
+# past H (the frontier/anchor blobs persist; the resurrection guard does not
+# brick it). Two-node sync + restart, so allow a long timeout.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_stateless.sh)
+    add_test(
+        NAME ShieldedEpochResetStateless
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_stateless.sh
+    )
+    set_tests_properties(ShieldedEpochResetStateless PROPERTIES
+        LABELS "integration;shielded;stateless;csn;restart;epoch-reset;canonical-state"
+        TIMEOUT 600
+    )
+    message(STATUS "  ✓ ShieldedEpochResetStateless registered")
+endif()
+
+# CSN shielded-spend sync regression: a stateless node must build the shielded
+# tree/anchors/nullifiers during sync so it can validate a shielded spend
+# (previously it early-returned before the shielded-apply section and failed
+# anchor-invalid). Bridge mines a shield+unshield chain; the stateless node syncs
+# it and its shieldedStateHash must match the full node's. Two-node, long timeout.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_spend_sync.sh)
+    add_test(
+        NAME CSNShieldedSpendSync
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_spend_sync.sh
+    )
+    set_tests_properties(CSNShieldedSpendSync PROPERTIES
+        LABELS "integration;shielded;stateless;csn;canonical-state"
+        TIMEOUT 600
+    )
+    message(STATUS "  ✓ CSNShieldedSpendSync registered")
+endif()
+
+# CSN ConnectTip stateless-recovery shielded-apply (#356). Deterministically
+# reaches ConnectTip's crash-recovery/replay branch (guard current_commitment ==
+# accumulator_root_before, INFO "Stateless replay path") via the regtest-only
+# fault-injection hook (DINERO_DEBUG_ABORT_AFTER_STORE_HEIGHT): a CSN stores a
+# shielded-bearing block H (an unshield/nullifier block) then _exit(70) before
+# connecting it; on restart ActivateBestChain connects H through the recovery
+# branch. Asserts the branch fired for H, and that the recovery-applied shielded
+# state converges with the full node (shieldedStateHash) and accepts a subsequent
+# shielded spend. Neuter-proven (reverting the branch's apply diverges/stalls).
+# Two-node bridge+CSN, restart, long timeout.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_recovery_shielded_apply.sh)
+    add_test(
+        NAME CSNRecoveryShieldedApply
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_recovery_shielded_apply.sh
+    )
+    set_tests_properties(CSNRecoveryShieldedApply PROPERTIES
+        LABELS "integration;shielded;stateless;csn;recovery;crash;canonical-state"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ CSNRecoveryShieldedApply registered")
+endif()
+
+# CSN shielded REORG invertibility (the e2e teeth). A stateless node must survive
+# a reorg whose disconnected AND replayed branches carry real shielded spends and
+# end byte-identical to a full node. Leg A: reorg invertibility (CSN sh==bridge);
+# Leg B: double-spend of a note whose nullifier entered CSN state via a replayed
+# block is rejected (nullifier-duplicate); Leg C: reorg across the epoch-reset
+# height converges (gates the bookkeeping reset RecordRoot fix); Leg D: a second reorg
+# disconnects replay-connected blocks with no "Missing undo data". Uses the
+# deterministic shielded_tx_builder so a note's nullifier is reproducible across
+# branches. Two-node bridge+CSN, long timeout.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_reorg_invertibility.sh)
+    add_test(
+        NAME CSNShieldedReorgInvertibility
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_reorg_invertibility.sh
+    )
+    set_tests_properties(CSNShieldedReorgInvertibility PROPERTIES
+        LABELS "integration;shielded;stateless;csn;reorg;invertibility;canonical-state"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ CSNShieldedReorgInvertibility registered")
 endif()
 
 # Companion to ShieldedReorgInvertibility. Same property assertion

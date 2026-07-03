@@ -90,11 +90,16 @@ static ChainParams g_mainnet = {
     // shielded value existed under it), blocks >= 32300 require the bound rule.
     .shielded_input_binding_activation_height = 32300,
 
-    // Audit Critical #1: shielded cv-binding activation. FLAG FOR HUMAN:
-    // UINT32_MAX = never activate (fix wired + tested but inert on mainnet)
-    // until a human picks a real height and coordinates the fleet upgrade.
-    // A wrong boundary splits the chain.
-    .shielded_cv_binding_activation_height = UINT32_MAX,
+    // Shielded cv-binding activation + shielded epoch reset (hard-fork cutover),
+    // MAINNET. Both MUST be equal (SelectParams invariant) and >= the input-
+    // binding activation (32300). At height 61000 the shielded pool is discarded
+    // to a fresh empty epoch (pre-cutover notes become unspendable) and cv-binding
+    // is enforced from block 1 of the new epoch — closing the [input_binding, cv)
+    // mint window by discarding the pre-cv-binding weak pool rather than carrying
+    // it forward. The fork-aware binary MUST be deployed to every fleet node
+    // BEFORE height 61000; a node still on an older binary at the cutover splits.
+    .shielded_cv_binding_activation_height = 61000,
+    .shielded_epoch_reset_height = 61000,
 
     .genesis = {
         .nVersion = 1,
@@ -461,6 +466,42 @@ void SelectParams(Chain chain) {
             break;
         default:
             throw std::invalid_argument("Unknown chain");
+    }
+
+    // cv-binding audit invariant (NECESSARY, not sufficient): cv-binding must
+    // not activate before input-binding. The cv circuit is only meaningful when
+    // public-input binding is on (VerifySpendProof passes `bind` and `cv_bound`
+    // separately; if cv activated first, the cv circuit would run with
+    // bind_public_inputs=false and a prover could present an arbitrary cv,
+    // defeating cv-binding entirely). So enforce cv_bound => bind.
+    //
+    // ⚠️ RESIDUAL ACTIVATION-WINDOW GAP (NOT closed by this check): because
+    // input-binding is fixed historically (mainnet 32300), any future cv height
+    // is > input height, leaving the window [input_height, cv_height) where
+    // balance is enforced over cv but cv is NOT yet bound to the note value. In
+    // that window an output can commit cm(val=X) while cv=Commit(0) — the binding
+    // sig balances it at zero cost and the note stays spendable after activation
+    // (mint-from-nothing across the transition). Activating cv-binding does NOT
+    // retroactively close this. The ONLY full closures are cv_height==input_height
+    // (impossible now) or a coordinated cutover / shielded-pool reset at
+    // activation that treats pre-activation shielded value as suspect. This MUST
+    // be handled in the cv-binding activation plan, not here. (cv=UINT32_MAX
+    // dormant today, so the window does not exist yet.)
+    if (g_active->shielded_cv_binding_activation_height <
+        g_active->shielded_input_binding_activation_height) {
+        throw std::runtime_error(
+            "invalid chainparams: shielded_cv_binding_activation_height must be >= "
+            "shielded_input_binding_activation_height");
+    }
+
+    // The shielded epoch reset must coincide with cv-binding activation: the pool
+    // is discarded and cv-binding is enforced from block 1 of the new epoch, so no
+    // window can exist where balance is enforced over cv while cv is still unbound.
+    if (g_active->shielded_epoch_reset_height !=
+        g_active->shielded_cv_binding_activation_height) {
+        throw std::runtime_error(
+            "invalid chainparams: shielded_epoch_reset_height must equal "
+            "shielded_cv_binding_activation_height");
     }
 }
 

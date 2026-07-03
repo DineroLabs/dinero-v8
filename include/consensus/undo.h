@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include "primitives/uint256.h"
+#include "consensus/shielded/shielded_epoch_snapshot.h"
 
 namespace dinero {
 
@@ -50,6 +51,11 @@ struct UndoRecord {
     // pre_block_shielded_frontier so flatfile-backed reorg paths can restore
     // the exact pre-block shielded frontier after reindex-built blocks.
     std::optional<std::vector<uint8_t>> pre_block_shielded_frontier;
+    // Shielded epoch reset snapshot (present ONLY on the reset block). Mirrors
+    // BlockUndo::pre_reset_shielded_epoch through the on-disk undo format so a
+    // reorg that disconnects across the cutover can restore the full pre-reset
+    // pool (the normal RollbackAbove path cannot re-add wiped rows).
+    std::optional<consensus::shielded::ShieldedEpochSnapshot> pre_reset_shielded_epoch;
 
     UndoRecord() = default;
 

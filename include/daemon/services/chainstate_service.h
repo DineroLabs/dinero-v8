@@ -7,6 +7,7 @@
 #include "consensus/block_index.h"  // Phase 41: BlockIndex graph for reorg logic
 #include "consensus/utxo_snapshot.h"  // Phase 42: AssumeUTXO snapshot structures
 #include "daemon/services/assumeutxo_lifecycle.h"  // AssumeUTXO fatal state machine
+#include "daemon/services/stateless_replay_shielded_decision.h"  // #356: marker-guard decision
 #include "consensus/block_validation.h"  // Reorg fix: Production consensus validator
 #include "consensus/consensus_utxo_set.h"  // Phase 2: Pure in-memory UTXO set
 #include "consensus/shielded/anchor_history.h"
@@ -227,9 +228,22 @@ public:
                     bool* out_consensus_invalid = nullptr);
 
     // CSN reorg: Bookkeeping-only connect (no ConnectBlock, no forest mutation).
-    // Writes coin changes, tip pointer, height index, notifications.
-    // Used after StatelessNode::ReplayBlock() has already advanced the forest.
-    bool CommitConnectedBlockBookkeeping(class CBlockIndex* block_index, const Block& block, std::string* out_error = nullptr);
+    // Writes coin changes, an UndoRecord (spent/created + shielded fields),
+    // shielded frontier/anchor/marker/nullifier state, tip pointer, height
+    // index, notifications. Used after StatelessNode::ReplayBlock() has
+    // already advanced the forest. `shielded_undo` is the BlockUndo the
+    // caller built while applying this block's shielded section (pass
+    // nullptr when no shielded apply preceded this call, e.g. ConnectTip's
+    // stateless-replay branch) — its pre_block_shielded_frontier /
+    // pre_reset_shielded_epoch feed the persisted UndoRecord so a later
+    // DisconnectTip-CSN can roll this block back. For a shielded-bearing
+    // block with no usable shielded undo (nullptr, or frontier unset), the
+    // undo write is SKIPPED with a loud warning so a later disconnect of
+    // that block fails loudly ("Missing undo data") instead of silently
+    // skipping the shielded rollback.
+    bool CommitConnectedBlockBookkeeping(class CBlockIndex* block_index, const Block& block,
+                                         const consensus::BlockUndo* shielded_undo,
+                                         std::string* out_error = nullptr);
 
     // Phase 41: Active chain tip (replaces ChainDB getTip for consensus)
     class CBlockIndex* GetActiveTip() const { return active_tip_; }
@@ -794,6 +808,31 @@ private:
     bool PersistShieldedState() const;
     ShieldedStateSnapshot CurrentShieldedStateSnapshot() const;
     bool PersistShieldedTipMarker(const uint256& tip_hash, uint32_t tip_height) const;
+
+    // #356: Advance the in-memory shielded pool for one stored block during a
+    // stateless replay/recovery connect, IFF the shielded pool sits exactly at
+    // height-1 (the marker-guard decision — see StatelessReplayShieldedDecision).
+    // Shared funnel for the ABC-CSN reorg replay loop and the ConnectTip
+    // crash-recovery branch so neither hand-rolls the delta+capture+apply
+    // sequence.
+    //
+    //   marker.height == height-1 -> apply, applied_out=true, undo_out filled
+    //   marker.height >= height    -> skip (already applied), applied_out=false,
+    //                                 returns true with no mutation
+    //   marker.height <  height-1  -> returns false (loud: contiguous-recovery
+    //                                 invariant broken)
+    //
+    // On the apply path, pre_block_shielded_frontier is captured BEFORE the
+    // apply (mirroring ConnectBlockInternal); pre_reset_shielded_epoch is filled
+    // by ApplyBlockShieldedSection when height == the epoch-reset height.
+    // `fallback_spent_outputs` is forwarded to ComputeShieldedDeltasForStoredBlock
+    // and consulted ONLY when block.utreexo is absent (CSN replay records carry
+    // the spend metadata for hash-only stored blocks).
+    bool ApplyStatelessReplayShielded(const Block& block, uint32_t height,
+                                      consensus::BlockUndo& undo_out, bool& applied_out,
+                                      std::string& error,
+                                      const std::vector<consensus::SpentOutputData>*
+                                          fallback_spent_outputs = nullptr);
     // Phase 3b step 6: RestoreShieldedFrontierFromUndoBlock,
     // ReplayShieldedBlockForward, and RecoverShieldedStateFromTipMarker
     // were deleted. Their only purpose was to reconcile partial-state
