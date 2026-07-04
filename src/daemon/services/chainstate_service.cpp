@@ -7189,6 +7189,22 @@ void ChainstateService::ActivateBestChain() {
     // candidate genuinely descends from the snapshot base (otherwise the below-base
     // fork guards above / the normal work comparison handle it).
     if (assumeutxo_active_ && !assumeutxo_base_block_.IsNull() &&
+        static_cast<uint32_t>(best_candidate->height) > assumeutxo_base_height_ &&
+        GetConfig().assumeutxo_forward_connect) {
+        // FORWARD-CONNECT (mobile profile): do NOT hold the tip at the base.
+        // Blocks descending from the snapshot base connect immediately (the
+        // base state is verified against the compiled registry anchor), and
+        // promotion runs in advanced-tip mode when the replay completes (see
+        // PromoteValidatedHistory) — so the #353 bug-2 hazard the hold guards
+        // against is handled there, not by deferring the tip.
+        if (!assumeutxo_forward_connect_logged_ && logger_) {
+            assumeutxo_forward_connect_logged_ = true;
+            logger_->info("[ActivateBestChain] AssumeUTXO active — forward-connect profile: "
+                          "connecting past snapshot base " +
+                          std::to_string(assumeutxo_base_height_) +
+                          " while background validation runs (node usable at the live tip)");
+        }
+    } else if (assumeutxo_active_ && !assumeutxo_base_block_.IsNull() &&
         static_cast<uint32_t>(best_candidate->height) > assumeutxo_base_height_) {
         // #360 residual: hold g_block_index_mutex across the ancestry walk so the
         // pprev reads don't race a concurrent load-thread relink. activation_mutex_
@@ -14485,7 +14501,17 @@ void ChainstateService::BackgroundValidationWorker() {
                     tip_below_base = false;
                 }
             }
-            if (tip_below_base) {
+            // Forward-connect: the tip legitimately advances past base
+            // BEFORE the replay finishes, so tip>=base does not mean a prior
+            // promotion landed — only the durable marker does. Without this,
+            // promotion would be skipped and the pre-base coins never
+            // materialized (#353 bug 2 through the side door).
+            bool promotion_needed = tip_below_base;
+            if (!tip_below_base && GetConfig().assumeutxo_forward_connect &&
+                !PromotionArtifactsCommitted()) {
+                promotion_needed = true;
+            }
+            if (promotion_needed) {
                 std::string promote_err;
                 if (!PromoteValidatedHistory(*replay, canonical_hashes_fallback,
                                              promote_err)) {
@@ -14511,6 +14537,19 @@ void ChainstateService::BackgroundValidationWorker() {
         logger_->error("[BackgroundValidation] " + error);
         OnBackgroundValidationComplete(false, error);
     }
+}
+
+std::string ChainstateService::PromotionMarkerKey() const {
+    // Keyed by the base BLOCK HASH: a future lifecycle with a different base
+    // can never be satisfied by a stale marker. (Height alone could collide
+    // across a chain reset.)
+    return std::string("assumeutxo_promoted:") + assumeutxo_base_block_.GetHex();
+}
+
+bool ChainstateService::PromotionArtifactsCommitted() const {
+    if (!chain_db_ || assumeutxo_base_block_.IsNull()) return false;
+    auto result = chain_db_->getUtreexoMeta(PromotionMarkerKey());
+    return result.status() == Status::Ok && result.value() == "1";
 }
 
 bool ChainstateService::PromoteValidatedHistory(
@@ -14570,17 +14609,39 @@ bool ChainstateService::PromoteValidatedHistory(
     // the bulk coin reconcile below would clobber post-base coin deltas with
     // base-state coins. Refuse to write; the exit gate's tip condition is
     // already satisfied.
+    bool advanced_tip = false;
     {
         auto tip_result = chain_db_->getTip();
         if (tip_result.status() == Status::Ok &&
             static_cast<uint32_t>(tip_result.value().height) >= base) {
-            if (logger_) {
-                logger_->warning("[Promotion] ChainDB tip already at height " +
-                                 std::to_string(tip_result.value().height) +
-                                 " >= base " + std::to_string(base) +
-                                 " — skipping promotion writes (exit gate already eligible)");
+            if (GetConfig().assumeutxo_forward_connect) {
+                if (PromotionArtifactsCommitted()) {
+                    if (logger_) {
+                        logger_->info("[Promotion] completion marker present — "
+                                      "promotion already landed (idempotent skip)");
+                    }
+                    return true;
+                }
+                // ADVANCED-TIP promotion (forward-connect): the canonical tip
+                // is legitimately past base. Reconcile against the LIVE set,
+                // leave tip-anchored state to ConnectTip, and commit via the
+                // durable marker instead of setTip(base).
+                advanced_tip = true;
+                if (logger_) {
+                    logger_->info("[Promotion] advanced-tip mode: ChainDB tip at height " +
+                                  std::to_string(tip_result.value().height) +
+                                  " >= base " + std::to_string(base) +
+                                  " (forward-connect profile)");
+                }
+            } else {
+                if (logger_) {
+                    logger_->warning("[Promotion] ChainDB tip already at height " +
+                                     std::to_string(tip_result.value().height) +
+                                     " >= base " + std::to_string(base) +
+                                     " — skipping promotion writes (exit gate already eligible)");
+                }
+                return true;
             }
-            return true;
         }
     }
 
@@ -14822,7 +14883,22 @@ bool ChainstateService::PromoteValidatedHistory(
     // history spent), then put every proven entry. Same end-state as the
     // reindexer's per-block delete/put rebuild, computed in one pass.
     {
-        const auto& proven = engine.ProvenUtxos();
+        // ADVANCED-TIP (forward-connect): the coin CF must end equal to the
+        // LIVE consensus set — proven base state + validated post-base
+        // connects. Reconciling against the engine's base set here would
+        // delete post-base coins and resurrect post-base-spent ones (the
+        // exact #353 bug-2 hazard). activation_mutex_ (held for this whole
+        // method) makes the live-set read atomic w.r.t. ConnectTip. The base
+        // state itself was already proven: the replay-complete digest check
+        // compared the engine's re-derived state to the snapshot commitment
+        // before promotion was called, and the live set descends from that
+        // same anchored snapshot.
+        if (advanced_tip && !consensus_utxo_set_) {
+            error = "advanced-tip promotion: consensus set unavailable";
+            return false;
+        }
+        const auto& proven = advanced_tip ? consensus_utxo_set_->GetUTXOs()
+                                          : engine.ProvenUtxos();
 
         std::vector<std::pair<uint256, uint32_t>> stale;
         const auto fe_status = chain_db_->forEachUTXO(
@@ -14946,6 +15022,13 @@ bool ChainstateService::PromoteValidatedHistory(
     }
 
     // ── 4b) Tip-anchored singles at base (one batch) + 5) journal row ──────
+    // ADVANCED-TIP: skipped entirely. ConnectTip has been maintaining the
+    // forest/shielded tip markers, frontier/anchor blobs, and per-height
+    // journal rows at the REAL tip all along; overwriting those singles with
+    // base-state values would leave the persisted markers behind the actual
+    // tip and corrupt the next restart's alignment audits. The base-height
+    // journal row is never read while the tip is above base.
+    if (!advanced_tip)
     // All from the ENGINE's proven state at the base — the same containers a
     // post-promotion restart loads back (frontier blob, anchor history blob,
     // nullifier rows above) and verifies against the markers
@@ -15096,7 +15179,38 @@ bool ChainstateService::PromoteValidatedHistory(
         }
     }
     if (logger_) {
-        logger_->info("[Promotion] stage 4b/5 complete: tip-anchored markers and journal row committed");
+        logger_->info(advanced_tip
+            ? "[Promotion] stage 4b/5 skipped (advanced-tip: ConnectTip owns the tip-anchored state)"
+            : "[Promotion] stage 4b/5 complete: tip-anchored markers and journal row committed");
+    }
+
+    // ── 6) The commit point ────────────────────────────────────────────────
+    // ADVANCED-TIP: the tip is already past base and must NOT be regressed.
+    // The durable completion marker replaces setTip(base) as the last write:
+    // it is what makes this promotion observable to the worker's idempotence
+    // gate and to the exit gate in OnBackgroundValidationComplete. A crash
+    // before the marker re-runs the replay + promotion on restart; every
+    // write above is idempotent (same proven bytes).
+    if (advanced_tip) {
+        rocksdb::WriteBatch marker_batch;
+        const auto put_st = chain_db_->putUtreexoMeta(
+            token, PromotionMarkerKey(), "1", &marker_batch);
+        if (put_st != Status::Ok) {
+            error = "advanced-tip promotion: completion marker stage failed";
+            return false;
+        }
+        const auto st = chain_db_->writeBatch(token, std::move(marker_batch), /*sync=*/true);
+        if (st != Status::Ok) {
+            error = "advanced-tip promotion: completion marker commit failed (status=" +
+                    std::to_string(static_cast<int>(st)) + ")";
+            return false;
+        }
+        if (logger_) {
+            logger_->info("[Promotion] complete (advanced-tip): pre-base history "
+                          "materialized under a live tip; completion marker durable "
+                          "(tip untouched)");
+        }
+        return true;
     }
 
     // ── 6) Durable setTip(base) — THE LAST WRITE (see ordering invariant) ──
@@ -15133,6 +15247,18 @@ bool ChainstateService::PromoteValidatedHistory(
             error = "promotion: setTip(base) failed (status=" +
                     std::to_string(static_cast<int>(st)) + ")";
             return false;
+        }
+    }
+
+    // Under the forward-connect profile the exit gate requires the completion
+    // marker even when promotion ran classically (replay won the race and the
+    // tip was still below base) — write it after setTip so both modes satisfy
+    // the same gate.
+    if (GetConfig().assumeutxo_forward_connect) {
+        rocksdb::WriteBatch marker_batch;
+        if (chain_db_->putUtreexoMeta(token, PromotionMarkerKey(), "1",
+                                      &marker_batch) == Status::Ok) {
+            (void)chain_db_->writeBatch(token, std::move(marker_batch), /*sync=*/true);
         }
     }
 
@@ -15272,6 +15398,17 @@ void ChainstateService::OnBackgroundValidationComplete(bool success, const std::
                 static_cast<uint32_t>(tip_result.value().height) >= assumeutxo_base_height_) {
                 chaindb_caught_up = true;
             }
+        }
+        // Forward-connect: tip >= base is true from forward sync ALONE, so it
+        // cannot stand in for "promotion landed". Require the durable
+        // completion marker, else the mode would exit with the pre-base coins
+        // never materialized (#353 bug 2 through the side door).
+        if (chaindb_caught_up && GetConfig().assumeutxo_forward_connect &&
+            !PromotionArtifactsCommitted()) {
+            chaindb_caught_up = false;
+            logger_->info("[BackgroundValidation] tip past base but promotion marker "
+                          "not durable yet — keeping AssumeUTXO mode active until "
+                          "promotion lands");
         }
 
         const bool lifecycle_fully_validated =

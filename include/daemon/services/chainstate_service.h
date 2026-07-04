@@ -1092,6 +1092,13 @@ private:
     // (fatally) any reorg whose fork point dips below this height. 0 = unset.
     uint32_t promoted_base_height_ = 0;
 
+    // Forward-connect (mobile profile) support: one-time INFO when the #361
+    // tip hold is bypassed, and the durable promotion-completion marker that
+    // replaces setTip(base) as the advanced-tip commit point. The marker is
+    // keyed by the base block hash, so a future different-base lifecycle can
+    // never be satisfied by a stale one.
+    bool assumeutxo_forward_connect_logged_ = false;
+
     // FIX 2 (issue #186) + rc24.1 single-flight guard: deferred snapshot-bootstrap
     // state machine (peeked at startup; block download is deferred while Pending
     // OR Loading). Only ONE thread may win the Pending -> Loading transition and
@@ -1284,6 +1291,11 @@ private:
     bool PromoteValidatedHistory(const assumeutxo::AssumeUtxoReplayEngine& engine,
                                  const std::vector<uint256>& canonical_hashes,
                                  std::string& error);
+
+    // Forward-connect promotion bookkeeping (see PromoteValidatedHistory):
+    // marker key for the current base, and whether it is already durable.
+    std::string PromotionMarkerKey() const;
+    bool PromotionArtifactsCommitted() const;
 
     // Phase 46: Pruning helpers
     bool PruneBlocksUpToHeight(uint32_t height);  // Execute pruning operation
