@@ -486,6 +486,26 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_promotion_race.sh)
     message(STATUS "  ✓ AssumeUtxoPromotionRace registered")
 endif()
 
+# Mobile-profile contract: assumeutxo_forward_connect=1 connects forward from
+# the snapshot base immediately (no #361 hold), and promotion lands in
+# advanced-tip mode (coin CF reconciled against the LIVE set, completion via
+# durable marker, tip never regressed). Same topology + race lever as
+# AssumeUtxoPromotionRace; asserts the forward-connect contract instead.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
+    add_test(
+        NAME AssumeUtxoForwardConnect
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh
+    )
+    # NOT labeled "integration" — same CI label-exclude trap as above.
+    set_tests_properties(AssumeUtxoForwardConnect PROPERTIES
+        LABELS "assumeutxo;replay;e2e;forward-connect"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ AssumeUtxoForwardConnect registered")
+endif()
+
 # issue #214: two-node integration repro of in-daemon staleness recovery.
 # CONTROL (recovery off -> stays stuck) vs EXPERIMENT (recovery on -> re-getheaders
 # and catches up). Needs the DINERO_TEST_* regtest hooks built into dinerod.

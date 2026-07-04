@@ -962,6 +962,23 @@ bool DaemonApp::Init(int argc, char** argv) {
         }
 
         GetConfig().sync_profile = sync_profile;
+
+        // AssumeUTXO forward-connect: default ON for the mobile (ios_utreexo)
+        // profile — a phone should be usable at the live tip in minutes, not
+        // held at the snapshot base for the full historical re-validation.
+        // Explicit config wins; both key spellings accepted (config keys are
+        // stored verbatim — the assumeutxo_snapshot hyphen/underscore lesson).
+        {
+            const bool profile_default = (sync_profile == "ios_utreexo");
+            GetConfig().assumeutxo_forward_connect = config->GetBool(
+                "assumeutxo_forward_connect",
+                config->GetBool("assumeutxo-forward-connect", profile_default));
+            if (GetConfig().assumeutxo_forward_connect) {
+                std::cout << "[DaemonApp] AssumeUTXO forward-connect ENABLED"
+                          << " (profile=" << sync_profile << ")" << std::endl;
+            }
+        }
+
         GetConfig().utreexo_bridge = config->GetBool("utreexo-bridge", true);
 
         // Phase 3a of the shielded reorg invertibility plan

@@ -38,6 +38,16 @@ struct NodeConfig {
     // Phase 7.4.3: Utreexo stateless mode
     bool utreexo_stateless = false;  // Sync as stateless node (no UTXO database)
 
+    // AssumeUTXO forward-connect (mobile profile): connect blocks forward from
+    // the snapshot base immediately instead of holding the tip at base until
+    // the genesis->base background validation promotes (#361). Promotion then
+    // runs in advanced-tip mode: coin CF reconciled against the LIVE consensus
+    // set, tip-anchored markers left to ConnectTip, completion recorded via a
+    // durable marker instead of setTip(base). Default ON for sync_profile
+    // ios_utreexo (a phone should be usable at the live tip in minutes),
+    // OFF otherwise; explicit config overrides either way.
+    bool assumeutxo_forward_connect = false;
+
     // Phase 3a of the shielded reorg invertibility plan
     // (docs/specs/atomic_consensus_persistence_phase3.md). Hidden,
     // default off — when on, ConnectTip / DisconnectTip route every
