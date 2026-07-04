@@ -463,11 +463,19 @@ public:
         stall_watchdog_seconds_ = secs;
     }
 
-    // Test accessor: number of peers currently demoted in the body-incapable
-    // skip-set (peer_lacks_body_at_or_below_). Used to assert watchdog recovery.
+    // Test accessor: number of peer demotions across BOTH per-queue skip-sets
+    // (tip + backfill). Used to assert watchdog recovery and #241 poisoning.
     size_t GetSkipSetSizeForTest() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return peer_lacks_body_at_or_below_.size();
+        return tip_peer_lacks_body_at_or_below_.size() +
+               backfill_peer_lacks_body_at_or_below_.size();
+    }
+
+    // Test accessor: demotions in the backfill (pre-base) skip-set only. Bug #4
+    // regression: a tip-queue NOTFOUND must leave this at 0.
+    size_t GetBackfillSkipSetSizeForTest() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return backfill_peer_lacks_body_at_or_below_.size();
     }
 
     // ========================================================================
@@ -665,12 +673,20 @@ private:
     std::chrono::steady_clock::time_point last_notfound_rescan_{};
     static constexpr uint32_t notfound_rescan_cooldown_seconds_ = 5;
 
-    // Per-peer body-availability hint (issue #241): peer_key -> highest block
-    // height that peer returned NOTFOUND for. The peer is treated as lacking
-    // bodies at all heights <= this value (covers AssumeUTXO snapshot peers that
-    // advertise the full tip but lack pre-snapshot bodies) and is excluded from
-    // getdata for those heights. Guarded by mutex_.
-    std::unordered_map<std::string, uint32_t> peer_lacks_body_at_or_below_;
+    // Per-peer body-availability hint (issue #241), SEPARATED PER QUEUE (bug #4):
+    // peer_key -> highest block height that peer returned NOTFOUND for, tracked
+    // independently for the tip-sync queue and the AssumeUTXO backfill queue. A
+    // peer is treated as lacking bodies at all heights <= its value FOR THAT
+    // QUEUE ONLY, and is excluded from getdata for those heights on that queue.
+    //
+    // Keeping them separate is the bug #4 fix: a tip-sync NOTFOUND means the peer
+    // lacks a post-snapshot body, which says NOTHING about whether it holds the
+    // pre-snapshot (pre-base) bodies backfill needs. Sharing one map let a single
+    // tip NOTFOUND at a height >= the snapshot base demote a peer out of the
+    // ENTIRE backfill range — starving backfill of full archival peers that
+    // actually hold every pre-base body. Guarded by mutex_.
+    std::unordered_map<std::string, uint32_t> tip_peer_lacks_body_at_or_below_;
+    std::unordered_map<std::string, uint32_t> backfill_peer_lacks_body_at_or_below_;
 
     // Skip-set for the current in-flight getdata, set by DispatchDeferredSends
     // immediately before each send_getdata callback and read synchronously by
@@ -725,9 +741,13 @@ private:
     size_t TryConnectStoredBlocksLocked(size_t max_blocks = 32);
 
     // Stage a getdata for block_hash/block_height into deferred_sends_ with
-    // its skip-set snapshot (from peer_lacks_body_at_or_below_). Caller MUST
+    // its skip-set snapshot (from the per-queue *_peer_lacks_body_at_or_below_
+    // maps, selected by StageGetdataLocked's for_backfill arg). Caller MUST
     // hold mutex_. The actual send happens in DispatchDeferredSends().
-    void StageGetdataLocked(const uint256& block_hash, uint32_t block_height);
+    // for_backfill selects which per-queue skip-set to apply (bug #4): backfill
+    // requests must ignore tip-queue demotions and vice versa.
+    void StageGetdataLocked(const uint256& block_hash, uint32_t block_height,
+                            bool for_backfill = false);
 
     // Drain deferred_sends_ (briefly re-acquiring mutex_ to swap it out) and
     // invoke send_getdata_callback_ for each entry WITHOUT holding mutex_.
