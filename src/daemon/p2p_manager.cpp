@@ -6271,7 +6271,27 @@ bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage&
     }
 
     if (peer_info && peer_info->via_relay) {
-        return send_relay_data_to_virtual_peer(*peer_info, message);
+        const bool sent = send_relay_data_to_virtual_peer(*peer_info, message);
+        // Zombie-circuit eviction (parity with the socket path below): a relay
+        // virtual peer whose transport can never deliver — QUIC session never
+        // handshake-ready, transport policy refusal, relay connection gone —
+        // stays is_connected, advertises heights, passes every block-download
+        // eligibility filter, and fails every send. Without eviction the
+        // scheduler loops on it forever ("Sent getdata ... to 0/N eligible
+        // peers", phantom in-flight re-request cycle) and the node wedges
+        // while looking healthy. Evict after the same consecutive-failure
+        // streak the socket path uses; cleanup_peer clears is_connected so
+        // the slot frees and the connection maintenance loop can dial a
+        // working path (direct outbound usually succeeds even behind NAT).
+        if (dinero::RecordSendOutcomeShouldDisconnect(
+                peer_info->consecutive_send_failures, sent)) {
+            std::cout << "[P2P] Evicting relay virtual peer " << peer_address
+                      << " after " << dinero::kMaxConsecutiveSendFailures
+                      << " consecutive relay send failures (transport undeliverable)"
+                      << std::endl;
+            disconnect_peer(peer_address);
+        }
+        return sent;
     }
 
     // Send outside peers_mutex_ to avoid blocking other threads.
