@@ -93,6 +93,13 @@
 
 namespace dinero {
 
+// #360 residual: g_block_index_mutex is defined in block_index.cpp but not exported
+// via block_index.h. Forward-declare it here so the direct CBlockIndex graph
+// mutations/walks in this TU (EnsureHeaderBranchIndexed relink, ActivateBestChain
+// ancestry walk) can hold it, serializing against the locked AddBlockIndex writers
+// on the P2P thread. Recursive + innermost — order is [activation_mutex_] -> this.
+extern std::recursive_mutex g_block_index_mutex;
+
 namespace {
 constexpr const char* kActivationLastErrorKey = "activation_last_error";
 constexpr const char* kActivationLastErrorTimeKey = "activation_last_error_time";
@@ -7183,15 +7190,22 @@ void ChainstateService::ActivateBestChain() {
     // fork guards above / the normal work comparison handle it).
     if (assumeutxo_active_ && !assumeutxo_base_block_.IsNull() &&
         static_cast<uint32_t>(best_candidate->height) > assumeutxo_base_height_) {
-        CBlockIndex* base_idx = dinero::FindBlockIndex(assumeutxo_base_block_);
+        // #360 residual: hold g_block_index_mutex across the ancestry walk so the
+        // pprev reads don't race a concurrent load-thread relink. activation_mutex_
+        // is already held here, preserving the [caller] -> g_block_index_mutex order.
+        CBlockIndex* base_idx = nullptr;
         CBlockIndex* ancestor = best_candidate;
-        while (ancestor &&
-               static_cast<uint32_t>(ancestor->height) > assumeutxo_base_height_) {
-            ancestor = ancestor->pprev;
+        {
+            std::lock_guard<std::recursive_mutex> lk(dinero::g_block_index_mutex);
+            base_idx = dinero::FindBlockIndex(assumeutxo_base_block_);
+            while (ancestor &&
+                   static_cast<uint32_t>(ancestor->height) > assumeutxo_base_height_) {
+                ancestor = ancestor->pprev;
+            }
         }
         if (base_idx && ancestor == base_idx) {
             if (logger_) {
-                logger_->info("[ActivateBestChain] AssumeUTXO active — holding tip at snapshot base " +
+                logger_->debug("[ActivateBestChain] AssumeUTXO active — holding tip at snapshot base " +
                               std::to_string(assumeutxo_base_height_) +
                               " until background validation + promotion complete (network candidate @" +
                               std::to_string(best_candidate->height) +
@@ -9766,26 +9780,35 @@ CBlockIndex* ChainstateService::EnsureHeaderBranchIndexed(const consensus::Heade
             imported++;
         }
 
-        if (idx->pprev != expected_parent) {
-            if (idx->pprev) {
-                auto& old_children = idx->pprev->children;
-                old_children.erase(std::remove(old_children.begin(), old_children.end(), idx),
-                                   old_children.end());
-            }
-            idx->pprev = expected_parent;
-            if (expected_parent) {
-                auto& new_children = expected_parent->children;
-                if (std::find(new_children.begin(), new_children.end(), idx) == new_children.end()) {
-                    new_children.push_back(idx);
+        // #360 residual fix: this pprev/children relink and the chainwork write
+        // mutate the shared CBlockIndex graph on the load thread, concurrent with
+        // the P2P thread's (locked) AddBlockIndex children.push_back. Both writers
+        // must hold g_block_index_mutex or the children vectors corrupt → silent
+        // heap crash mid-materialization (observed at nondeterministic heights).
+        // Recursive mutex: safe even if a caller already holds it.
+        {
+            std::lock_guard<std::recursive_mutex> lk(dinero::g_block_index_mutex);
+            if (idx->pprev != expected_parent) {
+                if (idx->pprev) {
+                    auto& old_children = idx->pprev->children;
+                    old_children.erase(std::remove(old_children.begin(), old_children.end(), idx),
+                                       old_children.end());
                 }
+                idx->pprev = expected_parent;
+                if (expected_parent) {
+                    auto& new_children = expected_parent->children;
+                    if (std::find(new_children.begin(), new_children.end(), idx) == new_children.end()) {
+                        new_children.push_back(idx);
+                    }
+                }
+                relinked++;
             }
-            relinked++;
-        }
 
-        const std::string expected_chainwork = entry->chainwork.GetHex();
-        if (idx->chainwork != expected_chainwork) {
-            idx->chainwork = expected_chainwork;
-            chainwork_fixed++;
+            const std::string expected_chainwork = entry->chainwork.GetHex();
+            if (idx->chainwork != expected_chainwork) {
+                idx->chainwork = expected_chainwork;
+                chainwork_fixed++;
+            }
         }
 
         if (mark_chain_valid && !(idx->status & BLOCK_VALID_CHAIN)) {
