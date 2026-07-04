@@ -2035,6 +2035,80 @@ int main() {
                   << std::endl;
     }
 
+    {
+        // ── bug #4 regression: per-queue NOTFOUND demotion ────────────────────
+        // A tip-sync NOTFOUND must NOT demote the peer from the AssumeUTXO
+        // backfill (pre-base) queue, and vice versa. Before the fix a single
+        // shared skip-set let one tip NOTFOUND at a height >= the snapshot base
+        // exclude a FULL ARCHIVAL peer from the ENTIRE backfill range — starving
+        // backfill of the peers that actually hold every pre-base body (the
+        // "no reachable peer holds the genesis..base bodies" symptom).
+        std::cout << "\nN+2. bug #4: tip NOTFOUND must not poison the backfill skip-set "
+                     "(per-queue separation)..." << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;  // index == height (hashes[0] == genesis)
+        try {
+            BuildLinearHeaders(selector, 12, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build header chain: " << e.what() << std::endl;
+            return 1;
+        }
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        // Snapshot base = 8: tip-sync queue = heights 9..12; pre-base bodies
+        // 1..8 are backfilled. No bodies present anywhere.
+        scheduler.SetLocalTipHeight(8);
+        scheduler.SetSendGetDataCallback([](const uint256&, uint32_t) { return true; });
+        scheduler.SetHasBlockBodyCallback(
+            [](const uint256&, uint32_t) -> bool { return false; });
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();  // stage tip-sync requests for heights 9..12
+
+        scheduler.EnableBackfill(1, 8, hashes[8]);  // pre-base queue, anchored on base
+        if (!Require(scheduler.GetBackfillProgress().enabled,
+                     "setup: backfill should be enabled")) {
+            return 1;
+        }
+
+        const std::string archival_peer = "198.51.100.9:9999";  // RFC5737 full node
+
+        // The archival peer NOTFOUNDs a TIP block (height 10) — e.g. a transient
+        // during its own restart, or a fork hash it never held. Tip-queue hash.
+        scheduler.OnBlockNotFound(hashes[10], archival_peer);
+
+        if (!Require(scheduler.GetSkipSetSizeForTest() == 1,
+                     "tip NOTFOUND should record exactly one demotion (tip queue)")) {
+            return 1;
+        }
+        // THE bug #4 invariant: that tip demotion must NOT land in the backfill
+        // skip-set. A shared map would put archival_peer here at gap=10, and
+        // ServiceBackfillLocked would then skip it for every pre-base height ≤10
+        // — i.e. all of 1..8.
+        if (!Require(scheduler.GetBackfillSkipSetSizeForTest() == 0,
+                     "bug #4: a tip-queue NOTFOUND must NOT demote the peer from backfill; "
+                     "backfill skip-set size=" +
+                         std::to_string(scheduler.GetBackfillSkipSetSizeForTest()))) {
+            return 1;
+        }
+
+        // Symmetric direction: a NOTFOUND for a pre-base (backfill) hash lands in
+        // the backfill map only, leaving the tip map for that peer unchanged.
+        scheduler.OnBlockNotFound(hashes[4], archival_peer);  // height 4 ∈ backfill 1..8
+        if (!Require(scheduler.GetBackfillSkipSetSizeForTest() == 1,
+                     "backfill NOTFOUND should demote the peer in the backfill skip-set")) {
+            return 1;
+        }
+        // Total across both queues = 2 (one tip demotion + one backfill demotion),
+        // proving the two queues track the peer independently.
+        if (!Require(scheduler.GetSkipSetSizeForTest() == 2,
+                     "tip + backfill demotions must be tracked separately (expected 2); got " +
+                         std::to_string(scheduler.GetSkipSetSizeForTest()))) {
+            return 1;
+        }
+        std::cout << "   ✅ tip and backfill NOTFOUND demotions are queue-isolated; a tip "
+                     "NOTFOUND no longer starves backfill of archival peers" << std::endl;
+    }
+
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
     return 0;
 }

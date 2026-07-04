@@ -77,16 +77,23 @@ void BlockDownloadScheduler::OnBlockNotFound(const uint256& hash,
                  hash.GetHex().substr(0, 16) + "..." +
                  (peer_key.empty() ? std::string() : (" from " + peer_key)));
 
-    // issue #241: record that this peer lacks the body for this block's height.
-    // A snapshot-bootstrapped peer advertises the full tip but lacks pre-snapshot
-    // bodies; one NOTFOUND marks it body-incapable at that height and below, so
+    // issue #241 / bug #4: record that this peer lacks the body for this block's
+    // height — but ONLY within the queue the request came from. One NOTFOUND
+    // marks the peer body-incapable at that height and below for THAT queue, so
     // subsequent getdata for those heights skip it instead of re-poisoning the
-    // in-flight request (which was the catch-up wedge). The hash→height lookup
-    // spans BOTH queues — the demotion map is shared, and AssumeUTXO backfill
-    // heights are exactly the pre-snapshot bodies such peers lack.
+    // in-flight request (the catch-up wedge #241 guards against).
+    //
+    // Bug #4: the demotion must NOT span both queues. A tip-sync NOTFOUND means
+    // the peer lacks a post-snapshot body; it says nothing about the pre-snapshot
+    // (pre-base) bodies backfill needs. Sharing one map let a tip NOTFOUND at a
+    // height >= the snapshot base demote a full archival peer out of the entire
+    // backfill range — the exact starvation bug #4 describes. So route the
+    // demotion by which queue owns the hash: missing_blocks_ → tip map,
+    // backfill_blocks_ → backfill map.
     if (!peer_key.empty()) {
         uint32_t notfound_height = 0;
         bool height_known = false;
+        bool from_backfill = false;
         for (const auto& fs : missing_blocks_) {
             if (fs.block_hash == hash) {
                 notfound_height = fs.height;
@@ -99,12 +106,15 @@ void BlockDownloadScheduler::OnBlockNotFound(const uint256& hash,
                 if (fs.block_hash == hash) {
                     notfound_height = fs.height;
                     height_known = true;
+                    from_backfill = true;
                     break;
                 }
             }
         }
         if (height_known) {
-            uint32_t& gap = peer_lacks_body_at_or_below_[peer_key];
+            auto& demotions = from_backfill ? backfill_peer_lacks_body_at_or_below_
+                                            : tip_peer_lacks_body_at_or_below_;
+            uint32_t& gap = demotions[peer_key];
             if (notfound_height > gap) gap = notfound_height;
         }
     }
@@ -156,12 +166,18 @@ thread_local std::unordered_set<std::string>
 // scheduler entry point — peer handler threads, the tick loop — freezing
 // block ingest while the process looked healthy).
 void BlockDownloadScheduler::StageGetdataLocked(const uint256& block_hash,
-                                                uint32_t block_height) {
+                                                uint32_t block_height,
+                                                bool for_backfill) {
     DeferredGetdata deferred;
     deferred.block_hash = block_hash;
     deferred.height = block_height;
     if (block_height > 0) {
-        for (const auto& kv : peer_lacks_body_at_or_below_) {
+        // bug #4: consult ONLY the skip-set for this request's queue. A backfill
+        // request ignores tip-queue demotions (and vice versa), so a peer that
+        // NOTFOUND'd a tip body is still eligible to serve pre-base backfill.
+        const auto& demotions = for_backfill ? backfill_peer_lacks_body_at_or_below_
+                                              : tip_peer_lacks_body_at_or_below_;
+        for (const auto& kv : demotions) {
             if (kv.second >= block_height) {
                 deferred.skip_peers.insert(kv.first);
             }
@@ -400,9 +416,12 @@ void BlockDownloadScheduler::MaybeRunStallWatchdogLocked(
     // out UNFILTERED. This is the "shouldn't depend on a human noticing" net.
     g_logger.warning("[BlockDownloadScheduler] stall watchdog: no tip progress for " +
                      std::to_string(stall_elapsed) + "s with blocks queued — clearing "
-                     "skip-set (" + std::to_string(peer_lacks_body_at_or_below_.size()) +
-                     " demoted peers) and resetting in-flight for unfiltered retry");
-    peer_lacks_body_at_or_below_.clear();
+                     "skip-sets (" +
+                     std::to_string(tip_peer_lacks_body_at_or_below_.size()) + " tip + " +
+                     std::to_string(backfill_peer_lacks_body_at_or_below_.size()) +
+                     " backfill demoted peers) and resetting in-flight for unfiltered retry");
+    tip_peer_lacks_body_at_or_below_.clear();
+    backfill_peer_lacks_body_at_or_below_.clear();
     for (auto& fs : missing_blocks_) {
         if (fs.status == FetchStatus::REQUESTED) {
             fs.status = FetchStatus::MISSING;
@@ -771,8 +790,10 @@ void BlockDownloadScheduler::ServiceBackfillLocked() {
         if (send_getdata_callback_) {
             // #241 reuse: StageGetdataLocked snapshots the skip-set (every
             // peer known to lack bodies at/above this height) and defers the
-            // send; Tick() dispatches after mutex_ release.
-            StageGetdataLocked(fs.block_hash, fs.height);
+            // send; Tick() dispatches after mutex_ release. bug #4: for_backfill
+            // → consult the BACKFILL skip-set only, so a peer demoted by a tip
+            // NOTFOUND is still asked for pre-base bodies it holds.
+            StageGetdataLocked(fs.block_hash, fs.height, /*for_backfill=*/true);
             staged++;
         } else {
             g_logger.warning("[BlockDownloadScheduler] send_getdata_callback not set (backfill)");
@@ -1783,6 +1804,13 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 if (!parent_in_flight && !cooldown_active && send_getdata_callback_) {
                     // Parent sits one height below the block we're trying to connect.
                     // Staged for dispatch after mutex_ release (#241/#214).
+                    // bug #4: for_backfill stays false (tip map) on purpose. This
+                    // path drains received_blocks_, which holds ONLY tip-connect
+                    // blocks — AssumeUTXO backfill bodies bypass it entirely (they
+                    // store to flatfile and return, never entering received_blocks_).
+                    // So `want-1` here is always a tip-regime (>= base) height; a
+                    // pre-base parent request is unreachable from this path. If that
+                    // ever changes, this must become height-aware / for_backfill.
                     StageGetdataLocked(parent_hash, want > 0 ? want - 1 : 0);  // #241
                     parent_request_times_[parent_hash] = now;
                     requested_parent = true;
