@@ -7205,7 +7205,13 @@ void ChainstateService::ActivateBestChain() {
         }
         if (base_idx && ancestor == base_idx) {
             if (logger_) {
-                logger_->debug("[ActivateBestChain] AssumeUTXO active — holding tip at snapshot base " +
+                // Keep at info: this "holding tip at snapshot base" line is a
+                // significant operational event and is the observability signal
+                // the AssumeUtxoPromotionRace e2e test (A1) greps for. Demoting it
+                // to debug made the test's default-INFO daemon log miss it → A1
+                // failed deterministically. Log-once spam reduction, if wanted,
+                // belongs in a separate change paired with a test update.
+                logger_->info("[ActivateBestChain] AssumeUTXO active — holding tip at snapshot base " +
                               std::to_string(assumeutxo_base_height_) +
                               " until background validation + promotion complete (network candidate @" +
                               std::to_string(best_candidate->height) +
