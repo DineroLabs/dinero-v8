@@ -9,11 +9,24 @@
 #include <algorithm>
 #include <cstring>
 #include <cassert>
+#include <mutex>
 
 namespace dinero {
 
 // Global block index storage
 std::unordered_map<uint256, std::unique_ptr<CBlockIndex>> g_block_index;
+
+// #353: g_block_index / g_candidates / g_orphan_pool are shared, mutable global
+// state with no other guard. Canonical #360 added a genesis→base materialization
+// loop inside LoadSnapshot that hammers AddBlockIndex on the load thread while the
+// P2P/scheduler thread also calls AddBlockIndex/FindBlockIndex for incoming blocks
+// — concurrent unordered_map insert + read triggers a rehash-under-read → heap
+// corruption → nondeterministic crash mid-materialization. RECURSIVE (AddBlockIndex
+// nests FindBlockIndex/MarkBlockValid/OnParentValidated) and INNERMOST: every
+// function below is self-contained (never calls out to activation_mutex_-holding
+// code), so the only lock order is [caller lock] -> g_block_index_mutex, never the
+// reverse — deadlock-free by construction.
+std::recursive_mutex g_block_index_mutex;
 
 // Global candidate tips (ordered by work, then hash)
 std::set<CBlockIndex*, ByWorkThenHash> g_candidates;
@@ -141,11 +154,19 @@ int CompareWork(const std::string& work_a, const std::string& work_b) {
 // === Block Index Management ===
 
 CBlockIndex* FindBlockIndex(const uint256& hash) {
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);
     auto it = g_block_index.find(hash);
     return (it != g_block_index.end()) ? it->second.get() : nullptr;
 }
 
 CBlockIndex* AddBlockIndex(const BlockHeader& header, uint32_t height) {
+    // #353: serialize the entire insert (find-check → pprev link → children
+    // push → chainwork → map insert → candidate/orphan bookkeeping) against
+    // FindBlockIndex/GetBestCandidate on other threads. Recursive: the nested
+    // FindBlockIndex / MarkBlockValid→AddCandidate / OnParentValidated calls
+    // below re-enter this lock.
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);
+
     // Phase M.0: GetHash() already returns uint256, no conversion needed
     uint256 hash = header.GetHash();
 
@@ -196,7 +217,15 @@ CBlockIndex* AddBlockIndex(const BlockHeader& header, uint32_t height) {
     }
 
     dinero::g_logger.info("Added block: height=" + std::to_string(height) +
-                         " hash=" + hash.GetHex().substr(0, 16) + "... work=..." + raw_ptr->chainwork.substr(48, 16));
+                         " hash=" + hash.GetHex().substr(0, 16) + "... work=..." +
+                         // #353: chainwork is un-padded (short) when pprev isn't yet
+                         // materialized (UpdateChainwork's genesis branch → WorkForBits
+                         // only). substr(48,...) then threw "invalid string position",
+                         // aborting LoadSnapshot's genesis→base materialization before
+                         // StartBackgroundValidation() and deadlocking the snapshot node.
+                         // Display-only; guard it (EnsureHeaderBranchIndexed fixes chainwork after).
+                         (raw_ptr->chainwork.size() >= 48 ? raw_ptr->chainwork.substr(48, 16)
+                                                          : raw_ptr->chainwork));
 
     return raw_ptr;
 }
@@ -218,6 +247,7 @@ void UpdateChainwork(CBlockIndex* block_index) {
 
 void AddCandidate(CBlockIndex* block_index) {
     if (!block_index) return;
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);  // #353
 
     // P0 invariant: single eligibility gate for all candidate paths.
     if (!IsEligibleForCandidacy(block_index->status)) {
@@ -235,10 +265,12 @@ void AddCandidate(CBlockIndex* block_index) {
 
 void RemoveCandidate(CBlockIndex* block_index) {
     if (!block_index) return;
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);  // #353
     g_candidates.erase(block_index);
 }
 
 CBlockIndex* GetBestCandidate() {
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);  // #353
     if (g_candidates.empty()) return nullptr;
     return *g_candidates.begin(); // First element has most work
 }
@@ -247,6 +279,7 @@ CBlockIndex* GetBestCandidate() {
 
 bool MaybeQueueOrphan(CBlockIndex* block_index) {
     if (!block_index) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);  // #353
 
     // Genesis blocks can always connect
     if (block_index->IsGenesis()) return false;
@@ -276,12 +309,14 @@ bool MaybeQueueOrphan(CBlockIndex* block_index) {
 
 void OnParentValidated(CBlockIndex* parent_index) {
     if (!parent_index) return;
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);  // #353
 
     uint256 parent_hash = parent_index->hash;
     ProcessOrphanQueue(parent_hash);
 }
 
 void ProcessOrphanQueue(const uint256& parent_hash) {
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);  // #353
     auto it = g_orphan_pool.find(parent_hash);
     if (it == g_orphan_pool.end()) {
         dinero::g_logger.debug("No orphans found for parent " + parent_hash.GetHex().substr(0, 16) + "...");
@@ -349,6 +384,7 @@ bool CanConnect(CBlockIndex* block_index) {
 
 void MarkBlockValid(CBlockIndex* block_index, uint32_t validation_flags) {
     if (!block_index) return;
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);  // #353
 
     uint32_t old_status = block_index->status;
     block_index->status |= validation_flags;
