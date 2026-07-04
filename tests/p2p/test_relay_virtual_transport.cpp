@@ -14,6 +14,7 @@
 
 #include "p2p_manager.h"
 #include "daemon/node_identity.h"
+#include "daemon/peer_send_health.h"
 #include "network/types.h"
 #include "p2p/addrman.h"
 
@@ -330,6 +331,43 @@ TEST(RelayVirtualTransport, DevOverrideAllowsRelayDataToQueueOneInnerMessage) {
     auto empty = manager.test_receive_peer_message(
         peer_key, std::chrono::milliseconds(5));
     EXPECT_EQ(empty, nullptr);
+}
+
+// Zombie-circuit eviction: a relay virtual peer whose transport can never
+// deliver (here: plaintext relay refused on mainnet defaults) must be evicted
+// after kMaxConsecutiveSendFailures failed sends — otherwise it stays
+// is_connected, passes every block-download eligibility filter, and the
+// scheduler loops "eligible=N sent=0" forever (the NAT'd-node backfill wedge).
+TEST(RelayVirtualTransport, ZombieRelayPeerEvictedAfterConsecutiveSendFailures) {
+    P2PManager manager(0);
+    const auto peer_key = InstallVirtualPeer(manager);
+
+    // Transport refuses by default on mainnet -> every send fails.
+    ASSERT_FALSE(manager.test_plaintext_relay_transport_allowed());
+
+    const auto msg = MakePing(0x5150);
+
+    auto peer_connected = [&](const std::string& key) {
+        const auto peers = manager.get_connected_peers();
+        return std::any_of(peers.begin(), peers.end(), [&](const PeerInfo& p) {
+            return p.to_string() == key;
+        });
+    };
+
+    ASSERT_TRUE(peer_connected(peer_key));
+
+    // Below the streak threshold: sends fail but the peer survives.
+    for (uint32_t i = 0; i + 1 < dinero::kMaxConsecutiveSendFailures; ++i) {
+        EXPECT_FALSE(manager.send_to_peer(peer_key, msg));
+        EXPECT_TRUE(peer_connected(peer_key))
+            << "evicted too early after " << (i + 1) << " failures";
+    }
+
+    // The streak-completing failure evicts the zombie.
+    EXPECT_FALSE(manager.send_to_peer(peer_key, msg));
+    EXPECT_FALSE(peer_connected(peer_key))
+        << "zombie relay peer still connected after "
+        << dinero::kMaxConsecutiveSendFailures << " consecutive send failures";
 }
 
 TEST(RelayVirtualTransport, SocketlessVirtualPeerReceiveUsesTransportQueue) {
