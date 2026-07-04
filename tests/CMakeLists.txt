@@ -5602,7 +5602,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_block_assembler_smoke.
     src/consensus/block_index.cpp
     src/consensus/block_lifecycle.cpp
     src/consensus/orphan_manager.cpp
-    src/consensus/block_index_persistence.cpp
     # src/consensus/genesis_canonical.cpp  # REMOVED - depends on missing genesis_block.h
     src/consensus/chainparams_impl.cpp
     src/consensus/chainwork.cpp
@@ -5678,7 +5677,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_consensus_integrati
     src/consensus/block_index.cpp
     src/consensus/block_lifecycle.cpp
     src/consensus/orphan_manager.cpp
-    src/consensus/block_index_persistence.cpp
     # src/consensus/genesis_canonical.cpp  # REMOVED - depends on missing genesis_block.h
     src/consensus/chainparams_impl.cpp
     src/consensus/chainwork.cpp
@@ -5750,7 +5748,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/consensus/block_index.cpp
     src/consensus/block_lifecycle.cpp
     src/consensus/orphan_manager.cpp
-    src/consensus/block_index_persistence.cpp
     # src/consensus/genesis_canonical.cpp  # REMOVED - depends on missing genesis_block.h
     src/consensus/chainparams_impl.cpp
     src/consensus/chainwork.cpp
@@ -5955,7 +5952,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/consensus/block_index.cpp
     src/consensus/block_lifecycle.cpp
     src/consensus/orphan_manager.cpp
-    src/consensus/block_index_persistence.cpp
     # src/consensus/genesis_canonical.cpp  # REMOVED - depends on missing genesis_block.h
     src/consensus/chainparams_impl.cpp
     src/consensus/chainwork.cpp
@@ -6294,7 +6290,6 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/consensus/block_index.cpp
     src/consensus/block_lifecycle.cpp
     src/consensus/orphan_manager.cpp
-    src/consensus/block_index_persistence.cpp
     # src/consensus/genesis_canonical.cpp  # REMOVED - depends on missing genesis_block.h
     src/consensus/chainparams_impl.cpp
     src/consensus/chainwork.cpp
