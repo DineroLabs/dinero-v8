@@ -735,10 +735,10 @@ void BlockDownloadScheduler::TickLocked() {
     // sequentially here as contiguous runs become available.
     TryConnectStoredBlocksLocked();
 
-    // Backfill is strictly lower priority: only when tip sync has nothing
-    // MISSING or REQUESTED do we spend request slots on history. Its sends
-    // are staged into deferred_sends_ and ride the same post-lock dispatch
-    // in Tick() as tip getdata (#241/#214).
+    // Backfill runs on a reserved window share (half when tip sync is busy,
+    // full when idle — see ServiceBackfillLocked). Its sends are staged into
+    // deferred_sends_ and ride the same post-lock dispatch in Tick() as tip
+    // getdata (#241/#214).
     ServiceBackfillLocked();
 }
 
@@ -754,19 +754,32 @@ void BlockDownloadScheduler::ServiceBackfillLocked() {
         return;
     }
 
-    // Tip sync busy? (ANY MISSING or REQUESTED tip block) → yield. Backfill
-    // is history repair; the tip window gets every slot first.
+    // AssumeUTXO bootstrap priority (#360 follow-up): while history validation is
+    // the gating operation, the pre-base bodies ARE the critical path — post-base
+    // tip blocks cannot be connected until promotion, so letting them consume the
+    // whole window starves the bodies validation needs (backfill sits at 0 while
+    // the tip drains thousands of unconnectable post-base blocks). Rather than
+    // yield the entire pipeline to tip sync on ANY outstanding tip block, reserve
+    // a share of the window for backfill. When tip sync is idle, backfill may use
+    // the full window.
+    bool tip_busy = false;
     for (const auto& fs : missing_blocks_) {
         if (fs.status == FetchStatus::MISSING ||
             fs.status == FetchStatus::REQUESTED) {
-            return;
+            tip_busy = true;
+            break;
         }
     }
 
-    // Shared global in-flight cap with tip sync: backfill hashes live in
-    // in_flight_blocks_ too, so tip work resuming next tick sees a truthful
-    // window (and backfill can never oversubscribe the peer pipeline).
     const size_t max_window = static_cast<size_t>(max_in_flight_);
+    // Slots backfill may hold in flight: half the window when tip sync is busy
+    // (reserved critical-path share), the whole window when idle. Gating on
+    // backfill's OWN in-flight against this quota means tip filling the shared
+    // window can no longer starve it; total stays bounded by max_window +
+    // backfill_quota (a small, transient oversubscription during validation).
+    const size_t backfill_quota = tip_busy
+        ? std::max<size_t>(1, max_window / 2)
+        : max_window;
     const auto now = std::chrono::steady_clock::now();
     const size_t n = backfill_blocks_.size();
     // Cursor fairness: resume where the last service pass stopped instead of
@@ -774,7 +787,11 @@ void BlockDownloadScheduler::ServiceBackfillLocked() {
     // loop, so indexing off the live value would skip/revisit entries).
     const size_t start = next_backfill_idx_;
     size_t staged = 0;
-    for (size_t i = 0; i < n && in_flight_blocks_.size() < max_window; ++i) {
+    for (size_t i = 0;
+         i < n
+         && backfill_progress_.in_flight < backfill_quota
+         && in_flight_blocks_.size() < max_window + backfill_quota;
+         ++i) {
         const size_t idx = (start + i) % n;
         auto& fs = backfill_blocks_[idx];
         if (fs.status != FetchStatus::MISSING) {
