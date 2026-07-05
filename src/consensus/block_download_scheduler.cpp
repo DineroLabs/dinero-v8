@@ -248,17 +248,15 @@ void BlockDownloadScheduler::NotifyGetDataDispatched(const uint256& block_hash,
     }
 }
 
-bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    const uint256 block_hash = block.GetHash();
-    g_logger.info("[BlockDownloadScheduler] OnBlockReceived: " + block_hash.GetHex());
+// #375: shared consume path for an EXPECTED AssumeUTXO backfill body.
+// Caller must hold mutex_ via `lock` and have verified membership in
+// backfill_expected_. Store-only: never enters tip-connect bookkeeping.
+// Unlocks `lock` before invoking foreign callbacks (persist/wake), so the
+// caller must not touch locked state afterwards.
+bool BlockDownloadScheduler::ConsumeExpectedBackfillLocked(
+    const Block& block, const uint256& block_hash,
+    std::unique_lock<std::mutex>& lock) {
 
-    // AssumeUTXO backfill routing (Task 2): a pre-base body is verified and
-    // stored EXACTLY like a tip block (same helper), but is store-only — it
-    // never enters tip-connect bookkeeping (received_blocks_, expected_blocks_,
-    // TryConnectStoredBlocksLocked inputs). The background validation worker reads
-    // it back from flat-file storage via the canonical header chain.
-    if (backfill_expected_.count(block_hash) > 0) {
         FilePosition stored_pos;
         if (!StoreVerifiedBlockLocked(block, stored_pos, /*track_received=*/false)) {
             return false;
@@ -324,6 +322,31 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
             wake();
         }
         return true;
+    }
+
+bool BlockDownloadScheduler::OnBackfillBodyReceived(const Block& block) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const uint256 block_hash = block.GetHash();
+    // #375: consume-if-expected only. NOT expected → return false with ZERO
+    // side effects (caller treats it as a stale duplicate and drops it).
+    if (backfill_expected_.count(block_hash) == 0) {
+        return false;
+    }
+    return ConsumeExpectedBackfillLocked(block, block_hash, lock);
+}
+
+bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const uint256 block_hash = block.GetHash();
+    g_logger.info("[BlockDownloadScheduler] OnBlockReceived: " + block_hash.GetHex());
+
+    // AssumeUTXO backfill routing (Task 2): a pre-base body is verified and
+    // stored EXACTLY like a tip block (same helper), but is store-only — it
+    // never enters tip-connect bookkeeping (received_blocks_, expected_blocks_,
+    // TryConnectStoredBlocksLocked inputs). The background validation worker reads
+    // it back from flat-file storage via the canonical header chain.
+    if (backfill_expected_.count(block_hash) > 0) {
+        return ConsumeExpectedBackfillLocked(block, block_hash, lock);
     }
 
     // Tip path: validate + store, then enter connect bookkeeping.

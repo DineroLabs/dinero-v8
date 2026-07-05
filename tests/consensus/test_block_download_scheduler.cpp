@@ -2136,6 +2136,58 @@ int main() {
     }
 
     // ────────────────────────────────────────────────────────────────────
+    // #375: OnBackfillBodyReceived — consume-if-expected, side-effect-free
+    // otherwise. The CSN OnUtxoBlock stale-guard must be able to offer any
+    // below-cursor utxoblk to this API before dropping it; pre-#375 the guard
+    // dropped 100% of backfill bodies (DineroTX e2e: completed=0/52287).
+    // ────────────────────────────────────────────────────────────────────
+    {
+        std::cout << "\n📋 Section: #375 backfill body consume-if-expected" << std::endl;
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 8, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(8);   // snapshot base = 8
+        scheduler.OnHeadersProcessed();
+        scheduler.SetHasBlockBodyCallback([](const uint256&, uint32_t height) -> bool {
+            return height == 3;           // height 3 body already present
+        });
+        scheduler.EnableBackfill(1, 8, hashes[8]);
+        if (!Require(scheduler.GetBackfillProgress().total == 7,
+                     "expected 7 missing backfill bodies (all but height 3)")) return 1;
+
+        // Expected backfill body → consumed (stored, completed++).
+        Block b4 = MakeBlockForHash(selector, hashes[4]);
+        if (!Require(scheduler.OnBackfillBodyReceived(b4),
+                     "expected backfill body must be consumed")) return 1;
+        if (!Require(scheduler.GetBackfillProgress().completed == 1,
+                     "completed must be 1 after consuming the body")) return 1;
+
+        // Duplicate of an already-consumed body → NOT consumed, no change.
+        if (!Require(!scheduler.OnBackfillBodyReceived(b4),
+                     "duplicate backfill body must not be consumed")) return 1;
+        if (!Require(scheduler.GetBackfillProgress().completed == 1,
+                     "duplicate must not advance completed")) return 1;
+
+        // Never-expected body (height 3 was skipped as already-present) →
+        // NOT consumed and NO side effects (this is the stale-duplicate case
+        // the CSN guard then drops).
+        Block b3 = MakeBlockForHash(selector, hashes[3]);
+        if (!Require(!scheduler.OnBackfillBodyReceived(b3),
+                     "unexpected body must not be consumed")) return 1;
+        if (!Require(scheduler.GetBackfillProgress().completed == 1,
+                     "unexpected body must not advance completed")) return 1;
+
+        std::cout << "   ✅ OnBackfillBodyReceived consumes exactly the expected bodies, "
+                     "side-effect-free otherwise" << std::endl;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
     // #371: DrainFailureStreak — persistent TEMPORARY_FAIL escalation.
     // The EU1 zombie retried "next tick" 17,979+ times against a latched
     // rocksdb error with zero escalation. The streak must fire exactly once
