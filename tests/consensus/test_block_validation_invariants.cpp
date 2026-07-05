@@ -98,6 +98,31 @@ static Block MakeCoinbaseBlock(uint32_t height, const uint256& prev_hash) {
     return block;
 }
 
+namespace {
+UtreexoHash ExpectedPostRoot(const UtreexoForest& base, const Block& block, uint32_t height) {
+    UtreexoForest expected = base.clone();
+    for (size_t i = 0; i < block.vtx.size(); i++) {
+        const Transaction& tx = block.vtx[i];
+        const TxId txid = tx.GetTxid();
+        for (size_t n = 0; n < tx.vout.size(); n++) {
+            const auto& out = tx.vout[n];
+            const uint64_t leaf_value = out.is_confidential ? 0 : out.value.GetUna();
+            UtreexoHash leaf = HashUTXOForCreationHeight(
+                txid.AsUint256(), static_cast<uint32_t>(n), leaf_value,
+                std::vector<uint8_t>(out.scriptPubKey.begin(), out.scriptPubKey.end()),
+                height, tx.IsCoinbase());
+            expected.add(leaf);
+        }
+    }
+    return expected.getCommitment();
+}
+
+void SetHeaderRoot(Block& block, const UtreexoHash& root) {
+    ASSERT_EQ(root.size(), 32u);
+    std::memcpy(block.header.utreexo_root.data, root.data(), 32);
+}
+}  // namespace
+
 class EmptySnapshotUTXOSet : public IConsensusUTXOSet {
 public:
     explicit EmptySnapshotUTXOSet(bool supports_snapshot_restore = false)
@@ -970,6 +995,9 @@ TEST(BlockValidationInvariants, StatelessEarlyReturnStoresShieldedFrontierInUndo
 
     BlockUndo undo;
     std::string error;
+    // #382: the stateless forward path now verifies the header commitment;
+    // give the fixture block a REAL post-state root.
+    SetHeaderRoot(block, ExpectedPostRoot(utxo_set.GetForest(), block, 1));
     bool ok = validator.ConnectBlock(block, 1, MakeTestHash(274), undo, error, nullptr);
     ASSERT_TRUE(ok) << "Coinbase-only stateless block must connect: " << error;
 
@@ -1042,6 +1070,71 @@ TEST(BlockValidationInvariants, BlockUndoWithoutEpochSnapshotIsBackwardCompatibl
 }
 
 // Entry point
+// ============================================================================
+// #382: stateless forward-connect must maintain the shared forest.
+// DineroTX clean-run evidence: ConnectTip's stateless early-return connected
+// 52289..55705 while the shared forest stayed frozen at the canonical-52288
+// root (77ba3a36...), so the first spend block failed root-continuity forever.
+// Contract: if the forest is at the block's PRE-state, ConnectBlock applies
+// the block's additions and verifies the result against the header commitment
+// (fail-fast on mismatch); if already at POST-state (StatelessNode worker
+// applied it), it must NOT double-apply.
+// ============================================================================
+
+
+TEST(BlockValidationInvariants, StatelessForwardConnectAdvancesForest) {
+    ConsensusUTXOSet utxo_set;
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+
+    const uint32_t height = 2;
+    Block block = MakeCoinbaseBlock(height, MakeTestHash(41));
+    const UtreexoHash expected_root =
+        ExpectedPostRoot(utxo_set.GetForest(), block, height);
+    SetHeaderRoot(block, expected_root);
+
+    // (1) Forest at PRE-state (the ConnectTip forward path: no worker involved,
+    // no block.utreexo). Connect must succeed AND advance the shared forest.
+    BlockUndo undo;
+    std::string error;
+    ASSERT_TRUE(validator.ConnectBlock(block, height, MakeTestHash(42), undo, error, nullptr))
+        << error;
+    EXPECT_EQ(utxo_set.GetForest().getCommitment(), expected_root)
+        << "stateless forward-connect left the shared forest at pre-state (#382 "
+           "— the DineroTX frozen-forest bug)";
+
+    // (2) Forest already at POST-state (worker-applied shape): reconnecting the
+    // same block must not double-apply.
+    BlockUndo undo2;
+    std::string error2;
+    ASSERT_TRUE(validator.ConnectBlock(block, height, MakeTestHash(43), undo2, error2, nullptr))
+        << error2;
+    EXPECT_EQ(utxo_set.GetForest().getCommitment(), expected_root)
+        << "worker-applied block was double-applied";
+}
+
+TEST(BlockValidationInvariants, StatelessForwardConnectRejectsWrongHeaderRoot) {
+    ConsensusUTXOSet utxo_set;
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+
+    const uint32_t height = 2;
+    Block block = MakeCoinbaseBlock(height, MakeTestHash(51));
+    // Deliberately wrong (but non-null) header commitment.
+    block.header.utreexo_root = MakeTestHash(0xbad);
+
+    BlockUndo undo;
+    std::string error;
+    const UtreexoHash before = utxo_set.GetForest().getCommitment();
+    EXPECT_FALSE(validator.ConnectBlock(block, height, MakeTestHash(52), undo, error, nullptr))
+        << "a wrong header utreexo commitment must fail fast on the stateless "
+           "forward path (silent divergence is how the forest froze for 3,417 "
+           "blocks unnoticed)";
+    EXPECT_NE(error.find("bad-utreexo-root"), std::string::npos) << "error was: " << error;
+    EXPECT_EQ(utxo_set.GetForest().getCommitment(), before)
+        << "failed connect must not mutate the forest";
+}
+
 int main(int argc, char** argv) {
     dinero::SelectParams(dinero::Chain::REGTEST);
     testing::InitGoogleTest(&argc, argv);

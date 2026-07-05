@@ -1887,6 +1887,115 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     //   5. Coinbase reward <= subsidy + fees
     // ═════════════════════════════════════════════════════════════════════════
     if (validation_mode_ == ValidationMode::STATELESS) {
+        // #382: TWO producers reach this early-return, and the original
+        // skip-everything behavior is only correct for one of them.
+        //  - Worker path: StatelessNode validated the utxoblk and ALREADY
+        //    applied the accumulator delta to the shared forest -> forest is
+        //    at THIS block's post-state -> skipping is required (double-apply
+        //    hazard, the original design intent).
+        //  - ConnectTip forward path (stored bodies StatelessNode never saw,
+        //    e.g. coinbase-only forward-connect after an AssumeUTXO
+        //    bootstrap): forest is still at the PARENT state and nobody else
+        //    will ever apply this block. On DineroTX the shared forest froze
+        //    at the canonical-52288 root while the tip reached 55705, so the
+        //    first spend block failed root-continuity forever.
+        // Discriminate by root: forest already at the header commitment =>
+        // worker applied it, skip; otherwise apply this block's additions
+        // here and VERIFY the result against the header commitment --
+        // restoring the fail-fast this path silently lacked.
+        if (consensus_utxo_set_) {
+            UtreexoForest& live_forest = consensus_utxo_set_->GetForest();
+            const UtreexoHash live_root = live_forest.getCommitment();
+            const std::vector<uint8_t> header_root_bytes(
+                block.header.utreexo_root.begin(), block.header.utreexo_root.end());
+            const bool forest_at_post_state =
+                live_root.size() == header_root_bytes.size() &&
+                std::equal(live_root.begin(), live_root.end(), header_root_bytes.begin());
+            // Engage ONLY for the stored-body shape (no utreexo payload):
+            // that is precisely the ConnectTip forward path. Blocks carrying
+            // proof data are worker-shape — StatelessNode owns their forest
+            // application (and replay paths re-read them with proofs
+            // embedded); keep the original skip semantics for those.
+            if (!forest_at_post_state && !block.utreexo.has_value()) {
+                // Identify intra-block (ephemeral) outputs -- they never enter
+                // the forest -- and detect external spends, whose deletions
+                // require proofs and therefore MUST arrive via the worker.
+                std::unordered_set<OutPoint> fwd_block_outputs;
+                for (const auto& tx : block.vtx) {
+                    const TxId fwd_txid = tx.GetTxid();
+                    for (size_t n = 0; n < tx.vout.size(); n++) {
+                        fwd_block_outputs.insert(OutPoint(fwd_txid, static_cast<uint32_t>(n)));
+                    }
+                }
+                std::unordered_set<OutPoint> fwd_ephemeral;
+                bool fwd_has_external_spend = false;
+                for (size_t i = 1; i < block.vtx.size(); i++) {
+                    for (const auto& input : block.vtx[i].vin) {
+                        OutPoint op(input.prevout.txid, input.prevout.vout);
+                        if (fwd_block_outputs.count(op)) {
+                            fwd_ephemeral.insert(op);
+                        } else {
+                            fwd_has_external_spend = true;
+                        }
+                    }
+                }
+                if (fwd_has_external_spend) {
+                    error = "stateless-forward-connect-requires-proofs: block " +
+                            std::to_string(height) +
+                            " spends external UTXOs but reached ConnectBlock without "
+                            "StatelessNode proof application";
+                    return false;
+                }
+
+                UtreexoForest fwd_work = live_forest.clone();
+                for (size_t i = 0; i < block.vtx.size(); i++) {
+                    const Transaction& tx = block.vtx[i];
+                    const TxId fwd_txid = tx.GetTxid();
+                    for (size_t n = 0; n < tx.vout.size(); n++) {
+                        OutPoint op(fwd_txid, static_cast<uint32_t>(n));
+                        if (fwd_ephemeral.count(op)) {
+                            continue;  // ephemeral: never enters the forest
+                        }
+                        const auto& output = tx.vout[n];
+                        UtreexoHash leaf = HashUTXOForCreationHeight(
+                            fwd_txid.AsUint256(),
+                            static_cast<uint32_t>(n),
+                            GetUtreexoLeafAmount(output),
+                            std::vector<uint8_t>(output.scriptPubKey.begin(),
+                                                 output.scriptPubKey.end()),
+                            height,
+                            tx.IsCoinbase());
+                        if (fwd_work.add(leaf) == UINT64_MAX) {
+                            error = "utreexo-add-failed (stateless-forward) at height " +
+                                    std::to_string(height);
+                            return false;
+                        }
+                    }
+                }
+                const UtreexoHash fwd_new_root = fwd_work.getCommitment();
+                const bool fwd_root_ok =
+                    fwd_new_root.size() == header_root_bytes.size() &&
+                    std::equal(fwd_new_root.begin(), fwd_new_root.end(),
+                               header_root_bytes.begin());
+                if (!fwd_root_ok) {
+                    std::ostringstream fwd_computed_hex;
+                    for (uint8_t b : fwd_new_root) {
+                        fwd_computed_hex << std::hex << std::setfill('0')
+                                         << std::setw(2) << static_cast<int>(b);
+                    }
+                    error = "bad-utreexo-root (stateless-forward): computed=" +
+                            fwd_computed_hex.str() + " expected=" +
+                            block.header.utreexo_root.GetHex() +
+                            " height=" + std::to_string(height);
+                    return false;
+                }
+                live_forest = std::move(fwd_work);
+                std::cout << "\u2705 [STATELESS] Forward-connect applied " << height
+                          << " to shared forest (root verified vs header, #382)"
+                          << std::endl;
+            }
+        }
+
         // Set computed root from header (already proven valid by proof verification)
         computed_utreexo_root = block.header.utreexo_root;
 
