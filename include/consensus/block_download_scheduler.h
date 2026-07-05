@@ -770,12 +770,15 @@ private:
     void LogBackfillDiagLocked() const;
 
     // AssumeUTXO backfill servicing (Task 2). Caller MUST hold mutex_.
-    // Strictly lower priority than tip sync: yields whenever ANY tip-queue
-    // entry is MISSING or REQUESTED, shares the global in-flight window
-    // (in_flight_blocks_/max_in_flight_) with tip sync, and stages sends
-    // through the same #241 deferred-dispatch path (StageGetdataLocked →
-    // DispatchDeferredSends after mutex_ release) — the send callback is
-    // NEVER invoked under mutex_.
+    // Holds a RESERVED share of the request window (#360 follow-up): half of
+    // max_in_flight_ while any tip-queue entry is MISSING or REQUESTED, the
+    // full window when tip sync is idle — so tip work can never starve the
+    // pre-base bodies background validation is gated on. Backfill hashes
+    // still live in in_flight_blocks_; total in-flight is bounded by
+    // max_in_flight_ + quota. Sends are staged through the same #241
+    // deferred-dispatch path (StageGetdataLocked → DispatchDeferredSends
+    // after mutex_ release) — the send callback is NEVER invoked under
+    // mutex_.
     void ServiceBackfillLocked();
 
     // DisableBackfill's body: erase the active backfill queue's hashes from

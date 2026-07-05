@@ -735,10 +735,10 @@ void BlockDownloadScheduler::TickLocked() {
     // sequentially here as contiguous runs become available.
     TryConnectStoredBlocksLocked();
 
-    // Backfill is strictly lower priority: only when tip sync has nothing
-    // MISSING or REQUESTED do we spend request slots on history. Its sends
-    // are staged into deferred_sends_ and ride the same post-lock dispatch
-    // in Tick() as tip getdata (#241/#214).
+    // Backfill runs on a reserved window share (half when tip sync is busy,
+    // full when idle — see ServiceBackfillLocked). Its sends are staged into
+    // deferred_sends_ and ride the same post-lock dispatch in Tick() as tip
+    // getdata (#241/#214).
     ServiceBackfillLocked();
 }
 

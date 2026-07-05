@@ -1131,13 +1131,13 @@ int main() {
 
 
     {
-        std::cout << "\n12. assumeutxo backfill: serviced ONLY when tip sync is idle "
-                     "(yields to MISSING and REQUESTED tip work) and respects the "
-                     "shared in-flight cap..." << std::endl;
+        std::cout << "\n12. assumeutxo backfill: reserved window share while tip sync is "
+                     "busy (half the window), full window when idle, quota is a hard "
+                     "cap..." << std::endl;
 
         // Topology: genesis + heights 1..40. Snapshot base = 20: tip sync owns
         // 21..40 (20 blocks), backfill owns 1..20 (20 blocks > max_in_flight 16,
-        // so the shared cap is observable).
+        // so both the reserve quota and the full-window cap are observable).
         dcs::HeaderChainSelector selector;
         std::vector<uint256> hashes;
         try {
@@ -1158,47 +1158,67 @@ int main() {
         scheduler.OnHeadersProcessed();   // tip sync: heights 21..40 missing
         scheduler.EnableBackfill(1, 20, hashes[20]);  // pre-base bodies 1..20, anchored on base hash
 
-        // Tick #1: tip sync fills the window. NO backfill height (<=20) may be
-        // requested while ANY tip entry is MISSING or REQUESTED.
+        // Tick #1: tip sync fills its window (16), and backfill gets its
+        // RESERVED share on the same tick — half the window (8) — instead of
+        // starving while tip work is outstanding. Total in-flight is bounded
+        // by max_window + quota.
+        const size_t max_window = scheduler.GetMaxInFlight();
+        const size_t busy_quota = std::max<size_t>(1, max_window / 2);
         scheduler.Tick();
-        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
-                     "expected tip sync to fill the window first")) {
+        size_t tip_reqs = 0, backfill_reqs = 0;
+        for (const auto& rq : requests) {
+            (rq.second > 20 ? tip_reqs : backfill_reqs)++;
+        }
+        if (!Require(tip_reqs == max_window,
+                     "expected tip sync to fill its window (got " +
+                         std::to_string(tip_reqs) + ")")) {
             return 1;
         }
-        for (const auto& rq : requests) {
-            if (!Require(rq.second > 20,
-                         "backfill serviced while tip sync pending (height " +
-                             std::to_string(rq.second) + ")")) {
-                return 1;
-            }
+        if (!Require(backfill_reqs == busy_quota,
+                     "backfill must get its reserved half-window share while tip "
+                     "sync is busy (got " + std::to_string(backfill_reqs) + ")")) {
+            return 1;
         }
-        if (!Require(scheduler.GetBackfillProgress().in_flight == 0,
-                     "backfill in_flight must stay 0 while tip sync is busy")) {
+        if (!Require(scheduler.GetBackfillProgress().in_flight == busy_quota,
+                     "backfill in_flight must equal the busy quota")) {
+            return 1;
+        }
+        if (!Require(scheduler.GetInFlightCount() == max_window + busy_quota,
+                     "total in-flight must be bounded by max_window + quota (got " +
+                         std::to_string(scheduler.GetInFlightCount()) + ")")) {
             return 1;
         }
 
-        // Drain the first window of tip blocks.
+        // Drain the first window of TIP blocks (leave backfill bodies pending
+        // so its in-flight stays pinned at the quota).
         auto first_window = requests;
         requests.clear();
         for (const auto& rq : first_window) {
+            if (rq.second <= 20) continue;  // backfill request — not delivered
             if (!scheduler.OnBlockReceived(MakeBlockForHash(selector, rq.first))) {
                 std::cerr << "   ❌ failed to inject tip block at height " << rq.second << std::endl;
                 return 1;
             }
         }
 
-        // Tick #2: the remaining 4 tip blocks become REQUESTED in this same
-        // tick; backfill must STILL yield (REQUESTED tip work counts as busy).
+        // Tick #2: the remaining 4 tip blocks become REQUESTED. Backfill is
+        // still holding its full quota (tip busy → quota unchanged), so the
+        // quota acts as a HARD cap: no additional backfill getdata may be
+        // staged beyond it.
         scheduler.Tick();
         if (!Require(requests.size() == 4, "expected the 4 remaining tip requests")) {
             return 1;
         }
         for (const auto& rq : requests) {
             if (!Require(rq.second > 20,
-                         "backfill serviced while tip blocks are REQUESTED (height " +
+                         "backfill exceeded its reserved quota while tip busy (height " +
                              std::to_string(rq.second) + ")")) {
                 return 1;
             }
+        }
+        if (!Require(scheduler.GetBackfillProgress().in_flight == busy_quota,
+                     "backfill in_flight must stay at the busy quota")) {
+            return 1;
         }
         auto second_window = requests;
         requests.clear();
@@ -1209,8 +1229,9 @@ int main() {
             }
         }
 
-        // Tick #3: tip queue fully RECEIVED → idle. Backfill is now serviced,
-        // capped at max_in_flight by the SHARED in-flight window.
+        // Tick #3: tip queue fully RECEIVED → idle. Backfill's quota widens to
+        // the FULL window; with busy_quota already in flight it tops up the
+        // remaining slots.
         scheduler.Tick();
         if (!Require(!requests.empty(), "backfill not serviced after tip idle")) {
             return 1;
@@ -1222,16 +1243,16 @@ int main() {
                 return 1;
             }
         }
-        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
-                     "backfill must fill exactly up to the shared in-flight cap (got " +
+        if (!Require(requests.size() == max_window - busy_quota,
+                     "backfill must top up exactly to the full window when tip idle (got " +
                          std::to_string(requests.size()) + ")")) {
             return 1;
         }
-        if (!Require(scheduler.GetInFlightCount() == scheduler.GetMaxInFlight(),
+        if (!Require(scheduler.GetInFlightCount() == max_window,
                      "backfill requests must share the global in-flight accounting")) {
             return 1;
         }
-        if (!Require(scheduler.GetBackfillProgress().in_flight == scheduler.GetMaxInFlight(),
+        if (!Require(scheduler.GetBackfillProgress().in_flight == max_window,
                      "backfill progress in_flight must track its staged requests")) {
             return 1;
         }
@@ -1240,9 +1261,9 @@ int main() {
             return 1;
         }
 
-        std::cout << "   ✅ backfill yielded to tip MISSING+REQUESTED, then filled "
-                  << requests.size() << "/" << scheduler.GetMaxInFlight()
-                  << " shared window slots" << std::endl;
+        std::cout << "   ✅ backfill held its reserved " << busy_quota << "-slot share while "
+                  << "tip sync was busy, then filled the full " << max_window
+                  << "-slot window when idle" << std::endl;
     }
 
     {
@@ -1464,15 +1485,18 @@ int main() {
         scheduler.OnHeadersProcessed();   // tip sync: heights 21..40 missing
         scheduler.EnableBackfill(1, 20, hashes[20]);  // pre-base bodies 1..20, anchored on base hash
 
-        // Tick #1: tip sync fills the window (16 blocks REQUESTED).
+        // Tick #1: tip sync fills the window (16 REQUESTED) and backfill stages
+        // its reserved half-window share (8) on the same tick.
         scheduler.Tick();
-        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
-                     "case 15 setup: expected tip to fill the window (tick 1)")) {
+        if (!Require(requests.size() == scheduler.GetMaxInFlight() +
+                         std::max<size_t>(1, scheduler.GetMaxInFlight() / 2),
+                     "case 15 setup: expected tip window + backfill share (tick 1)")) {
             return 1;
         }
         auto first_window = requests;
         requests.clear();
         for (const auto& rq : first_window) {
+            if (rq.second <= 20) continue;  // backfill request — stays in flight
             if (!scheduler.OnBlockReceived(MakeBlockForHash(selector, rq.first))) {
                 std::cerr << "   ❌ case 15: failed to drain tip block at height "
                           << rq.second << std::endl;
@@ -1480,7 +1504,7 @@ int main() {
             }
         }
 
-        // Tick #2: the remaining 4 tip blocks REQUESTED.
+        // Tick #2: the remaining 4 tip blocks REQUESTED (backfill holds its quota).
         scheduler.Tick();
         if (!Require(requests.size() == 4,
                      "case 15 setup: expected 4 remaining tip requests (tick 2)")) {
@@ -1496,11 +1520,12 @@ int main() {
             }
         }
 
-        // Tick #3: tip idle → backfill services up to max_in_flight (16 REQUESTED,
+        // Tick #3: tip idle → backfill tops up to max_in_flight (16 REQUESTED,
         // 4 MISSING remain in the 20-entry backfill queue).
         scheduler.Tick();
-        if (!Require(requests.size() == scheduler.GetMaxInFlight(),
-                     "case 15 setup: expected backfill to fill the window (tick 3)")) {
+        if (!Require(requests.size() == scheduler.GetMaxInFlight() -
+                         std::max<size_t>(1, scheduler.GetMaxInFlight() / 2),
+                     "case 15 setup: expected backfill to top up the window (tick 3)")) {
             return 1;
         }
 
