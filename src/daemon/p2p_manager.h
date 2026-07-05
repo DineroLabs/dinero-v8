@@ -724,6 +724,11 @@ public:
         bool dry_run);
 
 #ifdef DINERO_TEST_BUILD
+    // #373 fd-hygiene hooks: drive the private cleanup path and observe the
+    // stored fd so tests can prove close-and-invalidate (no double-close).
+    void test_cleanup_peer(const std::string& peer_address);
+    int test_peer_socket_fd(const std::string& peer_address) const;  // -2 if absent
+    void test_set_running(bool running);  // lets tests reach stop()'s close loop
     void set_plaintext_relay_dev_override_for_tests(bool allowed);
     void set_encrypted_relay_dev_override_for_tests(bool allowed);
     bool test_plaintext_relay_transport_allowed() const;
