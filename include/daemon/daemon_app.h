@@ -1,6 +1,7 @@
 #pragma once
 #include "daemon_context.h"
 #include "iservice.h"
+#include "daemon/notify_drain_worker.h"
 #include <vector>
 #include <memory>
 
@@ -83,6 +84,10 @@ private:
 
     // Per-service JSON loggers (Step B: Separate log files)
     std::unique_ptr<class JsonLogger> wallet_logger_;
+
+    // #377: dedicated CSN ordered-validation worker (unpins the P2P dispatch
+    // thread). Stopped early in Stop() so no drain runs during teardown.
+    std::shared_ptr<daemon::NotifyDrainWorker> csn_drain_worker_;
     std::unique_ptr<class JsonLogger> p2p_logger_;
     std::unique_ptr<class JsonLogger> mining_logger_;
     std::unique_ptr<class JsonLogger> mempool_logger_;

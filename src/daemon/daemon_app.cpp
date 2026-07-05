@@ -4317,6 +4317,54 @@ bool DaemonApp::Init(int argc, char** argv) {
                     auto header_chain_for_csn = ctx_.header_chain;
                     auto p2p_service_for_csn = p2p_service;
 
+                    // ── #377 (CSN throughput): validation moves OFF the P2P dispatch
+                    // thread onto ONE ordered worker (forest state is sequential).
+                    // The dispatch handler only parses, routes backfill, buffers and
+                    // notifies; heavy work (proof validation, block accept, checkpoint
+                    // persistence) and ALL forest mutations run on the worker.
+                    auto csn_reorg_reset_to = std::make_shared<std::optional<uint32_t>>();
+                    auto csn_should_use_transition_proof = [](const auto& pending) {
+                        return daemon_helpers::ShouldUseTransitionProof(
+                            pending.proof_msg.proof_data,
+                            pending.transition_proof
+                        );
+                    };
+                    auto csn_request_frontier_headers = [header_chain_for_csn,
+                                                         p2p_service_for_csn,
+                                                         chainstate_service,
+                                                         frontier_refresh_height,
+                                                         buffer_mutex](
+                        const std::string& source_peer, uint32_t validated_height) {
+                        if (!header_chain_for_csn || !p2p_service_for_csn || !chainstate_service) {
+                            return;
+                        }
+                        const auto* best_header = header_chain_for_csn->GetBestHeader();
+                        if (!best_header || validated_height < best_header->height) {
+                            return;
+                        }
+                        {
+                            std::lock_guard<std::mutex> fl(*buffer_mutex);
+                            if (*frontier_refresh_height >= validated_height) {
+                                return;
+                            }
+                            *frontier_refresh_height = validated_height;
+                        }
+                        auto locator = chainstate_service->GenerateBlockLocator();
+                        if (locator.empty()) {
+                            return;
+                        }
+                        std::vector<std::string> locator_hex;
+                        locator_hex.reserve(locator.size());
+                        for (const auto& hash : locator) {
+                            locator_hex.push_back(hash.GetHex());
+                        }
+                        auto getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
+                        p2p_service_for_csn->get().send_to_peer(source_peer, getheaders_msg);
+                        g_logger.info("[CSN] Reached known header frontier at height " +
+                                      std::to_string(validated_height) + " via " + source_peer +
+                                      " — requested headers refresh");
+                    };
+
                     // Global scheduler Tick() runs in multiple places; account for
                     // CSN pending-buffer occupancy in every request decision.
                     if (block_download_for_csn) {
@@ -4327,12 +4375,241 @@ bool DaemonApp::Init(int argc, char** argv) {
                         );
                     }
 
+                    auto csn_drain_step = [stateless_node, chainstate_service, block_relay,
+                                           block_download_for_csn, pending_blocks, buffer_mutex,
+                                           next_validate_height, retry_counts,
+                                           pending_count_for_scheduler, csn_reorg_reset_to,
+                                           csn_should_use_transition_proof,
+                                           csn_request_frontier_headers]() -> bool {
+                        std::unique_lock<std::mutex> lk(*buffer_mutex);
+
+                        // (1) Competing-branch reorg command posted by dispatch — the
+                        // forest restore MUST run on this thread (forest ops are
+                        // single-threaded by design; dispatch never touches them).
+                        if (csn_reorg_reset_to->has_value()) {
+                            const uint32_t reset_to = **csn_reorg_reset_to;
+                            csn_reorg_reset_to->reset();
+                            const uint32_t fork_height = (reset_to > 0) ? (reset_to - 1) : 0;
+                            std::string rewind_error;
+                            if (!chainstate_service->RestoreUtreexoCheckpoint(fork_height, rewind_error)) {
+                                g_logger.error("[CSN] Failed to restore fork-point checkpoint at height " +
+                                              std::to_string(fork_height) + ": " + rewind_error);
+                                pending_blocks->erase(reset_to);
+                                pending_count_for_scheduler->store(
+                                    pending_blocks->size(), std::memory_order_relaxed);
+                                return false;
+                            }
+                            stateless_node->SyncToForestState(fork_height);
+                            g_logger.info("[CSN] Restored stateless pre-state to fork checkpoint height " +
+                                          std::to_string(fork_height));
+                            // Preserve the competing block itself across the buffer clear.
+                            std::optional<PendingUtxoBlock> keep;
+                            auto kit = pending_blocks->find(reset_to);
+                            if (kit != pending_blocks->end()) {
+                                keep.emplace(std::move(kit->second));
+                            }
+                            pending_blocks->clear();
+                            if (keep.has_value()) {
+                                (*pending_blocks)[reset_to] = std::move(*keep);
+                            }
+                            *next_validate_height = reset_to;
+                            retry_counts->clear();
+                            pending_count_for_scheduler->store(
+                                pending_blocks->size(), std::memory_order_relaxed);
+                        }
+
+                        // (2) CSN reorg reset: ActivateBestChain one-shot signal
+                        // (moved from dispatch — cursor writes live here now).
+                        {
+                            uint32_t reset_h = chainstate_service->GetCSNReorgResetHeight();
+                            if (reset_h > 0) {
+                                chainstate_service->ClearCSNReorgReset();
+                                if (reset_h != *next_validate_height) {
+                                    g_logger.info("[CSN] Reorg reset: next_validate_height " +
+                                                 std::to_string(*next_validate_height) + " → " +
+                                                 std::to_string(reset_h));
+                                    *next_validate_height = reset_h;
+                                    pending_blocks->clear();
+                                    pending_count_for_scheduler->store(0, std::memory_order_relaxed);
+                                    retry_counts->clear();
+                                }
+                            }
+                        }
+
+                        // (3) Active-tip cursor sync (moved from dispatch): after an
+                        // AssumeUTXO snapshot restore the tip legitimately jumps to the
+                        // snapshot base; keep the ordered cursor aligned.
+                        if (const auto* active_tip = chainstate_service->GetActiveTip()) {
+                            if (active_tip->height >= 0) {
+                                const uint32_t active_next =
+                                    static_cast<uint32_t>(active_tip->height) + 1;
+                                if (active_next > *next_validate_height) {
+                                    g_logger.info("[CSN] Active-tip cursor sync: next_validate_height " +
+                                                  std::to_string(*next_validate_height) + " -> " +
+                                                  std::to_string(active_next));
+                                    *next_validate_height = active_next;
+                                }
+                            }
+                        }
+
+                        // (4) Prune entries below the cursor (stale duplicates).
+                        while (!pending_blocks->empty() &&
+                               pending_blocks->begin()->first < *next_validate_height) {
+                            pending_blocks->erase(pending_blocks->begin());
+                        }
+
+                        // (5) Take exactly the cursor item, release the lock, validate.
+                        auto it = pending_blocks->find(*next_validate_height);
+                        if (it == pending_blocks->end()) {
+                            pending_count_for_scheduler->store(
+                                pending_blocks->size(), std::memory_order_relaxed);
+                            return false;
+                        }
+                        if (it->second.proof_msg.block_height != *next_validate_height) {
+                            pending_blocks->erase(it);
+                            return true;
+                        }
+                        PendingUtxoBlock pending = std::move(it->second);
+                        pending_blocks->erase(it);
+                        const uint32_t h = *next_validate_height;
+                        pending_count_for_scheduler->store(
+                            pending_blocks->size(), std::memory_order_relaxed);
+                        lk.unlock();
+
+                        uint64_t peer_id = GetPeerID(pending.peer_addr);
+                            const bool use_transition_proof = csn_should_use_transition_proof(pending);
+                            bool valid;
+                            if (use_transition_proof) {
+                                valid = stateless_node->ValidateWithTransitionProof(
+                                    pending.block, pending.proof_msg,
+                                    pending.transition_proof.value(), peer_id);
+                            } else {
+                                valid = stateless_node->ValidateUtreexoProof(
+                                    pending.block, pending.proof_msg, peer_id);
+                            }
+                            if (valid) {
+                                g_logger.info("[CSN] Block " + pending.proof_msg.block_hash.GetHex().substr(0, 16) +
+                                             "... validated with " +
+                                             (use_transition_proof ? "transition" : "batch") +
+                                             " proof (height=" +
+                                             std::to_string(h) + ")");
+                                // Keep StatelessNode's notion of sync height aligned with
+                                // the ordered CSN validation cursor. Without this, stale
+                                // proofdata for already-applied historical heights bypasses
+                                // the stale-proof filter and gets treated as malicious.
+                                stateless_node->SetSyncHeight(h);
+                                // Persist the validated proof payload with the block so
+                                // later ConnectTip replays have the stateless spend data.
+                                pending.block.utreexo = pending.proof_msg.proof_data;
+
+                                std::string block_serialized = pending.block.Serialize();
+                                std::string blockHex;
+                                blockHex.reserve(block_serialized.size() * 2);
+                                for (unsigned char byte : block_serialized) {
+                                    char buf[3];
+                                    snprintf(buf, sizeof(buf), "%02x", byte);
+                                    blockHex += buf;
+                                }
+                                chainstate_service->ProcessIncomingBlockHex(blockHex, pending.peer_addr);
+                                if (block_download_for_csn) {
+                                    block_download_for_csn->MarkBlockConnected(
+                                        pending.proof_msg.block_hash
+                                    );
+                                }
+                                if (block_relay) {
+                                    block_relay->AnnounceBlock(pending.proof_msg.block_hash);
+                                }
+
+                                // CSN reorg support: persist forest checkpoint + spend targets
+                                if (auto* cdb = chainstate_service->GetChainDB()) {
+                                    ChainWriteToken ckpt_token;
+                                    rocksdb::WriteBatch ckpt_batch;
+                                    bool persist_ready = true;
+                                    if (auto* forest = stateless_node->GetForest()) {
+                                        auto forest_data = forest->serialize();
+                                        auto ckpt_status = cdb->putUtreexoCheckpoint(
+                                            ckpt_token,
+                                            static_cast<int>(h),
+                                            forest_data,
+                                            &ckpt_batch);
+                                        persist_ready = persist_ready && (ckpt_status == Status::Ok);
+                                    } else {
+                                        persist_ready = false;
+                                    }
+                                    const auto& targets =
+                                        use_transition_proof
+                                            ? pending.transition_proof->deletion_targets
+                                            : pending.proof_msg.proof_data.spend_proof.targets;
+                                    std::string targets_blob = SerializeCsnReplayData(
+                                        targets,
+                                        pending.proof_msg.proof_data.spent_outputs,
+                                        pending.proof_msg.proof_data.spend_proof.format_version);
+                                    auto targets_status = cdb->putCSNSpendTargets(
+                                        ckpt_token,
+                                        pending.proof_msg.block_hash,
+                                        targets_blob,
+                                        &ckpt_batch);
+                                    persist_ready = persist_ready && (targets_status == Status::Ok);
+
+                                    if (persist_ready) {
+                                        auto write_status = cdb->writeBatch(ckpt_token, std::move(ckpt_batch), true);
+                                        if (write_status != Status::Ok) {
+                                            g_logger.warning("[CSN] Failed to persist checkpoint+spend-targets atomically");
+                                        }
+                                    } else {
+                                        g_logger.warning("[CSN] Failed preparing checkpoint+spend-target persistence batch");
+                                    }
+                                }
+
+                                csn_request_frontier_headers(pending.peer_addr, h);
+                            }
+                        if (valid) {
+                            {
+                                std::lock_guard<std::mutex> rl(*buffer_mutex);
+                                if (*next_validate_height == h) {
+                                    (*next_validate_height)++;
+                                }
+                            }
+                            // Refill the download window promptly — drained slots must
+                            // turn into new getdata without waiting for the next arrival.
+                            if (block_download_for_csn) {
+                                block_download_for_csn->Tick();
+                            }
+                            return true;
+                        }
+                        uint32_t attempts = 0;
+                        {
+                            std::lock_guard<std::mutex> rl(*buffer_mutex);
+                            attempts = ++(*retry_counts)[h];
+                        }
+                        g_logger.error("[CSN] Invalid utreexo proof at height " +
+                                      std::to_string(h) + " from " + pending.peer_addr +
+                                      " (attempt " + std::to_string(attempts) + "/" +
+                                      std::to_string(MAX_RETRIES_PER_HEIGHT) + ")");
+                        const uint256 failed_hash = pending.proof_msg.block_hash;
+                        if (block_download_for_csn) {
+                            if (attempts >= MAX_RETRIES_PER_HEIGHT) {
+                                g_logger.error("[CSN] Proof failed " + std::to_string(attempts) +
+                                              "x at height " + std::to_string(h) +
+                                              " — halting CSN IBD to avoid infinite loop");
+                                block_download_for_csn->MarkBlockInvalid(failed_hash);
+                            } else {
+                                block_download_for_csn->ReRequestBlock(failed_hash);
+                            }
+                        }
+                        return false;
+                    };
+                    auto csn_validation_worker = std::make_shared<daemon::NotifyDrainWorker>(
+                        csn_drain_step, "csn-validate");
+                    csn_drain_worker_ = csn_validation_worker;
+
                     p2p_service->OnUtxoBlock = [stateless_node, chainstate_service, block_relay,
                                                  block_download_for_csn, parallel_download_for_csn,
                                                  pending_blocks, header_chain_for_csn,
                                                  p2p_service_for_csn, frontier_refresh_height,
                                                  next_validate_height, buffer_mutex,
-                                                 pending_count_for_scheduler, retry_counts](
+                                                 pending_count_for_scheduler, retry_counts,
+                                                 csn_reorg_reset_to, csn_validation_worker](
                         const std::string& peer_addr,
                         const ::P2PMessage& msg
                     ) {
@@ -4499,209 +4776,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                         proof_msg.accumulator_root_after = root_after;
                         proof_msg.proof_data = proof_data;
 
-                        auto maybe_request_frontier_headers = [&](const std::string& source_peer,
-                                                                  uint32_t validated_height) {
-                            if (!header_chain_for_csn || !p2p_service_for_csn || !chainstate_service) {
-                                return;
-                            }
-
-                            const auto* best_header = header_chain_for_csn->GetBestHeader();
-                            if (!best_header || validated_height < best_header->height) {
-                                return;
-                            }
-                            if (*frontier_refresh_height >= validated_height) {
-                                return;
-                            }
-
-                            auto locator = chainstate_service->GenerateBlockLocator();
-                            if (locator.empty()) {
-                                return;
-                            }
-
-                            std::vector<std::string> locator_hex;
-                            locator_hex.reserve(locator.size());
-                            for (const auto& hash : locator) {
-                                locator_hex.push_back(hash.GetHex());
-                            }
-
-                            auto getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
-                            p2p_service_for_csn->get().send_to_peer(source_peer, getheaders_msg);
-                            *frontier_refresh_height = validated_height;
-
-                            g_logger.info("[CSN] Reached known header frontier at height " +
-                                          std::to_string(validated_height) + " via " + source_peer +
-                                          " — requested headers refresh");
-                        };
-
-                        auto should_use_transition_proof = [](const auto& pending) {
-                            return daemon_helpers::ShouldUseTransitionProof(
-                                pending.proof_msg.proof_data,
-                                pending.transition_proof
-                            );
-                        };
-
+                        
+                        
                         // --- Thread-safe buffer + drain under lock ---
                         std::lock_guard<std::mutex> lock(*buffer_mutex);
 
-                        // CSN reorg reset: ActivateBestChain signals us to reset after a STATELESS reorg
-	                        {
-	                            uint32_t reset_h = chainstate_service->GetCSNReorgResetHeight();
-	                            if (reset_h > 0) {
-	                                // One-shot signal: clear immediately once observed.
-	                                chainstate_service->ClearCSNReorgReset();
-                                if (reset_h != *next_validate_height) {
-                                    g_logger.info("[CSN] Reorg reset: next_validate_height " +
-                                                 std::to_string(*next_validate_height) + " → " +
-                                                 std::to_string(reset_h));
-                                    *next_validate_height = reset_h;
-                                    pending_blocks->clear();
-                                    pending_count_for_scheduler->store(0, std::memory_order_relaxed);
-                                    retry_counts->clear();
-	                                }
-	                            }
-	                        }
-
-	                        // The CSN handler is wired before ChainstateService::Start()
-	                        // may restore an AssumeUTXO snapshot. In that case the
-	                        // cursor was initialized from genesis (1), then the active
-	                        // tip legitimately jumps to the snapshot base (for example
-	                        // 33048). Keep the ordered validation cursor aligned with
-	                        // the active tip before applying the far-ahead window.
-	                        if (const auto* active_tip = chainstate_service->GetActiveTip()) {
-	                            if (active_tip->height >= 0) {
-	                                const uint32_t active_next =
-	                                    static_cast<uint32_t>(active_tip->height) + 1;
-	                                if (active_next > *next_validate_height) {
-	                                    g_logger.info("[CSN] Active-tip cursor sync: next_validate_height " +
-	                                                  std::to_string(*next_validate_height) + " -> " +
-	                                                  std::to_string(active_next));
-	                                    *next_validate_height = active_next;
-	                                }
-	                            }
-	                        }
-
-	                        // Pre-drain: consume any buffered blocks before inserting new ones.
-	                        // Without this, the safety limit (below) drops new arrivals while
-                        // validated blocks sit in the buffer un-drained, causing CSN IBD stall.
-                        while (pending_blocks->count(*next_validate_height)) {
-                            auto it = pending_blocks->find(*next_validate_height);
-                            auto& pending = it->second;
-                            if (pending.proof_msg.block_height != *next_validate_height) {
-                                pending_blocks->erase(it);
-                                break;
-                            }
-                            uint64_t peer_id = GetPeerID(pending.peer_addr);
-                            const bool use_transition_proof = should_use_transition_proof(pending);
-                            bool valid;
-                            if (use_transition_proof) {
-                                valid = stateless_node->ValidateWithTransitionProof(
-                                    pending.block, pending.proof_msg,
-                                    pending.transition_proof.value(), peer_id);
-                            } else {
-                                valid = stateless_node->ValidateUtreexoProof(
-                                    pending.block, pending.proof_msg, peer_id);
-                            }
-                            if (valid) {
-                                g_logger.info("[CSN] Block " + pending.proof_msg.block_hash.GetHex().substr(0, 16) +
-                                             "... validated with " +
-                                             (use_transition_proof ? "transition" : "batch") +
-                                             " proof (height=" +
-                                             std::to_string(*next_validate_height) + ")");
-                                // Keep StatelessNode's notion of sync height aligned with
-                                // the ordered CSN validation cursor. Without this, stale
-                                // proofdata for already-applied historical heights bypasses
-                                // the stale-proof filter and gets treated as malicious.
-                                stateless_node->SetSyncHeight(*next_validate_height);
-                                // Persist the validated proof payload with the block so
-                                // later ConnectTip replays have the stateless spend data.
-                                pending.block.utreexo = pending.proof_msg.proof_data;
-
-                                std::string block_serialized = pending.block.Serialize();
-                                std::string blockHex;
-                                blockHex.reserve(block_serialized.size() * 2);
-                                for (unsigned char byte : block_serialized) {
-                                    char buf[3];
-                                    snprintf(buf, sizeof(buf), "%02x", byte);
-                                    blockHex += buf;
-                                }
-                                chainstate_service->ProcessIncomingBlockHex(blockHex, pending.peer_addr);
-                                if (block_download_for_csn) {
-                                    block_download_for_csn->MarkBlockConnected(
-                                        pending.proof_msg.block_hash
-                                    );
-                                }
-                                if (block_relay) {
-                                    block_relay->AnnounceBlock(pending.proof_msg.block_hash);
-                                }
-
-                                // CSN reorg support: persist forest checkpoint + spend targets
-                                if (auto* cdb = chainstate_service->GetChainDB()) {
-                                    ChainWriteToken ckpt_token;
-                                    rocksdb::WriteBatch ckpt_batch;
-                                    bool persist_ready = true;
-                                    if (auto* forest = stateless_node->GetForest()) {
-                                        auto forest_data = forest->serialize();
-                                        auto ckpt_status = cdb->putUtreexoCheckpoint(
-                                            ckpt_token,
-                                            static_cast<int>(*next_validate_height),
-                                            forest_data,
-                                            &ckpt_batch);
-                                        persist_ready = persist_ready && (ckpt_status == Status::Ok);
-                                    } else {
-                                        persist_ready = false;
-                                    }
-                                    const auto& targets =
-                                        use_transition_proof
-                                            ? pending.transition_proof->deletion_targets
-                                            : pending.proof_msg.proof_data.spend_proof.targets;
-                                    std::string targets_blob = SerializeCsnReplayData(
-                                        targets,
-                                        pending.proof_msg.proof_data.spent_outputs,
-                                        pending.proof_msg.proof_data.spend_proof.format_version);
-                                    auto targets_status = cdb->putCSNSpendTargets(
-                                        ckpt_token,
-                                        pending.proof_msg.block_hash,
-                                        targets_blob,
-                                        &ckpt_batch);
-                                    persist_ready = persist_ready && (targets_status == Status::Ok);
-
-                                    if (persist_ready) {
-                                        auto write_status = cdb->writeBatch(ckpt_token, std::move(ckpt_batch), true);
-                                        if (write_status != Status::Ok) {
-                                            g_logger.warning("[CSN] Failed to persist checkpoint+spend-targets atomically");
-                                        }
-                                    } else {
-                                        g_logger.warning("[CSN] Failed preparing checkpoint+spend-target persistence batch");
-                                    }
-                                }
-
-                                maybe_request_frontier_headers(pending.peer_addr, *next_validate_height);
-                            } else {
-                                uint32_t h = *next_validate_height;
-                                auto& retries = (*retry_counts)[h];
-                                retries++;
-                                g_logger.error("[CSN] Invalid utreexo proof at height " +
-                                              std::to_string(h) + " from " + pending.peer_addr +
-                                              " (attempt " + std::to_string(retries) + "/" +
-                                              std::to_string(MAX_RETRIES_PER_HEIGHT) + ")");
-                                uint256 failed_hash = pending.proof_msg.block_hash;
-                                pending_blocks->erase(it);
-                                if (block_download_for_csn) {
-                                    if (retries < MAX_RETRIES_PER_HEIGHT) {
-                                        block_download_for_csn->ReRequestBlock(failed_hash);
-                                    } else {
-                                        g_logger.error("[CSN] Proof failed " + std::to_string(retries) +
-                                                      "x at height " + std::to_string(h) +
-                                                      " — halting CSN IBD to avoid infinite loop");
-                                        block_download_for_csn->MarkBlockInvalid(failed_hash);
-                                    }
-                                }
-                                break;
-                            }
-                            pending_blocks->erase(it);
-                            (*next_validate_height)++;
-                        }
-                        pending_count_for_scheduler->store(pending_blocks->size(), std::memory_order_relaxed);
+                        
+	                        
+	                                                pending_count_for_scheduler->store(pending_blocks->size(), std::memory_order_relaxed);
 
                         std::optional<uint256> expected_hash_at_height;
                         if (block_download_for_csn) {
@@ -4744,20 +4826,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                                               " matches best-header hash but not active chain — resetting cursor from " +
                                               std::to_string(*next_validate_height) + " to " +
                                               std::to_string(block_height));
-                                const uint32_t fork_height = (block_height > 0) ? (block_height - 1) : 0;
-                                std::string rewind_error;
-                                if (!chainstate_service->RestoreUtreexoCheckpoint(fork_height, rewind_error)) {
-                                    g_logger.error("[CSN] Failed to restore fork-point checkpoint at height " +
-                                                  std::to_string(fork_height) + ": " + rewind_error);
-                                    return;
-                                }
-                                stateless_node->SyncToForestState(fork_height);
-                                g_logger.info("[CSN] Restored stateless pre-state to fork checkpoint height " +
-                                              std::to_string(fork_height));
-                                *next_validate_height = block_height;
-                                pending_blocks->clear();
-                                pending_count_for_scheduler->store(0, std::memory_order_relaxed);
-                                retry_counts->clear();
+                                // #377: forest ops are confined to the validation worker
+                                // thread. Post the reset; the worker restores the fork
+                                // checkpoint, resets the cursor and clears buffers before
+                                // draining this block. Dispatch must not touch the forest.
+                                *csn_reorg_reset_to = block_height;
                             }
                         }
 
@@ -4847,136 +4920,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                         }
 
-                        // Drain: validate buffered blocks in strict height order
-                        // (Utreexo accumulator is sequential: block N+1 depends on N's root)
-                        while (pending_blocks->count(*next_validate_height)) {
-                            auto it = pending_blocks->find(*next_validate_height);
-                            auto& pending = it->second;
-
-                            // Runtime invariant: only validate at exact next_validate_height
-                            if (pending.proof_msg.block_height != *next_validate_height) {
-                                g_logger.error("[CSN] INVARIANT: validating out-of-order block (expected " +
-                                              std::to_string(*next_validate_height) + " got " +
-                                              std::to_string(pending.proof_msg.block_height) + ")");
-                                pending_blocks->erase(it);
-                                break;
-                            }
-                            uint64_t peer_id = GetPeerID(pending.peer_addr);
-                            const bool use_transition_proof = should_use_transition_proof(pending);
-                            bool valid;
-                            if (use_transition_proof) {
-                                valid = stateless_node->ValidateWithTransitionProof(
-                                    pending.block, pending.proof_msg,
-                                    pending.transition_proof.value(), peer_id);
-                            } else {
-                                valid = stateless_node->ValidateUtreexoProof(
-                                    pending.block, pending.proof_msg, peer_id);
-                            }
-
-                            if (valid) {
-                                g_logger.info("[CSN] Block " + pending.proof_msg.block_hash.GetHex().substr(0, 16) +
-                                             "... validated with " +
-                                             (use_transition_proof ? "transition" : "batch") +
-                                             " proof (height=" +
-                                             std::to_string(*next_validate_height) + ")");
-                                // Keep StatelessNode's stale-proof filter aligned with the
-                                // ordered CSN validation cursor in both drain paths.
-                                stateless_node->SetSyncHeight(*next_validate_height);
-
-                                // Persist the validated proof payload with the block so
-                                // later ConnectTip replays have the stateless spend data.
-                                pending.block.utreexo = pending.proof_msg.proof_data;
-
-                                // Route validated block to ChainstateService for storage
-                                std::string block_serialized = pending.block.Serialize();
-                                std::string blockHex;
-                                blockHex.reserve(block_serialized.size() * 2);
-                                for (unsigned char byte : block_serialized) {
-                                    char buf[3];
-                                    snprintf(buf, sizeof(buf), "%02x", byte);
-                                    blockHex += buf;
-                                }
-                                chainstate_service->ProcessIncomingBlockHex(blockHex, pending.peer_addr);
-                                if (block_download_for_csn) {
-                                    block_download_for_csn->MarkBlockConnected(
-                                        pending.proof_msg.block_hash
-                                    );
-                                }
-
-                                // Announce validated block to other peers (also marks as seen)
-                                if (block_relay) {
-                                    block_relay->AnnounceBlock(pending.proof_msg.block_hash);
-                                }
-
-                                // CSN reorg support: persist forest checkpoint + spend targets
-                                if (auto* cdb = chainstate_service->GetChainDB()) {
-                                    ChainWriteToken ckpt_token;
-                                    rocksdb::WriteBatch ckpt_batch;
-                                    bool persist_ready = true;
-                                    if (auto* forest = stateless_node->GetForest()) {
-                                        auto forest_data = forest->serialize();
-                                        auto ckpt_status = cdb->putUtreexoCheckpoint(
-                                            ckpt_token,
-                                            static_cast<int>(*next_validate_height),
-                                            forest_data,
-                                            &ckpt_batch);
-                                        persist_ready = persist_ready && (ckpt_status == Status::Ok);
-                                    } else {
-                                        persist_ready = false;
-                                    }
-                                    const auto& targets =
-                                        use_transition_proof
-                                            ? pending.transition_proof->deletion_targets
-                                            : pending.proof_msg.proof_data.spend_proof.targets;
-                                    std::string targets_blob = SerializeCsnReplayData(
-                                        targets,
-                                        pending.proof_msg.proof_data.spent_outputs,
-                                        pending.proof_msg.proof_data.spend_proof.format_version);
-                                    auto targets_status = cdb->putCSNSpendTargets(
-                                        ckpt_token,
-                                        pending.proof_msg.block_hash,
-                                        targets_blob,
-                                        &ckpt_batch);
-                                    persist_ready = persist_ready && (targets_status == Status::Ok);
-
-                                    if (persist_ready) {
-                                        auto write_status = cdb->writeBatch(ckpt_token, std::move(ckpt_batch), true);
-                                        if (write_status != Status::Ok) {
-                                            g_logger.warning("[CSN] Failed to persist checkpoint+spend-targets atomically");
-                                        }
-                                    } else {
-                                        g_logger.warning("[CSN] Failed preparing checkpoint+spend-target persistence batch");
-                                    }
-                                }
-
-                                maybe_request_frontier_headers(pending.peer_addr, *next_validate_height);
-                            } else {
-                                uint32_t h = *next_validate_height;
-                                auto& retries = (*retry_counts)[h];
-                                retries++;
-                                g_logger.error("[CSN] Invalid utreexo proof at height " +
-                                              std::to_string(h) +
-                                              " from " + pending.peer_addr +
-                                              " (attempt " + std::to_string(retries) +
-                                              "/" + std::to_string(MAX_RETRIES_PER_HEIGHT) + ")");
-                                uint256 failed_hash = pending.proof_msg.block_hash;
-                                pending_blocks->erase(it);
-                                if (retries >= MAX_RETRIES_PER_HEIGHT) {
-                                    g_logger.error("[CSN] Proof failed " + std::to_string(retries) +
-                                                  "x at height " + std::to_string(h) +
-                                                  " — halting CSN IBD to avoid infinite loop");
-                                    if (block_download_for_csn) {
-                                        block_download_for_csn->MarkBlockInvalid(failed_hash);
-                                    }
-                                } else if (block_download_for_csn) {
-                                    block_download_for_csn->ReRequestBlock(failed_hash);
-                                }
-                                break;
-                            }
-
-                            pending_blocks->erase(it);
-                            (*next_validate_height)++;
-                        }
+                        // #377: hand ordered validation to the dedicated worker. The
+                        // dispatch thread returns to the socket immediately — this is
+                        // what keeps peer Recv-Qs drained (DineroTX: ~6/min ingest vs
+                        // ~900/min served with validation inline on this thread).
+                        csn_validation_worker->Notify();
                         pending_count_for_scheduler->store(
                             pending_blocks->size(), std::memory_order_relaxed);
 
@@ -7050,6 +6998,13 @@ void DaemonApp::Stop() {
         std::cerr << "[DaemonApp] ⚠️  WalletNotify::Shutdown unknown error" << std::endl;
     }
     LogShutdownPhase("callbacks_flushed", shutdown_start, "wallet notifications shut down");
+
+    // #377: stop the CSN validation worker before services tear down — a
+    // drain step mid-teardown would race destroyed services.
+    if (csn_drain_worker_) {
+        csn_drain_worker_->Stop();
+        std::cout << "[DaemonApp] ✅ CSN validation worker stopped" << std::endl;
+    }
 
     std::cerr << "[DaemonApp] Stopping services..." << std::endl;
 

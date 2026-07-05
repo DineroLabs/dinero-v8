@@ -94,6 +94,24 @@ set_tests_properties(ClockSource PROPERTIES
   TIMEOUT 5
 )
 
+# #375 follow-up: NotifyDrainWorker — CSN dispatch-thread unpinning primitive
+add_executable(test_notify_drain_worker
+  tests/daemon/test_notify_drain_worker.cpp
+)
+add_dependencies(test_notify_drain_worker gtest gtest_main)
+target_include_directories(test_notify_drain_worker BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_notify_drain_worker PRIVATE
+  GTest::gtest_main
+  Threads::Threads
+)
+add_test(NAME NotifyDrainWorker COMMAND test_notify_drain_worker)
+set_tests_properties(NotifyDrainWorker PROPERTIES
+  LABELS "daemon;smoke"
+)
+
 # issue #224: daemon log rotation + reopen
 add_executable(test_logger_rotation
   tests/common/test_logger_rotation.cpp
