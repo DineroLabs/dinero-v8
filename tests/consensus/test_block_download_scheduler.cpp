@@ -7,6 +7,7 @@
 
 #include "consensus/active_chain_ancestry.h"
 #include "consensus/block_download_scheduler.h"
+#include "consensus/drain_failure_streak.h"
 #include "consensus/header_chain.h"
 #include "consensus/chainparams.h"
 #include "primitives/block.h"
@@ -2107,6 +2108,47 @@ int main() {
         }
         std::cout << "   ✅ tip and backfill NOTFOUND demotions are queue-isolated; a tip "
                      "NOTFOUND no longer starves backfill of archival peers" << std::endl;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // #371: DrainFailureStreak — persistent TEMPORARY_FAIL escalation.
+    // The EU1 zombie retried "next tick" 17,979+ times against a latched
+    // rocksdb error with zero escalation. The streak must fire exactly once
+    // per stuck height, reset on height change and on progress.
+    // ────────────────────────────────────────────────────────────────────
+    {
+        std::cout << "\n📋 Section: #371 drain-failure streak escalation" << std::endl;
+        using dinero::consensus::DrainFailureStreak;
+        DrainFailureStreak streak;
+        const int T = DrainFailureStreak::kEscalationThreshold;
+
+        bool early_fired = false;
+        for (int i = 0; i < T - 1; ++i) {
+            early_fired = streak.RecordFailure(57480) || early_fired;
+        }
+        if (!Require(!early_fired, "streak must NOT escalate below the threshold")) return 1;
+        if (!Require(streak.RecordFailure(57480),
+                     "streak must escalate exactly at the threshold")) return 1;
+        if (!Require(!streak.RecordFailure(57480),
+                     "streak must not re-fire while the same height stays stuck")) return 1;
+
+        // A different height starts a fresh streak (log-once is per height).
+        if (!Require(!streak.RecordFailure(57481),
+                     "new height must start a fresh streak (no immediate fire)")) return 1;
+        for (int i = 0; i < T - 2; ++i) (void)streak.RecordFailure(57481);
+        if (!Require(streak.RecordFailure(57481),
+                     "fresh streak must escalate at its own threshold")) return 1;
+
+        // Progress clears the streak entirely.
+        streak.RecordProgress();
+        if (!Require(!streak.RecordFailure(57481),
+                     "after progress, one failure must not escalate")) return 1;
+        for (int i = 0; i < T - 2; ++i) (void)streak.RecordFailure(57481);
+        if (!Require(streak.RecordFailure(57481),
+                     "post-progress streak must need a full threshold again")) return 1;
+
+        std::cout << "   ✅ drain-failure streak escalates once per stuck height and resets "
+                     "on height change / progress" << std::endl;
     }
 
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;

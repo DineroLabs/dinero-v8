@@ -1767,6 +1767,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                     local_tip_height_ = want;
                 }
                 connected++;
+                drain_failure_streak_.RecordProgress();  // #371
 
                 g_logger.info("[BlockDownloadScheduler] Connected block at height " +
                              std::to_string(fetch_state.height) + ": " +
@@ -1829,8 +1830,19 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                               std::to_string(want));
                 return connected;
             case ConnectBlockResult::TEMPORARY_FAIL:
-                g_logger.warning("[BlockDownloadScheduler] Drain temporary failure at height " +
-                                std::to_string(want) + ", will retry next tick");
+                // #371: a "temporary" failure that never clears is how a
+                // latched storage error zombies the node (EU1 2026-07-04:
+                // 17,979+ silent retries). Escalate once per stuck height.
+                if (drain_failure_streak_.RecordFailure(want)) {
+                    g_logger.error("[BlockDownloadScheduler] Drain has failed " +
+                                  std::to_string(consensus::DrainFailureStreak::kEscalationThreshold) +
+                                  " consecutive ticks at height " + std::to_string(want) +
+                                  " — storage layer may be wedged (see issue #371); " +
+                                  "check ChainDB/rocksdb logs. Retries continue.");
+                } else {
+                    g_logger.warning("[BlockDownloadScheduler] Drain temporary failure at height " +
+                                    std::to_string(want) + ", will retry next tick");
+                }
                 return connected;
             case ConnectBlockResult::INVALID:
                 fetch_state.status = FetchStatus::INVALID;

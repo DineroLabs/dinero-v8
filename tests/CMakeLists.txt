@@ -5250,6 +5250,30 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_block_storage_roundtrip.cpp)
   add_test(NAME BlockStorageRoundTrip COMMAND test_block_storage_roundtrip)
 endif()
 
+# #371: ChainDB writeBatch must recover from a latched rocksdb background error
+# (Resume + retry) and fail loudly after a consecutive-failure threshold.
+# Uses rocksdb's FaultInjectionTestEnv (compiled into the vendored rocksdb lib).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_chain_db_write_failure_recovery.cpp)
+  add_executable(test_chain_db_write_failure_recovery
+    tests/storage/test_chain_db_write_failure_recovery.cpp
+    src/common/logger.cpp
+  )
+  target_link_libraries(test_chain_db_write_failure_recovery PRIVATE
+    dinero_chainstate
+    dinero_crypto
+    RocksDB::rocksdb
+    OpenSSL::Crypto
+  )
+  target_include_directories(test_chain_db_write_failure_recovery PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME ChainDBWriteFailureRecovery COMMAND test_chain_db_write_failure_recovery)
+  set_tests_properties(ChainDBWriteFailureRecovery PROPERTIES
+    LABELS "storage;smoke"
+  )
+endif()
+
 # Archival Block Reader Test - distinguish flatfiles from legacy ChainDB fallback
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_archival_block_reader.cpp)
   add_executable(test_archival_block_reader

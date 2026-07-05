@@ -27,6 +27,7 @@
 
 #include "primitives/uint256.h"
 #include "primitives/block.h"
+#include "consensus/drain_failure_streak.h"  // #371 persistent-drain escalation
 #include "storage/block_storage.h"         // For FilePosition
 #include "p2p/block_download_scheduler.h"  // For SyncPhase enum (Phase W.2.6 Enhancement #3)
 #include <atomic>
@@ -589,6 +590,10 @@ private:
         size_t idx;
         bool reorg_barrier;
     };
+
+    // #371: escalates persistent drain TEMPORARY_FAIL at one height to an
+    // ERROR log (once per stuck height) instead of infinite silent retries.
+    DrainFailureStreak drain_failure_streak_;
 
     // Header chain to observe
     HeaderChainSelector* header_chain_;
