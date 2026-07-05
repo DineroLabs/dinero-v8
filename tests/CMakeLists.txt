@@ -2386,6 +2386,7 @@ set(DINERO_QUIC_RELAY_TEST_TARGETS "")
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
   add_executable(test_relay_virtual_transport
     tests/p2p/test_relay_virtual_transport.cpp
+    tests/p2p/test_p2p_fd_hygiene.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp

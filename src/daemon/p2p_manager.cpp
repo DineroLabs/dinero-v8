@@ -3412,6 +3412,21 @@ bool P2PManager::enqueue_relay_frame(const std::string& virtual_peer_key,
 }
 
 #ifdef DINERO_TEST_BUILD
+void P2PManager::test_cleanup_peer(const std::string& peer_address) {
+    cleanup_peer(peer_address);
+}
+
+int P2PManager::test_peer_socket_fd(const std::string& peer_address) const {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    auto it = connected_peers_.find(peer_address);
+    if (it == connected_peers_.end() || !it->second) return -2;
+    return it->second->socket_fd;
+}
+
+void P2PManager::test_set_running(bool running) {
+    running_.store(running);
+}
+
 void P2PManager::set_plaintext_relay_dev_override_for_tests(bool allowed) {
     plaintext_relay_dev_override_for_tests_.store(allowed, std::memory_order_release);
 }
@@ -4320,8 +4335,14 @@ void P2PManager::stop() {
             // TS1 Invariant L3: Transition to JOINED state after thread join
             pair.second->lifetime_state.store(PeerLifetimeState::JOINED);
 
-            // Close socket (may already be closed by cleanup_peer, idempotent)
-            close_socket(pair.second->socket_fd);
+            // #373: close only if still owned. cleanup_peer invalidates the
+            // stored fd after closing; re-closing a stale number here is NOT
+            // idempotent once the kernel reuses it for another file.
+            const int fd = pair.second->socket_fd;
+            pair.second->socket_fd = -1;
+            if (fd >= 0) {
+                close_socket(fd);
+            }
         }
     }
 
@@ -5579,10 +5600,17 @@ void P2PManager::cleanup_peer(const std::string& peer_address) {
         connecting_peers_.erase(peer_address);  // Clear connecting guard
         auto it = connected_peers_.find(peer_address);
         if (it != connected_peers_.end()) {
+            // #373: take the fd and invalidate the stored copy BEFORE closing.
+            // The peer object stays in the map until stop() joins its thread,
+            // so a stale socket_fd here means any later closer (a second
+            // cleanup_peer, stop()'s loop) re-closes a number the kernel may
+            // have already reused — on EU1 that killed rocksdb's sst fd
+            // mid-flush and zombied the node (#371).
             fd_to_clean = it->second->socket_fd;
+            it->second->socket_fd = -1;
             // Close socket to unblock any pending I/O
-            if (it->second->socket_fd >= 0) {
-                close_socket(it->second->socket_fd);
+            if (fd_to_clean >= 0) {
+                close_socket(fd_to_clean);
             }
 
             // Mark peer as disconnected (but keep in map until threads are joined)
