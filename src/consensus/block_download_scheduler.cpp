@@ -625,7 +625,13 @@ void BlockDownloadScheduler::TickLocked() {
                 g_logger.error("[BlockDownloadScheduler] Stateless frontier is INVALID at height " +
                                std::to_string(want) + " hash=" +
                                gap_state.block_hash.GetHex().substr(0, 16) +
-                               "... — halting further block requests");
+                               "... — halting further TIP block requests"
+                               " (backfill continues)");
+                // #378: halt TIP requests only. The pre-base backfill queue is
+                // independent of the forward frontier; returning out of the
+                // whole tick here wedged a healthy backfill at 34,630/52,287
+                // on the DineroTX e2e run when the forward frontier failed.
+                ServiceBackfillLocked();
                 return;
             }
             bool retry_gap = false;

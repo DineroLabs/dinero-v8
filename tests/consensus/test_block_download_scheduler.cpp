@@ -2188,6 +2188,62 @@ int main() {
     }
 
     // ────────────────────────────────────────────────────────────────────
+    // #378: an INVALID stateless frontier must halt TIP requests only —
+    // never the independent pre-base backfill queue. Run 4 on DineroTX
+    // wedged backfill at 34,630/52,287 because the frontier halt returned
+    // out of the whole tick before ServiceBackfillLocked.
+    // ────────────────────────────────────────────────────────────────────
+    {
+        std::cout << "\n📋 Section: #378 frontier halt must not kill backfill" << std::endl;
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 12, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetStatelessMode(true);
+        scheduler.SetGetTipHeightCallback([]() -> uint32_t { return 8; });
+        scheduler.SetLocalTipHeight(8);          // snapshot base = 8; tip queue = 9..12
+        scheduler.OnHeadersProcessed();
+
+        std::vector<uint32_t> sent_heights;
+        scheduler.SetSendGetDataCallback([&](const uint256& /*hash*/, uint32_t height) {
+            sent_heights.push_back(height);
+        });
+        scheduler.SetHasBlockBodyCallback([](const uint256&, uint32_t) { return false; });
+        scheduler.EnableBackfill(1, 8, hashes[8]);
+        if (!Require(scheduler.GetBackfillProgress().enabled, "backfill armed")) return 1;
+
+        // Poison the stateless frontier (worker gave up on height 9 — the
+        // run-4 shape: forward frontier INVALID while backfill is healthy).
+        if (!Require(scheduler.MarkBlockInvalid(hashes[9]),
+                     "frontier block must be markable INVALID")) return 1;
+
+        sent_heights.clear();
+        scheduler.Tick();
+
+        bool any_backfill = false;
+        bool any_tip = false;
+        for (uint32_t h : sent_heights) {
+            if (h <= 8) any_backfill = true;
+            if (h >= 9) any_tip = true;
+        }
+        if (!Require(any_backfill,
+                     "backfill getdata must still dispatch while the frontier is INVALID")) {
+            return 1;
+        }
+        if (!Require(!any_tip,
+                     "tip requests must stay halted while the frontier is INVALID")) {
+            return 1;
+        }
+        std::cout << "   ✅ INVALID frontier halts tip requests only; backfill keeps flowing"
+                  << std::endl;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
     // #371: DrainFailureStreak — persistent TEMPORARY_FAIL escalation.
     // The EU1 zombie retried "next tick" 17,979+ times against a latched
     // rocksdb error with zero escalation. The streak must fire exactly once
