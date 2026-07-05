@@ -4437,8 +4437,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                         }
 
                         // (3) Active-tip cursor sync (moved from dispatch): after an
-                        // AssumeUTXO snapshot restore the tip legitimately jumps to the
-                        // snapshot base; keep the ordered cursor aligned.
+                        // AssumeUTXO snapshot restore — or after ConnectTip's stateless
+                        // path connected blocks the worker never saw (coinbase-only
+                        // forward-connect) — the tip legitimately moves ahead of the
+                        // cursor; keep the ordered cursor aligned.
                         if (const auto* active_tip = chainstate_service->GetActiveTip()) {
                             if (active_tip->height >= 0) {
                                 const uint32_t active_next =
@@ -4448,6 +4450,18 @@ bool DaemonApp::Init(int argc, char** argv) {
                                                   std::to_string(*next_validate_height) + " -> " +
                                                   std::to_string(active_next));
                                     *next_validate_height = active_next;
+                                    // #380: the stump is a StatelessNode-local cache of
+                                    // the SHARED forest. Whenever the tip advanced via a
+                                    // path other than this worker (ConnectTip stateless
+                                    // connects mutate the shared forest directly), the
+                                    // stump goes stale — every DineroTX forward run died
+                                    // at the first spend block (55706) because step 2
+                                    // compared the canonical root_before against a stump
+                                    // still at the snapshot base. Re-derive it from the
+                                    // (already-advanced) shared forest at every jump.
+                                    stateless_node->SyncToForestState(active_tip->height);
+                                    g_logger.info("[CSN] Stump re-derived from shared forest at height " +
+                                                  std::to_string(active_tip->height) + " (#380)");
                                 }
                             }
                         }
