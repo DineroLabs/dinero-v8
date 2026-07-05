@@ -11,6 +11,7 @@
 #include <rocksdb/table.h>
 #include <rocksdb/cache.h>
 #include <rocksdb/filter_policy.h>
+#include <atomic>
 #include <filesystem>
 #include <memory>
 #include <functional>
@@ -126,6 +127,26 @@ public:
     // ═══════════════════════════════════════════════════════════════════════
     Status init(const std::filesystem::path& dir);
     void close();
+
+    // Test-only seam (#371): inject a rocksdb::Env (e.g. FaultInjectionTestEnv)
+    // BEFORE init() so tests can force and heal storage-level IO failures.
+    // Never used in production; nullptr means rocksdb's default Env.
+    void setEnvForTesting(rocksdb::Env* env) { test_env_ = env; }
+
+    // Test-only (#371): force a memtable flush so tests can latch a rocksdb
+    // background error through an injected Env failure — mirrors the EU1
+    // incident (EBADF during an sst flush → "regular background error").
+    Status flushForTesting();
+
+    // #371 loud-failure escalation: after this many CONSECUTIVE writeBatch
+    // failures (Resume unable to recover), the node must fail loudly rather
+    // than zombie — default action logs FATAL and exits non-zero so systemd /
+    // the fleet watchdog restarts it (a restart is a proven full recovery for
+    // the latched-background-error class).
+    static constexpr int kMaxConsecutiveWriteFailures = 25;
+    void setFatalWriteFailureHookForTesting(std::function<void(const std::string&)> hook) {
+        fatal_write_failure_hook_ = std::move(hook);
+    }
 
 private:
     Status initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery);
@@ -585,6 +606,14 @@ private:
     // ⚠️ ORDER MATTERS: declare DB FIRST so it is destroyed LAST
     std::unique_ptr<rocksdb::DB> db_;
     std::vector<CfUPtr> cf_;
+
+    rocksdb::Env* test_env_ = nullptr;  // test-only (#371); see setEnvForTesting
+
+    // #371: consecutive writeBatch failure streak (reset on any success) and
+    // the loud-failure action taken when the streak reaches
+    // kMaxConsecutiveWriteFailures. Empty hook = default FATAL log + exit(1).
+    std::atomic<int> consecutive_write_failures_{0};
+    std::function<void(const std::string&)> fatal_write_failure_hook_;
 
     // Column family indices
     int idx_meta_ = 1;

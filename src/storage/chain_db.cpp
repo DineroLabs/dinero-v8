@@ -10,6 +10,7 @@
 #include <rocksdb/slice_transform.h>
 #include <rocksdb/env.h>
 #include <cstring>
+#include <chrono>
 #include <thread>
 #include <sstream>
 #include <iomanip>
@@ -1177,6 +1178,11 @@ StatusOr<Transaction> ChainDB::getTransaction(const uint256& txid) const {
     return Status::NotFound;
 }
 
+Status ChainDB::flushForTesting() {
+    if (!db_) return Status::Internal;
+    return convertRocksDBStatus(db_->Flush(rocksdb::FlushOptions()));
+}
+
 Status ChainDB::writeBatch(const ChainWriteToken& token, rocksdb::WriteBatch&& batch, bool sync) {
     if (!db_) return Status::Internal;
 
@@ -1187,6 +1193,58 @@ Status ChainDB::writeBatch(const ChainWriteToken& token, rocksdb::WriteBatch&& b
     options.sync = sync;
 
     auto status = db_->Write(options, &batch);
+    if (status.ok()) {
+        consecutive_write_failures_.store(0);
+        return Status::Ok;
+    }
+
+    // #371: rocksdb latches background errors (e.g. one EBADF during an sst
+    // flush) and then fails EVERY subsequent Write() with the saved status —
+    // silently, since it logs only once at latch time. Surface the reason,
+    // then attempt in-process recovery:
+    //  - Resume() clears a manually-recoverable latch (hard errors whose
+    //    cause has passed);
+    //  - Resume()==Busy means rocksdb's own auto-recovery is running (e.g.
+    //    NoSpace via SstFileManager free-space polling) — ride it out for a
+    //    bounded window and retry the (unconsumed) batch;
+    //  - a fatal latch (the EU1 sst-flush class) is refused by Resume()
+    //    immediately → fall through to the loud-failure escalation below.
+    std::cerr << "[ChainDB] writeBatch failed: " << status.ToString() << std::endl;
+    constexpr int kRecoveryAttempts = 50;  // x100ms = 5s bounded wait
+    for (int attempt = 0; attempt < kRecoveryAttempts; ++attempt) {
+        const auto resume_status = db_->Resume();
+        if (!resume_status.ok() && !resume_status.IsBusy()) {
+            std::cerr << "[ChainDB] Resume() cannot recover latched error: "
+                      << resume_status.ToString() << std::endl;
+            break;
+        }
+        status = db_->Write(options, &batch);
+        if (status.ok()) {
+            std::cerr << "[ChainDB] writeBatch recovered after Resume()/recovery wait "
+                      << "(attempt " << (attempt + 1) << ")" << std::endl;
+            consecutive_write_failures_.store(0);
+            return Status::Ok;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    // Unrecovered failure: a node that cannot persist blocks must fail loudly
+    // (systemd / fleet watchdog restarts it — a restart is a proven full
+    // recovery for this class), never zombie at a frozen tip (EU1 2026-07-04).
+    const int failures = consecutive_write_failures_.fetch_add(1) + 1;
+    if (failures == kMaxConsecutiveWriteFailures) {
+        const std::string reason =
+            "ChainDB writeBatch failed " + std::to_string(failures) +
+            " consecutive times, Resume() cannot recover: " + status.ToString();
+        if (fatal_write_failure_hook_) {
+            fatal_write_failure_hook_(reason);
+        } else {
+            std::cerr << "[ChainDB] FATAL: " << reason
+                      << " — exiting so the service manager restarts the node"
+                      << std::endl;
+            std::exit(1);
+        }
+    }
     return convertRocksDBStatus(status);
 }
 
@@ -2311,6 +2369,8 @@ rocksdb::Options ChainDB::getDefaultOptions() const {
     options.create_if_missing = true;
     options.create_missing_column_families = true;
     options.error_if_exists = false;  // Allow reopening existing DBs
+
+    if (test_env_) options.env = test_env_;  // test-only seam (#371)
 
     // Safety checks
     options.paranoid_checks = true;
