@@ -160,6 +160,16 @@ public:
     bool OnBlockReceived(const Block& block);
 
     /**
+     * #375: consume a block ONLY if it is an expected AssumeUTXO backfill
+     * body (store-only path — never enters tip-connect bookkeeping and never
+     * touches the forward-validation cursor). Returns false with ZERO side
+     * effects otherwise — safe to call for any below-cursor utxoblk before
+     * the CSN stale-duplicate drop. (OnBlockReceived cannot be used for this:
+     * its non-backfill path stores unconditionally into the tip queue.)
+     */
+    bool OnBackfillBodyReceived(const Block& block);
+
+    /**
      * Main tick - drives download scheduler.
      * Should be called periodically (e.g., every second).
      *
@@ -590,6 +600,10 @@ private:
         size_t idx;
         bool reorg_barrier;
     };
+
+    // #375: shared consume path for an expected backfill body (see .cpp).
+    bool ConsumeExpectedBackfillLocked(const Block& block, const uint256& block_hash,
+                                       std::unique_lock<std::mutex>& lock);
 
     // #371: escalates persistent drain TEMPORARY_FAIL at one height to an
     // ERROR log (once per stuck height) instead of infinite silent retries.

@@ -4761,11 +4761,20 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                         }
 
-                        // Reject blocks at heights already validated — prevents zombie entries
-                        // from duplicate peer responses (getdata sent to N peers, only first is useful;
-                        // late duplicates pass the pending_blocks duplicate check after erasure)
+                        // Below-cursor utxoblks are EITHER expected AssumeUTXO backfill
+                        // bodies OR stale duplicates of already-validated forward heights.
+                        // #375: offer them to the scheduler's store-only backfill path
+                        // FIRST — the pre-#375 guard dropped both classes here, which
+                        // silently discarded 100% of backfill bodies (DineroTX e2e run:
+                        // completed frozen at 0/52287 while the fleet served correctly).
                         if (block_height < *next_validate_height && !competing_reorg_block) {
-                            g_logger.debug("[CSN] Ignoring stale utxoblk at height " +
+                            if (block_download_for_csn &&
+                                block_download_for_csn->OnBackfillBodyReceived(block)) {
+                                return;  // consumed as backfill; forward cursor untouched
+                            }
+                            // Not an expected backfill body → genuine stale duplicate.
+                            // info (was debug): 52k invisible discards hid #375 for weeks.
+                            g_logger.info("[CSN] Ignoring stale utxoblk at height " +
                                           std::to_string(block_height) + " (cursor=" +
                                           std::to_string(*next_validate_height) + ")");
                             return;
