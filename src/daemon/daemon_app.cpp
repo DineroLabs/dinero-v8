@@ -56,6 +56,7 @@
 #include "consensus/header_store.h"  // Phase N.3: Header storage
 #include "consensus/active_chain_ancestry.h"
 #include "consensus/block_download_scheduler.h"  // Phase N.4: Block download scheduler
+#include "consensus/csn_accept_window.h"  // #384: CSN cursor-to-tip reconcile
 #include "consensus/proof_gossip.h"  // Phase 9.3: Proof availability gossip
 #include "p2p/block_download_scheduler.h"  // Phase G: Parallel block download
 #include "consensus/block_lifecycle.h"  // Phase P.2: BLOCK_HAVE_DATA flag
@@ -4795,8 +4796,31 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // --- Thread-safe buffer + drain under lock ---
                         std::lock_guard<std::mutex> lock(*buffer_mutex);
 
-                        
-	                        
+                        // #384: reconcile the forward-validate cursor to the active
+                        // chain tip BEFORE any cursor-dependent routing below
+                        // (backfill-below-cursor, competing-reorg, too-far-ahead
+                        // window). The cursor inits to 1 at wiring time and is
+                        // otherwise only advanced by the drain worker AFTER a block
+                        // buffers+Notify()s — but the too-far-ahead guard rejects
+                        // everything first, so a node that restarts mid-backfill
+                        // (no low block left to bootstrap the sync) rejects every
+                        // requested block forever ("too far ahead of cursor 1",
+                        // DineroDPI phone 2026-07-07). Active-tip blocks are already
+                        // connected/validated, so tracking active_tip+1 is correct
+                        // and makes pre-base backfill bodies route to the store lane.
+                        if (const auto* csn_active_tip = chainstate_service->GetActiveTip()) {
+                            const uint32_t reconciled = consensus::ReconcileCsnCursorToTip(
+                                *next_validate_height, csn_active_tip->height);
+                            if (reconciled != *next_validate_height) {
+                                g_logger.info("[CSN] Cursor reconciled to active tip: " +
+                                              std::to_string(*next_validate_height) + " -> " +
+                                              std::to_string(reconciled) + " (#384)");
+                                *next_validate_height = reconciled;
+                            }
+                        }
+
+
+
 	                                                pending_count_for_scheduler->store(pending_blocks->size(), std::memory_order_relaxed);
 
                         std::optional<uint256> expected_hash_at_height;

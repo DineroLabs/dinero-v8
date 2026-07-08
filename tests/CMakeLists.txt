@@ -5293,6 +5293,21 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_chain_db_write_failure_recovery
   )
 endif()
 
+# #384: CSN cursor-to-tip reconcile — pure predicate that breaks the
+# restart-mid-backfill "too far ahead of cursor 1" deadlock (phone 2026-07-07).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_csn_accept_window.cpp)
+  add_executable(test_csn_accept_window
+    tests/consensus/test_csn_accept_window.cpp
+  )
+  target_include_directories(test_csn_accept_window PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME CsnAcceptWindow COMMAND test_csn_accept_window)
+  set_tests_properties(CsnAcceptWindow PROPERTIES LABELS "consensus;smoke")
+endif()
+
+
 # Archival Block Reader Test - distinguish flatfiles from legacy ChainDB fallback
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_archival_block_reader.cpp)
   add_executable(test_archival_block_reader
