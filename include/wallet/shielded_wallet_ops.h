@@ -541,4 +541,39 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     const consensus::shielded::Hash* rcm_override = nullptr,
     const consensus::shielded::Hash* esk_override = nullptr);
 
+/**
+ * Pure helper — given an unsigned transparent envelope (shielded version;
+ * transparent vin/change/lockTime/explicit_fee set by the caller like the
+ * self-shield path), build a one-output bundle whose single output is
+ * addressed to `recipient` (an external dins1 recipient), with
+ * `value_balance = +recipient.value_una`. NO shielded spends, NO shielded
+ * change (transparent change is handled by the RPC, exactly as self-shield).
+ *
+ * Mirrors BuildShieldBundleForTx but emits the addressed recipient output
+ * (via BuildAddressedRecipientOutput) instead of a zero-diversifier self
+ * output. The created note belongs to the RECIPIENT — no self spend key is
+ * returned. `result.commitment` = the recipient commitment.
+ */
+AttachShieldResult BuildAddressedShieldBundleForTx(
+    dinero::Transaction& tx,
+    const AddressedRecipient& recipient,
+    const std::array<uint8_t, 512>* recipient_memo = nullptr,
+    bool cv_bound = false);
+
+/**
+ * Wallet-bound wrapper. Decodes `recipient_address` (rejecting a non-dins /
+ * wrong-network HRP before any tx work), builds the addressed shield bundle
+ * via BuildAddressedShieldBundleForTx, and attaches it to `tx`. Unlike
+ * self-shield, it does NOT persist a spendable pending note — the note is
+ * the recipient's, so `persist` is accepted only for signature symmetry
+ * with AttachShieldOutputBundle (there is no wallet state to mutate).
+ */
+AttachShieldResult AttachAddressedShieldOutputBundle(
+    dinero::Transaction& tx,
+    const std::string& recipient_address,
+    uint64_t value_una,
+    dinero::WalletManager& wallet,
+    const std::array<uint8_t, 512>* recipient_memo = nullptr,
+    bool persist = true);
+
 } // namespace dinero::wallet::shielded_ops

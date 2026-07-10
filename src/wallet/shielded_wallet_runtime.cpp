@@ -52,6 +52,19 @@ bool CvBoundForMiningAtTip(uint32_t tip_height) {
            static_cast<uint64_t>(dinero::Params().shielded_cv_binding_activation_height);
 }
 
+// Expected shielded-address HRP for the active chain (spec §7.1 network
+// match). A recipient address whose HRP differs must be rejected before
+// any tx work.
+const char* ExpectedShieldedHrp() {
+    namespace shdrv = ::dinero::wallet::shielded;
+    switch (dinero::GetActiveChain()) {
+        case dinero::Chain::MAINNET: return shdrv::kHrpMainnet;
+        case dinero::Chain::TESTNET: return shdrv::kHrpTestnet;
+        case dinero::Chain::REGTEST: return shdrv::kHrpRegtest;
+    }
+    return shdrv::kHrpMainnet;
+}
+
 struct ShieldedRuntime {
     std::string       store_path;
     ShieldedNoteStore store;
@@ -670,6 +683,66 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
     }
 
     OPENSSL_cleanse(built.nullifier_key.data(), built.nullifier_key.size());
+    return built;
+}
+
+// ── Shield-to-recipient: transparent → external dins1 ─────────────────
+
+AttachShieldResult AttachAddressedShieldOutputBundle(
+    dinero::Transaction& tx,
+    const std::string& recipient_address,
+    uint64_t value_una,
+    dinero::WalletManager& wallet,
+    const std::array<uint8_t, 512>* recipient_memo,
+    bool persist) {
+    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    std::string init_error;
+    if (!EnsureRuntimeLocked(wallet, &init_error)) {
+        AttachShieldResult err{};
+        err.status = OpStatus::StoreError;
+        err.error  = init_error.empty() ? "shielded_store_init_failed" : init_error;
+        return err;
+    }
+
+    if (value_una == 0) {
+        AttachShieldResult err{};
+        err.status = OpStatus::InvalidParams;
+        err.error  = "value must be positive";
+        return err;
+    }
+
+    // Decode + network-match BEFORE any tx work (spec §7.1).
+    namespace shdrv = ::dinero::wallet::shielded;
+    shdrv::DecodedShieldedAddress decoded;
+    try {
+        decoded = shdrv::DecodeShieldedAddress(recipient_address);
+    } catch (const std::exception& e) {
+        AttachShieldResult err{};
+        err.status = OpStatus::InvalidParams;
+        err.error  = std::string("invalid_shielded_address: ") + e.what();
+        return err;
+    }
+    const std::string expected_hrp = ExpectedShieldedHrp();
+    if (decoded.hrp != expected_hrp) {
+        AttachShieldResult err{};
+        err.status = OpStatus::InvalidParams;
+        err.error  = "invalid_shielded_address: wrong network hrp '" +
+                     decoded.hrp + "' (expected '" + expected_hrp + "')";
+        return err;
+    }
+
+    AddressedRecipient recipient;
+    recipient.d         = decoded.d;
+    recipient.pk_d      = decoded.pk_d;
+    recipient.value_una = value_una;
+
+    const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
+    auto built = BuildAddressedShieldBundleForTx(tx, recipient, recipient_memo,
+                                                 cv_bound);
+    // No self note to persist — the note belongs to the recipient. `persist`
+    // exists only for API symmetry with AttachShieldOutputBundle (dry-run
+    // fee measurement); there is no wallet state to mutate here.
+    (void)persist;
     return built;
 }
 

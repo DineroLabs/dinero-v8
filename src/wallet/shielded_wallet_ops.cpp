@@ -1140,4 +1140,79 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     return out;
 }
 
+// ── Shield-to-recipient: transparent → external dins1 ─────────────────
+
+AttachShieldResult BuildAddressedShieldBundleForTx(
+    dinero::Transaction& tx,
+    const AddressedRecipient& recipient,
+    const std::array<uint8_t, 512>* recipient_memo,
+    bool cv_bound) {
+    AttachShieldResult out;
+
+    if (recipient.value_una == 0) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "value must be positive";
+        return out;
+    }
+    if (!dinero::Transaction::IsShieldedVersion(tx.version)) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "tx.version must be shielded (5 or 6)";
+        return out;
+    }
+
+    if (!sh::PedersenGeneratorsReady()) {
+        (void)sh::PedersenGeneratorV();
+        if (!sh::PedersenGeneratorsReady()) {
+            out.status = OpStatus::InternalError;
+            out.error = "pedersen_generators_not_ready";
+            return out;
+        }
+    }
+
+    // ONE addressed recipient output (shared construction). No shielded
+    // spends, no shielded change — transparent change is the RPC's job.
+    auto rout = BuildAddressedRecipientOutput(recipient, recipient_memo, cv_bound);
+    if (rout.status != OpStatus::Ok) {
+        out.status = rout.status;
+        out.error  = rout.error;
+        return out;
+    }
+
+    // Sighash over the transparent envelope (vins/change/locktime/version/
+    // explicit_fee); bundle bytes are not in the sighash.
+    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx);
+
+    // Bundle: no spends, one output, value_balance = +value (transparent
+    // coins entering the pool), exactly like BuildShieldBundleForTx.
+    sh::ShieldedBundle bundle{};
+    const auto build_rc = sh::BuildShieldedBundle({}, {rout.planned},
+                                                  tx_sighash, bundle);
+    if (build_rc != sh::BundleBuildResult::Ok) {
+        out.status = OpStatus::InternalError;
+        out.error = "build_shielded_bundle_failed:" +
+                    std::to_string(static_cast<int>(build_rc));
+        return out;
+    }
+    if (bundle.value_balance != static_cast<int64_t>(recipient.value_una)) {
+        out.status = OpStatus::InternalError;
+        out.error = "bundle_value_balance_mismatch";
+        return out;
+    }
+
+    auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
+    if (bundle_bytes.empty()) {
+        out.status = OpStatus::InternalError;
+        out.error = "bundle_serialization_failed";
+        return out;
+    }
+    tx.shielded_bundle_bytes = std::move(bundle_bytes);
+
+    out.status       = OpStatus::Ok;
+    out.commitment   = rout.commitment;  // recipient commitment (their note)
+    out.bundle_bytes = tx.shielded_bundle_bytes.size();
+    // No self note: nullifier_key/public_key/randomness stay zero — the
+    // note belongs to the recipient, we cannot (and must not) spend it.
+    return out;
+}
+
 } // namespace dinero::wallet::shielded_ops
