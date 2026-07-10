@@ -843,6 +843,99 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
 
 namespace shdrv = ::dinero::wallet::shielded;
 
+// Shared addressed-recipient output construction. Extracted verbatim from
+// BuildAddressedTransferBundleForTx so the transfer path AND the
+// shield-to-recipient path share ONE definition of the commitment /
+// encryption / proof convention. Keeping the RandomHash() call sequence
+// (rcm[if random] → rcv → nonce) preserves the transfer builder's exact
+// behavior.
+AddressedRecipientOutput BuildAddressedRecipientOutput(
+    const AddressedRecipient& recipient,
+    const std::array<uint8_t, 512>* recipient_memo,
+    bool cv_bound,
+    const sh::Hash* rcm_override,
+    const sh::Hash* esk_override) {
+    AddressedRecipientOutput out;
+
+    if (recipient.value_una == 0) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "recipient value must be positive";
+        return out;
+    }
+
+    sh::Hash zero{};
+    //   d = recipient.d (packed into 32-byte hash for the on-chain
+    //                    commitment formula)
+    //   pk_note = Poseidon(DeriveNoteSpendKey(rcm), 0)
+    //   commitment = NoteCommitment(d_packed, pk_note, value, rcm)
+    //   encrypted_note = EncryptNoteForRecipient(d, pk_d, plaintext)
+    sh::Hash recipient_rcm = rcm_override ? *rcm_override : RandomHash();
+    sh::Hash recipient_sk  = shdrv::DeriveNoteSpendKey(recipient_rcm);
+    sh::Hash recipient_pk  = sh::PoseidonHash2(recipient_sk, zero);
+    sh::Hash recipient_value_hash = ValueToHash(recipient.value_una);
+    sh::Hash recipient_d_packed{};
+    std::memcpy(recipient_d_packed.data(), recipient.d.data(), recipient.d.size());
+    sh::Hash recipient_commitment = sh::NoteCommitment(
+        recipient_d_packed, recipient_pk,
+        recipient_value_hash, recipient_rcm);
+
+    sh::Hash recipient_rcv = RandomHash();
+    sh::OutputWitness recipient_ow{};
+    recipient_ow.value      = recipient_value_hash;
+    recipient_ow.public_key = recipient_pk;
+    recipient_ow.randomness = recipient_rcm;
+    recipient_ow.d          = recipient_d_packed;
+    recipient_ow.rcv        = recipient_rcv;
+    sh::OutputPublicInputs recipient_opi{};
+    recipient_opi.commitment = recipient_commitment;
+    if (cv_bound && !ComputeBundleCv(recipient_rcv, recipient.value_una, recipient_opi.cv)) {
+        out.status = OpStatus::InternalError;
+        out.error = "cv_commit_failed";
+        return out;
+    }
+    auto recipient_proof = sh::ProveOutput(recipient_ow, recipient_opi, nullptr,
+                                           /*bind_public_inputs=*/true, cv_bound);
+    if (recipient_proof.empty()) {
+        out.status = OpStatus::ProofError;
+        out.error = "recipient output proof generation failed";
+        return out;
+    }
+
+    // Build encrypted_note for the recipient.
+    shdrv::Diversifier dvf{};
+    std::memcpy(dvf.data(), recipient.d.data(), recipient.d.size());
+    shdrv::NotePlaintext nplain;
+    nplain.d         = dvf;
+    nplain.value_una = recipient.value_una;
+    nplain.rcm       = recipient_rcm;
+    if (recipient_memo != nullptr) {
+        std::memcpy(nplain.memo.data(), recipient_memo->data(), nplain.memo.size());
+    }
+    shdrv::EncryptedNote enc_bytes;
+    try {
+        enc_bytes = shdrv::EncryptNoteForRecipient(dvf, recipient.pk_d, nplain,
+                                                   esk_override);
+    } catch (const std::exception& e) {
+        out.status = OpStatus::InternalError;
+        out.error = std::string("encrypt_note_failed: ") + e.what();
+        return out;
+    }
+
+    sh::PlannedOutput planned{};
+    planned.commitment     = recipient_commitment;
+    planned.value_una      = recipient.value_una;
+    planned.rcv            = recipient_rcv;
+    planned.encrypted_note =
+        std::vector<uint8_t>(enc_bytes.begin(), enc_bytes.end());
+    planned.output_proof   = std::move(recipient_proof);
+    planned.nonce          = RandomHash();
+
+    out.status     = OpStatus::Ok;
+    out.commitment = recipient_commitment;
+    out.planned    = std::move(planned);
+    return out;
+}
+
 AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     dinero::Transaction& tx,
     const std::vector<UnshieldNoteInput>& spends,
@@ -933,75 +1026,20 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         planned_spends.push_back(std::move(ps));
     }
 
-    // ── Recipient output (addressed):
-    //   d = recipient.d (packed into 32-byte hash for the on-chain
-    //                    commitment formula)
-    //   pk_note = Poseidon(DeriveNoteSpendKey(rcm), 0)
-    //   commitment = NoteCommitment(d_packed, pk_note, value, rcm)
-    //   encrypted_note = EncryptNoteForRecipient(d, pk_d, plaintext)
-    sh::Hash recipient_rcm = RandomHash();
-    sh::Hash recipient_sk  = shdrv::DeriveNoteSpendKey(recipient_rcm);
-    sh::Hash recipient_pk  = sh::PoseidonHash2(recipient_sk, zero);
-    sh::Hash recipient_value_hash = ValueToHash(recipient.value_una);
-    sh::Hash recipient_d_packed{};
-    std::memcpy(recipient_d_packed.data(), recipient.d.data(), recipient.d.size());
-    sh::Hash recipient_commitment = sh::NoteCommitment(
-        recipient_d_packed, recipient_pk,
-        recipient_value_hash, recipient_rcm);
-
-    sh::Hash recipient_rcv = RandomHash();
-    sh::OutputWitness recipient_ow{};
-    recipient_ow.value      = recipient_value_hash;
-    recipient_ow.public_key = recipient_pk;
-    recipient_ow.randomness = recipient_rcm;
-    recipient_ow.d          = recipient_d_packed;
-    recipient_ow.rcv        = recipient_rcv;
-    sh::OutputPublicInputs recipient_opi{};
-    recipient_opi.commitment = recipient_commitment;
-    if (cv_bound && !ComputeBundleCv(recipient_rcv, recipient.value_una, recipient_opi.cv)) {
-        out.status = OpStatus::InternalError;
-        out.error = "cv_commit_failed";
+    // ── Recipient output (addressed): built by the shared helper so the
+    //    commitment / encryption / proof convention has ONE definition
+    //    (reused by the shield-to-recipient path).
+    auto rout = BuildAddressedRecipientOutput(recipient, recipient_memo, cv_bound);
+    if (rout.status != OpStatus::Ok) {
+        out.status = rout.status;
+        out.error  = rout.error;
         return out;
     }
-    auto recipient_proof = sh::ProveOutput(recipient_ow, recipient_opi, nullptr,
-                                           /*bind_public_inputs=*/true, cv_bound);
-    if (recipient_proof.empty()) {
-        out.status = OpStatus::ProofError;
-        out.error = "recipient output proof generation failed";
-        return out;
-    }
-
-    // Build encrypted_note for the recipient.
-    shdrv::Diversifier dvf{};
-    std::memcpy(dvf.data(), recipient.d.data(), recipient.d.size());
-    shdrv::NotePlaintext nplain;
-    nplain.d         = dvf;
-    nplain.value_una = recipient.value_una;
-    nplain.rcm       = recipient_rcm;
-    if (recipient_memo != nullptr) {
-        std::memcpy(nplain.memo.data(), recipient_memo->data(), nplain.memo.size());
-    }
-    shdrv::EncryptedNote enc_bytes;
-    try {
-        enc_bytes = shdrv::EncryptNoteForRecipient(dvf, recipient.pk_d, nplain);
-    } catch (const std::exception& e) {
-        out.status = OpStatus::InternalError;
-        out.error = std::string("encrypt_note_failed: ") + e.what();
-        return out;
-    }
-
-    sh::PlannedOutput recipient_planned{};
-    recipient_planned.commitment     = recipient_commitment;
-    recipient_planned.value_una      = recipient.value_una;
-    recipient_planned.rcv            = recipient_rcv;
-    recipient_planned.encrypted_note =
-        std::vector<uint8_t>(enc_bytes.begin(), enc_bytes.end());
-    recipient_planned.output_proof   = std::move(recipient_proof);
-    recipient_planned.nonce          = RandomHash();
+    const sh::Hash recipient_commitment = rout.commitment;
 
     std::vector<sh::PlannedOutput> planned_outputs;
     planned_outputs.reserve(2);
-    planned_outputs.push_back(std::move(recipient_planned));
+    planned_outputs.push_back(std::move(rout.planned));
 
     // ── Change (legacy self-recipient style; receivable via existing
     //    pending-note bookkeeping — wallet wrapper passes the secret

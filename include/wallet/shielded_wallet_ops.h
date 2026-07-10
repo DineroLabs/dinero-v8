@@ -6,6 +6,7 @@
  * The JSON-RPC adapter layer calls these with parsed params.
  */
 
+#include "consensus/shielded/bundle_builder.h"
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/shielded_circuit.h"
 #include "primitives/block.h"
@@ -502,5 +503,42 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     dinero::WalletManager& wallet,
     const std::string* recipient_memo_utf8 = nullptr,
     bool persist = true);
+
+// ── Shield-to-recipient: transparent → external dins1 address ─────────
+//
+// Shares the addressed-output construction with the transfer path: the
+// addressed recipient output below is EXTRACTED into one helper so the
+// commitment / encryption / proof convention has a SINGLE definition,
+// reused by BuildAddressedTransferBundleForTx and the shield-to-recipient
+// builder alike.
+
+/// The extracted addressed-recipient output plus its commitment. `planned`
+/// is ready to hand to `BuildShieldedBundle` as an output.
+struct AddressedRecipientOutput {
+    OpStatus status = OpStatus::InternalError;
+    std::string error;
+    consensus::shielded::PlannedOutput planned;
+    consensus::shielded::Hash          commitment{};
+};
+
+/**
+ * Build ONE addressed recipient output (the shared construction extracted
+ * from BuildAddressedTransferBundleForTx):
+ *   rcm      = fresh CSPRNG (or `rcm_override` for deterministic tests)
+ *   pk_note  = Poseidon(DeriveNoteSpendKey(rcm), 0)
+ *   commitment = NoteCommitment(d_packed, pk_note, value, rcm)
+ *   encrypted_note = EncryptNoteForRecipient(d, pk_d, {d,value,rcm,memo})
+ *   Spartan output proof + fresh Pedersen rcv + rangeproof nonce.
+ *
+ * `rcm_override` / `esk_override` are ONLY for deterministic test vectors
+ * (golden byte-pins on the construction convention). Production callers
+ * MUST pass nullptr so every output gets a fresh rcm + esk (unlinkability).
+ */
+AddressedRecipientOutput BuildAddressedRecipientOutput(
+    const AddressedRecipient& recipient,
+    const std::array<uint8_t, 512>* recipient_memo = nullptr,
+    bool cv_bound = false,
+    const consensus::shielded::Hash* rcm_override = nullptr,
+    const consensus::shielded::Hash* esk_override = nullptr);
 
 } // namespace dinero::wallet::shielded_ops
