@@ -135,6 +135,10 @@ bool isConfidentialDineroAddress(const QString& address) {
          address.startsWith("dina1") || address.startsWith("tdina1") || address.startsWith("rdina1");
 }
 
+bool isShieldedDineroAddress(const QString& address) {
+  return address.startsWith("dins1") || address.startsWith("tdins1") || address.startsWith("rdins1");
+}
+
 bool miningModeNeedsDaemon(const QString& mode) {
   return mode != "pool" && mode != "sv2_pool";
 }
@@ -2768,11 +2772,13 @@ void MainWindow::setupUI() {
     cmbSendAction_ = new QComboBox;
     cmbSendAction_->addItem("Send publicly", "public_transfer");
     cmbSendAction_->addItem("Spend privately", "private_transfer");
+    cmbSendAction_->addItem("Send to shielded", "shield_to");
     cmbSendAction_->addItem("Convert to public", "unshield");
     cmbSendAction_->addItem("Contracts", "public_contract");
     cmbSendAction_->setToolTip(
         "Send publicly: transparent Taproot or P2MR transfer\n"
         "Spend privately: shielded note transfer to a private address\n"
+        "Send to shielded: fund a shielded dins1 address from your transparent balance\n"
         "Convert to public: unshield to a fresh wallet Taproot address\n"
         "Contracts: create an on-chain lock or batch spending rule");
     sendLayout->addWidget(cmbSendAction_, 0, 1);
@@ -4907,6 +4913,7 @@ void MainWindow::updateSendModeUi() {
   const bool confidentialMode = isSendModeConfidential(mode);
   const bool privateMode = isSendModePrivate(mode);
   const bool shieldMode = mode == "shield";
+  const bool shieldToMode = mode == "shield_to";
   const bool unshieldMode = mode == "unshield";
   const bool shieldCovenantMode = mode == "shield_covenant";
   const bool contractMode = isSendModeContract(mode);
@@ -4922,7 +4929,9 @@ void MainWindow::updateSendModeUi() {
     if (publicMode) {
       edtRecipient_->setPlaceholderText("din1p... (Taproot) or din1r... (P2MR public)");
     } else if (privateMode) {
-      edtRecipient_->setPlaceholderText("dina1... (shielded private)");
+      edtRecipient_->setPlaceholderText("dins1... (shielded)");
+    } else if (shieldToMode) {
+      edtRecipient_->setPlaceholderText("dins1... (shielded destination)");
     } else if (unshieldMode) {
       edtRecipient_->setPlaceholderText("Fresh wallet Taproot address will be generated");
     } else {
@@ -4936,7 +4945,10 @@ void MainWindow::updateSendModeUi() {
       btnSend_->setToolTip("Create an on-chain contract lock with spending rules");
     } else if (privateMode) {
       btnSend_->setText("Send Privately");
-      btnSend_->setToolTip("Spend shielded notes to a private address");
+      btnSend_->setToolTip("Spend shielded notes to a shielded address");
+    } else if (shieldToMode) {
+      btnSend_->setText("Send to Shielded");
+      btnSend_->setToolTip("Fund a shielded dins1 address from your transparent balance");
     } else if (unshieldMode) {
       btnSend_->setText("Convert to Public");
       btnSend_->setToolTip("Unshield selected private value to a fresh wallet Taproot address");
@@ -4968,7 +4980,10 @@ void MainWindow::updateSendModeUi() {
         lblSendStatus_->setText("Create an on-chain contract with spending rules.");
       } else if (privateMode) {
         lblSendStatus_->setText(
-          "Spend shielded balance privately. Recipient must be a dina1 private address.");
+          "Spend shielded balance privately. Recipient must be a dins1 shielded address.");
+      } else if (shieldToMode) {
+        lblSendStatus_->setText(
+          "Send transparent balance into a shielded address. Recipient must be a dins1 shielded address.");
       } else if (unshieldMode) {
         lblSendStatus_->setText(
           "Convert shielded balance to public Taproot. The daemon sends it to a fresh wallet address.");
@@ -5597,7 +5612,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         rpc_->sendRawTransaction(txHex);
       }
     }
-  } else if (method == "wallet.transfer" || method == "wallet.unshield") {
+  } else if (method == "wallet.transfer" || method == "wallet.unshield" || method == "wallet.shield") {
     if (result.isObject()) {
       const auto obj = result.toObject();
       const QString error = obj.value("error").toString();
@@ -5618,9 +5633,12 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       }
 
       const bool unshield = method == "wallet.unshield";
+      const bool shieldTo = method == "wallet.shield";
       if (lblSendStatus_) {
         lblSendStatus_->setText(unshield
             ? "✅ Converted shielded balance to public Taproot."
+            : shieldTo
+            ? "✅ Sent to shielded address."
             : "✅ Private spend submitted.");
         lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; font-weight: 600; }");
       }
@@ -5628,6 +5646,8 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       if (txtSendResult_) {
         const QString recipientLine = unshield
             ? QString("<b>Public address:</b> %1<br>").arg(obj.value("recipient_address").toString("fresh wallet Taproot address"))
+            : shieldTo
+            ? QString("<b>Shielded recipient:</b> %1<br>").arg(edtRecipient_ ? edtRecipient_->text().toHtmlEscaped() : QString())
             : QString("<b>Private recipient:</b> %1<br>").arg(edtRecipient_ ? edtRecipient_->text().toHtmlEscaped() : QString());
         txtSendResult_->setHtml(QString(
           "<b>%1</b><br><br>"
@@ -5637,11 +5657,12 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
           "<b>Amount:</b> %4 DIN<br>"
           "<b>Fee:</b> 0.00001000 DIN<br><br>"
           "<i>%5</i>"
-        ).arg(unshield ? "Convert to Public Submitted" : "Private Spend Submitted",
+        ).arg(unshield ? "Convert to Public Submitted" : shieldTo ? "Send to Shielded Submitted" : "Private Spend Submitted",
               txid.toHtmlEscaped(),
               recipientLine,
               edtAmount_ ? edtAmount_->text().toHtmlEscaped() : QString(),
               unshield ? "The output is now transparent/public once confirmed."
+                       : shieldTo ? "The transparent balance is now shielded at the destination once confirmed."
                        : "Amounts and sender remain shielded on-chain."));
       }
 
@@ -6033,7 +6054,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         const QString mode = currentSendMode();
         const int txSizeVb =
           (isSendModeConfidential(mode) || isSendModePrivate(mode) ||
-           mode == "shield" || mode == "unshield" || mode == "shield_covenant")
+           mode == "shield" || mode == "shield_to" || mode == "unshield" || mode == "shield_covenant")
           ? kPrivateSendEstimateVbytes : kPublicSendEstimateVbytes;
         const double feeDin = estimatedFeeDin(feerateUnaPerVb, txSizeVb);
 
@@ -7050,7 +7071,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   // Keep send UI usable after RPC failures.
   if (method == "wallet.sendtoaddress" || method == "sendtoaddress" ||
       method == "sendpubliccovenant" || method == "wallet.sendpubliccovenant" ||
-      method == "wallet.transfer" || method == "wallet.unshield" ||
+      method == "wallet.transfer" || method == "wallet.unshield" || method == "wallet.shield" ||
       method == "wallet.sendrawtransaction" || method == "sendrawtransaction") {
     if (btnSend_) {
       btnSend_->setEnabled(true);
@@ -13433,7 +13454,7 @@ bool MainWindow::collectSendForm(QString& recipient,
       lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
       return false;
     }
-  } else if (isSendModeConfidential(mode) || isSendModePrivate(mode)) {
+  } else if (isSendModeConfidential(mode)) {
     if (!recipient.isEmpty() && !isConfidentialDineroAddress(recipient)) {
       lblSendStatus_->setText(QString::fromUtf8("\xE2\x9D\x8C Error: Invalid private Dinero address.\n"
         "Supported formats:\n"
@@ -13442,9 +13463,25 @@ bool MainWindow::collectSendForm(QString& recipient,
       lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
       return false;
     }
+  } else if (isSendModePrivate(mode)) {
+    if (!recipient.isEmpty() && !isShieldedDineroAddress(recipient)) {
+      lblSendStatus_->setText(QString::fromUtf8("\xE2\x9D\x8C Error: Invalid shielded Dinero address.\n"
+        "Supported formats:\n"
+        "\xE2\x80\xA2 dins1..., tdins1..., rdins1..."));
+      lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
+      return false;
+    }
+  } else if (mode == "shield_to") {
+    if (recipient.isEmpty() || !isShieldedDineroAddress(recipient)) {
+      lblSendStatus_->setText(QString::fromUtf8("\xE2\x9D\x8C Error: Send-to-shielded requires a valid shielded destination.\n"
+        "Supported formats:\n"
+        "\xE2\x80\xA2 dins1..., tdins1..., rdins1..."));
+      lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
+      return false;
+    }
   } else if (mode == "shield" && !recipient.isEmpty()) {
     if (!isConfidentialDineroAddress(recipient)) {
-      lblSendStatus_->setText("❌ Error: Shield destination must be a private dina1 address.\n"
+      lblSendStatus_->setText("❌ Error: Shield destination must be a shielded dins1 address.\n"
         "Leave recipient blank to shield to your own private lane.");
       lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
       return false;
@@ -13713,6 +13750,16 @@ void MainWindow::onSendTransaction() {
       {"address", recipient},
     };
     rpc_->callNamed("wallet.transfer", params);
+  } else if (mode == "shield_to") {
+    // Transparent balance -> external shielded dins1 address via wallet.shield.
+    // rc8: same fee derivation as private_transfer; shield_to is ~1000 vB.
+    qint64 feeUna = privateModeFeeUna(feeRate);
+    QJsonObject params{
+      {"amount", amount},
+      {"fee_una", feeUna},
+      {"address", recipient},
+    };
+    rpc_->callNamed("wallet.shield", params);
   } else if (mode == "unshield") {
     // rc8: same derivation as private_transfer. Unshield tx size ~1000 vB.
     qint64 feeUna = privateModeFeeUna(feeRate);
