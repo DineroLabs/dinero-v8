@@ -29,6 +29,9 @@ enum dinero_shielded_status {
     DINERO_SHIELDED_ERR_BUILD_FAILED = 3,
     DINERO_SHIELDED_ERR_ALLOCATION = 4,
     DINERO_SHIELDED_ERR_EXCEPTION = 5,
+    /* out_addr buffer too small; *out_addr_len is set to the required
+     * size (including the NUL terminator) so the caller can retry. */
+    DINERO_SHIELDED_ERR_BUFFER_TOO_SMALL = 6,
 };
 
 typedef struct dinero_shielded_spend_note {
@@ -81,6 +84,30 @@ DINERO_SHIELDED_PROVERKIT_API int dinero_shielded_build_unshield_bundle(
 
 DINERO_SHIELDED_PROVERKIT_API void
 dinero_shielded_free_result(dinero_shielded_unshield_result* out);
+
+/*
+ * Derive the diversified shielded receive address for (dk, ivk, j).
+ *
+ * dk32/ivk32: raw 32-byte keys (derived client-side; the wallet seed
+ * never crosses this ABI). hrp: NUL-terminated "dins" | "tdins" | "rdins".
+ * On success writes the bech32m address (NUL-terminated) into out_addr and
+ * sets *out_addr_len to the length written, excluding the NUL terminator.
+ *
+ * *out_addr_len must be set by the caller on entry to the capacity of
+ * out_addr (including room for the NUL terminator). If the buffer is too
+ * small, returns DINERO_SHIELDED_ERR_BUFFER_TOO_SMALL and sets
+ * *out_addr_len to the required capacity (including the NUL terminator);
+ * out_addr is left untouched.
+ *
+ * Returns 0 (DINERO_SHIELDED_OK) on success, another dinero_shielded_status
+ * value otherwise (see enum above) — always >= 0, matching the other four
+ * exports in this header. Callers MUST check `!= DINERO_SHIELDED_OK`, not
+ * `< 0`. No exceptions cross this ABI and no heap allocation is returned
+ * to the caller.
+ */
+DINERO_SHIELDED_PROVERKIT_API int32_t dinero_shielded_derive_address(
+    const uint8_t* dk32, const uint8_t* ivk32, uint64_t j,
+    const char* hrp, char* out_addr, size_t* out_addr_len);
 
 #ifdef __cplusplus
 } // extern "C"
