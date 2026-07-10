@@ -1,3 +1,25 @@
+dinero-core (8.0.14-1) unstable; urgency=medium
+
+  * v8.0.14 — shielded round-trip release (non-consensus; no rule or
+    activation changes). Safe to upgrade any time.
+    - shielded: shield-to-recipient. `wallet.shield` takes an optional
+      `address` (+ `memo`) so transparent funds go directly to an external
+      shielded `dins1` address in one step; without it, byte-unchanged
+      self-shield. Extracted BuildAddressedRecipientOutput (one shared
+      addressed-output/encryption definition for the transfer and shield
+      paths). Consensus-verified: no inflation (validator's transparent
+      value-delta check is output-type-agnostic), roundtrip test proves the
+      recipient's ivk decrypts and reproduces the on-chain commitment (#387).
+    - qt: send to dins1 shielded addresses. "Spend privately" now validates
+      the live dins1/tdins1/rdins1 family (the daemon no longer recognizes the
+      old dina1/dinc1 prefixes); new "Send to shielded" mode funds an external
+      dins1 from transparent balance via wallet.shield (#388).
+    - shielded (mobile): export dinero_shielded_derive_address from
+      ShieldedProverKit so clients derive diversified shielded receive
+      addresses locally (#386).
+
+ -- DineroLabs <team@dinerolabs.org>  Thu, 10 Jul 2026 00:00:00 +0000
+
 dinero-core (8.0.13-1) unstable; urgency=medium
 
   * v8.0.13 — the AssumeUTXO release (non-consensus; no rule or activation
