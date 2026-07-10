@@ -24,6 +24,7 @@
 #include "consensus/shielded/shielded_tx.h"
 #include "consensus/shielded/shielded_validation.h"
 #include "primitives/transaction.h"
+#include "wallet/shielded_derivation.h"
 #include "wallet/shielded_wallet_ops.h"
 
 #include <algorithm>
@@ -1111,6 +1112,241 @@ TEST_F(ShieldedValidationFixture, ApplyAppendsCommitmentsAndNullifiers) {
     EXPECT_NE(tree.Root(), root_before);
     EXPECT_TRUE(nullifier_set.Contains(MakeHash(0xC1)));
     EXPECT_EQ(nullifier_set.Size(), 1u);
+}
+
+// ── Shield-to-recipient (transparent → external dins1) ───────────────
+//
+// The consensus gate: build a shield-to-recipient bundle to a KNOWN
+// recipient (keys derived from a fixed seed), run it through the FULL
+// ValidateShieldedBundle, and prove the recipient's ivk trial-decrypts
+// the encrypted note and recovers value + d + rcm — i.e. the note is
+// detectable and spendable by the recipient and NOBODY else.
+
+namespace {
+
+namespace shdrv = ::dinero::wallet::shielded;
+namespace sops  = ::dinero::wallet::shielded_ops;
+
+// Same canonical deterministic seed shape as shielded_derivation_tests.
+std::array<uint8_t, 64> RoundtripSeed() {
+    constexpr const char kTag[] = "DIN/v7/shielded/shieldto/v1";
+    constexpr std::size_t kTagLen = sizeof(kTag) - 1;
+    std::array<uint8_t, 64> s{};
+    std::memcpy(s.data(), kTag, kTagLen);
+    for (std::size_t i = 0; i < 32; ++i) {
+        s[32 + i] = static_cast<uint8_t>(s[i] ^ 0xFF);
+    }
+    return s;
+}
+
+// Reuse the shield envelope shape (one transparent input, explicit fee).
+dinero::Transaction MakeShieldToRecipientEnvelope(uint64_t fee_una) {
+    dinero::Transaction tx;
+    tx.version  = dinero::Transaction::TX_VERSION_SHIELDED;
+    tx.lockTime = 0;
+    dinero::TxInput in{};
+    uint256 txid_raw;
+    std::memset(txid_raw.data, 0xC7, 32);
+    in.prevout.txid = dinero::TxId(txid_raw);
+    in.prevout.vout = 0;
+    in.sequence     = 0xfffffffe;
+    tx.vin.push_back(std::move(in));
+    tx.SetExplicitFee(fee_una);
+    return tx;
+}
+
+}  // namespace
+
+TEST_F(ShieldedValidationFixture, ShieldToRecipientRoundtripValidatesAndDecrypts) {
+    constexpr uint64_t kValue = 250'000'000;  // 2.5 DIN
+    constexpr uint64_t kFee   = 10'000;
+
+    // Recipient keys + diversified address from a fixed seed.
+    auto seed = RoundtripSeed();
+    auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
+    auto addr = shdrv::DeriveDiversifiedAddress(keys, /*j=*/0, shdrv::kHrpRegtest);
+
+    sops::AddressedRecipient recipient;
+    recipient.d         = addr.d;
+    recipient.pk_d      = addr.pk_d;
+    recipient.value_una = kValue;
+
+    // Build the shield-to-recipient bundle (no shielded spends, one
+    // addressed output, value_balance = +kValue).
+    auto tx = MakeShieldToRecipientEnvelope(kFee);
+    auto built = sops::BuildAddressedShieldBundleForTx(tx, recipient);
+    ASSERT_EQ(built.status, sops::OpStatus::Ok) << "build failed: " << built.error;
+    EXPECT_FALSE(tx.shielded_bundle_bytes.empty());
+
+    // Deserialize + run the FULL consensus validator.
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    EXPECT_EQ(decoded.spends.size(), 0u);
+    ASSERT_EQ(decoded.outputs.size(), 1u);
+    EXPECT_EQ(decoded.value_balance, static_cast<int64_t>(kValue));
+    EXPECT_EQ(decoded.outputs[0].commitment, built.commitment);
+
+    ctx.transparent_value_delta = static_cast<int64_t>(kValue);
+    ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok)
+        << "consensus validator rejected the shield-to-recipient bundle";
+
+    // Recipient trial-decrypts the on-chain encrypted_note with their ivk.
+    ASSERT_EQ(decoded.outputs[0].encrypted_note.size(), shdrv::kEncryptedNoteBytes);
+    shdrv::EncryptedNote enc{};
+    std::copy(decoded.outputs[0].encrypted_note.begin(),
+              decoded.outputs[0].encrypted_note.end(), enc.begin());
+    auto pt = shdrv::TryDecryptNoteForViewer(keys.ivk, enc);
+    ASSERT_TRUE(pt.has_value()) << "recipient ivk failed to decrypt its own note";
+    EXPECT_EQ(pt->value_una, kValue);
+    EXPECT_EQ(pt->d, addr.d);
+
+    // The recovered rcm re-derives pk_note and reproduces the on-chain
+    // commitment — proving the note is SPENDABLE by the recipient.
+    Hash d_packed{};
+    std::memcpy(d_packed.data(), addr.d.data(), addr.d.size());
+    Hash sk_note = shdrv::DeriveNoteSpendKey(pt->rcm);
+    Hash pk_note = PoseidonHash2(sk_note, Hash{});
+    Hash recomputed = NoteCommitment(d_packed, pk_note, ValueAsHash(kValue), pt->rcm);
+    EXPECT_EQ(recomputed, decoded.outputs[0].commitment)
+        << "recovered rcm does not reproduce the note commitment";
+}
+
+// cv-binding (audit Critical #1) over the ADDRESSED output: a cv-bound
+// shield-to-recipient bundle carries a 0x04 output proof whose cv == the
+// bundle's published cv, and verifies under the full validator at a
+// post-activation height. Exercises the shared helper's cv_bound=true branch
+// (ComputeBundleCv + ProveOutput cv-bound) — the path every shield-to-recipient
+// tx takes once cv-binding activates.
+TEST_F(ShieldedValidationFixture, ShieldToRecipientCvBoundValidatesAndDecrypts) {
+    constexpr uint64_t kValue = 175'000'000;
+    constexpr uint64_t kFee   = 10'000;
+
+    auto seed = RoundtripSeed();
+    auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
+    auto addr = shdrv::DeriveDiversifiedAddress(keys, /*j=*/0, shdrv::kHrpRegtest);
+
+    sops::AddressedRecipient recipient;
+    recipient.d         = addr.d;
+    recipient.pk_d      = addr.pk_d;
+    recipient.value_una = kValue;
+
+    auto tx = MakeShieldToRecipientEnvelope(kFee);
+    auto built = sops::BuildAddressedShieldBundleForTx(tx, recipient,
+                                                       /*memo=*/nullptr,
+                                                       /*cv_bound=*/true);
+    ASSERT_EQ(built.status, sops::OpStatus::Ok) << "build failed: " << built.error;
+
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    ASSERT_EQ(decoded.outputs.size(), 1u);
+    ASSERT_FALSE(decoded.outputs[0].zk_proof.empty());
+    EXPECT_EQ(decoded.outputs[0].zk_proof[0], 0x04);  // cv-bound output proof
+
+    ctx.shielded_cv_binding_activation_height    = 0;
+    ctx.shielded_input_binding_activation_height = 0;
+    ctx.transparent_value_delta = static_cast<int64_t>(kValue);
+    ctx.tx_sighash              = shielded::ComputeShieldedTxSighash(tx);
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok)
+        << "validator rejected the cv-bound shield-to-recipient bundle";
+
+    // Still recipient-decryptable under cv-binding.
+    shdrv::EncryptedNote enc{};
+    std::copy(decoded.outputs[0].encrypted_note.begin(),
+              decoded.outputs[0].encrypted_note.end(), enc.begin());
+    auto pt = shdrv::TryDecryptNoteForViewer(keys.ivk, enc);
+    ASSERT_TRUE(pt.has_value());
+    EXPECT_EQ(pt->value_una, kValue);
+    EXPECT_EQ(pt->d, addr.d);
+}
+
+TEST_F(ShieldedValidationFixture, ShieldToRecipientWrongIvkCannotDecrypt) {
+    constexpr uint64_t kValue = 100'000'000;
+
+    auto seed = RoundtripSeed();
+    auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
+    auto addr = shdrv::DeriveDiversifiedAddress(keys, /*j=*/0, shdrv::kHrpRegtest);
+
+    sops::AddressedRecipient recipient;
+    recipient.d         = addr.d;
+    recipient.pk_d      = addr.pk_d;
+    recipient.value_una = kValue;
+
+    auto tx = MakeShieldToRecipientEnvelope(10'000);
+    auto built = sops::BuildAddressedShieldBundleForTx(tx, recipient);
+    ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    ASSERT_EQ(decoded.outputs.size(), 1u);
+    shdrv::EncryptedNote enc{};
+    std::copy(decoded.outputs[0].encrypted_note.begin(),
+              decoded.outputs[0].encrypted_note.end(), enc.begin());
+
+    // A DIFFERENT wallet (account 1 → different ivk) must NOT decrypt.
+    auto other = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/1);
+    EXPECT_FALSE(shdrv::TryDecryptNoteForViewer(other.ivk, enc).has_value())
+        << "privacy break: unrelated ivk decrypted the recipient's note";
+}
+
+// Parity / KEEP-IN-SYNC: the shared BuildAddressedRecipientOutput implements
+// the EXACT addressed-output construction convention (commitment formula +
+// pk_note-from-rcm + EncryptNoteForRecipient). Pinned deterministically via
+// rcm + esk overrides. Because BOTH the transfer builder and the shield
+// builder route their recipient output through this ONE helper, pinning the
+// helper pins both paths — any drift in the convention breaks this test.
+TEST_F(ShieldedValidationFixture, AddressedRecipientOutputMatchesConventionBytes) {
+    constexpr uint64_t kValue = 42'000'000;
+
+    auto seed = RoundtripSeed();
+    auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
+    auto addr = shdrv::DeriveDiversifiedAddress(keys, /*j=*/0, shdrv::kHrpRegtest);
+
+    sops::AddressedRecipient recipient;
+    recipient.d         = addr.d;
+    recipient.pk_d      = addr.pk_d;
+    recipient.value_una = kValue;
+
+    // Deterministic rcm + esk so commitment + encrypted_note are pinnable.
+    Hash rcm{};
+    rcm[0] = 0xC0; rcm[31] = 0xDE;
+    Hash esk{};
+    esk[0] = 0xE5; esk[31] = 0xC0;
+
+    auto out = sops::BuildAddressedRecipientOutput(recipient, /*memo=*/nullptr,
+                                                   /*cv_bound=*/false, &rcm, &esk);
+    ASSERT_EQ(out.status, sops::OpStatus::Ok) << out.error;
+
+    // (1) commitment == the documented on-chain formula.
+    Hash d_packed{};
+    std::memcpy(d_packed.data(), addr.d.data(), addr.d.size());
+    Hash sk_note = shdrv::DeriveNoteSpendKey(rcm);
+    Hash pk_note = PoseidonHash2(sk_note, Hash{});
+    Hash expected_cm = NoteCommitment(d_packed, pk_note, ValueAsHash(kValue), rcm);
+    EXPECT_EQ(out.commitment, expected_cm);
+    EXPECT_EQ(out.planned.commitment, expected_cm);
+
+    // (2) encrypted_note == EncryptNoteForRecipient with the same esk.
+    shdrv::NotePlaintext note;
+    note.d         = addr.d;
+    note.value_una = kValue;
+    note.rcm       = rcm;
+    auto expected_enc = shdrv::EncryptNoteForRecipient(addr.d, addr.pk_d, note, &esk);
+    ASSERT_EQ(out.planned.encrypted_note.size(), expected_enc.size());
+    EXPECT_TRUE(std::equal(out.planned.encrypted_note.begin(),
+                           out.planned.encrypted_note.end(),
+                           expected_enc.begin()))
+        << "encrypted_note bytes diverge from the shared encryption convention";
+
+    // (3) Same overrides → identical bytes (deterministic construction).
+    auto out2 = sops::BuildAddressedRecipientOutput(recipient, nullptr, false,
+                                                    &rcm, &esk);
+    ASSERT_EQ(out2.status, sops::OpStatus::Ok) << out2.error;
+    EXPECT_EQ(out2.commitment, out.commitment);
+    EXPECT_EQ(out2.planned.encrypted_note, out.planned.encrypted_note);
 }
 
 }  // namespace

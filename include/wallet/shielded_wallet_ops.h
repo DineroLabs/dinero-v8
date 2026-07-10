@@ -6,6 +6,7 @@
  * The JSON-RPC adapter layer calls these with parsed params.
  */
 
+#include "consensus/shielded/bundle_builder.h"
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/shielded_circuit.h"
 #include "primitives/block.h"
@@ -501,6 +502,78 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     uint64_t fee_una,
     dinero::WalletManager& wallet,
     const std::string* recipient_memo_utf8 = nullptr,
+    bool persist = true);
+
+// ── Shield-to-recipient: transparent → external dins1 address ─────────
+//
+// Shares the addressed-output construction with the transfer path: the
+// addressed recipient output below is EXTRACTED into one helper so the
+// commitment / encryption / proof convention has a SINGLE definition,
+// reused by BuildAddressedTransferBundleForTx and the shield-to-recipient
+// builder alike.
+
+/// The extracted addressed-recipient output plus its commitment. `planned`
+/// is ready to hand to `BuildShieldedBundle` as an output.
+struct AddressedRecipientOutput {
+    OpStatus status = OpStatus::InternalError;
+    std::string error;
+    consensus::shielded::PlannedOutput planned;
+    consensus::shielded::Hash          commitment{};
+};
+
+/**
+ * Build ONE addressed recipient output (the shared construction extracted
+ * from BuildAddressedTransferBundleForTx):
+ *   rcm      = fresh CSPRNG (or `rcm_override` for deterministic tests)
+ *   pk_note  = Poseidon(DeriveNoteSpendKey(rcm), 0)
+ *   commitment = NoteCommitment(d_packed, pk_note, value, rcm)
+ *   encrypted_note = EncryptNoteForRecipient(d, pk_d, {d,value,rcm,memo})
+ *   Spartan output proof + fresh Pedersen rcv + rangeproof nonce.
+ *
+ * `rcm_override` / `esk_override` are ONLY for deterministic test vectors
+ * (golden byte-pins on the construction convention). Production callers
+ * MUST pass nullptr so every output gets a fresh rcm + esk (unlinkability).
+ */
+AddressedRecipientOutput BuildAddressedRecipientOutput(
+    const AddressedRecipient& recipient,
+    const std::array<uint8_t, 512>* recipient_memo = nullptr,
+    bool cv_bound = false,
+    const consensus::shielded::Hash* rcm_override = nullptr,
+    const consensus::shielded::Hash* esk_override = nullptr);
+
+/**
+ * Pure helper — given an unsigned transparent envelope (shielded version;
+ * transparent vin/change/lockTime/explicit_fee set by the caller like the
+ * self-shield path), build a one-output bundle whose single output is
+ * addressed to `recipient` (an external dins1 recipient), with
+ * `value_balance = +recipient.value_una`. NO shielded spends, NO shielded
+ * change (transparent change is handled by the RPC, exactly as self-shield).
+ *
+ * Mirrors BuildShieldBundleForTx but emits the addressed recipient output
+ * (via BuildAddressedRecipientOutput) instead of a zero-diversifier self
+ * output. The created note belongs to the RECIPIENT — no self spend key is
+ * returned. `result.commitment` = the recipient commitment.
+ */
+AttachShieldResult BuildAddressedShieldBundleForTx(
+    dinero::Transaction& tx,
+    const AddressedRecipient& recipient,
+    const std::array<uint8_t, 512>* recipient_memo = nullptr,
+    bool cv_bound = false);
+
+/**
+ * Wallet-bound wrapper. Decodes `recipient_address` (rejecting a non-dins /
+ * wrong-network HRP before any tx work), builds the addressed shield bundle
+ * via BuildAddressedShieldBundleForTx, and attaches it to `tx`. Unlike
+ * self-shield, it does NOT persist a spendable pending note — the note is
+ * the recipient's, so `persist` is accepted only for signature symmetry
+ * with AttachShieldOutputBundle (there is no wallet state to mutate).
+ */
+AttachShieldResult AttachAddressedShieldOutputBundle(
+    dinero::Transaction& tx,
+    const std::string& recipient_address,
+    uint64_t value_una,
+    dinero::WalletManager& wallet,
+    const std::array<uint8_t, 512>* recipient_memo = nullptr,
     bool persist = true);
 
 } // namespace dinero::wallet::shielded_ops

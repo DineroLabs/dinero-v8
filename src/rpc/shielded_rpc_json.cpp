@@ -33,6 +33,8 @@
 
 #include <openssl/crypto.h>
 
+#include <algorithm>
+#include <array>
 #include <climits>
 #include <cstring>
 #include <iomanip>
@@ -93,6 +95,9 @@ bool RejectIfShieldedNotActive(Json& err) {
     }
     return false;
 }
+
+// Forward decl (defined later in this TU): active-chain shielded HRP.
+const char* HrpForActiveChain();
 
 // Hex helper.
 std::string HashToHex(const consensus::shielded::Hash& h) {
@@ -176,21 +181,30 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
     // final tx (v6 bundle counts in BASE serialization, so vsize is
     // kilobytes) and raises the fee to the mempool's size-based floor.
     // An explicitly-passed fee is always respected verbatim.
+    // Optional `address` (+ `memo`) turns this into a shield-to-recipient:
+    // transparent → an external shielded (dins1) address, in one step. With
+    // no `address`, behaviour is byte-unchanged self-shield.
     double   amount_din   = 0;
     uint64_t fee_una      = 1000;  // provisional default (auto-sized below)
     bool     fee_explicit = false;
+    std::string recipient_address;
+    std::string recipient_memo;
     if (params.isObject()) {
         if (params.isMember("amount"))  amount_din = params["amount"].asDouble();
         if (params.isMember("fee_una")) {
             fee_una      = static_cast<uint64_t>(params["fee_una"].asInt64());
             fee_explicit = true;
         }
+        if (params.isMember("address")) recipient_address = params["address"].asString();
+        if (params.isMember("memo"))    recipient_memo    = params["memo"].asString();
     } else if (params.isArray()) {
         if (params.size() >= 1) amount_din = params[0].asDouble();
         if (params.size() >= 2) {
             fee_una      = static_cast<uint64_t>(params[1].asInt64());
             fee_explicit = true;
         }
+        if (params.size() >= 3) recipient_address = params[2].asString();
+        if (params.size() >= 4) recipient_memo    = params[3].asString();
     }
     if (amount_din <= 0) {
         result["error"] = "invalid_params";
@@ -198,6 +212,34 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
         return result;
     }
     const uint64_t value_una = static_cast<uint64_t>(amount_din * 1e8);
+
+    // Shield-to-recipient: validate the address (dins1 + active network)
+    // BEFORE any tx work so a bad recipient fails fast with a clear error.
+    const bool have_recipient = !recipient_address.empty();
+    std::array<uint8_t, 512> recipient_memo_buf{};
+    bool have_recipient_memo = false;
+    if (have_recipient) {
+        namespace shdrv = ::dinero::wallet::shielded;
+        try {
+            auto dec = shdrv::DecodeShieldedAddress(recipient_address);
+            if (dec.hrp != std::string(HrpForActiveChain())) {
+                result["error"] = "invalid_shielded_address";
+                result["error_message"] = "address network hrp '" + dec.hrp +
+                    "' != active network '" + std::string(HrpForActiveChain()) + "'";
+                return result;
+            }
+        } catch (const std::exception& e) {
+            result["error"] = "invalid_shielded_address";
+            result["error_message"] = e.what();
+            return result;
+        }
+        if (!recipient_memo.empty()) {
+            const std::size_t n =
+                std::min<std::size_t>(recipient_memo.size(), recipient_memo_buf.size());
+            std::memcpy(recipient_memo_buf.data(), recipient_memo.data(), n);
+            have_recipient_memo = true;
+        }
+    }
 
     // ── Tip height for note metadata ──────────────────────────────────
     uint32_t tip_height = 0;
@@ -314,8 +356,18 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
         tx.SetExplicitFee(fee);
 
         // ── Attach the shielded output bundle (one output, value_balance=+value_una) ──
-        auto attach_rc = ops::AttachShieldOutputBundle(tx, value_una, *wm,
-                                                       tip_height, persist);
+        // Self-shield (no address) → own pool. Shield-to-recipient (address)
+        // → an addressed output for the external dins1 recipient. Both leave
+        // transparent change on the transparent side (handled above).
+        ops::AttachShieldResult attach_rc;
+        if (have_recipient) {
+            attach_rc = ops::AttachAddressedShieldOutputBundle(
+                tx, recipient_address, value_una, *wm,
+                have_recipient_memo ? &recipient_memo_buf : nullptr, persist);
+        } else {
+            attach_rc = ops::AttachShieldOutputBundle(tx, value_una, *wm,
+                                                      tip_height, persist);
+        }
         if (attach_rc.status != ops::OpStatus::Ok) {
             result["error"] = "attach_bundle_failed";
             result["error_message"] = attach_rc.error;
@@ -497,9 +549,12 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
         return result;
     }
 
-    result["status"]         = "shielded";
+    result["status"]         = have_recipient ? "shielded_to_recipient" : "shielded";
     result["txid"]           = signed_tx.GetTxid().AsUint256().GetHex();
     result["commitment_hex"] = HashToHex(built.attach.commitment);
+    if (have_recipient) {
+        result["recipient_address"] = recipient_address;
+    }
     result["value_una"]      = static_cast<int64_t>(value_una);
     result["fee_una"]        = static_cast<int64_t>(final_fee);
     result["fee_autosized"]  = fee_autosized;
