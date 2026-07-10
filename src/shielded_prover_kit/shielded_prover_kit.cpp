@@ -79,6 +79,11 @@ static int Fail(dinero_shielded_unshield_result* out,
     return code;
 }
 
+static bool IsValidShieldedHrpAbi(const std::string& hrp) {
+    return hrp == deriv::kHrpMainnet || hrp == deriv::kHrpTestnet ||
+           hrp == deriv::kHrpRegtest;
+}
+
 static int CopyBundleResult(const dinero::Transaction& tx,
                             const ops::AttachUnshieldResult& built,
                             dinero_shielded_unshield_result* out) {
@@ -234,4 +239,44 @@ extern "C" void dinero_shielded_free_result(
     std::free(out->bundle_bytes);
     std::free(out->error);
     ResetResult(out);
+}
+
+extern "C" int32_t dinero_shielded_derive_address(
+    const uint8_t* dk32, const uint8_t* ivk32, uint64_t j,
+    const char* hrp, char* out_addr, size_t* out_addr_len) {
+    if (!dk32 || !ivk32 || !hrp || !out_addr || !out_addr_len) {
+        return DINERO_SHIELDED_ERR_INVALID_ARGUMENT;
+    }
+
+    try {
+        const std::string hrp_str(hrp);
+        if (!IsValidShieldedHrpAbi(hrp_str)) {
+            return DINERO_SHIELDED_ERR_INVALID_ARGUMENT;
+        }
+
+        sh::Hash dk = CopyHash(dk32);
+        sh::Hash ivk = CopyHash(ivk32);
+        HashCleanser dk_guard{&dk};
+        HashCleanser ivk_guard{&ivk};
+
+        const deriv::Diversifier d = deriv::ChaCha20Diversifier(dk, j);
+        const sh::Hash p_d = deriv::HashToPoint(d, deriv::kDstDiv);
+        const sh::Hash pk_d = deriv::DerivePkD(ivk, p_d);
+        const deriv::AddressPayload payload =
+            deriv::BuildAddressPayload(d, pk_d);
+        const std::string address =
+            deriv::EncodeShieldedAddress(payload, hrp_str);
+
+        const size_t needed = address.size() + 1;  // include NUL terminator
+        if (*out_addr_len < needed) {
+            *out_addr_len = needed;
+            return DINERO_SHIELDED_ERR_BUFFER_TOO_SMALL;
+        }
+
+        std::memcpy(out_addr, address.c_str(), needed);
+        *out_addr_len = address.size();
+        return DINERO_SHIELDED_OK;
+    } catch (...) {
+        return DINERO_SHIELDED_ERR_EXCEPTION;
+    }
 }
