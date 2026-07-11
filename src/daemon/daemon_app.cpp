@@ -5557,6 +5557,20 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // completed_blocks_/ChainDB with proof-less bodies and cause
                         // later ConnectTip() replays to fail with missing-utreexo-data.
                         if (stateless_mode) {
+                            // Raw MSG_BLOCK bodies are requested ONLY for AssumeUTXO
+                            // history backfill (archival bridges can't serve historical
+                            // utreexo proofs, so backfill uses MSG_BLOCK — see the
+                            // send-getdata callback). Route an EXPECTED backfill body
+                            // into the store-only backfill path: it persists the raw
+                            // body for the background validation worker to replay (which
+                            // rebuilds the forest itself, so no proof is needed) and
+                            // never touches the proof-bearing completed_blocks_/ChainDB
+                            // tip path warned about above. OnBackfillBodyReceived is
+                            // consume-if-expected, so a genuinely unsolicited raw block
+                            // returns false and still falls through to the drop below.
+                            if (block_download && block_download->OnBackfillBodyReceived(block)) {
+                                return;
+                            }
                             std::cout << "[P2P-DEBUG] Ignoring raw block message in stateless mode; awaiting utxoblk"
                                       << std::endl;
                             return;
@@ -6196,8 +6210,19 @@ bool DaemonApp::Init(int argc, char** argv) {
             bool csn_mode = GetConfig().utreexo_stateless;
             auto csn_bridge_rr_index = std::make_shared<std::atomic<size_t>>(0);
             block_download->SetSendGetDataCallback([p2p_service, csn_mode, csn_bridge_rr_index, sched = block_download.get()](const uint256& block_hash, uint32_t block_height) {
+                // AssumeUTXO history backfill requests raw MSG_BLOCK, not
+                // MSG_UTREEXO_BLOCK: archival bridges have the historical bodies
+                // but cannot generate the pre-block utreexo inclusion proof for
+                // arbitrary historical heights (BridgeNode::GenerateProofForBlock
+                // needs a height-1 checkpoint it lacks below its own forest), so a
+                // MSG_UTREEXO_BLOCK backfill request goes unserved and wedges the
+                // backfill with phantom in-flight. The backfill store path keeps
+                // only the raw body and the background validation worker rebuilds
+                // the forest itself (assumeutxo_replay), so the proof is
+                // unnecessary. Tip sync still uses MSG_UTREEXO_BLOCK.
+                const bool for_backfill = sched && sched->CurrentRequestIsBackfill();
                 // Use binary format with raw bytes (not hex) to preserve correct byte order
-                uint32_t inv_type = csn_mode
+                uint32_t inv_type = (csn_mode && !for_backfill)
                     ? static_cast<uint32_t>(dinero::InventoryType::MSG_UTREEXO_BLOCK)
                     : static_cast<uint32_t>(dinero::InventoryType::MSG_BLOCK);
                 ::P2PMessage msg = ::P2PMessage::create_getdata_binary(
@@ -6363,7 +6388,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                     }
                 }
                 g_logger.info("[Phase N] Sent getdata(" +
-                             std::string(csn_mode ? "MSG_UTREEXO_BLOCK" : "MSG_BLOCK") +
+                             std::string((csn_mode && !for_backfill) ? "MSG_UTREEXO_BLOCK" : "MSG_BLOCK") +
                              ") for block " + block_hash.GetHex() +
                              " to " + std::to_string(sent) + "/" +
                              std::to_string(eligible) + " eligible peers");

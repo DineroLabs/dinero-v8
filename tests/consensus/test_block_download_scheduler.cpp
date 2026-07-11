@@ -1267,6 +1267,84 @@ int main() {
                   << "-slot window when idle" << std::endl;
     }
 
+    // The MSG_BLOCK-vs-MSG_UTREEXO_BLOCK routing invariant. The daemon wiring
+    // (daemon_app.cpp) reads CurrentRequestIsBackfill() *inside* the send
+    // callback to decide the getdata inv type: a backfill body must be
+    // requested as raw MSG_BLOCK (archival bridges cannot serve historical
+    // utreexo proofs, so MSG_UTREEXO_BLOCK for a pre-base body goes unserved
+    // and wedges backfill), while tip work stays MSG_UTREEXO_BLOCK. When tip
+    // and backfill sends drain in the SAME batch, the flag must be correct
+    // per-send — not a single value smeared across the batch. This guards the
+    // routing signal at the scheduler seam the daemon depends on.
+    {
+        std::cout << "\n📋 Section: per-send backfill routing flag (MSG_BLOCK vs "
+                     "MSG_UTREEXO_BLOCK)" << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 40, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(20);  // snapshot base = 20
+
+        // Capture the routing flag AT SEND TIME, per request. The daemon reads
+        // it exactly here — synchronously inside the callback — so the flag is
+        // only meaningful in this scope (DispatchDeferredSends resets it to
+        // false after the batch). Key by height: tip heights (21..40) and
+        // backfill heights (1..20) are disjoint, so no collision.
+        std::unordered_map<uint32_t, bool> flag_at_send;
+        scheduler.SetSendGetDataCallback(
+            [&flag_at_send, &scheduler](const uint256&, uint32_t height) {
+                flag_at_send[height] = scheduler.CurrentRequestIsBackfill();
+            });
+
+        scheduler.OnHeadersProcessed();   // tip sync: heights 21..40 missing
+        scheduler.EnableBackfill(1, 20, hashes[20]);  // pre-base bodies 1..20
+
+        // Tick #1 drains tip sends (>20) and backfill sends (<=20) in one batch.
+        scheduler.Tick();
+
+        size_t tip_seen = 0, backfill_seen = 0;
+        for (const auto& [height, is_backfill] : flag_at_send) {
+            if (height > 20) {
+                ++tip_seen;
+                if (!Require(!is_backfill,
+                             "tip send at height " + std::to_string(height) +
+                                 " must NOT carry the backfill flag (would force "
+                                 "MSG_BLOCK for tip work)")) {
+                    return 1;
+                }
+            } else {
+                ++backfill_seen;
+                if (!Require(is_backfill,
+                             "backfill send at height " + std::to_string(height) +
+                                 " must carry the backfill flag (else MSG_UTREEXO_"
+                                 "BLOCK wedges the pre-base body)")) {
+                    return 1;
+                }
+            }
+        }
+
+        // Non-vacuous: both lanes must have actually sent in this batch, or the
+        // per-send assertion above proved nothing about the mixed case.
+        if (!Require(tip_seen > 0, "expected at least one tip send in the batch")) {
+            return 1;
+        }
+        if (!Require(backfill_seen > 0,
+                     "expected at least one backfill send in the batch")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ routing flag correct per-send across a mixed batch ("
+                  << tip_seen << " tip sends flagged tip, " << backfill_seen
+                  << " backfill sends flagged backfill)" << std::endl;
+    }
+
     {
         std::cout << "\n13. assumeutxo backfill: received backfill block is stored-only — "
                      "completion accounting without connect bookkeeping..." << std::endl;
@@ -2133,6 +2211,146 @@ int main() {
         }
         std::cout << "   ✅ tip and backfill NOTFOUND demotions are queue-isolated; a tip "
                      "NOTFOUND no longer starves backfill of archival peers" << std::endl;
+    }
+
+    // A backfill request can legitimately take longer than the scheduler's
+    // in-flight timeout. Its body is still expected by the backfill queue and
+    // must survive the daemon's IsBlockKnown-based unsolicited-block gate.
+    {
+        std::cout << "\n📋 Section: timed-out backfill reply remains known" << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 40, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(40);  // snapshot base; no forward tip work
+        scheduler.OnHeadersProcessed();
+        scheduler.SetHasBlockBodyCallback(
+            [](const uint256&, uint32_t) -> bool { return false; });
+
+        std::vector<uint32_t> sent_heights;
+        scheduler.SetSendGetDataCallback(
+            [&sent_heights](const uint256&, uint32_t height) {
+                sent_heights.push_back(height);
+            });
+        scheduler.SetStaleRequestTimeoutSeconds(0);
+        scheduler.EnableBackfill(1, 40, hashes[40]);
+
+        scheduler.Tick();  // heights 1..16 become REQUESTED
+        if (!Require(scheduler.IsBlockInFlight(hashes[1]),
+                     "late-reply setup: height 1 must start in flight")) return 1;
+
+        scheduler.Tick();  // expire 1..16; cursor requests 17..32
+        if (!Require(!scheduler.IsBlockInFlight(hashes[1]),
+                     "late-reply setup: height 1 must have aged out of in-flight")) return 1;
+        if (!Require(scheduler.IsBlockKnown(hashes[1]),
+                     "timed-out backfill body must remain known while backfill expects it")) {
+            return 1;
+        }
+        if (!Require(!scheduler.IsBlockKnown(hashes[0]),
+                     "an unrelated, never-queued body must remain unknown")) return 1;
+
+        if (!Require(scheduler.OnBlockReceived(
+                         MakeBlockForHash(selector, hashes[1])),
+                     "late backfill reply must still be accepted and stored")) return 1;
+        if (!Require(scheduler.GetBackfillProgress().completed == 1,
+                     "late backfill reply must advance completed")) return 1;
+        if (!Require(!scheduler.HasReceivedBlock(hashes[1]),
+                     "late backfill reply must stay out of tip receive bookkeeping")) return 1;
+        if (!Require(!scheduler.IsBlockKnown(hashes[1]),
+                     "consumed backfill body must leave the expected set")) return 1;
+
+        // A validation scan can race the post-store ChainDB locator callback
+        // and report the just-received body missing once. The frontier setter
+        // must not demote/un-count that RECEIVED entry or re-arm a duplicate.
+        scheduler.SetBackfillValidationFrontier(hashes[1], 1);
+        if (!Require(scheduler.GetBackfillProgress().completed == 1,
+                     "stale validation report must not un-count a RECEIVED body")) return 1;
+        if (!Require(!scheduler.IsBlockKnown(hashes[1]),
+                     "stale validation report must not re-arm a RECEIVED body")) return 1;
+
+        std::cout << "   ✅ timed-out body stayed known, was consumed late, and advanced "
+                     "backfill without polluting tip state" << std::endl;
+    }
+
+    // Validation's earliest gap gets one retry lane without stopping bulk
+    // traversal or duplicating an already-active request.
+    {
+        std::cout << "\n📋 Section: validation-frontier lane retries behind-cursor gap"
+                  << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 48, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(48);
+        scheduler.OnHeadersProcessed();
+        scheduler.SetHasBlockBodyCallback(
+            [](const uint256&, uint32_t) -> bool { return false; });
+
+        std::vector<uint32_t> sent;
+        scheduler.SetSendGetDataCallback(
+            [&sent](const uint256&, uint32_t height) { sent.push_back(height); });
+        scheduler.SetStaleRequestTimeoutSeconds(0);
+        scheduler.EnableBackfill(1, 48, hashes[48]);
+
+        scheduler.Tick();  // 1..16
+        sent.clear();
+        scheduler.Tick();  // expire 1..16, advance bulk cursor to 17..32
+        if (!Require(!scheduler.IsBlockInFlight(hashes[1]),
+                     "frontier setup: height 1 must be MISSING behind the cursor")) return 1;
+
+        scheduler.SetBackfillValidationFrontier(hashes[1], 1);
+        sent.clear();
+        scheduler.Tick();  // priority h1 + bulk 33..47
+        const size_t h1_count = static_cast<size_t>(
+            std::count(sent.begin(), sent.end(), uint32_t{1}));
+        const bool bulk_advanced =
+            std::any_of(sent.begin(), sent.end(), [](uint32_t h) { return h >= 33; });
+        if (!Require(h1_count == 1,
+                     "validation frontier must be staged exactly once ahead of cursor")) return 1;
+        if (!Require(bulk_advanced,
+                     "frontier lane must leave capacity for bulk cursor progress")) return 1;
+        if (!Require(scheduler.GetBackfillProgress().in_flight <= 16,
+                     "frontier lane must stay inside the backfill quota")) return 1;
+
+        // Re-reporting an active frontier is idempotent: no status reset, no
+        // duplicate getdata, and no accounting change.
+        scheduler.SetStaleRequestTimeoutSeconds(3600);
+        const auto before = scheduler.GetBackfillProgress().in_flight;
+        scheduler.SetBackfillValidationFrontier(hashes[1], 1);
+        sent.clear();
+        scheduler.Tick();
+        if (!Require(sent.empty(),
+                     "already-REQUESTED frontier must not be duplicated")) return 1;
+        if (!Require(scheduler.GetBackfillProgress().in_flight == before,
+                     "idempotent frontier update must preserve in-flight accounting")) return 1;
+
+        // Once stale, the same frontier is immediately retried while bulk work
+        // still advances; it never waits for a full vector wrap.
+        scheduler.SetStaleRequestTimeoutSeconds(0);
+        sent.clear();
+        scheduler.Tick();
+        if (!Require(std::count(sent.begin(), sent.end(), uint32_t{1}) == 1,
+                     "stale validation frontier must retry immediately")) return 1;
+        if (!Require(std::any_of(sent.begin(), sent.end(),
+                                 [](uint32_t h) { return h != 1; }),
+                     "frontier retry must not starve ordinary backfill")) return 1;
+
+        std::cout << "   ✅ one frontier slot retried immediately; remaining slots kept "
+                     "bulk traversal moving" << std::endl;
     }
 
     // ────────────────────────────────────────────────────────────────────
