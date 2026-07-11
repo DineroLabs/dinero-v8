@@ -9623,17 +9623,32 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // Add snapshot base block to g_block_index so ActivateBestChain's self-heal
         // can find the UTXO tip and align active_tip_ without triggering SAFE MODE.
         // Without this, FindBlockIndex(utxo_best) returns null → self-heal fails.
+        //
+        // Defense-in-depth: this materialization must NEVER abort the import before
+        // StartBackgroundValidation() runs (line ~9682). A throw here (e.g. a
+        // malformed chainwork string deep in AddBlockIndex) used to propagate to the
+        // outer catch and skip background validation entirely — the snapshot tip then
+        // stays held at base forever with validation NotStarted (a silent deadlock).
+        // ActivateBestChain's self-heal re-runs EnsureHeaderBranchIndexed later, so
+        // swallowing a transient failure here is safe; background validation is what
+        // matters and must always be reached.
         if (header_chain_selector_) {
-            const auto* hcs_entry = header_chain_selector_->GetHeader(header.block_hash);
-            if (hcs_entry) {
-                CBlockIndex* snapshot_idx = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
-                if (snapshot_idx) {
-                    PublishActiveTip(snapshot_idx, TipPublishReason::kSnapshotRestore);
-                    logger_->info("[LoadSnapshot] active_tip_ set to snapshot base (h=" +
-                                 std::to_string(header.block_height) + ")");
-                } else {
-                    logger_->warning("[LoadSnapshot] Failed to materialize snapshot ancestry in block index");
+            try {
+                const auto* hcs_entry = header_chain_selector_->GetHeader(header.block_hash);
+                if (hcs_entry) {
+                    CBlockIndex* snapshot_idx = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
+                    if (snapshot_idx) {
+                        PublishActiveTip(snapshot_idx, TipPublishReason::kSnapshotRestore);
+                        logger_->info("[LoadSnapshot] active_tip_ set to snapshot base (h=" +
+                                     std::to_string(header.block_height) + ")");
+                    } else {
+                        logger_->warning("[LoadSnapshot] Failed to materialize snapshot ancestry in block index");
+                    }
                 }
+            } catch (const std::exception& me) {
+                logger_->warning(std::string("[LoadSnapshot] Snapshot base materialization threw (") +
+                                 me.what() + ") — deferring to ActivateBestChain self-heal; "
+                                 "continuing to background validation");
             }
         }
 
