@@ -241,6 +241,7 @@ info "consumer connected to source — race window open"
 # observed WHILE still active (in a neutered build the tip races PAST base ->
 # this is the race evidence; in a fixed build the tip is held AT base).
 HOLD_LINE="AssumeUTXO active — holding tip at snapshot base"
+DEFER_LINE="AssumeUTXO active — deferring post-base header import until history promotion"
 FWD_LINE="forward-connect profile: connecting past snapshot base"
 ADV_PROMO_LINE="[Promotion] complete (advanced-tip)"
 HOLD_SEEN=0
@@ -251,7 +252,8 @@ MODE_EXITED=0
 RACE_START=$SECONDS
 LAST_LOG=$SECONDS
 while (( SECONDS - RACE_START < PROMO_TIMEOUT )); do
-    grep -qs "$HOLD_LINE" "$CON_DIR"/daemon*.log 2>/dev/null && HOLD_SEEN=1
+    { grep -qs "$HOLD_LINE" "$CON_DIR"/daemon*.log 2>/dev/null ||
+      grep -qs "$DEFER_LINE" "$CON_DIR"/daemon*.log 2>/dev/null; } && HOLD_SEEN=1
     grep -qs "$FWD_LINE"  "$CON_DIR"/daemon*.log 2>/dev/null && FWD_SEEN=1
     ST="$(snap_status "$CON_RPC" "$CON_DIR")"
     ACTIVE="$(jq -r '.assumeutxo_active // empty' <<<"$ST")"
@@ -273,15 +275,16 @@ while (( SECONDS - RACE_START < PROMO_TIMEOUT )); do
     fi
     sleep 2
 done
-grep -qs "$HOLD_LINE" "$CON_DIR"/daemon*.log 2>/dev/null && HOLD_SEEN=1
+{ grep -qs "$HOLD_LINE" "$CON_DIR"/daemon*.log 2>/dev/null ||
+  grep -qs "$DEFER_LINE" "$CON_DIR"/daemon*.log 2>/dev/null; } && HOLD_SEEN=1
 grep -qs "$FWD_LINE"  "$CON_DIR"/daemon*.log 2>/dev/null && FWD_SEEN=1
 info "observation: fwd_seen=$FWD_SEEN hold_seen=$HOLD_SEEN tip_past_base_while_active=$TIP_PAST_BASE_WHILE_ACTIVE max_tip=$MAX_TIP_OBSERVED mode_exited=$MODE_EXITED"
 
 # ── F1: no hold; forward-connect engaged ─────────────────────────────────
 if [[ "$HOLD_SEEN" == "0" ]]; then
-    ck_pass "F1a: the #361 hold line never fired (forward-connect bypassed the cap)"
+    ck_pass "F1a: neither hold nor deferred-import gate fired (forward-connect bypassed the cap)"
 else
-    ck_fail "F1a: the hold line fired despite assumeutxo_forward_connect=1"
+    ck_fail "F1a: a hold/deferred-import gate fired despite assumeutxo_forward_connect=1"
 fi
 if [[ "$FWD_SEEN" == "1" ]]; then
     ck_pass "F1b: forward-connect log line observed"

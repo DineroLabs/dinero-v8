@@ -1098,6 +1098,11 @@ private:
     // keyed by the base block hash, so a future different-base lifecycle can
     // never be satisfied by a stale one.
     bool assumeutxo_forward_connect_logged_ = false;
+    // Classic AssumeUTXO deliberately holds the active tip at the snapshot
+    // base until history promotion.  Remember the one-time diagnostic emitted
+    // when ActivateBestChain defers the post-base header branch; without this
+    // guard every arriving (often duplicate) body can produce another log line.
+    bool assumeutxo_header_import_deferred_logged_ = false;
 
     // FIX 2 (issue #186) + rc24.1 single-flight guard: deferred snapshot-bootstrap
     // state machine (peeked at startup; block download is deferred while Pending
