@@ -261,10 +261,10 @@ info "consumer connected to source — race window open"
 
 # ── Race + promotion observation loop ────────────────────────────────────
 # Poll until assumeutxo_active flips false (promotion done) or timeout. While
-# active, record: (a) the fix's hold line in the log, (b) the max ChainDB tip
+# active, record: (a) the fix's deferred-import line in the log, (b) the max ChainDB tip
 # observed WHILE still active (in a neutered build the tip races PAST base ->
 # this is the race evidence; in a fixed build the tip is held AT base).
-HOLD_LINE="AssumeUTXO active — holding tip at snapshot base"
+HOLD_LINE="AssumeUTXO active — deferring post-base header import until history promotion"
 HOLD_SEEN=0
 MAX_TIP_WHILE_ACTIVE=0
 TIP_PAST_BASE_WHILE_ACTIVE=0
@@ -298,14 +298,14 @@ grep -qs "$HOLD_LINE" "$CON_DIR"/daemon*.log 2>/dev/null && HOLD_SEEN=1
 info "race observation: hold_line_seen=$HOLD_SEEN, max_tip_while_active=$MAX_TIP_WHILE_ACTIVE (base=$BASE), tip_past_base_while_active=$TIP_PAST_BASE_WHILE_ACTIVE, mode_exited=$MODE_EXITED"
 
 # ── Assertion 1: race engaged (the fix's gate held the tip at base) ───────
-# The hold line proves the fix saw a network candidate past base and capped the
-# activation target -> the race was genuinely exercised. (In a neutered build
+# The deferred-import line proves the fix saw a canonical network continuation
+# past base and skipped activation -> the race was genuinely exercised. (In a neutered build
 # this line is gone; TIP_PAST_BASE_WHILE_ACTIVE=1 is the alternative evidence
 # that the tip raced past base, reported above.)
 if [[ "$HOLD_SEEN" == "1" ]]; then
-    ck_pass "A1: fix's hold line fired — activation capped at base while assumeutxo active (race exercised)"
+    ck_pass "A1: post-base import was deferred while assumeutxo active (race exercised)"
 else
-    ck_fail "A1: fix's hold line NEVER fired (race not exercised by the fix; tip_past_base_while_active=$TIP_PAST_BASE_WHILE_ACTIVE)"
+    ck_fail "A1: deferred-import line NEVER fired (race not exercised by the fix; tip_past_base_while_active=$TIP_PAST_BASE_WHILE_ACTIVE)"
 fi
 
 # ── Wait for mode exit + full validation (gate for A2/A3/A4) ──────────────
