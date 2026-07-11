@@ -1267,6 +1267,84 @@ int main() {
                   << "-slot window when idle" << std::endl;
     }
 
+    // The MSG_BLOCK-vs-MSG_UTREEXO_BLOCK routing invariant. The daemon wiring
+    // (daemon_app.cpp) reads CurrentRequestIsBackfill() *inside* the send
+    // callback to decide the getdata inv type: a backfill body must be
+    // requested as raw MSG_BLOCK (archival bridges cannot serve historical
+    // utreexo proofs, so MSG_UTREEXO_BLOCK for a pre-base body goes unserved
+    // and wedges backfill), while tip work stays MSG_UTREEXO_BLOCK. When tip
+    // and backfill sends drain in the SAME batch, the flag must be correct
+    // per-send — not a single value smeared across the batch. This guards the
+    // routing signal at the scheduler seam the daemon depends on.
+    {
+        std::cout << "\n📋 Section: per-send backfill routing flag (MSG_BLOCK vs "
+                     "MSG_UTREEXO_BLOCK)" << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 40, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(20);  // snapshot base = 20
+
+        // Capture the routing flag AT SEND TIME, per request. The daemon reads
+        // it exactly here — synchronously inside the callback — so the flag is
+        // only meaningful in this scope (DispatchDeferredSends resets it to
+        // false after the batch). Key by height: tip heights (21..40) and
+        // backfill heights (1..20) are disjoint, so no collision.
+        std::unordered_map<uint32_t, bool> flag_at_send;
+        scheduler.SetSendGetDataCallback(
+            [&flag_at_send, &scheduler](const uint256&, uint32_t height) {
+                flag_at_send[height] = scheduler.CurrentRequestIsBackfill();
+            });
+
+        scheduler.OnHeadersProcessed();   // tip sync: heights 21..40 missing
+        scheduler.EnableBackfill(1, 20, hashes[20]);  // pre-base bodies 1..20
+
+        // Tick #1 drains tip sends (>20) and backfill sends (<=20) in one batch.
+        scheduler.Tick();
+
+        size_t tip_seen = 0, backfill_seen = 0;
+        for (const auto& [height, is_backfill] : flag_at_send) {
+            if (height > 20) {
+                ++tip_seen;
+                if (!Require(!is_backfill,
+                             "tip send at height " + std::to_string(height) +
+                                 " must NOT carry the backfill flag (would force "
+                                 "MSG_BLOCK for tip work)")) {
+                    return 1;
+                }
+            } else {
+                ++backfill_seen;
+                if (!Require(is_backfill,
+                             "backfill send at height " + std::to_string(height) +
+                                 " must carry the backfill flag (else MSG_UTREEXO_"
+                                 "BLOCK wedges the pre-base body)")) {
+                    return 1;
+                }
+            }
+        }
+
+        // Non-vacuous: both lanes must have actually sent in this batch, or the
+        // per-send assertion above proved nothing about the mixed case.
+        if (!Require(tip_seen > 0, "expected at least one tip send in the batch")) {
+            return 1;
+        }
+        if (!Require(backfill_seen > 0,
+                     "expected at least one backfill send in the batch")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ routing flag correct per-send across a mixed batch ("
+                  << tip_seen << " tip sends flagged tip, " << backfill_seen
+                  << " backfill sends flagged backfill)" << std::endl;
+    }
+
     {
         std::cout << "\n13. assumeutxo backfill: received backfill block is stored-only — "
                      "completion accounting without connect bookkeeping..." << std::endl;
