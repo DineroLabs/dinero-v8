@@ -10785,3 +10785,28 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_peer_send_health.cpp)
   )
   add_test(NAME PeerSendHealth COMMAND test_peer_send_health)
 endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_chainwork_from_hex.cpp)
+  # Regression (PR #390): ChainworkFromHex must not throw on a 64-char
+  # non-hex string (the snapshot-bootstrap deadlock).
+  add_executable(test_chainwork_from_hex
+    tests/consensus/test_chainwork_from_hex.cpp
+    src/consensus/chainwork.cpp
+  )
+  target_link_libraries(test_chainwork_from_hex PRIVATE
+    GTest::gtest_main
+    dinero_crypto
+    OpenSSL::Crypto
+    pthread
+  )
+  target_include_directories(test_chainwork_from_hex PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_chainwork_from_hex PRIVATE
+      "-framework Security" "-framework CoreFoundation")
+  endif()
+  add_test(NAME ChainworkFromHex COMMAND test_chainwork_from_hex)
+  set_tests_properties(ChainworkFromHex PROPERTIES LABELS "consensus;chainwork" TIMEOUT 30)
+endif()
