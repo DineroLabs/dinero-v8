@@ -14285,6 +14285,13 @@ void ChainstateService::BackgroundValidationWorker() {
             want.reserve(missing.size());
             std::vector<uint8_t> entry_requested(missing.size(), 0);
             std::vector<uint256> entry_hash(missing.size());  // resolved hash
+            for (size_t i = 0; i < missing.size(); ++i) {
+                // The scan already resolved snapshot-base-anchored hashes for
+                // NoBodyForHash/HashMismatch. Populate diagnostics regardless
+                // of whether complete-window reconciliation runs; the old code
+                // misleadingly logged header_exists=0/requested=0 mid-window.
+                entry_hash[i] = missing[i].canonical_hash;
+            }
             auto* recon_ctx = DaemonContext::instance();
             consensus::BlockDownloadScheduler* sched =
                 (recon_ctx && recon_ctx->block_download)
@@ -14294,6 +14301,21 @@ void ChainstateService::BackgroundValidationWorker() {
                                  "scheduler unwired — cannot re-request missing "
                                  "bodies; relying on 30s backstop");
                 sched_unwired_logged = true;
+            }
+
+            // Mid-window liveness: give the earliest strict-read gap one
+            // persistent scheduler lane. This does not bulk-requeue the missing
+            // vector and does not reset an active request; it only prevents a
+            // timed-out critical body from waiting for the ~50k-entry cursor to
+            // wrap. The hash comes from the snapshot-base-anchored scan above,
+            // never from best-header-by-height.
+            if (sched) {
+                if (!missing.empty() && !missing.front().canonical_hash.IsNull()) {
+                    sched->SetBackfillValidationFrontier(
+                        missing.front().canonical_hash, missing.front().height);
+                } else {
+                    sched->SetBackfillValidationFrontier(uint256(), 0);
+                }
             }
             // #298 refinement: only re-request once backfill has reported its
             // window COMPLETE (completed >= total) yet validation still finds
@@ -14320,7 +14342,7 @@ void ChainstateService::BackgroundValidationWorker() {
             size_t requeued = 0;
             if (sched && backfill_window_complete) {
                 for (size_t i = 0; i < missing.size(); ++i) {
-                    uint256 hash = missing[i].canonical_hash;
+                    uint256 hash = entry_hash[i];
                     if (hash.IsNull()) {
                         uint256 derived;
                         if (sched->GetExpectedHashAtHeight(missing[i].height, derived)) {

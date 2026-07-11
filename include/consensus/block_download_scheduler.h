@@ -151,6 +151,19 @@ public:
     }
 
     /**
+     * True iff the getdata currently being dispatched to the send callback is an
+     * AssumeUTXO history-backfill request. Set by DispatchDeferredSends just
+     * before each callback, read synchronously by that callback on the same
+     * thread. The wiring uses it to request a raw MSG_BLOCK for backfill (archival
+     * bridges can't serve historical utreexo proofs, so MSG_UTREEXO_BLOCK goes
+     * unserved and wedges the backfill) instead of MSG_UTREEXO_BLOCK. Only
+     * meaningful inside the callback.
+     */
+    bool CurrentRequestIsBackfill() const {
+        return current_request_is_backfill_;
+    }
+
+    /**
      * Called when a block is received from a peer.
      * Validates block against header and stores if valid.
      *
@@ -580,6 +593,17 @@ public:
     size_t RequestMissingBackfillBodies(
         const std::vector<std::pair<uint256, uint32_t>>& want);
 
+    /**
+     * Give the validation worker one priority backfill lane for its earliest
+     * unreadable canonical body. Unlike RequestMissingBackfillBodies, this is
+     * safe while the bulk window is still active: an already-REQUESTED entry is
+     * left untouched, while a timed-out MISSING entry is serviced before the
+     * round-robin cursor on the next Tick. The remaining backfill slots keep
+     * bulk traversal moving, so an unavailable frontier cannot starve the rest
+     * of the window. A null hash clears the lane.
+     */
+    void SetBackfillValidationFrontier(const uint256& hash, uint32_t height);
+
     // #298 wake-on-store: invoked (outside mutex_) immediately after a backfill
     // body is verified, stored, and counted. Lets the background validation
     // worker re-attempt reads on delivery instead of polling. The callback must
@@ -714,6 +738,12 @@ private:
     // #241/#214) and concurrent Tick() callers must not race on it.
     static thread_local std::unordered_set<std::string> current_request_skip_peers_;
 
+    // Companion to current_request_skip_peers_: true iff the getdata being
+    // dispatched to the callback right now is an AssumeUTXO backfill request.
+    // Set/cleared alongside the skip-set in DispatchDeferredSends. thread_local
+    // for the same reason (sends dispatched OUTSIDE mutex_, issue #241/#214).
+    static thread_local bool current_request_is_backfill_;
+
     // issue #241/#214: a getdata staged under mutex_ for dispatch after the
     // lock is released. Invoking the send callback under mutex_ let one
     // blocked peer-socket send() wedge every scheduler entry point (peer
@@ -725,6 +755,7 @@ private:
         uint256 block_hash;
         uint32_t height = 0;
         std::unordered_set<std::string> skip_peers;
+        bool for_backfill = false;
     };
     std::vector<DeferredGetdata> deferred_sends_;  // guarded by mutex_
 
@@ -735,6 +766,10 @@ private:
     std::vector<BlockFetchState> backfill_blocks_;
     size_t next_backfill_idx_ = 0;
     std::unordered_set<uint256> backfill_expected_;  // routing in OnBlockReceived (Task 2)
+    // Index into backfill_blocks_ for the background validator's earliest
+    // unreadable body. Vector entries are never erased while a window is live,
+    // so the index is stable until DisableBackfillLocked resets it.
+    std::optional<size_t> backfill_validation_frontier_idx_;
     BackfillProgress backfill_progress_;
     uint256 backfill_anchor_hash_;  // trust root the active queue was walked from
     std::function<bool(const uint256&, uint32_t)> has_block_body_;

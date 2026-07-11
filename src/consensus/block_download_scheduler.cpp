@@ -159,6 +159,10 @@ void BlockDownloadScheduler::OnBlockNotFound(const uint256& hash,
 thread_local std::unordered_set<std::string>
     BlockDownloadScheduler::current_request_skip_peers_;
 
+// Companion handoff slot: whether the getdata being dispatched right now is a
+// backfill request (lets the send callback pick MSG_BLOCK vs MSG_UTREEXO_BLOCK).
+thread_local bool BlockDownloadScheduler::current_request_is_backfill_ = false;
+
 // issue #241: stage a getdata with its skip-set snapshot — every peer known
 // to lack bodies at or above this height. Caller MUST hold mutex_. The send
 // itself happens in DispatchDeferredSends(), after the lock is released
@@ -171,6 +175,7 @@ void BlockDownloadScheduler::StageGetdataLocked(const uint256& block_hash,
     DeferredGetdata deferred;
     deferred.block_hash = block_hash;
     deferred.height = block_height;
+    deferred.for_backfill = for_backfill;
     if (block_height > 0) {
         // bug #4: consult ONLY the skip-set for this request's queue. A backfill
         // request ignores tip-queue demotions (and vice versa), so a peer that
@@ -204,9 +209,11 @@ void BlockDownloadScheduler::DispatchDeferredSends() {
     for (auto& deferred : sends) {
         // Same-thread handoff to the callback (see CurrentRequestSkipPeers).
         current_request_skip_peers_ = std::move(deferred.skip_peers);
+        current_request_is_backfill_ = deferred.for_backfill;
         callback(deferred.block_hash, deferred.height);
     }
     current_request_skip_peers_.clear();
+    current_request_is_backfill_ = false;
 }
 
 void BlockDownloadScheduler::NotifyGetDataDispatched(const uint256& block_hash,
@@ -276,6 +283,11 @@ bool BlockDownloadScheduler::ConsumeExpectedBackfillLocked(
         backfill_last_progress_ = std::chrono::steady_clock::now();  // #298 diag
         in_flight_blocks_.erase(block_hash);
         backfill_expected_.erase(block_hash);
+        if (backfill_validation_frontier_idx_ &&
+            *backfill_validation_frontier_idx_ < backfill_blocks_.size() &&
+            backfill_blocks_[*backfill_validation_frontier_idx_].block_hash == block_hash) {
+            backfill_validation_frontier_idx_.reset();
+        }
         g_logger.info("[BlockDownloadScheduler] Backfill body stored: " +
                       block_hash.GetHex().substr(0, 16) + "... (" +
                       std::to_string(backfill_progress_.completed) + "/" +
@@ -816,22 +828,11 @@ void BlockDownloadScheduler::ServiceBackfillLocked() {
     // loop, so indexing off the live value would skip/revisit entries).
     const size_t start = next_backfill_idx_;
     size_t staged = 0;
-    for (size_t i = 0;
-         i < n
-         && backfill_progress_.in_flight < backfill_quota
-         && in_flight_blocks_.size() < max_window + backfill_quota;
-         ++i) {
-        const size_t idx = (start + i) % n;
-        auto& fs = backfill_blocks_[idx];
-        if (fs.status != FetchStatus::MISSING) {
-            continue;
-        }
-
+    auto stage_one = [&](BlockFetchState& fs) {
         fs.status = FetchStatus::REQUESTED;
         fs.request_time = now;  // re-armed by the stale sweep in TickLocked()
         in_flight_blocks_.insert(fs.block_hash);
         backfill_progress_.in_flight++;
-        next_backfill_idx_ = (idx + 1) % n;
 
         if (send_getdata_callback_) {
             // #241 reuse: StageGetdataLocked snapshots the skip-set (every
@@ -844,6 +845,35 @@ void BlockDownloadScheduler::ServiceBackfillLocked() {
         } else {
             g_logger.warning("[BlockDownloadScheduler] send_getdata_callback not set (backfill)");
         }
+    };
+
+    // The background validator's earliest gap owns one lane inside the existing
+    // quota. A stale timeout turns it MISSING above, so it is retried here on the
+    // same Tick instead of waiting for a ~50k-entry cursor wrap. We deliberately
+    // do not advance the bulk cursor; the remaining quota continues round-robin.
+    if (backfill_validation_frontier_idx_ &&
+        *backfill_validation_frontier_idx_ < backfill_blocks_.size() &&
+        backfill_progress_.in_flight < backfill_quota &&
+        in_flight_blocks_.size() < max_window + backfill_quota) {
+        auto& frontier = backfill_blocks_[*backfill_validation_frontier_idx_];
+        if (frontier.status == FetchStatus::MISSING) {
+            stage_one(frontier);
+        }
+    }
+
+    for (size_t i = 0;
+         i < n
+         && backfill_progress_.in_flight < backfill_quota
+         && in_flight_blocks_.size() < max_window + backfill_quota;
+         ++i) {
+        const size_t idx = (start + i) % n;
+        auto& fs = backfill_blocks_[idx];
+        if (fs.status != FetchStatus::MISSING) {
+            continue;
+        }
+
+        stage_one(fs);
+        next_backfill_idx_ = (idx + 1) % n;
     }
 
     if (staged > 0) {
@@ -910,7 +940,16 @@ bool BlockDownloadScheduler::IsBlockInFlight(const uint256& hash) const {
 
 bool BlockDownloadScheduler::IsBlockKnown(const uint256& hash) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return in_flight_blocks_.count(hash) > 0 || expected_blocks_.count(hash) > 0;
+    // A backfill body remains expected until it is durably consumed, even after
+    // its 30s network request ages out of the shared in-flight window. Omitting
+    // backfill_expected_ here made the daemon's unsolicited-block gate discard
+    // valid late replies before OnBlockReceived could route them to the
+    // store-only backfill path. The cursor then moved on, leaving a permanent
+    // validation hole (live failure: height 1275 timed out, arrived late, and was
+    // dropped while completed stayed at 474/51378).
+    return in_flight_blocks_.count(hash) > 0 ||
+           expected_blocks_.count(hash) > 0 ||
+           backfill_expected_.count(hash) > 0;
 }
 
 bool BlockDownloadScheduler::HasReceivedBlock(const uint256& hash) const {
@@ -1109,6 +1148,7 @@ void BlockDownloadScheduler::DisableBackfillLocked() {
     backfill_blocks_.clear();
     backfill_expected_.clear();
     next_backfill_idx_ = 0;
+    backfill_validation_frontier_idx_.reset();
     backfill_progress_ = BackfillProgress{};
     backfill_anchor_hash_ = uint256();
 }
@@ -1216,6 +1256,65 @@ size_t BlockDownloadScheduler::RequestMissingBackfillBodies(
     }
 
     return requeued;
+}
+
+void BlockDownloadScheduler::SetBackfillValidationFrontier(
+        const uint256& hash, uint32_t height) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (hash.IsNull()) {
+        backfill_validation_frontier_idx_.reset();
+        return;
+    }
+
+    size_t idx = backfill_blocks_.size();
+    for (size_t i = 0; i < backfill_blocks_.size(); ++i) {
+        if (backfill_blocks_[i].block_hash == hash) {
+            idx = i;
+            break;
+        }
+    }
+
+    if (idx == backfill_blocks_.size()) {
+        // The bulk window may have been rebuilt/cleared while validation was
+        // scanning. Re-create just this canonical entry; the worker supplied a
+        // snapshot-base-anchored hash, so never substitute a best-chain hash.
+        backfill_blocks_.emplace_back(hash, height);
+        idx = backfill_blocks_.size() - 1;
+        backfill_progress_.total++;
+        backfill_expected_.insert(hash);
+    } else {
+        auto& fs = backfill_blocks_[idx];
+        // REQUESTED stays REQUESTED: resetting it every 30s recreates the
+        // reconciliation churn this lane is designed to avoid. A RECEIVED
+        // entry is also left alone here. ConsumeExpectedBackfillLocked marks it
+        // RECEIVED immediately before releasing the scheduler lock and then
+        // persists its ChainDB locator outside the lock; a validation scan that
+        // began in that narrow interval can report a stale "missing" result
+        // after the store has completed. Demoting here would undercount
+        // completed and fetch a duplicate. Complete-window #298 reconciliation
+        // remains the deliberate repair path for a body that is still strictly
+        // unreadable after persistence has settled.
+        if (fs.status == FetchStatus::RECEIVED) {
+            return;
+        } else if (fs.status != FetchStatus::REQUESTED &&
+                   fs.status != FetchStatus::MISSING) {
+            fs.status = FetchStatus::MISSING;
+            fs.stored_pos = FilePosition();
+            in_flight_blocks_.erase(hash);
+        }
+        backfill_expected_.insert(hash);
+    }
+
+    const bool changed = !backfill_validation_frontier_idx_ ||
+                         *backfill_validation_frontier_idx_ != idx;
+    backfill_validation_frontier_idx_ = idx;
+    backfill_progress_.enabled = true;
+    if (changed) {
+        g_logger.info("[BlockDownloadScheduler] Validation frontier set: height=" +
+                      std::to_string(height) + " hash=" +
+                      hash.GetHex().substr(0, 16) + "...");
+    }
 }
 
 void BlockDownloadScheduler::ScanForMissingBlocks() {
