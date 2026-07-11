@@ -302,9 +302,26 @@ arith_uint256 ChainworkFromHex(const std::string& hex) {
     arith_uint256 result;
     
     if (hex.length() != 64) {
-        return result; // Return zero for invalid hex
+        return result; // Return zero for invalid length
     }
-    
+
+    // A 64-char string that isn't all hex digits makes std::stoull throw
+    // std::invalid_argument. Uncaught, that aborts LoadSnapshot's genesis→base
+    // materialization (EnsureHeaderBranchIndexed → AddBlockIndex → UpdateChainwork)
+    // before StartBackgroundValidation() runs, deadlocking a fresh snapshot node
+    // (tip held at base, background validation never starts). Treat a malformed
+    // chainwork string as zero work; EnsureHeaderBranchIndexed overwrites the
+    // block index's chainwork with the authoritative header-index value right
+    // after AddBlockIndex returns, so the zero fallback here is never persisted.
+    for (char c : hex) {
+        const bool is_hex = (c >= '0' && c <= '9') ||
+                            (c >= 'a' && c <= 'f') ||
+                            (c >= 'A' && c <= 'F');
+        if (!is_hex) {
+            return result; // Return zero for invalid hex
+        }
+    }
+
     // Parse hex string into 4 uint64_t values (big-endian input)
     for (int i = 0; i < 4; ++i) {
         std::string word_hex = hex.substr(i * 16, 16);
