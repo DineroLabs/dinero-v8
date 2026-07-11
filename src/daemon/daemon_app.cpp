@@ -6208,8 +6208,13 @@ bool DaemonApp::Init(int argc, char** argv) {
             // BlockDownloadScheduler → SendGetdata
             // Phase P.3: CSN requests MSG_UTREEXO_BLOCK (block + proof) instead of MSG_BLOCK
             bool csn_mode = GetConfig().utreexo_stateless;
-            auto csn_bridge_rr_index = std::make_shared<std::atomic<size_t>>(0);
-            block_download->SetSendGetDataCallback([p2p_service, csn_mode, csn_bridge_rr_index, sched = block_download.get()](const uint256& block_hash, uint32_t block_height) {
+            auto block_request_last_peer_mutex = std::make_shared<std::mutex>();
+            auto block_request_last_peer =
+                std::make_shared<std::unordered_map<uint256, std::string>>();
+            block_download->SetSendGetDataCallback([p2p_service, csn_mode,
+                                                     block_request_last_peer_mutex,
+                                                     block_request_last_peer,
+                                                     sched = block_download.get()](const uint256& block_hash, uint32_t block_height) {
                 // AssumeUTXO history backfill requests raw MSG_BLOCK, not
                 // MSG_UTREEXO_BLOCK: archival bridges have the historical bodies
                 // but cannot generate the pre-block utreexo inclusion proof for
@@ -6234,6 +6239,66 @@ bool DaemonApp::Init(int argc, char** argv) {
                 auto peers = p2p_service->get().get_connected_peers();
                 int sent = 0;
                 int eligible = 0;
+
+                // A scheduler entry is one logical in-flight request.  Sending
+                // it to every peer made each reply arrive two or three times,
+                // multiplying block validation/storage work and, under load,
+                // causing bilateral blocking-send backpressure.  Rotate one
+                // recipient per request instead.  A stale timeout naturally
+                // advances the same hash to another peer; if the first socket
+                // fails synchronously, try the remaining candidates immediately.
+                auto send_one_rotating = [&](const std::vector<std::string>& candidates) {
+                    std::vector<std::string> ordered = candidates;
+                    std::sort(ordered.begin(), ordered.end());
+                    ordered.erase(std::unique(ordered.begin(), ordered.end()), ordered.end());
+                    eligible = static_cast<int>(ordered.size());
+                    if (ordered.empty()) {
+                        return;
+                    }
+
+                    // Rotate by peer IDENTITY, not by the numeric position from
+                    // get_connected_peers() (its unordered_map order changes on
+                    // disconnect/reconnect).  Otherwise a bad peer can move to
+                    // the next index in lockstep with a retry and receive the
+                    // same frontier hash forever.
+                    std::string last_peer;
+                    {
+                        std::lock_guard<std::mutex> lock(*block_request_last_peer_mutex);
+                        auto it = block_request_last_peer->find(block_hash);
+                        if (it != block_request_last_peer->end()) {
+                            last_peer = it->second;
+                        }
+                    }
+
+                    size_t start = std::hash<uint256>{}(block_hash) % ordered.size();
+                    if (!last_peer.empty()) {
+                        auto last_it = std::find(ordered.begin(), ordered.end(), last_peer);
+                        if (last_it != ordered.end()) {
+                            start = (static_cast<size_t>(
+                                std::distance(ordered.begin(), last_it)) + 1) % ordered.size();
+                        }
+                    }
+
+                    for (size_t i = 0; i < ordered.size(); ++i) {
+                        const std::string& peer_key =
+                            ordered[(start + i) % ordered.size()];
+                        if (p2p_service->get().send_to_peer(peer_key, msg)) {
+                            std::lock_guard<std::mutex> lock(*block_request_last_peer_mutex);
+                            // Bound lifetime growth (tip hashes continue forever).
+                            // Clearing only resets peer preference; scheduler
+                            // request state and correctness are unaffected.
+                            constexpr size_t kMaxRememberedBlockRecipients = 131072;
+                            if (block_request_last_peer->size() >=
+                                    kMaxRememberedBlockRecipients &&
+                                block_request_last_peer->count(block_hash) == 0) {
+                                block_request_last_peer->clear();
+                            }
+                            (*block_request_last_peer)[block_hash] = peer_key;
+                            sent = 1;
+                            return;
+                        }
+                    }
+                };
 
                 // Height-aware peer selection: skip peers whose advertised
                 // height is below this block — they can't have it and would
@@ -6345,47 +6410,34 @@ bool DaemonApp::Init(int argc, char** argv) {
                     }
 
                     if (selected_bridge_peers && !selected_bridge_peers->empty()) {
-                        // For historical CSN catch-up, partial fanout can deadlock progress if the
-                        // few selected peers are lagging, overloaded, or silently drop utxoblk.
-                        // Prefer liveness over bandwidth here: send block requests to every
-                        // eligible bridge peer and let duplicate responses be discarded.
-                        size_t fanout = selected_bridge_peers->size();
-                        size_t start = csn_bridge_rr_index->fetch_add(1, std::memory_order_relaxed);
-                        eligible = static_cast<int>(selected_bridge_peers->size());
-                        for (size_t i = 0; i < fanout; ++i) {
-                            const std::string& peer_key =
-                                (*selected_bridge_peers)[(start + i) % selected_bridge_peers->size()];
-                            if (p2p_service->get().send_to_peer(peer_key, msg)) {
-                                sent++;
-                            }
-                        }
+                        send_one_rotating(*selected_bridge_peers);
                     } else {
                         // Backward-compatible fallback for mixed networks without bridge advertisements.
                         g_logger.warning("[CSN] No NODE_UTREEXO_BRIDGE peers available for block " +
                                          block_hash.GetHex().substr(0, 16) +
                                          "...; falling back to all peers");
-                        eligible = static_cast<int>(peers.size());
+                        std::vector<std::string> fallback_peers;
+                        fallback_peers.reserve(peers.size());
                         for (const auto& peer : peers) {
                             std::string peer_key = peer.to_string();
                             if (skip_below_height.count(peer_key)) {
                                 continue;  // peer's height is below this block
                             }
-                            if (p2p_service->get().send_to_peer(peer_key, msg)) {
-                                sent++;
-                            }
+                            fallback_peers.push_back(std::move(peer_key));
                         }
+                        send_one_rotating(fallback_peers);
                     }
                 } else {
-                    eligible = static_cast<int>(peers.size());
+                    std::vector<std::string> eligible_peers;
+                    eligible_peers.reserve(peers.size());
                     for (const auto& peer : peers) {
                         std::string peer_key = peer.to_string();
                         if (skip_below_height.count(peer_key)) {
                             continue;  // peer's height is below this block
                         }
-                        if (p2p_service->get().send_to_peer(peer_key, msg)) {
-                            sent++;
-                        }
+                        eligible_peers.push_back(std::move(peer_key));
                     }
+                    send_one_rotating(eligible_peers);
                 }
                 g_logger.info("[Phase N] Sent getdata(" +
                              std::string((csn_mode && !for_backfill) ? "MSG_UTREEXO_BLOCK" : "MSG_BLOCK") +

@@ -1865,6 +1865,13 @@ bool ChainstateService::VerifyOrBootstrapShieldedTipMarker(const uint256& tip_ha
 void ChainstateService::SetAssumeUTXOState(const uint256& base_block,
                                            uint32_t base_height,
                                            bool persist_metadata) {
+    {
+        // ActivateBestChain reads/writes this flag under activation_mutex_.
+        // Snapshot loading is independently serialized, so take the same lock
+        // here rather than introducing a plain-bool data race with P2P activation.
+        std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
+        assumeutxo_header_import_deferred_logged_ = false;
+    }
     assumeutxo::SetState(
         {assumeutxo_active_, assumeutxo_base_block_, assumeutxo_base_height_, utxo_index_.get()},
         base_block,
@@ -6916,11 +6923,87 @@ void ChainstateService::ActivateBestChain() {
     // 3. Here: detect better header chain, import blocks to block_index_
     // 4. Standard reorg logic then works correctly
     // ═══════════════════════════════════════════════════════════════════════════
+    // In the classic AssumeUTXO profile the active tip is intentionally held
+    // at the snapshot base until genesis-to-base replay is promoted.  Post-base
+    // bodies are independently downloaded and durably indexed by the scheduler,
+    // so importing that same continuation here cannot activate anything yet.
+    //
+    // Previously the hold was applied only *after* rebuilding the full branch.
+    // Every arriving body (including fanout duplicates) therefore walked ~9k
+    // headers, restored RocksDB metadata, and INFO-logged AddCandidate for every
+    // already stored block while holding activation_mutex_.  Peer receive loops
+    // queued behind that work until both sides' blocking sockets stopped
+    // draining.  Defer the no-op import at its source.  The ancestry check keeps
+    // competing/below-base branches on the normal safety path; when promotion
+    // clears assumeutxo_active_, the next activation imports the stored branch.
+    const auto* best_header_for_hold =
+        header_chain_selector_ ? header_chain_selector_->GetBestHeader() : nullptr;
+    bool defer_snapshot_continuation = false;
+    if (assumeutxo_active_ && !GetConfig().assumeutxo_forward_connect &&
+        best_header_for_hold && active_tip_ &&
+        !assumeutxo_base_block_.IsNull() && assumeutxo_base_height_ > 0 &&
+        static_cast<uint32_t>(active_tip_->height) == assumeutxo_base_height_ &&
+        active_tip_->hash == assumeutxo_base_block_ &&
+        best_header_for_hold->height > assumeutxo_base_height_) {
+        const auto* base_ancestor =
+            best_header_for_hold->GetAncestor(assumeutxo_base_height_);
+        const bool header_descends_from_base =
+            base_ancestor && base_ancestor->hash == assumeutxo_base_block_;
+
+        // BlockAcceptor can populate candidates_ before that block's header is
+        // reflected in HeaderChainSelector.  Inspect the best queued candidate
+        // too, otherwise a benign HCS continuation could hide a full-block fork
+        // that diverges at/below the snapshot base and needs the normal fatal
+        // fork guard below.  Candidates below the base are the replayed-history
+        // case already ignored by the existing AssumeUTXO floor; an equal-height
+        // different hash is deliberately NOT deferred.
+        bool candidate_is_safe_to_defer = true;
+        if (header_descends_from_base) {
+            // #360 lock order is activation_mutex_ -> g_block_index_mutex.
+            // Keep GetBestCandidate and its pprev ancestry walk in one graph
+            // snapshot so a concurrent load-thread relink cannot turn this
+            // safety decision into a torn read.
+            std::lock_guard<std::recursive_mutex> index_lock(
+                dinero::g_block_index_mutex);
+            CBlockIndex* queued_candidate = GetBestCandidate();
+            if (queued_candidate && queued_candidate != active_tip_) {
+                if (queued_candidate->height <
+                    static_cast<int>(assumeutxo_base_height_)) {
+                    candidate_is_safe_to_defer = true;
+                } else {
+                    CBlockIndex* candidate_base = queued_candidate;
+                    while (candidate_base && candidate_base->height >
+                           static_cast<int>(assumeutxo_base_height_)) {
+                        candidate_base = candidate_base->pprev;
+                    }
+                    candidate_is_safe_to_defer =
+                        candidate_base &&
+                        candidate_base->height == static_cast<int>(assumeutxo_base_height_) &&
+                        candidate_base->hash == assumeutxo_base_block_;
+                }
+            }
+        }
+        defer_snapshot_continuation =
+            header_descends_from_base && candidate_is_safe_to_defer;
+    }
+
+    if (defer_snapshot_continuation) {
+        if (!assumeutxo_header_import_deferred_logged_ && logger_) {
+            assumeutxo_header_import_deferred_logged_ = true;
+            logger_->info("[ActivateBestChain] AssumeUTXO active — deferring post-base "
+                          "header import until history promotion (base=" +
+                          std::to_string(assumeutxo_base_height_) + ", best_header=" +
+                          std::to_string(best_header_for_hold->height) +
+                          "); block bodies remain scheduler-managed");
+        }
+        return;
+    }
+
     std::cout << "🔍 [REORG-CHECK] header_chain_selector_=" << (header_chain_selector_ ? "SET" : "NULL")
               << ", active_tip_=" << (active_tip_ ? "SET" : "NULL") << std::endl;
 
     if (header_chain_selector_) {
-        const auto* best_header = header_chain_selector_->GetBestHeader();
+        const auto* best_header = best_header_for_hold;
         std::cout << "🔍 [REORG-CHECK] best_header=" << (best_header ? "SET" : "NULL") << std::endl;
         if (best_header) {
             std::cout << "🔍 [REORG-CHECK] best_header: height=" << best_header->height
@@ -15408,6 +15491,7 @@ void ChainstateService::OnBackgroundValidationComplete(bool success, const std::
     // but joining threads while holding it is fragile — so the failure branch
     // gathers state and logs under the lock, then acts AFTER releasing it.
     bool enter_fatal = false;
+    bool activate_stored_post_base_branch = false;
     std::string fatal_error;
     {
     std::lock_guard<std::mutex> lock(bg_validation_mutex_);
@@ -15456,6 +15540,12 @@ void ChainstateService::OnBackgroundValidationComplete(bool success, const std::
             logger_->info("[BackgroundValidation] ChainDB at snapshot height and history "
                           "fully validated — exiting AssumeUTXO mode");
             ClearAssumeUTXOState(/*clear_persisted_metadata=*/true);
+            // ActivateBestChain deliberately skipped this canonical post-base
+            // branch while the snapshot hold was active.  Import and activate
+            // the already stored continuation immediately after releasing the
+            // background-validation mutex instead of waiting for another peer
+            // event to happen to trigger it.
+            activate_stored_post_base_branch = true;
         } else if (chaindb_caught_up) {
             logger_->info("[BackgroundValidation] ChainDB caught up but historical replay "
                           "is not complete — keeping AssumeUTXO trust marker (spec: only a "
@@ -15514,6 +15604,28 @@ void ChainstateService::OnBackgroundValidationComplete(bool success, const std::
         fatal_error = error;
     }
     }  // release bg_validation_mutex_ before EnterSafeMode (joins mining threads)
+
+    if (activate_stored_post_base_branch) {
+        // This call still runs on the background-validation worker's stack.
+        // Promotion is already durable and the lifecycle is FullyValidated, so
+        // an operational catch-up exception must NOT escape to the worker's
+        // outer catch and be misclassified as a snapshot proof failure/fatal
+        // mismatch.  Normal periodic/peer-driven activation will retry.
+        try {
+            ActivateBestChain();
+        } catch (const std::exception& e) {
+            if (logger_) {
+                logger_->error(std::string("[BackgroundValidation] Post-promotion "
+                                           "ActivateBestChain failed; catch-up will retry: ") +
+                               e.what());
+            }
+        } catch (...) {
+            if (logger_) {
+                logger_->error("[BackgroundValidation] Post-promotion ActivateBestChain "
+                               "failed with unknown exception; catch-up will retry");
+            }
+        }
+    }
 
     if (enter_fatal) {
         EnsureAssumeUtxoLifecycle();
