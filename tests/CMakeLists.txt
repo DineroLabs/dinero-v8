@@ -3413,6 +3413,33 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_replay_failure_policy.cpp)
   message(STATUS "✅ AssumeUTXO replay-hardening test enabled")
 endif()
 
+# Heap-corruption regression: UnreadableBlockSet concurrent-access safety
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_unreadable_block_set.cpp)
+  add_executable(test_unreadable_block_set
+    tests/daemon/test_unreadable_block_set.cpp
+  )
+  add_dependencies(test_unreadable_block_set gtest)
+  target_link_libraries(test_unreadable_block_set PRIVATE
+    dinero_chainstate
+    dinero_wallet
+    gtest
+    sqlite3
+    ${CMAKE_DL_LIBS}
+  )
+  link_zstd_if_needed(test_unreadable_block_set)
+  target_include_directories(test_unreadable_block_set PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  add_test(NAME UnreadableBlockSet COMMAND test_unreadable_block_set)
+  set_tests_properties(UnreadableBlockSet PROPERTIES
+    LABELS "daemon;concurrency"
+    TIMEOUT 120
+  )
+  message(STATUS "✅ UnreadableBlockSet concurrency test enabled")
+endif()
+
 # AssumeUTXO fatal-state-machine lifecycle tests (docs/design/assumeutxo-fatal-state-machine.md)
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_lifecycle.cpp)
   add_executable(test_assumeutxo_lifecycle

@@ -7,6 +7,7 @@
 #include "consensus/block_index.h"  // Phase 41: BlockIndex graph for reorg logic
 #include "consensus/utxo_snapshot.h"  // Phase 42: AssumeUTXO snapshot structures
 #include "daemon/services/assumeutxo_lifecycle.h"  // AssumeUTXO fatal state machine
+#include "daemon/services/unreadable_block_set.h"  // thread-safe unreadable-block tracking
 #include "daemon/services/stateless_replay_shielded_decision.h"  // #356: marker-guard decision
 #include "consensus/block_validation.h"  // Reorg fix: Production consensus validator
 #include "consensus/consensus_utxo_set.h"  // Phase 2: Pure in-memory UTXO set
@@ -1072,24 +1073,11 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> header_announcing_peers_;
     std::unordered_set<std::string> stalled_missing_block_hashes_;
 
-    // Blocks whose data exists in ChainDB (hasBlock OK) but cannot be parsed
-    // (getBlock returns Serialization error). Prevents header-branch import
-    // from re-setting BLOCK_HAVE_DATA in a loop.
-    //
-    // CONCURRENCY: written from ConnectTip (insert) and the count() read in
-    // ActivateBestChain — both under activation_mutex_ — but ALSO erased from
-    // ProcessIncomingStoredBlock, which runs on the scheduler-drain/peer
-    // thread holding the scheduler lock, NOT activation_mutex_. Those two lock
-    // domains never meet, so without a dedicated lock the set was mutated
-    // concurrently, corrupting its bucket array / free-listing nodes into
-    // other allocations (root cause of the 2026-07-14 process-wide heap
-    // corruption: false bad-utreexo-root in the isolated replay thread + a
-    // SIGSEGV inside an unrelated mutex-guarded static deque). This is a LEAF
-    // lock: hold it only for the individual set operation, never while
-    // acquiring another lock, so it cannot invert with
-    // activation_mutex_/scheduler mutex.
-    mutable std::mutex unreadable_blocks_mutex_;
-    std::unordered_set<uint256> unreadable_blocks_;
+    // Blocks whose data exists in ChainDB (hasBlock OK) but cannot be parsed.
+    // Self-synchronizing: accessed from the scheduler-drain/peer thread
+    // (clear) AND from activation_mutex_ holders (mark/contains) — see
+    // UnreadableBlockSet for the corruption history that motivated the type.
+    UnreadableBlockSet unreadable_blocks_;
     mutable std::atomic<uint64_t> legacy_body_fallback_reads_{0};
     mutable std::atomic<uint64_t> legacy_undo_fallback_reads_{0};
     bool strict_archival_reads_{false};
