@@ -1,3 +1,33 @@
+dinero-core (8.0.15-1) unstable; urgency=medium
+
+  * v8.0.15 — AssumeUTXO stability + memory-safety release (non-consensus; no
+    rule or activation changes). HIGH PRIORITY: fixes a memory-corruption bug
+    on nodes that fast-sync from an AssumeUTXO snapshot. Safe to upgrade any
+    time; recommended for all snapshot-bootstrapping nodes (embedded/mobile
+    wallets and fresh desktop installs).
+    - chainstate: fix a data race on the unreadable-blocks set. It was cleared
+      from the scheduler-drain/peer thread while inserted/read under
+      activation_mutex_ on other threads — concurrent std::unordered_set
+      mutation (undefined behavior) that corrupted process-wide heap, surfacing
+      as false utreexo-root mismatches in the isolated background-validation
+      thread and a SIGSEGV in an unrelated thread. Encapsulated in a
+      self-synchronizing UnreadableBlockSet with a leaf mutex; added a
+      concurrency regression test (TSAN-gated in CI).
+    - qt: pass --assumeutxo_forward_connect on fresh installs that bootstrap
+      from the bundled snapshot, so the wallet is usable at the live tip within
+      minutes instead of showing received funds as 0-confirmations for the
+      whole genesis→base background validation window.
+    - assumeutxo: don't escalate a transient replay body-read failure to a
+      permanent fatal_mismatch. Verify the body's merkle root on read and
+      require a validation failure to reproduce on a fresh pass before
+      declaring the snapshot fatal (spec #298 fatal semantics preserved for
+      confirmed mismatches).
+    - consensus: fix a remotely-triggerable out-of-bounds read in
+      UtreexoProof::deserialize (numSiblings*32 computed in 32-bit arithmetic
+      wrapped the length guard); now uses checked size_t arithmetic.
+
+ -- DineroLabs <team@dinerolabs.org>  Tue, 14 Jul 2026 00:00:00 +0000
+
 dinero-core (8.0.14-1) unstable; urgency=medium
 
   * v8.0.14 — shielded round-trip release (non-consensus; no rule or
