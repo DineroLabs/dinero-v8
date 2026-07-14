@@ -5539,8 +5539,13 @@ consensus::ConnectBlockResult ChainstateService::ProcessIncomingStoredBlock(cons
         logger_->info("[ChainstateService] Block accepted: " + hash_hex +
                      " at height " + std::to_string(result.height));
 
-        // Clear from unreadable set — block now has valid data from peer
-        unreadable_blocks_.erase(result.block_hash);
+        // Clear from unreadable set — block now has valid data from peer.
+        // Leaf-locked: this runs on the scheduler-drain thread, not under
+        // activation_mutex_ (see unreadable_blocks_mutex_ declaration).
+        {
+            std::lock_guard<std::mutex> ub_lock(unreadable_blocks_mutex_);
+            unreadable_blocks_.erase(result.block_hash);
+        }
 
         // Do NOT announce on accept. Announcement is activation-gated and happens
         // from the active-chain connect path (ConnectTip -> notifyBlockConnected).
@@ -7106,8 +7111,14 @@ void ChainstateService::ActivateBestChain() {
                     }
 
                     // Skip blocks that were found unreadable (corrupt chaindb entries).
-                    // They will be re-downloaded from peers.
-                    if (unreadable_blocks_.count(entry->hash)) {
+                    // They will be re-downloaded from peers. Leaf-locked read —
+                    // the scheduler-drain thread erases concurrently.
+                    bool is_unreadable;
+                    {
+                        std::lock_guard<std::mutex> ub_lock(unreadable_blocks_mutex_);
+                        is_unreadable = unreadable_blocks_.count(entry->hash) != 0;
+                    }
+                    if (is_unreadable) {
                         missing_block_bodies.push_back(entry->hash.GetHex());
                         continue;
                     }
@@ -11813,7 +11824,10 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         // Clear BLOCK_HAVE_DATA so BlockDownloadScheduler will re-download
         // from peers instead of infinite retry from corrupt/missing chaindb entry
         tip_to_connect->status &= ~BLOCK_HAVE_DATA;
-        unreadable_blocks_.insert(tip_to_connect->hash);
+        {
+            std::lock_guard<std::mutex> ub_lock(unreadable_blocks_mutex_);
+            unreadable_blocks_.insert(tip_to_connect->hash);
+        }
         if (logger_) logger_->warning("[ConnectTip] Cleared BLOCK_HAVE_DATA for height " +
                       std::to_string(tip_to_connect->height) +
                       " — will be re-downloaded from peers");

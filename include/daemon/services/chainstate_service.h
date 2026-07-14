@@ -1075,6 +1075,20 @@ private:
     // Blocks whose data exists in ChainDB (hasBlock OK) but cannot be parsed
     // (getBlock returns Serialization error). Prevents header-branch import
     // from re-setting BLOCK_HAVE_DATA in a loop.
+    //
+    // CONCURRENCY: written from ConnectTip (insert) and the count() read in
+    // ActivateBestChain — both under activation_mutex_ — but ALSO erased from
+    // ProcessIncomingStoredBlock, which runs on the scheduler-drain/peer
+    // thread holding the scheduler lock, NOT activation_mutex_. Those two lock
+    // domains never meet, so without a dedicated lock the set was mutated
+    // concurrently, corrupting its bucket array / free-listing nodes into
+    // other allocations (root cause of the 2026-07-14 process-wide heap
+    // corruption: false bad-utreexo-root in the isolated replay thread + a
+    // SIGSEGV inside an unrelated mutex-guarded static deque). This is a LEAF
+    // lock: hold it only for the individual set operation, never while
+    // acquiring another lock, so it cannot invert with
+    // activation_mutex_/scheduler mutex.
+    mutable std::mutex unreadable_blocks_mutex_;
     std::unordered_set<uint256> unreadable_blocks_;
     mutable std::atomic<uint64_t> legacy_body_fallback_reads_{0};
     mutable std::atomic<uint64_t> legacy_undo_fallback_reads_{0};

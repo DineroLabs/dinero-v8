@@ -417,7 +417,17 @@ UtreexoProof UtreexoProof::deserialize(const std::vector<uint8_t>& data) {
     offset += 4;
 
     // 2. Sibling hashes
-    if (data.size() < offset + numSiblings * 32 + 16) {
+    // numSiblings is attacker-controlled (peer-relayed proof); compute the
+    // required length in size_t with overflow checks so a crafted count like
+    // 0x08000000 can't wrap `numSiblings * 32` to a small value and let the
+    // per-sibling loop read off the end of `data` (OOB read → crash/DoS).
+    // Matches the checked-multiply pattern used by the other deserializers.
+    size_t siblings_bytes = 0;
+    size_t required = 0;
+    if (!checked_mul_size_t(numSiblings, 32, siblings_bytes) ||
+        !checked_add_size_t(offset, siblings_bytes, required) ||
+        !checked_add_size_t(required, 16, required) ||
+        data.size() < required) {
         return proof;
     }
 

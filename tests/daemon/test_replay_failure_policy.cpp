@@ -17,8 +17,12 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <vector>
+
 #include "consensus/chainparams.h"
 #include "consensus/merkle_root.h"
+#include "consensus/utreexo_accumulator.h"
 #include "daemon/services/replay_failure_policy.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -135,6 +139,50 @@ TEST_F(ReplayBodyIntegrityTest, DroppedTrailingTxIsDetectedByMerkleGuard)
 
     EXPECT_NE(dinero::consensus::ComputeMerkleRoot(block.vtx),
               block.header.merkle_root);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// UtreexoProof::deserialize length-overflow guard (peer-relayed proof DoS)
+// ─────────────────────────────────────────────────────────────────────────
+
+namespace {
+std::vector<uint8_t> MakeProofBlob(uint32_t numSiblings, size_t total_bytes) {
+    std::vector<uint8_t> blob(total_bytes, 0);
+    if (total_bytes >= 4) {
+        blob[0] = static_cast<uint8_t>(numSiblings & 0xFF);
+        blob[1] = static_cast<uint8_t>((numSiblings >> 8) & 0xFF);
+        blob[2] = static_cast<uint8_t>((numSiblings >> 16) & 0xFF);
+        blob[3] = static_cast<uint8_t>((numSiblings >> 24) & 0xFF);
+    }
+    return blob;
+}
+}  // namespace
+
+// A crafted numSiblings whose *32 wraps 32-bit arithmetic must NOT be trusted
+// past the buffer. Pre-fix, numSiblings=0x08000000 made `numSiblings*32`
+// truncate to 0, the length guard passed, and the loop read 32 bytes/iter off
+// the end of `data`. Now it must bail cleanly (empty proof), no OOB read.
+TEST(UtreexoProofDeserializeOverflow, WrappingSiblingCountIsRejected)
+{
+    // 0x08000000 * 32 == 0x1'0000'0000 -> truncates to 0 in uint32_t.
+    auto blob = MakeProofBlob(0x08000000u, /*total_bytes=*/64);
+    auto proof = dinero::consensus::UtreexoProof::deserialize(blob);
+    EXPECT_TRUE(proof.siblings.empty());
+}
+
+TEST(UtreexoProofDeserializeOverflow, HugeSiblingCountIsRejected)
+{
+    auto blob = MakeProofBlob(0xFFFFFFFFu, /*total_bytes=*/64);
+    auto proof = dinero::consensus::UtreexoProof::deserialize(blob);
+    EXPECT_TRUE(proof.siblings.empty());
+}
+
+TEST(UtreexoProofDeserializeOverflow, HonestSmallProofStillParses)
+{
+    // numSiblings=1: needs 4 + 1*32 + 16 = 52 bytes; give exactly that.
+    auto blob = MakeProofBlob(1u, /*total_bytes=*/52);
+    auto proof = dinero::consensus::UtreexoProof::deserialize(blob);
+    EXPECT_EQ(proof.siblings.size(), 1u);
 }
 
 int main(int argc, char** argv)
