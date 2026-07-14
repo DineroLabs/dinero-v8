@@ -3386,6 +3386,33 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_metadata_lifecycle.cp
   message(STATUS "✅ AssumeUTXO metadata lifecycle test enabled")
 endif()
 
+# AssumeUTXO replay hardening: confirm-before-fatal policy + torn-body merkle guard
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_replay_failure_policy.cpp)
+  add_executable(test_replay_failure_policy
+    tests/daemon/test_replay_failure_policy.cpp
+  )
+  add_dependencies(test_replay_failure_policy gtest)
+  target_link_libraries(test_replay_failure_policy PRIVATE
+    dinero_chainstate
+    dinero_wallet
+    gtest
+    sqlite3
+    ${CMAKE_DL_LIBS}
+  )
+  link_zstd_if_needed(test_replay_failure_policy)
+  target_include_directories(test_replay_failure_policy PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  add_test(NAME ReplayFailurePolicy COMMAND test_replay_failure_policy)
+  set_tests_properties(ReplayFailurePolicy PROPERTIES
+    LABELS "daemon;assumeutxo"
+    TIMEOUT 60
+  )
+  message(STATUS "✅ AssumeUTXO replay-hardening test enabled")
+endif()
+
 # AssumeUTXO fatal-state-machine lifecycle tests (docs/design/assumeutxo-fatal-state-machine.md)
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_lifecycle.cpp)
   add_executable(test_assumeutxo_lifecycle
