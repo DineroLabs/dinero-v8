@@ -1131,11 +1131,18 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
                         ? tx["amount_hidden"].asBool()
                         : false;
 
+                // Prefer the coinbase flag the getaddresshistory entry now carries
+                // (derived from the block, no txindex). Fall back to a chain lookup
+                // for nodes/entries that predate the flag (only works with txindex).
                 bool is_coinbase = false;
-                if (!is_outgoing && txid.size() == 64) {
-                    auto tx_result = chain_db->getTransaction(dinero::uint256::FromHexUnsafe(txid));
-                    if (tx_result.ok()) {
-                        is_coinbase = tx_result.value().IsCoinbase();
+                if (!is_outgoing) {
+                    if (tx.isMember("is_coinbase") && tx["is_coinbase"].isBool()) {
+                        is_coinbase = tx["is_coinbase"].asBool();
+                    } else if (txid.size() == 64) {
+                        auto tx_result = chain_db->getTransaction(dinero::uint256::FromHexUnsafe(txid));
+                        if (tx_result.ok()) {
+                            is_coinbase = tx_result.value().IsCoinbase();
+                        }
                     }
                 }
 

@@ -500,6 +500,10 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
                     entry["height"] = h;
                     entry["confirmations"] = tip_height - h + 1;
                     entry["type"] = has_input ? "send" : "receive";
+                    // Coinbase (mining reward) flag — derived here from the block's
+                    // own transactions (no txindex needed), so light clients can label
+                    // Mined / Immature Mining instead of a plain receive.
+                    entry["is_coinbase"] = tx.IsCoinbase();
                     entry["privacy_flow"] = privacy_flow;
                     entry["classification"] = privacy_flow;
                     entry["has_confidential_activity"] = tx_has_conf_inputs || tx_has_conf_outputs;
