@@ -8,6 +8,8 @@
 #include "daemon/services/logger_service.h"
 #include "daemon/services/assumeutxo_state.h"
 #include "daemon/services/assumeutxo_replay.h"  // genesis->base replay engine (background validation)
+#include "daemon/services/replay_failure_policy.h"  // confirm-before-fatal for replay validation failures
+#include "consensus/merkle_root.h"  // torn-body guard on replay reads
 #include "daemon/services/config_service.h"
 #include "daemon/config.h"
 #include "daemon/services/p2p_service.h"  // Phase C.1 v2: For block broadcasting
@@ -5537,8 +5539,10 @@ consensus::ConnectBlockResult ChainstateService::ProcessIncomingStoredBlock(cons
         logger_->info("[ChainstateService] Block accepted: " + hash_hex +
                      " at height " + std::to_string(result.height));
 
-        // Clear from unreadable set — block now has valid data from peer
-        unreadable_blocks_.erase(result.block_hash);
+        // Clear from unreadable set — block now has valid data from peer.
+        // Self-synchronizing: this runs on the scheduler-drain thread, not
+        // under activation_mutex_ (see UnreadableBlockSet).
+        unreadable_blocks_.clear(result.block_hash);
 
         // Do NOT announce on accept. Announcement is activation-gated and happens
         // from the active-chain connect path (ConnectTip -> notifyBlockConnected).
@@ -7104,8 +7108,9 @@ void ChainstateService::ActivateBestChain() {
                     }
 
                     // Skip blocks that were found unreadable (corrupt chaindb entries).
-                    // They will be re-downloaded from peers.
-                    if (unreadable_blocks_.count(entry->hash)) {
+                    // They will be re-downloaded from peers. Self-synchronizing
+                    // read — the scheduler-drain thread clears concurrently.
+                    if (unreadable_blocks_.contains(entry->hash)) {
                         missing_block_bodies.push_back(entry->hash.GetHex());
                         continue;
                     }
@@ -11811,7 +11816,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         // Clear BLOCK_HAVE_DATA so BlockDownloadScheduler will re-download
         // from peers instead of infinite retry from corrupt/missing chaindb entry
         tip_to_connect->status &= ~BLOCK_HAVE_DATA;
-        unreadable_blocks_.insert(tip_to_connect->hash);
+        unreadable_blocks_.mark(tip_to_connect->hash);
         if (logger_) logger_->warning("[ConnectTip] Cleared BLOCK_HAVE_DATA for height " +
                       std::to_string(tip_to_connect->height) +
                       " — will be re-downloaded from peers");
@@ -14074,6 +14079,11 @@ void ChainstateService::BackgroundValidationWorker() {
         std::optional<assumeutxo::AssumeUtxoReplayEngine> replay;
         bool replay_poisoned = false;        // set when ConnectBlock refuses
         std::string replay_poison_reason;
+        // Confirm-before-fatal: a validation failure must reproduce on a
+        // fresh pass (fresh engine, freshly-read bodies) before it is
+        // treated as a snapshot mismatch — see ReplayFailurePolicy.
+        assumeutxo::ReplayFailurePolicy replay_failure_policy;
+        bool replay_retry_pass = false;
 
         // Memory expectation: the replay set holds all sub-base UTXOs in
         // memory a second time (bounded by the snapshot's own count).
@@ -14277,6 +14287,25 @@ void ChainstateService::BackgroundValidationWorker() {
                                      "missing body pending re-download");
                     continue;
                 }
+                // The block hash covers only the header; the tx section is
+                // bound via the header's merkle root, and ConnectBlock never
+                // re-checks it. Without this guard a torn or partially-flushed
+                // body read (intact header, corrupt tx bytes) walks into real
+                // validation and manifests as a false consensus failure
+                // (observed 2026-07-14 as bad-utreexo-root at height 143 on a
+                // body later proven byte-canonical). Same classification as a
+                // hash mismatch: LOCAL corruption, heal by re-download.
+                if (consensus::ComputeMerkleRoot(blk.vtx) != blk.header.merkle_root) {
+                    blocks_skipped++;
+                    missing.push_back({height, canonical_hash,
+                                       MissReason::HashMismatch});
+                    logger_->warning("[BackgroundValidation] body at height " +
+                                     std::to_string(height) +
+                                     " does not match its header merkle root — torn/"
+                                     "corrupt local body; treating as a missing body "
+                                     "pending re-download");
+                    continue;
+                }
                 // #298: this height is readable now. If a prior pass reported it
                 // missing and re-requested it, log the arrival exactly once.
                 if (auto req_it = bg_requested_heights_.find(height);
@@ -14320,14 +14349,37 @@ void ChainstateService::BackgroundValidationWorker() {
                     if (!replay->ConnectAndAdvance(blk, height, canonical_hash,
                                                    connect_err)) {
                         // A canonical-chain block below the snapshot base
-                        // failed real validation: the snapshot's chain is
-                        // invalid — spec: hard validation failure => fatal.
-                        replay_poisoned = true;
-                        replay_poison_reason = "block " + std::to_string(height) +
-                                               " failed validation during replay: " +
-                                               connect_err;
+                        // failed real validation. A GENUINE snapshot mismatch
+                        // is stable — it reproduces on a fresh pass with
+                        // freshly-read bodies — while torn reads / transient
+                        // heap corruption do not (2026-07-14 field incident:
+                        // height 143 failed bad-utreexo-root once with a
+                        // byte-canonical stored body, then validated clean).
+                        // Require confirmation before the spec fatal.
+                        switch (replay_failure_policy.OnValidationFailure(height)) {
+                        case assumeutxo::ReplayFailurePolicy::Action::kRetryPass:
+                            replay_retry_pass = true;
+                            logger_->warning(
+                                "[BackgroundValidation] block " + std::to_string(height) +
+                                " failed validation during replay (" + connect_err +
+                                ") — retrying with a fresh pass before treating it as "
+                                "a snapshot mismatch (transient-corruption guard, "
+                                "retry " +
+                                std::to_string(replay_failure_policy.TotalRetries()) +
+                                ")");
+                            break;
+                        case assumeutxo::ReplayFailurePolicy::Action::kConfirmFatal:
+                            // Spec: hard validation failure => fatal (now
+                            // confirmed across passes, or retries exhausted).
+                            replay_poisoned = true;
+                            replay_poison_reason = "block " + std::to_string(height) +
+                                                   " failed validation during replay: " +
+                                                   connect_err;
+                            break;
+                        }
                         break;  // out of the height loop; handled below
                     }
+                    replay_failure_policy.OnValidationSuccess(height);
                 }
                 if (!height_validated[height]) {
                     height_validated[height] = true;
@@ -14346,6 +14398,17 @@ void ChainstateService::BackgroundValidationWorker() {
                 }
             }
             if (replay_poisoned) break;
+            if (replay_retry_pass) {
+                // Unconfirmed validation failure: replay again immediately
+                // with a fresh engine and fresh body reads. Do NOT run the
+                // missing-body reconciliation/wait below — nothing is
+                // missing, the pass was discarded on suspicion of transient
+                // corruption. A full pass takes minutes, so this cannot
+                // tight-loop; ReplayFailurePolicy bounds total retries.
+                replay_retry_pass = false;
+                replay.reset();
+                continue;
+            }
             if (blocks_skipped == 0) break;
 
             assumeutxo_lifecycle_->OnMissingBodies(blocks_skipped);

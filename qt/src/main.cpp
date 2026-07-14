@@ -132,6 +132,16 @@ void appendAssumeUtxoSnapshotArgIfFresh(QStringList& args, const QString& datadi
     qInfo() << "Fresh datadir: fast-syncing from bundled AssumeUTXO snapshot"
             << snapshotPath;
     args << QString("--assumeutxo_snapshot=%1").arg(snapshotPath);
+    // Wallet-usable-at-tip during background validation: without this the
+    // desktop default profile (mac_fullblock) holds the active tip at the
+    // snapshot base until the genesis->base replay completes, so a payment
+    // received above the base shows 0 confirmations (and never reaches the
+    // wallet index) for the whole first-run validation window — hours of
+    // "where's my money?" on every fresh install. The snapshot is verified
+    // against the compiled trust anchor before it loads, and validation
+    // still runs to completion in the background (#361 forward-connect;
+    // the posture the iOS profile has always shipped).
+    args << QStringLiteral("--assumeutxo_forward_connect=1");
 }
 
 } // namespace
