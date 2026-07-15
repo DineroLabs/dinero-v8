@@ -7100,6 +7100,18 @@ void DaemonApp::Stop() {
         return;
     }
 
+    // Exactly-once teardown: losers block until the winner finishes so no
+    // caller ever proceeds past a live teardown (double-entry destroyed
+    // services under a running sibling Stop on-device 2026-07-15 —
+    // EXC_BAD_ACCESS in a libc++ hash table).
+    if (!stop_gate_.TryEnter()) {
+        return;
+    }
+    struct StopDoneGuard {
+        StopGate& gate;
+        ~StopDoneGuard() { gate.MarkDone(); }
+    } stop_done_guard{stop_gate_};
+
     const auto shutdown_start = ShutdownClock::now();
     LogShutdownPhase("interrupting", shutdown_start, "DaemonApp::Stop entered");
 

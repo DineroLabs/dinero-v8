@@ -2,6 +2,7 @@
 #include "daemon_context.h"
 #include "iservice.h"
 #include "daemon/notify_drain_worker.h"
+#include "daemon/stop_gate.h"
 #include <vector>
 #include <memory>
 
@@ -77,6 +78,10 @@ private:
     DaemonContext ctx_;
     std::vector<std::shared_ptr<IService>> services_;
     bool started_ = false;
+    // Stop() is reachable from multiple threads (node-thread shutdown path,
+    // fatal escalation, destructor); the gate makes teardown run exactly once
+    // while concurrent callers wait for it to finish (see stop_gate.h).
+    StopGate stop_gate_;
 
     // Own ChainDB for the full DaemonApp lifetime. Services receive non-owning
     // pointers to this instance.

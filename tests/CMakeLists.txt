@@ -3440,6 +3440,28 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_unreadable_block_set.cpp)
   message(STATUS "✅ UnreadableBlockSet concurrency test enabled")
 endif()
 
+# Double-teardown regression: DaemonApp::Stop exactly-once gate (stop_gate.h)
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_stop_gate.cpp)
+  add_executable(test_stop_gate
+    tests/daemon/test_stop_gate.cpp
+  )
+  add_dependencies(test_stop_gate gtest)
+  target_link_libraries(test_stop_gate PRIVATE
+    gtest
+    ${CMAKE_DL_LIBS}
+  )
+  target_include_directories(test_stop_gate PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  add_test(NAME StopGate COMMAND test_stop_gate)
+  set_tests_properties(StopGate PROPERTIES
+    LABELS "daemon;concurrency"
+    TIMEOUT 120
+  )
+  message(STATUS "✅ StopGate double-teardown test enabled")
+endif()
+
 # AssumeUTXO fatal-state-machine lifecycle tests (docs/design/assumeutxo-fatal-state-machine.md)
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_lifecycle.cpp)
   add_executable(test_assumeutxo_lifecycle
