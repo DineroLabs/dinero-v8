@@ -499,13 +499,24 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
         }
     });
 
-    // Wait briefly for startup confirmation
-    for (int i = 0; i < 50 && !s.running.load(); ++i) {
+    // Wait for startup confirmation. The old 5s window was too short for a RESTART: after
+    // the node has accumulated chainstate (tens of thousands of blocks), DaemonApp::Start()
+    // -> ChainstateService::Start() must reload that state + restore the Utreexo forest +
+    // resume background validation synchronously before it flips `running` — routinely more
+    // than 5s on mobile, so warm-sync restarts kept returning START_FAILED(-4) even though
+    // the node was starting fine. The iOS caller now runs nodecore_start off the main actor,
+    // so a longer wait no longer blocks the UI. 30s window, with a duration log so the real
+    // startup cost is visible.
+    const auto start_wait_begin = std::chrono::steady_clock::now();
+    for (int i = 0; i < 300 && !s.running.load(); ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    const long long start_wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start_wait_begin).count();
 
     if (!s.running.load()) {
         // Start failed — clean up
+        fprintf(stderr, "[nodecore_ffi] start NOT confirmed after %lldms — treating as START_FAILED\n", start_wait_ms);
         s.shutdown_requested = true;
         if (s.node_thread.joinable()) {
             s.node_thread.join();
@@ -514,6 +525,7 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
         return NODECORE_ERROR_START_FAILED;
     }
 
+    fprintf(stderr, "[nodecore_ffi] node started (running confirmed) in %lldms\n", start_wait_ms);
     return NODECORE_OK;
 }
 
