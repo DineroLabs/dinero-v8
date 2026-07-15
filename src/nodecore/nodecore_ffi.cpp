@@ -447,6 +447,32 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
         return NODECORE_ERROR_INIT_FAILED;
     }
 
+    // ChainDB's unrecovered-write loop-breaker defaults to std::exit(1)
+    // ("service manager restarts the node") — correct under systemd, fatal
+    // inside the host app's process: on-device 2026-07-15 a datadir wipe
+    // under the running node latched RocksDB and the loop-breaker took the
+    // whole app down. Route it to a clean node shutdown + host notification
+    // instead. The hook runs on an arbitrary internal service thread, so it
+    // must only set flags and emit — the node thread performs the actual
+    // Stop() via its shutdown_requested wait loop.
+    if (s.app->GetContext().chainstate) {
+        if (auto* fatal_cdb = s.app->GetContext().chainstate->GetChainDB()) {
+            fatal_cdb->setFatalWriteFailureHook([](const std::string& reason) {
+                auto& st = state();
+                fprintf(stderr,
+                        "[nodecore_ffi] ChainDB fatal: %s — requesting clean node "
+                        "shutdown (embedded node never exits the host process)\n",
+                        reason.c_str());
+                Json::Value ev;
+                ev["reason"] = "chaindb_fatal";
+                ev["error"] = reason;
+                emit_event_json(NODECORE_EVENT_SHUTDOWN, ev);
+                st.running = false;
+                st.shutdown_requested = true;
+            });
+        }
+    }
+
     // Start on a dedicated thread
     s.start_time = std::chrono::steady_clock::now();
 

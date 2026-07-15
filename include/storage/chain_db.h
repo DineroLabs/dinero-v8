@@ -144,7 +144,14 @@ public:
     // the fleet watchdog restarts it (a restart is a proven full recovery for
     // the latched-background-error class).
     static constexpr int kMaxConsecutiveWriteFailures = 25;
-    void setFatalWriteFailureHookForTesting(std::function<void(const std::string&)> hook) {
+    // Production override of the loud-failure action. std::exit(1) is only
+    // correct when a service manager owns the process; an EMBEDDED node
+    // (iOS/NodeCore) lives inside the host app's process, where exit() kills
+    // the whole app (observed on-device 2026-07-15 after the datadir was
+    // deleted under the node). The embedding layer installs a hook that
+    // requests a clean node shutdown + notifies the host instead. Also used
+    // by tests to observe the escalation without dying.
+    void setFatalWriteFailureHook(std::function<void(const std::string&)> hook) {
         fatal_write_failure_hook_ = std::move(hook);
     }
 

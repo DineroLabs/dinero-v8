@@ -147,7 +147,7 @@ void TestFatalHookFiresAfterThreshold() {
 
     int hook_calls = 0;
     std::string hook_reason;
-    db.setFatalWriteFailureHookForTesting([&](const std::string& reason) {
+    db.setFatalWriteFailureHook([&](const std::string& reason) {
         ++hook_calls;
         hook_reason = reason;
     });
@@ -195,11 +195,56 @@ void TestFatalHookFiresAfterThreshold() {
     std::cout << "  PASS" << std::endl;
 }
 
+void TestFatalHookOnDatadirDeletedUnderLiveDB() {
+    std::cout << "[Test 3] datadir deleted under a live DB escalates via hook, not exit"
+              << std::endl;
+
+    // The on-device 2026-07-15 incident shape: the host app's self-heal wiped
+    // the node datadir while the node was RUNNING. RocksDB latched
+    // ("No such file or directory: While open a file for appending"), and —
+    // with no hook installed — the loop-breaker's std::exit(1) took the whole
+    // host app down. An EMBEDDED node must escalate through the hook and
+    // leave the process alive; this test IS the process-alive assertion (it
+    // keeps executing past the threshold).
+    auto dir = MakeTempDir("wiped");
+
+    ChainDB db;
+    CHECK(db.init(dir) == Status::Ok, "ChainDB::init on real filesystem");
+
+    const ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    CHECK(PutOne(db, token, "k_seed", "v", /*sync=*/true) == Status::Ok, "seed write");
+
+    int hook_calls = 0;
+    db.setFatalWriteFailureHook([&](const std::string&) { ++hook_calls; });
+
+    // Delete the entire datadir under the open DB (the self-heal wipe).
+    std::filesystem::remove_all(dir);
+
+    // Force filesystem activity in the vanished directory: the flush must
+    // fail (no directory to create the sst in) and latch a background error.
+    CHECK(db.flushForTesting() != Status::Ok,
+          "flush into a deleted datadir must fail and latch");
+
+    const int threshold = ChainDB::kMaxConsecutiveWriteFailures;
+    for (int i = 0; i < threshold; ++i) {
+        CHECK(PutOne(db, token, "k_gone", "v", /*sync=*/true) != Status::Ok,
+              "write into a deleted datadir must fail");
+    }
+    CHECK(hook_calls == 1,
+          "hook must fire exactly once at the threshold (and the process must "
+          "still be alive to check it — exit(1) here killed the iOS app)");
+
+    db.close();
+    std::filesystem::remove_all(dir);
+    std::cout << "  PASS" << std::endl;
+}
+
 }  // namespace
 
 int main() {
     TestResumeRecoversHardError();
     TestFatalHookFiresAfterThreshold();
+    TestFatalHookOnDatadirDeletedUnderLiveDB();
     std::cout << "All #371 write-failure recovery tests passed" << std::endl;
     return 0;
 }
