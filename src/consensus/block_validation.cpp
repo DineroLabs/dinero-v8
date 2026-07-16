@@ -889,6 +889,27 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         }
     }
 
+    // STATELESS PROOF PRESENCE — hoisted ABOVE the Phase-2 snapshot/rollback
+    // guard. A spend block with no utreexo payload CANNOT connect in stateless
+    // mode and nothing has been mutated yet, so this reject must NOT fire the
+    // failure Restore(): Restore() replaces the SHARED forest object, and the
+    // CSN worker applies validated proofs to that same forest from another
+    // thread. The block-body-before-proof race retries this exact reject
+    // continuously, and each pointless Restore() can clobber a concurrent
+    // worker apply — observed on-device 2026-07-16 as a forest root matching
+    // no canonical height (FAIL step 2 at 62825) halting CSN IBD permanently.
+    // (The equivalent check below the guard is kept as defense in depth.)
+    if (validation_mode_ == ValidationMode::STATELESS &&
+        FullRulesActive(height) && !block.utreexo.has_value()) {
+        for (const auto& tx : block.vtx) {
+            if (!tx.IsCoinbase()) {
+                error = "missing-utreexo-data (height " + std::to_string(height) +
+                        " requires Utreexo proofs)";
+                return false;
+            }
+        }
+    }
+
     // Phase 2 snapshot/rollback semantics apply to all failure paths, including
     // structural rejects that happen before any deeper consensus work.
     UTXOSnapshot pre_block_snapshot;

@@ -971,6 +971,54 @@ TEST(BlockValidationInvariants, SnapshotCapableEmptyStateRestoresOnFailure) {
 }
 
 // ============================================================================
+// 2026-07-16 on-device wedge: a proof-less spend block in STATELESS mode is a
+// pure presence reject and must NOT fire the Phase-2 failure Restore().
+// ============================================================================
+// Restore() replaces the SHARED forest object; the CSN worker applies
+// validated proofs to that same forest from another thread. The block-body-
+// before-proof race retries this reject continuously, and each pointless
+// Restore() can clobber a concurrent worker apply — observed on-device as a
+// forest root matching no canonical height (FAIL step 2 at height 62825,
+// local=d5fe696d... vs canonical=e6d55d21...), halting CSN IBD permanently
+// after 5,689 retry attempts.
+
+TEST(BlockValidationInvariants, StatelessMissingProofRejectDoesNotFireRestore) {
+    EmptySnapshotUTXOSet utxo_set(/*supports_snapshot_restore=*/true);
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+
+    // Spend block WITHOUT a utreexo payload — the exact shape of a stored
+    // body that arrived ahead of its proof.
+    Block block = MakeCoinbaseBlock(62825, MakeTestHash(62824));
+    Transaction spend;
+    spend.version = 1;
+    spend.witness_version = 1;
+    TxInput input;
+    input.prevout.txid = MakeTestTxId(777);
+    input.prevout.vout = 0;
+    input.sequence = 0xfffffffe;
+    spend.vin.push_back(input);
+    TxOutput output;
+    output.value = AmountUna::Una(1000);
+    output.scriptPubKey = {0x51, 0x20};
+    output.scriptPubKey.resize(34, 0x00);
+    spend.vout.push_back(output);
+    block.vtx.push_back(spend);
+    ASSERT_FALSE(block.utreexo.has_value());
+
+    BlockUndo undo;
+    std::string error;
+    uint256 root;
+    bool ok = validator.ApplyBlock(block, 62825, MakeTestHash(62825), undo, root, error, nullptr);
+    ASSERT_FALSE(ok) << "proof-less spend block must not connect in stateless mode";
+    EXPECT_NE(error.find("missing-utreexo-data"), std::string::npos)
+        << "reject reason must be the proof-presence check, got: " << error;
+    EXPECT_EQ(utxo_set.restore_calls, 0u)
+        << "presence reject must not fire Restore() — it clobbers the shared "
+           "forest under the CSN worker's concurrent proof apply";
+}
+
+// ============================================================================
 // #274: STATELESS early-return must populate pre_block_shielded_frontier
 // ============================================================================
 // ConnectBlockInternal captures the pre-block shielded frontier early, but
