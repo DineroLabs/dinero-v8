@@ -447,6 +447,32 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
         return NODECORE_ERROR_INIT_FAILED;
     }
 
+    // ChainDB's unrecovered-write loop-breaker defaults to std::exit(1)
+    // ("service manager restarts the node") — correct under systemd, fatal
+    // inside the host app's process: on-device 2026-07-15 a datadir wipe
+    // under the running node latched RocksDB and the loop-breaker took the
+    // whole app down. Route it to a clean node shutdown + host notification
+    // instead. The hook runs on an arbitrary internal service thread, so it
+    // must only set flags and emit — the node thread performs the actual
+    // Stop() via its shutdown_requested wait loop.
+    if (s.app->GetContext().chainstate) {
+        if (auto* fatal_cdb = s.app->GetContext().chainstate->GetChainDB()) {
+            fatal_cdb->setFatalWriteFailureHook([](const std::string& reason) {
+                auto& st = state();
+                fprintf(stderr,
+                        "[nodecore_ffi] ChainDB fatal: %s — requesting clean node "
+                        "shutdown (embedded node never exits the host process)\n",
+                        reason.c_str());
+                Json::Value ev;
+                ev["reason"] = "chaindb_fatal";
+                ev["error"] = reason;
+                emit_event_json(NODECORE_EVENT_SHUTDOWN, ev);
+                st.running = false;
+                st.shutdown_requested = true;
+            });
+        }
+    }
+
     // Start on a dedicated thread
     s.start_time = std::chrono::steady_clock::now();
 
@@ -499,13 +525,24 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
         }
     });
 
-    // Wait briefly for startup confirmation
-    for (int i = 0; i < 50 && !s.running.load(); ++i) {
+    // Wait for startup confirmation. The old 5s window was too short for a RESTART: after
+    // the node has accumulated chainstate (tens of thousands of blocks), DaemonApp::Start()
+    // -> ChainstateService::Start() must reload that state + restore the Utreexo forest +
+    // resume background validation synchronously before it flips `running` — routinely more
+    // than 5s on mobile, so warm-sync restarts kept returning START_FAILED(-4) even though
+    // the node was starting fine. The iOS caller now runs nodecore_start off the main actor,
+    // so a longer wait no longer blocks the UI. 30s window, with a duration log so the real
+    // startup cost is visible.
+    const auto start_wait_begin = std::chrono::steady_clock::now();
+    for (int i = 0; i < 300 && !s.running.load(); ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    const long long start_wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start_wait_begin).count();
 
     if (!s.running.load()) {
         // Start failed — clean up
+        fprintf(stderr, "[nodecore_ffi] start NOT confirmed after %lldms — treating as START_FAILED\n", start_wait_ms);
         s.shutdown_requested = true;
         if (s.node_thread.joinable()) {
             s.node_thread.join();
@@ -514,6 +551,7 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
         return NODECORE_ERROR_START_FAILED;
     }
 
+    fprintf(stderr, "[nodecore_ffi] node started (running confirmed) in %lldms\n", start_wait_ms);
     return NODECORE_OK;
 }
 
