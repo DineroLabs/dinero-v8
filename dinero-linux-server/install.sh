@@ -42,6 +42,27 @@ echo "⚙️  Installing configuration..."
 sudo cp dinero.conf /etc/dinero/
 sudo chown dinero:dinero /etc/dinero/dinero.conf
 
+# Fresh-snapshot bootstrap (first-time installs only): fetch the fleet's
+# daily signed AssumeUTXO snapshot so the node starts minutes from tip
+# instead of syncing weeks of blocks. Skipped when chain data already
+# exists (a snapshot is consumed once at bootstrap and irrelevant after).
+# Any failure is non-fatal — the node simply syncs the long way.
+echo "⚡ Fetching fresh bootstrap snapshot..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FETCHER="$SCRIPT_DIR/dinero-snapshot-fetch.sh"
+[ -x "$FETCHER" ] || FETCHER="$SCRIPT_DIR/../packaging/snapshot/dinero-snapshot-fetch.sh"
+if [ ! -d /opt/dinero/data/blockchain ] && [ -x "$FETCHER" ]; then
+    sudo mkdir -p /opt/dinero/data/bootstrap
+    if sudo "$FETCHER" --dest /opt/dinero/data/bootstrap --conf /etc/dinero/dinero.conf; then
+        sudo chown -R dinero:dinero /opt/dinero/data
+        echo "   Snapshot staged — first sync will start near the chain tip."
+    else
+        echo "   ⚠️  Snapshot fetch failed — node will sync from its bundled/genesis state."
+    fi
+else
+    echo "   Skipped (existing chain data or fetcher not present)."
+fi
+
 # Setup firewall
 echo "🔒 Configuring firewall..."
 sudo ufw allow ssh
