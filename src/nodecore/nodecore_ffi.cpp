@@ -22,6 +22,8 @@
 #include "wallet/wallet_manager.h"
 #include "wallet/utxo_index.h"
 #include "storage/chain_db.h"
+#include "common/logger.h"
+#include <iostream>
 #include "consensus/utreexo_accumulator.h"
 #include "consensus/tx_parser.h"
 #include "consensus/pow_difficulty_helpers.h"
@@ -324,6 +326,7 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     bool assumeutxo_require_manifest = false;
     std::optional<std::string> explicit_profile;
     std::optional<bool> legacy_utreexo_override;
+    bool verbose_logging = false;  // embedded default: quiet (see below)
 
     if (config_json) {
         Json::Value config;
@@ -345,6 +348,9 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
             };
 
             if (config.isMember("network")) network = config["network"].asString();
+            if (config.isMember("verbose_logging")) {
+                verbose_logging = parse_bool(config["verbose_logging"], false);
+            }
             if (config.isMember("p2p_port")) p2p_port = config["p2p_port"].asInt();
             if (config.isMember("max_peers")) max_peers = config["max_peers"].asInt();
             if (config.isMember("wallet_schema_path")) {
@@ -437,6 +443,18 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     std::vector<char*> argv_ptrs;
     for (auto& a : args_storage) {
         argv_ptrs.push_back(const_cast<char*>(a.c_str()));
+    }
+
+    // Embedded logging is OFF by default: the daemon narrates every P2P
+    // message, block store, and UTXO add to stdout — thousands of syscalls
+    // per minute during sync, real CPU/battery on a phone, and nobody reads
+    // them in production. verbose_logging=true (Xcode debugging) restores
+    // the full firehose. std::cerr (errors/FATAL) is never silenced, and
+    // the g_logger threshold moves to WARNING so warnings still surface.
+    if (!verbose_logging) {
+        dinero::g_logger.setLogLevel(dinero::LogLevel::WARNING);
+        std::cout.rdbuf(nullptr);  // stream sentry fails fast; << becomes a no-op
+        fprintf(stderr, "[nodecore_ffi] quiet logging active (pass verbose_logging=true to restore)\n");
     }
 
     // Create and initialize DaemonApp
