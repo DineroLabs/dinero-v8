@@ -845,6 +845,31 @@ din::Json rpc_context_getblockchaininfo(const ExecutionContext& ctx, const din::
 }
 
 /**
+ * Forest checkpoint delta campaign phase 0
+ * (docs/design/forest-checkpoint-deltas.md): connect-latency and
+ * forest-checkpoint write-volume counters, shared by getsynchealth and
+ * getsnapshotbootstrapstatus.
+ */
+static din::Json BuildSyncStatsJson(
+    const std::shared_ptr<dinero::ChainstateService>& chainstate) {
+    const auto stats = chainstate->GetSyncStatsSnapshot();
+    din::Json sync_stats;
+    sync_stats["blocks_connected"] = static_cast<Json::UInt64>(stats.blocks_connected);
+    sync_stats["total_connect_ms"] = static_cast<Json::UInt64>(stats.total_connect_ms);
+    sync_stats["total_checkpoint_bytes"] =
+        static_cast<Json::UInt64>(stats.total_checkpoint_bytes);
+    sync_stats["last_height"] = static_cast<Json::UInt64>(stats.last_height);
+    sync_stats["last_connect_ms"] = static_cast<Json::UInt64>(stats.last_connect_ms);
+    sync_stats["last_checkpoint_bytes"] =
+        static_cast<Json::UInt64>(stats.last_checkpoint_bytes);
+    sync_stats["csn_checkpoint_writes"] =
+        static_cast<Json::UInt64>(stats.csn_checkpoint_writes);
+    sync_stats["csn_checkpoint_bytes"] =
+        static_cast<Json::UInt64>(stats.csn_checkpoint_bytes);
+    return sync_stats;
+}
+
+/**
  * blockchain.getsynchealth - Operator-focused sync diagnostics
  *
  * Returns a truthful view of the local active chain, header selector,
@@ -951,6 +976,11 @@ din::Json rpc_context_getsynchealth(const ExecutionContext& ctx, const din::Json
     const bool aligned = chainstate->IsCanonicalStateAligned(&alignment_reason);
     result["canonical_state_aligned"] = aligned;
     result["canonical_alignment_reason"] = aligned ? "" : alignment_reason;
+
+    // Forest checkpoint delta campaign phase 0
+    // (docs/design/forest-checkpoint-deltas.md): per-block connect latency
+    // and forest-checkpoint write volume since daemon start.
+    result["sync_stats"] = BuildSyncStatsJson(chainstate);
 
     din::Json selector;
     selector["available"] = static_cast<bool>(ctx.daemon->header_chain);
@@ -2176,6 +2206,7 @@ static din::Json rpc_context_getsnapshotbootstrapstatus(const ExecutionContext& 
         result["ibd_sync_percent"] = ibd.sync_percent;
         result["services_ready"] = ibd.services_ready;
         result["snapshot_bootstrap"] = buildSnapshotBootstrapDiagnostics(ctx, chainstate);
+        result["sync_stats"] = BuildSyncStatsJson(chainstate);
     } catch (const std::exception& e) {
         result["error"]["code"] = -32603;
         result["error"]["message"] = std::string("getsnapshotbootstrapstatus failed: ") + e.what();

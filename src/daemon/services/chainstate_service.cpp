@@ -11754,6 +11754,11 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         return false;
     };
 
+    // Forest checkpoint delta campaign phase 0
+    // (docs/design/forest-checkpoint-deltas.md): time the whole connect;
+    // recorded with the forest-checkpoint byte count at the success returns.
+    const auto connect_start = std::chrono::steady_clock::now();
+
     std::cout << "\n────────────────────────────────────────────────────────────────" << std::endl;
     std::cout << "🔧 [ConnectTip] ENTRY" << std::endl;
     std::cout << "────────────────────────────────────────────────────────────────" << std::endl;
@@ -12006,6 +12011,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             }
 
             std::cout << "✅ [ConnectTip] Stateless replay bookkeeping SUCCEEDED" << std::endl;
+            RecordBlockConnectStats(tip_to_connect->height, connect_start);
             return true;
         }
     }
@@ -12412,6 +12418,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         std::vector<uint8_t> forest_serialized;
         if (consensus_utxo_set_) {
             forest_serialized = consensus_utxo_set_->GetForest().serialize();
+            pending_forest_checkpoint_bytes_ = forest_serialized.size();
             const auto checkpoint_status = chain_db_->putUtreexoCheckpointWithChecksum(
                 token, tip_to_connect->height, forest_serialized, &utxo_batch);
             if (checkpoint_status != Status::Ok) {
@@ -13381,7 +13388,21 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                   << tip_to_connect->height << std::endl;
     }
 
+    RecordBlockConnectStats(tip_to_connect->height, connect_start);
     return true;
+}
+
+void ChainstateService::RecordBlockConnectStats(
+    uint32_t height, std::chrono::steady_clock::time_point connect_start) {
+    const auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - connect_start).count();
+    const uint64_t checkpoint_bytes = pending_forest_checkpoint_bytes_;
+    pending_forest_checkpoint_bytes_ = 0;
+    const std::string summary = sync_stats_.RecordBlockConnect(
+        height, static_cast<uint64_t>(connect_ms), checkpoint_bytes);
+    if (!summary.empty() && logger_) {
+        logger_->info(summary);
+    }
 }
 
 // ============================================================================
@@ -13771,6 +13792,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // 4. Utreexo checkpoint (forest is already at correct post-replay state)
     if (consensus_utxo_set_) {
         auto serialized = consensus_utxo_set_->GetForest().serialize();
+        pending_forest_checkpoint_bytes_ = serialized.size();
         auto checkpoint_status = chain_db_->putUtreexoCheckpointWithChecksum(
             token, block_index->height, serialized);
         if (checkpoint_status != Status::Ok) {

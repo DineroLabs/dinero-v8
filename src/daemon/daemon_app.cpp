@@ -4542,6 +4542,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     bool persist_ready = true;
                                     if (auto* forest = stateless_node->GetForest()) {
                                         auto forest_data = forest->serialize();
+                                        chainstate_service->RecordCsnForestCheckpoint(forest_data.size());
                                         auto ckpt_status = cdb->putUtreexoCheckpoint(
                                             ckpt_token,
                                             static_cast<int>(h),
