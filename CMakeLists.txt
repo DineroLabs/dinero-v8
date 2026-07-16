@@ -867,6 +867,7 @@ add_library(dinero_core STATIC
   src/daemon/services/config_service.cpp
   src/daemon/services/wallet_service.cpp
   src/daemon/services/chainstate_service.cpp
+  src/daemon/sync_stats_recorder.cpp  # Forest checkpoint delta campaign phase 0
   src/daemon/services/assumeutxo_lifecycle.cpp  # AssumeUTXO fatal state machine
   src/daemon/services/assumeutxo_replay.cpp     # AssumeUTXO isolated replay engine
   src/daemon/services/mempool_service.cpp

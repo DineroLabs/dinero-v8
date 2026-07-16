@@ -112,6 +112,26 @@ set_tests_properties(NotifyDrainWorker PROPERTIES
   LABELS "daemon;smoke"
 )
 
+# Forest checkpoint delta campaign phase 0: sync instrumentation
+# (docs/design/forest-checkpoint-deltas.md)
+add_executable(test_sync_stats_recorder
+  tests/daemon/test_sync_stats_recorder.cpp
+  src/daemon/sync_stats_recorder.cpp
+)
+add_dependencies(test_sync_stats_recorder gtest gtest_main)
+target_include_directories(test_sync_stats_recorder BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_sync_stats_recorder PRIVATE
+  GTest::gtest_main
+  Threads::Threads
+)
+add_test(NAME SyncStatsRecorder COMMAND test_sync_stats_recorder)
+set_tests_properties(SyncStatsRecorder PROPERTIES
+  LABELS "daemon;smoke"
+)
+
 # issue #224: daemon log rotation + reopen
 add_executable(test_logger_rotation
   tests/common/test_logger_rotation.cpp
@@ -5751,6 +5771,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_block_assembler_smoke.
     # Note: logger_service.h is header-only, no .cpp needed
     src/daemon/services/config_service.cpp
     src/daemon/services/chainstate_service.cpp
+    src/daemon/sync_stats_recorder.cpp
     src/daemon/services/wallet_service.cpp
     # Core dependencies
     src/common/logger.cpp
@@ -5822,6 +5843,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_consensus_integrati
     # Reuse same dependencies as test_block_assembler_smoke
     src/daemon/services/config_service.cpp
     src/daemon/services/chainstate_service.cpp
+    src/daemon/sync_stats_recorder.cpp
     src/daemon/services/mining_service.cpp
     src/daemon/services/wallet_service.cpp
     # Phase C: Legacy Mining class removed - test needs updating
@@ -5896,6 +5918,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     # Reuse same dependencies as test_mining_smoke
     src/daemon/services/config_service.cpp
     src/daemon/services/chainstate_service.cpp
+    src/daemon/sync_stats_recorder.cpp
     src/daemon/services/wallet_service.cpp
     src/common/logger.cpp
     src/common/config_manager.cpp
@@ -6438,6 +6461,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     # Reuse same dependencies as test_block_assembler_smoke
     src/daemon/services/config_service.cpp
     src/daemon/services/chainstate_service.cpp
+    src/daemon/sync_stats_recorder.cpp
     src/daemon/services/wallet_service.cpp
     src/common/logger.cpp
     src/common/config_manager.cpp
@@ -6645,6 +6669,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/regression/test_deep_reorg.cpp)
     src/common/logger.cpp  # Provides g_logger
     src/mining/block_assembler.cpp
     src/daemon/services/chainstate_service.cpp
+    src/daemon/sync_stats_recorder.cpp
     src/daemon/services/wallet_service.cpp
     src/daemon/services/config_service.cpp
   )

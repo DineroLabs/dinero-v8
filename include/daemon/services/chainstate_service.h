@@ -9,6 +9,7 @@
 #include "daemon/services/assumeutxo_lifecycle.h"  // AssumeUTXO fatal state machine
 #include "daemon/services/unreadable_block_set.h"  // thread-safe unreadable-block tracking
 #include "daemon/services/stateless_replay_shielded_decision.h"  // #356: marker-guard decision
+#include "daemon/sync_stats_recorder.h"  // Forest checkpoint delta campaign phase 0
 #include "consensus/block_validation.h"  // Reorg fix: Production consensus validator
 #include "consensus/consensus_utxo_set.h"  // Phase 2: Pure in-memory UTXO set
 #include "consensus/shielded/anchor_history.h"
@@ -413,6 +414,19 @@ public:
     bool IsInIBD() const;
     // Get IBD progress information
     IBDProgress GetIBDProgress() const;
+
+    // Forest checkpoint delta campaign phase 0
+    // (docs/design/forest-checkpoint-deltas.md): per-block connect latency +
+    // forest-checkpoint write volume, for getsynchealth /
+    // getsnapshotbootstrapstatus and the campaign's A/B baseline.
+    SyncStatsRecorder::Snapshot GetSyncStatsSnapshot() const {
+        return sync_stats_.GetSnapshot();
+    }
+    // CSN validation worker's extra full-forest checkpoint write
+    // (daemon_app CSN reorg-support path).
+    void RecordCsnForestCheckpoint(uint64_t bytes) {
+        sync_stats_.RecordCsnCheckpoint(bytes);
+    }
     // Update estimated network height (called by P2PService on peer connect)
     void UpdateNetworkHeight(uint32_t peer_height) {
         if (peer_height > ibd_network_height_) {
@@ -1078,6 +1092,18 @@ private:
     // (clear) AND from activation_mutex_ holders (mark/contains) — see
     // UnreadableBlockSet for the corruption history that motivated the type.
     UnreadableBlockSet unreadable_blocks_;
+
+    // Forest checkpoint delta campaign phase 0 instrumentation.
+    // pending_forest_checkpoint_bytes_ carries the size of the forest blob
+    // serialized while connecting the current block (main ConnectTip batch
+    // or CommitConnectedBlockBookkeeping) to the RecordBlockConnectStats
+    // call at ConnectTip's success returns. ConnectTip is serialized, so a
+    // plain member suffices.
+    SyncStatsRecorder sync_stats_;
+    uint64_t pending_forest_checkpoint_bytes_ = 0;
+    void RecordBlockConnectStats(uint32_t height,
+                                 std::chrono::steady_clock::time_point connect_start);
+
     mutable std::atomic<uint64_t> legacy_body_fallback_reads_{0};
     mutable std::atomic<uint64_t> legacy_undo_fallback_reads_{0};
     bool strict_archival_reads_{false};
