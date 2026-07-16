@@ -2873,8 +2873,17 @@ bool ChainstateService::Start() {
                 if (!checkpoint_valid) {
                     throw std::runtime_error("Checkpoint integrity check failed");
                 }
-                // Deserialize returns a new forest - replace the current one
+                // Deserialize returns a new forest - replace the current one.
+                // deserialize is all-or-nothing (rooted-husk fix): a refused
+                // payload comes back EMPTY. Installing an empty forest for a
+                // non-empty checkpoint silently strands the node — treat it
+                // as a corrupt checkpoint instead (recovery path below).
                 auto restored_forest = consensus::UtreexoForest::deserialize(serialized_forest);
+                if (restored_forest.getNumLeaves() == 0 && !serialized_forest.empty()) {
+                    throw std::runtime_error(
+                        "Checkpoint forest deserialize refused payload (" +
+                        std::to_string(serialized_forest.size()) + " bytes)");
+                }
                 consensus_utxo_set_->GetForest() = std::move(restored_forest);
 
                 // Apr 13 2026 Stage 3 — Utreexo canonical-roots fork.
