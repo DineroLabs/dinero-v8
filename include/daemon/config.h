@@ -38,6 +38,16 @@ struct NodeConfig {
     // Phase 7.4.3: Utreexo stateless mode
     bool utreexo_stateless = false;  // Sync as stateless node (no UTXO database)
 
+    // Forest checkpoint delta campaign phase 1
+    // (docs/design/forest-checkpoint-deltas.md): write the full forest
+    // checkpoint every N blocks instead of every block; the per-block
+    // Utreexo delta sidecar (UD:<hash>) rides the unified batch regardless.
+    // 1 = pre-campaign behavior (full checkpoint every block).
+    // DEV/REGTEST ONLY until phase 2 lands checkpoint+replay restore:
+    // with N > 1 a restart whose tip is past the latest checkpoint has no
+    // restore path yet and fails loud into recovery/safe mode.
+    uint32_t utreexo_checkpoint_interval = 1;
+
     // AssumeUTXO forward-connect (mobile profile): connect blocks forward from
     // the snapshot base immediately instead of holding the tip at base until
     // the genesis->base background validation promotes (#361). Promotion then

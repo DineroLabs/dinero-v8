@@ -982,6 +982,25 @@ bool DaemonApp::Init(int argc, char** argv) {
 
         GetConfig().utreexo_bridge = config->GetBool("utreexo-bridge", true);
 
+        // Forest checkpoint delta campaign phase 1
+        // (docs/design/forest-checkpoint-deltas.md). Hidden flag, default 1
+        // (= full checkpoint every block, pre-campaign behavior).
+        // DEV/REGTEST ONLY until phase 2 lands the checkpoint+replay
+        // restore path — see the NodeConfig field comment.
+        {
+            const int interval_raw =
+                config->GetInt("utreexo.checkpoint_interval", 1);
+            GetConfig().utreexo_checkpoint_interval =
+                interval_raw > 1 ? static_cast<uint32_t>(interval_raw) : 1;
+            if (GetConfig().utreexo_checkpoint_interval > 1) {
+                std::cout << "[DaemonApp] utreexo.checkpoint_interval="
+                          << GetConfig().utreexo_checkpoint_interval
+                          << " (CAMPAIGN PHASE 1 — DEV/REGTEST ONLY; no"
+                          << " delta-replay restore yet, restarts at a"
+                          << " non-checkpoint tip fail loud)" << std::endl;
+            }
+        }
+
         // Phase 3a of the shielded reorg invertibility plan
         // (docs/specs/atomic_consensus_persistence_phase3.md). Hidden
         // flag, default off. ConsensusWriteBatch::IsEnabled() reads

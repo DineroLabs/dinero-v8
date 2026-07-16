@@ -132,6 +132,27 @@ set_tests_properties(SyncStatsRecorder PROPERTIES
   LABELS "daemon;smoke"
 )
 
+# Forest checkpoint delta campaign phase 1: every-N checkpoint gating
+# at the commit-batch contract (docs/design/forest-checkpoint-deltas.md)
+add_executable(test_chainstate_commit_batch_interval
+  tests/daemon/test_chainstate_commit_batch_interval.cpp
+)
+add_dependencies(test_chainstate_commit_batch_interval gtest gtest_main)
+target_include_directories(test_chainstate_commit_batch_interval BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
+)
+target_link_libraries(test_chainstate_commit_batch_interval PRIVATE
+  GTest::gtest_main
+  Threads::Threads
+  ${ROCKSDB_LIBRARY}
+)
+add_test(NAME ChainstateCommitBatchInterval COMMAND test_chainstate_commit_batch_interval)
+set_tests_properties(ChainstateCommitBatchInterval PROPERTIES
+  LABELS "daemon;smoke"
+)
+
 # issue #224: daemon log rotation + reopen
 add_executable(test_logger_rotation
   tests/common/test_logger_rotation.cpp

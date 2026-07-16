@@ -68,12 +68,24 @@ class uint256;
 
 class ChainstateCommitBatch {
 public:
+    // utreexo_checkpoint_interval — forest checkpoint delta campaign phase 1
+    // (docs/design/forest-checkpoint-deltas.md): with interval > 1, the full
+    // forest checkpoint is required only at heights where
+    // height % interval == 0. The ForestTipMarker and the per-block delta
+    // sidecar stay required EVERY block — they are what DisconnectTip and
+    // phase 2's checkpoint+replay restore depend on. Interval 0 is treated
+    // as 1 (checkpoint every block, the pre-campaign behavior).
     ChainstateCommitBatch(uint64_t tip_height,
                           bool utreexo_active,
                           bool utreexo_stateless,
-                          bool shielded_active)
+                          bool shielded_active,
+                          uint32_t utreexo_checkpoint_interval = 1)
       : tip_height_(tip_height),
         utreexo_delta_required_(utreexo_active && !utreexo_stateless),
+        utreexo_checkpoint_required_(
+            utreexo_delta_required_ &&
+            (utreexo_checkpoint_interval <= 1 ||
+             tip_height % utreexo_checkpoint_interval == 0)),
         shielded_marker_required_(shielded_active) {}
 
     ChainstateCommitBatch(const ChainstateCommitBatch&) = delete;
@@ -111,7 +123,9 @@ public:
         if (!txindex_staged_) return std::string("txindex");
         if (!block_index_staged_) return std::string("block_index_metadata");
         if (utreexo_delta_required_) {
-            if (!utreexo_checkpoint_staged_) return std::string("utreexo_checkpoint");
+            if (utreexo_checkpoint_required_ && !utreexo_checkpoint_staged_) {
+                return std::string("utreexo_checkpoint");
+            }
             if (!utreexo_forest_tip_marker_staged_) return std::string("utreexo_forest_tip_marker");
             if (!utreexo_delta_staged_) return std::string("utreexo_delta_sidecar");
         }
@@ -148,6 +162,7 @@ public:
 private:
     uint64_t tip_height_;
     bool utreexo_delta_required_;
+    bool utreexo_checkpoint_required_;
     bool shielded_marker_required_;
 
     rocksdb::WriteBatch batch_;
