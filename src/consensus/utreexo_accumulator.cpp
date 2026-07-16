@@ -2482,6 +2482,21 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
 
     size_t offset = 0;
 
+    // Rooted-husk hazard (on-device 2026-07-16, height 62742): the payload
+    // parses numLeaves_/roots_ first, so returning the partial forest on a
+    // short read yields an object whose getCommitment() matches the original
+    // accumulator while nodes_/leaf_positions_ are missing — it passes every
+    // root check and fails every leaf lookup, permanently wedging the first
+    // spend after a restore. Deserialization is all-or-nothing: any short
+    // payload past the header fails LOUDLY with an empty forest, matching
+    // the tail-validation convention.
+    auto refuse_partial = [](const char* what) {
+        std::cerr << "❌ [Utreexo Deserialize] " << what
+                  << " — refusing partial forest (rooted-husk hazard)" << std::endl;
+        return UtreexoForest();
+    };
+
+
     // Version byte handling:
     //   v3: 1 byte version + 1 byte canonical_empty_roots_ flag
     //   v2: 1 byte version, no flag (flag defaults to false)
@@ -2526,7 +2541,7 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
     // FIX: Check for integer overflow before multiplication
     uint64_t roots_bytes = static_cast<uint64_t>(numRoots) * 32;
     if (roots_bytes > SIZE_MAX || data.size() < offset + roots_bytes) {
-        return forest;  // Overflow or insufficient data
+        return refuse_partial("roots section short or overflowing");
     }
 
     std::vector<UtreexoHash> nonEmptyRoots;
@@ -2557,8 +2572,10 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
 
     // 4. Number of internal nodes (Phase 4: Complete state deserialization)
     if (data.size() < offset + 4) {
-        // Backward compatibility: old format without nodes_
-        return forest;
+        // Pre-Phase-4 payloads (roots only, no nodes_) restore as EXACTLY the
+        // rooted husk described above. Every live writer emits the full v3
+        // state; a roots-only payload is either ancient or truncated — refuse.
+        return refuse_partial("payload ends after roots section (no nodes_)");
     }
 
     uint32_t numNodes = data[offset] | (data[offset+1] << 8) |
@@ -2570,12 +2587,12 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
         // Version 2: Each node has 1-byte presence flag + 32 bytes if present
         for (uint32_t i = 0; i < numNodes; i++) {
             if (data.size() < offset + 1) {
-                return forest;  // Insufficient data
+                return refuse_partial("nodes section truncated (presence flag)");
             }
             uint8_t present = data[offset++];
             if (present) {
                 if (data.size() < offset + 32) {
-                    return forest;  // Insufficient data
+                    return refuse_partial("nodes section truncated (node hash)");
                 }
                 UtreexoHash node(data.begin() + offset, data.begin() + offset + 32);
                 forest.nodes_.push_back(node);
@@ -2588,7 +2605,7 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
         // Version 1 (legacy): 32 bytes per node, empty vector means absent
         uint64_t nodes_bytes = static_cast<uint64_t>(numNodes) * 32;
         if (nodes_bytes > SIZE_MAX || data.size() < offset + nodes_bytes) {
-            return forest;  // Overflow or insufficient data
+            return refuse_partial("legacy nodes section short or overflowing");
         }
 
         for (uint32_t i = 0; i < numNodes; i++) {
@@ -2609,18 +2626,11 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
 
     // 6. Number of deleted positions (4 bytes) - For UTXO removal
     if (data.size() < offset + 4) {
-        // Backward compatibility: old format without deleted_positions_
-        // Rebuild leaf_positions_ map from nodes_
-        for (uint64_t i = 0; i < forest.numLeaves_ && i < forest.nodes_.size(); i++) {
-            if (forest.nodes_[i].has_value()) {
-                const auto inserted = forest.leaf_positions_.emplace(forest.nodes_[i].value(), i);
-                if (!inserted.second) {
-                    std::cerr << "❌ [Utreexo Deserialize] Duplicate live leaf hash in legacy payload" << std::endl;
-                    return UtreexoForest();
-                }
-            }
-        }
-        return forest;
+        // A payload without the deleted-positions section skips the tombstones
+        // AND the stored-vs-rebuilt roots cross-check below — a truncation here
+        // silently resurrects spent leaves under the original commitment. All
+        // live writers emit the full v3 state — refuse.
+        return refuse_partial("payload ends before deleted-positions section");
     }
 
     uint32_t numDeleted = data[offset] | (data[offset+1] << 8) |
@@ -2631,7 +2641,7 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
     // FIX: Check for integer overflow before multiplication
     uint64_t deleted_bytes = static_cast<uint64_t>(numDeleted) * 8;
     if (deleted_bytes > SIZE_MAX || data.size() < offset + deleted_bytes) {
-        return forest;  // Overflow or insufficient data
+        return refuse_partial("deleted-positions section short or overflowing");
     }
 
     for (uint32_t i = 0; i < numDeleted; i++) {

@@ -275,6 +275,14 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                             try {
                                 auto parent_forest =
                                     consensus::UtreexoForest::deserialize(ckpt.value());
+                                // All-or-nothing deserialize (rooted-husk fix):
+                                // refused payload -> empty forest. A husk here
+                                // would compute a bogus side-chain root.
+                                if (parent_forest.getNumLeaves() == 0 &&
+                                    !ckpt.value().empty()) {
+                                    throw std::runtime_error(
+                                        "parent forest checkpoint deserialize refused");
+                                }
 
                                 // Build a fork-aware UTXO overlay by
                                 // walking main-chain undo data from the

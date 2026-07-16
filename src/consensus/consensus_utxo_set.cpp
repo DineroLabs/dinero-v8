@@ -319,13 +319,30 @@ void ConsensusUTXOSet::Restore(const UTXOSnapshot& snapshot) {
     best_block_ = snapshot.block_hash;
     utxos_ = snapshot.utxos;  // Deep copy
 
+    bool rebuild_from_utxos = false;
     if (!snapshot.utreexo_forest_state.empty()) {
         forest_ = UtreexoForest::deserialize(snapshot.utreexo_forest_state);
+        // deserialize fails all-or-nothing (empty forest) — never a partial
+        // "rooted husk". If the blob claimed leaves but restored empty,
+        // rebuild from the UTXO map instead of proceeding with a dead forest.
+        if (forest_.getNumLeaves() == 0 && snapshot.utreexo_num_leaves != 0) {
+            std::cerr << "WARNING [Restore]: forest deserialize refused payload ("
+                      << snapshot.utreexo_forest_state.size()
+                      << " bytes, expected " << snapshot.utreexo_num_leaves
+                      << " leaves) — rebuilding forest from snapshot UTXOs"
+                      << std::endl;
+            rebuild_from_utxos = true;
+        }
     } else if (snapshot.utreexo_num_leaves == 0 && snapshot.utxos.empty()) {
         forest_ = UtreexoForest();
     } else {
-        // Backward-compat fallback for snapshots that predate serialized forest
-        // state. This is slower but preserves full-state restore semantics.
+        rebuild_from_utxos = true;
+    }
+
+    if (rebuild_from_utxos) {
+        // Fallback for snapshots that predate serialized forest state, or
+        // whose forest payload was refused by deserialize. Slower but
+        // preserves full-state restore semantics.
         forest_ = UtreexoForest();
         std::vector<OutPoint> sorted_outpoints;
         sorted_outpoints.reserve(utxos_.size());

@@ -3462,6 +3462,31 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_stop_gate.cpp)
   message(STATUS "✅ StopGate double-teardown test enabled")
 endif()
 
+# Rooted-husk regression: forest deserialize must be all-or-nothing (62742 wedge)
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_forest_serialization_integrity.cpp)
+  add_executable(test_forest_serialization_integrity
+    tests/consensus/test_forest_serialization_integrity.cpp
+  )
+  add_dependencies(test_forest_serialization_integrity gtest)
+  target_link_libraries(test_forest_serialization_integrity PRIVATE
+    dinero_chainstate
+    gtest
+    ${CMAKE_DL_LIBS}
+  )
+  link_zstd_if_needed(test_forest_serialization_integrity)
+  target_include_directories(test_forest_serialization_integrity PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  add_test(NAME ForestSerializationIntegrity COMMAND test_forest_serialization_integrity)
+  set_tests_properties(ForestSerializationIntegrity PROPERTIES
+    LABELS "consensus;utreexo"
+    TIMEOUT 120
+  )
+  message(STATUS "✅ Forest serialization integrity test enabled")
+endif()
+
 # AssumeUTXO fatal-state-machine lifecycle tests (docs/design/assumeutxo-fatal-state-machine.md)
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_lifecycle.cpp)
   add_executable(test_assumeutxo_lifecycle
