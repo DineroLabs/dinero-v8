@@ -144,12 +144,13 @@ probe_state() {
     sync="$(rpc_call "blockchain.getsynchealth" '[]')"
     jq -e '.error == null' <<<"${sync}" >/dev/null \
         || fail "blockchain.getsynchealth failed: ${sync}"
-    local chaindb_tip forest_marker checkpoint shielded_marker active safe_mode
+    local chaindb_tip forest_marker checkpoint shielded_marker active aligned safe_mode
     chaindb_tip="$(jq -r '.result.chaindb_tip_height // -1' <<<"${sync}")"
     forest_marker="$(jq -r '.result.forest_tip_marker_height // -1' <<<"${sync}")"
     checkpoint="$(jq -r '.result.latest_utreexo_checkpoint_height // -1' <<<"${sync}")"
     shielded_marker="$(jq -r '.result.shielded_tip_marker_height // -1' <<<"${sync}")"
     active="$(jq -r '.result.active_height // -1' <<<"${sync}")"
+    aligned="$(jq -r '.result.canonical_state_aligned // false' <<<"${sync}")"
 
     local sm
     sm="$(rpc_call "safemode.status" '[]')"
@@ -160,9 +161,9 @@ probe_state() {
         safe_mode="false"
     fi
 
-    printf '%s:%s:%s:%s:%s:%s\n' \
+    printf '%s:%s:%s:%s:%s:%s:%s\n' \
         "${chaindb_tip}" "${forest_marker}" "${checkpoint}" \
-        "${shielded_marker}" "${active}" "${safe_mode}"
+        "${shielded_marker}" "${active}" "${safe_mode}" "${aligned}"
 }
 
 # Assert all five container heights match and safe mode is not
@@ -170,8 +171,8 @@ probe_state() {
 assert_atomic_alignment() {
     local label="$1"
     local probe="$2"
-    local chaindb_tip forest_marker checkpoint shielded_marker active safe_mode
-    IFS=: read -r chaindb_tip forest_marker checkpoint shielded_marker active safe_mode \
+    local chaindb_tip forest_marker checkpoint shielded_marker active safe_mode aligned
+    IFS=: read -r chaindb_tip forest_marker checkpoint shielded_marker active safe_mode aligned \
         <<<"${probe}"
 
     [[ "${safe_mode}" == "false" ]] \
@@ -179,12 +180,20 @@ assert_atomic_alignment() {
 
     [[ "${chaindb_tip}" == "${forest_marker}" ]] \
         || fail "${label}: chaindb_tip ${chaindb_tip} != forest_tip_marker ${forest_marker}"
-    [[ "${chaindb_tip}" == "${checkpoint}" ]] \
-        || fail "${label}: chaindb_tip ${chaindb_tip} != utreexo_checkpoint ${checkpoint}"
+    # Forest checkpoint delta campaign phase 3: the full checkpoint is a
+    # periodic anchor (every utreexo.checkpoint_interval blocks), not a
+    # per-block container — the atomic per-block forest material is the
+    # ForestTipMarker + UD sidecar (asserted via marker equality above and
+    # canonical_state_aligned below, which reconstructs forest(tip) as
+    # checkpoint + sidecar replay). Checkpoint must exist at or below tip.
+    [[ "${checkpoint}" -ge 0 && "${checkpoint}" -le "${chaindb_tip}" ]] \
+        || fail "${label}: utreexo_checkpoint ${checkpoint} not in [0, chaindb_tip ${chaindb_tip}]"
     [[ "${chaindb_tip}" == "${shielded_marker}" ]] \
         || fail "${label}: chaindb_tip ${chaindb_tip} != shielded_tip_marker ${shielded_marker}"
     [[ "${chaindb_tip}" == "${active}" ]] \
         || fail "${label}: chaindb_tip ${chaindb_tip} != active_height ${active}"
+    [[ "${aligned}" == "true" ]] \
+        || fail "${label}: canonical_state_aligned false after restart (probe=${probe})"
 
     printf '%s\n' "${chaindb_tip}"
 }
