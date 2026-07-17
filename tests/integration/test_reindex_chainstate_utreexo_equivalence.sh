@@ -199,9 +199,16 @@ assert_same_state() {
             chaindb_tip_hash: ($lhs.chaindb_tip_hash == $rhs.chaindb_tip_hash),
             canonical_state_aligned: ($lhs.canonical_state_aligned == $rhs.canonical_state_aligned),
             latest_utreexo_checkpoint_found: ($lhs.latest_utreexo_checkpoint_found == $rhs.latest_utreexo_checkpoint_found),
-            latest_utreexo_checkpoint_height: ($lhs.latest_utreexo_checkpoint_height == $rhs.latest_utreexo_checkpoint_height),
+            # Checkpoint HEIGHT and checksum-version are storage layout, not
+            # chain state: with utreexo.checkpoint_interval > 1 (campaign
+            # phase 3 default) the live node holds its last interval
+            # checkpoint while a reindexed datadir anchors at its final tip.
+            # Equivalence requires each side to hold SOME valid checkpoint at
+            # or below its (already-compared-equal) tip.
+            latest_utreexo_checkpoint_sane:
+                ($lhs.latest_utreexo_checkpoint_height <= $lhs.chaindb_tip_height and
+                 $rhs.latest_utreexo_checkpoint_height <= $rhs.chaindb_tip_height),
             latest_utreexo_checkpoint_has_checksum: ($lhs.latest_utreexo_checkpoint_has_checksum == $rhs.latest_utreexo_checkpoint_has_checksum),
-            utreexo_checksum_version: ($lhs.utreexo_checksum_version == $rhs.utreexo_checksum_version),
             forest_tip_marker_found: ($lhs.forest_tip_marker_found == $rhs.forest_tip_marker_found),
             forest_tip_marker_height: ($lhs.forest_tip_marker_height == $rhs.forest_tip_marker_height),
             forest_tip_marker_hash: ($lhs.forest_tip_marker_hash == $rhs.forest_tip_marker_hash),

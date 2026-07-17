@@ -982,23 +982,22 @@ bool DaemonApp::Init(int argc, char** argv) {
 
         GetConfig().utreexo_bridge = config->GetBool("utreexo-bridge", true);
 
-        // Forest checkpoint delta campaign phase 1
-        // (docs/design/forest-checkpoint-deltas.md). Hidden flag, default 1
-        // (= full checkpoint every block, pre-campaign behavior).
-        // DEV/REGTEST ONLY until phase 2 lands the checkpoint+replay
-        // restore path — see the NodeConfig field comment.
+        // Forest checkpoint delta campaign
+        // (docs/design/forest-checkpoint-deltas.md). Full forest checkpoint
+        // every N blocks (default 500); per-block delta sidecars + replay
+        // restore cover everything in between. utreexo.checkpoint_interval=1
+        // restores the pre-campaign per-block checkpoint behavior.
         {
             const int interval_raw =
-                config->GetInt("utreexo.checkpoint_interval", 1);
+                config->GetInt("utreexo.checkpoint_interval", 500);
             GetConfig().utreexo_checkpoint_interval =
                 interval_raw > 1 ? static_cast<uint32_t>(interval_raw) : 1;
-            if (GetConfig().utreexo_checkpoint_interval > 1) {
-                std::cout << "[DaemonApp] utreexo.checkpoint_interval="
-                          << GetConfig().utreexo_checkpoint_interval
-                          << " (CAMPAIGN PHASE 1 — DEV/REGTEST ONLY; no"
-                          << " delta-replay restore yet, restarts at a"
-                          << " non-checkpoint tip fail loud)" << std::endl;
-            }
+            std::cout << "[DaemonApp] utreexo.checkpoint_interval="
+                      << GetConfig().utreexo_checkpoint_interval
+                      << (GetConfig().utreexo_checkpoint_interval == 1
+                              ? " (full checkpoint every block)"
+                              : " (delta sidecars between full checkpoints)")
+                      << std::endl;
         }
 
         // Phase 3a of the shielded reorg invertibility plan
@@ -1602,6 +1601,8 @@ bool DaemonApp::Init(int argc, char** argv) {
         reindex_config.progress_interval = 1000;
         reindex_config.shielded_frontier_output_path = temp_shielded_frontier_path;
         reindex_config.shielded_nullifier_db_path = temp_shielded_nullifier_db_path;
+        reindex_config.utreexo_checkpoint_interval =
+            GetConfig().utreexo_checkpoint_interval;
 
         consensus::BlockReindexer reindexer(data_dir_path, rebuilt_chain_db.get(), block_storage.get(), reindex_config);
         auto reindex_result = reindexer.execute();

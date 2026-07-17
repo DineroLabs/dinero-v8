@@ -197,6 +197,33 @@ set_tests_properties(ForestDeltaReplayEquivalence PROPERTIES
   LABELS "consensus;utreexo;forest-checkpoint-deltas;smoke"
 )
 
+# Forest checkpoint delta campaign phase 3: historical forest restore
+# (nearest checkpoint + sidecar replay) shared by startup + bridge
+add_executable(test_forest_restore
+  tests/storage/test_forest_restore.cpp
+  src/common/logger.cpp
+)
+add_dependencies(test_forest_restore gtest)
+target_link_libraries(test_forest_restore PRIVATE
+  dinero_chainstate
+  dinero_crypto
+  RocksDB::rocksdb
+  OpenSSL::Crypto
+  gtest
+  gtest_main
+  ${CMAKE_DL_LIBS}
+)
+link_zstd_if_needed(test_forest_restore)
+target_include_directories(test_forest_restore PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME ForestRestore COMMAND test_forest_restore)
+set_tests_properties(ForestRestore PROPERTIES
+  LABELS "storage;utreexo;forest-checkpoint-deltas;smoke"
+)
+
 # issue #224: daemon log rotation + reopen
 add_executable(test_logger_rotation
   tests/common/test_logger_rotation.cpp

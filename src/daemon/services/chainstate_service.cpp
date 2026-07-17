@@ -31,6 +31,7 @@
 #include "storage/chain_write_token.h"  // For genesis bootstrap token
 #include "consensus/chainparams.h"   // For Params()
 #include "consensus/utreexo_delta_codec.h"  // UD sidecar codec + forward replay (campaign phase 2)
+#include "storage/forest_restore.h"  // shared checkpoint+sidecar replay walk (campaign phase 3)
 #include "consensus/chainwork.h"     // For canonical genesis proof
 #include "consensus/pow.h"           // For canonical header PoW checks
 #include "consensus/block_filter.h"  // BIP158 GCS block filter construction
@@ -2048,47 +2049,33 @@ bool ChainstateService::Init(DaemonContext& ctx) {
         if (reorg_marker.has_value()) {
             logger_->warning("⚠️  Reorg marker found: " + reorg_marker.value());
 
-            // Auto-recovery: check if forest checkpoint is consistent with ChainDB tip.
-            // This handles: (1) power loss after reorg completed but before marker cleared,
-            // (2) rebuildutreexo forest corruption where disk checkpoint was never affected.
+            // Auto-recovery: check if forest state is consistent with the
+            // ChainDB tip. This handles: (1) power loss after reorg completed
+            // but before marker cleared, (2) rebuildutreexo forest corruption
+            // where disk checkpoint was never affected.
+            //
+            // Campaign phase 3: full checkpoints exist only every N blocks,
+            // so "consistent" no longer means "checkpoint at exactly the
+            // tip" (that guard bricked flag-on nodes killed mid-reorg —
+            // caught by the mainnet A/B torture 2026-07-17). Consistent
+            // means the forest AT the tip is reconstructible: nearest
+            // checkpoint + UD-sidecar replay, with the checkpoint and every
+            // replayed block verified against their headers' utreexo_root —
+            // which subsumes the old exact-height checksum + root check.
             bool state_aligned = false;
             if (chain_db_) {
                 auto tip_result = chain_db_->getTip();
-                auto checkpoint_result = chain_db_->getLatestUtreexoCheckpoint();
-                if (tip_result.ok() && checkpoint_result.ok()) {
-                    auto [tip_hash, tip_height] = std::make_pair(tip_result.value().hash, tip_result.value().height);
-                    auto [ckpt_height, ckpt_data] = checkpoint_result.value();
-
-                    if (ckpt_height == tip_height && !ckpt_data.empty()) {
-                        // Verify checkpoint integrity via SHA256 checksum
-                        auto checksum_result = chain_db_->getUtreexoChecksum(ckpt_height);
-                        bool checksum_ok = false;
-                        if (checksum_result.ok() && checksum_result.value().size() == 32) {
-                            unsigned char computed[32];
-                            crypto::CSHA256().Write(ckpt_data.data(), ckpt_data.size()).Finalize(computed);
-                            checksum_ok = (std::memcmp(computed, checksum_result.value().data(), 32) == 0);
-                        }
-
-                        if (checksum_ok) {
-                            // Deserialize checkpoint and compare root with block header
-                            try {
-                                auto forest = consensus::UtreexoForest::deserialize(ckpt_data);
-                                auto forest_root = forest.getCommitment();
-                                auto header_result = chain_db_->getHeader(tip_hash);
-                                if (header_result.ok()) {
-                                    std::vector<uint8_t> header_root(
-                                        header_result.value().utreexo_root.begin(),
-                                        header_result.value().utreexo_root.end()
-                                    );
-                                    if (forest_root.size() == header_root.size() &&
-                                        std::equal(forest_root.begin(), forest_root.end(), header_root.begin())) {
-                                        state_aligned = true;
-                                    }
-                                }
-                            } catch (...) {
-                                // Deserialization failed — not aligned
-                            }
-                        }
+                if (tip_result.ok()) {
+                    consensus::UtreexoForest tip_forest;
+                    std::string restore_error;
+                    state_aligned = storage::RestoreHistoricalForest(
+                        *chain_db_,
+                        static_cast<uint32_t>(tip_result.value().height),
+                        tip_forest, restore_error) == Status::Ok;
+                    if (!state_aligned) {
+                        logger_->warning(
+                            "[ChainstateService] Reorg-marker alignment restore failed: " +
+                            restore_error);
                     }
                 }
             }
@@ -2880,7 +2867,13 @@ bool ChainstateService::Start() {
                 // non-empty checkpoint silently strands the node — treat it
                 // as a corrupt checkpoint instead (recovery path below).
                 auto restored_forest = consensus::UtreexoForest::deserialize(serialized_forest);
-                if (restored_forest.getNumLeaves() == 0 && !serialized_forest.empty()) {
+                // checkpoint_height 0 exemption (campaign phase 3): the
+                // genesis checkpoint IS a legitimately empty forest, and
+                // with every-N checkpoints it is the routine restore anchor
+                // for short chains — only refuse empty-for-non-empty above
+                // genesis.
+                if (restored_forest.getNumLeaves() == 0 && !serialized_forest.empty() &&
+                    checkpoint_height > 0) {
                     throw std::runtime_error(
                         "Checkpoint forest deserialize refused payload (" +
                         std::to_string(serialized_forest.size()) + " bytes)");
@@ -13380,59 +13373,16 @@ bool ChainstateService::ReplayForestDeltasToTip(uint32_t checkpoint_height,
     // Work on a copy: a mid-replay failure (missing/corrupt sidecar, root
     // mismatch) must leave the live forest at verified checkpoint state so
     // the existing body-based catch-up recovery still has its expected
-    // starting point.
+    // starting point. The walk itself is the shared
+    // storage::ReplayUtreexoDeltaRange (also the bridge's historical
+    // restore) — per-block header-root verification included.
     consensus::UtreexoForest working = consensus_utxo_set_->GetForest();
 
-    for (uint32_t h = checkpoint_height + 1; h <= target_height; ++h) {
-        auto hash_result = chain_db_->getBlockHashByHeight(static_cast<int>(h));
-        if (hash_result.status() != Status::Ok) {
-            return fail("replay-missing-height-index-at-" + std::to_string(h));
-        }
-        const uint256 block_hash = hash_result.value();
-
-        std::string delta_blob;
-        const auto blob_status =
-            chain_db_->getRaw(MakeUtreexoDeltaUndoKey(block_hash), delta_blob);
-        if (blob_status != Status::Ok) {
-            return fail("replay-missing-delta-sidecar-at-" + std::to_string(h));
-        }
-
-        consensus::UtreexoDelta delta;
-        std::string codec_error;
-        if (!DeserializeUtreexoDelta(delta_blob, delta, codec_error)) {
-            return fail("replay-corrupt-delta-sidecar-at-" + std::to_string(h) +
-                        ": " + codec_error);
-        }
-
-        // Mirror ConnectBlockInternal's canonical-roots fork activation:
-        // flip + re-canonicalize before applying the activation block.
-        if (consensus::IsUtreexoCanonicalRootsActive(h) &&
-            !working.isCanonicalEmptyRoots()) {
-            working.setCanonicalEmptyRoots(true);
-            working.rebuildRoots();
-        }
-
-        std::string apply_error;
-        if (!ApplyUtreexoDeltaForward(working, delta, apply_error)) {
-            return fail("replay-apply-failed-at-" + std::to_string(h) + ": " +
-                        apply_error);
-        }
-
-        // Every replayed block must land exactly on the header commitment —
-        // the same check reindex enforces. This is what makes a wrong or
-        // reordered sidecar fail loudly instead of surfacing blocks later.
-        auto header_result = chain_db_->getHeader(block_hash);
-        if (header_result.status() != Status::Ok) {
-            return fail("replay-missing-header-at-" + std::to_string(h));
-        }
-        const consensus::UtreexoHash commitment = working.getCommitment();
-        uint256 computed_root;
-        if (commitment.size() == 32) {
-            std::memcpy(computed_root.data, commitment.data(), 32);
-        }
-        if (computed_root != header_result.value().utreexo_root) {
-            return fail("replay-root-mismatch-at-" + std::to_string(h));
-        }
+    std::string range_error;
+    const Status replay_status = storage::ReplayUtreexoDeltaRange(
+        *chain_db_, working, checkpoint_height, target_height, range_error);
+    if (replay_status != Status::Ok) {
+        return fail(range_error);
     }
 
     consensus_utxo_set_->GetForest() = std::move(working);

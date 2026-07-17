@@ -1931,6 +1931,26 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
             }
             g_logger.info("[reindex] Persisted CHECKSUM_VERSION=1");
         }
+
+        // Campaign phase 3: with every-N gating the loop may not have
+        // written a checkpoint at the reindex tip — emit one now so the
+        // reindexed datadir restarts instantly (no replay window).
+        const uint32_t final_interval =
+            config_.utreexo_checkpoint_interval > 1
+                ? config_.utreexo_checkpoint_interval : 1;
+        if (static_cast<uint32_t>(final_tip_height_) % final_interval != 0) {
+            ChainWriteToken token;
+            auto final_ckpt_status = chain_db_->putUtreexoCheckpointWithChecksum(
+                token, final_tip_height_, forest_->serialize());
+            if (final_ckpt_status != Status::Ok) {
+                g_logger.error("[reindex] Failed to emit final Utreexo checkpoint at tip " +
+                               std::to_string(final_tip_height_));
+                stats_.error = "Failed to persist final Utreexo checkpoint";
+                return stats_;
+            }
+            g_logger.info("[reindex] Persisted final Utreexo checkpoint @ tip " +
+                          std::to_string(final_tip_height_));
+        }
     }
 
     auto persist_shielded_status = persistShieldedArtifacts();
@@ -2683,13 +2703,21 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
         batch.Put(MakeUtreexoDeltaUndoKey(block_hash), delta_blob);
 
         // Forest checkpoint (in-batch so it commits atomically with the tip).
-        const std::vector<uint8_t> serialized_forest = forest_->serialize();
-        auto ckpt_status = chain_db_->putUtreexoCheckpointWithChecksum(
-            token, static_cast<int>(height), serialized_forest, &batch);
-        if (ckpt_status != Status::Ok) {
-            g_logger.error("[reindex] Failed to emit Utreexo checkpoint at height " +
-                           std::to_string(height));
-            return ckpt_status;
+        // Campaign phase 3: gated to every-N like the live writer — the
+        // sidecar above covers restore in between; a final checkpoint at the
+        // reindex tip is emitted at completion (execute()).
+        const uint32_t ckpt_interval =
+            config_.utreexo_checkpoint_interval > 1
+                ? config_.utreexo_checkpoint_interval : 1;
+        if (static_cast<uint32_t>(height) % ckpt_interval == 0) {
+            const std::vector<uint8_t> serialized_forest = forest_->serialize();
+            auto ckpt_status = chain_db_->putUtreexoCheckpointWithChecksum(
+                token, static_cast<int>(height), serialized_forest, &batch);
+            if (ckpt_status != Status::Ok) {
+                g_logger.error("[reindex] Failed to emit Utreexo checkpoint at height " +
+                               std::to_string(height));
+                return ckpt_status;
+            }
         }
     }
 

@@ -18,6 +18,8 @@ DINEROD="${ROOT_DIR}/build/dinerod"
 DATA_DIR="$(mktemp -d /tmp/dinero_ckpt_interval.XXXXXX)"
 LOG_A="${DATA_DIR}/interval_node.log"
 LOG_B="${DATA_DIR}/default_node.log"
+LOG_B_RESTART="${DATA_DIR}/default_node_restart.log"
+LOG_C="${DATA_DIR}/legacy_node.log"
 PID=""
 KEEP_ON_FAIL=0
 
@@ -188,21 +190,50 @@ pass "Interval boundary 15 wrote a fresh full checkpoint"
 
 stop_node
 
-# ─── Node B: default (no flag) — behavior must be unchanged ─────────────────
+# ─── Node B: default (no flag) — campaign phase 3 default is every-500 ──────
 NODE_DATADIR="${DATA_DIR}/default_node"
 RPC_PORT=$((RPC_PORT + 10))
 P2P_PORT=$((RPC_PORT + 1))
 WALLET_PORT=$((RPC_PORT + 2))
-info "Starting default node (no interval flag)"
+info "Starting default node (no interval flag — defaults to every-500)"
 start_node "${LOG_B}"
 wait_rpc || fail "default node did not reach RPC readiness"
+grep -q "utreexo.checkpoint_interval=500" "${LOG_B}" \
+    || fail "default node did not report interval 500"
 
 ADDR_D="$(new_address "ckpt-default-miner")"
 [[ -n "${ADDR_D}" ]] || fail "no miner address (default node)"
 mine_to 7 "${ADDR_D}"
-# Default: full checkpoint at EVERY height — latest == tip.
-assert_health 7 7 "default writer state at tip 7"
-pass "Default behavior unchanged: checkpoint at every height"
+# Default every-500: no interval boundary crossed in 7 blocks, so the only
+# full checkpoint is genesis (height 0); the tip rides on delta sidecars.
+assert_health 7 0 "default writer state at tip 7"
+pass "Default (500) writer: tip 7 rides on sidecars over the genesis checkpoint"
+
+info "Default node clean restart must restore via delta replay"
+stop_node
+start_node "${LOG_B_RESTART}"
+wait_rpc || fail "default node did not restart"
+grep -q "\[ForestDeltaReplay\] forest restored to tip height 7 via checkpoint 0 + 7 delta sidecars" "${LOG_B_RESTART}" \
+    || fail "default restart did not restore via delta replay"
+assert_health 7 0 "default post-restart state"
+pass "Default restart restored via checkpoint 0 + 7 delta sidecars"
+stop_node
+
+# ─── Node C: explicit interval=1 — pre-campaign behavior preserved ──────────
+NODE_DATADIR="${DATA_DIR}/legacy_node"
+RPC_PORT=$((RPC_PORT + 10))
+P2P_PORT=$((RPC_PORT + 1))
+WALLET_PORT=$((RPC_PORT + 2))
+info "Starting legacy node (--utreexo.checkpoint_interval=1)"
+start_node "${LOG_C}" --utreexo.checkpoint_interval=1
+wait_rpc || fail "legacy node did not reach RPC readiness"
+
+ADDR_L="$(new_address "ckpt-legacy-miner")"
+[[ -n "${ADDR_L}" ]] || fail "no miner address (legacy node)"
+mine_to 7 "${ADDR_L}"
+# interval=1: full checkpoint at EVERY height — latest == tip.
+assert_health 7 7 "legacy writer state at tip 7"
+pass "interval=1 preserves the pre-campaign checkpoint-every-block behavior"
 
 stop_node
 pass "Utreexo checkpoint interval writer behaves per design"

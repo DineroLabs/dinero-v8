@@ -1,6 +1,7 @@
 #include "network/bridge_node.h"
 #include "storage/archival_block_reader.h"
 #include "storage/chain_db.h"
+#include "storage/forest_restore.h"
 #include "common/logger.h"
 #include "crypto/sha256.h"
 #include "consensus/outpoint.h"  // For OutPoint type
@@ -161,26 +162,38 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
     }
 
     // Historical serving must generate proofs against the pre-block forest
-    // state, not the current tip forest. The bridge persists a checkpoint at
-    // every connected height, so restore height-1 when the live forest no
-    // longer matches the requested block's pre-state commitment.
+    // state, not the current tip forest. Forest checkpoint delta campaign
+    // phase 3: full checkpoints exist only every N blocks now, so restore
+    // height-1 as nearest-checkpoint + UD-sidecar replay (header-root
+    // verified per replayed block) when the live forest no longer matches
+    // the requested block's pre-state commitment.
     if (chain_db_ && block_height > 0) {
         const auto live_commitment = utreexo_forest_->getCommitment();
         if (live_commitment != proof_data.accumulator_root_before) {
-            auto checkpoint_result = chain_db_->getUtreexoCheckpoint(static_cast<int>(block_height - 1));
-            if (!checkpoint_result.ok()) {
-                if (block_height == 1 && checkpoint_result.status() == Status::NotFound) {
+            historical_forest.emplace();
+            std::string restore_error;
+            const auto restore_status = storage::RestoreHistoricalForest(
+                *chain_db_, block_height - 1, *historical_forest, restore_error);
+            if (restore_status != Status::Ok) {
+                if (block_height == 1 && restore_status == Status::NotFound) {
+                    // Genesis pre-state: empty accumulator.
                     historical_forest = consensus::UtreexoForest();
-                    proof_forest = &*historical_forest;
                 } else {
                     std::ostringstream oss;
-                    oss << "BridgeNode::GenerateProofForBlock - Missing checkpoint at height "
-                        << (block_height - 1);
+                    oss << "BridgeNode::GenerateProofForBlock - Failed to restore forest at height "
+                        << (block_height - 1) << ": " << restore_error;
                     throw std::runtime_error(oss.str());
                 }
             }
 
-            if (historical_forest.has_value()) {
+            if (block_height > 1 &&
+                historical_forest->getCommitment() != proof_data.accumulator_root_before) {
+                std::ostringstream oss;
+                oss << "BridgeNode::GenerateProofForBlock - Restored forest root mismatch at height "
+                    << (block_height - 1);
+                throw std::runtime_error(oss.str());
+            }
+            if (block_height == 1) {
                 const auto expected_root_before = historical_forest->getCommitment();
                 if (!proof_data.accumulator_root_before.empty() &&
                     proof_data.accumulator_root_before != expected_root_before) {
@@ -189,25 +202,9 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
                         << block_height << " (using canonical genesis pre-state)";
                     g_logger.warning(oss.str());
                 }
-            } else {
-                try {
-                    historical_forest = consensus::UtreexoForest::deserialize(checkpoint_result.value());
-                } catch (const std::exception& e) {
-                    std::ostringstream oss;
-                    oss << "BridgeNode::GenerateProofForBlock - Failed to restore checkpoint at height "
-                        << (block_height - 1) << ": " << e.what();
-                    throw std::runtime_error(oss.str());
-                }
-
-                if (historical_forest->getCommitment() != proof_data.accumulator_root_before) {
-                    std::ostringstream oss;
-                    oss << "BridgeNode::GenerateProofForBlock - Checkpoint root mismatch at height "
-                        << (block_height - 1);
-                    throw std::runtime_error(oss.str());
-                }
-
-                proof_forest = &*historical_forest;
             }
+
+            proof_forest = &*historical_forest;
         }
     }
 

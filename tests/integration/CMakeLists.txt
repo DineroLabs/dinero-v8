@@ -1121,6 +1121,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_delta_replay_restart.sh)
     message(STATUS "  ✓ UtreexoDeltaReplayRestart registered")
 endif()
 
+# Forest checkpoint delta campaign phase 3: mixed-signal restart torture
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_delta_torture.sh)
+    add_test(
+        NAME UtreexoDeltaTorture
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_delta_torture.sh
+    )
+    set_tests_properties(UtreexoDeltaTorture PROPERTIES
+        LABELS "integration;daemon;utreexo;restart;torture;forest-checkpoint-deltas"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ UtreexoDeltaTorture registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_daemon_restart_equivalence.sh)
     add_test(
         NAME ShieldedDaemonRestartEquivalence
