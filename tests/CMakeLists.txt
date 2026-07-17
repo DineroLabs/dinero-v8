@@ -153,6 +153,50 @@ set_tests_properties(ChainstateCommitBatchInterval PROPERTIES
   LABELS "daemon;smoke"
 )
 
+# Forest checkpoint delta campaign phase 2: delta record codec (#397 husk
+# treatment) + checkpoint+replay equivalence (docs/design/forest-checkpoint-deltas.md)
+add_executable(test_utreexo_delta_codec
+  tests/consensus/test_utreexo_delta_codec.cpp
+)
+add_dependencies(test_utreexo_delta_codec gtest)
+target_link_libraries(test_utreexo_delta_codec PRIVATE
+  dinero_chainstate
+  gtest
+  gtest_main
+  ${CMAKE_DL_LIBS}
+)
+link_zstd_if_needed(test_utreexo_delta_codec)
+target_include_directories(test_utreexo_delta_codec PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME UtreexoDeltaCodec COMMAND test_utreexo_delta_codec)
+set_tests_properties(UtreexoDeltaCodec PROPERTIES
+  LABELS "consensus;utreexo;forest-checkpoint-deltas;smoke"
+)
+
+add_executable(test_forest_delta_replay_equivalence
+  tests/consensus/test_forest_delta_replay_equivalence.cpp
+)
+add_dependencies(test_forest_delta_replay_equivalence gtest)
+target_link_libraries(test_forest_delta_replay_equivalence PRIVATE
+  dinero_chainstate
+  gtest
+  gtest_main
+  ${CMAKE_DL_LIBS}
+)
+link_zstd_if_needed(test_forest_delta_replay_equivalence)
+target_include_directories(test_forest_delta_replay_equivalence PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME ForestDeltaReplayEquivalence COMMAND test_forest_delta_replay_equivalence)
+set_tests_properties(ForestDeltaReplayEquivalence PROPERTIES
+  LABELS "consensus;utreexo;forest-checkpoint-deltas;smoke"
+)
+
 # issue #224: daemon log rotation + reopen
 add_executable(test_logger_rotation
   tests/common/test_logger_rotation.cpp

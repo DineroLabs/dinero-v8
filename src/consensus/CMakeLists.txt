@@ -34,6 +34,7 @@ add_library(dinero_consensus_core STATIC
   # Utreexo accumulator (pure cryptographic)
   src/consensus/utreexo_accumulator.cpp
   src/consensus/utreexo_stump.cpp
+  src/consensus/utreexo_delta_codec.cpp  # UD sidecar codec + forward replay (campaign phase 2)
 
   # Merkle computation (pure math)
   src/consensus/merkle_root.cpp
@@ -171,6 +172,7 @@ add_library(dinero_consensus STATIC
   src/consensus/pow.cpp                # Bitcoin Core-compatible PoW verification (MAINNET BLOCKER)
   src/consensus/utreexo_accumulator.cpp  # Phase 34.1: Utreexo forest accumulator
   src/consensus/utreexo_stump.cpp         # Phase 34.2: Utreexo stump (roots-only accumulator)
+  src/consensus/utreexo_delta_codec.cpp   # UD sidecar codec + forward replay (campaign phase 2)
   src/consensus/cpu_budget_monitor.cpp   # Phase E.2.d: CPU budget monitoring and validation timeouts
   src/consensus/undo.cpp                 # UndoRecord serialization for ChainDB
   src/address/addr_codec.cpp           # Address encoding/decoding (Taproot support)
