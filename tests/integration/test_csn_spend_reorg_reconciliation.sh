@@ -15,7 +15,11 @@ SYNC_TIMEOUT=${TIMEOUT:-240}
 FUNDING_BLOCKS=${FUNDING_BLOCKS:-120}
 POST_SPEND_CONFIRM_BLOCKS=${POST_SPEND_CONFIRM_BLOCKS:-2}
 ALT_BRANCH_BLOCKS=${ALT_BRANCH_BLOCKS:-3}
+CHECKPOINT_INTERVAL=${CHECKPOINT_INTERVAL:-500}
 KEEP_TMP_ON_FAIL=${KEEP_TMP_ON_FAIL:-1}
+
+[[ "${CHECKPOINT_INTERVAL}" =~ ^[1-9][0-9]*$ ]] \
+    || { echo "CHECKPOINT_INTERVAL must be a positive integer"; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -391,6 +395,7 @@ start_csn() {
         --listen=1 \
         --utreexo=1 \
         --utreexo-stateless=1 \
+        --utreexo.checkpoint_interval="${CHECKPOINT_INTERVAL}" \
         --connect="127.0.0.1:${P2P_PORT_BRIDGE}" \
         >> "${DATADIR_CSN}/daemon.log" 2>&1 &
     PID_CSN=$!
@@ -550,6 +555,18 @@ rpc_has_error "${VERIFY_RESULT}" && fail "wallet.verifyutxoproof failed after re
 [[ "$(echo "${VERIFY_RESULT}" | jq -r '.result.valid')" == "true" ]] || fail "Resurrected UTXO proof did not verify on CSN after reorg"
 pass "Stale proof root rejected; resurrected UTXO re-proved on the new branch"
 
+info "\n[10/10] Verifying CSN full-checkpoint write reduction"
+SYNC_HEALTH=$(rpc_call "${RPC_PORT_CSN}" "${DATADIR_CSN}" "blockchain.getsynchealth" "[]")
+rpc_has_error "${SYNC_HEALTH}" && fail "blockchain.getsynchealth failed"
+CSN_CHECKPOINT_WRITES=$(echo "${SYNC_HEALTH}" | jq -r '.result.sync_stats.csn_checkpoint_writes // -1')
+[[ "${CSN_CHECKPOINT_WRITES}" -ge 0 ]] || fail "Missing csn_checkpoint_writes metric"
+MAX_EXPECTED_WRITES=$((HEIGHT_BRIDGE / CHECKPOINT_INTERVAL + 1))
+[[ "${CSN_CHECKPOINT_WRITES}" -le "${MAX_EXPECTED_WRITES}" ]] \
+    || fail "CSN wrote ${CSN_CHECKPOINT_WRITES} full checkpoints for ${HEIGHT_BRIDGE} blocks at interval ${CHECKPOINT_INTERVAL}"
+[[ "${CSN_CHECKPOINT_WRITES}" -lt "${HEIGHT_BRIDGE}" ]] \
+    || fail "CSN still writes a full forest checkpoint every block"
+pass "CSN full checkpoints reduced to ${CSN_CHECKPOINT_WRITES} write(s) for ${HEIGHT_BRIDGE} blocks"
+
 echo ""
 echo "================================================================="
 echo -e "${GREEN}  CSN SPEND REORG RECONCILIATION PASSED${NC}"
@@ -560,6 +577,7 @@ echo "  - Confirmed spend was invalidated by a longer competing branch"
 echo "  - Canonical Utreexo state rewound cleanly on the CSN"
 echo "  - Wallet/mempool overlay reconciled without corrupting canonical state"
 echo "  - The resurrected UTXO could be re-proved against the new branch"
+echo "  - Full CSN forest checkpoints were gated to every ${CHECKPOINT_INTERVAL} blocks"
 echo ""
 
 exit 0

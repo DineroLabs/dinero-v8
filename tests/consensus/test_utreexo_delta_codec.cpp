@@ -9,13 +9,18 @@
 // chainstate_service.cpp into consensus/utreexo_delta_codec).
 
 #include "consensus/utreexo_delta_codec.h"
+#include "consensus/chainparams.h"
+#include "primitives/block.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <string>
 
 using dinero::DeserializeUtreexoDelta;
+using dinero::BuildStatelessUtreexoDelta;
 using dinero::MakeUtreexoDeltaUndoKey;
 using dinero::SerializeUtreexoDelta;
 using dinero::consensus::UtreexoDelta;
@@ -40,6 +45,24 @@ UtreexoDelta MakeSampleDelta() {
     delta.recordAdd(MakeLeaf(4), 191001);
     delta.recordAdd(MakeLeaf(5), 191002);
     return delta;
+}
+
+dinero::Block MakeCoinbaseBlock(uint32_t height) {
+    dinero::Block block{};
+    dinero::Transaction coinbase;
+    coinbase.version = 2;
+
+    dinero::TxInput input;
+    input.prevout.vout = std::numeric_limits<uint32_t>::max();
+    input.scriptSig.push_back(static_cast<uint8_t>(height));
+    coinbase.vin.push_back(std::move(input));
+
+    dinero::TxOutput output;
+    output.value = dinero::AmountUna::Una(50'000'000);
+    output.scriptPubKey = {0x51};
+    coinbase.vout.push_back(std::move(output));
+    block.vtx.push_back(std::move(coinbase));
+    return block;
 }
 
 void ExpectEqualDeltas(const UtreexoDelta& a, const UtreexoDelta& b) {
@@ -142,6 +165,46 @@ TEST(UtreexoDeltaCodec, UndoKeyMatchesLegacyFormat) {
     const dinero::uint256 hash = dinero::uint256::FromHexUnsafe(
         "00000010fb37bbab00000000000000000000000000000000000000000000abcd");
     EXPECT_EQ(MakeUtreexoDeltaUndoKey(hash), "UD:" + hash.GetHex());
+}
+
+TEST(UtreexoDeltaCodec, BuildsReplayableStatelessTransition) {
+    dinero::SelectParams(dinero::Chain::REGTEST);
+
+    dinero::consensus::UtreexoForest forest;
+    const UtreexoHash spent = MakeLeaf(90);
+    ASSERT_EQ(forest.add(spent), 0u);
+
+    const dinero::Block block = MakeCoinbaseBlock(7);
+    UtreexoDelta delta;
+    std::string error;
+    ASSERT_TRUE(BuildStatelessUtreexoDelta(
+        forest, block, 7, {spent}, delta, error)) << error;
+
+    ASSERT_EQ(delta.numLeavesBefore, 1u);
+    ASSERT_EQ(delta.deletedLeaves.size(), 1u);
+    EXPECT_EQ(delta.deletedLeaves[0].leafHash, spent);
+    EXPECT_EQ(delta.deletedLeaves[0].position, 0u);
+    ASSERT_EQ(delta.addedLeaves.size(), 1u);
+    EXPECT_EQ(delta.addedLeaves[0].position, 1u);
+
+    auto replayed = forest.cloneForHeight(7);
+    ASSERT_TRUE(dinero::ApplyUtreexoDeltaForward(replayed, delta, error)) << error;
+    EXPECT_EQ(replayed.getNumLeaves(), 2u);
+    EXPECT_EQ(replayed.findLeafPosition(spent), std::nullopt);
+    EXPECT_EQ(replayed.findLeafPosition(delta.addedLeaves[0].hash),
+              std::optional<uint64_t>(1));
+}
+
+TEST(UtreexoDeltaCodec, MissingStatelessTargetFailsWithoutPartialOutput) {
+    dinero::consensus::UtreexoForest forest;
+    UtreexoDelta delta = MakeSampleDelta();
+    const UtreexoDelta original = delta;
+    std::string error;
+
+    EXPECT_FALSE(BuildStatelessUtreexoDelta(
+        forest, MakeCoinbaseBlock(8), 8, {MakeLeaf(200)}, delta, error));
+    EXPECT_FALSE(error.empty());
+    ExpectEqualDeltas(delta, original);
 }
 
 }  // namespace

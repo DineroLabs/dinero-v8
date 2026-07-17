@@ -252,6 +252,7 @@ start_csn() {
         --listen=1 \
         --utreexo=1 \
         --utreexo-stateless=1 \
+        --utreexo.checkpoint_interval=1 \
         --connect="127.0.0.1:${P2P_PORT_BRIDGE}" \
         >> "${DATADIR_CSN}/daemon.log" 2>&1 &
     PID_CSN=$!

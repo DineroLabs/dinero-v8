@@ -60,6 +60,7 @@
 #include "consensus/proof_gossip.h"  // Phase 9.3: Proof availability gossip
 #include "p2p/block_download_scheduler.h"  // Phase G: Parallel block download
 #include "consensus/block_lifecycle.h"  // Phase P.2: BLOCK_HAVE_DATA flag
+#include "consensus/utreexo_delta_codec.h"
 #include "common/serialization.h"  // Phase N: Block deserialization
 #include "primitives/transaction.h"  // Pool payout callback tx decode + txid
 #include "common/crash_injection.h"
@@ -4499,8 +4500,18 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                                 const bool use_transition_proof =
                                     csn_should_use_transition_proof(pending);
+                                const auto& targets = use_transition_proof
+                                    ? pending.transition_proof->deletion_targets
+                                    : pending.proof_msg.proof_data.spend_proof.targets;
+                                consensus::UtreexoDelta utreexo_delta;
+                                std::string delta_error;
                                 bool valid = false;
-                                if (use_transition_proof) {
+                                if (!BuildStatelessUtreexoDelta(
+                                        scratch, pending.block, h, targets,
+                                        utreexo_delta, delta_error)) {
+                                    g_logger.error("[CSN-ReorgPlan] Failed to build Utreexo delta at height " +
+                                                   std::to_string(h) + ": " + delta_error);
+                                } else if (use_transition_proof) {
                                     network::StatelessNode scratch_node(&scratch);
                                     valid = scratch_node.ValidateWithTransitionProof(
                                         pending.block, pending.proof_msg,
@@ -4533,17 +4544,20 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     return false;
                                 }
 
-                                // Persist replay material first. Body metadata is the
-                                // visibility marker used by ABC's candidate import, so
-                                // publish it only after proof validation and replay data
-                                // are durable.
-                                const auto& targets = use_transition_proof
-                                    ? pending.transition_proof->deletion_targets
-                                    : pending.proof_msg.proof_data.spend_proof.targets;
+                                // Persist replay and delta material first. Body metadata
+                                // is the visibility marker used by ABC's candidate import,
+                                // so publish it only after both sidecars are durable.
                                 const std::string replay_blob = SerializeCsnReplayData(
                                     targets,
                                     pending.proof_msg.proof_data.spent_outputs,
                                     pending.proof_msg.proof_data.spend_proof.format_version);
+                                std::string delta_blob;
+                                if (!SerializeUtreexoDelta(
+                                        utreexo_delta, delta_blob, delta_error)) {
+                                    g_logger.error("[CSN-ReorgPlan] Failed to serialize Utreexo delta at height " +
+                                                   std::to_string(h) + ": " + delta_error);
+                                    return false;
+                                }
                                 auto* cdb = chainstate_service->GetChainDB();
                                 ChainWriteToken token;
                                 rocksdb::WriteBatch batch;
@@ -4552,9 +4566,15 @@ bool DaemonApp::Init(int argc, char** argv) {
                                           token, pending.proof_msg.block_hash,
                                           replay_blob, &batch)
                                     : Status::Internal;
+                                if (replay_status == Status::Ok) {
+                                    batch.Put(
+                                        MakeUtreexoDeltaUndoKey(
+                                            pending.proof_msg.block_hash),
+                                        delta_blob);
+                                }
                                 if (replay_status != Status::Ok ||
                                     cdb->writeBatch(token, std::move(batch), true) != Status::Ok) {
-                                    g_logger.error("[CSN-ReorgPlan] Failed to persist replay data at height " +
+                                    g_logger.error("[CSN-ReorgPlan] Failed to persist replay and delta data at height " +
                                                    std::to_string(h));
                                     return false;
                                 }
@@ -4682,11 +4702,30 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                         uint64_t peer_id = GetPeerID(pending.peer_addr);
                             const bool use_transition_proof = csn_should_use_transition_proof(pending);
-                            bool valid;
-                            if (use_transition_proof) {
+                            const auto& replay_targets =
+                                use_transition_proof
+                                    ? pending.transition_proof->deletion_targets
+                                    : pending.proof_msg.proof_data.spend_proof.targets;
+                            consensus::UtreexoDelta utreexo_delta;
+                            std::string delta_error;
+                            auto* forest_before = stateless_node->GetForest();
+                            bool valid = forest_before && BuildStatelessUtreexoDelta(
+                                *forest_before, pending.block, h, replay_targets,
+                                utreexo_delta, delta_error);
+                            if (!valid) {
+                                g_logger.error("[CSN] Failed to build Utreexo delta at height " +
+                                               std::to_string(h) + ": " + delta_error);
+                            } else if (use_transition_proof) {
                                 valid = stateless_node->ValidateWithTransitionProof(
                                     pending.block, pending.proof_msg,
                                     pending.transition_proof.value(), peer_id);
+                                if (valid &&
+                                    !pending.transition_proof->deletion_targets.empty()) {
+                                    valid = stateless_node->ReplayBlock(
+                                        pending.block, h,
+                                        pending.transition_proof->deletion_targets,
+                                        &pending.proof_msg.proof_data.spent_outputs);
+                                }
                             } else {
                                 valid = stateless_node->ValidateUtreexoProof(
                                     pending.block, pending.proof_msg, peer_id);
@@ -4706,25 +4745,28 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 // later ConnectTip replays have the stateless spend data.
                                 pending.block.utreexo = pending.proof_msg.proof_data;
 
-                                // Publish the hash-anchored replay record before
+                                // Publish the hash-anchored replay and delta records before
                                 // ProcessIncomingBlockHex can make transaction-valid
                                 // metadata durable. Startup and reorg recovery require
-                                // this sidecar, so the inverse order leaves a crash
+                                // these sidecars, so the inverse order leaves a crash
                                 // window with a visible block that cannot be replayed.
                                 auto* cdb = chainstate_service->GetChainDB();
                                 if (!cdb) {
-                                    g_logger.error("[CSN] ChainDB unavailable while persisting replay data at height " +
+                                    g_logger.error("[CSN] ChainDB unavailable while persisting replay and delta data at height " +
                                                    std::to_string(h));
                                     return false;
                                 }
-                                const auto& replay_targets =
-                                    use_transition_proof
-                                        ? pending.transition_proof->deletion_targets
-                                        : pending.proof_msg.proof_data.spend_proof.targets;
                                 const std::string replay_blob = SerializeCsnReplayData(
                                     replay_targets,
                                     pending.proof_msg.proof_data.spent_outputs,
                                     pending.proof_msg.proof_data.spend_proof.format_version);
+                                std::string delta_blob;
+                                if (!SerializeUtreexoDelta(
+                                        utreexo_delta, delta_blob, delta_error)) {
+                                    g_logger.error("[CSN] Failed to serialize Utreexo delta at height " +
+                                                   std::to_string(h) + ": " + delta_error);
+                                    return false;
+                                }
                                 {
                                     ChainWriteToken replay_token;
                                     rocksdb::WriteBatch replay_batch;
@@ -4733,10 +4775,16 @@ bool DaemonApp::Init(int argc, char** argv) {
                                         pending.proof_msg.block_hash,
                                         replay_blob,
                                         &replay_batch);
+                                    if (prepare_status == Status::Ok) {
+                                        replay_batch.Put(
+                                            MakeUtreexoDeltaUndoKey(
+                                                pending.proof_msg.block_hash),
+                                            delta_blob);
+                                    }
                                     if (prepare_status != Status::Ok ||
                                         cdb->writeBatch(
                                             replay_token, std::move(replay_batch), true) != Status::Ok) {
-                                        g_logger.error("[CSN] Failed to persist replay data before block publication at height " +
+                                        g_logger.error("[CSN] Failed to persist replay and delta data before block publication at height " +
                                                        std::to_string(h));
                                         return false;
                                     }
@@ -4760,9 +4808,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     block_relay->AnnounceBlock(pending.proof_msg.block_hash);
                                 }
 
-                                // Persist the post-connect forest checkpoint. The
-                                // replay sidecar was fsynced before block publication.
-                                {
+                                // Persist a full post-connect forest checkpoint only
+                                // at configured anchors. UD sidecars are durable every
+                                // block, so restore can replay between anchors.
+                                const uint32_t checkpoint_interval =
+                                    GetConfig().utreexo_checkpoint_interval > 1
+                                        ? GetConfig().utreexo_checkpoint_interval : 1;
+                                if (static_cast<uint64_t>(h) % checkpoint_interval == 0) {
                                     ChainWriteToken ckpt_token;
                                     rocksdb::WriteBatch ckpt_batch;
                                     bool persist_ready = true;

@@ -27,6 +27,7 @@
 #include "storage/chain_direct.h"
 #include "storage/chain_db.h"
 #include "storage/block_storage.h"
+#include "storage/forest_restore.h"
 #include "common/logger.h"
 #include "daemon/services/p2p_service.h"  // Week 4: P2PService access via context
 #include "daemon/p2p_manager.h"     // For P2PMessage
@@ -269,21 +270,16 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                         mainchain_parent.value() == parent_hash;
 
                     if (parent_in_main_chain) {
-                        auto ckpt = chain_db_for_utreexo->getUtreexoCheckpoint(
-                            static_cast<int>(parentHeight));
-                        if (ckpt.status() == dinero::Status::Ok) {
+                        consensus::UtreexoForest parent_forest;
+                        std::string restore_error;
+                        const auto restore_status =
+                            dinero::storage::RestoreHistoricalForest(
+                                *chain_db_for_utreexo,
+                                static_cast<uint32_t>(parentHeight),
+                                parent_forest,
+                                restore_error);
+                        if (restore_status == dinero::Status::Ok) {
                             try {
-                                auto parent_forest =
-                                    consensus::UtreexoForest::deserialize(ckpt.value());
-                                // All-or-nothing deserialize (rooted-husk fix):
-                                // refused payload -> empty forest. A husk here
-                                // would compute a bogus side-chain root.
-                                if (parent_forest.getNumLeaves() == 0 &&
-                                    !ckpt.value().empty()) {
-                                    throw std::runtime_error(
-                                        "parent forest checkpoint deserialize refused");
-                                }
-
                                 // Build a fork-aware UTXO overlay by
                                 // walking main-chain undo data from the
                                 // current tip back to `parentHeight`.
@@ -377,10 +373,14 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                                     }
                                 }
                             } catch (const std::exception& e) {
-                                LOG_ERROR("⚠️  Failed to deserialize utreexo checkpoint "
+                                LOG_ERROR("⚠️  Failed to use restored Utreexo forest "
                                           "at height " +
                                           std::to_string(parentHeight) + ": " + e.what());
                             }
+                        } else {
+                            LOG_ERROR("⚠️  Failed to restore Utreexo forest at height " +
+                                      std::to_string(parentHeight) + ": " +
+                                      restore_error);
                         }
                     }
                 }
