@@ -65,6 +65,7 @@
 #include "common/crash_injection.h"
 #include <sstream>  // P2P sync fix: For parsing pipe-separated headers
 #include "storage/archival_block_reader.h"
+#include "storage/forest_restore.h"
 #include "storage/chain_db.h"  // ONE DB: Direct ChainDB construction
 #include "storage/block_storage.h"  // Block storage for reindex operation
 #include "storage/disk_space_monitor.h"  // Phase E.2.b: Disk space monitoring
@@ -4324,8 +4325,29 @@ bool DaemonApp::Init(int argc, char** argv) {
                         UtreexoProofMessage proof_msg;
                         std::string peer_addr;
                         std::optional<consensus::UtreexoTransitionProof> transition_proof;
+                        FilePosition stored_pos;
+                    };
+                    struct CsnReorgValidationState {
+                        bool active{false};
+                        uint64_t generation{0};
+                        uint32_t fork_height{0};
+                        uint256 fork_hash;
+                        uint32_t next_height{0};
+                        std::optional<consensus::UtreexoForest> scratch_forest;
+                        std::map<uint32_t, PendingUtxoBlock> pending;
+
+                        void Reset() {
+                            ++generation;
+                            active = false;
+                            fork_height = 0;
+                            fork_hash.SetNull();
+                            next_height = 0;
+                            scratch_forest.reset();
+                            pending.clear();
+                        }
                     };
                     auto pending_blocks = std::make_shared<std::map<uint32_t, PendingUtxoBlock>>();
+                    auto reorg_state = std::make_shared<CsnReorgValidationState>();
                     auto next_validate_height = std::make_shared<uint32_t>(
                         block_download_for_csn ? block_download_for_csn->GetLocalTipHeight() + 1 : 1
                     );
@@ -4398,11 +4420,176 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                     auto csn_drain_step = [stateless_node, chainstate_service, block_relay,
                                            block_download_for_csn, pending_blocks, buffer_mutex,
+                                           reorg_state,
                                            next_validate_height, retry_counts,
                                            pending_count_for_scheduler, csn_reorg_reset_to,
                                            csn_should_use_transition_proof,
                                            csn_request_frontier_headers]() -> bool {
                         std::unique_lock<std::mutex> lk(*buffer_mutex);
+
+                        // Consume ABC's successful-reorg signal before looking at
+                        // speculative work, otherwise a completed plan with no next
+                        // buffered block would keep returning early forever.
+                        {
+                            const uint32_t reset_h =
+                                chainstate_service->GetCSNReorgResetHeight();
+                            if (reset_h > 0) {
+                                chainstate_service->ClearCSNReorgReset();
+                                reorg_state->Reset();
+                                *next_validate_height = reset_h;
+                                pending_blocks->clear();
+                                pending_count_for_scheduler->store(
+                                    0, std::memory_order_relaxed);
+                                retry_counts->clear();
+                                g_logger.info("[CSN] Reorg committed; validation cursor reset to " +
+                                              std::to_string(reset_h));
+                            }
+                        }
+
+                        // A competing branch is validated against an isolated forest.
+                        // Nothing in this lane may mutate the canonical forest or tip;
+                        // ActivateBestChain remains the sole canonical reorg owner.
+                        if (reorg_state->active) {
+                            uint256 active_fork_hash;
+                            if (!consensus::GetActiveChainHashAtHeight(
+                                    chainstate_service->GetActiveTip(),
+                                    reorg_state->fork_height,
+                                    active_fork_hash) ||
+                                active_fork_hash != reorg_state->fork_hash) {
+                                g_logger.warning("[CSN-ReorgPlan] Active-chain anchor changed; discarding stale plan");
+                                reorg_state->Reset();
+                            } else {
+                                if (!reorg_state->scratch_forest.has_value()) {
+                                    auto* cdb = chainstate_service->GetChainDB();
+                                    consensus::UtreexoForest restored;
+                                    std::string restore_error;
+                                    if (!cdb || storage::RestoreHistoricalForest(
+                                            *cdb, reorg_state->fork_height,
+                                            restored, restore_error) != Status::Ok) {
+                                        g_logger.error("[CSN-ReorgPlan] Failed to restore scratch forest at fork " +
+                                                       std::to_string(reorg_state->fork_height) + ": " +
+                                                       restore_error);
+                                        reorg_state->Reset();
+                                        pending_count_for_scheduler->store(
+                                            pending_blocks->size(), std::memory_order_relaxed);
+                                        return false;
+                                    }
+                                    reorg_state->scratch_forest.emplace(std::move(restored));
+                                    g_logger.info("[CSN-ReorgPlan] Scratch forest anchored at height " +
+                                                  std::to_string(reorg_state->fork_height));
+                                }
+
+                                auto rit = reorg_state->pending.find(reorg_state->next_height);
+                                if (rit == reorg_state->pending.end()) {
+                                    pending_count_for_scheduler->store(
+                                        pending_blocks->size() + reorg_state->pending.size(),
+                                        std::memory_order_relaxed);
+                                    return false;
+                                }
+
+                                PendingUtxoBlock pending = std::move(rit->second);
+                                reorg_state->pending.erase(rit);
+                                const uint32_t h = reorg_state->next_height;
+                                const uint64_t generation = reorg_state->generation;
+                                consensus::UtreexoForest scratch = *reorg_state->scratch_forest;
+                                pending_count_for_scheduler->store(
+                                    pending_blocks->size() + reorg_state->pending.size(),
+                                    std::memory_order_relaxed);
+                                lk.unlock();
+
+                                const bool use_transition_proof =
+                                    csn_should_use_transition_proof(pending);
+                                bool valid = false;
+                                if (use_transition_proof) {
+                                    network::StatelessNode scratch_node(&scratch);
+                                    valid = scratch_node.ValidateWithTransitionProof(
+                                        pending.block, pending.proof_msg,
+                                        *pending.transition_proof,
+                                        GetPeerID(pending.peer_addr));
+                                    if (valid && !pending.transition_proof->deletion_targets.empty()) {
+                                        valid = scratch_node.ReplayBlock(
+                                            pending.block, h,
+                                            pending.transition_proof->deletion_targets,
+                                            &pending.proof_msg.proof_data.spent_outputs);
+                                    }
+                                } else {
+                                    valid = stateless_node->ValidateProofIntoForest(
+                                        pending.block, pending.proof_msg, scratch);
+                                }
+
+                                if (!valid) {
+                                    g_logger.error("[CSN-ReorgPlan] Speculative proof validation failed at height " +
+                                                   std::to_string(h));
+                                    if (block_download_for_csn) {
+                                        block_download_for_csn->MarkBlockInvalid(
+                                            pending.proof_msg.block_hash);
+                                    }
+                                    lk.lock();
+                                    if (reorg_state->generation == generation) {
+                                        reorg_state->Reset();
+                                    }
+                                    pending_count_for_scheduler->store(
+                                        pending_blocks->size(), std::memory_order_relaxed);
+                                    return false;
+                                }
+
+                                // Persist replay material first. Body metadata is the
+                                // visibility marker used by ABC's candidate import, so
+                                // publish it only after proof validation and replay data
+                                // are durable.
+                                const auto& targets = use_transition_proof
+                                    ? pending.transition_proof->deletion_targets
+                                    : pending.proof_msg.proof_data.spend_proof.targets;
+                                const std::string replay_blob = SerializeCsnReplayData(
+                                    targets,
+                                    pending.proof_msg.proof_data.spent_outputs,
+                                    pending.proof_msg.proof_data.spend_proof.format_version);
+                                auto* cdb = chainstate_service->GetChainDB();
+                                ChainWriteToken token;
+                                rocksdb::WriteBatch batch;
+                                const Status replay_status = cdb
+                                    ? cdb->putCSNSpendTargets(
+                                          token, pending.proof_msg.block_hash,
+                                          replay_blob, &batch)
+                                    : Status::Internal;
+                                if (replay_status != Status::Ok ||
+                                    cdb->writeBatch(token, std::move(batch), true) != Status::Ok) {
+                                    g_logger.error("[CSN-ReorgPlan] Failed to persist replay data at height " +
+                                                   std::to_string(h));
+                                    return false;
+                                }
+
+                                CBlockIndex* staged = chainstate_service->AddBlockIndex(
+                                    pending.block.header, h);
+                                if (!staged) {
+                                    g_logger.error("[CSN-ReorgPlan] Failed to stage block index at height " +
+                                                   std::to_string(h));
+                                    return false;
+                                }
+                                chainstate_service->PersistStoredBodyPosition(
+                                    pending.proof_msg.block_hash, pending.stored_pos);
+
+                                lk.lock();
+                                if (!reorg_state->active ||
+                                    reorg_state->generation != generation ||
+                                    reorg_state->next_height != h) {
+                                    g_logger.info("[CSN-ReorgPlan] Plan changed while validating; staged block left non-canonical");
+                                    return false;
+                                }
+                                reorg_state->scratch_forest.emplace(std::move(scratch));
+                                ++reorg_state->next_height;
+                                pending_count_for_scheduler->store(
+                                    pending_blocks->size() + reorg_state->pending.size(),
+                                    std::memory_order_relaxed);
+                                g_logger.info("[CSN-ReorgPlan] Validated and staged competing block at height " +
+                                              std::to_string(h));
+                                lk.unlock();
+                                if (block_download_for_csn) {
+                                    block_download_for_csn->Tick();
+                                }
+                                return true;
+                            }
+                        }
 
                         // (1) Competing-branch reorg command posted by dispatch — the
                         // forest restore MUST run on this thread (forest ops are
@@ -4439,25 +4626,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 pending_blocks->size(), std::memory_order_relaxed);
                         }
 
-                        // (2) CSN reorg reset: ActivateBestChain one-shot signal
-                        // (moved from dispatch — cursor writes live here now).
-                        {
-                            uint32_t reset_h = chainstate_service->GetCSNReorgResetHeight();
-                            if (reset_h > 0) {
-                                chainstate_service->ClearCSNReorgReset();
-                                if (reset_h != *next_validate_height) {
-                                    g_logger.info("[CSN] Reorg reset: next_validate_height " +
-                                                 std::to_string(*next_validate_height) + " → " +
-                                                 std::to_string(reset_h));
-                                    *next_validate_height = reset_h;
-                                    pending_blocks->clear();
-                                    pending_count_for_scheduler->store(0, std::memory_order_relaxed);
-                                    retry_counts->clear();
-                                }
-                            }
-                        }
-
-                        // (3) Active-tip cursor sync (moved from dispatch): after an
+                        // (2) Active-tip cursor sync (moved from dispatch): after an
                         // AssumeUTXO snapshot restore — or after ConnectTip's stateless
                         // path connected blocks the worker never saw (coinbase-only
                         // forward-connect) — the tip legitimately moves ahead of the
@@ -4537,6 +4706,42 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 // later ConnectTip replays have the stateless spend data.
                                 pending.block.utreexo = pending.proof_msg.proof_data;
 
+                                // Publish the hash-anchored replay record before
+                                // ProcessIncomingBlockHex can make transaction-valid
+                                // metadata durable. Startup and reorg recovery require
+                                // this sidecar, so the inverse order leaves a crash
+                                // window with a visible block that cannot be replayed.
+                                auto* cdb = chainstate_service->GetChainDB();
+                                if (!cdb) {
+                                    g_logger.error("[CSN] ChainDB unavailable while persisting replay data at height " +
+                                                   std::to_string(h));
+                                    return false;
+                                }
+                                const auto& replay_targets =
+                                    use_transition_proof
+                                        ? pending.transition_proof->deletion_targets
+                                        : pending.proof_msg.proof_data.spend_proof.targets;
+                                const std::string replay_blob = SerializeCsnReplayData(
+                                    replay_targets,
+                                    pending.proof_msg.proof_data.spent_outputs,
+                                    pending.proof_msg.proof_data.spend_proof.format_version);
+                                {
+                                    ChainWriteToken replay_token;
+                                    rocksdb::WriteBatch replay_batch;
+                                    const Status prepare_status = cdb->putCSNSpendTargets(
+                                        replay_token,
+                                        pending.proof_msg.block_hash,
+                                        replay_blob,
+                                        &replay_batch);
+                                    if (prepare_status != Status::Ok ||
+                                        cdb->writeBatch(
+                                            replay_token, std::move(replay_batch), true) != Status::Ok) {
+                                        g_logger.error("[CSN] Failed to persist replay data before block publication at height " +
+                                                       std::to_string(h));
+                                        return false;
+                                    }
+                                }
+
                                 std::string block_serialized = pending.block.Serialize();
                                 std::string blockHex;
                                 blockHex.reserve(block_serialized.size() * 2);
@@ -4555,8 +4760,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     block_relay->AnnounceBlock(pending.proof_msg.block_hash);
                                 }
 
-                                // CSN reorg support: persist forest checkpoint + spend targets
-                                if (auto* cdb = chainstate_service->GetChainDB()) {
+                                // Persist the post-connect forest checkpoint. The
+                                // replay sidecar was fsynced before block publication.
+                                {
                                     ChainWriteToken ckpt_token;
                                     rocksdb::WriteBatch ckpt_batch;
                                     bool persist_ready = true;
@@ -4572,28 +4778,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     } else {
                                         persist_ready = false;
                                     }
-                                    const auto& targets =
-                                        use_transition_proof
-                                            ? pending.transition_proof->deletion_targets
-                                            : pending.proof_msg.proof_data.spend_proof.targets;
-                                    std::string targets_blob = SerializeCsnReplayData(
-                                        targets,
-                                        pending.proof_msg.proof_data.spent_outputs,
-                                        pending.proof_msg.proof_data.spend_proof.format_version);
-                                    auto targets_status = cdb->putCSNSpendTargets(
-                                        ckpt_token,
-                                        pending.proof_msg.block_hash,
-                                        targets_blob,
-                                        &ckpt_batch);
-                                    persist_ready = persist_ready && (targets_status == Status::Ok);
 
                                     if (persist_ready) {
                                         auto write_status = cdb->writeBatch(ckpt_token, std::move(ckpt_batch), true);
                                         if (write_status != Status::Ok) {
-                                            g_logger.warning("[CSN] Failed to persist checkpoint+spend-targets atomically");
+                                            g_logger.warning("[CSN] Failed to persist post-connect checkpoint");
                                         }
                                     } else {
-                                        g_logger.warning("[CSN] Failed preparing checkpoint+spend-target persistence batch");
+                                        g_logger.warning("[CSN] Failed preparing post-connect checkpoint batch");
                                     }
                                 }
 
@@ -4641,7 +4833,7 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                     p2p_service->OnUtxoBlock = [stateless_node, chainstate_service, block_relay,
                                                  block_download_for_csn, parallel_download_for_csn,
-                                                 pending_blocks, header_chain_for_csn,
+                                                 pending_blocks, reorg_state, header_chain_for_csn,
                                                  p2p_service_for_csn, frontier_refresh_height,
                                                  next_validate_height, buffer_mutex,
                                                  pending_count_for_scheduler, retry_counts,
@@ -4862,14 +5054,25 @@ bool DaemonApp::Init(int argc, char** argv) {
                             return;
                         }
 
-                        // Competing-branch reorg support: the scheduler can legitimately
-                        // request the best-header hash at a height below the current
-                        // validation cursor. When that happens, reset the stateless cursor
-                        // immediately so the replacement block is validated instead of being
-                        // dropped as stale while waiting for a later chainstate reorg signal.
+                        // Competing-branch reorg: a best-header-hash block below
+                        // the current validation cursor that is NOT on the active
+                        // chain belongs to a heavier competing branch.
+                        //
+                        // ActivateBestChain-owned reorg (docs/design/
+                        // csn-stateless-reorg-convergence.md): the CSN worker must
+                        // NOT rewind/replay the canonical shared forest for these —
+                        // doing so double-manages the forest against ABC's own
+                        // reorg path and thrashes (rewind → validate → the ABC
+                        // reorg re-applies → repeat). Instead, STORE the block so
+                        // ActivateBestChain can import it as a candidate and, once
+                        // the full branch outweighs the active tip, perform the sole
+                        // canonical disconnect/replay/bookkeeping. The scheduler's
+                        // assembly barrier downloads the rest of the branch. The
+                        // worker realigns its cursor afterward via the ABC reorg
+                        // reset signal (GetCSNReorgResetHeight, consumed above).
                         bool competing_reorg_block = false;
-                        if (block_height < *next_validate_height &&
-                            expected_hash_at_height.has_value() &&
+                        bool starts_competing_reorg = false;
+                        if (expected_hash_at_height.has_value() &&
                             block_hash == expected_hash_at_height.value() &&
                             (!block_download_for_csn ||
                              !block_download_for_csn->IsBlockConnected(block_hash))) {
@@ -4880,17 +5083,72 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     active_hash_at_height) &&
                                 active_hash_at_height != block_hash) {
                                 competing_reorg_block = true;
-                                g_logger.info("[CSN] Competing-branch utxoblk at height " +
-                                              std::to_string(block_height) +
-                                              " matches best-header hash but not active chain — resetting cursor from " +
-                                              std::to_string(*next_validate_height) + " to " +
-                                              std::to_string(block_height));
-                                // #377: forest ops are confined to the validation worker
-                                // thread. Post the reset; the worker restores the fork
-                                // checkpoint, resets the cursor and clears buffers before
-                                // draining this block. Dispatch must not touch the forest.
-                                *csn_reorg_reset_to = block_height;
+                                starts_competing_reorg = !reorg_state->active;
+                            } else if (reorg_state->active &&
+                                       block_height > reorg_state->fork_height) {
+                                // Descendants above the old active tip have no active
+                                // hash to compare. Once a hash-anchored reorg plan is
+                                // open, matching best-header descendants belong to it.
+                                competing_reorg_block = true;
                             }
+                        }
+
+                        if (competing_reorg_block) {
+                            if (starts_competing_reorg) {
+                                const CBlockIndex* active_tip = chainstate_service->GetActiveTip();
+                                uint32_t fork_height = active_tip && active_tip->height >= 0
+                                    ? std::min<uint32_t>(
+                                          static_cast<uint32_t>(active_tip->height),
+                                          block_height > 0 ? block_height - 1 : 0)
+                                    : 0;
+                                uint256 active_hash;
+                                while (fork_height > 0) {
+                                    const auto* best_at_height = header_chain_for_csn
+                                        ? header_chain_for_csn->GetHeaderAtHeight(fork_height)
+                                        : nullptr;
+                                    if (best_at_height &&
+                                        consensus::GetActiveChainHashAtHeight(
+                                            active_tip, fork_height, active_hash) &&
+                                        active_hash == best_at_height->hash) {
+                                        break;
+                                    }
+                                    --fork_height;
+                                }
+                                if (!consensus::GetActiveChainHashAtHeight(
+                                        active_tip, fork_height, active_hash)) {
+                                    g_logger.error("[CSN-ReorgPlan] Cannot anchor competing branch");
+                                    return;
+                                }
+                                reorg_state->Reset();
+                                reorg_state->active = true;
+                                reorg_state->fork_height = fork_height;
+                                reorg_state->fork_hash = active_hash;
+                                reorg_state->next_height = fork_height + 1;
+                                g_logger.info("[CSN-ReorgPlan] Opened plan at fork height " +
+                                              std::to_string(fork_height));
+                            }
+
+                            FilePosition stored_pos;
+                            if (!block_download_for_csn ||
+                                !block_download_for_csn->OnBlockReceived(block, &stored_pos)) {
+                                g_logger.error("[CSN-ReorgPlan] Failed to store competing block at height " +
+                                               std::to_string(block_height));
+                                return;
+                            }
+                            if (parallel_download_for_csn) {
+                                parallel_download_for_csn->notifyBlockReceived(block_hash);
+                            }
+                            reorg_state->pending[block_height] = PendingUtxoBlock{
+                                std::move(block), std::move(proof_msg), peer_addr,
+                                std::move(transition_proof), stored_pos
+                            };
+                            pending_count_for_scheduler->store(
+                                pending_blocks->size() + reorg_state->pending.size(),
+                                std::memory_order_relaxed);
+                            csn_validation_worker->Notify();
+                            g_logger.info("[CSN-ReorgPlan] Buffered competing block at height " +
+                                          std::to_string(block_height));
+                            return;
                         }
 
                         // Below-cursor utxoblks are EITHER expected AssumeUTXO backfill

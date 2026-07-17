@@ -516,7 +516,12 @@ bool StatelessNode::ValidateAndApplyProofInto(
 
     // 5. Apply deletions + additions to a working copy of `forest`.
     auto additions = ComputeCanonicalAdditionHashes(block, proof_msg.block_height);
-    consensus::UtreexoForest working_forest = forest;
+    // Apply the accumulator semantics for this block height. In particular,
+    // replay from a pre-fork checkpoint must promote and recanonicalize the
+    // forest at the canonical-empty-roots activation block before applying
+    // that block's delta.
+    consensus::UtreexoForest working_forest =
+        forest.cloneForHeight(proof_msg.block_height);
     if (!ApplyAccumulatorDelta(
             working_forest,
             spend_proof.targets,
@@ -741,7 +746,8 @@ bool StatelessNode::ValidateWithTransitionProof(
     // forest aligned with the verified stump so the next batch proof sees the
     // correct pre-state instead of snapping back to the stale forest.
     if (tp.deletion_targets.empty()) {
-        consensus::UtreexoForest working_forest = *utreexo_forest_;
+        consensus::UtreexoForest working_forest =
+            utreexo_forest_->cloneForHeight(proof_msg.block_height);
         for (const auto& leaf : tp.addition_hashes) {
             if (working_forest.add(leaf) == UINT64_MAX) {
                 g_logger.error("[StatelessNode-TP] FAIL step 5b: forest add failed at height " +
@@ -1054,7 +1060,8 @@ bool StatelessNode::ReplayBlock(
         // Transactional replay:
         // mutate a working copy first, verify root commitment, then commit.
         // This prevents partial forest mutation on any failure path.
-        consensus::UtreexoForest working_forest = *utreexo_forest_;
+        consensus::UtreexoForest working_forest =
+            utreexo_forest_->cloneForHeight(block_height);
 
         const auto additions = ComputeCanonicalAdditionHashes(block, block_height);
         if (!ApplyAccumulatorDelta(

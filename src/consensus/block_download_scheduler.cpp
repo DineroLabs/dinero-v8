@@ -347,7 +347,7 @@ bool BlockDownloadScheduler::OnBackfillBodyReceived(const Block& block) {
     return ConsumeExpectedBackfillLocked(block, block_hash, lock);
 }
 
-bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
+bool BlockDownloadScheduler::OnBlockReceived(const Block& block, FilePosition* stored_pos_out) {
     std::unique_lock<std::mutex> lock(mutex_);
     const uint256 block_hash = block.GetHash();
     g_logger.info("[BlockDownloadScheduler] OnBlockReceived: " + block_hash.GetHex());
@@ -365,6 +365,9 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block) {
     FilePosition stored_pos;
     if (!StoreVerifiedBlockLocked(block, stored_pos, /*track_received=*/true)) {
         return false;
+    }
+    if (stored_pos_out) {
+        *stored_pos_out = stored_pos;
     }
 
     // Mark block as received and record its storage position
@@ -625,6 +628,10 @@ void BlockDownloadScheduler::TickLocked() {
                           std::to_string(local_tip_height_) + " -> active=" +
                           std::to_string(actual_tip));
             local_tip_height_ = actual_tip;
+            // ActivateBestChain can replace the branch without delivering a
+            // fresh headers message. Rebuild from the newly published tip so
+            // old-branch frontier hashes cannot remain queued after a reorg.
+            ScanForMissingBlocks();
         }
 
         if (auto frontier = FindStatelessFrontierLocked(actual_tip)) {
@@ -651,7 +658,8 @@ void BlockDownloadScheduler::TickLocked() {
             if (gap_state.status == FetchStatus::REQUESTED && !gap_in_flight) {
                 retry_gap = true;
                 retry_reason = "request lost";
-            } else if (gap_state.status == FetchStatus::RECEIVED) {
+            } else if (gap_state.status == FetchStatus::RECEIVED &&
+                       !stateless_reorg_barrier) {
                 retry_gap = true;
                 retry_reason = "received but active tip still behind";
             } else if (gap_state.status == FetchStatus::CONNECTED) {
@@ -736,15 +744,20 @@ void BlockDownloadScheduler::TickLocked() {
                 }
             }
 
-            // On a competing branch, descendants are only valid after the
-            // replacement block at or below the current active tip becomes
-            // active. Hold the frontier here until chainstate catches up.
-            if (stateless_reorg_barrier) {
-                if (gap_state.status == FetchStatus::MISSING &&
-                    in_flight_blocks_.size() + clamped_backpressure < max_window) {
-                    request_stateless_frontier(*stateless_gap_idx, now);
-                }
-                break;
+            // ASSEMBLY BARRIER (CSN reorg, docs/design/csn-stateless-reorg-
+            // convergence.md): on a competing branch the whole branch must be
+            // downloaded before it can win — a single fork-point block below
+            // the active tip cannot advance the tip on its own. So request the
+            // frontier AND keep downloading its descendants (fall through to
+            // the normal window-filling loop) instead of stopping here. A
+            // RECEIVED competing block stays RECEIVED (stored, awaiting
+            // ActivateBestChain's canonical reorg) rather than being retried.
+            // ActivateBestChain owns the forest rewind + replay; the scheduler
+            // only assembles.
+            if (stateless_reorg_barrier &&
+                gap_state.status == FetchStatus::MISSING &&
+                in_flight_blocks_.size() + clamped_backpressure < max_window) {
+                request_stateless_frontier(*stateless_gap_idx, now);
             }
         }
 
