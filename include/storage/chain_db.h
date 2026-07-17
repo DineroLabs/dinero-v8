@@ -535,6 +535,11 @@ public:
     // Utreexo accumulator persistence (Phase 2.1: Read operations)
     StatusOr<std::vector<uint8_t>> getUtreexoCheckpoint(int height) const;
     StatusOr<std::pair<int, std::vector<uint8_t>>> getLatestUtreexoCheckpoint() const;
+    // Forest checkpoint delta campaign phase 3: nearest checkpoint at or
+    // below `height` — the anchor for delta-sidecar replay to any
+    // historical height (startup restore + bridge historical proof gen).
+    StatusOr<std::pair<int, std::vector<uint8_t>>>
+    getLatestUtreexoCheckpointAtOrBelow(int height) const;
     StatusOr<std::vector<int>> listUtreexoCheckpoints() const;
 
     // Iteration helpers

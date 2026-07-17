@@ -1586,6 +1586,43 @@ StatusOr<std::pair<int, std::vector<uint8_t>>> ChainDB::getLatestUtreexoCheckpoi
     return std::make_pair(height, std::move(serialized_forest));
 }
 
+StatusOr<std::pair<int, std::vector<uint8_t>>>
+ChainDB::getLatestUtreexoCheckpointAtOrBelow(int height) const {
+    if (!db_) return Status::Internal;
+
+    // SeekForPrev on PREFIX + height (big-endian) lands on the highest
+    // checkpoint key <= height — same scheme as getLatestUtreexoCheckpoint,
+    // bounded instead of open-ended.
+    std::string start_key;
+    start_key.reserve(5);
+    start_key.push_back(PREFIX_UTREEXO_CHECKPOINT);
+    start_key.push_back((height >> 24) & 0xFF);
+    start_key.push_back((height >> 16) & 0xFF);
+    start_key.push_back((height >> 8) & 0xFF);
+    start_key.push_back(height & 0xFF);
+
+    rocksdb::ReadOptions read_opts;
+    std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(read_opts, cf_[idx_utreexo_].get()));
+    it->SeekForPrev(start_key);
+
+    if (!it->Valid()) {
+        return Status::NotFound;
+    }
+    auto key = it->key();
+    if (key.size() != 5 || key[0] != PREFIX_UTREEXO_CHECKPOINT) {
+        return Status::NotFound;
+    }
+
+    int found_height = (static_cast<uint8_t>(key[1]) << 24) |
+                       (static_cast<uint8_t>(key[2]) << 16) |
+                       (static_cast<uint8_t>(key[3]) << 8) |
+                       static_cast<uint8_t>(key[4]);
+
+    auto value = it->value();
+    std::vector<uint8_t> serialized_forest(value.data(), value.data() + value.size());
+    return std::make_pair(found_height, std::move(serialized_forest));
+}
+
 StatusOr<std::vector<int>> ChainDB::listUtreexoCheckpoints() const {
     if (!db_) return Status::Internal;
 

@@ -231,6 +231,14 @@ public:
         // assumeUTXO snapshot load).
         bool preserve_shielded_state_on_init = false;
 
+        // Forest checkpoint delta campaign phase 3
+        // (docs/design/forest-checkpoint-deltas.md): full forest checkpoint
+        // every N processed blocks (the UD sidecar is written every block
+        // regardless), plus one final checkpoint at the reindex tip as the
+        // instant-restore anchor. 1 = pre-campaign per-block checkpoints.
+        // Callers pass the node's utreexo.checkpoint_interval.
+        uint32_t utreexo_checkpoint_interval = 1;
+
         // Optional anchor for canonical-chain selection.
         //
         // When set: the reindexer's SelectCanonicalChain skips the
