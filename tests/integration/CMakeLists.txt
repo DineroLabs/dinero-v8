@@ -1106,6 +1106,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_checkpoint_interval.sh)
     message(STATUS "  ✓ UtreexoCheckpointInterval registered")
 endif()
 
+# Forest checkpoint delta campaign phase 2: restart via checkpoint + UD
+# sidecar replay, plus the unified-batch crash boundary
+# (docs/design/forest-checkpoint-deltas.md)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_delta_replay_restart.sh)
+    add_test(
+        NAME UtreexoDeltaReplayRestart
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_delta_replay_restart.sh
+    )
+    set_tests_properties(UtreexoDeltaReplayRestart PROPERTIES
+        LABELS "integration;daemon;utreexo;restart;forest-checkpoint-deltas"
+        TIMEOUT 420
+    )
+    message(STATUS "  ✓ UtreexoDeltaReplayRestart registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_daemon_restart_equivalence.sh)
     add_test(
         NAME ShieldedDaemonRestartEquivalence

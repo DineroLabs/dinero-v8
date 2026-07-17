@@ -2458,8 +2458,18 @@ std::vector<uint8_t> UtreexoForest::serialize() const {
     data.push_back((numDeleted >> 16) & 0xFF);
     data.push_back((numDeleted >> 24) & 0xFF);
 
-    // 7. Deleted positions (8 bytes each) - Track spent UTXOs
-    for (uint64_t pos : deleted_positions_) {
+    // 7. Deleted positions (8 bytes each) - Track spent UTXOs.
+    // Emitted SORTED: deleted_positions_ is an unordered_set whose
+    // iteration order depends on its mutation history, so two forests with
+    // identical contents could serialize different bytes (observed as the
+    // continuous-vs-checkpoint+delta-replay byte divergence in the forest
+    // checkpoint delta campaign equivalence suite). Sorting makes the
+    // persisted form canonical; deserialize rebuilds the set and never
+    // cared about order, and pre-fix blobs remain readable.
+    std::vector<uint64_t> sorted_deleted(deleted_positions_.begin(),
+                                         deleted_positions_.end());
+    std::sort(sorted_deleted.begin(), sorted_deleted.end());
+    for (uint64_t pos : sorted_deleted) {
         data.push_back(pos & 0xFF);
         data.push_back((pos >> 8) & 0xFF);
         data.push_back((pos >> 16) & 0xFF);

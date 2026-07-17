@@ -30,6 +30,7 @@
 #include "network/stateless_node.h"  // CSN reorg: For RewindToCheckpoint/ReplayBlock
 #include "storage/chain_write_token.h"  // For genesis bootstrap token
 #include "consensus/chainparams.h"   // For Params()
+#include "consensus/utreexo_delta_codec.h"  // UD sidecar codec + forward replay (campaign phase 2)
 #include "consensus/chainwork.h"     // For canonical genesis proof
 #include "consensus/pow.h"           // For canonical header PoW checks
 #include "consensus/block_filter.h"  // BIP158 GCS block filter construction
@@ -3017,23 +3018,51 @@ bool ChainstateService::Start() {
                     throw std::runtime_error("Auto-recovery: forest wiped, replaying from genesis");
                 }
 
-                // Advance active_tip_ to the checkpoint height (last validated state).
-                // The forest checkpoint represents validated consensus state, so it's
-                // safe to skip ConnectBlock for blocks up to this height.
-                auto cp_hash = chain_db_->getBlockHashByHeight(checkpoint_height);
+                // Forest checkpoint delta campaign phase 2
+                // (docs/design/forest-checkpoint-deltas.md): if the verified
+                // checkpoint sits behind the persisted tip, replay the
+                // per-block UD sidecars forward to close the gap in memory —
+                // no block bodies or proof payloads needed. On success the
+                // active tip advances straight to the ChainDB tip; on
+                // failure we log loud and fall through to the pre-existing
+                // behavior (checkpoint-height tip + body-based catch-up
+                // recovery below).
+                uint32_t restored_forest_height =
+                    static_cast<uint32_t>(checkpoint_height);
+                if (restored_forest_height < height) {
+                    std::string replay_error;
+                    if (ReplayForestDeltasToTip(restored_forest_height, height,
+                                                &replay_error)) {
+                        restored_forest_height = height;
+                    } else {
+                        logger_->warning(
+                            "[ForestDeltaReplay] delta replay from checkpoint " +
+                            std::to_string(checkpoint_height) + " to tip " +
+                            std::to_string(height) + " unavailable (" +
+                            replay_error + ") — falling back to body-based catch-up");
+                    }
+                }
+
+                // Advance active_tip_ to the restored forest height (last
+                // validated state). The forest state is validated consensus
+                // state — checkpoint-verified, plus per-block header-root
+                // verification for any replayed deltas — so it's safe to
+                // skip ConnectBlock for blocks up to this height.
+                auto cp_hash = chain_db_->getBlockHashByHeight(
+                    static_cast<int>(restored_forest_height));
                 if (cp_hash.status() == Status::Ok) {
                     CBlockIndex* cp_idx = dinero::FindBlockIndex(cp_hash.value());
                     if (cp_idx) {
                         PublishActiveTip(cp_idx, TipPublishReason::kStartupLoad);
-                        logger_->info("[ChainstateService] active_tip_ advanced to checkpoint height=" +
-                                     std::to_string(checkpoint_height));
+                        logger_->info("[ChainstateService] active_tip_ advanced to restored forest height=" +
+                                     std::to_string(restored_forest_height));
                     } else {
-                        logger_->error("[ChainstateService] FindBlockIndex FAILED for checkpoint hash at height " +
-                                     std::to_string(checkpoint_height) + " — block index not loaded");
+                        logger_->error("[ChainstateService] FindBlockIndex FAILED for restored hash at height " +
+                                     std::to_string(restored_forest_height) + " — block index not loaded");
                     }
                 } else {
-                    logger_->error("[ChainstateService] getBlockHashByHeight FAILED for checkpoint height " +
-                                 std::to_string(checkpoint_height));
+                    logger_->error("[ChainstateService] getBlockHashByHeight FAILED for restored height " +
+                                 std::to_string(restored_forest_height));
                 }
 
                 // ═══════════════════════════════════════════════════════════════════
@@ -10663,90 +10692,6 @@ CBlockIndex* ChainstateService::FindFork(CBlockIndex* a, CBlockIndex* b) {
 
 namespace {
 
-constexpr const char* kUtreexoDeltaUndoPrefix = "UD:";
-constexpr uint8_t kUtreexoDeltaUndoSchemaV1 = 1;
-constexpr size_t kUtreexoLeafHashSize = 32;
-
-std::string MakeUtreexoDeltaUndoKey(const uint256& block_hash) {
-    return std::string(kUtreexoDeltaUndoPrefix) + block_hash.GetHex();
-}
-
-bool SerializeUtreexoDelta(const consensus::UtreexoDelta& delta, std::string& out, std::string& error) {
-    try {
-        VectorWriter writer;
-        writer.write(kUtreexoDeltaUndoSchemaV1);
-        writer.write(delta.numLeavesBefore);
-        writer.writeVarInt(delta.deletedLeaves.size());
-        for (const auto& deleted : delta.deletedLeaves) {
-            if (deleted.leafHash.size() != kUtreexoLeafHashSize) {
-                error = "utreexo-delta-serialize-invalid-deleted-hash-size";
-                return false;
-            }
-            writer.write(deleted.leafHash.data(), kUtreexoLeafHashSize);
-            writer.write(deleted.position);
-        }
-
-        writer.writeVarInt(delta.addedLeaves.size());
-        for (const auto& added : delta.addedLeaves) {
-            if (added.hash.size() != kUtreexoLeafHashSize) {
-                error = "utreexo-delta-serialize-invalid-added-hash-size";
-                return false;
-            }
-            writer.write(added.hash.data(), kUtreexoLeafHashSize);
-            writer.write(added.position);
-        }
-
-        out = writer.release_string();
-        return true;
-    } catch (const std::exception& e) {
-        error = std::string("utreexo-delta-serialize-exception: ") + e.what();
-        return false;
-    }
-}
-
-bool DeserializeUtreexoDelta(const std::string& data, consensus::UtreexoDelta& out, std::string& error) {
-    try {
-        Reader reader(data);
-        const uint8_t schema = reader.read<uint8_t>();
-        if (schema != kUtreexoDeltaUndoSchemaV1) {
-            error = "utreexo-delta-unsupported-schema";
-            return false;
-        }
-
-        consensus::UtreexoDelta parsed;
-        parsed.numLeavesBefore = reader.read<uint64_t>();
-
-        const uint64_t deleted_count = reader.readVarInt();
-        parsed.deletedLeaves.reserve(static_cast<size_t>(deleted_count));
-        for (uint64_t i = 0; i < deleted_count; ++i) {
-            consensus::UtreexoHash hash(kUtreexoLeafHashSize);
-            reader.read(hash.data(), kUtreexoLeafHashSize);
-            const uint64_t position = reader.read<uint64_t>();
-            parsed.deletedLeaves.emplace_back(hash, position);
-        }
-
-        const uint64_t added_count = reader.readVarInt();
-        parsed.addedLeaves.reserve(static_cast<size_t>(added_count));
-        for (uint64_t i = 0; i < added_count; ++i) {
-            consensus::UtreexoHash hash(kUtreexoLeafHashSize);
-            reader.read(hash.data(), kUtreexoLeafHashSize);
-            const uint64_t position = reader.read<uint64_t>();
-            parsed.addedLeaves.emplace_back(hash, position);
-        }
-
-        if (!reader.eof()) {
-            error = "utreexo-delta-trailing-bytes";
-            return false;
-        }
-
-        out = std::move(parsed);
-        return true;
-    } catch (const std::exception& e) {
-        error = std::string("utreexo-delta-deserialize-exception: ") + e.what();
-        return false;
-    }
-}
-
 // Convert consensus::BlockUndo + block data to dinero::UndoRecord for ChainDB storage.
 // BlockUndo only carries spent coins, so we must derive created outputs from the
 // actual block to preserve disconnect symmetry.
@@ -13414,6 +13359,91 @@ void ChainstateService::RecordBlockConnectStats(
     if (!summary.empty() && logger_) {
         logger_->info(summary);
     }
+}
+
+bool ChainstateService::ReplayForestDeltasToTip(uint32_t checkpoint_height,
+                                                uint32_t target_height,
+                                                std::string* error) {
+    auto fail = [&](const std::string& msg) {
+        if (error) {
+            *error = msg;
+        }
+        return false;
+    };
+    if (!consensus_utxo_set_ || !chain_db_) {
+        return fail("replay-prerequisites-missing");
+    }
+    if (target_height <= checkpoint_height) {
+        return true;
+    }
+
+    // Work on a copy: a mid-replay failure (missing/corrupt sidecar, root
+    // mismatch) must leave the live forest at verified checkpoint state so
+    // the existing body-based catch-up recovery still has its expected
+    // starting point.
+    consensus::UtreexoForest working = consensus_utxo_set_->GetForest();
+
+    for (uint32_t h = checkpoint_height + 1; h <= target_height; ++h) {
+        auto hash_result = chain_db_->getBlockHashByHeight(static_cast<int>(h));
+        if (hash_result.status() != Status::Ok) {
+            return fail("replay-missing-height-index-at-" + std::to_string(h));
+        }
+        const uint256 block_hash = hash_result.value();
+
+        std::string delta_blob;
+        const auto blob_status =
+            chain_db_->getRaw(MakeUtreexoDeltaUndoKey(block_hash), delta_blob);
+        if (blob_status != Status::Ok) {
+            return fail("replay-missing-delta-sidecar-at-" + std::to_string(h));
+        }
+
+        consensus::UtreexoDelta delta;
+        std::string codec_error;
+        if (!DeserializeUtreexoDelta(delta_blob, delta, codec_error)) {
+            return fail("replay-corrupt-delta-sidecar-at-" + std::to_string(h) +
+                        ": " + codec_error);
+        }
+
+        // Mirror ConnectBlockInternal's canonical-roots fork activation:
+        // flip + re-canonicalize before applying the activation block.
+        if (consensus::IsUtreexoCanonicalRootsActive(h) &&
+            !working.isCanonicalEmptyRoots()) {
+            working.setCanonicalEmptyRoots(true);
+            working.rebuildRoots();
+        }
+
+        std::string apply_error;
+        if (!ApplyUtreexoDeltaForward(working, delta, apply_error)) {
+            return fail("replay-apply-failed-at-" + std::to_string(h) + ": " +
+                        apply_error);
+        }
+
+        // Every replayed block must land exactly on the header commitment —
+        // the same check reindex enforces. This is what makes a wrong or
+        // reordered sidecar fail loudly instead of surfacing blocks later.
+        auto header_result = chain_db_->getHeader(block_hash);
+        if (header_result.status() != Status::Ok) {
+            return fail("replay-missing-header-at-" + std::to_string(h));
+        }
+        const consensus::UtreexoHash commitment = working.getCommitment();
+        uint256 computed_root;
+        if (commitment.size() == 32) {
+            std::memcpy(computed_root.data, commitment.data(), 32);
+        }
+        if (computed_root != header_result.value().utreexo_root) {
+            return fail("replay-root-mismatch-at-" + std::to_string(h));
+        }
+    }
+
+    consensus_utxo_set_->GetForest() = std::move(working);
+    if (logger_) {
+        logger_->info("[ForestDeltaReplay] forest restored to tip height " +
+                      std::to_string(target_height) + " via checkpoint " +
+                      std::to_string(checkpoint_height) + " + " +
+                      std::to_string(target_height - checkpoint_height) +
+                      " delta sidecars (root header-verified per block)");
+    }
+    return true;
 }
 
 // ============================================================================

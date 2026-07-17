@@ -1104,6 +1104,17 @@ private:
     void RecordBlockConnectStats(uint32_t height,
                                  std::chrono::steady_clock::time_point connect_start);
 
+    // Forest checkpoint delta campaign phase 2
+    // (docs/design/forest-checkpoint-deltas.md): startup restore replays the
+    // per-block UD:<blockhash> delta sidecars forward over the checkpoint
+    // forest, (checkpoint_height, target_height], verifying the root against
+    // every block header on the way. Pure in-memory; no ChainDB writes.
+    // Replays into a working copy and swaps it in only on full success, so
+    // a failed replay leaves the checkpoint-state forest untouched for the
+    // existing body-based catch-up/recovery machinery.
+    bool ReplayForestDeltasToTip(uint32_t checkpoint_height,
+                                 uint32_t target_height, std::string* error);
+
     mutable std::atomic<uint64_t> legacy_body_fallback_reads_{0};
     mutable std::atomic<uint64_t> legacy_undo_fallback_reads_{0};
     bool strict_archival_reads_{false};
