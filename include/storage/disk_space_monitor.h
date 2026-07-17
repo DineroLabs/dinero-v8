@@ -39,6 +39,18 @@ enum class DiskSpaceStatus {
 
 const char* DiskSpaceStatusToString(DiskSpaceStatus status);
 
+struct DiskLimitsConfig;
+
+// Pure status classification from (available, total) against the limits.
+// FULL — the hard startup/write refusal — is ABSOLUTE-bytes only: a node
+// needs a fixed amount of headroom, not a percentage of somebody's disk
+// (a 116 GB box with 5.4 GB free was refused by the old 5%-floor while
+// the message claimed "minimum required: 1.0 GB" — DineroTX canary,
+// 2026-07-17). Percentage floors demote to CRITICAL/LOW warnings.
+DiskSpaceStatus ClassifyDiskSpace(uint64_t available_bytes,
+                                  uint64_t total_bytes,
+                                  const DiskLimitsConfig& config);
+
 /**
  * Disk space information
  */
