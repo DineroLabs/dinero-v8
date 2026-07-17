@@ -449,7 +449,16 @@ else
     [[ -n "${TRANSFER_TXID_FINAL}" ]] || fail "final sendrawtransaction returned empty transfer txid"
 fi
 assert_mempool_contains "${TRANSFER_TXID_FINAL}" "post-restart transfer tx not in mempool"
-mine_blocks 1 "${MINER_ADDR}"
+# Mine the recovery block to CHANGE_ADDR, not MINER_ADDR. Fast regtest mining
+# walks block timestamps ahead of wall clock (generatetoaddress uses
+# max(prevMTP+1, now)), so a re-mine on the same parent with the same txs,
+# same coinbase target, and the still-deterministic timestamp reproduces the
+# invalidated block BIT-FOR-BIT — same hash — and its persistent
+# BLOCK_FAILED_VALID flag correctly blocks it, failing this test on fast
+# machines. A different coinbase target changes the merkle root, making the
+# recovery block structurally distinct regardless of machine speed.
+# (Root-caused 2026-07-16; the sleep-based alternative only shrinks the race.)
+mine_blocks 1 "${CHANGE_ADDR}"
 
 FINAL_HEIGHT="$(json_get "$(rpc_result "getblockcount" '[]')" '.result')"
 FINAL_HASH="$(json_get "$(rpc_result "getblockhash" "[${FINAL_HEIGHT}]")" '.result')"
