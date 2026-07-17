@@ -224,6 +224,26 @@ set_tests_properties(ForestRestore PROPERTIES
   LABELS "storage;utreexo;forest-checkpoint-deltas;smoke"
 )
 
+# Disk-space FULL gate must be absolute-bytes, not a percentage floor
+# (DineroTX canary finding, 2026-07-17)
+add_executable(test_disk_space_classify
+  tests/storage/test_disk_space_classify.cpp
+  src/storage/disk_space_monitor.cpp
+)
+add_dependencies(test_disk_space_classify gtest gtest_main)
+target_include_directories(test_disk_space_classify BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_disk_space_classify PRIVATE
+  GTest::gtest_main
+  Threads::Threads
+)
+add_test(NAME DiskSpaceClassify COMMAND test_disk_space_classify)
+set_tests_properties(DiskSpaceClassify PROPERTIES
+  LABELS "storage;smoke"
+)
+
 # issue #224: daemon log rotation + reopen
 add_executable(test_logger_rotation
   tests/common/test_logger_rotation.cpp

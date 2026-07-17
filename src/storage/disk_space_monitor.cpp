@@ -91,21 +91,33 @@ DiskSpaceInfo DiskSpaceMonitor::getFilesystemInfo(const std::filesystem::path& p
         info.available_percent = 0.0;
     }
 
-    // Determine status based on config
-    if (info.available_bytes < config_.min_free_bytes ||
-        info.available_percent < config_.min_free_percent) {
-        info.status = DiskSpaceStatus::FULL;
-    } else if (info.available_bytes < config_.min_free_bytes * 5 ||
-               info.available_percent < config_.min_free_percent * 2) {
-        info.status = DiskSpaceStatus::CRITICAL;
-    } else if (info.available_bytes < config_.low_space_threshold_bytes ||
-               info.available_percent < config_.low_space_threshold_percent) {
-        info.status = DiskSpaceStatus::LOW;
-    } else {
-        info.status = DiskSpaceStatus::OK;
-    }
+    info.status = ClassifyDiskSpace(info.available_bytes, info.total_bytes, config_);
 
     return info;
+}
+
+DiskSpaceStatus ClassifyDiskSpace(uint64_t available_bytes,
+                                  uint64_t total_bytes,
+                                  const DiskLimitsConfig& config) {
+    const double available_percent =
+        total_bytes > 0
+            ? (static_cast<double>(available_bytes) / total_bytes) * 100.0
+            : 0.0;
+
+    // FULL (the hard startup/write refusal) is absolute-bytes only — see
+    // the header note. Percentage floors demote to warnings.
+    if (available_bytes < config.min_free_bytes) {
+        return DiskSpaceStatus::FULL;
+    }
+    if (available_bytes < config.min_free_bytes * 5 ||
+        available_percent < config.min_free_percent) {
+        return DiskSpaceStatus::CRITICAL;
+    }
+    if (available_bytes < config.low_space_threshold_bytes ||
+        available_percent < config.low_space_threshold_percent) {
+        return DiskSpaceStatus::LOW;
+    }
+    return DiskSpaceStatus::OK;
 }
 
 DiskSpaceInfo DiskSpaceMonitor::checkDiskSpace() const {
