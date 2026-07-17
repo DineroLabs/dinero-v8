@@ -12348,10 +12348,20 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             static_cast<uint32_t>(tip_to_connect->height));
         const bool shielded_active = static_cast<uint32_t>(tip_to_connect->height) >=
             dinero::Params().shielded_activation_height;
+        // Forest checkpoint delta campaign phase 1: with interval N > 1 the
+        // full forest checkpoint is written only at heights % N == 0; the
+        // per-block delta sidecar + ForestTipMarker still ride this batch
+        // every block (DisconnectTip and phase 2's replay-restore need them).
+        const uint32_t checkpoint_interval =
+            GetConfig().utreexo_checkpoint_interval > 1
+                ? GetConfig().utreexo_checkpoint_interval : 1;
+        const bool write_full_checkpoint =
+            (static_cast<uint64_t>(tip_to_connect->height) % checkpoint_interval) == 0;
         ChainstateCommitBatch ccb(static_cast<uint64_t>(tip_to_connect->height),
                                   ut_active,
                                   GetConfig().utreexo_stateless,
-                                  shielded_active);
+                                  shielded_active,
+                                  checkpoint_interval);
         auto& utxo_batch = ccb.Batch();
 
         for (size_t tx_idx = 0; tx_idx < block.vtx.size(); tx_idx++) {
@@ -12416,7 +12426,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         // there with a comment explaining the move so the
         // structure of ConnectTip is still readable.
         std::vector<uint8_t> forest_serialized;
-        if (consensus_utxo_set_) {
+        if (consensus_utxo_set_ && write_full_checkpoint) {
             forest_serialized = consensus_utxo_set_->GetForest().serialize();
             pending_forest_checkpoint_bytes_ = forest_serialized.size();
             const auto checkpoint_status = chain_db_->putUtreexoCheckpointWithChecksum(
@@ -12436,7 +12446,9 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             // the getUtreexoMeta query that the standalone path
             // used.
             chain_db_->putUtreexoMeta(token, "CHECKSUM_VERSION", "1", &utxo_batch);
-
+            ccb.MarkUtreexoCheckpointStaged();
+        }
+        if (consensus_utxo_set_) {
             // ForestTipMarker — height + block hash + forest root.
             // Goes into the same batch so its existence on disk
             // implies the checkpoint above is also on disk.
@@ -12451,7 +12463,6 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 forest_marker.forest_root.SetNull();
             }
             chain_db_->putForestTipMarker(token, forest_marker, &utxo_batch);
-            ccb.MarkUtreexoCheckpointStaged();
             ccb.MarkUtreexoForestTipMarkerStaged();
         }
 
@@ -13789,14 +13800,23 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
         return fail("persist-height-index-failed");
     }
 
-    // 4. Utreexo checkpoint (forest is already at correct post-replay state)
+    // 4. Utreexo checkpoint (forest is already at correct post-replay state).
+    // Campaign phase 1: with utreexo.checkpoint_interval N > 1 the full
+    // checkpoint is written only at heights % N == 0 (same gating as
+    // ConnectTip's unified batch; the per-block delta sidecar is persisted
+    // by the caller either way).
     if (consensus_utxo_set_) {
-        auto serialized = consensus_utxo_set_->GetForest().serialize();
-        pending_forest_checkpoint_bytes_ = serialized.size();
-        auto checkpoint_status = chain_db_->putUtreexoCheckpointWithChecksum(
-            token, block_index->height, serialized);
-        if (checkpoint_status != Status::Ok) {
-            return fail("persist-utreexo-checkpoint-failed");
+        const uint32_t bk_checkpoint_interval =
+            GetConfig().utreexo_checkpoint_interval > 1
+                ? GetConfig().utreexo_checkpoint_interval : 1;
+        if (static_cast<uint64_t>(block_index->height) % bk_checkpoint_interval == 0) {
+            auto serialized = consensus_utxo_set_->GetForest().serialize();
+            pending_forest_checkpoint_bytes_ = serialized.size();
+            auto checkpoint_status = chain_db_->putUtreexoCheckpointWithChecksum(
+                token, block_index->height, serialized);
+            if (checkpoint_status != Status::Ok) {
+                return fail("persist-utreexo-checkpoint-failed");
+            }
         }
         consensus_utxo_set_->SetBestBlock(block_index->hash, block_index->height);
     }

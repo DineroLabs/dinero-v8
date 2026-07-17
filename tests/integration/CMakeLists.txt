@@ -1092,6 +1092,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_tip_marker_restart_equivalen
     message(STATUS "  ✓ ShieldedTipMarkerRestartEquivalence registered")
 endif()
 
+# Forest checkpoint delta campaign phase 1: every-N checkpoint writer
+# (docs/design/forest-checkpoint-deltas.md)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_checkpoint_interval.sh)
+    add_test(
+        NAME UtreexoCheckpointInterval
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_checkpoint_interval.sh
+    )
+    set_tests_properties(UtreexoCheckpointInterval PROPERTIES
+        LABELS "integration;daemon;utreexo;forest-checkpoint-deltas"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ UtreexoCheckpointInterval registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_daemon_restart_equivalence.sh)
     add_test(
         NAME ShieldedDaemonRestartEquivalence
