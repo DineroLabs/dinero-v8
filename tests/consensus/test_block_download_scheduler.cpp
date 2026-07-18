@@ -628,7 +628,7 @@ int main() {
     }
 
     {
-        std::cout << "\n6. stateless reorg barrier fetches replacement ancestor before descendants..." << std::endl;
+        std::cout << "\n6. stateless reorg barrier assembles the whole competing branch (frontier first)..." << std::endl;
 
         dcs::HeaderChainSelector selector;
         std::vector<uint256> main_hashes;
@@ -685,35 +685,44 @@ int main() {
 
         scheduler.Tick();
 
-        if (!Require(requested_hashes.size() == 1,
-                     "stateless reorg barrier must request only the replacement ancestor first")) {
+        // ASSEMBLY BARRIER (see BlockDownloadScheduler::TickLocked +
+        // docs/design/csn-stateless-reorg-convergence.md): a competing branch
+        // can only win once the WHOLE branch is downloaded, so the scheduler
+        // requests the fork-point frontier AND its descendants in one pass
+        // instead of holding after the ancestor. ActivateBestChain owns the
+        // canonical rewind + replay; the scheduler only assembles.
+        if (!Require(requested_hashes.size() == 3,
+                     "stateless reorg barrier must assemble the whole competing branch (heights 3-5)")) {
             return 1;
         }
         if (!Require(requested_hashes.front() == fork_hashes[0],
-                     "expected first stateless reorg request to be replacement block at current tip height")) {
+                     "expected the fork-point frontier (height 3) to be requested first")) {
+            return 1;
+        }
+        const bool assembled_descendants =
+            std::find(requested_hashes.begin(), requested_hashes.end(),
+                      fork_hashes[1]) != requested_hashes.end() &&
+            std::find(requested_hashes.begin(), requested_hashes.end(),
+                      fork_hashes[2]) != requested_hashes.end();
+        if (!Require(assembled_descendants,
+                     "expected descendants (heights 4-5) to be assembled without waiting for the ancestor to activate")) {
             return 1;
         }
 
-        // Simulate the competing block at height 3 becoming the active-chain
-        // replacement. The scheduler should then release the barrier and
-        // continue with the next descendant at height 4.
+        // The barrier assembles without needing the ancestor to activate first:
+        // once a competing block becomes the active replacement, ActivateBestChain
+        // drives the reorg and the scheduler issues no duplicate re-requests.
         fork_replacement_active = true;
-        const size_t requests_before_release = requested_hashes.size();
+        const size_t requests_before_activation = requested_hashes.size();
         scheduler.Tick();
-
-        if (!Require(requested_hashes.size() > requests_before_release,
-                     "expected additional requests after replacement ancestor became active")) {
-            return 1;
-        }
-        if (!Require(requested_hashes[requests_before_release] == fork_hashes[1],
-                     "expected first descendant request after reorg activation to be height 4")) {
+        if (!Require(requested_hashes.size() == requests_before_activation,
+                     "expected no duplicate re-requests after replacement ancestor became active")) {
             return 1;
         }
 
-        std::cout << "   ✅ replacement_first=" << requested_hashes.front().GetHex().substr(0, 16)
-                  << "... descendant_after_activation="
-                  << requested_hashes[requests_before_release].GetHex().substr(0, 16)
-                  << "..." << std::endl;
+        std::cout << "   ✅ assembled_branch frontier_first="
+                  << requested_hashes.front().GetHex().substr(0, 16)
+                  << "... descendants=" << (requested_hashes.size() - 1) << std::endl;
     }
 
     {

@@ -585,7 +585,7 @@ static void RunCpfpReplayBlockMatrixCase(
     BlockUtreexoData data = producer(producer_set, block, height);
     ExpectCpfpProducerDataShape(data, label);
 
-    UtreexoForest expected_after = producer_set.GetForest();
+    UtreexoForest expected_after = producer_set.GetForest().cloneForHeight(height);
     auto position = expected_after.findLeafPosition(funding_leaf);
     ASSERT_TRUE(position.has_value()) << label;
     auto proof = expected_after.prove(*position);
