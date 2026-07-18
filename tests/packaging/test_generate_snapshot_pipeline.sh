@@ -77,8 +77,16 @@ if [[ "$DUMP_CALL" != *"$DATADIR/.utxo-snapshot-mainnet-"* ]]; then
     echo "$DUMP_CALL" >&2
     exit 1
 fi
-if [[ "$DUMP_CALL" == *" /tmp/"* ]]; then
-    echo "snapshot pipeline still exports through systemd PrivateTmp" >&2
+# Guard against the original PrivateTmp bug (dumping to the bare system /tmp
+# root, e.g. "/tmp/utxo-snapshot-mainnet-$$.dat"). The datadir-containment
+# assertion above already proves the dump lands inside the daemon datadir; do
+# NOT flag a datadir that merely happens to live under /tmp (Linux mktemp -d
+# returns /tmp/tmp.XXXX, which is the daemon-visible datadir here, not the
+# systemd-isolated /tmp).
+DUMP_PATH="${DUMP_CALL##* }"
+if [[ "$DUMP_PATH" != "$DATADIR/"* ]]; then
+    echo "snapshot pipeline exported outside the daemon datadir" >&2
+    echo "$DUMP_CALL" >&2
     exit 1
 fi
 
