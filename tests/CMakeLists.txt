@@ -3518,6 +3518,16 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_metadata_lifecycle.cp
   message(STATUS "✅ AssumeUTXO metadata lifecycle test enabled")
 endif()
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/packaging/test_generate_snapshot_pipeline.sh)
+  add_test(NAME GenerateSnapshotPipeline
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/packaging/test_generate_snapshot_pipeline.sh
+  )
+  set_tests_properties(GenerateSnapshotPipeline PROPERTIES
+    LABELS "assumeutxo;packaging-smoke;snapshot"
+    TIMEOUT 30
+  )
+endif()
+
 # AssumeUTXO replay hardening: confirm-before-fatal policy + torn-body merkle guard
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_replay_failure_policy.cpp)
   add_executable(test_replay_failure_policy

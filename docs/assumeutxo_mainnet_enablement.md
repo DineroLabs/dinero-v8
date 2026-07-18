@@ -118,10 +118,10 @@ AssumeUTXO is **ready for mainnet deployment**. All code is production-ready, se
 2. **Configure cron:**
    ```bash
    # Testnet: Weekly (Sundays 2 AM)
-   0 2 * * 0 /opt/dinero/generate_snapshot.sh testnet >> /var/log/dinero/snapshot.log 2>&1
+   0 2 * * 0 DINERO_DATADIR=/var/lib/dinero /opt/dinero/generate_snapshot.sh testnet >> /var/log/dinero/snapshot.log 2>&1
 
    # Mainnet: Monthly (1st of month 3 AM)
-   0 3 1 * * /opt/dinero/generate_snapshot.sh mainnet >> /var/log/dinero/snapshot.log 2>&1
+   0 3 1 * * DINERO_DATADIR=/var/lib/dinero /opt/dinero/generate_snapshot.sh mainnet >> /var/log/dinero/snapshot.log 2>&1
    ```
 
 3. **Monitor logs:**
