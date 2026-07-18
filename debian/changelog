@@ -1,3 +1,27 @@
+dinero-core (8.0.16-1) unstable; urgency=medium
+
+  * v8.0.16 — Utreexo write-reduction + snapshot-bootstrap fixes (non-consensus;
+    no rule or activation changes; safe to upgrade any time). Highlights:
+    - CSN/stateless reorg convergence: ActivateBestChain-owned atomic reorg,
+      fixing the pre-existing CSN reorg-convergence failures.
+    - Every-N forest-checkpoint write reduction: a full Utreexo forest
+      checkpoint every N blocks (utreexo.checkpoint_interval, default 500) with
+      reversible per-block UD delta sidecars between anchors; restore replays
+      nearest checkpoint + deltas (header-verified per block). ~N-fold reduction
+      in checkpoint write volume on both full-node and CSN/mobile paths.
+    - AssumeUTXO snapshot bootstrap: genesis UTXO is preserved until a snapshot
+      passes every preflight (transport/manifest/checksum/consensus), so a
+      rejected snapshot can no longer strand the node in the unrecoverable
+      consensus-utxo-tip invariant loop; the genesis-only precondition is now
+      content-based (fixes deferred mobile bootstrap where tip height > 0).
+    - Mainnet snapshot pipeline: generate_snapshot.sh passes -datadir and dumps
+      inside the daemon datadir (no systemd PrivateTmp isolation, no missing RPC
+      cookie).
+    - iOS embedded hardening, forest deserialize all-or-nothing, stateless
+      missing-proof reject, installer-time fresh-snapshot fetch, quiet logging.
+
+ -- DineroLabs <team@dinerolabs.org>  Sat, 18 Jul 2026 06:57:01 +0000
+
 dinero-core (8.0.15-1) unstable; urgency=medium
 
   * v8.0.15 — AssumeUTXO stability + memory-safety release (non-consensus; no
