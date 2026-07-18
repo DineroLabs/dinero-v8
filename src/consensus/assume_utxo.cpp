@@ -73,6 +73,30 @@ const std::vector<AssumeUTXOSnapshot> AssumeUTXORegistry::snapshots_ = {
         154475,
         "Mainnet height 52287 v4 trust anchor (UXTO+UTRX+SHLD)"
     ),
+    // Mainnet height 65300 v4 trust anchor (generated 2026-07-18 by dumptxoutset
+    // on the production fleet node (na, /var/lib/dinero) at the canonical tip,
+    // now buried 139+ blocks below the live tip). Bundled in the desktop wallet
+    // installers so fresh GUI users fast-sync from 65300 instead of the older
+    // 52287 (fewer blocks to replay). Format: v4 UXTO+UTRX(Utreexo)+SHLD.
+    // Snapshot file: utxo-snapshot-65300.dat (23,935,983 bytes).
+    //
+    // Cross-validated against fleet consensus at the dump height:
+    //   • tip block hash == fleet canonical 00000098ccb1c3a0… @ 65300
+    //     (na/sj/eu1 agreed on this best hash at height 65300)
+    //   • utreexo_root 1202a3a97807c5cf55b6df929b80d77eac7445b3e2dc6643fc65d9b054cad9f0
+    //   • full-genesis-validated source ⇒ canonical UTXO set (193812 coins)
+    //
+    // ⚠️ 65300 SUPERSEDES 52287 as the preferred bundled fast-sync anchor
+    // (closer to tip). 52287 is retained for older bundles/manifests already in
+    // the field. Both are v4+SHLD — never re-add a v3/no-shielded anchor.
+    AssumeUTXOSnapshot(
+        "d7f6c0a53a5429ed293200e5d30e19cf23352ea2fd3ef44c35eda9ae23c6e7c6",
+        "00000098ccb1c3a0204ea9fb077be4975146be5a95ec2865ebde9cd0644462ed",
+        65300,
+        "0x0000000000000000000000000000000000000000000000000000068b62500bc1",
+        193812,
+        "Mainnet height 65300 v4 trust anchor (UXTO+UTRX+SHLD)"
+    ),
 };
 
 std::optional<AssumeUTXOSnapshot> AssumeUTXORegistry::GetSnapshot(uint32_t height) {
