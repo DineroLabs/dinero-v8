@@ -134,7 +134,7 @@ set(DINERO_SOLO_MINER_SOURCE_ROOT "${_DEFAULT_DINERO_SOLO_MINER_SOURCE_ROOT}" CA
 # ─────────────────────────────────────────────────────────────────────────────
 set(DINERO_MINER_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../dinero-miner" CACHE PATH "Source checkout for bundled CPU miner (external, pre-v8 release blocker)")
 set(DINERO_STRATUM_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../stratum" CACHE PATH "Source checkout for standalone stratum release checks (external)")
-set(DINERO_SV2_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../dinero-sv2" CACHE PATH "Source checkout for bundled SV2 pool miners (external)")
+set(DINERO_SV2_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../dinero-sv2" CACHE PATH "Source checkout for bundled SV2 pool miners (external)")
 
 set(DINERO_CORE_CHAIN_BUNDLE_HEADER "${DINERO_SOURCE_ROOT}/include/consensus/chain_bundle_generated.h")
 set(DINERO_CORE_CHAIN_IDENTITY_HEADER "${DINERO_SOURCE_ROOT}/include/consensus/chain_identity.h")

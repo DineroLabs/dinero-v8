@@ -443,6 +443,8 @@ private:
   QLineEdit* edtSv2Pubkey_ = nullptr;
   QLabel* lblSv2Backend_ = nullptr;
   class QComboBox* cmbSv2Backend_ = nullptr;
+  QLabel* lblSv2RewardMode_ = nullptr;
+  class QComboBox* cmbSv2RewardMode_ = nullptr;
   QLabel* lblSv2Shares_ = nullptr;  // Live "Shares: seq=… total=…" in SV2 mode
   QLineEdit* edtMiningAddress_;
   QLabel* lblStratumIdentity_;
@@ -454,6 +456,7 @@ private:
   QLabel* lblMiningReadiness_ = nullptr;
   QLabel* lblHashrate_;
   bool isMining_ = false;  // v0.14.0.4: Track mining state for toggle button
+  bool externalMinerStopRequested_ = false;
   QString activeMinerType_ = "none";  // "internal", "stratum_worker", "external", "gpu", "daemon", or "none"
 
 public:
@@ -532,6 +535,8 @@ private:
     // per-submit accepted_count field is only 1 per ack).
     qint64 sv2_shares_accepted = 0;
     qint64 sv2_hashrate_updates = 0;
+    qint64 sv2_window_bps = -1;
+    qint64 sv2_window_shares = 0;
   };
   MiningStats mining_stats_;
   
