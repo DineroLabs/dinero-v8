@@ -2,7 +2,10 @@
 
 #include "common/serialization.h"
 #include "consensus/utreexo_accumulator.h"
+#include "primitives/block.h"
 #include "primitives/uint256.h"
+
+#include <limits>
 
 namespace dinero {
 
@@ -127,6 +130,43 @@ bool ApplyUtreexoDeltaForward(consensus::UtreexoForest& forest,
         }
     }
 
+    return true;
+}
+
+bool BuildStatelessUtreexoDelta(
+    const consensus::UtreexoForest& forest_before,
+    const Block& block,
+    uint32_t block_height,
+    const std::vector<consensus::UtreexoHash>& spend_targets,
+    consensus::UtreexoDelta& out,
+    std::string& error) {
+    consensus::UtreexoDelta built;
+    built.numLeavesBefore = forest_before.getNumLeaves();
+
+    for (size_t i = 0; i < spend_targets.size(); ++i) {
+        const auto position = forest_before.findLeafPosition(spend_targets[i]);
+        if (!position.has_value()) {
+            error = "stateless-delta-target-missing-at-index-" +
+                    std::to_string(i);
+            return false;
+        }
+        built.recordDelete(*position, spend_targets[i]);
+    }
+
+    const auto additions =
+        consensus::UtreexoTransitionProof::computeAdditionHashes(
+            block, block_height);
+    if (additions.size() >
+        std::numeric_limits<uint64_t>::max() - built.numLeavesBefore) {
+        error = "stateless-delta-add-position-overflow";
+        return false;
+    }
+    for (size_t i = 0; i < additions.size(); ++i) {
+        built.recordAdd(
+            additions[i], built.numLeavesBefore + static_cast<uint64_t>(i));
+    }
+
+    out = std::move(built);
     return true;
 }
 

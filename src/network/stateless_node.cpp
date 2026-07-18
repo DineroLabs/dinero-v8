@@ -435,27 +435,129 @@ size_t StatelessNode::RequestProofsForBlocks(
     return requests_sent;
 }
 
+namespace {
+// UtreexoHash (vector<uint8_t>) to hex string (first 16 chars), for logs.
+std::string HashHex16(const consensus::UtreexoHash& h) {
+    if (h.empty()) return "(empty)";
+    std::string hex;
+    hex.reserve(h.size() * 2);
+    for (uint8_t b : h) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", b);
+        hex += buf;
+    }
+    return hex.substr(0, 16) + "...";
+}
+}  // namespace
+
+bool StatelessNode::ValidateAndApplyProofInto(
+    const Block& block,
+    const UtreexoProofMessage& proof_msg,
+    consensus::UtreexoForest& forest,
+    consensus::UtreexoStump& stump,
+    std::string& err_out) {
+    // 1. Block hash matches proof message
+    uint256 block_hash = block.GetHash();
+    if (block_hash != proof_msg.block_hash) {
+        err_out = "step 1: block hash mismatch: computed=" +
+                  block_hash.GetHex().substr(0, 16) + " proof=" +
+                  proof_msg.block_hash.GetHex().substr(0, 16);
+        return false;
+    }
+
+    // 2. Root continuity check (against the provided stump's commitment)
+    consensus::UtreexoHash current_root = stump.getCommitment();
+    if (current_root != proof_msg.accumulator_root_before) {
+        err_out = "step 2: root_before mismatch at height " +
+                  std::to_string(proof_msg.block_height) +
+                  ": local=" + HashHex16(current_root) +
+                  " proof=" + HashHex16(proof_msg.accumulator_root_before);
+        return false;
+    }
+
+    // 3. Extract targets from block inputs
+    std::vector<consensus::UtreexoHash> targets = ExtractTargetsFromBlock(
+        block,
+        proof_msg.proof_data.spent_outputs
+    );
+
+    // 4. Verify Utreexo batch proof — targets match proof_data targets
+    if (targets.size() != proof_msg.proof_data.spend_proof.targets.size()) {
+        err_out = "step 4a: target count mismatch at height " +
+                  std::to_string(proof_msg.block_height) +
+                  ": extracted=" + std::to_string(targets.size()) +
+                  " proof=" + std::to_string(proof_msg.proof_data.spend_proof.targets.size());
+        return false;
+    }
+    for (size_t i = 0; i < targets.size(); i++) {
+        if (targets[i] != proof_msg.proof_data.spend_proof.targets[i]) {
+            err_out = "step 4b: target hash mismatch at index " +
+                      std::to_string(i) + " height " +
+                      std::to_string(proof_msg.block_height);
+            return false;
+        }
+    }
+
+    // 4c. Verify batch proof cryptographically via the provided stump.
+    const auto& spend_proof = proof_msg.proof_data.spend_proof;
+    if (!spend_proof.targets.empty()) {
+        bool proof_valid = stump.verifyBatchProof(
+            spend_proof.targets,
+            spend_proof.positions,
+            spend_proof.proof_hashes
+        );
+        if (!proof_valid) {
+            err_out = "step 4c: batch proof crypto verification failed at height " +
+                      std::to_string(proof_msg.block_height) +
+                      " (stump_leaves=" + std::to_string(stump.getNumLeaves()) + ")";
+            return false;
+        }
+    }
+
+    // 5. Apply deletions + additions to a working copy of `forest`.
+    auto additions = ComputeCanonicalAdditionHashes(block, proof_msg.block_height);
+    // Apply the accumulator semantics for this block height. In particular,
+    // replay from a pre-fork checkpoint must promote and recanonicalize the
+    // forest at the canonical-empty-roots activation block before applying
+    // that block's delta.
+    consensus::UtreexoForest working_forest =
+        forest.cloneForHeight(proof_msg.block_height);
+    if (!ApplyAccumulatorDelta(
+            working_forest,
+            spend_proof.targets,
+            additions,
+            "[StatelessNode] ApplyBlockToAccumulator")) {
+        err_out = "step 5: forest apply failed at height " +
+                  std::to_string(proof_msg.block_height) +
+                  " (dels=" + std::to_string(spend_proof.targets.size()) +
+                  " adds=" + std::to_string(additions.size()) + ")";
+        return false;
+    }
+
+    // 6. Verify root_after matches the block header commitment.
+    consensus::UtreexoHash root_after = working_forest.getCommitment();
+    if (root_after != proof_msg.accumulator_root_after) {
+        err_out = "step 6: root_after mismatch at height " +
+                  std::to_string(proof_msg.block_height) +
+                  ": forest=" + HashHex16(root_after) +
+                  " proof=" + HashHex16(proof_msg.accumulator_root_after);
+        return false;
+    }
+
+    // Commit the advance into the CALLER's forest + stump atomically, only
+    // after the full transition matched.
+    forest = std::move(working_forest);
+    stump = consensus::UtreexoStump::fromForest(forest);
+    return true;
+}
+
 bool StatelessNode::ValidateUtreexoProof(
     const Block& block,
     const UtreexoProofMessage& proof_msg,
     uint64_t peer_id
 ) {
-    // Helper: UtreexoHash (vector<uint8_t>) to hex string (first 16 chars)
-    auto hashHex = [](const consensus::UtreexoHash& h) -> std::string {
-        if (h.empty()) return "(empty)";
-        std::string hex;
-        hex.reserve(h.size() * 2);
-        for (uint8_t b : h) {
-            char buf[3];
-            snprintf(buf, sizeof(buf), "%02x", b);
-            hex += buf;
-        }
-        return hex.substr(0, 16) + "...";
-    };
-
     // Update statistics
     sync_stats_.proofs_received++;
-
     if (bridge_peers_.find(peer_id) != bridge_peers_.end()) {
         bridge_peers_[peer_id].proofs_received++;
     }
@@ -474,12 +576,13 @@ bool StatelessNode::ValidateUtreexoProof(
         }
     }
 
-    // 1. Block hash matches proof message
-    uint256 block_hash = block.GetHash();
-    if (block_hash != proof_msg.block_hash) {
-        g_logger.error("[StatelessNode] FAIL step 1: block hash mismatch: computed=" +
-                      block_hash.GetHex().substr(0, 16) + " proof=" +
-                      proof_msg.block_hash.GetHex().substr(0, 16));
+    std::string err;
+    if (!ValidateAndApplyProofInto(block, proof_msg, *utreexo_forest_, local_stump_, err)) {
+        g_logger.error("[StatelessNode] FAIL " + err);
+        if (err.find("step 2") != std::string::npos ||
+            err.find("step 6") != std::string::npos) {
+            sync_stats_.root_continuity_errors++;
+        }
         sync_stats_.proofs_failed++;
         if (bridge_peers_.find(peer_id) != bridge_peers_.end()) {
             bridge_peers_[peer_id].proofs_failed++;
@@ -487,137 +590,37 @@ bool StatelessNode::ValidateUtreexoProof(
         return false;
     }
 
-    // 2. Root continuity check
-    consensus::UtreexoHash current_root = local_commitment_;
-    if (current_root != proof_msg.accumulator_root_before) {
-        g_logger.error("[StatelessNode] FAIL step 2: root_before mismatch at height " +
-                      std::to_string(proof_msg.block_height) +
-                      ": local=" + hashHex(current_root) +
-                      " proof=" + hashHex(proof_msg.accumulator_root_before) +
-                      " (forest_size=" + std::to_string(current_root.size()) +
-                      " proof_size=" + std::to_string(proof_msg.accumulator_root_before.size()) + ")");
-        sync_stats_.root_continuity_errors++;
-        sync_stats_.proofs_failed++;
-        if (bridge_peers_.find(peer_id) != bridge_peers_.end()) {
-            bridge_peers_[peer_id].proofs_failed++;
-        }
-        return false;
-    }
+    // Keep cached commitment/leaf-count aligned with the committed stump.
+    local_commitment_ = local_stump_.getCommitment();
+    local_num_leaves_ = local_stump_.getNumLeaves();
 
-    // 3. Extract targets from block inputs
-    std::vector<consensus::UtreexoHash> targets = ExtractTargetsFromBlock(
-        block,
-        proof_msg.proof_data.spent_outputs
-    );
-
-    // 4. Verify Utreexo batch proof
-    // Check that targets match proof_data targets
-    if (targets.size() != proof_msg.proof_data.spend_proof.targets.size()) {
-        g_logger.error("[StatelessNode] FAIL step 4a: target count mismatch at height " +
-                      std::to_string(proof_msg.block_height) +
-                      ": extracted=" + std::to_string(targets.size()) +
-                      " proof=" + std::to_string(proof_msg.proof_data.spend_proof.targets.size()));
-        sync_stats_.proofs_failed++;
-        if (bridge_peers_.find(peer_id) != bridge_peers_.end()) {
-            bridge_peers_[peer_id].proofs_failed++;
-        }
-        return false;
-    }
-
-    // Verify each target matches
-    for (size_t i = 0; i < targets.size(); i++) {
-        if (targets[i] != proof_msg.proof_data.spend_proof.targets[i]) {
-            g_logger.error("[StatelessNode] FAIL step 4b: target hash mismatch at index " +
-                          std::to_string(i) + " height " +
-                          std::to_string(proof_msg.block_height) +
-                          ": extracted=" + hashHex(targets[i]) +
-                          " proof=" + hashHex(proof_msg.proof_data.spend_proof.targets[i]));
-            sync_stats_.proofs_failed++;
-            if (bridge_peers_.find(peer_id) != bridge_peers_.end()) {
-                bridge_peers_[peer_id].proofs_failed++;
-            }
-            return false;
-        }
-    }
-
-    // 4c. Verify batch proof cryptographically via stump (pure root math)
-    const auto& spend_proof = proof_msg.proof_data.spend_proof;
-    if (!spend_proof.targets.empty()) {
-        bool proof_valid = local_stump_.verifyBatchProof(
-            spend_proof.targets,
-            spend_proof.positions,
-            spend_proof.proof_hashes
-        );
-        if (!proof_valid) {
-            g_logger.error("[StatelessNode] FAIL step 4c: batch proof crypto verification failed at height " +
-                          std::to_string(proof_msg.block_height) +
-                          " (targets=" + std::to_string(spend_proof.targets.size()) +
-                          " positions=" + std::to_string(spend_proof.positions.size()) +
-                          " proof_hashes=" + std::to_string(spend_proof.proof_hashes.size()) +
-                          " stump_leaves=" + std::to_string(local_stump_.getNumLeaves()) + ")");
-            sync_stats_.proofs_failed++;
-            if (bridge_peers_.find(peer_id) != bridge_peers_.end()) {
-                bridge_peers_[peer_id].proofs_failed++;
-            }
-            return false;
-        }
-    }
-
-    // 5. Apply deletions + additions to the shared forest transactionally.
-    //    ConnectBlock() in STATELESS mode assumes the canonical forest has
-    //    already been advanced here, so batch validation must mutate the
-    //    forest on success and leave it untouched on failure.
-    auto additions = ComputeCanonicalAdditionHashes(block, proof_msg.block_height);
-    consensus::UtreexoForest working_forest = *utreexo_forest_;
-    if (!ApplyAccumulatorDelta(
-            working_forest,
-            spend_proof.targets,
-            additions,
-            "[StatelessNode] ApplyBlockToAccumulator")) {
-        g_logger.error("[StatelessNode] FAIL step 5: forest apply failed at height " +
-                      std::to_string(proof_msg.block_height) +
-                      " (dels=" + std::to_string(spend_proof.targets.size()) +
-                      " adds=" + std::to_string(additions.size()) + ")");
-        sync_stats_.proofs_failed++;
-        if (bridge_peers_.find(peer_id) != bridge_peers_.end()) {
-            bridge_peers_[peer_id].proofs_failed++;
-        }
-        return false;
-    }
-
-    // 6. Verify root_after matches
-    consensus::UtreexoHash root_after = working_forest.getCommitment();
-    if (root_after != proof_msg.accumulator_root_after) {
-        g_logger.error("[StatelessNode] FAIL step 6: root_after mismatch at height " +
-                      std::to_string(proof_msg.block_height) +
-                      ": forest=" + hashHex(root_after) +
-                      " proof=" + hashHex(proof_msg.accumulator_root_after));
-        sync_stats_.root_continuity_errors++;
-        sync_stats_.proofs_failed++;
-        if (bridge_peers_.find(peer_id) != bridge_peers_.end()) {
-            bridge_peers_[peer_id].proofs_failed++;
-        }
-        return false;
-    }
-
-    // Commit forest + stump atomically only after the full transition matches.
-    *utreexo_forest_ = std::move(working_forest);
-    local_stump_ = consensus::UtreexoStump::fromForest(*utreexo_forest_);
-
-    // Proof validated successfully
     g_logger.info("[StatelessNode] Proof OK at height " +
                  std::to_string(proof_msg.block_height) +
                  " (dels=" + std::to_string(proof_msg.proof_data.spend_proof.targets.size()) +
                  " adds=" + std::to_string(block.vtx.size()) +
-                 " root_after=" + hashHex(root_after) + ")");
-
-    // Keep cached state aligned with the committed forest/stump.
-    local_commitment_ = local_stump_.getCommitment();
-    local_num_leaves_ = local_stump_.getNumLeaves();
+                 " root_after=" + HashHex16(local_commitment_) + ")");
 
     sync_stats_.proofs_validated++;
     sync_stats_.blocks_applied++;
+    return true;
+}
 
+bool StatelessNode::ValidateProofIntoForest(
+    const Block& block,
+    const UtreexoProofMessage& proof_msg,
+    consensus::UtreexoForest& scratch_forest
+) {
+    // Speculative: validate against a stump derived from the caller's scratch
+    // forest and, on success, advance ONLY that scratch forest. No member
+    // state (utreexo_forest_, local_stump_, stats) is read or written — so the
+    // canonical shared forest is untouched (CSN reorg-plan building).
+    consensus::UtreexoStump scratch_stump =
+        consensus::UtreexoStump::fromForest(scratch_forest);
+    std::string err;
+    if (!ValidateAndApplyProofInto(block, proof_msg, scratch_forest, scratch_stump, err)) {
+        g_logger.debug("[StatelessNode] scratch validation FAIL " + err);
+        return false;
+    }
     return true;
 }
 
@@ -743,7 +746,8 @@ bool StatelessNode::ValidateWithTransitionProof(
     // forest aligned with the verified stump so the next batch proof sees the
     // correct pre-state instead of snapping back to the stale forest.
     if (tp.deletion_targets.empty()) {
-        consensus::UtreexoForest working_forest = *utreexo_forest_;
+        consensus::UtreexoForest working_forest =
+            utreexo_forest_->cloneForHeight(proof_msg.block_height);
         for (const auto& leaf : tp.addition_hashes) {
             if (working_forest.add(leaf) == UINT64_MAX) {
                 g_logger.error("[StatelessNode-TP] FAIL step 5b: forest add failed at height " +
@@ -1056,7 +1060,8 @@ bool StatelessNode::ReplayBlock(
         // Transactional replay:
         // mutate a working copy first, verify root commitment, then commit.
         // This prevents partial forest mutation on any failure path.
-        consensus::UtreexoForest working_forest = *utreexo_forest_;
+        consensus::UtreexoForest working_forest =
+            utreexo_forest_->cloneForHeight(block_height);
 
         const auto additions = ComputeCanonicalAdditionHashes(block, block_height);
         if (!ApplyAccumulatorDelta(

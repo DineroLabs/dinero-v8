@@ -7113,6 +7113,8 @@ void ChainstateService::ActivateBestChain() {
                     logger_->warning("[ActivateBestChain] Ignoring incompatible header branch (no common ancestor with active tip)");
                 }
             } else {
+                const bool importing_competing_branch =
+                    walk->hash != active_tip_->hash;
                 std::reverse(branch_path.begin(), branch_path.end());
 
                 size_t imported_blocks = 0;
@@ -7144,6 +7146,37 @@ void ChainstateService::ActivateBestChain() {
                     if (unreadable_blocks_.contains(entry->hash)) {
                         missing_block_bodies.push_back(entry->hash.GetHex());
                         continue;
+                    }
+
+                    // In CSN mode, flat-file presence alone is not validation.
+                    // The scheduler stores raw utxoblk bodies before the ordered
+                    // worker verifies their accumulator transition. Import only
+                    // after either (a) the reorg worker persisted hash-anchored
+                    // replay data for a genuinely competing branch, or (b)
+                    // AcceptBlockFromRPC durably marked transaction validation
+                    // before a crash stopped tip connection. Forward-sync replay
+                    // data is not an activation marker: the ordered worker still
+                    // owns submission of that block. A raw scheduler body may
+                    // carry proof bytes too, so payload shape is not a validation
+                    // marker. This prevents periodic ABC from racing ahead while
+                    // preserving store-ahead crash recovery.
+                    if (GetConfig().utreexo_stateless) {
+                        const auto metadata = chain_db_->getHeaderMetadata(entry->hash);
+                        const bool transaction_validated =
+                            metadata.status() == Status::Ok &&
+                            (metadata.value().status_flags &
+                             BLOCK_VALID_TRANSACTIONS) != 0;
+                        const bool reorg_plan_validated =
+                            importing_competing_branch &&
+                            chain_db_->getCSNSpendTargets(entry->hash).status() == Status::Ok;
+                        if (!transaction_validated && !reorg_plan_validated) {
+                            if (logger_) {
+                                logger_->debug("[ActivateBestChain] CSN body at height " +
+                                               std::to_string(entry->height) +
+                                               " awaits ordered proof validation");
+                            }
+                            continue;
+                        }
                     }
 
                     // Restart recovery: a stored better-branch block can have
@@ -7601,16 +7634,55 @@ void ChainstateService::ActivateBestChain() {
             return;
         }
 
-        // Step 1: Load forest checkpoint at fork_point height
-        auto checkpoint = chain_db_->getUtreexoCheckpoint(static_cast<int>(fork_point->height));
-        if (checkpoint.status() != Status::Ok) {
-            if (logger_) logger_->error("[ABC-CSN] No forest checkpoint at fork height " +
-                                        std::to_string(fork_point->height) + " — cannot reorg");
-            std::cout << "❌ [ABC-CSN] No forest checkpoint at height " << fork_point->height << std::endl;
-            return;
+        // Preflight the complete branch before touching any canonical state.
+        // A side branch becomes visible to candidate import only after the CSN
+        // speculative validator persisted its replay record, so absence of
+        // either artifact means the plan is incomplete or stale. Previously a
+        // missing body was discovered only after DisconnectTip had already
+        // moved the active chain to the fork, leaving the node stranded there.
+        for (const auto* block_index : connect_path) {
+            const auto block_result = ReadStoredBlock(block_index->hash);
+            if (block_result.status() != Status::Ok) {
+                if (logger_) {
+                    logger_->warning("[ABC-CSN] Reorg plan incomplete: body unavailable at height " +
+                                     std::to_string(block_index->height) +
+                                     " — canonical state left untouched");
+                }
+                return;
+            }
+            const auto replay_result = chain_db_->getCSNSpendTargets(block_index->hash);
+            CsnReplayData replay_data;
+            if (replay_result.status() != Status::Ok ||
+                !DecodeCsnReplayData(replay_result.value(), replay_data)) {
+                if (logger_) {
+                    logger_->warning("[ABC-CSN] Reorg plan incomplete: replay data unavailable at height " +
+                                     std::to_string(block_index->height) +
+                                     " — canonical state left untouched");
+                }
+                return;
+            }
         }
-        auto restored_forest = consensus::UtreexoForest::deserialize(checkpoint.value());
-        if (logger_) logger_->info("[ABC-CSN] Loaded forest checkpoint at height " +
+
+        // Step 1: Rebuild the forest at fork_point height. Campaign phase 3
+        // (CSN): full checkpoints exist only every N blocks, so restore is
+        // nearest-checkpoint + UD-sidecar replay (header-root verified per
+        // block inside RestoreHistoricalForest) rather than an exact-height
+        // checkpoint read that misses off-interval.
+        consensus::UtreexoForest restored_forest;
+        {
+            std::string restore_error;
+            const Status restore_status = storage::RestoreHistoricalForest(
+                *chain_db_, fork_point->height, restored_forest, restore_error);
+            if (restore_status != Status::Ok) {
+                if (logger_) logger_->error("[ABC-CSN] Cannot rebuild forest at fork height " +
+                                            std::to_string(fork_point->height) + " (" +
+                                            restore_error + ") — cannot reorg");
+                std::cout << "❌ [ABC-CSN] Cannot rebuild forest at height "
+                          << fork_point->height << ": " << restore_error << std::endl;
+                return;
+            }
+        }
+        if (logger_) logger_->info("[ABC-CSN] Rebuilt forest at fork height " +
                                    std::to_string(fork_point->height) + " leaves=" +
                                    std::to_string(restored_forest.getNumLeaves()));
 
@@ -10448,17 +10520,30 @@ bool ChainstateService::RestoreUtreexoCheckpoint(uint32_t height, std::string& e
 
     try {
         if (height == 0) {
-            consensus_utxo_set_->GetForest() = consensus::UtreexoForest();
+            consensus::UtreexoForest empty;
+            if (consensus::IsUtreexoCanonicalRootsActive(0)) {
+                empty.setCanonicalEmptyRoots(true);
+            }
+            consensus_utxo_set_->GetForest() = std::move(empty);
             return true;
         }
 
-        auto checkpoint = chain_db_->getUtreexoCheckpoint(static_cast<int>(height));
-        if (checkpoint.status() != Status::Ok) {
-            error = "Missing Utreexo checkpoint at height " + std::to_string(height);
+        // Forest checkpoint delta campaign phase 3 (CSN/stateless): full
+        // checkpoints exist only every utreexo.checkpoint_interval blocks, so
+        // rebuild `height` as nearest-checkpoint + UD-sidecar replay
+        // (header-root verified per block) instead of reading an exact-height
+        // checkpoint that no longer exists off-interval. This is the CSN
+        // reorg rewind (fork-point restore) — see daemon_app.cpp CSN worker
+        // and the ABC-CSN stateless reorg path.
+        consensus::UtreexoForest restored;
+        const Status restore_status =
+            storage::RestoreHistoricalForest(*chain_db_, height, restored, error);
+        if (restore_status != Status::Ok) {
+            if (error.empty()) {
+                error = "Failed to restore forest to height " + std::to_string(height);
+            }
             return false;
         }
-
-        auto restored = consensus::UtreexoForest::deserialize(checkpoint.value());
         consensus_utxo_set_->GetForest() = std::move(restored);
         return true;
     } catch (const std::exception& e) {
@@ -11896,11 +11981,41 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 logger_->info("[ConnectTip] Stateless replay path: advancing shared forest from stored proof data at height " +
                               std::to_string(tip_to_connect->height));
             }
+
+            // Transition-proof validation can use deletion targets that differ
+            // from the batch proof embedded in the stored block. The ordered
+            // CSN worker persists those exact, already-validated targets in the
+            // hash-anchored replay sidecar. Recovery must prefer that record,
+            // just like the ABC-CSN reorg loop does, or the first real spend
+            // after a restart can replay against the wrong leaves.
+            std::vector<consensus::UtreexoHash> replay_targets =
+                block.utreexo->spend_proof.targets;
+            std::vector<consensus::SpentOutputData> replay_spent_outputs;
+            const std::vector<consensus::SpentOutputData>* spent_outputs =
+                &block.utreexo->spent_outputs;
+            const auto replay_result =
+                chain_db_->getCSNSpendTargets(tip_to_connect->hash);
+            if (replay_result.status() == Status::Ok) {
+                CsnReplayData replay_data;
+                if (!DecodeCsnReplayData(replay_result.value(), replay_data)) {
+                    if (logger_) {
+                        logger_->error("[ConnectTip] Malformed CSN replay data at height " +
+                                       std::to_string(tip_to_connect->height));
+                    }
+                    return fail("stateless-replay-data-malformed");
+                }
+                replay_targets = std::move(replay_data.spend_targets);
+                if (replay_data.has_spent_outputs) {
+                    replay_spent_outputs = std::move(replay_data.spent_outputs);
+                    spent_outputs = &replay_spent_outputs;
+                }
+            }
+
             if (!stateless_node_->ReplayBlock(
                     block,
                     tip_to_connect->height,
-                    block.utreexo->spend_proof.targets,
-                    &block.utreexo->spent_outputs)) {
+                    replay_targets,
+                    spent_outputs)) {
                 if (logger_) {
                     logger_->error("[ConnectTip] Stateless replay failed at height " +
                                    std::to_string(tip_to_connect->height));
