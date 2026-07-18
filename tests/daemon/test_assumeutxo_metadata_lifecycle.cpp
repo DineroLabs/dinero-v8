@@ -7,6 +7,10 @@
 #include <string>
 
 #include "daemon/services/assumeutxo_state.h"
+#include "daemon/snapshot_bootstrap_policy.h"
+#include "consensus/chainparams.h"
+#include "consensus/consensus_utxo_set.h"
+#include "primitives/transaction.h"
 #include "primitives/uint256.h"
 #include "wallet/utxo_index.h"
 
@@ -113,6 +117,41 @@ TEST_F(AssumeUTXOMetadataLifecycleTest, InMemoryClearDoesNotDeletePersistedMetad
     EXPECT_EQ(ReadMetadata(assumeutxo::kActiveKey).value_or(""), "true");
     EXPECT_EQ(ReadMetadata(assumeutxo::kBaseBlockKey).value_or(""), persisted_block.GetHex());
     EXPECT_EQ(ReadMetadata(assumeutxo::kBaseHeightKey).value_or(""), "27727");
+}
+
+TEST(SnapshotBootstrapPolicyTest, AcceptsOnlyExactGenesisCoinbaseState) {
+    SelectParams(Chain::MAINNET);
+    Transaction genesis_coinbase;
+    ASSERT_TRUE(TransactionSerializer::Deserialize(
+        genesis_coinbase, Params().genesis.genesisCoinbaseHex));
+    ASSERT_TRUE(genesis_coinbase.IsCoinbase());
+
+    consensus::ConsensusUTXOSet utxo_set;
+    const TxId genesis_txid = genesis_coinbase.GetTxid();
+    for (uint32_t vout = 0; vout < genesis_coinbase.vout.size(); ++vout) {
+        const auto& output = genesis_coinbase.vout[vout];
+        ASSERT_TRUE(utxo_set.AddCoin(
+            OutPoint(genesis_txid, vout),
+            consensus::UTXOEntry(
+                output.value, output.scriptPubKey, 0, true,
+                output.is_confidential, output.commitment)));
+    }
+
+    EXPECT_TRUE(assumeutxo::IsGenesisOnlyUtxoSet(
+        utxo_set, genesis_coinbase));
+
+    const OutPoint first_genesis(genesis_txid, 0);
+    ASSERT_TRUE(utxo_set.DeleteCoin(first_genesis));
+    const uint256 impostor_hash = uint256::FromHexUnsafe(
+        "0100000000000000000000000000000000000000000000000000000000000000");
+    ASSERT_TRUE(utxo_set.AddCoin(
+        OutPoint(TxId(impostor_hash), 0),
+        consensus::UTXOEntry(AmountUna::Una(1), {0x51}, 1, false)));
+
+    // Same cardinality is not enough: real post-genesis state must never be
+    // cleared for snapshot import.
+    EXPECT_FALSE(assumeutxo::IsGenesisOnlyUtxoSet(
+        utxo_set, genesis_coinbase));
 }
 
 } // namespace dinero

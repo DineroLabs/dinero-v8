@@ -16,16 +16,23 @@ set -euo pipefail
 
 # Configuration
 NETWORK="${1:-testnet}"
-DATADIR="${DINERO_DATADIR:-$HOME/.dinero}"
+if [ -n "${DINERO_DATADIR:-}" ]; then
+    DATADIR="$DINERO_DATADIR"
+elif [ "$NETWORK" = "mainnet" ] && [ "$(id -u)" -eq 0 ] && [ -d /var/lib/dinero ]; then
+    # Fleet snapshot jobs run as root while dinerod owns this system datadir.
+    DATADIR="/var/lib/dinero"
+else
+    DATADIR="$HOME/.dinero"
+fi
 OUTDIR="${SNAPSHOT_OUTDIR:-/var/lib/dinero/snapshots/$NETWORK}"
 DINERO_CLI="${DINERO_CLI:-dinero-cli}"
 
 # Derived paths
+CLI_ARGS=("-datadir=$DATADIR")
+SNAPSHOT_WORKDIR="$DATADIR"
 if [ "$NETWORK" != "mainnet" ]; then
-    CLI_ARGS="--$NETWORK"
-    DATADIR="$DATADIR/$NETWORK"
-else
-    CLI_ARGS=""
+    CLI_ARGS+=("--$NETWORK")
+    SNAPSHOT_WORKDIR="$DATADIR/$NETWORK"
 fi
 
 # Colors
@@ -44,7 +51,7 @@ echo "  Output:  $OUTDIR"
 echo ""
 
 # Check if daemon is running
-if ! $DINERO_CLI $CLI_ARGS getblockcount >/dev/null 2>&1; then
+if ! "$DINERO_CLI" "${CLI_ARGS[@]}" getblockcount >/dev/null 2>&1; then
     echo -e "${RED}✗ Error: dinerod not running or not responding${NC}"
     echo ""
     echo "  Start dinerod first:"
@@ -61,11 +68,11 @@ echo ""
 
 # Check sync status
 echo "[1] Checking sync status..."
-BLOCKCOUNT=$($DINERO_CLI $CLI_ARGS getblockcount)
+BLOCKCOUNT=$("$DINERO_CLI" "${CLI_ARGS[@]}" getblockcount)
 echo "  Current height: $BLOCKCOUNT"
 
 # Check if in IBD
-BLOCKCHAIN_INFO=$($DINERO_CLI $CLI_ARGS getblockchaininfo 2>/dev/null || echo "{}")
+BLOCKCHAIN_INFO=$("$DINERO_CLI" "${CLI_ARGS[@]}" getblockchaininfo 2>/dev/null || echo "{}")
 if echo "$BLOCKCHAIN_INFO" | grep -q "\"initialblockdownload\" : true"; then
     echo -e "${YELLOW}⚠️  Warning: Node is in Initial Block Download${NC}"
     echo "  Snapshot may be stale. Wait for full sync for production use."
@@ -88,7 +95,15 @@ echo ""
 
 # Generate snapshot filename
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-TMP_FILE="/tmp/utxo-snapshot-$NETWORK-$$.dat"
+if [ ! -d "$SNAPSHOT_WORKDIR" ]; then
+    echo -e "${RED}✗ Snapshot work directory does not exist: $SNAPSHOT_WORKDIR${NC}" >&2
+    exit 1
+fi
+TMP_FILE="$SNAPSHOT_WORKDIR/.utxo-snapshot-$NETWORK-$$.dat"
+cleanup() {
+    rm -f "$TMP_FILE" "/tmp/dump_result_$$.json"
+}
+trap cleanup EXIT
 FINAL_NAME="utxo-snapshot-$NETWORK-height-$BLOCKCOUNT-$TIMESTAMP.dat"
 FINAL_PATH="$OUTDIR/$FINAL_NAME"
 
@@ -96,7 +111,7 @@ echo "[3] Generating snapshot..."
 echo "  This may take several minutes for large UTXO sets..."
 echo ""
 
-if ! $DINERO_CLI $CLI_ARGS dumptxoutset "$TMP_FILE" > /tmp/dump_result_$$.json 2>&1; then
+if ! "$DINERO_CLI" "${CLI_ARGS[@]}" dumptxoutset "$TMP_FILE" > /tmp/dump_result_$$.json 2>&1; then
     echo -e "${RED}✗ Snapshot generation failed${NC}"
     cat /tmp/dump_result_$$.json
     rm -f /tmp/dump_result_$$.json

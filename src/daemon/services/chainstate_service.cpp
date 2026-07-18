@@ -8,6 +8,7 @@
 #include "daemon/services/logger_service.h"
 #include "daemon/services/assumeutxo_state.h"
 #include "daemon/services/assumeutxo_replay.h"  // genesis->base replay engine (background validation)
+#include "daemon/snapshot_bootstrap_policy.h"
 #include "daemon/services/replay_failure_policy.h"  // confirm-before-fatal for replay validation failures
 #include "consensus/merkle_root.h"  // torn-body guard on replay reads
 #include "daemon/services/config_service.h"
@@ -9046,21 +9047,21 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         return result;
     }
 
-    // CRITICAL: UTXO set must be empty (or genesis-only) to load snapshot.
-    // When TrySnapshotBootstrap is called at IBD startup, the genesis block is
-    // already connected (1 UTXO). Allow clearing genesis-only state so the
-    // snapshot can be imported cleanly. Reject if any real chain state exists.
+    // CRITICAL: UTXO set must be empty (or provably genesis-only) to load a
+    // snapshot. Deferred mobile bootstrap may run after header metadata moves
+    // beyond height zero, so tip height is not proof of UTXO identity. Match the
+    // complete compiled genesis coinbase state, but do not clear it here:
+    // transport, manifest, checksum, and consensus validation can still reject
+    // the snapshot. BulkLoad replaces the set only after every preflight passes.
     {
-        uint64_t existing = consensus_utxo_set_->GetSetSize();
+        const uint64_t existing = consensus_utxo_set_->GetSetSize();
         if (existing > 0) {
-            uint32_t tip_height = 0;
-            if (chain_db_) {
-                auto tip_result = chain_db_->getTip();
-                if (tip_result.status() == Status::Ok) tip_height = tip_result.value().height;
-            }
-            if (existing == 1 && tip_height == 0) {
-                logger_->info("[LoadSnapshot] Clearing genesis UTXO to allow snapshot import");
-                consensus_utxo_set_->Clear();
+            Transaction genesis_coinbase;
+            const bool decoded_genesis = TransactionSerializer::Deserialize(
+                genesis_coinbase, Params().genesis.genesisCoinbaseHex);
+            if (decoded_genesis && assumeutxo::IsGenesisOnlyUtxoSet(
+                    *consensus_utxo_set_, genesis_coinbase)) {
+                logger_->info("[LoadSnapshot] Verified replaceable genesis-only UTXO state");
             } else {
                 result.error_message = "Consensus UTXO set must be empty to load snapshot (found " +
                                       std::to_string(existing) + " existing UTXOs). " +
@@ -9071,7 +9072,7 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         }
     }
 
-    logger_->info("[LoadSnapshot] Precondition check passed: consensus UTXO set is empty");
+    logger_->info("[LoadSnapshot] UTXO precondition passed");
 
     // Transport hardening preflight:
     // - regular file only (no symlink/device)
