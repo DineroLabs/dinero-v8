@@ -10,6 +10,7 @@
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
+#include <QLockFile>
 #include <iostream>
 #include <QMessageBox>
 #include <QPushButton>
@@ -1076,6 +1077,36 @@ int main(int argc, char** argv) {
       datadir = args[i].mid(9); // Extract value after "-datadir="
       break;
     }
+  }
+
+  // Single-instance guard. dinero-qt embeds and manages a dinerod bound to
+  // fixed ports (RPC 20998 / P2P 20999) against this datadir. A second GUI
+  // launched during the first's daemon-startup window sees a not-yet-bound
+  // port, so ensureDaemonRunning()'s "adopt the running daemon" path never
+  // triggers — both GUIs race to spawn a daemon and the loser dies "port in
+  // use", surfacing a scary "Daemon Failed to Start" dialog. The daemon's own
+  // datadir LOCK stops two daemons, but nothing stopped two GUIs. Hold a
+  // QLockFile for the process lifetime so only one wallet runs per datadir.
+  // staleLockTime(0) disables time-based staleness so a long-running instance
+  // is never treated as stale; QLockFile still clears a lock left by a crashed
+  // prior instance via its PID-liveness check, so this self-heals after a crash.
+  static QLockFile* singleInstanceLock =
+      new QLockFile(QDir(datadir).filePath(QStringLiteral(".dinero-qt.lock")));
+  singleInstanceLock->setStaleLockTime(0);
+  if (!singleInstanceLock->tryLock(0)) {
+    qWarning() << "Another dinero-qt instance already holds the lock for"
+               << datadir << "- refusing to start a second instance";
+    QMessageBox box;
+    box.setIcon(QMessageBox::Information);
+    box.setWindowTitle(QStringLiteral("Dinero"));
+    box.setText(QStringLiteral("Dinero is already running."));
+    box.setInformativeText(QStringLiteral(
+        "Another copy of the Dinero wallet is already open for this data "
+        "directory. Only one instance can run at a time.\n\n"
+        "Switch to the window that is already open, or quit it before "
+        "starting a new one."));
+    box.exec();
+    return 0;
   }
 
 #ifdef Q_OS_MAC
