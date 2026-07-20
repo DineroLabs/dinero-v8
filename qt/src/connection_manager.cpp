@@ -31,10 +31,19 @@ ConnectionManager::ConnectionManager(QObject* parent)
     , queueProcessTimer_(new QTimer(this))
     , processingQueue_(false)
     , healthCheckInterval_(5000)  // 5 seconds
-    , maxRetries_(10)
+    , maxRetries_(40)
     , currentRetryAttempt_(0)
     , consecutiveFailures_(0)
 {
+    // Windows slow-start: the embedded daemon can take ~150s to serve RPC on a
+    // node with many wallets at high height. With the old cap of 10 the loop
+    // reached Failed and stopped retrying before the daemon was ready, so the
+    // GUI stayed disconnected even once dinerod came up. Keep retrying well
+    // past the init window (backoff caps at 30s). Override via env if needed.
+    if (int envRetries = qEnvironmentVariableIntValue("DINERO_QT_MAX_RECONNECT"); envRetries > 0) {
+        maxRetries_ = envRetries;
+    }
+
     healthCheckTimer_->setInterval(healthCheckInterval_);
     QObject::connect(healthCheckTimer_, &QTimer::timeout, this, &ConnectionManager::onHealthCheckTimer);
     
