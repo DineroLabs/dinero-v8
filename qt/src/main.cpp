@@ -891,7 +891,13 @@ static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsol
     // immediately. A squatting seeder (#295) never becomes healthy, so it still
     // recovers — after the grace window rather than instantly.
     if (isDaemonRunning(1000)) {
-        constexpr qint64 kStartupGraceMs = 90000;  // covers the ~75-80s slow-start
+        // Windows slow-start: a node with many wallets at high height can take
+        // ~150s to serve RPC. Wait well past that before deeming a port-held
+        // daemon wedged, so we ADOPT a healthy-but-slow daemon instead of
+        // killing it (the 90s default sweept a still-initializing daemon and
+        // looped forever). Override with DINERO_QT_STARTUP_GRACE_MS.
+        const int envGraceMs = qEnvironmentVariableIntValue("DINERO_QT_STARTUP_GRACE_MS");
+        const qint64 kStartupGraceMs = envGraceMs > 0 ? static_cast<qint64>(envGraceMs) : 300000;
         QElapsedTimer settle;
         settle.start();
         while (settle.elapsed() < kStartupGraceMs) {

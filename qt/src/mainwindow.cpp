@@ -1762,7 +1762,10 @@ MainWindow::MainWindow(QWidget* parent)
   connectionMgr_->setDaemonUrl("http://127.0.0.1:20998");
   connectionMgr_->setCookiePath(QDir(rpc_->datadir()).filePath(".cookie"));
   connectionMgr_->setHealthCheckInterval(5000);   // Check every 5 seconds
-  connectionMgr_->setMaxRetries(10);              // Try 10 times before giving up
+  // Windows slow-start: a node with many wallets at high height can take ~150s
+  // to serve RPC. 10 retries gave up before that, leaving the GUI disconnected
+  // even after dinerod came up. Keep trying well past the init window.
+  connectionMgr_->setMaxRetries(40);
   
   // Connect ConnectionManager signals
   QObject::connect(connectionMgr_, &ConnectionManager::connected,
@@ -1783,7 +1786,62 @@ MainWindow::MainWindow(QWidget* parent)
   
   // Auto-connect ConnectionManager for wallet/address operations
   connectionMgr_->connectToDaemon();
-  
+
+  // Friendly startup countdown. On Windows a node with many wallets at high
+  // height can take up to ~3 minutes to serve RPC. Without visible feedback,
+  // users assume the app hung and force-quit + relaunch mid-init — which is
+  // exactly what wedged startup historically. A live mm:ss countdown shows
+  // progress so they wait it out. Auto-dismisses the instant we connect.
+  QTimer::singleShot(2000, this, [this]() {
+    if (shuttingDown_ || (connectionMgr_ && connectionMgr_->isConnected())) {
+      return;  // already connected (fast start / adopted a warm daemon)
+    }
+    auto* box = new QMessageBox(this);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setIcon(QMessageBox::Information);
+    box->setWindowTitle("Starting Dinero…");
+    box->addButton("Hide", QMessageBox::RejectRole);  // optional dismiss; waiting is fine
+
+    auto remaining = std::make_shared<int>(180);  // 3:00
+    auto render = [box](int secs) {
+      if (secs > 0) {
+        box->setText(QString("Starting the Dinero node — ready in about %1:%2")
+                         .arg(secs / 60)
+                         .arg(secs % 60, 2, 10, QChar('0')));
+        box->setInformativeText(
+            "This can take up to ~3 minutes on first start.\n"
+            "Please wait — do NOT close or restart. The wallet opens "
+            "automatically once the node is ready.");
+      } else {
+        box->setText("Almost there — the node is taking a little longer than usual.");
+        box->setInformativeText(
+            "Still starting… please keep waiting and do NOT close or restart.");
+      }
+    };
+    render(*remaining);
+
+    auto* tick = new QTimer(box);
+    tick->setInterval(1000);
+    QObject::connect(tick, &QTimer::timeout, box, [this, box, remaining, render]() {
+      if (connectionMgr_ && connectionMgr_->isConnected()) {
+        box->close();
+        return;
+      }
+      if (*remaining > 0) {
+        --(*remaining);
+      }
+      render(*remaining);
+    });
+    tick->start();
+
+    // Close the moment the daemon connects, even between ticks.
+    QObject::connect(connectionMgr_, &ConnectionManager::connected, box,
+                     [box]() { box->close(); });
+
+    box->show();  // non-modal: countdown updates while the app keeps working
+  });
+
+
   // Connect RPC signals (legacy - will be phased out)
   connect(rpc_, &RpcClient::rpcResult, this, &MainWindow::onRpcResult);
   connect(rpc_, &RpcClient::rpcResult, txTracker_, &TransactionTracker::onPollRpcResult);
@@ -1881,12 +1939,11 @@ MainWindow::MainWindow(QWidget* parent)
 
   // #295: visible timeout on the startup wait. If RPC never comes up the
   // user previously stared at "Connecting..." forever with no explanation.
-  // Bumped 60s -> 100s: a fast-synced node loading all wallets + the catch-up
-  // scan can legitimately take ~80s to be RPC-ready, and the old 60s watchdog
-  // nagged with "Still Waiting for Daemon" before it connected. The handler
-  // no-ops if already connected, so this only delays the alert for a GENUINE
-  // hang (now after 100s instead of 60s).
-  QTimer::singleShot(100000, this, &MainWindow::onStartupWatchdogTimeout);
+  // Bumped 60s -> 100s -> 180s: on Windows a node with many wallets at high
+  // height can take ~150s to be RPC-ready, and the old 100s watchdog nagged
+  // with "Still Waiting for Daemon" before it connected. The handler no-ops if
+  // already connected, so this only delays the alert for a GENUINE hang.
+  QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
 
   // Cmd+K dashboard. The AI assistant surface is temporarily hidden by
   // kShowAiAssistantPanel, but the shortcut remains the dashboard entry point.
@@ -11944,12 +12001,12 @@ void MainWindow::onStartupWatchdogTimeout() {
   }
   const QString logPath = QDir(datadir).filePath("debug.log");
 
-  qWarning() << "Startup watchdog: no daemon RPC connection after 100s";
+  qWarning() << "Startup watchdog: no daemon RPC connection after 180s";
 
   QMessageBox box(this);
   box.setIcon(QMessageBox::Warning);
   box.setWindowTitle("Still Waiting for Daemon");
-  box.setText("Dinero has been waiting 100 seconds for the daemon (dinerod) "
+  box.setText("Dinero has been waiting 180 seconds for the daemon (dinerod) "
               "and is still not connected — the daemon may have failed.");
   box.setInformativeText(
     "Common causes:\n"
@@ -11967,9 +12024,9 @@ void MainWindow::onStartupWatchdogTimeout() {
   if (box.clickedButton() == showLogBtn) {
     QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
     // Re-arm: the user is investigating, keep the watchdog alive.
-    QTimer::singleShot(100000, this, &MainWindow::onStartupWatchdogTimeout);
+    QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
   } else if (box.clickedButton() == waitBtn) {
-    QTimer::singleShot(100000, this, &MainWindow::onStartupWatchdogTimeout);
+    QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
   } else {
     close();
   }
@@ -12222,22 +12279,20 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
       if (dir.trimmed().isEmpty()) {
         dir = defaultDineroDataDir();
       }
-      qWarning() << "Daemon exited before RPC came up, code:" << exitCode;
-      QMessageBox box(this);
-      box.setIcon(QMessageBox::Critical);
-      box.setWindowTitle("Daemon Failed");
-      box.setText(QString("The Dinero daemon (dinerod) exited before the "
-                          "wallet could connect (exit code %1).").arg(exitCode));
-      box.setInformativeText(
-        "Common causes:\n"
-        "  • Port 20998 is already in use by another process\n"
-        "  • Another Dinero instance is using the same data directory\n\n"
-        "See the daemon log below for details (Show Details).");
-      box.setDetailedText(QString("Last lines of %1/debug.log:\n\n%2")
-                              .arg(dir, daemonDebugLogTail(dir)));
-      box.exec();
+      // The scary Critical "Daemon Failed" modal was removed: a daemon that
+      // exits before RPC during startup is usually a transient race (port
+      // handoff from a still-running daemon, datadir-lock release), and the
+      // retry logic above plus the ConnectionManager keep trying and adopt the
+      // daemon once it is healthy. Interrupting the user with a modal here made
+      // them force-quit mid-init, which only made things worse. Surface the
+      // state quietly; a GENUINE, persistent failure is still reported by the
+      // (non-modal) startup watchdog after 180s.
+      Q_UNUSED(dir);
+      qWarning() << "Daemon exited before RPC came up, code:" << exitCode
+                 << "(retries exhausted; ConnectionManager keeps trying, "
+                    "watchdog will surface a persistent failure)";
       if (lblConnectionStatus_) {
-        lblConnectionStatus_->setText("Daemon failed to start");
+        lblConnectionStatus_->setText("Starting daemon…");
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
       }
       btnStartDaemon_->setVisible(true);
