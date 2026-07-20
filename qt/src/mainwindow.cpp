@@ -3655,7 +3655,8 @@ void MainWindow::setupUI() {
       "Solo = mine directly with your node.\n"
       "Pool (Stratum V1) = submit shares to a V1 pool (legacy, cleartext).\n"
       "Pool (SV2 / Job Declaration) = submit shares to an SV2 pool over\n"
-      "Noise-encrypted transport with miner-owned coinbase outputs.");
+      "Noise-encrypted transport. Earns shared (PPLNS) payouts by default;\n"
+      "requires a Taproot (din1p…) payout address.");
     modeRow->addWidget(cmbMiningMode_);
 
     lblStratumEndpoint_ = new QLabel("Pool Endpoint:");
@@ -11164,6 +11165,17 @@ void MainWindow::startSv2Miner() {
        << "--payout-script-hex" << payoutScript
        << "--user-agent" << "dinero-qt"
        << "--json";
+
+  // Reward mode: Dinero-Qt defaults pool mining to SHARED (pool PPLNS) so a
+  // miner earns steady proportional payouts instead of only-on-a-found-block
+  // solo rewards. The miner CLI itself stays solo-by-default for backward
+  // compatibility, so the GUI must select shared explicitly. Shared requires a
+  // Taproot (P2TR) payout script; fall back to solo for non-P2TR payouts (e.g.
+  // P2MR) so those users still mine rather than hitting a validation error.
+  const bool payoutIsP2TR =
+      payoutScript.startsWith(QLatin1String("5120"), Qt::CaseInsensitive) &&
+      payoutScript.size() == 68;
+  args << "--reward-mode" << (payoutIsP2TR ? "shared" : "solo");
   if (useGpu) {
     // GPU batch-size: 1M nonces per dispatch (~2ms on M4 Max). Small
     // enough to respond to SetNewPrevHash within one dispatch.
