@@ -1,3 +1,15 @@
+dinero-core (8.0.18-1) unstable; urgency=medium
+
+  * v8.0.18 — GUI startup robustness (qt-only; non-consensus; daemon
+    byte-identical to v8.0.17, no fleet redeploy needed). PR #410: single-instance
+    QLockFile guard, 300s grace to adopt a slow-initializing embedded daemon
+    instead of killing it, live startup countdown, and removal of the false
+    "Daemon Failed" modal. PR #411: fixes the startup countdown freezing at 3:00
+    (it was a QMessageBox, whose native NSAlert nested modal loop starves Qt
+    timers; now a non-modal QDialog, so it actually counts down).
+
+ -- DineroLabs <team@dinerolabs.org>  Mon, 20 Jul 2026 03:49:47 +0000
+
 dinero-core (8.0.17-1) unstable; urgency=medium
 
   * v8.0.17 — AssumeUTXO fast-sync anchor refresh (non-consensus; no rule or
