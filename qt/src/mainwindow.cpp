@@ -52,6 +52,8 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QMessageBox>
+#include <QDialog>
+#include <QFont>
 #include <QJsonDocument>
 #include <QProcess>
 #include <QTcpSocket>
@@ -1793,29 +1795,55 @@ MainWindow::MainWindow(QWidget* parent)
   // users assume the app hung and force-quit + relaunch mid-init — which is
   // exactly what wedged startup historically. A live mm:ss countdown shows
   // progress so they wait it out. Auto-dismisses the instant we connect.
+  //
+  // MUST be a plain widget-based QDialog, NOT a QMessageBox. On macOS a
+  // QMessageBox is presented as a native NSAlert that spins its own nested
+  // modal run loop (runModalForWindow:), and Qt QTimers do NOT fire inside that
+  // loop — so a QMessageBox-based countdown parks the main thread in the modal
+  // loop and its own tick timer never runs, freezing the display at 3:00. A
+  // non-modal QDialog uses no native modal loop, so the tick fires and the
+  // countdown actually counts down.
   QTimer::singleShot(2000, this, [this]() {
     if (shuttingDown_ || (connectionMgr_ && connectionMgr_->isConnected())) {
       return;  // already connected (fast start / adopted a warm daemon)
     }
-    auto* box = new QMessageBox(this);
+    auto* box = new QDialog(this);
     box->setAttribute(Qt::WA_DeleteOnClose);
-    box->setIcon(QMessageBox::Information);
+    box->setModal(false);
     box->setWindowTitle("Starting Dinero…");
-    box->addButton("Hide", QMessageBox::RejectRole);  // optional dismiss; waiting is fine
+
+    auto* layout = new QVBoxLayout(box);
+    auto* titleLabel = new QLabel(box);
+    titleLabel->setTextFormat(Qt::PlainText);
+    QFont titleFont = titleLabel->font();
+    titleFont.setBold(true);
+    titleFont.setPointSize(titleFont.pointSize() + 1);
+    titleLabel->setFont(titleFont);
+    auto* infoLabel = new QLabel(box);
+    infoLabel->setTextFormat(Qt::PlainText);
+    infoLabel->setWordWrap(true);
+    layout->addWidget(titleLabel);
+    layout->addWidget(infoLabel);
+    auto* btnRow = new QHBoxLayout();
+    btnRow->addStretch();
+    auto* hideBtn = new QPushButton("Hide", box);  // optional dismiss; waiting is fine
+    btnRow->addWidget(hideBtn);
+    layout->addLayout(btnRow);
+    QObject::connect(hideBtn, &QPushButton::clicked, box, &QDialog::close);
 
     auto remaining = std::make_shared<int>(180);  // 3:00
-    auto render = [box](int secs) {
+    auto render = [titleLabel, infoLabel](int secs) {
       if (secs > 0) {
-        box->setText(QString("Starting the Dinero node — ready in about %1:%2")
-                         .arg(secs / 60)
-                         .arg(secs % 60, 2, 10, QChar('0')));
-        box->setInformativeText(
+        titleLabel->setText(QString("Starting the Dinero node — ready in about %1:%2")
+                                .arg(secs / 60)
+                                .arg(secs % 60, 2, 10, QChar('0')));
+        infoLabel->setText(
             "This can take up to ~3 minutes on first start.\n"
             "Please wait — do NOT close or restart. The wallet opens "
             "automatically once the node is ready.");
       } else {
-        box->setText("Almost there — the node is taking a little longer than usual.");
-        box->setInformativeText(
+        titleLabel->setText("Almost there — the node is taking a little longer than usual.");
+        infoLabel->setText(
             "Still starting… please keep waiting and do NOT close or restart.");
       }
     };
