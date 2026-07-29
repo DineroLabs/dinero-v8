@@ -1,0 +1,119 @@
+name: Windows OpenSSL Release Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-openssl-release-smoke.yml'
+      - 'cmake/ThirdParty.cmake'
+      - 'scripts/build-openssl-vendored.ps1'
+      - 'scripts/ci/check_openssl_version.ps1'
+      - 'packaging/windows/**'
+
+jobs:
+  windows-openssl-release-smoke:
+    name: Windows MSVC — OpenSSL 3.5.7 build, daemon, installer
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache vendored OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7
+          key: windows-msvc-openssl-3.5.7-${{ hashFiles('scripts/build-openssl-vendored.ps1') }}
+
+      - name: Build vendored OpenSSL 3.5.7
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-openssl-vendored.ps1
+
+      - name: Install NSIS
+        shell: powershell
+        run: choco install nsis --no-progress -y
+
+      # The GitHub runner keeps vcpkg at VCPKG_INSTALLATION_ROOT (C:\vcpkg)
+      # with no packages installed — unlike the owner's box, where
+      # build-server-installer.ps1's default $USERPROFILE\vcpkg layout holds
+      # curl. Without this, configure dies at find_package(CURL)
+      # (CMakeLists.txt:1113) before OpenSSL is ever exercised.
+      - name: Provision curl via runner vcpkg
+        shell: powershell
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
+
+      - name: Build Windows server release and installer
+        shell: powershell
+        run: |
+          .\packaging\windows\build-server-installer.ps1 `
+            -Version '8.0.18-openssl357-ci' `
+            -BuildDir 'build-msvc-server' `
+            -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
+            -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+
+      - name: Assert the linked OpenSSL version
+        shell: powershell
+        run: |
+          .\scripts\ci\check_openssl_version.ps1 `
+            -BuildDir 'build-msvc-server' `
+            -ExpectedVersion '3.5.7'
+
+      - name: Daemon startup, mining, and restart smoke
+        shell: powershell
+        run: |
+          .\scripts\native-msvc-regtest-smoke.ps1 `
+            -BuildDir 'build-msvc-server\Release' `
+            -TimeoutSeconds 90
+
+      - name: Silent installer and uninstall smoke
+        shell: powershell
+        run: |
+          $installer = Resolve-Path 'packaging\windows\dist\Dinero-Server-8.0.18-openssl357-ci-windows-x86_64-Setup.exe'
+          $installDir = Join-Path $env:ProgramFiles 'Dinero-Server'
+
+          $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "silent installer exited with code $($install.ExitCode)"
+          }
+          foreach ($name in @('dinerod.exe', 'dinero-cli.exe', 'Uninstall.exe')) {
+            $path = Join-Path $installDir $name
+            if (-not (Test-Path $path)) {
+              throw "installer did not produce $path"
+            }
+          }
+
+          $installedVersion = & (Join-Path $installDir 'dinerod.exe') --version 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "installed dinerod --version failed: $installedVersion"
+          }
+          Write-Host $installedVersion
+
+          $uninstall = Start-Process `
+            -FilePath (Join-Path $installDir 'Uninstall.exe') `
+            -ArgumentList '/S' `
+            -Wait `
+            -PassThru
+          if ($uninstall.ExitCode -ne 0) {
+            throw "silent uninstall exited with code $($uninstall.ExitCode)"
+          }
+          if (Test-Path (Join-Path $installDir 'dinerod.exe')) {
+            throw "silent uninstall left dinerod.exe installed"
+          }
+
+      - name: Upload installer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-server-openssl-3.5.7-smoke
+          path: packaging/windows/dist/Dinero-Server-8.0.18-openssl357-ci-windows-x86_64-Setup.exe
+          if-no-files-found: warn
