@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <array>
 #include <cstdint>
 #include <string>
 #include "primitives/transaction.h"
@@ -43,6 +44,9 @@ public:
         size_t input_index,
         const std::vector<UTXOEntry>& input_utxos,
         const std::vector<uint8_t>& tapleaf_hash,
+        const std::array<uint8_t, 32>& internal_key,
+        const std::array<uint8_t, 32>& merkle_root,
+        uint8_t output_key_parity,
         uint32_t flags,
         std::string& error,
         const std::vector<uint8_t>& annex = {}
@@ -56,7 +60,11 @@ private:
         const Transaction* tx;
         size_t input_index;
         const std::vector<UTXOEntry>* input_utxos;
+        const std::vector<uint8_t>* tapscript;
         const std::vector<uint8_t>* tapleaf_hash;
+        const std::array<uint8_t, 32>* internal_key;
+        const std::array<uint8_t, 32>* merkle_root;
+        uint8_t output_key_parity;
         const std::vector<uint8_t>* annex;  // BIP341 annex (for sighash computation)
         uint32_t flags;  // Script verification flags (for covenant enforcement)
         std::string error;

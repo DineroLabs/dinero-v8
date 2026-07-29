@@ -67,6 +67,8 @@ enum ScriptVerifyFlags : uint32_t {
     SCRIPT_VERIFY_TXHASH = (1U << 22),
     // OP_CHECKCONTRACTVERIFY - Advanced contract state verification
     SCRIPT_VERIFY_CHECKCONTRACT = (1U << 23),
+    // Activated CCV successor-binding v1.
+    SCRIPT_VERIFY_CCV_SUCCESSOR_BINDING = (1U << 24),
 
     // Additional validation flags
     SCRIPT_VERIFY_STRICTENC = (1U << 1),       // Strict signature encoding

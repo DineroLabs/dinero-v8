@@ -26,6 +26,9 @@ bool TapscriptInterpreter::ExecuteTapscript(
     size_t input_index,
     const std::vector<UTXOEntry>& input_utxos,
     const std::vector<uint8_t>& tapleaf_hash,
+    const std::array<uint8_t, 32>& internal_key,
+    const std::array<uint8_t, 32>& merkle_root,
+    uint8_t output_key_parity,
     uint32_t flags,
     std::string& error,
     const std::vector<uint8_t>& annex
@@ -42,7 +45,11 @@ bool TapscriptInterpreter::ExecuteTapscript(
     ctx.tx = &tx;
     ctx.input_index = input_index;
     ctx.input_utxos = &input_utxos;
+    ctx.tapscript = &script;
     ctx.tapleaf_hash = &tapleaf_hash;
+    ctx.internal_key = &internal_key;
+    ctx.merkle_root = &merkle_root;
+    ctx.output_key_parity = output_key_parity;
     ctx.annex = &annex;  // BIP341 annex for sighash computation
     ctx.flags = flags;  // Phase L0.3: Pass flags for covenant enforcement
 
@@ -678,9 +685,12 @@ bool TapscriptInterpreter::OpCheckContractVerify(ExecutionContext& ctx) {
     }
 
     // Pop contract state data from stack
-    const auto& new_state_bytes = ctx.stack.back();
+    // Copy before pop. The historical implementation retained references to
+    // vector elements after pop_back(), producing undefined behavior and
+    // making otherwise valid CCV witnesses fail nondeterministically.
+    const auto new_state_bytes = ctx.stack.back();
     ctx.stack.pop_back();
-    const auto& prev_state_bytes = ctx.stack.back();
+    const auto prev_state_bytes = ctx.stack.back();
     ctx.stack.pop_back();
 
     // Deserialize previous state
@@ -697,9 +707,30 @@ bool TapscriptInterpreter::OpCheckContractVerify(ExecutionContext& ctx) {
         return false;
     }
 
-    // Verify contract state transition using covenant verification function
-    if (!VerifyContractTransition(*ctx.tx, static_cast<uint32_t>(ctx.input_index),
-                                   prev_state, new_state)) {
+    bool valid = false;
+    if (ctx.flags & SCRIPT_VERIFY_CCV_SUCCESSOR_BINDING) {
+        if (!ctx.input_utxos || !ctx.tapscript ||
+            !ctx.internal_key || !ctx.merkle_root) {
+            ctx.error = "OP_CHECKCONTRACTVERIFY: missing Taproot binding context";
+            return false;
+        }
+        const ContractSpendContext spend_context{
+            *ctx.input_utxos,
+            *ctx.tapscript,
+            *ctx.internal_key,
+            *ctx.merkle_root,
+            ctx.output_key_parity
+        };
+        valid = VerifyContractTransition(
+            *ctx.tx, static_cast<uint32_t>(ctx.input_index),
+            prev_state, new_state, spend_context);
+    } else {
+        // The historical transition predicate remains selected pre-activation.
+        valid = VerifyContractTransition(
+            *ctx.tx, static_cast<uint32_t>(ctx.input_index),
+            prev_state, new_state);
+    }
+    if (!valid) {
         ctx.error = "OP_CHECKCONTRACTVERIFY: state transition verification failed";
         return false;
     }

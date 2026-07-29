@@ -60,7 +60,10 @@ private:
     static bool CheckStructure(const Transaction& tx, std::string& error);
     static bool CheckInputsExist(const Transaction& tx, consensus::IUTXOProvider* utxo_provider, uint32_t current_height, std::string& error);
     static bool CheckNoDoubleSpend(const Transaction& tx, consensus::IUTXOProvider* utxo_provider, std::string& error);
-    static bool VerifySignatures(const Transaction& tx, consensus::IUTXOProvider* utxo_provider, std::string& error);
+    static bool VerifySignatures(const Transaction& tx,
+                                 consensus::IUTXOProvider* utxo_provider,
+                                 uint32_t current_height,
+                                 std::string& error);
     // Phase M.6.1: fee parameter changed to AmountUna&
     static bool CheckFees(const Transaction& tx, consensus::IUTXOProvider* utxo_provider, AmountUna& fee, std::string& error);
 

@@ -21,8 +21,10 @@
  */
 
 #include <vector>
+#include <cstddef>
 #include <cstdint>
 #include <array>
+#include "consensus/utxo_entry.h"
 
 namespace dinero {
 
@@ -157,6 +159,52 @@ struct ContractState {
     uint32_t counter;                        // State counter/nonce
 };
 
+// Two 32-byte hashes, counter, and length consume 72 of Tapscript's
+// consensus 520-byte stack-element limit.
+inline constexpr size_t MAX_CONTRACT_STATE_DATA_SIZE = 520 - 72;
+
+/**
+ * Taproot data that binds a CCV state transition to the spent output and its
+ * successor. These values come from the already-verified control block.
+ */
+struct ContractSpendContext {
+    const std::vector<UTXOEntry>& inputUtxos;
+    const std::vector<uint8_t>& tapscript;
+    const std::array<uint8_t, 32>& internalKey;
+    const std::array<uint8_t, 32>& merkleRoot;
+    uint8_t outputKeyParity;
+};
+
+/** Compute SHA256(code), where code is the revealed immutable Tapscript. */
+std::array<uint8_t, 32> ComputeContractCodeHash(
+    const std::vector<uint8_t>& tapscript);
+
+/** Compute SHA256(codeHash || counter_le32 || data). */
+std::array<uint8_t, 32> ComputeContractStateHash(
+    const ContractState& state);
+
+/**
+ * Derive an x-only NUMS-style internal key from a state commitment.
+ *
+ * The derivation hashes to an x-coordinate and retries until it parses as a
+ * secp256k1 point. No secret scalar is constructed, so the state commitment
+ * does not create a known Taproot key-path private key.
+ */
+bool DeriveContractInternalKey(
+    const ContractState& state,
+    std::array<uint8_t, 32>& internalKey);
+
+/**
+ * Construct OP_1 PUSH32 <output-key> for a state and immutable Taproot tree.
+ * If outputKeyParity is non-null, write the parity bit required by the
+ * corresponding control block.
+ */
+bool ComputeContractOutputScript(
+    const ContractState& state,
+    const std::array<uint8_t, 32>& merkleRoot,
+    std::vector<uint8_t>& scriptPubKey,
+    uint8_t* outputKeyParity = nullptr);
+
 /**
  * Verify a contract state transition.
  *
@@ -173,6 +221,18 @@ bool VerifyContractTransition(const Transaction& tx,
                                uint32_t inputIndex,
                                const ContractState& prevState,
                                const ContractState& newState);
+
+/**
+ * Complete CCV transition verification used after successor-binding
+ * activation. In addition to state progression, this binds prevState to the
+ * spent Taproot internal key/parity and requires output[inputIndex] to carry
+ * the same transparent value into newState under the same immutable tree.
+ */
+bool VerifyContractTransition(const Transaction& tx,
+                              uint32_t inputIndex,
+                              const ContractState& prevState,
+                              const ContractState& newState,
+                              const ContractSpendContext& spendContext);
 
 // ============================================================================
 // Verification Flags

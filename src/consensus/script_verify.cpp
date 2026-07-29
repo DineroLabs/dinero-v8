@@ -583,7 +583,9 @@ bool ScriptVerifier::VerifyOPCTCOMMIT(const Transaction& tx, size_t input_index,
 }
 
 bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
-                                   const std::vector<UTXOEntry>& input_utxos, std::string& error) {
+                                   const std::vector<UTXOEntry>& input_utxos,
+                                   std::string& error,
+                                   uint32_t flags) {
     // Validate input_index and UTXO vector
     if (input_index >= tx.vin.size() || input_index >= input_utxos.size()) {
         error = "Invalid input index";
@@ -620,18 +622,32 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
         return false;
     }
 
+    // Historical Dinero parsing looked for an annex in the first script-stack
+    // item. BIP341 places it at the end of the witness and removes it before
+    // key-path/script-path classification. Correct that behavior together with
+    // CCV successor binding while preserving old blocks before activation.
+    std::vector<std::vector<uint8_t>> effective_witness = input.witness;
+    std::vector<uint8_t> annex;
+    if ((flags & SCRIPT_VERIFY_CCV_SUCCESSOR_BINDING) &&
+        effective_witness.size() >= 2 &&
+        !effective_witness.back().empty() &&
+        effective_witness.back()[0] == 0x50) {
+        annex = effective_witness.back();
+        effective_witness.pop_back();
+    }
+
     // Determine spending path:
     // - Key path: witness has exactly 1 element (signature)
     // - Script path: witness has 2+ elements (stack items + script + control_block)
 
-    bool is_key_path = (input.witness.size() == 1);
+    bool is_key_path = (effective_witness.size() == 1);
 
     if (is_key_path) {
         // ============================================================
         // KEY PATH SPENDING (BIP341)
         // ============================================================
 
-        const std::vector<uint8_t>& signature = input.witness[0];
+        const std::vector<uint8_t>& signature = effective_witness[0];
 
         // Schnorr signatures are 64 bytes (or 65 with sighash type)
         if (signature.size() != 64 && signature.size() != 65) {
@@ -661,7 +677,8 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
         std::vector<uint8_t> tapleaf_hash;  // Empty for key path
 
         std::vector<uint8_t> sighash = ComputeTaprootSighash(
-            tx, input_index, prevout_values, prevout_scripts, hash_type, tapleaf_hash
+            tx, input_index, prevout_values, prevout_scripts, hash_type,
+            tapleaf_hash, annex
         );
 
         // Verify Schnorr signature with libsecp256k1
@@ -690,13 +707,13 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
 
         // Script path witness: <stack items...> <script> <control_block>
         // Minimum: 2 elements (script + control_block)
-        if (input.witness.size() < 2) {
+        if (effective_witness.size() < 2) {
             error = "Invalid script path witness (need at least script + control block)";
             return false;
         }
 
         // Last element is control block
-        const std::vector<uint8_t>& control_block = input.witness[input.witness.size() - 1];
+        const std::vector<uint8_t>& control_block = effective_witness.back();
 
         // Control block format: <leaf_version|parity> <internal_key> [<merkle_proof>...]
         // Minimum size: 33 bytes (1 + 32)
@@ -712,7 +729,8 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
         }
 
         // Second-to-last element is the revealed script
-        const std::vector<uint8_t>& script = input.witness[input.witness.size() - 2];
+        const std::vector<uint8_t>& script =
+            effective_witness[effective_witness.size() - 2];
 
         if (script.empty()) {
             error = "Empty Tapscript";
@@ -867,24 +885,28 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
         // Witness stack: <stack items...> <script> <control_block>
         // Extract witness stack (exclude script and control block)
         std::vector<std::vector<uint8_t>> witness_stack;
-        if (input.witness.size() > 2) {
+        if (effective_witness.size() > 2) {
             witness_stack.insert(witness_stack.end(),
-                               input.witness.begin(),
-                               input.witness.end() - 2);
+                               effective_witness.begin(),
+                               effective_witness.end() - 2);
         }
 
-        // BIP342 Fix #4: Annex handling
-        // If the first witness stack element starts with 0x50, it is the annex
-        // The annex must be removed from the stack before script execution
-        // Note: Annex is included in signature hash computation per BIP341
-        std::vector<uint8_t> annex;
-        if (!witness_stack.empty() &&
+        // Preserve the historical parser before successor-binding activation.
+        // Its first-item rule is intentionally not used by the activated path.
+        if (!(flags & SCRIPT_VERIFY_CCV_SUCCESSOR_BINDING) &&
+            !witness_stack.empty() &&
             !witness_stack[0].empty() &&
             witness_stack[0][0] == 0x50) {
-            // Found annex - remove it from witness stack
             annex = witness_stack[0];
             witness_stack.erase(witness_stack.begin());
         }
+
+        std::array<uint8_t, 32> control_internal_key{};
+        std::copy(internal_key.begin(), internal_key.end(),
+                  control_internal_key.begin());
+        std::array<uint8_t, 32> taproot_merkle_root{};
+        std::copy(computed_root.begin(), computed_root.end(),
+                  taproot_merkle_root.begin());
 
         // Execute Tapscript
         // Phase L0.3: Pass SCRIPT_VERIFY_STANDARD flags to enable covenant enforcement
@@ -897,7 +919,10 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
             input_index,
             input_utxos,
             tapleaf_hash,
-            SCRIPT_VERIFY_STANDARD,  // Includes covenant flags
+            control_internal_key,
+            taproot_merkle_root,
+            parity_bit,
+            flags,
             script_error,
             annex  // BIP341 annex for sighash
         );

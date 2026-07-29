@@ -295,8 +295,14 @@ ScriptValidationResult ValidateTaprootSpend(
         }
 
         // Delegate to ScriptVerifier::VerifyTaproot (full BIP342 + covenants)
+        uint32_t flags = SCRIPT_VERIFY_STANDARD;
+        if (consensus::CcvSuccessorBindingActivationParams::IsActive(
+                block_height, dinero::GetActiveChain())) {
+            flags |= SCRIPT_VERIFY_CCV_SUCCESSOR_BINDING;
+        }
         std::string script_error;
-        bool valid = consensus::ScriptVerifier::VerifyTaproot(tx, input_index, all_utxos, script_error);
+        bool valid = consensus::ScriptVerifier::VerifyTaproot(
+            tx, input_index, all_utxos, script_error, flags);
         return valid ? ScriptValidationResult::OK : ScriptValidationResult::INVALID_SCRIPT;
     }
 

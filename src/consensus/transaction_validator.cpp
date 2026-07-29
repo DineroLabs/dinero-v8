@@ -67,7 +67,7 @@ TransactionValidator::ValidationResult TransactionValidator::ValidateTransaction
     }
 
     // 4. Verify all signatures
-    if (!VerifySignatures(tx, utxo_provider, result.error)) {
+    if (!VerifySignatures(tx, utxo_provider, current_height, result.error)) {
         return result;
     }
 
@@ -235,6 +235,20 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
     }
 
     const auto& input = tx.vin[input_index];
+
+    // This bit must be folded into the cache key before lookup. Restrict the
+    // chain-parameter query to Taproot script-path spends; other script types
+    // must remain testable before SelectParams().
+    const bool is_taproot_script_path =
+        scriptPubKey.size() == 34 &&
+        scriptPubKey[0] == 0x51 &&
+        scriptPubKey[1] == 0x20 &&
+        input.witness.size() >= 2;
+    if (is_taproot_script_path &&
+        consensus::CcvSuccessorBindingActivationParams::IsActive(
+            height, dinero::GetActiveChain())) {
+        script_flags |= consensus::SCRIPT_VERIFY_CCV_SUCCESSOR_BINDING;
+    }
 
     // ========================================================================
     // BIP113: Locktime Validation (Median Time Past for time-based locks)
@@ -730,7 +744,11 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
             }
 
             std::string script_error;
-            bool valid = consensus::ScriptVerifier::VerifyTaproot(tx, input_index, utxo_entries, script_error);
+            const uint32_t taproot_flags =
+                consensus::SCRIPT_VERIFY_STANDARD |
+                (script_flags & consensus::SCRIPT_VERIFY_CCV_SUCCESSOR_BINDING);
+            bool valid = consensus::ScriptVerifier::VerifyTaproot(
+                tx, input_index, utxo_entries, script_error, taproot_flags);
 
             if (valid) {
                 // Cache positive result
@@ -773,6 +791,7 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
 bool TransactionValidator::VerifySignatures(
     const Transaction& tx,
     consensus::IUTXOProvider* utxo_provider,
+    uint32_t current_height,
     std::string& error
 ) {
     if (!utxo_provider) {
@@ -815,7 +834,7 @@ bool TransactionValidator::VerifySignatures(
         // Phase M.6.2: Extract raw value for script verification
         auto result = VerifyInput(tx, i, utxo.scriptPubKey, utxo.value.GetUna(),
                                    0 /* script_flags */,
-                                   utxo.height,
+                                   current_height,
                                    0 /* median_time_past - mempool has no MTP context */,
                                    all_input_amounts,
                                    all_input_scriptpubkeys,

@@ -4151,6 +4151,31 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_covenants.cpp)
   add_test(NAME CovenantTests COMMAND test_covenants)
 endif()
 
+# CCV successor binding: adversarial state/output continuity tests.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_ccv_successor_binding.cpp)
+  add_executable(test_ccv_successor_binding
+    tests/consensus/test_ccv_successor_binding.cpp
+  )
+  target_link_libraries(test_ccv_successor_binding PRIVATE
+    dinero_consensus
+    dinero_crypto
+    secp256k1
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_ccv_successor_binding)
+  target_include_directories(test_ccv_successor_binding PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include
+  )
+  add_test(NAME CcvSuccessorBinding COMMAND test_ccv_successor_binding)
+  set_tests_properties(CcvSuccessorBinding PROPERTIES
+    LABELS "consensus;covenant;ccv"
+    TIMEOUT 60
+  )
+endif()
+
 # Phase 29: Covenant Integration Layer Tests
 # DELETED registration: this test was superseded by Phase C.2, which moved
 # covenant policy directly into mempool.cpp without the deprecated

@@ -43,6 +43,21 @@ std::array<uint8_t, 32> SHA256Hash(const std::vector<uint8_t>& data) {
     return SHA256Hash(data.data(), data.size());
 }
 
+std::array<uint8_t, 32> TaggedHash(const char* tag,
+                                   const std::vector<uint8_t>& data) {
+    const auto tagHash = SHA256Hash(
+        reinterpret_cast<const uint8_t*>(tag), std::strlen(tag));
+    crypto::CSHA256 hasher;
+    hasher.Write(tagHash.data(), tagHash.size());
+    hasher.Write(tagHash.data(), tagHash.size());
+    if (!data.empty()) {
+        hasher.Write(data.data(), data.size());
+    }
+    std::array<uint8_t, 32> result{};
+    hasher.Finalize(result.data());
+    return result;
+}
+
 // Write uint32 in little-endian
 void WriteLE32(std::vector<uint8_t>& buf, uint32_t value) {
     buf.push_back(value & 0xFF);
@@ -364,6 +379,102 @@ std::array<uint8_t, 32> ComputeTxHash(const Transaction& tx,
 // CCV (CheckContractVerify) Implementation
 // ============================================================================
 
+std::array<uint8_t, 32> ComputeContractCodeHash(
+    const std::vector<uint8_t>& tapscript) {
+    return SHA256Hash(tapscript);
+}
+
+std::array<uint8_t, 32> ComputeContractStateHash(
+    const ContractState& state) {
+    std::vector<uint8_t> statePreimage;
+    statePreimage.reserve(36 + state.data.size());
+    statePreimage.insert(statePreimage.end(),
+                         state.codeHash.begin(), state.codeHash.end());
+    WriteLE32(statePreimage, state.counter);
+    statePreimage.insert(statePreimage.end(),
+                         state.data.begin(), state.data.end());
+    return SHA256Hash(statePreimage);
+}
+
+bool DeriveContractInternalKey(
+    const ContractState& state,
+    std::array<uint8_t, 32>& internalKey) {
+    // Hash-to-x rather than scalar*G: deriving a scalar directly from public
+    // state would create a publicly known key-path private key.
+    std::vector<uint8_t> preimage;
+    preimage.reserve(36);
+    preimage.insert(preimage.end(), state.stateHash.begin(), state.stateHash.end());
+
+    secp256k1_context* ctx = GetSecp256k1Context();
+    for (uint32_t retry = 0;; ++retry) {
+        preimage.resize(32);
+        WriteLE32(preimage, retry);
+        const auto candidate = TaggedHash("Dinero/CCVInternalKey/v1", preimage);
+
+        secp256k1_xonly_pubkey parsed;
+        if (secp256k1_xonly_pubkey_parse(ctx, &parsed, candidate.data())) {
+            internalKey = candidate;
+            return true;
+        }
+        if (retry == UINT32_MAX) {
+            return false;
+        }
+    }
+}
+
+bool ComputeContractOutputScript(
+    const ContractState& state,
+    const std::array<uint8_t, 32>& merkleRoot,
+    std::vector<uint8_t>& scriptPubKey,
+    uint8_t* outputKeyParity) {
+    std::array<uint8_t, 32> internalKey{};
+    if (!DeriveContractInternalKey(state, internalKey)) {
+        return false;
+    }
+
+    secp256k1_context* ctx = GetSecp256k1Context();
+    secp256k1_xonly_pubkey internalPubkey;
+    if (!secp256k1_xonly_pubkey_parse(
+            ctx, &internalPubkey, internalKey.data())) {
+        return false;
+    }
+
+    std::vector<uint8_t> tweakPreimage;
+    tweakPreimage.reserve(64);
+    tweakPreimage.insert(tweakPreimage.end(), internalKey.begin(), internalKey.end());
+    tweakPreimage.insert(tweakPreimage.end(), merkleRoot.begin(), merkleRoot.end());
+    const auto tweak = TaggedHash("TapTweak", tweakPreimage);
+
+    secp256k1_pubkey tweakedPubkey;
+    if (!secp256k1_xonly_pubkey_tweak_add(
+            ctx, &tweakedPubkey, &internalPubkey, tweak.data())) {
+        return false;
+    }
+
+    secp256k1_xonly_pubkey outputKey;
+    int parity = 0;
+    if (!secp256k1_xonly_pubkey_from_pubkey(
+            ctx, &outputKey, &parity, &tweakedPubkey)) {
+        return false;
+    }
+    if (outputKeyParity != nullptr) {
+        *outputKeyParity = static_cast<uint8_t>(parity);
+    }
+
+    std::array<uint8_t, 32> serialized{};
+    if (!secp256k1_xonly_pubkey_serialize(
+            ctx, serialized.data(), &outputKey)) {
+        return false;
+    }
+
+    scriptPubKey.clear();
+    scriptPubKey.reserve(34);
+    scriptPubKey.push_back(0x51);  // OP_1
+    scriptPubKey.push_back(0x20);  // PUSH32
+    scriptPubKey.insert(scriptPubKey.end(), serialized.begin(), serialized.end());
+    return true;
+}
+
 bool VerifyContractTransition(const Transaction& tx,
                                uint32_t inputIndex,
                                const ContractState& prevState,
@@ -383,29 +494,12 @@ bool VerifyContractTransition(const Transaction& tx,
         return false;
     }
 
-    // Verify the new state hash is correctly computed
-    std::vector<uint8_t> statePreimage;
-    statePreimage.reserve(96 + newState.data.size());
-
-    // codeHash (32 bytes)
-    statePreimage.insert(statePreimage.end(),
-                         newState.codeHash.begin(), newState.codeHash.end());
-
-    // counter (4 bytes)
-    WriteLE32(statePreimage, newState.counter);
-
-    // data
-    statePreimage.insert(statePreimage.end(),
-                         newState.data.begin(), newState.data.end());
-
-    auto computedStateHash = SHA256Hash(statePreimage);
-
     // Verify state hash matches
-    if (computedStateHash != newState.stateHash) {
+    if (ComputeContractStateHash(newState) != newState.stateHash) {
         return false;
     }
 
-    // TODO(P2 — consensus-incomplete): This function does NOT verify:
+    // Historical pre-successor-binding behavior. This function does NOT verify:
     //   1. That any output commits to the new state (no output binding).
     //   2. That the output value is preserved minus fees (value conservation).
     //   3. Any contract-specific business rules.
@@ -415,9 +509,86 @@ bool VerifyContractTransition(const Transaction& tx,
     // state machine "exits" without a successor. This violates the contract
     // invariant that motivates CCV's existence.
     //
-    // Until this is implemented, CCV-based contracts are NOT safe for production
-    // use. Treat them as experimental / proof-of-concept only. Do not activate
-    // CCV-locked outputs on mainnet until this is resolved.
+    // The activated five-argument overload below closes these generic
+    // continuity gaps. Contract-specific business rules remain the Tapscript's
+    // responsibility. Retain this predicate only for pre-activation replay.
+
+    return true;
+}
+
+bool VerifyContractTransition(const Transaction& tx,
+                              uint32_t inputIndex,
+                              const ContractState& prevState,
+                              const ContractState& newState,
+                              const ContractSpendContext& spendContext) {
+    if (inputIndex >= tx.vin.size() ||
+        inputIndex >= tx.vout.size() ||
+        spendContext.inputUtxos.size() != tx.vin.size() ||
+        prevState.data.size() > MAX_CONTRACT_STATE_DATA_SIZE ||
+        newState.data.size() > MAX_CONTRACT_STATE_DATA_SIZE) {
+        return false;
+    }
+
+    // The activated rule closes the legacy counter-wrap edge too.
+    if (prevState.counter == UINT32_MAX ||
+        newState.counter != prevState.counter + 1 ||
+        newState.codeHash != prevState.codeHash) {
+        return false;
+    }
+    if (ComputeContractStateHash(prevState) != prevState.stateHash ||
+        ComputeContractStateHash(newState) != newState.stateHash) {
+        return false;
+    }
+
+    // The state declares which immutable Tapscript is being executed.
+    if (ComputeContractCodeHash(spendContext.tapscript) != prevState.codeHash) {
+        return false;
+    }
+
+    std::array<uint8_t, 32> expectedCurrentInternalKey{};
+    if (!DeriveContractInternalKey(prevState, expectedCurrentInternalKey) ||
+        expectedCurrentInternalKey != spendContext.internalKey) {
+        return false;
+    }
+
+    const UTXOEntry& spent = spendContext.inputUtxos[inputIndex];
+    if (spent.is_confidential) {
+        // Equality of Pedersen commitments does not prove equal values when
+        // blinders differ. A future confidential-CCV rule needs its own proof.
+        return false;
+    }
+
+    std::vector<uint8_t> expectedCurrentScript;
+    uint8_t expectedCurrentParity = 0;
+    if (!ComputeContractOutputScript(
+            prevState, spendContext.merkleRoot, expectedCurrentScript,
+            &expectedCurrentParity) ||
+        expectedCurrentParity != spendContext.outputKeyParity ||
+        spent.scriptPubKey != expectedCurrentScript) {
+        return false;
+    }
+
+    std::vector<uint8_t> expectedSuccessorScript;
+    if (!ComputeContractOutputScript(
+            newState, spendContext.merkleRoot, expectedSuccessorScript)) {
+        return false;
+    }
+
+    const auto& successor = tx.vout[inputIndex];
+    if (successor.is_confidential ||
+        successor.value != spent.value ||
+        successor.scriptPubKey != expectedSuccessorScript) {
+        return false;
+    }
+
+    // The exact successor under this immutable tree must appear only once.
+    // Otherwise this input could claim one of several indistinguishable outputs.
+    for (size_t i = 0; i < tx.vout.size(); ++i) {
+        if (i != inputIndex &&
+            tx.vout[i].scriptPubKey == expectedSuccessorScript) {
+            return false;
+        }
+    }
 
     return true;
 }
