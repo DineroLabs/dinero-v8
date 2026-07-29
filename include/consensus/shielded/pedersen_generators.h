@@ -33,6 +33,8 @@
 
 #include "consensus/shielded/commitment_tree.h"
 
+#include <string>
+
 namespace dinero::consensus::shielded {
 
 /// Domain separation tag for V. ANY change here is a chain split.
@@ -48,5 +50,31 @@ const Hash& PedersenGeneratorV();
 /// link-order / static-init bugs at runtime instead of corrupting
 /// commitments.
 bool PedersenGeneratorsReady();
+
+/// Startup precondition. Returns true when the generators are available;
+/// otherwise returns false and, when `error` is non-null, fills it with an
+/// operator-facing explanation (and clears it on success).
+///
+/// Callers MUST refuse to start the node when this returns false. Shielded
+/// consensus validation fails closed without the generators (see
+/// ValidateShieldedBundle), so a node in this state does not merely lose
+/// shielded functionality — it rejects every shielded bundle at or above the
+/// input-binding activation height and forks itself off the network while
+/// otherwise appearing healthy. Derivation runs under std::call_once, so the
+/// failure is permanent for the process and cannot be retried; failing fast at
+/// startup is the only loud outcome available.
+bool CheckPedersenGeneratorsStartupPrecondition(std::string* error);
+
+#ifdef DINERO_ENABLE_TEST_HOOKS
+/// TEST-ONLY seam. Forces PedersenGeneratorsReady() to report failure so the
+/// fail-closed consensus paths and the startup precondition can be exercised —
+/// derivation is a std::call_once singleton over a compile-time DST, so the
+/// failure cannot be produced legitimately.
+///
+/// Compiled ONLY when DINERO_ENABLE_TEST_HOOKS is defined, which is set on
+/// individual test targets in tests/CMakeLists.txt and never on the production
+/// libraries or the daemon.
+void SetPedersenGeneratorsUnavailableForTest(bool unavailable);
+#endif
 
 }  // namespace dinero::consensus::shielded

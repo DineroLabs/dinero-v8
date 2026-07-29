@@ -11,6 +11,7 @@
 #include "build/build_identity.h"
 #include "consensus/chain_identity.h"
 #include "consensus/chainparams.h"
+#include "consensus/shielded/pedersen_generators.h"
 #include "version_config.h"
 #include <iostream>
 #include <csignal>
@@ -755,6 +756,22 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         }
         std::cout << "[Network] REGTEST: shielded epoch reset + cv-binding forced at height "
                   << shielded_epoch_reset_override << " (test-only)\n";
+    }
+
+    // Consensus crypto precondition. Shielded validation fails closed when the
+    // Pedersen generators are unavailable, so a node that cannot derive them
+    // would reject every shielded bundle at or above the input-binding
+    // activation height and fork itself off the network while still looking
+    // healthy. Derivation is a one-shot std::call_once, so it cannot recover
+    // later — refuse to start instead, which is the only loud failure available.
+    {
+        std::string generator_error;
+        if (!dinero::consensus::shielded::CheckPedersenGeneratorsStartupPrecondition(
+                &generator_error)) {
+            std::cerr << "[FATAL] " << generator_error << "\n";
+            return 1;
+        }
+        std::cout << "[Consensus] Pedersen value-commitment generator ready\n";
     }
 
     // Initialize P2P network magic from chainparams (single source of truth).
