@@ -70,7 +70,7 @@ repo_macos_target() {
 
 openssl_repo_dir() {
     local repo_path="$1"
-    local base="${repo_path}/third_party/openssl-3.3.2"
+    local base="${repo_path}/third_party/openssl-3.5.7"
     if [[ "$(uname -s)" != "Darwin" ]]; then
         printf '%s\n' "${base}"
         return

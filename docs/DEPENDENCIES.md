@@ -323,8 +323,8 @@ find /opt/homebrew/opt/boost/include -name "endian.hpp"
 **Version:** 3.3.2 (vendored) or 3.0.12+ (system)
 **Purpose:** TLS, SHA256, RIPEMD160, AES encryption
 **License:** Apache 2.0
-**Location (vendored):** `third_party/openssl-3.3.2/`
-**Source:** https://www.openssl.org/source/openssl-3.3.2.tar.gz
+**Location (vendored):** `third_party/openssl-3.5.7/`
+**Source:** https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz
 
 **SHA256 (3.3.2 tarball):**
 ```
@@ -334,8 +334,8 @@ TBD - Fill in after verifying official OpenSSL download
 **Build Script (vendored):**
 ```bash
 ./scripts/build-openssl-vendored.sh
-# Produces: third_party/openssl-3.3.2/libcrypto.a
-#           third_party/openssl-3.3.2/libssl.a
+# Produces: third_party/openssl-3.5.7/libcrypto.a
+#           third_party/openssl-3.5.7/libssl.a
 ```
 
 **macOS Installation (system):**
@@ -350,8 +350,8 @@ sudo apt install libssl-dev
 
 **Verification (vendored):**
 ```bash
-ls third_party/openssl-3.3.2/libcrypto.a
-ls third_party/openssl-3.3.2/libssl.a
+ls third_party/openssl-3.5.7/libcrypto.a
+ls third_party/openssl-3.5.7/libssl.a
 # Both should exist
 ```
 
