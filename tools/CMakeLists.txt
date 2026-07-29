@@ -59,6 +59,28 @@ target_include_directories(verify_genesis_bundle PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# Offline archival-chain scanner for revealed CCV Tapscript leaves. As with
+# verify_genesis_bundle above, dinero_consensus_core's Utreexo helpers retain
+# active-chain accessors, so supply the canonical chainparams implementation.
+add_executable(ccv-chain-audit
+    tools/ccv_chain_audit.cpp
+    src/consensus/chainparams_impl.cpp
+)
+target_link_libraries(ccv-chain-audit PRIVATE
+    dinero_consensus_core
+)
+target_include_directories(ccv-chain-audit PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+)
+if(BUILD_TESTING)
+  add_test(NAME CcvChainAuditSelfTest COMMAND ccv-chain-audit --self-test)
+  set_tests_properties(CcvChainAuditSelfTest PROPERTIES
+    LABELS "consensus;covenant;ccv"
+    TIMEOUT 30
+  )
+endif()
+
 # Raw Taproot key generator (no wallet dependency)
 # DISABLED: tools/taproot_keygen.cpp not found - uncomment when added
 # add_executable(taproot_keygen tools/taproot_keygen.cpp)
