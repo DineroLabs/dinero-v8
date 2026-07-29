@@ -128,3 +128,114 @@ jobs:
             --output-on-failure \
             --no-tests=error \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
+
+  # ───────────────────────────────────────────────────────────────────────
+  # QUIC-enabled lane (owner decision, 2026-07-29, follow-up to PR #417):
+  # DINERO_ENABLE_QUIC defaults OFF, so the default lane above never even
+  # REGISTERS the QUIC test family — the mechanism by which the
+  # RelayTlsKeypair bitrot (PR #416) survived CI. This lane configures with
+  # QUIC ON, builds the full default graph (which includes every registered
+  # QUIC test target), runs the same integrity gate, and runs the QUIC/P2P
+  # label selection with --no-tests=error. It is deliberately a SEPARATE
+  # job so the default non-QUIC configuration stays covered exactly as
+  # before — both configurations are real, so both get CI.
+  #
+  # Rollout: like this workflow's own v2 soak, not required at first —
+  # observe on dinero-main (vendored-OpenSSL QUIC API availability on the
+  # runner is the known unknown; tests skip-or-assert per their own
+  # policies), document surprises, then promote.
+  # ───────────────────────────────────────────────────────────────────────
+  linux-quic-full-build-ctest:
+    name: Linux x86_64 — QUIC-enabled build + p2p/quic ctest
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            ccache \
+            pkg-config \
+            python3 \
+            perl \
+            libcurl4-openssl-dev \
+            libudev-dev \
+            libusb-1.0-0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.workflow }}-linux-quic
+          max-size: 1G
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.3.2/prebuilt
+            depends/sources
+            depends/x86_64-pc-linux-gnu*
+            ~/.cargo/registry
+            ~/.cargo/git
+            third_party/bulletproofs_ffi/target
+            third_party/bulletproofs-ffi/target
+          key: vendored-tests-quic-${{ runner.os }}-${{ hashFiles('depends/CMakeLists.txt', 'depends/packages/*.cmake', 'scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock', 'third_party/bulletproofs-ffi/Cargo.lock') }}
+          restore-keys: |
+            vendored-tests-quic-${{ runner.os }}-
+            vendored-tests-${{ runner.os }}-
+            vendored-${{ runner.os }}-
+
+      - name: Build vendored OpenSSL
+        run: OPENSSL_VERSION=3.3.2 bash scripts/build-openssl-vendored.sh
+
+      - name: Build depends
+        run: |
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j
+
+      - name: CMake configure (QUIC ON)
+        run: |
+          cmake -S . -B build-tests-quic \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DDINERO_ENABLE_QUIC=ON \
+            -DENABLE_GRPC=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Full default build (includes registered QUIC test targets)
+        run: cmake --build build-tests-quic -j
+
+      # Same gate as the default lane, now over a registry that INCLUDES
+      # the QUIC family: registered => built, in this configuration too.
+      - name: CTest integrity gate (registered => built)
+        run: python3 scripts/ci/check_ctest_integrity.py build-tests-quic
+
+      - name: Report QUIC test inventory
+        run: ctest --test-dir build-tests-quic -N -L 'quic|p2p'
+
+      - name: Run QUIC/P2P ctest
+        run: |
+          # Same pre-existing-debt exclusions as the default lane; the
+          # selection is the QUIC/P2P surface this lane exists to cover.
+          # --no-tests=error: if the QUIC family ever vanishes from the
+          # registry again, this lane fails instead of passing emptily.
+          ctest --test-dir build-tests-quic \
+            --output-on-failure \
+            --no-tests=error \
+            -L 'quic|p2p' \
+            --label-exclude 'integration|gate|release|canonicality|fuzz'
