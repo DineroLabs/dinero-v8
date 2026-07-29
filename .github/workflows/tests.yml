@@ -105,12 +105,26 @@ jobs:
       - name: Full default build
         run: cmake --build build-tests -j
 
+      # CI integrity gate: every test registered with CTest in THIS build
+      # configuration must have a runnable executable. A registered-but-
+      # unbuilt test otherwise reports 'Not Run' (or vanishes behind a label
+      # filter) and the repo silently advertises coverage that disappeared —
+      # RelayTlsKeypair rotted to non-compiling exactly this way (PR #416).
+      # Note the residual blind spot documented in the script: tests behind
+      # feature flags that are OFF here (e.g. DINERO_ENABLE_QUIC) are not
+      # registered at all and cannot be checked by this gate.
+      - name: CTest integrity gate (registered => built)
+        run: python3 scripts/ci/check_ctest_integrity.py build-tests
+
       - name: Run ctest
         run: |
           # Initial v2 soak intentionally runs the stable full-build test subset.
           # Excluded labels are pre-existing runtime/integration harness debt
           # surfaced by the first full ctest pass; keep this list explicit so
           # future PRs can retire exclusions one category at a time.
+          # --no-tests=error: a label filter that matches ZERO tests is a
+          # silent-disappearance mode, not a pass.
           ctest --test-dir build-tests \
             --output-on-failure \
+            --no-tests=error \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
