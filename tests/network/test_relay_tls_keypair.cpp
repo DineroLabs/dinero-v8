@@ -23,6 +23,8 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -31,39 +33,6 @@ namespace {
 dinero::network::UdpAddr Loopback(uint16_t port) {
     const uint8_t ip[4] = {127, 0, 0, 1};
     return dinero::network::UdpAddr::FromIPv4(ip, port);
-}
-
-void DeliverClientPackets(dinero::network::QuicSession& client,
-                          dinero::network::QuicSession& server,
-                          const dinero::network::UdpAddr& client_addr,
-                          const dinero::network::UdpAddr& server_addr,
-                          const dinero::network::QuicSessionOptions& options) {
-    std::vector<std::vector<uint8_t>> packets;
-    ASSERT_TRUE(client.DrainOutgoing(&packets)) << client.last_error();
-    for (const auto& packet : packets) {
-        if (!server.active()) {
-            ASSERT_TRUE(server.StartServerFromInitial(
-                            server_addr, client_addr, packet, options))
-                << server.last_error();
-        }
-        ASSERT_TRUE(server.ReceivePacket(server_addr, client_addr, packet))
-            << server.last_error();
-    }
-}
-
-void DeliverServerPackets(dinero::network::QuicSession& client,
-                          dinero::network::QuicSession& server,
-                          const dinero::network::UdpAddr& client_addr,
-                          const dinero::network::UdpAddr& server_addr) {
-    if (!server.active()) {
-        return;
-    }
-    std::vector<std::vector<uint8_t>> packets;
-    ASSERT_TRUE(server.DrainOutgoing(&packets)) << server.last_error();
-    for (const auto& packet : packets) {
-        ASSERT_TRUE(client.ReceivePacket(client_addr, server_addr, packet))
-            << client.last_error();
-    }
 }
 
 }  // namespace
@@ -109,7 +78,9 @@ TEST(RelayTlsKeypair, EachCallReturnsDistinctKeypair) {
 }
 
 TEST(RelayTlsKeypair, MaterialDrivesWorkingQuicHandshake) {
-    // Skip cleanly on builds without crypto wired in.
+    // Skip cleanly on builds without crypto wired in. (Deliberately a SKIP,
+    // not an ASSERT like test_quic_session.cpp: this test's subject is the
+    // keypair GENERATOR, and a crypto-less build has nothing to say about it.)
     const auto info = dinero::network::QuicTransport::CompileInfo();
     if (!info.crypto_available || info.crypto_backend != "ossl") {
         GTEST_SKIP() << info.disabled_reason;
@@ -128,35 +99,67 @@ TEST(RelayTlsKeypair, MaterialDrivesWorkingQuicHandshake) {
     options.private_key_pem = key_pem;
     options.verify_peer = false;
 
+    // Writer-callback wiring, mirroring test_quic_session.cpp's
+    // LoopbackHandshakeAndOneEncryptedStreamPayload — each session's
+    // outbound packets are enqueued straight into the other's inbox.
+    // (This file's previous DrainOutgoing/StartServerFromInitial pump
+    // predates that API and is what bitrotted; see PR.)
+    using dinero::network::QuicSession;
+    std::shared_ptr<QuicSession> client_session;
+    std::shared_ptr<QuicSession> server_session;
+    auto client_writer = [&server_session](std::vector<uint8_t> bytes) {
+        if (server_session) server_session->EnqueueIncomingPacket(std::move(bytes));
+    };
+    auto server_writer = [&client_session](std::vector<uint8_t> bytes) {
+        if (client_session) client_session->EnqueueIncomingPacket(std::move(bytes));
+    };
+    server_session = std::make_shared<QuicSession>(server_writer);
+    client_session = std::make_shared<QuicSession>(client_writer);
+
     const auto client_addr = Loopback(40001);
     const auto server_addr = Loopback(40002);
 
-    dinero::network::QuicSession client;
-    dinero::network::QuicSession server;
+    ASSERT_TRUE(server_session->StartServer(server_addr, client_addr, options))
+        << server_session->last_error();
+    ASSERT_TRUE(client_session->StartClient(client_addr, server_addr, options))
+        << client_session->last_error();
 
-    ASSERT_TRUE(client.StartClient(client_addr, server_addr, options))
-        << client.last_error();
+    auto cr = client_session->WaitHandshakeReady();
+    auto sr = server_session->WaitHandshakeReady();
+    ASSERT_EQ(cr.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+        << "client handshake did not converge — generated cert/key are "
+           "probably not acceptable to ngtcp2/quictls. client_err='"
+        << client_session->last_error() << "'";
+    ASSERT_EQ(sr.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+        << "server handshake did not converge. server_err='"
+        << server_session->last_error() << "'";
+    EXPECT_TRUE(cr.get()) << client_session->last_error();
+    EXPECT_TRUE(sr.get()) << server_session->last_error();
 
-    // Mirror the pump pattern from test_quic_session.cpp's
-    // LoopbackHandshakeAndOneEncryptedStreamPayload — both sides need
-    // HandleExpiry each round-trip or ngtcp2 stalls on retransmit timers.
-    // 1000-iteration cap matches the sibling test; converges in <100 in
-    // practice but the slack absorbs CI host variance.
-    bool handshake_done = false;
-    for (int i = 0; i < 1000; ++i) {
-        DeliverClientPackets(client, server, client_addr, server_addr, options);
-        DeliverServerPackets(client, server, client_addr, server_addr);
-        if (server.active()) {
-            ASSERT_TRUE(client.HandleExpiry()) << client.last_error();
-            ASSERT_TRUE(server.HandleExpiry()) << server.last_error();
-        }
-        if (client.handshake_ready() && server.handshake_ready()) {
-            handshake_done = true;
-            break;
-        }
+    // The header comment promises handshake AND one exchanged payload —
+    // restore the second half of that guarantee (the bitrotted version had
+    // quietly dropped it).
+    const std::vector<uint8_t> payload = {'r', 'e', 'l', 'a', 'y', '-',
+                                          't', 'l', 's', '-', 'o', 'k'};
+    client_session->EnqueueOutgoingStream(payload, /*fin=*/true);
+
+    std::vector<uint8_t> received;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (received.size() < payload.size() &&
+           std::chrono::steady_clock::now() < deadline) {
+        auto chunk =
+            server_session->ReadDecryptedStream(std::chrono::milliseconds(100));
+        received.insert(received.end(), chunk.begin(), chunk.end());
     }
-    EXPECT_TRUE(handshake_done)
-        << "QUIC handshake did not converge — generated cert/key are probably "
-           "not acceptable to ngtcp2/quictls. client_err='"
-        << client.last_error() << "' server_err='" << server.last_error() << "'";
+    EXPECT_EQ(received, payload)
+        << "encrypted stream payload did not round-trip over the handshake "
+           "driven by the generated keypair";
+
+    // Explicit teardown so session destructors run while both sessions are
+    // still in scope, making the by-reference writer captures safe.
+    client_session->Close();
+    server_session->Close();
+    client_session.reset();
+    server_session.reset();
 }
