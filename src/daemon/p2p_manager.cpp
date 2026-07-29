@@ -7134,6 +7134,33 @@ void P2PManager::mark_peer_seen(const std::string& peer_address) {
     }
 }
 
+P2PManager::IdlePeerAction P2PManager::classify_idle_peer(
+    bool is_connected,
+    bool is_relay_virtual,
+    bool is_outbound,
+    std::chrono::system_clock::time_point last_message_at,
+    std::chrono::system_clock::time_point now,
+    std::chrono::seconds idle_timeout) {
+    if (!is_connected) return IdlePeerAction::kKeep;
+
+    // Exclusive boundary: idle == idle_timeout exactly is retained; the peer
+    // must be STRICTLY past the threshold to be reaped. last_message_at
+    // refreshes on ANY received message (p2p_manager.cpp receive path), so a
+    // single PONG resets this window.
+    const auto idle = now - last_message_at;
+    if (idle <= idle_timeout) return IdlePeerAction::kKeep;
+
+    if (is_relay_virtual) return IdlePeerAction::kReapRelayZombie;
+    if (!is_outbound) return IdlePeerAction::kReapDirectInbound;
+
+    // Silent direct OUTBOUND peers are deliberately exempt under current
+    // policy: we selected them (addrman quality), and reaping would just
+    // redial the same address. If outbound liveness becomes a problem it
+    // should get its own policy — widening this reap silently is how a
+    // network partitions itself.
+    return IdlePeerAction::kKeep;
+}
+
 void P2PManager::keepalive_loop() {
     std::cout << "[P2P] Keepalive thread started (30s PING interval)" << std::endl;
 
@@ -7203,31 +7230,43 @@ void P2PManager::keepalive_loop() {
             }
         }
 
-        // Reap zombie relay-virtual peers. Direct peers detect dead connections
-        // via TCP-level signals (RST, keepalive timeout, send error). Relay-
-        // virtual peers have no such mechanism — if the remote endpoint's
-        // QuicSession dies, the relay still has both TCP sockets open and
-        // there's no "session closed" signal that travels back through the
-        // relay control plane. Without explicit timeout-based reaping, the
-        // local relay-virtual peer entry stays in connected_peers_ forever
-        // with a frozen last_message_at, appearing as "quiet" in the UI.
+        // Reap zombie peers. TCP keepalive alone is insufficient here because
+        // this loop writes an application PING every 30 seconds. A suspended
+        // mobile client can therefore keep the server-side TCP socket writable
+        // without ever reading the PING or returning a PONG. Those half-dead
+        // inbound entries used to remain in connected_peers_ indefinitely and
+        // consume MAX_INBOUND_PER_IP, eventually rejecting every fresh client
+        // behind the same NAT.
+        //
+        // Relay-virtual peers need the same application-level liveness rule
+        // because their relay sockets can remain open after the endpoint dies.
         //
         // Threshold: 90 seconds. PINGs go every 30s, so 90s = 3 missed
         // PING/PONG round-trips. Real low-traffic peers still produce PINGs
         // so they won't trip this; only genuinely-silent (= dead) peers do.
-        constexpr auto kRelayVirtualIdleTimeout = std::chrono::seconds(90);
+        // Decision logic lives in classify_idle_peer() so the boundary is
+        // pinned by the fake-clock regression test.
         std::vector<std::pair<std::string /*key*/, std::string /*relay*/>> relay_zombies;
+        std::vector<std::string> direct_inbound_zombies;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
-            const auto now = std::chrono::system_clock::now();
+            const auto now = clock_ ? clock_->SystemNow()
+                                    : std::chrono::system_clock::now();
             for (const auto& pair : connected_peers_) {
                 const auto& peer = pair.second;
-                if (!peer->is_connected) continue;
-                if (!peer->via_relay) continue;
-                const auto idle = now - peer->last_message_at;
-                if (idle > kRelayVirtualIdleTimeout) {
-                    relay_zombies.emplace_back(pair.first,
-                                               peer->via_relay->relay_peer_address);
+                switch (classify_idle_peer(peer->is_connected,
+                                           peer->via_relay.has_value(),
+                                           peer->is_outbound,
+                                           peer->last_message_at, now)) {
+                    case IdlePeerAction::kKeep:
+                        break;
+                    case IdlePeerAction::kReapRelayZombie:
+                        relay_zombies.emplace_back(pair.first,
+                                                   peer->via_relay->relay_peer_address);
+                        break;
+                    case IdlePeerAction::kReapDirectInbound:
+                        direct_inbound_zombies.push_back(pair.first);
+                        break;
                 }
             }
         }
@@ -7237,6 +7276,11 @@ void P2PManager::keepalive_loop() {
             // A circuit that went silent → the relay path degraded. Penalize
             // the relay's health so a persistently-bad relay gets replaced.
             note_relay_outcome(relay_ep, false);
+            cleanup_peer(key);
+        }
+        for (const auto& key : direct_inbound_zombies) {
+            std::cout << "[P2P] direct-inbound: reaping zombie peer " << key
+                      << " (no inbound message in 90s+)" << std::endl;
             cleanup_peer(key);
         }
 

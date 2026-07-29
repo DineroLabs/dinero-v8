@@ -2527,6 +2527,70 @@ else()
   message(WARNING "⚠️  Ring 3 Phase 4c TS1 integration test not found - skipping")
 endif()
 
+# Keepalive idle-peer reaping policy (P2PManager::classify_idle_peer):
+# fake-clock regression pinning the 90s boundary, the last_message_at
+# refresh, and the deliberate silent-outbound exemption. Mirrors the TS1
+# target's dependency list — the one proven to link p2p_manager.cpp
+# standalone.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_idle_peer_reap.cpp)
+  add_executable(test_p2p_idle_peer_reap
+    tests/p2p/test_p2p_idle_peer_reap.cpp
+    src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
+    src/network/relay_tls_keypair.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  if(APPLE)
+    target_link_libraries(test_p2p_idle_peer_reap PRIVATE
+      GTest::gtest
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_p2p_idle_peer_reap PRIVATE
+      GTest::gtest
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_p2p_idle_peer_reap PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_p2p_idle_peer_reap PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_p2p_idle_peer_reap PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  target_include_directories(test_p2p_idle_peer_reap PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+  )
+
+  add_test(NAME P2PIdlePeerReap COMMAND test_p2p_idle_peer_reap)
+  set_tests_properties(P2PIdlePeerReap PROPERTIES
+    LABELS "network;p2p;keepalive;smoke"
+    TIMEOUT 10  # pure fake-clock policy test — no sockets, no sleeps
+  )
+endif()
+
 # Focused build target for the relay/QUIC transport gate. CTest does not
 # build executables, so this target gives lean QUIC build directories a clean
 # "build focused tests, then ctest focused label" path.
