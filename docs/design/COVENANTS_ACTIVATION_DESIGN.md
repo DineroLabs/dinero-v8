@@ -1,10 +1,17 @@
 # Dinero Covenant Activation Design Document
 
-**Status:** DRAFT
+**Status:** SUPERSEDED / HISTORICAL
 **Date:** 2026-03-28
 **Authors:** Mirsad Hajdarevic
 
 ---
+
+> **Do not use this document as the current consensus specification.** Its
+> statements that CCV, the covenant wallet, and confidential stateful
+> covenants are complete predate the successor-binding audit and are false.
+> The normative CCV rule, limitations, and activation status are defined in
+> [`docs/consensus/CCV_SUCCESSOR_BINDING_V1.md`](../consensus/CCV_SUCCESSOR_BINDING_V1.md).
+> This file remains only as design history.
 
 ## 1. Current State
 
