@@ -72,7 +72,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            third_party/openssl-3.3.2/prebuilt
+            third_party/openssl-3.5.7/prebuilt
             depends/sources
             depends/x86_64-pc-linux-gnu*
             ~/.cargo/registry
@@ -85,7 +85,7 @@ jobs:
             vendored-${{ runner.os }}-
 
       - name: Build vendored OpenSSL
-        run: OPENSSL_VERSION=3.3.2 bash scripts/build-openssl-vendored.sh
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
 
       - name: Build depends
         run: |
@@ -115,6 +115,9 @@ jobs:
       # registered at all and cannot be checked by this gate.
       - name: CTest integrity gate (registered => built)
         run: python3 scripts/ci/check_ctest_integrity.py build-tests
+
+      - name: OpenSSL version assertion (policy pin 3.5.7)
+        run: bash scripts/ci/check_openssl_version.sh build-tests 3.5.7
 
       - name: Run ctest
         run: |
@@ -185,7 +188,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            third_party/openssl-3.3.2/prebuilt
+            third_party/openssl-3.5.7/prebuilt
             depends/sources
             depends/x86_64-pc-linux-gnu*
             ~/.cargo/registry
@@ -199,7 +202,7 @@ jobs:
             vendored-${{ runner.os }}-
 
       - name: Build vendored OpenSSL
-        run: OPENSSL_VERSION=3.3.2 bash scripts/build-openssl-vendored.sh
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
 
       - name: Build depends
         run: |
@@ -224,6 +227,9 @@ jobs:
       # the QUIC family: registered => built, in this configuration too.
       - name: CTest integrity gate (registered => built)
         run: python3 scripts/ci/check_ctest_integrity.py build-tests-quic
+
+      - name: OpenSSL version assertion (policy pin 3.5.7)
+        run: bash scripts/ci/check_openssl_version.sh build-tests-quic 3.5.7
 
       - name: Report QUIC test inventory
         run: ctest --test-dir build-tests-quic -N -L 'quic|p2p'
