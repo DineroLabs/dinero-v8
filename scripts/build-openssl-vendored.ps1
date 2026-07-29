@@ -20,7 +20,7 @@
 #   .\scripts\build-openssl-vendored.ps1
 #
 # Build a specific OpenSSL version/source/output:
-#   $env:OPENSSL_VERSION = '3.5.6'
+#   $env:OPENSSL_VERSION = '3.5.7'
 #   $env:OPENSSL_OUTPUT_DIR = 'C:\path\to\openssl-prebuilt'
 #   .\scripts\build-openssl-vendored.ps1
 #
@@ -34,7 +34,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $ThirdPartyDir = Join-Path $ProjectRoot 'third_party'
-$OpenSSLVersion = if ($env:OPENSSL_VERSION) { $env:OPENSSL_VERSION } else { '3.5.6' }
+$OpenSSLVersion = if ($env:OPENSSL_VERSION) { $env:OPENSSL_VERSION } else { '3.5.7' }
 $OpenSSLDir = if ($env:OPENSSL_SOURCE_DIR) {
     $env:OPENSSL_SOURCE_DIR
 } else {
@@ -48,6 +48,7 @@ $OutputDir = if ($env:OPENSSL_OUTPUT_DIR) {
 $MetadataFile = Join-Path $OutputDir '.dinero-build-meta'
 $Rebuild     = $env:OPENSSL_REBUILD -eq '1'
 $KnownOpenSSLSourceSha256 = @{
+    '3.5.7' = 'a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8'
     '3.5.6' = 'deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736'
 }
 

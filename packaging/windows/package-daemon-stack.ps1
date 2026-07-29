@@ -174,7 +174,7 @@ $readmeLines = @(
     "",
     "Build:      Microsoft Visual Studio 2022 (MSVC 14.44), x86_64",
     "Built UTC:  $builtOn",
-    "Linkage:    Vendored OpenSSL 3.3.2 (static, no-shared)",
+    "Linkage:    Vendored OpenSSL 3.5.7 (static, no-shared)",
     "Source:     https://github.com/DineroLabs/dinero-v8",
     "",
     "Included operator binaries (bin/):",

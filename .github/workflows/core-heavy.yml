@@ -79,7 +79,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            third_party/openssl-3.3.2/prebuilt
+            third_party/openssl-3.5.7/prebuilt
             depends/sources
             depends/x86_64-pc-linux-gnu*
             ~/.cargo/registry
@@ -93,7 +93,7 @@ jobs:
             vendored-${{ runner.os }}-
 
       - name: Build vendored OpenSSL
-        run: OPENSSL_VERSION=3.3.2 bash scripts/build-openssl-vendored.sh
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
 
       - name: Build depends
         run: |
@@ -117,6 +117,9 @@ jobs:
       # build configuration (see scripts/ci/check_ctest_integrity.py).
       - name: CTest integrity gate (registered => built)
         run: python3 scripts/ci/check_ctest_integrity.py build-core-heavy
+
+      - name: OpenSSL version assertion (policy pin 3.5.7)
+        run: bash scripts/ci/check_openssl_version.sh build-core-heavy 3.5.7
 
       - name: Inventory core-heavy tests
         run: ctest --test-dir build-core-heavy -N -L core-heavy-smoke
