@@ -93,7 +93,7 @@ detect_openssl_archive_target() {
 }
 
 vendored_openssl_dir() {
-  local base="third_party/openssl-3.3.2"
+  local base="third_party/openssl-3.5.7"
   if [ "$PLATFORM" != "darwin" ]; then
     printf '%s\n' "${base}"
     return
