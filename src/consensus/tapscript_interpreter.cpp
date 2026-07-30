@@ -46,6 +46,62 @@ enum class TapscriptPreScanResult {
     INVALID,
 };
 
+enum class PushDecodeResult {
+    NOT_PUSH,
+    PUSH,
+    INVALID,
+};
+
+PushDecodeResult DecodePushLength(
+    const std::vector<uint8_t>& script,
+    size_t& pc,
+    uint8_t opcode,
+    size_t& push_length,
+    std::string& error
+) {
+    uint64_t decoded_length = 0;
+    if (opcode == OP_0) {
+        decoded_length = 0;
+    } else if (opcode >= 0x01 && opcode <= 0x4b) {
+        decoded_length = opcode;
+    } else if (opcode == OP_PUSHDATA1) {
+        if (pc >= script.size()) {
+            error = "OP_PUSHDATA1: missing length byte";
+            return PushDecodeResult::INVALID;
+        }
+        decoded_length = script[pc++];
+    } else if (opcode == OP_PUSHDATA2) {
+        if (script.size() - pc < 2) {
+            error = "OP_PUSHDATA2: missing length bytes";
+            return PushDecodeResult::INVALID;
+        }
+        decoded_length =
+            static_cast<uint64_t>(script[pc]) |
+            (static_cast<uint64_t>(script[pc + 1]) << 8);
+        pc += 2;
+    } else if (opcode == OP_PUSHDATA4) {
+        if (script.size() - pc < 4) {
+            error = "OP_PUSHDATA4: missing length bytes";
+            return PushDecodeResult::INVALID;
+        }
+        decoded_length =
+            static_cast<uint64_t>(script[pc]) |
+            (static_cast<uint64_t>(script[pc + 1]) << 8) |
+            (static_cast<uint64_t>(script[pc + 2]) << 16) |
+            (static_cast<uint64_t>(script[pc + 3]) << 24);
+        pc += 4;
+    } else {
+        return PushDecodeResult::NOT_PUSH;
+    }
+
+    if (decoded_length > script.size() - pc) {
+        error = "Push operation exceeds script bounds";
+        return PushDecodeResult::INVALID;
+    }
+    push_length = static_cast<size_t>(decoded_length);
+    return PushDecodeResult::PUSH;
+}
+
 TapscriptPreScanResult PreScanTapscript(
     const std::vector<uint8_t>& script,
     uint32_t flags,
@@ -59,42 +115,15 @@ TapscriptPreScanResult PreScanTapscript(
             return TapscriptPreScanResult::SUCCESS;
         }
 
-        uint64_t push_length = 0;
-        if (opcode >= 0x01 && opcode <= 0x4b) {
-            push_length = opcode;
-        } else if (opcode == OP_PUSHDATA1) {
-            if (pc >= script.size()) {
-                error = "OP_PUSHDATA1: missing length byte";
-                return TapscriptPreScanResult::INVALID;
-            }
-            push_length = script[pc++];
-        } else if (opcode == OP_PUSHDATA2) {
-            if (script.size() - pc < 2) {
-                error = "OP_PUSHDATA2: missing length bytes";
-                return TapscriptPreScanResult::INVALID;
-            }
-            push_length =
-                static_cast<uint64_t>(script[pc]) |
-                (static_cast<uint64_t>(script[pc + 1]) << 8);
-            pc += 2;
-        } else if (opcode == OP_PUSHDATA4) {
-            if (script.size() - pc < 4) {
-                error = "OP_PUSHDATA4: missing length bytes";
-                return TapscriptPreScanResult::INVALID;
-            }
-            push_length =
-                static_cast<uint64_t>(script[pc]) |
-                (static_cast<uint64_t>(script[pc + 1]) << 8) |
-                (static_cast<uint64_t>(script[pc + 2]) << 16) |
-                (static_cast<uint64_t>(script[pc + 3]) << 24);
-            pc += 4;
-        }
-
-        if (push_length > script.size() - pc) {
-            error = "Push operation exceeds script bounds";
+        size_t push_length = 0;
+        const PushDecodeResult push_result =
+            DecodePushLength(script, pc, opcode, push_length, error);
+        if (push_result == PushDecodeResult::INVALID) {
             return TapscriptPreScanResult::INVALID;
         }
-        pc += static_cast<size_t>(push_length);
+        if (push_result == PushDecodeResult::PUSH) {
+            pc += push_length;
+        }
     }
     return TapscriptPreScanResult::CONTINUE;
 }
@@ -274,10 +303,15 @@ bool TapscriptInterpreter::ExecuteTapscript(
 // ============================================================
 
 bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, ExecutionContext& ctx) {
-    size_t pc = 0; // Program counter
+    size_t pc = 0;
+
+    // O(1) conditional execution state, matching Bitcoin Core's ConditionStack
+    // behavior without rescanning the nesting vector for every opcode.
+    std::vector<bool> condition_stack;
+    size_t inactive_conditions = 0;
 
     while (pc < script.size()) {
-        uint8_t opcode = script[pc++];
+        const uint8_t opcode = script[pc++];
 
         // OP_SUCCESS opcodes (BIP342 soft fork mechanism)
         if (TapscriptOpcodes::IsOpSuccess(opcode)) {
@@ -287,34 +321,114 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
             }
         }
 
-        // Push data opcodes (0x01-0x4b: direct push)
-        if (opcode >= 0x01 && opcode <= 0x4b) {
-            size_t push_len = opcode;
-            if (pc + push_len > script.size()) {
-                ctx.error = "Push operation exceeds script bounds";
+        // Decode every push, including pushes in unexecuted branches. Bounds
+        // and the 520-byte element limit remain consensus checks even when the
+        // branch is inactive; only the stack mutation is conditional.
+        size_t push_length = 0;
+        const PushDecodeResult push_result =
+            DecodePushLength(script, pc, opcode, push_length, ctx.error);
+        if (push_result == PushDecodeResult::INVALID) {
+            return false;
+        }
+        if (push_result == PushDecodeResult::PUSH) {
+            if (push_length > 520) {
+                ctx.error =
+                    "Stack element size limit exceeded (BIP342: 520 bytes max)";
                 return false;
             }
-            std::vector<uint8_t> data(script.begin() + pc, script.begin() + pc + push_len);
-            if (!PushStack(ctx, data)) return false;  // BIP342: Check limits
-            pc += push_len;
+            if (inactive_conditions == 0) {
+                std::vector<uint8_t> data(
+                    script.begin() + pc,
+                    script.begin() + pc + push_length);
+                if (!PushStack(ctx, data)) return false;
+            }
+            pc += push_length;
+            continue;
+        }
+
+        // OP_VERIF and OP_VERNOTIF are permanently disabled and fail even in
+        // an unexecuted branch.
+        if (opcode == OP_VERIF || opcode == OP_VERNOTIF) {
+            ctx.error = "Disabled conditional opcode";
+            return false;
+        }
+
+        // IF/NOTIF/ELSE/ENDIF must be processed even inside an inactive branch
+        // so nesting remains balanced. Tapscript enforces MINIMALIF as a
+        // consensus rule: the consumed value is exactly {} or {0x01}.
+        if (opcode == OP_IF || opcode == OP_NOTIF) {
+            bool condition = false;
+            if (inactive_conditions == 0) {
+                std::vector<uint8_t> value;
+                if (!PopStack(ctx, value)) {
+                    ctx.error =
+                        opcode == OP_IF
+                            ? "OP_IF: insufficient stack elements"
+                            : "OP_NOTIF: insufficient stack elements";
+                    return false;
+                }
+                if (!value.empty() &&
+                    !(value.size() == 1 && value[0] == 0x01)) {
+                    ctx.error =
+                        "OP_IF/OP_NOTIF requires a minimal boolean in tapscript";
+                    return false;
+                }
+                condition = !value.empty();
+                if (opcode == OP_NOTIF) {
+                    condition = !condition;
+                }
+            }
+            condition_stack.push_back(condition);
+            if (!condition) {
+                ++inactive_conditions;
+            }
+            continue;
+        }
+
+        if (opcode == OP_ELSE) {
+            if (condition_stack.empty()) {
+                ctx.error = "OP_ELSE without OP_IF/OP_NOTIF";
+                return false;
+            }
+            if (!condition_stack.back()) {
+                --inactive_conditions;
+            }
+            condition_stack.back() = !condition_stack.back();
+            if (!condition_stack.back()) {
+                ++inactive_conditions;
+            }
+            continue;
+        }
+
+        if (opcode == OP_ENDIF) {
+            if (condition_stack.empty()) {
+                ctx.error = "OP_ENDIF without OP_IF/OP_NOTIF";
+                return false;
+            }
+            if (!condition_stack.back()) {
+                --inactive_conditions;
+            }
+            condition_stack.pop_back();
+            continue;
+        }
+
+        // Ordinary opcodes in an inactive branch are parsed but not executed.
+        if (inactive_conditions != 0) {
+            continue;
+        }
+
+        if (opcode == OP_1NEGATE ||
+            (opcode >= OP_1 && opcode <= OP_16)) {
+            const int64_t value =
+                opcode == OP_1NEGATE
+                    ? -1
+                    : static_cast<int64_t>(opcode - (OP_1 - 1));
+            if (!PushStack(ctx, EncodeScriptNum(value))) return false;
             continue;
         }
 
         // Handle opcodes
         switch (opcode) {
-            // Constants
-            case OP_0:  // OP_0 == OP_FALSE (0x00)
-                if (!PushStack(ctx, {})) return false;  // BIP342: Check limits
-                break;
-
-            case OP_1:  // OP_1 == OP_TRUE (0x51)
-                if (!PushStack(ctx, {0x01})) return false;  // BIP342: Check limits
-                break;
-
-            case OP_1NEGATE:
-                if (!PushStack(ctx, {0x81})) return false;  // BIP342: Check limits
-                break;
-
             // Stack operations
             case OP_DUP:
                 if (!OpDup(ctx)) return false;
@@ -355,6 +469,14 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
                 if (!OpCheckSigAdd(ctx)) return false;
                 break;
 
+            // BIP342 disables the legacy multisig opcodes. They fail only when
+            // executed; the inactive-branch path above ignores them.
+            case OP_CHECKMULTISIG:
+            case OP_CHECKMULTISIGVERIFY:
+                ctx.error =
+                    "OP_CHECKMULTISIG(VERIFY) is disabled in tapscript";
+                return false;
+
             // Phase L0.3: Covenant opcodes (consensus-critical)
             case OP_CHECKTEMPLATEVERIFY:
                 // BIP119 assigns NOP4. Before activation it remains a NOP;
@@ -383,28 +505,16 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
                 if (!OpCheckContractVerify(ctx)) return false;
                 break;
 
-            // Push data with length prefix
-            case OP_PUSHDATA1: {
-                if (pc >= script.size()) {
-                    ctx.error = "OP_PUSHDATA1: missing length byte";
-                    return false;
-                }
-                size_t len = script[pc++];
-                if (pc + len > script.size()) {
-                    ctx.error = "OP_PUSHDATA1: data exceeds script bounds";
-                    return false;
-                }
-                std::vector<uint8_t> data(script.begin() + pc, script.begin() + pc + len);
-                if (!PushStack(ctx, data)) return false;  // BIP342: Check limits
-                pc += len;
-                break;
-            }
-
             default:
                 ctx.error = "Unknown or unsupported opcode: 0x" +
                            std::to_string(static_cast<int>(opcode));
                 return false;
         }
+    }
+
+    if (!condition_stack.empty()) {
+        ctx.error = "Unbalanced conditional";
+        return false;
     }
 
     return true;

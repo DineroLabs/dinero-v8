@@ -267,6 +267,235 @@ TEST(TaprootScriptPathConsensus, OpSuccessScanParsesPushOperations) {
         dinero::consensus::SCRIPT_VERIFY_NONE));
 }
 
+TEST(TaprootScriptPathConsensus, ExecutesAllPushLengthEncodings) {
+    EXPECT_TRUE(ExecuteBareTapscript(
+        {dinero::consensus::OP_PUSHDATA1, 0x01, 0x01},
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+    EXPECT_TRUE(ExecuteBareTapscript(
+        {dinero::consensus::OP_PUSHDATA2, 0x01, 0x00, 0x01},
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+    EXPECT_TRUE(ExecuteBareTapscript(
+        {dinero::consensus::OP_PUSHDATA4, 0x01, 0x00, 0x00, 0x00, 0x01},
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+}
+
+TEST(TaprootScriptPathConsensus, EnforcesPushLimitAfterOpSuccessScan) {
+    std::vector<uint8_t> oversized_push{
+        dinero::consensus::OP_PUSHDATA2, 0x09, 0x02};  // 521 bytes
+    oversized_push.resize(oversized_push.size() + 521, 0x01);
+
+    // An executed or unexecuted 521-byte push violates the inherited
+    // tapscript element-size limit.
+    EXPECT_FALSE(ExecuteBareTapscript(
+        oversized_push,
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+
+    std::vector<uint8_t> unexecuted{
+        dinero::consensus::OP_0,
+        dinero::consensus::OP_IF};
+    unexecuted.insert(
+        unexecuted.end(), oversized_push.begin(), oversized_push.end());
+    unexecuted.push_back(dinero::consensus::OP_ENDIF);
+    unexecuted.push_back(dinero::consensus::OP_1);
+    EXPECT_FALSE(ExecuteBareTapscript(
+        unexecuted,
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+
+    // OP_SUCCESS is discovered by the pre-scan before resource checks and
+    // therefore bypasses the 520-byte rule, even when it follows the push.
+    oversized_push.push_back(dinero::consensus::OP_CHECKSIGFROMSTACK);
+    EXPECT_TRUE(ExecuteBareTapscript(
+        oversized_push,
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+}
+
+TEST(TaprootScriptPathConsensus, ExecutesSmallIntegerConstants) {
+    for (uint8_t opcode = dinero::consensus::OP_2;
+         opcode <= dinero::consensus::OP_16;
+         ++opcode) {
+        EXPECT_TRUE(ExecuteBareTapscript(
+            {opcode},
+            {},
+            dinero::consensus::SCRIPT_VERIFY_NONE))
+            << "opcode=0x" << std::hex << static_cast<unsigned>(opcode);
+    }
+}
+
+TEST(TaprootScriptPathConsensus, ExecutesConditionalBranches) {
+    EXPECT_TRUE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_0,
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_RETURN,
+            dinero::consensus::OP_ELSE,
+                dinero::consensus::OP_1,
+            dinero::consensus::OP_ENDIF,
+        },
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+
+    EXPECT_TRUE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_1,
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_1,
+            dinero::consensus::OP_ELSE,
+                dinero::consensus::OP_RETURN,
+            dinero::consensus::OP_ENDIF,
+        },
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+}
+
+TEST(TaprootScriptPathConsensus, ExecutesNestedConditionals) {
+    EXPECT_TRUE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_1,
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_0,
+                dinero::consensus::OP_NOTIF,
+                    dinero::consensus::OP_1,
+                dinero::consensus::OP_ELSE,
+                    dinero::consensus::OP_RETURN,
+                dinero::consensus::OP_ENDIF,
+            dinero::consensus::OP_ELSE,
+                dinero::consensus::OP_RETURN,
+            dinero::consensus::OP_ENDIF,
+        },
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+
+    // A nested IF inside an inactive parent does not consume the stack.
+    EXPECT_TRUE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_0,
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_IF,
+                    dinero::consensus::OP_RETURN,
+                dinero::consensus::OP_ENDIF,
+            dinero::consensus::OP_ENDIF,
+            dinero::consensus::OP_1,
+        },
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+}
+
+TEST(TaprootScriptPathConsensus, EnforcesMinimalIfAsConsensus) {
+    EXPECT_TRUE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_1,
+            dinero::consensus::OP_ELSE,
+                dinero::consensus::OP_0,
+            dinero::consensus::OP_ENDIF,
+        },
+        {{0x01}},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+
+    // BIP342 makes MINIMALIF consensus mandatory. It is not conditional on a
+    // policy flag: only the empty vector and exactly {0x01} are accepted.
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_1,
+            dinero::consensus::OP_ENDIF,
+        },
+        {{0x02}},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_NOTIF,
+                dinero::consensus::OP_1,
+            dinero::consensus::OP_ENDIF,
+        },
+        {{0x80}},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_1,
+            dinero::consensus::OP_ENDIF,
+        },
+        {{0x00}},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_1,
+            dinero::consensus::OP_ENDIF,
+        },
+        {{0x01, 0x00}},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+}
+
+TEST(TaprootScriptPathConsensus, RejectsUnbalancedConditionals) {
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {dinero::consensus::OP_ELSE, dinero::consensus::OP_1},
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {dinero::consensus::OP_ENDIF, dinero::consensus::OP_1},
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {dinero::consensus::OP_1, dinero::consensus::OP_IF,
+         dinero::consensus::OP_1},
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+}
+
+TEST(TaprootScriptPathConsensus, VerIfAndVerNotIfAlwaysFail) {
+    // These historical disabled opcodes fail even in an unexecuted branch.
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_0,
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_VERIF,
+            dinero::consensus::OP_ENDIF,
+            dinero::consensus::OP_1,
+        },
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_0,
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_VERNOTIF,
+            dinero::consensus::OP_ENDIF,
+            dinero::consensus::OP_1,
+        },
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+}
+
+TEST(TaprootScriptPathConsensus, CheckMultisigFailsOnlyWhenExecuted) {
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {dinero::consensus::OP_CHECKMULTISIG},
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+    EXPECT_FALSE(ExecuteBareTapscript(
+        {dinero::consensus::OP_CHECKMULTISIGVERIFY},
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+
+    EXPECT_TRUE(ExecuteBareTapscript(
+        {
+            dinero::consensus::OP_0,
+            dinero::consensus::OP_IF,
+                dinero::consensus::OP_CHECKMULTISIG,
+            dinero::consensus::OP_ENDIF,
+            dinero::consensus::OP_1,
+        },
+        {},
+        dinero::consensus::SCRIPT_VERIFY_NONE));
+}
+
 TEST(TaprootScriptPathConsensus, InactiveCTVRetainsNop4Semantics) {
     EXPECT_TRUE(ExecuteBareTapscript(
         {dinero::consensus::OP_CHECKTEMPLATEVERIFY},
