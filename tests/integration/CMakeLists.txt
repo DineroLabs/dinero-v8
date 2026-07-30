@@ -1602,7 +1602,18 @@ if(CURL_FOUND AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/cold_start_test.cpp)
 
     # Only register test if dinerod binary is available
     if(DINEROD_BINARY OR EXISTS ${CMAKE_SOURCE_DIR}/dinerod)
-        add_test(NAME ColdStartConsensus COMMAND test_cold_start)
+        # WORKING_DIRECTORY is REQUIRED, not cosmetic (issue #413). The harness
+        # execs the relative path "./dinerod", which only exists at the build
+        # root. Without this, ctest defaults the CWD to CMAKE_CURRENT_BINARY_DIR
+        # — build/tests/integration, because this file is add_subdirectory()'d
+        # from tests/CMakeLists.txt — so execvp fails and every subtest fails at
+        # node.start(). Sibling harnesses like TwoNodeSync exec the same relative
+        # path but are registered in tests/CMakeLists.txt, which is include()d,
+        # so they already get the build root as CWD and never hit this.
+        # Any future dinerod-spawning test registered in THIS directory needs the
+        # same property.
+        add_test(NAME ColdStartConsensus COMMAND test_cold_start
+                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
         set_tests_properties(ColdStartConsensus PROPERTIES
             LABELS "e2e;consensus;cold-start"
             TIMEOUT 180
