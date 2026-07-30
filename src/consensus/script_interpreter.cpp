@@ -1423,10 +1423,13 @@ bool EvalScript(
                     return false;
                 }
 
-                // Expected hash must be exactly 32 bytes
+                // BIP119: non-32-byte arguments are reserved NOP behavior.
                 if (stack.back().size() != 32) {
-                    error = ScriptError::CTV_WRONG_LENGTH;
-                    return false;
+                    if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                        error = ScriptError::DISCOURAGE_UPGRADABLE_NOPS;
+                        return false;
+                    }
+                    break;
                 }
 
                 // Need transaction context

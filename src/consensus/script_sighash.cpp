@@ -443,12 +443,31 @@ std::vector<uint8_t> SignatureHashTaproot(
         return {};
     }
 
+    // BIP341 only defines DEFAULT, ALL/NONE/SINGLE, and the three
+    // ANYONECANPAY variants. Undefined values must fail rather than being
+    // silently masked into a defined mode.
+    switch (hash_type) {
+        case 0x00:
+        case SIGHASH_ALL:
+        case SIGHASH_NONE:
+        case SIGHASH_SINGLE:
+        case SIGHASH_ALL | SIGHASH_ANYONECANPAY:
+        case SIGHASH_NONE | SIGHASH_ANYONECANPAY:
+        case SIGHASH_SINGLE | SIGHASH_ANYONECANPAY:
+            break;
+        default:
+            return {};
+    }
+
     // Default sighash type for Taproot (SIGHASH_DEFAULT = 0x00 is treated as SIGHASH_ALL)
     uint8_t effective_hash_type = (hash_type == 0) ? SIGHASH_ALL : hash_type;
 
     // Extract base hash type and ANYONECANPAY flag
     uint8_t base_type = effective_hash_type & 0x1F;
     bool anyonecanpay = (effective_hash_type & SIGHASH_ANYONECANPAY) != 0;
+    if (base_type == SIGHASH_SINGLE && input_index >= tx.vout.size()) {
+        return {};
+    }
 
     std::vector<uint8_t> data;
 
@@ -512,38 +531,23 @@ std::vector<uint8_t> SignatureHashTaproot(
         data.insert(data.end(), sha_sequences.begin(), sha_sequences.end());
     }
 
-    // 9. sha_outputs (32 bytes) - depends on sighash type
-    if (base_type != SIGHASH_NONE) {
-        if (base_type == SIGHASH_SINGLE) {
-            // SIGHASH_SINGLE: hash only the output at the same index (if it exists)
-            if (input_index < tx.vout.size()) {
-                std::vector<uint8_t> output;
-                // Phase M.6.1: Extract raw value for serialization
-                WriteUint64LE(output, tx.vout[input_index].value.GetUna());
-                WriteScript(output, tx.vout[input_index].scriptPubKey);
-                std::vector<uint8_t> sha_output = SHA256_Single(output);
-                data.insert(data.end(), sha_output.begin(), sha_output.end());
-            }
-            // If no matching output, sha_outputs is omitted per BIP 341
-        } else {
-            // SIGHASH_ALL (default): hash all outputs
-            std::vector<uint8_t> outputs;
-            for (const auto& output : tx.vout) {
-                // Phase M.6.1: Extract raw value for serialization
-                WriteUint64LE(outputs, output.value.GetUna());
-                WriteScript(outputs, output.scriptPubKey);
-            }
-            std::vector<uint8_t> sha_outputs = SHA256_Single(outputs);
-            data.insert(data.end(), sha_outputs.begin(), sha_outputs.end());
+    // 9. sha_outputs (32 bytes) - only ALL/DEFAULT. BIP341 places the
+    // SIGHASH_SINGLE output commitment later, after the annex commitment.
+    if (base_type != SIGHASH_NONE && base_type != SIGHASH_SINGLE) {
+        std::vector<uint8_t> outputs;
+        for (const auto& output : tx.vout) {
+            WriteUint64LE(outputs, output.value.GetUna());
+            WriteScript(outputs, output.scriptPubKey);
         }
+        std::vector<uint8_t> sha_outputs = SHA256_Single(outputs);
+        data.insert(data.end(), sha_outputs.begin(), sha_outputs.end());
     }
 
     // 10. spend_type (1 byte)
-    // Bit 0: ext_flag (0 for key-path, 1 for script-path)
-    // Bit 1: annex_present (1 if annex is provided)
+    // spend_type = (ext_flag * 2) + annex_present.
     uint8_t ext_flag = leaf_hash.empty() ? 0 : 1;
     uint8_t annex_present = annex.empty() ? 0 : 1;
-    uint8_t spend_type = ext_flag | (annex_present << 1);
+    uint8_t spend_type = (ext_flag << 1) | annex_present;
     data.push_back(spend_type);
 
     // 11. Input data (depends on ANYONECANPAY)
@@ -568,17 +572,7 @@ std::vector<uint8_t> SignatureHashTaproot(
         WriteUint32LE(data, input_index);
     }
 
-    // 12. If SIGHASH_SINGLE with ANYONECANPAY, output data
-    if (anyonecanpay && base_type == SIGHASH_SINGLE && input_index < tx.vout.size()) {
-        std::vector<uint8_t> output;
-        // Phase M.6.1: Extract raw value for serialization
-        WriteUint64LE(output, tx.vout[input_index].value.GetUna());
-        WriteScript(output, tx.vout[input_index].scriptPubKey);
-        std::vector<uint8_t> sha_output = SHA256_Single(output);
-        data.insert(data.end(), sha_output.begin(), sha_output.end());
-    }
-
-    // 12b. BIP341 Annex hash (if annex_present)
+    // 12. BIP341 annex hash (if annex_present)
     // sha_annex = SHA256(compact_size(len(annex)) || annex)
     if (!annex.empty()) {
         std::vector<uint8_t> annex_serialized;
@@ -588,7 +582,17 @@ std::vector<uint8_t> SignatureHashTaproot(
         data.insert(data.end(), sha_annex.begin(), sha_annex.end());
     }
 
-    // 13. Script path data (if spending via script path)
+    // 13. SIGHASH_SINGLE commits to its corresponding output here,
+    // regardless of ANYONECANPAY.
+    if (base_type == SIGHASH_SINGLE) {
+        std::vector<uint8_t> output;
+        WriteUint64LE(output, tx.vout[input_index].value.GetUna());
+        WriteScript(output, tx.vout[input_index].scriptPubKey);
+        std::vector<uint8_t> sha_output = SHA256_Single(output);
+        data.insert(data.end(), sha_output.begin(), sha_output.end());
+    }
+
+    // 14. Script path data (if spending via script path)
     if (!leaf_hash.empty()) {
         // tapleaf_hash (32 bytes)
         data.insert(data.end(), leaf_hash.begin(), leaf_hash.end());
@@ -598,14 +602,14 @@ std::vector<uint8_t> SignatureHashTaproot(
         WriteUint32LE(data, 0xFFFFFFFF);  // -1 = no OP_CODESEPARATOR
     }
 
-    // 14. Dinero CT extension: bind confidential prevout commitments when present.
+    // 15. Dinero CT extension: bind confidential prevout commitments when present.
     const std::vector<uint8_t> ct_extension = ComputeConfidentialPrevoutExtension(ctx, anyonecanpay);
     if (!ct_extension.empty()) {
         data.insert(data.end(), ct_extension.begin(), ct_extension.end());
         return TaggedHash("dinero/sighash/v1", data);
     }
 
-    // 15. Final hash using the standard TapSighash tag for transparent prevouts.
+    // 16. Final hash using the standard TapSighash tag for transparent prevouts.
     return TaggedHash("TapSighash", data);
 }
 

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include "primitives/transaction.h"
+#include "consensus/script_interpreter.h"
 #include "consensus/utxo_entry.h"
 
 namespace dinero {
@@ -90,7 +91,9 @@ public:
      * @return true if signature is valid
      */
     static bool VerifyTaproot(const Transaction& tx, size_t input_index,
-                             const std::vector<UTXOEntry>& input_utxos, std::string& error);
+                             const std::vector<UTXOEntry>& input_utxos,
+                             std::string& error,
+                             uint32_t flags);
 
     /**
      * Check if a scriptPubKey is valid P2TR (Taproot) format
@@ -139,4 +142,3 @@ private:
 
 } // namespace consensus
 } // namespace dinero
-

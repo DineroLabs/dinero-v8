@@ -21,8 +21,10 @@
  */
 
 #include <vector>
+#include <cstddef>
 #include <cstdint>
 #include <array>
+#include "consensus/utxo_entry.h"
 
 namespace dinero {
 
@@ -51,12 +53,12 @@ enum class CTVHashFlags : uint8_t {
 };
 
 /**
- * Compute the CTV template hash for a transaction.
+ * Compute the BIP119 DefaultCheckTemplateVerifyHash for a transaction.
  *
  * The template hash commits to:
  * - nVersion (4 bytes, little-endian)
  * - nLockTime (4 bytes, little-endian)
- * - scriptSigs hash (32 bytes) - hash of all scriptSigs
+ * - scriptSigs hash (32 bytes), present only when any scriptSig is non-empty
  * - number of inputs (4 bytes, little-endian)
  * - sequences hash (32 bytes) - hash of all input sequences
  * - number of outputs (4 bytes, little-endian)
@@ -65,9 +67,25 @@ enum class CTVHashFlags : uint8_t {
  *
  * @param tx The spending transaction
  * @param inputIndex The index of the input being verified
- * @return 32-byte template hash
+ * This construction-only convenience overload throws std::invalid_argument
+ * when the transaction uses a Dinero-only serialization extension that BIP119
+ * does not commit to. Consensus validation must use TryComputeCTVHash().
+ *
+ * @return 32-byte BIP119 template hash
  */
 std::array<uint8_t, 32> ComputeCTVHash(const Transaction& tx, uint32_t inputIndex);
+
+/**
+ * Consensus-safe BIP119 hash computation.
+ *
+ * Returns false for an out-of-range input or for transaction forms outside
+ * BIP119's canonical transparent serialization (confidential outputs,
+ * shielded versions, or explicit-fee encoding). No custom hash extension is
+ * substituted for those forms.
+ */
+bool TryComputeCTVHash(const Transaction& tx,
+                       uint32_t inputIndex,
+                       std::array<uint8_t, 32>& hashOut);
 
 /**
  * Verify CTV opcode.
@@ -157,22 +175,58 @@ struct ContractState {
     uint32_t counter;                        // State counter/nonce
 };
 
+// Two hashes, a counter, and a length consume 72 bytes of Tapscript's
+// 520-byte consensus stack-element limit.
+inline constexpr size_t MAX_CONTRACT_STATE_DATA_SIZE = 520 - 72;
+
 /**
- * Verify a contract state transition.
+ * Authenticated Taproot data required to bind a CCV transition to the spent
+ * output and its successor. The script verifier supplies these values only
+ * after validating the control block and output key.
+ */
+struct ContractSpendContext {
+    const std::vector<UTXOEntry>& inputUtxos;
+    const std::vector<uint8_t>& tapscript;
+    const std::array<uint8_t, 32>& internalKey;
+    const std::array<uint8_t, 32>& merkleRoot;
+    uint8_t outputKeyParity;
+};
+
+std::array<uint8_t, 32> ComputeContractCodeHash(
+    const std::vector<uint8_t>& tapscript);
+
+std::array<uint8_t, 32> ComputeContractStateHash(
+    const ContractState& state);
+
+bool DeriveContractInternalKey(
+    const ContractState& state,
+    std::array<uint8_t, 32>& internalKey);
+
+bool ComputeContractOutputScript(
+    const ContractState& state,
+    const std::array<uint8_t, 32>& merkleRoot,
+    std::vector<uint8_t>& scriptPubKey,
+    uint8_t* outputKeyParity = nullptr);
+
+/**
+ * Verify a complete transparent CCV state transition.
  *
- * This opcode enables stateful contracts in Tapscript by verifying
- * that state transitions follow the contract's rules.
+ * The previous state must describe the authenticated spent P2TR output. The
+ * matching transaction output must preserve its exact transparent value and
+ * commit to the next state under the same immutable Taproot tree.
  *
  * @param tx The spending transaction
  * @param inputIndex Current input index
  * @param prevState Previous contract state
  * @param newState New contract state
- * @return true if state transition is valid
+ * @param spendContext Authenticated control-block and spent-output context
+ * @return true only if state and successor binding are valid
  */
 bool VerifyContractTransition(const Transaction& tx,
                                uint32_t inputIndex,
                                const ContractState& prevState,
-                               const ContractState& newState);
+                               const ContractState& newState,
+                               const ContractSpendContext& spendContext);
 
 // ============================================================================
 // Verification Flags
@@ -187,7 +241,8 @@ bool VerifyContractTransition(const Transaction& tx,
 //   - SCRIPT_VERIFY_CHECKCONTRACT
 //   - SCRIPT_VERIFY_COVENANTS (combined flags)
 //
-// These flags are now part of SCRIPT_VERIFY_STANDARD for consensus enforcement.
+// These flags are height-dependent and are not statically part of
+// SCRIPT_VERIFY_STANDARD.
 
 } // namespace consensus
 } // namespace dinero

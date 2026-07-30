@@ -281,85 +281,45 @@ ScriptValidationResult ValidateTaprootSpend(
         return ScriptValidationResult::INVALID_SCRIPT;
     }
 
+    if (input_index >= tx.vin.size()) {
+        return ScriptValidationResult::INVALID_SCRIPT;
+    }
     const TxInput& input = tx.vin[input_index];
-
-    // Taproot key-path spend: witness must have exactly 1 element (64-byte signature)
     if (input.witness.empty()) {
         return ScriptValidationResult::INVALID_SCRIPT;
     }
 
-    if (input.witness.size() != 1) {
-        // Script-path spend — check activation height, then delegate to full verifier
-        if (!consensus::CovenantActivationParams::IsCovenantActive(block_height, dinero::GetActiveChain())) {
-            return ScriptValidationResult::UNSUPPORTED_SCRIPT;
-        }
-
-        // Delegate to ScriptVerifier::VerifyTaproot (full BIP342 + covenants)
-        std::string script_error;
-        bool valid = consensus::ScriptVerifier::VerifyTaproot(tx, input_index, all_utxos, script_error);
-        return valid ? ScriptValidationResult::OK : ScriptValidationResult::INVALID_SCRIPT;
+    size_t effective_items = input.witness.size();
+    if (effective_items >= 2 &&
+        !input.witness.back().empty() &&
+        input.witness.back()[0] == 0x50) {
+        --effective_items;
+    }
+    const bool is_script_path = effective_items != 1;
+    if (is_script_path &&
+        !consensus::CovenantActivationParams::IsScriptPathActive(
+            block_height, dinero::Params())) {
+        return ScriptValidationResult::UNSUPPORTED_SCRIPT;
     }
 
-    const std::vector<uint8_t>& sig = input.witness[0];
-
-    // BIP340 Schnorr signature must be 64 bytes (or 65 with sighash type, but default is implicit)
-    if (sig.size() != 64 && sig.size() != 65) {
-        return ScriptValidationResult::INVALID_SIGNATURE;
+    std::vector<UTXOEntry> single_prevout;
+    const std::vector<UTXOEntry>* prevouts = &all_utxos;
+    if (all_utxos.empty() && tx.vin.size() == 1) {
+        single_prevout.push_back(utxo);
+        prevouts = &single_prevout;
     }
-
-    // Extract 64-byte signature (strip sighash type if present)
-    std::vector<uint8_t> sig64 = (sig.size() == 65)
-        ? std::vector<uint8_t>(sig.begin(), sig.begin() + 64)
-        : sig;
-
-    // Extract sighash type (default is 0x00 for SIGHASH_DEFAULT)
-    uint8_t sighash_type = (sig.size() == 65) ? sig[64] : 0x00;
-
-    // Extract x-only pubkey from scriptPubKey
-    // P2TR scriptPubKey: 51 20 <32-byte-xonly-pubkey>
-    // Offset: 0=OP_1, 1=0x20(PUSH32), 2-33=pubkey
-    if (utxo.scriptPubKey.size() != 34) {
+    if (prevouts->size() != tx.vin.size()) {
         return ScriptValidationResult::INVALID_SCRIPT;
     }
 
-    std::vector<uint8_t> xonly_pubkey(
-        utxo.scriptPubKey.begin() + 2,
-        utxo.scriptPubKey.begin() + 34
-    );
-
-    // Create script execution context with ALL input amounts and scriptPubKeys (BIP341 requirement)
-    ScriptExecutionContext ctx(&tx, input_index, utxo.value.GetUna(), 0);
-
-    // Populate all_amounts and all_scriptpubkeys for BIP341 sighash
-    if (!all_utxos.empty() && all_utxos.size() == tx.vin.size()) {
-        ctx.all_amounts.reserve(all_utxos.size());
-        ctx.all_scriptpubkeys.reserve(all_utxos.size());
-        ctx.all_confidential_flags.reserve(all_utxos.size());
-        ctx.all_input_commitments.reserve(all_utxos.size());
-
-        for (const auto& u : all_utxos) {
-            ctx.all_amounts.push_back(u.value.GetUna());
-            ctx.all_scriptpubkeys.push_back(u.scriptPubKey);
-            ctx.all_confidential_flags.push_back(u.is_confidential ? 1 : 0);
-            ctx.all_input_commitments.push_back(u.commitment);
-        }
-    } else if (!all_utxos.empty()) {
-        return ScriptValidationResult::INVALID_SCRIPT;
-    }
-
-    std::vector<uint8_t> leaf_hash;  // Empty for key-path spend
-    std::vector<uint8_t> sighash = SignatureHashTaproot(ctx, sighash_type, leaf_hash);
-
-    if (sighash.size() != 32) {
-        return ScriptValidationResult::INVALID_SCRIPT;
-    }
-
-    // Verify Schnorr signature
-    if (!VerifySchnorrSignature(xonly_pubkey, sig64, sighash)) {
-        return ScriptValidationResult::INVALID_SIGNATURE;
-    }
-
-    return ScriptValidationResult::OK;
+    std::string script_error;
+    const uint32_t flags =
+        consensus::CovenantActivationParams::StandardFlags(
+            block_height, dinero::Params());
+    const bool valid = consensus::ScriptVerifier::VerifyTaproot(
+        tx, input_index, *prevouts, script_error, flags);
+    return valid ? ScriptValidationResult::OK
+                 : ScriptValidationResult::INVALID_SCRIPT;
 }
 
 // ============================================================================

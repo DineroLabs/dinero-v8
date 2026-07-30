@@ -78,6 +78,7 @@ enum ScriptVerifyFlags : uint32_t {
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS = (1U << 7),  // Discourage NOPs
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM = (1U << 12),  // Unknown witness versions
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION = (1U << 18),  // Unknown Taproot leaf versions
+    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE = (1U << 19),  // Unknown tapscript pubkey types
 
     // Covenant verification flags combined (Phase L0.2)
     SCRIPT_VERIFY_COVENANTS = SCRIPT_VERIFY_CHECKTEMPLATEVERIFY |
@@ -85,8 +86,8 @@ enum ScriptVerifyFlags : uint32_t {
                               SCRIPT_VERIFY_TXHASH |
                               SCRIPT_VERIFY_CHECKCONTRACT,
 
-    // Standard verification flags (post-Taproot + Covenants)
-    // Phase L0.2: NOW INCLUDES COVENANT ENFORCEMENT
+    // Baseline standard flags. Covenant flags are height-dependent consensus
+    // rules and MUST be added through CovenantActivationParams::StandardFlags.
     SCRIPT_VERIFY_STANDARD = SCRIPT_VERIFY_P2SH |
                              SCRIPT_VERIFY_DERSIG |
                              SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
@@ -99,8 +100,7 @@ enum ScriptVerifyFlags : uint32_t {
                              SCRIPT_VERIFY_NULLFAIL |
                              SCRIPT_VERIFY_CLEANSTACK |
                              SCRIPT_VERIFY_MINIMALIF |
-                             SCRIPT_VERIFY_WITNESS_PUBKEYTYPE |
-                             SCRIPT_VERIFY_COVENANTS,  // ← CRITICAL: Enforces covenants in consensus
+                             SCRIPT_VERIFY_WITNESS_PUBKEYTYPE,
 };
 
 // ============================================================================
