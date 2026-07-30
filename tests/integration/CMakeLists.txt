@@ -745,6 +745,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_createrawtransaction_scriptpub
     message(STATUS "  ✓ WalletCreateRawTransactionScriptPubKeyOutputs registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_covenant_wallet_multinode_lifecycle.sh)
+    add_test(
+        NAME CovenantWalletMultinodeLifecycle
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_covenant_wallet_multinode_lifecycle.sh
+    )
+    set_tests_properties(CovenantWalletMultinodeLifecycle PROPERTIES
+        LABELS "covenant;wallet;rpc;multinode;relay;restart;reorg;regtest;serial"
+        TIMEOUT 360
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ CovenantWalletMultinodeLifecycle registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_listunspent_excludes_mempool_spent.sh)
     add_test(
         NAME WalletListUnspentExcludesMempoolSpent
