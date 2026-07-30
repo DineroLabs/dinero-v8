@@ -298,6 +298,27 @@ public:
     bool GetHeaderAtHeightCopy(uint32_t height, HeaderIndexEntry& out) const;
 
     /**
+     * @brief Compute a header's Median Time Past entirely under the lock (#441).
+     *
+     * MTP is fork-aware: it walks the entry's own parent chain (11 timestamps).
+     * That makes it unreachable through the *Copy accessors, which deliberately
+     * null the copy's parent pointer — parents carry the same eviction hazard as
+     * the entry itself.
+     *
+     * Rather than export a pointer so the caller can walk, the walk happens
+     * here, holding mutex_ throughout. Same principle as BuildLocatorCopy():
+     * derive the value inside the selector; never let ancestry escape.
+     *
+     * @param hash        Header to compute MTP for (may be a side branch)
+     * @param mtp_out     Median Time Past, seconds since epoch
+     * @param height_out  That header's height (callers usually log it)
+     * @return true iff the hash is known
+     */
+    bool GetMedianTimePastByHash(const uint256& hash,
+                                 uint32_t& mtp_out,
+                                 uint32_t& height_out) const;
+
+    /**
      * @brief Atomically resolve an anchor by hash and copy its ancestor
      *        (hash, height) pairs for heights [start_height, anchor height],
      *        ascending — all under the internal mutex.

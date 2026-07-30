@@ -358,6 +358,21 @@ bool HeaderChainSelector::GetBestHeaderCopy(HeaderIndexEntry& out) const {
     return true;
 }
 
+bool HeaderChainSelector::GetMedianTimePastByHash(const uint256& hash,
+                                                  uint32_t& mtp_out,
+                                                  uint32_t& height_out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = header_index_.find(hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+    // Safe to walk parents here: we hold the lock EvictBranch also takes, so no
+    // ancestor can be freed underneath the walk (#441).
+    mtp_out = it->second->GetMedianTimePast();
+    height_out = it->second->height;
+    return true;
+}
+
 bool HeaderChainSelector::GetHeaderAtHeightCopy(uint32_t height,
                                                 HeaderIndexEntry& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
