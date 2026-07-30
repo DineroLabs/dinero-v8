@@ -4429,6 +4429,19 @@ set_tests_properties(CovenantSystemLifecycle PROPERTIES
   TIMEOUT 30
 )
 
+add_executable(benchmark_covenant_validation
+  tests/benchmarks/benchmark_covenant_validation.cpp
+)
+target_link_libraries(benchmark_covenant_validation PRIVATE
+  dinero_consensus
+  dinero_crypto
+  secp256k1
+)
+target_include_directories(benchmark_covenant_validation PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+
 add_executable(test_ccv_successor_binding
   tests/consensus/test_ccv_successor_binding.cpp
 )

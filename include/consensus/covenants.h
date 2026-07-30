@@ -38,6 +38,91 @@ namespace consensus {
 // ============================================================================
 
 /**
+ * Immutable transaction-wide data used by covenant/Taproot validation.
+ *
+ * BIP119 hashes scriptsigs, sequences, and outputs independently of the
+ * current input. Build this once per transaction and share it across input
+ * validation so a many-input covenant transaction remains O(tx_size), rather
+ * than re-hashing the complete transaction for every input. When the spent
+ * outputs are supplied, the same object also caches the five BIP341
+ * transaction-wide hashes and Dinero's whole-prevout confidential extension.
+ */
+class PrecomputedTransactionData {
+public:
+    explicit PrecomputedTransactionData(const Transaction& tx);
+    PrecomputedTransactionData(
+        const Transaction& tx,
+        const std::vector<UTXOEntry>& inputUtxos);
+
+    bool TryComputeCTVHash(
+        uint32_t inputIndex,
+        std::array<uint8_t, 32>& hashOut) const;
+
+    bool IsFor(const Transaction& tx) const {
+        return transaction_ == &tx;
+    }
+    bool HasTaprootDataFor(const Transaction& tx) const;
+    const std::array<uint8_t, 32>& TaprootPrevoutsHash() const {
+        return taprootPrevoutsHash_;
+    }
+    const std::array<uint8_t, 32>& TaprootAmountsHash() const {
+        return taprootAmountsHash_;
+    }
+    const std::array<uint8_t, 32>& TaprootScriptPubKeysHash() const {
+        return taprootScriptPubKeysHash_;
+    }
+    const std::array<uint8_t, 32>& TaprootSequencesHash() const {
+        return taprootSequencesHash_;
+    }
+    const std::array<uint8_t, 32>& TaprootOutputsHash() const {
+        return taprootOutputsHash_;
+    }
+    bool HasConfidentialPrevouts() const {
+        return hasConfidentialPrevouts_;
+    }
+    const std::array<uint8_t, 32>& TaprootConfidentialPrevoutsHash() const {
+        return taprootConfidentialPrevoutsHash_;
+    }
+    const UTXOEntry* TaprootInputUtxo(size_t inputIndex) const {
+        return inputIndex < taprootInputUtxos_.size()
+            ? &taprootInputUtxos_[inputIndex]
+            : nullptr;
+    }
+
+private:
+    void InitializeCTV(const Transaction& tx);
+    void InitializeTaproot(
+        const Transaction& tx,
+        const std::vector<UTXOEntry>& inputUtxos);
+
+    const Transaction* transaction_{nullptr};
+    bool ctvEligible_{false};
+    bool hasNonEmptyScriptSig_{false};
+    bool taprootEligible_{false};
+    bool hasConfidentialPrevouts_{false};
+    uint32_t inputCount_{0};
+    uint32_t outputCount_{0};
+    int32_t version_{0};
+    uint32_t lockTime_{0};
+    std::array<uint8_t, 32> scriptSigHash_{};
+    std::array<uint8_t, 32> sequenceHash_{};
+    std::array<uint8_t, 32> outputHash_{};
+    std::array<uint8_t, 32> taprootPrevoutsHash_{};
+    std::array<uint8_t, 32> taprootAmountsHash_{};
+    std::array<uint8_t, 32> taprootScriptPubKeysHash_{};
+    std::array<uint8_t, 32> taprootSequencesHash_{};
+    std::array<uint8_t, 32> taprootOutputsHash_{};
+    std::array<uint8_t, 32> taprootConfidentialPrevoutsHash_{};
+    std::vector<UTXOEntry> taprootInputUtxos_;
+};
+
+// Redundant repeats add validation cost but cannot strengthen these
+// deterministic covenant predicates. A transaction may still batch many
+// covenant inputs; the limit is per revealed tapscript.
+inline constexpr uint32_t MAX_CTV_OPS_PER_TAPSCRIPT = 1;
+inline constexpr uint32_t MAX_CCV_OPS_PER_TAPSCRIPT = 1;
+
+/**
  * CTV Hash Flags - components to include in the template hash
  */
 enum class CTVHashFlags : uint8_t {
@@ -85,7 +170,9 @@ std::array<uint8_t, 32> ComputeCTVHash(const Transaction& tx, uint32_t inputInde
  */
 bool TryComputeCTVHash(const Transaction& tx,
                        uint32_t inputIndex,
-                       std::array<uint8_t, 32>& hashOut);
+                       std::array<uint8_t, 32>& hashOut,
+                       const PrecomputedTransactionData*
+                           precomputed = nullptr);
 
 /**
  * Verify CTV opcode.
@@ -99,7 +186,9 @@ bool TryComputeCTVHash(const Transaction& tx,
  * @return true if template matches, false otherwise
  */
 bool VerifyCTV(const Transaction& tx, uint32_t inputIndex,
-               const std::vector<uint8_t>& expectedHash);
+               const std::vector<uint8_t>& expectedHash,
+               const PrecomputedTransactionData*
+                   precomputed = nullptr);
 
 // ============================================================================
 // CSFS (CheckSigFromStack) - Signature verification over arbitrary messages

@@ -11,6 +11,7 @@
 #include "mempool/mempool_persistence.h"  // v0.13.0.2 - Mempool persistence
 #include "mempool/fee_estimator.h"  // v0.13.0.3 - Fee estimation
 #include "consensus/covenant_activation.h"
+#include "consensus/covenants.h"
 #include "consensus/script_interpreter.h"  // Phase L0.4: Script verification with consensus flags
 #include "consensus/script.h"              // Phase L0.4: For Script class
 #include "consensus/script_validation.h"   // Phase 6 Commit 4: unified ValidateSpend dispatcher (single consensus script validator)
@@ -2996,9 +2997,12 @@ bool Mempool::validateTransaction(
         utxo_entries.push_back(std::move(e));
     }
 
+    const consensus::PrecomputedTransactionData
+        covenant_precomputed(tx, utxo_entries);
     for (size_t i = 0; i < tx.vin.size(); i++) {
         const consensus::ScriptValidationResult result = consensus::ValidateSpend(
-            tx, i, utxo_entries[i], next_block_height_for_scripts, utxo_entries);
+            tx, i, utxo_entries[i], next_block_height_for_scripts,
+            utxo_entries, &covenant_precomputed);
 
         if (result != consensus::ScriptValidationResult::OK) {
             const char* reason = "unknown";

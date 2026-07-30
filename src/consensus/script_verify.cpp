@@ -1,4 +1,5 @@
 #include "consensus/script_verify.h"
+#include "consensus/covenants.h"
 #include "consensus/tx_parser.h"
 #include "consensus/tapscript_interpreter.h"
 #include "consensus/script_interpreter.h"  // Phase L0.3: For SCRIPT_VERIFY_STANDARD
@@ -412,7 +413,9 @@ bool ScriptVerifier::VerifyOPCTCOMMIT(const Transaction& tx, size_t input_index,
 bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
                                    const std::vector<UTXOEntry>& input_utxos,
                                    std::string& error,
-                                   uint32_t flags) {
+                                   uint32_t flags,
+                                   const PrecomputedTransactionData*
+                                       covenant_precomputed) {
     // Validate input_index and UTXO vector
     if (input_index >= tx.vin.size() || input_index >= input_utxos.size()) {
         error = "Invalid input index";
@@ -490,29 +493,29 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
             }
         }
 
-        // Compute Taproot sighash (BIP341)
-        std::vector<uint64_t> prevout_values;
-        std::vector<std::vector<uint8_t>> prevout_scripts;
-        std::vector<uint8_t> confidential_flags;
-        std::vector<std::vector<uint8_t>> input_commitments;
-
-        prevout_values.reserve(input_utxos.size());
-        prevout_scripts.reserve(input_utxos.size());
-        confidential_flags.reserve(input_utxos.size());
-        input_commitments.reserve(input_utxos.size());
-
-        for (const auto& u : input_utxos) {
-            prevout_values.push_back(u.value.GetUna());
-            prevout_scripts.push_back(u.scriptPubKey);
-            confidential_flags.push_back(u.is_confidential ? 1 : 0);
-            input_commitments.push_back(u.commitment);
-        }
-
+        // Compute Taproot sighash (BIP341). Production validation supplies
+        // immutable transaction-wide precomputation, so this per-input
+        // context remains O(1). Standalone callers retain the canonical
+        // uncached fallback.
         ScriptExecutionContext sighash_context(
             &tx, static_cast<uint32_t>(input_index),
-            prevout_values[input_index], flags,
-            prevout_values, prevout_scripts,
-            confidential_flags, input_commitments);
+            input_utxos[input_index].value.GetUna(), flags);
+        if (covenant_precomputed != nullptr &&
+            covenant_precomputed->HasTaprootDataFor(tx)) {
+            sighash_context.covenant_precomputed = covenant_precomputed;
+        } else {
+            sighash_context.all_amounts.reserve(input_utxos.size());
+            sighash_context.all_scriptpubkeys.reserve(input_utxos.size());
+            sighash_context.all_confidential_flags.reserve(input_utxos.size());
+            sighash_context.all_input_commitments.reserve(input_utxos.size());
+            for (const auto& u : input_utxos) {
+                sighash_context.all_amounts.push_back(u.value.GetUna());
+                sighash_context.all_scriptpubkeys.push_back(u.scriptPubKey);
+                sighash_context.all_confidential_flags.push_back(
+                    u.is_confidential ? 1 : 0);
+                sighash_context.all_input_commitments.push_back(u.commitment);
+            }
+        }
         std::vector<uint8_t> sighash = SignatureHashTaproot(
             sighash_context, static_cast<uint8_t>(hash_type), {}, annex);
         if (sighash.size() != 32) {
@@ -751,7 +754,8 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
             parity_bit,
             flags,
             script_error,
-            annex  // BIP341 annex for sighash
+            annex,  // BIP341 annex for sighash
+            covenant_precomputed
         );
 
         if (!script_valid) {

@@ -242,4 +242,64 @@ TEST(CcvSuccessorBindingIntegration, EnforcesThroughAuthenticatedScriptPath) {
     SelectParams(Chain::MAINNET);
 }
 
+TEST(CcvSuccessorBindingIntegration, LimitsRedundantCcvExecutionPerScript) {
+    const std::vector<uint8_t> script{
+        static_cast<uint8_t>(OP_CHECKCONTRACTVERIFY),
+        static_cast<uint8_t>(OP_CHECKCONTRACTVERIFY),
+        static_cast<uint8_t>(OP_TRUE)};
+    const std::vector<uint8_t> leaf_hash = TapLeafHash(0xc0, script);
+    std::array<uint8_t, 32> merkle_root{};
+    std::copy(leaf_hash.begin(), leaf_hash.end(), merkle_root.begin());
+
+    ContractState previous;
+    previous.codeHash = ComputeContractCodeHash(script);
+    previous.counter = 11;
+    previous.data = {0x01};
+    previous.stateHash = ComputeContractStateHash(previous);
+    ContractState next;
+    next.codeHash = previous.codeHash;
+    next.counter = 12;
+    next.data = {0x02};
+    next.stateHash = ComputeContractStateHash(next);
+
+    std::array<uint8_t, 32> internal_key{};
+    ASSERT_TRUE(DeriveContractInternalKey(previous, internal_key));
+    uint8_t parity = 0;
+    std::vector<uint8_t> current_script;
+    ASSERT_TRUE(ComputeContractOutputScript(
+        previous, merkle_root, current_script, &parity));
+    std::vector<uint8_t> successor_script;
+    ASSERT_TRUE(ComputeContractOutputScript(
+        next, merkle_root, successor_script));
+
+    std::vector<uint8_t> control_block{
+        static_cast<uint8_t>(0xc0 | parity)};
+    control_block.insert(
+        control_block.end(), internal_key.begin(), internal_key.end());
+    const auto previous_bytes = SerializeState(previous);
+    const auto next_bytes = SerializeState(next);
+
+    Transaction tx;
+    tx.vin.emplace_back();
+    tx.vin[0].witness = {
+        previous_bytes, next_bytes,
+        previous_bytes, next_bytes,
+        script, control_block};
+    tx.vout.emplace_back(AmountUna::Una(75'000), successor_script);
+    const std::vector<UTXOEntry> inputs{
+        UTXOEntry(
+            AmountUna::Una(75'000), current_script, 100, false)};
+
+    SelectParams(Chain::REGTEST);
+    const uint32_t activated_flags =
+        CovenantActivationParams::StandardFlags(20, Params());
+    std::string error;
+    EXPECT_FALSE(ScriptVerifier::VerifyTaproot(
+        tx, 0, inputs, error, activated_flags));
+    EXPECT_NE(
+        error.find("per-tapscript execution limit exceeded"),
+        std::string::npos);
+    SelectParams(Chain::MAINNET);
+}
+
 } // namespace

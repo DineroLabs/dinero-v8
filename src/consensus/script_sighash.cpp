@@ -1,4 +1,5 @@
 #include "consensus/script_interpreter.h"
+#include "consensus/covenants.h"
 #include "primitives/transaction.h"
 #include "crypto/tagged_hash.h"
 #include "common/sha256d.h"
@@ -81,6 +82,10 @@ static bool HasConfidentialPrevoutContext(const ScriptExecutionContext& ctx) {
     if (!ctx.tx) {
         return false;
     }
+    if (ctx.covenant_precomputed != nullptr &&
+        ctx.covenant_precomputed->HasTaprootDataFor(*ctx.tx)) {
+        return ctx.covenant_precomputed->HasConfidentialPrevouts();
+    }
 
     const size_t input_count = ctx.tx->vin.size();
     if (ctx.all_amounts.size() != input_count ||
@@ -100,6 +105,10 @@ static bool HasFullTaprootPrevoutContext(const ScriptExecutionContext& ctx) {
     if (!ctx.tx) {
         return false;
     }
+    if (ctx.covenant_precomputed != nullptr &&
+        ctx.covenant_precomputed->HasTaprootDataFor(*ctx.tx)) {
+        return true;
+    }
 
     const size_t input_count = ctx.tx->vin.size();
     return ctx.all_amounts.size() == input_count &&
@@ -109,6 +118,14 @@ static bool HasFullTaprootPrevoutContext(const ScriptExecutionContext& ctx) {
 }
 
 static uint64_t GetTaprootInputAmount(const ScriptExecutionContext& ctx, size_t index) {
+    if (ctx.tx && ctx.covenant_precomputed != nullptr &&
+        ctx.covenant_precomputed->HasTaprootDataFor(*ctx.tx)) {
+        const UTXOEntry* spent =
+            ctx.covenant_precomputed->TaprootInputUtxo(index);
+        if (spent != nullptr) {
+            return spent->is_confidential ? 0 : spent->value.GetUna();
+        }
+    }
     const bool is_confidential =
         index < ctx.all_confidential_flags.size() && ctx.all_confidential_flags[index] != 0;
     if (is_confidential) {
@@ -131,6 +148,23 @@ static void WriteConfidentialPrevoutDescriptor(
     const ScriptExecutionContext& ctx,
     size_t index
 ) {
+    if (ctx.tx && ctx.covenant_precomputed != nullptr &&
+        ctx.covenant_precomputed->HasTaprootDataFor(*ctx.tx)) {
+        const UTXOEntry* spent =
+            ctx.covenant_precomputed->TaprootInputUtxo(index);
+        if (spent != nullptr) {
+            out.push_back(spent->is_confidential ? 1 : 0);
+            if (spent->is_confidential) {
+                WriteVarint(out, spent->commitment.size());
+                out.insert(
+                    out.end(),
+                    spent->commitment.begin(), spent->commitment.end());
+            } else {
+                WriteVarint(out, 0);
+            }
+            return;
+        }
+    }
     const bool is_confidential =
         index < ctx.all_confidential_flags.size() && ctx.all_confidential_flags[index] != 0;
 
@@ -471,6 +505,10 @@ std::vector<uint8_t> SignatureHashTaproot(
     }
 
     std::vector<uint8_t> data;
+    const PrecomputedTransactionData* precomputed =
+        ctx.covenant_precomputed;
+    const bool has_precomputed =
+        precomputed != nullptr && precomputed->HasTaprootDataFor(tx);
 
     // 1. Epoch (1 byte) - always 0 for BIP 341
     data.push_back(0);
@@ -487,61 +525,86 @@ std::vector<uint8_t> SignatureHashTaproot(
     // 5. sha_prevouts (32 bytes) - if not ANYONECANPAY
     // BIP 341: single SHA256 of all outpoints
     if (!anyonecanpay) {
-        std::vector<uint8_t> prevouts;
-        for (const auto& input : tx.vin) {
-            // CRITICAL: Txids in little-endian (internal) byte order - DO NOT reverse!
-            // See Phase 12b bugfix (commit 76e72f45): reversing caused signature failures.
-            const auto& txid_u256 = input.prevout.txid.AsUint256();
-            prevouts.insert(prevouts.end(), txid_u256.data, txid_u256.data + 32);
-            WriteUint32LE(prevouts, input.prevout.vout);
+        if (has_precomputed) {
+            const auto& hash = precomputed->TaprootPrevoutsHash();
+            data.insert(data.end(), hash.begin(), hash.end());
+        } else {
+            std::vector<uint8_t> prevouts;
+            for (const auto& input : tx.vin) {
+                // CRITICAL: Txids in little-endian (internal) byte order.
+                const auto& txid_u256 = input.prevout.txid.AsUint256();
+                prevouts.insert(
+                    prevouts.end(), txid_u256.data, txid_u256.data + 32);
+                WriteUint32LE(prevouts, input.prevout.vout);
+            }
+            const std::vector<uint8_t> hash = SHA256_Single(prevouts);
+            data.insert(data.end(), hash.begin(), hash.end());
         }
-        std::vector<uint8_t> sha_prevouts = SHA256_Single(prevouts);
-        data.insert(data.end(), sha_prevouts.begin(), sha_prevouts.end());
     }
 
     // 6. sha_amounts (32 bytes) - if not ANYONECANPAY
     // BIP 341: single SHA256 of all input amounts
     if (!anyonecanpay) {
-        std::vector<uint8_t> amounts;
-        for (size_t i = 0; i < tx.vin.size(); ++i) {
-            WriteUint64LE(amounts, GetTaprootInputAmount(ctx, i));
+        if (has_precomputed) {
+            const auto& hash = precomputed->TaprootAmountsHash();
+            data.insert(data.end(), hash.begin(), hash.end());
+        } else {
+            std::vector<uint8_t> amounts;
+            for (size_t i = 0; i < tx.vin.size(); ++i) {
+                WriteUint64LE(amounts, GetTaprootInputAmount(ctx, i));
+            }
+            const std::vector<uint8_t> hash = SHA256_Single(amounts);
+            data.insert(data.end(), hash.begin(), hash.end());
         }
-        std::vector<uint8_t> sha_amounts = SHA256_Single(amounts);
-        data.insert(data.end(), sha_amounts.begin(), sha_amounts.end());
     }
 
     // 7. sha_scriptpubkeys (32 bytes) - if not ANYONECANPAY
     // BIP 341: single SHA256 of all input scriptPubKeys (with compact size prefix)
     if (!anyonecanpay) {
-        std::vector<uint8_t> scriptpubkeys;
-        for (const auto& spk : ctx.all_scriptpubkeys) {
-            WriteScript(scriptpubkeys, spk);
+        if (has_precomputed) {
+            const auto& hash = precomputed->TaprootScriptPubKeysHash();
+            data.insert(data.end(), hash.begin(), hash.end());
+        } else {
+            std::vector<uint8_t> scriptpubkeys;
+            for (const auto& spk : ctx.all_scriptpubkeys) {
+                WriteScript(scriptpubkeys, spk);
+            }
+            const std::vector<uint8_t> hash = SHA256_Single(scriptpubkeys);
+            data.insert(data.end(), hash.begin(), hash.end());
         }
-        std::vector<uint8_t> sha_scriptpubkeys = SHA256_Single(scriptpubkeys);
-        data.insert(data.end(), sha_scriptpubkeys.begin(), sha_scriptpubkeys.end());
     }
 
     // 8. sha_sequences (32 bytes) - if not ANYONECANPAY
     // BIP 341: single SHA256 of all sequences
     if (!anyonecanpay) {
-        std::vector<uint8_t> sequences;
-        for (const auto& input : tx.vin) {
-            WriteUint32LE(sequences, input.sequence);
+        if (has_precomputed) {
+            const auto& hash = precomputed->TaprootSequencesHash();
+            data.insert(data.end(), hash.begin(), hash.end());
+        } else {
+            std::vector<uint8_t> sequences;
+            for (const auto& input : tx.vin) {
+                WriteUint32LE(sequences, input.sequence);
+            }
+            const std::vector<uint8_t> hash = SHA256_Single(sequences);
+            data.insert(data.end(), hash.begin(), hash.end());
         }
-        std::vector<uint8_t> sha_sequences = SHA256_Single(sequences);
-        data.insert(data.end(), sha_sequences.begin(), sha_sequences.end());
     }
 
     // 9. sha_outputs (32 bytes) - only ALL/DEFAULT. BIP341 places the
     // SIGHASH_SINGLE output commitment later, after the annex commitment.
     if (base_type != SIGHASH_NONE && base_type != SIGHASH_SINGLE) {
-        std::vector<uint8_t> outputs;
-        for (const auto& output : tx.vout) {
-            WriteUint64LE(outputs, output.value.GetUna());
-            WriteScript(outputs, output.scriptPubKey);
+        if (has_precomputed) {
+            const auto& hash = precomputed->TaprootOutputsHash();
+            data.insert(data.end(), hash.begin(), hash.end());
+        } else {
+            std::vector<uint8_t> outputs;
+            for (const auto& output : tx.vout) {
+                WriteUint64LE(outputs, output.value.GetUna());
+                WriteScript(outputs, output.scriptPubKey);
+            }
+            const std::vector<uint8_t> hash = SHA256_Single(outputs);
+            data.insert(data.end(), hash.begin(), hash.end());
         }
-        std::vector<uint8_t> sha_outputs = SHA256_Single(outputs);
-        data.insert(data.end(), sha_outputs.begin(), sha_outputs.end());
     }
 
     // 10. spend_type (1 byte)
@@ -564,7 +627,16 @@ std::vector<uint8_t> SignatureHashTaproot(
         WriteUint64LE(data, GetTaprootInputAmount(ctx, input_index));
 
         // scriptPubKey of the spent output
-        WriteScript(data, ctx.all_scriptpubkeys[input_index]);
+        if (has_precomputed) {
+            const UTXOEntry* spent =
+                precomputed->TaprootInputUtxo(input_index);
+            if (spent == nullptr) {
+                return {};
+            }
+            WriteScript(data, spent->scriptPubKey);
+        } else {
+            WriteScript(data, ctx.all_scriptpubkeys[input_index]);
+        }
 
         // Sequence
         WriteUint32LE(data, tx.vin[input_index].sequence);
@@ -604,7 +676,15 @@ std::vector<uint8_t> SignatureHashTaproot(
     }
 
     // 15. Dinero CT extension: bind confidential prevout commitments when present.
-    const std::vector<uint8_t> ct_extension = ComputeConfidentialPrevoutExtension(ctx, anyonecanpay);
+    if (!anyonecanpay && has_precomputed &&
+        precomputed->HasConfidentialPrevouts()) {
+        const auto& extension =
+            precomputed->TaprootConfidentialPrevoutsHash();
+        data.insert(data.end(), extension.begin(), extension.end());
+        return TaggedHash("dinero/sighash/v1", data);
+    }
+    const std::vector<uint8_t> ct_extension =
+        ComputeConfidentialPrevoutExtension(ctx, anyonecanpay);
     if (!ct_extension.empty()) {
         data.insert(data.end(), ct_extension.begin(), ct_extension.end());
         return TaggedHash("dinero/sighash/v1", data);

@@ -116,60 +116,64 @@ std::vector<uint8_t> HexToBytes(const std::string& hex) {
 // CTV (CheckTemplateVerify) Implementation - BIP-119
 // ============================================================================
 
-bool TryComputeCTVHash(const Transaction& tx,
-                       uint32_t inputIndex,
-                       std::array<uint8_t, 32>& hashOut) {
-    if (inputIndex >= tx.vin.size()) {
-        return false;
-    }
+PrecomputedTransactionData::PrecomputedTransactionData(
+    const Transaction& tx)
+    : transaction_(&tx) {
+    InitializeCTV(tx);
+}
+
+PrecomputedTransactionData::PrecomputedTransactionData(
+    const Transaction& tx,
+    const std::vector<UTXOEntry>& inputUtxos)
+    : transaction_(&tx) {
+    InitializeCTV(tx);
+    InitializeTaproot(tx, inputUtxos);
+}
+
+void PrecomputedTransactionData::InitializeCTV(
+    const Transaction& tx) {
+    version_ = tx.version;
+    lockTime_ = tx.lockTime;
 
     // BIP119 specifies Bitcoin's transparent transaction serialization. These
     // Dinero extensions carry value or authorization data that its template
     // hash does not commit to. Reject them rather than defining an unaudited,
     // project-specific hash under the BIP119 name.
-    if (Transaction::IsShieldedVersion(tx.version) ||
-        tx.has_explicit_fee ||
-        tx.HasConfidentialOutputs()) {
-        return false;
+    ctvEligible_ =
+        !Transaction::IsShieldedVersion(tx.version) &&
+        !tx.has_explicit_fee &&
+        !tx.HasConfidentialOutputs() &&
+        tx.vin.size() <= UINT32_MAX &&
+        tx.vout.size() <= UINT32_MAX;
+    if (!ctvEligible_) {
+        return;
     }
+    inputCount_ = static_cast<uint32_t>(tx.vin.size());
+    outputCount_ = static_cast<uint32_t>(tx.vout.size());
 
-    std::vector<uint8_t> preimage;
-    preimage.reserve(256);
-
-    // BIP119 DefaultCheckTemplateVerifyHash.
-    WriteLE32(preimage, static_cast<uint32_t>(tx.version));
-    WriteLE32(preimage, tx.lockTime);
-
-    bool hasNonEmptyScriptSig = false;
     for (const auto& vin : tx.vin) {
         if (!vin.scriptSig.empty()) {
-            hasNonEmptyScriptSig = true;
+            hasNonEmptyScriptSig_ = true;
             break;
         }
     }
 
-    if (hasNonEmptyScriptSig) {
+    if (hasNonEmptyScriptSig_) {
         std::vector<uint8_t> scriptSigData;
         for (const auto& vin : tx.vin) {
             WriteCompactSize(scriptSigData, vin.scriptSig.size());
             scriptSigData.insert(scriptSigData.end(),
                                  vin.scriptSig.begin(), vin.scriptSig.end());
         }
-        auto scriptSigHash = SHA256Hash(scriptSigData);
-        preimage.insert(preimage.end(), scriptSigHash.begin(), scriptSigHash.end());
+        scriptSigHash_ = SHA256Hash(scriptSigData);
     }
-
-    WriteLE32(preimage, static_cast<uint32_t>(tx.vin.size()));
 
     std::vector<uint8_t> sequenceData;
     sequenceData.reserve(tx.vin.size() * 4);
     for (const auto& vin : tx.vin) {
         WriteLE32(sequenceData, vin.sequence);
     }
-    auto sequenceHash = SHA256Hash(sequenceData);
-    preimage.insert(preimage.end(), sequenceHash.begin(), sequenceHash.end());
-
-    WriteLE32(preimage, static_cast<uint32_t>(tx.vout.size()));
+    sequenceHash_ = SHA256Hash(sequenceData);
 
     std::vector<uint8_t> outputData;
     outputData.reserve(tx.vout.size() * 48);
@@ -179,13 +183,122 @@ bool TryComputeCTVHash(const Transaction& tx,
         outputData.insert(outputData.end(),
                           vout.scriptPubKey.begin(), vout.scriptPubKey.end());
     }
-    auto outputHash = SHA256Hash(outputData);
-    preimage.insert(preimage.end(), outputHash.begin(), outputHash.end());
+    outputHash_ = SHA256Hash(outputData);
+}
+
+void PrecomputedTransactionData::InitializeTaproot(
+    const Transaction& tx,
+    const std::vector<UTXOEntry>& inputUtxos) {
+    if (inputUtxos.size() != tx.vin.size()) {
+        return;
+    }
+    taprootInputUtxos_ = inputUtxos;
+
+    std::vector<uint8_t> prevouts;
+    std::vector<uint8_t> amounts;
+    std::vector<uint8_t> scriptPubKeys;
+    std::vector<uint8_t> sequences;
+    std::vector<uint8_t> outputs;
+    std::vector<uint8_t> confidentialPrevouts;
+    prevouts.reserve(tx.vin.size() * 36);
+    amounts.reserve(tx.vin.size() * 8);
+    sequences.reserve(tx.vin.size() * 4);
+    outputs.reserve(tx.vout.size() * 48);
+
+    confidentialPrevouts.push_back(0x01);
+    confidentialPrevouts.push_back(0x00);
+    WriteCompactSize(confidentialPrevouts, tx.vin.size());
+
+    for (size_t index = 0; index < tx.vin.size(); ++index) {
+        const auto& input = tx.vin[index];
+        const auto& spent = inputUtxos[index];
+        const auto& txid = input.prevout.txid.AsUint256();
+        prevouts.insert(prevouts.end(), txid.data, txid.data + 32);
+        WriteLE32(prevouts, input.prevout.vout);
+        WriteLE64(amounts, spent.is_confidential ? 0 : spent.value.GetUna());
+        WriteCompactSize(scriptPubKeys, spent.scriptPubKey.size());
+        scriptPubKeys.insert(
+            scriptPubKeys.end(),
+            spent.scriptPubKey.begin(), spent.scriptPubKey.end());
+        WriteLE32(sequences, input.sequence);
+
+        confidentialPrevouts.push_back(spent.is_confidential ? 1 : 0);
+        if (spent.is_confidential) {
+            hasConfidentialPrevouts_ = true;
+            WriteCompactSize(confidentialPrevouts, spent.commitment.size());
+            confidentialPrevouts.insert(
+                confidentialPrevouts.end(),
+                spent.commitment.begin(), spent.commitment.end());
+        } else {
+            WriteCompactSize(confidentialPrevouts, 0);
+        }
+    }
+    for (const auto& output : tx.vout) {
+        WriteLE64(outputs, output.value.GetUna());
+        WriteCompactSize(outputs, output.scriptPubKey.size());
+        outputs.insert(
+            outputs.end(),
+            output.scriptPubKey.begin(), output.scriptPubKey.end());
+    }
+
+    taprootPrevoutsHash_ = SHA256Hash(prevouts);
+    taprootAmountsHash_ = SHA256Hash(amounts);
+    taprootScriptPubKeysHash_ = SHA256Hash(scriptPubKeys);
+    taprootSequencesHash_ = SHA256Hash(sequences);
+    taprootOutputsHash_ = SHA256Hash(outputs);
+    if (hasConfidentialPrevouts_) {
+        taprootConfidentialPrevoutsHash_ =
+            TaggedHash("dinero/ct-prevouts/v1", confidentialPrevouts);
+    }
+    taprootEligible_ = true;
+}
+
+bool PrecomputedTransactionData::HasTaprootDataFor(
+    const Transaction& tx) const {
+    return taprootEligible_ && transaction_ == &tx;
+}
+
+bool PrecomputedTransactionData::TryComputeCTVHash(
+    uint32_t inputIndex,
+    std::array<uint8_t, 32>& hashOut) const {
+    if (!ctvEligible_ || inputIndex >= inputCount_) {
+        return false;
+    }
+
+    std::vector<uint8_t> preimage;
+    preimage.reserve(116);
+    WriteLE32(preimage, static_cast<uint32_t>(version_));
+    WriteLE32(preimage, lockTime_);
+    if (hasNonEmptyScriptSig_) {
+        preimage.insert(
+            preimage.end(), scriptSigHash_.begin(), scriptSigHash_.end());
+    }
+    WriteLE32(preimage, inputCount_);
+    preimage.insert(
+        preimage.end(), sequenceHash_.begin(), sequenceHash_.end());
+    WriteLE32(preimage, outputCount_);
+    preimage.insert(
+        preimage.end(), outputHash_.begin(), outputHash_.end());
 
     WriteLE32(preimage, inputIndex);
 
     hashOut = SHA256Hash(preimage);
     return true;
+}
+
+bool TryComputeCTVHash(
+    const Transaction& tx,
+    uint32_t inputIndex,
+    std::array<uint8_t, 32>& hashOut,
+    const PrecomputedTransactionData* precomputed) {
+    if (precomputed != nullptr) {
+        if (!precomputed->IsFor(tx)) {
+            return false;
+        }
+        return precomputed->TryComputeCTVHash(inputIndex, hashOut);
+    }
+    const PrecomputedTransactionData local(tx);
+    return local.TryComputeCTVHash(inputIndex, hashOut);
 }
 
 std::array<uint8_t, 32> ComputeCTVHash(const Transaction& tx, uint32_t inputIndex) {
@@ -197,15 +310,19 @@ std::array<uint8_t, 32> ComputeCTVHash(const Transaction& tx, uint32_t inputInde
     return hash;
 }
 
-bool VerifyCTV(const Transaction& tx, uint32_t inputIndex,
-               const std::vector<uint8_t>& expectedHash) {
+bool VerifyCTV(
+    const Transaction& tx,
+    uint32_t inputIndex,
+    const std::vector<uint8_t>& expectedHash,
+    const PrecomputedTransactionData* precomputed) {
     // Expected hash must be exactly 32 bytes
     if (expectedHash.size() != 32) {
         return false;
     }
 
     std::array<uint8_t, 32> computedHash{};
-    if (!TryComputeCTVHash(tx, inputIndex, computedHash)) {
+    if (!TryComputeCTVHash(
+            tx, inputIndex, computedHash, precomputed)) {
         return false;
     }
 

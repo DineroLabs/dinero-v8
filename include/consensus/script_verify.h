@@ -10,6 +10,8 @@
 namespace dinero {
 namespace consensus {
 
+class PrecomputedTransactionData;
+
 /**
  * P2WPKH (Pay-to-Witness-Public-Key-Hash) signature verification
  * Implements BIP141 (SegWit) and BIP143 (signature hash)
@@ -93,7 +95,9 @@ public:
     static bool VerifyTaproot(const Transaction& tx, size_t input_index,
                              const std::vector<UTXOEntry>& input_utxos,
                              std::string& error,
-                             uint32_t flags);
+                             uint32_t flags,
+                             const PrecomputedTransactionData*
+                                 covenant_precomputed = nullptr);
 
     /**
      * Check if a scriptPubKey is valid P2TR (Taproot) format

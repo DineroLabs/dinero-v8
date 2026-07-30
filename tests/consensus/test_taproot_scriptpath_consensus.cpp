@@ -3,6 +3,7 @@
 #include "consensus/script_verify.h"
 #include "consensus/tapscript_interpreter.h"
 #include "consensus/utxo_entry.h"
+#include "consensus/covenants.h"
 #include "crypto/evp_secp256k1.h"
 #include "crypto/sha256.h"
 #include "primitives/transaction.h"
@@ -750,6 +751,36 @@ TEST(TaprootScriptPathConsensus, InactiveCTVRetainsNop4Semantics) {
         {{0x01}},
         dinero::consensus::SCRIPT_VERIFY_CHECKTEMPLATEVERIFY |
             dinero::consensus::SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS));
+}
+
+TEST(TaprootScriptPathConsensus, LimitsRedundantCtvExecutionPerScript) {
+    Transaction tx;
+    tx.vin.emplace_back();
+    tx.vin[0].sequence = 0xfffffffeU;
+    tx.vout.emplace_back(AmountUna::Una(9'000), std::vector<uint8_t>{0x51});
+    const auto template_hash =
+        dinero::consensus::ComputeCTVHash(tx, 0);
+    const std::vector<uint8_t> hash(
+        template_hash.begin(), template_hash.end());
+
+    std::vector<uint8_t> one_check;
+    AppendPush(one_check, hash);
+    one_check.push_back(dinero::consensus::OP_CHECKTEMPLATEVERIFY);
+    EXPECT_TRUE(ExecuteBareTapscriptWithTransaction(
+        one_check, {},
+        dinero::consensus::SCRIPT_VERIFY_CHECKTEMPLATEVERIFY,
+        tx));
+
+    std::vector<uint8_t> repeated;
+    AppendPush(repeated, hash);
+    repeated.push_back(dinero::consensus::OP_CHECKTEMPLATEVERIFY);
+    repeated.push_back(dinero::consensus::OP_DROP);
+    AppendPush(repeated, hash);
+    repeated.push_back(dinero::consensus::OP_CHECKTEMPLATEVERIFY);
+    EXPECT_FALSE(ExecuteBareTapscriptWithTransaction(
+        repeated, {},
+        dinero::consensus::SCRIPT_VERIFY_CHECKTEMPLATEVERIFY,
+        tx));
 }
 
 TEST(TaprootScriptPathConsensus, TapscriptHasNoLegacyScriptSizeLimit) {

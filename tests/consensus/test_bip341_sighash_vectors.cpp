@@ -1,3 +1,4 @@
+#include "consensus/covenants.h"
 #include "consensus/script_interpreter.h"
 #include "consensus/script_verify.h"
 #include "consensus/tx_parser.h"
@@ -28,6 +29,7 @@ using dinero::consensus::ScriptVerifier;
 using dinero::consensus::SignatureHashTaproot;
 using dinero::consensus::TransactionParser;
 using dinero::consensus::UTXOEntry;
+using dinero::consensus::PrecomputedTransactionData;
 
 std::string ToHex(const std::vector<uint8_t>& bytes) {
     std::ostringstream out;
@@ -90,6 +92,12 @@ TEST(BIP341SighashVectors, MatchesOfficialKeyPathMessages) {
     }
     const std::vector<uint8_t> confidential_flags(tx.vin.size(), 0);
     const std::vector<std::vector<uint8_t>> commitments(tx.vin.size());
+    std::vector<UTXOEntry> input_utxos;
+    for (size_t index = 0; index < tx.vin.size(); ++index) {
+        input_utxos.emplace_back(
+            AmountUna::Una(amounts[index]), scripts[index], 1, false);
+    }
+    const PrecomputedTransactionData precomputed(tx, input_utxos);
 
     for (const ExpectedSighash& expected : kExpected) {
         SCOPED_TRACE(expected.input);
@@ -100,10 +108,65 @@ TEST(BIP341SighashVectors, MatchesOfficialKeyPathMessages) {
         EXPECT_EQ(ToHex(SignatureHashTaproot(
                       context, expected.hash_type, {}, {})),
                   expected.hash);
+        ScriptExecutionContext cached_context(
+            &tx, expected.input, amounts[expected.input],
+            dinero::consensus::SCRIPT_VERIFY_TAPROOT, amounts, scripts,
+            confidential_flags, commitments, &precomputed);
+        EXPECT_EQ(SignatureHashTaproot(
+                      cached_context, expected.hash_type, {}, {}),
+                  SignatureHashTaproot(
+                      context, expected.hash_type, {}, {}));
         EXPECT_EQ(ToHex(ScriptVerifier::ComputeTaprootSighash(
                       tx, expected.input, amounts, scripts,
                       expected.hash_type)),
                   expected.hash);
+    }
+}
+
+TEST(BIP341SighashVectors, PrecomputationPreservesConfidentialExtension) {
+    Transaction tx;
+    tx.vin.resize(2);
+    tx.vout.emplace_back(AmountUna::Una(7), std::vector<uint8_t>{0x51});
+    tx.vout.emplace_back(AmountUna::Una(8), std::vector<uint8_t>{0x51, 0x51});
+    tx.vin[0].sequence = 1;
+    tx.vin[1].sequence = 2;
+
+    std::vector<UTXOEntry> input_utxos;
+    input_utxos.emplace_back(
+        AmountUna::Zero(), std::vector<uint8_t>{0x51}, 1, false,
+        true, std::vector<uint8_t>(33, 0x42));
+    input_utxos.emplace_back(
+        AmountUna::Una(20), std::vector<uint8_t>{0x51, 0x51}, 1, false);
+
+    const std::vector<uint64_t> amounts{0, 20};
+    const std::vector<std::vector<uint8_t>> scripts{
+        input_utxos[0].scriptPubKey, input_utxos[1].scriptPubKey};
+    const std::vector<uint8_t> confidential_flags{1, 0};
+    const std::vector<std::vector<uint8_t>> commitments{
+        input_utxos[0].commitment, {}};
+    const PrecomputedTransactionData precomputed(tx, input_utxos);
+
+    for (const uint8_t hash_type :
+         std::array<uint8_t, 6>{0, 1, 2, 0x81, 0x82, 0x83}) {
+        for (uint32_t input = 0; input < tx.vin.size(); ++input) {
+            if ((hash_type & 0x1f) == 3 && input >= tx.vout.size()) {
+                continue;
+            }
+            ScriptExecutionContext direct(
+                &tx, input, amounts[input],
+                dinero::consensus::SCRIPT_VERIFY_TAPROOT,
+                amounts, scripts, confidential_flags, commitments);
+            ScriptExecutionContext cached(
+                &tx, input, amounts[input],
+                dinero::consensus::SCRIPT_VERIFY_TAPROOT,
+                amounts, scripts, confidential_flags, commitments,
+                &precomputed);
+            EXPECT_EQ(
+                SignatureHashTaproot(direct, hash_type, {}, {}),
+                SignatureHashTaproot(cached, hash_type, {}, {}))
+                << "hash_type=" << static_cast<unsigned>(hash_type)
+                << " input=" << input;
+        }
     }
 }
 

@@ -9,6 +9,7 @@
 #include "consensus/script_validation.h"   // ValidateSpend / P2MR dispatcher
 #include "consensus/script_verify.h"       // Phase C.1: ScriptVerifier::VerifyTaproot (script-path)
 #include "consensus/covenant_activation.h" // Phase C.2: Height-gated covenant activation
+#include "consensus/covenants.h"
 #include "consensus/crypto/sighash_bip143.h"  // Sighash computation (consensus)
 #include "primitives/hash_domains.h"  // Phase M.4.3-B: TxId type
 #include <iostream>
@@ -224,7 +225,9 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
     const std::vector<uint64_t>& all_input_amounts,
     const std::vector<std::vector<uint8_t>>& all_input_scriptpubkeys,
     const std::vector<uint8_t>& all_input_confidential_flags,
-    const std::vector<std::vector<uint8_t>>& all_input_commitments
+    const std::vector<std::vector<uint8_t>>& all_input_commitments,
+    const consensus::PrecomputedTransactionData*
+        covenant_precomputed
 ) {
     InputVerificationResult result;
     result.valid = false;
@@ -371,7 +374,8 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
 
         const consensus::ScriptValidationResult script_result =
             consensus::ValidateSpend(tx, input_index, all_utxos[input_index],
-                                     height, all_utxos);
+                                     height, all_utxos,
+                                     covenant_precomputed);
 
         if (consensus::g_script_cache) {
             auto cache_key = consensus::ScriptCache::computeKey(
@@ -668,7 +672,8 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
             consensus::CovenantActivationParams::StandardFlags(
                 height, dinero::Params());
         result.valid = consensus::ScriptVerifier::VerifyTaproot(
-            tx, input_index, utxo_entries, script_error, taproot_flags);
+            tx, input_index, utxo_entries, script_error, taproot_flags,
+            covenant_precomputed);
         if (!result.valid) {
             result.error = "Taproot verification: " + script_error;
         }
@@ -728,6 +733,8 @@ bool TransactionValidator::VerifySignatures(
         all_input_commitments.push_back(prevouts.back().commitment);
     }
 
+    const consensus::PrecomputedTransactionData
+        covenant_precomputed(tx, prevouts);
     for (size_t i = 0; i < tx.vin.size(); i++) {
         const consensus::UTXOEntry& utxo = prevouts[i];
 
@@ -743,7 +750,8 @@ bool TransactionValidator::VerifySignatures(
                                    all_input_amounts,
                                    all_input_scriptpubkeys,
                                    all_input_confidential_flags,
-                                   all_input_commitments);
+                                   all_input_commitments,
+                                   &covenant_precomputed);
         if (!result.valid) {
             error = result.error;
             return false;
