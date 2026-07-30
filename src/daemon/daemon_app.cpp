@@ -4382,8 +4382,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                         if (!header_chain_for_csn || !p2p_service_for_csn || !chainstate_service) {
                             return;
                         }
-                        const auto* best_header = header_chain_for_csn->GetBestHeader();
-                        if (!best_header || validated_height < best_header->height) {
+                        // #441: copy under the selector's lock.
+                        consensus::HeaderIndexEntry best_header_copy{};
+                        if (!header_chain_for_csn->GetBestHeaderCopy(best_header_copy) ||
+                            validated_height < best_header_copy.height) {
                             return;
                         }
                         {
@@ -5643,11 +5645,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                         }
 
                         if (added > 0 && header_chain_ptr) {
-                            const auto* best = header_chain_ptr->GetBestHeader();
+                            // #441: copy under the selector's lock.
+                            consensus::HeaderIndexEntry best_copy{};
+                            const bool have_best = header_chain_ptr->GetBestHeaderCopy(best_copy);
                             auto p2p_locked = p2p_weak.lock();
-                            if (best && p2p_locked) {
-                                p2p_locked->get().update_peer_height(peer_addr, best->height);
-                                p2p_locked->get().update_peer_synced_headers(peer_addr, best->height);
+                            if (have_best && p2p_locked) {
+                                p2p_locked->get().update_peer_height(peer_addr, best_copy.height);
+                                p2p_locked->get().update_peer_synced_headers(peer_addr, best_copy.height);
                             }
                         }
 
@@ -5666,10 +5670,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                         if (header_chain_ptr) {
                             const auto& min_work_hex = dinero::Params().nMinimumChainWork;
                             if (!min_work_hex.empty()) {
-                                const auto* best_hdr = header_chain_ptr->GetBestHeader();
+                                // #441: copy under the selector's lock.
+                                consensus::HeaderIndexEntry best_hdr_copy{};
                                 header_chain_has_min_work =
-                                    (best_hdr != nullptr &&
-                                     dinero::CompareChainwork(best_hdr->chainwork.GetHex(), min_work_hex) >= 0);
+                                    (header_chain_ptr->GetBestHeaderCopy(best_hdr_copy) &&
+                                     dinero::CompareChainwork(best_hdr_copy.chainwork.GetHex(), min_work_hex) >= 0);
                                 if (!header_chain_has_min_work) {
                                     g_logger.info("[4d-1] best header chainwork below nMinimumChainWork "
                                                   "— deferring block download/activation (IBD anti-DoS)");
@@ -5709,11 +5714,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // the better header chain and call RequestBlocks() for missing bodies.
                         // Gate avoids thrash during bulk header batches.
                         if (can_download_blocks && chainstate_ptr && header_chain_ptr) {
-                            auto* best = header_chain_ptr->GetBestHeader();
+                            // #441: copy under the selector's lock.
+                            consensus::HeaderIndexEntry best_copy{};
+                            const bool have_best = header_chain_ptr->GetBestHeaderCopy(best_copy);
                             auto* active = chainstate_ptr->GetActiveTip();
-                            if (best && active && best->height > active->height) {
+                            if (have_best && active && best_copy.height > active->height) {
                                 g_logger.info("[P1] Headers reveal better chain (header=" +
-                                             std::to_string(best->height) + " > active=" +
+                                             std::to_string(best_copy.height) + " > active=" +
                                              std::to_string(active->height) +
                                              ") — triggering ActivateBestChain");
                                 chainstate_ptr->ActivateBestChain();
@@ -5913,9 +5920,12 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // Drop everything else as truly unsolicited.
                         bool header_backlog_active = false;
                         if (header_chain && chainstate) {
-                            const auto* best = header_chain->GetBestHeader();
+                            // #441: copy under the selector's lock.
+                            consensus::HeaderIndexEntry best_copy{};
+                            const bool have_best = header_chain->GetBestHeaderCopy(best_copy);
                             const auto* active = chainstate->GetActiveTip();
-                            header_backlog_active = best && active && best->height > active->height;
+                            header_backlog_active =
+                                have_best && active && best_copy.height > active->height;
                         }
                         bool scheduler_syncing = block_download &&
                             (!block_download->IsFullySynchronized() || header_backlog_active);
@@ -5964,10 +5974,12 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // through ChainstateService for instant chain extension.
                         bool header_backlog_active_after_receive = false;
                         if (header_chain && chainstate) {
-                            const auto* best = header_chain->GetBestHeader();
+                            // #441: copy under the selector's lock.
+                            consensus::HeaderIndexEntry best_copy{};
+                            const bool have_best = header_chain->GetBestHeaderCopy(best_copy);
                             const auto* active = chainstate->GetActiveTip();
                             header_backlog_active_after_receive =
-                                best && active && best->height > active->height;
+                                have_best && active && best_copy.height > active->height;
                         }
                         bool scheduler_syncing_after_receive = block_download &&
                             (!block_download->IsFullySynchronized() || header_backlog_active_after_receive);
@@ -6861,12 +6873,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                 // SetDeferCheck) until this resolves.
                 ctx_.chainstate->TryDeferredSnapshotBootstrap();
 
-                auto* best = ctx_.header_chain->GetBestHeader();
+                // #441: copy under the selector's lock.
+                consensus::HeaderIndexEntry best_copy{};
+                const bool have_best = ctx_.header_chain->GetBestHeaderCopy(best_copy);
                 auto* active = ctx_.chainstate->GetActiveTip();
                 const auto peers = p2p_service->get().get_connected_peers();
-                if (best && active && best->height > active->height && !peers.empty()) {
+                if (have_best && active && best_copy.height > active->height && !peers.empty()) {
                     std::cout << "[DaemonApp] Bootstrapping block download from persisted header backlog "
-                              << "(header=" << best->height
+                              << "(header=" << best_copy.height
                               << ", active=" << active->height
                               << ", peers=" << peers.size() << ")" << std::endl;
                     block_download->OnHeadersProcessed();
