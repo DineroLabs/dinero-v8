@@ -96,21 +96,27 @@ if(CURL_FOUND AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_mining_polic
         ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
     )
 
-    find_program(DINEROD_BINARY dinerod
-        PATHS ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}
-        NO_DEFAULT_PATH
+    # Registration is UNCONDITIONAL (issue #428). The previous gate was a
+    # configure-time find_program(DINEROD_BINARY dinerod PATHS <src> <build>),
+    # which on a clean checkout always fails — configure runs before build, so
+    # ${CMAKE_BINARY_DIR}/dinerod does not exist yet. CI therefore never
+    # REGISTERED this test or ColdStartConsensus: they did not fail, they
+    # silently did not exist, which is how #413 survived for months. It also
+    # made coverage build-order dependent: the tests appeared only if some
+    # dinerod happened to be findable when cmake last ran.
+    #
+    # dinerod is an in-tree target, so its path is known at configure time
+    # regardless of build order. Depend on the target and hand the harness the
+    # absolute path via the DINEROD environment variable — no PATH lookup, no
+    # reliance on the process working directory.
+    add_dependencies(test_mining_policy_e2e dinerod)
+    add_test(NAME MiningPolicyE2E COMMAND test_mining_policy_e2e)
+    set_tests_properties(MiningPolicyE2E PROPERTIES
+        LABELS "e2e;mining;policy;f5;e2e-daemon"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 120
     )
-
-    if(DINEROD_BINARY OR EXISTS ${CMAKE_SOURCE_DIR}/dinerod)
-        add_test(NAME MiningPolicyE2E COMMAND test_mining_policy_e2e)
-        set_tests_properties(MiningPolicyE2E PROPERTIES
-            LABELS "e2e;mining;policy;f5"
-            TIMEOUT 120
-        )
-        message(STATUS "  ✓ MiningPolicyE2E registered (dinerod found at: ${CMAKE_SOURCE_DIR}/dinerod)")
-    else()
-        message(STATUS "  ⊘ MiningPolicyE2E skipped (dinerod not available)")
-    endif()
+    message(STATUS "  ✓ MiningPolicyE2E registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
 # Shared RPC authcookie resolution regression for WebSocket/HTTP auth.
@@ -1600,28 +1606,23 @@ if(CURL_FOUND AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/cold_start_test.cpp)
         ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
     )
 
-    # Only register test if dinerod binary is available
-    if(DINEROD_BINARY OR EXISTS ${CMAKE_SOURCE_DIR}/dinerod)
-        # WORKING_DIRECTORY is REQUIRED, not cosmetic (issue #413). The harness
-        # execs the relative path "./dinerod", which only exists at the build
-        # root. Without this, ctest defaults the CWD to CMAKE_CURRENT_BINARY_DIR
-        # — build/tests/integration, because this file is add_subdirectory()'d
-        # from tests/CMakeLists.txt — so execvp fails and every subtest fails at
-        # node.start(). Sibling harnesses like TwoNodeSync exec the same relative
-        # path but are registered in tests/CMakeLists.txt, which is include()d,
-        # so they already get the build root as CWD and never hit this.
-        # Any future dinerod-spawning test registered in THIS directory needs the
-        # same property.
-        add_test(NAME ColdStartConsensus COMMAND test_cold_start
-                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-        set_tests_properties(ColdStartConsensus PROPERTIES
-            LABELS "e2e;consensus;cold-start"
-            TIMEOUT 180
-        )
-        message(STATUS "  ✓ ColdStartConsensus test registered")
-    else()
-        message(STATUS "  ⊘ ColdStartConsensus skipped (dinerod not available)")
-    endif()
+    # Registration is UNCONDITIONAL (issue #428) — see the MiningPolicyE2E block
+    # above for why the old configure-time find_program gate could never fire in
+    # CI.
+    #
+    # NOTE: this deliberately carries NO WORKING_DIRECTORY. PR #427 added one so
+    # the harness's relative "./dinerod" would resolve; that mechanism is now
+    # superseded. The harness takes the absolute daemon path from the DINEROD
+    # environment variable below, so the test no longer depends on the process
+    # working directory at all. Do not reintroduce a CWD assumption here.
+    add_dependencies(test_cold_start dinerod)
+    add_test(NAME ColdStartConsensus COMMAND test_cold_start)
+    set_tests_properties(ColdStartConsensus PROPERTIES
+        LABELS "e2e;consensus;cold-start;e2e-daemon"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 180
+    )
+    message(STATUS "  ✓ ColdStartConsensus registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
 # Disable the POSIX-only .sh ctest entries registered above when building on

@@ -58,7 +58,7 @@ public:
 
         // Build command
         std::vector<std::string> cmd_args;
-        cmd_args.push_back("./dinerod");
+        cmd_args.push_back(ResolveDinerodPath());
         cmd_args.push_back("--regtest");
         cmd_args.push_back("--datadir=" + datadir_.string());
         cmd_args.push_back("--rpcport=" + std::to_string(rpc_port_));
@@ -71,16 +71,17 @@ public:
         }
         extra_args_ = extra_args;
 
-        // Fail loudly when the daemon binary is not where the relative exec
-        // below expects it (issue #413). Without this check the execvp failure
-        // is invisible: the child has already redirected stderr into the datadir
-        // log before exec'ing, exits 1, and stop() then deletes that datadir —
-        // so the only symptom is a bare "start() returned false".
-        if (!fs::exists("./dinerod")) {
-            std::cerr << "[" << name_ << "] FATAL: ./dinerod not found (cwd="
-                      << fs::current_path().string() << "). This test must run"
-                         " with WORKING_DIRECTORY set to the build root."
-                      << std::endl;
+        // Fail loudly, and never silently, when the daemon binary is unusable
+        // (issues #413 / #428). Without this the execvp failure is invisible:
+        // the child has already redirected stderr into the datadir log before
+        // exec'ing, exits 1, and stop() then deletes that datadir — so the only
+        // symptom is a bare "start() returned false".
+        //
+        // The path comes from DINEROD ($<TARGET_FILE:dinerod>), so this no
+        // longer depends on the process working directory.
+        std::string daemon_error;
+        if (!DinerodAvailable(nullptr, &daemon_error)) {
+            std::cerr << "[" << name_ << "] FATAL: " << daemon_error << std::endl;
             return false;
         }
 
@@ -155,7 +156,7 @@ public:
 
         // Restart with same config
         std::vector<std::string> cmd_args;
-        cmd_args.push_back("./dinerod");
+        cmd_args.push_back(ResolveDinerodPath());
         cmd_args.push_back("--regtest");
         cmd_args.push_back("--datadir=" + datadir_.string());
         cmd_args.push_back("--rpcport=" + std::to_string(rpc_port_));
@@ -211,7 +212,7 @@ public:
 
         // Restart with --reindex
         std::vector<std::string> cmd_args;
-        cmd_args.push_back("./dinerod");
+        cmd_args.push_back(ResolveDinerodPath());
         cmd_args.push_back("--regtest");
         cmd_args.push_back("--datadir=" + datadir_.string());
         cmd_args.push_back("--rpcport=" + std::to_string(rpc_port_));

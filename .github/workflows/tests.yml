@@ -127,10 +127,57 @@ jobs:
           # future PRs can retire exclusions one category at a time.
           # --no-tests=error: a label filter that matches ZERO tests is a
           # silent-disappearance mode, not a pass.
+          # --exclude-regex: the daemon-spawning e2e tests became unconditionally
+          # registered in #428 and now run in their own serial step below. They
+          # are excluded HERE by NAME, not by the 'e2e' label: five other tests
+          # carry 'e2e' (WalletRestoreRescan, AssumeUtxoReplayE2E,
+          # AssumeUtxoPromotionRace, AssumeUtxoForwardConnect) and excluding the
+          # label would silently drop them. They also do not carry 'integration',
+          # so the existing label list does not cover them.
           ctest --test-dir build-tests \
             --output-on-failure \
             --no-tests=error \
+            --exclude-regex '^(ColdStartConsensus|MiningPolicyE2E)$' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
+
+      # Serial e2e lane (issue #428). These spawn real dinerod processes, bind
+      # ports, and must not run concurrently with each other or the suite above
+      # — hence -j1 and a separate step.
+      #
+      # Each test gets its OWN ctest invocation with --no-tests=error. That is
+      # deliberate and stronger than one combined -R over both names: a single
+      # '^(A|B)$' selection still passes when only ONE of the two survives, so it
+      # cannot prove that BOTH are registered. Per-test invocations fail if
+      # EITHER disappears from the registry.
+      #
+      # This is the third distinct guarantee in the chain:
+      #   #417 integrity gate  — every REGISTERED test has a runnable executable
+      #   #428 registration    — these two are ALWAYS registered (no find_program)
+      #   this step            — CI actually EXECUTES them, and a launch failure
+      #                          is a failure (the GTEST_SKIPs are gone)
+      - name: Run serial e2e tests (daemon-spawning)
+        run: |
+          for t in ColdStartConsensus MiningPolicyE2E; do
+            echo "=== $t ==="
+            ctest --test-dir build-tests \
+              --output-on-failure \
+              --no-tests=error \
+              -j1 \
+              -R "^${t}$"
+          done
+
+      # Daemon logs are printed by the harnesses on failure (tail of daemon.log),
+      # so --output-on-failure above captures them. Keep the ctest logs as an
+      # artifact too: the harnesses delete their temp datadirs on teardown, so
+      # the CI log is the only durable record.
+      - name: Upload ctest logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-linux-full
+          path: build-tests/Testing/
+          if-no-files-found: ignore
+          retention-days: 14
 
   # ───────────────────────────────────────────────────────────────────────
   # QUIC-enabled lane (owner decision, 2026-07-29, follow-up to PR #417):
