@@ -1709,6 +1709,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/pedersen_tests.cpp)
     $<TARGET_FILE:gtest_main>
     dinero_shielded
     secp256k1
+    OpenSSL::Crypto
   )
   target_include_directories(test_pedersen BEFORE PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
