@@ -3,6 +3,9 @@
 This file is the operator-facing status summary. It does not replace the
 normative opcode specifications or activation parameters.
 
+The combined normative candidate is `DINERO_COVENANT_PROFILE_V1.md`. The
+reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
+
 ## Implemented and exercised
 
 - Transparent Taproot key-path/script-path validation uses one BIP341 sighash
@@ -79,14 +82,12 @@ opcode activations dormant avoids assuming otherwise.
 
 ## Required before production activation
 
-1. Freeze the combined activation specification and byte-level review vectors
-   for the proposed CTV/CCV profile.
-2. Replace the orphaned covenant wallet/RPC builders, then add live
+1. Replace the orphaned covenant wallet/RPC builders, then add live
    wallet-recovery and two-daemon relay tests at the chosen production height.
-3. Obtain independent consensus and cryptographic review of the frozen
+2. Obtain independent consensus and cryptographic review of the frozen
    specification, implementation diff, vectors, lifecycle tests, and resource
    results.
-4. Assign activation parameters only after that review, then coordinate the
+3. Assign activation parameters only after that review, then coordinate the
    activation release and monitoring across all validating nodes.
 
 No mainnet/testnet activation height should be assigned merely because the
