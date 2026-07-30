@@ -11,6 +11,7 @@
 
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
+#include <secp256k1_schnorrsig.h>
 
 #include <array>
 #include <cstdint>
@@ -26,7 +27,10 @@ using dinero::Transaction;
 using dinero::TxInput;
 using dinero::TxOutput;
 using dinero::consensus::ScriptVerifier;
+using dinero::consensus::ScriptExecutionContext;
+using dinero::consensus::SignatureHashTaproot;
 using dinero::consensus::TapscriptInterpreter;
+using dinero::consensus::TapLeafHash;
 using dinero::consensus::UTXOEntry;
 
 void WriteCompactSize(std::vector<uint8_t>& out, uint64_t value) {
@@ -137,10 +141,15 @@ ScriptPathCase BuildScriptPathCase(const std::vector<uint8_t>& script,
 }
 
 bool Verify(const ScriptPathCase& test_case,
-            uint32_t flags = dinero::consensus::SCRIPT_VERIFY_STANDARD) {
+            uint32_t flags = dinero::consensus::SCRIPT_VERIFY_STANDARD,
+            std::string* failure = nullptr) {
     std::string error;
-    return ScriptVerifier::VerifyTaproot(
+    const bool valid = ScriptVerifier::VerifyTaproot(
         test_case.tx, 0, test_case.prevouts, error, flags);
+    if (failure != nullptr) {
+        *failure = error;
+    }
+    return valid;
 }
 
 bool ExecuteBareTapscript(const std::vector<uint8_t>& script,
@@ -156,6 +165,66 @@ bool ExecuteBareTapscript(const std::vector<uint8_t>& script,
     return TapscriptInterpreter::ExecuteTapscript(
         script, stack, tx, 0, prevouts, leaf_hash,
         internal_key, merkle_root, 0, flags, error);
+}
+
+struct SchnorrSigningKey {
+    secp256k1_keypair keypair{};
+    std::array<uint8_t, 32> pubkey{};
+};
+
+SchnorrSigningKey BuildSchnorrSigningKey(uint8_t scalar) {
+    auto* secp = dinero::crypto::GetSecp256k1ContextSignVerify();
+    std::array<uint8_t, 32> secret{};
+    secret.back() = scalar;
+
+    SchnorrSigningKey key;
+    EXPECT_EQ(
+        secp256k1_keypair_create(secp, &key.keypair, secret.data()), 1);
+    secp256k1_xonly_pubkey xonly;
+    EXPECT_EQ(
+        secp256k1_keypair_xonly_pub(secp, &xonly, nullptr, &key.keypair), 1);
+    EXPECT_EQ(
+        secp256k1_xonly_pubkey_serialize(
+            secp, key.pubkey.data(), &xonly),
+        1);
+    return key;
+}
+
+std::vector<uint8_t> SignTapscript(
+    const ScriptPathCase& test_case,
+    const std::vector<uint8_t>& script,
+    const SchnorrSigningKey& key,
+    uint32_t codesep_pos
+) {
+    const std::vector<uint64_t> amounts{
+        test_case.prevouts[0].value.GetUna()};
+    const std::vector<std::vector<uint8_t>> script_pubkeys{
+        test_case.prevouts[0].scriptPubKey};
+    ScriptExecutionContext context(
+        &test_case.tx, 0, amounts[0],
+        dinero::consensus::SCRIPT_VERIFY_STANDARD,
+        amounts, script_pubkeys, {0}, {{}});
+    const std::vector<uint8_t> message = SignatureHashTaproot(
+        context, 0, TapLeafHash(0xc0, script), {}, codesep_pos);
+    EXPECT_EQ(message.size(), 32U);
+
+    std::vector<uint8_t> signature(64);
+    const std::array<uint8_t, 32> aux{};
+    EXPECT_EQ(
+        secp256k1_schnorrsig_sign32(
+            dinero::crypto::GetSecp256k1ContextSignVerify(),
+            signature.data(), message.data(), &key.keypair, aux.data()),
+        1);
+    return signature;
+}
+
+ScriptPathCase WithSignature(
+    ScriptPathCase test_case,
+    const std::vector<uint8_t>& signature
+) {
+    test_case.tx.vin[0].witness.insert(
+        test_case.tx.vin[0].witness.begin(), signature);
+    return test_case;
 }
 
 TEST(TaprootScriptPathConsensus, AcceptsValidLeaf) {
@@ -494,6 +563,120 @@ TEST(TaprootScriptPathConsensus, CheckMultisigFailsOnlyWhenExecuted) {
         },
         {},
         dinero::consensus::SCRIPT_VERIFY_NONE));
+}
+
+TEST(TaprootScriptPathConsensus, SighashCommitsToCodeSeparatorPosition) {
+    Transaction tx;
+    tx.vin.emplace_back();
+    tx.vout.emplace_back(
+        AmountUna::Una(9'000),
+        std::vector<uint8_t>{dinero::consensus::OP_1});
+    const std::vector<uint64_t> amounts{10'000};
+    const std::vector<std::vector<uint8_t>> script_pubkeys{
+        {dinero::consensus::OP_1}};
+    ScriptExecutionContext context(
+        &tx, 0, amounts[0], dinero::consensus::SCRIPT_VERIFY_TAPROOT,
+        amounts, script_pubkeys, {0}, {{}});
+    const std::vector<uint8_t> leaf_hash(32, 0x42);
+
+    const auto no_separator =
+        SignatureHashTaproot(context, 0, leaf_hash, {}, 0xffffffffU);
+    const auto separator_zero =
+        SignatureHashTaproot(context, 0, leaf_hash, {}, 0);
+    const auto separator_one =
+        SignatureHashTaproot(context, 0, leaf_hash, {}, 1);
+    EXPECT_NE(no_separator, separator_zero);
+    EXPECT_NE(separator_zero, separator_one);
+    EXPECT_NE(no_separator, separator_one);
+}
+
+TEST(TaprootScriptPathConsensus, CommitsLastExecutedCodeSeparator) {
+    const SchnorrSigningKey key = BuildSchnorrSigningKey(2);
+    std::vector<uint8_t> script{
+        dinero::consensus::OP_CODESEPARATOR,
+        dinero::consensus::OP_CODESEPARATOR,
+        0x20};
+    script.insert(script.end(), key.pubkey.begin(), key.pubkey.end());
+    script.push_back(dinero::consensus::OP_CHECKSIG);
+
+    const ScriptPathCase unsigned_case = BuildScriptPathCase(script);
+    EXPECT_TRUE(Verify(WithSignature(
+        unsigned_case, SignTapscript(unsigned_case, script, key, 1))));
+    EXPECT_FALSE(Verify(WithSignature(
+        unsigned_case, SignTapscript(unsigned_case, script, key, 0))));
+}
+
+TEST(TaprootScriptPathConsensus, CountsOpcodePositionsAcrossPushesAndBranches) {
+    const SchnorrSigningKey key = BuildSchnorrSigningKey(3);
+    std::vector<uint8_t> script{
+        dinero::consensus::OP_PUSHDATA1, 0x01, 0x01,
+        dinero::consensus::OP_DROP,
+        dinero::consensus::OP_0,
+        dinero::consensus::OP_IF,
+            dinero::consensus::OP_CODESEPARATOR,
+        dinero::consensus::OP_ENDIF,
+        dinero::consensus::OP_CODESEPARATOR,
+        0x20};
+    script.insert(script.end(), key.pubkey.begin(), key.pubkey.end());
+    script.push_back(dinero::consensus::OP_CHECKSIG);
+
+    // Opcode positions are:
+    //   PUSHDATA1=0, DROP=1, 0=2, IF=3, inactive CODESEPARATOR=4,
+    //   ENDIF=5, executed CODESEPARATOR=6, pubkey push=7, CHECKSIG=8.
+    // PUSHDATA1's length and payload bytes do not advance the opcode index.
+    const ScriptPathCase unsigned_case = BuildScriptPathCase(script);
+    EXPECT_TRUE(Verify(WithSignature(
+        unsigned_case, SignTapscript(unsigned_case, script, key, 6))));
+    EXPECT_FALSE(Verify(WithSignature(
+        unsigned_case, SignTapscript(unsigned_case, script, key, 4))));
+    EXPECT_FALSE(Verify(WithSignature(
+        unsigned_case, SignTapscript(unsigned_case, script, key, 8))));
+}
+
+TEST(TaprootScriptPathConsensus, LaterCodeSeparatorDoesNotAffectSignature) {
+    const SchnorrSigningKey key = BuildSchnorrSigningKey(4);
+    std::vector<uint8_t> script{0x20};
+    script.insert(script.end(), key.pubkey.begin(), key.pubkey.end());
+    script.insert(
+        script.end(),
+        {
+            dinero::consensus::OP_CHECKSIGVERIFY,
+            dinero::consensus::OP_CODESEPARATOR,
+            dinero::consensus::OP_1,
+        });
+
+    const ScriptPathCase unsigned_case = BuildScriptPathCase(script);
+    EXPECT_TRUE(Verify(WithSignature(
+        unsigned_case,
+        SignTapscript(unsigned_case, script, key, 0xffffffffU))));
+    EXPECT_FALSE(Verify(WithSignature(
+        unsigned_case, SignTapscript(unsigned_case, script, key, 2))));
+}
+
+TEST(TaprootScriptPathConsensus, CheckSigAddCommitsCodeSeparatorPosition) {
+    const SchnorrSigningKey key = BuildSchnorrSigningKey(5);
+    std::vector<uint8_t> script{
+        dinero::consensus::OP_CODESEPARATOR,
+        0x20};
+    script.insert(script.end(), key.pubkey.begin(), key.pubkey.end());
+    script.push_back(dinero::consensus::OP_CHECKSIGADD);
+
+    const ScriptPathCase unsigned_case = BuildScriptPathCase(script);
+    ScriptPathCase valid_case = WithSignature(
+        unsigned_case, SignTapscript(unsigned_case, script, key, 0));
+    valid_case.tx.vin[0].witness.emplace(
+        valid_case.tx.vin[0].witness.begin());
+    std::string error;
+    EXPECT_TRUE(Verify(
+        valid_case, dinero::consensus::SCRIPT_VERIFY_STANDARD, &error))
+        << error;
+
+    ScriptPathCase wrong_position = WithSignature(
+        unsigned_case,
+        SignTapscript(unsigned_case, script, key, 0xffffffffU));
+    wrong_position.tx.vin[0].witness.emplace(
+        wrong_position.tx.vin[0].witness.begin());
+    EXPECT_FALSE(Verify(wrong_position));
 }
 
 TEST(TaprootScriptPathConsensus, InactiveCTVRetainsNop4Semantics) {

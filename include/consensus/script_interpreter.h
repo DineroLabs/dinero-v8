@@ -462,13 +462,16 @@ std::vector<uint8_t> SignatureHashWitness(
  * @param hash_type      Signature hash type (default 0 = SIGHASH_DEFAULT)
  * @param leaf_hash      Tapleaf hash (for script-path spending, empty for key-path)
  * @param annex          BIP341 annex data (empty if no annex present)
+ * @param codesep_pos    BIP342 opcode position of the last executed
+ *                       OP_CODESEPARATOR (0xffffffff if none)
  * @return               32-byte signature hash
  */
 std::vector<uint8_t> SignatureHashTaproot(
     const ScriptExecutionContext& ctx,
     uint8_t hash_type,
     const std::vector<uint8_t>& leaf_hash,
-    const std::vector<uint8_t>& annex = {}
+    const std::vector<uint8_t>& annex = {},
+    uint32_t codesep_pos = 0xffffffffU
 );
 
 // ============================================================================
