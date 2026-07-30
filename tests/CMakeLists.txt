@@ -4295,6 +4295,114 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_covenants.cpp)
   add_test(NAME CovenantTests COMMAND test_covenants)
 endif()
 
+# BIP119 compatibility vectors exercise the production CTV hash implementation
+# independently of Dinero's wallet/RPC constructors.
+add_executable(test_bip119_ctv_vectors
+  tests/consensus/test_bip119_ctv_vectors.cpp
+)
+add_dependencies(test_bip119_ctv_vectors gtest gtest_main)
+target_link_libraries(test_bip119_ctv_vectors PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_bip119_ctv_vectors)
+target_include_directories(test_bip119_ctv_vectors PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME BIP119CTVVectors COMMAND test_bip119_ctv_vectors)
+set_tests_properties(BIP119CTVVectors PROPERTIES
+  LABELS "consensus;covenant;ctv"
+  TIMEOUT 10
+)
+
+add_executable(test_taproot_scriptpath_consensus
+  tests/consensus/test_taproot_scriptpath_consensus.cpp
+)
+add_dependencies(test_taproot_scriptpath_consensus gtest gtest_main)
+target_link_libraries(test_taproot_scriptpath_consensus PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_taproot_scriptpath_consensus)
+target_include_directories(test_taproot_scriptpath_consensus PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME TaprootScriptPathConsensus
+  COMMAND test_taproot_scriptpath_consensus)
+set_tests_properties(TaprootScriptPathConsensus PROPERTIES
+  LABELS "consensus;taproot;scriptpath;covenant"
+  TIMEOUT 10
+)
+
+add_executable(test_bip341_sighash_vectors
+  tests/consensus/test_bip341_sighash_vectors.cpp
+)
+add_dependencies(test_bip341_sighash_vectors gtest gtest_main)
+target_link_libraries(test_bip341_sighash_vectors PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_bip341_sighash_vectors)
+target_include_directories(test_bip341_sighash_vectors PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME BIP341SighashVectors COMMAND test_bip341_sighash_vectors)
+set_tests_properties(BIP341SighashVectors PROPERTIES
+  LABELS "consensus;taproot;sighash"
+  TIMEOUT 10
+)
+
+add_executable(test_covenant_activation
+  tests/consensus/test_covenant_activation.cpp
+)
+add_dependencies(test_covenant_activation gtest gtest_main)
+target_link_libraries(test_covenant_activation PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_covenant_activation)
+target_include_directories(test_covenant_activation PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CovenantActivation COMMAND test_covenant_activation)
+set_tests_properties(CovenantActivation PROPERTIES
+  LABELS "consensus;covenant;activation"
+  TIMEOUT 10
+)
+
+add_executable(test_ccv_successor_binding
+  tests/consensus/test_ccv_successor_binding.cpp
+)
+add_dependencies(test_ccv_successor_binding gtest gtest_main)
+target_link_libraries(test_ccv_successor_binding PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_ccv_successor_binding)
+target_include_directories(test_ccv_successor_binding PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CcvSuccessorBinding COMMAND test_ccv_successor_binding)
+set_tests_properties(CcvSuccessorBinding PROPERTIES
+  LABELS "consensus;covenant;ccv;scriptpath"
+  TIMEOUT 10
+)
+
 # Phase 29: Covenant Integration Layer Tests
 # DELETED registration: this test was superseded by Phase C.2, which moved
 # covenant policy directly into mempool.cpp without the deprecated
