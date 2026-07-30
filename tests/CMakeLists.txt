@@ -4360,6 +4360,53 @@ set_tests_properties(CovenantActivation PROPERTIES
   TIMEOUT 10
 )
 
+add_executable(test_covenant_system_lifecycle
+  tests/consensus/test_covenant_system_lifecycle.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+target_link_libraries(test_covenant_system_lifecycle PRIVATE
+  dinero_core
+  dinero_consensus
+  dinero_pq
+  dinero_shielded
+  dinero_chainstate
+  dinero_crypto
+  secp256k1
+  ${ROCKSDB_LIBRARY}
+  ${SQLITE3_LIBRARIES}
+  GTest::gtest
+  GTest::gtest_main
+)
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(
+    test_covenant_system_lifecycle PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(
+      test_covenant_system_lifecycle build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_covenant_system_lifecycle)
+target_include_directories(test_covenant_system_lifecycle PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_covenant_system_lifecycle PRIVATE
+    "-framework Security"
+    "-framework CoreFoundation"
+  )
+endif()
+add_test(
+  NAME CovenantSystemLifecycle
+  COMMAND test_covenant_system_lifecycle)
+set_tests_properties(CovenantSystemLifecycle PROPERTIES
+  LABELS "consensus;covenant;activation;mempool;mining;reorg;restart"
+  TIMEOUT 30
+)
+
 add_executable(test_ccv_successor_binding
   tests/consensus/test_ccv_successor_binding.cpp
 )
