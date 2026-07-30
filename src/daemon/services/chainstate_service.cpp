@@ -3454,6 +3454,11 @@ bool ChainstateService::Start() {
         // self-heal can find the UTXO tip. Without this, FindBlockIndex(utxo_best)
         // returns null and safe-mode triggers on every restart after snapshot load.
         if (header_chain_selector_ && !assumeutxo_base_block_.IsNull()) {
+            // #441: NOT migrated. EnsureHeaderBranchIndexed() walks entry->parent to
+            // link the whole branch into the block index, so a *Copy (parent nulled)
+            // cannot substitute. Making this safe means either indexing the branch
+            // inside the selector's lock, or having it consume a copied ancestor list
+            // — a real restructure of snapshot/branch indexing. Tracked in #441.
             const auto* hcs_entry = header_chain_selector_->GetHeader(assumeutxo_base_block_);
             if (hcs_entry) {
                 CBlockIndex* snapshot_idx = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
@@ -6932,6 +6937,11 @@ void ChainstateService::ActivateBestChain() {
                 // instead of wedging in safe mode.
                 CBlockIndex* materialized = nullptr;
                 if (header_chain_selector_ && !utxo_best.IsNull()) {
+                    // #441: NOT migrated. EnsureHeaderBranchIndexed() walks entry->parent to
+                    // link the whole branch into the block index, so a *Copy (parent nulled)
+                    // cannot substitute. Making this safe means either indexing the branch
+                    // inside the selector's lock, or having it consume a copied ancestor list
+                    // — a real restructure of snapshot/branch indexing. Tracked in #441.
                     if (const auto* hcs_entry = header_chain_selector_->GetHeader(utxo_best)) {
                         materialized = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
                     }
@@ -9218,6 +9228,8 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // from the header store).
         bool base_block_known = hasBlockByHash(header.block_hash);
         if (!base_block_known && header_chain_selector_) {
+            // #441: SAFE as-is — the pointer is only compared against nullptr,
+            // never dereferenced, so the eviction hazard does not apply.
             base_block_known = (header_chain_selector_->GetHeader(header.block_hash) != nullptr);
         }
         if (!base_block_known) {
@@ -9265,8 +9277,11 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         if (height_result.ok()) {
             verified_height = height_result.value();
         } else if (header_chain_selector_) {
-            const auto* hcs_entry = header_chain_selector_->GetHeader(header.block_hash);
-            if (hcs_entry) verified_height = static_cast<int>(hcs_entry->height);
+            // #441: copy under the selector's lock.
+            consensus::HeaderIndexEntry hcs_copy{};
+            if (header_chain_selector_->GetHeaderCopy(header.block_hash, hcs_copy)) {
+                verified_height = static_cast<int>(hcs_copy.height);
+            }
         }
         if (verified_height < 0) {
             result.error_message = "Failed to get height for snapshot base block";
@@ -9583,9 +9598,10 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             if (base_block_result.ok()) {
                 header_utreexo_root = base_block_result.value().header.utreexo_root;
             } else if (header_chain_selector_) {
-                const auto* hcs_entry = header_chain_selector_->GetHeader(header.block_hash);
-                if (hcs_entry) {
-                    header_utreexo_root = hcs_entry->header.utreexo_root;
+                // #441: copy under the selector's lock.
+                consensus::HeaderIndexEntry hcs_copy{};
+                if (header_chain_selector_->GetHeaderCopy(header.block_hash, hcs_copy)) {
+                    header_utreexo_root = hcs_copy.header.utreexo_root;
                     logger_->info("[LoadSnapshot] Using HeaderChainSelector for utreexo_root verification");
                 } else {
                     result.error_message = "Failed to load snapshot base block for utreexo_root verification";
@@ -9848,6 +9864,11 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // matters and must always be reached.
         if (header_chain_selector_) {
             try {
+                // #441: NOT migrated. EnsureHeaderBranchIndexed() walks entry->parent to
+                // link the whole branch into the block index, so a *Copy (parent nulled)
+                // cannot substitute. Making this safe means either indexing the branch
+                // inside the selector's lock, or having it consume a copied ancestor list
+                // — a real restructure of snapshot/branch indexing. Tracked in #441.
                 const auto* hcs_entry = header_chain_selector_->GetHeader(header.block_hash);
                 if (hcs_entry) {
                     CBlockIndex* snapshot_idx = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
@@ -16036,6 +16057,8 @@ void ChainstateService::TryDeferredSnapshotBootstrap() {
         return;  // inactive / already loading / loaded / fell back — safe no-op
     }
 
+    // #441: SAFE as-is — base_hdr is only compared against nullptr below and
+    // never dereferenced, so the eviction hazard does not apply.
     const consensus::HeaderIndexEntry* base_hdr =
         header_chain_selector_
             ? header_chain_selector_->GetHeader(snapshot_bootstrap_base_hash_)

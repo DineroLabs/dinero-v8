@@ -5157,13 +5157,16 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     : 0;
                                 uint256 active_hash;
                                 while (fork_height > 0) {
-                                    const auto* best_at_height = header_chain_for_csn
-                                        ? header_chain_for_csn->GetHeaderAtHeight(fork_height)
-                                        : nullptr;
-                                    if (best_at_height &&
+                                    // #441: copy under the selector's lock.
+                                    consensus::HeaderIndexEntry best_at_height{};
+                                    const bool have_at_height =
+                                        header_chain_for_csn &&
+                                        header_chain_for_csn->GetHeaderAtHeightCopy(
+                                            fork_height, best_at_height);
+                                    if (have_at_height &&
                                         consensus::GetActiveChainHashAtHeight(
                                             active_tip, fork_height, active_hash) &&
-                                        active_hash == best_at_height->hash) {
+                                        active_hash == best_at_height.hash) {
                                         break;
                                     }
                                     --fork_height;

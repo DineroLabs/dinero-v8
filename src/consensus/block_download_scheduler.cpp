@@ -1625,9 +1625,10 @@ bool BlockDownloadScheduler::MarkBlockConnected(const uint256& block_hash) {
 
 bool BlockDownloadScheduler::GetExpectedHashAtHeight(uint32_t height, uint256& out_hash) const {
     if (!header_chain_) return false;
-    const HeaderIndexEntry* entry = header_chain_->GetHeaderAtHeight(height);
-    if (!entry) return false;
-    out_hash = entry->hash;
+    // #441: copy under the selector's lock.
+    HeaderIndexEntry entry{};
+    if (!header_chain_->GetHeaderAtHeightCopy(height, entry)) return false;
+    out_hash = entry.hash;
     return true;
 }
 
