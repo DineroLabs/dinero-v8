@@ -42,6 +42,7 @@ add_library(dinero_wallet STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/taproot_keys.cpp  # BIP340 Schnorr key generation and signing
   ${CMAKE_CURRENT_SOURCE_DIR}/taproot_address.cpp  # BIP86 Taproot address generation (P2TR key-path)
   ${CMAKE_CURRENT_SOURCE_DIR}/taproot_tx_signer.cpp  # BIP341 Taproot transaction signing (BIP340 Schnorr)
+  ${CMAKE_CURRENT_SOURCE_DIR}/ccv_wallet_v1.cpp  # CCV v1 pure state/output/transition construction
   ${CMAKE_CURRENT_SOURCE_DIR}/intent_descriptor.cpp  # B3: Intent descriptor for SigHash v1 ext_commitment
   ${CMAKE_CURRENT_SOURCE_DIR}/policy_descriptor.cpp  # B2: PolicyDescriptor + policy_id computation
   ${CMAKE_CURRENT_SOURCE_DIR}/taproot_template_builder.cpp  # B2: Taproot template tree builder (PROTECTED/ESCROW)

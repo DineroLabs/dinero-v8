@@ -4176,6 +4176,29 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_ccv_successor_binding.cpp)
   )
 endif()
 
+# Wallet-side CCV v1 construction must round-trip through activated consensus.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_ccv_wallet_v1.cpp)
+  add_executable(test_ccv_wallet_v1
+    tests/wallet/test_ccv_wallet_v1.cpp
+  )
+  target_link_libraries(test_ccv_wallet_v1 PRIVATE
+    dinero_wallet
+    dinero_consensus
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_ccv_wallet_v1)
+  target_include_directories(test_ccv_wallet_v1 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME CcvWalletV1 COMMAND test_ccv_wallet_v1)
+  set_tests_properties(CcvWalletV1 PROPERTIES
+    LABELS "wallet;consensus;covenant;ccv"
+    TIMEOUT 60
+  )
+endif()
+
 # Phase 29: Covenant Integration Layer Tests
 # DELETED registration: this test was superseded by Phase C.2, which moved
 # covenant policy directly into mempool.cpp without the deprecated
