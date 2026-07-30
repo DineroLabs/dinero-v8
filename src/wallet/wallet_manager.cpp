@@ -1447,6 +1447,29 @@ void WalletManager::migrate(sqlite3* db) {
         setUserVersion(db, 25);
         WLOG_INFO("Database migrated to schema version 25 (no-op for v7 fresh wallets)");
     }
+
+    if (version < 26) {
+        // Profile-v1 covenant recovery records contain public construction
+        // data only: checksummed descriptor, derived scriptPubKey, lineage,
+        // and an operator label. The script is also registered in
+        // watch_scripts by storeCovenantDescriptor().
+        exec(db, R"(
+            CREATE TABLE IF NOT EXISTS covenant_descriptors (
+                descriptor_id TEXT PRIMARY KEY,
+                profile TEXT NOT NULL CHECK(profile IN ('ctv', 'ccv')),
+                descriptor TEXT NOT NULL UNIQUE,
+                script_pubkey BLOB NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                parent_descriptor_id TEXT,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            )
+        )");
+        exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_covenant_descriptors_script ON covenant_descriptors(script_pubkey)");
+        exec(db, "CREATE INDEX IF NOT EXISTS idx_covenant_descriptors_profile ON covenant_descriptors(profile)");
+        exec(db, "CREATE INDEX IF NOT EXISTS idx_covenant_descriptors_parent ON covenant_descriptors(parent_descriptor_id)");
+        setUserVersion(db, 26);
+        WLOG_INFO("Database migrated to schema version 26 with covenant recovery descriptors");
+    }
 }
 
 std::vector<std::string> WalletManager::listWallets() const {
@@ -6409,27 +6432,60 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKey(cons
     std::string derivation_path = *path_opt;
     WLOG_DEBUG("Deriving private key for scriptPubKey " + script_pubkey + " with path: " + derivation_path);
 
+    // Watch-only namespaces are deliberately not BIP32 paths. Covenant
+    // descriptors use a NUMS internal key and register
+    // m/covenant/<profile>/<descriptor-id> solely for UTXO discovery. Trying
+    // to parse that label with stoul both invents ownership and aborts
+    // multi-input signing before an unrelated wallet-owned fee input can be
+    // signed.
+    if (derivation_path.rfind("m/covenant/", 0) == 0) {
+        WLOG_DEBUG(
+            "Covenant watch script has no wallet private key: " +
+            script_pubkey);
+        return std::nullopt;
+    }
+
     // Parse derivation path (e.g., "m/84'/1448'/0'/0/0")
     // Expected format: m/purpose'/coin_type'/account'/change/address_index
     std::vector<uint32_t> path_components;
     size_t pos = 2; // Skip "m/"
 
-    while (pos < derivation_path.length()) {
-        size_t slash_pos = derivation_path.find('/', pos);
-        std::string component = (slash_pos == std::string::npos)
-            ? derivation_path.substr(pos)
-            : derivation_path.substr(pos, slash_pos - pos);
+    try {
+        while (pos < derivation_path.length()) {
+            size_t slash_pos = derivation_path.find('/', pos);
+            std::string component = (slash_pos == std::string::npos)
+                ? derivation_path.substr(pos)
+                : derivation_path.substr(pos, slash_pos - pos);
+            if (component.empty()) {
+                return std::nullopt;
+            }
 
-        bool hardened = (component.back() == '\'');
-        if (hardened) component.pop_back();
+            bool hardened = (component.back() == '\'');
+            if (hardened) component.pop_back();
+            if (component.empty() ||
+                !std::all_of(
+                    component.begin(),
+                    component.end(),
+                    [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+                WLOG_ERR(
+                    "Refusing non-BIP32 watch path for private-key "
+                    "derivation: " + derivation_path);
+                return std::nullopt;
+            }
 
-        uint32_t index = std::stoul(component);
-        if (hardened) index |= 0x80000000; // Set hardened bit
+            uint32_t index = std::stoul(component);
+            if (hardened) index |= 0x80000000; // Set hardened bit
 
-        path_components.push_back(index);
+            path_components.push_back(index);
 
-        if (slash_pos == std::string::npos) break;
-        pos = slash_pos + 1;
+            if (slash_pos == std::string::npos) break;
+            pos = slash_pos + 1;
+        }
+    } catch (const std::exception& e) {
+        WLOG_ERR(
+            "Invalid BIP32 derivation path " + derivation_path +
+            ": " + e.what());
+        return std::nullopt;
     }
 
     // Derive key using BIP32Deriver (canonical engine with secure zeroization)
@@ -7753,6 +7809,248 @@ void WalletManager::addWatchScript(const std::vector<uint8_t>& script_pubkey, co
     }
 
     WLOG_INFO("[addWatchScript] ✅ Added watch script: " + path);
+}
+
+bool WalletManager::storeCovenantDescriptor(
+    const CovenantDescriptorRecord& record) {
+    if (!db_ ||
+        record.descriptor_id.size() != 64 ||
+        (record.profile != "ctv" && record.profile != "ccv") ||
+        record.descriptor.empty() ||
+        record.script_pubkey.size() != 34 ||
+        record.script_pubkey[0] != 0x51 ||
+        record.script_pubkey[1] != 0x20) {
+        WLOG_ERR("[storeCovenantDescriptor] Invalid record or no active wallet");
+        return false;
+    }
+
+    const std::string watch_path =
+        "m/covenant/1/" + record.descriptor_id;
+    sqlite3_stmt* statement = nullptr;
+    bool transaction_open = false;
+    try {
+        exec(db_, "BEGIN IMMEDIATE");
+        transaction_open = true;
+
+        const char* insert_sql = R"(
+            INSERT OR IGNORE INTO covenant_descriptors
+                (descriptor_id, profile, descriptor, script_pubkey, label,
+                 parent_descriptor_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        )";
+        if (sqlite3_prepare_v2(
+                db_, insert_sql, -1, &statement, nullptr) != SQLITE_OK) {
+            throw std::runtime_error(sqlite3_errmsg(db_));
+        }
+        sqlite3_bind_text(
+            statement, 1, record.descriptor_id.c_str(), -1,
+            SQLITE_TRANSIENT);
+        sqlite3_bind_text(
+            statement, 2, record.profile.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(
+            statement, 3, record.descriptor.c_str(), -1,
+            SQLITE_TRANSIENT);
+        sqlite3_bind_blob(
+            statement, 4,
+            record.script_pubkey.data(),
+            static_cast<int>(record.script_pubkey.size()),
+            SQLITE_TRANSIENT);
+        sqlite3_bind_text(
+            statement, 5, record.label.c_str(), -1, SQLITE_TRANSIENT);
+        if (record.parent_descriptor_id.empty()) {
+            sqlite3_bind_null(statement, 6);
+        } else {
+            sqlite3_bind_text(
+                statement, 6,
+                record.parent_descriptor_id.c_str(), -1,
+                SQLITE_TRANSIENT);
+        }
+        if (sqlite3_step(statement) != SQLITE_DONE) {
+            throw std::runtime_error(sqlite3_errmsg(db_));
+        }
+        sqlite3_finalize(statement);
+        statement = nullptr;
+
+        // INSERT OR IGNORE is idempotent, but an impossible descriptor-id or
+        // script collision must fail closed rather than silently aliasing two
+        // recovery records.
+        const char* verify_sql = R"(
+            SELECT profile, descriptor, script_pubkey
+            FROM covenant_descriptors
+            WHERE descriptor_id = ?
+        )";
+        if (sqlite3_prepare_v2(
+                db_, verify_sql, -1, &statement, nullptr) != SQLITE_OK) {
+            throw std::runtime_error(sqlite3_errmsg(db_));
+        }
+        sqlite3_bind_text(
+            statement, 1, record.descriptor_id.c_str(), -1,
+            SQLITE_TRANSIENT);
+        if (sqlite3_step(statement) != SQLITE_ROW) {
+            throw std::runtime_error("covenant descriptor insert disappeared");
+        }
+        const char* stored_profile =
+            reinterpret_cast<const char*>(
+                sqlite3_column_text(statement, 0));
+        const char* stored_descriptor =
+            reinterpret_cast<const char*>(
+                sqlite3_column_text(statement, 1));
+        const auto* stored_script =
+            static_cast<const uint8_t*>(
+                sqlite3_column_blob(statement, 2));
+        const int stored_script_size =
+            sqlite3_column_bytes(statement, 2);
+        const bool exact_match =
+            stored_profile != nullptr &&
+            stored_descriptor != nullptr &&
+            record.profile == stored_profile &&
+            record.descriptor == stored_descriptor &&
+            stored_script != nullptr &&
+            stored_script_size ==
+                static_cast<int>(record.script_pubkey.size()) &&
+            std::equal(
+                record.script_pubkey.begin(),
+                record.script_pubkey.end(),
+                stored_script);
+        sqlite3_finalize(statement);
+        statement = nullptr;
+        if (!exact_match) {
+            throw std::runtime_error(
+                "covenant descriptor identifier or script collision");
+        }
+
+        const char* watch_sql = R"(
+            INSERT OR IGNORE INTO watch_scripts
+                (script_pubkey, path, is_change, last_seen_height, created_at)
+            VALUES (?, ?, 0, 0, strftime('%s','now'))
+        )";
+        if (sqlite3_prepare_v2(
+                db_, watch_sql, -1, &statement, nullptr) != SQLITE_OK) {
+            throw std::runtime_error(sqlite3_errmsg(db_));
+        }
+        sqlite3_bind_blob(
+            statement, 1,
+            record.script_pubkey.data(),
+            static_cast<int>(record.script_pubkey.size()),
+            SQLITE_TRANSIENT);
+        sqlite3_bind_text(
+            statement, 2, watch_path.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(statement) != SQLITE_DONE) {
+            throw std::runtime_error(sqlite3_errmsg(db_));
+        }
+        sqlite3_finalize(statement);
+        statement = nullptr;
+
+        exec(db_, "COMMIT");
+        transaction_open = false;
+    } catch (const std::exception& error) {
+        if (statement != nullptr) {
+            sqlite3_finalize(statement);
+        }
+        if (transaction_open) {
+            try {
+                exec(db_, "ROLLBACK");
+            } catch (...) {
+            }
+        }
+        WLOG_ERR(
+            "[storeCovenantDescriptor] Failed: " +
+            std::string(error.what()));
+        return false;
+    }
+
+    if (utxo_index_) {
+        utxo_index_->RegisterAddress(record.script_pubkey, watch_path);
+    }
+    WLOG_INFO(
+        "[storeCovenantDescriptor] Stored " + record.profile +
+        " descriptor " + record.descriptor_id);
+    return true;
+}
+
+std::optional<CovenantDescriptorRecord>
+WalletManager::getCovenantDescriptor(
+    const std::string& descriptor_id) const {
+    if (!db_ || descriptor_id.empty()) {
+        return std::nullopt;
+    }
+    const char* sql = R"(
+        SELECT descriptor_id, profile, descriptor, script_pubkey, label,
+               COALESCE(parent_descriptor_id, ''), created_at
+        FROM covenant_descriptors
+        WHERE descriptor_id = ?
+    )";
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(
+            db_, sql, -1, &statement, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    sqlite3_bind_text(
+        statement, 1, descriptor_id.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(statement) != SQLITE_ROW) {
+        sqlite3_finalize(statement);
+        return std::nullopt;
+    }
+
+    CovenantDescriptorRecord result;
+    const auto text = [&](int column) -> std::string {
+        const char* value =
+            reinterpret_cast<const char*>(
+                sqlite3_column_text(statement, column));
+        return value ? value : "";
+    };
+    result.descriptor_id = text(0);
+    result.profile = text(1);
+    result.descriptor = text(2);
+    const auto* script =
+        static_cast<const uint8_t*>(
+            sqlite3_column_blob(statement, 3));
+    const int script_size = sqlite3_column_bytes(statement, 3);
+    if (script != nullptr && script_size > 0) {
+        result.script_pubkey.assign(script, script + script_size);
+    }
+    result.label = text(4);
+    result.parent_descriptor_id = text(5);
+    result.created_at = sqlite3_column_int64(statement, 6);
+    sqlite3_finalize(statement);
+    return result;
+}
+
+std::vector<CovenantDescriptorRecord>
+WalletManager::listCovenantDescriptors() const {
+    std::vector<CovenantDescriptorRecord> result;
+    if (!db_) {
+        return result;
+    }
+    const char* sql = R"(
+        SELECT descriptor_id
+        FROM covenant_descriptors
+        ORDER BY created_at, descriptor_id
+    )";
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(
+            db_, sql, -1, &statement, nullptr) != SQLITE_OK) {
+        return result;
+    }
+    std::vector<std::string> ids;
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+        const char* id =
+            reinterpret_cast<const char*>(
+                sqlite3_column_text(statement, 0));
+        if (id != nullptr) {
+            ids.emplace_back(id);
+        }
+    }
+    sqlite3_finalize(statement);
+
+    result.reserve(ids.size());
+    for (const auto& id : ids) {
+        auto record = getCovenantDescriptor(id);
+        if (record.has_value()) {
+            result.push_back(std::move(*record));
+        }
+    }
+    return result;
 }
 
 void WalletManager::addAddress(int account, int change, int idx, const std::string& address, const std::string& type) {

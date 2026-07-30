@@ -64,6 +64,16 @@ struct AddressRow {
     std::string script_pubkey;  // Bitcoin-grade: Use scriptPubKey for ownership, not address strings
 };
 
+struct CovenantDescriptorRecord {
+    std::string descriptor_id;
+    std::string profile;
+    std::string descriptor;
+    std::vector<uint8_t> script_pubkey;
+    std::string label;
+    std::string parent_descriptor_id;
+    int64_t created_at = 0;
+};
+
 // Week 1 Day 5: WalletManager now implements WalletKeyStore interface
 // This enables IsMine logic to query wallet keys for script ownership
 class WalletManager : public WalletNotifier, public dinero::wallet::WalletKeyStore {
@@ -135,6 +145,19 @@ public:
     // Add scriptPubKey to watch_scripts table for blockchain scanning
     // This is the ownership invariant: wallet must watch scripts it owns
     void addWatchScript(const std::vector<uint8_t>& script_pubkey, const std::string& path, bool is_change);
+
+    /**
+     * Persist a validated profile-v1 covenant descriptor and its watch script
+     * atomically. Descriptors contain no secret key material.
+     *
+     * The caller must first parse and re-derive the descriptor with
+     * wallet::covenant::RecoverCTVPlan/RecoverCCVPlan. This storage boundary
+     * deliberately does not duplicate covenant parsing or consensus rules.
+     */
+    bool storeCovenantDescriptor(const CovenantDescriptorRecord& record);
+    std::optional<CovenantDescriptorRecord> getCovenantDescriptor(
+        const std::string& descriptor_id) const;
+    std::vector<CovenantDescriptorRecord> listCovenantDescriptors() const;
 
     // Add address to addresses table for HD derivation tracking
     // This is the ownership invariant: wallet must track addresses it derives

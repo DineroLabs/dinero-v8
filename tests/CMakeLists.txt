@@ -4441,6 +4441,72 @@ set_tests_properties(CcvSuccessorBinding PROPERTIES
   TIMEOUT 10
 )
 
+# Production wallet construction and checksummed recovery descriptors for the
+# regtest-active profile. The test feeds every constructed spend back through
+# the consensus Taproot verifier; construction never substitutes validation.
+add_executable(test_covenant_profile_wallet
+  tests/wallet/test_covenant_profile.cpp
+)
+add_dependencies(test_covenant_profile_wallet gtest gtest_main)
+target_link_libraries(test_covenant_profile_wallet PRIVATE
+  dinero_wallet
+  dinero_consensus
+  dinero_crypto
+  secp256k1
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_covenant_profile_wallet)
+target_include_directories(test_covenant_profile_wallet PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CovenantProfileWallet COMMAND test_covenant_profile_wallet)
+set_tests_properties(CovenantProfileWallet PROPERTIES
+  LABELS "wallet;covenant;ctv;ccv;recovery"
+  TIMEOUT 15
+)
+
+if(NOT WIN32)
+  add_executable(test_covenant_wallet_recovery
+    tests/wallet/test_covenant_wallet_recovery.cpp
+    src/daemon/lightning_stubs.cpp
+    tests/stubs/mempool_test_stubs.cpp
+  )
+  add_dependencies(test_covenant_wallet_recovery gtest gtest_main)
+  target_link_libraries(test_covenant_wallet_recovery PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::Crypto
+    secp256k1
+    RocksDB::rocksdb
+    sqlite3
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_covenant_wallet_recovery)
+  target_include_directories(test_covenant_wallet_recovery PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  if(APPLE)
+    target_link_libraries(
+      test_covenant_wallet_recovery PRIVATE "-framework Security")
+  endif()
+  add_test(
+    NAME CovenantWalletRecovery
+    COMMAND test_covenant_wallet_recovery)
+  set_tests_properties(CovenantWalletRecovery PROPERTIES
+    LABELS "wallet;covenant;recovery;persistence;migration"
+    TIMEOUT 30
+  )
+endif()
+
 # Phase 29: Covenant Integration Layer Tests
 # DELETED registration: this test was superseded by Phase C.2, which moved
 # covenant policy directly into mempool.cpp without the deprecated
