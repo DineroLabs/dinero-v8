@@ -22,6 +22,7 @@
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <cstring>
+#include <stdexcept>
 
 extern "C" {
 #include <secp256k1.h>
@@ -118,8 +119,9 @@ TEST_F(CovenantScriptPathTest, CTVHash_Deterministic) {
     EXPECT_NE(hash1, hash3);
 }
 
-// Test: CTV hash includes commitment data for confidential outputs
-TEST_F(CovenantScriptPathTest, CTVHash_ConfidentialOutput) {
+// BIP119 does not define a confidential-output serialization. Consensus must
+// reject the form instead of silently inventing a project-specific CTV hash.
+TEST_F(CovenantScriptPathTest, CTVHash_RejectsConfidentialOutput) {
     Transaction tx;
     tx.version = 2;
     tx.lockTime = 0;
@@ -138,33 +140,31 @@ TEST_F(CovenantScriptPathTest, CTVHash_ConfidentialOutput) {
     ct_output.range_proof.resize(100, 0xAA);  // Fake proof
     tx.vout.push_back(ct_output);
 
-    auto hash1 = ComputeCTVHash(tx, 0);
-
-    // Different commitment → different hash (proves commitment is included)
-    tx.vout[0].commitment[1] = 0xFF;
-    auto hash2 = ComputeCTVHash(tx, 0);
-    EXPECT_NE(hash1, hash2);
-
-    // Different range proof → different hash (proves proof hash is included)
-    tx.vout[0].commitment[1] = 0x02;  // Restore
-    tx.vout[0].range_proof[0] = 0xBB;
-    auto hash3 = ComputeCTVHash(tx, 0);
-    EXPECT_NE(hash1, hash3);
+    std::array<uint8_t, 32> hash{};
+    EXPECT_FALSE(TryComputeCTVHash(tx, 0, hash));
+    EXPECT_FALSE(VerifyCTV(tx, 0, std::vector<uint8_t>(32)));
+    EXPECT_THROW(ComputeCTVHash(tx, 0), std::invalid_argument);
 }
 
 // Test: Covenant activation check
 TEST_F(CovenantScriptPathTest, ActivationGating) {
-    // Regtest activates at height 20
-    EXPECT_FALSE(CovenantActivationParams::IsCovenantActive(19, Chain::REGTEST));
-    EXPECT_TRUE(CovenantActivationParams::IsCovenantActive(20, Chain::REGTEST));
-    EXPECT_TRUE(CovenantActivationParams::IsCovenantActive(21, Chain::REGTEST));
+    ChainParams params;
+    params.taproot_scriptpath_activation_height = 20;
+    params.ctv_activation_height = 30;
 
-    // Mainnet activates at height 1 (Fair Launch v3: covenants live from
-    // the first PoW block, so the "before activation" window has only
-    // height 0, which is the unspendable genesis output).
-    EXPECT_FALSE(CovenantActivationParams::IsCovenantActive(0, Chain::MAINNET));
-    EXPECT_TRUE(CovenantActivationParams::IsCovenantActive(1, Chain::MAINNET));
-    EXPECT_TRUE(CovenantActivationParams::IsCovenantActive(20000, Chain::MAINNET));
+    EXPECT_FALSE(CovenantActivationParams::IsScriptPathActive(19, params));
+    EXPECT_TRUE(CovenantActivationParams::IsScriptPathActive(20, params));
+
+    EXPECT_EQ(CovenantActivationParams::CovenantFlags(29, params),
+              SCRIPT_VERIFY_NONE);
+    EXPECT_EQ(CovenantActivationParams::CovenantFlags(30, params),
+              SCRIPT_VERIFY_CHECKTEMPLATEVERIFY);
+    EXPECT_EQ(CovenantActivationParams::CovenantFlags(UINT32_MAX, params),
+              SCRIPT_VERIFY_CHECKTEMPLATEVERIFY);
+
+    params.ctv_activation_height = UINT32_MAX;
+    EXPECT_EQ(CovenantActivationParams::CovenantFlags(UINT32_MAX, params),
+              SCRIPT_VERIFY_NONE);
 }
 
 // Test: TXHASH includes commitment data for confidential outputs

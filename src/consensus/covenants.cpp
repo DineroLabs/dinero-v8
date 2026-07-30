@@ -10,6 +10,7 @@
 #include "primitives/transaction.h"  // Phase C.1: Use canonical primitive location
 #include <cstring>
 #include <algorithm>
+#include <stdexcept>
 
 // secp256k1 for Schnorr verification
 extern "C" {
@@ -43,6 +44,21 @@ std::array<uint8_t, 32> SHA256Hash(const std::vector<uint8_t>& data) {
     return SHA256Hash(data.data(), data.size());
 }
 
+std::array<uint8_t, 32> TaggedHash(const char* tag,
+                                   const std::vector<uint8_t>& data) {
+    const auto tagHash = SHA256Hash(
+        reinterpret_cast<const uint8_t*>(tag), std::strlen(tag));
+    crypto::CSHA256 hasher;
+    hasher.Write(tagHash.data(), tagHash.size());
+    hasher.Write(tagHash.data(), tagHash.size());
+    if (!data.empty()) {
+        hasher.Write(data.data(), data.size());
+    }
+    std::array<uint8_t, 32> result{};
+    hasher.Finalize(result.data());
+    return result;
+}
+
 // Write uint32 in little-endian
 void WriteLE32(std::vector<uint8_t>& buf, uint32_t value) {
     buf.push_back(value & 0xFF);
@@ -55,6 +71,24 @@ void WriteLE32(std::vector<uint8_t>& buf, uint32_t value) {
 void WriteLE64(std::vector<uint8_t>& buf, uint64_t value) {
     for (int i = 0; i < 8; i++) {
         buf.push_back((value >> (i * 8)) & 0xFF);
+    }
+}
+
+// Bitcoin CompactSize encoding. BIP119 commits to canonical transaction
+// serialization, not fixed-width vector lengths.
+void WriteCompactSize(std::vector<uint8_t>& buf, uint64_t value) {
+    if (value < 0xfd) {
+        buf.push_back(static_cast<uint8_t>(value));
+    } else if (value <= 0xffff) {
+        buf.push_back(0xfd);
+        buf.push_back(static_cast<uint8_t>(value));
+        buf.push_back(static_cast<uint8_t>(value >> 8));
+    } else if (value <= 0xffffffffULL) {
+        buf.push_back(0xfe);
+        WriteLE32(buf, static_cast<uint32_t>(value));
+    } else {
+        buf.push_back(0xff);
+        WriteLE64(buf, value);
     }
 }
 
@@ -82,18 +116,30 @@ std::vector<uint8_t> HexToBytes(const std::string& hex) {
 // CTV (CheckTemplateVerify) Implementation - BIP-119
 // ============================================================================
 
-std::array<uint8_t, 32> ComputeCTVHash(const Transaction& tx, uint32_t inputIndex) {
+bool TryComputeCTVHash(const Transaction& tx,
+                       uint32_t inputIndex,
+                       std::array<uint8_t, 32>& hashOut) {
+    if (inputIndex >= tx.vin.size()) {
+        return false;
+    }
+
+    // BIP119 specifies Bitcoin's transparent transaction serialization. These
+    // Dinero extensions carry value or authorization data that its template
+    // hash does not commit to. Reject them rather than defining an unaudited,
+    // project-specific hash under the BIP119 name.
+    if (Transaction::IsShieldedVersion(tx.version) ||
+        tx.has_explicit_fee ||
+        tx.HasConfidentialOutputs()) {
+        return false;
+    }
+
     std::vector<uint8_t> preimage;
     preimage.reserve(256);
 
-    // 1. nVersion (4 bytes, little-endian)
+    // BIP119 DefaultCheckTemplateVerifyHash.
     WriteLE32(preimage, static_cast<uint32_t>(tx.version));
-
-    // 2. nLockTime (4 bytes, little-endian)
     WriteLE32(preimage, tx.lockTime);
 
-    // 3. Hash of all scriptSigs
-    // If any scriptSig is non-empty, hash them all. Otherwise, use 32 zero bytes.
     bool hasNonEmptyScriptSig = false;
     for (const auto& vin : tx.vin) {
         if (!vin.scriptSig.empty()) {
@@ -105,22 +151,16 @@ std::array<uint8_t, 32> ComputeCTVHash(const Transaction& tx, uint32_t inputInde
     if (hasNonEmptyScriptSig) {
         std::vector<uint8_t> scriptSigData;
         for (const auto& vin : tx.vin) {
-            // Length-prefixed scriptSig
-            WriteLE32(scriptSigData, static_cast<uint32_t>(vin.scriptSig.size()));
+            WriteCompactSize(scriptSigData, vin.scriptSig.size());
             scriptSigData.insert(scriptSigData.end(),
                                  vin.scriptSig.begin(), vin.scriptSig.end());
         }
         auto scriptSigHash = SHA256Hash(scriptSigData);
         preimage.insert(preimage.end(), scriptSigHash.begin(), scriptSigHash.end());
-    } else {
-        // 32 zero bytes for empty scriptSigs
-        preimage.insert(preimage.end(), 32, 0x00);
     }
 
-    // 4. Number of inputs (4 bytes, little-endian)
     WriteLE32(preimage, static_cast<uint32_t>(tx.vin.size()));
 
-    // 5. Hash of all input sequences
     std::vector<uint8_t> sequenceData;
     sequenceData.reserve(tx.vin.size() * 4);
     for (const auto& vin : tx.vin) {
@@ -129,47 +169,32 @@ std::array<uint8_t, 32> ComputeCTVHash(const Transaction& tx, uint32_t inputInde
     auto sequenceHash = SHA256Hash(sequenceData);
     preimage.insert(preimage.end(), sequenceHash.begin(), sequenceHash.end());
 
-    // 6. Number of outputs (4 bytes, little-endian)
     WriteLE32(preimage, static_cast<uint32_t>(tx.vout.size()));
 
-    // 7. Hash of all outputs
-    // Transparent outputs: value(8) + scriptPubKey
-    // Confidential outputs: value(8, =0 marker) + scriptPubKey + commitment(33) + SHA256(range_proof)
-    // This allows CTV templates to commit to confidential output structure
-    // without embedding the full ~5KB range proof in the template hash.
     std::vector<uint8_t> outputData;
-    outputData.reserve(tx.vout.size() * 80);  // Estimate
+    outputData.reserve(tx.vout.size() * 48);
     for (const auto& vout : tx.vout) {
-        // Value (8 bytes, little-endian) — 0 for confidential outputs
         WriteLE64(outputData, vout.value.GetUna());
-        // Length-prefixed scriptPubKey
-        WriteLE32(outputData, static_cast<uint32_t>(vout.scriptPubKey.size()));
+        WriteCompactSize(outputData, vout.scriptPubKey.size());
         outputData.insert(outputData.end(),
                           vout.scriptPubKey.begin(), vout.scriptPubKey.end());
-
-        if (vout.is_confidential) {
-            // Commitment (33 bytes) — binds the hidden amount
-            WriteLE32(outputData, static_cast<uint32_t>(vout.commitment.size()));
-            outputData.insert(outputData.end(),
-                              vout.commitment.begin(), vout.commitment.end());
-            // Hash of range proof (32 bytes) — commits to proof without 5KB bloat
-            if (!vout.range_proof.empty()) {
-                auto proofHash = SHA256Hash(vout.range_proof);
-                outputData.insert(outputData.end(), proofHash.begin(), proofHash.end());
-            } else {
-                outputData.insert(outputData.end(), 32, 0x00);
-            }
-        }
     }
     auto outputHash = SHA256Hash(outputData);
     preimage.insert(preimage.end(), outputHash.begin(), outputHash.end());
 
-    // 8. Input index (4 bytes, little-endian)
     WriteLE32(preimage, inputIndex);
 
-    // Final hash: SHA256(SHA256(preimage))
-    auto firstHash = SHA256Hash(preimage);
-    return SHA256Hash(firstHash.data(), firstHash.size());
+    hashOut = SHA256Hash(preimage);
+    return true;
+}
+
+std::array<uint8_t, 32> ComputeCTVHash(const Transaction& tx, uint32_t inputIndex) {
+    std::array<uint8_t, 32> hash{};
+    if (!TryComputeCTVHash(tx, inputIndex, hash)) {
+        throw std::invalid_argument(
+            "BIP119 CTV hash requires a valid input and transparent transaction");
+    }
+    return hash;
 }
 
 bool VerifyCTV(const Transaction& tx, uint32_t inputIndex,
@@ -179,13 +204,10 @@ bool VerifyCTV(const Transaction& tx, uint32_t inputIndex,
         return false;
     }
 
-    // Input index must be valid
-    if (inputIndex >= tx.vin.size()) {
+    std::array<uint8_t, 32> computedHash{};
+    if (!TryComputeCTVHash(tx, inputIndex, computedHash)) {
         return false;
     }
-
-    // Compute the template hash
-    auto computedHash = ComputeCTVHash(tx, inputIndex);
 
     // Compare hashes
     return std::equal(computedHash.begin(), computedHash.end(), expectedHash.begin());
@@ -364,60 +386,162 @@ std::array<uint8_t, 32> ComputeTxHash(const Transaction& tx,
 // CCV (CheckContractVerify) Implementation
 // ============================================================================
 
+std::array<uint8_t, 32> ComputeContractCodeHash(
+    const std::vector<uint8_t>& tapscript) {
+    return SHA256Hash(tapscript);
+}
+
+std::array<uint8_t, 32> ComputeContractStateHash(
+    const ContractState& state) {
+    std::vector<uint8_t> preimage;
+    preimage.reserve(36 + state.data.size());
+    preimage.insert(preimage.end(), state.codeHash.begin(), state.codeHash.end());
+    WriteLE32(preimage, state.counter);
+    preimage.insert(preimage.end(), state.data.begin(), state.data.end());
+    return SHA256Hash(preimage);
+}
+
+bool DeriveContractInternalKey(
+    const ContractState& state,
+    std::array<uint8_t, 32>& internalKey) {
+    std::vector<uint8_t> preimage;
+    preimage.reserve(36);
+    preimage.insert(preimage.end(), state.stateHash.begin(), state.stateHash.end());
+
+    secp256k1_context* ctx = GetSecp256k1Context();
+    for (uint32_t retry = 0;; ++retry) {
+        preimage.resize(32);
+        WriteLE32(preimage, retry);
+        const auto candidate =
+            TaggedHash("Dinero/CCVInternalKey/v1", preimage);
+        secp256k1_xonly_pubkey parsed;
+        if (secp256k1_xonly_pubkey_parse(ctx, &parsed, candidate.data())) {
+            internalKey = candidate;
+            return true;
+        }
+        if (retry == UINT32_MAX) {
+            return false;
+        }
+    }
+}
+
+bool ComputeContractOutputScript(
+    const ContractState& state,
+    const std::array<uint8_t, 32>& merkleRoot,
+    std::vector<uint8_t>& scriptPubKey,
+    uint8_t* outputKeyParity) {
+    std::array<uint8_t, 32> internalKey{};
+    if (!DeriveContractInternalKey(state, internalKey)) {
+        return false;
+    }
+
+    secp256k1_context* ctx = GetSecp256k1Context();
+    secp256k1_xonly_pubkey internalPubkey;
+    if (!secp256k1_xonly_pubkey_parse(
+            ctx, &internalPubkey, internalKey.data())) {
+        return false;
+    }
+
+    std::vector<uint8_t> tweakPreimage;
+    tweakPreimage.reserve(64);
+    tweakPreimage.insert(
+        tweakPreimage.end(), internalKey.begin(), internalKey.end());
+    tweakPreimage.insert(
+        tweakPreimage.end(), merkleRoot.begin(), merkleRoot.end());
+    const auto tweak = TaggedHash("TapTweak", tweakPreimage);
+
+    secp256k1_pubkey tweakedPubkey;
+    if (!secp256k1_xonly_pubkey_tweak_add(
+            ctx, &tweakedPubkey, &internalPubkey, tweak.data())) {
+        return false;
+    }
+
+    secp256k1_xonly_pubkey outputKey;
+    int parity = 0;
+    if (!secp256k1_xonly_pubkey_from_pubkey(
+            ctx, &outputKey, &parity, &tweakedPubkey)) {
+        return false;
+    }
+    if (outputKeyParity != nullptr) {
+        *outputKeyParity = static_cast<uint8_t>(parity);
+    }
+
+    std::array<uint8_t, 32> serialized{};
+    if (!secp256k1_xonly_pubkey_serialize(
+            ctx, serialized.data(), &outputKey)) {
+        return false;
+    }
+
+    scriptPubKey = {0x51, 0x20};
+    scriptPubKey.insert(
+        scriptPubKey.end(), serialized.begin(), serialized.end());
+    return true;
+}
+
 bool VerifyContractTransition(const Transaction& tx,
-                               uint32_t inputIndex,
-                               const ContractState& prevState,
-                               const ContractState& newState) {
-    // Basic validation
-    if (inputIndex >= tx.vin.size()) {
+                              uint32_t inputIndex,
+                              const ContractState& prevState,
+                              const ContractState& newState,
+                              const ContractSpendContext& spendContext) {
+    if (inputIndex >= tx.vin.size() ||
+        inputIndex >= tx.vout.size() ||
+        spendContext.inputUtxos.size() != tx.vin.size() ||
+        prevState.data.size() > MAX_CONTRACT_STATE_DATA_SIZE ||
+        newState.data.size() > MAX_CONTRACT_STATE_DATA_SIZE) {
         return false;
     }
 
-    // State counter must increment by exactly 1
-    if (newState.counter != prevState.counter + 1) {
+    if (prevState.counter == UINT32_MAX ||
+        newState.counter != prevState.counter + 1 ||
+        newState.codeHash != prevState.codeHash ||
+        ComputeContractStateHash(prevState) != prevState.stateHash ||
+        ComputeContractStateHash(newState) != newState.stateHash ||
+        ComputeContractCodeHash(spendContext.tapscript) != prevState.codeHash) {
         return false;
     }
 
-    // Code hash must remain the same (contract immutability)
-    if (prevState.codeHash != newState.codeHash) {
+    std::array<uint8_t, 32> expectedInternalKey{};
+    if (!DeriveContractInternalKey(prevState, expectedInternalKey) ||
+        expectedInternalKey != spendContext.internalKey) {
         return false;
     }
 
-    // Verify the new state hash is correctly computed
-    std::vector<uint8_t> statePreimage;
-    statePreimage.reserve(96 + newState.data.size());
-
-    // codeHash (32 bytes)
-    statePreimage.insert(statePreimage.end(),
-                         newState.codeHash.begin(), newState.codeHash.end());
-
-    // counter (4 bytes)
-    WriteLE32(statePreimage, newState.counter);
-
-    // data
-    statePreimage.insert(statePreimage.end(),
-                         newState.data.begin(), newState.data.end());
-
-    auto computedStateHash = SHA256Hash(statePreimage);
-
-    // Verify state hash matches
-    if (computedStateHash != newState.stateHash) {
+    const UTXOEntry& spent = spendContext.inputUtxos[inputIndex];
+    if (spent.is_confidential) {
         return false;
     }
 
-    // TODO(P2 — consensus-incomplete): This function does NOT verify:
-    //   1. That any output commits to the new state (no output binding).
-    //   2. That the output value is preserved minus fees (value conservation).
-    //   3. Any contract-specific business rules.
-    //
-    // Without output binding, a transaction can satisfy CCV and spend the locked
-    // coin without carrying the new state forward in any output — the contract
-    // state machine "exits" without a successor. This violates the contract
-    // invariant that motivates CCV's existence.
-    //
-    // Until this is implemented, CCV-based contracts are NOT safe for production
-    // use. Treat them as experimental / proof-of-concept only. Do not activate
-    // CCV-locked outputs on mainnet until this is resolved.
+    std::vector<uint8_t> expectedCurrentScript;
+    uint8_t expectedParity = 0;
+    if (!ComputeContractOutputScript(
+            prevState, spendContext.merkleRoot, expectedCurrentScript,
+            &expectedParity) ||
+        expectedParity != spendContext.outputKeyParity ||
+        spent.scriptPubKey != expectedCurrentScript) {
+        return false;
+    }
+
+    std::vector<uint8_t> expectedSuccessorScript;
+    if (!ComputeContractOutputScript(
+            newState, spendContext.merkleRoot, expectedSuccessorScript)) {
+        return false;
+    }
+
+    const auto& successor = tx.vout[inputIndex];
+    if (successor.is_confidential ||
+        successor.value != spent.value ||
+        successor.scriptPubKey != expectedSuccessorScript) {
+        return false;
+    }
+
+    // A unique successor avoids ambiguous state lineage and prevents multiple
+    // CCV inputs from claiming an indistinguishable output.
+    for (size_t index = 0; index < tx.vout.size(); ++index) {
+        if (index != inputIndex &&
+            tx.vout[index].scriptPubKey == expectedSuccessorScript) {
+            return false;
+        }
+    }
 
     return true;
 }

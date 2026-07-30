@@ -15,6 +15,30 @@
 namespace dinero {
 namespace consensus {
 
+namespace {
+
+void WriteCompactSize(std::vector<uint8_t>& out, uint64_t value) {
+    if (value < 0xfd) {
+        out.push_back(static_cast<uint8_t>(value));
+    } else if (value <= 0xffff) {
+        out.push_back(0xfd);
+        out.push_back(static_cast<uint8_t>(value));
+        out.push_back(static_cast<uint8_t>(value >> 8));
+    } else if (value <= 0xffffffffULL) {
+        out.push_back(0xfe);
+        for (unsigned shift = 0; shift < 32; shift += 8) {
+            out.push_back(static_cast<uint8_t>(value >> shift));
+        }
+    } else {
+        out.push_back(0xff);
+        for (unsigned shift = 0; shift < 64; shift += 8) {
+            out.push_back(static_cast<uint8_t>(value >> shift));
+        }
+    }
+}
+
+} // namespace
+
 // Hex utilities
 std::vector<uint8_t> ScriptVerifier::HexDecode(const std::string& hex) {
     std::vector<uint8_t> bytes;
@@ -310,218 +334,21 @@ std::vector<uint8_t> ScriptVerifier::ComputeTaprootSighash(
         return std::vector<uint8_t>(32, 0);
     }
 
-    // Epoch (1 byte) - 0x00 for BIP341
-    std::vector<uint8_t> data;
-    data.push_back(0x00);
-
-    // Hash type (1 byte)
-    data.push_back(static_cast<uint8_t>(hash_type));
-
-    // nVersion (4 bytes)
-    for (int i = 0; i < 4; i++) {
-        data.push_back((tx.version >> (i * 8)) & 0xff);
+    if (hash_type > 0xff) {
+        return {};
     }
 
-    // nLockTime (4 bytes)
-    for (int i = 0; i < 4; i++) {
-        data.push_back((tx.lockTime >> (i * 8)) & 0xff);
-    }
-
-    // If hash_type is not ANYONECANPAY:
-    // - sha_prevouts (32 bytes)
-    // - sha_amounts (32 bytes)
-    // - sha_scriptpubkeys (32 bytes)
-    // - sha_sequences (32 bytes)
-
-    bool anyonecanpay = (hash_type & 0x80) != 0;
-
-    if (!anyonecanpay) {
-        // Hash all prevouts
-        {
-            std::vector<uint8_t> prevouts_data;
-            for (const auto& input : tx.vin) {
-                // Phase M.4.3-B: Unwrap TxId for serialization
-                const auto& txid_u256 = input.prevout.txid.AsUint256();
-                std::vector<uint8_t> txid_bytes(txid_u256.data, txid_u256.data + 32);
-                std::reverse(txid_bytes.begin(), txid_bytes.end());
-                prevouts_data.insert(prevouts_data.end(), txid_bytes.begin(), txid_bytes.end());
-
-                for (int i = 0; i < 4; i++) {
-                    prevouts_data.push_back((input.prevout.vout >> (i * 8)) & 0xff);
-                }
-            }
-            auto hash = DoubleSHA256(prevouts_data.data(), prevouts_data.size());
-            data.insert(data.end(), hash.begin(), hash.end());
-        }
-
-        // Hash all amounts
-        {
-            std::vector<uint8_t> amounts_data;
-            for (uint64_t value : prevout_values) {
-                for (int i = 0; i < 8; i++) {
-                    amounts_data.push_back((value >> (i * 8)) & 0xff);
-                }
-            }
-            auto hash = DoubleSHA256(amounts_data.data(), amounts_data.size());
-            data.insert(data.end(), hash.begin(), hash.end());
-        }
-
-        // Hash all scriptPubKeys
-        {
-            std::vector<uint8_t> scripts_data;
-            for (const auto& script : prevout_scripts) {
-                // Compact size length
-                scripts_data.push_back(static_cast<uint8_t>(script.size()));
-                scripts_data.insert(scripts_data.end(), script.begin(), script.end());
-            }
-            auto hash = DoubleSHA256(scripts_data.data(), scripts_data.size());
-            data.insert(data.end(), hash.begin(), hash.end());
-        }
-
-        // Hash all sequences
-        {
-            std::vector<uint8_t> sequences_data;
-            for (const auto& input : tx.vin) {
-                for (int i = 0; i < 4; i++) {
-                    sequences_data.push_back((input.sequence >> (i * 8)) & 0xff);
-                }
-            }
-            auto hash = DoubleSHA256(sequences_data.data(), sequences_data.size());
-            data.insert(data.end(), hash.begin(), hash.end());
-        }
-    }
-
-    // If hash_type is neither NONE nor SINGLE:
-    // - sha_outputs (32 bytes)
-
-    uint8_t base_type = hash_type & 0x1f;
-    if (base_type != 0x02 && base_type != 0x03) {  // Not NONE and not SINGLE
-        std::vector<uint8_t> outputs_data;
-        for (const auto& output : tx.vout) {
-            // Value (8 bytes)
-            // Phase M.6.1: Extract raw value for serialization
-            uint64_t value_raw = output.value.GetUna();
-            for (int i = 0; i < 8; i++) {
-                outputs_data.push_back((value_raw >> (i * 8)) & 0xff);
-            }
-
-            // ScriptPubKey
-            std::vector<uint8_t> spk_bytes(output.scriptPubKey.begin(), output.scriptPubKey.end());
-            outputs_data.push_back(static_cast<uint8_t>(spk_bytes.size()));
-            outputs_data.insert(outputs_data.end(), spk_bytes.begin(), spk_bytes.end());
-        }
-        auto hash = DoubleSHA256(outputs_data.data(), outputs_data.size());
-        data.insert(data.end(), hash.begin(), hash.end());
-    }
-
-    // spend_type (1 byte)
-    // BIP341: spend_type = 2*ext_flag + annex_present
-    // ext_flag: 0 for key path, 1 for script path
-    // annex_present: 1 if annex is provided
-    uint8_t ext_flag = tapleaf_hash.empty() ? 0 : 1;
-    uint8_t annex_present = annex.empty() ? 0 : 1;
-    uint8_t spend_type = 2 * ext_flag + annex_present;
-    data.push_back(spend_type);
-
-    // If ANYONECANPAY:
-    // - outpoint (36 bytes)
-    // - amount (8 bytes)
-    // - scriptPubKey (variable)
-    // - nSequence (4 bytes)
-
-    if (anyonecanpay) {
-        const auto& input = tx.vin[input_index];
-
-        // Outpoint - Phase M.4.3-B: Unwrap TxId for serialization
-        const auto& txid_u256 = input.prevout.txid.AsUint256();
-        std::vector<uint8_t> txid_bytes(txid_u256.data, txid_u256.data + 32);
-        std::reverse(txid_bytes.begin(), txid_bytes.end());
-        data.insert(data.end(), txid_bytes.begin(), txid_bytes.end());
-
-        for (int i = 0; i < 4; i++) {
-            data.push_back((input.prevout.vout >> (i * 8)) & 0xff);
-        }
-
-        // Amount
-        uint64_t value = prevout_values[input_index];
-        for (int i = 0; i < 8; i++) {
-            data.push_back((value >> (i * 8)) & 0xff);
-        }
-
-        // ScriptPubKey
-        const auto& script = prevout_scripts[input_index];
-        data.push_back(static_cast<uint8_t>(script.size()));
-        data.insert(data.end(), script.begin(), script.end());
-
-        // Sequence
-        for (int i = 0; i < 4; i++) {
-            data.push_back((input.sequence >> (i * 8)) & 0xff);
-        }
-    } else {
-        // Input index (4 bytes)
-        for (int i = 0; i < 4; i++) {
-            data.push_back((input_index >> (i * 8)) & 0xff);
-        }
-    }
-
-    // BIP341: If annex is present, add sha_annex
-    // sha_annex = SHA256(compact_size(len(annex)) || annex)
-    if (!annex.empty()) {
-        std::vector<uint8_t> annex_serialized;
-        // Compact size length prefix
-        if (annex.size() < 253) {
-            annex_serialized.push_back(static_cast<uint8_t>(annex.size()));
-        } else if (annex.size() <= 0xFFFF) {
-            annex_serialized.push_back(253);
-            annex_serialized.push_back(annex.size() & 0xFF);
-            annex_serialized.push_back((annex.size() >> 8) & 0xFF);
-        } else {
-            annex_serialized.push_back(254);
-            annex_serialized.push_back(annex.size() & 0xFF);
-            annex_serialized.push_back((annex.size() >> 8) & 0xFF);
-            annex_serialized.push_back((annex.size() >> 16) & 0xFF);
-            annex_serialized.push_back((annex.size() >> 24) & 0xFF);
-        }
-        annex_serialized.insert(annex_serialized.end(), annex.begin(), annex.end());
-
-        // SHA256 of serialized annex
-        uint8_t annex_hash[32];
-        dinero::crypto::CSHA256().Write(annex_serialized.data(), annex_serialized.size()).Finalize(annex_hash);
-        data.insert(data.end(), annex_hash, annex_hash + 32);
-    }
-
-    // If script path spending, add tapleaf hash
-    if (!tapleaf_hash.empty()) {
-        data.insert(data.end(), tapleaf_hash.begin(), tapleaf_hash.end());
-    }
-
-    // Key version (1 byte) - always 0x00 for BIP341
-    data.push_back(0x00);
-
-    // Code separator position (4 bytes) - 0xFFFFFFFF for key path
-    for (int i = 0; i < 4; i++) {
-        data.push_back(0xFF);
-    }
-
-    // Hash with "TapSighash" tag (BIP340 tagged hash)
-    // Tagged hash: SHA256(SHA256("TapSighash") || SHA256("TapSighash") || data)
-    std::string tag = "TapSighash";
-    std::vector<uint8_t> tag_bytes(tag.begin(), tag.end());
-
-    // Compute SHA256(tag)
-    uint8_t tag_hash[32];
-    dinero::crypto::CSHA256().Write(tag_bytes.data(), tag_bytes.size()).Finalize(tag_hash);
-
-    // Compute tagged hash: SHA256(tag_hash || tag_hash || data)
-    dinero::crypto::CSHA256 hasher;
-    hasher.Write(tag_hash, 32);
-    hasher.Write(tag_hash, 32);
-    hasher.Write(data.data(), data.size());
-
-    uint8_t result[32];
-    hasher.Finalize(result);
-
-    return std::vector<uint8_t>(result, result + 32);
+    // One Taproot sighash implementation only: this compatibility API is
+    // retained for wallet callers, but delegates to the vector-tested
+    // consensus implementation.
+    ScriptExecutionContext canonical_context(
+        &tx, static_cast<uint32_t>(input_index), prevout_values[input_index],
+        SCRIPT_VERIFY_TAPROOT, prevout_values, prevout_scripts,
+        std::vector<uint8_t>(tx.vin.size(), 0),
+        std::vector<std::vector<uint8_t>>(tx.vin.size()));
+    return SignatureHashTaproot(
+        canonical_context, static_cast<uint8_t>(hash_type),
+        tapleaf_hash, annex);
 }
 
 // ============================================================================
@@ -583,7 +410,9 @@ bool ScriptVerifier::VerifyOPCTCOMMIT(const Transaction& tx, size_t input_index,
 }
 
 bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
-                                   const std::vector<UTXOEntry>& input_utxos, std::string& error) {
+                                   const std::vector<UTXOEntry>& input_utxos,
+                                   std::string& error,
+                                   uint32_t flags) {
     // Validate input_index and UTXO vector
     if (input_index >= tx.vin.size() || input_index >= input_utxos.size()) {
         error = "Invalid input index";
@@ -620,18 +449,30 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
         return false;
     }
 
-    // Determine spending path:
-    // - Key path: witness has exactly 1 element (signature)
-    // - Script path: witness has 2+ elements (stack items + script + control_block)
+    // BIP341: a trailing element beginning with 0x50 is an annex. It is
+    // committed by the signature hash but removed before deciding whether the
+    // remaining witness is a key-path or script-path spend.
+    std::vector<std::vector<uint8_t>> witness = input.witness;
+    std::vector<uint8_t> annex;
+    if (witness.size() >= 2 &&
+        !witness.back().empty() &&
+        witness.back()[0] == 0x50) {
+        annex = std::move(witness.back());
+        witness.pop_back();
+    }
+    if (witness.empty()) {
+        error = "Taproot witness contains annex without a spend";
+        return false;
+    }
 
-    bool is_key_path = (input.witness.size() == 1);
+    const bool is_key_path = (witness.size() == 1);
 
     if (is_key_path) {
         // ============================================================
         // KEY PATH SPENDING (BIP341)
         // ============================================================
 
-        const std::vector<uint8_t>& signature = input.witness[0];
+        const std::vector<uint8_t>& signature = witness[0];
 
         // Schnorr signatures are 64 bytes (or 65 with sighash type)
         if (signature.size() != 64 && signature.size() != 65) {
@@ -643,26 +484,41 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
         uint32_t hash_type = 0;  // SIGHASH_DEFAULT
         if (signature.size() == 65) {
             hash_type = signature[64];  // Last byte is sighash type
+            if (hash_type == 0) {
+                error = "Explicit SIGHASH_DEFAULT byte is invalid";
+                return false;
+            }
         }
 
         // Compute Taproot sighash (BIP341)
         std::vector<uint64_t> prevout_values;
         std::vector<std::vector<uint8_t>> prevout_scripts;
+        std::vector<uint8_t> confidential_flags;
+        std::vector<std::vector<uint8_t>> input_commitments;
 
         prevout_values.reserve(input_utxos.size());
         prevout_scripts.reserve(input_utxos.size());
+        confidential_flags.reserve(input_utxos.size());
+        input_commitments.reserve(input_utxos.size());
 
         for (const auto& u : input_utxos) {
-            // Phase M.6.2: Extract raw value for signature hashing
             prevout_values.push_back(u.value.GetUna());
             prevout_scripts.push_back(u.scriptPubKey);
+            confidential_flags.push_back(u.is_confidential ? 1 : 0);
+            input_commitments.push_back(u.commitment);
         }
 
-        std::vector<uint8_t> tapleaf_hash;  // Empty for key path
-
-        std::vector<uint8_t> sighash = ComputeTaprootSighash(
-            tx, input_index, prevout_values, prevout_scripts, hash_type, tapleaf_hash
-        );
+        ScriptExecutionContext sighash_context(
+            &tx, static_cast<uint32_t>(input_index),
+            prevout_values[input_index], flags,
+            prevout_values, prevout_scripts,
+            confidential_flags, input_commitments);
+        std::vector<uint8_t> sighash = SignatureHashTaproot(
+            sighash_context, static_cast<uint8_t>(hash_type), {}, annex);
+        if (sighash.size() != 32) {
+            error = "Invalid Taproot signature hash type";
+            return false;
+        }
 
         // Verify Schnorr signature with libsecp256k1
         secp256k1_context* ctx = dinero::crypto::GetSecp256k1ContextVerify();
@@ -690,13 +546,13 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
 
         // Script path witness: <stack items...> <script> <control_block>
         // Minimum: 2 elements (script + control_block)
-        if (input.witness.size() < 2) {
+        if (witness.size() < 2) {
             error = "Invalid script path witness (need at least script + control block)";
             return false;
         }
 
         // Last element is control block
-        const std::vector<uint8_t>& control_block = input.witness[input.witness.size() - 1];
+        const std::vector<uint8_t>& control_block = witness.back();
 
         // Control block format: <leaf_version|parity> <internal_key> [<merkle_proof>...]
         // Minimum size: 33 bytes (1 + 32)
@@ -712,12 +568,7 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
         }
 
         // Second-to-last element is the revealed script
-        const std::vector<uint8_t>& script = input.witness[input.witness.size() - 2];
-
-        if (script.empty()) {
-            error = "Empty Tapscript";
-            return false;
-        }
+        const std::vector<uint8_t>& script = witness[witness.size() - 2];
 
         // Parse control block
         uint8_t leaf_version = control_block[0] & 0xfe;  // Clear parity bit
@@ -725,23 +576,10 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
 
         std::vector<uint8_t> internal_key(control_block.begin() + 1, control_block.begin() + 33);
 
-        // BIP342: Only leaf version 0xC0 is defined
-        if (leaf_version != 0xC0) {
-            error = "Unsupported Tapscript leaf version (expected 0xC0)";
-            return false;
-        }
-
         // Compute tapleaf hash: Tagged hash of (leaf_version || compact_size(script) || script)
         std::vector<uint8_t> tapleaf_data;
         tapleaf_data.push_back(leaf_version);
-        // Compact size encoding (simplified for scripts < 253 bytes)
-        if (script.size() < 253) {
-            tapleaf_data.push_back(static_cast<uint8_t>(script.size()));
-        } else {
-            // TODO: Handle larger scripts with proper compact size encoding
-            error = "Tapscript larger than 252 bytes not yet supported";
-            return false;
-        }
+        WriteCompactSize(tapleaf_data, script.size());
         tapleaf_data.insert(tapleaf_data.end(), script.begin(), script.end());
 
         // Tagged hash with "TapLeaf"
@@ -839,7 +677,7 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
 
         // Compute tweaked pubkey: P = Q + tweak * G
         secp256k1_pubkey tweaked_pubkey;
-        int parity_ignored;
+        int computed_parity = -1;
         if (!secp256k1_xonly_pubkey_tweak_add(ctx_verify, &tweaked_pubkey, &internal_pubkey, tap_tweak)) {
             error = "Failed to compute tweaked public key";
             return false;
@@ -847,7 +685,9 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
 
         // Convert tweaked pubkey to x-only format
         secp256k1_xonly_pubkey computed_output_xonly;
-        if (!secp256k1_xonly_pubkey_from_pubkey(ctx_verify, &computed_output_xonly, &parity_ignored, &tweaked_pubkey)) {
+        if (!secp256k1_xonly_pubkey_from_pubkey(
+                ctx_verify, &computed_output_xonly, &computed_parity,
+                &tweaked_pubkey)) {
             error = "Failed to convert tweaked pubkey to x-only";
             return false;
         }
@@ -862,29 +702,38 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
             error = "Output key does not match tweaked internal key (script tree commitment mismatch)";
             return false;
         }
+        if (computed_parity != parity_bit) {
+            error = "Control block parity does not match tweaked output key";
+            return false;
+        }
+
+        // BIP341 reserves unknown leaf versions for soft-fork upgrades. Once
+        // their commitment and control path are valid, consensus succeeds
+        // without executing the leaf. Standard policy may discourage relay.
+        if (leaf_version != 0xc0) {
+            if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) {
+                error = "Discouraged unknown Taproot leaf version";
+                return false;
+            }
+            return true;
+        }
 
         // Execute Tapscript (BIP342)
         // Witness stack: <stack items...> <script> <control_block>
         // Extract witness stack (exclude script and control block)
         std::vector<std::vector<uint8_t>> witness_stack;
-        if (input.witness.size() > 2) {
+        if (witness.size() > 2) {
             witness_stack.insert(witness_stack.end(),
-                               input.witness.begin(),
-                               input.witness.end() - 2);
+                               witness.begin(),
+                               witness.end() - 2);
         }
 
-        // BIP342 Fix #4: Annex handling
-        // If the first witness stack element starts with 0x50, it is the annex
-        // The annex must be removed from the stack before script execution
-        // Note: Annex is included in signature hash computation per BIP341
-        std::vector<uint8_t> annex;
-        if (!witness_stack.empty() &&
-            !witness_stack[0].empty() &&
-            witness_stack[0][0] == 0x50) {
-            // Found annex - remove it from witness stack
-            annex = witness_stack[0];
-            witness_stack.erase(witness_stack.begin());
-        }
+        std::array<uint8_t, 32> control_internal_key{};
+        std::copy(internal_key.begin(), internal_key.end(),
+                  control_internal_key.begin());
+        std::array<uint8_t, 32> taproot_merkle_root{};
+        std::copy(computed_root.begin(), computed_root.end(),
+                  taproot_merkle_root.begin());
 
         // Execute Tapscript
         // Phase L0.3: Pass SCRIPT_VERIFY_STANDARD flags to enable covenant enforcement
@@ -897,7 +746,10 @@ bool ScriptVerifier::VerifyTaproot(const Transaction& tx, size_t input_index,
             input_index,
             input_utxos,
             tapleaf_hash,
-            SCRIPT_VERIFY_STANDARD,  // Includes covenant flags
+            control_internal_key,
+            taproot_merkle_root,
+            parity_bit,
+            flags,
             script_error,
             annex  // BIP341 annex for sighash
         );

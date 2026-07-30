@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <array>
 #include <cstdint>
 #include <string>
 #include "primitives/transaction.h"
@@ -43,6 +44,9 @@ public:
         size_t input_index,
         const std::vector<UTXOEntry>& input_utxos,
         const std::vector<uint8_t>& tapleaf_hash,
+        const std::array<uint8_t, 32>& internal_key,
+        const std::array<uint8_t, 32>& merkle_root,
+        uint8_t output_key_parity,
         uint32_t flags,
         std::string& error,
         const std::vector<uint8_t>& annex = {}
@@ -56,9 +60,15 @@ private:
         const Transaction* tx;
         size_t input_index;
         const std::vector<UTXOEntry>* input_utxos;
+        const std::vector<uint8_t>* tapscript;
         const std::vector<uint8_t>* tapleaf_hash;
+        const std::array<uint8_t, 32>* internal_key;
+        const std::array<uint8_t, 32>* merkle_root;
+        uint8_t output_key_parity;
         const std::vector<uint8_t>* annex;  // BIP341 annex (for sighash computation)
         uint32_t flags;  // Script verification flags (for covenant enforcement)
+        bool op_success{false};  // BIP342 immediate-success short circuit
+        int64_t validation_weight_left{0};  // BIP342 witness budget
         std::string error;
     };
 
@@ -143,13 +153,16 @@ namespace TapscriptOpcodes {
      * OP_SUCCESS opcodes always succeed, enabling soft fork upgrades
      */
     inline bool IsOpSuccess(uint8_t opcode) {
-        // BIP342: OP_SUCCESS opcodes are 0x50, 0x62, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f
-        // 0x90-0x99, 0x9a-0x9f, 0xb0-0xb8, 0xb9 (reserved)
+        // Exact BIP342 set. Opcodes 0xbb-0xfe are deliberately upgradeable;
+        // Dinero's custom opcodes in that range remain OP_SUCCESS until their
+        // individual consensus flags activate.
         return opcode == 0x50 || opcode == 0x62 ||
-               (opcode >= 0x89 && opcode <= 0x8f) ||
-               (opcode >= 0x90 && opcode <= 0x99) ||
-               (opcode >= 0x9a && opcode <= 0x9f) ||
-               (opcode >= 0xb0 && opcode <= 0xb9 && opcode != 0xba); // 0xba is OP_CHECKSIGADD
+               (opcode >= 0x7e && opcode <= 0x81) ||
+               (opcode >= 0x83 && opcode <= 0x86) ||
+               (opcode >= 0x89 && opcode <= 0x8a) ||
+               (opcode >= 0x8d && opcode <= 0x8e) ||
+               (opcode >= 0x95 && opcode <= 0x99) ||
+               (opcode >= 0xbb && opcode <= 0xfe);
     }
 }
 

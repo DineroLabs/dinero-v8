@@ -8,9 +8,177 @@
 #include <secp256k1.h>
 #include <secp256k1_schnorrsig.h>
 #include <algorithm>
+#include <limits>
 
 namespace dinero {
 namespace consensus {
+
+namespace {
+
+size_t CompactSizeLength(uint64_t value) {
+    if (value < 0xfd) return 1;
+    if (value <= 0xffff) return 3;
+    if (value <= 0xffffffffULL) return 5;
+    return 9;
+}
+
+size_t SerializedWitnessSize(const std::vector<std::vector<uint8_t>>& witness) {
+    size_t size = CompactSizeLength(witness.size());
+    for (const auto& element : witness) {
+        size += CompactSizeLength(element.size()) + element.size();
+    }
+    return size;
+}
+
+bool IsActivatedCustomOpcode(uint8_t opcode, uint32_t flags) {
+    return ((opcode == OP_CHECKSIGFROMSTACK ||
+             opcode == OP_CHECKSIGFROMSTACKVERIFY) &&
+            (flags & SCRIPT_VERIFY_CHECKSIGFROMSTACK)) ||
+           (opcode == OP_TXHASH &&
+            (flags & SCRIPT_VERIFY_TXHASH)) ||
+           (opcode == OP_CHECKCONTRACTVERIFY &&
+            (flags & SCRIPT_VERIFY_CHECKCONTRACT));
+}
+
+enum class TapscriptPreScanResult {
+    CONTINUE,
+    SUCCESS,
+    INVALID,
+};
+
+TapscriptPreScanResult PreScanTapscript(
+    const std::vector<uint8_t>& script,
+    uint32_t flags,
+    std::string& error
+) {
+    size_t pc = 0;
+    while (pc < script.size()) {
+        const uint8_t opcode = script[pc++];
+        if (TapscriptOpcodes::IsOpSuccess(opcode) &&
+            !IsActivatedCustomOpcode(opcode, flags)) {
+            return TapscriptPreScanResult::SUCCESS;
+        }
+
+        uint64_t push_length = 0;
+        if (opcode >= 0x01 && opcode <= 0x4b) {
+            push_length = opcode;
+        } else if (opcode == OP_PUSHDATA1) {
+            if (pc >= script.size()) {
+                error = "OP_PUSHDATA1: missing length byte";
+                return TapscriptPreScanResult::INVALID;
+            }
+            push_length = script[pc++];
+        } else if (opcode == OP_PUSHDATA2) {
+            if (script.size() - pc < 2) {
+                error = "OP_PUSHDATA2: missing length bytes";
+                return TapscriptPreScanResult::INVALID;
+            }
+            push_length =
+                static_cast<uint64_t>(script[pc]) |
+                (static_cast<uint64_t>(script[pc + 1]) << 8);
+            pc += 2;
+        } else if (opcode == OP_PUSHDATA4) {
+            if (script.size() - pc < 4) {
+                error = "OP_PUSHDATA4: missing length bytes";
+                return TapscriptPreScanResult::INVALID;
+            }
+            push_length =
+                static_cast<uint64_t>(script[pc]) |
+                (static_cast<uint64_t>(script[pc + 1]) << 8) |
+                (static_cast<uint64_t>(script[pc + 2]) << 16) |
+                (static_cast<uint64_t>(script[pc + 3]) << 24);
+            pc += 4;
+        }
+
+        if (push_length > script.size() - pc) {
+            error = "Push operation exceeds script bounds";
+            return TapscriptPreScanResult::INVALID;
+        }
+        pc += static_cast<size_t>(push_length);
+    }
+    return TapscriptPreScanResult::CONTINUE;
+}
+
+ScriptExecutionContext MakeTaprootSighashContext(
+    const Transaction* tx,
+    size_t input_index,
+    uint32_t flags,
+    const std::vector<UTXOEntry>& input_utxos
+) {
+    std::vector<uint64_t> amounts;
+    std::vector<std::vector<uint8_t>> scripts;
+    std::vector<uint8_t> confidential_flags;
+    std::vector<std::vector<uint8_t>> commitments;
+    amounts.reserve(input_utxos.size());
+    scripts.reserve(input_utxos.size());
+    confidential_flags.reserve(input_utxos.size());
+    commitments.reserve(input_utxos.size());
+    for (const auto& utxo : input_utxos) {
+        amounts.push_back(utxo.value.GetUna());
+        scripts.push_back(utxo.scriptPubKey);
+        confidential_flags.push_back(utxo.is_confidential ? 1 : 0);
+        commitments.push_back(utxo.commitment);
+    }
+    return ScriptExecutionContext(
+        tx, static_cast<uint32_t>(input_index),
+        amounts[input_index], flags,
+        amounts, scripts, confidential_flags, commitments);
+}
+
+bool ConsumeSignatureBudget(int64_t& validation_weight_left, std::string& error) {
+    validation_weight_left -= 50;
+    if (validation_weight_left < 0) {
+        error = "Tapscript signature validation weight exceeded";
+        return false;
+    }
+    return true;
+}
+
+bool DecodeScriptNum(
+    const std::vector<uint8_t>& bytes,
+    bool require_minimal,
+    int64_t& value
+) {
+    if (bytes.size() > 4) return false;
+    if (require_minimal && !bytes.empty() &&
+        (bytes.back() & 0x7f) == 0 &&
+        (bytes.size() == 1 || (bytes[bytes.size() - 2] & 0x80) == 0)) {
+        return false;
+    }
+
+    uint64_t result = 0;
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        result |= static_cast<uint64_t>(bytes[i]) << (8 * i);
+    }
+    if (!bytes.empty() && (bytes.back() & 0x80)) {
+        result &= ~(uint64_t{0x80} << (8 * (bytes.size() - 1)));
+        value = -static_cast<int64_t>(result);
+    } else {
+        value = static_cast<int64_t>(result);
+    }
+    return true;
+}
+
+std::vector<uint8_t> EncodeScriptNum(int64_t value) {
+    if (value == 0) return {};
+    const bool negative = value < 0;
+    uint64_t absolute = negative
+        ? static_cast<uint64_t>(-(value + 1)) + 1
+        : static_cast<uint64_t>(value);
+    std::vector<uint8_t> result;
+    while (absolute != 0) {
+        result.push_back(static_cast<uint8_t>(absolute & 0xff));
+        absolute >>= 8;
+    }
+    if (result.back() & 0x80) {
+        result.push_back(negative ? 0x80 : 0x00);
+    } else if (negative) {
+        result.back() |= 0x80;
+    }
+    return result;
+}
+
+} // namespace
 
 // Phase L0.3: Use opcodes from consensus namespace (script.h) instead of TapscriptOpcodes
 // to avoid ambiguity with covenant opcodes
@@ -26,14 +194,35 @@ bool TapscriptInterpreter::ExecuteTapscript(
     size_t input_index,
     const std::vector<UTXOEntry>& input_utxos,
     const std::vector<uint8_t>& tapleaf_hash,
+    const std::array<uint8_t, 32>& internal_key,
+    const std::array<uint8_t, 32>& merkle_root,
+    uint8_t output_key_parity,
     uint32_t flags,
     std::string& error,
     const std::vector<uint8_t>& annex
 ) {
-    // BIP342 Fix #3: Enforce maximum script size (10,000 bytes)
-    if (script.size() > 10000) {
-        error = "Script size limit exceeded (BIP342: 10,000 bytes max)";
+    // BIP342 decodes OP_SUCCESS before every resource and execution rule.
+    // Pushed bytes are skipped and therefore cannot masquerade as opcodes.
+    const TapscriptPreScanResult pre_scan =
+        PreScanTapscript(script, flags, error);
+    if (pre_scan == TapscriptPreScanResult::SUCCESS) {
+        return true;
+    }
+    if (pre_scan == TapscriptPreScanResult::INVALID) {
         return false;
+    }
+
+    // BIP342 retains the 1,000-element and 520-byte element limits for the
+    // initial stack, but removes the legacy 10,000-byte script-size limit.
+    if (witness_stack.size() > 1000) {
+        error = "Initial stack exceeds 1,000 elements";
+        return false;
+    }
+    for (const auto& element : witness_stack) {
+        if (element.size() > 520) {
+            error = "Initial stack element exceeds 520 bytes";
+            return false;
+        }
     }
 
     // Initialize execution context
@@ -42,14 +231,23 @@ bool TapscriptInterpreter::ExecuteTapscript(
     ctx.tx = &tx;
     ctx.input_index = input_index;
     ctx.input_utxos = &input_utxos;
+    ctx.tapscript = &script;
     ctx.tapleaf_hash = &tapleaf_hash;
+    ctx.internal_key = &internal_key;
+    ctx.merkle_root = &merkle_root;
+    ctx.output_key_parity = output_key_parity;
     ctx.annex = &annex;  // BIP341 annex for sighash computation
     ctx.flags = flags;  // Phase L0.3: Pass flags for covenant enforcement
+    ctx.validation_weight_left =
+        static_cast<int64_t>(SerializedWitnessSize(tx.vin[input_index].witness)) + 50;
 
     // Execute the script
     if (!Execute(script, ctx)) {
         error = ctx.error.empty() ? "Script execution failed" : ctx.error;
         return false;
+    }
+    if (ctx.op_success) {
+        return true;
     }
 
     // Script must leave exactly one true value on stack (BIP342)
@@ -83,8 +281,10 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
 
         // OP_SUCCESS opcodes (BIP342 soft fork mechanism)
         if (TapscriptOpcodes::IsOpSuccess(opcode)) {
-            // OP_SUCCESS always succeeds (for future soft forks)
-            return true;
+            if (!IsActivatedCustomOpcode(opcode, ctx.flags)) {
+                ctx.op_success = true;
+                return true;
+            }
         }
 
         // Push data opcodes (0x01-0x4b: direct push)
@@ -157,7 +357,12 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
 
             // Phase L0.3: Covenant opcodes (consensus-critical)
             case OP_CHECKTEMPLATEVERIFY:
-                if (!OpCheckTemplateVerify(ctx)) return false;
+                // BIP119 assigns NOP4. Before activation it remains a NOP;
+                // the 32-byte argument rule is part of the activated opcode.
+                if ((ctx.flags & SCRIPT_VERIFY_CHECKTEMPLATEVERIFY) &&
+                    !OpCheckTemplateVerify(ctx)) {
+                    return false;
+                }
                 break;
 
             case OP_CHECKSIGFROMSTACK:
@@ -277,43 +482,54 @@ bool TapscriptInterpreter::OpCheckSig(ExecutionContext& ctx) {
         return PushStack(ctx, {});  // BIP342: Push false and check limits
     }
 
-    // Schnorr signature must be exactly 64 bytes (BIP340)
-    if (signature.size() != 64) {
-        ctx.error = "OP_CHECKSIG: invalid signature size (expected 64 bytes for Schnorr)";
+    if (pubkey.empty()) {
+        ctx.error = "OP_CHECKSIG: empty public key";
         return false;
     }
 
-    // Public key must be 32 bytes (x-only, BIP340)
+    if (!ConsumeSignatureBudget(ctx.validation_weight_left, ctx.error)) {
+        return false;
+    }
+
+    // BIP342 reserves non-empty, non-32-byte public keys for future
+    // signature algorithms. Consensus treats a non-empty signature as valid;
+    // relay policy may discourage this upgrade path.
     if (pubkey.size() != 32) {
-        ctx.error = "OP_CHECKSIG: invalid pubkey size (expected 32 bytes for x-only)";
+        if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE) {
+            ctx.error = "OP_CHECKSIG: discouraged upgradable public key type";
+            return false;
+        }
+        return PushStack(ctx, {0x01});
+    }
+
+    if (signature.size() != 64 && signature.size() != 65) {
+        ctx.error = "OP_CHECKSIG: invalid Schnorr signature size";
+        return false;
+    }
+    const uint8_t hash_type = signature.size() == 65 ? signature.back() : 0;
+    if (signature.size() == 65 && hash_type == 0) {
+        ctx.error = "OP_CHECKSIG: explicit SIGHASH_DEFAULT byte is invalid";
         return false;
     }
 
-    // Compute BIP341 sighash for script path spending
-    std::vector<uint64_t> prevout_values;
-    std::vector<std::vector<uint8_t>> prevout_scripts;
-
-    for (const auto& utxo : *ctx.input_utxos) {
-        // Phase M.6.2: Extract raw value for signature hashing
-        prevout_values.push_back(utxo.value.GetUna());
-        prevout_scripts.push_back(utxo.scriptPubKey);
+    ScriptExecutionContext sighash_context = MakeTaprootSighashContext(
+        ctx.tx, ctx.input_index, ctx.flags, *ctx.input_utxos);
+    std::vector<uint8_t> sighash = SignatureHashTaproot(
+        sighash_context, hash_type, *ctx.tapleaf_hash,
+        ctx.annex ? *ctx.annex : std::vector<uint8_t>{});
+    if (sighash.size() != 32) {
+        ctx.error = "OP_CHECKSIG: invalid signature hash type";
+        return false;
     }
-
-    // BIP342: hash_type is always 0x00 (SIGHASH_DEFAULT) for Tapscript
-    // BIP341: Include annex in sighash computation if present
-    std::vector<uint8_t> sighash = ScriptVerifier::ComputeTaprootSighash(
-        *ctx.tx,
-        ctx.input_index,
-        prevout_values,
-        prevout_scripts,
-        0x00, // SIGHASH_DEFAULT
-        *ctx.tapleaf_hash, // Script path spending
-        ctx.annex ? *ctx.annex : std::vector<uint8_t>{} // BIP341 annex
-    );
 
     // Verify Schnorr signature
-    bool valid = VerifySchnorrSignature(signature, pubkey, sighash);
-    return PushStack(ctx, valid ? std::vector<uint8_t>{0x01} : std::vector<uint8_t>{});  // BIP342: Check limits
+    const std::vector<uint8_t> schnorr_signature(signature.begin(), signature.begin() + 64);
+    bool valid = VerifySchnorrSignature(schnorr_signature, pubkey, sighash);
+    if (!valid) {
+        ctx.error = "OP_CHECKSIG: non-empty invalid Schnorr signature";
+        return false;
+    }
+    return PushStack(ctx, {0x01});
 }
 
 bool TapscriptInterpreter::OpCheckSigVerify(ExecutionContext& ctx) {
@@ -335,54 +551,61 @@ bool TapscriptInterpreter::OpCheckSigAdd(ExecutionContext& ctx) {
     if (!PopStack(ctx, signature)) return false;
     if (!PopStack(ctx, n_bytes)) return false;
 
-    // n must be a valid number (CScriptNum in Bitcoin Core)
-    // For simplicity, we'll assume it's a single byte for now
-    if (n_bytes.empty()) {
-        ctx.error = "OP_CHECKSIGADD: n is empty";
+    int64_t n = 0;
+    if (!DecodeScriptNum(
+            n_bytes, (ctx.flags & SCRIPT_VERIFY_MINIMALDATA) != 0, n)) {
+        ctx.error = "OP_CHECKSIGADD: invalid script number";
         return false;
     }
-
-    int64_t n = static_cast<int64_t>(n_bytes[0]);
 
     // Empty signature is always invalid (doesn't increment n)
     if (signature.empty()) {
         return PushStack(ctx, n_bytes);  // BIP342: Push n unchanged and check limits
     }
 
-    // Validate signature format
-    if (signature.size() != 64) {
-        ctx.error = "OP_CHECKSIGADD: invalid signature size";
+    if (pubkey.empty()) {
+        ctx.error = "OP_CHECKSIGADD: empty public key";
         return false;
     }
 
+    if (!ConsumeSignatureBudget(ctx.validation_weight_left, ctx.error)) {
+        return false;
+    }
+
+    bool valid = false;
     if (pubkey.size() != 32) {
-        ctx.error = "OP_CHECKSIGADD: invalid pubkey size";
-        return false;
+        if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE) {
+            ctx.error = "OP_CHECKSIGADD: discouraged upgradable public key type";
+            return false;
+        }
+        valid = true;
+    } else {
+        if (signature.size() != 64 && signature.size() != 65) {
+            ctx.error = "OP_CHECKSIGADD: invalid Schnorr signature size";
+            return false;
+        }
+        const uint8_t hash_type = signature.size() == 65 ? signature.back() : 0;
+        if (signature.size() == 65 && hash_type == 0) {
+            ctx.error = "OP_CHECKSIGADD: explicit SIGHASH_DEFAULT byte is invalid";
+            return false;
+        }
+        ScriptExecutionContext sighash_context = MakeTaprootSighashContext(
+            ctx.tx, ctx.input_index, ctx.flags, *ctx.input_utxos);
+        std::vector<uint8_t> sighash = SignatureHashTaproot(
+            sighash_context, hash_type, *ctx.tapleaf_hash,
+            ctx.annex ? *ctx.annex : std::vector<uint8_t>{});
+        if (sighash.size() != 32) {
+            ctx.error = "OP_CHECKSIGADD: invalid signature hash type";
+            return false;
+        }
+        const std::vector<uint8_t> schnorr_signature(
+            signature.begin(), signature.begin() + 64);
+        valid = VerifySchnorrSignature(schnorr_signature, pubkey, sighash);
+        if (!valid) {
+            ctx.error = "OP_CHECKSIGADD: non-empty invalid Schnorr signature";
+            return false;
+        }
     }
-
-    // Compute sighash
-    std::vector<uint64_t> prevout_values;
-    std::vector<std::vector<uint8_t>> prevout_scripts;
-
-    for (const auto& utxo : *ctx.input_utxos) {
-        // Phase M.6.2: Extract raw value for signature hashing
-        prevout_values.push_back(utxo.value.GetUna());
-        prevout_scripts.push_back(utxo.scriptPubKey);
-    }
-
-    // BIP341: Include annex in sighash computation if present
-    std::vector<uint8_t> sighash = ScriptVerifier::ComputeTaprootSighash(
-        *ctx.tx,
-        ctx.input_index,
-        prevout_values,
-        prevout_scripts,
-        0x00,
-        *ctx.tapleaf_hash,
-        ctx.annex ? *ctx.annex : std::vector<uint8_t>{} // BIP341 annex
-    );
-
-    // Verify signature
-    bool valid = VerifySchnorrSignature(signature, pubkey, sighash);
 
     // Increment n if valid
     if (valid) {
@@ -390,7 +613,7 @@ bool TapscriptInterpreter::OpCheckSigAdd(ExecutionContext& ctx) {
     }
 
     // Push updated n back to stack
-    return PushStack(ctx, {static_cast<uint8_t>(n & 0xff)});  // BIP342: Check limits
+    return PushStack(ctx, EncodeScriptNum(n));
 }
 
 // ============================================================
@@ -506,10 +729,14 @@ bool TapscriptInterpreter::OpCheckTemplateVerify(ExecutionContext& ctx) {
 
     const auto& expected_hash = ctx.stack.back();
 
-    // Expected hash must be exactly 32 bytes
+    // BIP119 reserves all non-32-byte arguments as NOP behavior for future
+    // upgrades. Nodes may discourage them as policy, but consensus succeeds.
     if (expected_hash.size() != 32) {
-        ctx.error = "OP_CHECKTEMPLATEVERIFY: hash must be 32 bytes, got " + std::to_string(expected_hash.size());
-        return false;
+        if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+            ctx.error = "OP_CHECKTEMPLATEVERIFY: discouraged non-32-byte argument";
+            return false;
+        }
+        return true;
     }
 
     // Need transaction context
@@ -677,10 +904,11 @@ bool TapscriptInterpreter::OpCheckContractVerify(ExecutionContext& ctx) {
         return false;
     }
 
-    // Pop contract state data from stack
-    const auto& new_state_bytes = ctx.stack.back();
+    // Copy before pop_back: retaining references to vector elements across a
+    // pop is undefined behavior.
+    const auto new_state_bytes = ctx.stack.back();
     ctx.stack.pop_back();
-    const auto& prev_state_bytes = ctx.stack.back();
+    const auto prev_state_bytes = ctx.stack.back();
     ctx.stack.pop_back();
 
     // Deserialize previous state
@@ -697,9 +925,22 @@ bool TapscriptInterpreter::OpCheckContractVerify(ExecutionContext& ctx) {
         return false;
     }
 
-    // Verify contract state transition using covenant verification function
-    if (!VerifyContractTransition(*ctx.tx, static_cast<uint32_t>(ctx.input_index),
-                                   prev_state, new_state)) {
+    if (!ctx.input_utxos || !ctx.tapscript ||
+        !ctx.internal_key || !ctx.merkle_root) {
+        ctx.error = "OP_CHECKCONTRACTVERIFY: missing Taproot binding context";
+        return false;
+    }
+
+    const ContractSpendContext spend_context{
+        *ctx.input_utxos,
+        *ctx.tapscript,
+        *ctx.internal_key,
+        *ctx.merkle_root,
+        ctx.output_key_parity
+    };
+    if (!VerifyContractTransition(
+            *ctx.tx, static_cast<uint32_t>(ctx.input_index),
+            prev_state, new_state, spend_context)) {
         ctx.error = "OP_CHECKCONTRACTVERIFY: state transition verification failed";
         return false;
     }
