@@ -9,7 +9,9 @@ by the activation table in §3.
 **Security status:** This document describes what the implementation does. It
 is not a claim that the custom composition has inherited the security proofs of
 Sapling, BIP340, Spartan, or libsecp256k1-zkp. Independent cryptographic review
-remains required; §15 identifies the review boundary.
+remains required; §15 identifies the review boundary and the
+[external-review package](../audits/SHIELDED_V1_EXTERNAL_REVIEW_PACKAGE.md)
+defines the assignment, evidence, and acceptance criteria.
 
 If this document and deployed consensus code disagree, nodes follow the code.
 The disagreement is a consensus-spec defect and MUST be resolved explicitly;
