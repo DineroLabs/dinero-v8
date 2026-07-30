@@ -206,6 +206,28 @@ public:
     const HeaderIndexEntry* GetBestHeader() const;
 
     /**
+     * @brief Copy the best header out under the lock (issue #439).
+     *
+     * Prefer this over GetBestHeader() for anything that reads fields. The raw
+     * accessor takes mutex_ and returns the pointer *after* releasing it, so
+     * every field read through it happens outside the lock.
+     *
+     * This is a USE-AFTER-FREE hazard, not merely a stale/racy read: "best
+     * header" is not a permanent property of an entry. A reorg can make the
+     * former best header a side-branch tip, and side-branch tips are evictable
+     * (EvictBranch, which runs under THIS class's mutex — not the caller's).
+     * So the entry a caller is holding can be freed the moment the lock is
+     * released. The same reasoning that justifies GetHeaderCopy() applies here.
+     *
+     * Copying under the lock removes it. The copy's parent pointer is nulled —
+     * it must not be followed (same eviction hazard).
+     *
+     * @param out Filled with a by-value copy of the best header (parent == nullptr)
+     * @return true iff a best header exists
+     */
+    bool GetBestHeaderCopy(HeaderIndexEntry& out) const;
+
+    /**
      * @brief Get header by hash
      *
      * @param hash Block hash to lookup

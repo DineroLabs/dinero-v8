@@ -347,6 +347,17 @@ const HeaderIndexEntry* HeaderChainSelector::GetHeader(const uint256& hash) cons
     return it->second.get();
 }
 
+bool HeaderChainSelector::GetBestHeaderCopy(HeaderIndexEntry& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!best_header_) {
+        return false;
+    }
+    out = *best_header_;
+    // Same rule as GetHeaderCopy: a copy never carries the parent pointer out.
+    out.parent = nullptr;
+    return true;
+}
+
 bool HeaderChainSelector::GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = header_index_.find(hash);
