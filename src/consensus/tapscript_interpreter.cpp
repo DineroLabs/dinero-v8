@@ -304,6 +304,7 @@ bool TapscriptInterpreter::ExecuteTapscript(
 
 bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, ExecutionContext& ctx) {
     size_t pc = 0;
+    uint32_t opcode_position = 0;
 
     // O(1) conditional execution state, matching Bitcoin Core's ConditionStack
     // behavior without rescanning the nesting vector for every opcode.
@@ -311,6 +312,10 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
     size_t inactive_conditions = 0;
 
     while (pc < script.size()) {
+        // BIP342 counts decoded opcodes, not byte offsets. A multi-byte push is
+        // one opcode, and opcodes in inactive branches still advance this
+        // position even though they are not executed.
+        const uint32_t current_opcode_position = opcode_position++;
         const uint8_t opcode = script[pc++];
 
         // OP_SUCCESS opcodes (BIP342 soft fork mechanism)
@@ -454,6 +459,10 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
 
             case OP_RETURN:
                 if (!OpReturn(ctx)) return false;
+                break;
+
+            case OP_CODESEPARATOR:
+                ctx.code_separator_position = current_opcode_position;
                 break;
 
             // Crypto (Schnorr signatures - BIP342)
@@ -626,7 +635,8 @@ bool TapscriptInterpreter::OpCheckSig(ExecutionContext& ctx) {
         ctx.tx, ctx.input_index, ctx.flags, *ctx.input_utxos);
     std::vector<uint8_t> sighash = SignatureHashTaproot(
         sighash_context, hash_type, *ctx.tapleaf_hash,
-        ctx.annex ? *ctx.annex : std::vector<uint8_t>{});
+        ctx.annex ? *ctx.annex : std::vector<uint8_t>{},
+        ctx.code_separator_position);
     if (sighash.size() != 32) {
         ctx.error = "OP_CHECKSIG: invalid signature hash type";
         return false;
@@ -703,7 +713,8 @@ bool TapscriptInterpreter::OpCheckSigAdd(ExecutionContext& ctx) {
             ctx.tx, ctx.input_index, ctx.flags, *ctx.input_utxos);
         std::vector<uint8_t> sighash = SignatureHashTaproot(
             sighash_context, hash_type, *ctx.tapleaf_hash,
-            ctx.annex ? *ctx.annex : std::vector<uint8_t>{});
+            ctx.annex ? *ctx.annex : std::vector<uint8_t>{},
+            ctx.code_separator_position);
         if (sighash.size() != 32) {
             ctx.error = "OP_CHECKSIGADD: invalid signature hash type";
             return false;
