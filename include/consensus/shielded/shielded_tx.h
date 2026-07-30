@@ -46,11 +46,9 @@ namespace dinero::consensus::shielded {
  * `cv = v · V_GEN + rcv · R_GEN` published alongside the proof.
  * Consensus uses cv for the cross-bundle balance check (wave 2).
  */
-/// Pedersen value commitment in 33-byte compressed form. The libsecp
-/// pedersen serialization uses prefix 0x08 (odd-y) / 0x09 (even-y);
-/// preserving the prefix is consensus-critical, since dropping it
-/// would force verifiers to guess parity 50/50 per cv, breaking
-/// the bvk reconstruction in binding-sig verify.
+/// Pedersen value commitment in libsecp256k1-zkp's 33-byte encoding.
+/// Prefix 0x08/0x09 carries the library's internal sign convention (not
+/// SEC1's 0x02/0x03 y-parity encoding). Preserving it is consensus-critical.
 using ValueCommitment = std::array<uint8_t, 33>;
 
 struct ShieldedSpend {
@@ -89,22 +87,24 @@ struct ShieldedOutput {
  * Negative = value flowing OUT (unshield). Zero = balanced transfer.
  *
  * Consensus verifies: transparent_in - transparent_out - fee = value_balance
- * The ZK proofs verify: sum(spend_values) - sum(output_values) = value_balance
+ * The ZK proofs verify: sum(output_values) - sum(spend_values) = value_balance
  */
 /// Phase 3 wave 2: Schnorr binding signature, 64 bytes:
 ///   bytes [0..32) — R (32-byte x-only)
 ///   bytes [32..64) — s (32-byte scalar)
 /// Per BIP340. Verifier reconstructs bvk = sum(cv_spend) - sum(cv_output)
-/// - value_balance·V and checks the signature.
+/// + value_balance·V and checks the signature.
 using BindingSignature = std::array<uint8_t, 64>;
 
 struct ShieldedBundle {
     int64_t                          value_balance = 0;  ///< net value into pool (can be negative)
     std::vector<ShieldedSpend>       spends;
     std::vector<ShieldedOutput>      outputs;
-    /// Aggregated range proof: per-cv Borromean rangeproof bytes today,
-    /// reinterpreted as Bulletproofs aggregated proof when libsecp ships
-    /// the verifier. Wire format documented in range_proof.h.
+    /// Misnamed legacy field: this is a version-1 container holding one
+    /// Borromean secp256k1-zkp range proof per cv. It is NOT an aggregated
+    /// proof. A future aggregated construction is a new protocol requiring
+    /// an explicit encoding/version and activation; these bytes must not be
+    /// silently reinterpreted. Wire format is documented in range_proof.h.
     std::vector<uint8_t>             aggregated_range_proof;
     /// Phase 3 wave 2: published bvk in pedersen_commitment form
     /// (33 bytes). bvk = bsk·G + 0·V where bsk = sum(rcv_spend) -
@@ -132,10 +132,10 @@ constexpr int32_t TX_VERSION_SHIELDED_V2 = 6;
 constexpr size_t kMaxSpendsPerBundle  = 200;
 constexpr size_t kMaxOutputsPerBundle = 200;
 
-// Phase 3 wave 1 (Path C): max number of value commitments aggregated
-// into a single Bulletproof. Verifier cost grows ~O(N log N); cap of
-// 32 keeps per-BP work bounded. Bundles with > 32 cvs emit multiple
-// BPs (concatenated in `aggregated_range_proof`).
+// Historical planning constant. The deployed v1 range-proof container is
+// per-cv Borromean, does not aggregate, and does not consume this value.
+// Retained only because callers/tests may reference it; it is not a consensus
+// limit. The actual bundle caps are kMaxSpendsPerBundle/kMaxOutputsPerBundle.
 constexpr size_t kMaxBPAggregationDepth = 32;
 
 // ── VWU constants for shielded components ────────────────────────────

@@ -13,10 +13,11 @@
  *   in upstream. We use the older `secp256k1_rangeproof_*` Borromean-
  *   shape proof per cv, which provides the same security property
  *   (proves v ∈ [0, 2^64)) at higher byte-cost (~5 KB per proof vs.
- *   ~700 bytes for an aggregated BP). Wire format is forward-compatible:
- *   when bppp-aggregated proofs ship in libsecp, the inner encoding of
- *   `ShieldedBundle.aggregated_range_proof` switches without touching
- *   the outer canonical-serialization byte layout.
+ *   ~700 bytes for an aggregated BP).
+ *
+ * Despite the historical field name, this encoding is NOT safely
+ * reinterpret-able. A future aggregated proof changes consensus semantics and
+ * MUST use an explicit protocol version/encoding plus coordinated activation.
  *
  * Wire format of `aggregated_range_proof`:
  *

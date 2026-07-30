@@ -1,4 +1,10 @@
-# Shielded Pool — Cross-Bundle Supply Integrity
+# Shielded Pool — Cross-Bundle Supply Integrity (historical design)
+
+> **Nonnormative and partly superseded.** This document records the design
+> process. Its planned aggregated Bulletproof construction and several binding
+> equations do not describe deployed consensus. See
+> [`shielded_protocol_v1.md`](shielded_protocol_v1.md) for the traced v1
+> protocol. Do not implement from this document.
 
 **Status:** **PATH C WAVES 1 + 2 SHIPPED 2026-04-27** (same-day
 implementation after approval). Wave 3 has structural test coverage

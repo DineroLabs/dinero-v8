@@ -172,11 +172,10 @@ TxId Transaction::GetTxid() const {
 }
 
 // ============================================================================
-// Witness Transaction ID (Phase 11b.3: Safety Guard)
+// Witness Transaction ID
 // ============================================================================
-// ⚠️  Phase 11b.3: wtxid is NOT consensus-active yet!
-//     Used only by consensus::ComputeWitnessMerkleRoot() (groundwork).
-//     See include/primitives/transaction.h for full explanation.
+// Consensus::ComputeWitnessMerkleRoot() commits these IDs through the coinbase
+// DINW witness commitment. Transaction indexing continues to use txid.
 // ============================================================================
 WTxId Transaction::GetWtxid() const {
     // Wtxid is hash of full serialization (with witness) - Phase M.4.3-A: returns WTxId

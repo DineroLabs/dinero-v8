@@ -17,7 +17,8 @@
  *   Partial rounds: Rp = 56  (only element [0])
  *   Total rounds:   64
  *   MDS matrix:     M = [[2,1,1],[1,2,1],[1,1,2]]  (MDS for all p > 3)
- *   Round constants: SHA256("PoseidonC_secp256k1" || BE32(round) || BE32(element)) mod n
+ *   Round constants: SHA256("PoseidonC_secp256k1" || BE32(round) ||
+ *                    BE32(element)), rehashed until a valid non-zero scalar
  *
  * Constraint cost:
  *   Full rounds:    8 rounds × 3 elements × 3 muls = 72 R1CS mul constraints

@@ -1,21 +1,21 @@
 #pragma once
 /**
- * Shielded pool block commitment — anchors the private state in each block.
+ * Dormant shielded pool coinbase-commitment experiment.
  *
- * The block header's 12-byte reserved field is too small for a full 32-byte
- * commitment tree root. Instead, we follow the BIP141 pattern:
+ * IMPORTANT: this module has no production caller and is not part of the
+ * deployed protocol. BlockHeader v1 requires reserved[12] to remain all zero,
+ * and production block validation does not require this OP_RETURN. Shielded
+ * state is deterministically derived from the committed transaction bundles.
  *
- *   1. The coinbase transaction carries an OP_RETURN output with:
+ * The helpers preserve an earlier proposed BIP141-shaped encoding:
+ *
+ *   1. A coinbase transaction could carry an OP_RETURN output with:
  *      [4-byte magic] [32-byte tree_root] [8-byte nullifier_count_le]
  *
- *   2. The header's reserved[0] byte is set to 0x01 when the block
- *      contains a shielded commitment (activation flag).
- *
- * Validators find the commitment in the coinbase and verify it matches
- * the state computed from the block's shielded bundles.
- *
  * Magic bytes: "DSP\x01" (Dinero Shielded Pool v1).
- * Located in the first OP_RETURN output whose script starts with this magic.
+ *
+ * Do not emit or require this encoding without a separately specified and
+ * activated consensus change.
  */
 
 #include "consensus/shielded/commitment_tree.h"
@@ -30,7 +30,7 @@ namespace dinero::consensus::shielded {
 /** Magic prefix for the coinbase OP_RETURN shielded commitment. */
 constexpr std::array<uint8_t, 4> SHIELDED_COMMITMENT_MAGIC = {0x44, 0x53, 0x50, 0x01}; // "DSP\x01"
 
-/** Header reserved[0] flag: block has a shielded state commitment. */
+/** Historical proposed flag only. Deployed BlockHeader v1 rejects its use. */
 constexpr uint8_t HEADER_SHIELDED_FLAG = 0x01;
 
 /** Total OP_RETURN payload: 4 (magic) + 32 (tree root) + 8 (nullifier count) = 44 bytes. */

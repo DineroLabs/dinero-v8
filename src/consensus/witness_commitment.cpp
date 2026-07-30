@@ -62,7 +62,7 @@ std::vector<uint8_t> BuildWitnessCommitment(
     script.push_back(0x52);  // R
     script.push_back(0x57);  // W
 
-    // Version byte (0x01 = Phase 11c, NOT enforced)
+    // Version byte (0x01).
     script.push_back(WitnessCommitment::VERSION);
 
     // Commitment hash (32 bytes)

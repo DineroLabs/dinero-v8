@@ -13,21 +13,27 @@
  *   for each spend:
  *     [32 bytes] nullifier
  *     [32 bytes] anchor
- *     [varint]   proof_len
- *     [N bytes]  zk_proof
+ *     [33 bytes] cv
+ *     [CompactSize] proof_len
+ *     [N bytes] zk_proof
  *   [varint]   num_outputs
  *   for each output:
  *     [32 bytes] commitment
- *     [varint]   encrypted_note_len
- *     [N bytes]  encrypted_note
- *     [varint]   proof_len
- *     [N bytes]  zk_proof
- *   [32 bytes] binding_sig
+ *     [33 bytes] cv
+ *     [CompactSize] encrypted_note_len
+ *     [N bytes] encrypted_note
+ *     [CompactSize] proof_len
+ *     [N bytes] zk_proof
+ *   [CompactSize] range_proof_container_len
+ *   [N bytes] range_proof_container
+ *   [33 bytes] bvk_commitment
+ *   [64 bytes] binding_sig
  *
  * Canonical constraints:
  *   - Spends are ordered by nullifier (lexicographic, ascending)
  *   - Outputs are ordered by commitment (lexicographic, ascending)
- *   - Varints use Bitcoin's CompactSize (minimal encoding only)
+ *   - Every variable-length integer uses Bitcoin CompactSize
+ *     (minimal encoding only)
  *   - No trailing bytes after binding_sig
  *   - Reserialize-equals-original check (same as P2MR witness)
  */

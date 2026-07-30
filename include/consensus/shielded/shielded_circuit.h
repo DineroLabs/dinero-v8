@@ -3,24 +3,30 @@
  * Shielded pool ZK circuits — spend and output proofs.
  *
  * Spend proof (published with each ShieldedSpend):
- *   Public inputs:  nullifier, anchor (commitment tree root)
+ *   Public inputs:  nullifier, anchor, and (post-cv activation) cv
  *   Private inputs: secret_key, leaf_index, value, randomness,
- *                   merkle_path[TREE_DEPTH] siblings
+ *                   diversifier, rcv, merkle_path[TREE_DEPTH] siblings
  *
  *   The circuit proves:
  *     1. public_key = Poseidon(secret_key, 0)
- *     2. commitment = Poseidon(Poseidon(value, public_key), randomness)
- *     3. Merkle path from commitment to anchor is valid
- *     4. nullifier = Poseidon(secret_key, leaf_index)
+ *     2. addr_bind = Poseidon(ADDR_TAG, Poseidon(d, public_key))
+ *     3. commitment = Poseidon(Poseidon(addr_bind, value), randomness)
+ *     4. Merkle path from commitment to anchor is valid
+ *     5. nullifier = Poseidon(secret_key, leaf_index)
+ *     6. value is 64-bit
+ *     7. post-cv activation: cv = rcv·G + value·V
  *
  *   Constraint count: ~240 × (1 + 1 + TREE_DEPTH + 1) ≈ 8,400
  *
  * Output proof (published with each ShieldedOutput):
- *   Public inputs:  commitment
- *   Private inputs: value, public_key, randomness
+ *   Public inputs:  commitment and (post-cv activation) cv
+ *   Private inputs: value, public_key, randomness, diversifier, rcv
  *
  *   The circuit proves:
- *     commitment = Poseidon(Poseidon(value, public_key), randomness)
+ *     addr_bind = Poseidon(ADDR_TAG, Poseidon(d, public_key))
+ *     commitment = Poseidon(Poseidon(addr_bind, value), randomness)
+ *     value is 64-bit
+ *     post-cv activation: cv = rcv·G + value·V
  *
  *   Constraint count: ~480
  *

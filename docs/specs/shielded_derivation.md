@@ -1,6 +1,13 @@
-# Dinero Shielded Derivation Spec — v1 (DRAFT, not yet activated)
+# Dinero Shielded Derivation Notes — historical draft
 
-**Status:** DRAFT. This spec defines key derivation and address encoding for
+> **Nonnormative and partly superseded.** This draft contains pre-deployment
+> proposals (including RFC 9380 hash-to-curve and direct `(d, pk_d)` note
+> binding) that do not describe the deployed protocol. The normative,
+> implementation-traced description is
+> [`shielded_protocol_v1.md`](shielded_protocol_v1.md). Retained vectors and
+> deviation notes below are historical evidence, not authority.
+
+**Historical status:** This draft proposed key derivation and address encoding for
 the Dinero shielded pool (tx version 5). Consensus code in
 `src/consensus/shielded/` already accepts v5 transactions; what remains
 before any wallet ships shielded UX is locking the bytes in this document

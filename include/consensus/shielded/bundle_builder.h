@@ -6,8 +6,8 @@
  * list of spends-to-perform and outputs-to-create. The builder
  * handles every cryptographic primitive Wave 1B / Wave 2 introduced:
  *
- *   - Generates fresh `rcv` (Pedersen blinding randomness) per spend
- *     and per output.
+ *   - Consumes caller-supplied fresh `rcv` (Pedersen blinding randomness)
+ *     and range-proof nonces per spend and per output.
  *   - Computes `cv = blind·G + value·V` for each via `PedersenCommit`.
  *   - Generates per-cv Borromean range proofs via `SignRangeProof`
  *     and concatenates them into `aggregated_range_proof`.

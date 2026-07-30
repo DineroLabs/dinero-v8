@@ -17,8 +17,9 @@
  *   - Sender chooses blinds such that
  *       bsk = sum(blind_spend) - sum(blind_output)  (mod q)
  *     is a known scalar. The corresponding public key is
+ *       value_balance = sum(value_output) - sum(value_spend)
  *       bvk = bsk · G
- *           = sum(cv_spend) - sum(cv_output) - value_balance · V
+ *           = sum(cv_spend) - sum(cv_output) + value_balance · V
  *     (the V-component cancels when value_balance matches the
  *     committed value flow; the G-component is bvk).
  *
@@ -26,9 +27,11 @@
  *     binding_sighash domain-separates over:
  *       "DIN/v7/shielded/binding/v1"
  *         || value_balance_LE_8bytes
- *         || tx_sighash_32bytes      // transparent envelope BIP143 sighash
- *         || canonical-sorted cv_spend_x's
- *         || canonical-sorted cv_output_x's
+ *         || tx_sighash_32bytes      // custom transparent-envelope digest
+ *         || spend_count_LE_8bytes
+ *         || canonical-sorted cv_spend_33bytes
+ *         || output_count_LE_8bytes
+ *         || canonical-sorted cv_output_33bytes
  *
  *   - Consensus reconstructs bvk and verifies the signature. Any
  *     mismatch — mutated value_balance, swapped cv, mutated tx
@@ -41,8 +44,9 @@
  * they're sufficient supply-integrity guards that the activation
  * gate can finally be lowered.
  *
- * Wrap-attack protection: `tx_sighash` is the BIP143 sighash of the
- * transparent envelope this bundle rides in. A miner who lifts the
+ * Wrap-attack protection: `tx_sighash` is Dinero's domain-separated
+ * SHA-256 stream over the transparent envelope this bundle rides in. It is
+ * not BIP143-shaped and is not a BIP143 input sighash. A miner who lifts the
  * bundle into a different transparent envelope produces a different
  * sighash, breaks binding_sighash, and binding-sig verify rejects.
  * Caller (block_validation.cpp) MUST supply the real tx_sighash;
@@ -81,12 +85,12 @@ Hash ComputeBindingSighash(const ShieldedBundle& bundle,
  *   sighash = SHA-256(
  *       "DIN/v7/shielded/tx-sighash/v1"
  *       || version_LE_4bytes
- *       || prevouts_hash         (BIP143 GetPrevoutsHash)
- *       || sequence_hash         (BIP143 GetSequenceHash)
- *       || outputs_hash          (BIP143 GetOutputsHash)
+ *       || vin_count_LE_4bytes
+ *       || (prev_txid_32 || prev_vout_LE_4 || sequence_LE_4)*
+ *       || vout_count_LE_4bytes
+ *       || (value_LE_8 || script_len_LE_4 || script_bytes)*
  *       || locktime_LE_4bytes)
  */
-struct Transaction;  // forward declared via primitives below
 }  // namespace dinero::consensus::shielded
 
 #include "primitives/transaction.h"

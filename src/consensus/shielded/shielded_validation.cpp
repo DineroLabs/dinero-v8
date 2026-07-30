@@ -159,7 +159,7 @@ ShieldedValidationError ValidateShieldedBundle(
 
     // 3b. Phase 3 wave 2: Schnorr binding signature.
     //     Closes the cross-bundle inflation hole. Reconstructs
-    //     bvk = sum(cv_spend) - sum(cv_output) - value_balance · V
+    //     bvk = sum(cv_spend) - sum(cv_output) + value_balance · V
     //     and verifies a BIP340 Schnorr signature against bvk over a
     //     domain-separated sighash that includes value_balance, the
     //     transparent tx_sighash, and every cv. Any mutation of those
