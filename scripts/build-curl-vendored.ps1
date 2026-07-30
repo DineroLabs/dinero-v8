@@ -18,6 +18,11 @@ $KnownCurlSourceSha256 = @{
 
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 
+# --- Enforce OpenSSL 3.5.7 baseline (no overrides) ---
+if ($OpenSSLVersion -ne '3.5.7') {
+    Fail "OPENSSL_VERSION must be 3.5.7 (the pinned crypto baseline); got '$OpenSSLVersion'"
+}
+
 if (-not (Test-Path (Join-Path $OpenSSLPrebuilt 'libcrypto.lib'))) {
     Fail "Vendored static OpenSSL $OpenSSLVersion not found at $OpenSSLPrebuilt. Run scripts/build-openssl-vendored.ps1 first."
 }
