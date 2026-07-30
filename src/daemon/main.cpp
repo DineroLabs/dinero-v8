@@ -418,6 +418,7 @@ void print_usage(const char* program_name) {
     std::cout << "\n";
     std::cout << "Pool Accounting (disabled by default):\n";
     std::cout << "  --pool.accounting.enable=1  Enable pool.* accounting RPC + pool DB\n";
+    std::cout << "  --experimental.ccv_rpc=1   Enable construction-only CCV RPC (REGTEST only)\n";
     std::cout << "\n";
 }
 

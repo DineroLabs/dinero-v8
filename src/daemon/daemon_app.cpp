@@ -895,6 +895,16 @@ bool DaemonApp::Init(int argc, char** argv) {
         }
     }
 
+    // The construction RPC is intentionally a regtest laboratory surface.
+    // Reject unsupported-chain requests before opening chain or wallet data;
+    // WireRpcContext repeats this check as defense in depth.
+    if (config->GetBool("experimental.ccv_rpc", false) &&
+        Params().name != "regtest") {
+        std::cerr
+            << "[FATAL] experimental.ccv_rpc is REGTEST-only" << std::endl;
+        return false;
+    }
+
     // Phase D.1 (Dinero Core 1.0): wire `debug.log_file` from final
     // config (file + CLI overrides applied) into LoggerService BEFORE
     // app.Start() runs the LoggerService::Start() lifecycle hook. Empty

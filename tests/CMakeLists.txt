@@ -4199,6 +4199,31 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_ccv_wallet_v1.cpp)
   )
 endif()
 
+# Experimental CCV RPC stays construction-only, opt-in, and REGTEST-only.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/rpc/test_wallet_ccv_rpc.cpp)
+  add_executable(test_wallet_ccv_rpc
+    tests/rpc/test_wallet_ccv_rpc.cpp
+    src/rpc/methods_wallet_ccv.cpp
+  )
+  target_link_libraries(test_wallet_ccv_rpc PRIVATE
+    dinero_wallet
+    dinero_consensus
+    jsoncpp_static
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_wallet_ccv_rpc)
+  target_include_directories(test_wallet_ccv_rpc PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME WalletCcvRpc COMMAND test_wallet_ccv_rpc)
+  set_tests_properties(WalletCcvRpc PROPERTIES
+    LABELS "wallet;rpc;regtest;covenant;ccv"
+    TIMEOUT 60
+  )
+endif()
+
 # Phase 29: Covenant Integration Layer Tests
 # DELETED registration: this test was superseded by Phase C.2, which moved
 # covenant policy directly into mempool.cpp without the deprecated

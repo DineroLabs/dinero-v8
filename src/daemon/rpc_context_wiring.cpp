@@ -8,6 +8,7 @@
 #include "rpc/rpc_registry.h"
 #include "rpc/rpc_init.h"                    // For RegisterAllRPCMethods() (Phase E.3.1 CPU stats)
 #include "rpc/methods_mining.h"             // For din::rpc::registerStratumMethodsContext()
+#include "rpc/methods_wallet_ccv.h"         // Opt-in regtest-only CCV construction
 #include "rpc/methods_pool.h"               // Pool accounting RPC (feature-gated)
 #include "rpc/rpc_dynamic_p2p_handlers.h"   // Task 6: dynamic_p2p.observe handler
 #include "rpc/rpc_relay_hints_handlers.h"   // Phase 2b: relay_hints.list handler
@@ -192,6 +193,29 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
         // v7 shielded pool.
         registerShieldedWalletMethods();
         dinero::g_logger.info("[RPC Context] ✅ V7 shielded pool handlers registered (wallet.shield, wallet.unshield)");
+
+        const bool ccv_rpc_requested =
+            ctx.config &&
+            ctx.config->GetBool("experimental.ccv_rpc", false);
+        switch (dinero::rpc::EvaluateWalletCcvRpcGateForSelectedChain(
+            ccv_rpc_requested)) {
+        case dinero::rpc::WalletCcvRpcGate::Disabled:
+            break;
+        case dinero::rpc::WalletCcvRpcGate::RefusedNonRegtest:
+            dinero::g_logger.error(
+                "[RPC Context] experimental.ccv_rpc is REGTEST-only");
+            return false;
+        case dinero::rpc::WalletCcvRpcGate::Enabled:
+            if (!dinero::rpc::RegisterWalletCcvMethods()) {
+                dinero::g_logger.error(
+                    "[RPC Context] Failed to register wallet CCV handlers");
+                return false;
+            }
+            dinero::g_logger.warning(
+                "[RPC Context] ⚠️ Experimental REGTEST-only CCV construction "
+                "RPC enabled (no signing or broadcast)");
+            break;
+        }
 
         // TODO Phase D: Re-enable covenant methods when methods_wallet_covenant.cpp is added to build
         // // Wallet covenant (Phase C.4: Covenant construction)
