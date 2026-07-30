@@ -892,7 +892,7 @@ int main(int argc, char* argv[]) {
         std::cout << "\n[SUCCESS] All tests passed!\n";
         return 0;
     } else {
-        std::cout << "\n[WARNING] Some tests failed\n";
-        return (tests_failed > 100) ? 1 : 0;  // Allow some failures during development
+        std::cout << "\n[FAILURE] Script corpus contains failing vectors\n";
+        return 1;
     }
 }

@@ -57,6 +57,7 @@ private:
     // Phase L0.3: Added flags for covenant enforcement
     struct ExecutionContext {
         std::vector<std::vector<uint8_t>> stack;
+        std::vector<std::vector<uint8_t>> altstack;
         const Transaction* tx;
         size_t input_index;
         const std::vector<UTXOEntry>* input_utxos;

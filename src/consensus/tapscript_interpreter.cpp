@@ -166,9 +166,10 @@ bool ConsumeSignatureBudget(int64_t& validation_weight_left, std::string& error)
 bool DecodeScriptNum(
     const std::vector<uint8_t>& bytes,
     bool require_minimal,
+    size_t max_size,
     int64_t& value
 ) {
-    if (bytes.size() > 4) return false;
+    if (bytes.size() > max_size) return false;
     if (require_minimal && !bytes.empty() &&
         (bytes.back() & 0x7f) == 0 &&
         (bytes.size() == 1 || (bytes[bytes.size() - 2] & 0x80) == 0)) {
@@ -205,6 +206,28 @@ std::vector<uint8_t> EncodeScriptNum(int64_t value) {
         result.back() |= 0x80;
     }
     return result;
+}
+
+bool IsMinimalPush(uint8_t opcode, const std::vector<uint8_t>& data) {
+    if (data.empty()) {
+        return opcode == OP_0;
+    }
+    if (data.size() == 1 && data[0] >= 1 && data[0] <= 16) {
+        return opcode == OP_1 + (data[0] - 1);
+    }
+    if (data.size() == 1 && data[0] == 0x81) {
+        return opcode == OP_1NEGATE;
+    }
+    if (data.size() <= 75) {
+        return opcode == data.size();
+    }
+    if (data.size() <= 255) {
+        return opcode == OP_PUSHDATA1;
+    }
+    if (data.size() <= 65535) {
+        return opcode == OP_PUSHDATA2;
+    }
+    return true;
 }
 
 } // namespace
@@ -311,6 +334,31 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
     std::vector<bool> condition_stack;
     size_t inactive_conditions = 0;
 
+    auto require_stack = [&](size_t count, const char* operation) {
+        if (ctx.stack.size() >= count) {
+            return true;
+        }
+        ctx.error = std::string(operation) + ": insufficient stack elements";
+        return false;
+    };
+    auto stack_top = [&](size_t depth) -> std::vector<uint8_t>& {
+        return ctx.stack[ctx.stack.size() - depth];
+    };
+    auto decode_number = [&](size_t depth, size_t max_size, int64_t& value) {
+        if (!require_stack(depth, "Numeric opcode")) {
+            return false;
+        }
+        if (!DecodeScriptNum(
+                stack_top(depth),
+                (ctx.flags & SCRIPT_VERIFY_MINIMALDATA) != 0,
+                max_size,
+                value)) {
+            ctx.error = "Invalid script number";
+            return false;
+        }
+        return true;
+    };
+
     while (pc < script.size()) {
         // BIP342 counts decoded opcodes, not byte offsets. A multi-byte push is
         // one opcode, and opcodes in inactive branches still advance this
@@ -345,6 +393,11 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
                 std::vector<uint8_t> data(
                     script.begin() + pc,
                     script.begin() + pc + push_length);
+                if ((ctx.flags & SCRIPT_VERIFY_MINIMALDATA) &&
+                    !IsMinimalPush(opcode, data)) {
+                    ctx.error = "Non-minimal data push";
+                    return false;
+                }
                 if (!PushStack(ctx, data)) return false;
             }
             pc += push_length;
@@ -435,12 +488,165 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
         // Handle opcodes
         switch (opcode) {
             // Stack operations
+            case OP_TOALTSTACK:
+                if (!require_stack(1, "OP_TOALTSTACK")) return false;
+                ctx.altstack.push_back(std::move(ctx.stack.back()));
+                ctx.stack.pop_back();
+                break;
+
+            case OP_FROMALTSTACK:
+                if (ctx.altstack.empty()) {
+                    ctx.error = "OP_FROMALTSTACK: altstack empty";
+                    return false;
+                }
+                ctx.stack.push_back(std::move(ctx.altstack.back()));
+                ctx.altstack.pop_back();
+                break;
+
+            case OP_2DROP:
+                if (!require_stack(2, "OP_2DROP")) return false;
+                ctx.stack.pop_back();
+                ctx.stack.pop_back();
+                break;
+
+            case OP_2DUP: {
+                if (!require_stack(2, "OP_2DUP")) return false;
+                const auto first = stack_top(2);
+                const auto second = stack_top(1);
+                if (!PushStack(ctx, first) || !PushStack(ctx, second)) {
+                    return false;
+                }
+                break;
+            }
+
+            case OP_3DUP: {
+                if (!require_stack(3, "OP_3DUP")) return false;
+                const auto first = stack_top(3);
+                const auto second = stack_top(2);
+                const auto third = stack_top(1);
+                if (!PushStack(ctx, first) ||
+                    !PushStack(ctx, second) ||
+                    !PushStack(ctx, third)) {
+                    return false;
+                }
+                break;
+            }
+
+            case OP_2OVER: {
+                if (!require_stack(4, "OP_2OVER")) return false;
+                const auto first = stack_top(4);
+                const auto second = stack_top(3);
+                if (!PushStack(ctx, first) || !PushStack(ctx, second)) {
+                    return false;
+                }
+                break;
+            }
+
+            case OP_2ROT: {
+                if (!require_stack(6, "OP_2ROT")) return false;
+                const auto first = stack_top(6);
+                const auto second = stack_top(5);
+                ctx.stack.erase(ctx.stack.end() - 6);
+                ctx.stack.erase(ctx.stack.end() - 5);
+                if (!PushStack(ctx, first) || !PushStack(ctx, second)) {
+                    return false;
+                }
+                break;
+            }
+
+            case OP_2SWAP:
+                if (!require_stack(4, "OP_2SWAP")) return false;
+                std::swap(stack_top(4), stack_top(2));
+                std::swap(stack_top(3), stack_top(1));
+                break;
+
+            case OP_IFDUP:
+                if (!require_stack(1, "OP_IFDUP")) return false;
+                if (CastToBool(ctx.stack.back())) {
+                    const auto value = ctx.stack.back();
+                    if (!PushStack(ctx, value)) return false;
+                }
+                break;
+
+            case OP_DEPTH:
+                if (!PushStack(
+                        ctx,
+                        EncodeScriptNum(
+                            static_cast<int64_t>(ctx.stack.size())))) {
+                    return false;
+                }
+                break;
+
             case OP_DUP:
                 if (!OpDup(ctx)) return false;
                 break;
 
             case OP_DROP:
                 if (!OpDrop(ctx)) return false;
+                break;
+
+            case OP_NIP:
+                if (!require_stack(2, "OP_NIP")) return false;
+                ctx.stack.erase(ctx.stack.end() - 2);
+                break;
+
+            case OP_OVER: {
+                if (!require_stack(2, "OP_OVER")) return false;
+                const auto value = stack_top(2);
+                if (!PushStack(ctx, value)) return false;
+                break;
+            }
+
+            case OP_PICK:
+            case OP_ROLL: {
+                int64_t depth = 0;
+                if (!decode_number(1, 4, depth)) return false;
+                ctx.stack.pop_back();
+                if (depth < 0 ||
+                    static_cast<size_t>(depth) >= ctx.stack.size()) {
+                    ctx.error =
+                        opcode == OP_PICK
+                            ? "OP_PICK: invalid stack depth"
+                            : "OP_ROLL: invalid stack depth";
+                    return false;
+                }
+                const size_t index =
+                    ctx.stack.size() - 1 - static_cast<size_t>(depth);
+                const auto value = ctx.stack[index];
+                if (opcode == OP_ROLL) {
+                    ctx.stack.erase(ctx.stack.begin() + index);
+                }
+                if (!PushStack(ctx, value)) return false;
+                break;
+            }
+
+            case OP_ROT:
+                if (!require_stack(3, "OP_ROT")) return false;
+                std::rotate(ctx.stack.end() - 3,
+                            ctx.stack.end() - 2,
+                            ctx.stack.end());
+                break;
+
+            case OP_SWAP:
+                if (!require_stack(2, "OP_SWAP")) return false;
+                std::swap(stack_top(2), stack_top(1));
+                break;
+
+            case OP_TUCK: {
+                if (!require_stack(2, "OP_TUCK")) return false;
+                const auto value = ctx.stack.back();
+                ctx.stack.insert(ctx.stack.end() - 2, value);
+                break;
+            }
+
+            case OP_SIZE:
+                if (!require_stack(1, "OP_SIZE") ||
+                    !PushStack(
+                        ctx,
+                        EncodeScriptNum(
+                            static_cast<int64_t>(ctx.stack.back().size())))) {
+                    return false;
+                }
                 break;
 
             // Equality
@@ -460,6 +666,142 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
             case OP_RETURN:
                 if (!OpReturn(ctx)) return false;
                 break;
+
+            // Numeric operations inherited from P2WSH. Tapscript retains
+            // four-byte minimally encoded operands when MINIMALDATA is set.
+            case OP_1ADD:
+            case OP_1SUB:
+            case OP_NEGATE:
+            case OP_ABS:
+            case OP_NOT:
+            case OP_0NOTEQUAL: {
+                int64_t value = 0;
+                if (!decode_number(1, 4, value)) return false;
+                ctx.stack.pop_back();
+                switch (opcode) {
+                    case OP_1ADD: ++value; break;
+                    case OP_1SUB: --value; break;
+                    case OP_NEGATE: value = -value; break;
+                    case OP_ABS:
+                        if (value < 0) value = -value;
+                        break;
+                    case OP_NOT: value = value == 0 ? 1 : 0; break;
+                    case OP_0NOTEQUAL: value = value != 0 ? 1 : 0; break;
+                    default: break;
+                }
+                if (!PushStack(ctx, EncodeScriptNum(value))) return false;
+                break;
+            }
+
+            case OP_ADD:
+            case OP_SUB:
+            case OP_BOOLAND:
+            case OP_BOOLOR:
+            case OP_NUMEQUAL:
+            case OP_NUMEQUALVERIFY:
+            case OP_NUMNOTEQUAL:
+            case OP_LESSTHAN:
+            case OP_GREATERTHAN:
+            case OP_LESSTHANOREQUAL:
+            case OP_GREATERTHANOREQUAL:
+            case OP_MIN:
+            case OP_MAX: {
+                int64_t left = 0;
+                int64_t right = 0;
+                if (!decode_number(2, 4, left) ||
+                    !decode_number(1, 4, right)) {
+                    return false;
+                }
+
+                int64_t result = 0;
+                switch (opcode) {
+                    case OP_ADD: result = left + right; break;
+                    case OP_SUB: result = left - right; break;
+                    case OP_BOOLAND:
+                        result = left != 0 && right != 0 ? 1 : 0;
+                        break;
+                    case OP_BOOLOR:
+                        result = left != 0 || right != 0 ? 1 : 0;
+                        break;
+                    case OP_NUMEQUAL:
+                    case OP_NUMEQUALVERIFY:
+                        result = left == right ? 1 : 0;
+                        break;
+                    case OP_NUMNOTEQUAL:
+                        result = left != right ? 1 : 0;
+                        break;
+                    case OP_LESSTHAN:
+                        result = left < right ? 1 : 0;
+                        break;
+                    case OP_GREATERTHAN:
+                        result = left > right ? 1 : 0;
+                        break;
+                    case OP_LESSTHANOREQUAL:
+                        result = left <= right ? 1 : 0;
+                        break;
+                    case OP_GREATERTHANOREQUAL:
+                        result = left >= right ? 1 : 0;
+                        break;
+                    case OP_MIN: result = std::min(left, right); break;
+                    case OP_MAX: result = std::max(left, right); break;
+                    default: break;
+                }
+                ctx.stack.pop_back();
+                ctx.stack.pop_back();
+
+                if (opcode == OP_NUMEQUALVERIFY) {
+                    if (result == 0) {
+                        ctx.error = "OP_NUMEQUALVERIFY failed";
+                        return false;
+                    }
+                } else if (!PushStack(ctx, EncodeScriptNum(result))) {
+                    return false;
+                }
+                break;
+            }
+
+            case OP_WITHIN: {
+                int64_t value = 0;
+                int64_t minimum = 0;
+                int64_t maximum = 0;
+                if (!decode_number(3, 4, value) ||
+                    !decode_number(2, 4, minimum) ||
+                    !decode_number(1, 4, maximum)) {
+                    return false;
+                }
+                ctx.stack.pop_back();
+                ctx.stack.pop_back();
+                ctx.stack.pop_back();
+                if (!PushStack(
+                        ctx,
+                        EncodeScriptNum(
+                            minimum <= value && value < maximum ? 1 : 0))) {
+                    return false;
+                }
+                break;
+            }
+
+            // Hash operations inherited unchanged from P2WSH.
+            case OP_RIPEMD160:
+            case OP_SHA1:
+            case OP_SHA256:
+            case OP_HASH160:
+            case OP_HASH256: {
+                if (!require_stack(1, "Hash opcode")) return false;
+                const auto input = ctx.stack.back();
+                ctx.stack.pop_back();
+                std::vector<uint8_t> digest;
+                switch (opcode) {
+                    case OP_RIPEMD160: digest = RIPEMD160_Hash(input); break;
+                    case OP_SHA1: digest = SHA1_Hash(input); break;
+                    case OP_SHA256: digest = SHA256_Hash(input); break;
+                    case OP_HASH160: digest = HASH160_Hash(input); break;
+                    case OP_HASH256: digest = HASH256_Hash(input); break;
+                    default: break;
+                }
+                if (!PushStack(ctx, digest)) return false;
+                break;
+            }
 
             case OP_CODESEPARATOR:
                 ctx.code_separator_position = current_opcode_position;
@@ -486,12 +828,118 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
                     "OP_CHECKMULTISIG(VERIFY) is disabled in tapscript";
                 return false;
 
+            case OP_NOP:
+                break;
+
+            case OP_NOP1:
+            case OP_NOP5:
+            case OP_NOP6:
+            case OP_NOP7:
+            case OP_NOP8:
+            case OP_NOP9:
+            case OP_NOP10:
+                if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                    ctx.error = "Discouraged upgradable NOP";
+                    return false;
+                }
+                break;
+
+            case OP_CHECKLOCKTIMEVERIFY: {
+                if (!(ctx.flags & SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY)) {
+                    if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                        ctx.error = "Discouraged OP_CHECKLOCKTIMEVERIFY NOP";
+                        return false;
+                    }
+                    break;
+                }
+
+                int64_t required_lock_time = 0;
+                if (!decode_number(1, 5, required_lock_time)) return false;
+                if (required_lock_time < 0) {
+                    ctx.error = "OP_CHECKLOCKTIMEVERIFY: negative locktime";
+                    return false;
+                }
+                if (!ctx.tx || ctx.input_index >= ctx.tx->vin.size()) {
+                    ctx.error =
+                        "OP_CHECKLOCKTIMEVERIFY: missing transaction context";
+                    return false;
+                }
+
+                constexpr int64_t kLockTimeThreshold = 500'000'000;
+                const int64_t transaction_lock_time = ctx.tx->lockTime;
+                if ((required_lock_time < kLockTimeThreshold) !=
+                        (transaction_lock_time < kLockTimeThreshold) ||
+                    required_lock_time > transaction_lock_time ||
+                    ctx.tx->vin[ctx.input_index].sequence ==
+                        std::numeric_limits<uint32_t>::max()) {
+                    ctx.error = "OP_CHECKLOCKTIMEVERIFY: unsatisfied locktime";
+                    return false;
+                }
+                break;
+            }
+
+            case OP_CHECKSEQUENCEVERIFY: {
+                if (!(ctx.flags & SCRIPT_VERIFY_CHECKSEQUENCEVERIFY)) {
+                    if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                        ctx.error = "Discouraged OP_CHECKSEQUENCEVERIFY NOP";
+                        return false;
+                    }
+                    break;
+                }
+
+                int64_t required_sequence = 0;
+                if (!decode_number(1, 5, required_sequence)) return false;
+                if (required_sequence < 0) {
+                    ctx.error =
+                        "OP_CHECKSEQUENCEVERIFY: negative sequence";
+                    return false;
+                }
+
+                constexpr int64_t kDisableFlag = int64_t{1} << 31;
+                constexpr int64_t kTypeFlag = int64_t{1} << 22;
+                constexpr int64_t kSequenceMask = 0x0000ffff;
+                if (required_sequence & kDisableFlag) {
+                    break;
+                }
+                if (!ctx.tx ||
+                    ctx.tx->version < 2 ||
+                    ctx.input_index >= ctx.tx->vin.size()) {
+                    ctx.error =
+                        "OP_CHECKSEQUENCEVERIFY: transaction is not eligible";
+                    return false;
+                }
+
+                const int64_t transaction_sequence =
+                    ctx.tx->vin[ctx.input_index].sequence;
+                if (transaction_sequence & kDisableFlag) {
+                    ctx.error =
+                        "OP_CHECKSEQUENCEVERIFY: input sequence disabled";
+                    return false;
+                }
+                const int64_t required_masked =
+                    required_sequence & (kTypeFlag | kSequenceMask);
+                const int64_t transaction_masked =
+                    transaction_sequence & (kTypeFlag | kSequenceMask);
+                if ((required_masked & kTypeFlag) !=
+                        (transaction_masked & kTypeFlag) ||
+                    required_masked > transaction_masked) {
+                    ctx.error =
+                        "OP_CHECKSEQUENCEVERIFY: unsatisfied sequence";
+                    return false;
+                }
+                break;
+            }
+
             // Phase L0.3: Covenant opcodes (consensus-critical)
             case OP_CHECKTEMPLATEVERIFY:
                 // BIP119 assigns NOP4. Before activation it remains a NOP;
                 // the 32-byte argument rule is part of the activated opcode.
-                if ((ctx.flags & SCRIPT_VERIFY_CHECKTEMPLATEVERIFY) &&
-                    !OpCheckTemplateVerify(ctx)) {
+                if (ctx.flags & SCRIPT_VERIFY_CHECKTEMPLATEVERIFY) {
+                    if (!OpCheckTemplateVerify(ctx)) return false;
+                } else if (
+                    ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                    ctx.error =
+                        "Discouraged inactive OP_CHECKTEMPLATEVERIFY";
                     return false;
                 }
                 break;
@@ -518,6 +966,12 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
                 ctx.error = "Unknown or unsupported opcode: 0x" +
                            std::to_string(static_cast<int>(opcode));
                 return false;
+        }
+
+        if (ctx.stack.size() + ctx.altstack.size() > 1000) {
+            ctx.error =
+                "Stack size limit exceeded (BIP342: 1000 elements max)";
+            return false;
         }
     }
 
@@ -668,12 +1122,12 @@ bool TapscriptInterpreter::OpCheckSigAdd(ExecutionContext& ctx) {
 
     std::vector<uint8_t> pubkey, signature, n_bytes;
     if (!PopStack(ctx, pubkey)) return false;
-    if (!PopStack(ctx, signature)) return false;
     if (!PopStack(ctx, n_bytes)) return false;
+    if (!PopStack(ctx, signature)) return false;
 
     int64_t n = 0;
     if (!DecodeScriptNum(
-            n_bytes, (ctx.flags & SCRIPT_VERIFY_MINIMALDATA) != 0, n)) {
+            n_bytes, (ctx.flags & SCRIPT_VERIFY_MINIMALDATA) != 0, 4, n)) {
         ctx.error = "OP_CHECKSIGADD: invalid script number";
         return false;
     }
@@ -752,8 +1206,8 @@ bool TapscriptInterpreter::PopStack(ExecutionContext& ctx, std::vector<uint8_t>&
 }
 
 bool TapscriptInterpreter::PushStack(ExecutionContext& ctx, const std::vector<uint8_t>& data) {
-    // BIP342 Fix #1: Enforce maximum stack size (1000 elements)
-    if (ctx.stack.size() >= 1000) {
+    // BIP342 inherits the combined main-stack + altstack 1,000-element limit.
+    if (ctx.stack.size() + ctx.altstack.size() >= 1000) {
         ctx.error = "Stack size limit exceeded (BIP342: 1000 elements max)";
         return false;
     }
