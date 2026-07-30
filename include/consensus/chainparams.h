@@ -62,30 +62,25 @@ struct ChainParams {
     bool mine_blocks_on_demand;      // Mine blocks on demand (regtest)
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Phase 11d: Witness Commitment Enforcement (OPTIONAL, OFF by default)
+    // Witness commitment enforcement
     // ═══════════════════════════════════════════════════════════════════════════
-    // ⚠️  CRITICAL: This is NOT segwit activation!
-    //     This is enforcement plumbing only - the switch is OFF by default.
-    //
     // What this controls:
     //   - If enforce_witness_commitment = true AND height >= enforcement_height:
-    //     * Blocks with witness data MUST include valid witness commitment
-    //     * Blocks without witness data are NOT affected
+    //     * Blocks with a serialized witness marker MUST include valid DINW
+    //     * Blocks without a witness marker are not required to include DINW
     //     * Invalid/missing commitment → block rejected
+    //   - A recognized DINW v1 commitment is validated at every full-rules
+    //     height, including before mandatory enforcement.
     //
     // What this does NOT do:
     //   - ❌ NOT segwit activation
-    //   - ❌ NOT a soft fork (unless explicitly enabled)
     //   - ❌ NOT a header change
     //   - ❌ NOT mandatory for all blocks
     //
-    // Network defaults (SAFE - no activation):
-    //   - mainnet:  enforce=false, height=UINT32_MAX (never)
-    //   - testnet:  enforce=false, height=UINT32_MAX (never)
-    //   - regtest:  enforce=false, height=UINT32_MAX (configurable)
-    //
-    // Status: Phase 11d.1 (plumbing only, NOT activated)
-    // Locked by: tests/consensus/test_witness_commitment_enforcement.cpp
+    // Deployed v8 behavior made DINW mandatory for witness-bearing blocks at
+    // height 10,670 on every chain. These fields are the sole activation source;
+    // changing them changes consensus and requires historical compatibility
+    // analysis plus real BlockValidator boundary tests.
     // ═══════════════════════════════════════════════════════════════════════════
     bool enforce_witness_commitment;           // Enforce witness commitment requirement
     uint32_t witness_commitment_enforcement_height;  // Height to start enforcement

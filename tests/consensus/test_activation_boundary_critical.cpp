@@ -56,6 +56,7 @@ protected:
     // Helper: Create a transaction with witness data
     static Transaction CreateWitnessTx(const TxId& prevTxid) {
         Transaction tx;
+        tx.witness_version = 1;
         tx.vin.resize(1);
         tx.vin[0].prevout.txid = prevTxid;
         tx.vin[0].prevout.vout = 0;
@@ -148,7 +149,7 @@ TEST_F(ActivationBoundaryCriticalTest, Height2_FullRulesActive) {
         << "CRITICAL: IsUtreexoActive must return TRUE for height 2 on mainnet";
 }
 
-TEST_F(ActivationBoundaryCriticalTest, Height2_WitnessTxRequiresCommitment) {
+TEST_F(ActivationBoundaryCriticalTest, Height2_WitnessCommitmentStillOptional) {
     constexpr uint32_t NORMAL_HEIGHT = 2;
 
     SelectParams(Chain::MAINNET);
@@ -161,17 +162,18 @@ TEST_F(ActivationBoundaryCriticalTest, Height2_WitnessTxRequiresCommitment) {
 
     std::vector<Transaction> vtx = {coinbase, witness_tx};
 
-    // Validate witness commitment - should FAIL (witness tx but no commitment)
+    // Full Utreexo rules are active, but mandatory DINW enforcement is a
+    // separate deployed boundary at height 10,670.
     std::string error;
-    bool enforce = true;
-    uint32_t enforcement_height = 0;  // Enforcement from genesis
+    bool result = EnforceWitnessCommitment(
+        vtx,
+        NORMAL_HEIGHT,
+        Params().enforce_witness_commitment,
+        Params().witness_commitment_enforcement_height,
+        error);
 
-    bool result = EnforceWitnessCommitment(vtx, NORMAL_HEIGHT, enforce, enforcement_height, error);
-
-    EXPECT_FALSE(result)
-        << "CRITICAL: Block with witness tx but NO commitment must be REJECTED";
-    EXPECT_FALSE(error.empty())
-        << "CRITICAL: Rejection must include error message";
+    EXPECT_TRUE(result)
+        << "Height 2 predates mandatory DINW enforcement: " << error;
 }
 
 TEST_F(ActivationBoundaryCriticalTest, Height2_ValidCommitmentAccepted) {

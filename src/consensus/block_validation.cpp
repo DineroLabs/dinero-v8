@@ -986,35 +986,19 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         // FULL RULES PATH: Utreexo + witness commitment enforced
         // ─────────────────────────────────────────────────────────────────────
 
-        // Validate witness commitment (if present, must be correct)
+        // ChainParams is the single activation source. EnforceWitnessCommitment
+        // also preserves the deployed rule that a recognized DINW v1
+        // commitment is validated at every full-rules height, even before it
+        // is mandatory.
         std::string witness_error;
-        if (!ValidateWitnessCommitment(block.vtx, witness_error)) {
-            error = "bad-witness-commitment: " + witness_error;
+        if (!EnforceWitnessCommitment(
+                block.vtx,
+                height,
+                Params().enforce_witness_commitment,
+                Params().witness_commitment_enforcement_height,
+                witness_error)) {
+            error = witness_error;
             return false;
-        }
-        // MANDATORY witness commitment for new blocks (activation height 10670)
-        // Blocks 1-10669 were mined before the assembler added commitments.
-        // After 10670, every block has witness data and MUST include DINW commitment.
-        {
-            constexpr uint32_t WITNESS_COMMITMENT_MANDATORY_HEIGHT = 10670;
-            if (height >= WITNESS_COMMITMENT_MANDATORY_HEIGHT) {
-                bool block_has_witness = false;
-                for (const auto& tx : block.vtx) {
-                    if (tx.HasWitness()) {
-                        block_has_witness = true;
-                        break;
-                    }
-                }
-                if (block_has_witness && !block.vtx.empty()) {
-                    auto commitment_idx = FindWitnessCommitmentIndex(block.vtx[0]);
-                    if (!commitment_idx.has_value()) {
-                        error = "missing-witness-commitment (required at height " +
-                                std::to_string(height) + ", mandatory since height " +
-                                std::to_string(WITNESS_COMMITMENT_MANDATORY_HEIGHT) + ")";
-                        return false;
-                    }
-                }
-            }
         }
 
         // Validate Utreexo data presence (if block spends UTXOs)
