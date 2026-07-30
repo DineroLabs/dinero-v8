@@ -50,6 +50,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -353,12 +354,20 @@ int main() {
         auto hkdf_sha256 = [](const uint8_t* ikm, std::size_t ikm_len,
                               const uint8_t* salt, std::size_t salt_len,
                               const uint8_t* info, std::size_t info_len,
-                              uint8_t* out, std::size_t L) {
+                              uint8_t* out, std::size_t L) -> bool {
+            if (salt_len > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+                L > 255U * 32U) {
+                return false;
+            }
+
             // Extract: PRK = HMAC(salt, ikm)
             unsigned int prk_len = 0;
             uint8_t prk[32];
-            HMAC(EVP_sha256(), salt, static_cast<int>(salt_len),
-                 ikm, ikm_len, prk, &prk_len);
+            if (HMAC(EVP_sha256(), salt, static_cast<int>(salt_len),
+                     ikm, ikm_len, prk, &prk_len) == nullptr ||
+                prk_len != sizeof(prk)) {
+                return false;
+            }
 
             // Expand: T(i) = HMAC(PRK, T(i-1) || info || i)
             uint8_t prev[32];
@@ -366,31 +375,38 @@ int main() {
             std::size_t produced = 0;
             uint8_t counter = 1;
             while (produced < L) {
-                HMAC_CTX* ctx = HMAC_CTX_new();
-                HMAC_Init_ex(ctx, prk, 32, EVP_sha256(), nullptr);
-                if (prev_len > 0) HMAC_Update(ctx, prev, prev_len);
-                HMAC_Update(ctx, info, info_len);
-                HMAC_Update(ctx, &counter, 1);
+                std::vector<uint8_t> block_input;
+                block_input.reserve(prev_len + info_len + 1);
+                block_input.insert(block_input.end(), prev, prev + prev_len);
+                block_input.insert(block_input.end(), info, info + info_len);
+                block_input.push_back(counter);
+
                 unsigned int tlen = 0;
-                HMAC_Final(ctx, prev, &tlen);
-                HMAC_CTX_free(ctx);
+                if (HMAC(EVP_sha256(), prk, static_cast<int>(prk_len),
+                         block_input.data(), block_input.size(),
+                         prev, &tlen) == nullptr ||
+                    tlen != sizeof(prev)) {
+                    return false;
+                }
+
                 prev_len = tlen;
                 const std::size_t copy = (L - produced < tlen) ? (L - produced) : tlen;
                 for (std::size_t i = 0; i < copy; ++i) out[produced + i] = prev[i];
                 produced += copy;
                 ++counter;
             }
+            return true;
         };
 
         std::array<uint8_t, 32> derived_pq_seed{};
-        hkdf_sha256(
+        const bool hkdf_ok = hkdf_sha256(
             tv::kHkdfVector_Ikm.data(),  tv::kHkdfVector_Ikm.size(),
             reinterpret_cast<const uint8_t*>(tv::kHkdfVector_Salt.data()),
             tv::kHkdfVector_Salt.size(),
             tv::kHkdfVector_Info.data(), tv::kHkdfVector_Info.size(),
             derived_pq_seed.data(),      derived_pq_seed.size());
 
-        record(derived_pq_seed == tv::kHkdfVector_ExpectedPqSeed,
+        record(hkdf_ok && derived_pq_seed == tv::kHkdfVector_ExpectedPqSeed,
                "T19a: HKDF-SHA256(ikm, salt, info) matches pinned pq_seed");
 
         // Feed derived seed into KeygenFromSeed; check pubkey prefix.

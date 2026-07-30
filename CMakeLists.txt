@@ -67,6 +67,14 @@ add_custom_target(check_no_deprecated_openssl_sha256
   COMMENT "Checking first-party code for deprecated OpenSSL SHA-256 APIs"
 )
 
+# Guardrail: OpenSSL 3.x also deprecates the stateful HMAC_CTX API.
+# Supported one-shot HMAC or EVP_MAC must be used instead.
+add_custom_target(check_no_deprecated_openssl_hmac
+  COMMAND ${CMAKE_SOURCE_DIR}/tools/check_no_deprecated_openssl_hmac.sh
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Checking first-party code for deprecated OpenSSL HMAC APIs"
+)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Hermetic Build Detection
 # ═══════════════════════════════════════════════════════════════════════════

@@ -223,6 +223,7 @@ endif()
 # Ensure production code path remains on canonical daemon mempool.
 add_dependencies(dinerod
   check_no_legacy_mempool_prod
+  check_no_deprecated_openssl_hmac
   check_no_deprecated_openssl_sha256
 )
 
