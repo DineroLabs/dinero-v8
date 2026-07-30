@@ -752,6 +752,28 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_empty_rangeproof_inf
   )
 endif()
 
+# Behavior-matrix regression for the canonical sync snapshot (#439). Pure logic:
+# includes only consensus/header_convergence.h, so it links nothing heavy and
+# runs in milliseconds. See docs/architecture/sync-state-behavior-matrix.md.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_sync_snapshot_matrix.cpp)
+  add_executable(test_sync_snapshot_matrix
+    tests/consensus/test_sync_snapshot_matrix.cpp
+    src/primitives/uint256.cpp   # uint256::operator== is out-of-line
+  )
+  target_include_directories(test_sync_snapshot_matrix PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(
+    NAME SyncSnapshotBehaviorMatrix
+    COMMAND test_sync_snapshot_matrix
+  )
+  set_tests_properties(SyncSnapshotBehaviorMatrix PROPERTIES
+    LABELS "consensus;sync;headers;mandatory"
+    TIMEOUT 60
+  )
+endif()
+
 # Security regression: consensus shielded validation must FAIL CLOSED when the
 # Pedersen generators are unavailable, and the daemon must refuse to start in
 # that state rather than silently rejecting every shielded bundle above the

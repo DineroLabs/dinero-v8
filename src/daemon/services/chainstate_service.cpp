@@ -3630,9 +3630,12 @@ bool ChainstateService::Start() {
         const uint32_t current_height = static_cast<uint32_t>(active_tip_->height);
         uint32_t target_height = current_height;
 
-        // Use header chain's best height as the target
-        if (const auto* best_header = header_chain_selector_->GetBestHeader()) {
-            target_height = best_header->height;
+        // Use header chain's best height as the target. Via the canonical
+        // snapshot (#439) rather than GetBestHeader(), whose raw pointer is
+        // returned after the selector's lock is released.
+        const auto sync = GetSyncSnapshot();
+        if (sync.has_best_header) {
+            target_height = sync.best_header_height;
         }
 
         if (target_height > current_height) {
@@ -4419,6 +4422,25 @@ void ChainstateService::PublishActiveTip(CBlockIndex* tip, TipPublishReason reas
                       " height=" + std::to_string(tip->height));
     }
     active_tip_ = tip;
+
+    // #439: publish an immutable VALUE copy of the tip identity under its own
+    // mutex. GetSyncSnapshot() reads this instead of dereferencing active_tip_,
+    // which is a bare CBlockIndex* mutated on the chain-advancement path — a
+    // reader touching tip->hash / tip->height concurrently would be racing.
+    // Because this is the single setter for active_tip_, publishing here keeps
+    // the value in lockstep with the pointer.
+    {
+        std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        if (tip) {
+            published_tip_valid_ = true;
+            published_tip_hash_ = tip->GetBlockHash();
+            published_tip_height_ = static_cast<uint32_t>(tip->height);
+        } else {
+            published_tip_valid_ = false;
+            published_tip_hash_.SetNull();
+            published_tip_height_ = 0;
+        }
+    }
 }
 
 ChainstateService::DisconnectMaterialCheck
@@ -15855,6 +15877,38 @@ void ChainstateService::OnBackgroundValidationComplete(bool success, const std::
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase 45: Snapshot-accelerated IBD (Fast Sync)
 // ═══════════════════════════════════════════════════════════════════════════
+
+ChainstateService::SyncSnapshot ChainstateService::GetSyncSnapshot() const {
+    SyncSnapshot snap;
+
+    // Best header: copied under HeaderChainSelector's mutex. Deliberately NOT
+    // GetBestHeader(), which returns a raw pointer after releasing that lock —
+    // reading its fields races with concurrent header connection (#439).
+    if (header_chain_selector_) {
+        dinero::consensus::HeaderIndexEntry best{};
+        if (header_chain_selector_->GetBestHeaderCopy(best)) {
+            snap.has_best_header = true;
+            snap.best_header_hash = best.hash;
+            snap.best_header_height = best.height;
+        }
+    }
+
+    // Active tip: read the VALUE published by PublishActiveTip under its own
+    // mutex. Deliberately NOT `active_tip_->GetBlockHash()` — active_tip_ is a
+    // bare CBlockIndex* mutated on the chain-advancement path, so dereferencing
+    // it here would race with block connection.
+    {
+        std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        if (published_tip_valid_) {
+            snap.has_active_tip = true;
+            snap.active_tip_hash = published_tip_hash_;
+            snap.active_tip_height = published_tip_height_;
+        }
+    }
+
+    snap.RecomputeConvergence();
+    return snap;
+}
 
 bool ChainstateService::IsInIBD() const {
     if (!chain_db_) {
