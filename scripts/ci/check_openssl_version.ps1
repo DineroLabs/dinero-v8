@@ -47,39 +47,85 @@ if ($cacheText -notmatch "(?m)^USE_SYSTEM_OPENSSL:BOOL=OFF\s*$") {
     Fail "Windows release verification unexpectedly used system OpenSSL"
 }
 
+# The "one crypto baseline" policy governs *every* binary the release ships,
+# not just dinerod. Auxiliary tools can drag in a different OpenSSL through a
+# dynamic dependency — e.g. dinero-wallet-cli -> libcurl.dll -> a vcpkg
+# libcrypto-3-x64.dll built against a different OpenSSL. The header/metadata/
+# cache/dinerod checks above cannot see that second copy, so scan the actual
+# bundled DLLs and EXEs too. Scan the installer stage (the definitive shipped
+# payload) and the build Release dir.
+$scanRoots = New-Object System.Collections.Generic.List[string]
+$stage = Join-Path $repo 'packaging\windows\dist\server-installer-stage'
+if (Test-Path -LiteralPath $stage) { $scanRoots.Add((Resolve-Path -LiteralPath $stage).Path) }
+$releaseDir = Join-Path $build 'Release'
+if (Test-Path -LiteralPath $releaseDir) { $scanRoots.Add((Resolve-Path -LiteralPath $releaseDir).Path) }
+if ($scanRoots.Count -eq 0) {
+    Fail "no bundled payload found to scan (looked for $stage and $releaseDir)"
+}
+
 # Search raw bytes rather than relying on a platform-specific strings utility.
 # The archive must contain exactly the pinned OpenSSL version. The final
 # executable is decisive when a version object survives selective static
 # archive extraction; absence there is permitted, matching the POSIX checker.
+# For bundled DLLs/EXEs the same rule applies: exactly the baseline or none;
+# any *other* OpenSSL version is a hard failure.
 $python = @'
 import pathlib, re, sys
 
-expected = sys.argv[1].encode()
+expected = sys.argv[1]
+expected_str = f"OpenSSL {expected}"
 libcrypto = pathlib.Path(sys.argv[2]).read_bytes()
 dinerod = pathlib.Path(sys.argv[3]).read_bytes()
+scan_roots = sys.argv[4:]
 pat = re.compile(rb"OpenSSL 3\.[0-9]+\.[0-9]+")
 
-lib_versions = sorted(set(x.decode() for x in pat.findall(libcrypto)))
-if lib_versions != [f"OpenSSL {expected.decode()}"]:
-    raise SystemExit(
-        f"libcrypto embeds {lib_versions or 'no version'}, expected exactly OpenSSL {expected.decode()}"
-    )
+def versions(data):
+    return sorted(set(x.decode() for x in pat.findall(data)))
 
-bin_versions = sorted(set(x.decode() for x in pat.findall(dinerod)))
-if bin_versions and bin_versions != [f"OpenSSL {expected.decode()}"]:
-    raise SystemExit(
-        f"dinerod embeds {bin_versions}, expected exactly OpenSSL {expected.decode()}"
-    )
-print(f"libcrypto embeds exactly OpenSSL {expected.decode()}")
+lib_versions = versions(libcrypto)
+if lib_versions != [expected_str]:
+    raise SystemExit(f"libcrypto embeds {lib_versions or 'no version'}, expected exactly {expected_str}")
+
+bin_versions = versions(dinerod)
+if bin_versions and bin_versions != [expected_str]:
+    raise SystemExit(f"dinerod embeds {bin_versions}, expected exactly {expected_str}")
+
+print(f"libcrypto embeds exactly {expected_str}")
 if bin_versions:
-    print(f"dinerod embeds exactly OpenSSL {expected.decode()}")
+    print(f"dinerod embeds exactly {expected_str}")
 else:
     print("dinerod embeds no OpenSSL version string; header, metadata, cache, and archive checks carry the guarantee")
+
+seen = set()
+offenders = []
+scanned = 0
+for root in scan_roots:
+    for path in sorted(pathlib.Path(root).rglob("*")):
+        if path.suffix.lower() not in (".dll", ".exe"):
+            continue
+        rp = path.resolve()
+        if rp in seen:
+            continue
+        seen.add(rp)
+        vers = versions(path.read_bytes())
+        if not vers:
+            continue
+        scanned += 1
+        if any(v != expected_str for v in vers):
+            offenders.append(f"{path.name}: {', '.join(vers)}")
+
+if offenders:
+    raise SystemExit(
+        f"bundled binaries embed a non-baseline OpenSSL (expected exactly {expected_str}):\n  "
+        + "\n  ".join(sorted(set(offenders)))
+    )
+print(f"scanned bundled DLLs/EXEs across {len(scan_roots)} payload root(s); "
+      f"{scanned} embed an OpenSSL version, all exactly {expected_str}")
 '@
 
-$python | python - $ExpectedVersion $libcrypto $dinerod
+$python | python - $ExpectedVersion $libcrypto $dinerod @scanRoots
 if ($LASTEXITCODE -ne 0) {
     Fail "raw archive/binary version inspection failed"
 }
 
-Write-Host "openssl version assertion OK: Windows build consumed exactly OpenSSL $ExpectedVersion" -ForegroundColor Green
+Write-Host "openssl version assertion OK: Windows build consumed exactly OpenSSL $ExpectedVersion (daemon + bundled payload)" -ForegroundColor Green
