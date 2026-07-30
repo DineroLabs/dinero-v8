@@ -3,10 +3,10 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "zk/zkvm/ipa.h"
+#include "crypto/sha256.h"
 #include <cassert>
 #include <cstring>
 #include <thread>
-#include <openssl/sha.h>
 
 namespace dinero {
 namespace zk {
@@ -23,15 +23,14 @@ namespace {
 Point hash_to_generator(const char* tag, size_t index, secp256k1_context* ctx) {
     for (uint32_t ctr = 0; ctr < 256; ++ctr) {
         uint8_t hash[32];
-        SHA256_CTX h;
-        SHA256_Init(&h);
-        SHA256_Update(&h, tag, std::strlen(tag));
+        dinero::crypto::CSHA256 h;
+        h.Write(reinterpret_cast<const uint8_t*>(tag), std::strlen(tag));
         uint8_t idx_bytes[8];
         for (int i = 0; i < 8; ++i) idx_bytes[i] = static_cast<uint8_t>(index >> (56 - 8*i));
-        SHA256_Update(&h, idx_bytes, 8);
+        h.Write(idx_bytes, 8);
         uint8_t ctr_byte = static_cast<uint8_t>(ctr);
-        SHA256_Update(&h, &ctr_byte, 1);
-        SHA256_Final(hash, &h);
+        h.Write(&ctr_byte, 1);
+        h.Finalize(hash);
 
         // Try as compressed point with even y
         uint8_t candidate[33];

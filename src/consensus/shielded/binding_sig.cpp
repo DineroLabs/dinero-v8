@@ -3,8 +3,8 @@
 #include "consensus/crypto/sighash_bip143.h"
 
 #include "crypto/evp_secp256k1.h"
+#include "crypto/sha256.h"
 
-#include <openssl/sha.h>
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_generator.h>
@@ -22,17 +22,18 @@ const secp256k1_generator* PedersenGeneratorVInternal();
 namespace {
 
 struct Sha256Builder {
-    SHA256_CTX ctx;
-    Sha256Builder() { ::SHA256_Init(&ctx); }
-    void Add(const void* p, size_t n) { ::SHA256_Update(&ctx, p, n); }
+    dinero::crypto::CSHA256 ctx;
+    void Add(const void* p, size_t n) {
+        ctx.Write(static_cast<const uint8_t*>(p), n);
+    }
     void AddU64(uint64_t v) {
         unsigned char buf[8];
         for (int i = 0; i < 8; ++i) buf[i] = static_cast<unsigned char>((v >> (8 * i)) & 0xFF);
-        ::SHA256_Update(&ctx, buf, 8);
+        ctx.Write(buf, 8);
     }
     Hash Finalize() {
         Hash out{};
-        ::SHA256_Final(out.data(), &ctx);
+        ctx.Finalize(out.data());
         return out;
     }
 };

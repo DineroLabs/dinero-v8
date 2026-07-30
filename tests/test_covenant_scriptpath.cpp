@@ -19,6 +19,7 @@
 #include "consensus/utxo_entry.h"
 #include "primitives/transaction.h"
 #include "crypto/evp_secp256k1.h"
+#include "crypto/sha256.h"
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <cstring>
@@ -80,14 +81,12 @@ protected:
         uint8_t tag_hash[32];
         SHA256(reinterpret_cast<const uint8_t*>(tag.data()), tag.size(), tag_hash);
 
-        SHA256_CTX h;
-        SHA256_Init(&h);
-        SHA256_Update(&h, tag_hash, 32);
-        SHA256_Update(&h, tag_hash, 32);
-        SHA256_Update(&h, data.data(), data.size());
-
         std::vector<uint8_t> result(32);
-        SHA256_Final(result.data(), &h);
+        dinero::crypto::CSHA256()
+            .Write(tag_hash, 32)
+            .Write(tag_hash, 32)
+            .Write(data.data(), data.size())
+            .Finalize(result.data());
         return result;
     }
 };

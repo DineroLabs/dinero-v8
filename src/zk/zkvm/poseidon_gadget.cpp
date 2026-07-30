@@ -5,7 +5,7 @@
 #include "zk/zkvm/poseidon_gadget.h"
 #include "zk/zkvm/gadgets.h"
 #include "crypto/evp_secp256k1.h"
-#include <openssl/sha.h>
+#include "crypto/sha256.h"
 #include <cassert>
 #include <cstring>
 #include <cstdio>
@@ -45,9 +45,8 @@ static Scalar derive_round_constant(uint32_t round, uint32_t element) {
     auto* ctx = dinero::crypto::GetSecp256k1ContextSignVerify();
 
     uint8_t hash[32];
-    SHA256_CTX h;
-    SHA256_Init(&h);
-    SHA256_Update(&h, kTag, sizeof(kTag) - 1);
+    dinero::crypto::CSHA256 h;
+    h.Write(reinterpret_cast<const uint8_t*>(kTag), sizeof(kTag) - 1);
     // Big-endian round index
     uint8_t r_be[4] = {
         static_cast<uint8_t>(round >> 24),
@@ -61,9 +60,9 @@ static Scalar derive_round_constant(uint32_t round, uint32_t element) {
         static_cast<uint8_t>(element >> 8),
         static_cast<uint8_t>(element)
     };
-    SHA256_Update(&h, r_be, 4);
-    SHA256_Update(&h, e_be, 4);
-    SHA256_Final(hash, &h);
+    h.Write(r_be, 4);
+    h.Write(e_be, 4);
+    h.Finalize(hash);
 
     return Scalar::from_hash(hash, ctx);
 }
