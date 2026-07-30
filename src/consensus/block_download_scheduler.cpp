@@ -493,10 +493,12 @@ void BlockDownloadScheduler::TickLocked() {
     // scheduler can remain permanently inert after restart with a preloaded
     // header backlog. Prime the queue from the existing selector view here.
     if (!headers_processed_.load() && header_chain_) {
-        if (const HeaderIndexEntry* best = header_chain_->GetBestHeader()) {
+        // #441: copy under the selector's lock.
+        HeaderIndexEntry best_copy{};
+        if (header_chain_->GetBestHeaderCopy(best_copy)) {
             headers_processed_.store(true);
             g_logger.info("[BlockDownloadScheduler] Bootstrap scan from persisted headers: best=" +
-                          std::to_string(best->height) + " local=" +
+                          std::to_string(best_copy.height) + " local=" +
                           std::to_string(local_tip_height_));
             ScanForMissingBlocks();
             g_logger.info("[BlockDownloadScheduler] Missing blocks: " +
@@ -933,8 +935,10 @@ bool BlockDownloadScheduler::IsFullySynchronized() const {
         }
     }
     if (header_chain_) {
-        const HeaderIndexEntry* best = header_chain_->GetBestHeader();
-        if (best && best->height > local_tip_height_) {
+        // #441: copy under the selector's lock.
+        HeaderIndexEntry best_copy{};
+        if (header_chain_->GetBestHeaderCopy(best_copy) &&
+            best_copy.height > local_tip_height_) {
             return false;  // Headers ahead of our validated tip
         }
     }

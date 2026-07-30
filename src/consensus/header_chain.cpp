@@ -358,6 +358,25 @@ bool HeaderChainSelector::GetBestHeaderCopy(HeaderIndexEntry& out) const {
     return true;
 }
 
+bool HeaderChainSelector::GetHeaderAtHeightCopy(uint32_t height,
+                                                HeaderIndexEntry& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!best_header_) {
+        return false;
+    }
+    // Same resolution GetHeaderAtHeight() performs, but the result is copied
+    // before the lock is released rather than handed out as a pointer (#441).
+    const HeaderIndexEntry* entry = best_header_->GetAncestor(height);
+    if (!entry) {
+        return false;
+    }
+    out = *entry;
+    // Same rule as the other *Copy accessors: never let a copy carry the parent
+    // pointer out — parents are subject to the same eviction hazard.
+    out.parent = nullptr;
+    return true;
+}
+
 std::vector<uint256> HeaderChainSelector::BuildLocatorCopy(size_t max_entries) const {
     std::vector<uint256> locator;
     std::lock_guard<std::mutex> lock(mutex_);

@@ -277,6 +277,27 @@ public:
     std::vector<uint256> BuildLocatorCopy(size_t max_entries = 10) const;
 
     /**
+     * @brief Copy the best-chain header at `height` out under the lock (#441).
+     *
+     * Value-returning counterpart to GetHeaderAtHeight(), which resolves
+     * best_header_->GetAncestor(height) and then returns that raw pointer
+     * AFTER releasing mutex_ — the same escape-the-lock hazard as
+     * GetBestHeader(). Ancestors are especially exposed: a reorg can move the
+     * best chain out from under a height that was previously on it, leaving the
+     * entry an evictable side branch.
+     *
+     * The copy's parent pointer is nulled — it must not be followed. Callers
+     * that need to walk ancestry should use CollectAncestorsByHash() or
+     * BuildLocatorCopy() instead, both of which resolve the whole walk under a
+     * single lock.
+     *
+     * @param height Best-chain height to resolve
+     * @param out    Filled with a by-value copy (parent == nullptr)
+     * @return true iff a best-chain header exists at that height
+     */
+    bool GetHeaderAtHeightCopy(uint32_t height, HeaderIndexEntry& out) const;
+
+    /**
      * @brief Atomically resolve an anchor by hash and copy its ancestor
      *        (hash, height) pairs for heights [start_height, anchor height],
      *        ascending — all under the internal mutex.
