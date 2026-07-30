@@ -253,6 +253,30 @@ public:
     bool GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const;
 
     /**
+     * @brief Build a block locator from the best header, entirely under the lock.
+     *
+     * Bitcoin-style exponential back-off: tip, then walk back with gaps of
+     * 1, 2, 4, 8, ... up to `max_entries` hashes.
+     *
+     * Exists because the obvious composition — GetBestHeader() then repeated
+     * GetHeaderAtHeight() — is unsafe twice over (issue #441):
+     *
+     *   1. Both accessors return raw pointers AFTER releasing mutex_, and a
+     *      reorg can demote the former best header to a side-branch tip, which
+     *      EvictBranch may then free. Dereferencing is use-after-free.
+     *   2. Even ignoring lifetime, the walk takes the lock once PER STEP, so a
+     *      concurrent reorg between steps yields a locator that mixes hashes
+     *      from different chain states — an inconsistent locator, which is
+     *      worse than a stale but coherent one.
+     *
+     * Building the whole locator under a single lock removes both.
+     *
+     * @param max_entries Maximum hashes to emit (Bitcoin uses ~10)
+     * @return Locator hashes, tip first. Empty if no headers are known.
+     */
+    std::vector<uint256> BuildLocatorCopy(size_t max_entries = 10) const;
+
+    /**
      * @brief Atomically resolve an anchor by hash and copy its ancestor
      *        (hash, height) pairs for heights [start_height, anchor height],
      *        ascending — all under the internal mutex.

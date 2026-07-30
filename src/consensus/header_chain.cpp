@@ -358,6 +358,43 @@ bool HeaderChainSelector::GetBestHeaderCopy(HeaderIndexEntry& out) const {
     return true;
 }
 
+std::vector<uint256> HeaderChainSelector::BuildLocatorCopy(size_t max_entries) const {
+    std::vector<uint256> locator;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!best_header_ || max_entries == 0) {
+        return locator;
+    }
+
+    // Mirrors the previous GetHeaderLocator() walk exactly, but every step
+    // resolves under THIS lock, so no pointer escapes and the whole locator
+    // reflects one consistent chain state (#441).
+    locator.reserve(max_entries);
+
+    const HeaderIndexEntry* current = best_header_;
+    uint32_t height = best_header_->height;
+    uint32_t step = 1;
+
+    while (current != nullptr && locator.size() < max_entries) {
+        locator.push_back(current->hash);
+
+        if (height < step) {
+            break;
+        }
+        height -= step;
+
+        // Same resolution GetHeaderAtHeight() performs, but inline and still
+        // holding the lock.
+        current = best_header_->GetAncestor(height);
+
+        if (locator.size() > 1) {
+            step *= 2;
+        }
+    }
+
+    return locator;
+}
+
 bool HeaderChainSelector::GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = header_index_.find(hash);

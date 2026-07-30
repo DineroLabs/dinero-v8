@@ -266,6 +266,9 @@ bool HeaderSyncManager::ProcessHeaders(uint64_t peer_id, const std::vector<Block
         // Validate via HeaderChainSelector
         if (!chain_selector_->AddHeader(header)) {
             const bool missing_parent_locally =
+                // #441: SAFE as-is — the returned pointer is only compared
+                // against nullptr, never dereferenced, so the eviction hazard
+                // does not apply. Do not "fix" this to GetHeaderCopy().
                 (accepted == 0 && chain_selector_->GetHeader(header.prev_block_hash) == nullptr);
 
             if (missing_parent_locally) {
@@ -334,45 +337,15 @@ bool HeaderSyncManager::ProcessHeaders(uint64_t peer_id, const std::vector<Block
 }
 
 std::vector<uint256> HeaderSyncManager::GetHeaderLocator() const {
-    std::vector<uint256> locator;
-
-    const HeaderIndexEntry* tip = chain_selector_->GetBestHeader();
-    if (!tip) {
-        // No headers yet, return empty locator (will request from genesis)
-        return locator;
-    }
-
-    // Bitcoin-style exponential backoff locator
-    // Start with tip, then walk back with exponentially increasing gaps
-
-    uint32_t height = tip->height;
-    uint32_t step = 1;
-    const HeaderIndexEntry* current = tip;
-
-    while (current && locator.size() < 10) {
-        locator.push_back(current->hash);
-
-        // Walk back exponentially: 0, 1, 2, 4, 8, 16, 32, 64, 128, 256...
-        if (height < step) {
-            break;
-        }
-        height -= step;
-
-        current = chain_selector_->GetHeaderAtHeight(height);
-
-        // Exponential growth
-        if (locator.size() > 1) {
-            step *= 2;
-        }
-    }
-
-    // Always include genesis if we have it
-    const HeaderIndexEntry* genesis = chain_selector_->GetHeaderAtHeight(0);
-    if (genesis && (locator.empty() || locator.back() != genesis->hash)) {
-        locator.push_back(genesis->hash);
-    }
-
-    return locator;
+    // #441: built entirely under the selector's lock.
+    //
+    // The previous implementation took the tip via GetBestHeader() and then
+    // walked back with repeated GetHeaderAtHeight() calls. That was unsafe
+    // twice: both accessors return raw pointers after releasing the lock (and a
+    // reorg can demote the former best header to an evictable side-branch tip),
+    // and taking the lock once per step meant a concurrent reorg could produce a
+    // locator mixing hashes from different chain states.
+    return chain_selector_->BuildLocatorCopy(10);
 }
 
 bool HeaderSyncManager::ShouldRequestHeaders(uint64_t peer_id) const {
