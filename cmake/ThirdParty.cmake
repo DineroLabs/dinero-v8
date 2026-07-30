@@ -255,13 +255,14 @@ set(DINERO_VENDORED_OPENSSL_SOURCE_DIR "" CACHE PATH
   "Override directory containing vendored OpenSSL source headers")
 
 if(NOT USE_SYSTEM_OPENSSL AND DINERO_VENDORED_OPENSSL_VERSION STREQUAL "")
-  if(DINERO_ENABLE_QUIC)
-    set(DINERO_VENDORED_OPENSSL_VERSION "3.5.6" CACHE STRING
-      "Vendored OpenSSL version directory to use when DINERO_VENDORED_OPENSSL_DIR is unset" FORCE)
-  else()
-    set(DINERO_VENDORED_OPENSSL_VERSION "3.3.2" CACHE STRING
-      "Vendored OpenSSL version directory to use when DINERO_VENDORED_OPENSSL_DIR is unset" FORCE)
-  endif()
+  # One supported crypto baseline for every shipped configuration (owner
+  # policy, 2026-07-29): QUIC and non-QUIC builds pin the SAME OpenSSL so
+  # CI never tests a dependency releases no longer use. Update this pin
+  # intentionally — after CI, QUIC handshake, stream-payload and packaging
+  # suites — never as a side effect. (iOS remains on 3.3.2 via
+  # scripts/build_openssl_ios.sh until its own migration.)
+  set(DINERO_VENDORED_OPENSSL_VERSION "3.5.7" CACHE STRING
+    "Vendored OpenSSL version directory to use when DINERO_VENDORED_OPENSSL_DIR is unset" FORCE)
 endif()
 
 function(dinero_detect_single_apple_arch out_arch)
@@ -358,6 +359,24 @@ if(USE_SYSTEM_OPENSSL)
   message(STATUS "Using system OpenSSL (USE_SYSTEM_OPENSSL=ON)")
   find_package(OpenSSL REQUIRED)
   message(STATUS "  Found OpenSSL ${OPENSSL_VERSION}")
+  # Owner policy (2026-07-29): system builds require the supported crypto
+  # baseline >= 3.5.0 and < 3.6.0. 3.5+ does NOT automatically bless 3.6
+  # or 4.0 — a new branch is adopted intentionally, after the CI, QUIC
+  # handshake, stream-payload and packaging suites pass against it, then
+  # this range moves. Escape hatch for explicitly-tested other branches:
+  # -DDINERO_ALLOW_UNSUPPORTED_OPENSSL=ON (own your crypto).
+  option(DINERO_ALLOW_UNSUPPORTED_OPENSSL
+    "Permit a system OpenSSL outside the supported [3.5.0, 3.6.0) baseline" OFF)
+  if(NOT DINERO_ALLOW_UNSUPPORTED_OPENSSL AND
+     (OPENSSL_VERSION VERSION_LESS "3.5.0" OR
+      OPENSSL_VERSION VERSION_GREATER_EQUAL "3.6.0"))
+    message(FATAL_ERROR
+      "System OpenSSL ${OPENSSL_VERSION} is outside the supported baseline "
+      "[3.5.0, 3.6.0). Install an OpenSSL 3.5.x, use the vendored build "
+      "(USE_SYSTEM_OPENSSL=OFF), or pass "
+      "-DDINERO_ALLOW_UNSUPPORTED_OPENSSL=ON for an explicitly-tested "
+      "alternative branch.")
+  endif()
 else()
   # Use vendored static OpenSSL (default for portable binaries)
   set(OPENSSL_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/openssl-${DINERO_VENDORED_OPENSSL_VERSION}")

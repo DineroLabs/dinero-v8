@@ -7,8 +7,9 @@ BUILD_ROOT="${BUILD_ROOT:-$ROOT_DIR/build-shielded-proverkit-ios}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-$ROOT_DIR/artifacts}"
 IOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET:-15.0}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
-OPENSSL_DEVICE_DIR="${OPENSSL_DEVICE_DIR:-$ROOT_DIR/third_party/openssl-3.3.2/prebuilt/ios-arm64}"
-OPENSSL_SIMULATOR_DIR="${OPENSSL_SIMULATOR_DIR:-$ROOT_DIR/third_party/openssl-3.3.2/prebuilt/ios-simulator-arm64}"
+OPENSSL_VERSION="${OPENSSL_VERSION:-3.5.7}"
+OPENSSL_DEVICE_DIR="${OPENSSL_DEVICE_DIR:-$ROOT_DIR/third_party/openssl-${OPENSSL_VERSION}/prebuilt/ios-arm64}"
+OPENSSL_SIMULATOR_DIR="${OPENSSL_SIMULATOR_DIR:-$ROOT_DIR/third_party/openssl-${OPENSSL_VERSION}/prebuilt/ios-simulator-arm64}"
 
 die() {
   echo "error: $*" >&2
