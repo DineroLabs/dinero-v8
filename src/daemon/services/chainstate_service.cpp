@@ -16074,14 +16074,19 @@ void ChainstateService::TryDeferredSnapshotBootstrap() {
     // block is not on the canonical chain we synced) — give up immediately and
     // fall back to full IBD. Never block block-download forever. CAS so only the
     // first thread logs/transitions Pending -> Fallback.
-    const consensus::HeaderIndexEntry* best_hdr =
-        header_chain_selector_ ? header_chain_selector_->GetBestHeader() : nullptr;
-    if (best_hdr != nullptr && best_hdr->height >= snapshot_bootstrap_base_height_) {
+    // #441: copy under the selector's lock. GetBestHeader() returns a raw
+    // pointer AFTER releasing it, and a reorg can demote the former best header
+    // to an evictable side-branch tip — so reading ->height here would be a
+    // use-after-free, not merely a stale read.
+    consensus::HeaderIndexEntry best_hdr_copy{};
+    const bool have_best_hdr =
+        header_chain_selector_ && header_chain_selector_->GetBestHeaderCopy(best_hdr_copy);
+    if (have_best_hdr && best_hdr_copy.height >= snapshot_bootstrap_base_height_) {
         SnapshotBootstrapState expected = SnapshotBootstrapState::Pending;
         if (snapshot_bootstrap_state_.compare_exchange_strong(
                 expected, SnapshotBootstrapState::Fallback)) {
             logger_->warning("[snapshot] rejected — headers reached height " +
-                             std::to_string(best_hdr->height) + " (>= base " +
+                             std::to_string(best_hdr_copy.height) + " (>= base " +
                              std::to_string(snapshot_bootstrap_base_height_) + ") but base hash " +
                              snapshot_bootstrap_base_hash_.GetHex().substr(0, 16) +
                              "... is not on the canonical chain (stale/orphaned snapshot); "

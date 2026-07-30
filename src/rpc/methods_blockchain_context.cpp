@@ -758,8 +758,13 @@ din::Json rpc_context_getblockchaininfo(const ExecutionContext& ctx, const din::
     // Header height: report the highest locally known selector/header-sync view.
     uint32_t header_height = height;
     if (ctx.daemon->header_chain) {
-        if (const auto* best = ctx.daemon->header_chain->GetBestHeader()) {
-            header_height = std::max(header_height, best->height);
+        // #441: copy under the selector's lock. GetBestHeader() returns a raw
+        // pointer AFTER releasing that lock, and a reorg can demote the former
+        // best header to an evictable side-branch tip — so dereferencing it
+        // here would be a use-after-free, not merely a stale read.
+        dinero::consensus::HeaderIndexEntry best{};
+        if (ctx.daemon->header_chain->GetBestHeaderCopy(best)) {
+            header_height = std::max(header_height, best.height);
         }
     }
     if (ctx.daemon->header_sync) {
@@ -986,9 +991,11 @@ din::Json rpc_context_getsynchealth(const ExecutionContext& ctx, const din::Json
     selector["available"] = static_cast<bool>(ctx.daemon->header_chain);
     if (ctx.daemon->header_chain) {
         selector["header_count"] = static_cast<Json::UInt64>(ctx.daemon->header_chain->GetHeaderCount());
-        if (const auto* best = ctx.daemon->header_chain->GetBestHeader()) {
-            selector["best_height"] = static_cast<int>(best->height);
-            selector["best_hash"] = best->hash.GetHex();
+        // #441: copy under the lock — see the note above.
+        dinero::consensus::HeaderIndexEntry best{};
+        if (ctx.daemon->header_chain->GetBestHeaderCopy(best)) {
+            selector["best_height"] = static_cast<int>(best.height);
+            selector["best_hash"] = best.hash.GetHex();
         } else {
             selector["best_height"] = 0;
             selector["best_hash"] = "";
