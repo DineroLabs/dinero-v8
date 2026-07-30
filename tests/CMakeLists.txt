@@ -752,6 +752,64 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_empty_rangeproof_inf
   )
 endif()
 
+# Security regression: consensus shielded validation must FAIL CLOSED when the
+# Pedersen generators are unavailable, and the daemon must refuse to start in
+# that state rather than silently rejecting every shielded bundle above the
+# input-binding activation height (which forks the node off the network).
+#
+# Generator derivation is a std::call_once singleton over a compile-time DST, so
+# the failure cannot be produced legitimately. This target compiles
+# pedersen_generators.cpp directly with DINERO_ENABLE_TEST_HOOKS to get the
+# override seam. Compiling that translation unit here also means it defines every
+# symbol the dinero_shielded archive member defines, so the archive member is
+# never pulled in and there is no duplicate-symbol clash. The definition is set
+# ONLY on this target — production libraries and the daemon never see it.
+#
+# CONSTRAINT: that no-clash property holds only while this translation unit
+# defines exactly the symbols the archive member defines. If someone adds a
+# symbol to pedersen_generators.cpp that another dinero_shielded member
+# references, the linker pulls the archive member back in and this target fails
+# with a duplicate-symbol error. Fix it by adding the new symbol's dependencies
+# here, not by dropping the direct compile.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_generator_failclosed.cpp)
+  add_executable(test_shielded_generator_failclosed
+    tests/consensus/test_shielded_generator_failclosed.cpp
+    ${CMAKE_SOURCE_DIR}/src/consensus/shielded/pedersen_generators.cpp
+  )
+  target_compile_definitions(test_shielded_generator_failclosed PRIVATE
+    DINERO_ENABLE_TEST_HOOKS
+  )
+  target_link_libraries(test_shielded_generator_failclosed PRIVATE
+    dinero_shielded
+    dinero_consensus
+    dinero_zk
+    dinero_crypto
+    OpenSSL::Crypto
+    OpenSSL::SSL
+    pthread
+    sqlite3
+  )
+  link_zstd_if_needed(test_shielded_generator_failclosed)
+  target_include_directories(test_shielded_generator_failclosed PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_generator_failclosed PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(
+    NAME ShieldedGeneratorFailClosed
+    COMMAND test_shielded_generator_failclosed
+  )
+  set_tests_properties(ShieldedGeneratorFailClosed PROPERTIES
+    LABELS "shielded;security;inflation;mandatory"
+    TIMEOUT 120
+  )
+endif()
+
 # Security regression: untrusted CompactSize counts in the shielded-bundle
 # deserializer must be capped before resize() (remote-OOM fix).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_serialization_oom.cpp)

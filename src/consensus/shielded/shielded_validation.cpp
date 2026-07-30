@@ -139,11 +139,16 @@ ShieldedValidationError ValidateShieldedBundle(
         if (bundle.aggregated_range_proof.empty()) {
             return ShieldedValidationError::RangeProofInvalid;
         }
-        if (PedersenGeneratorsReady()) {
-            const auto rc = VerifyBundleRangeProofs(bundle);
-            if (rc != RangeProofResult::Ok) {
-                return ShieldedValidationError::RangeProofInvalid;
-            }
+        // Consensus cryptography must fail closed. Generator initialization is
+        // deterministic and mandatory; treating an unavailable generator as a
+        // reason to skip verification would make block validity depend on a
+        // node's runtime initialization state.
+        if (!PedersenGeneratorsReady()) {
+            return ShieldedValidationError::RangeProofInvalid;
+        }
+        const auto rc = VerifyBundleRangeProofs(bundle);
+        if (rc != RangeProofResult::Ok) {
+            return ShieldedValidationError::RangeProofInvalid;
         }
     } else if (PedersenGeneratorsReady() && !bundle.aggregated_range_proof.empty()) {
         const auto rc = VerifyBundleRangeProofs(bundle);
@@ -179,11 +184,16 @@ ShieldedValidationError ValidateShieldedBundle(
     // attacker can no longer skip this by sending an empty proof. Below the
     // activation height we preserve the exact pre-fix opportunistic behavior.
     if (ctx.block_height >= ctx.shielded_input_binding_activation_height) {
-        if (PedersenGeneratorsReady()) {
-            const auto rc = VerifyBinding(bundle, ctx.tx_sighash);
-            if (rc != BindingSigResult::Ok) {
-                return ShieldedValidationError::BindingSigInvalid;
-            }
+        // Do not weaken consensus verification when the generator is
+        // unavailable. The range-proof branch above has already rejected that
+        // state; retain this independent guard so future refactors cannot make
+        // the binding check fail open.
+        if (!PedersenGeneratorsReady()) {
+            return ShieldedValidationError::BindingSigInvalid;
+        }
+        const auto rc = VerifyBinding(bundle, ctx.tx_sighash);
+        if (rc != BindingSigResult::Ok) {
+            return ShieldedValidationError::BindingSigInvalid;
         }
     } else if (PedersenGeneratorsReady() && !bundle.aggregated_range_proof.empty()) {
         const auto rc = VerifyBinding(bundle, ctx.tx_sighash);
