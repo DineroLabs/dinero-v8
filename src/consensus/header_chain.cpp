@@ -451,6 +451,7 @@ bool HeaderChainSelector::CollectAncestorsByHash(
     // mutex_) can free side-branch entries, so neither the anchor pointer nor
     // its parent links may escape this critical section.
     std::lock_guard<std::mutex> lock(mutex_);
+    anchor_height_out = 0;
     out_ascending.clear();
 
     auto it = header_index_.find(anchor_hash);
@@ -471,6 +472,74 @@ bool HeaderChainSelector::CollectAncestorsByHash(
             break;  // height-0 guard: `e->height >= 0` is never false (unsigned)
         }
     }
+    if (out_ascending.empty() ||
+        out_ascending.back().second != start_height) {
+        // A persisted/relinked tree must never expose a broken parent chain as
+        // a successful snapshot. Fail closed and leave no partial range.
+        out_ascending.clear();
+        return false;
+    }
+    std::reverse(out_ascending.begin(), out_ascending.end());
+    return true;
+}
+
+bool HeaderChainSelector::GetAncestorHashByHash(
+        const uint256& anchor_hash,
+        uint32_t ancestor_height,
+        uint256& ancestor_hash_out,
+        uint32_t& anchor_height_out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ancestor_hash_out.SetNull();
+    anchor_height_out = 0;
+
+    auto it = header_index_.find(anchor_hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+
+    const HeaderIndexEntry* anchor = it->second.get();
+    anchor_height_out = anchor->height;
+    if (ancestor_height > anchor->height) {
+        return false;
+    }
+
+    // Keep the complete parent walk under the lock EvictBranch also takes.
+    const HeaderIndexEntry* ancestor = anchor->GetAncestor(ancestor_height);
+    if (!ancestor) {
+        return false;
+    }
+    ancestor_hash_out = ancestor->hash;
+    return true;
+}
+
+bool HeaderChainSelector::CollectBranchCopiesByHash(
+        const uint256& anchor_hash,
+        const std::unordered_set<uint256>& stop_hashes,
+        std::vector<HeaderIndexEntry>& out_ascending,
+        uint256& common_ancestor_out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    out_ascending.clear();
+    common_ancestor_out.SetNull();
+
+    auto it = header_index_.find(anchor_hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+
+    // Copy the non-common portion under one selector snapshot. A concurrent
+    // reorg may make this branch stale immediately after return, but the values
+    // remain coherent and owned by the caller; the next activation rescans.
+    for (const HeaderIndexEntry* entry = it->second.get(); entry;
+         entry = entry->parent) {
+        if (stop_hashes.find(entry->hash) != stop_hashes.end()) {
+            common_ancestor_out = entry->hash;
+            break;
+        }
+
+        out_ascending.push_back(*entry);
+        out_ascending.back().parent = nullptr;
+    }
+
     std::reverse(out_ascending.begin(), out_ascending.end());
     return true;
 }

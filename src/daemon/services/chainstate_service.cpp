@@ -7004,8 +7004,12 @@ void ChainstateService::ActivateBestChain() {
     // draining.  Defer the no-op import at its source.  The ancestry check keeps
     // competing/below-base branches on the normal safety path; when promotion
     // clears assumeutxo_active_, the next activation imports the stored branch.
+    consensus::HeaderIndexEntry best_header_copy{};
+    const bool have_best_header =
+        header_chain_selector_ &&
+        header_chain_selector_->GetBestHeaderCopy(best_header_copy);
     const auto* best_header_for_hold =
-        header_chain_selector_ ? header_chain_selector_->GetBestHeader() : nullptr;
+        have_best_header ? &best_header_copy : nullptr;
     bool defer_snapshot_continuation = false;
     if (assumeutxo_active_ && !GetConfig().assumeutxo_forward_connect &&
         best_header_for_hold && active_tip_ &&
@@ -7013,10 +7017,16 @@ void ChainstateService::ActivateBestChain() {
         static_cast<uint32_t>(active_tip_->height) == assumeutxo_base_height_ &&
         active_tip_->hash == assumeutxo_base_block_ &&
         best_header_for_hold->height > assumeutxo_base_height_) {
-        const auto* base_ancestor =
-            best_header_for_hold->GetAncestor(assumeutxo_base_height_);
+        uint256 base_ancestor_hash;
+        uint32_t anchor_height = 0;
         const bool header_descends_from_base =
-            base_ancestor && base_ancestor->hash == assumeutxo_base_block_;
+            header_chain_selector_->GetAncestorHashByHash(
+                best_header_for_hold->hash,
+                assumeutxo_base_height_,
+                base_ancestor_hash,
+                anchor_height) &&
+            anchor_height == best_header_for_hold->height &&
+            base_ancestor_hash == assumeutxo_base_block_;
 
         // BlockAcceptor can populate candidates_ before that block's header is
         // reflected in HeaderChainSelector.  Inspect the best queued candidate
@@ -7127,57 +7137,69 @@ void ChainstateService::ActivateBestChain() {
             //  - headers missing from block index, and
             //  - headers that already have index entries but still need body import/request.
             std::unordered_set<uint256> active_chain_hashes;
-            for (CBlockIndex* cursor = active_tip_; cursor; cursor = cursor->pprev) {
-                active_chain_hashes.insert(cursor->hash);
+            {
+                // #360 lock order: activation_mutex_ (held by caller) then the
+                // block-index graph lock. Copy only identities before entering
+                // the header selector; no cross-subsystem callback occurs while
+                // either graph's internal lock is held.
+                std::lock_guard<std::recursive_mutex> index_lock(
+                    dinero::g_block_index_mutex);
+                for (CBlockIndex* cursor = active_tip_; cursor; cursor = cursor->pprev) {
+                    active_chain_hashes.insert(cursor->hash);
+                }
             }
 
-            std::vector<const consensus::HeaderIndexEntry*> branch_path;
-            const consensus::HeaderIndexEntry* walk = best_header;
-            while (walk && active_chain_hashes.find(walk->hash) == active_chain_hashes.end()) {
-                branch_path.push_back(walk);
-                walk = walk->parent;
-            }
+            std::vector<consensus::HeaderIndexEntry> branch_path;
+            uint256 common_ancestor_hash;
+            const bool branch_snapshot_ok =
+                header_chain_selector_->CollectBranchCopiesByHash(
+                    best_header->hash,
+                    active_chain_hashes,
+                    branch_path,
+                    common_ancestor_hash);
 
             // If we never reach an active-chain ancestor, this header branch is
             // incompatible with our current chain graph (e.g., stale foreign headers).
             // Skip importing it as a candidate to avoid FindFork() null deadlocks.
-            if (!walk) {
+            if (!branch_snapshot_ok) {
+                if (logger_) {
+                    logger_->debug("[ActivateBestChain] Header branch changed before it "
+                                   "could be copied; retrying on the next activation");
+                }
+            } else if (common_ancestor_hash.IsNull()) {
                 if (logger_) {
                     logger_->warning("[ActivateBestChain] Ignoring incompatible header branch (no common ancestor with active tip)");
                 }
             } else {
                 const bool importing_competing_branch =
-                    walk->hash != active_tip_->hash;
-                std::reverse(branch_path.begin(), branch_path.end());
+                    common_ancestor_hash != active_tip_->hash;
 
                 size_t imported_blocks = 0;
                 std::vector<std::string> missing_block_bodies;
                 missing_block_bodies.reserve(branch_path.size());
 
-                for (const auto* entry : branch_path) {
-                    if (!entry) continue;
-
-                    CBlockIndex* idx = FindBlockIndex(entry->hash);
+                for (const auto& entry : branch_path) {
+                    CBlockIndex* idx = FindBlockIndex(entry.hash);
                     if (!idx) {
-                        idx = AddBlockIndex(entry->header, entry->height);
+                        idx = AddBlockIndex(entry.header, entry.height);
                         if (!idx) {
                             continue;
                         }
                     }
 
-                    idx->chainwork = entry->chainwork.GetHex();
+                    idx->chainwork = entry.chainwork.GetHex();
 
                     // If body isn't stored yet, request it and continue.
-                    if (!HasStoredBlockBody(entry->hash)) {
-                        missing_block_bodies.push_back(entry->hash.GetHex());
+                    if (!HasStoredBlockBody(entry.hash)) {
+                        missing_block_bodies.push_back(entry.hash.GetHex());
                         continue;
                     }
 
                     // Skip blocks that were found unreadable (corrupt chaindb entries).
                     // They will be re-downloaded from peers. Self-synchronizing
                     // read — the scheduler-drain thread clears concurrently.
-                    if (unreadable_blocks_.contains(entry->hash)) {
-                        missing_block_bodies.push_back(entry->hash.GetHex());
+                    if (unreadable_blocks_.contains(entry.hash)) {
+                        missing_block_bodies.push_back(entry.hash.GetHex());
                         continue;
                     }
 
@@ -7194,18 +7216,18 @@ void ChainstateService::ActivateBestChain() {
                     // marker. This prevents periodic ABC from racing ahead while
                     // preserving store-ahead crash recovery.
                     if (GetConfig().utreexo_stateless) {
-                        const auto metadata = chain_db_->getHeaderMetadata(entry->hash);
+                        const auto metadata = chain_db_->getHeaderMetadata(entry.hash);
                         const bool transaction_validated =
                             metadata.status() == Status::Ok &&
                             (metadata.value().status_flags &
                              BLOCK_VALID_TRANSACTIONS) != 0;
                         const bool reorg_plan_validated =
                             importing_competing_branch &&
-                            chain_db_->getCSNSpendTargets(entry->hash).status() == Status::Ok;
+                            chain_db_->getCSNSpendTargets(entry.hash).status() == Status::Ok;
                         if (!transaction_validated && !reorg_plan_validated) {
                             if (logger_) {
                                 logger_->debug("[ActivateBestChain] CSN body at height " +
-                                               std::to_string(entry->height) +
+                                               std::to_string(entry.height) +
                                                " awaits ordered proof validation");
                             }
                             continue;
@@ -7217,7 +7239,7 @@ void ChainstateService::ActivateBestChain() {
                     // reachable from the active height index. Rehydrate that
                     // metadata before candidacy checks so the node can promote
                     // a locally stored better block after restart.
-                    RestorePersistedBlockIndexMetadata(*chain_db_, entry->hash, idx);
+                    RestorePersistedBlockIndexMetadata(*chain_db_, entry.hash, idx);
                     std::string invalidity_error;
                     if (!BackfillFailedChildFromParent(chain_db_,
                                                        idx,

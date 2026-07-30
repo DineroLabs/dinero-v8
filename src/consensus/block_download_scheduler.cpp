@@ -1363,35 +1363,40 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
         }
     }
 
-    // Clear existing queue and reset cursors.
-    // in_flight_blocks_ is rebuilt from preserved REQUESTED entries.
-    missing_blocks_.clear();
-    expected_blocks_.clear();
-    in_flight_blocks_.clear();
-    next_missing_idx_ = 0;
+    // Commit helper: do not destroy the live TIP queue until a complete,
+    // coherent header snapshot has been copied. If a copied tip is concurrently
+    // demoted and evicted before its hash-anchored walk, the retry path below
+    // leaves current requests intact instead of turning a safe retry into a
+    // liveness stall.
+    auto reset_tip_queue = [this]() {
+        missing_blocks_.clear();
+        expected_blocks_.clear();
+        in_flight_blocks_.clear();
+        next_missing_idx_ = 0;
 
-    // Backfill in-flight hashes share the window: preserve them across rescans
-    // (the rescan only restructures TIP work; backfill requests stay on the wire).
-    // This re-add MUST sit immediately after the clear, before ANY early return:
-    // the "Already synchronized" exit below is the NORMAL steady state of a
-    // snapshot-loaded node at tip, and skipping the re-add there dropped the
-    // outstanding backfill hashes from the cap authority on every headers
-    // message — the next service pass then staged another full cap's worth
-    // (2x oversubscription).
-    for (const auto& fs : backfill_blocks_) {
-        if (fs.status == FetchStatus::REQUESTED) {
-            in_flight_blocks_.insert(fs.block_hash);
+        // Backfill in-flight hashes share the window: preserve them across
+        // rescans (the rescan only restructures TIP work; backfill requests stay
+        // on the wire). This re-add must happen on every committed reset,
+        // including the normal "already synchronized" result.
+        for (const auto& fs : backfill_blocks_) {
+            if (fs.status == FetchStatus::REQUESTED) {
+                in_flight_blocks_.insert(fs.block_hash);
+            }
         }
-    }
+    };
 
-    // Get best header
-    const HeaderIndexEntry* best_header = header_chain_->GetBestHeader();
-    if (!best_header) {
+    // Anchor this complete scan to one copied tip identity. Every ancestry
+    // collection below resolves by this hash under HeaderChainSelector's lock,
+    // so a concurrent reorg can make the snapshot stale but cannot make it
+    // internally inconsistent or leave us dereferencing an evicted entry.
+    HeaderIndexEntry best_header{};
+    if (!header_chain_->GetBestHeaderCopy(best_header)) {
+        reset_tip_queue();
         g_logger.info("[BlockDownloadScheduler] No headers available");
         return;
     }
 
-    uint32_t best_height = best_header->height;
+    const uint32_t best_height = best_header.height;
     g_logger.info("[BlockDownloadScheduler] Scanning for missing blocks: best header height = " +
                  std::to_string(best_height) + ", local tip height = " +
                  std::to_string(local_tip_height_));
@@ -1403,105 +1408,108 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
     // Fork detection: if the best header chain diverges from our local chain,
     // we need to download blocks from the fork point, not from local_tip+1.
     // Without this, reorg blocks below our tip would never be queued.
-    if (get_block_hash_at_height_callback_ && local_tip_height_ > 0) {
-        const HeaderIndexEntry* tip_header = header_chain_->GetHeaderAtHeight(local_tip_height_);
-        if (tip_header) {
-            uint256 local_hash;
-            if (get_block_hash_at_height_callback_(local_tip_height_, local_hash)) {
-                if (local_hash != tip_header->hash) {
-                    // Fork detected: best header chain differs from our active chain.
-                    // Walk backwards to find the common ancestor (fork point).
-                    uint32_t fork_height = local_tip_height_;
-                    while (fork_height > 0) {
-                        fork_height--;
-                        const HeaderIndexEntry* entry = header_chain_->GetHeaderAtHeight(fork_height);
-                        uint256 chain_hash;
-                        if (entry && get_block_hash_at_height_callback_(fork_height, chain_hash)) {
-                            if (chain_hash == entry->hash) {
-                                break;  // Found the common ancestor
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                    g_logger.info("[BlockDownloadScheduler] Fork detected: local tip=" +
-                                 std::to_string(local_tip_height_) +
-                                 " fork point=" + std::to_string(fork_height) +
-                                 " best header=" + std::to_string(best_height));
-                    start_height = fork_height + 1;
+    std::vector<std::pair<uint256, uint32_t>> header_window;
+    if (get_block_hash_at_height_callback_ && local_tip_height_ > 0 &&
+        local_tip_height_ <= best_height) {
+        uint32_t anchor_height = 0;
+        if (!header_chain_->CollectAncestorsByHash(
+                best_header.hash, local_tip_height_, anchor_height, header_window) ||
+            anchor_height != best_height || header_window.empty() ||
+            header_window.front().second != local_tip_height_) {
+            // The copied tip may have been demoted and evicted before the
+            // hash-anchored collection. A later scheduler tick/headers event
+            // retries from the then-current best tip; never mix snapshots.
+            g_logger.info("[BlockDownloadScheduler] Header snapshot changed during scan; retrying later");
+            return;
+        }
+
+        uint256 local_hash;
+        if (get_block_hash_at_height_callback_(local_tip_height_, local_hash) &&
+            local_hash != header_window.front().first) {
+            // Fork detected. Expand the SAME hash-anchored branch snapshot to
+            // genesis once, then compare it to the active-chain oracle while
+            // holding no selector pointers or locks. This is O(n), not the old
+            // O(n²) sequence of per-height GetHeaderAtHeight walks.
+            if (!header_chain_->CollectAncestorsByHash(
+                    best_header.hash, 0, anchor_height, header_window) ||
+                anchor_height != best_height || header_window.empty() ||
+                header_window.front().second != 0 ||
+                header_window.back().second != best_height ||
+                header_window.size() != static_cast<size_t>(best_height) + 1) {
+                g_logger.info("[BlockDownloadScheduler] Fork snapshot changed during scan; retrying later");
+                return;
+            }
+
+            uint32_t fork_height = local_tip_height_;
+            while (fork_height > 0) {
+                fork_height--;
+                uint256 chain_hash;
+                if (fork_height >= header_window.size() ||
+                    header_window[fork_height].second != fork_height ||
+                    !get_block_hash_at_height_callback_(fork_height, chain_hash)) {
+                    break;
+                }
+                if (chain_hash == header_window[fork_height].first) {
+                    break;  // Found the common ancestor.
                 }
             }
+
+            g_logger.info("[BlockDownloadScheduler] Fork detected: local tip=" +
+                         std::to_string(local_tip_height_) +
+                         " fork point=" + std::to_string(fork_height) +
+                         " best header=" + std::to_string(best_height));
+            start_height = fork_height + 1;
         }
     }
 
     if (start_height > best_height) {
+        reset_tip_queue();
         g_logger.info("[BlockDownloadScheduler] Already synchronized (local tip >= header tip)");
         return;
     }
 
-    // issue #241 perf: collect the [start_height, best_height] window with ONE
-    // backward walk over parent pointers (shared helper) instead of
-    // GetHeaderAtHeight(h) per height — each of those calls walks from the
-    // best header, making the scan O(n^2). On a from-genesis sync (~39k
-    // headers) that pinned a core inside this loop under mutex_ on EVERY
-    // headers message and throttled ingest to a few blocks/min. Tip sync's
-    // anchor IS the best header (already resolved above), so the total stays
-    // linear.
-    std::vector<const HeaderIndexEntry*> window;
-    if (!CollectCanonicalHeadersLocked(start_height, best_header, window)) {
-        return;
+    // If fork detection did not already collect a window containing
+    // start_height, collect exactly the missing range now. Resolve by the copied
+    // best hash so every entry belongs to one coherent branch even if fork
+    // choice changes concurrently.
+    if (header_window.empty() ||
+        header_window.front().second > start_height ||
+        header_window.back().second != best_height) {
+        uint32_t anchor_height = 0;
+        if (!header_chain_->CollectAncestorsByHash(
+                best_header.hash, start_height, anchor_height, header_window) ||
+            anchor_height != best_height || header_window.empty() ||
+            header_window.front().second != start_height ||
+            header_window.back().second != best_height) {
+            g_logger.info("[BlockDownloadScheduler] Header window changed during scan; retrying later");
+            return;
+        }
     }
 
+    // The snapshot is complete. Only now replace the live queue/cursors.
+    reset_tip_queue();
+
     size_t preserved_count = 0;
-    for (const HeaderIndexEntry* entry : window) {
+    for (const auto& [hash, height] : header_window) {
+        if (height < start_height) {
+            continue;
+        }
         // Restore preserved status from previous scan.
-        auto it = preserved.find(entry->hash);
+        auto it = preserved.find(hash);
         if (it != preserved.end()) {
             missing_blocks_.push_back(it->second);
             if (it->second.status == FetchStatus::REQUESTED) {
-                in_flight_blocks_.insert(entry->hash);
+                in_flight_blocks_.insert(hash);
             }
             preserved_count++;
         } else {
-            missing_blocks_.emplace_back(entry->hash, entry->height);
+            missing_blocks_.emplace_back(hash, height);
         }
-        expected_blocks_.insert(entry->hash);
+        expected_blocks_.insert(hash);
     }
 
     g_logger.info("[BlockDownloadScheduler] Queued " + std::to_string(missing_blocks_.size()) +
                  " blocks for download (" + std::to_string(preserved_count) + " preserved states)");
-}
-
-// Single-backward-walk collector for the header window
-// [start_height, anchor->height], ascending order (carryover from Task 1
-// review; used by ScanForMissingBlocks with a BEST-CHAIN anchor). Parent
-// links down to start_height: O(anchor->height - start_height) total.
-// Calling GetHeaderAtHeight(h) per height instead would be O(n²), the #241
-// scan bug (commit 9bc061782).
-//
-// LIFETIME: walks raw parent pointers WITHOUT the header chain's lock —
-// valid only for best-chain anchors (never evicted). EnableBackfill's
-// possibly-side-branch anchor must NOT come through here; it uses
-// HeaderChainSelector::CollectAncestorsByHash (copies under the header
-// chain's own mutex, immune to concurrent EvictBranch).
-bool BlockDownloadScheduler::CollectCanonicalHeadersLocked(
-        uint32_t start_height, const HeaderIndexEntry* anchor,
-        std::vector<const HeaderIndexEntry*>& out_ascending) const {
-    out_ascending.clear();
-    if (!anchor || start_height > anchor->height) {
-        return false;
-    }
-
-    out_ascending.reserve(anchor->height - start_height + 1);
-    for (const HeaderIndexEntry* e = anchor; e && e->height >= start_height;
-         e = e->parent) {
-        out_ascending.push_back(e);
-        if (e->height == start_height) {
-            break;  // height-0 guard: `e->height >= 0` is never false (unsigned)
-        }
-    }
-    std::reverse(out_ascending.begin(), out_ascending.end());
-    return true;
 }
 
 std::optional<BlockDownloadScheduler::StatelessFrontier>
