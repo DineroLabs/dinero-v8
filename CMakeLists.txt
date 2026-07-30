@@ -177,6 +177,8 @@ include(cmake/SeedGeneration.cmake)
 # Third-party dependency setup lives in cmake/ThirdParty.cmake.
 # Keep this as include() so helper functions and imported targets remain root-scoped.
 include(cmake/ThirdParty.cmake)
+# Vendored static libcurl (MSVC) — must precede any curl consumer subdirectory.
+include(cmake/VendoredCurl.cmake)
 include(cmake/VendorNgtcp2.cmake)
 
 # V7 PQ façade + bench + round-trip tests. Requires OpenSSL::Crypto
@@ -1110,7 +1112,9 @@ include(src/lightningd/CMakeLists.txt)
 # Native MSVC needs CMake/vcpkg's imported libcurl target. Keep the existing
 # raw `curl` link name for Unix-style builds that already resolve -lcurl.
 if(WIN32)
-  find_package(CURL REQUIRED)
+  if(NOT TARGET CURL::libcurl)
+    find_package(CURL REQUIRED)
+  endif()
   set(DINERO_CURL_TARGET CURL::libcurl)
 else()
   set(DINERO_CURL_TARGET curl)
