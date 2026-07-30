@@ -253,6 +253,72 @@ public:
     bool GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const;
 
     /**
+     * @brief Build a block locator from the best header, entirely under the lock.
+     *
+     * Bitcoin-style exponential back-off: tip, then walk back with gaps of
+     * 1, 2, 4, 8, ... up to `max_entries` hashes.
+     *
+     * Exists because the obvious composition — GetBestHeader() then repeated
+     * GetHeaderAtHeight() — is unsafe twice over (issue #441):
+     *
+     *   1. Both accessors return raw pointers AFTER releasing mutex_, and a
+     *      reorg can demote the former best header to a side-branch tip, which
+     *      EvictBranch may then free. Dereferencing is use-after-free.
+     *   2. Even ignoring lifetime, the walk takes the lock once PER STEP, so a
+     *      concurrent reorg between steps yields a locator that mixes hashes
+     *      from different chain states — an inconsistent locator, which is
+     *      worse than a stale but coherent one.
+     *
+     * Building the whole locator under a single lock removes both.
+     *
+     * @param max_entries Maximum hashes to emit (Bitcoin uses ~10)
+     * @return Locator hashes, tip first. Empty if no headers are known.
+     */
+    std::vector<uint256> BuildLocatorCopy(size_t max_entries = 10) const;
+
+    /**
+     * @brief Copy the best-chain header at `height` out under the lock (#441).
+     *
+     * Value-returning counterpart to GetHeaderAtHeight(), which resolves
+     * best_header_->GetAncestor(height) and then returns that raw pointer
+     * AFTER releasing mutex_ — the same escape-the-lock hazard as
+     * GetBestHeader(). Ancestors are especially exposed: a reorg can move the
+     * best chain out from under a height that was previously on it, leaving the
+     * entry an evictable side branch.
+     *
+     * The copy's parent pointer is nulled — it must not be followed. Callers
+     * that need to walk ancestry should use CollectAncestorsByHash() or
+     * BuildLocatorCopy() instead, both of which resolve the whole walk under a
+     * single lock.
+     *
+     * @param height Best-chain height to resolve
+     * @param out    Filled with a by-value copy (parent == nullptr)
+     * @return true iff a best-chain header exists at that height
+     */
+    bool GetHeaderAtHeightCopy(uint32_t height, HeaderIndexEntry& out) const;
+
+    /**
+     * @brief Compute a header's Median Time Past entirely under the lock (#441).
+     *
+     * MTP is fork-aware: it walks the entry's own parent chain (11 timestamps).
+     * That makes it unreachable through the *Copy accessors, which deliberately
+     * null the copy's parent pointer — parents carry the same eviction hazard as
+     * the entry itself.
+     *
+     * Rather than export a pointer so the caller can walk, the walk happens
+     * here, holding mutex_ throughout. Same principle as BuildLocatorCopy():
+     * derive the value inside the selector; never let ancestry escape.
+     *
+     * @param hash        Header to compute MTP for (may be a side branch)
+     * @param mtp_out     Median Time Past, seconds since epoch
+     * @param height_out  That header's height (callers usually log it)
+     * @return true iff the hash is known
+     */
+    bool GetMedianTimePastByHash(const uint256& hash,
+                                 uint32_t& mtp_out,
+                                 uint32_t& height_out) const;
+
+    /**
      * @brief Atomically resolve an anchor by hash and copy its ancestor
      *        (hash, height) pairs for heights [start_height, anchor height],
      *        ascending — all under the internal mutex.

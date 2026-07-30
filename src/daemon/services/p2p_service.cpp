@@ -691,12 +691,14 @@ void P2PService::StartSchedulerTickLoop() {
                 if (++activate_tick_counter >= 6) {  // 5s × 6 = 30s
                     activate_tick_counter = 0;
                     if (ctx->chainstate && ctx->header_chain) {
-                        auto* best = ctx->header_chain->GetBestHeader();
+                        // #441: copy under the selector's lock.
+                        consensus::HeaderIndexEntry best_copy{};
+                        const bool have_best = ctx->header_chain->GetBestHeaderCopy(best_copy);
                         auto* active = ctx->chainstate->GetActiveTip();
-                        if (best && active && best->height > active->height) {
+                        if (have_best && active && best_copy.height > active->height) {
                             if (logger_interface_) {
                                 logger_interface_->info("[P1] Periodic reorg check: header=" +
-                                    std::to_string(best->height) + " > active=" +
+                                    std::to_string(best_copy.height) + " > active=" +
                                     std::to_string(active->height) + " — triggering ActivateBestChain");
                             }
                             ctx->chainstate->ActivateBestChain();
@@ -808,8 +810,10 @@ void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now)
         return;
     }
 
-    const auto* best = ctx->header_chain->GetBestHeader();
-    const uint32_t best_h = best ? best->height : 0;
+    // #441: copy under the selector's lock.
+    consensus::HeaderIndexEntry best_copy{};
+    const uint32_t best_h =
+        ctx->header_chain->GetBestHeaderCopy(best_copy) ? best_copy.height : 0;
     const size_t peer_count = p2p_mgr_->get_peer_count();
 
     // The WHEN-to-act decision is a pure state machine (unit-tested in
@@ -875,17 +879,20 @@ void P2PService::MaybeRequestHeadersForPeerTip(const std::string& peer_addr,
         return;
     }
 
-    const auto* best_header = ctx->header_chain ? ctx->header_chain->GetBestHeader() : nullptr;
+    // #441: copy under the selector's lock.
+    consensus::HeaderIndexEntry best_header_copy{};
+    const bool have_best_header =
+        ctx->header_chain && ctx->header_chain->GetBestHeaderCopy(best_header_copy);
     const auto* active_tip = ctx->chainstate->GetActiveTip();
-    const uint32_t best_header_height = best_header ? best_header->height : 0;
+    const uint32_t best_header_height = have_best_header ? best_header_copy.height : 0;
     const uint32_t active_height = active_tip ? active_tip->height : chainstate_->getBlockHeight();
     const uint32_t known_height = std::max(best_header_height, active_height);
 
     chainstate_->UpdateNetworkHeight(peer_height);
 
     if (peer_height <= known_height) {
-        if (ctx->block_download && ctx->header_chain && best_header && active_tip &&
-            best_header->height > active_tip->height &&
+        if (ctx->block_download && ctx->header_chain && have_best_header && active_tip &&
+            best_header_copy.height > active_tip->height &&
             ctx->block_download->HasSendGetDataCallback()) {
             ctx->block_download->OnHeadersProcessed();
             ctx->block_download->Tick();
@@ -1636,11 +1643,13 @@ bool P2PService::Start() {
                     if (auto* ctx = DaemonContext::instance();
                         ctx && ctx->block_download && ctx->header_chain && ctx->chainstate &&
                         ctx->block_download->HasSendGetDataCallback()) {
-                        auto* best = ctx->header_chain->GetBestHeader();
+                        // #441: copy under the selector's lock.
+                        consensus::HeaderIndexEntry best_copy{};
+                        const bool have_best = ctx->header_chain->GetBestHeaderCopy(best_copy);
                         auto* active = ctx->chainstate->GetActiveTip();
-                        if (best && active && best->height > active->height) {
+                        if (have_best && active && best_copy.height > active->height) {
                             logger_interface_->info("[P2PService] Peer available for persisted header backlog "
-                                                   "(header=" + std::to_string(best->height) +
+                                                   "(header=" + std::to_string(best_copy.height) +
                                                    ", active=" + std::to_string(active->height) +
                                                    ") — bootstrapping block download");
                             ctx->block_download->OnHeadersProcessed();
