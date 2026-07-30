@@ -220,7 +220,26 @@ inline MiningPolicyResult CheckMiningStartPolicy(
     // Phase E.2.1: Mining blocked during IBD (Initial Block Download)
     // ═══════════════════════════════════════════════════════════════════
 
-    if (chain.is_initial_block_download && !config.skip_ibd_check) {
+    // Bootstrap escape (issue #429). A node at height 0 with NO network height
+    // estimate is not "behind" anything — there is nothing known to be behind.
+    // Without this escape the IBD gate is a DEADLOCK on any chain that has to
+    // mine its way off genesis (regtest): leaving IBD requires adding blocks,
+    // and adding blocks requires mining, which this check refuses. mining.start
+    // failed permanently with "-10 Mining disabled during initial block
+    // download" on every fresh regtest node.
+    //
+    // This mirrors `bootstrap_genesis_allowed` in mining/mining_readiness.h,
+    // which already guards the parallel readiness gate the same way
+    // (local_height == 0 && network_height_estimate == 0 && tip == genesis).
+    // The two gates had drifted: the readiness path had the escape, this RPC
+    // path did not, and the RPC path is the one mining.start hits. Keeping the
+    // rule chain-agnostic and expressed only over ChainPolicyView preserves this
+    // header's property of being a pure, dependency-free, unit-testable policy.
+    const bool bootstrap_genesis_allowed =
+        (chain.current_height == 0 && chain.total_blocks == 0);
+
+    if (chain.is_initial_block_download && !config.skip_ibd_check &&
+        !bootstrap_genesis_allowed) {
         // Exception: --mine-during-ibd flag (dangerous, wastes electricity)
         // Format sync progress message
         std::string progress_msg = "Mining disabled during initial block download.";
