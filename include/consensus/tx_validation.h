@@ -27,6 +27,8 @@
 namespace dinero {
 namespace consensus {
 
+class PrecomputedTransactionData;
+
 // Forward declaration - avoid pulling in RocksDB headers
 class CoinsViewCache;
 
@@ -386,7 +388,9 @@ bool verifyScript(
     const std::vector<std::vector<uint8_t>>& all_input_scriptpubkeys,
     const std::vector<uint8_t>& all_input_confidential_flags,
     const std::vector<std::vector<uint8_t>>& all_input_commitments,
-    uint32_t block_height
+    uint32_t block_height,
+    const PrecomputedTransactionData*
+        covenant_precomputed = nullptr
 );
 
 // ============================================================================

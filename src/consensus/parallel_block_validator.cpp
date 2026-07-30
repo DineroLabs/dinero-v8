@@ -1,4 +1,5 @@
 #include "consensus/parallel_block_validator.h"
+#include "consensus/covenants.h"
 #include "consensus/transaction_validator.h"
 #include "consensus/interfaces/iconsensus_utxo_set.h"  // Phase 2: Direct IConsensusUTXOSet
 #include "consensus/outpoint.h"  // OutPoint type
@@ -216,6 +217,8 @@ bool ParallelBlockValidator::validateBlockParallel(const Block& block, uint64_t 
         std::vector<std::vector<uint8_t>> all_input_scriptpubkeys;
         std::vector<uint8_t> all_input_confidential_flags;
         std::vector<std::vector<uint8_t>> all_input_commitments;
+        std::shared_ptr<const PrecomputedTransactionData>
+            covenant_precomputed;
     };
 
     std::vector<ScriptCheck> script_checks;
@@ -230,10 +233,12 @@ bool ParallelBlockValidator::validateBlockParallel(const Block& block, uint64_t 
         std::vector<std::vector<uint8_t>> tx_all_scriptpubkeys;
         std::vector<uint8_t> tx_all_confidential_flags;
         std::vector<std::vector<uint8_t>> tx_all_input_commitments;
+        std::vector<UTXOEntry> tx_input_utxos;
         tx_all_amounts.reserve(tx.vin.size());
         tx_all_scriptpubkeys.reserve(tx.vin.size());
         tx_all_confidential_flags.reserve(tx.vin.size());
         tx_all_input_commitments.reserve(tx.vin.size());
+        tx_input_utxos.reserve(tx.vin.size());
 
         // First pass: collect all UTXO data for this transaction
         for (size_t input_idx = 0; input_idx < tx.vin.size(); ++input_idx) {
@@ -255,7 +260,12 @@ bool ParallelBlockValidator::validateBlockParallel(const Block& block, uint64_t 
             tx_all_scriptpubkeys.push_back(utxo.scriptPubKey);
             tx_all_confidential_flags.push_back(utxo.is_confidential ? 1 : 0);
             tx_all_input_commitments.push_back(utxo.commitment);
+            tx_input_utxos.push_back(utxo);
         }
+
+        const auto covenant_precomputed =
+            std::make_shared<const PrecomputedTransactionData>(
+                tx, tx_input_utxos);
 
         // Second pass: create ScriptCheck for each input with full UTXO context
         for (size_t input_idx = 0; input_idx < tx.vin.size(); ++input_idx) {
@@ -274,6 +284,7 @@ bool ParallelBlockValidator::validateBlockParallel(const Block& block, uint64_t 
             check.all_input_scriptpubkeys = tx_all_scriptpubkeys;
             check.all_input_confidential_flags = tx_all_confidential_flags;
             check.all_input_commitments = tx_all_input_commitments;
+            check.covenant_precomputed = covenant_precomputed;
 
             script_checks.push_back(std::move(check));
         }
@@ -313,7 +324,8 @@ bool ParallelBlockValidator::validateBlockParallel(const Block& block, uint64_t 
                 check.all_input_amounts,        // BIP341: Full UTXO context
                 check.all_input_scriptpubkeys,  // BIP341: Full UTXO context
                 check.all_input_confidential_flags,
-                check.all_input_commitments
+                check.all_input_commitments,
+                check.covenant_precomputed.get()
             );
 
             if (!result.valid) {

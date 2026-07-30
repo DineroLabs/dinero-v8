@@ -11,6 +11,7 @@ namespace consensus {
 
 // Forward declaration
 class IUTXOProvider;
+class PrecomputedTransactionData;
 
 } // namespace consensus
 
@@ -52,7 +53,9 @@ public:
         const std::vector<uint64_t>& all_input_amounts = {},
         const std::vector<std::vector<uint8_t>>& all_input_scriptpubkeys = {},
         const std::vector<uint8_t>& all_input_confidential_flags = {},
-        const std::vector<std::vector<uint8_t>>& all_input_commitments = {}
+        const std::vector<std::vector<uint8_t>>& all_input_commitments = {},
+        const consensus::PrecomputedTransactionData*
+            covenant_precomputed = nullptr
     );
 
 private:

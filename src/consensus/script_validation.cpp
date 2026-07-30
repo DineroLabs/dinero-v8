@@ -274,7 +274,8 @@ ScriptValidationResult ValidateTaprootSpend(
     size_t input_index,
     const UTXOEntry& utxo,
     uint32_t block_height,
-    const std::vector<UTXOEntry>& all_utxos
+    const std::vector<UTXOEntry>& all_utxos,
+    const PrecomputedTransactionData* covenant_precomputed
 ) {
     // Taproot requires full input context (BIP341) - catch caller bugs
     if (!all_utxos.empty() && all_utxos.size() != tx.vin.size()) {
@@ -317,7 +318,8 @@ ScriptValidationResult ValidateTaprootSpend(
         consensus::CovenantActivationParams::StandardFlags(
             block_height, dinero::Params());
     const bool valid = consensus::ScriptVerifier::VerifyTaproot(
-        tx, input_index, *prevouts, script_error, flags);
+        tx, input_index, *prevouts, script_error, flags,
+        covenant_precomputed);
     return valid ? ScriptValidationResult::OK
                  : ScriptValidationResult::INVALID_SCRIPT;
 }
@@ -500,7 +502,8 @@ ScriptValidationResult ValidateSpend(
     size_t input_index,
     const UTXOEntry& utxo,
     uint32_t block_height,
-    const std::vector<UTXOEntry>& all_utxos
+    const std::vector<UTXOEntry>& all_utxos,
+    const PrecomputedTransactionData* covenant_precomputed
 ) {
     ScriptType type = DetectScriptType(utxo.scriptPubKey);
 
@@ -509,7 +512,9 @@ ScriptValidationResult ValidateSpend(
             return ValidateLegacySpend(tx, input_index, utxo, block_height);
 
         case ScriptType::P2TR:
-            return ValidateTaprootSpend(tx, input_index, utxo, block_height, all_utxos);
+            return ValidateTaprootSpend(
+                tx, input_index, utxo, block_height, all_utxos,
+                covenant_precomputed);
 
         case ScriptType::P2WPKH:
             return ValidateP2WPKHSpend(tx, input_index, utxo, block_height);

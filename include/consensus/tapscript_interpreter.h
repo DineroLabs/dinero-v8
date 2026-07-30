@@ -10,6 +10,8 @@
 namespace dinero {
 namespace consensus {
 
+class PrecomputedTransactionData;
+
 /**
  * Tapscript Interpreter (BIP342)
  * Executes Taproot script path spending scripts
@@ -49,7 +51,9 @@ public:
         uint8_t output_key_parity,
         uint32_t flags,
         std::string& error,
-        const std::vector<uint8_t>& annex = {}
+        const std::vector<uint8_t>& annex = {},
+        const PrecomputedTransactionData*
+            covenant_precomputed = nullptr
     );
 
 private:
@@ -67,10 +71,14 @@ private:
         const std::array<uint8_t, 32>* merkle_root;
         uint8_t output_key_parity;
         const std::vector<uint8_t>* annex;  // BIP341 annex (for sighash computation)
+        const PrecomputedTransactionData*
+            covenant_precomputed;
         uint32_t flags;  // Script verification flags (for covenant enforcement)
         bool op_success{false};  // BIP342 immediate-success short circuit
         int64_t validation_weight_left{0};  // BIP342 witness budget
         uint32_t code_separator_position{0xffffffffU};
+        uint32_t ctv_executions{0};
+        uint32_t ccv_executions{0};
         std::string error;
     };
 

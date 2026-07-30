@@ -22,6 +22,13 @@ normative opcode specifications or activation parameters.
 - CCV successor binding v1 authenticates previous state, immutable code/tree,
   exact transparent value, and the next-state output. Its normative definition
   is in `CCV_SUCCESSOR_BINDING_V1.md`.
+- Mempool admission, mining selection, block validation, activation rollback,
+  reorg revalidation, and persistence restart are exercised through production
+  components by `CovenantSystemLifecycle`.
+- Transaction-wide CTV and BIP341 data is precomputed once and shared across
+  validation inputs. CTV and CCV may each execute at most once per revealed
+  tapscript. Limits, neuter evidence, and scaling results are recorded in
+  `COVENANT_RESOURCE_LIMITS.md`.
 
 ## Deliberately dormant
 
@@ -72,14 +79,15 @@ opcode activations dormant avoids assuming otherwise.
 
 ## Required before production activation
 
-1. Finish a normative spec and vectors for every Dinero-specific opcode being
-   proposed.
-2. Add activation-boundary, reorg, mempool, mining, wallet/recovery, and
-   multi-node tests for the chosen production height.
-3. Benchmark adversarial scripts and remove any repeated transaction-wide
-   hashing from per-input execution.
-4. Obtain independent consensus and cryptographic review.
-5. Coordinate the activation release across all validating nodes.
+1. Freeze the combined activation specification and byte-level review vectors
+   for the proposed CTV/CCV profile.
+2. Replace the orphaned covenant wallet/RPC builders, then add live
+   wallet-recovery and two-daemon relay tests at the chosen production height.
+3. Obtain independent consensus and cryptographic review of the frozen
+   specification, implementation diff, vectors, lifecycle tests, and resource
+   results.
+4. Assign activation parameters only after that review, then coordinate the
+   activation release and monitoring across all validating nodes.
 
 No mainnet/testnet activation height should be assigned merely because the
 regtest implementation passes its local suites.
