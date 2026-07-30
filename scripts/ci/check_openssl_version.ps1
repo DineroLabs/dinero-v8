@@ -52,15 +52,17 @@ if ($cacheText -notmatch "(?m)^USE_SYSTEM_OPENSSL:BOOL=OFF\s*$") {
 # dynamic dependency — e.g. dinero-wallet-cli -> libcurl.dll -> a vcpkg
 # libcrypto-3-x64.dll built against a different OpenSSL. The header/metadata/
 # cache/dinerod checks above cannot see that second copy, so scan the actual
-# bundled DLLs and EXEs too. Scan the installer stage (the definitive shipped
+# bundled DLLs and EXEs too. Scan the installer stages (the definitive shipped
 # payload) and the build Release dir.
 $scanRoots = New-Object System.Collections.Generic.List[string]
 $stage = Join-Path $repo 'packaging\windows\dist\server-installer-stage'
 if (Test-Path -LiteralPath $stage) { $scanRoots.Add((Resolve-Path -LiteralPath $stage).Path) }
+$userStage = Join-Path $repo 'packaging\windows\dist\installer-stage'
+if (Test-Path -LiteralPath $userStage) { $scanRoots.Add((Resolve-Path -LiteralPath $userStage).Path) }
 $releaseDir = Join-Path $build 'Release'
 if (Test-Path -LiteralPath $releaseDir) { $scanRoots.Add((Resolve-Path -LiteralPath $releaseDir).Path) }
 if ($scanRoots.Count -eq 0) {
-    Fail "no bundled payload found to scan (looked for $stage and $releaseDir)"
+    Fail "no bundled payload found to scan (looked for $stage, $userStage and $releaseDir)"
 }
 
 # Search raw bytes rather than relying on a platform-specific strings utility.
