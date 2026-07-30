@@ -339,6 +339,35 @@ public:
 
     P2PManager(uint16_t listen_port = 20999, const std::string& external_ip = "");
 
+    // Idle-peer reaping policy, evaluated by keepalive_loop() on its 30s
+    // cadence. Pure and public so the 90-second boundary is pinned by a
+    // fake-clock regression test (tests/p2p/test_p2p_idle_peer_reap.cpp)
+    // instead of being re-derived by every reader of the loop.
+    //
+    // PINGs go to ALL connected peers every 30s and last_message_at
+    // refreshes on ANY received message (PONGs included), so a live peer
+    // cannot trip the threshold: reaping requires 3 consecutive missed
+    // PING/PONG round-trips. The boundary is exclusive — a peer idle for
+    // EXACTLY kPeerIdleTimeout is retained; reaping starts strictly after.
+    //
+    // Silent direct OUTBOUND peers are deliberately exempt under current
+    // policy (we chose them; churning them recreates the same connection),
+    // but that exemption is policy, not accident — revisit alongside the
+    // outbound liveness work rather than silently widening this reap.
+    enum class IdlePeerAction {
+        kKeep,               // healthy, not yet past the threshold, or exempt
+        kReapRelayZombie,    // relay-virtual peer idle past the threshold
+        kReapDirectInbound,  // direct inbound peer idle past the threshold
+    };
+    static constexpr std::chrono::seconds kPeerIdleTimeout{90};
+    static IdlePeerAction classify_idle_peer(
+        bool is_connected,
+        bool is_relay_virtual,
+        bool is_outbound,
+        std::chrono::system_clock::time_point last_message_at,
+        std::chrono::system_clock::time_point now,
+        std::chrono::seconds idle_timeout = kPeerIdleTimeout);
+
     // Test-only constructor: inject a custom ClockSource (e.g.,
     // FakeClockSource) for deterministic TTL tests. Existing default
     // ctor stays untouched — defaults clock_ to SystemClockSource.

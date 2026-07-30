@@ -6,6 +6,10 @@
 #include <secp256k1.h>
 #include <secp256k1_generator.h>
 
+#ifdef DINERO_ENABLE_TEST_HOOKS
+#include <atomic>
+#endif
+
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -49,6 +53,13 @@ DerivedState& State() {
     return s;
 }
 
+#ifdef DINERO_ENABLE_TEST_HOOKS
+// TEST-ONLY override (see the header). Never compiled into production builds.
+// Atomic because PedersenGeneratorsReady() is called from validation, which a
+// future test target may exercise on more than one thread.
+std::atomic<bool> g_force_unavailable_for_test{false};
+#endif
+
 }  // namespace
 
 const Hash& PedersenGeneratorV() {
@@ -56,7 +67,32 @@ const Hash& PedersenGeneratorV() {
 }
 
 bool PedersenGeneratorsReady() {
+#ifdef DINERO_ENABLE_TEST_HOOKS
+    if (g_force_unavailable_for_test) return false;
+#endif
     return State().ok;
+}
+
+#ifdef DINERO_ENABLE_TEST_HOOKS
+void SetPedersenGeneratorsUnavailableForTest(bool unavailable) {
+    g_force_unavailable_for_test = unavailable;
+}
+#endif
+
+bool CheckPedersenGeneratorsStartupPrecondition(std::string* error) {
+    if (PedersenGeneratorsReady()) {
+        if (error) error->clear();
+        return true;
+    }
+    if (error) {
+        *error = "Pedersen value-commitment generator V could not be derived from \"" +
+                 std::string(kPedersenVDST) +
+                 "\". Shielded consensus validation fails closed without it, so this "
+                 "node would reject every shielded bundle at or above the "
+                 "input-binding activation height and fork itself off the network. "
+                 "Derivation is one-shot, so this cannot recover at runtime.";
+    }
+    return false;
 }
 
 // Internal accessor used by pedersen_commit.cpp — returns the cached

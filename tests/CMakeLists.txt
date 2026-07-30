@@ -752,6 +752,64 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_empty_rangeproof_inf
   )
 endif()
 
+# Security regression: consensus shielded validation must FAIL CLOSED when the
+# Pedersen generators are unavailable, and the daemon must refuse to start in
+# that state rather than silently rejecting every shielded bundle above the
+# input-binding activation height (which forks the node off the network).
+#
+# Generator derivation is a std::call_once singleton over a compile-time DST, so
+# the failure cannot be produced legitimately. This target compiles
+# pedersen_generators.cpp directly with DINERO_ENABLE_TEST_HOOKS to get the
+# override seam. Compiling that translation unit here also means it defines every
+# symbol the dinero_shielded archive member defines, so the archive member is
+# never pulled in and there is no duplicate-symbol clash. The definition is set
+# ONLY on this target — production libraries and the daemon never see it.
+#
+# CONSTRAINT: that no-clash property holds only while this translation unit
+# defines exactly the symbols the archive member defines. If someone adds a
+# symbol to pedersen_generators.cpp that another dinero_shielded member
+# references, the linker pulls the archive member back in and this target fails
+# with a duplicate-symbol error. Fix it by adding the new symbol's dependencies
+# here, not by dropping the direct compile.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_generator_failclosed.cpp)
+  add_executable(test_shielded_generator_failclosed
+    tests/consensus/test_shielded_generator_failclosed.cpp
+    ${CMAKE_SOURCE_DIR}/src/consensus/shielded/pedersen_generators.cpp
+  )
+  target_compile_definitions(test_shielded_generator_failclosed PRIVATE
+    DINERO_ENABLE_TEST_HOOKS
+  )
+  target_link_libraries(test_shielded_generator_failclosed PRIVATE
+    dinero_shielded
+    dinero_consensus
+    dinero_zk
+    dinero_crypto
+    OpenSSL::Crypto
+    OpenSSL::SSL
+    pthread
+    sqlite3
+  )
+  link_zstd_if_needed(test_shielded_generator_failclosed)
+  target_include_directories(test_shielded_generator_failclosed PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_generator_failclosed PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(
+    NAME ShieldedGeneratorFailClosed
+    COMMAND test_shielded_generator_failclosed
+  )
+  set_tests_properties(ShieldedGeneratorFailClosed PROPERTIES
+    LABELS "shielded;security;inflation;mandatory"
+    TIMEOUT 120
+  )
+endif()
+
 # Security regression: untrusted CompactSize counts in the shielded-bundle
 # deserializer must be capped before resize() (remote-OOM fix).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_serialization_oom.cpp)
@@ -2525,6 +2583,70 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   message(STATUS "✅ Ring 3 Phase 4c: TS1 integration test (production P2PManager)")
 else()
   message(WARNING "⚠️  Ring 3 Phase 4c TS1 integration test not found - skipping")
+endif()
+
+# Keepalive idle-peer reaping policy (P2PManager::classify_idle_peer):
+# fake-clock regression pinning the 90s boundary, the last_message_at
+# refresh, and the deliberate silent-outbound exemption. Mirrors the TS1
+# target's dependency list — the one proven to link p2p_manager.cpp
+# standalone.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_idle_peer_reap.cpp)
+  add_executable(test_p2p_idle_peer_reap
+    tests/p2p/test_p2p_idle_peer_reap.cpp
+    src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
+    src/network/relay_tls_keypair.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  if(APPLE)
+    target_link_libraries(test_p2p_idle_peer_reap PRIVATE
+      GTest::gtest
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_p2p_idle_peer_reap PRIVATE
+      GTest::gtest
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_p2p_idle_peer_reap PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_p2p_idle_peer_reap PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_p2p_idle_peer_reap PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  target_include_directories(test_p2p_idle_peer_reap PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+  )
+
+  add_test(NAME P2PIdlePeerReap COMMAND test_p2p_idle_peer_reap)
+  set_tests_properties(P2PIdlePeerReap PROPERTIES
+    LABELS "network;p2p;keepalive;smoke"
+    TIMEOUT 10  # pure fake-clock policy test — no sockets, no sleeps
+  )
 endif()
 
 # Focused build target for the relay/QUIC transport gate. CTest does not

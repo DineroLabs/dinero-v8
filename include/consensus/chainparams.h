@@ -216,10 +216,11 @@ struct ChainParams {
     // blocks below it keep verifying legacy proofs (0x01/0x02) under the old
     // verifying key, so the ~10 pre-activation notes remain spendable.
     //
-    // FLAG FOR HUMAN DECISION: defaulted to UINT32_MAX (never activate) on every
-    // network. A real mainnet activation height MUST be chosen by a human and
-    // coordinated across the fleet before this ships — a wrong boundary splits
-    // the chain. Until then the fix is wired and tested but inert on mainnet.
+    // The struct default is UINT32_MAX (never activate); each chain opts in from
+    // chainparams_impl.cpp. MAINNET activated at 61000 (paired with the epoch
+    // reset — see below); testnet/regtest leave it dormant. Any new activation
+    // height MUST be chosen by a human and coordinated across the fleet before it
+    // ships — a wrong boundary splits the chain.
     // ===========================================================================
     uint32_t shielded_cv_binding_activation_height = UINT32_MAX;
 
@@ -229,7 +230,8 @@ struct ChainParams {
     // shielded_cv_binding_activation_height (cv-binding activates from block 1 of
     // the new epoch) — SelectParams enforces this. Discarding the weak pool at the
     // reset is what closes the [input_binding, cv) mint window instead of carrying
-    // it forward. Defaulted UINT32_MAX (dormant) on every network; a real mainnet
+    // it forward. The struct default is UINT32_MAX (dormant); MAINNET set 61000
+    // and the cutover has happened, so the mainnet window is closed. Any new
     // height MUST be chosen by a human + fleet-coordinated before it ships.
     uint32_t shielded_epoch_reset_height = UINT32_MAX;
 
