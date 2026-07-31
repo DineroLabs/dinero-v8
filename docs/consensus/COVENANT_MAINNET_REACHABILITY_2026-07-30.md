@@ -2,12 +2,13 @@
 
 ## Result
 
-The canonical mainnet chain through height 75,490 contains no Taproot
+The canonical mainnet chain through height 76,105 contains no Taproot
 script-path spend and no revealed or bare covenant opcode. Every observed P2TR
-spend is a key-path spend.
+spend is a key-path spend using a 64-byte signature with implicit
+`SIGHASH_DEFAULT`.
 
 This supports the operator's statement that the covenant features were never
-used. It does not prove that the 71,203 unspent P2TR outputs have no hidden
+used. It does not prove that the 71,818 unspent P2TR outputs have no hidden
 script tree. Taproot intentionally hides scripts until they are spent.
 Consequently, this audit permits a coordinated covenant activation plan; it
 does not justify silently changing the meaning of every historical P2TR output.
@@ -24,34 +25,39 @@ The scanner:
    transaction serialization to recover txids and follow P2TR outpoints;
 4. applies the BIP341 trailing-annex rule before classifying key-path and
    script-path spends; and
-5. parses script push operations so opcode-valued bytes inside pushed data are
+5. records every key-path signature length and explicit sighash byte, so
+   corrected non-default sighash behavior cannot silently reinterpret history;
+   and
+6. parses script push operations so opcode-valued bytes inside pushed data are
    not false positives.
 
 | Field | Result |
 |---|---:|
 | Network | mainnet |
-| End height | 75,490 |
-| End hash | `000000856e22c706820cde87e5d4ed2d32db3f8a1a920ed02c98fa8511038595` |
-| Canonical blocks | 75,491 |
-| Transactions | 75,567 |
-| Inputs | 77,843 |
-| Outputs | 228,557 |
-| P2TR outputs created | 73,555 |
+| End height | 76,105 |
+| End hash | `000000597d60ede4a0afeed16c01ec9408f33e9fc7956cc8b9d9e06f3ed61f51` |
+| Canonical blocks | 76,106 |
+| Transactions | 76,182 |
+| Inputs | 78,458 |
+| Outputs | 230,402 |
+| P2TR outputs created | 74,170 |
 | P2TR outputs spent | 2,352 |
 | P2TR key-path spends | 2,352 |
+| 64-byte implicit `SIGHASH_DEFAULT` spends | **2,352** |
+| 65-byte explicit-sighash spends | **0** |
 | P2TR script-path spends | **0** |
 | P2TR malformed spends | 0 |
 | P2TR annex spends | 0 |
-| Unspent P2TR outputs | 71,203 |
+| Unspent P2TR outputs | 71,818 |
 | Revealed covenant opcodes | **0** |
 | Bare covenant opcodes | **0** |
 
 The first P2TR output is at height 1. The first P2TR key-path spend is at
 height 7,187.
 
-The generated JSON result was 31,005 bytes with SHA-256:
+The schema-v2 generated JSON result was 34,108 bytes with SHA-256:
 
-`42cb9162bdd529483a0620e040250c1fee461b0d41c6a0eea79c675d045e97c0`
+`f8b20d2f0ea620dd6ff7613e828743de1cc072ae84eaa1cae0d5f962f2617367`
 
 ## Reproduction
 
