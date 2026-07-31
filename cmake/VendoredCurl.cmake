@@ -93,7 +93,19 @@ if(DINERO_VENDORED_CURL AND NOT TARGET CURL::libcurl)
     IMPORTED_LOCATION "${_curl_lib}"
     INTERFACE_INCLUDE_DIRECTORIES "${_curl_inc}"
     INTERFACE_COMPILE_DEFINITIONS "CURL_STATICLIB"
-    INTERFACE_LINK_LIBRARIES "${_ossl}/libssl.lib;${_ossl}/libcrypto.lib;ws2_32;crypt32;wldap32;bcrypt;normaliz;advapi32")
+    # System libs mirror what curl's own CMakeLists appends on Windows:
+    #   ws2_32, iphlpapi (CURL_NETWORK_AND_TIME_LIBS), bcrypt, advapi32, crypt32,
+    #   wldap32, normaliz (CURL_LIBS).
+    # iphlpapi is required by curl >= 8.21.0: lib/peer.c calls if_nametoindex()
+    # (curl's CMakeLists says so verbatim — 'iphlpapi'  # for if_nametoindex()).
+    # 8.11.1 never referenced it, so omitting it linked fine until the version
+    # bump and then failed with:
+    #   LNK2019: unresolved external symbol __imp_if_nametoindex
+    #            referenced in function peer_create
+    # secur32 is deliberately NOT listed: curl only needs it for USE_WINDOWS_SSPI,
+    # which is off in this configuration (CURL_USE_SCHANNEL=OFF, and the identical
+    # list linked cleanly against 8.11.1).
+    INTERFACE_LINK_LIBRARIES "${_ossl}/libssl.lib;${_ossl}/libcrypto.lib;ws2_32;iphlpapi;crypt32;wldap32;bcrypt;normaliz;advapi32")
   set(CURL_FOUND TRUE)
   message(STATUS "Using vendored STATIC libcurl ${_curlver}: ${_curl_lib}")
   message(STATUS "  linked against vendored OpenSSL ${DINERO_VENDORED_OPENSSL_VERSION}")
