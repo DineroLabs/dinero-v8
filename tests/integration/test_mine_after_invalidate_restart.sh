@@ -184,14 +184,25 @@ TARGET_MERKLE="$(header_merkle "${TARGET_HASH}")"
 NOW="$(date +%s)"
 info "tip height=${TIP_HEIGHT} time=${TARGET_TIME} wall_clock=${NOW}"
 
-# Precondition. If the chain's time has NOT overtaken the wall clock, the next
-# template would pick up a fresh timestamp and could differ for that reason
-# alone — which would make a pass meaningless. Fail inconclusive rather than
-# report a green result that proves nothing.
-if (( TARGET_TIME <= NOW )); then
-    fail "precondition not met: tip time ${TARGET_TIME} <= wall clock ${NOW}. The chain's time has not overtaken the wall clock, so block_time is not frozen and this test cannot isolate the extranonce. Increase SEED_BLOCKS."
+# INFORMATIONAL, deliberately not a hard precondition.
+#
+# Whether the chain's time has overtaken the wall clock depends on how fast the
+# host mines the seed blocks. On Linux CI 40 blocks complete inside one second,
+# so tip time == wall clock and a strict "> NOW" check fails there while passing
+# on slower hardware — a hardware-speed dependency, not a property of the code
+# under test.
+#
+# It does not need to be a precondition, because the assertion that gates this
+# test is the MERKLE ROOT, which does not depend on the timestamp at all.
+# Demonstrated directly: in the neutered run that proved this test works, the
+# timestamps DIFFERED (1785486203 -> 1785486209) and the merkle-root assertion
+# still caught the constant session id. Frozen time only strengthens the
+# secondary block-hash assertion; it is not required for the gate.
+if (( TARGET_TIME > NOW )); then
+    info "block_time is frozen at prevMTP+1 (tip time ${TARGET_TIME} > wall clock ${NOW}) — the block-hash assertion is also isolated in this run"
+else
+    info "block_time is not frozen (tip time ${TARGET_TIME} <= wall clock ${NOW}); the merkle-root assertion below is timestamp-independent and still gates this test"
 fi
-pass "block_time is frozen at prevMTP+1 (tip time ${TARGET_TIME} > wall clock ${NOW})"
 
 PARENT_HASH="$(hash_at_height $((TIP_HEIGHT - 1)))" || fail "getblockhash at parent failed"
 info "target=${TARGET_HASH}"
