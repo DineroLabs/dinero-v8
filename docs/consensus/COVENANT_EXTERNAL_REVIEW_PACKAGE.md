@@ -2,16 +2,17 @@
 
 Status: ready for independent review; not ready for production activation.
 
-Date: 2026-07-30
+Date: 2026-07-31
 
-Implementation base: `06148559b4673f2863c59a8ab1090679a52f64df`
-(`origin/dinero-main` at the start of this work)
+Implementation base: `cb21a91d4226a8a0b8b798f065d1b867f7de88bb`
+(`origin/dinero-main` after PR #463)
 
-Implementation tip before the wallet/RPC lifecycle:
-`d56b6dd6b`
+Review stack boundaries:
 
-Wallet/RPC implementation and live lifecycle:
-`efa7cda89` and `744a1ce19`
+- foundation and dormant protocol: `c7b8cb5612`;
+- inherited BIP342 completion: `501f6c21fe`;
+- lifecycle, resource bounds, and frozen profile: `7c47744e48`; and
+- wallet/RPC construction, recovery, and live lifecycle: `2c1f180618`.
 
 Reviewers should review the final branch tip, including
 `DINERO_COVENANT_PROFILE_V1.md`, against that base.
@@ -53,28 +54,30 @@ Upstream references:
 
 | Commit | Purpose |
 |---|---|
-| `139b88b03` | mainnet reachability scan and reproducible audit |
-| `ba3263147` | fail-closed covenant and Taproot verification foundations |
-| `94c509ca3` | Taproot conformance vectors |
-| `16fdb0b5a` | activation and CCV binding vectors |
-| `5542410cf` | covenant/Taproot test registration |
-| `c6650c904` | dormant CTV and CCV specifications |
-| `770087521` | tapscript pushes and conditional execution |
-| `c44c28827` | BIP342 code-separator position commitment |
-| `3d8e3abe2` | remaining inherited BIP342 execution surface |
-| `71a390876` | conformance and differential evidence |
-| `3b435f93c` | activation/reorg/mempool/mining/restart lifecycle |
-| `4da3bfc04` | deterministic resource bounds and precomputation |
-| `d56b6dd6b` | frozen combined profile-v1 specification |
-| `efa7cda89` | checksummed wallet/RPC construction and recovery |
-| `744a1ce19` | live mainnet guard and two-node regtest lifecycle |
+| `76f32f0a7` | mainnet reachability scan and reproducible audit |
+| `20d0c9e67` | fail-closed covenant and Taproot verification foundations |
+| `0c4751fac` | Taproot conformance vectors |
+| `a95d11012` | activation and CCV binding vectors |
+| `16f097ea3` | covenant/Taproot test registration |
+| `e6dca246e` | dormant CTV and CCV specifications |
+| `c7b8cb561` | canonical tagged-hash and SHA-256 test helpers |
+| `4c503f2aa` | tapscript pushes and conditional execution |
+| `5d376a26b` | BIP342 code-separator position commitment |
+| `6e5b2f3ba` | remaining inherited BIP342 execution surface |
+| `501f6c21f` | conformance and differential evidence |
+| `7cd102ba1` | activation/reorg/mempool/mining/restart lifecycle |
+| `71309689e` | deterministic resource bounds and precomputation |
+| `7c47744e4` | frozen combined profile-v1 specification |
+| `497c68e80` | checksummed wallet/RPC construction and recovery |
+| `0e27df1b9` | live mainnet guard and two-node regtest lifecycle |
+| `2c1f18061` | wallet lifecycle and recovery readiness record |
 
 Recommended review commands:
 
 ```text
-git diff 06148559b4673f2863c59a8ab1090679a52f64df..HEAD
+git diff cb21a91d4226a8a0b8b798f065d1b867f7de88bb..HEAD
 git log --reverse --oneline \
-  06148559b4673f2863c59a8ab1090679a52f64df..HEAD
+  cb21a91d4226a8a0b8b798f065d1b867f7de88bb..HEAD
 ```
 
 ## 4. High-risk code
@@ -207,6 +210,12 @@ Expected evidence at the review tip:
 - 1/1 live mainnet-guard and two-daemon wallet/RPC relay, restart, reorg, and
   reconfirmation lifecycle; and
 - 6/6 adjacent mempool/mining/UTXO tests.
+
+The 2026-07-31 rebased review tip additionally passed all 98 tests selected by
+`ctest -L 'consensus|covenant|taproot'`, including the cold-start harness,
+consensus fuzzer, two-node sync, and the serialized live covenant wallet
+lifecycle. Every selected executable was built before the run; the result was
+98/98 with zero `Not Run` entries.
 
 The CTV and CCV execution-limit tests were independently neutered by changing
 each maximum from one to two. Each test then failed because the repeated
