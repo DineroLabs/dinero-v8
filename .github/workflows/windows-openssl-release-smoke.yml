@@ -38,6 +38,18 @@ jobs:
           $env:OPENSSL_VERSION = '3.5.7'
           .\scripts\build-openssl-vendored.ps1
 
+      # Must run after the OpenSSL build (it links the vendored static OpenSSL)
+      # and before the installer build. cmake/VendoredCurl.cmake hard-fails the
+      # configure when third_party/curl-*/prebuilt/windows-x86_64-msvc is absent,
+      # so without this step CI dies at "Build Windows server release and
+      # installer" on a clean checkout, even though a developer machine that had
+      # already run this script by hand builds fine.
+      - name: Build vendored static libcurl (OpenSSL 3.5.7)
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-curl-vendored.ps1
+
       - name: Install NSIS
         shell: powershell
         run: choco install nsis --no-progress -y
