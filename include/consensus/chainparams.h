@@ -180,6 +180,22 @@ struct ChainParams {
     uint32_t confidential_activation_height = 0;
 
     // ===========================================================================
+    // Taproot script-path and covenant activation
+    // ===========================================================================
+    // Script-path activation is independent from every covenant opcode. BIP341
+    // script paths can therefore remain available while unfinished extensions
+    // retain their pre-activation NOP/OP_SUCCESS semantics.
+    //
+    // UINT32_MAX means dormant. Changing a production height changes block
+    // validity and requires a coordinated network release.
+    // ===========================================================================
+    uint32_t taproot_scriptpath_activation_height = UINT32_MAX;
+    uint32_t ctv_activation_height = UINT32_MAX;
+    uint32_t csfs_activation_height = UINT32_MAX;
+    uint32_t txhash_activation_height = UINT32_MAX;
+    uint32_t ccv_activation_height = UINT32_MAX;
+
+    // ===========================================================================
     // Shielded Pool Activation Height (Phase 1 — disabled on mainnet/testnet)
     // ===========================================================================
     // Block height at which shielded transactions (v5) become consensus-valid
