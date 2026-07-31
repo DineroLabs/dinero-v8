@@ -91,10 +91,14 @@ struct CCVPlan {
 };
 
 /**
- * Construct a profile-v1 CCV state output. The v1 contract code is the
- * successor-binding tapscript:
+ * Construct a profile-v1 permissionless CCV state output. The v1 contract
+ * code is the successor-binding tapscript:
  *
  *   OP_CHECKCONTRACTVERIFY OP_TRUE
+ *
+ * This script authenticates continuity, not an owner. Any party able to spend
+ * an additional fee input can choose nextData and advance the state. It is a
+ * regtest construction/recovery profile, not an owner-authorized contract.
  */
 CCVPlan BuildCCVPlan(
     uint32_t counter,
@@ -117,6 +121,7 @@ struct CCVTransition {
  * The covenant input and successor output are fixed at index zero. Additional
  * inputs and outputs may fund fees, but the CCV value is preserved exactly.
  * Additional inputs are left unsigned for the normal wallet signer.
+ * No signature authorizes the covenant input itself.
  */
 CCVTransition BuildCCVTransition(
     const CCVPlan& current,

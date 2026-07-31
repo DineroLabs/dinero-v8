@@ -37,6 +37,10 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
   watch scripts atomically, and re-derives them after wallet restart. Its
   construction and recovery contract is documented in
   `../wallet/COVENANT_PROFILE_V1_RECOVERY.md`.
+- The wallet CCV artifact proves permissionless state continuity only. Its
+  fixed script has no owner signature and the RPC requires an explicit
+  `permissionless: true` acknowledgement. Owner-authorized CCV construction
+  is not implemented and remains a production blocker.
 - `CovenantWalletMultinodeLifecycle` exercises two live daemons: CTV and CCV
   funding, normal peer relay and mining, an ordinary wallet fee input on a CCV
   transition, wallet restart and descriptor recovery, a longer-chain reorg,
@@ -54,6 +58,13 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
 Regtest activates CTV and CCV at height 20 so boundary, wallet, recovery, and
 multi-node work can exercise the reviewed semantics. Regtest behavior is not a
 production activation decision.
+
+The regtest wallet refuses to construct spends before the candidate height has
+the relevant rule active. That guard is not a consensus or relay-policy rule:
+a transaction constructed after activation and retained across a deep reorg
+could otherwise be submitted when the opcode again has NOP/`OP_SUCCESS`
+semantics. Production deployment therefore still requires explicit
+pre-activation mempool/relay policy and activation-boundary reorg tests.
 
 ## Interpreter conformance evidence
 

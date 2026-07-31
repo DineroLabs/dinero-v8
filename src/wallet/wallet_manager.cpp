@@ -7941,6 +7941,41 @@ bool WalletManager::storeCovenantDescriptor(
         sqlite3_finalize(statement);
         statement = nullptr;
 
+        // The script is the primary key. INSERT OR IGNORE may therefore have
+        // preserved a pre-existing wallet/watch registration with a different
+        // ownership path. Committing the descriptor in that case would make
+        // SQLite recovery and the in-memory UTXO index disagree about who
+        // owns the script.
+        const char* verify_watch_sql = R"(
+            SELECT path, is_change
+            FROM watch_scripts
+            WHERE script_pubkey = ?
+        )";
+        if (sqlite3_prepare_v2(
+                db_, verify_watch_sql, -1, &statement, nullptr) != SQLITE_OK) {
+            throw std::runtime_error(sqlite3_errmsg(db_));
+        }
+        sqlite3_bind_blob(
+            statement, 1,
+            record.script_pubkey.data(),
+            static_cast<int>(record.script_pubkey.size()),
+            SQLITE_TRANSIENT);
+        if (sqlite3_step(statement) != SQLITE_ROW) {
+            throw std::runtime_error("covenant watch-script insert disappeared");
+        }
+        const char* stored_path =
+            reinterpret_cast<const char*>(sqlite3_column_text(statement, 0));
+        const bool watch_matches =
+            stored_path != nullptr &&
+            watch_path == stored_path &&
+            sqlite3_column_int(statement, 1) == 0;
+        sqlite3_finalize(statement);
+        statement = nullptr;
+        if (!watch_matches) {
+            throw std::runtime_error(
+                "covenant script collides with an existing watch path");
+        }
+
         exec(db_, "COMMIT");
         transaction_open = false;
     } catch (const std::exception& error) {

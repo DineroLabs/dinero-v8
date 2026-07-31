@@ -2,7 +2,9 @@
 #include "rpc/rpc_registry.h"
 
 #include "consensus/chainparams.h"
+#include "consensus/covenant_activation.h"
 #include "daemon/daemon_context.h"
+#include "daemon/services/chainstate_service.h"
 #include "daemon/services/wallet_service.h"
 #include "primitives/transaction.h"
 #include "wallet/covenant_profile.h"
@@ -194,6 +196,8 @@ din::Json CcvJson(const CCVPlan& plan) {
     result["code_hash"] = Hex(plan.state.codeHash);
     result["counter"] = static_cast<Json::UInt>(plan.state.counter);
     result["data_hex"] = Hex(plan.state.data);
+    result["authorization"] = "none";
+    result["permissionless"] = true;
     result["taproot"] = TaprootJson(plan.taproot);
     return result;
 }
@@ -204,6 +208,48 @@ void RequireRegtest() {
         throw std::runtime_error(
             "covenant wallet RPC is regtest-only while profile v1 "
             "remains dormant on mainnet and testnet");
+    }
+}
+
+void RequireExplicitPermissionless(const din::Json& params) {
+    if (!params.isMember("permissionless") ||
+        !params["permissionless"].isBool() ||
+        !params["permissionless"].asBool()) {
+        throw std::invalid_argument(
+            "profile-v1 CCV has no owner authorization; set "
+            "permissionless=true to acknowledge that any party may choose "
+            "the next state");
+    }
+}
+
+void RequireSpendActivation(
+    const ExecutionContext& context,
+    ProfileType type) {
+    if (context.daemon == nullptr || !context.daemon->chainstate) {
+        throw std::runtime_error(
+            "chainstate is unavailable for covenant activation check");
+    }
+    const uint32_t tip = context.daemon->chainstate->getBlockHeight();
+    if (tip == UINT32_MAX) {
+        throw std::runtime_error(
+            "active-chain height is unavailable for covenant activation check");
+    }
+    const uint32_t spendHeight = tip + 1;
+    const auto& params = dinero::Params();
+    const uint32_t activationHeight =
+        type == ProfileType::CTV
+            ? params.ctv_activation_height
+            : params.ccv_activation_height;
+    if (!dinero::consensus::CovenantActivationParams::IsScriptPathActive(
+            spendHeight, params) ||
+        !dinero::consensus::CovenantActivationParams::IsActive(
+            spendHeight, activationHeight)) {
+        throw std::runtime_error(
+            std::string(type == ProfileType::CTV ? "CTV" : "CCV") +
+            " spend construction is disabled at candidate height " +
+            std::to_string(spendHeight) +
+            "; before activation its opcode does not enforce the intended "
+            "covenant");
     }
 }
 
@@ -319,7 +365,7 @@ din::Json RpcCtvCreate(
 }
 
 din::Json RpcCtvSpend(
-    const ExecutionContext&,
+    const ExecutionContext& context,
     const din::Json& params) {
     return RpcResult([&] {
         if (!params.isObject() ||
@@ -333,6 +379,7 @@ din::Json RpcCtvSpend(
         const auto plan =
             dinero::wallet::covenant::RecoverCTVPlan(
                 params["descriptor"].asString());
+        RequireSpendActivation(context, ProfileType::CTV);
         std::vector<dinero::TxOutPoint> prevouts;
         prevouts.reserve(params["prevouts"].size());
         for (const auto& item : params["prevouts"]) {
@@ -357,6 +404,7 @@ din::Json RpcCcvCreate(
             throw std::invalid_argument(
                 "wallet.covenant.ccvcreate requires an object");
         }
+        RequireExplicitPermissionless(params);
         const auto data = ParseHex(
             params.get("data_hex", "").asString(),
             "data_hex",
@@ -395,6 +443,8 @@ din::Json RpcCcvAdvance(
         const auto current =
             dinero::wallet::covenant::RecoverCCVPlan(
                 params["descriptor"].asString());
+        RequireExplicitPermissionless(params);
+        RequireSpendActivation(context, ProfileType::CCV);
         std::vector<dinero::wallet::covenant::Input> inputs;
         inputs.reserve(params["inputs"].size());
         for (const auto& item : params["inputs"]) {

@@ -16,6 +16,14 @@ new consensus rules and it does not authorize an activation height.
   not possess a key-path escape.
 - CCV internal keys and successor outputs are re-derived from the authenticated
   contract state and fixed profile-v1 code.
+- The v1 CCV wallet artifact is deliberately permissionless: its tapscript is
+  `OP_CHECKCONTRACTVERIFY OP_TRUE` and contains no signature check. Any party
+  can fund the fee and choose the next `data`. The RPC requires the caller to
+  set `permissionless: true`; this artifact is lifecycle evidence, not an
+  owner-controlled contract.
+- Spend construction fails before the relevant activation height. Before
+  activation, CTV is NOP4 and CCV is an `OP_SUCCESS` slot, so constructing a
+  nominal spend would not enforce the covenant.
 - Construction is not validation. Unit and integration tests submit the
   resulting wire transaction through the canonical spend validator, mempool,
   mining, block connection, and reorg paths.
@@ -74,9 +82,10 @@ All responses use `din.wallet.covenant.profile.v1`.
   outputs, committed input sequences, input index, version, and locktime.
 - `wallet.covenant.ctvspend` recovers the plan and supplies its prevout
   identifiers.
-- `wallet.covenant.ccvcreate` constructs an initial CCV state.
-- `wallet.covenant.ccvadvance` constructs the next state and leaves ordinary
-  fee inputs unsigned.
+- `wallet.covenant.ccvcreate` constructs an initial permissionless CCV state
+  after explicit `permissionless: true` acknowledgement.
+- `wallet.covenant.ccvadvance` constructs its permissionless next state and
+  leaves ordinary fee inputs unsigned; it requires the same acknowledgement.
 - `wallet.covenant.import` validates, re-derives, and tracks a descriptor.
 - `wallet.covenant.inspect` validates and displays a descriptor without
   storing it.
@@ -87,6 +96,11 @@ descriptor independently before funding its scriptPubKey.
 
 Amounts created by these RPCs use unsigned integer `value_una` fields. This
 avoids floating-point ambiguity at the covenant construction boundary.
+
+An owner-authorized CCV profile requires authenticated script logic (for
+example, a reviewed tapscript signature policy), corresponding wallet key and
+recovery semantics, and new adversarial tests. It is a production blocker, not
+an implied property of profile v1.
 
 ## Signing and recovery workflow
 

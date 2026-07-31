@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <stdexcept>
 
 namespace dinero::wallet::covenant {
@@ -156,6 +157,14 @@ DecodedDescriptor DecodeDescriptor(const std::string& descriptor) {
     }
     const auto payload = Unhex(
         descriptor.substr(std::strlen(DESCRIPTOR_PREFIX)));
+    // Descriptor ids hash the textual form, so accepting upper-case hex would
+    // give one canonical payload multiple ids and let it collide with its own
+    // derived scriptPubKey in durable wallet storage.
+    if (descriptor != std::string(DESCRIPTOR_PREFIX) +
+            Hex(payload.data(), payload.size())) {
+        throw std::invalid_argument(
+            "covenant descriptor is not canonically encoded");
+    }
     constexpr size_t headerSize = DESCRIPTOR_MAGIC.size() + 2;
     constexpr size_t checksumSize = 32;
     if (payload.size() < headerSize + checksumSize ||
@@ -315,11 +324,23 @@ Transaction BuildCTVTemplateTransaction(
         input.sequence = sequence;
         tx.vin.push_back(std::move(input));
     }
+    uint64_t totalOutputValue = 0;
     for (const auto& output : outputs) {
         if (output.scriptPubKey.empty()) {
             throw std::invalid_argument(
                 "CTV output scriptPubKey must not be empty");
         }
+        if (!output.value.IsPositive() ||
+            !output.value.IsWithinSupply()) {
+            throw std::invalid_argument(
+                "CTV output value is outside the consensus money range");
+        }
+        if (output.value.GetUna() >
+            AmountUna::Max().GetUna() - totalOutputValue) {
+            throw std::invalid_argument(
+                "CTV output total exceeds the consensus money range");
+        }
+        totalOutputValue += output.value.GetUna();
         tx.vout.emplace_back(output.value, output.scriptPubKey);
     }
     return tx;
@@ -494,7 +515,12 @@ Transaction BuildCTVSpend(
     }
 
     Transaction tx = recovered.templateTx;
+    std::set<TxOutPoint> uniquePrevouts;
     for (size_t index = 0; index < prevouts.size(); ++index) {
+        if (!uniquePrevouts.insert(prevouts[index]).second) {
+            throw std::invalid_argument(
+                "CTV spend contains a duplicate prevout");
+        }
         tx.vin[index].prevout = prevouts[index];
     }
     // The descriptor intentionally stores a witnessless template. Its
@@ -565,6 +591,11 @@ CCVTransition BuildCCVTransition(
         throw std::invalid_argument(
             "CCV profile requires transparent transaction version 1 or 2");
     }
+    if (!covenantValue.IsPositive() ||
+        !covenantValue.IsWithinSupply()) {
+        throw std::invalid_argument(
+            "CCV covenant value is outside the consensus money range");
+    }
 
     CCVTransition result;
     result.successor =
@@ -574,7 +605,12 @@ CCVTransition BuildCCVTransition(
     // default. CCV construction is a Taproot script-path spend.
     result.tx.witness_version = 1;
     result.tx.lockTime = lockTime;
+    std::set<TxOutPoint> uniquePrevouts;
     for (const auto& source : inputs) {
+        if (!uniquePrevouts.insert(source.prevout).second) {
+            throw std::invalid_argument(
+                "CCV transition contains a duplicate prevout");
+        }
         TxInput input;
         input.prevout = source.prevout;
         input.sequence = source.sequence;
@@ -582,11 +618,23 @@ CCVTransition BuildCCVTransition(
     }
     result.tx.vout.emplace_back(
         covenantValue, result.successor.taproot.scriptPubKey);
+    uint64_t totalOutputValue = covenantValue.GetUna();
     for (const auto& output : additionalOutputs) {
         if (output.scriptPubKey.empty()) {
             throw std::invalid_argument(
                 "CCV additional output scriptPubKey must not be empty");
         }
+        if (!output.value.IsPositive() ||
+            !output.value.IsWithinSupply()) {
+            throw std::invalid_argument(
+                "CCV additional output value is outside the consensus money range");
+        }
+        if (output.value.GetUna() >
+            AmountUna::Max().GetUna() - totalOutputValue) {
+            throw std::invalid_argument(
+                "CCV output total exceeds the consensus money range");
+        }
+        totalOutputValue += output.value.GetUna();
         result.tx.vout.emplace_back(output.value, output.scriptPubKey);
     }
     result.tx.vin[0].witness = {

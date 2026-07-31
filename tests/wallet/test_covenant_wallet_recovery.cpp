@@ -190,4 +190,61 @@ TEST_F(
     EXPECT_EQ(wallet.listCovenantDescriptors().size(), 2U);
 }
 
+TEST_F(
+    CovenantWalletRecoveryTest,
+    ExistingWatchPathCollisionRollsBackDescriptorAtomically) {
+    const CTVPlan plan = BuildCTVPlan(
+        {0xfffffffeU},
+        0,
+        {Output{AmountUna::Una(50'000), {0x51}}});
+
+    WalletManager wallet(root_);
+    wallet.create("watch-collision");
+    wallet.open("watch-collision");
+
+    sqlite3_stmt* statement = nullptr;
+    ASSERT_EQ(
+        sqlite3_prepare_v2(
+            wallet.getCurrentDatabase(),
+            "INSERT INTO watch_scripts "
+            "(script_pubkey, path, is_change, last_seen_height) "
+            "VALUES (?, 'existing-watch-path', 0, 0)",
+            -1,
+            &statement,
+            nullptr),
+        SQLITE_OK);
+    sqlite3_bind_blob(
+        statement, 1,
+        plan.taproot.scriptPubKey.data(),
+        static_cast<int>(plan.taproot.scriptPubKey.size()),
+        SQLITE_TRANSIENT);
+    ASSERT_EQ(sqlite3_step(statement), SQLITE_DONE);
+    sqlite3_finalize(statement);
+
+    EXPECT_FALSE(wallet.storeCovenantDescriptor(Record(plan)));
+    EXPECT_FALSE(wallet.getCovenantDescriptor(plan.descriptorId).has_value())
+        << "descriptor and watch registration must commit or roll back together";
+
+    statement = nullptr;
+    ASSERT_EQ(
+        sqlite3_prepare_v2(
+            wallet.getCurrentDatabase(),
+            "SELECT path FROM watch_scripts WHERE script_pubkey = ?",
+            -1,
+            &statement,
+            nullptr),
+        SQLITE_OK);
+    sqlite3_bind_blob(
+        statement, 1,
+        plan.taproot.scriptPubKey.data(),
+        static_cast<int>(plan.taproot.scriptPubKey.size()),
+        SQLITE_TRANSIENT);
+    ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
+    EXPECT_EQ(
+        std::string(reinterpret_cast<const char*>(
+            sqlite3_column_text(statement, 0))),
+        "existing-watch-path");
+    sqlite3_finalize(statement);
+}
+
 } // namespace

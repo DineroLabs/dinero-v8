@@ -356,6 +356,45 @@ rpc_result "${NODE_A_RPC}" "${DATA_A}" "wallet.createhd" \
 rpc_result "${NODE_B_RPC}" "${DATA_B}" "wallet.createhd" \
     '["covenant-lifecycle-b"]' >/dev/null 2>&1 || true
 
+info "Proving covenant spend construction fails before activation height 20"
+ZERO_TXID="0000000000000000000000000000000000000000000000000000000000000000"
+PRE_CTV="$(covenant_result "${NODE_A_RPC}" "${DATA_A}" \
+    "wallet.covenant.ctvcreate" \
+    '{"outputs":[{"value_una":1,"script_pubkey":"51"}]}')"
+PRE_CTV_DESCRIPTOR="$(jq -r '.recovery_descriptor' <<<"${PRE_CTV}")"
+PRE_CTV_RESULT="$(rpc_result "${NODE_A_RPC}" "${DATA_A}" \
+    "wallet.covenant.ctvspend" \
+    "$(jq -nc --arg descriptor "${PRE_CTV_DESCRIPTOR}" \
+        --arg txid "${ZERO_TXID}" \
+        '{descriptor:$descriptor,prevouts:[{txid:$txid,vout:0}]}')")"
+jq -e '.success == false and (.error | contains("before activation"))' \
+    <<<"${PRE_CTV_RESULT}" >/dev/null \
+    || fail "CTV spend construction did not fail closed before activation: ${PRE_CTV_RESULT}"
+
+CCV_NO_ACK="$(rpc_result "${NODE_A_RPC}" "${DATA_A}" \
+    "wallet.covenant.ccvcreate" \
+    '{"counter":0,"data_hex":"00"}')"
+jq -e '.success == false and (.error | contains("permissionless=true"))' \
+    <<<"${CCV_NO_ACK}" >/dev/null \
+    || fail "CCV creation did not require permissionless acknowledgement: ${CCV_NO_ACK}"
+PRE_CCV="$(covenant_result "${NODE_A_RPC}" "${DATA_A}" \
+    "wallet.covenant.ccvcreate" \
+    '{"counter":0,"data_hex":"00","permissionless":true}')"
+PRE_CCV_DESCRIPTOR="$(jq -r '.recovery_descriptor' <<<"${PRE_CCV}")"
+PRE_CCV_RESULT="$(rpc_result "${NODE_A_RPC}" "${DATA_A}" \
+    "wallet.covenant.ccvadvance" \
+    "$(jq -nc --arg descriptor "${PRE_CCV_DESCRIPTOR}" \
+        --arg txid "${ZERO_TXID}" \
+        '{descriptor:$descriptor,
+          permissionless:true,
+          inputs:[{txid:$txid,vout:0}],
+          covenant_value_una:1,
+          next_data_hex:"01"}')")"
+jq -e '.success == false and (.error | contains("before activation"))' \
+    <<<"${PRE_CCV_RESULT}" >/dev/null \
+    || fail "CCV spend construction did not fail closed before activation: ${PRE_CCV_RESULT}"
+pass "pre-activation spend construction and implicit CCV authorization fail closed"
+
 MINER_A="$(wallet_address "${NODE_A_RPC}" "${DATA_A}")"
 MINER_B="$(wallet_address "${NODE_B_RPC}" "${DATA_B}")"
 CHANGE_A="$(wallet_address "${NODE_A_RPC}" "${DATA_A}")"
@@ -416,7 +455,7 @@ pass "CTV descriptor funded, spent, relayed, and confirmed"
 
 CCV_PLAN="$(covenant_result "${NODE_A_RPC}" "${DATA_A}" \
     "wallet.covenant.ccvcreate" \
-    '{"counter":7,"data_hex":"c0ffee","track":true,"label":"live-ccv-7"}')"
+    '{"counter":7,"data_hex":"c0ffee","permissionless":true,"track":true,"label":"live-ccv-7"}')"
 CCV_DESCRIPTOR="$(jq -r '.recovery_descriptor' <<<"${CCV_PLAN}")"
 CCV_ID="$(jq -r '.descriptor_id' <<<"${CCV_PLAN}")"
 CCV_SCRIPT="$(jq -r '.taproot.script_pubkey' <<<"${CCV_PLAN}")"
@@ -442,6 +481,7 @@ CCV_ADVANCE_PARAMS="$(jq -nc \
     --argjson fee "${FEE_UTXO}" \
     --arg change "${CCV_CHANGE}" \
     '{descriptor:$descriptor,
+      permissionless:true,
       inputs:[
         {txid:$covenant_txid,vout:$covenant_vout},
         {txid:$fee.txid,vout:$fee.vout}

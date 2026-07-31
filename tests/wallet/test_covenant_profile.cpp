@@ -154,6 +154,21 @@ TEST_F(
     ASSERT_GT(corrupt.size(), 8U);
     corrupt.back() = corrupt.back() == '0' ? '1' : '0';
     EXPECT_THROW(RecoverCTVPlan(corrupt), std::invalid_argument);
+
+    std::string nonCanonical = plan.recoveryDescriptor;
+    bool changedCase = false;
+    for (size_t i = std::string("dncov1:").size();
+         i < nonCanonical.size(); ++i) {
+        if (nonCanonical[i] >= 'a' && nonCanonical[i] <= 'f') {
+            nonCanonical[i] = static_cast<char>(
+                nonCanonical[i] - 'a' + 'A');
+            changedCase = true;
+        }
+    }
+    ASSERT_TRUE(changedCase);
+    EXPECT_THROW(RecoverCTVPlan(nonCanonical), std::invalid_argument)
+        << "one descriptor payload must have exactly one textual id";
+
     EXPECT_THROW(RecoverCCVPlan(plan.recoveryDescriptor), std::invalid_argument);
     EXPECT_THROW(
         BuildCTVPlan(
@@ -300,6 +315,69 @@ TEST_F(
             {},
             0,
             Transaction::TX_VERSION_SHIELDED),
+        std::invalid_argument);
+}
+
+TEST_F(
+    CovenantProfileWalletTest,
+    BuildersRejectInvalidMoneyRangesAndDuplicatePrevouts) {
+    EXPECT_THROW(
+        BuildCTVPlan(
+            {0xfffffffeU}, 0,
+            {Output{AmountUna::Zero(), {OP_TRUE}}}),
+        std::invalid_argument);
+    EXPECT_THROW(
+        BuildCTVPlan(
+            {0xfffffffeU}, 0,
+            {Output{
+                AmountUna::Una(AmountUna::Max().GetUna() + 1),
+                {OP_TRUE}}}),
+        std::invalid_argument);
+    EXPECT_THROW(
+        BuildCTVPlan(
+            {0xfffffffeU}, 0,
+            {
+                Output{AmountUna::Max(), {OP_TRUE}},
+                Output{AmountUna::Una(1), {OP_TRUE}},
+            }),
+        std::invalid_argument);
+
+    const CTVPlan ctv = BuildCTVPlan(
+        {0xfffffffeU, 0xfffffffdU},
+        0,
+        {Output{AmountUna::Una(1), {OP_TRUE}}});
+    const TxOutPoint duplicate = Outpoint(
+        "000000000000000000000000000000000000000000000000000000000000c704",
+        0);
+    EXPECT_THROW(
+        BuildCTVSpend(ctv, {duplicate, duplicate}),
+        std::invalid_argument);
+
+    const CCVPlan ccv = BuildCCVPlan(0, {});
+    EXPECT_THROW(
+        BuildCCVTransition(
+            ccv,
+            {Input{duplicate, 0xfffffffeU}},
+            AmountUna::Zero(),
+            {}),
+        std::invalid_argument);
+    EXPECT_THROW(
+        BuildCCVTransition(
+            ccv,
+            {
+                Input{duplicate, 0xfffffffeU},
+                Input{duplicate, 0xfffffffdU},
+            },
+            AmountUna::Una(1),
+            {}),
+        std::invalid_argument);
+    EXPECT_THROW(
+        BuildCCVTransition(
+            ccv,
+            {Input{duplicate, 0xfffffffeU}},
+            AmountUna::Max(),
+            {},
+            {Output{AmountUna::Una(1), {OP_TRUE}}}),
         std::invalid_argument);
 }
 
