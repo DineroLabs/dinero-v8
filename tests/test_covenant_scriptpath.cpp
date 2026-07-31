@@ -19,8 +19,9 @@
 #include "consensus/utxo_entry.h"
 #include "primitives/transaction.h"
 #include "crypto/evp_secp256k1.h"
+#include "crypto/sha256.h"
+#include "crypto/tagged_hash.h"
 #include <openssl/rand.h>
-#include <openssl/sha.h>
 #include <cstring>
 #include <stdexcept>
 
@@ -40,8 +41,8 @@ protected:
     void SetUp() override {
         ctx_ = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
         unsigned char seed[32];
-        RAND_bytes(seed, 32);
-        secp256k1_context_randomize(ctx_, seed);
+        ASSERT_EQ(1, RAND_bytes(seed, sizeof(seed)));
+        ASSERT_EQ(1, secp256k1_context_randomize(ctx_, seed));
     }
 
     void TearDown() override {
@@ -78,18 +79,7 @@ protected:
     // Tagged hash: SHA256(SHA256(tag) || SHA256(tag) || data)
     std::vector<uint8_t> TaggedHash(const std::string& tag,
                                      const std::vector<uint8_t>& data) {
-        uint8_t tag_hash[32];
-        SHA256(reinterpret_cast<const uint8_t*>(tag.data()), tag.size(), tag_hash);
-
-        SHA256_CTX h;
-        SHA256_Init(&h);
-        SHA256_Update(&h, tag_hash, 32);
-        SHA256_Update(&h, tag_hash, 32);
-        SHA256_Update(&h, data.data(), data.size());
-
-        std::vector<uint8_t> result(32);
-        SHA256_Final(result.data(), &h);
-        return result;
+        return dinero::crypto::TaggedHash(tag, data);
     }
 };
 
@@ -285,7 +275,7 @@ TEST_F(CovenantScriptPathTest, CSFSVerify_ValidSignature) {
 
     // Hash message to 32 bytes
     uint8_t msg_hash[32];
-    SHA256(message.data(), message.size(), msg_hash);
+    dinero::crypto::CSHA256().Write(message.data(), message.size()).Finalize(msg_hash);
 
     secp256k1_keypair kp;
     ASSERT_EQ(1, secp256k1_keypair_create(ctx_, &kp, privkey.data()));
@@ -305,7 +295,7 @@ TEST_F(CovenantScriptPathTest, CSFSVerify_WrongMessage) {
 
     std::vector<uint8_t> message = {0xDE, 0xAD, 0xBE, 0xEF};
     uint8_t msg_hash[32];
-    SHA256(message.data(), message.size(), msg_hash);
+    dinero::crypto::CSHA256().Write(message.data(), message.size()).Finalize(msg_hash);
 
     secp256k1_keypair kp;
     ASSERT_EQ(1, secp256k1_keypair_create(ctx_, &kp, privkey.data()));
