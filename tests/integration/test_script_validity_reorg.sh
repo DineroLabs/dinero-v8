@@ -191,6 +191,19 @@ info "height after invalidate: ${HEIGHT_AFTER_INVALIDATE}"
 info "Mining competing branch B (9 blocks) to outweigh branch A"
 MINE_B="$(rpc_call "generatetoaddress" "[9,\"${MINER_ADDR}\"]")"
 rpc_has_error "${MINE_B}" && fail "generatetoaddress (branch B) failed: ${MINE_B}"
+info "branch B mine response: $(echo "${MINE_B}" | tr -d '\n' | cut -c1-300)"
+
+# Diagnose the fork state BEFORE reconsidering, so a premise failure points at
+# the step that actually broke rather than at the end state.
+HEIGHT_AFTER_B="$(block_count)"
+HASH_AT_FORK_AFTER_B="$(hash_at_height "${FORK_HEIGHT}")"
+info "after mining B: height=${HEIGHT_AFTER_B}, hash@${FORK_HEIGHT}=${HASH_AT_FORK_AFTER_B}"
+if [[ "${HASH_AT_FORK_AFTER_B}" == "${TARGET_HASH}" ]]; then
+    fail "branch B did not fork: height ${FORK_HEIGHT} still holds the target hash after invalidate+mine. invalidateblock did not roll the active chain back as expected."
+fi
+if (( HEIGHT_AFTER_B <= 16 )); then
+    fail "branch B (height ${HEIGHT_AFTER_B}) does not outweigh branch A (16); mine more blocks on B"
+fi
 
 info "Reconsidering the target so it is valid-but-outweighed"
 REC="$(rpc_call "reconsiderblock" "[\"${TARGET_HASH}\"]")"
