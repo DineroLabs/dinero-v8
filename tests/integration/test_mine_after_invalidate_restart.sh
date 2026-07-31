@@ -15,14 +15,39 @@
 # This test invalidates the tip, RESTARTS the daemon, mines from the same
 # parent, and requires the replacement to differ.
 #
-# The decisive assertion is on the MERKLE ROOT, not the block hash. A restart
-# takes several seconds while the frozen-time margin is typically ~1s, so in
-# practice the wall clock usually overtakes prevMTP+1 during the restart and the
-# two blocks get different timestamps — which makes their hashes differ for a
-# reason that has nothing to do with the extranonce. The merkle root does not
-# depend on the timestamp; it is derived from the coinbase, which is exactly
-# where the extranonce lives. Verified: with a process-only counter the two
-# merkle roots come out byte-identical while the hash check still passes.
+# ── WHAT ACTUALLY GATES THIS TEST ────────────────────────────────────────────
+#
+# The MERKLE ROOT is the regression gate. The block hash and the timestamps are
+# INFORMATIVE ONLY and must never be treated as the gate.
+#
+# Why the merkle root is decisive:
+#   - both blocks are mined at the same height on the same parent
+#   - both are mined by a freshly started process, so both use counter=0
+#   - everything else (address, subsidy, no mempool txs) is identical
+#   => the coinbase differs ONLY by the extranonce session id, and the merkle
+#      root is derived from the coinbase. It does not depend on the timestamp.
+#
+# Why the block hash is NOT sufficient:
+#   A restart takes several seconds while the frozen-time margin is ~1s, so the
+#   wall clock usually overtakes prevMTP+1 during the restart. The two blocks
+#   then get different timestamps and their hashes differ for a reason that has
+#   nothing to do with the extranonce.
+#
+# NEUTER EVIDENCE (do not delete — this is what proves the gate works).
+# With the session id neutered to a constant, both counters at 0:
+#
+#     target merkle = 931dcc4a59ef336388f6957cf37926469222dcfe9b40b25b8e9a8d52c37200f5
+#     new merkle    = 931dcc4a59ef336388f6957cf37926469222dcfe9b40b25b8e9a8d52c37200f5
+#
+# byte-identical coinbases — while "replacement hash differs" still PASSED.
+# Re-confirmed after the frozen-time precondition was removed:
+#
+#     [PASS] replacement hash differs from the invalidated block across a restart
+#     [FAIL] merkle roots are identical (240688fd1d54d508f9ec...)
+#
+# Restoring the session id makes the merkle roots differ, independently of the
+# timestamps. If a future change makes the merkle assertion non-decisive, this
+# test stops guarding #458 even while appearing green.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
