@@ -5,14 +5,22 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir     = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot   = Split-Path -Parent $ScriptDir
 $ThirdPartyDir = Join-Path $ProjectRoot 'third_party'
-$CurlVersion    = if ($env:CURL_VERSION)    { $env:CURL_VERSION }    else { '8.11.1' }
+$CurlVersion    = if ($env:CURL_VERSION)    { $env:CURL_VERSION }    else { '8.21.0' }
 $OpenSSLVersion = if ($env:OPENSSL_VERSION) { $env:OPENSSL_VERSION } else { '3.5.7' }
 $CurlDir   = if ($env:CURL_SOURCE_DIR) { $env:CURL_SOURCE_DIR } else { Join-Path $ThirdPartyDir "curl-$CurlVersion" }
 $OutputDir = if ($env:CURL_OUTPUT_DIR) { $env:CURL_OUTPUT_DIR } else { Join-Path $CurlDir 'prebuilt\windows-x86_64-msvc' }
 $OpenSSLPrebuilt = Join-Path $ThirdPartyDir "openssl-$OpenSSLVersion\prebuilt\windows-x86_64-msvc"
 $MetadataFile = Join-Path $OutputDir '.dinero-build-meta'
 $Rebuild = $env:CURL_REBUILD -eq '1'
+# Pinned source hashes. 8.21.0 (2026-06-24) verified three ways before pinning:
+# computed from curl.se, byte-identical download from the GitHub release, and a
+# good GPG signature from Daniel Stenberg <daniel@haxx.se>
+# (27ED EAF2 2F3A BCEB 50DB  9A12 5CC9 08FD B71E 12C2).
+#
+# 8.11.1 (2024-12) is retained for reproducing older builds ONLY. Do not ship it:
+# it carries a long list of published advisories fixed in later releases.
 $KnownCurlSourceSha256 = @{
+    '8.21.0' = 'd9b327997999045a24cda50f3983e69e51c516bd8be6ef9842fc7f99135e33bb'
     '8.11.1' = 'a889ac9dbba3644271bd9d1302b5c22a088893719b72be3487bc3d401e5c4e80'
 }
 
@@ -71,7 +79,8 @@ $configureArgs = @(
 )
 & cmake @configureArgs; if ($LASTEXITCODE -ne 0) { Fail "curl configure failed" }
 $env:MSBUILDDISABLENODEREUSE = '1'
-# curl 8.11.1 CMake names the static-only target "libcurl_static" (not "libcurl")
+# curl's CMake names the static-only target "libcurl_static" (not "libcurl") —
+# see CMakeLists.txt: set(LIB_STATIC "libcurl_static"). Verified present in 8.21.0.
 & cmake --build $BuildDir --config Release --target libcurl_static -- /nodeReuse:false
 if ($LASTEXITCODE -ne 0) { Fail "curl build failed" }
 

@@ -48,7 +48,7 @@ for this pass; a follow-up may extend `check_openssl_version.sh` for parity.
 
 Companion to `scripts/build-openssl-vendored.ps1`, same shape and conventions:
 
-- Env knobs: `CURL_VERSION` (default a pinned stable, target curl 8.15.x as of
+- Env knobs: `CURL_VERSION` (default a pinned stable, target curl 8.21.0 as of
   2026-07 — finalize exact version + published SHA256 at implementation and add
   to a `$KnownCurlSourceSha256` map, exactly like the OpenSSL script's map),
   `CURL_SOURCE_DIR`, `CURL_OUTPUT_DIR`, `CURL_REBUILD`, `OPENSSL_VERSION`

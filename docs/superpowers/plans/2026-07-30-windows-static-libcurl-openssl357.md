@@ -42,13 +42,13 @@ git commit -m "ci(windows): scan every bundled DLL/EXE for a non-baseline OpenSS
 - Produces: `third_party/curl-<ver>/prebuilt/windows-x86_64-msvc/lib/libcurl.lib`, `.../include/curl/*.h`, and `.../.dinero-build-meta` (`OS=Windows`, `ARCH=AMD64`, `CURL_VERSION=<ver>`, `OPENSSL_VERSION=3.5.7`, `BUILT_AT_UTC=...`).
 - Consumes: vendored static OpenSSL at `third_party/openssl-3.5.7/prebuilt/windows-x86_64-msvc` (built by `scripts/build-openssl-vendored.ps1`).
 
-- [ ] **Step 1: Pin the curl source SHA256.** Target **curl 8.11.1**. Fetch the authoritative hash and record it (do not guess):
+- [ ] **Step 1: Pin the curl source SHA256.** Target **curl 8.21.0**. Fetch the authoritative hash and record it (do not guess):
 
 ```powershell
 # One-off: read the official hash to paste into the script's map below.
-Invoke-WebRequest -UseBasicParsing https://curl.se/download/curl-8.11.1.tar.gz.sha256 | Select-Object -ExpandProperty Content
+Invoke-WebRequest -UseBasicParsing https://curl.se/download/curl-8.21.0.tar.gz.sha256 | Select-Object -ExpandProperty Content
 ```
-Expected: a line like `<64-hex>  curl-8.11.1.tar.gz`. Use that hex in Step 2's `$KnownCurlSourceSha256`.
+Expected: a line like `<64-hex>  curl-8.21.0.tar.gz`. Use that hex in Step 2's `$KnownCurlSourceSha256`.
 
 - [ ] **Step 2: Write the script.** Create `scripts/build-curl-vendored.ps1`:
 
@@ -60,7 +60,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir     = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot   = Split-Path -Parent $ScriptDir
 $ThirdPartyDir = Join-Path $ProjectRoot 'third_party'
-$CurlVersion    = if ($env:CURL_VERSION)    { $env:CURL_VERSION }    else { '8.11.1' }
+$CurlVersion    = if ($env:CURL_VERSION)    { $env:CURL_VERSION }    else { '8.21.0' }
 $OpenSSLVersion = if ($env:OPENSSL_VERSION) { $env:OPENSSL_VERSION } else { '3.5.7' }
 $CurlDir   = if ($env:CURL_SOURCE_DIR) { $env:CURL_SOURCE_DIR } else { Join-Path $ThirdPartyDir "curl-$CurlVersion" }
 $OutputDir = if ($env:CURL_OUTPUT_DIR) { $env:CURL_OUTPUT_DIR } else { Join-Path $CurlDir 'prebuilt\windows-x86_64-msvc' }
@@ -68,7 +68,7 @@ $OpenSSLPrebuilt = Join-Path $ThirdPartyDir "openssl-$OpenSSLVersion\prebuilt\wi
 $MetadataFile = Join-Path $OutputDir '.dinero-build-meta'
 $Rebuild = $env:CURL_REBUILD -eq '1'
 $KnownCurlSourceSha256 = @{
-    '8.11.1' = 'PASTE_SHA256_FROM_STEP_1'
+    '8.21.0' = 'd9b327997999045a24cda50f3983e69e51c516bd8be6ef9842fc7f99135e33bb'
 }
 
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
@@ -154,15 +154,15 @@ Write-Host "Vendored static libcurl ready: $(Join-Path $OutputDir 'lib\libcurl.l
 Set-Location 'C:\Users\Dina Hajdarevic\DineroLabs\dinero-v8'
 .\scripts\build-curl-vendored.ps1
 ```
-Expected: ends with `Vendored static libcurl ready: ...\third_party\curl-8.11.1\prebuilt\windows-x86_64-msvc\lib\libcurl.lib`.
+Expected: ends with `Vendored static libcurl ready: ...\third_party\curl-8.21.0\prebuilt\windows-x86_64-msvc\lib\libcurl.lib`.
 
 - [ ] **Step 4: Verify the artifact.**
 
 ```powershell
-$p = 'third_party\curl-8.11.1\prebuilt\windows-x86_64-msvc'
+$p = 'third_party\curl-8.21.0\prebuilt\windows-x86_64-msvc'
 Test-Path "$p\lib\libcurl.lib"; Test-Path "$p\include\curl\curl.h"; Get-Content "$p\.dinero-build-meta"
 ```
-Expected: `True`, `True`, and meta showing `CURL_VERSION=8.11.1` + `OPENSSL_VERSION=3.5.7`.
+Expected: `True`, `True`, and meta showing `CURL_VERSION=8.21.0` + `OPENSSL_VERSION=3.5.7`.
 
 - [ ] **Step 5: Commit** (script only — not the downloaded source or prebuilt).
 
