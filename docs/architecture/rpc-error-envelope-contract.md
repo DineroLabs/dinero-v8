@@ -65,12 +65,31 @@ These improve: they currently cannot see handler-returned errors at all.
 
 ### Affected — read the nested `result.error`
 
-**`dinero-qt` (separate repo) — 9+ sites.** `src/hardwarewalletwidget.cpp`
-(×7), `src/walletwizard.cpp:2019`, `src/mainwindow.cpp:7952`,
-`src/shieldedwidget.cpp:620`. The last already carries a comment noting that
-"some daemon RPCs wrap server-side errors in `result.error`", i.e. the malformed
-shape is knowingly depended upon. **Must accept both shapes before the daemon
-change is deployed.**
+**`dinero-qt` (separate repo) — COMPATIBLE, no code changes required.**
+
+An earlier revision of this document listed dinero-qt as a hard blocker with
+"9+ nested sites". That was a grep-based classification that did not check what
+`result` was bound to at each site. Corrected by reading the data flow:
+
+- `src/rpcclient.cpp:368` — the central client already handles the **top-level**
+  error and requires `isObject()`, exactly the normalized shape emitted here.
+  Errors are intercepted centrally and routed to `rpcError` before any widget
+  callback runs.
+- `src/shieldedwidget.cpp:620` — the comment there reads "...instead of a
+  JSON-RPC error envelope. **Detect both shapes.**" It already implements
+  dual-shape handling.
+- `src/hardwarewalletwidget.cpp` (×7) and `src/mainwindow.cpp:7952` — these take
+  the **full envelope** (`handleXResult(result.toObject())`, branching on
+  `contains("result")` vs `contains("error")`). Already correct.
+- `src/walletwizard.cpp:2019` — the one genuine nested read, inside a **success**
+  callback that receives the extracted `.result`. It supports both generations
+  indirectly: old nested errors reach the success callback, new top-level errors
+  route through the central error callback. The fallback becomes dead but
+  harmless.
+
+dinero-qt should gain more correct behaviour from this change, not less: errors
+previously buried in `result` were invisible to the central client and will now
+surface through the standard `rpcError` channel.
 
 **`DineroDPI` (separate repo) — AUDITED, compatible with caveats.** New
 top-level errors are handled correctly and embedded NodeCore is unaffected.
@@ -94,13 +113,22 @@ the nested shape strictly and are updated in this PR to accept both:
 The three nodes are all operator-controlled, which makes a coordinated window
 practical. Consumers are the risk, not the nodes.
 
-1. Audit every consumer for `.result.error` (this document; complete —
-   `dinero-qt` is the remaining hard blocker).
+1. Audit every consumer for `.result.error` (this document; complete — **no
+   known hard blocker**).
 2. Update clients to accept **both** the old nested and the new top-level shape.
-3. Release/update DineroDPI, Qt, CLI, miners and operator scripts.
+3. Land DineroDPI's centralized dual-shape normalization and its regression
+   tests. dinero-qt needs no code change. Do not touch the `dinero-qt`
+   `spec/my-node-dashboard` checkout — it has uncommitted work in
+   `src/mainwindow.cpp`.
 4. Merge and deploy the daemon envelope correction across the three nodes in a
    controlled window.
-5. Verify a successful call and a deliberate error call on every node.
+5. Runtime-verify on every node, with BOTH:
+   - a **handler-returned** error that this change promotes (e.g.
+     `generatetoaddress` to an invalid address, or `ct.setminfee` with no
+     parameter for the string-normalization path) — an unknown-method error is
+     NOT sufficient, since that path already produced a top-level error before
+     this change and would pass either way;
+   - one successful RPC, to confirm the success envelope is unaffected.
 6. Later, remove the nested-shape compatibility from clients.
 
 ## Verification
