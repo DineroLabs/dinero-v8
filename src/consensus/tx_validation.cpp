@@ -348,7 +348,8 @@ bool verifyScript(
         all_input_amounts,
         all_input_scriptpubkeys,
         all_input_confidential_flags,
-        all_input_commitments
+        all_input_commitments,
+        covenant_precomputed
     );
 
     // Execute script verification

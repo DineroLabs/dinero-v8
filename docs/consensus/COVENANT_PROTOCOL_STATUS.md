@@ -78,8 +78,9 @@ Dinero specifications and native vectors in this directory.
 
 ## Historical mainnet evidence
 
-The canonical scan through height 75,490 found 73,555 P2TR outputs and 2,352
-P2TR spends, all key-path. It found zero revealed script paths, annexes, or
+The canonical scan through height 76,105 found 74,170 P2TR outputs and 2,352
+P2TR spends, all key-path with 64-byte implicit `SIGHASH_DEFAULT`. It found
+zero explicit-sighash key-path spends, revealed script paths, annexes, or
 covenant opcodes. The reproducible report and scanner are:
 
 - `COVENANT_MAINNET_REACHABILITY_2026-07-30.md`

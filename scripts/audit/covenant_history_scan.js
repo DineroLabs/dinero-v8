@@ -452,7 +452,20 @@ function classifyP2TRWitness(witness) {
     stack.pop();
     annex = true;
   }
-  if (stack.length === 1) return {kind: "keypath", annex};
+  if (stack.length === 1) {
+    const signature = stack[0];
+    const sighash = signature.length === 64
+      ? "default"
+      : signature.length === 65
+        ? `0x${signature[64].toString(16).padStart(2, "0")}`
+        : `invalid-length-${signature.length}`;
+    return {
+      kind: "keypath",
+      annex,
+      signatureLength: signature.length,
+      sighash,
+    };
+  }
   if (stack.length >= 2) {
     return {
       kind: "scriptpath",
@@ -553,7 +566,7 @@ async function main() {
 
   const p2trUtxos = new Map();
   const summary = {
-    schema: 1,
+    schema: 2,
     network: info.chain,
     source: canonicalBlocks ? "canonical-walk-from-block-files" : "json-rpc",
     startedAt: new Date().toISOString(),
@@ -581,6 +594,7 @@ async function main() {
     firstSeen: {},
     revealedOpcodeCounts: {},
     bareOpcodeCounts: {},
+    keypathSighashCounts: {},
     samples: {
       p2trOutputs: [],
       p2trSpends: [],
@@ -656,6 +670,10 @@ async function main() {
 
         if (classification.kind === "keypath") {
           ++summary.totals.p2trKeypathSpends;
+          sample.signatureLength = classification.signatureLength;
+          sample.sighash = classification.sighash;
+          summary.keypathSighashCounts[classification.sighash] =
+            (summary.keypathSighashCounts[classification.sighash] || 0) + 1;
           firstSeen("p2trKeypathSpend", height);
         } else if (classification.kind === "scriptpath") {
           ++summary.totals.p2trScriptpathSpends;
