@@ -166,7 +166,8 @@ jobs:
               -R "^${t}$"
           done
 
-      # #453 durable script-validity gate.
+      # #453 durable script-validity gate, plus the #458
+      # mine-after-invalidate gates.
       #
       # These two carry the labels 'integration' and 'canonicality', both of
       # which the main ctest step above excludes. Without this step they are
@@ -192,7 +193,7 @@ jobs:
       # than no gate at all.
       # NOTE: quoted — an unquoted '#' after whitespace starts a YAML comment,
       # which silently truncates this step's name to "Run".
-      - name: "Run #453 script-validity durability tests (daemon-spawning)"
+      - name: "Run #453/#458 durability tests (daemon-spawning)"
         run: |
           echo "=== ScriptValidityDurability ==="
           ctest --test-dir build-tests \
@@ -207,6 +208,21 @@ jobs:
             --no-tests=error \
             -j1 \
             -R '^ScriptValidityCrashOrdering$'
+
+          # #458 — same label-exclusion problem, same treatment.
+          echo "=== MineAfterInvalidate ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^MineAfterInvalidate$'
+
+          echo "=== MineAfterInvalidateRestart ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^MineAfterInvalidateRestart$'
 
       # Daemon logs are printed by the harnesses on failure (tail of daemon.log),
       # so --output-on-failure above captures them. Keep the ctest logs as an

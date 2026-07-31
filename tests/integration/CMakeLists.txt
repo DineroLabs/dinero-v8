@@ -311,6 +311,32 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_crash_ordering.sh)
     message(STATUS "  ✓ ScriptValidityCrashOrdering registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate.sh)
+    add_test(
+        NAME MineAfterInvalidate
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate.sh
+    )
+    set_tests_properties(MineAfterInvalidate PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ MineAfterInvalidate registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate_restart.sh)
+    add_test(
+        NAME MineAfterInvalidateRestart
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate_restart.sh
+    )
+    set_tests_properties(MineAfterInvalidateRestart PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 420
+    )
+    message(STATUS "  ✓ MineAfterInvalidateRestart registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_tip_persist_restart_equivalence.sh)
     add_test(
         NAME TipPersistRestartEquivalence
