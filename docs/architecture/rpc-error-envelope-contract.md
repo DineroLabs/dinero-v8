@@ -72,8 +72,11 @@ These improve: they currently cannot see handler-returned errors at all.
 shape is knowingly depended upon. **Must accept both shapes before the daemon
 change is deployed.**
 
-**`DineroDPI` (separate repo) — NOT AUDITED.** Not available in this working
-tree. Must be audited before the daemon change is deployed.
+**`DineroDPI` (separate repo) — AUDITED, compatible with caveats.** New
+top-level errors are handled correctly and embedded NodeCore is unaffected.
+**Recommended before deployment:** centralized dual-shape normalization plus
+regression tests, rather than per-call-site handling. Not a hard blocker, but
+not a no-op either.
 
 **In-repo scripts — ~30 sites** across `scripts/test_key_import*.sh`,
 `test_wif_support.sh`, `test_encrypted_import*.sh`, `test_rate_limiting_only.sh`,
@@ -91,8 +94,8 @@ the nested shape strictly and are updated in this PR to accept both:
 The three nodes are all operator-controlled, which makes a coordinated window
 practical. Consumers are the risk, not the nodes.
 
-1. Audit every consumer for `.result.error` (this document; **DineroDPI still
-   outstanding**).
+1. Audit every consumer for `.result.error` (this document; complete —
+   `dinero-qt` is the remaining hard blocker).
 2. Update clients to accept **both** the old nested and the new top-level shape.
 3. Release/update DineroDPI, Qt, CLI, miners and operator scripts.
 4. Merge and deploy the daemon envelope correction across the three nodes in a
