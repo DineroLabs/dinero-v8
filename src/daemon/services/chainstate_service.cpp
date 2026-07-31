@@ -12584,7 +12584,26 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             tip_to_connect->undo_file,
             tip_to_connect->undo_pos,
             tip_to_connect->undo_size,
-            &utxo_batch);
+            &utxo_batch,
+            // Issue #453 — durably record script validity.
+            //
+            // Scripts for this block were genuinely validated by the
+            // block_validator_->ConnectBlock() call earlier in ConnectTip
+            // (BlockValidator::ConnectBlockInternal -> ValidateSpend). Until
+            // this write existed, BLOCK_VALID_SCRIPTS was only ever set in
+            // memory, by BlockAcceptor::ConnectBlock. The header-metadata row
+            // BlockAcceptor persists is built from a status literal that omits
+            // BLOCK_VALID_SCRIPTS, and no live path re-persisted the in-memory
+            // value afterwards: every other updateBlockIndex() call site is a
+            // NotFound fallback that does not fire once the acceptance row
+            // exists. A restarted daemon therefore could not distinguish a
+            // script-validated block from one never script-checked, and does
+            // not re-validate. Regression: ScriptValidityDurability.
+            //
+            // Passed here rather than staged as a separate setHeaderStatusBits
+            // call: a second staged helper re-reads the pre-batch row and would
+            // silently drop the BLOCK_HAVE_UNDO stamped above.
+            BLOCK_VALID_SCRIPTS);
         if (bi_status == Status::NotFound) {
             // A freshly connected block should already have header metadata
             // from header/body acceptance. If an older path reaches ConnectTip
@@ -12593,6 +12612,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             // to preserve in this branch.
             bi_status = chain_db_->updateBlockIndex(token, tip_to_connect, &utxo_batch);
         }
+        // Issue #453 — durably record script validity.
         if (bi_status == Status::Ok) {
             ccb.MarkBlockIndexStaged();
         } else {
