@@ -1443,7 +1443,9 @@ bool EvalScript(
                 }
 
                 // Verify CTV template hash
-                if (!VerifyCTV(*ctx.tx, ctx.input_index, stack.back())) {
+                if (!VerifyCTV(
+                        *ctx.tx, ctx.input_index, stack.back(),
+                        ctx.covenant_precomputed)) {
                     error = ScriptError::CTV_VERIFY_FAILED;
                     return false;
                 }

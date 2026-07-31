@@ -4,6 +4,7 @@
 #include "consensus/interfaces/iutxo_provider.h"
 #include "consensus/script_interpreter.h"
 #include "consensus/transaction_validator.h"
+#include "consensus/tx_validation.h"
 #include "consensus/utxo_entry.h"
 #include "primitives/hash_domains.h"
 #include "primitives/transaction.h"
@@ -221,6 +222,40 @@ TEST(CovenantActivation, CtvPrecomputationMatchesCanonicalHashing) {
     tx.has_explicit_fee = true;
     const PrecomputedTransactionData ineligible(tx);
     EXPECT_FALSE(ineligible.TryComputeCTVHash(0, rejected));
+}
+
+TEST(CovenantActivation, LegacyCtvReceivesSharedPrecomputation) {
+    SelectParams(Chain::REGTEST);
+
+    Transaction tx;
+    tx.vin.emplace_back();
+    tx.vout.emplace_back(
+        dinero::AmountUna::Una(1'000),
+        std::vector<uint8_t>{dinero::consensus::OP_TRUE});
+
+    const auto template_hash = dinero::consensus::ComputeCTVHash(tx, 0);
+    std::vector<uint8_t> covenant_script{32};
+    covenant_script.insert(
+        covenant_script.end(), template_hash.begin(), template_hash.end());
+    covenant_script.push_back(
+        static_cast<uint8_t>(
+            dinero::consensus::OP_CHECKTEMPLATEVERIFY));
+
+    const PrecomputedTransactionData matching(tx);
+    EXPECT_TRUE(dinero::consensus::verifyScript(
+        {}, covenant_script, {}, tx, 0, 1'000,
+        {}, {}, {}, {}, 20, &matching));
+
+    // A precomputation object is transaction-bound. This intentionally
+    // mismatched object proves that the canonical legacy/P2SH entry point
+    // forwards the shared object into OP_CTV instead of silently rebuilding
+    // transaction-wide hashes for every execution.
+    Transaction other = tx;
+    other.lockTime = 1;
+    const PrecomputedTransactionData mismatched(other);
+    EXPECT_FALSE(dinero::consensus::verifyScript(
+        {}, covenant_script, {}, tx, 0, 1'000,
+        {}, {}, {}, {}, 20, &mismatched));
 }
 
 } // namespace
