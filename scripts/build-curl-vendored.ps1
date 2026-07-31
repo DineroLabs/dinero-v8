@@ -12,16 +12,17 @@ $OutputDir = if ($env:CURL_OUTPUT_DIR) { $env:CURL_OUTPUT_DIR } else { Join-Path
 $OpenSSLPrebuilt = Join-Path $ThirdPartyDir "openssl-$OpenSSLVersion\prebuilt\windows-x86_64-msvc"
 $MetadataFile = Join-Path $OutputDir '.dinero-build-meta'
 $Rebuild = $env:CURL_REBUILD -eq '1'
-# Pinned source hashes. 8.21.0 (2026-06-24) verified three ways before pinning:
-# computed from curl.se, byte-identical download from the GitHub release, and a
-# good GPG signature from Daniel Stenberg <daniel@haxx.se>
-# (27ED EAF2 2F3A BCEB 50DB  9A12 5CC9 08FD B71E 12C2).
+# Pinned source hashes — EXACTLY ONE shippable version. 8.21.0 (2026-06-24)
+# verified three ways before pinning: computed from curl.se, byte-identical
+# download from the GitHub release, and a good GPG signature from
+# Daniel Stenberg <daniel@haxx.se> (27ED EAF2 2F3A BCEB 50DB  9A12 5CC9 08FD B71E 12C2).
 #
-# 8.11.1 (2024-12) is retained for reproducing older builds ONLY. Do not ship it:
-# it carries a long list of published advisories fixed in later releases.
+# Deliberately NOT carrying older versions here. A second accepted version is a
+# way for an obsolete curl to be built and linked by accident; historical builds
+# stay reproducible by checking out the historical commit, which carries its own
+# pin. Adding an entry to this table is a release decision, not a convenience.
 $KnownCurlSourceSha256 = @{
     '8.21.0' = 'd9b327997999045a24cda50f3983e69e51c516bd8be6ef9842fc7f99135e33bb'
-    '8.11.1' = 'a889ac9dbba3644271bd9d1302b5c22a088893719b72be3487bc3d401e5c4e80'
 }
 
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }

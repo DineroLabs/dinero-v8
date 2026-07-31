@@ -200,25 +200,24 @@ if(DINERO_VENDORED_CURL AND NOT TARGET CURL::libcurl)
   if(DINERO_VENDORED_CURL_DIR)
     set(_curl_root "${DINERO_VENDORED_CURL_DIR}")
   else()
-    file(GLOB _curl_candidates "${CMAKE_SOURCE_DIR}/third_party/curl-*/prebuilt/windows-x86_64-msvc")
-    list(SORT _curl_candidates)
-    list(REVERSE _curl_candidates)
-    list(LENGTH _curl_candidates _n)
-    if(_n EQUAL 0)
-      message(FATAL_ERROR
-        "DINERO_VENDORED_CURL is ON but no vendored static libcurl was found under "
-        "third_party/curl-*/prebuilt/windows-x86_64-msvc. Run scripts/build-curl-vendored.ps1 first.")
-    endif()
-    list(GET _curl_candidates 0 _curl_root)
-  endif()
+    # CORRECTED 2026-07-31 — do NOT discover the prebuilt with a glob.
+    # file(GLOB curl-*) + list(SORT) + list(REVERSE) + list(GET 0) means
+    # "lexicographically highest wins", which is not version ordering: with
+    # curl-8.21.0, curl-8.11.1 and curl-8.9 present it picks curl-8.9 ("9" > "2").
+    # Clean CI has one directory so this is invisible there, but a packaging
+    # machine with a leftover curl-* tree would silently link an unintended,
+    # possibly vulnerable, curl into a shipped binary.
+    #
+    # Resolve the EXACT pinned path and then verify what is in it:
+    #   1. third_party/curl-${DINERO_VENDORED_CURL_VERSION}/prebuilt/windows-x86_64-msvc
+    #   2. include/curl/curlver.h declares exactly that LIBCURL_VERSION
+    #   3. .dinero-build-meta agrees on CURL_VERSION *and* OPENSSL_VERSION
+    # The DINERO_VENDORED_CURL_DIR override is validated too, so it cannot be
+    # used to smuggle in an unverified tree.
+    set(_curl_root
+      "${CMAKE_SOURCE_DIR}/third_party/curl-${DINERO_VENDORED_CURL_VERSION}/prebuilt/windows-x86_64-msvc")
+    # ... see cmake/VendoredCurl.cmake for the three gates in full.
 
-  set(_curl_lib "${_curl_root}/lib/libcurl.lib")
-  set(_curl_inc "${_curl_root}/include")
-  if(NOT EXISTS "${_curl_lib}")
-    message(FATAL_ERROR "Vendored static libcurl missing: ${_curl_lib}. Run scripts/build-curl-vendored.ps1.")
-  endif()
-
-  set(_ossl "${CMAKE_SOURCE_DIR}/third_party/openssl-${DINERO_VENDORED_OPENSSL_VERSION}/prebuilt/windows-x86_64-msvc")
   add_library(CURL::libcurl STATIC IMPORTED GLOBAL)
   set_target_properties(CURL::libcurl PROPERTIES
     IMPORTED_LOCATION "${_curl_lib}"
