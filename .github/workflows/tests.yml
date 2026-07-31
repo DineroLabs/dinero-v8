@@ -166,6 +166,48 @@ jobs:
               -R "^${t}$"
           done
 
+      # #453 durable script-validity gate.
+      #
+      # These two carry the labels 'integration' and 'canonicality', both of
+      # which the main ctest step above excludes. Without this step they are
+      # REGISTERED but never EXECUTED — verified on the first CI run of PR #460,
+      # where the configure log printed "✓ ScriptValidityDurability registered"
+      # and "✓ ScriptValidityCrashOrdering registered" while neither name
+      # appeared anywhere in "100% tests passed ... out of 382".
+      #
+      # A regression test that does not run is indistinguishable from no test.
+      # That is the same silent-coverage failure #412 and #428 were opened for,
+      # so the gate lands in the same commit series as the behaviour it protects
+      # rather than as a follow-up.
+      #
+      # Deliberately NOT carrying --label-exclude: these are selected by exact
+      # name, so the broad exclusions must not apply to them.
+      #
+      # Two separate invocations, not one '^(A|B)$' — a combined selection still
+      # passes when only ONE survives, so it cannot prove BOTH are registered.
+      # With --no-tests=error, either name disappearing fails the build.
+      #
+      # No retry and no until-pass wrapper: both spawn a real dinerod, and a
+      # flaky-tolerant gate for a consensus durability property would be worse
+      # than no gate at all.
+      # NOTE: quoted — an unquoted '#' after whitespace starts a YAML comment,
+      # which silently truncates this step's name to "Run".
+      - name: "Run #453 script-validity durability tests (daemon-spawning)"
+        run: |
+          echo "=== ScriptValidityDurability ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ScriptValidityDurability$'
+
+          echo "=== ScriptValidityCrashOrdering ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ScriptValidityCrashOrdering$'
+
       # Daemon logs are printed by the harnesses on failure (tail of daemon.log),
       # so --output-on-failure above captures them. Keep the ctest logs as an
       # artifact too: the harnesses delete their temp datadirs on teardown, so
