@@ -160,7 +160,7 @@ cat manifest.json | python3 -m json.tool
 
 ### 3.2 Verify Consensus Checksum
 
-The consensus checksum (`ff279196e33c326f61191c368726f924c6728e5d36c227844195e653650ef430`) is a deterministic hash of all consensus-critical parameters. **Every node must produce this exact checksum** or consensus will fail.
+The v2 consensus checksum (`2f6946c7767d4abab61bc609ce5894a5afe7828685f80ebca7318a6d4715c7f4`) is a deterministic hash of all consensus-critical parameters, including the independent Taproot script-path and covenant activation heights. **Every node running this release must produce this exact checksum** or its consensus configuration differs.
 
 ---
 
@@ -344,4 +344,3 @@ This verification guide is provided as-is for public audit purposes. Verificatio
 **Last Updated:** November 1, 2025  
 **Version:** 1.0  
 **Status:** ✅ Chain Sealed
-

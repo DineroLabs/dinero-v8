@@ -37,6 +37,8 @@
 #include "wallet/wallet_key_provider.h"   // Phase 10: hybrid ECDSA + v7 P2MR provider
 #include "wallet/v7_p2mr_store.h"         // Phase 10: P2MR SQLite store
 #include "consensus/pq/p2mr_consensus.h"  // Phase 10: IsP2MRScript
+#include "consensus/covenants.h"          // PrecomputedTransactionData
+#include "consensus/script_validation.h"  // canonical completion validation
 #include "consensus/script_interpreter.h" // Phase 10: SignatureHashTaproot, ScriptExecutionContext
 #include "wallet/p2mr_address.h"          // Phase 10: DecodeP2MRAddress for address validation
 #include "address/addr_codec.h"           // Taproot/bech32m-aware validateaddress decode
@@ -5496,6 +5498,7 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
         std::vector<dinero::CanonicalWalletUTXO> input_utxos(tx.vin.size());
         std::vector<std::optional<std::vector<uint8_t>>> input_private_keys(tx.vin.size());
         std::vector<bool> have_prevout(tx.vin.size(), false);
+        std::vector<bool> had_witness(tx.vin.size(), false);
         size_t signed_count = 0;
 
         // Gather prevout metadata for all inputs first.
@@ -5536,9 +5539,20 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
                 wallet_utxo.path = path_it->second;
             }
 
-            auto privkey = wallet.deriveKeyForScriptPubKey(script_pubkey_hex);
-            if (privkey.has_value() && privkey->size() == 32) {
-                input_private_keys[i] = *privkey;
+            // Preserve any already-populated witness (notably a covenant
+            // script path) and do not ask the HD wallet for a key it cannot
+            // own. Completion is decided below by canonical consensus
+            // validation, so malformed pre-populated witnesses do not get a
+            // free "complete" result.
+            had_witness[i] = !tx.vin[i].witness.empty();
+            if (had_witness[i]) {
+                signed_count++;
+            } else {
+                auto privkey =
+                    wallet.deriveKeyForScriptPubKey(script_pubkey_hex);
+                if (privkey.has_value() && privkey->size() == 32) {
+                    input_private_keys[i] = *privkey;
+                }
             }
 
             have_prevout[i] = true;
@@ -5578,6 +5592,9 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
         // Sign the wallet-owned inputs we have enough metadata for.
         for (size_t i = 0; i < tx.vin.size(); ++i) {
             const auto& utxo = input_utxos[i];
+            if (had_witness[i]) {
+                continue;
+            }
             const bool is_p2mr = have_prevout[i] &&
                 dinero::consensus::pq::IsP2MRScript(utxo.spk);
 
@@ -5656,7 +5673,52 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
 
         tx.DetectWitnessVersion();
         result["hex"] = tx.SerializeHex(true);
-        result["complete"] = (signed_count == tx.vin.size());
+
+        // "complete" means every input passes the same validator used by
+        // mempool and block connection. Counting witness elements would let a
+        // malformed pre-populated covenant witness masquerade as complete.
+        bool complete =
+            have_all_prevouts && signed_count == tx.vin.size();
+        if (complete) {
+            std::vector<dinero::consensus::UTXOEntry> prevout_entries;
+            prevout_entries.reserve(input_utxos.size());
+            for (const auto& utxo : input_utxos) {
+                prevout_entries.emplace_back(
+                    utxo.value,
+                    utxo.spk,
+                    utxo.height,
+                    utxo.is_coinbase,
+                    utxo.is_confidential,
+                    utxo.commitment);
+            }
+            uint32_t validation_height = 0;
+            if (chainstate) {
+                const uint32_t tip_height =
+                    chainstate->getBlockHeight();
+                validation_height =
+                    tip_height == UINT32_MAX ? tip_height : tip_height + 1;
+            } else {
+                complete = false;
+            }
+            if (complete) {
+                const dinero::consensus::PrecomputedTransactionData
+                    precomputed(tx, prevout_entries);
+                for (size_t i = 0; i < tx.vin.size(); ++i) {
+                    if (dinero::consensus::ValidateSpend(
+                            tx,
+                            i,
+                            prevout_entries[i],
+                            validation_height,
+                            prevout_entries,
+                            &precomputed) !=
+                        dinero::consensus::ScriptValidationResult::OK) {
+                        complete = false;
+                        break;
+                    }
+                }
+            }
+        }
+        result["complete"] = complete;
 
         if (ctx.logger) {
             ctx.logger->info("[wallet.signrawtransaction] Signed " +

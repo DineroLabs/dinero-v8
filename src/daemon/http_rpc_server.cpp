@@ -715,6 +715,68 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
                     throw;
                 }
 
+                // Issue #458 — promote a handler-reported error to the
+                // top-level JSON-RPC error field.
+                //
+                // Handlers signal failure by RETURNING an object containing
+                // "error" rather than throwing (e.g. generatetoaddress'
+                // "Block not activated"). Placing that object under "result"
+                // while setting the top-level "error" to null produces a
+                // malformed envelope in which a hard failure is
+                // indistinguishable from success:
+                //
+                //   {"error": null, "result": {"error": {"code": -32000, ...}}}
+                //
+                // RPCServer::handleSingleRequest (rpc_server.cpp:699) already
+                // promotes exactly this way, but that path is not the live one;
+                // this dispatcher did not, so every caller had to know to look
+                // inside "result". None did — a totally failed mine read as
+                // success across the integration suite.
+                //
+                // Stricter than the legacy path in two respects.
+                //
+                // 1. It promotes only a NON-NULL error, so a handler that
+                //    returns an explicit "error": null alongside real data
+                //    keeps its result rather than becoming an empty error.
+                //
+                // 2. It NORMALISES the promoted value. Handlers in this repo
+                //    return both shapes:
+                //        {"error": {"code": -32000, "message": "..."}}
+                //        {"error": "some message"}
+                //    Promoting a bare string verbatim would produce another
+                //    invalid JSON-RPC envelope — the error member must be an
+                //    object with numeric "code" and string "message". A string
+                //    is therefore wrapped as an internal error, and so is any
+                //    other malformed shape (number, array, object missing
+                //    code/message).
+                if (result.isObject() && result.isMember("error") &&
+                    !result["error"].isNull()) {
+                    const Json::Value& raw = result["error"];
+                    const bool well_formed =
+                        raw.isObject() && raw.isMember("code") &&
+                        raw["code"].isIntegral() && raw.isMember("message") &&
+                        raw["message"].isString();
+
+                    if (well_formed) {
+                        response["error"] = raw;
+                    } else {
+                        Json::Value normalized;
+                        normalized["code"] = -32603;  // Internal error
+                        normalized["message"] =
+                            raw.isString()
+                                ? raw.asString()
+                                : std::string("Handler reported a malformed "
+                                              "error value");
+                        // Keep the original for debuggability without letting a
+                        // malformed shape escape into the envelope contract.
+                        if (!raw.isString()) {
+                            normalized["data"] = raw;
+                        }
+                        response["error"] = normalized;
+                    }
+                    return response;
+                }
+
                 // Preserve JSON null for gettxout to match Bitcoin-style contract:
                 // null means "spent or never existed".
                 const bool preserve_null_result =

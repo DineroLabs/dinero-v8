@@ -57,7 +57,7 @@ if echo "$HEX_RESULT" | jq -e '.result.success' | grep -q "true"; then
     echo "   Compressed: $COMPRESSED"
 else
     echo "❌ Hex key import failed"
-    echo "$HEX_RESULT" | jq .result.error
+    echo "$HEX_RESULT" | jq '.error.message? // .error // .result.error.message? // .result.error'
 fi
 
 # Test 2: Valid regtest WIF (compressed, should work)
@@ -74,7 +74,7 @@ if echo "$REGTEST_WIF_RESULT" | jq -e '.result.success' | grep -q "true"; then
     echo "   Compressed: $(echo "$REGTEST_WIF_RESULT" | jq -r '.result.compressed')"
 else
     echo "❌ Regtest WIF import failed"
-    echo "$REGTEST_WIF_RESULT" | jq .result.error
+    echo "$REGTEST_WIF_RESULT" | jq '.error.message? // .error // .result.error.message? // .result.error'
 fi
 
 # Test 3: Foreign network WIF without flag (should fail)
@@ -84,9 +84,9 @@ FOREIGN_WIF_RESULT=$(curl -s --max-time 5 --user "$AUTH" -H 'content-type: appli
   --data-binary '{"jsonrpc":"2.0","id":"foreign","method":"wallet.importprivatekey","params":{"privkey":"5J3mBbAH58CpQ3Y5RNJpUKPE62SuSZ4y8MzEoXVkrxLQrb8Kknu","label":"Foreign WIF"}}' \
   http://127.0.0.1:$PORT/)
 
-if echo "$FOREIGN_WIF_RESULT" | jq -e '.result.success' | grep -q "false"; then
+if echo "$FOREIGN_WIF_RESULT" | jq -e '(.result.success == false) or (.error != null)' >/dev/null; then
     echo "✅ Foreign WIF correctly rejected without allow_foreign_wif"
-    echo "   Error: $(echo "$FOREIGN_WIF_RESULT" | jq -r '.result.error')"
+    echo "   Error: $(echo "$FOREIGN_WIF_RESULT" | jq -r '.error.message? // .error // .result.error.message? // .result.error')"
 else
     echo "❌ Foreign WIF should have been rejected"
 fi
@@ -104,7 +104,7 @@ if echo "$FOREIGN_ALLOWED_RESULT" | jq -e '.result.success' | grep -q "true"; th
     echo "   Network: $(echo "$FOREIGN_ALLOWED_RESULT" | jq -r '.result.network')"
 else
     echo "❌ Foreign WIF import with flag failed"
-    echo "$FOREIGN_ALLOWED_RESULT" | jq .result.error
+    echo "$FOREIGN_ALLOWED_RESULT" | jq '.error.message? // .error // .result.error.message? // .result.error'
 fi
 
 # Test 5: Uncompressed WIF for segwit (should fail)
@@ -114,9 +114,9 @@ UNCOMPRESSED_RESULT=$(curl -s --max-time 5 --user "$AUTH" -H 'content-type: appl
   --data-binary '{"jsonrpc":"2.0","id":"uncompressed","method":"wallet.importprivatekey","params":{"privkey":"92Pg46rUhgTT7romnV7iGW6W1gbGdeezqdbJCzShkCsYNzyyNcc","label":"Uncompressed Test","allow_foreign_wif":true}}' \
   http://127.0.0.1:$PORT/)
 
-if echo "$UNCOMPRESSED_RESULT" | jq -e '.result.success' | grep -q "false"; then
+if echo "$UNCOMPRESSED_RESULT" | jq -e '(.result.success == false) or (.error != null)' >/dev/null; then
     echo "✅ Uncompressed WIF correctly rejected for segwit"
-    echo "   Error: $(echo "$UNCOMPRESSED_RESULT" | jq -r '.result.error')"
+    echo "   Error: $(echo "$UNCOMPRESSED_RESULT" | jq -r '.error.message? // .error // .result.error.message? // .result.error')"
 else
     echo "❌ Uncompressed WIF should have been rejected for segwit"
 fi
@@ -128,9 +128,9 @@ INVALID_HEX_RESULT=$(curl -s --max-time 5 --user "$AUTH" -H 'content-type: appli
   --data-binary '{"jsonrpc":"2.0","id":"invalid_hex","method":"wallet.importprivatekey","params":{"privkey":"invalid_hex_string","label":"Invalid Hex"}}' \
   http://127.0.0.1:$PORT/)
 
-if echo "$INVALID_HEX_RESULT" | jq -e '.result.success' | grep -q "false"; then
+if echo "$INVALID_HEX_RESULT" | jq -e '(.result.success == false) or (.error != null)' >/dev/null; then
     echo "✅ Invalid hex format correctly rejected"
-    echo "   Error: $(echo "$INVALID_HEX_RESULT" | jq -r '.result.error')"
+    echo "   Error: $(echo "$INVALID_HEX_RESULT" | jq -r '.error.message? // .error // .result.error.message? // .result.error')"
 else
     echo "❌ Invalid hex should have been rejected"
 fi
@@ -142,9 +142,9 @@ INVALID_WIF_RESULT=$(curl -s --max-time 5 --user "$AUTH" -H 'content-type: appli
   --data-binary '{"jsonrpc":"2.0","id":"invalid_wif","method":"wallet.importprivatekey","params":{"privkey":"5J3mBbAH58CpQ3Y5RNJpUKPE62SuSZ4y8MzEoXVkrxLQrb8Kknx","label":"Invalid WIF"}}' \
   http://127.0.0.1:$PORT/)
 
-if echo "$INVALID_WIF_RESULT" | jq -e '.result.success' | grep -q "false"; then
+if echo "$INVALID_WIF_RESULT" | jq -e '(.result.success == false) or (.error != null)' >/dev/null; then
     echo "✅ Invalid WIF checksum correctly rejected"
-    echo "   Error: $(echo "$INVALID_WIF_RESULT" | jq -r '.result.error')"
+    echo "   Error: $(echo "$INVALID_WIF_RESULT" | jq -r '.error.message? // .error // .result.error.message? // .result.error')"
 else
     echo "❌ Invalid WIF checksum should have been rejected"
 fi

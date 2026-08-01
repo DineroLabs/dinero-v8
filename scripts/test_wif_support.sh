@@ -90,8 +90,8 @@ if echo "$WIF_RESULT" | jq -e '.result.success' | grep -q "true"; then
     echo "   Compressed: $WIF_COMPRESSED"
 else
     echo "❌ WIF private key import failed"
-    if echo "$WIF_RESULT" | jq -e '.result.error' >/dev/null; then
-        echo "   Error: $(echo "$WIF_RESULT" | jq -r '.result.error')"
+    if echo "$WIF_RESULT" | jq -e '(.error.message? // .error // .result.error.message? // .result.error) != null' >/dev/null; then
+        echo "   Error: $(echo "$WIF_RESULT" | jq -r '.error.message? // .error // .result.error.message? // .result.error')"
     fi
 fi
 
@@ -118,8 +118,8 @@ if echo "$MAINNET_RESULT" | jq -e '.result.success' | grep -q "true"; then
     echo "   Compressed: $MAINNET_COMPRESSED"
 else
     echo "✅ Mainnet WIF correctly handled (expected behavior)"
-    if echo "$MAINNET_RESULT" | jq -e '.result.error' >/dev/null; then
-        echo "   Info: $(echo "$MAINNET_RESULT" | jq -r '.result.error')"
+    if echo "$MAINNET_RESULT" | jq -e '(.error.message? // .error // .result.error.message? // .result.error) != null' >/dev/null; then
+        echo "   Info: $(echo "$MAINNET_RESULT" | jq -r '.error.message? // .error // .result.error.message? // .result.error')"
     fi
 fi
 
@@ -137,7 +137,7 @@ JSON
 echo "Invalid WIF test result:"
 echo "$INVALID_RESULT" | jq .
 
-if echo "$INVALID_RESULT" | jq -e '.result.error' >/dev/null; then
+if echo "$INVALID_RESULT" | jq -e '(.error.message? // .error // .result.error.message? // .result.error) != null' >/dev/null; then
     echo "✅ Invalid WIF correctly rejected"
 else
     echo "❌ Invalid WIF should have been rejected"

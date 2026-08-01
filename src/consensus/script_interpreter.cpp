@@ -1414,6 +1414,10 @@ bool EvalScript(
                 // BIP-119 style: OP_CHECKTEMPLATEVERIFY (CTV)
                 // If flag not set, treat as NOP4 (soft-fork compatible)
                 if (!(ctx.flags & SCRIPT_VERIFY_CHECKTEMPLATEVERIFY)) {
+                    if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                        error = ScriptError::DISCOURAGE_UPGRADABLE_NOPS;
+                        return false;
+                    }
                     break;
                 }
 
@@ -1423,10 +1427,13 @@ bool EvalScript(
                     return false;
                 }
 
-                // Expected hash must be exactly 32 bytes
+                // BIP119: non-32-byte arguments are reserved NOP behavior.
                 if (stack.back().size() != 32) {
-                    error = ScriptError::CTV_WRONG_LENGTH;
-                    return false;
+                    if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                        error = ScriptError::DISCOURAGE_UPGRADABLE_NOPS;
+                        return false;
+                    }
+                    break;
                 }
 
                 // Need transaction context
@@ -1436,7 +1443,9 @@ bool EvalScript(
                 }
 
                 // Verify CTV template hash
-                if (!VerifyCTV(*ctx.tx, ctx.input_index, stack.back())) {
+                if (!VerifyCTV(
+                        *ctx.tx, ctx.input_index, stack.back(),
+                        ctx.covenant_precomputed)) {
                     error = ScriptError::CTV_VERIFY_FAILED;
                     return false;
                 }

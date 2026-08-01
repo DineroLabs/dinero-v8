@@ -36,7 +36,7 @@ echo "note A: leaf=$NOTE_A_LEAF0 tree_size=$TREE0 commit=${NOTE_A_COMMIT:0:16}"
 echo ""
 echo "########## TEST #322: explicit too-low fee (20000) must be rejected cleanly, NO stuck state ##########"
 R=$(rpc wallet.transfer "{\"amount_una\":70000000,\"address\":\"$RCPT\",\"fee_una\":20000}")
-ERR=$(jq -r '.result.error' <<<"$R"); REQ=$(jq -r '.result.required_fee_una' <<<"$R"); VS=$(jq -r '.result.vsize' <<<"$R")
+ERR=$(jq -r '.error.message? // .error // .result.error.message? // .result.error // empty' <<<"$R"); REQ=$(jq -r '.result.required_fee_una' <<<"$R"); VS=$(jq -r '.result.vsize' <<<"$R")
 echo "result: error=$ERR required_fee_una=$REQ vsize=$VS"
 SPENT_AFTER=$(rpc wallet.listshielded '{}' | jq -r '[.result.notes[]?|select(.commitment_hex==$c)][0].spent' --arg c "$NOTE_A_COMMIT")
 echo "note A spent after rejected low-fee send: $SPENT_AFTER (must be false = no stuck state)"
@@ -70,7 +70,7 @@ fi
 echo ""
 echo "########## DECISIVE: can the drifted note still be SPENT after restart? (auto-sized fee) ##########"
 SR=$(rpc wallet.transfer "{\"amount_una\":50000000,\"address\":\"$RCPT\"}")
-SR_ERR=$(jq -r '.result.error // "none"' <<<"$SR"); SR_STATUS=$(jq -r '.result.status // "none"' <<<"$SR")
+SR_ERR=$(jq -r '.error.message? // .error // .result.error.message? // .result.error // "none"' <<<"$SR"); SR_STATUS=$(jq -r '.result.status // "none"' <<<"$SR")
 SR_TXID=$(jq -r '.result.txid // empty' <<<"$SR")
 echo "post-restart spend: status=$SR_STATUS error=$SR_ERR txid=${SR_TXID:0:16}"
 if [[ "$SR_STATUS" == "transferred" || -n "$SR_TXID" ]]; then

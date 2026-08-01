@@ -18,6 +18,11 @@ __pycache__/
 
 # OpenSSL 3.5.x is pulled/generated locally for QUIC work. Only curated
 # release prebuilts should be tracked.
+# 3.5.7 is fetched on demand by build_nodecore_xcframework.sh and
+# scripts/build_openssl_ios.sh against a pinned SHA-256, so its source tree is a
+# build input, never committed. The prebuilt/ slices under it are local caches.
+/third_party/openssl-3.5.7/*
+/third_party/openssl-3.5.7.tar.gz
 /third_party/openssl-3.5.6/*
 !third_party/openssl-3.5.6/prebuilt/
 !third_party/openssl-3.5.6/prebuilt/windows-x86_64-msvc/
@@ -199,6 +204,7 @@ logs/
 test-*/
 !test-cross-language-vectors/
 test_*/
+!include/consensus/pq/test_vectors/
 ci_test_*/
 ci_datadir/
 blockchain_data*/

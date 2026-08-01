@@ -408,6 +408,241 @@ void test08_UpdateHeaderStatusStillOverwrites() {
     pass("updateHeaderStatus still overwrites (intentional behavior preserved)");
 }
 
+// Issue #453: updateUndoLocator() gained an extra_status_bits parameter so
+// ConnectTip can persist BLOCK_VALID_SCRIPTS in the SAME read/merge/write that
+// stamps the undo locator.
+//
+// This exists because the obvious alternative — staging a separate
+// setHeaderStatusBits() call into the same WriteBatch — silently loses data:
+// both helpers read via getHeaderMetadata(), which sees only COMMITTED state,
+// so the second helper re-reads the pre-batch row and drops the bits the first
+// one staged. That is the same lost-update class as the May 2026 HAVE_UNDO
+// incident this file guards.
+void test09_UpdateUndoLocatorMergesExtraStatusBits() {
+    cleanTestDatadir();
+    ChainDB db;
+    auto init_status = db.init(TEST_DATADIR);
+    if (init_status != Status::Ok) {
+        fail("ChainDB::init failed (status=" +
+             std::to_string(static_cast<int>(init_status)) + ")");
+    }
+
+    ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    const uint256 hash = uint256::FromHexUnsafe(
+        "9999999999999999999999999999999999999999999999999999999999999999");
+
+    // Deliberately WITHOUT BLOCK_VALID_SCRIPTS — this mirrors the row
+    // BlockAcceptor persists, whose status literal omits it.
+    const uint32_t initial = bits(
+        BLOCK_VALID_HEADER, BLOCK_VALID_TREE, BLOCK_VALID_TRANSACTIONS,
+        BLOCK_VALID_CHAIN, BLOCK_HAVE_DATA);
+    auto metadata = makeHealthyHeader(initial);
+    metadata.undo_file = 0;
+    metadata.undo_pos = 0;
+    metadata.undo_size = 0;
+    metadata.file_number = 77;
+    metadata.data_pos = 1234;
+    metadata.data_size = 4321;
+    db.putHeaderMetadata(token, hash, metadata);
+
+    auto update_status = db.updateUndoLocator(token, hash, 9, 8888, 777,
+                                              nullptr, BLOCK_VALID_SCRIPTS);
+    if (update_status != Status::Ok) {
+        fail("updateUndoLocator with extra_status_bits failed");
+    }
+
+    auto read = db.getHeaderMetadata(hash);
+    if (!read.ok()) {
+        fail("getHeaderMetadata failed after extra-bits update");
+    }
+
+    // Both the caller-supplied bit and BLOCK_HAVE_UNDO must land in ONE write.
+    const uint32_t expected_status =
+        bits(initial, BLOCK_HAVE_UNDO, BLOCK_VALID_SCRIPTS);
+    if (read.value().status_flags != expected_status) {
+        fail("updateUndoLocator did not merge extra_status_bits + HAVE_UNDO "
+             "(got " + std::to_string(read.value().status_flags) +
+             ", want " + std::to_string(expected_status) + ")");
+    }
+    if ((read.value().status_flags & BLOCK_HAVE_UNDO) == 0) {
+        fail("extra_status_bits path dropped BLOCK_HAVE_UNDO");
+    }
+    if (read.value().undo_file != 9 || read.value().undo_pos != 8888 ||
+        read.value().undo_size != 777) {
+        fail("extra_status_bits path did not write the undo locator");
+    }
+    if (read.value().file_number != 77 || read.value().data_pos != 1234 ||
+        read.value().data_size != 4321) {
+        fail("extra_status_bits path clobbered block body position");
+    }
+    pass("updateUndoLocator merges extra_status_bits without stripping");
+}
+
+// SCOPE: this is a CALLER-CONTRACT test, not a script-validity test.
+//
+// It proves only that updateUndoLocator() with the default extra_status_bits
+// argument adds no status bits beyond BLOCK_HAVE_UNDO, so the other two
+// callers (CommitConnectedBlockBookkeeping, PromoteValidatedHistory) cannot
+// silently begin stamping BLOCK_VALID_SCRIPTS.
+//
+// It does NOT prove that a block whose scripts actually FAIL validation is
+// denied the bit — nothing here runs script validation at all. That property
+// is covered end-to-end by the ScriptFailureNeverValidates integration test,
+// which submits a block containing a genuinely unspendable input and inspects
+// the stored status afterwards.
+void test10_UpdateUndoLocatorDefaultAddsNoExtraBits() {
+    cleanTestDatadir();
+    ChainDB db;
+    auto init_status = db.init(TEST_DATADIR);
+    if (init_status != Status::Ok) {
+        fail("ChainDB::init failed (status=" +
+             std::to_string(static_cast<int>(init_status)) + ")");
+    }
+
+    ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    const uint256 hash = uint256::FromHexUnsafe(
+        "aaaa000000000000000000000000000000000000000000000000000000000000");
+
+    const uint32_t initial = bits(
+        BLOCK_VALID_HEADER, BLOCK_VALID_TREE, BLOCK_VALID_TRANSACTIONS,
+        BLOCK_VALID_CHAIN, BLOCK_HAVE_DATA);
+    auto metadata = makeHealthyHeader(initial);
+    metadata.undo_size = 0;
+    db.putHeaderMetadata(token, hash, metadata);
+
+    // No extra bits argument — must behave exactly as before #453.
+    auto update_status = db.updateUndoLocator(token, hash, 3, 44, 55);
+    if (update_status != Status::Ok) {
+        fail("updateUndoLocator (default extra bits) failed");
+    }
+
+    auto read = db.getHeaderMetadata(hash);
+    if (!read.ok()) {
+        fail("getHeaderMetadata failed after default update");
+    }
+    if (read.value().status_flags != bits(initial, BLOCK_HAVE_UNDO)) {
+        fail("default updateUndoLocator changed more than BLOCK_HAVE_UNDO");
+    }
+    if ((read.value().status_flags & BLOCK_VALID_SCRIPTS) != 0) {
+        fail("default updateUndoLocator granted BLOCK_VALID_SCRIPTS — callers "
+             "that pass no extra bits must never stamp script validity");
+    }
+    pass("updateUndoLocator default adds no extra bits (caller contract only)");
+}
+
+// Issue #453 — FAULT INJECTION: a failed stage must persist NOTHING.
+//
+// This is the durability-ordering guarantee the #453 fix depends on: script
+// validity may only become durable as part of a stage that succeeded. If the
+// stage fails, the row must be byte-identical to its prior state — no
+// BLOCK_VALID_SCRIPTS, no BLOCK_HAVE_UNDO, no undo locator.
+//
+// The injection needs no test hook and no production change: updateUndoLocator
+// returns Status::Invalid when undo_size == 0. That matters for ConnectTip
+// specifically, because Invalid is NOT NotFound, so the updateBlockIndex
+// fallback does not fire and control reaches the fail-closed branch
+// (Abort() -> DisconnectBlock() -> return fail("persist-undo-metadata-stage-
+// failed-status-...")), meaning acceptance cannot report success.
+//
+// SCOPE: this covers "stage failure returns failure", "the scripts-valid bit is
+// not persisted", and "no partial undo metadata is left behind". It does NOT
+// cover the daemon-level properties (active tip not advanced; retry after
+// clearing the failure yields a durable 415) — those need a running node.
+void test11_FailedStagePersistsNothing() {
+    cleanTestDatadir();
+    ChainDB db;
+    auto init_status = db.init(TEST_DATADIR);
+    if (init_status != Status::Ok) {
+        fail("ChainDB::init failed (status=" +
+             std::to_string(static_cast<int>(init_status)) + ")");
+    }
+
+    ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    const uint256 hash = uint256::FromHexUnsafe(
+        "bbbb000000000000000000000000000000000000000000000000000000000000");
+
+    // The acceptance-time row: no BLOCK_VALID_SCRIPTS, no BLOCK_HAVE_UNDO.
+    const uint32_t initial = bits(
+        BLOCK_VALID_HEADER, BLOCK_VALID_TREE, BLOCK_VALID_TRANSACTIONS,
+        BLOCK_VALID_CHAIN, BLOCK_HAVE_DATA);
+    auto metadata = makeHealthyHeader(initial);
+    metadata.undo_file = 0;
+    metadata.undo_pos = 0;
+    metadata.undo_size = 0;
+    metadata.file_number = 21;
+    metadata.data_pos = 909;
+    metadata.data_size = 808;
+    db.putHeaderMetadata(token, hash, metadata);
+
+    auto before = db.getHeaderMetadata(hash);
+    if (!before.ok()) {
+        fail("getHeaderMetadata failed before injected-failure stage");
+    }
+
+    // Inject: undo_size == 0 forces Status::Invalid.
+    auto injected = db.updateUndoLocator(token, hash, 5, 6, 0, nullptr,
+                                          BLOCK_VALID_SCRIPTS);
+    if (injected == Status::Ok) {
+        fail("injected updateUndoLocator failure did not fail (undo_size=0 must "
+             "return Invalid)");
+    }
+    if (injected == Status::NotFound) {
+        fail("injected failure returned NotFound — ConnectTip would take the "
+             "updateBlockIndex fallback instead of the fail-closed branch, so "
+             "this injection would not exercise the path under test");
+    }
+
+    auto after = db.getHeaderMetadata(hash);
+    if (!after.ok()) {
+        fail("getHeaderMetadata failed after injected-failure stage");
+    }
+
+    if ((after.value().status_flags & BLOCK_VALID_SCRIPTS) != 0) {
+        fail("failed stage still persisted BLOCK_VALID_SCRIPTS — script "
+             "validity must never become durable through a stage that failed");
+    }
+    if ((after.value().status_flags & BLOCK_HAVE_UNDO) != 0) {
+        fail("failed stage persisted BLOCK_HAVE_UNDO");
+    }
+    if (after.value().status_flags != before.value().status_flags) {
+        fail("failed stage changed status_flags (" +
+             std::to_string(before.value().status_flags) + " -> " +
+             std::to_string(after.value().status_flags) + ")");
+    }
+    if (after.value().undo_file != 0 || after.value().undo_pos != 0 ||
+        after.value().undo_size != 0) {
+        fail("failed stage left partial undo metadata behind");
+    }
+    if (after.value().file_number != 21 || after.value().data_pos != 909 ||
+        after.value().data_size != 808) {
+        fail("failed stage clobbered block body position");
+    }
+    pass("failed stage persists nothing (no SCRIPTS, no HAVE_UNDO, no locator)");
+
+    // Retry with the failure condition removed must succeed and produce the
+    // durable, fully-validated status.
+    auto retry = db.updateUndoLocator(token, hash, 5, 6, 7, nullptr,
+                                       BLOCK_VALID_SCRIPTS);
+    if (retry != Status::Ok) {
+        fail("retry after clearing the injected failure did not succeed");
+    }
+    auto retried = db.getHeaderMetadata(hash);
+    if (!retried.ok()) {
+        fail("getHeaderMetadata failed after retry");
+    }
+    const uint32_t expected =
+        bits(initial, BLOCK_HAVE_UNDO, BLOCK_VALID_SCRIPTS);
+    if (retried.value().status_flags != expected) {
+        fail("retry did not produce the durable validated status (got " +
+             std::to_string(retried.value().status_flags) + ", want " +
+             std::to_string(expected) + ")");
+    }
+    if (retried.value().undo_size != 7) {
+        fail("retry did not write the undo locator");
+    }
+    pass("retry after clearing the failure persists the validated status");
+}
+
 }  // namespace
 
 int main() {
@@ -423,8 +658,11 @@ int main() {
     test06_PreserveExistingUndoOnDuplicateMetadataWrite();
     test07_UpdateUndoLocatorIsSurgical();
     test08_UpdateHeaderStatusStillOverwrites();
+    test09_UpdateUndoLocatorMergesExtraStatusBits();
+    test10_UpdateUndoLocatorDefaultAddsNoExtraBits();
+    test11_FailedStagePersistsNothing();
 
-    std::cout << "\n✅ Header status bits: 8/8 properties hold" << std::endl;
+    std::cout << "\n✅ Header status bits: 11/11 properties hold" << std::endl;
     cleanTestDatadir();
     return 0;
 }

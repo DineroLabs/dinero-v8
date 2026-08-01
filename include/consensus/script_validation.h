@@ -25,6 +25,8 @@
 namespace dinero {
 namespace consensus {
 
+class PrecomputedTransactionData;
+
 /**
  * Script validation result
  */
@@ -89,7 +91,9 @@ ScriptValidationResult ValidateSpend(
     size_t input_index,
     const UTXOEntry& utxo,
     uint32_t block_height,
-    const std::vector<UTXOEntry>& all_utxos = {}
+    const std::vector<UTXOEntry>& all_utxos = {},
+    const PrecomputedTransactionData*
+        covenant_precomputed = nullptr
 );
 
 /**
@@ -144,7 +148,9 @@ ScriptValidationResult ValidateTaprootSpend(
     size_t input_index,
     const UTXOEntry& utxo,
     uint32_t block_height,
-    const std::vector<UTXOEntry>& all_utxos
+    const std::vector<UTXOEntry>& all_utxos,
+    const PrecomputedTransactionData*
+        covenant_precomputed = nullptr
 );
 
 } // namespace consensus

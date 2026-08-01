@@ -11,6 +11,7 @@ namespace consensus {
 
 // Forward declaration
 class IUTXOProvider;
+class PrecomputedTransactionData;
 
 } // namespace consensus
 
@@ -52,7 +53,9 @@ public:
         const std::vector<uint64_t>& all_input_amounts = {},
         const std::vector<std::vector<uint8_t>>& all_input_scriptpubkeys = {},
         const std::vector<uint8_t>& all_input_confidential_flags = {},
-        const std::vector<std::vector<uint8_t>>& all_input_commitments = {}
+        const std::vector<std::vector<uint8_t>>& all_input_commitments = {},
+        const consensus::PrecomputedTransactionData*
+            covenant_precomputed = nullptr
     );
 
 private:
@@ -60,7 +63,10 @@ private:
     static bool CheckStructure(const Transaction& tx, std::string& error);
     static bool CheckInputsExist(const Transaction& tx, consensus::IUTXOProvider* utxo_provider, uint32_t current_height, std::string& error);
     static bool CheckNoDoubleSpend(const Transaction& tx, consensus::IUTXOProvider* utxo_provider, std::string& error);
-    static bool VerifySignatures(const Transaction& tx, consensus::IUTXOProvider* utxo_provider, std::string& error);
+    static bool VerifySignatures(const Transaction& tx,
+                                 consensus::IUTXOProvider* utxo_provider,
+                                 uint32_t validation_height,
+                                 std::string& error);
     // Phase M.6.1: fee parameter changed to AmountUna&
     static bool CheckFees(const Transaction& tx, consensus::IUTXOProvider* utxo_provider, AmountUna& fee, std::string& error);
 

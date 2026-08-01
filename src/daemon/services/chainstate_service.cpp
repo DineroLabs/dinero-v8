@@ -2698,6 +2698,103 @@ bool ChainstateService::Start() {
         logger_->info("[ChainstateService] Seeded " + std::to_string(candidates_seeded) +
                      " candidates from active chain height index");
 
+        // ═════════════════════════════════════════════════════════════════════
+        // Issue #462 — restore FORK blocks to the in-memory index.
+        //
+        // The loop above walks getBlockHashByHeight(), the CANONICAL HEIGHT
+        // INDEX, which maps a height to the ACTIVE chain's block. Blocks on a
+        // losing fork are therefore never re-added, so FindBlockIndex() misses
+        // them after a restart and getblockheader silently omits status_flags,
+        // failed_valid and failed_child — the fields go ABSENT, not null.
+        //
+        // The consequence is the same class as #453: after restart the node
+        // cannot tell that a fork block was ever validated, and per #453 it does
+        // not re-validate. It also erases the distinction #453 established
+        // between "valid block that lost the fork race" and "block marked
+        // invalid", because the failure flags disappear too.
+        //
+        // The data is already durable — the header row survives with its
+        // chainwork and status_flags — so this is purely a rebuild gap.
+        //
+        // Ordering is load-bearing: entries must be added parent-first so pprev
+        // links and chainwork accumulate correctly, exactly as the active-chain
+        // loop above notes. Persisted rows are collected first, then sorted by
+        // height ascending.
+        //
+        // Fork blocks are deliberately NOT seeded as candidates here. The
+        // active-chain loop seeds candidates; a restored fork block that
+        // genuinely outweighs the active tip is the business of the normal
+        // reorg path, and seeding it during startup rebuild would let a restart
+        // change fork choice as a side effect of a bookkeeping fix.
+        {
+            struct PendingForkEntry {
+                uint256 hash;
+                ChainDB::PersistedHeaderMetadata metadata;
+            };
+            std::vector<PendingForkEntry> fork_entries;
+
+            auto scan_status = chain_db_->forEachHeaderMetadata(
+                [&](const uint256& hash,
+                    const ChainDB::PersistedHeaderMetadata& metadata) -> bool {
+                    if (dinero::FindBlockIndex(hash) == nullptr) {
+                        fork_entries.push_back(PendingForkEntry{hash, metadata});
+                    }
+                    return true;
+                });
+
+            if (scan_status != Status::Ok) {
+                // Non-fatal: the active chain is already loaded and usable. Log
+                // loudly rather than refuse to start over a display/bookkeeping
+                // gap.
+                logger_->warning(
+                    "[ChainstateService] Could not scan persisted header metadata for fork "
+                    "blocks (status=" + std::to_string(static_cast<int>(scan_status)) +
+                    "); fork-block validation status will be unavailable until restart");
+            } else if (!fork_entries.empty()) {
+                std::sort(fork_entries.begin(), fork_entries.end(),
+                          [](const PendingForkEntry& a, const PendingForkEntry& b) {
+                              return a.metadata.height < b.metadata.height;
+                          });
+
+                uint32_t fork_loaded = 0;
+                uint32_t fork_skipped = 0;
+                for (const auto& entry : fork_entries) {
+                    // A later entry may have been added as a side effect of an
+                    // earlier one; re-check rather than assume.
+                    if (dinero::FindBlockIndex(entry.hash) != nullptr) continue;
+
+                    BlockHeader header;
+                    bool recovered_header_from_body = false;
+                    std::string recovery_error;
+                    if (!loadHeaderOrRecoverFromBody(entry.hash,
+                                                     entry.metadata.height,
+                                                     &header,
+                                                     &recovered_header_from_body,
+                                                     &recovery_error)) {
+                        fork_skipped++;
+                        continue;
+                    }
+
+                    CBlockIndex* idx =
+                        AddBlockIndex(header, static_cast<uint32_t>(entry.metadata.height));
+                    if (!idx) {
+                        fork_skipped++;
+                        continue;
+                    }
+
+                    ApplyPersistedMetadataToBlockIndex(idx, entry.metadata);
+                    fork_loaded++;
+                }
+
+                logger_->info("[ChainstateService] Restored " + std::to_string(fork_loaded) +
+                              " off-active-chain block index entries with persisted status (#462)" +
+                              (fork_skipped > 0
+                                   ? "; skipped " + std::to_string(fork_skipped) +
+                                         " whose header could not be loaded"
+                                   : ""));
+            }
+        }
+
         // Set active_tip_ to genesis initially. The Utreexo checkpoint loader
         // below will advance it to the last validated height if a checkpoint
         // exists. We must NOT set active_tip_ to the ChainDB storage tip
@@ -12606,7 +12703,26 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             tip_to_connect->undo_file,
             tip_to_connect->undo_pos,
             tip_to_connect->undo_size,
-            &utxo_batch);
+            &utxo_batch,
+            // Issue #453 — durably record script validity.
+            //
+            // Scripts for this block were genuinely validated by the
+            // block_validator_->ConnectBlock() call earlier in ConnectTip
+            // (BlockValidator::ConnectBlockInternal -> ValidateSpend). Until
+            // this write existed, BLOCK_VALID_SCRIPTS was only ever set in
+            // memory, by BlockAcceptor::ConnectBlock. The header-metadata row
+            // BlockAcceptor persists is built from a status literal that omits
+            // BLOCK_VALID_SCRIPTS, and no live path re-persisted the in-memory
+            // value afterwards: every other updateBlockIndex() call site is a
+            // NotFound fallback that does not fire once the acceptance row
+            // exists. A restarted daemon therefore could not distinguish a
+            // script-validated block from one never script-checked, and does
+            // not re-validate. Regression: ScriptValidityDurability.
+            //
+            // Passed here rather than staged as a separate setHeaderStatusBits
+            // call: a second staged helper re-reads the pre-batch row and would
+            // silently drop the BLOCK_HAVE_UNDO stamped above.
+            BLOCK_VALID_SCRIPTS);
         if (bi_status == Status::NotFound) {
             // A freshly connected block should already have header metadata
             // from header/body acceptance. If an older path reaches ConnectTip
@@ -12615,6 +12731,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             // to preserve in this branch.
             bi_status = chain_db_->updateBlockIndex(token, tip_to_connect, &utxo_batch);
         }
+        // Issue #453 — durably record script validity.
         if (bi_status == Status::Ok) {
             ccb.MarkBlockIndexStaged();
         } else {
