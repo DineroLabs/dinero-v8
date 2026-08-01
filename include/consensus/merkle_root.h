@@ -38,46 +38,8 @@ namespace dinero::consensus {
  */
 uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx);
 
-// ═══════════════════════════════════════════════════════════════
-// Phase 11b.1: Witness Merkle Groundwork (NOT CONSENSUS-ACTIVE)
-// ═══════════════════════════════════════════════════════════════
-// ⚠️  CRITICAL: This function is GROUNDWORK ONLY.
-//
-// Status: NOT consensus-active, NOT referenced by mining/validation
-//
-// Purpose:
-//   - Prepare infrastructure for future witness commitment support
-//   - Lock invariants before activation
-//   - Zero call sites until explicit consensus upgrade
-//
-// What this computes:
-//   - Merkle tree of witness transaction IDs (wtxids)
-//   - Coinbase witness hash = 0x00...00 (Bitcoin convention)
-//   - Uses full transaction data (witness included)
-//
-// ❌ DO NOT use for:
-//   - Block header validation
-//   - BlockHeader::merkle_root comparison
-//   - Mining block templates
-//   - Consensus checks
-//
-// ✅ Future use (when activated):
-//   - Segwit witness commitment (in coinbase)
-//   - Fraud proof generation
-//   - Light client verification
-//
-// Invariants locked by:
-//   - tests/consensus/test_witness_merkle_isolation.cpp
-//
-// Activation requires:
-//   - Explicit consensus upgrade (Phase 11c+)
-//   - Network versioning
-//   - Softfork deployment
-// ═══════════════════════════════════════════════════════════════
 /**
- * Compute witness merkle root from transaction vector (GROUNDWORK ONLY)
- *
- * ⚠️ NOT CONSENSUS-ACTIVE - do not use for validation or mining
+ * Compute the consensus witness merkle root for a DINW commitment.
  *
  * Algorithm:
  * 1. For each transaction, compute witness transaction ID (wtxid):
@@ -88,7 +50,10 @@ uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx);
  *
  * Difference from ComputeMerkleRoot():
  *   - ComputeMerkleRoot() uses txid (non-witness hash) ← consensus-active
- *   - ComputeWitnessMerkleRoot() uses wtxid (witness hash) ← NOT active
+ *   - ComputeWitnessMerkleRoot() uses wtxid (witness hash) for DINW
+ *
+ * Do not use this value as BlockHeader::merkle_root; the block header commits
+ * to the non-witness transaction IDs returned by GetTxid().
  *
  * @param vtx Vector of transactions
  * @return Witness merkle root as uint256 (zero hash if empty)

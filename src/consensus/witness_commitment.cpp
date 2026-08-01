@@ -8,6 +8,7 @@
 #include "consensus/witness_commitment.h"
 #include "consensus/merkle_root.h"
 #include "common/sha256d.h"
+#include <algorithm>
 #include <cstring>
 
 namespace dinero::consensus {
@@ -62,7 +63,7 @@ std::vector<uint8_t> BuildWitnessCommitment(
     script.push_back(0x52);  // R
     script.push_back(0x57);  // W
 
-    // Version byte (0x01 = Phase 11c, NOT enforced)
+    // DINW commitment format version
     script.push_back(WitnessCommitment::VERSION);
 
     // Commitment hash (32 bytes)
@@ -150,9 +151,11 @@ bool ValidateWitnessCommitment(
     // Step 1: Find witness commitment
     auto index_opt = FindWitnessCommitmentIndex(coinbase);
 
-    // Step 2: If no commitment found, validation passes (optional in Phase 11c)
+    // Step 2: If no recognized DINW v1 commitment is found, validation passes.
     if (!index_opt.has_value()) {
-        return true;  // No commitment = valid (commitment is optional)
+        // This helper validates recognized commitments. The activation-aware
+        // caller decides whether absence is allowed at this height.
+        return true;
     }
 
     size_t index = index_opt.value();
@@ -199,65 +202,38 @@ bool EnforceWitnessCommitment(
     uint32_t enforcement_height,
     std::string& error
 ) {
-    // ═════════════════════════════════════════════════════════════════════════
-    // Phase 11d.1: Witness Commitment Enforcement (OFF by default)
-    // ═════════════════════════════════════════════════════════════════════════
-    // This function enforces witness commitment requirement if enabled.
-    // Default behavior: enforcement is OFF (safe).
-    // ═════════════════════════════════════════════════════════════════════════
-
-    // Step 1: Check if enforcement is enabled
-    if (!enforce_commitment) {
-        return true;  // Enforcement disabled - always pass
-    }
-
-    // Step 2: Check if we've reached enforcement height
-    if (height < enforcement_height) {
-        return true;  // Before enforcement height - always pass
-    }
-
-    // Step 3: Check if block has ACTUAL witness data (not just version flag)
-    // A block has witness data if ANY input has witness stack items
-    bool has_witness = false;
-    for (const auto& tx : vtx) {
-        for (const auto& input : tx.vin) {
-            if (!input.witness.empty()) {
-                has_witness = true;
-                break;
-            }
-        }
-        if (has_witness) break;
-    }
-
-    // Step 4: If no witness data, no commitment required
-    if (!has_witness) {
-        return true;  // No witness data - commitment not required
-    }
-
-    // Step 5: Block has witness data - commitment is REQUIRED
-    // Find witness commitment in coinbase
-    if (vtx.empty()) {
-        error = "Block has no transactions (enforcement check)";
-        return false;
-    }
-
-    const Transaction& coinbase = vtx[0];
-    auto index_opt = FindWitnessCommitmentIndex(coinbase);
-
-    if (!index_opt.has_value()) {
-        error = "Witness commitment REQUIRED but not found (enforcement active at height " +
-                std::to_string(height) + ")";
-        return false;
-    }
-
-    // Step 6: Commitment found - validate it (reuse Phase 11c validation)
+    // A recognized DINW v1 commitment has always been consensus-validated,
+    // including before mandatory enforcement. Keep that historical behavior
+    // independent of the activation switch.
     std::string validation_error;
     if (!ValidateWitnessCommitment(vtx, validation_error)) {
-        error = "Witness commitment REQUIRED but invalid: " + validation_error;
+        error = "bad-witness-commitment: " + validation_error;
         return false;
     }
 
-    return true;  // Commitment present and valid
+    if (!enforce_commitment || height < enforcement_height) {
+        return true;
+    }
+
+    // Production serialization uses witness_version != 0xFF as the witness
+    // marker. Do not substitute a non-empty-stack test: that would disagree
+    // with Transaction::HasWitness() and change the deployed block rule.
+    const bool has_witness = std::any_of(
+        vtx.begin(), vtx.end(), [](const Transaction& tx) {
+            return tx.HasWitness();
+        });
+    if (!has_witness) {
+        return true;
+    }
+
+    if (!FindWitnessCommitmentIndex(vtx[0]).has_value()) {
+        error = "missing-witness-commitment (required at height " +
+                std::to_string(height) + ", mandatory since height " +
+                std::to_string(enforcement_height) + ")";
+        return false;
+    }
+
+    return true;
 }
 
 uint32_t TranslateWitnessMagic(

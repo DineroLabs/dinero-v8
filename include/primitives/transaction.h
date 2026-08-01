@@ -376,39 +376,12 @@ struct Transaction {
     // Transaction ID (hash of non-witness data) - Phase M.4.3-A: TxId semantic type
     TxId GetTxid() const;
 
-    // ═══════════════════════════════════════════════════════════════
-    // Witness Transaction ID (Phase 11b.3: Safety Guard)
-    // ═══════════════════════════════════════════════════════════════
-    // ⚠️  CRITICAL: wtxid is NOT consensus-active yet!
-    //
-    // Current status (Phase 11b): GROUNDWORK ONLY
-    //   - Used by: consensus::ComputeWitnessMerkleRoot() (NOT active)
-    //   - NOT used for: block validation, mining, or consensus checks
-    //   - NOT referenced in: block headers or network messages
-    //
-    // This function is for:
-    //   - Future segwit witness commitments (Phase 11c+)
-    //   - Testing witness merkle isolation
-    //   - Fraud proof infrastructure
-    //
-    // ❌ DO NOT use for:
-    //   - Block header validation
-    //   - Mining block templates
-    //   - Consensus checks
-    //   - Transaction indexing (use GetTxid() instead)
-    //
-    // Difference from GetTxid():
-    //   - GetTxid(): hash of non-witness data ← consensus-active
-    //   - GetWtxid(): hash of ALL data (witness included) ← NOT active
-    //
-    // Activation requires:
-    //   - Explicit consensus upgrade (Phase 11c+)
-    //   - Witness commitment in coinbase
-    //   - Network versioning
-    //   - Softfork deployment
+    // Witness transaction ID: hash of the complete serialization, including
+    // witness data. Consensus::ComputeWitnessMerkleRoot() consumes this value
+    // for the DINW coinbase commitment. Transaction indexing and the block
+    // header merkle root continue to use GetTxid().
     //
     // Locked by: tests/consensus/test_witness_merkle_isolation.cpp
-    // ═══════════════════════════════════════════════════════════════
     WTxId GetWtxid() const;
     
     // Size calculations
