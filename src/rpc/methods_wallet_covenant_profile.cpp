@@ -19,6 +19,7 @@
 namespace {
 
 using dinero::wallet::covenant::CCVPlan;
+using dinero::wallet::covenant::CCVAuthorization;
 using dinero::wallet::covenant::CTVPlan;
 using dinero::wallet::covenant::Output;
 using dinero::wallet::covenant::ProfileType;
@@ -189,15 +190,22 @@ din::Json CtvJson(const CTVPlan& plan) {
 
 din::Json CcvJson(const CCVPlan& plan) {
     din::Json result(Json::objectValue);
-    result["profile"] = "ccv";
+    const bool ownerAuthorized =
+        plan.authorization == CCVAuthorization::OwnerSchnorr;
+    result["profile"] = ownerAuthorized ? "ccv-owner" : "ccv";
     result["descriptor_id"] = plan.descriptorId;
     result["recovery_descriptor"] = plan.recoveryDescriptor;
     result["state_hash"] = Hex(plan.state.stateHash);
     result["code_hash"] = Hex(plan.state.codeHash);
     result["counter"] = static_cast<Json::UInt>(plan.state.counter);
     result["data_hex"] = Hex(plan.state.data);
-    result["authorization"] = "none";
-    result["permissionless"] = true;
+    result["authorization"] =
+        ownerAuthorized ? "bip340-owner" : "none";
+    result["permissionless"] = !ownerAuthorized;
+    if (ownerAuthorized) {
+        result["owner_public_key"] = Hex(plan.ownerPublicKey);
+        result["owner_key_origin"] = plan.ownerKeyOrigin;
+    }
     result["taproot"] = TaprootJson(plan.taproot);
     return result;
 }
@@ -216,9 +224,8 @@ void RequireExplicitPermissionless(const din::Json& params) {
         !params["permissionless"].isBool() ||
         !params["permissionless"].asBool()) {
         throw std::invalid_argument(
-            "profile-v1 CCV has no owner authorization; set "
-            "permissionless=true to acknowledge that any party may choose "
-            "the next state");
+            "legacy permissionless CCV requires permissionless=true to "
+            "acknowledge that any party may choose the next state");
     }
 }
 
@@ -404,14 +411,50 @@ din::Json RpcCcvCreate(
             throw std::invalid_argument(
                 "wallet.covenant.ccvcreate requires an object");
         }
-        RequireExplicitPermissionless(params);
         const auto data = ParseHex(
             params.get("data_hex", "").asString(),
             "data_hex",
             true);
-        const auto plan =
-            dinero::wallet::covenant::BuildCCVPlan(
+        CCVPlan plan;
+        const bool permissionless =
+            params.isMember("permissionless") &&
+            params["permissionless"].isBool() &&
+            params["permissionless"].asBool();
+        if (permissionless) {
+            RequireExplicitPermissionless(params);
+            plan = dinero::wallet::covenant::BuildCCVPlan(
                 UInt32(params, "counter", 0), data);
+        } else {
+            auto& wallet = ActiveWallet(context);
+            const std::string ownerAddress = wallet.getNewAddress(
+                params.get("label", "ccv-owner").asString() +
+                    " owner key",
+                "taproot");
+            if (ownerAddress.empty()) {
+                throw std::runtime_error(
+                    "failed to allocate a wallet key for CCV ownership");
+            }
+            const auto ownerScript =
+                wallet.getScriptPubKeyForAddress(ownerAddress);
+            if (!ownerScript.has_value()) {
+                throw std::runtime_error(
+                    "wallet did not persist the CCV owner key locator");
+            }
+            const auto ownerOrigin = wallet.getDerivationPath(*ownerScript);
+            const auto ownerPrivateKey =
+                wallet.deriveKeyForScriptPubKey(*ownerScript);
+            if (!ownerOrigin.has_value() ||
+                !ownerPrivateKey.has_value()) {
+                throw std::runtime_error(
+                    "wallet cannot recover the allocated CCV owner key");
+            }
+            plan = dinero::wallet::covenant::BuildOwnerAuthorizedCCVPlan(
+                UInt32(params, "counter", 0),
+                data,
+                dinero::wallet::covenant::OwnerXOnlyPublicKey(
+                    *ownerPrivateKey),
+                *ownerOrigin);
+        }
         const bool track = params.get("track", false).asBool();
         if (track &&
             !Track(
@@ -443,8 +486,14 @@ din::Json RpcCcvAdvance(
         const auto current =
             dinero::wallet::covenant::RecoverCCVPlan(
                 params["descriptor"].asString());
-        RequireExplicitPermissionless(params);
-        RequireSpendActivation(context, ProfileType::CCV);
+        if (current.authorization == CCVAuthorization::Permissionless) {
+            RequireExplicitPermissionless(params);
+        }
+        RequireSpendActivation(
+            context,
+            current.authorization == CCVAuthorization::OwnerSchnorr
+                ? ProfileType::CCV_OWNER
+                : ProfileType::CCV);
         std::vector<dinero::wallet::covenant::Input> inputs;
         inputs.reserve(params["inputs"].size());
         for (const auto& item : params["inputs"]) {
@@ -456,20 +505,64 @@ din::Json RpcCcvAdvance(
         if (params.isMember("outputs")) {
             outputs = ParseOutputs(params["outputs"], true);
         }
-        const auto transition =
-            dinero::wallet::covenant::BuildCCVTransition(
+        const auto covenantValue = dinero::AmountUna::Una(
+            UInt64(params, "covenant_value_una"));
+        const auto nextData = ParseHex(
+            params.get("next_data_hex", "").asString(),
+            "next_data_hex",
+            true);
+        dinero::wallet::covenant::CCVTransition transition;
+        if (current.authorization == CCVAuthorization::OwnerSchnorr) {
+            std::vector<dinero::wallet::covenant::Prevout> prevouts;
+            prevouts.reserve(inputs.size());
+            prevouts.push_back({
+                covenantValue,
+                current.taproot.scriptPubKey});
+            for (Json::ArrayIndex index = 1;
+                 index < params["inputs"].size();
+                 ++index) {
+                const auto& item = params["inputs"][index];
+                if (!item.isMember("prevout_value_una")) {
+                    throw std::invalid_argument(
+                        "owner CCV fee inputs require prevout_value_una");
+                }
+                prevouts.push_back({
+                    dinero::AmountUna::Una(
+                        UInt64(item, "prevout_value_una")),
+                    ParseOutputScript(item)});
+            }
+            const std::string ownerPrivateKeyHex =
+                ActiveWallet(context).getPrivateKeyForPath(
+                    current.ownerKeyOrigin);
+            if (ownerPrivateKeyHex.empty()) {
+                throw std::runtime_error(
+                    "wallet is locked or cannot recover the CCV owner key");
+            }
+            transition = dinero::wallet::covenant::
+                BuildOwnerAuthorizedCCVTransition(
+                    current,
+                    inputs,
+                    prevouts,
+                    covenantValue,
+                    nextData,
+                    ParseHex(
+                        ownerPrivateKeyHex,
+                        "wallet CCV owner private key"),
+                    outputs,
+                    UInt32(params, "locktime", 0),
+                    static_cast<int32_t>(
+                        UInt32(params, "version", 2)));
+        } else {
+            transition = dinero::wallet::covenant::BuildCCVTransition(
                 current,
                 inputs,
-                dinero::AmountUna::Una(
-                    UInt64(params, "covenant_value_una")),
-                ParseHex(
-                    params.get("next_data_hex", "").asString(),
-                    "next_data_hex",
-                    true),
+                covenantValue,
+                nextData,
                 outputs,
                 UInt32(params, "locktime", 0),
                 static_cast<int32_t>(
                     UInt32(params, "version", 2)));
+        }
         const bool track =
             params.get("track_successor", false).asBool();
         if (track &&
@@ -523,7 +616,8 @@ din::Json RpcImport(
                 result = CtvJson(plan);
                 break;
             }
-            case ProfileType::CCV: {
+            case ProfileType::CCV:
+            case ProfileType::CCV_OWNER: {
                 const auto plan =
                     dinero::wallet::covenant::RecoverCCVPlan(descriptor);
                 if (!Track(
@@ -576,7 +670,22 @@ din::Json RpcList(
              ActiveWallet(context).listCovenantDescriptors()) {
             din::Json item(Json::objectValue);
             item["descriptor_id"] = record.descriptor_id;
-            item["profile"] = record.profile;
+            if (record.profile == "ccv") {
+                const auto plan = dinero::wallet::covenant::RecoverCCVPlan(
+                    record.descriptor);
+                const bool ownerAuthorized =
+                    plan.authorization == CCVAuthorization::OwnerSchnorr;
+                item["profile"] = ownerAuthorized ? "ccv-owner" : "ccv";
+                item["authorization"] =
+                    ownerAuthorized ? "bip340-owner" : "none";
+                item["permissionless"] = !ownerAuthorized;
+                if (ownerAuthorized) {
+                    item["owner_public_key"] = Hex(plan.ownerPublicKey);
+                    item["owner_key_origin"] = plan.ownerKeyOrigin;
+                }
+            } else {
+                item["profile"] = record.profile;
+            }
             item["recovery_descriptor"] = record.descriptor;
             item["script_pubkey"] = Hex(record.script_pubkey);
             item["label"] = record.label;
