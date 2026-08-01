@@ -32,6 +32,32 @@ pass() { printf '[PASS] %s\n' "$*"; }
 fail() {
     KEEP_ON_FAIL=1
     printf '[FAIL] %s\n' "$*" >&2
+
+    # Stop the daemons and wait for them to exit BEFORE reading their logs.
+    #
+    # Their stdout is block-buffered when redirected to a file, so nothing is
+    # flushed until the process exits. Tailing while they are still running
+    # printed two empty sections on every failure:
+    #
+    #     --- node A log tail ---
+    #     --- node B log tail ---
+    #
+    # which is why this test's CI output has never carried usable diagnostics.
+    # The logs were fine on disk; they simply had not been written yet.
+    for _pid in "${PID_A}" "${PID_B}"; do
+        [[ -n "${_pid}" ]] && kill "${_pid}" 2>/dev/null || true
+    done
+    for _pid in "${PID_A}" "${PID_B}"; do
+        [[ -n "${_pid}" ]] || continue
+        for _ in $(seq 1 40); do
+            kill -0 "${_pid}" 2>/dev/null || break
+            sleep 0.25
+        done
+        kill -9 "${_pid}" 2>/dev/null || true
+    done
+    PID_A=""
+    PID_B=""
+
     [[ -f "${LOG_A}" ]] && { printf -- '--- node A log tail ---\n' >&2; tail -160 "${LOG_A}" >&2 || true; }
     [[ -f "${LOG_B}" ]] && { printf -- '--- node B log tail ---\n' >&2; tail -160 "${LOG_B}" >&2 || true; }
     exit 1
