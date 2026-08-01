@@ -32,6 +32,19 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
   validation inputs. CTV and CCV may each execute at most once per revealed
   tapscript. Limits, neuter evidence, and scaling results are recorded in
   `COVENANT_RESOURCE_LIMITS.md`.
+- The regtest-only wallet/RPC profile constructs CTV and CCV Taproot
+  script-path artifacts, stores checksummed public recovery descriptors and
+  watch scripts atomically, and re-derives them after wallet restart. Its
+  construction and recovery contract is documented in
+  `../wallet/COVENANT_PROFILE_V1_RECOVERY.md`.
+- The wallet CCV artifact proves permissionless state continuity only. Its
+  fixed script has no owner signature and the RPC requires an explicit
+  `permissionless: true` acknowledgement. Owner-authorized CCV construction
+  is not implemented and remains a production blocker.
+- `CovenantWalletMultinodeLifecycle` exercises two live daemons: CTV and CCV
+  funding, normal peer relay and mining, an ordinary wallet fee input on a CCV
+  transition, wallet restart and descriptor recovery, a longer-chain reorg,
+  mempool revalidation, independent rebroadcast, and reconfirmation.
 
 ## Deliberately dormant
 
@@ -45,6 +58,13 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
 Regtest activates CTV and CCV at height 20 so boundary, wallet, recovery, and
 multi-node work can exercise the reviewed semantics. Regtest behavior is not a
 production activation decision.
+
+The regtest wallet refuses to construct spends before the candidate height has
+the relevant rule active. That guard is not a consensus or relay-policy rule:
+a transaction constructed after activation and retained across a deep reorg
+could otherwise be submitted when the opcode again has NOP/`OP_SUCCESS`
+semantics. Production deployment therefore still requires explicit
+pre-activation mempool/relay policy and activation-boundary reorg tests.
 
 ## Interpreter conformance evidence
 
@@ -83,11 +103,11 @@ opcode activations dormant avoids assuming otherwise.
 
 ## Required before production activation
 
-1. Replace the orphaned covenant wallet/RPC builders, then add live
-   wallet-recovery and two-daemon relay tests at the chosen production height.
-2. Obtain independent consensus and cryptographic review of the frozen
+1. Obtain independent consensus and cryptographic review of the frozen
    specification, implementation diff, vectors, lifecycle tests, and resource
    results.
+2. Repeat the wallet-recovery and multi-node deployment tests against release
+   candidates and the proposed testnet/production activation boundaries.
 3. Assign activation parameters only after that review, then coordinate the
    activation release and monitoring across all validating nodes.
 

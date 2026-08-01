@@ -2,16 +2,27 @@
 
 Status: ready for independent review; not ready for production activation.
 
-Date: 2026-07-30
+Date: 2026-07-31
 
-Implementation base: `06148559b4673f2863c59a8ab1090679a52f64df`
-(`origin/dinero-main` at the start of this work)
+Implementation base: `cb21a91d4226a8a0b8b798f065d1b867f7de88bb`
+(`origin/dinero-main` after PR #463)
 
-Implementation tip before this review document:
-`4da3bfc041e5278fb23809bdb037aa071c237dc0`
+Review stack branches (resolve and record the exact remote heads when review
+starts; the short hashes below are the original implementation anchors, not a
+substitute for reviewing later amendments):
 
-Reviewers should review the final branch tip, including
-`DINERO_COVENANT_PROFILE_V1.md`, against that base.
+- foundation and dormant protocol: `codex/covenants-01-foundation`
+  (anchor `c7b8cb5612`);
+- inherited BIP342 completion: `codex/covenants-02-bip342`
+  (anchor `501f6c21fe`);
+- lifecycle, resource bounds, and frozen profile:
+  `codex/covenants-03-lifecycle` (anchor `7c47744e48`); and
+- wallet/RPC construction, recovery, and live lifecycle:
+  `codex/covenants-04-wallet` (anchor `2c1f180618`).
+
+Reviewers should fetch the remote branches, record their full hashes, and
+review the final wallet branch tip—including all merged lower-stack
+amendments and `DINERO_COVENANT_PROFILE_V1.md`—against that base.
 
 ## 1. Review objective
 
@@ -21,9 +32,10 @@ Determine whether the dormant CTV/CCV implementation:
 - correctly implements the stated BIP119 profile and Dinero CCV v1;
 - is consistent across mempool, mining, serial/stateless/parallel block
   validation, reorg, and restart paths;
+- can be constructed, recovered, wallet-signed, relayed, revalidated after a
+  reorg, and reconfirmed without a non-consensus bypass;
 - has deterministic and sufficient denial-of-service bounds; and
-- is suitable to proceed to production wallet/relay work and a later
-  activation proposal.
+- is suitable to proceed to a later activation proposal.
 
 This review is not a request to approve an activation height.
 
@@ -49,25 +61,30 @@ Upstream references:
 
 | Commit | Purpose |
 |---|---|
-| `139b88b03` | mainnet reachability scan and reproducible audit |
-| `ba3263147` | fail-closed covenant and Taproot verification foundations |
-| `94c509ca3` | Taproot conformance vectors |
-| `16fdb0b5a` | activation and CCV binding vectors |
-| `5542410cf` | covenant/Taproot test registration |
-| `c6650c904` | dormant CTV and CCV specifications |
-| `770087521` | tapscript pushes and conditional execution |
-| `c44c28827` | BIP342 code-separator position commitment |
-| `3d8e3abe2` | remaining inherited BIP342 execution surface |
-| `71a390876` | conformance and differential evidence |
-| `3b435f93c` | activation/reorg/mempool/mining/restart lifecycle |
-| `4da3bfc04` | deterministic resource bounds and precomputation |
+| `76f32f0a7` | mainnet reachability scan and reproducible audit |
+| `20d0c9e67` | fail-closed covenant and Taproot verification foundations |
+| `0c4751fac` | Taproot conformance vectors |
+| `a95d11012` | activation and CCV binding vectors |
+| `16f097ea3` | covenant/Taproot test registration |
+| `e6dca246e` | dormant CTV and CCV specifications |
+| `c7b8cb561` | canonical tagged-hash and SHA-256 test helpers |
+| `4c503f2aa` | tapscript pushes and conditional execution |
+| `5d376a26b` | BIP342 code-separator position commitment |
+| `6e5b2f3ba` | remaining inherited BIP342 execution surface |
+| `501f6c21f` | conformance and differential evidence |
+| `7cd102ba1` | activation/reorg/mempool/mining/restart lifecycle |
+| `71309689e` | deterministic resource bounds and precomputation |
+| `7c47744e4` | frozen combined profile-v1 specification |
+| `497c68e80` | checksummed wallet/RPC construction and recovery |
+| `0e27df1b9` | live mainnet guard and two-node regtest lifecycle |
+| `2c1f18061` | wallet lifecycle and recovery readiness record |
 
 Recommended review commands:
 
 ```text
-git diff 06148559b4673f2863c59a8ab1090679a52f64df..HEAD
+git diff cb21a91d4226a8a0b8b798f065d1b867f7de88bb..HEAD
 git log --reverse --oneline \
-  06148559b4673f2863c59a8ab1090679a52f64df..HEAD
+  cb21a91d4226a8a0b8b798f065d1b867f7de88bb..HEAD
 ```
 
 ## 4. High-risk code
@@ -100,8 +117,20 @@ Executable evidence:
 - `tests/consensus/test_ccv_successor_binding.cpp`
 - `tests/consensus/test_covenant_activation.cpp`
 - `tests/consensus/test_covenant_system_lifecycle.cpp`
+- `tests/wallet/test_covenant_profile.cpp`
+- `tests/wallet/test_covenant_wallet_recovery.cpp`
+- `tests/integration/test_covenant_wallet_multinode_lifecycle.sh`
 - `tests/benchmarks/benchmark_covenant_validation.cpp`
 - `tests/test_script_json.cpp`
+
+Wallet/RPC construction and recovery surfaces:
+
+- `include/wallet/covenant_profile.h`
+- `src/wallet/covenant_profile.cpp`
+- `src/rpc/methods_wallet_covenant_profile.cpp`
+- `include/wallet/wallet_manager.h`
+- `src/wallet/wallet_manager.cpp`
+- `src/rpc/methods_wallet_context.cpp`
 
 ## 5. Questions requiring explicit reviewer answers
 
@@ -130,6 +159,14 @@ Executable evidence:
     validate with the wrong target height or stale activation flags?
 12. Does any supposedly constrained wallet leaf contain a dormant
     `OP_SUCCESS` opcode that makes it immediately spendable?
+13. Can a malformed, non-canonical, wrong-profile, or checksum-corrupted
+    recovery descriptor ever be imported or used to construct a spend?
+14. Does wallet persistence atomically bind descriptor id, profile,
+    descriptor, Taproot scriptPubKey, watch registration, and CCV successor
+    lineage without implying possession of a key-path secret?
+15. Does `wallet.signrawtransaction` preserve a preconstructed covenant
+    script-path witness, sign only the remaining wallet-owned inputs, and
+    report `complete` only after canonical validation of every input?
 
 ## 6. Reproduction
 
@@ -144,6 +181,8 @@ cmake --build build-covenants --target \
   test_covenant_activation \
   test_covenant_system_lifecycle \
   test_ccv_successor_binding \
+  test_covenant_profile_wallet \
+  test_covenant_wallet_recovery \
   test_covenant_scriptpath \
   test_escape_hatches \
   test_covenant_semantic_oracles \
@@ -151,7 +190,8 @@ cmake --build build-covenants --target \
   -j8
 
 ctest --test-dir build-covenants --output-on-failure \
-  -R '^(BIP119CTVVectors|TaprootScriptPathConsensus|BIP341SighashVectors|CovenantActivation|CovenantSystemLifecycle|CcvSuccessorBinding|CovenantScriptPath|EscapeHatchTests|Execution_CovenantSemantics_R7_7d)$'
+  --no-tests=error \
+  -R '^(BIP119CTVVectors|TaprootScriptPathConsensus|BIP341SighashVectors|CovenantActivation|CovenantSystemLifecycle|CcvSuccessorBinding|CovenantProfileWallet|CovenantWalletRecovery|CovenantScriptPath|CovenantWalletMultinodeLifecycle|EscapeHatchTests|Execution_CovenantSemantics_R7_7d)$'
 
 ./build-covenants/benchmark_covenant_validation
 ```
@@ -163,29 +203,51 @@ Additional conformance commands:
 ./build-covenants/test_taproot_scriptpath_consensus
 ```
 
-Expected evidence at the review tip:
+Expected evidence at the review tip (re-run; do not inherit these counts from
+an earlier head):
 
 - 1,213/1,213 executable script-corpus vectors;
 - 640/640 deterministic differential interpreter comparisons;
 - 42/42 Taproot script-path tests;
 - 4/4 BIP341 sighash-vector tests;
-- 5/5 activation tests;
+- 6/6 activation tests;
 - 9/9 CCV tests;
 - 3/3 lifecycle tests;
-- 8/8 covenant-labelled CTest targets; and
+- 6/6 checksummed CTV/CCV construction tests;
+- 3/3 wallet persistence and restart-recovery tests;
+- 1/1 live mainnet-guard and two-daemon wallet/RPC relay, restart, reorg, and
+  reconfirmation lifecycle; and
 - 6/6 adjacent mempool/mining/UTXO tests.
+
+An earlier 2026-07-31 rebased tip passed all 98 tests selected by
+`ctest -L 'consensus|covenant|taproot'`, including the cold-start harness,
+consensus fuzzer, two-node sync, and the serialized live covenant wallet
+lifecycle. Every selected executable was built before the run; the result was
+98/98 with zero `Not Run` entries. This is historical evidence only; the final
+review head must repeat the selection.
 
 The CTV and CCV execution-limit tests were independently neutered by changing
 each maximum from one to two. Each test then failed because the repeated
 script became valid; both limits were restored to one.
 
+Wallet-layer guards were also neuter-verified independently: removing
+canonical lowercase descriptor enforcement made the uppercase-alias test
+fail; removing watch-path collision verification committed a descriptor under
+the wrong existing watch path; removing the next-height activation guard let
+the pre-activation CTV spend constructor succeed; removing the explicit CCV
+acknowledgement let permissionless construction proceed silently; and removing
+the output money-range check admitted a zero-valued CTV output. Each guard was
+restored before the passing focused and two-daemon runs.
+
 ## 7. Historical evidence
 
-The canonical mainnet scan through height 75,490 found:
+The canonical mainnet scan through height 76,105 found:
 
-- 73,555 P2TR outputs;
+- 74,170 P2TR outputs;
 - 2,352 P2TR spends;
 - all observed spends using key path;
+- all 2,352 key-path spends using 64-byte implicit `SIGHASH_DEFAULT`;
+- zero 65-byte explicit sighash forms;
 - zero revealed script paths;
 - zero annexes; and
 - zero revealed or bare covenant opcodes.
@@ -198,11 +260,21 @@ reinterpret hidden trees without explicit deployment planning.
 
 - Mainnet and testnet CTV/CCV activation heights remain dormant.
 - Independent review has not yet occurred.
-- Covenant wallet/RPC builders are orphaned and are not approved production
-  construction paths.
-- There is no live two-daemon covenant relay/reorg test or production wallet
-  recovery test yet. `CovenantSystemLifecycle` uses real production
-  components but is not a substitute for those deployment tests.
+- The profile-v1 wallet/RPC surface is intentionally regtest-only. Its
+  successful lifecycle evidence does not approve testnet or mainnet
+  activation.
+- The profile-v1 wallet CCV artifact is explicitly permissionless
+  (`OP_CHECKCONTRACTVERIFY OP_TRUE`). It proves construction and continuity,
+  not owner authorization. An authenticated application script and its wallet
+  key/recovery design require separate implementation and review.
+- The wallet refuses spend construction before activation, but that is not a
+  network policy rule and cannot protect signed transactions held across a
+  deep activation-boundary reorg. A production deployment needs an explicit
+  mempool/relay policy for revealed pre-activation NOP/`OP_SUCCESS` covenant
+  spends, with boundary and reorg tests, without changing consensus-valid
+  historical behavior.
+- Release-candidate tests must be repeated at any proposed activation
+  boundary and on every supported platform before production use.
 - CSFS and TXHASH remain incomplete, uncosted, and deliberately dormant.
 - Confidential CTV/CCV is undefined and rejected.
 - A mainnet history scan cannot inspect hidden Taproot leaves.

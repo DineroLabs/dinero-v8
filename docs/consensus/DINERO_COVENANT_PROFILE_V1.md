@@ -274,8 +274,10 @@ change and new independent review.
 This specification does not assign a mainnet or testnet activation height.
 Before doing so, the project MUST:
 
-1. replace or remove the orphaned covenant wallet/RPC builders;
-2. pass live wallet recovery and two-daemon relay/reorg tests;
+1. retain the checksummed, watch-only wallet recovery path and live
+   two-daemon relay/restart/reorg coverage implemented for regtest;
+2. repeat those deployment tests against the proposed activation boundaries
+   and release candidates;
 3. obtain independent consensus and cryptographic review of this profile,
    implementation, vectors, lifecycle tests, and resource analysis;
 4. publish the chosen activation parameters and release hashes with enough

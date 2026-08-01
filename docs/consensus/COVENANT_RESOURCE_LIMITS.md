@@ -101,6 +101,13 @@ CCV output-scan measurements remained bounded from 53.2 microseconds at one
 output to 59.0 microseconds at 8,192 outputs on this machine. The state/key
 cryptography dominates the scan at the current transaction-size ceiling.
 
+The benchmark was rerun after rebasing onto `dinero-main` at
+`cb21a91d4226a8a0b8b798f065d1b867f7de88bb` on 2026-07-31. At 1,024 inputs,
+the precomputed paths measured 440 microseconds for CTV and 1,411 microseconds
+for BIP341 versus 50,995 and 310,424 microseconds for the direct paths. CCV at
+8,192 outputs measured 56.7 microseconds. These results reproduce the scaling
+and bounds above; timing remains diagnostic rather than a consensus rule.
+
 ## Remaining activation blockers
 
 These resource limits do not by themselves authorize production activation.
