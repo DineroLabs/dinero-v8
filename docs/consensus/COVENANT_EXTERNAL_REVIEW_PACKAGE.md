@@ -267,12 +267,12 @@ reinterpret hidden trees without explicit deployment planning.
   (`OP_CHECKCONTRACTVERIFY OP_TRUE`). It proves construction and continuity,
   not owner authorization. An authenticated application script and its wallet
   key/recovery design require separate implementation and review.
-- The wallet refuses spend construction before activation, but that is not a
-  network policy rule and cannot protect signed transactions held across a
-  deep activation-boundary reorg. A production deployment needs an explicit
-  mempool/relay policy for revealed pre-activation NOP/`OP_SUCCESS` covenant
-  spends, with boundary and reorg tests, without changing consensus-valid
-  historical behavior.
+- Mempool admission and block-template selection reject revealed CTV, CCV,
+  CSFS, and TXHASH scripts before each opcode's independent activation height.
+  Historical consensus NOP/`OP_SUCCESS` behavior is unchanged. The lifecycle
+  suite separates Taproot script-path activation from CTV and exercises
+  admission, mining, rollback, revalidation, and restart across that boundary;
+  the same tests must be repeated at any proposed production boundaries.
 - Release-candidate tests must be repeated at any proposed activation
   boundary and on every supported platform before production use.
 - CSFS and TXHASH remain incomplete, uncosted, and deliberately dormant.
