@@ -58,6 +58,15 @@ add_custom_target(check_no_legacy_mempool_prod
   COMMENT "Checking production tree for legacy mempool references"
 )
 
+# Guardrail: OpenSSL 3.x deprecates its low-level incremental SHA-256 API.
+# First-party code uses dinero::crypto::CSHA256 (or supported one-shot APIs)
+# instead, so a future reintroduction must fail the normal daemon build.
+add_custom_target(check_no_deprecated_openssl_sha256
+  COMMAND ${CMAKE_SOURCE_DIR}/tools/check_no_deprecated_openssl_sha256.sh
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Checking first-party code for deprecated OpenSSL SHA-256 APIs"
+)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Hermetic Build Detection
 # ═══════════════════════════════════════════════════════════════════════════
@@ -345,6 +354,9 @@ if(ENABLE_ZK)
         secp256k1_zkp          # ElementsProject/secp256k1-zkp (Pedersen + Bulletproofs)
         lightning_core_static  # Uses secp256k1-zkp for Pedersen + Bulletproofs!
         OpenSSL::Crypto        # For secure random (RAND_bytes)
+    )
+    target_link_libraries(dinero_zk PRIVATE
+        dinero_crypto          # CSHA256 transcript and Fiat-Shamir hashing
     )
 
     target_compile_definitions(dinero_zk PUBLIC

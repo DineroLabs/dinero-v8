@@ -5,6 +5,7 @@
  */
 
 #include "wallet/pq_derivation.h"
+#include "crypto/sha256.h"
 
 #include <array>
 #include <cstddef>
@@ -14,7 +15,6 @@
 
 #include <openssl/crypto.h>  // OPENSSL_cleanse
 #include <openssl/hmac.h>    // HMAC, HMAC_CTX_*
-#include <openssl/sha.h>     // SHA256
 
 namespace dinero::wallet::pq {
 
@@ -134,12 +134,11 @@ std::array<uint8_t, 32> ComputeSingleLeafMerkleRoot(
     uint8_t scheme_id,
     const dinero::consensus::pq::ml_dsa_65::PublicKey& pubkey) {
     // SHA256(scheme_id || pubkey)
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, &scheme_id, 1);
-    SHA256_Update(&ctx, pubkey.data(), pubkey.size());
     std::array<uint8_t, 32> out{};
-    SHA256_Final(out.data(), &ctx);
+    dinero::crypto::CSHA256()
+        .Write(&scheme_id, 1)
+        .Write(pubkey.data(), pubkey.size())
+        .Finalize(out.data());
     return out;
 }
 

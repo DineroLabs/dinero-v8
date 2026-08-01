@@ -13,6 +13,7 @@
 #include "wallet/pq_derivation.h"
 #include "consensus/pq/ml_dsa_65.h"
 #include "consensus/pq/test_vectors/wallet_hkdf_vectors.h"
+#include "crypto/sha256.h"
 
 #include <array>
 #include <cstddef>
@@ -22,8 +23,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <openssl/sha.h>
 
 namespace wpq   = dinero::wallet::pq;
 namespace mldsa = dinero::consensus::pq::ml_dsa_65;
@@ -98,12 +97,11 @@ int main() {
 
         std::array<uint8_t, 32> expected{};
         {
-            SHA256_CTX ctx;
-            SHA256_Init(&ctx);
             uint8_t scheme_id = 0x01;
-            SHA256_Update(&ctx, &scheme_id, 1);
-            SHA256_Update(&ctx, kp.pubkey().data(), kp.pubkey().size());
-            SHA256_Final(expected.data(), &ctx);
+            dinero::crypto::CSHA256()
+                .Write(&scheme_id, 1)
+                .Write(kp.pubkey().data(), kp.pubkey().size())
+                .Finalize(expected.data());
         }
         auto actual = wpq::ComputeSingleLeafMerkleRoot(0x01, kp.pubkey());
         record(actual == expected,
