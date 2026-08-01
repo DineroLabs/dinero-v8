@@ -57,6 +57,7 @@ private:
     // Phase L0.3: Added flags for covenant enforcement
     struct ExecutionContext {
         std::vector<std::vector<uint8_t>> stack;
+        std::vector<std::vector<uint8_t>> altstack;
         const Transaction* tx;
         size_t input_index;
         const std::vector<UTXOEntry>* input_utxos;
@@ -69,6 +70,7 @@ private:
         uint32_t flags;  // Script verification flags (for covenant enforcement)
         bool op_success{false};  // BIP342 immediate-success short circuit
         int64_t validation_weight_left{0};  // BIP342 witness budget
+        uint32_t code_separator_position{0xffffffffU};
         std::string error;
     };
 

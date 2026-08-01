@@ -426,7 +426,8 @@ std::vector<uint8_t> SignatureHashTaproot(
     const ScriptExecutionContext& ctx,
     uint8_t hash_type,
     const std::vector<uint8_t>& leaf_hash,
-    const std::vector<uint8_t>& annex
+    const std::vector<uint8_t>& annex,
+    uint32_t codesep_pos
 ) {
     if (!ctx.tx) {
         return std::vector<uint8_t>(32, 0);
@@ -599,7 +600,7 @@ std::vector<uint8_t> SignatureHashTaproot(
         // key_version (1 byte) - always 0 for BIP 342
         data.push_back(0);
         // codesep_pos (4 bytes) - position of last executed OP_CODESEPARATOR (-1 if none)
-        WriteUint32LE(data, 0xFFFFFFFF);  // -1 = no OP_CODESEPARATOR
+        WriteUint32LE(data, codesep_pos);
     }
 
     // 15. Dinero CT extension: bind confidential prevout commitments when present.

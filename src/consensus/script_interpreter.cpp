@@ -1414,6 +1414,10 @@ bool EvalScript(
                 // BIP-119 style: OP_CHECKTEMPLATEVERIFY (CTV)
                 // If flag not set, treat as NOP4 (soft-fork compatible)
                 if (!(ctx.flags & SCRIPT_VERIFY_CHECKTEMPLATEVERIFY)) {
+                    if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                        error = ScriptError::DISCOURAGE_UPGRADABLE_NOPS;
+                        return false;
+                    }
                     break;
                 }
 
