@@ -170,7 +170,7 @@ public:
      * @param block The received block
      * @return true if block is valid and stored
      */
-    bool OnBlockReceived(const Block& block);
+    bool OnBlockReceived(const Block& block, FilePosition* stored_pos_out = nullptr);
 
     /**
      * #375: consume a block ONLY if it is an expected AssumeUTXO backfill

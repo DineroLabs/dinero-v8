@@ -27,6 +27,7 @@
 namespace dinero {
 
 class uint256;
+struct Block;
 
 namespace consensus {
 class UtreexoForest;
@@ -50,6 +51,18 @@ bool DeserializeUtreexoDelta(const std::string& data,
 bool ApplyUtreexoDeltaForward(consensus::UtreexoForest& forest,
                               const consensus::UtreexoDelta& delta,
                               std::string& error);
+
+// Builds the exact per-block UD sidecar for a stateless transition while the
+// caller still owns the pre-state forest. Proof validation remains responsible
+// for authorizing the transition; this helper records the deterministic delete
+// and append positions needed by checkpoint+replay restore.
+bool BuildStatelessUtreexoDelta(
+    const consensus::UtreexoForest& forest_before,
+    const Block& block,
+    uint32_t block_height,
+    const std::vector<consensus::UtreexoHash>& spend_targets,
+    consensus::UtreexoDelta& out,
+    std::string& error);
 
 }  // namespace dinero
 

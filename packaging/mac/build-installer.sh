@@ -141,10 +141,10 @@ chmod +x "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-seeder"
 # the default path below (e.g. the published release asset) before packaging.
 # Missing → the wallet still works, just syncs from genesis (logged); build does
 # not fail.
-SNAPSHOT_DAT="${DINERO_SNAPSHOT_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/utxo-snapshot-52287.dat}"
+SNAPSHOT_DAT="${DINERO_SNAPSHOT_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/utxo-snapshot-65300.dat}"
 if [[ -f "$SNAPSHOT_DAT" ]]; then
     echo "Bundling AssumeUTXO snapshot: $(basename "$SNAPSHOT_DAT") ($(stat -f%z "$SNAPSHOT_DAT") bytes)"
-    cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/utxo-snapshot-52287.dat"
+    cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/utxo-snapshot-65300.dat"
 else
     echo "WARNING: AssumeUTXO snapshot not found at $SNAPSHOT_DAT — fresh wallets will sync from genesis." >&2
     echo "         Set DINERO_SNAPSHOT_DAT or place the .dat there to bundle fast-sync." >&2

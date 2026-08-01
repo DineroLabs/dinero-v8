@@ -52,6 +52,8 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QMessageBox>
+#include <QDialog>
+#include <QFont>
 #include <QJsonDocument>
 #include <QProcess>
 #include <QTcpSocket>
@@ -366,7 +368,7 @@ QString sv2MinerEnvVar()      { return "DINERO_SV2_MINER_PATH"; }
 
 QString sv2PoolEndpointDefault()       { return "173.249.200.59:4444"; }
 QString sv2PoolServerPubkeyDefault()   {
-  return "bcaa90dba639e2d57baa4c6de8c88647a82f02669cb0395f0d9a44c0e4ec2931";
+  return "3c879d90c9bb430493dfbf02cecbb93c3ae0d9d6c31d0757595e353fbe927417";
 }
 
 QString sv2PoolEndpoint() {
@@ -386,7 +388,8 @@ QString sv2PoolServerPubkey() {
   if (!envOverride.isEmpty()) return envOverride.trimmed();
   QSettings settings;
   QString saved = settings.value("mining/sv2_server_pubkey").toString().trimmed();
-  if (saved.startsWith("17fc0efc")) {
+  if (saved.startsWith("17fc0efc") ||
+      saved == QStringLiteral("bcaa90dba639e2d57baa4c6de8c88647a82f02669cb0395f0d9a44c0e4ec2931")) {
     settings.remove("mining/sv2_server_pubkey");
     saved.clear();
   }
@@ -1762,7 +1765,10 @@ MainWindow::MainWindow(QWidget* parent)
   connectionMgr_->setDaemonUrl("http://127.0.0.1:20998");
   connectionMgr_->setCookiePath(QDir(rpc_->datadir()).filePath(".cookie"));
   connectionMgr_->setHealthCheckInterval(5000);   // Check every 5 seconds
-  connectionMgr_->setMaxRetries(10);              // Try 10 times before giving up
+  // Windows slow-start: a node with many wallets at high height can take ~150s
+  // to serve RPC. 10 retries gave up before that, leaving the GUI disconnected
+  // even after dinerod came up. Keep trying well past the init window.
+  connectionMgr_->setMaxRetries(40);
   
   // Connect ConnectionManager signals
   QObject::connect(connectionMgr_, &ConnectionManager::connected,
@@ -1783,7 +1789,88 @@ MainWindow::MainWindow(QWidget* parent)
   
   // Auto-connect ConnectionManager for wallet/address operations
   connectionMgr_->connectToDaemon();
-  
+
+  // Friendly startup countdown. On Windows a node with many wallets at high
+  // height can take up to ~3 minutes to serve RPC. Without visible feedback,
+  // users assume the app hung and force-quit + relaunch mid-init — which is
+  // exactly what wedged startup historically. A live mm:ss countdown shows
+  // progress so they wait it out. Auto-dismisses the instant we connect.
+  //
+  // MUST be a plain widget-based QDialog, NOT a QMessageBox. On macOS a
+  // QMessageBox is presented as a native NSAlert that spins its own nested
+  // modal run loop (runModalForWindow:), and Qt QTimers do NOT fire inside that
+  // loop — so a QMessageBox-based countdown parks the main thread in the modal
+  // loop and its own tick timer never runs, freezing the display at 3:00. A
+  // non-modal QDialog uses no native modal loop, so the tick fires and the
+  // countdown actually counts down.
+  QTimer::singleShot(2000, this, [this]() {
+    if (shuttingDown_ || (connectionMgr_ && connectionMgr_->isConnected())) {
+      return;  // already connected (fast start / adopted a warm daemon)
+    }
+    auto* box = new QDialog(this);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setModal(false);
+    box->setWindowTitle("Starting Dinero…");
+
+    auto* layout = new QVBoxLayout(box);
+    auto* titleLabel = new QLabel(box);
+    titleLabel->setTextFormat(Qt::PlainText);
+    QFont titleFont = titleLabel->font();
+    titleFont.setBold(true);
+    titleFont.setPointSize(titleFont.pointSize() + 1);
+    titleLabel->setFont(titleFont);
+    auto* infoLabel = new QLabel(box);
+    infoLabel->setTextFormat(Qt::PlainText);
+    infoLabel->setWordWrap(true);
+    layout->addWidget(titleLabel);
+    layout->addWidget(infoLabel);
+    auto* btnRow = new QHBoxLayout();
+    btnRow->addStretch();
+    auto* hideBtn = new QPushButton("Hide", box);  // optional dismiss; waiting is fine
+    btnRow->addWidget(hideBtn);
+    layout->addLayout(btnRow);
+    QObject::connect(hideBtn, &QPushButton::clicked, box, &QDialog::close);
+
+    auto remaining = std::make_shared<int>(180);  // 3:00
+    auto render = [titleLabel, infoLabel](int secs) {
+      if (secs > 0) {
+        titleLabel->setText(QString("Starting the Dinero node — ready in about %1:%2")
+                                .arg(secs / 60)
+                                .arg(secs % 60, 2, 10, QChar('0')));
+        infoLabel->setText(
+            "This can take up to ~3 minutes on first start.\n"
+            "Please wait — do NOT close or restart. The wallet opens "
+            "automatically once the node is ready.");
+      } else {
+        titleLabel->setText("Almost there — the node is taking a little longer than usual.");
+        infoLabel->setText(
+            "Still starting… please keep waiting and do NOT close or restart.");
+      }
+    };
+    render(*remaining);
+
+    auto* tick = new QTimer(box);
+    tick->setInterval(1000);
+    QObject::connect(tick, &QTimer::timeout, box, [this, box, remaining, render]() {
+      if (connectionMgr_ && connectionMgr_->isConnected()) {
+        box->close();
+        return;
+      }
+      if (*remaining > 0) {
+        --(*remaining);
+      }
+      render(*remaining);
+    });
+    tick->start();
+
+    // Close the moment the daemon connects, even between ticks.
+    QObject::connect(connectionMgr_, &ConnectionManager::connected, box,
+                     [box]() { box->close(); });
+
+    box->show();  // non-modal: countdown updates while the app keeps working
+  });
+
+
   // Connect RPC signals (legacy - will be phased out)
   connect(rpc_, &RpcClient::rpcResult, this, &MainWindow::onRpcResult);
   connect(rpc_, &RpcClient::rpcResult, txTracker_, &TransactionTracker::onPollRpcResult);
@@ -1881,12 +1968,11 @@ MainWindow::MainWindow(QWidget* parent)
 
   // #295: visible timeout on the startup wait. If RPC never comes up the
   // user previously stared at "Connecting..." forever with no explanation.
-  // Bumped 60s -> 100s: a fast-synced node loading all wallets + the catch-up
-  // scan can legitimately take ~80s to be RPC-ready, and the old 60s watchdog
-  // nagged with "Still Waiting for Daemon" before it connected. The handler
-  // no-ops if already connected, so this only delays the alert for a GENUINE
-  // hang (now after 100s instead of 60s).
-  QTimer::singleShot(100000, this, &MainWindow::onStartupWatchdogTimeout);
+  // Bumped 60s -> 100s -> 180s: on Windows a node with many wallets at high
+  // height can take ~150s to be RPC-ready, and the old 100s watchdog nagged
+  // with "Still Waiting for Daemon" before it connected. The handler no-ops if
+  // already connected, so this only delays the alert for a GENUINE hang.
+  QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
 
   // Cmd+K dashboard. The AI assistant surface is temporarily hidden by
   // kShowAiAssistantPanel, but the shortcut remains the dashboard entry point.
@@ -3587,7 +3673,7 @@ void MainWindow::setupUI() {
     cmbMiningMode_ = new QComboBox;
     cmbMiningMode_->addItem("Solo Mining (Default)", "solo");
     cmbMiningMode_->addItem("Pool Mining (Stratum V1)", "pool");
-    cmbMiningMode_->addItem("Pool Mining (SV2 / Job Declaration)", "sv2_pool");
+    cmbMiningMode_->addItem("Pool Mining (SV2)", "sv2_pool");
     cmbMiningMode_->setCurrentIndex(0);
     cmbMiningMode_->setFixedHeight(30);
     cmbMiningMode_->setStyleSheet(
@@ -3597,8 +3683,8 @@ void MainWindow::setupUI() {
     cmbMiningMode_->setToolTip(
       "Solo = mine directly with your node.\n"
       "Pool (Stratum V1) = submit shares to a V1 pool (legacy, cleartext).\n"
-      "Pool (SV2 / Job Declaration) = submit shares to an SV2 pool over\n"
-      "Noise-encrypted transport with miner-owned coinbase outputs.");
+      "Pool (SV2) = Noise-encrypted pool mining. Choose Shared rewards\n"
+      "for PPLNS payouts or Solo rewards for a miner-owned coinbase.");
     modeRow->addWidget(cmbMiningMode_);
 
     lblStratumEndpoint_ = new QLabel("Pool Endpoint:");
@@ -3720,6 +3806,34 @@ void MainWindow::setupUI() {
       onMinerTypeChanged(cmbMinerType_ ? cmbMinerType_->currentIndex() : 0);
     });
     sv2PubkeyRow->addWidget(cmbSv2Backend_);
+
+    lblSv2RewardMode_ = new QLabel("Rewards:");
+    lblSv2RewardMode_->setVisible(false);
+    sv2PubkeyRow->addWidget(lblSv2RewardMode_);
+
+    cmbSv2RewardMode_ = new QComboBox;
+    cmbSv2RewardMode_->addItem("Pool Shared", "shared");
+    cmbSv2RewardMode_->addItem("Pool Solo", "solo");
+    {
+      const QString saved =
+        QSettings().value("mining/sv2_reward_mode", "shared").toString();
+      const int idx = cmbSv2RewardMode_->findData(saved);
+      cmbSv2RewardMode_->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+    cmbSv2RewardMode_->setFixedHeight(30);
+    cmbSv2RewardMode_->setStyleSheet(cmbSv2Backend_->styleSheet());
+    cmbSv2RewardMode_->setToolTip(
+      "Pool Shared = each accepted share contributes to the pool's PPLNS window.\n"
+      "Pool Solo = the miner owns the block coinbase, but receives nothing unless it finds a block.");
+    cmbSv2RewardMode_->setVisible(false);
+    connect(cmbSv2RewardMode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+      if (!cmbSv2RewardMode_) return;
+      QSettings().setValue(
+        "mining/sv2_reward_mode",
+        cmbSv2RewardMode_->currentData().toString());
+    });
+    sv2PubkeyRow->addWidget(cmbSv2RewardMode_);
     quickMineLayout->addLayout(sv2PubkeyRow);
 
     // Row 1: Solo miner engine, or pool worker binary when Pool mode is selected.
@@ -8971,6 +9085,8 @@ void MainWindow::onMiningModeChanged(int index) {
   if (edtSv2Pubkey_)    edtSv2Pubkey_->setVisible(poolSv2);
   if (lblSv2Backend_)   lblSv2Backend_->setVisible(poolSv2);
   if (cmbSv2Backend_)   cmbSv2Backend_->setVisible(poolSv2);
+  if (lblSv2RewardMode_) lblSv2RewardMode_->setVisible(poolSv2);
+  if (cmbSv2RewardMode_) cmbSv2RewardMode_->setVisible(poolSv2);
   if (lblSv2Shares_)    lblSv2Shares_->setVisible(poolSv2);
   if (lblMiningUptimeCaption_) lblMiningUptimeCaption_->setVisible(true);
   if (lblMiningUptime_) lblMiningUptime_->setVisible(true);
@@ -9104,6 +9220,9 @@ void MainWindow::setMiningModeControlsLocked(bool locked) {
   }
   if (cmbSv2Backend_) {
     cmbSv2Backend_->setEnabled(!locked);
+  }
+  if (cmbSv2RewardMode_) {
+    cmbSv2RewardMode_->setEnabled(!locked);
   }
   if (btnLocalStratum_) {
     btnLocalStratum_->setEnabled(!locked ||
@@ -11067,6 +11186,19 @@ void MainWindow::startSv2Miner() {
     return;
   }
 
+  const QString rewardMode = cmbSv2RewardMode_
+    ? cmbSv2RewardMode_->currentData().toString()
+    : QStringLiteral("shared");
+  if (rewardMode == QStringLiteral("shared") &&
+      (payoutScript.size() != 68 ||
+       !payoutScript.startsWith(QStringLiteral("5120"), Qt::CaseInsensitive))) {
+    QMessageBox::warning(this, "Taproot Address Required",
+      "Pool Shared credits its PPLNS ledger to a Taproot (din1p...) address.\n\n"
+      "Select a Taproot mining address, or choose Pool Solo to keep using "
+      "this address.");
+    return;
+  }
+
   // Backend: CPU miner or GPU miner — different binaries.
   const QString backend = cmbSv2Backend_
     ? cmbSv2Backend_->currentData().toString()
@@ -11105,6 +11237,7 @@ void MainWindow::startSv2Miner() {
   args << "--pool" << endpoint
        << "--server-pubkey" << pubkey
        << "--payout-script-hex" << payoutScript
+       << "--reward-mode" << rewardMode
        << "--user-agent" << "dinero-qt"
        << "--json";
   if (useGpu) {
@@ -11147,9 +11280,14 @@ void MainWindow::startSv2Miner() {
         mining_stats_.sv2_shares_accepted +=
           (batchCount > 0 ? batchCount : 1);
         if (lblSv2Shares_) {
-          lblSv2Shares_->setText(QString("Shares: seq=%1  total=%2")
+          const QString window = mining_stats_.sv2_window_bps >= 0
+            ? QString("  PPLNS=%1%").arg(
+                mining_stats_.sv2_window_bps / 100.0, 0, 'f', 2)
+            : QString();
+          lblSv2Shares_->setText(QString("Shares: seq=%1  total=%2%3")
             .arg(obj.value("last_seq").toVariant().toLongLong())
-            .arg(mining_stats_.sv2_shares_accepted));
+            .arg(mining_stats_.sv2_shares_accepted)
+            .arg(window));
         }
         // Output panel: log only on early shares (so the user sees
         // confirmation that mining started) and once every 1000 shares
@@ -11164,6 +11302,23 @@ void MainWindow::startSv2Miner() {
             "#95d66b",
             QString::number(total));
         }
+      } else if (event == "window_status") {
+        mining_stats_.sv2_window_bps =
+          obj.value("window_bps").toVariant().toLongLong();
+        mining_stats_.sv2_window_shares =
+          obj.value("window_shares").toVariant().toLongLong();
+        if (lblSv2Shares_) {
+          lblSv2Shares_->setText(QString("PPLNS: %1%  accepted=%2  window=%3")
+            .arg(mining_stats_.sv2_window_bps / 100.0, 0, 'f', 2)
+            .arg(mining_stats_.sv2_shares_accepted)
+            .arg(mining_stats_.sv2_window_shares));
+        }
+        appendSv2EventLine(txtMiningOutput_, "pplns",
+          QString("your share=%1% window=%2")
+            .arg(mining_stats_.sv2_window_bps / 100.0, 0, 'f', 2)
+            .arg(mining_stats_.sv2_window_shares),
+          "#95d66b",
+          QString::number(mining_stats_.sv2_window_bps));
       } else if (event == "hashrate") {
         // Backend-agnostic hashrate event from dinero-sv2-miner and
         // dinero-sv2-gpu-miner. Feeds the top-of-panel MH/s widget.
@@ -11218,8 +11373,10 @@ void MainWindow::startSv2Miner() {
         }
       } else if (event == "new_job") {
         appendSv2EventLine(txtMiningOutput_, "job",
-          QString("height=%1 template=%2 target=%3")
-            .arg(obj.value("height").toVariant().toLongLong())
+          QString("%1 template=%2 target=%3")
+            .arg(obj.contains("height")
+              ? QString("height=%1").arg(obj.value("height").toVariant().toLongLong())
+              : QStringLiteral("shared"))
             .arg(obj.value("template_id").toVariant().toLongLong())
             .arg(compactSv2Value(obj.value("share_target").toString(), 12, 8)),
           "#d8c27a",
@@ -11287,12 +11444,23 @@ void MainWindow::startSv2Miner() {
   });
 
   connect(miningProcess_, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-          this, [this](int exitCode, QProcess::ExitStatus) {
+          this, [this](int exitCode, QProcess::ExitStatus exitStatus) {
+    const bool expectedStop = externalMinerStopRequested_ || shuttingDown_;
+    externalMinerStopRequested_ = false;
     if (txtMiningOutput_ && !shuttingDown_) {
-      appendSv2EventLine(txtMiningOutput_, "exit",
-        QString("miner stopped code=%1").arg(exitCode),
-        exitCode == 0 ? "#95d66b" : "#ff8b8b",
-        QString::number(exitCode));
+      if (expectedStop) {
+        appendSv2EventLine(txtMiningOutput_, "stop",
+          QStringLiteral("miner stopped normally"),
+          "#95d66b",
+          QString::number(exitCode));
+      } else {
+        appendSv2EventLine(txtMiningOutput_, "exit",
+          exitStatus == QProcess::CrashExit
+            ? QString("miner terminated unexpectedly (signal/code %1)").arg(exitCode)
+            : QString("miner exited unexpectedly (code %1)").arg(exitCode),
+          "#ff8b8b",
+          QString::number(exitCode));
+      }
     }
     isMining_ = false;
     activeMinerType_.clear();
@@ -11321,12 +11489,19 @@ void MainWindow::startSv2Miner() {
       addr,
       payoutScript,
       workHint);
+    appendSv2EventLine(txtMiningOutput_, "mode",
+      rewardMode == QStringLiteral("shared")
+        ? QStringLiteral("Pool Shared (PPLNS)")
+        : QStringLiteral("Pool Solo (miner-owned coinbase)"),
+      rewardMode == QStringLiteral("shared") ? "#95d66b" : "#f6c85f",
+      rewardMode);
     appendSv2EventLine(txtMiningOutput_, "bin",
       compactSv2Value(minerPath, 54, 24),
       "#7d8b94",
       minerPath);
   }
 
+  externalMinerStopRequested_ = false;
   miningProcess_->start(minerPath, args);
   if (!miningProcess_->waitForStarted(5000)) {
     QMessageBox::critical(this, "SV2 Miner Failed to Start",
@@ -11343,6 +11518,8 @@ void MainWindow::startSv2Miner() {
   mining_stats_.current_hashrate = 0.0;
   mining_stats_.sv2_shares_accepted = 0;
   mining_stats_.sv2_hashrate_updates = 0;
+  mining_stats_.sv2_window_bps = -1;
+  mining_stats_.sv2_window_shares = 0;
   if (lblCurrentHash_) lblCurrentHash_->setText("0.00");
   if (lblBlocksFound_) lblBlocksFound_->setText("0");
   updateMiningRuntimeLabel();
@@ -11354,7 +11531,9 @@ void MainWindow::startSv2Miner() {
   }
   if (btnStartMining_) btnStartMining_->setText("Stop Mining");
   if (lblMiningStatus_) {
-    lblMiningStatus_->setText("Mining (SV2 Pool)");
+    lblMiningStatus_->setText(rewardMode == QStringLiteral("shared")
+      ? "Mining (SV2 Pool Shared)"
+      : "Mining (SV2 Pool Solo)");
     lblMiningStatus_->setStyleSheet(chromePillStyle() + " color: #2cb84a;");
   }
   setMiningOutputCinematicEnabled(true);
@@ -11388,6 +11567,7 @@ void MainWindow::stopExternalMiner() {
   if (!lblMiningStatus_ || !btnStartMining_ || !btnStopMining_) {
     // Still try to stop the process even if widgets are gone
     if (miningProcess_ && miningProcess_->state() == QProcess::Running) {
+      externalMinerStopRequested_ = true;
       miningProcess_->terminate();
       if (!miningProcess_->waitForFinished(3000)) {
         miningProcess_->kill();
@@ -11404,6 +11584,7 @@ void MainWindow::stopExternalMiner() {
     lblMiningStatus_->setText(miningStatusInactiveText() + " | Stopping miner...");
     lblMiningStatus_->setStyleSheet(chromePillStyle());
 
+    externalMinerStopRequested_ = true;
     miningProcess_->terminate();
     if (!miningProcess_->waitForFinished(3000)) {
       // Force kill if it doesn't stop gracefully
@@ -11944,12 +12125,12 @@ void MainWindow::onStartupWatchdogTimeout() {
   }
   const QString logPath = QDir(datadir).filePath("debug.log");
 
-  qWarning() << "Startup watchdog: no daemon RPC connection after 100s";
+  qWarning() << "Startup watchdog: no daemon RPC connection after 180s";
 
   QMessageBox box(this);
   box.setIcon(QMessageBox::Warning);
   box.setWindowTitle("Still Waiting for Daemon");
-  box.setText("Dinero has been waiting 100 seconds for the daemon (dinerod) "
+  box.setText("Dinero has been waiting 180 seconds for the daemon (dinerod) "
               "and is still not connected — the daemon may have failed.");
   box.setInformativeText(
     "Common causes:\n"
@@ -11967,9 +12148,9 @@ void MainWindow::onStartupWatchdogTimeout() {
   if (box.clickedButton() == showLogBtn) {
     QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
     // Re-arm: the user is investigating, keep the watchdog alive.
-    QTimer::singleShot(100000, this, &MainWindow::onStartupWatchdogTimeout);
+    QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
   } else if (box.clickedButton() == waitBtn) {
-    QTimer::singleShot(100000, this, &MainWindow::onStartupWatchdogTimeout);
+    QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
   } else {
     close();
   }
@@ -12222,22 +12403,20 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
       if (dir.trimmed().isEmpty()) {
         dir = defaultDineroDataDir();
       }
-      qWarning() << "Daemon exited before RPC came up, code:" << exitCode;
-      QMessageBox box(this);
-      box.setIcon(QMessageBox::Critical);
-      box.setWindowTitle("Daemon Failed");
-      box.setText(QString("The Dinero daemon (dinerod) exited before the "
-                          "wallet could connect (exit code %1).").arg(exitCode));
-      box.setInformativeText(
-        "Common causes:\n"
-        "  • Port 20998 is already in use by another process\n"
-        "  • Another Dinero instance is using the same data directory\n\n"
-        "See the daemon log below for details (Show Details).");
-      box.setDetailedText(QString("Last lines of %1/debug.log:\n\n%2")
-                              .arg(dir, daemonDebugLogTail(dir)));
-      box.exec();
+      // The scary Critical "Daemon Failed" modal was removed: a daemon that
+      // exits before RPC during startup is usually a transient race (port
+      // handoff from a still-running daemon, datadir-lock release), and the
+      // retry logic above plus the ConnectionManager keep trying and adopt the
+      // daemon once it is healthy. Interrupting the user with a modal here made
+      // them force-quit mid-init, which only made things worse. Surface the
+      // state quietly; a GENUINE, persistent failure is still reported by the
+      // (non-modal) startup watchdog after 180s.
+      Q_UNUSED(dir);
+      qWarning() << "Daemon exited before RPC came up, code:" << exitCode
+                 << "(retries exhausted; ConnectionManager keeps trying, "
+                    "watchdog will surface a persistent failure)";
       if (lblConnectionStatus_) {
-        lblConnectionStatus_->setText("Daemon failed to start");
+        lblConnectionStatus_->setText("Starting daemon…");
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
       }
       btnStartDaemon_->setVisible(true);

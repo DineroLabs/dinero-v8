@@ -422,6 +422,34 @@ public:
     );
 
     /**
+     * @brief Speculatively validate a block's Utreexo proof into a
+     *        CALLER-PROVIDED scratch forest, without touching this node's
+     *        shared forest or cached stump.
+     *
+     * Same cryptographic validation as ValidateUtreexoProof (block-hash,
+     * root-continuity against `scratch_forest`'s current root, target
+     * extraction/match, batch-proof crypto, delta apply, root_after check),
+     * but the proof is checked against a stump derived from `scratch_forest`
+     * and, on success, ONLY `scratch_forest` is advanced.
+     *
+     * This is the CSN reorg-plan building primitive: the worker restores a
+     * fork point into a private scratch forest and replays a competing
+     * branch into it speculatively, so ActivateBestChain remains the sole
+     * owner of the canonical shared forest. See
+     * docs/design/csn-stateless-reorg-convergence.md.
+     *
+     * @param block           Block to validate.
+     * @param proof_msg       Its Utreexo proof payload.
+     * @param scratch_forest  Forest to validate against + advance on success.
+     * @return true iff the proof validates and scratch_forest was advanced.
+     */
+    bool ValidateProofIntoForest(
+        const Block& block,
+        const UtreexoProofMessage& proof_msg,
+        consensus::UtreexoForest& scratch_forest
+    );
+
+    /**
      * @brief Validate block using transition proof
      *
      * **Algorithm:**
@@ -609,6 +637,24 @@ private:
     // ═════════════════════════════════════════════════════════════════════════
     // Internal State
     // ═════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @brief Shared core of ValidateUtreexoProof / ValidateProofIntoForest.
+     *
+     * Runs the full cryptographic validation of `block`/`proof_msg` against
+     * `forest` + `stump` (block-hash, root-continuity, target match,
+     * batch-proof crypto, delta apply into a working copy, root_after check).
+     * On success, commits the advance into `forest` and rebuilds `stump` from
+     * it; on any failure leaves both untouched and returns false with a
+     * reason in `err_out`. Touches no member state — the caller owns
+     * forest/stump and any statistics.
+     */
+    bool ValidateAndApplyProofInto(
+        const Block& block,
+        const UtreexoProofMessage& proof_msg,
+        consensus::UtreexoForest& forest,
+        consensus::UtreexoStump& stump,
+        std::string& err_out);
 
     /// Utreexo accumulator (NOT owned by this class)
     consensus::UtreexoForest* utreexo_forest_;

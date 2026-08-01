@@ -38,24 +38,21 @@ namespace dinero { struct Transaction; }
 namespace dinero::consensus::shielded {
 
 // ─────────────────────────────────────────────────────────────────────
-// Known supply-integrity gap (acknowledged, partial fix in Phase 2):
+// Supply-integrity rules:
 //
-// Phase 2 wave 4 added per-output and per-spend `value < 2^64` range
-// proofs in the ZK circuits. This bounds *individual* note values to
-// the una/DIN range and rejects garbage scalars.
+// Each spend and output value is constrained to 64 bits by its shielded
+// circuit and is represented by a secp256k1 Pedersen value commitment.
+// Per-cv Borromean range proofs reject negative/out-of-range commitments.
+// A BIP340 binding signature proves the cross-bundle conservation equation
+// between spend cvs, output cvs, and `value_balance`. At and above the
+// public-input-binding activation height these checks are mandatory and
+// generator initialization failure is rejected rather than skipped.
 //
-// What it does NOT yet enforce:
-//   - Cross-bundle conservation. `bundle.value_balance` is a plaintext
-//     int64 on the wire; consensus checks it against the transparent
-//     delta (`transparent_in - transparent_out - fee`). Nothing inside
-//     the proof binds the SHIELDED side of the equation: a sender can
-//     publish (spend value=10, output value=10000, value_balance=-9990)
-//     and consensus accepts it, minting 9990 from nowhere.
-//   - The fix requires Pedersen value commitments + a Sapling-style
-//     binding signature (bvk derived from rcv values; verifier checks
-//     bvk · G == sum(cv_spend) - sum(cv_output) - value_balance · G).
-//     Tracked as a future phase. Until then, the activation gate
-//     (Phase 1) keeps shielded output non-relayable on mainnet.
+// At and above the cv-binding activation height, the shielded circuit also
+// constrains each published cv to the same private note value used by the
+// note commitment. Earlier proof versions remain only for historical block
+// validation; mainnet resets the legacy shielded epoch at the cv-binding
+// activation boundary.
 // ─────────────────────────────────────────────────────────────────────
 
 enum class ShieldedValidationError : uint8_t {

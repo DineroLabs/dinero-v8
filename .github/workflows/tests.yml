@@ -72,7 +72,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            third_party/openssl-3.3.2/prebuilt
+            third_party/openssl-3.5.7/prebuilt
             depends/sources
             depends/x86_64-pc-linux-gnu*
             ~/.cargo/registry
@@ -85,7 +85,7 @@ jobs:
             vendored-${{ runner.os }}-
 
       - name: Build vendored OpenSSL
-        run: OPENSSL_VERSION=3.3.2 bash scripts/build-openssl-vendored.sh
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
 
       - name: Build depends
         run: |
@@ -105,12 +105,264 @@ jobs:
       - name: Full default build
         run: cmake --build build-tests -j
 
+      # CI integrity gate: every test registered with CTest in THIS build
+      # configuration must have a runnable executable. A registered-but-
+      # unbuilt test otherwise reports 'Not Run' (or vanishes behind a label
+      # filter) and the repo silently advertises coverage that disappeared —
+      # RelayTlsKeypair rotted to non-compiling exactly this way (PR #416).
+      # Note the residual blind spot documented in the script: tests behind
+      # feature flags that are OFF here (e.g. DINERO_ENABLE_QUIC) are not
+      # registered at all and cannot be checked by this gate.
+      - name: CTest integrity gate (registered => built)
+        run: python3 scripts/ci/check_ctest_integrity.py build-tests
+
+      - name: OpenSSL version assertion (policy pin 3.5.7)
+        run: bash scripts/ci/check_openssl_version.sh build-tests 3.5.7
+
       - name: Run ctest
         run: |
           # Initial v2 soak intentionally runs the stable full-build test subset.
           # Excluded labels are pre-existing runtime/integration harness debt
           # surfaced by the first full ctest pass; keep this list explicit so
           # future PRs can retire exclusions one category at a time.
+          # --no-tests=error: a label filter that matches ZERO tests is a
+          # silent-disappearance mode, not a pass.
+          # --exclude-regex: the daemon-spawning e2e tests became unconditionally
+          # registered in #428 and now run in their own serial step below. They
+          # are excluded HERE by NAME, not by the 'e2e' label: five other tests
+          # carry 'e2e' (WalletRestoreRescan, AssumeUtxoReplayE2E,
+          # AssumeUtxoPromotionRace, AssumeUtxoForwardConnect) and excluding the
+          # label would silently drop them. They also do not carry 'integration',
+          # so the existing label list does not cover them.
           ctest --test-dir build-tests \
             --output-on-failure \
+            --no-tests=error \
+            --exclude-regex '^(ColdStartConsensus|MiningPolicyE2E)$' \
+            --label-exclude 'integration|gate|release|canonicality|fuzz'
+
+      # Serial e2e lane (issue #428 plus the covenant wallet lifecycle). These
+      # spawn real dinerod processes, bind ports, and must not run concurrently
+      # with each other or the suite above — hence -j1 and a separate step.
+      #
+      # Each test gets its OWN ctest invocation with --no-tests=error. That is
+      # deliberate and stronger than one combined -R over all names: a combined
+      # selection still passes when one test disappears, while per-test
+      # invocations fail if any name vanishes from the registry.
+      #
+      # This is the third distinct guarantee in the chain:
+      #   #417 integrity gate  — every REGISTERED test has a runnable executable
+      #   unconditional CMake — every named test is registered without an
+      #                          EXISTS/find_program disappearance path
+      #   this step            — CI actually EXECUTES them, and a launch failure
+      #                          is a failure (the GTEST_SKIPs are gone)
+      - name: Run serial e2e tests (daemon-spawning)
+        run: |
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle; do
+            echo "=== $t ==="
+            ctest --test-dir build-tests \
+              --output-on-failure \
+              --no-tests=error \
+              -j1 \
+              -R "^${t}$"
+          done
+
+      # #453 durable script-validity gate, plus the #458
+      # mine-after-invalidate gates.
+      #
+      # These two carry the labels 'integration' and 'canonicality', both of
+      # which the main ctest step above excludes. Without this step they are
+      # REGISTERED but never EXECUTED — verified on the first CI run of PR #460,
+      # where the configure log printed "✓ ScriptValidityDurability registered"
+      # and "✓ ScriptValidityCrashOrdering registered" while neither name
+      # appeared anywhere in "100% tests passed ... out of 382".
+      #
+      # A regression test that does not run is indistinguishable from no test.
+      # That is the same silent-coverage failure #412 and #428 were opened for,
+      # so the gate lands in the same commit series as the behaviour it protects
+      # rather than as a follow-up.
+      #
+      # Deliberately NOT carrying --label-exclude: these are selected by exact
+      # name, so the broad exclusions must not apply to them.
+      #
+      # Two separate invocations, not one '^(A|B)$' — a combined selection still
+      # passes when only ONE survives, so it cannot prove BOTH are registered.
+      # With --no-tests=error, either name disappearing fails the build.
+      #
+      # No retry and no until-pass wrapper: both spawn a real dinerod, and a
+      # flaky-tolerant gate for a consensus durability property would be worse
+      # than no gate at all.
+      # NOTE: quoted — an unquoted '#' after whitespace starts a YAML comment,
+      # which silently truncates this step's name to "Run".
+      - name: "Run #453/#458 durability tests (daemon-spawning)"
+        run: |
+          echo "=== ScriptValidityDurability ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ScriptValidityDurability$'
+
+          echo "=== ScriptValidityCrashOrdering ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ScriptValidityCrashOrdering$'
+
+          # #458 — same label-exclusion problem, same treatment.
+          echo "=== MineAfterInvalidate ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^MineAfterInvalidate$'
+
+          echo "=== MineAfterInvalidateRestart ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^MineAfterInvalidateRestart$'
+
+          # #462 — same label-exclusion problem.
+          echo "=== ForkBlockStatusRestart ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ForkBlockStatusRestart$'
+
+          # #458 RPC envelope contract — same label-exclusion problem.
+          echo "=== RpcErrorEnvelope ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^RpcErrorEnvelope$'
+
+      # Daemon logs are printed by the harnesses on failure (tail of daemon.log),
+      # so --output-on-failure above captures them. Keep the ctest logs as an
+      # artifact too: the harnesses delete their temp datadirs on teardown, so
+      # the CI log is the only durable record.
+      - name: Upload ctest logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-linux-full
+          path: build-tests/Testing/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ───────────────────────────────────────────────────────────────────────
+  # QUIC-enabled lane (owner decision, 2026-07-29, follow-up to PR #417):
+  # DINERO_ENABLE_QUIC defaults OFF, so the default lane above never even
+  # REGISTERS the QUIC test family — the mechanism by which the
+  # RelayTlsKeypair bitrot (PR #416) survived CI. This lane configures with
+  # QUIC ON, builds the full default graph (which includes every registered
+  # QUIC test target), runs the same integrity gate, and runs the QUIC/P2P
+  # label selection with --no-tests=error. It is deliberately a SEPARATE
+  # job so the default non-QUIC configuration stays covered exactly as
+  # before — both configurations are real, so both get CI.
+  #
+  # Rollout: like this workflow's own v2 soak, not required at first —
+  # observe on dinero-main (vendored-OpenSSL QUIC API availability on the
+  # runner is the known unknown; tests skip-or-assert per their own
+  # policies), document surprises, then promote.
+  # ───────────────────────────────────────────────────────────────────────
+  linux-quic-full-build-ctest:
+    name: Linux x86_64 — QUIC-enabled build + p2p/quic ctest
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            ccache \
+            pkg-config \
+            python3 \
+            perl \
+            libcurl4-openssl-dev \
+            libudev-dev \
+            libusb-1.0-0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.workflow }}-linux-quic
+          max-size: 1G
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7/prebuilt
+            depends/sources
+            depends/x86_64-pc-linux-gnu*
+            ~/.cargo/registry
+            ~/.cargo/git
+            third_party/bulletproofs_ffi/target
+            third_party/bulletproofs-ffi/target
+          key: vendored-tests-quic-${{ runner.os }}-${{ hashFiles('depends/CMakeLists.txt', 'depends/packages/*.cmake', 'scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock', 'third_party/bulletproofs-ffi/Cargo.lock') }}
+          restore-keys: |
+            vendored-tests-quic-${{ runner.os }}-
+            vendored-tests-${{ runner.os }}-
+            vendored-${{ runner.os }}-
+
+      - name: Build vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+
+      - name: Build depends
+        run: |
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j
+
+      - name: CMake configure (QUIC ON)
+        run: |
+          cmake -S . -B build-tests-quic \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DDINERO_ENABLE_QUIC=ON \
+            -DENABLE_GRPC=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Full default build (includes registered QUIC test targets)
+        run: cmake --build build-tests-quic -j
+
+      # Same gate as the default lane, now over a registry that INCLUDES
+      # the QUIC family: registered => built, in this configuration too.
+      - name: CTest integrity gate (registered => built)
+        run: python3 scripts/ci/check_ctest_integrity.py build-tests-quic
+
+      - name: OpenSSL version assertion (policy pin 3.5.7)
+        run: bash scripts/ci/check_openssl_version.sh build-tests-quic 3.5.7
+
+      - name: Report QUIC test inventory
+        run: ctest --test-dir build-tests-quic -N -L 'quic|p2p'
+
+      - name: Run QUIC/P2P ctest
+        run: |
+          # Same pre-existing-debt exclusions as the default lane; the
+          # selection is the QUIC/P2P surface this lane exists to cover.
+          # --no-tests=error: if the QUIC family ever vanishes from the
+          # registry again, this lane fails instead of passing emptily.
+          ctest --test-dir build-tests-quic \
+            --output-on-failure \
+            --no-tests=error \
+            -L 'quic|p2p' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'

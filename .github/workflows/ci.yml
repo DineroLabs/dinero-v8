@@ -93,7 +93,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            third_party/openssl-3.3.2/prebuilt
+            third_party/openssl-3.5.7/prebuilt
             depends/sources
             depends/x86_64-pc-linux-gnu*
             ~/.cargo/registry
@@ -106,7 +106,7 @@ jobs:
 
       # ─── build vendored OpenSSL (cached after first run) ───────────────
       - name: Build vendored OpenSSL
-        run: OPENSSL_VERSION=3.3.2 bash scripts/build-openssl-vendored.sh
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
 
       # ─── build depends/ (miniupnpc + libnatpmp) ────────────────────────
       - name: Build depends

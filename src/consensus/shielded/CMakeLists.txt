@@ -43,6 +43,7 @@ target_include_directories(dinero_shielded PRIVATE
 
 target_link_libraries(dinero_shielded PRIVATE
     dinero_zk         # Poseidon-2 native evaluator (poseidon2_bytes)
+    dinero_crypto     # CSHA256 sighash construction
     sqlite3           # NullifierSet persistence
 )
 

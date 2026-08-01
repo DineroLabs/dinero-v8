@@ -262,21 +262,26 @@ TEST(WalletRestoreRescan, RestoreFindsFunds_W11) {
     std::string mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     std::cout << "✅ Using test mnemonic: " << mnemonic << std::endl;
 
-    // Import mnemonic via wallet.importmnemonic RPC
-    // This replaces the random seed with the test mnemonic's seed
-    // Skip address derivation - mining will derive addresses from index 0
+    // Import mnemonic via wallet.importmnemonic RPC.
+    // This replaces the random seed with the test mnemonic's seed. Derive one
+    // receive/change address so the import satisfies its watch-script
+    // invariant; generate() will then mine to receive index 1, which is inside
+    // the default restore lookahead window.
     try {
         json import_params;
         import_params["mnemonic"] = mnemonic;
         import_params["rescan"] = false;  // No rescan needed - fresh chain
-        import_params["skip_address_derivation"] = true;  // Mining will derive addresses
+        import_params["initial_address_count"] = 1;
         json import_response = rpcCall(NODE_RPC_PORT, "wallet.importmnemonic", import_params);
-        if (import_response.contains("error") && !import_response["error"].is_null()) {
-            std::cerr << "❌ Mnemonic import error: " << import_response["error"].dump() << std::endl;
-            FAIL() << "Failed to import mnemonic: " << import_response["error"].dump();
-        } else {
-            std::cout << "✅ Mnemonic imported into wallet" << std::endl;
-        }
+        ASSERT_FALSE(import_response.contains("error") && !import_response["error"].is_null())
+            << "Failed to import mnemonic: " << import_response["error"].dump();
+        ASSERT_TRUE(import_response.contains("result") && import_response["result"].is_object())
+            << "Mnemonic import returned no result: " << import_response.dump();
+        ASSERT_TRUE(import_response["result"].value("success", false))
+            << "Mnemonic import did not report success: " << import_response.dump();
+        ASSERT_GT(import_response["result"].value("watch_scripts", 0), 0)
+            << "Mnemonic import registered no watch scripts: " << import_response.dump();
+        std::cout << "✅ Mnemonic imported into wallet" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "❌ Mnemonic import exception: " << e.what() << std::endl;
         FAIL() << "Failed to import mnemonic: " << e.what();

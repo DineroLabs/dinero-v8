@@ -8,6 +8,7 @@
 #include "daemon/services/logger_service.h"
 #include "daemon/services/assumeutxo_state.h"
 #include "daemon/services/assumeutxo_replay.h"  // genesis->base replay engine (background validation)
+#include "daemon/snapshot_bootstrap_policy.h"
 #include "daemon/services/replay_failure_policy.h"  // confirm-before-fatal for replay validation failures
 #include "consensus/merkle_root.h"  // torn-body guard on replay reads
 #include "daemon/services/config_service.h"
@@ -2697,6 +2698,103 @@ bool ChainstateService::Start() {
         logger_->info("[ChainstateService] Seeded " + std::to_string(candidates_seeded) +
                      " candidates from active chain height index");
 
+        // ═════════════════════════════════════════════════════════════════════
+        // Issue #462 — restore FORK blocks to the in-memory index.
+        //
+        // The loop above walks getBlockHashByHeight(), the CANONICAL HEIGHT
+        // INDEX, which maps a height to the ACTIVE chain's block. Blocks on a
+        // losing fork are therefore never re-added, so FindBlockIndex() misses
+        // them after a restart and getblockheader silently omits status_flags,
+        // failed_valid and failed_child — the fields go ABSENT, not null.
+        //
+        // The consequence is the same class as #453: after restart the node
+        // cannot tell that a fork block was ever validated, and per #453 it does
+        // not re-validate. It also erases the distinction #453 established
+        // between "valid block that lost the fork race" and "block marked
+        // invalid", because the failure flags disappear too.
+        //
+        // The data is already durable — the header row survives with its
+        // chainwork and status_flags — so this is purely a rebuild gap.
+        //
+        // Ordering is load-bearing: entries must be added parent-first so pprev
+        // links and chainwork accumulate correctly, exactly as the active-chain
+        // loop above notes. Persisted rows are collected first, then sorted by
+        // height ascending.
+        //
+        // Fork blocks are deliberately NOT seeded as candidates here. The
+        // active-chain loop seeds candidates; a restored fork block that
+        // genuinely outweighs the active tip is the business of the normal
+        // reorg path, and seeding it during startup rebuild would let a restart
+        // change fork choice as a side effect of a bookkeeping fix.
+        {
+            struct PendingForkEntry {
+                uint256 hash;
+                ChainDB::PersistedHeaderMetadata metadata;
+            };
+            std::vector<PendingForkEntry> fork_entries;
+
+            auto scan_status = chain_db_->forEachHeaderMetadata(
+                [&](const uint256& hash,
+                    const ChainDB::PersistedHeaderMetadata& metadata) -> bool {
+                    if (dinero::FindBlockIndex(hash) == nullptr) {
+                        fork_entries.push_back(PendingForkEntry{hash, metadata});
+                    }
+                    return true;
+                });
+
+            if (scan_status != Status::Ok) {
+                // Non-fatal: the active chain is already loaded and usable. Log
+                // loudly rather than refuse to start over a display/bookkeeping
+                // gap.
+                logger_->warning(
+                    "[ChainstateService] Could not scan persisted header metadata for fork "
+                    "blocks (status=" + std::to_string(static_cast<int>(scan_status)) +
+                    "); fork-block validation status will be unavailable until restart");
+            } else if (!fork_entries.empty()) {
+                std::sort(fork_entries.begin(), fork_entries.end(),
+                          [](const PendingForkEntry& a, const PendingForkEntry& b) {
+                              return a.metadata.height < b.metadata.height;
+                          });
+
+                uint32_t fork_loaded = 0;
+                uint32_t fork_skipped = 0;
+                for (const auto& entry : fork_entries) {
+                    // A later entry may have been added as a side effect of an
+                    // earlier one; re-check rather than assume.
+                    if (dinero::FindBlockIndex(entry.hash) != nullptr) continue;
+
+                    BlockHeader header;
+                    bool recovered_header_from_body = false;
+                    std::string recovery_error;
+                    if (!loadHeaderOrRecoverFromBody(entry.hash,
+                                                     entry.metadata.height,
+                                                     &header,
+                                                     &recovered_header_from_body,
+                                                     &recovery_error)) {
+                        fork_skipped++;
+                        continue;
+                    }
+
+                    CBlockIndex* idx =
+                        AddBlockIndex(header, static_cast<uint32_t>(entry.metadata.height));
+                    if (!idx) {
+                        fork_skipped++;
+                        continue;
+                    }
+
+                    ApplyPersistedMetadataToBlockIndex(idx, entry.metadata);
+                    fork_loaded++;
+                }
+
+                logger_->info("[ChainstateService] Restored " + std::to_string(fork_loaded) +
+                              " off-active-chain block index entries with persisted status (#462)" +
+                              (fork_skipped > 0
+                                   ? "; skipped " + std::to_string(fork_skipped) +
+                                         " whose header could not be loaded"
+                                   : ""));
+            }
+        }
+
         // Set active_tip_ to genesis initially. The Utreexo checkpoint loader
         // below will advance it to the last validated height if a checkpoint
         // exists. We must NOT set active_tip_ to the ChainDB storage tip
@@ -3453,6 +3551,11 @@ bool ChainstateService::Start() {
         // self-heal can find the UTXO tip. Without this, FindBlockIndex(utxo_best)
         // returns null and safe-mode triggers on every restart after snapshot load.
         if (header_chain_selector_ && !assumeutxo_base_block_.IsNull()) {
+            // #441: NOT migrated. EnsureHeaderBranchIndexed() walks entry->parent to
+            // link the whole branch into the block index, so a *Copy (parent nulled)
+            // cannot substitute. Making this safe means either indexing the branch
+            // inside the selector's lock, or having it consume a copied ancestor list
+            // — a real restructure of snapshot/branch indexing. Tracked in #441.
             const auto* hcs_entry = header_chain_selector_->GetHeader(assumeutxo_base_block_);
             if (hcs_entry) {
                 CBlockIndex* snapshot_idx = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
@@ -3629,9 +3732,12 @@ bool ChainstateService::Start() {
         const uint32_t current_height = static_cast<uint32_t>(active_tip_->height);
         uint32_t target_height = current_height;
 
-        // Use header chain's best height as the target
-        if (const auto* best_header = header_chain_selector_->GetBestHeader()) {
-            target_height = best_header->height;
+        // Use header chain's best height as the target. Via the canonical
+        // snapshot (#439) rather than GetBestHeader(), whose raw pointer is
+        // returned after the selector's lock is released.
+        const auto sync = GetSyncSnapshot();
+        if (sync.has_best_header) {
+            target_height = sync.best_header_height;
         }
 
         if (target_height > current_height) {
@@ -4418,6 +4524,25 @@ void ChainstateService::PublishActiveTip(CBlockIndex* tip, TipPublishReason reas
                       " height=" + std::to_string(tip->height));
     }
     active_tip_ = tip;
+
+    // #439: publish an immutable VALUE copy of the tip identity under its own
+    // mutex. GetSyncSnapshot() reads this instead of dereferencing active_tip_,
+    // which is a bare CBlockIndex* mutated on the chain-advancement path — a
+    // reader touching tip->hash / tip->height concurrently would be racing.
+    // Because this is the single setter for active_tip_, publishing here keeps
+    // the value in lockstep with the pointer.
+    {
+        std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        if (tip) {
+            published_tip_valid_ = true;
+            published_tip_hash_ = tip->GetBlockHash();
+            published_tip_height_ = static_cast<uint32_t>(tip->height);
+        } else {
+            published_tip_valid_ = false;
+            published_tip_hash_.SetNull();
+            published_tip_height_ = 0;
+        }
+    }
 }
 
 ChainstateService::DisconnectMaterialCheck
@@ -6909,6 +7034,11 @@ void ChainstateService::ActivateBestChain() {
                 // instead of wedging in safe mode.
                 CBlockIndex* materialized = nullptr;
                 if (header_chain_selector_ && !utxo_best.IsNull()) {
+                    // #441: NOT migrated. EnsureHeaderBranchIndexed() walks entry->parent to
+                    // link the whole branch into the block index, so a *Copy (parent nulled)
+                    // cannot substitute. Making this safe means either indexing the branch
+                    // inside the selector's lock, or having it consume a copied ancestor list
+                    // — a real restructure of snapshot/branch indexing. Tracked in #441.
                     if (const auto* hcs_entry = header_chain_selector_->GetHeader(utxo_best)) {
                         materialized = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
                     }
@@ -7113,6 +7243,8 @@ void ChainstateService::ActivateBestChain() {
                     logger_->warning("[ActivateBestChain] Ignoring incompatible header branch (no common ancestor with active tip)");
                 }
             } else {
+                const bool importing_competing_branch =
+                    walk->hash != active_tip_->hash;
                 std::reverse(branch_path.begin(), branch_path.end());
 
                 size_t imported_blocks = 0;
@@ -7144,6 +7276,37 @@ void ChainstateService::ActivateBestChain() {
                     if (unreadable_blocks_.contains(entry->hash)) {
                         missing_block_bodies.push_back(entry->hash.GetHex());
                         continue;
+                    }
+
+                    // In CSN mode, flat-file presence alone is not validation.
+                    // The scheduler stores raw utxoblk bodies before the ordered
+                    // worker verifies their accumulator transition. Import only
+                    // after either (a) the reorg worker persisted hash-anchored
+                    // replay data for a genuinely competing branch, or (b)
+                    // AcceptBlockFromRPC durably marked transaction validation
+                    // before a crash stopped tip connection. Forward-sync replay
+                    // data is not an activation marker: the ordered worker still
+                    // owns submission of that block. A raw scheduler body may
+                    // carry proof bytes too, so payload shape is not a validation
+                    // marker. This prevents periodic ABC from racing ahead while
+                    // preserving store-ahead crash recovery.
+                    if (GetConfig().utreexo_stateless) {
+                        const auto metadata = chain_db_->getHeaderMetadata(entry->hash);
+                        const bool transaction_validated =
+                            metadata.status() == Status::Ok &&
+                            (metadata.value().status_flags &
+                             BLOCK_VALID_TRANSACTIONS) != 0;
+                        const bool reorg_plan_validated =
+                            importing_competing_branch &&
+                            chain_db_->getCSNSpendTargets(entry->hash).status() == Status::Ok;
+                        if (!transaction_validated && !reorg_plan_validated) {
+                            if (logger_) {
+                                logger_->debug("[ActivateBestChain] CSN body at height " +
+                                               std::to_string(entry->height) +
+                                               " awaits ordered proof validation");
+                            }
+                            continue;
+                        }
                     }
 
                     // Restart recovery: a stored better-branch block can have
@@ -7601,16 +7764,55 @@ void ChainstateService::ActivateBestChain() {
             return;
         }
 
-        // Step 1: Load forest checkpoint at fork_point height
-        auto checkpoint = chain_db_->getUtreexoCheckpoint(static_cast<int>(fork_point->height));
-        if (checkpoint.status() != Status::Ok) {
-            if (logger_) logger_->error("[ABC-CSN] No forest checkpoint at fork height " +
-                                        std::to_string(fork_point->height) + " — cannot reorg");
-            std::cout << "❌ [ABC-CSN] No forest checkpoint at height " << fork_point->height << std::endl;
-            return;
+        // Preflight the complete branch before touching any canonical state.
+        // A side branch becomes visible to candidate import only after the CSN
+        // speculative validator persisted its replay record, so absence of
+        // either artifact means the plan is incomplete or stale. Previously a
+        // missing body was discovered only after DisconnectTip had already
+        // moved the active chain to the fork, leaving the node stranded there.
+        for (const auto* block_index : connect_path) {
+            const auto block_result = ReadStoredBlock(block_index->hash);
+            if (block_result.status() != Status::Ok) {
+                if (logger_) {
+                    logger_->warning("[ABC-CSN] Reorg plan incomplete: body unavailable at height " +
+                                     std::to_string(block_index->height) +
+                                     " — canonical state left untouched");
+                }
+                return;
+            }
+            const auto replay_result = chain_db_->getCSNSpendTargets(block_index->hash);
+            CsnReplayData replay_data;
+            if (replay_result.status() != Status::Ok ||
+                !DecodeCsnReplayData(replay_result.value(), replay_data)) {
+                if (logger_) {
+                    logger_->warning("[ABC-CSN] Reorg plan incomplete: replay data unavailable at height " +
+                                     std::to_string(block_index->height) +
+                                     " — canonical state left untouched");
+                }
+                return;
+            }
         }
-        auto restored_forest = consensus::UtreexoForest::deserialize(checkpoint.value());
-        if (logger_) logger_->info("[ABC-CSN] Loaded forest checkpoint at height " +
+
+        // Step 1: Rebuild the forest at fork_point height. Campaign phase 3
+        // (CSN): full checkpoints exist only every N blocks, so restore is
+        // nearest-checkpoint + UD-sidecar replay (header-root verified per
+        // block inside RestoreHistoricalForest) rather than an exact-height
+        // checkpoint read that misses off-interval.
+        consensus::UtreexoForest restored_forest;
+        {
+            std::string restore_error;
+            const Status restore_status = storage::RestoreHistoricalForest(
+                *chain_db_, fork_point->height, restored_forest, restore_error);
+            if (restore_status != Status::Ok) {
+                if (logger_) logger_->error("[ABC-CSN] Cannot rebuild forest at fork height " +
+                                            std::to_string(fork_point->height) + " (" +
+                                            restore_error + ") — cannot reorg");
+                std::cout << "❌ [ABC-CSN] Cannot rebuild forest at height "
+                          << fork_point->height << ": " << restore_error << std::endl;
+                return;
+            }
+        }
+        if (logger_) logger_->info("[ABC-CSN] Rebuilt forest at fork height " +
                                    std::to_string(fork_point->height) + " leaves=" +
                                    std::to_string(restored_forest.getNumLeaves()));
 
@@ -8974,21 +9176,21 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         return result;
     }
 
-    // CRITICAL: UTXO set must be empty (or genesis-only) to load snapshot.
-    // When TrySnapshotBootstrap is called at IBD startup, the genesis block is
-    // already connected (1 UTXO). Allow clearing genesis-only state so the
-    // snapshot can be imported cleanly. Reject if any real chain state exists.
+    // CRITICAL: UTXO set must be empty (or provably genesis-only) to load a
+    // snapshot. Deferred mobile bootstrap may run after header metadata moves
+    // beyond height zero, so tip height is not proof of UTXO identity. Match the
+    // complete compiled genesis coinbase state, but do not clear it here:
+    // transport, manifest, checksum, and consensus validation can still reject
+    // the snapshot. BulkLoad replaces the set only after every preflight passes.
     {
-        uint64_t existing = consensus_utxo_set_->GetSetSize();
+        const uint64_t existing = consensus_utxo_set_->GetSetSize();
         if (existing > 0) {
-            uint32_t tip_height = 0;
-            if (chain_db_) {
-                auto tip_result = chain_db_->getTip();
-                if (tip_result.status() == Status::Ok) tip_height = tip_result.value().height;
-            }
-            if (existing == 1 && tip_height == 0) {
-                logger_->info("[LoadSnapshot] Clearing genesis UTXO to allow snapshot import");
-                consensus_utxo_set_->Clear();
+            Transaction genesis_coinbase;
+            const bool decoded_genesis = TransactionSerializer::Deserialize(
+                genesis_coinbase, Params().genesis.genesisCoinbaseHex);
+            if (decoded_genesis && assumeutxo::IsGenesisOnlyUtxoSet(
+                    *consensus_utxo_set_, genesis_coinbase)) {
+                logger_->info("[LoadSnapshot] Verified replaceable genesis-only UTXO state");
             } else {
                 result.error_message = "Consensus UTXO set must be empty to load snapshot (found " +
                                       std::to_string(existing) + " existing UTXOs). " +
@@ -8999,7 +9201,7 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         }
     }
 
-    logger_->info("[LoadSnapshot] Precondition check passed: consensus UTXO set is empty");
+    logger_->info("[LoadSnapshot] UTXO precondition passed");
 
     // Transport hardening preflight:
     // - regular file only (no symlink/device)
@@ -9123,6 +9325,8 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // from the header store).
         bool base_block_known = hasBlockByHash(header.block_hash);
         if (!base_block_known && header_chain_selector_) {
+            // #441: SAFE as-is — the pointer is only compared against nullptr,
+            // never dereferenced, so the eviction hazard does not apply.
             base_block_known = (header_chain_selector_->GetHeader(header.block_hash) != nullptr);
         }
         if (!base_block_known) {
@@ -9170,8 +9374,11 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         if (height_result.ok()) {
             verified_height = height_result.value();
         } else if (header_chain_selector_) {
-            const auto* hcs_entry = header_chain_selector_->GetHeader(header.block_hash);
-            if (hcs_entry) verified_height = static_cast<int>(hcs_entry->height);
+            // #441: copy under the selector's lock.
+            consensus::HeaderIndexEntry hcs_copy{};
+            if (header_chain_selector_->GetHeaderCopy(header.block_hash, hcs_copy)) {
+                verified_height = static_cast<int>(hcs_copy.height);
+            }
         }
         if (verified_height < 0) {
             result.error_message = "Failed to get height for snapshot base block";
@@ -9488,9 +9695,10 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             if (base_block_result.ok()) {
                 header_utreexo_root = base_block_result.value().header.utreexo_root;
             } else if (header_chain_selector_) {
-                const auto* hcs_entry = header_chain_selector_->GetHeader(header.block_hash);
-                if (hcs_entry) {
-                    header_utreexo_root = hcs_entry->header.utreexo_root;
+                // #441: copy under the selector's lock.
+                consensus::HeaderIndexEntry hcs_copy{};
+                if (header_chain_selector_->GetHeaderCopy(header.block_hash, hcs_copy)) {
+                    header_utreexo_root = hcs_copy.header.utreexo_root;
                     logger_->info("[LoadSnapshot] Using HeaderChainSelector for utreexo_root verification");
                 } else {
                     result.error_message = "Failed to load snapshot base block for utreexo_root verification";
@@ -9753,6 +9961,11 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // matters and must always be reached.
         if (header_chain_selector_) {
             try {
+                // #441: NOT migrated. EnsureHeaderBranchIndexed() walks entry->parent to
+                // link the whole branch into the block index, so a *Copy (parent nulled)
+                // cannot substitute. Making this safe means either indexing the branch
+                // inside the selector's lock, or having it consume a copied ancestor list
+                // — a real restructure of snapshot/branch indexing. Tracked in #441.
                 const auto* hcs_entry = header_chain_selector_->GetHeader(header.block_hash);
                 if (hcs_entry) {
                     CBlockIndex* snapshot_idx = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
@@ -10448,17 +10661,30 @@ bool ChainstateService::RestoreUtreexoCheckpoint(uint32_t height, std::string& e
 
     try {
         if (height == 0) {
-            consensus_utxo_set_->GetForest() = consensus::UtreexoForest();
+            consensus::UtreexoForest empty;
+            if (consensus::IsUtreexoCanonicalRootsActive(0)) {
+                empty.setCanonicalEmptyRoots(true);
+            }
+            consensus_utxo_set_->GetForest() = std::move(empty);
             return true;
         }
 
-        auto checkpoint = chain_db_->getUtreexoCheckpoint(static_cast<int>(height));
-        if (checkpoint.status() != Status::Ok) {
-            error = "Missing Utreexo checkpoint at height " + std::to_string(height);
+        // Forest checkpoint delta campaign phase 3 (CSN/stateless): full
+        // checkpoints exist only every utreexo.checkpoint_interval blocks, so
+        // rebuild `height` as nearest-checkpoint + UD-sidecar replay
+        // (header-root verified per block) instead of reading an exact-height
+        // checkpoint that no longer exists off-interval. This is the CSN
+        // reorg rewind (fork-point restore) — see daemon_app.cpp CSN worker
+        // and the ABC-CSN stateless reorg path.
+        consensus::UtreexoForest restored;
+        const Status restore_status =
+            storage::RestoreHistoricalForest(*chain_db_, height, restored, error);
+        if (restore_status != Status::Ok) {
+            if (error.empty()) {
+                error = "Failed to restore forest to height " + std::to_string(height);
+            }
             return false;
         }
-
-        auto restored = consensus::UtreexoForest::deserialize(checkpoint.value());
         consensus_utxo_set_->GetForest() = std::move(restored);
         return true;
     } catch (const std::exception& e) {
@@ -11896,11 +12122,41 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 logger_->info("[ConnectTip] Stateless replay path: advancing shared forest from stored proof data at height " +
                               std::to_string(tip_to_connect->height));
             }
+
+            // Transition-proof validation can use deletion targets that differ
+            // from the batch proof embedded in the stored block. The ordered
+            // CSN worker persists those exact, already-validated targets in the
+            // hash-anchored replay sidecar. Recovery must prefer that record,
+            // just like the ABC-CSN reorg loop does, or the first real spend
+            // after a restart can replay against the wrong leaves.
+            std::vector<consensus::UtreexoHash> replay_targets =
+                block.utreexo->spend_proof.targets;
+            std::vector<consensus::SpentOutputData> replay_spent_outputs;
+            const std::vector<consensus::SpentOutputData>* spent_outputs =
+                &block.utreexo->spent_outputs;
+            const auto replay_result =
+                chain_db_->getCSNSpendTargets(tip_to_connect->hash);
+            if (replay_result.status() == Status::Ok) {
+                CsnReplayData replay_data;
+                if (!DecodeCsnReplayData(replay_result.value(), replay_data)) {
+                    if (logger_) {
+                        logger_->error("[ConnectTip] Malformed CSN replay data at height " +
+                                       std::to_string(tip_to_connect->height));
+                    }
+                    return fail("stateless-replay-data-malformed");
+                }
+                replay_targets = std::move(replay_data.spend_targets);
+                if (replay_data.has_spent_outputs) {
+                    replay_spent_outputs = std::move(replay_data.spent_outputs);
+                    spent_outputs = &replay_spent_outputs;
+                }
+            }
+
             if (!stateless_node_->ReplayBlock(
                     block,
                     tip_to_connect->height,
-                    block.utreexo->spend_proof.targets,
-                    &block.utreexo->spent_outputs)) {
+                    replay_targets,
+                    spent_outputs)) {
                 if (logger_) {
                     logger_->error("[ConnectTip] Stateless replay failed at height " +
                                    std::to_string(tip_to_connect->height));
@@ -12425,7 +12681,26 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             tip_to_connect->undo_file,
             tip_to_connect->undo_pos,
             tip_to_connect->undo_size,
-            &utxo_batch);
+            &utxo_batch,
+            // Issue #453 — durably record script validity.
+            //
+            // Scripts for this block were genuinely validated by the
+            // block_validator_->ConnectBlock() call earlier in ConnectTip
+            // (BlockValidator::ConnectBlockInternal -> ValidateSpend). Until
+            // this write existed, BLOCK_VALID_SCRIPTS was only ever set in
+            // memory, by BlockAcceptor::ConnectBlock. The header-metadata row
+            // BlockAcceptor persists is built from a status literal that omits
+            // BLOCK_VALID_SCRIPTS, and no live path re-persisted the in-memory
+            // value afterwards: every other updateBlockIndex() call site is a
+            // NotFound fallback that does not fire once the acceptance row
+            // exists. A restarted daemon therefore could not distinguish a
+            // script-validated block from one never script-checked, and does
+            // not re-validate. Regression: ScriptValidityDurability.
+            //
+            // Passed here rather than staged as a separate setHeaderStatusBits
+            // call: a second staged helper re-reads the pre-batch row and would
+            // silently drop the BLOCK_HAVE_UNDO stamped above.
+            BLOCK_VALID_SCRIPTS);
         if (bi_status == Status::NotFound) {
             // A freshly connected block should already have header metadata
             // from header/body acceptance. If an older path reaches ConnectTip
@@ -12434,6 +12709,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             // to preserve in this branch.
             bi_status = chain_db_->updateBlockIndex(token, tip_to_connect, &utxo_batch);
         }
+        // Issue #453 — durably record script validity.
         if (bi_status == Status::Ok) {
             ccb.MarkBlockIndexStaged();
         } else {
@@ -15740,6 +16016,38 @@ void ChainstateService::OnBackgroundValidationComplete(bool success, const std::
 // Phase 45: Snapshot-accelerated IBD (Fast Sync)
 // ═══════════════════════════════════════════════════════════════════════════
 
+ChainstateService::SyncSnapshot ChainstateService::GetSyncSnapshot() const {
+    SyncSnapshot snap;
+
+    // Best header: copied under HeaderChainSelector's mutex. Deliberately NOT
+    // GetBestHeader(), which returns a raw pointer after releasing that lock —
+    // reading its fields races with concurrent header connection (#439).
+    if (header_chain_selector_) {
+        dinero::consensus::HeaderIndexEntry best{};
+        if (header_chain_selector_->GetBestHeaderCopy(best)) {
+            snap.has_best_header = true;
+            snap.best_header_hash = best.hash;
+            snap.best_header_height = best.height;
+        }
+    }
+
+    // Active tip: read the VALUE published by PublishActiveTip under its own
+    // mutex. Deliberately NOT `active_tip_->GetBlockHash()` — active_tip_ is a
+    // bare CBlockIndex* mutated on the chain-advancement path, so dereferencing
+    // it here would race with block connection.
+    {
+        std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        if (published_tip_valid_) {
+            snap.has_active_tip = true;
+            snap.active_tip_hash = published_tip_hash_;
+            snap.active_tip_height = published_tip_height_;
+        }
+    }
+
+    snap.RecomputeConvergence();
+    return snap;
+}
+
 bool ChainstateService::IsInIBD() const {
     if (!chain_db_) {
         return false;  // Can't determine without chain DB
@@ -15866,6 +16174,8 @@ void ChainstateService::TryDeferredSnapshotBootstrap() {
         return;  // inactive / already loading / loaded / fell back — safe no-op
     }
 
+    // #441: SAFE as-is — base_hdr is only compared against nullptr below and
+    // never dereferenced, so the eviction hazard does not apply.
     const consensus::HeaderIndexEntry* base_hdr =
         header_chain_selector_
             ? header_chain_selector_->GetHeader(snapshot_bootstrap_base_hash_)
@@ -15904,14 +16214,19 @@ void ChainstateService::TryDeferredSnapshotBootstrap() {
     // block is not on the canonical chain we synced) — give up immediately and
     // fall back to full IBD. Never block block-download forever. CAS so only the
     // first thread logs/transitions Pending -> Fallback.
-    const consensus::HeaderIndexEntry* best_hdr =
-        header_chain_selector_ ? header_chain_selector_->GetBestHeader() : nullptr;
-    if (best_hdr != nullptr && best_hdr->height >= snapshot_bootstrap_base_height_) {
+    // #441: copy under the selector's lock. GetBestHeader() returns a raw
+    // pointer AFTER releasing it, and a reorg can demote the former best header
+    // to an evictable side-branch tip — so reading ->height here would be a
+    // use-after-free, not merely a stale read.
+    consensus::HeaderIndexEntry best_hdr_copy{};
+    const bool have_best_hdr =
+        header_chain_selector_ && header_chain_selector_->GetBestHeaderCopy(best_hdr_copy);
+    if (have_best_hdr && best_hdr_copy.height >= snapshot_bootstrap_base_height_) {
         SnapshotBootstrapState expected = SnapshotBootstrapState::Pending;
         if (snapshot_bootstrap_state_.compare_exchange_strong(
                 expected, SnapshotBootstrapState::Fallback)) {
             logger_->warning("[snapshot] rejected — headers reached height " +
-                             std::to_string(best_hdr->height) + " (>= base " +
+                             std::to_string(best_hdr_copy.height) + " (>= base " +
                              std::to_string(snapshot_bootstrap_base_height_) + ") but base hash " +
                              snapshot_bootstrap_base_hash_.GetHex().substr(0, 16) +
                              "... is not on the canonical chain (stale/orphaned snapshot); "

@@ -585,7 +585,7 @@ static void RunCpfpReplayBlockMatrixCase(
     BlockUtreexoData data = producer(producer_set, block, height);
     ExpectCpfpProducerDataShape(data, label);
 
-    UtreexoForest expected_after = producer_set.GetForest();
+    UtreexoForest expected_after = producer_set.GetForest().cloneForHeight(height);
     auto position = expected_after.findLeafPosition(funding_leaf);
     ASSERT_TRUE(position.has_value()) << label;
     auto proof = expected_after.prove(*position);
@@ -673,6 +673,56 @@ TEST(BlockValidationInvariants, StatelessRejectsImmatureV2CoinbaseOnLiveConnectP
         << "Expected maturity rejection before script/proof validation, got: " << error;
     EXPECT_FALSE(validator.statelessMaturityUnverified())
         << "v2 maturity metadata is authenticated; it must be enforced, not deferred";
+}
+
+// Issue #453 — a block that genuinely FAILS script validation must never reach
+// the point where BLOCK_VALID_SCRIPTS is persisted.
+//
+// ChainstateService::ConnectTip persists BLOCK_VALID_SCRIPTS (via the
+// updateUndoLocator extra_status_bits argument) only on the success path of
+// this exact ConnectBlock() call. So the durable negative property reduces to:
+// a script-invalid block must make ConnectBlock() return false.
+//
+// The assertion on SCRIPT_VERIFY_FAILED is load-bearing. Without it this test
+// would still pass if the block were rejected for an unrelated reason
+// (maturity, proof format, merkle), which would prove nothing about script
+// validation and would silently stop guarding #453.
+TEST(BlockValidationInvariants, ScriptInvalidSpendIsRejectedBeforeValidityIsRecorded) {
+    ConsensusUTXOSet utxo_set;
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+
+    const uint32_t height = GetUtreexoMaturityLeafActivationHeight() + 200;
+    Block block = MakeStatelessSpendBlock(
+        utxo_set,
+        height,
+        /*spent_created_height=*/1,
+        /*spent_is_coinbase=*/false,
+        GetUtreexoProofFormatVersion(height));
+
+    ASSERT_TRUE(block.utreexo.has_value());
+    ASSERT_FALSE(block.utreexo->spent_outputs.empty());
+
+    // The spend input carries no valid witness/signature for the P2TR output it
+    // claims, so ValidateSpend rejects it. Verified by construction, not
+    // assumed: an earlier revision of this test additionally rewrote the spent
+    // scriptPubKey to OP_RETURN, and removing that rewrite changed nothing —
+    // the fixture already fails script validation on its own. The decorative
+    // mutation was dropped rather than left in place implying a mechanism it
+    // did not provide.
+
+    BlockUndo undo;
+    std::string error;
+    const bool ok = validator.ConnectBlock(block, height, MakeTestHash(4530),
+                                           undo, error, nullptr);
+
+    EXPECT_FALSE(ok)
+        << "A spend whose script does not validate must not connect; if it "
+           "does, ConnectTip would persist BLOCK_VALID_SCRIPTS for a block "
+           "whose scripts never validated. error=" << error;
+    EXPECT_NE(error.find("SCRIPT_VERIFY_FAILED"), std::string::npos)
+        << "Rejection must come from script validation specifically, otherwise "
+           "this test does not guard #453. Got: " << error;
 }
 
 TEST(BlockValidationInvariants, StatelessRejectsProofFormatDowngradeFromTrustedHeight) {

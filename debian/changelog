@@ -1,3 +1,53 @@
+dinero-core (8.0.18-1) unstable; urgency=medium
+
+  * v8.0.18 — GUI startup robustness (qt-only; non-consensus; daemon
+    byte-identical to v8.0.17, no fleet redeploy needed). PR #410: single-instance
+    QLockFile guard, 300s grace to adopt a slow-initializing embedded daemon
+    instead of killing it, live startup countdown, and removal of the false
+    "Daemon Failed" modal. PR #411: fixes the startup countdown freezing at 3:00
+    (it was a QMessageBox, whose native NSAlert nested modal loop starves Qt
+    timers; now a non-modal QDialog, so it actually counts down).
+
+ -- DineroLabs <team@dinerolabs.org>  Mon, 20 Jul 2026 03:49:47 +0000
+
+dinero-core (8.0.17-1) unstable; urgency=medium
+
+  * v8.0.17 — AssumeUTXO fast-sync anchor refresh (non-consensus; no rule or
+    activation changes; safe to upgrade any time). Registers a fresh height-65300
+    v4 trust anchor (UXTO+UTRX+SHLD) and bundles utxo-snapshot-65300.dat in the
+    desktop/server installers, so fresh installs fast-sync from height 65300
+    instead of the older 52287 (fewer blocks to replay to the tip). The 52287
+    anchor is retained for bundles/manifests already in the field. Verified: a
+    fresh node with no manifest loads the 65300 snapshot via the built-in trust
+    anchor and forward-connects to the tip. Already-synced nodes need not
+    upgrade — this only affects the fresh-bootstrap path.
+
+ -- DineroLabs <team@dinerolabs.org>  Sat, 18 Jul 2026 09:30:00 +0000
+
+dinero-core (8.0.16-1) unstable; urgency=medium
+
+  * v8.0.16 — Utreexo write-reduction + snapshot-bootstrap fixes (non-consensus;
+    no rule or activation changes; safe to upgrade any time). Highlights:
+    - CSN/stateless reorg convergence: ActivateBestChain-owned atomic reorg,
+      fixing the pre-existing CSN reorg-convergence failures.
+    - Every-N forest-checkpoint write reduction: a full Utreexo forest
+      checkpoint every N blocks (utreexo.checkpoint_interval, default 500) with
+      reversible per-block UD delta sidecars between anchors; restore replays
+      nearest checkpoint + deltas (header-verified per block). ~N-fold reduction
+      in checkpoint write volume on both full-node and CSN/mobile paths.
+    - AssumeUTXO snapshot bootstrap: genesis UTXO is preserved until a snapshot
+      passes every preflight (transport/manifest/checksum/consensus), so a
+      rejected snapshot can no longer strand the node in the unrecoverable
+      consensus-utxo-tip invariant loop; the genesis-only precondition is now
+      content-based (fixes deferred mobile bootstrap where tip height > 0).
+    - Mainnet snapshot pipeline: generate_snapshot.sh passes -datadir and dumps
+      inside the daemon datadir (no systemd PrivateTmp isolation, no missing RPC
+      cookie).
+    - iOS embedded hardening, forest deserialize all-or-nothing, stateless
+      missing-proof reject, installer-time fresh-snapshot fetch, quiet logging.
+
+ -- DineroLabs <team@dinerolabs.org>  Sat, 18 Jul 2026 06:57:01 +0000
+
 dinero-core (8.0.15-1) unstable; urgency=medium
 
   * v8.0.15 — AssumeUTXO stability + memory-safety release (non-consensus; no

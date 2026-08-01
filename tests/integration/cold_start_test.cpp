@@ -58,7 +58,7 @@ public:
 
         // Build command
         std::vector<std::string> cmd_args;
-        cmd_args.push_back("./dinerod");
+        cmd_args.push_back(ResolveDinerodPath());
         cmd_args.push_back("--regtest");
         cmd_args.push_back("--datadir=" + datadir_.string());
         cmd_args.push_back("--rpcport=" + std::to_string(rpc_port_));
@@ -70,6 +70,20 @@ public:
             cmd_args.push_back(arg);
         }
         extra_args_ = extra_args;
+
+        // Fail loudly, and never silently, when the daemon binary is unusable
+        // (issues #413 / #428). Without this the execvp failure is invisible:
+        // the child has already redirected stderr into the datadir log before
+        // exec'ing, exits 1, and stop() then deletes that datadir — so the only
+        // symptom is a bare "start() returned false".
+        //
+        // The path comes from DINEROD ($<TARGET_FILE:dinerod>), so this no
+        // longer depends on the process working directory.
+        std::string daemon_error;
+        if (!DinerodAvailable(nullptr, &daemon_error)) {
+            std::cerr << "[" << name_ << "] FATAL: " << daemon_error << std::endl;
+            return false;
+        }
 
         // Fork and exec
         daemon_pid_ = fork();
@@ -142,7 +156,7 @@ public:
 
         // Restart with same config
         std::vector<std::string> cmd_args;
-        cmd_args.push_back("./dinerod");
+        cmd_args.push_back(ResolveDinerodPath());
         cmd_args.push_back("--regtest");
         cmd_args.push_back("--datadir=" + datadir_.string());
         cmd_args.push_back("--rpcport=" + std::to_string(rpc_port_));
@@ -198,7 +212,7 @@ public:
 
         // Restart with --reindex
         std::vector<std::string> cmd_args;
-        cmd_args.push_back("./dinerod");
+        cmd_args.push_back(ResolveDinerodPath());
         cmd_args.push_back("--regtest");
         cmd_args.push_back("--datadir=" + datadir_.string());
         cmd_args.push_back("--rpcport=" + std::to_string(rpc_port_));
@@ -254,6 +268,33 @@ public:
     std::string getName() const { return name_; }
 
 private:
+    // Echo the tail of the daemon's own log. The child redirects stdout/stderr
+    // into the datadir before exec'ing and stop() deletes that datadir, so
+    // without this the daemon's account of its own failure is never seen.
+    void dumpDaemonLogTail(size_t max_lines = 20) {
+        const auto log_path = datadir_ / "daemon.log";
+        std::ifstream log(log_path);
+        if (!log) {
+            std::cerr << "  (no daemon log at " << log_path.string() << ")"
+                      << std::endl;
+            return;
+        }
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(log, line)) {
+            lines.push_back(line);
+            if (lines.size() > max_lines) lines.erase(lines.begin());
+        }
+        if (lines.empty()) {
+            std::cerr << "  (daemon log empty — typically means execvp itself"
+                         " failed)" << std::endl;
+            return;
+        }
+        std::cerr << "  --- last " << lines.size() << " line(s) of daemon.log ---"
+                  << std::endl;
+        for (const auto& l : lines) std::cerr << "  " << l << std::endl;
+    }
+
     bool waitForReady(int timeout_sec = 60) {
         auto start = std::chrono::steady_clock::now();
         while (true) {
@@ -265,7 +306,24 @@ private:
             if (daemon_pid_ > 0) {
                 int status;
                 if (waitpid(daemon_pid_, &status, WNOHANG) == daemon_pid_) {
-                    return false;  // Process died
+                    // Say WHY the daemon died, and tail its log — otherwise a
+                    // daemon-side startup failure is indistinguishable from a
+                    // harness bug (issue #413).
+                    std::cerr << "[" << name_ << "] daemon died during startup: ";
+                    if (WIFEXITED(status)) {
+                        std::cerr << "exit=" << WEXITSTATUS(status);
+                    } else if (WIFSIGNALED(status)) {
+                        std::cerr << "signal=" << WTERMSIG(status);
+                    } else {
+                        std::cerr << "status=" << status;
+                    }
+                    std::cerr << std::endl;
+                    dumpDaemonLogTail();
+                    // Clear the pid: it is already reaped, so leaving it set makes
+                    // stop() signal a dead process and then burn its full 3s
+                    // (30 x 100ms) waitpid loop that can never succeed.
+                    daemon_pid_ = -1;
+                    return false;
                 }
             }
 

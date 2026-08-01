@@ -101,10 +101,21 @@ Status RestoreHistoricalForest(const ChainDB& db, uint32_t target_height,
         return Status::Invalid;
     }
     if (consensus::IsUtreexoCanonicalRootsActive(checkpoint_height)) {
-        // The checkpoint's roots_ are already canonical (saved by a
-        // flag-on node); set the flag without rebuilding, exactly like
-        // the startup restore does.
+        // Full-node checkpoints are serialized with the canonical flag ON,
+        // so their roots_ are already canonical and just need the flag set.
+        // CSN/stateless checkpoints, however, are serialized from a forest
+        // that never called setCanonicalEmptyRoots (see stateless_node.cpp)
+        // — flag stored OFF, roots_ NOT canonical. Force-setting the flag
+        // on those without recomputing yields a non-canonical root and a
+        // spurious header mismatch (observed at CSN reorg fork restore).
+        // So: if the stored flag was OFF at a post-activation height,
+        // recanonicalize roots_ from nodes_ via rebuildRoots(); if it was
+        // already ON, leave it (rebuild would reproduce the same values).
+        const bool stored_canonical = restored.isCanonicalEmptyRoots();
         restored.setCanonicalEmptyRoots(true);
+        if (!stored_canonical) {
+            restored.rebuildRoots();
+        }
     }
 
     // Verify the checkpoint itself against its own height's header root.

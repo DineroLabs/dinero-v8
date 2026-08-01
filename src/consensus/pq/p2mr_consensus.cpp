@@ -12,11 +12,10 @@
 #include "consensus/pq/ml_dsa_65.h"
 #include "consensus/pq/scheme_registry.h"
 #include "consensus/utxo_entry.h"
+#include "crypto/sha256.h"
 #include "primitives/transaction.h"
 
 #include <cstring>
-
-#include <openssl/sha.h>
 
 namespace dinero::consensus::pq {
 
@@ -29,11 +28,10 @@ namespace {
 std::array<uint8_t, 32> Sha256Concat(const uint8_t* a, std::size_t a_len,
                                      const uint8_t* b, std::size_t b_len) {
     std::array<uint8_t, 32> out{};
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, a, a_len);
-    SHA256_Update(&ctx, b, b_len);
-    SHA256_Final(out.data(), &ctx);
+    dinero::crypto::CSHA256()
+        .Write(a, a_len)
+        .Write(b, b_len)
+        .Finalize(out.data());
     return out;
 }
 
@@ -270,12 +268,11 @@ P2MRWitnessDecodeError DeserializeP2MRWitness(const uint8_t* bytes,
 std::array<uint8_t, 32> ComputeP2MRLeafHash(uint8_t              scheme_id,
                                             const uint8_t*       pubkey_bytes,
                                             std::size_t          pubkey_len) {
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, &scheme_id, 1);
-    SHA256_Update(&ctx, pubkey_bytes, pubkey_len);
     std::array<uint8_t, 32> out{};
-    SHA256_Final(out.data(), &ctx);
+    dinero::crypto::CSHA256()
+        .Write(&scheme_id, 1)
+        .Write(pubkey_bytes, pubkey_len)
+        .Finalize(out.data());
     return out;
 }
 

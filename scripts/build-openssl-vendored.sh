@@ -17,12 +17,15 @@ NC='\033[0m' # No Color
 # Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-OPENSSL_VERSION="${OPENSSL_VERSION:-3.5.6}"
+OPENSSL_VERSION="${OPENSSL_VERSION:-3.5.7}"
 OPENSSL_DIR="${OPENSSL_SOURCE_DIR:-$PROJECT_ROOT/third_party/openssl-${OPENSSL_VERSION}}"
 MACOS_TARGET_FILE="$PROJECT_ROOT/.macos-deployment-target"
 
 known_openssl_source_sha256() {
     case "$1" in
+        3.5.7)
+            printf '%s\n' "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
+            ;;
         3.5.6)
             printf '%s\n' "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736"
             ;;

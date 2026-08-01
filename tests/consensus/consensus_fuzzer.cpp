@@ -23,6 +23,7 @@
  *   - iterations: Number of fuzz iterations (default: 1000)
  */
 
+#include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/utxo_snapshot_state.h"
 #include "consensus/block_undo.h"
@@ -965,6 +966,33 @@ bool ConsensusFuzzer::TestRoundTripReorg() {
 // =============================================================================
 
 int main(int argc, char* argv[]) {
+    // REQUIRED: without this the fuzzer aborts on its first applied block.
+    // ConsensusUTXOSet::ProcessTransaction -> HashUTXOForCreationHeight ->
+    // IsUtreexoMaturityLeafActive -> GetActiveChain(), which throws
+    // "Chain parameters not selected" when no chain is active. The fuzzer had
+    // no SelectParams call at all, so every registered run aborted before
+    // executing a single invariant check (see issue #412).
+    //
+    // REGTEST is a deliberate coverage choice, NOT an arbitrary default. The
+    // utreexo maturity-bound leaf fork changes the accumulator leaf preimage
+    // (v1: txid|vout|amount|spk, v2: ...|created_height|flags) at a per-chain
+    // activation height:
+    //     MAINNET 60000, TESTNET 0, REGTEST 20
+    //     (include/consensus/utreexo_maturity_leaf_activation.h)
+    // TestLinearChainGrowth applies blocks at heights 1..iterations/10 — 100
+    // blocks at the default. Only REGTEST puts the activation boundary INSIDE
+    // that range, so the fuzzer exercises v1 leaves (heights 1-19), v2 leaves
+    // (heights 20-100), AND the transition between them. MAINNET would keep
+    // every block below 60000 and test the legacy path only; TESTNET activates
+    // at 0 and tests v2 only. Do not "simplify" this to another chain without
+    // replacing the lost boundary coverage.
+    //
+    // Chain choice is safe with respect to maturity: ConsensusUTXOSet never
+    // reads Params(), and the fuzzer's own COINBASE_MATURITY constant governs
+    // only which UTXOs it selects to spend, so REGTEST's coinbase_maturity=10
+    // does not interact with this test.
+    dinero::SelectParams(dinero::Chain::REGTEST);
+
     // Parse arguments
     unsigned seed = static_cast<unsigned>(std::time(nullptr));
     int iterations = DEFAULT_FUZZ_ITERATIONS;

@@ -93,8 +93,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            third_party/openssl-3.3.2/prebuilt
-            third_party/openssl-3.5.6/prebuilt
+            third_party/openssl-3.5.7/prebuilt
             depends/sources
             ~/.cargo/registry
             ~/.cargo/git

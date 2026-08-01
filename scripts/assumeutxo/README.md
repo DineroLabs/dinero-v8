@@ -64,7 +64,8 @@ with stable bundle filenames so the iOS app can discover it automatically.
 ```
 
 **Environment variables:**
-- `DINERO_DATADIR` — Override datadir (default: `~/.dinero`)
+- `DINERO_DATADIR` — Override datadir (default: `/var/lib/dinero` for a root-run
+  mainnet fleet job when that directory exists; otherwise `~/.dinero`)
 - `SNAPSHOT_OUTDIR` — Override output dir (default: `/var/lib/dinero/snapshots/$NETWORK`)
 - `DINERO_CLI` — Override CLI path (default: `dinero-cli`)
 
@@ -76,10 +77,10 @@ with stable bundle filenames so the iOS app can discover it automatically.
 
 ```bash
 # Generate weekly testnet snapshot (Sundays at 2 AM)
-0 2 * * 0 /path/to/scripts/assumeutxo/generate_snapshot.sh testnet >> /var/log/dinero/snapshot.log 2>&1
+0 2 * * 0 DINERO_DATADIR=/var/lib/dinero /path/to/scripts/assumeutxo/generate_snapshot.sh testnet >> /var/log/dinero/snapshot.log 2>&1
 
 # Generate monthly mainnet snapshot (1st of month at 3 AM)
-0 3 1 * * /path/to/scripts/assumeutxo/generate_snapshot.sh mainnet >> /var/log/dinero/snapshot.log 2>&1
+0 3 1 * * DINERO_DATADIR=/var/lib/dinero /path/to/scripts/assumeutxo/generate_snapshot.sh mainnet >> /var/log/dinero/snapshot.log 2>&1
 ```
 
 **What cron does:**

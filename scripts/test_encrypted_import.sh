@@ -68,7 +68,7 @@ JSON
 echo "Encrypted import result:"
 echo "$ENCRYPTED_IMPORT" | jq .
 
-if echo "$ENCRYPTED_IMPORT" | jq -e '.result.error' | grep -q "not.*implemented"; then
+if echo "$ENCRYPTED_IMPORT" | jq -er '.error.message? // .error // .result.error.message? // .result.error // empty' | grep -q "not.*implemented"; then
     echo "✅ Encrypted import correctly shows not implemented (expected)"
     echo "   This is the framework for future OpenSSL integration"
 else
