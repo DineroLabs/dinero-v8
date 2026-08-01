@@ -150,9 +150,10 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_parallel_block_download_targeted.sh)
     )
     set_tests_properties(ParallelBlockDownloadTargeted PROPERTIES
         LABELS "integration;p2p;block-download"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         TIMEOUT 180
     )
-    message(STATUS "  ✓ ParallelBlockDownloadTargeted registered")
+    message(STATUS "  ✓ ParallelBlockDownloadTargeted registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_lagging_peer_catchup_no_orphans.sh)

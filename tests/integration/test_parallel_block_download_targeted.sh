@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+# CTest injects the exact in-tree target path.  Keep the source-tree fallback
+# for developers invoking this script directly from the conventional build.
+DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 # Ports are randomized per run. Fixed ports collided between back-to-back runs
 # and with anything else on the host; see #470/#459.
 pick_base_port() {
