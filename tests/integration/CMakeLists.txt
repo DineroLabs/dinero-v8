@@ -285,6 +285,84 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_invalidity_import_equivalence.sh)
     message(STATUS "  ✓ InvalidityImportEquivalence registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_durability.sh)
+    add_test(
+        NAME ScriptValidityDurability
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_durability.sh
+    )
+    set_tests_properties(ScriptValidityDurability PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ScriptValidityDurability registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_crash_ordering.sh)
+    add_test(
+        NAME ScriptValidityCrashOrdering
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_crash_ordering.sh
+    )
+    set_tests_properties(ScriptValidityCrashOrdering PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ScriptValidityCrashOrdering registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate.sh)
+    add_test(
+        NAME MineAfterInvalidate
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate.sh
+    )
+    set_tests_properties(MineAfterInvalidate PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ MineAfterInvalidate registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate_restart.sh)
+    add_test(
+        NAME MineAfterInvalidateRestart
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate_restart.sh
+    )
+    set_tests_properties(MineAfterInvalidateRestart PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 420
+    )
+    message(STATUS "  ✓ MineAfterInvalidateRestart registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_fork_block_status_restart.sh)
+    add_test(
+        NAME ForkBlockStatusRestart
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_fork_block_status_restart.sh
+    )
+    set_tests_properties(ForkBlockStatusRestart PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ForkBlockStatusRestart registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh)
+    add_test(
+        NAME RpcErrorEnvelope
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh
+    )
+    set_tests_properties(RpcErrorEnvelope PROPERTIES
+        LABELS "integration;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ RpcErrorEnvelope registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_tip_persist_restart_equivalence.sh)
     add_test(
         NAME TipPersistRestartEquivalence
@@ -692,6 +770,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_createrawtransaction_scriptpub
     )
     message(STATUS "  ✓ WalletCreateRawTransactionScriptPubKeyOutputs registered")
 endif()
+
+add_test(
+    NAME CovenantWalletMultinodeLifecycle
+    COMMAND ${CMAKE_COMMAND} -E env
+        "DINEROD=$<TARGET_FILE:dinerod>"
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_covenant_wallet_multinode_lifecycle.sh
+)
+set_tests_properties(CovenantWalletMultinodeLifecycle PROPERTIES
+    LABELS "integration;covenant;wallet;rpc;multinode;relay;restart;reorg;regtest;serial"
+    TIMEOUT 360
+    RUN_SERIAL TRUE
+)
+message(STATUS "  ✓ CovenantWalletMultinodeLifecycle registered unconditionally")
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_listunspent_excludes_mempool_spent.sh)
     add_test(
@@ -1652,6 +1743,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         TaprootSignRawTransactionRbfConfirmation
         ParentChildRbfReplacementWithMempoolParent
         WalletCreateRawTransactionScriptPubKeyOutputs
+        CovenantWalletMultinodeLifecycle
         WalletListUnspentExcludesMempoolSpent
         RbfPolicyReporting FilterCommitmentActivationBoundary
         ExternalMinerCoinbaseTxnFilterCommitment

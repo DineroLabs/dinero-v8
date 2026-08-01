@@ -272,11 +272,22 @@ Json::Value rpc_getblockchaininfo(const Json::Value& params) {
             result["difficulty"] = 1.0;
         }
 
+        // Header facts come from the canonical snapshot (#439). Previously both
+        // values were overridden from dinero::g_header_sync_manager, which is
+        // never assigned in production, so `headers` silently fell back to
+        // `blocks` and could never exceed the validated tip.
+        //
+        // `initialblockdownload` deliberately stays on IsInIBD(): that is the
+        // initial-download POLICY state (network-height and snapshot aware),
+        // which is distinct from header convergence. Substituting convergence
+        // here would change IBD semantics for snapshot nodes whose headers run
+        // ahead of their validated tip — see
+        // docs/architecture/sync-state-behavior-matrix.md.
         uint32_t headers = blocks;
-        bool initial_block_download = chainstate->IsInIBD();
-        if (dinero::g_header_sync_manager) {
-            headers = static_cast<uint32_t>(dinero::g_header_sync_manager->GetBestHeaderHeight());
-            initial_block_download = dinero::g_header_sync_manager->IsInitialBlockDownload();
+        const bool initial_block_download = chainstate->IsInIBD();
+        const auto sync = chainstate->GetSyncSnapshot();
+        if (sync.has_best_header) {
+            headers = sync.best_header_height;
         }
         result["headers"] = static_cast<Json::UInt>(headers);
         result["initialblockdownload"] = initial_block_download;
