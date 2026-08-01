@@ -132,8 +132,18 @@ ScriptExecutionContext MakeTaprootSighashContext(
     const Transaction* tx,
     size_t input_index,
     uint32_t flags,
-    const std::vector<UTXOEntry>& input_utxos
+    const std::vector<UTXOEntry>& input_utxos,
+    const PrecomputedTransactionData* covenant_precomputed
 ) {
+    if (covenant_precomputed != nullptr &&
+        covenant_precomputed->HasTaprootDataFor(*tx)) {
+        ScriptExecutionContext context(
+            tx, static_cast<uint32_t>(input_index),
+            input_utxos[input_index].value.GetUna(), flags);
+        context.covenant_precomputed = covenant_precomputed;
+        return context;
+    }
+
     std::vector<uint64_t> amounts;
     std::vector<std::vector<uint8_t>> scripts;
     std::vector<uint8_t> confidential_flags;
@@ -151,7 +161,8 @@ ScriptExecutionContext MakeTaprootSighashContext(
     return ScriptExecutionContext(
         tx, static_cast<uint32_t>(input_index),
         amounts[input_index], flags,
-        amounts, scripts, confidential_flags, commitments);
+        amounts, scripts, confidential_flags, commitments,
+        covenant_precomputed);
 }
 
 bool ConsumeSignatureBudget(int64_t& validation_weight_left, std::string& error) {
@@ -251,7 +262,8 @@ bool TapscriptInterpreter::ExecuteTapscript(
     uint8_t output_key_parity,
     uint32_t flags,
     std::string& error,
-    const std::vector<uint8_t>& annex
+    const std::vector<uint8_t>& annex,
+    const PrecomputedTransactionData* covenant_precomputed
 ) {
     // BIP342 decodes OP_SUCCESS before every resource and execution rule.
     // Pushed bytes are skipped and therefore cannot masquerade as opcodes.
@@ -289,6 +301,7 @@ bool TapscriptInterpreter::ExecuteTapscript(
     ctx.merkle_root = &merkle_root;
     ctx.output_key_parity = output_key_parity;
     ctx.annex = &annex;  // BIP341 annex for sighash computation
+    ctx.covenant_precomputed = covenant_precomputed;
     ctx.flags = flags;  // Phase L0.3: Pass flags for covenant enforcement
     ctx.validation_weight_left =
         static_cast<int64_t>(SerializedWitnessSize(tx.vin[input_index].witness)) + 50;
@@ -1086,7 +1099,8 @@ bool TapscriptInterpreter::OpCheckSig(ExecutionContext& ctx) {
     }
 
     ScriptExecutionContext sighash_context = MakeTaprootSighashContext(
-        ctx.tx, ctx.input_index, ctx.flags, *ctx.input_utxos);
+        ctx.tx, ctx.input_index, ctx.flags, *ctx.input_utxos,
+        ctx.covenant_precomputed);
     std::vector<uint8_t> sighash = SignatureHashTaproot(
         sighash_context, hash_type, *ctx.tapleaf_hash,
         ctx.annex ? *ctx.annex : std::vector<uint8_t>{},
@@ -1164,7 +1178,8 @@ bool TapscriptInterpreter::OpCheckSigAdd(ExecutionContext& ctx) {
             return false;
         }
         ScriptExecutionContext sighash_context = MakeTaprootSighashContext(
-            ctx.tx, ctx.input_index, ctx.flags, *ctx.input_utxos);
+            ctx.tx, ctx.input_index, ctx.flags, *ctx.input_utxos,
+            ctx.covenant_precomputed);
         std::vector<uint8_t> sighash = SignatureHashTaproot(
             sighash_context, hash_type, *ctx.tapleaf_hash,
             ctx.annex ? *ctx.annex : std::vector<uint8_t>{},
@@ -1295,6 +1310,11 @@ bool TapscriptInterpreter::OpCheckTemplateVerify(ExecutionContext& ctx) {
         ctx.error = "OP_CHECKTEMPLATEVERIFY not enabled (SCRIPT_VERIFY_CHECKTEMPLATEVERIFY flag not set)";
         return false;
     }
+    if (++ctx.ctv_executions > MAX_CTV_OPS_PER_TAPSCRIPT) {
+        ctx.error =
+            "OP_CHECKTEMPLATEVERIFY: per-tapscript execution limit exceeded";
+        return false;
+    }
 
     // Stack: <32-byte template hash>
     if (ctx.stack.empty()) {
@@ -1321,7 +1341,11 @@ bool TapscriptInterpreter::OpCheckTemplateVerify(ExecutionContext& ctx) {
     }
 
     // Verify CTV template hash using covenant verification function
-    if (!VerifyCTV(*ctx.tx, static_cast<uint32_t>(ctx.input_index), expected_hash)) {
+    if (!VerifyCTV(
+            *ctx.tx,
+            static_cast<uint32_t>(ctx.input_index),
+            expected_hash,
+            ctx.covenant_precomputed)) {
         ctx.error = "OP_CHECKTEMPLATEVERIFY: template hash verification failed";
         return false;
     }
@@ -1464,6 +1488,11 @@ bool TapscriptInterpreter::OpCheckContractVerify(ExecutionContext& ctx) {
     if (!(ctx.flags & SCRIPT_VERIFY_CHECKCONTRACT)) {
         // NOT ENABLED: Fail explicitly (no silent fallbacks)
         ctx.error = "OP_CHECKCONTRACTVERIFY not enabled (SCRIPT_VERIFY_CHECKCONTRACT flag not set)";
+        return false;
+    }
+    if (++ctx.ccv_executions > MAX_CCV_OPS_PER_TAPSCRIPT) {
+        ctx.error =
+            "OP_CHECKCONTRACTVERIFY: per-tapscript execution limit exceeded";
         return false;
     }
 

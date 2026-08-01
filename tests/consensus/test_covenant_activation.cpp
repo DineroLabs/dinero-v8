@@ -4,6 +4,7 @@
 #include "consensus/interfaces/iutxo_provider.h"
 #include "consensus/script_interpreter.h"
 #include "consensus/transaction_validator.h"
+#include "consensus/tx_validation.h"
 #include "consensus/utxo_entry.h"
 #include "primitives/hash_domains.h"
 #include "primitives/transaction.h"
@@ -33,6 +34,7 @@ using dinero::TxId;
 using dinero::TxInput;
 using dinero::TxOutput;
 using dinero::consensus::CovenantActivationParams;
+using dinero::consensus::PrecomputedTransactionData;
 using dinero::consensus::ContractState;
 using dinero::consensus::IUTXOProvider;
 using dinero::consensus::UTXOEntry;
@@ -177,6 +179,83 @@ TEST(CovenantActivation, HighLevelValidationUsesSpendHeightNotCoinHeight) {
         TransactionValidator::ValidateTransaction(tx, &provider, 20);
     EXPECT_TRUE(result.valid) << result.error;
     EXPECT_EQ(result.total_fee, dinero::AmountUna::Una(1'000));
+}
+
+TEST(CovenantActivation, CtvPrecomputationMatchesCanonicalHashing) {
+    Transaction tx;
+    for (uint32_t index = 0; index < 32; ++index) {
+        TxInput input;
+        dinero::uint256 txid;
+        txid.data[0] = static_cast<uint8_t>(index + 1);
+        input.prevout.txid = TxId(txid);
+        input.prevout.vout = index;
+        input.sequence = 0xfffffffeU - index;
+        if (index == 7) {
+            input.scriptSig = {0x01, 0x42};
+        }
+        tx.vin.push_back(std::move(input));
+
+        tx.vout.emplace_back(
+            dinero::AmountUna::Una(1'000 + index),
+            std::vector<uint8_t>{
+                dinero::consensus::OP_TRUE,
+                static_cast<uint8_t>(index)});
+    }
+
+    const PrecomputedTransactionData precomputed(tx);
+    for (uint32_t index = 0; index < tx.vin.size(); ++index) {
+        std::array<uint8_t, 32> direct{};
+        std::array<uint8_t, 32> cached{};
+        ASSERT_TRUE(dinero::consensus::TryComputeCTVHash(
+            tx, index, direct));
+        ASSERT_TRUE(dinero::consensus::TryComputeCTVHash(
+            tx, index, cached, &precomputed));
+        EXPECT_EQ(cached, direct);
+    }
+
+    Transaction other = tx;
+    const PrecomputedTransactionData wrong_transaction(other);
+    std::array<uint8_t, 32> rejected{};
+    EXPECT_FALSE(dinero::consensus::TryComputeCTVHash(
+        tx, 0, rejected, &wrong_transaction));
+
+    tx.has_explicit_fee = true;
+    const PrecomputedTransactionData ineligible(tx);
+    EXPECT_FALSE(ineligible.TryComputeCTVHash(0, rejected));
+}
+
+TEST(CovenantActivation, LegacyCtvReceivesSharedPrecomputation) {
+    SelectParams(Chain::REGTEST);
+
+    Transaction tx;
+    tx.vin.emplace_back();
+    tx.vout.emplace_back(
+        dinero::AmountUna::Una(1'000),
+        std::vector<uint8_t>{dinero::consensus::OP_TRUE});
+
+    const auto template_hash = dinero::consensus::ComputeCTVHash(tx, 0);
+    std::vector<uint8_t> covenant_script{32};
+    covenant_script.insert(
+        covenant_script.end(), template_hash.begin(), template_hash.end());
+    covenant_script.push_back(
+        static_cast<uint8_t>(
+            dinero::consensus::OP_CHECKTEMPLATEVERIFY));
+
+    const PrecomputedTransactionData matching(tx);
+    EXPECT_TRUE(dinero::consensus::verifyScript(
+        {}, covenant_script, {}, tx, 0, 1'000,
+        {}, {}, {}, {}, 20, &matching));
+
+    // A precomputation object is transaction-bound. This intentionally
+    // mismatched object proves that the canonical legacy/P2SH entry point
+    // forwards the shared object into OP_CTV instead of silently rebuilding
+    // transaction-wide hashes for every execution.
+    Transaction other = tx;
+    other.lockTime = 1;
+    const PrecomputedTransactionData mismatched(other);
+    EXPECT_FALSE(dinero::consensus::verifyScript(
+        {}, covenant_script, {}, tx, 0, 1'000,
+        {}, {}, {}, {}, 20, &mismatched));
 }
 
 } // namespace

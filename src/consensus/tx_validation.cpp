@@ -1,6 +1,7 @@
 #include "consensus/tx_validation.h"
 #include "consensus/coins_db.h"
 #include "consensus/covenant_activation.h"
+#include "consensus/covenants.h"
 #include "consensus/script_interpreter.h"
 #include "consensus/script_verify.h"
 #include <set>
@@ -147,6 +148,8 @@ TxValidationResult validateInputs(
             all_input_commitments.push_back(utxo.commitment);
         }
 
+        const PrecomputedTransactionData
+            covenant_precomputed(tx, input_utxos);
         for (size_t i = 0; i < tx.vin.size(); ++i) {
             const auto& input = tx.vin[i];
             const auto& coin = input_utxos[i];
@@ -161,7 +164,8 @@ TxValidationResult validateInputs(
                 all_input_scriptpubkeys,
                 all_input_confidential_flags,
                 all_input_commitments,
-                ctx.block_height
+                ctx.block_height,
+                &covenant_precomputed
             );
 
             if (!script_ok) {
@@ -274,7 +278,8 @@ bool verifyScript(
     const std::vector<std::vector<uint8_t>>& all_input_scriptpubkeys,
     const std::vector<uint8_t>& all_input_confidential_flags,
     const std::vector<std::vector<uint8_t>>& all_input_commitments,
-    uint32_t block_height
+    uint32_t block_height,
+    const PrecomputedTransactionData* covenant_precomputed
 ) {
     // ========================================================================
     // Phase 24: Full Script Verification Engine
@@ -330,7 +335,8 @@ bool verifyScript(
 
         std::string taproot_error;
         return ScriptVerifier::VerifyTaproot(
-            tx, input_index, prevouts, taproot_error, flags);
+            tx, input_index, prevouts, taproot_error, flags,
+            covenant_precomputed);
     }
 
     // Create execution context with authoritative height-derived flags.
@@ -342,7 +348,8 @@ bool verifyScript(
         all_input_amounts,
         all_input_scriptpubkeys,
         all_input_confidential_flags,
-        all_input_commitments
+        all_input_commitments,
+        covenant_precomputed
     );
 
     // Execute script verification

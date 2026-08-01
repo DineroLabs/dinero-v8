@@ -16,6 +16,7 @@ namespace consensus {
 
 // Forward declaration for CPU budget monitoring
 class CPUBudgetMonitor;
+class PrecomputedTransactionData;
 
 // ============================================================================
 // Phase 24.1: Script Verification Flags
@@ -259,6 +260,8 @@ struct ScriptExecutionContext {
     std::vector<std::vector<uint8_t>> all_scriptpubkeys;  // scriptPubKeys for all inputs
     std::vector<uint8_t> all_confidential_flags;          // 1 if the prevout is confidential
     std::vector<std::vector<uint8_t>> all_input_commitments; // Prevout CT commitments
+    const PrecomputedTransactionData*
+        covenant_precomputed = nullptr;
 
     // Phase 26: Sighash preimage cache (mutable for caching in const methods)
     mutable SighashCache sighash_cache;
@@ -285,7 +288,9 @@ struct ScriptExecutionContext {
         const std::vector<uint64_t>& amounts,
         const std::vector<std::vector<uint8_t>>& scriptpubkeys,
         const std::vector<uint8_t>& confidential_flags = {},
-        const std::vector<std::vector<uint8_t>>& input_commitments = {}
+        const std::vector<std::vector<uint8_t>>& input_commitments = {},
+        const PrecomputedTransactionData*
+            covenant_precomputed_ = nullptr
     )
         : tx(tx_)
         , input_index(input_index_)
@@ -296,6 +301,7 @@ struct ScriptExecutionContext {
         , all_scriptpubkeys(scriptpubkeys)
         , all_confidential_flags(confidential_flags)
         , all_input_commitments(input_commitments)
+        , covenant_precomputed(covenant_precomputed_)
     {}
 };
 

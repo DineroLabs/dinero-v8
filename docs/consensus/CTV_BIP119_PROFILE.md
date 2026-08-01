@@ -64,7 +64,8 @@ creation height of the spent coin. The height-derived flags are part of script
 cache keys, and activation parameters are committed by the v2 consensus
 checksum.
 
-Production activation additionally requires boundary/reorg/mempool/mining,
-wallet/recovery, and multi-node tests; adversarial cost benchmarks with
-transaction-wide hash caching; coordinated validator deployment; and
-independent consensus review.
+Boundary, reorg, mempool, mining, and adversarial-cost component coverage is
+recorded in `COVENANT_PROTOCOL_STATUS.md` and
+`COVENANT_RESOURCE_LIMITS.md`. Production activation still requires approved
+wallet/recovery and live multi-node coverage, coordinated validator
+deployment, and independent consensus review.

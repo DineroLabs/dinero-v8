@@ -100,9 +100,10 @@ no weak, partially bound CCV mode. Activation heights are committed by the
 chain-parameter consensus checksum and height-derived flags are included in
 script-cache keys.
 
-Assigning a production activation height requires coordinated deployment,
-activation-boundary/reorg/mempool/mining/multi-node tests, wallet recovery
-tests, and independent cryptographic and consensus review.
+Activation-boundary, reorg, mempool, mining, and restart component coverage is
+recorded in `COVENANT_PROTOCOL_STATUS.md`. Assigning a production activation
+height still requires approved wallet recovery and live multi-node tests,
+coordinated deployment, and independent cryptographic and consensus review.
 
 ## Golden vector
 
