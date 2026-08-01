@@ -68,6 +68,13 @@ TEST_F(
         0,
         {Output{AmountUna::Una(50'000), {0x51}}});
     const CCVPlan ccv = BuildCCVPlan(7, {0xaa, 0xbb});
+    std::vector<uint8_t> ownerPrivateKey(32, 0);
+    ownerPrivateKey.back() = 9;
+    const CCVPlan ownerCcv = BuildOwnerAuthorizedCCVPlan(
+        3,
+        {0xcc},
+        OwnerXOnlyPublicKey(ownerPrivateKey),
+        "m/86'/1448'/0'/0/9");
 
     {
         WalletManager wallet(root_);
@@ -79,12 +86,16 @@ TEST_F(
         EXPECT_TRUE(wallet.storeCovenantDescriptor(
             Record(ccv, "state-7")));
         EXPECT_TRUE(wallet.storeCovenantDescriptor(
+            Record(ownerCcv, "owned-state-3")));
+        EXPECT_TRUE(wallet.storeCovenantDescriptor(
             Record(ctv, "ignored-idempotent-label")));
 
         const auto records = wallet.listCovenantDescriptors();
-        ASSERT_EQ(records.size(), 2U);
+        ASSERT_EQ(records.size(), 3U);
         EXPECT_TRUE(wallet.getCovenantDescriptor(
             ctv.descriptorId).has_value());
+        EXPECT_TRUE(wallet.getCovenantDescriptor(
+            ownerCcv.descriptorId).has_value());
         std::optional<std::vector<uint8_t>> covenantKey;
         EXPECT_NO_THROW(
             covenantKey = wallet.deriveKeyForScriptPubKey(
@@ -99,7 +110,7 @@ TEST_F(
             sqlite3_prepare_v2(
                 wallet.getCurrentDatabase(),
                 "SELECT COUNT(*) FROM watch_scripts "
-                "WHERE script_pubkey IN (?, ?)",
+                "WHERE script_pubkey IN (?, ?, ?)",
                 -1,
                 &statement,
                 nullptr),
@@ -114,8 +125,13 @@ TEST_F(
             ccv.taproot.scriptPubKey.data(),
             static_cast<int>(ccv.taproot.scriptPubKey.size()),
             SQLITE_TRANSIENT);
+        sqlite3_bind_blob(
+            statement, 3,
+            ownerCcv.taproot.scriptPubKey.data(),
+            static_cast<int>(ownerCcv.taproot.scriptPubKey.size()),
+            SQLITE_TRANSIENT);
         ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
-        EXPECT_EQ(sqlite3_column_int(statement, 0), 2);
+        EXPECT_EQ(sqlite3_column_int(statement, 0), 3);
         sqlite3_finalize(statement);
 
         statement = nullptr;
@@ -139,14 +155,27 @@ TEST_F(
             restarted.getCovenantDescriptor(ctv.descriptorId);
         const auto ccvRecord =
             restarted.getCovenantDescriptor(ccv.descriptorId);
+        const auto ownerCcvRecord =
+            restarted.getCovenantDescriptor(ownerCcv.descriptorId);
         ASSERT_TRUE(ctvRecord.has_value());
         ASSERT_TRUE(ccvRecord.has_value());
+        ASSERT_TRUE(ownerCcvRecord.has_value());
         EXPECT_EQ(
             RecoverCTVPlan(ctvRecord->descriptor).taproot.scriptPubKey,
             ctv.taproot.scriptPubKey);
         EXPECT_EQ(
             RecoverCCVPlan(ccvRecord->descriptor).state.stateHash,
             ccv.state.stateHash);
+        const CCVPlan recoveredOwner =
+            RecoverCCVPlan(ownerCcvRecord->descriptor);
+        EXPECT_EQ(
+            recoveredOwner.authorization,
+            CCVAuthorization::OwnerSchnorr);
+        EXPECT_EQ(recoveredOwner.ownerPublicKey, ownerCcv.ownerPublicKey);
+        EXPECT_EQ(recoveredOwner.ownerKeyOrigin, ownerCcv.ownerKeyOrigin);
+        EXPECT_EQ(
+            recoveredOwner.taproot.scriptPubKey,
+            ownerCcv.taproot.scriptPubKey);
     }
 }
 

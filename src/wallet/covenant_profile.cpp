@@ -5,6 +5,9 @@
 #include "crypto/evp_secp256k1.h"
 #include "crypto/sha256.h"
 #include "crypto/tagged_hash.h"
+#include "wallet/canonical_wallet_utxo.h"
+#include "wallet/key_origin.h"
+#include "wallet/taproot_tx_signer.h"
 
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
@@ -179,7 +182,8 @@ DecodedDescriptor DecodeDescriptor(const std::string& descriptor) {
     }
     const uint8_t rawType = payload[DESCRIPTOR_MAGIC.size() + 1];
     if (rawType != static_cast<uint8_t>(ProfileType::CTV) &&
-        rawType != static_cast<uint8_t>(ProfileType::CCV)) {
+        rawType != static_cast<uint8_t>(ProfileType::CCV) &&
+        rawType != static_cast<uint8_t>(ProfileType::CCV_OWNER)) {
         throw std::invalid_argument("unknown covenant descriptor type");
     }
 
@@ -293,7 +297,18 @@ std::vector<uint8_t> SerializeContractState(
     return result;
 }
 
-std::vector<uint8_t> CcvTapscript() {
+std::vector<uint8_t> CcvTapscript(
+    CCVAuthorization authorization,
+    const std::array<uint8_t, 32>& ownerPublicKey) {
+    if (authorization == CCVAuthorization::OwnerSchnorr) {
+        std::vector<uint8_t> result{
+            static_cast<uint8_t>(consensus::OP_CHECKCONTRACTVERIFY),
+            32};
+        result.insert(
+            result.end(), ownerPublicKey.begin(), ownerPublicKey.end());
+        result.push_back(static_cast<uint8_t>(consensus::OP_CHECKSIG));
+        return result;
+    }
     return {
         static_cast<uint8_t>(consensus::OP_CHECKCONTRACTVERIFY),
         static_cast<uint8_t>(consensus::OP_TRUE)};
@@ -403,17 +418,54 @@ CTVPlan CompleteCTVPlan(
 }
 
 CCVPlan CompleteCCVPlan(
+    ProfileType type,
     uint32_t counter,
     const std::vector<uint8_t>& data,
+    const std::array<uint8_t, 32>& ownerPublicKey,
+    const std::string& ownerKeyOrigin,
     const std::string* recoveredDescriptor) {
     if (data.size() > consensus::MAX_CONTRACT_STATE_DATA_SIZE) {
         throw std::invalid_argument("CCV state data exceeds profile limit");
     }
 
     CCVPlan result;
+    if (type != ProfileType::CCV && type != ProfileType::CCV_OWNER) {
+        throw std::invalid_argument("descriptor is not a CCV profile");
+    }
+    result.authorization =
+        type == ProfileType::CCV_OWNER
+            ? CCVAuthorization::OwnerSchnorr
+            : CCVAuthorization::Permissionless;
+    result.ownerPublicKey = ownerPublicKey;
+    result.ownerKeyOrigin = ownerKeyOrigin;
+    if (result.authorization == CCVAuthorization::OwnerSchnorr) {
+        secp256k1_xonly_pubkey parsed;
+        if (!secp256k1_xonly_pubkey_parse(
+                crypto::GetSecp256k1ContextSignVerify(),
+                &parsed,
+                result.ownerPublicKey.data())) {
+            throw std::invalid_argument("invalid CCV owner x-only public key");
+        }
+        const auto parsedOrigin =
+            wallet::KeyOriginInfo::parsePathString(result.ownerKeyOrigin);
+        if (result.ownerKeyOrigin.size() > 255 ||
+            !parsedOrigin.has_value() ||
+            parsedOrigin->getPathString() != result.ownerKeyOrigin) {
+            throw std::invalid_argument(
+                "owner-authorized CCV requires a canonical BIP32 key origin");
+        }
+    } else if (!result.ownerKeyOrigin.empty() ||
+               std::any_of(
+                   result.ownerPublicKey.begin(),
+                   result.ownerPublicKey.end(),
+                   [](uint8_t value) { return value != 0; })) {
+        throw std::invalid_argument(
+            "permissionless CCV must not contain owner metadata");
+    }
     result.state.counter = counter;
     result.state.data = data;
-    result.taproot.tapscript = CcvTapscript();
+    result.taproot.tapscript = CcvTapscript(
+        result.authorization, result.ownerPublicKey);
     result.state.codeHash =
         consensus::ComputeContractCodeHash(result.taproot.tapscript);
     result.state.stateHash =
@@ -444,10 +496,21 @@ CCVPlan CompleteCCVPlan(
         result.recoveryDescriptor = *recoveredDescriptor;
     } else {
         std::vector<uint8_t> body;
+        if (result.authorization == CCVAuthorization::OwnerSchnorr) {
+            body.insert(
+                body.end(),
+                result.ownerPublicKey.begin(),
+                result.ownerPublicKey.end());
+            WriteBytes(
+                body,
+                std::vector<uint8_t>(
+                    result.ownerKeyOrigin.begin(),
+                    result.ownerKeyOrigin.end()));
+        }
         WriteLE32(body, counter);
         WriteBytes(body, data);
         result.recoveryDescriptor =
-            EncodeDescriptor(ProfileType::CCV, body);
+            EncodeDescriptor(type, body);
     }
     result.descriptorId = DescriptorId(result.recoveryDescriptor);
     return result;
@@ -545,15 +608,67 @@ Transaction BuildCTVSpend(
 CCVPlan BuildCCVPlan(
     uint32_t counter,
     const std::vector<uint8_t>& data) {
-    return CompleteCCVPlan(counter, data, nullptr);
+    return CompleteCCVPlan(
+        ProfileType::CCV, counter, data, {}, {}, nullptr);
+}
+
+CCVPlan BuildOwnerAuthorizedCCVPlan(
+    uint32_t counter,
+    const std::vector<uint8_t>& data,
+    const std::array<uint8_t, 32>& ownerPublicKey,
+    const std::string& ownerKeyOrigin) {
+    return CompleteCCVPlan(
+        ProfileType::CCV_OWNER,
+        counter,
+        data,
+        ownerPublicKey,
+        ownerKeyOrigin,
+        nullptr);
+}
+
+std::array<uint8_t, 32> OwnerXOnlyPublicKey(
+    const std::vector<uint8_t>& privateKey) {
+    if (privateKey.size() != 32) {
+        throw std::invalid_argument("CCV owner private key must be 32 bytes");
+    }
+    secp256k1_context* context = crypto::GetSecp256k1ContextSignVerify();
+    secp256k1_keypair keypair;
+    secp256k1_xonly_pubkey publicKey;
+    int parity = 0;
+    std::array<uint8_t, 32> result{};
+    if (!secp256k1_keypair_create(
+            context, &keypair, privateKey.data()) ||
+        !secp256k1_keypair_xonly_pub(
+            context, &publicKey, &parity, &keypair) ||
+        !secp256k1_xonly_pubkey_serialize(
+            context, result.data(), &publicKey)) {
+        throw std::invalid_argument("invalid CCV owner private key");
+    }
+    return result;
 }
 
 CCVPlan RecoverCCVPlan(const std::string& descriptor) {
     const auto decoded = DecodeDescriptor(descriptor);
-    if (decoded.type != ProfileType::CCV) {
+    if (decoded.type != ProfileType::CCV &&
+        decoded.type != ProfileType::CCV_OWNER) {
         throw std::invalid_argument("descriptor is not a CCV profile");
     }
     size_t offset = 0;
+    std::array<uint8_t, 32> ownerPublicKey{};
+    std::string ownerKeyOrigin;
+    if (decoded.type == ProfileType::CCV_OWNER) {
+        if (decoded.body.size() < ownerPublicKey.size()) {
+            throw std::invalid_argument("malformed owner CCV descriptor body");
+        }
+        std::copy_n(
+            decoded.body.begin(), ownerPublicKey.size(), ownerPublicKey.begin());
+        offset += ownerPublicKey.size();
+        std::vector<uint8_t> encodedOrigin;
+        if (!ReadBytes(decoded.body, offset, encodedOrigin)) {
+            throw std::invalid_argument("malformed owner CCV key origin");
+        }
+        ownerKeyOrigin.assign(encodedOrigin.begin(), encodedOrigin.end());
+    }
     uint32_t counter = 0;
     std::vector<uint8_t> data;
     if (!ReadLE32(decoded.body, offset, counter) ||
@@ -561,29 +676,30 @@ CCVPlan RecoverCCVPlan(const std::string& descriptor) {
         offset != decoded.body.size()) {
         throw std::invalid_argument("malformed CCV descriptor body");
     }
-    return CompleteCCVPlan(counter, data, &descriptor);
+    return CompleteCCVPlan(
+        decoded.type,
+        counter,
+        data,
+        ownerPublicKey,
+        ownerKeyOrigin,
+        &descriptor);
 }
 
-CCVTransition BuildCCVTransition(
-    const CCVPlan& current,
+namespace {
+
+CCVTransition BuildCCVTransitionCommon(
+    const CCVPlan& recovered,
     const std::vector<Input>& inputs,
     AmountUna covenantValue,
     const std::vector<uint8_t>& nextData,
     const std::vector<Output>& additionalOutputs,
     uint32_t lockTime,
     int32_t version) {
-    const CCVPlan recovered =
-        RecoverCCVPlan(current.recoveryDescriptor);
-    if (recovered.state.stateHash != current.state.stateHash ||
-        recovered.taproot.scriptPubKey != current.taproot.scriptPubKey) {
-        throw std::invalid_argument(
-            "CCV plan does not match its recovery descriptor");
-    }
     if (inputs.empty()) {
         throw std::invalid_argument(
             "CCV transition requires the covenant input at index zero");
     }
-    if (current.state.counter == std::numeric_limits<uint32_t>::max()) {
+    if (recovered.state.counter == std::numeric_limits<uint32_t>::max()) {
         throw std::invalid_argument("CCV counter cannot advance");
     }
     if (version != Transaction::TX_VERSION_LEGACY &&
@@ -599,10 +715,14 @@ CCVTransition BuildCCVTransition(
 
     CCVTransition result;
     result.successor =
-        BuildCCVPlan(current.state.counter + 1, nextData);
+        recovered.authorization == CCVAuthorization::OwnerSchnorr
+            ? BuildOwnerAuthorizedCCVPlan(
+                  recovered.state.counter + 1,
+                  nextData,
+                  recovered.ownerPublicKey,
+                  recovered.ownerKeyOrigin)
+            : BuildCCVPlan(recovered.state.counter + 1, nextData);
     result.tx.version = version;
-    // Set this explicitly rather than relying on Transaction's historical
-    // default. CCV construction is a Taproot script-path spend.
     result.tx.witness_version = 1;
     result.tx.lockTime = lockTime;
     std::set<TxOutPoint> uniquePrevouts;
@@ -642,6 +762,108 @@ CCVTransition BuildCCVTransition(
         SerializeContractState(result.successor.state),
         recovered.taproot.tapscript,
         recovered.taproot.controlBlock};
+    return result;
+}
+
+} // namespace
+
+CCVTransition BuildCCVTransition(
+    const CCVPlan& current,
+    const std::vector<Input>& inputs,
+    AmountUna covenantValue,
+    const std::vector<uint8_t>& nextData,
+    const std::vector<Output>& additionalOutputs,
+    uint32_t lockTime,
+    int32_t version) {
+    const CCVPlan recovered =
+        RecoverCCVPlan(current.recoveryDescriptor);
+    if (recovered.state.stateHash != current.state.stateHash ||
+        recovered.taproot.scriptPubKey != current.taproot.scriptPubKey) {
+        throw std::invalid_argument(
+            "CCV plan does not match its recovery descriptor");
+    }
+    if (recovered.authorization != CCVAuthorization::Permissionless) {
+        throw std::invalid_argument(
+            "owner-authorized CCV requires the signing transition builder");
+    }
+    return BuildCCVTransitionCommon(
+        recovered,
+        inputs,
+        covenantValue,
+        nextData,
+        additionalOutputs,
+        lockTime,
+        version);
+}
+
+CCVTransition BuildOwnerAuthorizedCCVTransition(
+    const CCVPlan& current,
+    const std::vector<Input>& inputs,
+    const std::vector<Prevout>& prevouts,
+    AmountUna covenantValue,
+    const std::vector<uint8_t>& nextData,
+    const std::vector<uint8_t>& ownerPrivateKey,
+    const std::vector<Output>& additionalOutputs,
+    uint32_t lockTime,
+    int32_t version) {
+    const CCVPlan recovered = RecoverCCVPlan(current.recoveryDescriptor);
+    if (recovered.state.stateHash != current.state.stateHash ||
+        recovered.taproot.scriptPubKey != current.taproot.scriptPubKey ||
+        recovered.authorization != CCVAuthorization::OwnerSchnorr) {
+        throw std::invalid_argument(
+            "owner CCV plan does not match its recovery descriptor");
+    }
+    if (OwnerXOnlyPublicKey(ownerPrivateKey) != recovered.ownerPublicKey) {
+        throw std::invalid_argument(
+            "CCV owner private key does not match recovery descriptor");
+    }
+    if (prevouts.size() != inputs.size() || prevouts.empty()) {
+        throw std::invalid_argument(
+            "owner CCV requires prevout metadata for every input");
+    }
+    if (prevouts[0].value != covenantValue ||
+        prevouts[0].scriptPubKey != recovered.taproot.scriptPubKey) {
+        throw std::invalid_argument(
+            "owner CCV covenant prevout does not match current state");
+    }
+    std::vector<CanonicalWalletUTXO> signingPrevouts;
+    signingPrevouts.reserve(prevouts.size());
+    for (size_t index = 0; index < prevouts.size(); ++index) {
+        if (!prevouts[index].value.IsPositive() ||
+            !prevouts[index].value.IsWithinSupply() ||
+            prevouts[index].scriptPubKey.empty()) {
+            throw std::invalid_argument("invalid CCV signing prevout metadata");
+        }
+        CanonicalWalletUTXO utxo;
+        utxo.txid = inputs[index].prevout.txid.AsUint256();
+        utxo.vout = inputs[index].prevout.vout;
+        utxo.value = prevouts[index].value;
+        utxo.spk = prevouts[index].scriptPubKey;
+        signingPrevouts.push_back(std::move(utxo));
+    }
+
+    CCVTransition result = BuildCCVTransitionCommon(
+        recovered,
+        inputs,
+        covenantValue,
+        nextData,
+        additionalOutputs,
+        lockTime,
+        version);
+    const auto sighash = TaprootTxSigner::ComputeScriptPathSighash(
+        result.tx,
+        0,
+        signingPrevouts,
+        recovered.taproot.tapscript,
+        TAPSCRIPT_LEAF_VERSION,
+        TaprootTxSigner::SIGHASH_DEFAULT);
+    const auto signature =
+        TaprootTxSigner::SignSchnorr(sighash, ownerPrivateKey);
+    if (signature.size() != 64) {
+        throw std::runtime_error("failed to sign owner-authorized CCV transition");
+    }
+    result.tx.vin[0].witness.insert(
+        result.tx.vin[0].witness.begin(), signature);
     return result;
 }
 

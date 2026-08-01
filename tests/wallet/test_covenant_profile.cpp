@@ -320,6 +320,141 @@ TEST_F(
 
 TEST_F(
     CovenantProfileWalletTest,
+    OwnerCcvRequiresMatchingSchnorrKeyAndCommitsTheFinalTransaction) {
+    std::vector<uint8_t> ownerPrivateKey(32, 0);
+    ownerPrivateKey.back() = 7;
+    const auto ownerPublicKey = OwnerXOnlyPublicKey(ownerPrivateKey);
+    const CCVPlan current = BuildOwnerAuthorizedCCVPlan(
+        8,
+        {0xa1, 0xb2},
+        ownerPublicKey,
+        "m/86'/1448'/0'/0/12");
+    const CCVPlan recovered = RecoverCCVPlan(current.recoveryDescriptor);
+
+    EXPECT_EQ(
+        DescriptorType(current.recoveryDescriptor),
+        ProfileType::CCV_OWNER);
+    EXPECT_EQ(recovered.authorization, CCVAuthorization::OwnerSchnorr);
+    EXPECT_EQ(recovered.ownerPublicKey, ownerPublicKey);
+    EXPECT_EQ(recovered.ownerKeyOrigin, "m/86'/1448'/0'/0/12");
+    ASSERT_EQ(current.taproot.tapscript.size(), 35U);
+    EXPECT_EQ(
+        current.taproot.tapscript.front(),
+        static_cast<uint8_t>(OP_CHECKCONTRACTVERIFY));
+    EXPECT_EQ(current.taproot.tapscript[1], 32U);
+    EXPECT_TRUE(std::equal(
+        ownerPublicKey.begin(),
+        ownerPublicKey.end(),
+        current.taproot.tapscript.begin() + 2));
+    EXPECT_EQ(
+        current.taproot.tapscript.back(),
+        static_cast<uint8_t>(OP_CHECKSIG));
+
+    const std::vector<Input> spendInputs{
+        Input{
+            Outpoint(
+                "000000000000000000000000000000000000000000000000000000000000ce01",
+                0),
+            0xfffffffeU},
+        Input{
+            Outpoint(
+                "000000000000000000000000000000000000000000000000000000000000ce02",
+                1),
+            0xfffffffdU},
+    };
+    const std::vector<Prevout> prevouts{
+        Prevout{AmountUna::Una(250'000), current.taproot.scriptPubKey},
+        Prevout{AmountUna::Una(100'000), {OP_TRUE}},
+    };
+    const CCVTransition transition = BuildOwnerAuthorizedCCVTransition(
+        current,
+        spendInputs,
+        prevouts,
+        AmountUna::Una(250'000),
+        {0xc3, 0xd4},
+        ownerPrivateKey,
+        {Output{AmountUna::Una(90'000), {OP_TRUE}}});
+
+    EXPECT_EQ(transition.successor.authorization, CCVAuthorization::OwnerSchnorr);
+    EXPECT_EQ(transition.successor.ownerPublicKey, ownerPublicKey);
+    EXPECT_EQ(
+        transition.successor.ownerKeyOrigin,
+        current.ownerKeyOrigin);
+    ASSERT_EQ(transition.tx.vin[0].witness.size(), 5U);
+    EXPECT_EQ(transition.tx.vin[0].witness[0].size(), 64U);
+    EXPECT_TRUE(transition.tx.vin[1].witness.empty());
+
+    const std::vector<UTXOEntry> validationInputs{
+        UTXOEntry(
+            prevouts[0].value,
+            prevouts[0].scriptPubKey,
+            1,
+            false),
+        UTXOEntry(
+            prevouts[1].value,
+            prevouts[1].scriptPubKey,
+            1,
+            false),
+    };
+    const uint32_t flags =
+        CovenantActivationParams::StandardFlags(20, Params());
+    std::string error;
+    EXPECT_TRUE(ScriptVerifier::VerifyTaproot(
+        transition.tx, 0, validationInputs, error, flags))
+        << error;
+    EXPECT_EQ(
+        ValidateSpend(
+            transition.tx,
+            0,
+            validationInputs[0],
+            20,
+            validationInputs),
+        ScriptValidationResult::OK);
+
+    Transaction mutated = transition.tx;
+    mutated.vout[1].value = AmountUna::Una(89'999);
+    error.clear();
+    EXPECT_FALSE(ScriptVerifier::VerifyTaproot(
+        mutated, 0, validationInputs, error, flags));
+    EXPECT_NE(error.find("signature"), std::string::npos) << error;
+
+    mutated = transition.tx;
+    mutated.vin[0].witness[0][0] ^= 1;
+    error.clear();
+    EXPECT_FALSE(ScriptVerifier::VerifyTaproot(
+        mutated, 0, validationInputs, error, flags));
+
+    std::vector<uint8_t> wrongPrivateKey(32, 0);
+    wrongPrivateKey.back() = 8;
+    EXPECT_THROW(
+        BuildOwnerAuthorizedCCVTransition(
+            current,
+            spendInputs,
+            prevouts,
+            AmountUna::Una(250'000),
+            {},
+            wrongPrivateKey),
+        std::invalid_argument);
+    EXPECT_THROW(
+        BuildCCVTransition(
+            current,
+            spendInputs,
+            AmountUna::Una(250'000),
+            {}),
+        std::invalid_argument)
+        << "permissionless builder must not silently spend an owner profile";
+    EXPECT_THROW(
+        BuildOwnerAuthorizedCCVPlan(
+            0,
+            {},
+            ownerPublicKey,
+            "m/86'/1448'/0'//12"),
+        std::invalid_argument)
+        << "recovery metadata must be a canonical derivation path";
+}
+
+TEST_F(
+    CovenantProfileWalletTest,
     BuildersRejectInvalidMoneyRangesAndDuplicatePrevouts) {
     EXPECT_THROW(
         BuildCTVPlan(
