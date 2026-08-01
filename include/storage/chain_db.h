@@ -258,12 +258,19 @@ public:
     // setHeaderStatusBits() + another locator update in the same WriteBatch:
     // RocksDB WriteBatch does not make separate helper reads see prior staged
     // writes.
+    //
+    // `extra_status_bits` is OR-ed into status_flags by that same single
+    // read/merge/write. Issue #453 needs BLOCK_VALID_SCRIPTS persisted at the
+    // same point ConnectTip stamps durable undo; routing it through this
+    // parameter keeps it one write, so it cannot clobber the undo locator the
+    // way a second staged helper call would.
     Status updateUndoLocator(const ChainWriteToken& token,
                              const uint256& hash,
                              uint32_t undo_file,
                              uint32_t undo_pos,
                              uint32_t undo_size,
-                             rocksdb::WriteBatch* wb = nullptr);
+                             rocksdb::WriteBatch* wb = nullptr,
+                             uint32_t extra_status_bits = 0);
 
     // Phase P.2: Update CBlockIndex disk positions and status flags after pruning
     Status updateBlockIndex(const ChainWriteToken& token, const CBlockIndex* pindex, rocksdb::WriteBatch* wb = nullptr);

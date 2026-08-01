@@ -140,24 +140,24 @@ jobs:
             --exclude-regex '^(ColdStartConsensus|MiningPolicyE2E)$' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
 
-      # Serial e2e lane (issue #428). These spawn real dinerod processes, bind
-      # ports, and must not run concurrently with each other or the suite above
-      # — hence -j1 and a separate step.
+      # Serial e2e lane (issue #428 plus the covenant wallet lifecycle). These
+      # spawn real dinerod processes, bind ports, and must not run concurrently
+      # with each other or the suite above — hence -j1 and a separate step.
       #
       # Each test gets its OWN ctest invocation with --no-tests=error. That is
-      # deliberate and stronger than one combined -R over both names: a single
-      # '^(A|B)$' selection still passes when only ONE of the two survives, so it
-      # cannot prove that BOTH are registered. Per-test invocations fail if
-      # EITHER disappears from the registry.
+      # deliberate and stronger than one combined -R over all names: a combined
+      # selection still passes when one test disappears, while per-test
+      # invocations fail if any name vanishes from the registry.
       #
       # This is the third distinct guarantee in the chain:
       #   #417 integrity gate  — every REGISTERED test has a runnable executable
-      #   #428 registration    — these two are ALWAYS registered (no find_program)
+      #   unconditional CMake — every named test is registered without an
+      #                          EXISTS/find_program disappearance path
       #   this step            — CI actually EXECUTES them, and a launch failure
       #                          is a failure (the GTEST_SKIPs are gone)
       - name: Run serial e2e tests (daemon-spawning)
         run: |
-          for t in ColdStartConsensus MiningPolicyE2E; do
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
@@ -165,6 +165,80 @@ jobs:
               -j1 \
               -R "^${t}$"
           done
+
+      # #453 durable script-validity gate, plus the #458
+      # mine-after-invalidate gates.
+      #
+      # These two carry the labels 'integration' and 'canonicality', both of
+      # which the main ctest step above excludes. Without this step they are
+      # REGISTERED but never EXECUTED — verified on the first CI run of PR #460,
+      # where the configure log printed "✓ ScriptValidityDurability registered"
+      # and "✓ ScriptValidityCrashOrdering registered" while neither name
+      # appeared anywhere in "100% tests passed ... out of 382".
+      #
+      # A regression test that does not run is indistinguishable from no test.
+      # That is the same silent-coverage failure #412 and #428 were opened for,
+      # so the gate lands in the same commit series as the behaviour it protects
+      # rather than as a follow-up.
+      #
+      # Deliberately NOT carrying --label-exclude: these are selected by exact
+      # name, so the broad exclusions must not apply to them.
+      #
+      # Two separate invocations, not one '^(A|B)$' — a combined selection still
+      # passes when only ONE survives, so it cannot prove BOTH are registered.
+      # With --no-tests=error, either name disappearing fails the build.
+      #
+      # No retry and no until-pass wrapper: both spawn a real dinerod, and a
+      # flaky-tolerant gate for a consensus durability property would be worse
+      # than no gate at all.
+      # NOTE: quoted — an unquoted '#' after whitespace starts a YAML comment,
+      # which silently truncates this step's name to "Run".
+      - name: "Run #453/#458 durability tests (daemon-spawning)"
+        run: |
+          echo "=== ScriptValidityDurability ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ScriptValidityDurability$'
+
+          echo "=== ScriptValidityCrashOrdering ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ScriptValidityCrashOrdering$'
+
+          # #458 — same label-exclusion problem, same treatment.
+          echo "=== MineAfterInvalidate ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^MineAfterInvalidate$'
+
+          echo "=== MineAfterInvalidateRestart ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^MineAfterInvalidateRestart$'
+
+          # #462 — same label-exclusion problem.
+          echo "=== ForkBlockStatusRestart ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ForkBlockStatusRestart$'
+
+          # #458 RPC envelope contract — same label-exclusion problem.
+          echo "=== RpcErrorEnvelope ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^RpcErrorEnvelope$'
 
       # Daemon logs are printed by the harnesses on failure (tail of daemon.log),
       # so --output-on-failure above captures them. Keep the ctest logs as an

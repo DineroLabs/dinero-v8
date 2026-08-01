@@ -45,6 +45,7 @@ add_library(dinero_wallet STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/intent_descriptor.cpp  # B3: Intent descriptor for SigHash v1 ext_commitment
   ${CMAKE_CURRENT_SOURCE_DIR}/policy_descriptor.cpp  # B2: PolicyDescriptor + policy_id computation
   ${CMAKE_CURRENT_SOURCE_DIR}/taproot_template_builder.cpp  # B2: Taproot template tree builder (PROTECTED/ESCROW)
+  ${CMAKE_CURRENT_SOURCE_DIR}/covenant_profile.cpp  # Covenant profile-v1 construction + recovery descriptors
   ${CMAKE_CURRENT_SOURCE_DIR}/safety_profile.cpp  # B4: Safety profile management
   ${CMAKE_CURRENT_SOURCE_DIR}/protected_output_builder.cpp  # B4: Protected output construction (HDWallet + template builder)
   ${CMAKE_CURRENT_SOURCE_DIR}/protected_spend.cpp  # B4: Script-path spending for panic/recovery leaves

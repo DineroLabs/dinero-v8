@@ -10,6 +10,8 @@
 #include "policy/rbf_policy.h"  // BIP125 RBF validation
 #include "mempool/mempool_persistence.h"  // v0.13.0.2 - Mempool persistence
 #include "mempool/fee_estimator.h"  // v0.13.0.3 - Fee estimation
+#include "consensus/covenant_activation.h"
+#include "consensus/covenants.h"
 #include "consensus/script_interpreter.h"  // Phase L0.4: Script verification with consensus flags
 #include "consensus/script.h"              // Phase L0.4: For Script class
 #include "consensus/script_validation.h"   // Phase 6 Commit 4: unified ValidateSpend dispatcher (single consensus script validator)
@@ -2163,7 +2165,47 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
                                          uint32_t next_block_height,
                                          std::string* reason) const {
     const Transaction& tx = entry.tx;
-    if (next_block_height == 0 || !UsesShieldedValueSemantics(tx)) {
+    if (next_block_height == 0) {
+        return true;
+    }
+
+    // Transparent transactions are admitted under the consensus rules for
+    // the then-next block (entry.height + 1). Reorgs can move the next block
+    // across Taproot or covenant activation boundaries while leaving the
+    // transaction in the mempool. Re-run canonical validation only when the
+    // relevant activation state changed; otherwise avoid adding a full script
+    // verification pass to every block-template build.
+    if (!UsesShieldedValueSemantics(tx)) {
+        const uint32_t admission_height =
+            entry.height == std::numeric_limits<uint32_t>::max()
+                ? entry.height
+                : entry.height + 1;
+        const auto& params = dinero::Params();
+        const bool script_path_state_changed =
+            consensus::CovenantActivationParams::IsScriptPathActive(
+                admission_height, params) !=
+            consensus::CovenantActivationParams::IsScriptPathActive(
+                next_block_height, params);
+        const bool covenant_state_changed =
+            consensus::CovenantActivationParams::CovenantFlags(
+                admission_height, params) !=
+            consensus::CovenantActivationParams::CovenantFlags(
+                next_block_height, params);
+
+        if (!script_path_state_changed && !covenant_state_changed) {
+            return true;
+        }
+
+        std::string validation_error;
+        if (!validateTransaction(
+                tx, validation_error, next_block_height)) {
+            if (reason) {
+                *reason =
+                    "height-gated script validation failed: " +
+                    validation_error;
+            }
+            return false;
+        }
         return true;
     }
 
@@ -2786,7 +2828,10 @@ void Mempool::broadcastTransaction(const uint256& txid) {
     MPLOG_WARN("Cannot broadcast transaction: no tx broadcast callback set");
 }
 
-bool Mempool::validateTransaction(const Transaction& tx, std::string& error) const {
+bool Mempool::validateTransaction(
+    const Transaction& tx,
+    std::string& error,
+    std::optional<uint32_t> target_height) const {
     const bool has_shielded_bundle = UsesShieldedValueSemantics(tx);
 
     // Basic transaction validation
@@ -2919,7 +2964,9 @@ bool Mempool::validateTransaction(const Transaction& tx, std::string& error) con
     // outright — don't silently fake a height, that would bypass
     // height-gated rules like PQSchemeRegistry activation.
     uint32_t next_block_height_for_scripts = 0;
-    {
+    if (target_height.has_value()) {
+        next_block_height_for_scripts = *target_height;
+    } else {
         if (!chain_db_) {
             error = "Script validation unavailable: ChainDB not initialized";
             return false;
@@ -2950,9 +2997,12 @@ bool Mempool::validateTransaction(const Transaction& tx, std::string& error) con
         utxo_entries.push_back(std::move(e));
     }
 
+    const consensus::PrecomputedTransactionData
+        covenant_precomputed(tx, utxo_entries);
     for (size_t i = 0; i < tx.vin.size(); i++) {
         const consensus::ScriptValidationResult result = consensus::ValidateSpend(
-            tx, i, utxo_entries[i], next_block_height_for_scripts, utxo_entries);
+            tx, i, utxo_entries[i], next_block_height_for_scripts,
+            utxo_entries, &covenant_precomputed);
 
         if (result != consensus::ScriptValidationResult::OK) {
             const char* reason = "unknown";
@@ -2988,7 +3038,8 @@ bool Mempool::validateTransaction(const Transaction& tx, std::string& error) con
             return false;
         }
         const uint32_t next_block_height =
-            static_cast<uint32_t>(tip_result.value().height) + 1;
+            target_height.value_or(
+                static_cast<uint32_t>(tip_result.value().height) + 1);
 
         consensus::shielded::ShieldedBundle bundle;
         auto decode = consensus::shielded::DeserializeShieldedBundle(

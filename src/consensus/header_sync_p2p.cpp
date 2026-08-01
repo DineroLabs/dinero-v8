@@ -243,21 +243,24 @@ std::vector<BlockHeader> HeaderSyncP2P::FindHeadersToSend(
     // ========================================================================
     // Block locator is ordered from tip to genesis, so we find the first
     // hash we know about - that's our starting point.
-    const HeaderIndexEntry* start_entry = nullptr;
+    // #441: copy under the selector's lock. Both GetHeader() and
+    // GetHeaderAtHeight() hand back raw pointers after releasing it, and a
+    // locator hash can name a SIDE-BRANCH entry — precisely the entries
+    // EvictBranch is allowed to free.
+    HeaderIndexEntry start_entry{};
+    bool have_start = false;
 
     for (const auto& hash_hex : locator_hashes) {
         uint256 hash = uint256::FromHexUnsafe(hash_hex);
-        const HeaderIndexEntry* entry = chain_selector_->GetHeader(hash);
-        if (entry) {
-            start_entry = entry;
+        if (chain_selector_->GetHeaderCopy(hash, start_entry)) {
+            have_start = true;
             break;
         }
     }
 
     // If no locator hash found, start from genesis (height 0)
-    if (!start_entry) {
-        start_entry = chain_selector_->GetHeaderAtHeight(0);
-        if (!start_entry) {
+    if (!have_start) {
+        if (!chain_selector_->GetHeaderAtHeightCopy(0, start_entry)) {
             return headers;  // No genesis - empty chain
         }
     }
@@ -268,8 +271,9 @@ std::vector<BlockHeader> HeaderSyncP2P::FindHeadersToSend(
     // We need headers AFTER start_entry (peer already has start_entry)
     // Walk from start_entry.height + 1 up to best header or hash_stop
 
-    const HeaderIndexEntry* best = chain_selector_->GetBestHeader();
-    if (!best) {
+    // #441: copy under the selector's lock.
+    HeaderIndexEntry best_copy{};
+    if (!chain_selector_->GetBestHeaderCopy(best_copy)) {
         return headers;
     }
 
@@ -280,21 +284,30 @@ std::vector<BlockHeader> HeaderSyncP2P::FindHeadersToSend(
     }
 
     // Collect headers from start_height + 1 to best
-    uint32_t start_height = start_entry->height + 1;
-    uint32_t end_height = best->height;
+    uint32_t start_height = start_entry.height + 1;
+    uint32_t end_height = best_copy.height;
 
     headers.reserve(std::min(static_cast<size_t>(end_height - start_height + 1), max_count));
 
     for (uint32_t h = start_height; h <= end_height && headers.size() < max_count; ++h) {
-        const HeaderIndexEntry* entry = chain_selector_->GetHeaderAtHeight(h);
-        if (!entry) {
+        // #441: copy under the selector's lock rather than dereferencing the
+        // raw GetHeaderAtHeight() pointer, which escapes that lock.
+        //
+        // NOTE: each iteration takes the lock separately, so a reorg mid-loop
+        // could still mix chain states in the emitted range. That is a
+        // pre-existing property of this loop, not something introduced here,
+        // and a peer rejects an inconsistent header run harmlessly. A
+        // range-copy-under-one-lock primitive (cf. BuildLocatorCopy) would
+        // close it properly.
+        HeaderIndexEntry entry{};
+        if (!chain_selector_->GetHeaderAtHeightCopy(h, entry)) {
             break;  // Gap in chain - shouldn't happen
         }
 
-        headers.push_back(entry->header);
+        headers.push_back(entry.header);
 
         // Check if we hit hash_stop
-        if (!stop_hash.IsNull() && entry->hash == stop_hash) {
+        if (!stop_hash.IsNull() && entry.hash == stop_hash) {
             break;
         }
     }
