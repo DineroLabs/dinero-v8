@@ -2980,15 +2980,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                 auto block_download_for_inv = ctx_.block_download;  // IBD check for inv suppression
                 auto chainstate_for_inv = std::dynamic_pointer_cast<ChainstateService>(ctx_.chainstate);
                 const bool csn_mode_for_inv = GetConfig().utreexo_stateless;
-                auto inv_header_refresh_times =
-                    std::make_shared<std::unordered_map<std::string, std::chrono::steady_clock::time_point>>();
-                auto inv_header_refresh_hashes =
-                    std::make_shared<std::unordered_map<std::string, std::string>>();
-                auto inv_header_refresh_mutex = std::make_shared<std::mutex>();
                 p2p_service->OnInv = [block_relay, tx_relay, block_download_for_inv,
-                                      chainstate_for_inv, p2p_service, csn_mode_for_inv,
-                                      inv_header_refresh_times, inv_header_refresh_hashes,
-                                      inv_header_refresh_mutex](
+                                      chainstate_for_inv, p2p_service, csn_mode_for_inv](
                     const std::string& peer_addr, const ::P2PMessage& msg) {
                     g_logger.info("[Relay] OnInv received from " + peer_addr + " (payload size: " + std::to_string(msg.payload.size()) + ")");
 
@@ -3008,44 +3001,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                     }
 
                     bool requested_headers_refresh = false;
-                    auto request_headers_refresh = [&](const uint256* announced_hash) -> bool {
+                    auto request_headers_refresh = [&]() -> bool {
                         if (requested_headers_refresh || !chainstate_for_inv || !p2p_service) {
                             return false;
                         }
-
-                        const auto now = std::chrono::steady_clock::now();
-                        const std::string announced_hash_hex =
-                            announced_hash ? announced_hash->GetHex() : std::string();
-                        {
-                            std::lock_guard<std::mutex> lock(*inv_header_refresh_mutex);
-                            auto it = inv_header_refresh_times->find(peer_addr);
-                            auto hash_it = inv_header_refresh_hashes->find(peer_addr);
-                            const bool same_announced_hash =
-                                announced_hash_hex.empty() ||
-                                (hash_it != inv_header_refresh_hashes->end() &&
-                                 hash_it->second == announced_hash_hex);
-                            if (it != inv_header_refresh_times->end() &&
-                                now - it->second < std::chrono::milliseconds(750) &&
-                                same_announced_hash) {
-                                g_logger.debug("[Relay] Header refresh already requested recently for " +
-                                               peer_addr + "; coalescing block inv");
-                                return false;
-                            }
-                            (*inv_header_refresh_times)[peer_addr] = now;
-                            if (!announced_hash_hex.empty()) {
-                                (*inv_header_refresh_hashes)[peer_addr] = announced_hash_hex;
-                            }
-                        }
-
-                        auto locator = chainstate_for_inv->GenerateBlockLocator();
-                        std::vector<std::string> locator_hex;
-                        locator_hex.reserve(locator.size());
-                        for (const auto& hash_item : locator) {
-                            locator_hex.push_back(hash_item.GetHex());
-                        }
-
-                        auto getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
-                        p2p_service->get().send_to_peer(peer_addr, getheaders_msg);
+                        p2p_service->RequestHeadersRefreshForBlockAnnouncement(peer_addr);
                         requested_headers_refresh = true;
                         return true;
                     };
@@ -3075,14 +3035,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                         } else if (inv_type == 2 && block_relay) {
                             // MSG_BLOCK = 2
                             if (csn_mode_for_inv) {
-                                request_headers_refresh(&hash);
+                                request_headers_refresh();
 
                                 g_logger.info("[Relay] CSN mode routes block inv through headers-first sync, not BlockRelayManager (" +
                                               peer_addr + ")");
                                 continue;
                             }
                             if (block_download_for_inv) {
-                                request_headers_refresh(&hash);
+                                request_headers_refresh();
 
                                 if (!block_download_for_inv->HeadersSynced()) {
                                     g_logger.info("[Relay] Headers not yet synced; requesting headers instead of routing block inv from " +

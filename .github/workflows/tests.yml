@@ -140,7 +140,8 @@ jobs:
             --exclude-regex '^(ColdStartConsensus|MiningPolicyE2E)$' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
 
-      # Serial e2e lane (issue #428 plus the covenant wallet lifecycle). These
+      # Serial e2e lane (issue #428, the covenant wallet lifecycle, and the
+      # CrossSeed header-refresh regression). These
       # spawn real dinerod processes, bind ports, and must not run concurrently
       # with each other or the suite above — hence -j1 and a separate step.
       #
@@ -157,7 +158,7 @@ jobs:
       #                          is a failure (the GTEST_SKIPs are gone)
       - name: Run serial e2e tests (daemon-spawning)
         run: |
-          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle; do
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle CrossSeedRestartReorgParity; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \

@@ -3454,6 +3454,22 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_stale_tip_recovery.cpp)
   message(STATUS "✅ StaleTipRecovery (#214) deterministic test enabled")
 endif()
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_header_refresh_coalescer.cpp)
+  add_executable(test_header_refresh_coalescer
+    tests/services/test_header_refresh_coalescer.cpp
+  )
+  add_dependencies(test_header_refresh_coalescer gtest gtest_main)
+  target_include_directories(test_header_refresh_coalescer BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  target_link_libraries(test_header_refresh_coalescer PRIVATE
+    gtest gtest_main
+  )
+  add_test(NAME HeaderRefreshCoalescer COMMAND test_header_refresh_coalescer)
+  set_tests_properties(HeaderRefreshCoalescer PROPERTIES LABELS "p2p;unit")
+endif()
+
 # services-boundary-smoke: PeerScoringService boundary contract.
 # Service owns a unique_ptr<p2p::PeerScoringManager>; tests verify Name(),
 # getManager() identity preservation, Init/Start/Stop safety, and that
