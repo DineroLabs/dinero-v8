@@ -58,6 +58,23 @@ add_custom_target(check_no_legacy_mempool_prod
   COMMENT "Checking production tree for legacy mempool references"
 )
 
+# Guardrail: OpenSSL 3.x deprecates its low-level incremental SHA-256 API.
+# First-party code uses dinero::crypto::CSHA256 (or supported one-shot APIs)
+# instead, so a future reintroduction must fail the normal daemon build.
+add_custom_target(check_no_deprecated_openssl_sha256
+  COMMAND ${CMAKE_SOURCE_DIR}/tools/check_no_deprecated_openssl_sha256.sh
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Checking first-party code for deprecated OpenSSL SHA-256 APIs"
+)
+
+# Guardrail: OpenSSL 3.x also deprecates the stateful HMAC_CTX API.
+# Supported one-shot HMAC or EVP_MAC must be used instead.
+add_custom_target(check_no_deprecated_openssl_hmac
+  COMMAND ${CMAKE_SOURCE_DIR}/tools/check_no_deprecated_openssl_hmac.sh
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Checking first-party code for deprecated OpenSSL HMAC APIs"
+)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Hermetic Build Detection
 # ═══════════════════════════════════════════════════════════════════════════
@@ -177,6 +194,8 @@ include(cmake/SeedGeneration.cmake)
 # Third-party dependency setup lives in cmake/ThirdParty.cmake.
 # Keep this as include() so helper functions and imported targets remain root-scoped.
 include(cmake/ThirdParty.cmake)
+# Vendored static libcurl (MSVC) — must precede any curl consumer subdirectory.
+include(cmake/VendoredCurl.cmake)
 include(cmake/VendorNgtcp2.cmake)
 
 # V7 PQ façade + bench + round-trip tests. Requires OpenSSL::Crypto
@@ -346,6 +365,9 @@ if(ENABLE_ZK)
         lightning_core_static  # Uses secp256k1-zkp for Pedersen + Bulletproofs!
         OpenSSL::Crypto        # For secure random (RAND_bytes)
     )
+    target_link_libraries(dinero_zk PRIVATE
+        dinero_crypto          # CSHA256 transcript and Fiat-Shamir hashing
+    )
 
     target_compile_definitions(dinero_zk PUBLIC
         HAVE_ZK_PRIVACY
@@ -424,6 +446,12 @@ target_include_directories(dinero_crypto PUBLIC
   ${CMAKE_SOURCE_DIR}/third_party
   ${CMAKE_SOURCE_DIR}/external
 )
+
+# dinero_crypto compiles EVP, HMAC, RAND, and legacy hash wrappers directly.
+# Declare the dependency on the target so its configured headers and static
+# archive travel together; a source-tree header copy must never supply this
+# dependency implicitly.
+target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto)
 
 # macOS Security framework is required because dinero_crypto_minimal.cpp
 # calls SecRandomCopyBytes (Apple's CSPRNG). Declared INTERFACE so every
@@ -1111,7 +1139,9 @@ include(src/lightningd/CMakeLists.txt)
 # Native MSVC needs CMake/vcpkg's imported libcurl target. Keep the existing
 # raw `curl` link name for Unix-style builds that already resolve -lcurl.
 if(WIN32)
-  find_package(CURL REQUIRED)
+  if(NOT TARGET CURL::libcurl)
+    find_package(CURL REQUIRED)
+  endif()
   set(DINERO_CURL_TARGET CURL::libcurl)
 else()
   set(DINERO_CURL_TARGET curl)

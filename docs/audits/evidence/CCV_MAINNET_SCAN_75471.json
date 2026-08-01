@@ -1,0 +1,30 @@
+{
+  "active_chain_blocks": 75472,
+  "active_genesis": "0000001c36abf27e2c233ff40ed0c08888926c24450f3bff82a047ae1528b76f",
+  "active_height": 75471,
+  "active_tip": "000000ac150d3a83251b61fc4819d4cd044e916836551d3f6767e74ea25644a4",
+  "alternate_body_records": 258,
+  "ccv_reveals": [],
+  "conclusion": "No selected block reveals a Taproot script leaf containing OP_CHECKCONTRACTVERIFY.",
+  "duplicate_records": 101215,
+  "expected_height": 75471,
+  "expected_tip": "000000ac150d3a83251b61fc4819d4cd044e916836551d3f6767e74ea25644a4",
+  "files_scanned": [
+    "blk00000.dat"
+  ],
+  "limitation": "Zero revealed CCV leaves cannot exclude hidden, unspent CCV leaves committed inside P2TR outputs.",
+  "metrics": {
+    "inputs": 77824,
+    "outputs": 228500,
+    "p2tr_outputs": 73536,
+    "revealed_ccv_leaves": 0,
+    "revealed_tapscript_leaves": 0,
+    "script_path_witnesses": 0,
+    "transactions": 75548
+  },
+  "records_scanned": 176936,
+  "schema_version": 1,
+  "scope": "active-chain-to-explicit-tip",
+  "stale_or_unselected_records": 249,
+  "unique_blocks_scanned": 75721
+}

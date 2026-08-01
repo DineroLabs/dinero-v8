@@ -95,6 +95,28 @@ rpc_result() {
     jq '.result' <<<"${response}"
 }
 
+rpc_failure_result() {
+    local port="$1"
+    local datadir="$2"
+    local method="$3"
+    local params="${4:-[]}"
+    local response normalized
+    response="$(rpc_call "${port}" "${datadir}" "${method}" "${params}")" \
+        || fail "RPC transport failed: ${method}"
+    normalized="$(jq -e '
+        if .error != null then
+            {success:false,
+             error:(.error.message? // (.error | tostring)),
+             error_code:(.error.code? // null)}
+        elif .result.error? != null then
+            .result
+        else
+            empty
+        end' <<<"${response}")" \
+        || fail "RPC ${method} unexpectedly succeeded: ${response}"
+    printf '%s\n' "${normalized}"
+}
+
 covenant_result() {
     local port="$1"
     local datadir="$2"
@@ -336,15 +358,22 @@ mkdir -p "${DATA_GUARD}"
 PID_GUARD=$!
 wait_rpc "${GUARD_RPC}" "${DATA_GUARD}" \
     || fail "mainnet guard daemon RPC did not start"
-GUARD_RESULT="$(rpc_result "${GUARD_RPC}" "${DATA_GUARD}" \
+GUARD_RESPONSE="$(rpc_call "${GUARD_RPC}" "${DATA_GUARD}" \
     "wallet.covenant.inspect" \
-    '[{"descriptor":"dncov1:00"}]')"
+    '[{"descriptor":"dncov1:00"}]')" \
+    || fail "mainnet covenant RPC transport failed"
 jq -e \
-    '.success == false and
-     (.error | contains("regtest-only")) and
-     .rpc_schema == "din.wallet.covenant.profile.v1"' \
-    <<<"${GUARD_RESULT}" >/dev/null \
-    || fail "mainnet covenant RPC did not fail closed: ${GUARD_RESULT}"
+    'if .error != null then
+         (.error.code == -32603) and
+         (.error.message | contains("regtest-only")) and
+         ((has("result") | not) or .result == null)
+     else
+         (.result.success == false) and
+         (.result.error | contains("regtest-only")) and
+         (.result.rpc_schema == "din.wallet.covenant.profile.v1")
+     end' \
+    <<<"${GUARD_RESPONSE}" >/dev/null \
+    || fail "mainnet covenant RPC did not fail closed: ${GUARD_RESPONSE}"
 stop_guard
 pass "mainnet covenant wallet/RPC construction is unavailable"
 
@@ -362,7 +391,7 @@ PRE_CTV="$(covenant_result "${NODE_A_RPC}" "${DATA_A}" \
     "wallet.covenant.ctvcreate" \
     '{"outputs":[{"value_una":1,"script_pubkey":"51"}]}')"
 PRE_CTV_DESCRIPTOR="$(jq -r '.recovery_descriptor' <<<"${PRE_CTV}")"
-PRE_CTV_RESULT="$(rpc_result "${NODE_A_RPC}" "${DATA_A}" \
+PRE_CTV_RESULT="$(rpc_failure_result "${NODE_A_RPC}" "${DATA_A}" \
     "wallet.covenant.ctvspend" \
     "$(jq -nc --arg descriptor "${PRE_CTV_DESCRIPTOR}" \
         --arg txid "${ZERO_TXID}" \
@@ -371,7 +400,7 @@ jq -e '.success == false and (.error | contains("before activation"))' \
     <<<"${PRE_CTV_RESULT}" >/dev/null \
     || fail "CTV spend construction did not fail closed before activation: ${PRE_CTV_RESULT}"
 
-CCV_NO_ACK="$(rpc_result "${NODE_A_RPC}" "${DATA_A}" \
+CCV_NO_ACK="$(rpc_failure_result "${NODE_A_RPC}" "${DATA_A}" \
     "wallet.covenant.ccvcreate" \
     '{"counter":0,"data_hex":"00"}')"
 jq -e '.success == false and (.error | contains("permissionless=true"))' \
@@ -381,7 +410,7 @@ PRE_CCV="$(covenant_result "${NODE_A_RPC}" "${DATA_A}" \
     "wallet.covenant.ccvcreate" \
     '{"counter":0,"data_hex":"00","permissionless":true}')"
 PRE_CCV_DESCRIPTOR="$(jq -r '.recovery_descriptor' <<<"${PRE_CCV}")"
-PRE_CCV_RESULT="$(rpc_result "${NODE_A_RPC}" "${DATA_A}" \
+PRE_CCV_RESULT="$(rpc_failure_result "${NODE_A_RPC}" "${DATA_A}" \
     "wallet.covenant.ccvadvance" \
     "$(jq -nc --arg descriptor "${PRE_CCV_DESCRIPTOR}" \
         --arg txid "${ZERO_TXID}" \

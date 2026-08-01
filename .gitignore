@@ -204,6 +204,7 @@ logs/
 test-*/
 !test-cross-language-vectors/
 test_*/
+!include/consensus/pq/test_vectors/
 ci_test_*/
 ci_datadir/
 blockchain_data*/

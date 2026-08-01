@@ -57,14 +57,7 @@ uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx) {
     return layer[0];
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Phase 11b.1: Witness Merkle Groundwork (NOT CONSENSUS-ACTIVE)
-// ═══════════════════════════════════════════════════════════════
-// ⚠️  CRITICAL: This function has ZERO call sites until Phase 11c+
-//     DO NOT use for mining, validation, or any consensus checks
-//     See include/consensus/merkle_root.h for full explanation
-// ═══════════════════════════════════════════════════════════════
-
+// Consensus witness merkle root committed by the DINW coinbase output.
 uint256 ComputeWitnessMerkleRoot(const std::vector<Transaction>& vtx) {
     if (vtx.empty()) {
         return uint256();  // Zero hash for empty block

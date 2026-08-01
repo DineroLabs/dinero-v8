@@ -289,7 +289,7 @@ fi
 # ---- Leg B: double-spend probe (N's nullifier is in CSN state via the replayed block) ----
 info "[Leg B] double-spend probe"
 DS_RESP=$(rpc "$RC" "$DC1" sendrawtransaction "\"$(transfer_hex 123)\"")
-DS_MSG=$(echo "$DS_RESP" | jq -r '(.result.error.message // .error.message // .result // "accepted")' 2>/dev/null)
+DS_MSG=$(echo "$DS_RESP" | jq -r '(.error.message? // .error // .result.error.message? // .result.error // .result // "accepted")' 2>/dev/null)
 info "    CSN double-spend response: ${DS_MSG}"
 if echo "$DS_MSG" | grep -q "nullifier-duplicate"; then
     leg_pass "B: CSN REJECTED the re-spend of N (nullifier present via replayed block): ${DS_MSG}"

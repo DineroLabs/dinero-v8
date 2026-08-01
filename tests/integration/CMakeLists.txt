@@ -57,7 +57,9 @@ message(STATUS "Configuring Phase E.3 integration tests...")
 message(STATUS "Configuring Phase F.5 end-to-end tests...")
 
 # E2E Test Harness Library (requires curl)
-find_package(CURL QUIET)
+if(NOT TARGET CURL::libcurl)
+  find_package(CURL QUIET)
+endif()
 if(CURL_FOUND)
     add_library(e2e_test_harness STATIC
         e2e_test_harness.cpp
@@ -361,6 +363,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_reorg.sh)
         TIMEOUT 300
     )
     message(STATUS "  ✓ ScriptValidityReorg registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh)
+    add_test(
+        NAME RpcErrorEnvelope
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh
+    )
+    set_tests_properties(RpcErrorEnvelope PROPERTIES
+        LABELS "integration;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ RpcErrorEnvelope registered")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_tip_persist_restart_equivalence.sh)
