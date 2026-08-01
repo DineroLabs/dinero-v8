@@ -425,6 +425,12 @@ target_include_directories(dinero_crypto PUBLIC
   ${CMAKE_SOURCE_DIR}/external
 )
 
+# dinero_crypto compiles EVP, HMAC, RAND, and legacy hash wrappers directly.
+# Declare the dependency on the target so its configured headers and static
+# archive travel together; a source-tree header copy must never supply this
+# dependency implicitly.
+target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto)
+
 # macOS Security framework is required because dinero_crypto_minimal.cpp
 # calls SecRandomCopyBytes (Apple's CSPRNG). Declared INTERFACE so every
 # downstream target that links dinero_crypto (test executables, tools,
