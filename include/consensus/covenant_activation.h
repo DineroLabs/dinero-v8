@@ -2,14 +2,14 @@
 /**
  * Covenant Activation Parameters
  *
- * Height-based activation for Taproot script-path spending with covenant opcodes
- * (OP_CTV, OP_CHECKSIGFROMSTACK, OP_TXHASH, OP_CHECKCONTRACTVERIFY).
- *
- * Follows the same pattern as RingActivationParams.
+ * Authoritative, per-feature height activation for Taproot script-path
+ * spending and covenant opcodes.
  *
  * Activation rules:
- *   - Before activation: Taproot script-path spends are rejected (key-path only)
- *   - After activation: Script-path spends are accepted, covenant opcodes execute
+ *   - Script-path activation is independent from covenant activation.
+ *   - CTV retains NOP4 behavior before its own activation.
+ *   - Opcodes in BIP342 OP_SUCCESS slots retain immediate-success behavior
+ *     before their own activation.
  *   - Key-path Taproot spending is always allowed regardless of activation
  *   - Transparent (non-Taproot) transactions are never affected
  *
@@ -19,39 +19,44 @@
 
 #include <cstdint>
 #include "consensus/chainparams.h"
+#include "consensus/script_interpreter.h"
 
 namespace dinero {
 namespace consensus {
 
 struct CovenantActivationParams {
-    // Height at which Taproot script-path + covenant opcodes become valid.
-    // Before this height: script-path spends rejected, key-path only.
-    // After this height: full Tapscript execution with CTV/CSFS/TXHASH/CCV.
-    static constexpr uint32_t MAINNET_ACTIVATION_HEIGHT = 1;
-    static constexpr uint32_t TESTNET_ACTIVATION_HEIGHT = 200;
-    static constexpr uint32_t REGTEST_ACTIVATION_HEIGHT = 20;
-
-    /**
-     * Check if Taproot script-path spending (covenants) is active at the given height.
-     *
-     * @param height  Block height being validated
-     * @param chain   Network type (MAINNET, TESTNET, REGTEST)
-     * @return true if script-path + covenant opcodes are valid
-     */
-    static bool IsCovenantActive(uint32_t height, Chain chain) {
-        return height >= GetActivationHeight(chain);
+    static bool IsActive(uint32_t height, uint32_t activation_height) {
+        return activation_height != UINT32_MAX &&
+               height >= activation_height;
     }
 
-    /**
-     * Get the activation height for a given network.
-     */
-    static uint32_t GetActivationHeight(Chain chain) {
-        switch (chain) {
-            case Chain::MAINNET: return MAINNET_ACTIVATION_HEIGHT;
-            case Chain::TESTNET: return TESTNET_ACTIVATION_HEIGHT;
-            case Chain::REGTEST: return REGTEST_ACTIVATION_HEIGHT;
-            default: return MAINNET_ACTIVATION_HEIGHT;
+    static bool IsScriptPathActive(uint32_t height,
+                                   const ChainParams& params) {
+        return IsActive(height,
+                        params.taproot_scriptpath_activation_height);
+    }
+
+    static uint32_t CovenantFlags(uint32_t height,
+                                  const ChainParams& params) {
+        uint32_t flags = SCRIPT_VERIFY_NONE;
+        if (IsActive(height, params.ctv_activation_height)) {
+            flags |= SCRIPT_VERIFY_CHECKTEMPLATEVERIFY;
         }
+        if (IsActive(height, params.csfs_activation_height)) {
+            flags |= SCRIPT_VERIFY_CHECKSIGFROMSTACK;
+        }
+        if (IsActive(height, params.txhash_activation_height)) {
+            flags |= SCRIPT_VERIFY_TXHASH;
+        }
+        if (IsActive(height, params.ccv_activation_height)) {
+            flags |= SCRIPT_VERIFY_CHECKCONTRACT;
+        }
+        return flags;
+    }
+
+    static uint32_t StandardFlags(uint32_t height,
+                                  const ChainParams& params) {
+        return SCRIPT_VERIFY_STANDARD | CovenantFlags(height, params);
     }
 };
 

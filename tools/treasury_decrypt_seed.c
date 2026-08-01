@@ -12,19 +12,19 @@
  *
  * Build:
  *   cc -O2 -o treasury_decrypt_seed treasury_decrypt_seed.c \
- *      -I../../third_party/openssl-3.3.2/include \
- *      -L../../third_party/openssl-3.3.2 -lssl -lcrypto
+ *      -I"${OPENSSL_PREFIX}/include" -L"${OPENSSL_PREFIX}/lib" -lcrypto
  *
  * Usage:
  *   ./treasury_decrypt_seed <encrypted_blob_hex_248chars>
  */
 
-#include <openssl/sha.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 
 /* ───────────────────────────────────────────────────────────────────────
  * Broken HMAC-SHA512 — exact replica of the Linux bug.
@@ -34,40 +34,13 @@ static void broken_hmac_sha512(const uint8_t *key, size_t keylen,
                                const uint8_t *data, size_t datalen,
                                uint8_t out64[64])
 {
-    uint8_t key_buf[32];
-    const uint8_t *k = key;
-    size_t klen = keylen;
-
-    /* If key > 64 bytes, hash it first (standard HMAC rule) */
-    if (klen > 64) {
-        SHA256(k, klen, key_buf);
-        k = key_buf;
-        klen = 32;
+    unsigned int outlen = 0;
+    if (keylen > INT_MAX ||
+        HMAC(EVP_sha256(), key, (int)keylen, data, datalen, out64, &outlen) == NULL ||
+        outlen != 32) {
+        fputs("HMAC-SHA256 failed\n", stderr);
+        abort();
     }
-
-    uint8_t ipad[64], opad[64];
-    memset(ipad, 0x36, 64);
-    memset(opad, 0x5c, 64);
-
-    for (size_t i = 0; i < klen; i++) {
-        ipad[i] ^= k[i];
-        opad[i] ^= k[i];
-    }
-
-    /* Inner hash: SHA-256(ipad || data)  ← BUG: should be SHA-512 */
-    SHA256_CTX ctx;
-    uint8_t inner_hash[32];
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, ipad, 64);
-    SHA256_Update(&ctx, data, datalen);
-    SHA256_Final(inner_hash, &ctx);
-
-    /* Outer hash: SHA-256(opad || inner_hash) */
-    uint8_t outer[64 + 32];
-    memcpy(outer, opad, 64);
-    memcpy(outer + 64, inner_hash, 32);
-
-    SHA256(outer, 64 + 32, out64);
 
     /* Duplicate 32 bytes to fill 64  ← BUG */
     memcpy(out64 + 32, out64, 32);

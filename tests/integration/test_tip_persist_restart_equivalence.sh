@@ -105,6 +105,7 @@ start_node() {
         --wallet-socket-port="${WALLET_PORT}" \
         --listen=0 \
         --utreexo=1 \
+        --utreexo.checkpoint_interval=5 \
         --p2p.offline=1 \
         >"${log_file}" 2>&1 &
     PID=$!
@@ -150,12 +151,13 @@ assert_sync_state() {
     health="$(sync_health)"
     jq -e \
         --argjson expected_height "${expected_height}" \
+        --argjson expected_ckpt "$(( expected_height - (expected_height % 5) ))" \
         '
         .active_height == $expected_height and
         .chaindb_tip_height == $expected_height and
         .canonical_state_aligned == true and
         .latest_utreexo_checkpoint_found == true and
-        .latest_utreexo_checkpoint_height == $expected_height and
+        .latest_utreexo_checkpoint_height == $expected_ckpt and
         .latest_utreexo_checkpoint_has_checksum == true and
         .utreexo_checksum_version == "1" and
         .forest_tip_marker_found == true and
@@ -177,12 +179,13 @@ wait_for_sync_state() {
         health="$(sync_health)"
         if jq -e \
             --argjson expected_height "${expected_height}" \
+            --argjson expected_ckpt "$(( expected_height - (expected_height % 5) ))" \
             '
             .active_height == $expected_height and
             .chaindb_tip_height == $expected_height and
             .canonical_state_aligned == true and
             .latest_utreexo_checkpoint_found == true and
-            .latest_utreexo_checkpoint_height == $expected_height and
+            .latest_utreexo_checkpoint_height == $expected_ckpt and
             .latest_utreexo_checkpoint_has_checksum == true and
             .utreexo_checksum_version == "1" and
             .forest_tip_marker_found == true and

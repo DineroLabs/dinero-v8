@@ -347,6 +347,88 @@ const HeaderIndexEntry* HeaderChainSelector::GetHeader(const uint256& hash) cons
     return it->second.get();
 }
 
+bool HeaderChainSelector::GetBestHeaderCopy(HeaderIndexEntry& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!best_header_) {
+        return false;
+    }
+    out = *best_header_;
+    // Same rule as GetHeaderCopy: a copy never carries the parent pointer out.
+    out.parent = nullptr;
+    return true;
+}
+
+bool HeaderChainSelector::GetMedianTimePastByHash(const uint256& hash,
+                                                  uint32_t& mtp_out,
+                                                  uint32_t& height_out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = header_index_.find(hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+    // Safe to walk parents here: we hold the lock EvictBranch also takes, so no
+    // ancestor can be freed underneath the walk (#441).
+    mtp_out = it->second->GetMedianTimePast();
+    height_out = it->second->height;
+    return true;
+}
+
+bool HeaderChainSelector::GetHeaderAtHeightCopy(uint32_t height,
+                                                HeaderIndexEntry& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!best_header_) {
+        return false;
+    }
+    // Same resolution GetHeaderAtHeight() performs, but the result is copied
+    // before the lock is released rather than handed out as a pointer (#441).
+    const HeaderIndexEntry* entry = best_header_->GetAncestor(height);
+    if (!entry) {
+        return false;
+    }
+    out = *entry;
+    // Same rule as the other *Copy accessors: never let a copy carry the parent
+    // pointer out — parents are subject to the same eviction hazard.
+    out.parent = nullptr;
+    return true;
+}
+
+std::vector<uint256> HeaderChainSelector::BuildLocatorCopy(size_t max_entries) const {
+    std::vector<uint256> locator;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!best_header_ || max_entries == 0) {
+        return locator;
+    }
+
+    // Mirrors the previous GetHeaderLocator() walk exactly, but every step
+    // resolves under THIS lock, so no pointer escapes and the whole locator
+    // reflects one consistent chain state (#441).
+    locator.reserve(max_entries);
+
+    const HeaderIndexEntry* current = best_header_;
+    uint32_t height = best_header_->height;
+    uint32_t step = 1;
+
+    while (current != nullptr && locator.size() < max_entries) {
+        locator.push_back(current->hash);
+
+        if (height < step) {
+            break;
+        }
+        height -= step;
+
+        // Same resolution GetHeaderAtHeight() performs, but inline and still
+        // holding the lock.
+        current = best_header_->GetAncestor(height);
+
+        if (locator.size() > 1) {
+            step *= 2;
+        }
+    }
+
+    return locator;
+}
+
 bool HeaderChainSelector::GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = header_index_.find(hash);

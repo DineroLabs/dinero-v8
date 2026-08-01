@@ -57,8 +57,9 @@ target_include_directories(dinero_pq PRIVATE
 
 target_link_libraries(dinero_pq PRIVATE
     pqclean_ml_dsa_65
-    # HMAC-SHA256 + SHA-256 used by pq_derivation.cpp. OpenSSL::Crypto
-    # is imported in the root CMakeLists.txt before this subdir is added.
+    dinero_crypto     # CSHA256 leaf and request hashing
+    # HMAC-SHA256 used by pq_derivation.cpp. OpenSSL::Crypto is imported
+    # in the root CMakeLists.txt before this subdir is added.
     OpenSSL::Crypto
     # AES-GCM (aead_seed.cpp) + SQLite (v7_p2mr_store.cpp).
     sqlite3

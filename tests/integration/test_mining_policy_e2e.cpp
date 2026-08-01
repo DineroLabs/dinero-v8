@@ -51,9 +51,13 @@ protected:
 
 TEST_F(MiningPolicyE2ETest, MiningHappyPath_WalletOwnedAddress) {
     // Step 1: Start daemon with temp datadir
-    if (!daemon_->start()) {
-        GTEST_SKIP() << "MiningPolicyE2E requires a runnable dinerod daemon (not available in this environment)";
-    }
+    // Launch failure is a FAILURE, not a skip (issue #428). dinerod is a build
+    // dependency of this target and CMake passes its absolute path via DINEROD,
+    // so a daemon that will not start means something is broken — skipping here
+    // would let a registered test report green while testing nothing.
+    ASSERT_TRUE(daemon_->start())
+        << "dinerod failed to start (" << ResolveDinerodPath() << "); see the "
+           "daemon log above";
     std::cout << "[Test] ✅ Daemon started (RPC port: " << daemon_->getRpcPort() << ")" << std::endl;
     std::cout << "[Test] 📋 Daemon log: " << daemon_->getLogPath() << std::endl;
 
@@ -131,9 +135,13 @@ TEST_F(MiningPolicyE2ETest, MiningHappyPath_WalletOwnedAddress) {
 
 TEST_F(MiningPolicyE2ETest, MiningForeignAddressRejected) {
     // Step 1: Start daemon
-    if (!daemon_->start()) {
-        GTEST_SKIP() << "MiningPolicyE2E requires a runnable dinerod daemon (not available in this environment)";
-    }
+    // Launch failure is a FAILURE, not a skip (issue #428). dinerod is a build
+    // dependency of this target and CMake passes its absolute path via DINEROD,
+    // so a daemon that will not start means something is broken — skipping here
+    // would let a registered test report green while testing nothing.
+    ASSERT_TRUE(daemon_->start())
+        << "dinerod failed to start (" << ResolveDinerodPath() << "); see the "
+           "daemon log above";
     std::cout << "[Test] ✅ Daemon started" << std::endl;
 
     // Step 2: Create RPC client
@@ -182,9 +190,13 @@ TEST_F(MiningPolicyE2ETest, MiningForeignAddressRejected) {
 TEST_F(MiningPolicyE2ETest, MiningWithoutAddressRejected) {
     // Note: Daemon auto-creates "default" wallet, so we test missing address instead
     // Step 1: Start daemon
-    if (!daemon_->start()) {
-        GTEST_SKIP() << "MiningPolicyE2E requires a runnable dinerod daemon (not available in this environment)";
-    }
+    // Launch failure is a FAILURE, not a skip (issue #428). dinerod is a build
+    // dependency of this target and CMake passes its absolute path via DINEROD,
+    // so a daemon that will not start means something is broken — skipping here
+    // would let a registered test report green while testing nothing.
+    ASSERT_TRUE(daemon_->start())
+        << "dinerod failed to start (" << ResolveDinerodPath() << "); see the "
+           "daemon log above";
     std::cout << "[Test] ✅ Daemon started" << std::endl;
 
     // Step 2: Create RPC client
@@ -223,9 +235,13 @@ TEST_F(MiningPolicyE2ETest, MiningWithoutAddressRejected) {
 
 TEST_F(MiningPolicyE2ETest, MiningLockedWalletRejected) {
     // Step 1: Start daemon
-    if (!daemon_->start()) {
-        GTEST_SKIP() << "MiningPolicyE2E requires a runnable dinerod daemon (not available in this environment)";
-    }
+    // Launch failure is a FAILURE, not a skip (issue #428). dinerod is a build
+    // dependency of this target and CMake passes its absolute path via DINEROD,
+    // so a daemon that will not start means something is broken — skipping here
+    // would let a registered test report green while testing nothing.
+    ASSERT_TRUE(daemon_->start())
+        << "dinerod failed to start (" << ResolveDinerodPath() << "); see the "
+           "daemon log above";
     std::cout << "[Test] ✅ Daemon started" << std::endl;
 
     // Step 2: Create RPC client
@@ -277,9 +293,13 @@ TEST_F(MiningPolicyE2ETest, MiningLockedWalletRejected) {
 
 TEST_F(MiningPolicyE2ETest, MiningStopIsIdempotent) {
     // Step 1: Start daemon
-    if (!daemon_->start()) {
-        GTEST_SKIP() << "MiningPolicyE2E requires a runnable dinerod daemon (not available in this environment)";
-    }
+    // Launch failure is a FAILURE, not a skip (issue #428). dinerod is a build
+    // dependency of this target and CMake passes its absolute path via DINEROD,
+    // so a daemon that will not start means something is broken — skipping here
+    // would let a registered test report green while testing nothing.
+    ASSERT_TRUE(daemon_->start())
+        << "dinerod failed to start (" << ResolveDinerodPath() << "); see the "
+           "daemon log above";
     std::cout << "[Test] ✅ Daemon started" << std::endl;
 
     // Step 2: Create RPC client
@@ -325,9 +345,13 @@ TEST_F(MiningPolicyE2ETest, MiningStopIsIdempotent) {
 
 TEST_F(MiningPolicyE2ETest, MiningDoesNotAutoResumeAfterRestart) {
     // Step 1: Start daemon
-    if (!daemon_->start()) {
-        GTEST_SKIP() << "MiningPolicyE2E requires a runnable dinerod daemon (not available in this environment)";
-    }
+    // Launch failure is a FAILURE, not a skip (issue #428). dinerod is a build
+    // dependency of this target and CMake passes its absolute path via DINEROD,
+    // so a daemon that will not start means something is broken — skipping here
+    // would let a registered test report green while testing nothing.
+    ASSERT_TRUE(daemon_->start())
+        << "dinerod failed to start (" << ResolveDinerodPath() << "); see the "
+           "daemon log above";
     std::cout << "[Test] ✅ Daemon started" << std::endl;
 
     // Step 2: Create RPC client
@@ -379,9 +403,13 @@ TEST_F(MiningPolicyE2ETest, MiningDoesNotAutoResumeAfterRestart) {
 
 TEST_F(MiningPolicyE2ETest, MiningResumesOnlyAfterExplicitStart) {
     // Step 1: Start daemon
-    if (!daemon_->start()) {
-        GTEST_SKIP() << "MiningPolicyE2E requires a runnable dinerod daemon (not available in this environment)";
-    }
+    // Launch failure is a FAILURE, not a skip (issue #428). dinerod is a build
+    // dependency of this target and CMake passes its absolute path via DINEROD,
+    // so a daemon that will not start means something is broken — skipping here
+    // would let a registered test report green while testing nothing.
+    ASSERT_TRUE(daemon_->start())
+        << "dinerod failed to start (" << ResolveDinerodPath() << "); see the "
+           "daemon log above";
 
     // Step 2: Create RPC client
     std::string cookie = daemon_->readCookie();
