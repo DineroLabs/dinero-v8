@@ -215,17 +215,23 @@ preconditions, and transcript.
 
 ## 6. Reproduction
 
-Fetch the exact PR stack and record its head:
+Fetch the exact candidate and current base, then record both commits:
 
 ```sh
 git fetch origin \
-  fix/shielded-generator-fail-closed \
-  codex/fix-shielded-range-container-bounds \
+  dinero-main \
   codex/docs-shielded-protocol-v1
 git checkout --detach origin/codex/docs-shielded-protocol-v1
 git rev-parse HEAD
+git merge-base --is-ancestor origin/dinero-main HEAD
 git submodule status --recursive
 ```
+
+The generator fail-closed remediation (#414) and range-container bounds fix
+(#432) are already merged into `dinero-main` and incorporated in this candidate;
+their retired feature branches are not separate audit dependencies. Record the
+candidate HEAD and `origin/dinero-main` commit reviewed so the report remains
+reproducible if either branch later advances.
 
 Configure and build using the repository's supported OpenSSL baseline. Then run
 the focused consensus evidence:
