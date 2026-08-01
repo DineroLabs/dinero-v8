@@ -2,8 +2,8 @@
 
 This is the canonical Dinero source repository.
 
-[![Release](https://img.shields.io/badge/release-v8.0.0--rc-blue)](https://github.com/DineroLabs/dinero-v8/releases)
-[![Status](https://img.shields.io/badge/status-release--candidate-blue)](https://github.com/DineroLabs/dinero-v8/releases)
+[![Release](https://img.shields.io/badge/release-v8.0.18-blue)](https://github.com/DineroLabs/dinero-v8/releases/tag/v8.0.18)
+[![Status](https://img.shields.io/badge/status-stable-brightgreen)](https://github.com/DineroLabs/dinero-v8/releases/tag/v8.0.18)
 [![Website](https://img.shields.io/badge/site-dinerolabs.org-blue)](https://dinerolabs.org)
 
 Dinero v8 is the current release lane for the daemon, CLI, Qt desktop wallet,
@@ -15,7 +15,7 @@ working directly with the v8 source tree.
 
 ## Current Downloads
 
-Use the latest `v8.0.0-rc*` release from:
+Use the current stable `v8.0.18` release from:
 
 - [Dinero v8 releases](https://github.com/DineroLabs/dinero-v8/releases)
 - [dinerolabs.org](https://dinerolabs.org)
@@ -50,7 +50,7 @@ cmake --build build
 ```
 
 For headless Linux/server installs, prefer the installer and release notes
-published with the current release candidate.
+published with the current stable release.
 
 ## Repository History
 
@@ -582,7 +582,7 @@ At this point you have exercised the core Dinero v8 daemon/CLI flow:
 - Run local test mining when using regtest
 - Use the same RPC surfaces that the mainnet v8 release line exposes
 
-For mainnet or operator deployments, use the current signed release candidate
+For mainnet or operator deployments, use the current stable release
 from the Dinero v8 releases page and verify the published checksums.
 
 ---
@@ -596,6 +596,6 @@ from the Dinero v8 releases page and verify the published checksums.
 
 ---
 
-*Last updated: June 9, 2026*
-*Dinero Version: **v8.0.0 release candidate line***
+*Last updated: July 28, 2026*
+*Dinero Version: **v8.0.18 stable***
 *Release: [Dinero v8 releases](https://github.com/DineroLabs/dinero-v8/releases)*

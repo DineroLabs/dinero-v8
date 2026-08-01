@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build vendored OpenSSL 3.3.2 for iOS device + simulator slices, installing
+# Build vendored OpenSSL for iOS device + simulator slices, installing
 # into the cache layout the ShieldedProverKit xcframework packager consumes:
 #
-#   third_party/openssl-3.3.2/prebuilt/ios-arm64/{libcrypto.a,libssl.a,include/openssl/}
-#   third_party/openssl-3.3.2/prebuilt/ios-simulator-arm64/{...}
+#   third_party/openssl-<version>/prebuilt/ios-arm64/{libcrypto.a,libssl.a,include/openssl/}
+#   third_party/openssl-<version>/prebuilt/ios-simulator-arm64/{...}
+#
+# Version follows the repository-wide crypto baseline (owner policy
+# 2026-07-29): 3.5.7 everywhere a shipped configuration links OpenSSL.
+# The source tarball is downloaded and SHA-256-verified when absent.
 #
 # Mirrors the inline iOS-OpenSSL logic in build_nodecore_xcframework.sh so the
 # shielded-prover-kit lane can run a one-shot prerequisite instead of the full
@@ -14,7 +18,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-OPENSSL_SRC="${ROOT_DIR}/third_party/openssl-3.3.2"
+OPENSSL_VERSION="${OPENSSL_VERSION:-3.5.7}"
+OPENSSL_SRC="${ROOT_DIR}/third_party/openssl-${OPENSSL_VERSION}"
+OPENSSL_SHA256_3_5_7="a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
 IOS_DEPLOY_TARGET="${IOS_DEPLOY_TARGET:-15.0}"
 NCPU="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
@@ -27,7 +33,19 @@ require() { command -v "$1" >/dev/null 2>&1 || die "$1 not found"; }
 require xcrun
 require make
 require perl
-[ -f "${OPENSSL_SRC}/Configure" ] || die "OpenSSL source not found at ${OPENSSL_SRC}"
+ensure_source() {
+    [ -f "${OPENSSL_SRC}/Configure" ] && return 0
+    [ "${OPENSSL_VERSION}" = "3.5.7" ] || die "OpenSSL source not found at ${OPENSSL_SRC} and no pinned SHA for ${OPENSSL_VERSION}"
+    echo "==> Downloading openssl-${OPENSSL_VERSION}.tar.gz (pinned SHA-256)"
+    local tarball="${ROOT_DIR}/third_party/openssl-${OPENSSL_VERSION}.tar.gz"
+    curl -fsSL -o "${tarball}" \
+        "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+    echo "${OPENSSL_SHA256_3_5_7}  ${tarball}" | shasum -a 256 -c - \
+        || die "openssl-${OPENSSL_VERSION}.tar.gz SHA-256 mismatch"
+    tar -xzf "${tarball}" -C "${ROOT_DIR}/third_party/"
+    [ -f "${OPENSSL_SRC}/Configure" ] || die "extraction did not produce ${OPENSSL_SRC}/Configure"
+}
+ensure_source
 
 clean_openssl_tree() {
     # MUST exclude prebuilt/ because it lives inside OPENSSL_SRC and holds

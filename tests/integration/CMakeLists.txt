@@ -98,21 +98,27 @@ if(CURL_FOUND AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_mining_polic
         ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
     )
 
-    find_program(DINEROD_BINARY dinerod
-        PATHS ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}
-        NO_DEFAULT_PATH
+    # Registration is UNCONDITIONAL (issue #428). The previous gate was a
+    # configure-time find_program(DINEROD_BINARY dinerod PATHS <src> <build>),
+    # which on a clean checkout always fails — configure runs before build, so
+    # ${CMAKE_BINARY_DIR}/dinerod does not exist yet. CI therefore never
+    # REGISTERED this test or ColdStartConsensus: they did not fail, they
+    # silently did not exist, which is how #413 survived for months. It also
+    # made coverage build-order dependent: the tests appeared only if some
+    # dinerod happened to be findable when cmake last ran.
+    #
+    # dinerod is an in-tree target, so its path is known at configure time
+    # regardless of build order. Depend on the target and hand the harness the
+    # absolute path via the DINEROD environment variable — no PATH lookup, no
+    # reliance on the process working directory.
+    add_dependencies(test_mining_policy_e2e dinerod)
+    add_test(NAME MiningPolicyE2E COMMAND test_mining_policy_e2e)
+    set_tests_properties(MiningPolicyE2E PROPERTIES
+        LABELS "e2e;mining;policy;f5;e2e-daemon"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 120
     )
-
-    if(DINEROD_BINARY OR EXISTS ${CMAKE_SOURCE_DIR}/dinerod)
-        add_test(NAME MiningPolicyE2E COMMAND test_mining_policy_e2e)
-        set_tests_properties(MiningPolicyE2E PROPERTIES
-            LABELS "e2e;mining;policy;f5"
-            TIMEOUT 120
-        )
-        message(STATUS "  ✓ MiningPolicyE2E registered (dinerod found at: ${CMAKE_SOURCE_DIR}/dinerod)")
-    else()
-        message(STATUS "  ⊘ MiningPolicyE2E skipped (dinerod not available)")
-    endif()
+    message(STATUS "  ✓ MiningPolicyE2E registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
 # Shared RPC authcookie resolution regression for WebSocket/HTTP auth.
@@ -279,6 +285,84 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_invalidity_import_equivalence.sh)
         TIMEOUT 240
     )
     message(STATUS "  ✓ InvalidityImportEquivalence registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_durability.sh)
+    add_test(
+        NAME ScriptValidityDurability
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_durability.sh
+    )
+    set_tests_properties(ScriptValidityDurability PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ScriptValidityDurability registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_crash_ordering.sh)
+    add_test(
+        NAME ScriptValidityCrashOrdering
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_crash_ordering.sh
+    )
+    set_tests_properties(ScriptValidityCrashOrdering PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ScriptValidityCrashOrdering registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate.sh)
+    add_test(
+        NAME MineAfterInvalidate
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate.sh
+    )
+    set_tests_properties(MineAfterInvalidate PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ MineAfterInvalidate registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate_restart.sh)
+    add_test(
+        NAME MineAfterInvalidateRestart
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate_restart.sh
+    )
+    set_tests_properties(MineAfterInvalidateRestart PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 420
+    )
+    message(STATUS "  ✓ MineAfterInvalidateRestart registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_fork_block_status_restart.sh)
+    add_test(
+        NAME ForkBlockStatusRestart
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_fork_block_status_restart.sh
+    )
+    set_tests_properties(ForkBlockStatusRestart PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ForkBlockStatusRestart registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh)
+    add_test(
+        NAME RpcErrorEnvelope
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh
+    )
+    set_tests_properties(RpcErrorEnvelope PROPERTIES
+        LABELS "integration;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ RpcErrorEnvelope registered")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_tip_persist_restart_equivalence.sh)
@@ -688,6 +772,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_createrawtransaction_scriptpub
     )
     message(STATUS "  ✓ WalletCreateRawTransactionScriptPubKeyOutputs registered")
 endif()
+
+add_test(
+    NAME CovenantWalletMultinodeLifecycle
+    COMMAND ${CMAKE_COMMAND} -E env
+        "DINEROD=$<TARGET_FILE:dinerod>"
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_covenant_wallet_multinode_lifecycle.sh
+)
+set_tests_properties(CovenantWalletMultinodeLifecycle PROPERTIES
+    LABELS "integration;covenant;wallet;rpc;multinode;relay;restart;reorg;regtest;serial"
+    TIMEOUT 360
+    RUN_SERIAL TRUE
+)
+message(STATUS "  ✓ CovenantWalletMultinodeLifecycle registered unconditionally")
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_listunspent_excludes_mempool_spent.sh)
     add_test(
@@ -1602,17 +1699,23 @@ if(CURL_FOUND AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/cold_start_test.cpp)
         ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
     )
 
-    # Only register test if dinerod binary is available
-    if(DINEROD_BINARY OR EXISTS ${CMAKE_SOURCE_DIR}/dinerod)
-        add_test(NAME ColdStartConsensus COMMAND test_cold_start)
-        set_tests_properties(ColdStartConsensus PROPERTIES
-            LABELS "e2e;consensus;cold-start"
-            TIMEOUT 180
-        )
-        message(STATUS "  ✓ ColdStartConsensus test registered")
-    else()
-        message(STATUS "  ⊘ ColdStartConsensus skipped (dinerod not available)")
-    endif()
+    # Registration is UNCONDITIONAL (issue #428) — see the MiningPolicyE2E block
+    # above for why the old configure-time find_program gate could never fire in
+    # CI.
+    #
+    # NOTE: this deliberately carries NO WORKING_DIRECTORY. PR #427 added one so
+    # the harness's relative "./dinerod" would resolve; that mechanism is now
+    # superseded. The harness takes the absolute daemon path from the DINEROD
+    # environment variable below, so the test no longer depends on the process
+    # working directory at all. Do not reintroduce a CWD assumption here.
+    add_dependencies(test_cold_start dinerod)
+    add_test(NAME ColdStartConsensus COMMAND test_cold_start)
+    set_tests_properties(ColdStartConsensus PROPERTIES
+        LABELS "e2e;consensus;cold-start;e2e-daemon"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 180
+    )
+    message(STATUS "  ✓ ColdStartConsensus registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
 # Disable the POSIX-only .sh ctest entries registered above when building on
@@ -1642,6 +1745,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         TaprootSignRawTransactionRbfConfirmation
         ParentChildRbfReplacementWithMempoolParent
         WalletCreateRawTransactionScriptPubKeyOutputs
+        CovenantWalletMultinodeLifecycle
         WalletListUnspentExcludesMempoolSpent
         RbfPolicyReporting FilterCommitmentActivationBoundary
         ExternalMinerCoinbaseTxnFilterCommitment

@@ -17,6 +17,7 @@
 
 #include "consensus/pq/ml_dsa_65.h"
 #include "consensus/pq/scheme_registry.h"
+#include "crypto/sha256.h"
 #include "wallet/aead_seed.h"
 #include "wallet/p2mr_address.h"
 #include "wallet/pq_derivation.h"
@@ -25,7 +26,6 @@
 
 #include <cstring>
 #include <openssl/crypto.h>
-#include <openssl/sha.h>
 #include <string>
 
 namespace dinero::rpc::v7 {
@@ -49,11 +49,10 @@ std::string BuildDerivationPath(int account, int change, int address_index) {
 
 std::array<uint8_t, 32> LeafHash(uint8_t scheme_id, const mldsa::PublicKey& pk) {
     std::array<uint8_t, 32> out{};
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, &scheme_id, 1);
-    SHA256_Update(&ctx, pk.data(), pk.size());
-    SHA256_Final(out.data(), &ctx);
+    dinero::crypto::CSHA256()
+        .Write(&scheme_id, 1)
+        .Write(pk.data(), pk.size())
+        .Finalize(out.data());
     return out;
 }
 

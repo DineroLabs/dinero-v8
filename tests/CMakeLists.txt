@@ -752,6 +752,86 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_empty_rangeproof_inf
   )
 endif()
 
+# Behavior-matrix regression for the canonical sync snapshot (#439). Pure logic:
+# includes only consensus/header_convergence.h, so it links nothing heavy and
+# runs in milliseconds. See docs/architecture/sync-state-behavior-matrix.md.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_sync_snapshot_matrix.cpp)
+  add_executable(test_sync_snapshot_matrix
+    tests/consensus/test_sync_snapshot_matrix.cpp
+    src/primitives/uint256.cpp   # uint256::operator== is out-of-line
+  )
+  target_include_directories(test_sync_snapshot_matrix PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(
+    NAME SyncSnapshotBehaviorMatrix
+    COMMAND test_sync_snapshot_matrix
+  )
+  set_tests_properties(SyncSnapshotBehaviorMatrix PROPERTIES
+    LABELS "consensus;sync;headers;mandatory"
+    TIMEOUT 60
+  )
+endif()
+
+# Security regression: consensus shielded validation must FAIL CLOSED when the
+# Pedersen generators are unavailable, and the daemon must refuse to start in
+# that state rather than silently rejecting every shielded bundle above the
+# input-binding activation height (which forks the node off the network).
+#
+# Generator derivation is a std::call_once singleton over a compile-time DST, so
+# the failure cannot be produced legitimately. This target compiles
+# pedersen_generators.cpp directly with DINERO_ENABLE_TEST_HOOKS to get the
+# override seam. Compiling that translation unit here also means it defines every
+# symbol the dinero_shielded archive member defines, so the archive member is
+# never pulled in and there is no duplicate-symbol clash. The definition is set
+# ONLY on this target — production libraries and the daemon never see it.
+#
+# CONSTRAINT: that no-clash property holds only while this translation unit
+# defines exactly the symbols the archive member defines. If someone adds a
+# symbol to pedersen_generators.cpp that another dinero_shielded member
+# references, the linker pulls the archive member back in and this target fails
+# with a duplicate-symbol error. Fix it by adding the new symbol's dependencies
+# here, not by dropping the direct compile.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_generator_failclosed.cpp)
+  add_executable(test_shielded_generator_failclosed
+    tests/consensus/test_shielded_generator_failclosed.cpp
+    ${CMAKE_SOURCE_DIR}/src/consensus/shielded/pedersen_generators.cpp
+  )
+  target_compile_definitions(test_shielded_generator_failclosed PRIVATE
+    DINERO_ENABLE_TEST_HOOKS
+  )
+  target_link_libraries(test_shielded_generator_failclosed PRIVATE
+    dinero_shielded
+    dinero_consensus
+    dinero_zk
+    dinero_crypto
+    OpenSSL::Crypto
+    OpenSSL::SSL
+    pthread
+    sqlite3
+  )
+  link_zstd_if_needed(test_shielded_generator_failclosed)
+  target_include_directories(test_shielded_generator_failclosed PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_generator_failclosed PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(
+    NAME ShieldedGeneratorFailClosed
+    COMMAND test_shielded_generator_failclosed
+  )
+  set_tests_properties(ShieldedGeneratorFailClosed PROPERTIES
+    LABELS "shielded;security;inflation;mandatory"
+    TIMEOUT 120
+  )
+endif()
+
 # Security regression: untrusted CompactSize counts in the shielded-bundle
 # deserializer must be capped before resize() (remote-OOM fix).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_serialization_oom.cpp)
@@ -1651,6 +1731,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/pedersen_tests.cpp)
     $<TARGET_FILE:gtest_main>
     dinero_shielded
     secp256k1
+    OpenSSL::Crypto
   )
   target_include_directories(test_pedersen BEFORE PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
@@ -2525,6 +2606,70 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   message(STATUS "✅ Ring 3 Phase 4c: TS1 integration test (production P2PManager)")
 else()
   message(WARNING "⚠️  Ring 3 Phase 4c TS1 integration test not found - skipping")
+endif()
+
+# Keepalive idle-peer reaping policy (P2PManager::classify_idle_peer):
+# fake-clock regression pinning the 90s boundary, the last_message_at
+# refresh, and the deliberate silent-outbound exemption. Mirrors the TS1
+# target's dependency list — the one proven to link p2p_manager.cpp
+# standalone.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_idle_peer_reap.cpp)
+  add_executable(test_p2p_idle_peer_reap
+    tests/p2p/test_p2p_idle_peer_reap.cpp
+    src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
+    src/network/relay_tls_keypair.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  if(APPLE)
+    target_link_libraries(test_p2p_idle_peer_reap PRIVATE
+      GTest::gtest
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_p2p_idle_peer_reap PRIVATE
+      GTest::gtest
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_p2p_idle_peer_reap PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_p2p_idle_peer_reap PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_p2p_idle_peer_reap PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  target_include_directories(test_p2p_idle_peer_reap PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+  )
+
+  add_test(NAME P2PIdlePeerReap COMMAND test_p2p_idle_peer_reap)
+  set_tests_properties(P2PIdlePeerReap PROPERTIES
+    LABELS "network;p2p;keepalive;smoke"
+    TIMEOUT 10  # pure fake-clock policy test — no sockets, no sleeps
+  )
 endif()
 
 # Focused build target for the relay/QUIC transport gate. CTest does not
@@ -4149,6 +4294,240 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_covenants.cpp)
     target_link_directories(test_covenants PRIVATE /opt/homebrew/lib)
   endif()
   add_test(NAME CovenantTests COMMAND test_covenants)
+endif()
+
+# BIP119 compatibility vectors exercise the production CTV hash implementation
+# independently of Dinero's wallet/RPC constructors.
+add_executable(test_bip119_ctv_vectors
+  tests/consensus/test_bip119_ctv_vectors.cpp
+)
+add_dependencies(test_bip119_ctv_vectors gtest gtest_main)
+target_link_libraries(test_bip119_ctv_vectors PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_bip119_ctv_vectors)
+target_include_directories(test_bip119_ctv_vectors PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME BIP119CTVVectors COMMAND test_bip119_ctv_vectors)
+set_tests_properties(BIP119CTVVectors PROPERTIES
+  LABELS "consensus;covenant;ctv"
+  TIMEOUT 10
+)
+
+add_executable(test_taproot_scriptpath_consensus
+  tests/consensus/test_taproot_scriptpath_consensus.cpp
+)
+add_dependencies(test_taproot_scriptpath_consensus gtest gtest_main)
+target_link_libraries(test_taproot_scriptpath_consensus PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_taproot_scriptpath_consensus)
+target_include_directories(test_taproot_scriptpath_consensus PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME TaprootScriptPathConsensus
+  COMMAND test_taproot_scriptpath_consensus)
+set_tests_properties(TaprootScriptPathConsensus PROPERTIES
+  LABELS "consensus;taproot;scriptpath;covenant"
+  TIMEOUT 10
+)
+
+add_executable(test_bip341_sighash_vectors
+  tests/consensus/test_bip341_sighash_vectors.cpp
+)
+add_dependencies(test_bip341_sighash_vectors gtest gtest_main)
+target_link_libraries(test_bip341_sighash_vectors PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_bip341_sighash_vectors)
+target_include_directories(test_bip341_sighash_vectors PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME BIP341SighashVectors COMMAND test_bip341_sighash_vectors)
+set_tests_properties(BIP341SighashVectors PROPERTIES
+  LABELS "consensus;taproot;sighash"
+  TIMEOUT 10
+)
+
+add_executable(test_covenant_activation
+  tests/consensus/test_covenant_activation.cpp
+)
+add_dependencies(test_covenant_activation gtest gtest_main)
+target_link_libraries(test_covenant_activation PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_covenant_activation)
+target_include_directories(test_covenant_activation PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CovenantActivation COMMAND test_covenant_activation)
+set_tests_properties(CovenantActivation PROPERTIES
+  LABELS "consensus;covenant;activation"
+  TIMEOUT 10
+)
+
+add_executable(test_covenant_system_lifecycle
+  tests/consensus/test_covenant_system_lifecycle.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+target_link_libraries(test_covenant_system_lifecycle PRIVATE
+  dinero_core
+  dinero_consensus
+  dinero_pq
+  dinero_shielded
+  dinero_chainstate
+  dinero_crypto
+  secp256k1
+  ${ROCKSDB_LIBRARY}
+  ${SQLITE3_LIBRARIES}
+  GTest::gtest
+  GTest::gtest_main
+)
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(
+    test_covenant_system_lifecycle PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(
+      test_covenant_system_lifecycle build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_covenant_system_lifecycle)
+target_include_directories(test_covenant_system_lifecycle PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_covenant_system_lifecycle PRIVATE
+    "-framework Security"
+    "-framework CoreFoundation"
+  )
+endif()
+add_test(
+  NAME CovenantSystemLifecycle
+  COMMAND test_covenant_system_lifecycle)
+set_tests_properties(CovenantSystemLifecycle PROPERTIES
+  LABELS "consensus;covenant;activation;mempool;mining;reorg;restart"
+  TIMEOUT 30
+)
+
+add_executable(benchmark_covenant_validation
+  tests/benchmarks/benchmark_covenant_validation.cpp
+)
+target_link_libraries(benchmark_covenant_validation PRIVATE
+  dinero_consensus
+  dinero_crypto
+  secp256k1
+)
+target_include_directories(benchmark_covenant_validation PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+
+add_executable(test_ccv_successor_binding
+  tests/consensus/test_ccv_successor_binding.cpp
+)
+add_dependencies(test_ccv_successor_binding gtest gtest_main)
+target_link_libraries(test_ccv_successor_binding PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_ccv_successor_binding)
+target_include_directories(test_ccv_successor_binding PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CcvSuccessorBinding COMMAND test_ccv_successor_binding)
+set_tests_properties(CcvSuccessorBinding PROPERTIES
+  LABELS "consensus;covenant;ccv;scriptpath"
+  TIMEOUT 10
+)
+
+# Production wallet construction and checksummed recovery descriptors for the
+# regtest-active profile. The test feeds every constructed spend back through
+# the consensus Taproot verifier; construction never substitutes validation.
+add_executable(test_covenant_profile_wallet
+  tests/wallet/test_covenant_profile.cpp
+)
+add_dependencies(test_covenant_profile_wallet gtest gtest_main)
+target_link_libraries(test_covenant_profile_wallet PRIVATE
+  dinero_wallet
+  dinero_consensus
+  dinero_crypto
+  secp256k1
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_covenant_profile_wallet)
+target_include_directories(test_covenant_profile_wallet PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CovenantProfileWallet COMMAND test_covenant_profile_wallet)
+set_tests_properties(CovenantProfileWallet PROPERTIES
+  LABELS "wallet;covenant;ctv;ccv;recovery"
+  TIMEOUT 15
+)
+
+if(NOT WIN32)
+  add_executable(test_covenant_wallet_recovery
+    tests/wallet/test_covenant_wallet_recovery.cpp
+    src/daemon/lightning_stubs.cpp
+    tests/stubs/mempool_test_stubs.cpp
+  )
+  add_dependencies(test_covenant_wallet_recovery gtest gtest_main)
+  target_link_libraries(test_covenant_wallet_recovery PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::Crypto
+    secp256k1
+    RocksDB::rocksdb
+    sqlite3
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_covenant_wallet_recovery)
+  target_include_directories(test_covenant_wallet_recovery PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  if(APPLE)
+    target_link_libraries(
+      test_covenant_wallet_recovery PRIVATE "-framework Security")
+  endif()
+  add_test(
+    NAME CovenantWalletRecovery
+    COMMAND test_covenant_wallet_recovery)
+  set_tests_properties(CovenantWalletRecovery PROPERTIES
+    LABELS "wallet;covenant;recovery;persistence;migration"
+    TIMEOUT 30
+  )
 endif()
 
 # Phase 29: Covenant Integration Layer Tests

@@ -116,7 +116,7 @@ if echo "$ENCRYPTED_IMPORT" | jq -e '.result.success' | grep -q "true"; then
     
 else
     echo "❌ Real encrypted key import failed"
-    echo "Error: $(echo "$ENCRYPTED_IMPORT" | jq -r '.result.error')"
+    echo "Error: $(echo "$ENCRYPTED_IMPORT" | jq -r '.error.message? // .error // .result.error.message? // .result.error // "unknown"')"
     
     # Show daemon logs for debugging
     echo ""

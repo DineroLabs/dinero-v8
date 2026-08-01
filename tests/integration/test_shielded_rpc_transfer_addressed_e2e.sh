@@ -128,14 +128,15 @@ pass "shield confirmed; tree_size=${TREE_BEFORE}, balance_una=${BAL_BEFORE_UNA}"
 # Negative: address without amount → invalid_params.
 info "Negative: address without amount"
 NA_RES="$(rpc_call "wallet.transfer" "{\"fee_una\": 20000, \"address\": \"${RECIPIENT_ADDR}\"}")"
-echo "${NA_RES}" | jq -e '.result.error == "invalid_params"' >/dev/null \
+# #458 envelope migration: accept both nested and top-level error shapes.
+echo "${NA_RES}" | jq -e '(.error.message // .result.error) == "invalid_params"' >/dev/null \
     || fail "address-without-amount should be invalid_params: ${NA_RES}"
 pass "address-without-amount rejected"
 
 # Negative: bad HRP (taproot din1 mishosed in shielded slot).
 info "Negative: non-shielded HRP rejected"
 BAD_HRP_RES="$(rpc_call "wallet.transfer" "{\"fee_una\": 20000, \"amount_una\": 10000, \"address\": \"din1pqyqsywdkqz4dz9hfff9zfwryjs4khufprr2elx2qedlcz4cyk67r3qq2yzg2v\"}")"
-echo "${BAD_HRP_RES}" | jq -e '.result.error == "attach_transfer_failed"' >/dev/null \
+echo "${BAD_HRP_RES}" | jq -e '(.error.message // .result.error) == "attach_transfer_failed"' >/dev/null \
     || fail "din1p HRP should be rejected by addressed transfer: ${BAD_HRP_RES}"
 pass "non-shielded HRP rejected by addressed transfer"
 

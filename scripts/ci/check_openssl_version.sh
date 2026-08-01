@@ -7,11 +7,13 @@
 # unsupported or unexpected OpenSSL versions instead of discovering them
 # in a shipped binary.
 #
-# Checks two layers:
+# Checks three layers:
 #   1. The vendored source the build consumed: OPENSSL_FULL_VERSION_STR in
 #      third_party/openssl-<expected>/ must equal the expected version.
-#   2. The built dinerod binary: the statically-linked OpenSSL embeds its
-#      version string; it must contain "OpenSSL <expected>" and must NOT
+#   2. The selected static archive and the header resolved by a production
+#      compile command must both equal the expected version.
+#   3. The built dinerod binary: when the statically-linked OpenSSL embeds a
+#      version string, it must contain "OpenSSL <expected>" and must NOT
 #      contain any other "OpenSSL 3.x.y" version.
 #
 # Usage: check_openssl_version.sh <build-dir> [expected-version]
@@ -34,7 +36,7 @@ if [[ -n "$HDR" ]]; then
         || fail "vendored ${HDR} does not declare ${EXPECTED}"
     echo "vendored headers declare OpenSSL ${EXPECTED} (${HDR})"
 else
-    echo "note: no vendored opensslv.h found for ${EXPECTED} — relying on binary check"
+    echo "note: no repository-local vendored opensslv.h found for ${EXPECTED} — relying on consumed-library and compiler-resolution checks"
 fi
 
 # Layer 2: the library the build ACTUALLY consumed, per CMakeCache. This is
@@ -72,6 +74,13 @@ else
             || fail "libcrypto at ${lc} embeds '${AF:-nothing}', expected exactly 'OpenSSL ${EXPECTED}'"
     done
     echo "consumed libraries verified: ${#LIBS[@]} prebuilt libcrypto.a slice(s) embed exactly OpenSSL ${EXPECTED}"
+
+    # Layer 2b: preprocess opensslv.h using the exact include ordering from a
+    # production target. Checking the configured OPENSSL_INCLUDE_DIR alone is
+    # insufficient: a generic include directory can shadow it, causing older
+    # headers to compile against the selected library.
+    python3 scripts/ci/check_openssl_header_resolution.py \
+        "${BUILD_DIR}" "${EXPECTED}"
 fi
 
 # Layer 3: the built binary — decisive when a version string IS embedded

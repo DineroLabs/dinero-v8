@@ -41,32 +41,35 @@ void WriteCompactSize(std::vector<uint8_t>& out, uint64_t v) {
     }
 }
 
-bool ReadCompactSize(const uint8_t*& p, const uint8_t* end, uint64_t& out) {
-    if (p >= end) return false;
-    uint8_t first = *p++;
+bool ReadCompactSize(const std::vector<uint8_t>& bytes,
+                     size_t& offset,
+                     uint64_t& out) {
+    if (offset >= bytes.size()) return false;
+    const uint8_t first = bytes[offset++];
     if (first < 253) {
         out = first;
     } else if (first == 0xFD) {
-        if (p + 2 > end) return false;
-        out = static_cast<uint64_t>(p[0]) | (static_cast<uint64_t>(p[1]) << 8);
+        if (bytes.size() - offset < 2) return false;
+        out = static_cast<uint64_t>(bytes[offset]) |
+              (static_cast<uint64_t>(bytes[offset + 1]) << 8);
         if (out < 253) return false;
-        p += 2;
+        offset += 2;
     } else if (first == 0xFE) {
-        if (p + 4 > end) return false;
+        if (bytes.size() - offset < 4) return false;
         out = 0;
         for (int i = 0; i < 4; ++i) {
-            out |= static_cast<uint64_t>(p[i]) << (8 * i);
+            out |= static_cast<uint64_t>(bytes[offset + i]) << (8 * i);
         }
         if (out <= 0xFFFF) return false;
-        p += 4;
+        offset += 4;
     } else {
-        if (p + 8 > end) return false;
+        if (bytes.size() - offset < 8) return false;
         out = 0;
         for (int i = 0; i < 8; ++i) {
-            out |= static_cast<uint64_t>(p[i]) << (8 * i);
+            out |= static_cast<uint64_t>(bytes[offset + i]) << (8 * i);
         }
         if (out <= 0xFFFFFFFF) return false;
-        p += 8;
+        offset += 8;
     }
     return true;
 }
@@ -82,20 +85,27 @@ bool ParseCv(secp256k1_context* ctx, const ValueCommitment& cv,
 // proof byte-vectors. Returns false on parse error.
 bool DecodeAggregated(const std::vector<uint8_t>& blob,
                       std::vector<std::vector<uint8_t>>& out) {
-    const uint8_t* p = blob.data();
-    const uint8_t* end = p + blob.size();
+    size_t offset = 0;
     uint64_t n = 0;
-    if (!ReadCompactSize(p, end, n)) return false;
+    if (!ReadCompactSize(blob, offset, n)) return false;
+
+    // Every proof requires at least its one-byte CompactSize length. Prove the
+    // attacker-controlled count is backed by the input before converting it to
+    // size_t or reserving memory.
+    if (n > static_cast<uint64_t>(blob.size() - offset)) return false;
+
     out.clear();
     out.reserve(static_cast<size_t>(n));
     for (uint64_t i = 0; i < n; ++i) {
         uint64_t plen = 0;
-        if (!ReadCompactSize(p, end, plen)) return false;
-        if (p + plen > end) return false;
-        out.emplace_back(p, p + plen);
-        p += plen;
+        if (!ReadCompactSize(blob, offset, plen)) return false;
+        if (plen > static_cast<uint64_t>(blob.size() - offset)) return false;
+        const size_t proof_len = static_cast<size_t>(plen);
+        out.emplace_back(blob.begin() + offset,
+                         blob.begin() + offset + proof_len);
+        offset += proof_len;
     }
-    return p == end;
+    return offset == blob.size();
 }
 
 }  // namespace

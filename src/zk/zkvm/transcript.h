@@ -17,10 +17,10 @@
  */
 
 #include "zk/zkvm/scalar.h"
+#include "crypto/sha256.h"
 #include <vector>
 #include <cstdint>
 #include <cstring>
-#include <openssl/sha.h>
 
 namespace dinero {
 namespace zk {
@@ -56,17 +56,16 @@ public:
     // Derive a challenge scalar from the current transcript state
     Scalar challenge_scalar(const char* label, secp256k1_context* ctx) {
         // Hash: state || "chal" || label || label_len
-        SHA256_CTX h;
-        SHA256_Init(&h);
-        SHA256_Update(&h, state_.data(), state_.size());
-        SHA256_Update(&h, "chal", 4);
+        dinero::crypto::CSHA256 h;
+        h.Write(state_.data(), state_.size());
+        h.Write(reinterpret_cast<const uint8_t*>("chal"), 4);
         size_t label_len = std::strlen(label);
-        SHA256_Update(&h, label, label_len);
+        h.Write(reinterpret_cast<const uint8_t*>(label), label_len);
         uint8_t len_byte = static_cast<uint8_t>(label_len & 0xff);
-        SHA256_Update(&h, &len_byte, 1);
+        h.Write(&len_byte, 1);
 
         uint8_t hash[32];
-        SHA256_Final(hash, &h);
+        h.Finalize(hash);
 
         // Update state with the challenge (for chaining)
         state_.insert(state_.end(), hash, hash + 32);

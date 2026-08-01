@@ -33,6 +33,29 @@ namespace dinero {
 namespace test {
 
 // ═══════════════════════════════════════════════════════════════════════
+// Daemon path resolution
+// ═══════════════════════════════════════════════════════════════════════
+
+// Path to the dinerod binary under test.
+//
+// CMake sets DINEROD=$<TARGET_FILE:dinerod> on every daemon-spawning test, so
+// the returned path is absolute and independent of the process working
+// directory (issue #428). Previously these harnesses exec'd the relative
+// "./dinerod", which only resolves when the test happens to run from the build
+// root — that is what broke ColdStartConsensus (#413).
+//
+// The "./dinerod" fallback exists ONLY so a developer can still run a test
+// binary by hand from the build root. CI always supplies DINEROD.
+std::string ResolveDinerodPath();
+
+// True when the resolved daemon path exists and is executable. Callers must
+// treat a false result as a test FAILURE, never as a skip: these tests are
+// registered unconditionally and dinerod is a build dependency of both test
+// targets, so an unusable daemon means the environment is broken, not absent.
+bool DinerodAvailable(std::string* resolved_path_out = nullptr,
+                      std::string* error_out = nullptr);
+
+// ═══════════════════════════════════════════════════════════════════════
 // TestDaemon - Daemon Lifecycle Manager
 // ═══════════════════════════════════════════════════════════════════════
 
