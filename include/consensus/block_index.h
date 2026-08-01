@@ -29,7 +29,21 @@ enum BlockStatus {
 
     // Phase P.1: Prune eligibility (derived, restart-safe)
     // Note: BLOCK_HAVE_DATA and BLOCK_HAVE_UNDO are defined in block_lifecycle.h
-    BLOCK_PRUNE_ELIGIBLE     = 512,  // Block is safe to prune (all conditions met)
+    //
+    // Issue #456 — moved from 512 to 1024. BlockDataStatus::BLOCK_IN_FLIGHT in
+    // block_lifecycle.h is also 512, and BOTH enums are applied to the same
+    // uint32_t CBlockIndex::status field. BLOCK_IN_FLIGHT is actively written
+    // (block_lifecycle.cpp:137,157) while BLOCK_PRUNE_ELIGIBLE was never set —
+    // it appears only in prune_service.h documentation — so the collision was
+    // latent rather than active. It would have bitten whoever implemented
+    // pruning as documented: marking a block prune-eligible would have read
+    // back as "requested from peer, awaiting receipt", and vice versa.
+    //
+    // Safe to renumber precisely because nothing ever wrote it: no persisted
+    // row can contain the old value, so no migration is required. A static
+    // assertion below now prevents the two enums drifting into each other
+    // again.
+    BLOCK_PRUNE_ELIGIBLE     = 1024, // Block is safe to prune (all conditions met)
 };
 
 /**
