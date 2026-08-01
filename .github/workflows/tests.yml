@@ -140,24 +140,24 @@ jobs:
             --exclude-regex '^(ColdStartConsensus|MiningPolicyE2E)$' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
 
-      # Serial e2e lane (issue #428). These spawn real dinerod processes, bind
-      # ports, and must not run concurrently with each other or the suite above
-      # — hence -j1 and a separate step.
+      # Serial e2e lane (issue #428 plus the covenant wallet lifecycle). These
+      # spawn real dinerod processes, bind ports, and must not run concurrently
+      # with each other or the suite above — hence -j1 and a separate step.
       #
       # Each test gets its OWN ctest invocation with --no-tests=error. That is
-      # deliberate and stronger than one combined -R over both names: a single
-      # '^(A|B)$' selection still passes when only ONE of the two survives, so it
-      # cannot prove that BOTH are registered. Per-test invocations fail if
-      # EITHER disappears from the registry.
+      # deliberate and stronger than one combined -R over all names: a combined
+      # selection still passes when one test disappears, while per-test
+      # invocations fail if any name vanishes from the registry.
       #
       # This is the third distinct guarantee in the chain:
       #   #417 integrity gate  — every REGISTERED test has a runnable executable
-      #   #428 registration    — these two are ALWAYS registered (no find_program)
+      #   unconditional CMake — every named test is registered without an
+      #                          EXISTS/find_program disappearance path
       #   this step            — CI actually EXECUTES them, and a launch failure
       #                          is a failure (the GTEST_SKIPs are gone)
       - name: Run serial e2e tests (daemon-spawning)
         run: |
-          for t in ColdStartConsensus MiningPolicyE2E; do
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
@@ -166,7 +166,8 @@ jobs:
               -R "^${t}$"
           done
 
-      # #453 durable script-validity gate.
+      # #453 durable script-validity gate, plus the #458
+      # mine-after-invalidate gates.
       #
       # These two carry the labels 'integration' and 'canonicality', both of
       # which the main ctest step above excludes. Without this step they are
@@ -192,7 +193,7 @@ jobs:
       # than no gate at all.
       # NOTE: quoted — an unquoted '#' after whitespace starts a YAML comment,
       # which silently truncates this step's name to "Run".
-      - name: "Run #453 script-validity durability tests (daemon-spawning)"
+      - name: "Run #453/#458 durability tests (daemon-spawning)"
         run: |
           echo "=== ScriptValidityDurability ==="
           ctest --test-dir build-tests \
@@ -207,6 +208,21 @@ jobs:
             --no-tests=error \
             -j1 \
             -R '^ScriptValidityCrashOrdering$'
+
+          # #458 — same label-exclusion problem, same treatment.
+          echo "=== MineAfterInvalidate ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^MineAfterInvalidate$'
+
+          echo "=== MineAfterInvalidateRestart ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^MineAfterInvalidateRestart$'
 
           # #458 RPC envelope contract — same label-exclusion problem.
           echo "=== RpcErrorEnvelope ==="

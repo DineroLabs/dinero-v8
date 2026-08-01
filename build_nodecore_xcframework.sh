@@ -27,8 +27,36 @@ echo "Project: ${PROJECT_ROOT}"
 echo "Output:  ${XCFRAMEWORK_OUTPUT}"
 echo ""
 
-OPENSSL_SRC="${PROJECT_ROOT}/third_party/openssl-3.5.6"
+# Single source of truth for the vendored OpenSSL, override with OPENSSL_VERSION=…
+# Mirrors scripts/build_openssl_ios.sh and scripts/build-shielded-proverkit-xcframework.sh,
+# which already default to 3.5.7. This was pinned to 3.5.6, so every NodeCore
+# xcframework silently linked 3.5.6 unless the line was hand-edited first.
+OPENSSL_VERSION="${OPENSSL_VERSION:-3.5.7}"
+OPENSSL_SRC="${PROJECT_ROOT}/third_party/openssl-${OPENSSL_VERSION}"
+OPENSSL_SHA256_3_5_7="a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
 NCPU=$(sysctl -n hw.ncpu)
+
+# openssl-3.5.7 is a build input, not a committed vendor tree like 3.5.6, so
+# fetch it (pinned SHA-256) when absent — otherwise a fresh clone silently
+# builds against whatever OpenSSL happens to be on disk.
+ensure_openssl_source() {
+    [ -f "${OPENSSL_SRC}/Configure" ] && return 0
+    [ "${OPENSSL_VERSION}" = "3.5.7" ] || {
+        echo "ERROR: no OpenSSL source at ${OPENSSL_SRC} and no pinned SHA for ${OPENSSL_VERSION}" >&2
+        exit 1
+    }
+    echo "==> Downloading openssl-${OPENSSL_VERSION}.tar.gz (pinned SHA-256)"
+    local tarball="${PROJECT_ROOT}/third_party/openssl-${OPENSSL_VERSION}.tar.gz"
+    curl -fsSL -o "${tarball}" \
+        "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+    echo "${OPENSSL_SHA256_3_5_7}  ${tarball}" | shasum -a 256 -c - \
+        || { echo "ERROR: openssl-${OPENSSL_VERSION}.tar.gz SHA-256 mismatch" >&2; exit 1; }
+    tar -xzf "${tarball}" -C "${PROJECT_ROOT}/third_party/"
+    [ -f "${OPENSSL_SRC}/Configure" ] || {
+        echo "ERROR: extraction did not produce ${OPENSSL_SRC}/Configure" >&2; exit 1
+    }
+}
+ensure_openssl_source
 
 sync_artifact() {
     local SRC=$1
@@ -40,8 +68,15 @@ sync_artifact() {
 }
 
 clean_openssl_tree() {
+    # MUST exclude prebuilt/ because it lives inside OPENSSL_SRC and holds
+    # completed macOS + iOS slices that other builds depend on.
+    #
+    # WARNING: `-prune` does NOT work here because `-delete` auto-enables
+    # `-depth`, so find descends into prebuilt/ before evaluating prune on the
+    # dir itself, deleting cached .a files as collateral. Use `! -path` instead.
     make distclean >/dev/null 2>&1 || make clean >/dev/null 2>&1 || true
-    find . \( -name '*.o' -o -name '*.d' -o -name '*.a' -o -name '*.dylib' \) -delete
+    find . \( -name '*.o' -o -name '*.d' -o -name '*.a' -o -name '*.dylib' \) \
+        -type f ! -path './prebuilt/*' -delete >/dev/null 2>&1 || true
     rm -f Makefile Makefile.in configdata.pm builddata.pm
 }
 
