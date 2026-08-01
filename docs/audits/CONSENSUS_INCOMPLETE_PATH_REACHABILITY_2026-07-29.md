@@ -7,6 +7,19 @@ Scope: explicit `TODO`, `FIXME`, `not implemented`, `unimplemented`, and
 through production call sites. This is a reachability audit, not a complete
 consensus-security audit.
 
+## Post-audit status
+
+This report preserves the behavior observed at the audited revision; it is not
+a description of current covenant readiness. PRs #465–#467 subsequently made
+mainnet and testnet CTV/CCV activation dormant, completed the inherited BIP342
+interpreter surface, bound CCV transitions to successor outputs, and added
+resource and lifecycle coverage. Current operator status and the remaining
+production-activation requirements are maintained in
+`docs/consensus/COVENANT_PROTOCOL_STATUS.md`.
+
+The other findings below remain scoped to the audited revision unless a later
+change is explicitly linked from their issue or owning design document.
+
 ## Executive result
 
 The raw scan returned 37 marker matches in 20 files. Grouping repeated comments
