@@ -7,6 +7,10 @@ DINEROD="${ROOT_DIR}/build/dinerod"
 # and with anything else on the host; see #470/#459.
 pick_base_port() {
     local base
+    command -v lsof >/dev/null || {
+        printf '%s\n' "lsof is required for port preflight" >&2
+        return 1
+    }
     for _ in $(seq 1 40); do
         base=$(( 35200 + (RANDOM % 200) * 10 ))
         local busy=0
@@ -15,7 +19,8 @@ pick_base_port() {
         done
         [[ "${busy}" == "0" ]] && { printf '%s\n' "${base}"; return 0; }
     done
-    printf '%s\n' "35200"
+    printf '%s\n' "could not find six free test ports after 40 attempts" >&2
+    return 1
 }
 BASE_PORT="${BASE_PORT:-$(pick_base_port)}"
 NODE_A_RPC=$((BASE_PORT + 0))
@@ -84,6 +89,7 @@ trap cleanup EXIT
 require_tools() {
     command -v curl >/dev/null || fail "curl is required"
     command -v jq >/dev/null || fail "jq is required"
+    command -v lsof >/dev/null || fail "lsof is required for port preflight"
     [[ -x "${DINEROD}" ]] || fail "dinerod not built at ${DINEROD}"
 }
 
