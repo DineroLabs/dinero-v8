@@ -350,6 +350,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_fork_block_status_restart.sh)
     message(STATUS "  ✓ ForkBlockStatusRestart registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_reorg.sh)
+    add_test(
+        NAME ScriptValidityReorg
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_script_validity_reorg.sh
+    )
+    set_tests_properties(ScriptValidityReorg PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ScriptValidityReorg registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_tip_persist_restart_equivalence.sh)
     add_test(
         NAME TipPersistRestartEquivalence
