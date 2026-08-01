@@ -348,6 +348,18 @@ TEST_F(
 TEST_F(
     CovenantSystemLifecycleTest,
     MempoolMiningReorgAndRestartRespectActivationState) {
+    auto& params = dinero::MutableParams();
+    const uint32_t saved_scriptpath =
+        params.taproot_scriptpath_activation_height;
+    params.taproot_scriptpath_activation_height = 1;
+    struct RestoreScriptPath {
+        dinero::ChainParams& params;
+        uint32_t height;
+        ~RestoreScriptPath() {
+            params.taproot_scriptpath_activation_height = height;
+        }
+    } restore{params, saved_scriptpath};
+
     const auto persistence_file = root_ / "mempool.dat";
 
     SetTip(db_, 18, 0x18);
@@ -357,6 +369,11 @@ TEST_F(
         const auto pre_activation =
             pool.submitTransaction(spend_.tx, "covenant-system-test", false);
         EXPECT_FALSE(pre_activation.accepted());
+        EXPECT_NE(
+            pre_activation.message.find(
+                "premature revealed OP_CHECKTEMPLATEVERIFY"),
+            std::string::npos)
+            << pre_activation.message;
         EXPECT_EQ(pool.size(), 0U);
 
         SetTip(db_, 19, 0x19);

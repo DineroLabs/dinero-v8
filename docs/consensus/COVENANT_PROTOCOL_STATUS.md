@@ -60,11 +60,13 @@ multi-node work can exercise the reviewed semantics. Regtest behavior is not a
 production activation decision.
 
 The regtest wallet refuses to construct spends before the candidate height has
-the relevant rule active. That guard is not a consensus or relay-policy rule:
-a transaction constructed after activation and retained across a deep reorg
-could otherwise be submitted when the opcode again has NOP/`OP_SUCCESS`
-semantics. Production deployment therefore still requires explicit
-pre-activation mempool/relay policy and activation-boundary reorg tests.
+the relevant rule active. Mempool admission and block-template selection also
+reject revealed CTV, CCV, CSFS, or TXHASH scripts before that individual
+opcode's activation height while preserving historical consensus NOP/
+`OP_SUCCESS` behavior. `CovenantSystemLifecycle` separates Taproot script-path
+activation from the CTV boundary and proves admission, mining selection,
+rollback, revalidation, and restart behavior across it. Production release
+candidates must repeat this evidence at their proposed boundaries.
 
 ## Interpreter conformance evidence
 

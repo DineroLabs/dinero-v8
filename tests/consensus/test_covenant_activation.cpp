@@ -9,6 +9,7 @@
 #include "primitives/hash_domains.h"
 #include "primitives/transaction.h"
 #include "primitives/uint256.h"
+#include "policy/covenant_relay_policy.h"
 
 #include <gtest/gtest.h>
 
@@ -94,6 +95,99 @@ TEST(CovenantActivation, RegtestExercisesReviewedCovenants) {
                   dinero::consensus::SCRIPT_VERIFY_CHECKCONTRACT);
     EXPECT_EQ(Params().csfs_activation_height, UINT32_MAX);
     EXPECT_EQ(Params().txhash_activation_height, UINT32_MAX);
+}
+
+TEST(CovenantActivation, RelayPolicyRejectsDormantRevealedOpcodes) {
+    ChainParams params{};
+    params.taproot_scriptpath_activation_height = 1;
+    params.ctv_activation_height = 20;
+    params.ccv_activation_height = 30;
+    params.csfs_activation_height = UINT32_MAX;
+    params.txhash_activation_height = UINT32_MAX;
+
+    auto transactionWithScript = [](std::vector<uint8_t> tapscript) {
+        Transaction tx;
+        tx.vin.emplace_back();
+        tx.vout.emplace_back(
+            dinero::AmountUna::Una(1),
+            std::vector<uint8_t>{dinero::consensus::OP_TRUE});
+        tx.vin[0].witness = {
+            std::move(tapscript),
+            std::vector<uint8_t>(33, 0xc0)};
+        return tx;
+    };
+
+    std::vector<std::vector<uint8_t>> p2trScripts{
+        std::vector<uint8_t>(34, 0x00)};
+    p2trScripts[0][0] = dinero::consensus::OP_1;
+    p2trScripts[0][1] = 32;
+
+    std::string reason;
+    const Transaction ctv = transactionWithScript(
+        {dinero::consensus::OP_CHECKTEMPLATEVERIFY});
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        ctv, p2trScripts, 19, params, &reason));
+    EXPECT_NE(reason.find("OP_CHECKTEMPLATEVERIFY"), std::string::npos);
+    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
+        ctv, p2trScripts, 20, params));
+
+    const Transaction ccv = transactionWithScript(
+        {dinero::consensus::OP_CHECKCONTRACTVERIFY});
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        ccv, p2trScripts, 29, params, &reason));
+    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
+        ccv, p2trScripts, 30, params));
+
+    const Transaction csfs = transactionWithScript(
+        {dinero::consensus::OP_CHECKSIGFROMSTACK});
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        csfs, p2trScripts, UINT32_MAX, params, &reason));
+
+    const Transaction csfsVerify = transactionWithScript(
+        {dinero::consensus::OP_CHECKSIGFROMSTACKVERIFY});
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        csfsVerify, p2trScripts, UINT32_MAX, params, &reason));
+
+    const Transaction txhash = transactionWithScript(
+        {dinero::consensus::OP_TXHASH});
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        txhash, p2trScripts, UINT32_MAX, params, &reason));
+
+    Transaction annexedCtv = ctv;
+    annexedCtv.vin[0].witness.push_back({0x50, 0x01});
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        annexedCtv, p2trScripts, 19, params, &reason));
+
+    // Opcode bytes inside pushed data are not executable and must not trigger
+    // policy. Key-path witnesses and ordinary tapscripts remain unaffected.
+    const Transaction pushedBytes = transactionWithScript({
+        4,
+        dinero::consensus::OP_CHECKTEMPLATEVERIFY,
+        dinero::consensus::OP_CHECKCONTRACTVERIFY,
+        dinero::consensus::OP_TXHASH,
+        dinero::consensus::OP_CHECKSIGFROMSTACK});
+    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
+        pushedBytes, p2trScripts, 1, params));
+
+    Transaction keyPath;
+    keyPath.vin.emplace_back();
+    keyPath.vin[0].witness = {std::vector<uint8_t>(64, 0x01)};
+    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
+        keyPath, p2trScripts, 1, params));
+
+    Transaction nonTaprootWitness;
+    nonTaprootWitness.vin.emplace_back();
+    nonTaprootWitness.vin[0].witness = {
+        {dinero::consensus::OP_CHECKCONTRACTVERIFY},
+        std::vector<uint8_t>(33, 0xc0)};
+    const std::vector<std::vector<uint8_t>> p2wshPrevout{
+        std::vector<uint8_t>(34, 0x00)};
+    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
+        nonTaprootWitness, p2wshPrevout, 1, params));
+
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        ctv, {}, 19, params, &reason));
+    EXPECT_NE(reason.find("missing spent output scripts"), std::string::npos);
 }
 
 TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
