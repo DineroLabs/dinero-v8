@@ -1,7 +1,7 @@
 <h1 align="center">Dinero</h1>
 
 <p align="center">
-  <strong>A proof-of-work cryptocurrency built on Utreexo — full validation without a UTXO database on disk.</strong>
+  <strong>A post-quantum, Utreexo-native proof-of-work cryptocurrency.</strong>
 </p>
 
 <p align="center">
@@ -11,20 +11,43 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License"></a>
 </p>
 
-Dinero uses **Utreexo** accumulators at the consensus layer, so a validating node
-proves coin existence from a compact accumulator rather than maintaining a
-multi-gigabyte UTXO database. The same validation logic runs inside mobile wallets
-through NodeCore — the phone verifies for itself instead of trusting a server.
+<p align="center">
+  <img src="docs/assets/screenshots/01-overview.png" alt="Dinero wallet overview showing Utreexo consensus health, post-quantum status, live peers, and system monitoring" width="100%">
+</p>
+
+Dinero accepts **NIST-standardized post-quantum signatures at the consensus
+layer** — ML-DSA-65 (FIPS 204), valid since block 0 — and uses **Utreexo**
+accumulators so a validating node proves coin existence from a compact
+accumulator instead of maintaining a multi-gigabyte UTXO database. The same
+validation logic runs inside mobile wallets through NodeCore, so the phone
+verifies for itself rather than trusting a server.
 
 ## Why Dinero Is Different
 
 | | |
 |---|---|
+| **Post-quantum at consensus** | ML-DSA-65 (NIST FIPS 204) is an accepted signature scheme from genesis — `activation_height = 0`. P2MR spends (witness v3) bind an ML-DSA-65 key to a Merkle commitment. Adoption is opt-in and still early; the point is that the consensus rules are already in place, not retrofitted after a quantum scare. |
+| **Crypto-agility by design** | The signature scheme registry reserves slots for FALCON-512 and SPHINCS+-128s alongside ML-DSA-65, each with its own witness weight and verify cost, so adding or retiring a scheme is a registry change rather than a redesign. |
 | **Utreexo at consensus** | Full validation without a UTXO database on disk. Not a layer, not an opt-in mode — it is the consensus rule. |
 | **AssumeUTXO fast sync** | Signed snapshot anchors bring a new node to the tip quickly, then validate history forward in the background. |
 | **~2-minute blocks** | `target_spacing = 120` seconds — roughly 720 blocks/day, with ASERT retargeting every `retarget_interval = 720` blocks. |
 | **Taproot from block 1** | `taproot_scriptpath_activation_height = 1` on mainnet. No activation fork, no legacy script debt. |
 | **Local validation on mobile** | NodeCore runs the same consensus code inside native wallets. |
+
+## The Wallet
+
+The Qt desktop wallet bundles a full node, solo and Stratum V2 mining, UTXO
+inspection, and hardware wallet support.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/04-mining.png" alt="Embedded CPU solo miner with live block-found log" width="100%"><br><sub><strong>Built-in solo miner.</strong> Templates, difficulty, and found blocks stream live — including the Utreexo root committed in each header.</sub></td>
+    <td width="50%"><img src="docs/assets/screenshots/03-utxos.png" alt="Unspent outputs view with confirmations, maturity, and spendability" width="100%"><br><sub><strong>Full UTXO visibility.</strong> Every output with confirmations, maturity, and spendability.</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/assets/screenshots/02-transactions.png" alt="Transaction history showing mined coinbase outputs with confirmations" width="100%"><br><sub><strong>Transaction history</strong> with per-entry confirmation depth. <em>Addresses are redacted in these screenshots.</em></sub></td>
+  </tr>
+</table>
 
 Dinero v8 is the current release lane for the daemon, CLI, Qt desktop wallet,
 NodeCore mobile runtime, bridge/proof serving, and mining components.
