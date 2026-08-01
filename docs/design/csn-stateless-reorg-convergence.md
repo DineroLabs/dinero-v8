@@ -143,7 +143,7 @@ Supported naturally because StatelessNode already binds to an arbitrary
 validation commits to whichever forest it holds
 (`stateless_node.cpp:604` — `*utreexo_forest_ = std::move(working_forest)`).
 
-### Grounded code seams (for execution)
+### Grounded code seams used for implementation
 
 - **Speculative validation seam** — `ValidateUtreexoProof`
   (`stateless_node.cpp:438-622`) does: stump-resync from member forest
@@ -178,10 +178,11 @@ validation commits to whichever forest it holds
    (the stashed read-conversion WIP + the CSN checkpoint canonical-flag
    consistency fix).
 
-Hold the DineroDPI CSN xcframework until the 3 failing reorg suites AND the
-existing passing CSN regression suite are green.
+The rollout plan required holding the DineroDPI CSN xcframework until the
+three failing reorg suites and the existing passing CSN regression suite were
+green.
 
-## Guards for whoever implements
+## Implementation guards recorded at diagnosis
 
 - Keep the passing CSN suite green: `BridgeCsnHistoricalSpendRelay`,
   `CsnContaminatedCheckpointRecovery`, `CSNShieldedSpendSync`.
