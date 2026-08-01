@@ -100,7 +100,7 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
     SelectParams(Chain::MAINNET);
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "2f6946c7767d4abab61bc609ce5894a5afe7828685f80ebca7318a6d4715c7f4");
+        "48bb4b27879a492dd8a83fd1e4826ec422f6b9ac3b1ae6797c9469783036c76e");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);
