@@ -64,13 +64,13 @@ run_test() {
             fi
         else
             echo "❌ $test_name: FAILED (expected success)"
-            echo "   → Error: $(echo "$result_json" | jq -r '.result.error // "unknown"')"
+            echo "   → Error: $(echo "$result_json" | jq -r '.error.message? // .error // .result.error.message? // .result.error // "unknown"')"
         fi
     else
-        if echo "$result_json" | jq -e '.result.success' >/dev/null 2>&1 && echo "$result_json" | jq -r '.result.success' | grep -q "false"; then
+        if echo "$result_json" | jq -e '(.result.success == false) or (.error != null)' >/dev/null 2>&1; then
             echo "✅ $test_name: PASSED (correctly rejected)"
             TESTS_PASSED=$((TESTS_PASSED + 1))
-            echo "   → Error: $(echo "$result_json" | jq -r '.result.error')"
+            echo "   → Error: $(echo "$result_json" | jq -r '.error.message? // .error // .result.error.message? // .result.error // "unknown"')"
         else
             echo "❌ $test_name: FAILED (should have been rejected)"
         fi

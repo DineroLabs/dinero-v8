@@ -350,6 +350,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_fork_block_status_restart.sh)
     message(STATUS "  ✓ ForkBlockStatusRestart registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh)
+    add_test(
+        NAME RpcErrorEnvelope
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh
+    )
+    set_tests_properties(RpcErrorEnvelope PROPERTIES
+        LABELS "integration;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ RpcErrorEnvelope registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_tip_persist_restart_equivalence.sh)
     add_test(
         NAME TipPersistRestartEquivalence

@@ -167,6 +167,6 @@ echo "$DISCONNECT" | jq -e '.result.disconnected == true' >/dev/null || fail "di
 echo "$DISCONNECT" | jq -e '.result.had_active_session == false' >/dev/null || fail "disconnect should be idempotent when idle: $DISCONNECT"
 
 CONNECT_RESPONSE="$(rpc_raw "hwallet.connecthwdevice" '{}' | jq -c '.')"
-echo "$CONNECT_RESPONSE" | jq -e '.result.error.message == "device_id parameter required"' >/dev/null || fail "connect without device_id returned unexpected response: $CONNECT_RESPONSE"
+echo "$CONNECT_RESPONSE" | jq -e '(.error.message? // .result.error.message?) == "device_id parameter required"' >/dev/null || fail "connect without device_id returned unexpected response: $CONNECT_RESPONSE"
 
 pass "hardware wallet RPCs expose truthful idle USB session state"

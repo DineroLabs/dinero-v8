@@ -232,6 +232,14 @@ jobs:
             -j1 \
             -R '^ForkBlockStatusRestart$'
 
+          # #458 RPC envelope contract — same label-exclusion problem.
+          echo "=== RpcErrorEnvelope ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^RpcErrorEnvelope$'
+
       # Daemon logs are printed by the harnesses on failure (tail of daemon.log),
       # so --output-on-failure above captures them. Keep the ctest logs as an
       # artifact too: the harnesses delete their temp datadirs on teardown, so
