@@ -32,18 +32,19 @@ and benign uses produced 14 findings:
 | Compiled or declared but no production caller | 5 |
 | Comment, observability, or intentional placeholder | 4 |
 
-The highest-priority result is not a traditional TODO: covenant verification is
-reachable in normal block validation and active on mainnet from height 1, while
-`VerifyContractTransition()` explicitly omits binding the successor state to a
-transaction output. The source comment says not to activate CCV until that is
-fixed, but the activation parameters already did so. The absence of historical
-CCV outputs limits historical exposure; it does not make a newly created CCV
-output safe.
+At the audited revision, the highest-priority result was not a traditional
+TODO: covenant verification was reachable in normal block validation and active
+on mainnet from height 1, while `VerifyContractTransition()` explicitly omitted
+binding the successor state to a transaction output. The source comment said
+not to activate CCV until that was fixed, but the activation parameters already
+did so. The absence of historical CCV outputs limited historical exposure; it
+did not make a newly created CCV output safe.
 
-The second live consensus item is a hard rejection of Tapscripts larger than
-252 bytes. This is narrower than the 10,000-byte limit claimed by the
-interpreter and by BIP342. Because it is already enforced, correcting it is a
-consensus change and must not be shipped as an ordinary parser fix.
+The second live consensus item at the audited revision was a hard rejection of
+Tapscripts larger than 252 bytes. This was narrower than the 10,000-byte limit
+claimed by the interpreter and by BIP342. Because it was already enforced,
+correcting it required consensus-change discipline rather than an ordinary
+parser fix.
 
 Several alarming-looking difficulty, median-time, chain-walking, block
 conversion, and undo-checksum TODOs are not called by the production chain
@@ -81,7 +82,8 @@ Reachability labels used below:
 ### C-01 — CCV accepts a transition with no committed successor output
 
 **Priority:** P0 before any CCV use
-**Reachability:** Live-consensus; configured active on mainnet at height 1
+**Reachability at audited revision:** Live-consensus; configured active on
+mainnet at height 1
 
 Evidence:
 
