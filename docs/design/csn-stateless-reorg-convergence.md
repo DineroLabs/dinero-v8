@@ -107,9 +107,9 @@ architecture decision on consensus-critical code, not a local tweak.
   `setCanonicalEmptyRoots`) → `restore-checkpoint-root-mismatch`. That flag
   consistency + sidecar writing on the stateless path is the separate CSN
   every-N work (campaign phase, "task #17").
-- Not in production: fleet nodes are full/archival, not stateless. Only the
-  phone (CSN) hits this path; the DineroDPI xcframework rebuild is HELD until
-  this is fixed. A phone that livelocks on a deep reorg must not ship.
+- At diagnosis this path was not in the full/archival fleet; only the phone
+  (CSN) used it. The DineroDPI xcframework rebuild was held pending the fix:
+  a phone that livelocks on a deep reorg must not ship.
 
 ## Chosen design (owner decision 2026-07-17): ActivateBestChain-owned canonical reorg
 
