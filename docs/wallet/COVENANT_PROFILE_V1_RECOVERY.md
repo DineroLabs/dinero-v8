@@ -1,6 +1,8 @@
 # Covenant profile v1 wallet construction and recovery
 
-Status: implemented for regtest review; not approved for testnet or mainnet.
+Status: implemented and exercised on regtest. The mainnet consensus profile is
+scheduled for block 80,000, but these construction RPCs remain regtest-only
+until a separate production-wallet release enables them.
 
 The wallet layer constructs and recovers the transparent CTV and CCV forms
 defined by `../consensus/DINERO_COVENANT_PROFILE_V1.md`. It does not introduce
@@ -9,7 +11,8 @@ new consensus rules and it does not authorize an activation height.
 ## Safety boundary
 
 - Every handler fails closed unless the selected chain is regtest.
-- Mainnet and testnet CTV/CCV activation heights remain `UINT32_MAX`.
+- Mainnet CTV/CCV consensus activation is block 80,000; testnet remains
+  dormant. The RPC chain guard remains independent and fail-closed.
 - Descriptors contain public construction data only. They contain no seed,
   private key, or signing capability.
 - CTV outputs use the BIP341 recommended NUMS internal key, so the wallet does
@@ -112,9 +115,9 @@ Amounts created by these RPCs use unsigned integer `value_una` fields. This
 avoids floating-point ambiguity at the covenant construction boundary.
 
 Owner authorization removes the known permissionless-wallet blocker. It does
-not authorize production activation: mainnet/testnet heights remain dormant,
-and the interpreter, activation boundary, reorg, performance, and independent
-consensus-review gates remain separate requirements.
+not by itself authorize shipping mainnet construction: the production-wallet
+guard, release-candidate activation boundary, reorg, performance, and
+independent consensus-review gates remain separate requirements.
 
 ## Signing and recovery workflow
 

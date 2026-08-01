@@ -1,8 +1,8 @@
 # Dinero covenant profile v1
 
-Status: normative candidate for independent review. Implemented and active on
-regtest only. Mainnet and testnet CTV/CCV activation heights remain
-`UINT32_MAX`.
+Status: normative profile scheduled for mainnet CTV/CCV activation at block
+80,000, subject to the independent-review and deployment gates in
+`COVENANT_MAINNET_ACTIVATION_80000.md`. Testnet remains dormant.
 
 This document defines the complete first Dinero covenant profile. The key
 words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative.
@@ -56,13 +56,14 @@ Each feature has an independent height:
 
 | Chain | Script path | CTV | CCV | CSFS/TXHASH |
 |---|---:|---:|---:|---:|
-| Mainnet | 1 | dormant | dormant | dormant |
+| Mainnet | 1 | 80,000 | 80,000 | dormant |
 | Testnet | 200 | dormant | dormant | dormant |
 | Regtest | 20 | 20 | 20 | dormant |
 
 `dormant` means `UINT32_MAX`, which MUST never be treated as an active height.
-For any future production assignment, CTV and CCV activation MUST NOT precede
-script-path activation.
+CTV and CCV activation MUST NOT precede script-path activation. Mainnet pins
+both reviewed opcodes to the same height so there is no partial profile-v1
+window.
 
 Block validation uses the candidate block height. Mempool admission and mining
 selection use the height of the next candidate block. When a reorg changes

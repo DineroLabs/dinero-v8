@@ -37,6 +37,10 @@ static constexpr const char* EXPECTED_GENESIS_HASH =
 static constexpr const char* EXPECTED_MERKLE_ROOT =
     dinero::chain_bundle::GENESIS_MERKLE_ROOT;       // v7 merkle (from chain_bundle)
 
+// CTV and CCV are one reviewed mainnet profile. A single constant prevents a
+// partial-activation window from being introduced by changing only one field.
+static constexpr uint32_t MAINNET_COVENANT_PROFILE_V1_HEIGHT = 80000;
+
 // ============================================================================
 // MAINNET PARAMETERS - Dinero Official Mainnet
 // ============================================================================
@@ -74,14 +78,15 @@ static ChainParams g_mainnet = {
     // Confidential transaction activation (after genesis)
     .confidential_activation_height = 1,
 
-    // BIP341 script paths retain their deployed height-1 behavior. Covenant
-    // opcodes are deliberately dormant until their individual specifications,
-    // implementations, vectors, and activation plans have passed review.
+    // BIP341 script paths retain their deployed height-1 behavior. The reviewed
+    // transparent CTV/CCV profile activates together at block 80,000. CSFS and
+    // TXHASH remain deliberately dormant pending separate specifications,
+    // resource analysis, vectors, and independent review.
     .taproot_scriptpath_activation_height = 1,
-    .ctv_activation_height = UINT32_MAX,
+    .ctv_activation_height = MAINNET_COVENANT_PROFILE_V1_HEIGHT,
     .csfs_activation_height = UINT32_MAX,
     .txhash_activation_height = UINT32_MAX,
-    .ccv_activation_height = UINT32_MAX,
+    .ccv_activation_height = MAINNET_COVENANT_PROFILE_V1_HEIGHT,
 
     // Shielded pool activation on mainnet — set 2026-04-27.
     // Direct mainnet activation; testnet phase skipped per
@@ -502,6 +507,22 @@ void SelectParams(Chain chain) {
             break;
         default:
             throw std::invalid_argument("Unknown chain");
+    }
+
+    // An activated covenant opcode is only meaningful inside an active BIP341
+    // script path. Fail startup if a future chain edit would create a covenant
+    // boundary before (or without) script-path activation.
+    const auto covenant_precedes_script_path = [&](uint32_t height) {
+        return height != UINT32_MAX &&
+               (g_active->taproot_scriptpath_activation_height == UINT32_MAX ||
+                height < g_active->taproot_scriptpath_activation_height);
+    };
+    if (covenant_precedes_script_path(g_active->ctv_activation_height) ||
+        covenant_precedes_script_path(g_active->csfs_activation_height) ||
+        covenant_precedes_script_path(g_active->txhash_activation_height) ||
+        covenant_precedes_script_path(g_active->ccv_activation_height)) {
+        throw std::logic_error(
+            "covenant activation cannot precede Taproot script-path activation");
     }
 
     // cv-binding audit invariant (NECESSARY, not sufficient): cv-binding must

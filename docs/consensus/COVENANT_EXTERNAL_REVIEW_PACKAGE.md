@@ -1,15 +1,21 @@
 # Covenant profile v1 external-review package
 
-Status: ready for independent review; not ready for production activation.
+Status: ready for independent review. Mainnet CTV/CCV activation is scheduled
+for block 80,000, but the activation release must not ship until the reviewer
+deliverable and deployment gates are satisfied.
 
-Date: 2026-07-31
+Date: 2026-08-01
 
-Implementation base: `cb21a91d4226a8a0b8b798f065d1b867f7de88bb`
-(`origin/dinero-main` after PR #463)
+Implementation base: `ed3fb9cb8f58485b578dc63708ea8237a57c26c9`
+(`origin/dinero-main` after PR #476)
 
-Review stack branches (resolve and record the exact remote heads when review
-starts; the short hashes below are the original implementation anchors, not a
-substitute for reviewing later amendments):
+Activation review target: the exact head of
+`codex/covenant-mainnet-80000`, including
+`COVENANT_MAINNET_ACTIVATION_80000.md`. Record its full hash before review.
+
+Historical review stack branches (the short hashes below are implementation
+anchors, not a substitute for reviewing the merged implementation and the
+activation target above):
 
 - foundation and dormant protocol: `codex/covenants-01-foundation`
   (anchor `c7b8cb5612`);
@@ -20,9 +26,8 @@ substitute for reviewing later amendments):
 - wallet/RPC construction, recovery, and live lifecycle:
   `codex/covenants-04-wallet` (anchor `2c1f180618`).
 
-Reviewers should fetch the remote branches, record their full hashes, and
-review the final wallet branch tip—including all merged lower-stack
-amendments and `DINERO_COVENANT_PROFILE_V1.md`—against that base.
+Reviewers should review the activation target against the implementation base
+and use the historical branches only to recover authorship and sequencing.
 
 ## 1. Review objective
 
@@ -35,9 +40,10 @@ Determine whether the dormant CTV/CCV implementation:
 - can be constructed, recovered, wallet-signed, relayed, revalidated after a
   reorg, and reconfirmed without a non-consensus bypass;
 - has deterministic and sufficient denial-of-service bounds; and
-- is suitable to proceed to a later activation proposal.
+- is suitable for the scheduled block-80,000 mainnet activation.
 
-This review is not a request to approve an activation height.
+This review explicitly includes the height-80,000 boundary and the deployment
+and abort conditions in the activation plan.
 
 ## 2. Normative material
 
@@ -258,23 +264,23 @@ reinterpret hidden trees without explicit deployment planning.
 
 ## 8. Known limitations and blockers
 
-- Mainnet and testnet CTV/CCV activation heights remain dormant.
+- Mainnet CTV/CCV activation is scheduled at block 80,000; testnet remains
+  dormant.
 - Independent review has not yet occurred.
-- The profile-v1 wallet/RPC surface is intentionally regtest-only. Its
-  successful lifecycle evidence does not approve testnet or mainnet
-  activation.
-- The profile-v1 wallet CCV artifact is explicitly permissionless
-  (`OP_CHECKCONTRACTVERIFY OP_TRUE`). It proves construction and continuity,
-  not owner authorization. An authenticated application script and its wallet
-  key/recovery design require separate implementation and review.
+- The profile-v1 wallet/RPC surface remains intentionally regtest-only. The
+  consensus activation does not silently expose mainnet construction RPCs;
+  production wallet enablement requires a separate reviewed release.
+- The default profile-v1 wallet CCV artifact is owner-authorized with BIP340.
+  The legacy permissionless form remains available only after explicit
+  acknowledgement.
 - Mempool admission and block-template selection reject revealed CTV, CCV,
   CSFS, and TXHASH scripts before each opcode's independent activation height.
   Historical consensus NOP/`OP_SUCCESS` behavior is unchanged. The lifecycle
   suite separates Taproot script-path activation from CTV and exercises
   admission, mining, rollback, revalidation, and restart across that boundary;
   the same tests must be repeated at any proposed production boundaries.
-- Release-candidate tests must be repeated at any proposed activation
-  boundary and on every supported platform before production use.
+- Release-candidate tests must be repeated at the block-80,000 boundary and on
+  every supported platform before production use.
 - CSFS and TXHASH remain incomplete, uncosted, and deliberately dormant.
 - Confidential CTV/CCV is undefined and rejected.
 - A mainnet history scan cannot inspect hidden Taproot leaves.

@@ -50,18 +50,22 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
   longer-chain reorg, mempool revalidation, independent rebroadcast, and
   reconfirmation.
 
-## Deliberately dormant
+## Activation policy
 
-- Mainnet and testnet CTV, CCV, CSFS, and TXHASH activation heights are
-  `UINT32_MAX`.
+- Mainnet CTV and CCV activate together at block **80,000**. Block 79,999
+  retains the historical NOP4/`OP_SUCCESS` meanings; block 80,000 is the first
+  block that enforces the profile-v1 CTV/CCV rules.
+- Testnet CTV and CCV remain dormant (`UINT32_MAX`).
 - CSFS and TXHASH do not yet have an approved normative specification or
-  external review. Their BIP342 slots remain `OP_SUCCESS`.
+  external review. They remain dormant on every production network, and their
+  BIP342 slots retain `OP_SUCCESS` behavior.
 - Confidential CTV and CCV are unsupported rather than assigned a custom,
   unaudited commitment extension.
 
 Regtest activates CTV and CCV at height 20 so boundary, wallet, recovery, and
-multi-node work can exercise the reviewed semantics. Regtest behavior is not a
-production activation decision.
+multi-node work can exercise the reviewed semantics. Mainnet height 80,000 is
+the separately scheduled production boundary; the regtest height is not its
+source.
 
 The regtest wallet refuses to construct spends before the candidate height has
 the relevant rule active. Mempool admission and block-template selection also
@@ -70,7 +74,7 @@ opcode's activation height while preserving historical consensus NOP/
 `OP_SUCCESS` behavior. `CovenantSystemLifecycle` separates Taproot script-path
 activation from the CTV boundary and proves admission, mining selection,
 rollback, revalidation, and restart behavior across it. Production release
-candidates must repeat this evidence at their proposed boundaries.
+candidates must repeat this evidence with the height-80,000 parameters.
 
 ## Interpreter conformance evidence
 
@@ -104,18 +108,24 @@ covenant opcodes. The reproducible report and scanner are:
 - `scripts/audit/covenant_history_scan.js`
 
 Unspent P2TR outputs can commit to hidden trees, so chain history cannot prove
-that no unspent output contains a dormant covenant leaf. Keeping production
-opcode activations dormant avoids assuming otherwise.
+that no unspent output contains a dormant covenant leaf. The activation is a
+coordinated soft fork and must not treat absence of revealed historical use as
+a substitute for deployment discipline.
 
-## Required before production activation
+## Release gates before block 80,000
 
 1. Obtain independent consensus and cryptographic review of the frozen
    specification, implementation diff, vectors, lifecycle tests, and resource
    results.
-2. Repeat the wallet-recovery and multi-node deployment tests against release
-   candidates and the proposed testnet/production activation boundaries.
-3. Assign activation parameters only after that review, then coordinate the
-   activation release and monitoring across all validating nodes.
+2. Repeat the activation-boundary, wallet-recovery, and multi-node deployment
+   tests against the exact release candidate carrying height 80,000.
+3. Deploy that identical release to every validating node by height 79,000 and
+   verify the expected consensus checksum, tip, peer set, and block-template
+   behavior on each node.
+4. If either review or fleet deployment misses the height-79,000 checkpoint,
+   do not compress the rollout window. Schedule a later activation height in a
+   new coordinated release.
 
-No mainnet/testnet activation height should be assigned merely because the
-regtest implementation passes its local suites.
+The height decision was recorded at mainnet tip 76,305, leaving 3,695 blocks.
+The schedule does not waive independent review or release-candidate evidence.
+The detailed operator plan is `COVENANT_MAINNET_ACTIVATION_80000.md`.

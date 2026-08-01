@@ -1,7 +1,7 @@
 # CHECKTEMPLATEVERIFY BIP119 profile
 
-Status: implemented for regtest review. Mainnet and testnet activation is
-dormant (`UINT32_MAX`).
+Status: mainnet activation scheduled at block 80,000. Testnet remains dormant
+(`UINT32_MAX`).
 
 Opcode: `OP_CHECKTEMPLATEVERIFY` / `OP_NOP4` (`0xb3`).
 
@@ -55,7 +55,7 @@ vectors, implementation, activation flag, and independent review.
 
 | Chain | CTV |
 |---|---:|
-| Mainnet | dormant |
+| Mainnet | 80,000 |
 | Testnet | dormant |
 | Regtest | 20 |
 
@@ -66,6 +66,7 @@ checksum.
 
 Boundary, reorg, mempool, mining, and adversarial-cost component coverage is
 recorded in `COVENANT_PROTOCOL_STATUS.md` and
-`COVENANT_RESOURCE_LIMITS.md`. Production activation still requires approved
-wallet/recovery and live multi-node coverage, coordinated validator
-deployment, and independent consensus review.
+`COVENANT_RESOURCE_LIMITS.md`. The scheduled activation remains gated on
+release-candidate wallet/recovery and live multi-node coverage, coordinated
+validator deployment, and independent consensus review as specified in
+`COVENANT_MAINNET_ACTIVATION_80000.md`.
