@@ -609,6 +609,7 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/methods_address_index.cpp
   src/core/rpc/blockchain_rpc_metadata.cpp  # RPC metadata registration
   src/rpc/methods_wallet_context.cpp
+  src/rpc/methods_wallet_covenant_profile.cpp  # Regtest-only profile-v1 construction/recovery RPC
   src/rpc/wallet_sync_rpc_handlers.cpp  # Phase W.2.6: Wallet sync UX RPC methods
   src/rpc/wallet_sync_aggregator.cpp  # Phase W.2.6: Single aggregation point for sync status
   src/rpc/ergonomics_rpc_handlers.cpp  # Phase W.3: High-level status aggregation (getnodehealth, getminingreadiness)

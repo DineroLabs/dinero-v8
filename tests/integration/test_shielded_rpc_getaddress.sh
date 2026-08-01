@@ -65,10 +65,10 @@ rpc_result() {
     if echo "$result" | jq -e '.error != null and .error != false' >/dev/null 2>&1; then
         fail "${method} failed: ${result}"
     fi
-    if echo "$result" | jq -e '.result.error // empty' >/dev/null 2>&1; then
-        if echo "$result" | jq -e '.result.error' >/dev/null 2>&1; then
+    if echo "$result" | jq -e '(.error.message // .result.error) // empty' >/dev/null 2>&1; then
+        if echo "$result" | jq -e '(.error.message // .result.error)' >/dev/null 2>&1; then
             local inner_err
-            inner_err="$(jq -r '.result.error // ""' <<<"${result}")"
+            inner_err="$(jq -r '(.error.message // .result.error) // ""' <<<"${result}")"
             if [[ -n "${inner_err}" && "${inner_err}" != "null" && "${inner_err}" != "false" ]]; then
                 fail "${method} returned result.error=${inner_err}: ${result}"
             fi
@@ -171,7 +171,10 @@ LOCKED_LIST="$(rpc_result "wallet.listshielded" '[]')"
 pass "locked wallet still exposes read-only shielded balance/list"
 
 LOCKED_SHIELD="$(rpc_call "wallet.shield" '{"amount": 1.0, "fee_una": 10000}')"
-LOCKED_SHIELD_ERR="$(jq -r '.result.error // empty' <<<"${LOCKED_SHIELD}")"
+# #458 envelope migration: handler errors are now promoted to the top-level
+# JSON-RPC "error" member. Accept BOTH shapes while clients migrate — the old
+# nested .result.error and the new .error.message.
+LOCKED_SHIELD_ERR="$(jq -r '.error.message // .result.error // empty' <<<"${LOCKED_SHIELD}")"
 [[ "${LOCKED_SHIELD_ERR}" == "wallet_locked" ]] || fail "locked wallet.shield should reject spends: ${LOCKED_SHIELD}"
 pass "locked wallet still rejects shield spend path"
 

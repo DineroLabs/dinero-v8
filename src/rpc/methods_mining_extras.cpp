@@ -39,6 +39,10 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <atomic>   // #458: coinbase extranonce counter
+#include <cstdint>   // #458: extranonce session id
+#include <openssl/rand.h>   // #458: extranonce session id
+#include <array>   // #458: extranonce session id
 
 // External globals
 extern RpcRegistry g_rpcRegistry;
@@ -377,6 +381,98 @@ din::Json handle_generatetoaddress(
             scriptSig.push_back('D');
             scriptSig.push_back('I');
             scriptSig.push_back('N');
+
+            // Issue #458 — coinbase extranonce, so two templates built on the
+            // same parent can never be byte-identical.
+            //
+            // The nonce search starts at 0 every time, and the timestamp does
+            // NOT reliably differ between attempts:
+            //
+            //     block_time = max(prevMTP + 1, wall clock)
+            //
+            // Once the chain's median time past has run ahead of wall clock —
+            // the normal state in regtest after mining a burst — this collapses
+            // to the constant prevMTP + 1. It is then completely independent of
+            // wall clock, so waiting does not change it and neither does a
+            // restart of any duration.
+            //
+            // Without an extranonce the same parent therefore reproduces the
+            // identical header and identical block hash, which made a
+            // rolled-back chain impossible to extend:
+            //
+            //   mine 16 -> invalidateblock(hash@12) -> height 11
+            //   generatetoaddress(9) -> re-mines the SAME hash as the block
+            //   just invalidated, which carries BLOCK_FAILED_VALID, so
+            //   BlockAcceptor skips AddCandidate ("has persistent
+            //   BLOCK_FAILED_VALID flag") and it can never activate.
+            //
+            // The invalidation guard is correct and is deliberately untouched;
+            // the defect was that the miner produced a duplicate rather than a
+            // new block.
+            //
+            // A process-lifetime counter alone is NOT sufficient: it resets to
+            // zero on restart, and because block_time can be frozen at
+            // prevMTP + 1, a restarted node mining from the same parent would
+            // rebuild the invalidated block exactly. The extranonce therefore
+            // combines a 128-bit per-process random session id with a 64-bit
+            // counter: the session id makes templates distinct ACROSS restarts
+            // with computationally negligible collision probability, the
+            // counter makes them distinct WITHIN a process.
+            //
+            // Coinbase scriptSig must be 2..100 bytes (tx_validation.cpp:346).
+            // This adds 25 on top of ~6-9, leaving ample headroom. The BIP34
+            // height push stays first; trailing bytes are free-form.
+            {
+                // Drawn once per process from the CSPRNG. Not key material —
+                // its only job is to differ across restarts.
+                //
+                // FAIL CLOSED if the CSPRNG is unavailable. There is no safe
+                // fallback: a time/pid/address mix is NOT guaranteed unique
+                // across a restart (pid reuse, similar address-space layout and
+                // an identical frozen timestamp can reproduce it), and silently
+                // mining a duplicate of an invalidated block is worse than not
+                // mining at all. Mining availability is not worth knowingly
+                // risking a block that can never activate.
+                struct ExtranonceSession {
+                    std::array<uint8_t, 16> id{};
+                    bool ok = false;
+                };
+                static const ExtranonceSession session = [] {
+                    ExtranonceSession s;
+                    s.ok = (RAND_bytes(s.id.data(),
+                                       static_cast<int>(s.id.size())) == 1);
+                    if (!s.ok) {
+                        dinero::g_logger.error(
+                            "[generatetoaddress] RAND_bytes failed for the "
+                            "coinbase extranonce session id; refusing to mine "
+                            "rather than risk reproducing an invalidated block");
+                    }
+                    return s;
+                }();
+
+                if (!session.ok) {
+                    result["error"]["code"] = -32603;
+                    result["error"]["message"] =
+                        "Cannot mine: CSPRNG unavailable for the coinbase "
+                        "extranonce session id. Mining is refused because a "
+                        "non-random extranonce can reproduce a previously "
+                        "invalidated block, which carries BLOCK_FAILED_VALID "
+                        "and can never activate.";
+                    return result;
+                }
+
+                static std::atomic<uint64_t> g_coinbase_extranonce{0};
+                const uint64_t counter =
+                    g_coinbase_extranonce.fetch_add(1, std::memory_order_relaxed);
+
+                scriptSig.push_back(24);  // push 24 bytes: 16 session + 8 counter
+                scriptSig.insert(scriptSig.end(), session.id.begin(),
+                                 session.id.end());
+                for (int i = 0; i < 8; ++i) {
+                    scriptSig.push_back(
+                        static_cast<uint8_t>((counter >> (i * 8)) & 0xff));
+                }
+            }
 
             input.scriptSig = scriptSig;
             input.sequence = 0xffffffff;

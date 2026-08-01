@@ -4,6 +4,7 @@
 #include "wallet/utxo_index.h"
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Wallet event notifications
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
+#include "consensus/header_convergence.h"  // #439: HeaderConvergence + pure rule
 #include "consensus/block_index.h"  // Phase 41: BlockIndex graph for reorg logic
 #include "consensus/utxo_snapshot.h"  // Phase 42: AssumeUTXO snapshot structures
 #include "daemon/services/assumeutxo_lifecycle.h"  // AssumeUTXO fatal state machine
@@ -414,6 +415,72 @@ public:
     bool IsInIBD() const;
     // Get IBD progress information
     IBDProgress GetIBDProgress() const;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Canonical sync snapshot (issue #439)
+    //
+    // Header-chain convergence is a DISTINCT state from the three that already
+    // exist here. Do not conflate them; see
+    // docs/architecture/sync-state-behavior-matrix.md.
+    //
+    //   1. header convergence  — this snapshot: does the active chain match the
+    //                            best known header chain?
+    //   2. initial-download    — IsInIBD(): should we be downloading rather
+    //      policy                than trusting our tip? (network-height and
+    //                            snapshot aware; UNCHANGED by #439)
+    //   3. service readiness   — AreServicesReady()
+    //   4. AssumeUTXO ready    — assumeutxo + IsBackgroundValidationComplete()
+    //                            (e.g. CanPruneNow())
+    //
+    // A snapshot node at convergence with background validation still running
+    // must simultaneously report Converged, services READY, and prune-unsafe.
+    // Collapsing these would break at least one consumer.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // The convergence vocabulary and rule live in the tiny standalone header
+    // consensus/header_convergence.h so the behavior-matrix test can exercise
+    // them without pulling in RocksDB and the rest of the daemon. Aliased here
+    // so consumers keep using ChainstateService::HeaderConvergence.
+    using HeaderConvergence = dinero::consensus::HeaderConvergence;
+
+    // The snapshot VALUE TYPE lives in consensus/header_convergence.h alongside
+    // the rule, so tests exercise the production IsConverged() directly rather
+    // than re-implementing it. Aliased so consumers keep using
+    // ChainstateService::SyncSnapshot.
+    using SyncSnapshot = dinero::consensus::SyncSnapshot;
+
+    /**
+     * @brief Single canonical source of header-chain sync facts.
+     *
+     * Value-returning and lock-safe: the best header is copied out of
+     * HeaderChainSelector under its mutex (GetBestHeaderCopy), so no pointer
+     * escapes and no field is read outside the lock. Consumers must use this
+     * rather than reaching into HeaderChainSelector themselves.
+     *
+     * Convergence compares HASHES, not heights: an equal-height reorg
+     * (same height, different hash) is NOT convergence.
+     */
+    SyncSnapshot GetSyncSnapshot() const;
+
+    /**
+     * @brief The convergence rule, as a pure function.
+     *
+     * Extracted so the behavior matrix
+     * (docs/architecture/sync-state-behavior-matrix.md) can be tested directly
+     * — cold start, headers-ahead, convergence, equal-height reorg, missing
+     * inputs and restart are all decided here, without standing up a
+     * ChainstateService, a ChainDB or a peer.
+     *
+     * Fails closed: any missing input yields Unknown.
+     * Compares hashes, never heights.
+     */
+    static HeaderConvergence ComputeConvergence(bool has_best_header,
+                                                const uint256& best_header_hash,
+                                                bool has_active_tip,
+                                                const uint256& active_tip_hash) {
+        return dinero::consensus::ComputeHeaderConvergence(
+            has_best_header, best_header_hash, has_active_tip, active_tip_hash);
+    }
 
     // Forest checkpoint delta campaign phase 0
     // (docs/design/forest-checkpoint-deltas.md): per-block connect latency +
@@ -1060,6 +1127,16 @@ private:
     std::set<class CBlockIndex*, struct ByWorkThenHash> candidates_;
     std::unordered_map<uint256, std::vector<class CBlockIndex*>> orphan_pool_;
     class CBlockIndex* active_tip_ = nullptr;  // Current active chain tip
+
+    // #439: value-copy of the active tip identity, published by PublishActiveTip
+    // (the single setter for active_tip_) under its own mutex. GetSyncSnapshot()
+    // reads these instead of dereferencing active_tip_, which would otherwise
+    // race with chain advancement. Kept separate from any broader chainstate
+    // lock so a sync-status read never contends with block connection.
+    mutable std::mutex published_tip_mutex_;
+    bool     published_tip_valid_ = false;
+    uint256  published_tip_hash_;
+    uint32_t published_tip_height_ = 0;
     mutable std::recursive_mutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
 
     // Phase 43: Safe mode state (deep reorg protection)

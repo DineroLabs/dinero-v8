@@ -59,21 +59,34 @@ WalletSyncStatus BuildWalletSyncStatusFromContext(const ::ExecutionContext& ctx)
         status.blocks_total = static_cast<uint64_t>(tip.height);
         status.blocks_synced = static_cast<uint64_t>(tip.height);
 
-        // Phase W.2.6 Enhancement #2: Separate header/block tracking via HeaderSyncManager
-        if (dinero::g_header_sync_manager) {
-            auto header_status = dinero::g_header_sync_manager->GetStatus();
-            status.headers_synced = header_status.headers_synced;
-            status.headers_total = header_status.headers_target;
+        // Phase W.2.6 Enhancement #2: separate header/block tracking.
+        //
+        // Previously keyed on dinero::g_header_sync_manager, which is never
+        // assigned in production — so this always took the legacy branch and
+        // headers could never differ from blocks, defeating the enhancement
+        // (#439). Now sourced from the canonical snapshot.
+        dinero::ChainstateService::SyncSnapshot header_sync;
+        if (ctx.daemon && ctx.daemon->chainstate) {
+            header_sync = ctx.daemon->chainstate->GetSyncSnapshot();
+        }
+        if (header_sync.has_best_header) {
+            // We hold headers up to the best header, so synced == target here.
+            // The useful separation is headers vs BLOCKS: headers may legitimately
+            // run ahead of the validated tip above.
+            status.headers_total = static_cast<uint64_t>(header_sync.best_header_height);
+            status.headers_synced = static_cast<uint64_t>(header_sync.best_header_height);
 
-            dinero::g_logger.debug(std::string("BuildWalletSyncStatus: HeaderSyncManager active - ") +
-                                  "headers_synced=" + std::to_string(header_status.headers_synced) +
-                                  ", headers_target=" + std::to_string(header_status.headers_target) +
-                                  ", is_syncing=" + std::to_string(header_status.is_syncing));
+            dinero::g_logger.debug(std::string("BuildWalletSyncStatus: header snapshot - ") +
+                                  "best_header_height=" + std::to_string(header_sync.best_header_height) +
+                                  ", blocks=" + std::to_string(tip.height) +
+                                  ", converged=" + std::to_string(header_sync.IsConverged() ? 1 : 0));
         } else {
-            // Fallback: headers and blocks are synchronized (legacy behavior)
+            // Fail-closed fallback: no best header known (cold start, or a
+            // restart before headers are re-read). Report headers == blocks
+            // rather than inventing a target.
             status.headers_total = static_cast<uint64_t>(tip.height);
             status.headers_synced = static_cast<uint64_t>(tip.height);
-            dinero::g_logger.debug("BuildWalletSyncStatus: HeaderSyncManager not available, using legacy sync");
+            dinero::g_logger.debug("BuildWalletSyncStatus: no best header available, using blocks as headers");
         }
     }
 

@@ -50,7 +50,7 @@ test_case() {
       http://127.0.0.1:$PORT/)
     
     local success=$(echo "$response" | jq -r '.result.success // false')
-    local error=$(echo "$response" | jq -r '.result.error // "none"')
+    local error=$(echo "$response" | jq -r '.error.message? // .error // .result.error.message? // .result.error // "none"')
     
     if [[ "$expected_error" == "SUCCESS" ]]; then
         if [[ "$success" == "true" ]]; then

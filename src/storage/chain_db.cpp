@@ -630,7 +630,8 @@ Status ChainDB::updateUndoLocator(const ChainWriteToken& token,
                                   uint32_t undo_file,
                                   uint32_t undo_pos,
                                   uint32_t undo_size,
-                                  rocksdb::WriteBatch* wb) {
+                                  rocksdb::WriteBatch* wb,
+                                  uint32_t extra_status_bits) {
     if (!db_) return Status::Internal;
     if (undo_size == 0) return Status::Invalid;
 
@@ -647,6 +648,10 @@ Status ChainDB::updateUndoLocator(const ChainWriteToken& token,
     metadata.undo_pos = undo_pos;
     metadata.undo_size = undo_size;
     metadata.status_flags |= BLOCK_HAVE_UNDO;
+    // Issue #453: merged into the same read/modify/write so the caller never
+    // has to stage a second helper against this row (see the header comment —
+    // a staged helper cannot observe prior writes in the same WriteBatch).
+    metadata.status_flags |= extra_status_bits;
 
     return putHeaderMetadata(token, hash, metadata, wb);
 }
