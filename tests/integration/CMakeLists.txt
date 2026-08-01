@@ -337,6 +337,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate_restart.sh)
     message(STATUS "  ✓ MineAfterInvalidateRestart registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_fork_block_status_restart.sh)
+    add_test(
+        NAME ForkBlockStatusRestart
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_fork_block_status_restart.sh
+    )
+    set_tests_properties(ForkBlockStatusRestart PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ForkBlockStatusRestart registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh)
     add_test(
         NAME RpcErrorEnvelope
