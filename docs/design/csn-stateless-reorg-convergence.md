@@ -1,10 +1,12 @@
 # CSN / stateless competing-branch reorg — convergence bug (design note)
 
-**Status:** diagnosed 2026-07-17, NOT fixed. Pre-existing on clean
-`dinero-main` (reproduces at interval=1, so independent of the forest
-checkpoint delta campaign). CI-excluded (label `integration`/`canonicality`).
-Consensus-critical stateless reorg path — surface to the consensus/reorg
-owner before implementing.
+**Status:** diagnosed 2026-07-17 and implemented by PR #407 on 2026-07-18.
+This document preserves the pre-fix evidence and design decision that led to
+the implementation. The selected design is ActivateBestChain-owned atomic
+reorg: competing branches are validated against an isolated scratch forest,
+then the canonical state is changed by one owner and the tip is published
+last. The defect reproduced at interval=1 and was therefore independent of the
+forest-checkpoint-delta campaign.
 
 **Failing tests (all one root cause):** `CsnSpendReorgReconciliation` (#348),
 `CSNRecoveryShieldedApply` (#374), `CSNShieldedReorgInvertibility` (#375).
@@ -70,7 +72,7 @@ So a correct fix must decide **who owns the forest during a stateless
 competing-branch reorg** and make the other path defer. That is an
 architecture decision on consensus-critical code, not a local tweak.
 
-## Candidate approaches (for the owner to choose)
+## Approaches considered before the owner decision
 
 1. **Worker-owned reorg, ActivateBestChain pointer-only.** Loosen the barrier
    to download the full competing branch; the worker rewinds once and replays
