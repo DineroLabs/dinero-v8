@@ -63,9 +63,9 @@ static ChainParams g_mainnet = {
     .require_standard_txs = true,
     .mine_blocks_on_demand = false,
 
-    // Phase 11d: Witness commitment enforcement (active from height 2)
-    .enforce_witness_commitment = true,              // ENFORCED on mainnet
-    .witness_commitment_enforcement_height = 1,      // Height 1+ (v7 restart: features live from block 1)
+    // Deployed validator boundary; keep historical acceptance unchanged.
+    .enforce_witness_commitment = true,
+    .witness_commitment_enforcement_height = 10670,
 
     // Phase 11e: Bitcoin magic translation (OFF by default - safe)
     .enable_witness_magic_translation = false,       // NOT translated on mainnet
@@ -275,9 +275,9 @@ static ChainParams g_testnet = {
     .require_standard_txs = true,
     .mine_blocks_on_demand = false,
 
-    // Phase 11d: Witness commitment enforcement (active from height 2)
-    .enforce_witness_commitment = true,              // ENFORCED on testnet
-    .witness_commitment_enforcement_height = 2,      // First block after genesis
+    // Deployed validator boundary; keep historical acceptance unchanged.
+    .enforce_witness_commitment = true,
+    .witness_commitment_enforcement_height = 10670,
 
     // Phase 11e: Bitcoin magic translation (OFF by default - safe)
     .enable_witness_magic_translation = false,       // NOT translated on testnet
@@ -365,9 +365,9 @@ static ChainParams g_regtest = {
     .require_standard_txs = false,    // Allow non-standard txs for testing
     .mine_blocks_on_demand = true,    // Enable instant block generation
 
-    // Phase 11d: Witness commitment enforcement (OFF by default, configurable for tests)
-    .enforce_witness_commitment = false,             // NOT enforced by default
-    .witness_commitment_enforcement_height = UINT32_MAX,  // Never triggers (tests override)
+    // Deployed validator boundary; tests may override through MutableParams().
+    .enforce_witness_commitment = true,
+    .witness_commitment_enforcement_height = 10670,
 
     // Phase 11e: Bitcoin magic translation (OFF by default, configurable for tests)
     .enable_witness_magic_translation = false,       // NOT translated by default
@@ -433,7 +433,11 @@ std::string ConsensusChecksum(const ChainParams& params) {
        << "ctv_height=" << params.ctv_activation_height << '\n'
        << "csfs_height=" << params.csfs_activation_height << '\n'
        << "txhash_height=" << params.txhash_activation_height << '\n'
-       << "ccv_height=" << params.ccv_activation_height << '\n';
+       << "ccv_height=" << params.ccv_activation_height << '\n'
+       << "enforce_witness_commitment="
+       << params.enforce_witness_commitment << '\n'
+       << "witness_commitment_height="
+       << params.witness_commitment_enforcement_height << '\n';
 
     auto str = ss.str();
     std::vector<uint8_t> data(str.begin(), str.end());

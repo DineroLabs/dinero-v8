@@ -213,13 +213,12 @@ if (Test-Path $iconSrc) {
     Write-Host "  WARNING: $iconSrc not found; window icon will be missing." -ForegroundColor Yellow
 }
 
-# vcpkg's x64-windows triplet links our daemon stack against shared
-# OpenSSL + libcurl rather than static. windeployqt only bundles Qt
-# DLLs, so the runtime DLL chain (libcurl + libcrypto/libssl + zlib)
-# must be copied manually. dumpbin shows these are the direct +
-# transitive deps; everything else is Windows system or VC++ runtime.
-Write-Host "Copying runtime DLLs from vcpkg..."
-$vcpkgDlls = 'libcurl.dll','libcrypto-3-x64.dll','libssl-3-x64.dll','z.dll'
+# User lane is fully static via vendored libcurl+OpenSSL 3.5.7 (Task 4).
+# The CURL::libcurl CMake target (cmake/VendoredCurl.cmake) links against
+# static .lib files so no libcurl/openssl/zlib DLLs are needed at runtime.
+# windeployqt handles Qt DLLs; everything else is Windows system or VC++ runtime.
+Write-Host "Copying runtime DLLs from vcpkg (if required)..."
+$vcpkgDlls = @()  # user lane is fully static (vendored libcurl+OpenSSL 3.5.7 + zlib-off)
 foreach ($d in $vcpkgDlls) {
     $src = Join-Path $VcpkgBin $d
     if (Test-Path $src) {

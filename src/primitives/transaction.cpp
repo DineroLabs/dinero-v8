@@ -171,13 +171,7 @@ TxId Transaction::GetTxid() const {
     return TxId(result);  // Wrap in TxId domain type
 }
 
-// ============================================================================
-// Witness Transaction ID (Phase 11b.3: Safety Guard)
-// ============================================================================
-// ⚠️  Phase 11b.3: wtxid is NOT consensus-active yet!
-//     Used only by consensus::ComputeWitnessMerkleRoot() (groundwork).
-//     See include/primitives/transaction.h for full explanation.
-// ============================================================================
+// Witness transaction ID used by the consensus DINW commitment.
 WTxId Transaction::GetWtxid() const {
     // Wtxid is hash of full serialization (with witness) - Phase M.4.3-A: returns WTxId
     auto bytes = Serialize(true);
