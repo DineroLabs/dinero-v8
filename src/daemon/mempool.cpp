@@ -12,6 +12,7 @@
 #include "mempool/fee_estimator.h"  // v0.13.0.3 - Fee estimation
 #include "consensus/covenant_activation.h"
 #include "consensus/covenants.h"
+#include "policy/covenant_relay_policy.h"
 #include "consensus/script_interpreter.h"  // Phase L0.4: Script verification with consensus flags
 #include "consensus/script.h"              // Phase L0.4: For Script class
 #include "consensus/script_validation.h"   // Phase 6 Commit 4: unified ValidateSpend dispatcher (single consensus script validator)
@@ -2978,6 +2979,20 @@ bool Mempool::validateTransaction(
         }
         next_block_height_for_scripts =
             static_cast<uint32_t>(tip_result.value().height) + 1;
+    }
+
+    // Consensus must retain each extension's pre-activation NOP/OP_SUCCESS
+    // behavior for historical validation. Relay/mining policy must not: a
+    // transaction signed under active covenant rules could otherwise become
+    // anyone-can-spend after a deep reorg below an independently configured
+    // opcode boundary.
+    if (!policy::IsCovenantRelayStandard(
+            tx,
+            all_scriptpubkeys,
+            next_block_height_for_scripts,
+            dinero::Params(),
+            &error)) {
+        return false;
     }
 
     // Build the consensus::UTXOEntry vector that ValidateSpend consumes.

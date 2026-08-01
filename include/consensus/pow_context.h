@@ -265,25 +265,6 @@ inline int64_t GetCanonicalAsertAnchorTime(
 }
 
 template <typename ChainDBType>
-inline int64_t GetCanonicalAsertAnchorTime(
-    const CBlockIndex* parent_index,
-    const dinero::consensus::HeaderIndexEntry* parent_entry,
-    ChainDBType* chain_db,
-    int32_t target_height)
-{
-    if (target_height <= 1) {
-        return static_cast<int64_t>(dinero::Params().genesis.nTime);
-    }
-
-    const int64_t ancestry_anchor_time = GetKnownAncestryTimestamp(parent_index, parent_entry, 1);
-    if (ancestry_anchor_time > 0) {
-        return ancestry_anchor_time;
-    }
-
-    return GetCanonicalAsertAnchorTime(chain_db, target_height);
-}
-
-template <typename ChainDBType>
 inline std::optional<AsertInput> BuildAsertInputForNextBlockOnChainDB(
     ChainDBType* chain_db,
     int32_t target_height,
@@ -345,9 +326,9 @@ inline std::optional<AsertInput> BuildAsertInputForNextBlockOnChainDB(
 }
 
 template <typename ChainDBType>
-inline std::optional<AsertInput> BuildAsertInputForCandidate(
-    const CBlockIndex* parent_index,
-    const dinero::consensus::HeaderIndexEntry* parent_entry,
+inline std::optional<AsertInput> BuildAsertInputForCandidateTimes(
+    int64_t known_parent_mtp,
+    int64_t known_block1_time,
     ChainDBType* chain_db,
     int32_t target_height,
     int64_t candidate_timestamp,
@@ -360,10 +341,8 @@ inline std::optional<AsertInput> BuildAsertInputForCandidate(
     int64_t parent_mtp = 0;
     if (target_height == 1) {
         parent_mtp = static_cast<int64_t>(dinero::Params().genesis.nTime);
-    } else if (parent_index) {
-        parent_mtp = static_cast<int64_t>(parent_index->GetMedianTimePast());
-    } else if (parent_entry) {
-        parent_mtp = static_cast<int64_t>(parent_entry->GetMedianTimePast());
+    } else if (known_parent_mtp > 0) {
+        parent_mtp = known_parent_mtp;
     } else {
         parent_mtp = GetMedianTimePastAtHeight(chain_db, static_cast<uint32_t>(target_height - 1));
     }
@@ -375,11 +354,45 @@ inline std::optional<AsertInput> BuildAsertInputForCandidate(
     AsertInput input;
     input.target_height = target_height;
     input.reference_time = GetConsensusReferenceTime(target_height, parent_mtp, candidate_timestamp);
+    const int64_t anchor_time = (target_height <= 1)
+        ? static_cast<int64_t>(dinero::Params().genesis.nTime)
+        : (known_block1_time > 0
+            ? known_block1_time
+            : GetCanonicalAsertAnchorTime(chain_db, target_height));
     input.anchor = GetCanonicalAsertAnchor(
         consensus,
-        GetCanonicalAsertAnchorTime(parent_index, parent_entry, chain_db, target_height));
+        anchor_time);
     input.params = GetAsertParams(consensus);
     return input;
+}
+
+template <typename ChainDBType>
+inline std::optional<AsertInput> BuildAsertInputForCandidate(
+    const CBlockIndex* parent_index,
+    const dinero::consensus::HeaderIndexEntry* parent_entry,
+    ChainDBType* chain_db,
+    int32_t target_height,
+    int64_t candidate_timestamp,
+    const Consensus& consensus)
+{
+    // Internal header validation calls this while HeaderChainSelector holds its
+    // lock. External callers must use BuildAsertInputForCandidateTimes with a
+    // value-only context obtained through GetAsertContextByHash().
+    int64_t known_parent_mtp = 0;
+    if (parent_index) {
+        known_parent_mtp = static_cast<int64_t>(parent_index->GetMedianTimePast());
+    } else if (parent_entry) {
+        known_parent_mtp = static_cast<int64_t>(parent_entry->GetMedianTimePast());
+    }
+    const int64_t known_block1_time =
+        GetKnownAncestryTimestamp(parent_index, parent_entry, 1);
+    return BuildAsertInputForCandidateTimes(
+        known_parent_mtp,
+        known_block1_time,
+        chain_db,
+        target_height,
+        candidate_timestamp,
+        consensus);
 }
 
 } // namespace dinero

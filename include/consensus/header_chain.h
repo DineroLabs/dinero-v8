@@ -24,6 +24,7 @@
 #include <set>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -119,6 +120,16 @@ struct HeaderIndexEntry {
 };
 
 /**
+ * Value-only ASERT ancestry derived while HeaderChainSelector is locked.
+ * No selector-owned pointer or parent link escapes with this snapshot.
+ */
+struct HeaderAsertContext {
+    uint32_t parent_height{0};
+    int64_t parent_mtp{0};
+    int64_t block1_time{0};
+};
+
+/**
  * @brief Order side-branch tips by ascending cumulative work (4d-2 / #181).
  *
  * Strict-weak ordering over HeaderIndexEntry pointers: by chainwork ascending,
@@ -193,25 +204,10 @@ public:
     bool AddHeader(const BlockHeader& header);
 
     /**
-     * @brief Get the current best header tip
-     *
-     * Phase N.2: Returns header with highest accumulated chainwork.
-     *
-     * Fork-choice rules:
-     * 1. Max chainwork wins
-     * 2. Height is informational only
-     * 3. Ties break deterministically by hash
-     *
-     * @return Best header tip, or nullptr if no headers
-     */
-    const HeaderIndexEntry* GetBestHeader() const;
-
-    /**
      * @brief Copy the best header out under the lock (issue #439).
      *
-     * Prefer this over GetBestHeader() for anything that reads fields. The raw
-     * accessor takes mutex_ and returns the pointer *after* releasing it, so
-     * every field read through it happens outside the lock.
+     * This replaced the former raw GetBestHeader() accessor, which returned a
+     * selector-owned pointer after releasing mutex_.
      *
      * This is a USE-AFTER-FREE hazard, not merely a stale/racy read: "best
      * header" is not a permanent property of an entry. A reorg can make the
@@ -228,20 +224,15 @@ public:
      */
     bool GetBestHeaderCopy(HeaderIndexEntry& out) const;
 
-    /**
-     * @brief Get header by hash
-     *
-     * @param hash Block hash to lookup
-     * @return Header entry, or nullptr if not found
-     */
-    const HeaderIndexEntry* GetHeader(const uint256& hash) const;
+    /** Value-returning best-header accessor; parent is always null. */
+    std::optional<HeaderIndexEntry> GetBestHeaderValue() const;
 
     /**
      * @brief Look up a header by hash and copy the entry out under the lock.
      *
      * Exists for callers that may hit SIDE-BRANCH entries (e.g. the AssumeUTXO
-     * backfill receive path validating snapshot-chain bodies): raw pointers
-     * returned by GetHeader() can be freed by side-branch eviction
+     * backfill receive path validating snapshot-chain bodies): selector-owned
+     * pointers can be freed by side-branch eviction
      * (EvictBranch, which runs under THIS class's mutex — not the caller's)
      * the moment this lock is released. Copying under the lock removes the
      * use-after-free hazard. The copied entry's parent pointer is nulled —
@@ -253,14 +244,20 @@ public:
      */
     bool GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const;
 
+    /** Value-returning hash accessor; parent is always null. */
+    std::optional<HeaderIndexEntry> GetHeaderValue(const uint256& hash) const;
+
+    /** Return whether a header identity is known without exporting its pointer. */
+    bool ContainsHeader(const uint256& hash) const;
+
     /**
      * @brief Build a block locator from the best header, entirely under the lock.
      *
      * Bitcoin-style exponential back-off: tip, then walk back with gaps of
      * 1, 2, 4, 8, ... up to `max_entries` hashes.
      *
-     * Exists because the obvious composition — GetBestHeader() then repeated
-     * GetHeaderAtHeight() — is unsafe twice over (issue #441):
+     * Exists because the former raw-accessor composition — best tip followed
+     * by repeated per-height lookups — was unsafe twice over (issue #441):
      *
      *   1. Both accessors return raw pointers AFTER releasing mutex_, and a
      *      reorg can demote the former best header to a side-branch tip, which
@@ -280,10 +277,8 @@ public:
     /**
      * @brief Copy the best-chain header at `height` out under the lock (#441).
      *
-     * Value-returning counterpart to GetHeaderAtHeight(), which resolves
-     * best_header_->GetAncestor(height) and then returns that raw pointer
-     * AFTER releasing mutex_ — the same escape-the-lock hazard as
-     * GetBestHeader(). Ancestors are especially exposed: a reorg can move the
+     * Resolves best_header_->GetAncestor(height) and copies it before releasing
+     * mutex_. Ancestors are especially exposed: a reorg can move the
      * best chain out from under a height that was previously on it, leaving the
      * entry an evictable side branch.
      *
@@ -320,13 +315,20 @@ public:
                                  uint32_t& height_out) const;
 
     /**
+     * Derive all header-ancestry values needed by ASERT under one lock (#441).
+     * block1_time is zero only when the parent is genesis (target height 1).
+     */
+    bool GetAsertContextByHash(const uint256& parent_hash,
+                               HeaderAsertContext& out) const;
+
+    /**
      * @brief Atomically resolve an anchor by hash and copy its ancestor
      *        (hash, height) pairs for heights [start_height, anchor height],
      *        ascending — all under the internal mutex.
      *
      * Exists for callers that must walk a possibly-SIDE-BRANCH anchor (the
-     * AssumeUTXO backfill base): raw HeaderIndexEntry pointers returned by
-     * GetHeader() can be freed by side-branch eviction (EvictBranch, which
+     * AssumeUTXO backfill base): selector-owned HeaderIndexEntry pointers can
+     * be freed by side-branch eviction (EvictBranch, which
      * runs under THIS class's mutex — not the caller's) the moment this
      * lock is released, so following parent pointers outside the lock is a
      * use-after-free hazard. Copying under the lock removes it. A caller must
@@ -386,27 +388,13 @@ public:
         std::vector<HeaderIndexEntry>& out_ascending,
         uint256& common_ancestor_out) const;
 
-    /**
-     * @brief Get header at specific height on best chain
-     *
-     * @param height Block height
-     * @return Header at height, or nullptr if not on best chain
-     */
-    const HeaderIndexEntry* GetHeaderAtHeight(uint32_t height) const;
+    /** Value-returning best-chain height accessor; parent is always null. */
+    std::optional<HeaderIndexEntry> GetHeaderAtHeightValue(uint32_t height) const;
 
-    /**
-     * @brief Find fork point between two headers
-     *
-     * Phase N.4: Used to determine which blocks to fetch.
-     *
-     * @param a First header
-     * @param b Second header
-     * @return Common ancestor header
-     */
-    const HeaderIndexEntry* FindForkPoint(
-        const HeaderIndexEntry* a,
-        const HeaderIndexEntry* b
-    ) const;
+    /** Resolve a fork point by identity without exporting selector pointers. */
+    bool FindForkPointHash(const uint256& a_hash,
+                           const uint256& b_hash,
+                           uint256& fork_hash_out) const;
 
     /**
      * @brief Get total number of headers

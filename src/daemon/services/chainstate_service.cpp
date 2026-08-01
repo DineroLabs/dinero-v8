@@ -3551,14 +3551,9 @@ bool ChainstateService::Start() {
         // self-heal can find the UTXO tip. Without this, FindBlockIndex(utxo_best)
         // returns null and safe-mode triggers on every restart after snapshot load.
         if (header_chain_selector_ && !assumeutxo_base_block_.IsNull()) {
-            // #441: NOT migrated. EnsureHeaderBranchIndexed() walks entry->parent to
-            // link the whole branch into the block index, so a *Copy (parent nulled)
-            // cannot substitute. Making this safe means either indexing the branch
-            // inside the selector's lock, or having it consume a copied ancestor list
-            // — a real restructure of snapshot/branch indexing. Tracked in #441.
-            const auto* hcs_entry = header_chain_selector_->GetHeader(assumeutxo_base_block_);
-            if (hcs_entry) {
-                CBlockIndex* snapshot_idx = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
+            if (header_chain_selector_->ContainsHeader(assumeutxo_base_block_)) {
+                CBlockIndex* snapshot_idx = EnsureHeaderBranchIndexed(
+                    assumeutxo_base_block_, /*mark_chain_valid=*/true);
                 if (snapshot_idx) {
                     const bool active_tip_missing = (active_tip_ == nullptr);
                     const bool active_tip_is_genesis =
@@ -7033,15 +7028,10 @@ void ChainstateService::ActivateBestChain() {
                 // PublishActiveTip); mirror it here so a FRESH bootstrap self-heals
                 // instead of wedging in safe mode.
                 CBlockIndex* materialized = nullptr;
-                if (header_chain_selector_ && !utxo_best.IsNull()) {
-                    // #441: NOT migrated. EnsureHeaderBranchIndexed() walks entry->parent to
-                    // link the whole branch into the block index, so a *Copy (parent nulled)
-                    // cannot substitute. Making this safe means either indexing the branch
-                    // inside the selector's lock, or having it consume a copied ancestor list
-                    // — a real restructure of snapshot/branch indexing. Tracked in #441.
-                    if (const auto* hcs_entry = header_chain_selector_->GetHeader(utxo_best)) {
-                        materialized = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
-                    }
+                if (header_chain_selector_ && !utxo_best.IsNull() &&
+                    header_chain_selector_->ContainsHeader(utxo_best)) {
+                    materialized = EnsureHeaderBranchIndexed(
+                        utxo_best, /*mark_chain_valid=*/true);
                 }
                 if (materialized &&
                     static_cast<uint32_t>(materialized->height) == utxo_height) {
@@ -9347,9 +9337,7 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // from the header store).
         bool base_block_known = hasBlockByHash(header.block_hash);
         if (!base_block_known && header_chain_selector_) {
-            // #441: SAFE as-is — the pointer is only compared against nullptr,
-            // never dereferenced, so the eviction hazard does not apply.
-            base_block_known = (header_chain_selector_->GetHeader(header.block_hash) != nullptr);
+            base_block_known = header_chain_selector_->ContainsHeader(header.block_hash);
         }
         if (!base_block_known) {
             result.error_message = "Snapshot base block " + header.block_hash.GetHex() +
@@ -9983,14 +9971,9 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // matters and must always be reached.
         if (header_chain_selector_) {
             try {
-                // #441: NOT migrated. EnsureHeaderBranchIndexed() walks entry->parent to
-                // link the whole branch into the block index, so a *Copy (parent nulled)
-                // cannot substitute. Making this safe means either indexing the branch
-                // inside the selector's lock, or having it consume a copied ancestor list
-                // — a real restructure of snapshot/branch indexing. Tracked in #441.
-                const auto* hcs_entry = header_chain_selector_->GetHeader(header.block_hash);
-                if (hcs_entry) {
-                    CBlockIndex* snapshot_idx = EnsureHeaderBranchIndexed(hcs_entry, /*mark_chain_valid=*/true);
+                if (header_chain_selector_->ContainsHeader(header.block_hash)) {
+                    CBlockIndex* snapshot_idx = EnsureHeaderBranchIndexed(
+                        header.block_hash, /*mark_chain_valid=*/true);
                     if (snapshot_idx) {
                         PublishActiveTip(snapshot_idx, TipPublishReason::kSnapshotRestore);
                         logger_->info("[LoadSnapshot] active_tip_ set to snapshot base (h=" +
@@ -10116,27 +10099,73 @@ CBlockIndex* ChainstateService::AddBlockIndex(const BlockHeader& header, uint32_
     return result;
 }
 
-CBlockIndex* ChainstateService::EnsureHeaderBranchIndexed(const consensus::HeaderIndexEntry* tip_entry,
+CBlockIndex* ChainstateService::EnsureHeaderBranchIndexed(const uint256& tip_hash,
                                                          bool mark_chain_valid) {
-    if (!tip_entry) {
+    if (!header_chain_selector_ || tip_hash.IsNull()) {
         return nullptr;
     }
 
-    std::vector<const consensus::HeaderIndexEntry*> path_to_import;
-    const consensus::HeaderIndexEntry* walk = tip_entry;
-    while (walk) {
-        CBlockIndex* idx = FindBlockIndex(walk->hash);
-        CBlockIndex* expected_parent = walk->parent ? FindBlockIndex(walk->parent->hash) : nullptr;
-        const bool parent_ready = (walk->parent == nullptr) || (expected_parent != nullptr);
-        const bool already_linked = idx && parent_ready && idx->pprev == expected_parent;
-        if (already_linked) {
-            break;
+    // #441: never export a selector-owned HeaderIndexEntry pointer and walk its
+    // parents here. Side-branch eviction owns those allocations and can free
+    // them as soon as the selector lock is released. Snapshot the identities
+    // already present in the permanent BlockIndex graph, then ask the selector
+    // to copy one coherent branch prefix while holding its own lock.
+    std::unordered_set<uint256> linked_index_hashes;
+    {
+        std::lock_guard<std::recursive_mutex> lk(dinero::g_block_index_mutex);
+        linked_index_hashes.reserve(dinero::g_block_index.size());
+        for (const auto& [hash, owned_index] : dinero::g_block_index) {
+            const CBlockIndex* index = owned_index.get();
+            const bool linked_to_declared_parent = index &&
+                ((index->prev_hash.IsNull() && index->pprev == nullptr) ||
+                 (!index->prev_hash.IsNull() && index->pprev != nullptr &&
+                  index->pprev->hash == index->prev_hash));
+            if (linked_to_declared_parent) {
+                linked_index_hashes.insert(hash);
+            }
         }
-        path_to_import.push_back(walk);
-        walk = walk->parent;
     }
 
-    std::reverse(path_to_import.begin(), path_to_import.end());
+    consensus::HeaderIndexEntry tip_copy;
+    if (!header_chain_selector_->GetHeaderCopy(tip_hash, tip_copy)) {
+        return nullptr;
+    }
+
+    std::vector<consensus::HeaderIndexEntry> path_to_import;
+    uint256 common_ancestor_hash;
+    if (!header_chain_selector_->CollectBranchCopiesByHash(
+            tip_hash, linked_index_hashes, path_to_import, common_ancestor_hash)) {
+        return nullptr;
+    }
+
+    // Validate the copied branch before mutating the BlockIndex graph. If no
+    // indexed ancestor was found, only a complete genesis-rooted branch is
+    // acceptable. Otherwise the first copied entry must attach exactly to the
+    // common ancestor returned by the same selector snapshot.
+    if (path_to_import.empty()) {
+        if (common_ancestor_hash != tip_hash) {
+            return nullptr;
+        }
+    } else {
+        const auto& first = path_to_import.front();
+        if (common_ancestor_hash.IsNull()) {
+            if (first.height != 0 || !first.prev_hash.IsNull()) {
+                return nullptr;
+            }
+        } else if (first.prev_hash != common_ancestor_hash) {
+            return nullptr;
+        }
+        for (size_t i = 1; i < path_to_import.size(); ++i) {
+            const auto& prev = path_to_import[i - 1];
+            const auto& cur = path_to_import[i];
+            if (cur.prev_hash != prev.hash || cur.height != prev.height + 1) {
+                return nullptr;
+            }
+        }
+        if (path_to_import.back().hash != tip_hash) {
+            return nullptr;
+        }
+    }
 
     size_t imported = 0;
     size_t relinked = 0;
@@ -10144,27 +10173,25 @@ CBlockIndex* ChainstateService::EnsureHeaderBranchIndexed(const consensus::Heade
     size_t marked_valid = 0;
     CBlockIndex* tip_idx = nullptr;
 
-    for (const consensus::HeaderIndexEntry* entry : path_to_import) {
-        if (!entry) {
-            continue;
-        }
-
-        CBlockIndex* expected_parent = entry->parent ? FindBlockIndex(entry->parent->hash) : nullptr;
-        if (entry->parent && !expected_parent) {
+    for (const consensus::HeaderIndexEntry& entry : path_to_import) {
+        CBlockIndex* expected_parent = entry.prev_hash.IsNull()
+            ? nullptr
+            : FindBlockIndex(entry.prev_hash);
+        if (!entry.prev_hash.IsNull() && !expected_parent) {
             if (logger_) {
                 logger_->error("[ChainstateService] Cannot index header branch at height " +
-                              std::to_string(entry->height) + " — parent missing from block index");
+                              std::to_string(entry.height) + " — parent missing from block index");
             }
             return nullptr;
         }
 
-        CBlockIndex* idx = FindBlockIndex(entry->hash);
+        CBlockIndex* idx = FindBlockIndex(entry.hash);
         if (!idx) {
-            idx = AddBlockIndex(entry->header, entry->height);
+            idx = AddBlockIndex(entry.header, entry.height);
             if (!idx) {
                 if (logger_) {
                     logger_->error("[ChainstateService] Failed to add header branch block index entry at height " +
-                                  std::to_string(entry->height));
+                                  std::to_string(entry.height));
                 }
                 return nullptr;
             }
@@ -10195,7 +10222,7 @@ CBlockIndex* ChainstateService::EnsureHeaderBranchIndexed(const consensus::Heade
                 relinked++;
             }
 
-            const std::string expected_chainwork = entry->chainwork.GetHex();
+            const std::string expected_chainwork = entry.chainwork.GetHex();
             if (idx->chainwork != expected_chainwork) {
                 idx->chainwork = expected_chainwork;
                 chainwork_fixed++;
@@ -10211,11 +10238,11 @@ CBlockIndex* ChainstateService::EnsureHeaderBranchIndexed(const consensus::Heade
     }
 
     if (!tip_idx) {
-        tip_idx = FindBlockIndex(tip_entry->hash);
+        tip_idx = FindBlockIndex(tip_hash);
     }
 
-    if (tip_idx && tip_idx->chainwork != tip_entry->chainwork.GetHex()) {
-        tip_idx->chainwork = tip_entry->chainwork.GetHex();
+    if (tip_idx && tip_idx->chainwork != tip_copy.chainwork.GetHex()) {
+        tip_idx->chainwork = tip_copy.chainwork.GetHex();
         chainwork_fixed++;
     }
 
@@ -16196,15 +16223,11 @@ void ChainstateService::TryDeferredSnapshotBootstrap() {
         return;  // inactive / already loading / loaded / fell back — safe no-op
     }
 
-    // #441: SAFE as-is — base_hdr is only compared against nullptr below and
-    // never dereferenced, so the eviction hazard does not apply.
-    const consensus::HeaderIndexEntry* base_hdr =
-        header_chain_selector_
-            ? header_chain_selector_->GetHeader(snapshot_bootstrap_base_hash_)
-            : nullptr;
+    const bool base_header_known = header_chain_selector_ &&
+        header_chain_selector_->ContainsHeader(snapshot_bootstrap_base_hash_);
 
     // RULE 2: only load once the EXACT base hash is on our header chain.
-    if (base_hdr != nullptr) {
+    if (base_header_known) {
         // Single-flight: exactly one thread wins Pending -> Loading and loads.
         // Everyone else loses the CAS and returns. The Loading state keeps the
         // scheduler's defer predicate true, so no blocks connect during the load.

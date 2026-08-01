@@ -1344,7 +1344,7 @@ private:
 
     // Ensure a header-validated branch exists in the BlockIndex graph with
     // correct ancestry and cumulative chainwork before using it as active_tip_.
-    class CBlockIndex* EnsureHeaderBranchIndexed(const consensus::HeaderIndexEntry* tip_entry,
+    class CBlockIndex* EnsureHeaderBranchIndexed(const uint256& tip_hash,
                                                  bool mark_chain_valid);
 
     // CSN reorg support: StatelessNode for forest checkpoint restore during reorg

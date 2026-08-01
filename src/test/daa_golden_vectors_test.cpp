@@ -302,6 +302,15 @@ TEST(ASERTDAA, CrossPathInvariantValidationMiningRpcAgree) {
         nullptr,
         &entries[parent_height],
         &fake_db);
+    const auto value_context_input = BuildAsertInputForCandidateTimes(
+        static_cast<int64_t>(entries[parent_height].GetMedianTimePast()),
+        static_cast<int64_t>(entries[1].header.timestamp),
+        &fake_db,
+        target_height,
+        candidate_time,
+        c);
+    ASSERT_TRUE(value_context_input.has_value());
+    const uint32_t value_context_bits = ComputeAsertBits(*value_context_input);
     const uint32_t mining_bits = GetNextWorkRequiredWithChainDB(
         target_height,
         candidate_time,
@@ -315,6 +324,7 @@ TEST(ASERTDAA, CrossPathInvariantValidationMiningRpcAgree) {
 
     EXPECT_EQ(validation_bits, mining_bits);
     EXPECT_EQ(validation_bits, rpc_bits);
+    EXPECT_EQ(validation_bits, value_context_bits);
 }
 
 TEST(ASERTDAA, DebugSnapshotIncludesConsensusFields) {
