@@ -27,6 +27,50 @@ enum BlockDataStatus {
     BLOCK_DATA_MASK         = (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO),
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #456 — BlockStatus (block_index.h) and BlockDataStatus (above) are two
+// separate enums whose values are OR-ed into the SAME uint32_t
+// CBlockIndex::status field. Nothing in the language stops them being given
+// overlapping bits, and that is exactly what happened: BLOCK_PRUNE_ELIGIBLE and
+// BLOCK_IN_FLIGHT were both 512.
+//
+// It stayed latent only because BLOCK_PRUNE_ELIGIBLE was never written —
+// pruning is documented in prune_service.h but not implemented — while
+// BLOCK_IN_FLIGHT is actively set (block_lifecycle.cpp:137,157). Implementing
+// pruning as documented would have made a prune-eligible block read back as
+// "requested from peer, awaiting receipt".
+//
+// These assertions fail the build if the two enums are ever given overlapping
+// bits again. Add a line here whenever either enum gains a value.
+// ─────────────────────────────────────────────────────────────────────────────
+static_assert((BLOCK_HAVE_DATA & BLOCK_VALID_MASK) == 0,
+              "BLOCK_HAVE_DATA overlaps a BlockStatus validation bit");
+static_assert((BLOCK_HAVE_UNDO & BLOCK_VALID_MASK) == 0,
+              "BLOCK_HAVE_UNDO overlaps a BlockStatus validation bit");
+static_assert((BLOCK_IN_FLIGHT & BLOCK_VALID_MASK) == 0,
+              "BLOCK_IN_FLIGHT overlaps a BlockStatus validation bit");
+
+// Compared as uint32_t: these are two distinct enum types sharing one status
+// field, and comparing the enumerators directly is deprecated in C++20.
+static_assert(static_cast<uint32_t>(BLOCK_HAVE_DATA) !=
+                  static_cast<uint32_t>(BLOCK_PRUNE_ELIGIBLE),
+              "BLOCK_HAVE_DATA collides with BLOCK_PRUNE_ELIGIBLE");
+static_assert(static_cast<uint32_t>(BLOCK_HAVE_UNDO) !=
+                  static_cast<uint32_t>(BLOCK_PRUNE_ELIGIBLE),
+              "BLOCK_HAVE_UNDO collides with BLOCK_PRUNE_ELIGIBLE");
+static_assert(static_cast<uint32_t>(BLOCK_IN_FLIGHT) !=
+                  static_cast<uint32_t>(BLOCK_PRUNE_ELIGIBLE),
+              "BLOCK_IN_FLIGHT collides with BLOCK_PRUNE_ELIGIBLE (#456)");
+
+static_assert((BLOCK_HAVE_DATA & BLOCK_FAILED_VALID) == 0 &&
+              (BLOCK_HAVE_UNDO & BLOCK_FAILED_VALID) == 0 &&
+              (BLOCK_IN_FLIGHT & BLOCK_FAILED_VALID) == 0,
+              "a BlockDataStatus bit collides with BLOCK_FAILED_VALID");
+static_assert((BLOCK_HAVE_DATA & BLOCK_FAILED_CHILD) == 0 &&
+              (BLOCK_HAVE_UNDO & BLOCK_FAILED_CHILD) == 0 &&
+              (BLOCK_IN_FLIGHT & BLOCK_FAILED_CHILD) == 0,
+              "a BlockDataStatus bit collides with BLOCK_FAILED_CHILD");
+
 /**
  * Block Lifecycle State Machine
  *
