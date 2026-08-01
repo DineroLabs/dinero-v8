@@ -126,7 +126,7 @@ int main() {
             std::cout << "   [TEST] AddHeader for block2 returned: " << added2 << std::endl << std::flush;
             assert(added2);
 
-            assert(selector.GetBestHeader()->height == 2);
+            assert(selector.GetBestHeaderValue()->height == 2);
             std::cout << "   Created 3 headers (height 0-2)" << std::endl;
 
         }
@@ -147,8 +147,8 @@ int main() {
 
             // Verify headers loaded
             assert(selector.GetHeaderCount() == 3);
-            assert(selector.GetBestHeader() != nullptr);
-            assert(selector.GetBestHeader()->height == 2);
+            assert(selector.GetBestHeaderValue().has_value());
+            assert(selector.GetBestHeaderValue()->height == 2);
 
             std::cout << "   ✅ Headers persisted and reloaded correctly" << std::endl;
 
@@ -179,13 +179,13 @@ int main() {
             assert(selector.GetHeaderCount() == 3);
 
             // Debug: Check best header
-            const HeaderIndexEntry* best = selector.GetBestHeader();
+            const auto best = selector.GetBestHeaderValue();
             std::cout << "   Best header at height " << (best ? best->height : -1) << std::endl;
 
             // Create fork at height 1
-            const HeaderIndexEntry* block1_entry = selector.GetHeaderAtHeight(1);
+            const auto block1_entry = selector.GetHeaderAtHeightValue(1);
             std::cout << "   Got header at height 1: " << (block1_entry ? "yes" : "null") << std::endl;
-            assert(block1_entry != nullptr);
+            assert(block1_entry.has_value());
             uint256 block1_hash = block1_entry->hash;
             BlockHeader fork_block = CreateTestHeader(block1_hash, 1000010);
             std::cout << "   [TEST 2a] About to add fork block..." << std::endl << std::flush;
@@ -239,8 +239,8 @@ int main() {
 
             std::cout << "   [TEST 3a] Creating HeaderChainSelector..." << std::endl << std::flush;
             HeaderChainSelector selector(&store);
-            const HeaderIndexEntry* best = selector.GetBestHeader();
-            assert(best != nullptr);
+            const auto best = selector.GetBestHeaderValue();
+            assert(best.has_value());
             original_best_hash = best->hash;
             uint32_t original_height = best->height;
 
@@ -261,8 +261,8 @@ int main() {
             std::cout << "   [TEST 3b] Creating HeaderChainSelector..." << std::endl << std::flush;
             HeaderChainSelector selector(&store);
 
-            const HeaderIndexEntry* best = selector.GetBestHeader();
-            assert(best != nullptr);
+            const auto best = selector.GetBestHeaderValue();
+            assert(best.has_value());
             assert(best->hash == original_best_hash);
             std::cout << "   ✅ Best tip persists across restarts" << std::endl;
 
@@ -287,23 +287,18 @@ int main() {
         HeaderChainSelector selector(&store);
 
         // Get tip and walk backwards
-        const HeaderIndexEntry* tip = selector.GetBestHeader();
-        assert(tip != nullptr);
+        const auto tip = selector.GetBestHeaderValue();
+        assert(tip.has_value());
 
-        int height_check = tip->height;
-        const HeaderIndexEntry* current = tip;
-
-        while (current && height_check > 0) {
-            assert(current->parent != nullptr);
-            assert(current->parent->height == current->height - 1);
-            current = current->parent;
-            height_check--;
+        uint32_t anchor_height = 0;
+        std::vector<std::pair<uint256, uint32_t>> ancestry;
+        assert(selector.CollectAncestorsByHash(
+            tip->hash, 0, anchor_height, ancestry));
+        assert(anchor_height == tip->height);
+        assert(ancestry.size() == static_cast<size_t>(tip->height) + 1);
+        for (size_t i = 0; i < ancestry.size(); ++i) {
+            assert(ancestry[i].second == i);
         }
-
-        // Should reach genesis
-        assert(current != nullptr);
-        assert(current->IsGenesis());
-        assert(current->parent == nullptr);
 
         std::cout << "   ✅ Parent pointers rebuilt correctly" << std::endl;
 
@@ -329,8 +324,8 @@ int main() {
             HeaderChainSelector selector(&store);
 
             assert(selector.GetHeaderCount() == 4);
-            assert(selector.GetBestHeader() != nullptr);
-            assert(selector.GetBestHeader()->height == 2);
+            assert(selector.GetBestHeaderValue().has_value());
+            assert(selector.GetBestHeaderValue()->height == 2);
 
             std::cout << "   ✅ Missing best marker recovered via persisted header scan" << std::endl;
         }
@@ -348,8 +343,8 @@ int main() {
             assert(store.Open());
             AssertSchemaMetadataPresent(store);
             HeaderChainSelector selector(&store);
-            const HeaderIndexEntry* height_one = selector.GetHeaderAtHeight(1);
-            assert(height_one != nullptr);
+            const auto height_one = selector.GetHeaderAtHeightValue(1);
+            assert(height_one.has_value());
             height_one_hash = height_one->hash;
         }
 
@@ -367,8 +362,8 @@ int main() {
             HeaderChainSelector selector(&store);
 
             assert(selector.GetHeaderCount() == 4);
-            assert(selector.GetBestHeader() != nullptr);
-            assert(selector.GetBestHeader()->height == 2);
+            assert(selector.GetBestHeaderValue().has_value());
+            assert(selector.GetBestHeaderValue()->height == 2);
 
             std::cout << "   ✅ Stale best marker overridden by chainwork scan" << std::endl;
         }
@@ -399,8 +394,8 @@ int main() {
             HeaderChainSelector selector(&store);
 
             assert(selector.GetHeaderCount() == 4);
-            assert(selector.GetBestHeader() != nullptr);
-            assert(selector.GetBestHeader()->height == 2);
+            assert(selector.GetBestHeaderValue().has_value());
+            assert(selector.GetBestHeaderValue()->height == 2);
 
             std::cout << "   ✅ Dangling best marker ignored; best header recovered from stored headers" << std::endl;
         }

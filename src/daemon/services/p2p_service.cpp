@@ -11,7 +11,7 @@
 #include "consensus/chainparams.h"
 #include "consensus/block_download_scheduler.h"
 #include "dinero/network/network_invariants.h"
-#include "consensus/header_chain.h"  // P1 reorg fix: for HeaderChainSelector::GetBestHeader()
+#include "consensus/header_chain.h"  // HeaderChainSelector value snapshots
 #include "network/local_interfaces.h"  // Self-loop filter (shared with P2PManager)
 #include "network/port_mapper.h"
 #include "network/stun_client.h"       // NAT traversal Phase C1: public-IP discovery

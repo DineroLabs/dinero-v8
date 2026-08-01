@@ -177,8 +177,8 @@ void Test1_MidSyncStall() {
     assert(switch_capture.old_peer_id == 1);
 
     // Already-accepted headers remain valid
-    const HeaderIndexEntry* best = selector.GetBestHeader();
-    assert(best != nullptr);
+    const auto best = selector.GetBestHeaderValue();
+    assert(best.has_value());
     assert(best->height == 200);
 
     std::cout << "   ✅ Mid-sync stall detected correctly" << std::endl;
@@ -247,8 +247,8 @@ void Test2_SlowDrip() {
     // Total time elapsed: 50 * 10 seconds = 500 seconds ≈ 8.3 minutes
     // Peer is making progress, timeout should keep extending
 
-    const HeaderIndexEntry* best = selector.GetBestHeader();
-    assert(best != nullptr);
+    const auto best = selector.GetBestHeaderValue();
+    assert(best.has_value());
     assert(best->height == 50);
 
     std::cout << "   ✅ Slow drip tolerated (no false positive)" << std::endl;
