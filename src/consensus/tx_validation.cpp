@@ -1,6 +1,9 @@
 #include "consensus/tx_validation.h"
 #include "consensus/coins_db.h"
+#include "consensus/covenant_activation.h"
+#include "consensus/covenants.h"
 #include "consensus/script_interpreter.h"
+#include "consensus/script_verify.h"
 #include <set>
 #include <algorithm>
 
@@ -145,6 +148,8 @@ TxValidationResult validateInputs(
             all_input_commitments.push_back(utxo.commitment);
         }
 
+        const PrecomputedTransactionData
+            covenant_precomputed(tx, input_utxos);
         for (size_t i = 0; i < tx.vin.size(); ++i) {
             const auto& input = tx.vin[i];
             const auto& coin = input_utxos[i];
@@ -158,7 +163,9 @@ TxValidationResult validateInputs(
                 all_input_amounts,
                 all_input_scriptpubkeys,
                 all_input_confidential_flags,
-                all_input_commitments
+                all_input_commitments,
+                ctx.block_height,
+                &covenant_precomputed
             );
 
             if (!script_ok) {
@@ -270,7 +277,9 @@ bool verifyScript(
     const std::vector<uint64_t>& all_input_amounts,
     const std::vector<std::vector<uint8_t>>& all_input_scriptpubkeys,
     const std::vector<uint8_t>& all_input_confidential_flags,
-    const std::vector<std::vector<uint8_t>>& all_input_commitments
+    const std::vector<std::vector<uint8_t>>& all_input_commitments,
+    uint32_t block_height,
+    const PrecomputedTransactionData* covenant_precomputed
 ) {
     // ========================================================================
     // Phase 24: Full Script Verification Engine
@@ -286,16 +295,61 @@ bool verifyScript(
     Script sig_script(scriptSig);
     Script pubkey_script(scriptPubKey);
 
-    // Create execution context with standard verification flags
+    const uint32_t flags = CovenantActivationParams::StandardFlags(
+        block_height, dinero::Params());
+
+    // Route Taproot through the verifier that authenticates the control block
+    // and output-key tweak. The generic legacy interpreter's historical v1
+    // branch predates that check and must not be a consensus entry point.
+    if (ScriptVerifier::IsP2TR(scriptPubKey)) {
+        if (!scriptSig.empty() ||
+            all_input_amounts.size() != tx.vin.size() ||
+            all_input_scriptpubkeys.size() != tx.vin.size() ||
+            all_input_confidential_flags.size() != tx.vin.size() ||
+            all_input_commitments.size() != tx.vin.size()) {
+            return false;
+        }
+
+        size_t effective_items = witness.size();
+        if (effective_items >= 2 &&
+            !witness.back().empty() &&
+            witness.back()[0] == 0x50) {
+            --effective_items;
+        }
+        if (effective_items != 1 &&
+            !CovenantActivationParams::IsScriptPathActive(
+                block_height, dinero::Params())) {
+            return false;
+        }
+
+        std::vector<UTXOEntry> prevouts;
+        prevouts.reserve(tx.vin.size());
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            UTXOEntry prevout;
+            prevout.value = AmountUna::Una(all_input_amounts[i]);
+            prevout.scriptPubKey = all_input_scriptpubkeys[i];
+            prevout.is_confidential = all_input_confidential_flags[i] != 0;
+            prevout.commitment = all_input_commitments[i];
+            prevouts.push_back(std::move(prevout));
+        }
+
+        std::string taproot_error;
+        return ScriptVerifier::VerifyTaproot(
+            tx, input_index, prevouts, taproot_error, flags,
+            covenant_precomputed);
+    }
+
+    // Create execution context with authoritative height-derived flags.
     ScriptExecutionContext ctx(
         &tx,
         input_index,
         amount,
-        SCRIPT_VERIFY_STANDARD,  // All consensus rules enabled
+        flags,
         all_input_amounts,
         all_input_scriptpubkeys,
         all_input_confidential_flags,
-        all_input_commitments
+        all_input_commitments,
+        covenant_precomputed
     );
 
     // Execute script verification

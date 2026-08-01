@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
+#include "crypto/sha256.h"
 
+#include <openssl/sha.h>
 #include <sqlite3.h>
 #ifdef _WIN32
 #include <process.h>
@@ -53,7 +55,6 @@ static inline char* mkdtemp(char* tmpl) {
 #include <string>
 #include <vector>
 
-#include <openssl/sha.h>
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 
@@ -226,12 +227,11 @@ bool compute_taproot_output_key_for_test(const std::vector<uint8_t>& internal_xo
         SHA256(reinterpret_cast<const unsigned char*>(tag), std::strlen(tag), tag_hash);
 
         unsigned char tweak[32];
-        SHA256_CTX sha_ctx;
-        SHA256_Init(&sha_ctx);
-        SHA256_Update(&sha_ctx, tag_hash, sizeof(tag_hash));
-        SHA256_Update(&sha_ctx, tag_hash, sizeof(tag_hash));
-        SHA256_Update(&sha_ctx, internal_xonly.data(), internal_xonly.size());
-        SHA256_Final(tweak, &sha_ctx);
+        dinero::crypto::CSHA256()
+            .Write(tag_hash, sizeof(tag_hash))
+            .Write(tag_hash, sizeof(tag_hash))
+            .Write(internal_xonly.data(), internal_xonly.size())
+            .Finalize(tweak);
 
         secp256k1_pubkey output_pk;
         if (!secp256k1_xonly_pubkey_tweak_add(ctx, &output_pk, &internal_pk, tweak)) {

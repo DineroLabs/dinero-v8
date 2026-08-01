@@ -78,13 +78,12 @@ int main(void) {
     /* BIP341 TapTweak: output = internal + H("TapTweak", internal)*G */
     uint8_t tag_hash[32];
     SHA256((uint8_t*)"TapTweak", 8, tag_hash);
-    SHA256_CTX sha;
     uint8_t tweak[32];
-    SHA256_Init(&sha);
-    SHA256_Update(&sha, tag_hash, 32);
-    SHA256_Update(&sha, tag_hash, 32);
-    SHA256_Update(&sha, internal_key, 32);
-    SHA256_Final(tweak, &sha);
+    uint8_t tweak_preimage[96];
+    memcpy(tweak_preimage, tag_hash, 32);
+    memcpy(tweak_preimage + 32, tag_hash, 32);
+    memcpy(tweak_preimage + 64, internal_key, 32);
+    SHA256(tweak_preimage, sizeof(tweak_preimage), tweak);
 
     /* Tweaked output key */
     secp256k1_pubkey P;

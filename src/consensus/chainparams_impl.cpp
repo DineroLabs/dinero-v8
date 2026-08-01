@@ -63,9 +63,9 @@ static ChainParams g_mainnet = {
     .require_standard_txs = true,
     .mine_blocks_on_demand = false,
 
-    // Phase 11d: Witness commitment enforcement (active from height 2)
-    .enforce_witness_commitment = true,              // ENFORCED on mainnet
-    .witness_commitment_enforcement_height = 1,      // Height 1+ (v7 restart: features live from block 1)
+    // Deployed validator boundary; keep historical acceptance unchanged.
+    .enforce_witness_commitment = true,
+    .witness_commitment_enforcement_height = 10670,
 
     // Phase 11e: Bitcoin magic translation (OFF by default - safe)
     .enable_witness_magic_translation = false,       // NOT translated on mainnet
@@ -73,6 +73,15 @@ static ChainParams g_mainnet = {
 
     // Confidential transaction activation (after genesis)
     .confidential_activation_height = 1,
+
+    // BIP341 script paths retain their deployed height-1 behavior. Covenant
+    // opcodes are deliberately dormant until their individual specifications,
+    // implementations, vectors, and activation plans have passed review.
+    .taproot_scriptpath_activation_height = 1,
+    .ctv_activation_height = UINT32_MAX,
+    .csfs_activation_height = UINT32_MAX,
+    .txhash_activation_height = UINT32_MAX,
+    .ccv_activation_height = UINT32_MAX,
 
     // Shielded pool activation on mainnet — set 2026-04-27.
     // Direct mainnet activation; testnet phase skipped per
@@ -266,9 +275,9 @@ static ChainParams g_testnet = {
     .require_standard_txs = true,
     .mine_blocks_on_demand = false,
 
-    // Phase 11d: Witness commitment enforcement (active from height 2)
-    .enforce_witness_commitment = true,              // ENFORCED on testnet
-    .witness_commitment_enforcement_height = 2,      // First block after genesis
+    // Deployed validator boundary; keep historical acceptance unchanged.
+    .enforce_witness_commitment = true,
+    .witness_commitment_enforcement_height = 10670,
 
     // Phase 11e: Bitcoin magic translation (OFF by default - safe)
     .enable_witness_magic_translation = false,       // NOT translated on testnet
@@ -276,6 +285,12 @@ static ChainParams g_testnet = {
 
     // Confidential transaction activation (immediately on testnet)
     .confidential_activation_height = 0,
+
+    .taproot_scriptpath_activation_height = 200,
+    .ctv_activation_height = UINT32_MAX,
+    .csfs_activation_height = UINT32_MAX,
+    .txhash_activation_height = UINT32_MAX,
+    .ccv_activation_height = UINT32_MAX,
 
     // Shielded pool — testnet phase parked.
     // Solo operator + fix-forward-on-mainnet policy made the
@@ -350,9 +365,9 @@ static ChainParams g_regtest = {
     .require_standard_txs = false,    // Allow non-standard txs for testing
     .mine_blocks_on_demand = true,    // Enable instant block generation
 
-    // Phase 11d: Witness commitment enforcement (OFF by default, configurable for tests)
-    .enforce_witness_commitment = false,             // NOT enforced by default
-    .witness_commitment_enforcement_height = UINT32_MAX,  // Never triggers (tests override)
+    // Deployed validator boundary; tests may override through MutableParams().
+    .enforce_witness_commitment = true,
+    .witness_commitment_enforcement_height = 10670,
 
     // Phase 11e: Bitcoin magic translation (OFF by default, configurable for tests)
     .enable_witness_magic_translation = false,       // NOT translated by default
@@ -360,6 +375,14 @@ static ChainParams g_regtest = {
 
     // Confidential transaction activation (immediately on regtest)
     .confidential_activation_height = 0,
+
+    // Regtest activates reviewed primitives early so boundary and end-to-end
+    // tests can exercise them. Unspecified CSFS/TXHASH stay dormant.
+    .taproot_scriptpath_activation_height = 20,
+    .ctv_activation_height = 20,
+    .csfs_activation_height = UINT32_MAX,
+    .txhash_activation_height = UINT32_MAX,
+    .ccv_activation_height = 20,
 
     // Shielded pool: active from genesis on regtest so unit tests
     // exercise the full pipeline without needing to override.
@@ -393,15 +416,28 @@ static ChainParams g_regtest = {
 
 std::string ConsensusChecksum(const ChainParams& params) {
     std::ostringstream ss;
-    // Include all consensus-critical parameters
-    ss << params.target_spacing
-       << params.retarget_interval
-       << params.pow_limit_bits
-       << params.genesis.nTime
-       << params.genesis.nBits
-       << params.genesis.nNonce
-       << params.genesis.genesisHashHex
-       << params.genesis.merkleRootHex;
+    // Field names and separators prevent ambiguous concatenation. This checksum
+    // is an operator drift detector, so newly-authoritative activation heights
+    // must be represented explicitly.
+    ss << "consensus-checksum-v2\n"
+       << "target_spacing=" << params.target_spacing << '\n'
+       << "retarget_interval=" << params.retarget_interval << '\n'
+       << "pow_limit_bits=" << params.pow_limit_bits << '\n'
+       << "genesis_time=" << params.genesis.nTime << '\n'
+       << "genesis_bits=" << params.genesis.nBits << '\n'
+       << "genesis_nonce=" << params.genesis.nNonce << '\n'
+       << "genesis_hash=" << params.genesis.genesisHashHex << '\n'
+       << "genesis_merkle=" << params.genesis.merkleRootHex << '\n'
+       << "taproot_scriptpath_height="
+       << params.taproot_scriptpath_activation_height << '\n'
+       << "ctv_height=" << params.ctv_activation_height << '\n'
+       << "csfs_height=" << params.csfs_activation_height << '\n'
+       << "txhash_height=" << params.txhash_activation_height << '\n'
+       << "ccv_height=" << params.ccv_activation_height << '\n'
+       << "enforce_witness_commitment="
+       << params.enforce_witness_commitment << '\n'
+       << "witness_commitment_height="
+       << params.witness_commitment_enforcement_height << '\n';
 
     auto str = ss.str();
     std::vector<uint8_t> data(str.begin(), str.end());

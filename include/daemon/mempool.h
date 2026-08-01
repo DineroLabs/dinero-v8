@@ -14,6 +14,7 @@
 #include <map>
 #include <limits>
 #include <functional>
+#include <optional>
 #include "wallet/transaction.h"
 #include "common/logger.h"
 #include "mempool/coins_view_mempool.h"  // v0.11.0: Policy-layer UTXO overlay
@@ -467,7 +468,10 @@ private:
     TxAcceptResult submitTransactionInternal(const Transaction& tx, const std::string& source, bool relay);
 
     // Internal validation and management (Phase M.0: Changed to uint256)
-    bool validateTransaction(const Transaction& tx, std::string& error) const;
+    bool validateTransaction(
+        const Transaction& tx,
+        std::string& error,
+        std::optional<uint32_t> target_height = std::nullopt) const;
     bool checkDoubleSpend(const Transaction& tx) const;
     bool checkDependencies(const Transaction& tx) const;
     uint64_t calculateFee(const Transaction& tx) const;

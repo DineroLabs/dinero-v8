@@ -567,7 +567,9 @@ bool test_mixed_prevout_ct_taproot_sighash_anyonecanpay() {
         &tx, 1, transparent_changed[1], dinero::consensus::SCRIPT_VERIFY_TAPROOT,
         transparent_changed, all_scriptpubkeys, flags, commitments);
 
-    const uint8_t hash_type = dinero::consensus::SIGHASH_ANYONECANPAY;
+    const uint8_t hash_type =
+        dinero::consensus::SIGHASH_ALL |
+        dinero::consensus::SIGHASH_ANYONECANPAY;
     const auto base_hash = dinero::consensus::SignatureHashTaproot(base_ctx, hash_type, {});
     const auto transparent_changed_hash =
         dinero::consensus::SignatureHashTaproot(transparent_changed_ctx, hash_type, {});
@@ -593,7 +595,7 @@ bool test_mixed_prevout_ct_taproot_sighash_anyonecanpay() {
     }
 
     if (!expect_hash(base_hash,
-                     "54015a9e2fb86b813f26958378df8a10da4ddf39a4dba4c125168cac27db1b18",
+                     "13b3f74b06be066fbc9c4caa0e271eb430be176a86c8d30e0800d56db9c6b3b2",
                      "mixed-input CT ANYONECANPAY Taproot sighash")) {
         return false;
     }

@@ -1,4 +1,5 @@
 #include "consensus/block_validation.h"
+#include "consensus/covenants.h"
 #include "consensus/consensus_write_batch.h"
 #include "dinero/compat/int128.hpp"
 #include "consensus/shielded/anchor_history.h"
@@ -986,35 +987,19 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         // FULL RULES PATH: Utreexo + witness commitment enforced
         // ─────────────────────────────────────────────────────────────────────
 
-        // Validate witness commitment (if present, must be correct)
+        // ChainParams is the single activation source. EnforceWitnessCommitment
+        // also preserves the deployed rule that a recognized DINW v1
+        // commitment is validated at every full-rules height, even before it
+        // is mandatory.
         std::string witness_error;
-        if (!ValidateWitnessCommitment(block.vtx, witness_error)) {
-            error = "bad-witness-commitment: " + witness_error;
+        if (!EnforceWitnessCommitment(
+                block.vtx,
+                height,
+                Params().enforce_witness_commitment,
+                Params().witness_commitment_enforcement_height,
+                witness_error)) {
+            error = witness_error;
             return false;
-        }
-        // MANDATORY witness commitment for new blocks (activation height 10670)
-        // Blocks 1-10669 were mined before the assembler added commitments.
-        // After 10670, every block has witness data and MUST include DINW commitment.
-        {
-            constexpr uint32_t WITNESS_COMMITMENT_MANDATORY_HEIGHT = 10670;
-            if (height >= WITNESS_COMMITMENT_MANDATORY_HEIGHT) {
-                bool block_has_witness = false;
-                for (const auto& tx : block.vtx) {
-                    if (tx.HasWitness()) {
-                        block_has_witness = true;
-                        break;
-                    }
-                }
-                if (block_has_witness && !block.vtx.empty()) {
-                    auto commitment_idx = FindWitnessCommitmentIndex(block.vtx[0]);
-                    if (!commitment_idx.has_value()) {
-                        error = "missing-witness-commitment (required at height " +
-                                std::to_string(height) + ", mandatory since height " +
-                                std::to_string(WITNESS_COMMITMENT_MANDATORY_HEIGHT) + ")";
-                        return false;
-                    }
-                }
-            }
         }
 
         // Validate Utreexo data presence (if block spends UTXOs)
@@ -1454,6 +1439,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                 );
             }
 
+            const PrecomputedTransactionData
+                covenant_precomputed(tx, fee_input_utxos);
+
             // Phase 8: Validate each input using spent_outputs data
             // This includes both value checking AND script validation
             for (size_t input_idx = 0; input_idx < tx.vin.size(); input_idx++) {
@@ -1486,7 +1474,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                 // Phase 8: CRITICAL - Script validation for stateless mode
                 // This validates signatures and script execution
                 // Pass all_utxos for BIP341 Taproot sighash computation
-                ScriptValidationResult script_result = ValidateSpend(tx, input_idx, utxo, height, fee_input_utxos);
+                ScriptValidationResult script_result = ValidateSpend(
+                    tx, input_idx, utxo, height, fee_input_utxos,
+                    &covenant_precomputed);
 
                 if (script_result != ScriptValidationResult::OK) {
                     // Map validation result to error message
@@ -2902,6 +2892,9 @@ bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,
         return false;
     }
 
+    const PrecomputedTransactionData
+        covenant_precomputed(tx, input_utxos);
+
     // Phase 2: Verify scripts with full UTXO set available
     // Phase F.11: Use minimal script validation engine (explicit, not VM-based)
     //
@@ -2913,7 +2906,8 @@ bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,
 
         // Use minimal script engine (explicit validation per script type)
         // Pass all input UTXOs for BIP341 Taproot sighash computation
-        ScriptValidationResult result = ValidateSpend(tx, i, utxo, height, input_utxos);
+        ScriptValidationResult result = ValidateSpend(
+            tx, i, utxo, height, input_utxos, &covenant_precomputed);
 
         if (result != ScriptValidationResult::OK) {
             // Map validation result to error message

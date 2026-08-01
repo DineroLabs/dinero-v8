@@ -24,6 +24,7 @@
 #include "primitives/transaction.h"
 #include "primitives/amount.h"
 #include "wallet/p2mr_address.h"
+#include "crypto/sha256.h"
 
 #include <array>
 #include <cstddef>
@@ -33,7 +34,6 @@
 #include <string>
 #include <vector>
 
-#include <openssl/sha.h>
 
 namespace pq    = dinero::consensus::pq;
 namespace mldsa = dinero::consensus::pq::ml_dsa_65;
@@ -57,11 +57,10 @@ void record(bool cond, const char* tag) {
 std::array<uint8_t, 32> Sha256Concat(const std::array<uint8_t, 32>& a,
                                      const std::array<uint8_t, 32>& b) {
     std::array<uint8_t, 32> out{};
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, a.data(), a.size());
-    SHA256_Update(&ctx, b.data(), b.size());
-    SHA256_Final(out.data(), &ctx);
+    dinero::crypto::CSHA256()
+        .Write(a.data(), a.size())
+        .Write(b.data(), b.size())
+        .Finalize(out.data());
     return out;
 }
 
@@ -74,10 +73,9 @@ mldsa::Seed MakeSeed(uint8_t byte_fill) {
 // Helper: the 32-byte SHA-256 sighash used in tests.
 std::array<uint8_t, 32> TestSighash(const char* label) {
     std::array<uint8_t, 32> out{};
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, label, std::strlen(label));
-    SHA256_Final(out.data(), &ctx);
+    dinero::crypto::CSHA256()
+        .Write(reinterpret_cast<const uint8_t*>(label), std::strlen(label))
+        .Finalize(out.data());
     return out;
 }
 

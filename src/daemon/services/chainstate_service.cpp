@@ -2698,6 +2698,103 @@ bool ChainstateService::Start() {
         logger_->info("[ChainstateService] Seeded " + std::to_string(candidates_seeded) +
                      " candidates from active chain height index");
 
+        // ═════════════════════════════════════════════════════════════════════
+        // Issue #462 — restore FORK blocks to the in-memory index.
+        //
+        // The loop above walks getBlockHashByHeight(), the CANONICAL HEIGHT
+        // INDEX, which maps a height to the ACTIVE chain's block. Blocks on a
+        // losing fork are therefore never re-added, so FindBlockIndex() misses
+        // them after a restart and getblockheader silently omits status_flags,
+        // failed_valid and failed_child — the fields go ABSENT, not null.
+        //
+        // The consequence is the same class as #453: after restart the node
+        // cannot tell that a fork block was ever validated, and per #453 it does
+        // not re-validate. It also erases the distinction #453 established
+        // between "valid block that lost the fork race" and "block marked
+        // invalid", because the failure flags disappear too.
+        //
+        // The data is already durable — the header row survives with its
+        // chainwork and status_flags — so this is purely a rebuild gap.
+        //
+        // Ordering is load-bearing: entries must be added parent-first so pprev
+        // links and chainwork accumulate correctly, exactly as the active-chain
+        // loop above notes. Persisted rows are collected first, then sorted by
+        // height ascending.
+        //
+        // Fork blocks are deliberately NOT seeded as candidates here. The
+        // active-chain loop seeds candidates; a restored fork block that
+        // genuinely outweighs the active tip is the business of the normal
+        // reorg path, and seeding it during startup rebuild would let a restart
+        // change fork choice as a side effect of a bookkeeping fix.
+        {
+            struct PendingForkEntry {
+                uint256 hash;
+                ChainDB::PersistedHeaderMetadata metadata;
+            };
+            std::vector<PendingForkEntry> fork_entries;
+
+            auto scan_status = chain_db_->forEachHeaderMetadata(
+                [&](const uint256& hash,
+                    const ChainDB::PersistedHeaderMetadata& metadata) -> bool {
+                    if (dinero::FindBlockIndex(hash) == nullptr) {
+                        fork_entries.push_back(PendingForkEntry{hash, metadata});
+                    }
+                    return true;
+                });
+
+            if (scan_status != Status::Ok) {
+                // Non-fatal: the active chain is already loaded and usable. Log
+                // loudly rather than refuse to start over a display/bookkeeping
+                // gap.
+                logger_->warning(
+                    "[ChainstateService] Could not scan persisted header metadata for fork "
+                    "blocks (status=" + std::to_string(static_cast<int>(scan_status)) +
+                    "); fork-block validation status will be unavailable until restart");
+            } else if (!fork_entries.empty()) {
+                std::sort(fork_entries.begin(), fork_entries.end(),
+                          [](const PendingForkEntry& a, const PendingForkEntry& b) {
+                              return a.metadata.height < b.metadata.height;
+                          });
+
+                uint32_t fork_loaded = 0;
+                uint32_t fork_skipped = 0;
+                for (const auto& entry : fork_entries) {
+                    // A later entry may have been added as a side effect of an
+                    // earlier one; re-check rather than assume.
+                    if (dinero::FindBlockIndex(entry.hash) != nullptr) continue;
+
+                    BlockHeader header;
+                    bool recovered_header_from_body = false;
+                    std::string recovery_error;
+                    if (!loadHeaderOrRecoverFromBody(entry.hash,
+                                                     entry.metadata.height,
+                                                     &header,
+                                                     &recovered_header_from_body,
+                                                     &recovery_error)) {
+                        fork_skipped++;
+                        continue;
+                    }
+
+                    CBlockIndex* idx =
+                        AddBlockIndex(header, static_cast<uint32_t>(entry.metadata.height));
+                    if (!idx) {
+                        fork_skipped++;
+                        continue;
+                    }
+
+                    ApplyPersistedMetadataToBlockIndex(idx, entry.metadata);
+                    fork_loaded++;
+                }
+
+                logger_->info("[ChainstateService] Restored " + std::to_string(fork_loaded) +
+                              " off-active-chain block index entries with persisted status (#462)" +
+                              (fork_skipped > 0
+                                   ? "; skipped " + std::to_string(fork_skipped) +
+                                         " whose header could not be loaded"
+                                   : ""));
+            }
+        }
+
         // Set active_tip_ to genesis initially. The Utreexo checkpoint loader
         // below will advance it to the last validated height if a checkpoint
         // exists. We must NOT set active_tip_ to the ChainDB storage tip
@@ -7004,8 +7101,12 @@ void ChainstateService::ActivateBestChain() {
     // draining.  Defer the no-op import at its source.  The ancestry check keeps
     // competing/below-base branches on the normal safety path; when promotion
     // clears assumeutxo_active_, the next activation imports the stored branch.
+    consensus::HeaderIndexEntry best_header_copy{};
+    const bool have_best_header =
+        header_chain_selector_ &&
+        header_chain_selector_->GetBestHeaderCopy(best_header_copy);
     const auto* best_header_for_hold =
-        header_chain_selector_ ? header_chain_selector_->GetBestHeader() : nullptr;
+        have_best_header ? &best_header_copy : nullptr;
     bool defer_snapshot_continuation = false;
     if (assumeutxo_active_ && !GetConfig().assumeutxo_forward_connect &&
         best_header_for_hold && active_tip_ &&
@@ -7013,10 +7114,16 @@ void ChainstateService::ActivateBestChain() {
         static_cast<uint32_t>(active_tip_->height) == assumeutxo_base_height_ &&
         active_tip_->hash == assumeutxo_base_block_ &&
         best_header_for_hold->height > assumeutxo_base_height_) {
-        const auto* base_ancestor =
-            best_header_for_hold->GetAncestor(assumeutxo_base_height_);
+        uint256 base_ancestor_hash;
+        uint32_t anchor_height = 0;
         const bool header_descends_from_base =
-            base_ancestor && base_ancestor->hash == assumeutxo_base_block_;
+            header_chain_selector_->GetAncestorHashByHash(
+                best_header_for_hold->hash,
+                assumeutxo_base_height_,
+                base_ancestor_hash,
+                anchor_height) &&
+            anchor_height == best_header_for_hold->height &&
+            base_ancestor_hash == assumeutxo_base_block_;
 
         // BlockAcceptor can populate candidates_ before that block's header is
         // reflected in HeaderChainSelector.  Inspect the best queued candidate
@@ -7127,57 +7234,69 @@ void ChainstateService::ActivateBestChain() {
             //  - headers missing from block index, and
             //  - headers that already have index entries but still need body import/request.
             std::unordered_set<uint256> active_chain_hashes;
-            for (CBlockIndex* cursor = active_tip_; cursor; cursor = cursor->pprev) {
-                active_chain_hashes.insert(cursor->hash);
+            {
+                // #360 lock order: activation_mutex_ (held by caller) then the
+                // block-index graph lock. Copy only identities before entering
+                // the header selector; no cross-subsystem callback occurs while
+                // either graph's internal lock is held.
+                std::lock_guard<std::recursive_mutex> index_lock(
+                    dinero::g_block_index_mutex);
+                for (CBlockIndex* cursor = active_tip_; cursor; cursor = cursor->pprev) {
+                    active_chain_hashes.insert(cursor->hash);
+                }
             }
 
-            std::vector<const consensus::HeaderIndexEntry*> branch_path;
-            const consensus::HeaderIndexEntry* walk = best_header;
-            while (walk && active_chain_hashes.find(walk->hash) == active_chain_hashes.end()) {
-                branch_path.push_back(walk);
-                walk = walk->parent;
-            }
+            std::vector<consensus::HeaderIndexEntry> branch_path;
+            uint256 common_ancestor_hash;
+            const bool branch_snapshot_ok =
+                header_chain_selector_->CollectBranchCopiesByHash(
+                    best_header->hash,
+                    active_chain_hashes,
+                    branch_path,
+                    common_ancestor_hash);
 
             // If we never reach an active-chain ancestor, this header branch is
             // incompatible with our current chain graph (e.g., stale foreign headers).
             // Skip importing it as a candidate to avoid FindFork() null deadlocks.
-            if (!walk) {
+            if (!branch_snapshot_ok) {
+                if (logger_) {
+                    logger_->debug("[ActivateBestChain] Header branch changed before it "
+                                   "could be copied; retrying on the next activation");
+                }
+            } else if (common_ancestor_hash.IsNull()) {
                 if (logger_) {
                     logger_->warning("[ActivateBestChain] Ignoring incompatible header branch (no common ancestor with active tip)");
                 }
             } else {
                 const bool importing_competing_branch =
-                    walk->hash != active_tip_->hash;
-                std::reverse(branch_path.begin(), branch_path.end());
+                    common_ancestor_hash != active_tip_->hash;
 
                 size_t imported_blocks = 0;
                 std::vector<std::string> missing_block_bodies;
                 missing_block_bodies.reserve(branch_path.size());
 
-                for (const auto* entry : branch_path) {
-                    if (!entry) continue;
-
-                    CBlockIndex* idx = FindBlockIndex(entry->hash);
+                for (const auto& entry : branch_path) {
+                    CBlockIndex* idx = FindBlockIndex(entry.hash);
                     if (!idx) {
-                        idx = AddBlockIndex(entry->header, entry->height);
+                        idx = AddBlockIndex(entry.header, entry.height);
                         if (!idx) {
                             continue;
                         }
                     }
 
-                    idx->chainwork = entry->chainwork.GetHex();
+                    idx->chainwork = entry.chainwork.GetHex();
 
                     // If body isn't stored yet, request it and continue.
-                    if (!HasStoredBlockBody(entry->hash)) {
-                        missing_block_bodies.push_back(entry->hash.GetHex());
+                    if (!HasStoredBlockBody(entry.hash)) {
+                        missing_block_bodies.push_back(entry.hash.GetHex());
                         continue;
                     }
 
                     // Skip blocks that were found unreadable (corrupt chaindb entries).
                     // They will be re-downloaded from peers. Self-synchronizing
                     // read — the scheduler-drain thread clears concurrently.
-                    if (unreadable_blocks_.contains(entry->hash)) {
-                        missing_block_bodies.push_back(entry->hash.GetHex());
+                    if (unreadable_blocks_.contains(entry.hash)) {
+                        missing_block_bodies.push_back(entry.hash.GetHex());
                         continue;
                     }
 
@@ -7194,18 +7313,18 @@ void ChainstateService::ActivateBestChain() {
                     // marker. This prevents periodic ABC from racing ahead while
                     // preserving store-ahead crash recovery.
                     if (GetConfig().utreexo_stateless) {
-                        const auto metadata = chain_db_->getHeaderMetadata(entry->hash);
+                        const auto metadata = chain_db_->getHeaderMetadata(entry.hash);
                         const bool transaction_validated =
                             metadata.status() == Status::Ok &&
                             (metadata.value().status_flags &
                              BLOCK_VALID_TRANSACTIONS) != 0;
                         const bool reorg_plan_validated =
                             importing_competing_branch &&
-                            chain_db_->getCSNSpendTargets(entry->hash).status() == Status::Ok;
+                            chain_db_->getCSNSpendTargets(entry.hash).status() == Status::Ok;
                         if (!transaction_validated && !reorg_plan_validated) {
                             if (logger_) {
                                 logger_->debug("[ActivateBestChain] CSN body at height " +
-                                               std::to_string(entry->height) +
+                                               std::to_string(entry.height) +
                                                " awaits ordered proof validation");
                             }
                             continue;
@@ -7217,7 +7336,7 @@ void ChainstateService::ActivateBestChain() {
                     // reachable from the active height index. Rehydrate that
                     // metadata before candidacy checks so the node can promote
                     // a locally stored better block after restart.
-                    RestorePersistedBlockIndexMetadata(*chain_db_, entry->hash, idx);
+                    RestorePersistedBlockIndexMetadata(*chain_db_, entry.hash, idx);
                     std::string invalidity_error;
                     if (!BackfillFailedChildFromParent(chain_db_,
                                                        idx,

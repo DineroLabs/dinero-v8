@@ -57,7 +57,9 @@ message(STATUS "Configuring Phase E.3 integration tests...")
 message(STATUS "Configuring Phase F.5 end-to-end tests...")
 
 # E2E Test Harness Library (requires curl)
-find_package(CURL QUIET)
+if(NOT TARGET CURL::libcurl)
+  find_package(CURL QUIET)
+endif()
 if(CURL_FOUND)
     add_library(e2e_test_harness STATIC
         e2e_test_harness.cpp
@@ -335,6 +337,32 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_mine_after_invalidate_restart.sh)
         TIMEOUT 420
     )
     message(STATUS "  ✓ MineAfterInvalidateRestart registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_fork_block_status_restart.sh)
+    add_test(
+        NAME ForkBlockStatusRestart
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_fork_block_status_restart.sh
+    )
+    set_tests_properties(ForkBlockStatusRestart PROPERTIES
+        LABELS "integration;restart;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ForkBlockStatusRestart registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh)
+    add_test(
+        NAME RpcErrorEnvelope
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_rpc_error_envelope.sh
+    )
+    set_tests_properties(RpcErrorEnvelope PROPERTIES
+        LABELS "integration;canonicality"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ RpcErrorEnvelope registered")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_tip_persist_restart_equivalence.sh)
@@ -744,6 +772,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_createrawtransaction_scriptpub
     )
     message(STATUS "  ✓ WalletCreateRawTransactionScriptPubKeyOutputs registered")
 endif()
+
+add_test(
+    NAME CovenantWalletMultinodeLifecycle
+    COMMAND ${CMAKE_COMMAND} -E env
+        "DINEROD=$<TARGET_FILE:dinerod>"
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_covenant_wallet_multinode_lifecycle.sh
+)
+set_tests_properties(CovenantWalletMultinodeLifecycle PROPERTIES
+    LABELS "integration;covenant;wallet;rpc;multinode;relay;restart;reorg;regtest;serial"
+    TIMEOUT 360
+    RUN_SERIAL TRUE
+)
+message(STATUS "  ✓ CovenantWalletMultinodeLifecycle registered unconditionally")
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_listunspent_excludes_mempool_spent.sh)
     add_test(
@@ -1704,6 +1745,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         TaprootSignRawTransactionRbfConfirmation
         ParentChildRbfReplacementWithMempoolParent
         WalletCreateRawTransactionScriptPubKeyOutputs
+        CovenantWalletMultinodeLifecycle
         WalletListUnspentExcludesMempoolSpent
         RbfPolicyReporting FilterCommitmentActivationBoundary
         ExternalMinerCoinbaseTxnFilterCommitment

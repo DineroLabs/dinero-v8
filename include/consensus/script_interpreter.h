@@ -16,6 +16,7 @@ namespace consensus {
 
 // Forward declaration for CPU budget monitoring
 class CPUBudgetMonitor;
+class PrecomputedTransactionData;
 
 // ============================================================================
 // Phase 24.1: Script Verification Flags
@@ -78,6 +79,7 @@ enum ScriptVerifyFlags : uint32_t {
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS = (1U << 7),  // Discourage NOPs
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM = (1U << 12),  // Unknown witness versions
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION = (1U << 18),  // Unknown Taproot leaf versions
+    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE = (1U << 19),  // Unknown tapscript pubkey types
 
     // Covenant verification flags combined (Phase L0.2)
     SCRIPT_VERIFY_COVENANTS = SCRIPT_VERIFY_CHECKTEMPLATEVERIFY |
@@ -85,8 +87,8 @@ enum ScriptVerifyFlags : uint32_t {
                               SCRIPT_VERIFY_TXHASH |
                               SCRIPT_VERIFY_CHECKCONTRACT,
 
-    // Standard verification flags (post-Taproot + Covenants)
-    // Phase L0.2: NOW INCLUDES COVENANT ENFORCEMENT
+    // Baseline standard flags. Covenant flags are height-dependent consensus
+    // rules and MUST be added through CovenantActivationParams::StandardFlags.
     SCRIPT_VERIFY_STANDARD = SCRIPT_VERIFY_P2SH |
                              SCRIPT_VERIFY_DERSIG |
                              SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
@@ -99,8 +101,7 @@ enum ScriptVerifyFlags : uint32_t {
                              SCRIPT_VERIFY_NULLFAIL |
                              SCRIPT_VERIFY_CLEANSTACK |
                              SCRIPT_VERIFY_MINIMALIF |
-                             SCRIPT_VERIFY_WITNESS_PUBKEYTYPE |
-                             SCRIPT_VERIFY_COVENANTS,  // ← CRITICAL: Enforces covenants in consensus
+                             SCRIPT_VERIFY_WITNESS_PUBKEYTYPE,
 };
 
 // ============================================================================
@@ -259,6 +260,8 @@ struct ScriptExecutionContext {
     std::vector<std::vector<uint8_t>> all_scriptpubkeys;  // scriptPubKeys for all inputs
     std::vector<uint8_t> all_confidential_flags;          // 1 if the prevout is confidential
     std::vector<std::vector<uint8_t>> all_input_commitments; // Prevout CT commitments
+    const PrecomputedTransactionData*
+        covenant_precomputed = nullptr;
 
     // Phase 26: Sighash preimage cache (mutable for caching in const methods)
     mutable SighashCache sighash_cache;
@@ -285,7 +288,9 @@ struct ScriptExecutionContext {
         const std::vector<uint64_t>& amounts,
         const std::vector<std::vector<uint8_t>>& scriptpubkeys,
         const std::vector<uint8_t>& confidential_flags = {},
-        const std::vector<std::vector<uint8_t>>& input_commitments = {}
+        const std::vector<std::vector<uint8_t>>& input_commitments = {},
+        const PrecomputedTransactionData*
+            covenant_precomputed_ = nullptr
     )
         : tx(tx_)
         , input_index(input_index_)
@@ -296,6 +301,7 @@ struct ScriptExecutionContext {
         , all_scriptpubkeys(scriptpubkeys)
         , all_confidential_flags(confidential_flags)
         , all_input_commitments(input_commitments)
+        , covenant_precomputed(covenant_precomputed_)
     {}
 };
 
@@ -462,13 +468,16 @@ std::vector<uint8_t> SignatureHashWitness(
  * @param hash_type      Signature hash type (default 0 = SIGHASH_DEFAULT)
  * @param leaf_hash      Tapleaf hash (for script-path spending, empty for key-path)
  * @param annex          BIP341 annex data (empty if no annex present)
+ * @param codesep_pos    BIP342 opcode position of the last executed
+ *                       OP_CODESEPARATOR (0xffffffff if none)
  * @return               32-byte signature hash
  */
 std::vector<uint8_t> SignatureHashTaproot(
     const ScriptExecutionContext& ctx,
     uint8_t hash_type,
     const std::vector<uint8_t>& leaf_hash,
-    const std::vector<uint8_t>& annex = {}
+    const std::vector<uint8_t>& annex = {},
+    uint32_t codesep_pos = 0xffffffffU
 );
 
 // ============================================================================
