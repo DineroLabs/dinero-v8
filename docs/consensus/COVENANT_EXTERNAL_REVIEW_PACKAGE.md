@@ -223,4 +223,3 @@ For each question in section 5, record:
 
 At least one reviewer should be independent of the implementation authors and
 should reproduce the vectors and neuter checks from a clean checkout.
-

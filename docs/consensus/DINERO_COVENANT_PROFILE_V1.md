@@ -281,4 +281,3 @@ Before doing so, the project MUST:
 4. publish the chosen activation parameters and release hashes with enough
    fleet-upgrade lead time; and
 5. monitor activation and retain a coordinated incident response procedure.
-
