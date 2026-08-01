@@ -244,7 +244,7 @@ int main() {
         assert(locator.size() <= 11);  // Max 10 + genesis
 
         // First entry should be tip
-        const HeaderIndexEntry* tip = selector.GetBestHeader();
+        const auto tip = selector.GetBestHeaderValue();
         assert(locator[0] == tip->hash);
 
         // Last entry should be genesis

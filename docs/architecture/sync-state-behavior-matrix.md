@@ -3,6 +3,13 @@
 Design note for the canonical sync snapshot. Written **before** implementation so the intended
 behavior is reviewable independently of the code.
 
+> **Implementation update (issue #441):** the raw `GetBestHeader()`, `GetHeader()`,
+> `GetHeaderAtHeight()`, and pointer-based `FindForkPoint()` APIs described below
+> have since been removed. Production and tests now use value copies, identity
+> checks, or compute-under-lock ancestry operations. The table and hazard
+> analysis are retained as the design history that motivated that change; they
+> do not describe the current accessor surface.
+
 ## Why this exists
 
 `dinero::HeaderSyncManager` (`include/consensus/header_sync_manager.h`) documents itself as the
@@ -11,7 +18,7 @@ behavior is reviewable independently of the code.
 `BlockRelayManager::SetHeaderSyncManager()` is never called. Every consumer null-guards it and
 falls through to a different mechanism. See #439.
 
-Consequences today:
+Consequences at the time this design was written:
 
 | Consumer | Falls back to | Effect |
 |---|---|---|
@@ -55,10 +62,9 @@ So this change introduces convergence as a *new, separate* fact. It does not red
 
 ## Inputs available
 
-- `HeaderChainSelector::GetBestHeader()` → `HeaderIndexEntry{hash, prev_hash, height, chainwork}`
-  — returns a raw pointer **after** releasing `mutex_` (see the use-after-free note above). A
-  copy-under-lock accessor is added, following the existing house pattern (`GetHeaderCopy`,
-  `GetAncestorHashesCopy`) rather than inventing a new one.
+- Header selector facts are read through copy/value accessors and purpose-built
+  compute-under-lock operations. The former raw `GetBestHeader()` accessor is
+  described above only to preserve the original design rationale.
 - Active tip: `active_tip_` is a bare `CBlockIndex*` mutated on the chain-advancement path, so
   dereferencing it from a status reader is itself a race. `PublishActiveTip()` — already the single
   setter for that pointer — now also publishes an immutable `{valid, hash, height}` value under its

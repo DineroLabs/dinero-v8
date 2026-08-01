@@ -68,22 +68,22 @@ int main() {
         null_hash.SetNull();
         BlockHeader genesis = CreateTestHeader(null_hash, 1000000);
         assert(selector.AddHeader(genesis));
-        assert(selector.GetBestHeader() != nullptr);
-        assert(selector.GetBestHeader()->height == 0);
+        assert(selector.GetBestHeaderValue().has_value());
+        assert(selector.GetBestHeaderValue()->height == 0);
         std::cout << "   Genesis added at height 0" << std::endl;
 
         // Block 1
         uint256 genesis_hash = genesis.GetHash();
         BlockHeader block1 = CreateTestHeader(genesis_hash, 1000001);
         assert(selector.AddHeader(block1));
-        assert(selector.GetBestHeader()->height == 1);
+        assert(selector.GetBestHeaderValue()->height == 1);
         std::cout << "   Block 1 added at height 1" << std::endl;
 
         // Block 2
         uint256 block1_hash = block1.GetHash();
         BlockHeader block2 = CreateTestHeader(block1_hash, 1000002);
         assert(selector.AddHeader(block2));
-        assert(selector.GetBestHeader()->height == 2);
+        assert(selector.GetBestHeaderValue()->height == 2);
         std::cout << "   Block 2 added at height 2" << std::endl;
 
         std::cout << "✅ Linear chain advances best tip correctly" << std::endl;
@@ -102,8 +102,8 @@ int main() {
         BlockHeader genesis = CreateTestHeader(null_hash, 2000000);
         assert(selector.AddHeader(genesis));
 
-        const HeaderIndexEntry* genesis_entry = selector.GetBestHeader();
-        assert(genesis_entry != nullptr);
+        const auto genesis_entry = selector.GetBestHeaderValue();
+        assert(genesis_entry.has_value());
         assert(genesis_entry->IsGenesis());
         assert(genesis_entry->height == 0);
         assert(genesis_entry->parent == nullptr);
@@ -144,7 +144,7 @@ int main() {
         // Now block2 should succeed
         added = selector.AddHeader(block2);
         assert(added);
-        assert(selector.GetBestHeader()->height == 2);
+        assert(selector.GetBestHeaderValue()->height == 2);
         std::cout << "   Block 2 accepted (parent now present)" << std::endl;
 
         std::cout << "✅ Out-of-order headers require parent" << std::endl;
@@ -186,13 +186,17 @@ int main() {
         selector.AddHeader(fork2);
 
         // Find fork point
-        const HeaderIndexEntry* main_tip = selector.GetHeader(chain_hashes[5]);
-        const HeaderIndexEntry* fork_tip = selector.GetHeader(fork2.GetHash());
+        const auto main_tip = selector.GetHeaderValue(chain_hashes[5]);
+        const auto fork_tip = selector.GetHeaderValue(fork2.GetHash());
 
-        const HeaderIndexEntry* fork_point = selector.FindForkPoint(main_tip, fork_tip);
-
-        assert(fork_point != nullptr);
-        assert(fork_point->hash == fork_point_hash);
+        assert(main_tip.has_value());
+        assert(fork_tip.has_value());
+        uint256 resolved_fork_hash;
+        assert(selector.FindForkPointHash(
+            main_tip->hash, fork_tip->hash, resolved_fork_hash));
+        assert(resolved_fork_hash == fork_point_hash);
+        const auto fork_point = selector.GetHeaderValue(resolved_fork_hash);
+        assert(fork_point.has_value());
         assert(fork_point->height == 2);
 
         std::cout << "   Fork point found at height: " << fork_point->height << std::endl;
@@ -223,7 +227,7 @@ int main() {
         // lower. Consensus permits this child because it is greater than MTP.
         BlockHeader backward_time = CreateTestHeader(prev, 5000010);
         assert(selector.AddHeader(backward_time));
-        assert(selector.GetBestHeader()->height == 12);
+        assert(selector.GetBestHeaderValue()->height == 12);
 
         std::cout << "✅ Non-monotonic parent timestamp accepted above MTP" << std::endl;
     }

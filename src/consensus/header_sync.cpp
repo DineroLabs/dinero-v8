@@ -266,10 +266,7 @@ bool HeaderSyncManager::ProcessHeaders(uint64_t peer_id, const std::vector<Block
         // Validate via HeaderChainSelector
         if (!chain_selector_->AddHeader(header)) {
             const bool missing_parent_locally =
-                // #441: SAFE as-is — the returned pointer is only compared
-                // against nullptr, never dereferenced, so the eviction hazard
-                // does not apply. Do not "fix" this to GetHeaderCopy().
-                (accepted == 0 && chain_selector_->GetHeader(header.prev_block_hash) == nullptr);
+                (accepted == 0 && !chain_selector_->ContainsHeader(header.prev_block_hash));
 
             if (missing_parent_locally) {
                 std::cerr << "[HeaderSyncManager] Local header gap: missing parent "

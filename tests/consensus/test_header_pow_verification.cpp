@@ -45,8 +45,8 @@ int main() {
     assert(genesis_ok && "real genesis (valid PoW) must be accepted");
     std::cout << "  [1] real genesis accepted: OK" << std::endl;
 
-    const HeaderIndexEntry* best_after_genesis = selector.GetBestHeader();
-    assert(best_after_genesis != nullptr &&
+    const auto best_after_genesis = selector.GetBestHeaderValue();
+    assert(best_after_genesis.has_value() &&
            best_after_genesis->hash == genesis.GetHash());
 
     // ------------------------------------------------------------------
@@ -72,8 +72,8 @@ int main() {
     // 3. Best header must remain genesis — the forged header (which claimed
     //    huge chainwork) did NOT win fork-choice.
     // ------------------------------------------------------------------
-    const HeaderIndexEntry* best_after_forge = selector.GetBestHeader();
-    assert(best_after_forge != nullptr &&
+    const auto best_after_forge = selector.GetBestHeaderValue();
+    assert(best_after_forge.has_value() &&
            best_after_forge->hash == genesis.GetHash() &&
            "forged header must not become best (no forged-chainwork takeover)");
     std::cout << "  [3] best header unchanged (no forged-chainwork takeover): OK"

@@ -872,20 +872,37 @@ bool BlockAcceptor::ValidateProofOfWork(const ParsedBlock& block, uint32_t block
             auto* chain_db = chainstate ? chainstate->GetChainDB() : nullptr;
             const dinero::uint256 pow_parent_hash = dinero::uint256::FromHexUnsafe(parentHashHex);
             auto* parent_index = chainstate ? chainstate->FindBlockIndex(pow_parent_hash) : nullptr;
-            const auto* parent_entry =
-                // #441: NOT migrated. This pointer is handed to
-                // BuildAsertInputForCandidate(), which calls
-                // parent_entry->GetMedianTimePast() and GetCanonicalAsertAnchorTime()
-                // — both walk the parent chain, so a *Copy (parent nulled) cannot
-                // substitute. Converting it means changing that function's
-                // signature to take precomputed values, which is a change to
-                // consensus difficulty-input construction and wants its own
-                // reviewed commit. Tracked in #441.
-                (daemon_ctx && daemon_ctx->header_chain) ? daemon_ctx->header_chain->GetHeader(pow_parent_hash) : nullptr;
+            int64_t known_parent_mtp = 0;
+            int64_t known_block1_time = 0;
+            if (parent_index) {
+                known_parent_mtp = static_cast<int64_t>(parent_index->GetMedianTimePast());
+                known_block1_time = dinero::GetKnownAncestryTimestamp(
+                    parent_index,
+                    /*parent_entry=*/nullptr,
+                    1);
+            } else if (daemon_ctx && daemon_ctx->header_chain) {
+                // #441: derive both ancestry-dependent values inside the
+                // selector lock. A raw HeaderIndexEntry pointer here could be
+                // freed by side-branch eviction during the MTP/anchor walk.
+                dinero::consensus::HeaderAsertContext header_context;
+                if (daemon_ctx->header_chain->GetAsertContextByHash(
+                        pow_parent_hash, header_context)) {
+                    if (header_context.parent_height + 1 != nextHeight) {
+                        error = "bad-diffbits: header parent height " +
+                            std::to_string(header_context.parent_height) +
+                            " does not precede candidate height " +
+                            std::to_string(nextHeight);
+                        LOG_ERROR("❌ " + error);
+                        return false;
+                    }
+                    known_parent_mtp = header_context.parent_mtp;
+                    known_block1_time = header_context.block1_time;
+                }
+            }
 
-            const auto asert_input = dinero::BuildAsertInputForCandidate(
-                parent_index,
-                parent_entry,
+            const auto asert_input = dinero::BuildAsertInputForCandidateTimes(
+                known_parent_mtp,
+                known_block1_time,
                 chain_db,
                 nextHeight,
                 static_cast<int64_t>(block.timestamp),
@@ -911,14 +928,6 @@ bool BlockAcceptor::ValidateProofOfWork(const ParsedBlock& block, uint32_t block
                 LOG_INFO("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 LOG_INFO("📊 Difficulty calculated for height " + std::to_string(nextHeight) +
                          ": " + dinero::hex32_0x(requiredBits));
-            } else {
-                requiredBits = GetNextWorkRequiredForCandidate(
-                    nextHeight,
-                    static_cast<int64_t>(block.timestamp),
-                    consensus,
-                    parent_index,
-                    parent_entry,
-                    chain_db);
             }
         }
 

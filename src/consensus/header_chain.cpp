@@ -333,20 +333,6 @@ void HeaderChainSelector::EvictBranch(const HeaderIndexEntry* tip) {
     }
 }
 
-const HeaderIndexEntry* HeaderChainSelector::GetBestHeader() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return best_header_;
-}
-
-const HeaderIndexEntry* HeaderChainSelector::GetHeader(const uint256& hash) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = header_index_.find(hash);
-    if (it == header_index_.end()) {
-        return nullptr;
-    }
-    return it->second.get();
-}
-
 bool HeaderChainSelector::GetBestHeaderCopy(HeaderIndexEntry& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!best_header_) {
@@ -356,6 +342,14 @@ bool HeaderChainSelector::GetBestHeaderCopy(HeaderIndexEntry& out) const {
     // Same rule as GetHeaderCopy: a copy never carries the parent pointer out.
     out.parent = nullptr;
     return true;
+}
+
+std::optional<HeaderIndexEntry> HeaderChainSelector::GetBestHeaderValue() const {
+    HeaderIndexEntry out;
+    if (!GetBestHeaderCopy(out)) {
+        return std::nullopt;
+    }
+    return out;
 }
 
 bool HeaderChainSelector::GetMedianTimePastByHash(const uint256& hash,
@@ -373,14 +367,38 @@ bool HeaderChainSelector::GetMedianTimePastByHash(const uint256& hash,
     return true;
 }
 
+bool HeaderChainSelector::GetAsertContextByHash(
+        const uint256& parent_hash,
+        HeaderAsertContext& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    out = HeaderAsertContext{};
+
+    auto it = header_index_.find(parent_hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+
+    const HeaderIndexEntry* parent = it->second.get();
+    out.parent_height = parent->height;
+    out.parent_mtp = static_cast<int64_t>(parent->GetMedianTimePast());
+    if (parent->height >= 1) {
+        const HeaderIndexEntry* block1 = parent->GetAncestor(1);
+        if (!block1) {
+            out = HeaderAsertContext{};
+            return false;
+        }
+        out.block1_time = static_cast<int64_t>(block1->header.timestamp);
+    }
+    return true;
+}
+
 bool HeaderChainSelector::GetHeaderAtHeightCopy(uint32_t height,
                                                 HeaderIndexEntry& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!best_header_) {
         return false;
     }
-    // Same resolution GetHeaderAtHeight() performs, but the result is copied
-    // before the lock is released rather than handed out as a pointer (#441).
+    // Resolve and copy before the lock is released (#441).
     const HeaderIndexEntry* entry = best_header_->GetAncestor(height);
     if (!entry) {
         return false;
@@ -417,8 +435,7 @@ std::vector<uint256> HeaderChainSelector::BuildLocatorCopy(size_t max_entries) c
         }
         height -= step;
 
-        // Same resolution GetHeaderAtHeight() performs, but inline and still
-        // holding the lock.
+        // Resolve inline while still holding the lock.
         current = best_header_->GetAncestor(height);
 
         if (locator.size() > 1) {
@@ -440,6 +457,20 @@ bool HeaderChainSelector::GetHeaderCopy(const uint256& hash, HeaderIndexEntry& o
     // the parent entry); never let a copy carry it out.
     out.parent = nullptr;
     return true;
+}
+
+std::optional<HeaderIndexEntry> HeaderChainSelector::GetHeaderValue(
+        const uint256& hash) const {
+    HeaderIndexEntry out;
+    if (!GetHeaderCopy(hash, out)) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+bool HeaderChainSelector::ContainsHeader(const uint256& hash) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return header_index_.find(hash) != header_index_.end();
 }
 
 bool HeaderChainSelector::CollectAncestorsByHash(
@@ -544,44 +575,50 @@ bool HeaderChainSelector::CollectBranchCopiesByHash(
     return true;
 }
 
-const HeaderIndexEntry* HeaderChainSelector::GetHeaderAtHeight(uint32_t height) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!best_header_) {
-        return nullptr;
+std::optional<HeaderIndexEntry> HeaderChainSelector::GetHeaderAtHeightValue(
+        uint32_t height) const {
+    HeaderIndexEntry out;
+    if (!GetHeaderAtHeightCopy(height, out)) {
+        return std::nullopt;
     }
-
-    // Walk back from best header to requested height
-    return best_header_->GetAncestor(height);
+    return out;
 }
 
-const HeaderIndexEntry* HeaderChainSelector::FindForkPoint(
-    const HeaderIndexEntry* a,
-    const HeaderIndexEntry* b
+bool HeaderChainSelector::FindForkPointHash(
+    const uint256& a_hash,
+    const uint256& b_hash,
+    uint256& fork_hash_out
 ) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!a || !b) {
-        return nullptr;
+    fork_hash_out.SetNull();
+    auto a_it = header_index_.find(a_hash);
+    auto b_it = header_index_.find(b_hash);
+    if (a_it == header_index_.end() || b_it == header_index_.end()) {
+        return false;
     }
+    const HeaderIndexEntry* a = a_it->second.get();
+    const HeaderIndexEntry* b = b_it->second.get();
 
     // Bring both to same height
     while (a->height > b->height) {
         a = a->parent;
-        if (!a) return nullptr;
+        if (!a) return false;
     }
 
     while (b->height > a->height) {
         b = b->parent;
-        if (!b) return nullptr;
+        if (!b) return false;
     }
 
     // Walk back together until we find common ancestor
     while (a != b) {
         a = a->parent;
         b = b->parent;
-        if (!a || !b) return nullptr;
+        if (!a || !b) return false;
     }
 
-    return a;  // Common ancestor
+    fork_hash_out = a->hash;
+    return true;
 }
 
 void HeaderChainSelector::Clear() {
