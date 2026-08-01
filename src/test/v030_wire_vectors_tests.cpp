@@ -38,6 +38,7 @@
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/nullifier_set.h"
 #include "consensus/shielded/pedersen_generators.h"
+#include "consensus/shielded/range_proof.h"
 #include "consensus/shielded/shielded_circuit.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_tx.h"
@@ -130,6 +131,27 @@ void AssertBundleRoundTrips(const ShieldedBundle& bundle) {
     ASSERT_EQ(rc, shielded::BundleDecodeError::Ok);
     auto bytes2 = shielded::SerializeShieldedBundle(parsed);
     ASSERT_EQ(bytes, bytes2) << "deserialize ↔ serialize is not idempotent";
+}
+
+TEST(ShieldedRangeProofContainer, RejectsUnbackedCountsAndLengths) {
+    ASSERT_TRUE(shielded::PedersenGeneratorsReady() ||
+                !shielded::PedersenGeneratorV().empty());
+
+    ShieldedBundle bundle{};
+
+    // A CompactSize count of UINT64_MAX is not backed by even one length byte
+    // per claimed proof. It must be rejected before reserve(size_t(n)).
+    bundle.aggregated_range_proof = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    };
+    EXPECT_EQ(VerifyBundleRangeProofs(bundle), RangeProofResult::ParseError);
+
+    // One proof whose UINT64_MAX byte length is not backed by the input. The
+    // length comparison must not form an out-of-range pointer.
+    bundle.aggregated_range_proof = {
+        0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    };
+    EXPECT_EQ(VerifyBundleRangeProofs(bundle), RangeProofResult::ParseError);
 }
 
 class V030VectorFixture : public ::testing::Test {

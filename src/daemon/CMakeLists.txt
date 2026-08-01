@@ -221,7 +221,11 @@ if(CARGO_EXECUTABLE)
   add_dependencies(dinerod build_bulletproofs_ffi)
 endif()
 # Ensure production code path remains on canonical daemon mempool.
-add_dependencies(dinerod check_no_legacy_mempool_prod)
+add_dependencies(dinerod
+  check_no_legacy_mempool_prod
+  check_no_deprecated_openssl_hmac
+  check_no_deprecated_openssl_sha256
+)
 
 # Windows: sockets + CSPRNG
 if(WIN32)

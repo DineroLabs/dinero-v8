@@ -166,8 +166,8 @@ fi
 step "Error-path checks"
 # Bad method
 rpc does.not.exist '[]' | jq -e '.error.code==-32601' >/dev/null
-# Invalid tx hex (error is nested in result.error for this RPC)
-rpc sendrawtransaction '["00"]' | jq -e '.result.error' >/dev/null
+# Invalid tx hex (accept legacy nested and normalized top-level envelopes).
+rpc sendrawtransaction '["00"]' | jq -e '(.error.message? // .error // .result.error.message? // .result.error) != null' >/dev/null
 
 # ---- L. DB invariants quick pass -------------------------------------------
 step "DB invariants (schema bits)"

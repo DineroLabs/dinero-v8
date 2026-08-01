@@ -710,10 +710,25 @@ char* nodecore_get_status_json(void) {
         }
     }
 
-    // Sync status
-    if (dinero::g_header_sync_manager) {
-        bool is_ibd = dinero::g_header_sync_manager->IsInitialBlockDownload();
-        uint32_t header_tip = dinero::g_header_sync_manager->GetBestHeaderHeight();
+    // Sync status.
+    //
+    // Previously keyed on dinero::g_header_sync_manager, which is never assigned
+    // in production — so this branch never ran and the else below always did,
+    // permanently reporting headers=0 (#439). Now sourced from the canonical
+    // snapshot; the else remains as the fail-closed path when no best header is
+    // known (cold start, restart before headers are re-read).
+    //
+    // NOTE the state separation: header facts come from the snapshot, but the
+    // initial-download verdict still comes from IsInIBD(), which is
+    // network-height and snapshot aware. Convergence is NOT substituted for it.
+    const auto& cs = s.app->GetContext().chainstate;
+    dinero::ChainstateService::SyncSnapshot sync;
+    if (cs) {
+        sync = cs->GetSyncSnapshot();
+    }
+    if (cs && sync.has_best_header) {
+        bool is_ibd = cs->IsInIBD();
+        uint32_t header_tip = sync.best_header_height;
         uint64_t validated = status.isMember("height") ? status["height"].asUInt64() : 0;
         uint64_t network_target = std::max<uint64_t>(header_tip, max_peer_height);
         bool peer_ahead = network_target > validated;
@@ -802,9 +817,19 @@ bool nodecore_is_synced(void) {
     std::lock_guard<std::mutex> lock(s.mtx);
     if (!is_queryable_locked(s)) return false;
 
-    // Check if IBD is complete via HeaderSyncManager
-    if (dinero::g_header_sync_manager) {
-        return !dinero::g_header_sync_manager->IsInitialBlockDownload();
+    // Header-chain convergence via the canonical snapshot (#439).
+    //
+    // This previously consulted dinero::g_header_sync_manager, which is never
+    // assigned in production, so the guard never fired and this function could
+    // only ever return false — a fully synced node reported NOT synced,
+    // permanently. See issue #439.
+    //
+    // IsConverged() is true only for an explicit Converged verdict, so a
+    // missing selector / best header / active tip still yields false. That
+    // preserves the conservative default while fixing the permanent-false bug.
+    const auto& chainstate = s.app->GetContext().chainstate;
+    if (chainstate) {
+        return chainstate->GetSyncSnapshot().IsConverged();
     }
     return false;
 }

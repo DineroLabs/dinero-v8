@@ -26,6 +26,7 @@
 #include "wallet/pq_derivation.h"
 #include "wallet/secure_keypair.h"
 #include "wallet/v7_p2mr_store.h"
+#include "crypto/sha256.h"
 
 #include <array>
 #include <cstddef>
@@ -37,7 +38,6 @@
 #include <vector>
 
 #include <openssl/rand.h>
-#include <openssl/sha.h>
 #include <sqlite3.h>
 #include <unistd.h>
 
@@ -59,11 +59,10 @@ void record(bool cond, const char* tag) {
 std::array<uint8_t, 32> Sha256OfSchemeAndPubkey(uint8_t scheme_id,
                                                 const mldsa::PublicKey& pk) {
     std::array<uint8_t, 32> out{};
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, &scheme_id, 1);
-    SHA256_Update(&ctx, pk.data(), pk.size());
-    SHA256_Final(out.data(), &ctx);
+    dinero::crypto::CSHA256()
+        .Write(&scheme_id, 1)
+        .Write(pk.data(), pk.size())
+        .Finalize(out.data());
     return out;
 }
 

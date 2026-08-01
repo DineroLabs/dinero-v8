@@ -74,6 +74,15 @@ static ChainParams g_mainnet = {
     // Confidential transaction activation (after genesis)
     .confidential_activation_height = 1,
 
+    // BIP341 script paths retain their deployed height-1 behavior. Covenant
+    // opcodes are deliberately dormant until their individual specifications,
+    // implementations, vectors, and activation plans have passed review.
+    .taproot_scriptpath_activation_height = 1,
+    .ctv_activation_height = UINT32_MAX,
+    .csfs_activation_height = UINT32_MAX,
+    .txhash_activation_height = UINT32_MAX,
+    .ccv_activation_height = UINT32_MAX,
+
     // Shielded pool activation on mainnet — set 2026-04-27.
     // Direct mainnet activation; testnet phase skipped per
     // shielded_activation_plan.md (solo operator + 25/25 ctest
@@ -277,6 +286,12 @@ static ChainParams g_testnet = {
     // Confidential transaction activation (immediately on testnet)
     .confidential_activation_height = 0,
 
+    .taproot_scriptpath_activation_height = 200,
+    .ctv_activation_height = UINT32_MAX,
+    .csfs_activation_height = UINT32_MAX,
+    .txhash_activation_height = UINT32_MAX,
+    .ccv_activation_height = UINT32_MAX,
+
     // Shielded pool — testnet phase parked.
     // Solo operator + fix-forward-on-mainnet policy made the
     // testnet → soak → mainnet pipeline obsolete. Testnet stays
@@ -361,6 +376,14 @@ static ChainParams g_regtest = {
     // Confidential transaction activation (immediately on regtest)
     .confidential_activation_height = 0,
 
+    // Regtest activates reviewed primitives early so boundary and end-to-end
+    // tests can exercise them. Unspecified CSFS/TXHASH stay dormant.
+    .taproot_scriptpath_activation_height = 20,
+    .ctv_activation_height = 20,
+    .csfs_activation_height = UINT32_MAX,
+    .txhash_activation_height = UINT32_MAX,
+    .ccv_activation_height = 20,
+
     // Shielded pool: active from genesis on regtest so unit tests
     // exercise the full pipeline without needing to override.
     .shielded_activation_height = 0,
@@ -393,15 +416,24 @@ static ChainParams g_regtest = {
 
 std::string ConsensusChecksum(const ChainParams& params) {
     std::ostringstream ss;
-    // Include all consensus-critical parameters
-    ss << params.target_spacing
-       << params.retarget_interval
-       << params.pow_limit_bits
-       << params.genesis.nTime
-       << params.genesis.nBits
-       << params.genesis.nNonce
-       << params.genesis.genesisHashHex
-       << params.genesis.merkleRootHex;
+    // Field names and separators prevent ambiguous concatenation. This checksum
+    // is an operator drift detector, so newly-authoritative activation heights
+    // must be represented explicitly.
+    ss << "consensus-checksum-v2\n"
+       << "target_spacing=" << params.target_spacing << '\n'
+       << "retarget_interval=" << params.retarget_interval << '\n'
+       << "pow_limit_bits=" << params.pow_limit_bits << '\n'
+       << "genesis_time=" << params.genesis.nTime << '\n'
+       << "genesis_bits=" << params.genesis.nBits << '\n'
+       << "genesis_nonce=" << params.genesis.nNonce << '\n'
+       << "genesis_hash=" << params.genesis.genesisHashHex << '\n'
+       << "genesis_merkle=" << params.genesis.merkleRootHex << '\n'
+       << "taproot_scriptpath_height="
+       << params.taproot_scriptpath_activation_height << '\n'
+       << "ctv_height=" << params.ctv_activation_height << '\n'
+       << "csfs_height=" << params.csfs_activation_height << '\n'
+       << "txhash_height=" << params.txhash_activation_height << '\n'
+       << "ccv_height=" << params.ccv_activation_height << '\n';
 
     auto str = ss.str();
     std::vector<uint8_t> data(str.begin(), str.end());
@@ -475,18 +507,31 @@ void SelectParams(Chain chain) {
     // bind_public_inputs=false and a prover could present an arbitrary cv,
     // defeating cv-binding entirely). So enforce cv_bound => bind.
     //
-    // ⚠️ RESIDUAL ACTIVATION-WINDOW GAP (NOT closed by this check): because
-    // input-binding is fixed historically (mainnet 32300), any future cv height
+    // ACTIVATION-WINDOW GAP — how it was closed, and the rule for any new chain.
+    // Because input-binding is fixed historically (mainnet 32300), any cv height
     // is > input height, leaving the window [input_height, cv_height) where
     // balance is enforced over cv but cv is NOT yet bound to the note value. In
     // that window an output can commit cm(val=X) while cv=Commit(0) — the binding
     // sig balances it at zero cost and the note stays spendable after activation
     // (mint-from-nothing across the transition). Activating cv-binding does NOT
     // retroactively close this. The ONLY full closures are cv_height==input_height
-    // (impossible now) or a coordinated cutover / shielded-pool reset at
-    // activation that treats pre-activation shielded value as suspect. This MUST
-    // be handled in the cv-binding activation plan, not here. (cv=UINT32_MAX
-    // dormant today, so the window does not exist yet.)
+    // or a coordinated cutover / shielded-pool reset at activation that treats
+    // pre-activation shielded value as suspect.
+    //
+    // MAINNET took the second route and the window is CLOSED: [32300, 61000)
+    // existed, and at height 61000 the shielded epoch reset discarded the entire
+    // pre-cutover pool (those notes are unspendable) while cv-binding began at
+    // block 1 of the fresh epoch. The reset == cv-binding invariant enforced just
+    // below is what makes that structural rather than a matter of timing.
+    // TESTNET leaves input-binding dormant (UINT32_MAX), so no
+    // balance-enforced-over-unbound-cv regime exists there at all. REGTEST runs
+    // input=0 with cv/reset dormant by default and drives the cutover through the
+    // REGTEST-only --consensus-shielded-epoch-reset-height override; it carries no
+    // real value.
+    //
+    // ⚠️ Any NEW chain that sets a cv height above its input height MUST pair it
+    // with a pool reset at the same height. Do that in the activation plan, not
+    // here — this check only enforces the ordering, never the closure.
     if (g_active->shielded_cv_binding_activation_height <
         g_active->shielded_input_binding_activation_height) {
         throw std::runtime_error(

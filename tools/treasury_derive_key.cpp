@@ -4,6 +4,7 @@
 
 #include "wallet/bip32_deriver.h"
 #include "wallet/taproot_keys.h"
+#include "crypto/sha256.h"
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 #include <openssl/crypto.h>
@@ -106,12 +107,11 @@ int main(int argc, char* argv[]) {
         uint8_t tag_hash[32];
         SHA256(reinterpret_cast<const unsigned char*>(tag), strlen(tag), tag_hash);
 
-        SHA256_CTX sha_ctx;
-        SHA256_Init(&sha_ctx);
-        SHA256_Update(&sha_ctx, tag_hash, 32);
-        SHA256_Update(&sha_ctx, tag_hash, 32);
-        SHA256_Update(&sha_ctx, xonly.data(), 32);
-        SHA256_Final(tweak, &sha_ctx);
+        dinero::crypto::CSHA256()
+            .Write(tag_hash, 32)
+            .Write(tag_hash, 32)
+            .Write(xonly.data(), 32)
+            .Finalize(tweak);
     }
 
     // Tweak private key

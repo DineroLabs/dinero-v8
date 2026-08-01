@@ -873,6 +873,14 @@ bool BlockAcceptor::ValidateProofOfWork(const ParsedBlock& block, uint32_t block
             const dinero::uint256 pow_parent_hash = dinero::uint256::FromHexUnsafe(parentHashHex);
             auto* parent_index = chainstate ? chainstate->FindBlockIndex(pow_parent_hash) : nullptr;
             const auto* parent_entry =
+                // #441: NOT migrated. This pointer is handed to
+                // BuildAsertInputForCandidate(), which calls
+                // parent_entry->GetMedianTimePast() and GetCanonicalAsertAnchorTime()
+                // — both walk the parent chain, so a *Copy (parent nulled) cannot
+                // substitute. Converting it means changing that function's
+                // signature to take precomputed values, which is a change to
+                // consensus difficulty-input construction and wants its own
+                // reviewed commit. Tracked in #441.
                 (daemon_ctx && daemon_ctx->header_chain) ? daemon_ctx->header_chain->GetHeader(pow_parent_hash) : nullptr;
 
             const auto asert_input = dinero::BuildAsertInputForCandidate(
@@ -1008,14 +1016,18 @@ bool BlockAcceptor::ValidateTimestamp(const ParsedBlock& block, std::string& err
 
     // Fallback 1: HeaderChainSelector
     if (!mtp_computed && daemon_ctx && daemon_ctx->header_chain) {
-        const auto* parent_entry = daemon_ctx->header_chain->GetHeader(parent_hash);
-
-        if (parent_entry) {
-            // Fork-aware MTP: compute from parent's ancestry
-            median_time_past = parent_entry->GetMedianTimePast();
+        // #441: MTP walks the parent chain, which the *Copy accessors cannot
+        // expose (they null the copy's parent). Compute it inside the selector,
+        // under its lock, instead of dereferencing an escaped pointer.
+        uint32_t parent_mtp = 0;
+        uint32_t parent_height = 0;
+        if (daemon_ctx->header_chain->GetMedianTimePastByHash(parent_hash, parent_mtp,
+                                                              parent_height)) {
+            // Fork-aware MTP: computed from parent's ancestry
+            median_time_past = parent_mtp;
             mtp_computed = true;
             LOG_INFO("⏰ [FORK-AWARE] MTP=" + std::to_string(median_time_past) +
-                     " (from parent height=" + std::to_string(parent_entry->height) + ")");
+                     " (from parent height=" + std::to_string(parent_height) + ")");
         }
     }
 
@@ -1125,9 +1137,11 @@ bool BlockAcceptor::FindParentBlock(const std::string& prevHash, uint64_t& paren
             }
         }
         if (daemon_ctx && daemon_ctx->header_chain) {
-            if (const auto* parent_entry = daemon_ctx->header_chain->GetHeader(parent_hash)) {
-                parentHeight = parent_entry->height;
-                parentChainwork = parent_entry->chainwork.GetHex();
+            // #441: copy under the selector's lock.
+            dinero::consensus::HeaderIndexEntry parent_copy{};
+            if (daemon_ctx->header_chain->GetHeaderCopy(parent_hash, parent_copy)) {
+                parentHeight = parent_copy.height;
+                parentChainwork = parent_copy.chainwork.GetHex();
                 LOG_INFO("✅ Parent found in HeaderChain at height " + std::to_string(parentHeight));
                 return true;
             }

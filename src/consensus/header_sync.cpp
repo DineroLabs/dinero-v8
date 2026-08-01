@@ -109,8 +109,12 @@ void HeaderSyncManager::AddPeer(uint64_t peer_id, uint32_t claimed_height, const
 
     // If we're idle and this peer is ahead, we might want to sync
     if (state_ == HeaderSyncState::IDLE || state_ == HeaderSyncState::CAUGHT_UP) {
-        const HeaderIndexEntry* best = chain_selector_->GetBestHeader();
-        uint32_t our_height = best ? best->height : 0;
+        // #441: copy under the selector's lock — GetBestHeader() returns a raw
+        // pointer after releasing it, and a reorg can demote the former best
+        // header to an evictable side-branch tip.
+        HeaderIndexEntry best_copy{};
+        uint32_t our_height =
+            chain_selector_->GetBestHeaderCopy(best_copy) ? best_copy.height : 0;
         if (claimed_height > our_height) {
             // New peer is ahead, trigger sync
             TransitionTo(HeaderSyncState::IDLE);
@@ -139,8 +143,12 @@ void HeaderSyncManager::UpdatePeerBest(uint64_t peer_id, uint32_t height, const 
 
     // If peer announced better headers, might need to sync
     if (state_ == HeaderSyncState::CAUGHT_UP) {
-        const HeaderIndexEntry* best = chain_selector_->GetBestHeader();
-        uint32_t our_height = best ? best->height : 0;
+        // #441: copy under the selector's lock — GetBestHeader() returns a raw
+        // pointer after releasing it, and a reorg can demote the former best
+        // header to an evictable side-branch tip.
+        HeaderIndexEntry best_copy{};
+        uint32_t our_height =
+            chain_selector_->GetBestHeaderCopy(best_copy) ? best_copy.height : 0;
         if (height > our_height) {
             TransitionTo(HeaderSyncState::IDLE);
         }
@@ -258,6 +266,9 @@ bool HeaderSyncManager::ProcessHeaders(uint64_t peer_id, const std::vector<Block
         // Validate via HeaderChainSelector
         if (!chain_selector_->AddHeader(header)) {
             const bool missing_parent_locally =
+                // #441: SAFE as-is — the returned pointer is only compared
+                // against nullptr, never dereferenced, so the eviction hazard
+                // does not apply. Do not "fix" this to GetHeaderCopy().
                 (accepted == 0 && chain_selector_->GetHeader(header.prev_block_hash) == nullptr);
 
             if (missing_parent_locally) {
@@ -291,8 +302,12 @@ bool HeaderSyncManager::ProcessHeaders(uint64_t peer_id, const std::vector<Block
         TransitionTo(HeaderSyncState::REQUESTING_HEADERS);
     } else {
         // Partial batch (< 2000 headers) - check if we're truly caught up with this peer
-        const HeaderIndexEntry* best = chain_selector_->GetBestHeader();
-        uint32_t our_height = best ? best->height : 0;
+        // #441: copy under the selector's lock — GetBestHeader() returns a raw
+        // pointer after releasing it, and a reorg can demote the former best
+        // header to an evictable side-branch tip.
+        HeaderIndexEntry best_copy{};
+        uint32_t our_height =
+            chain_selector_->GetBestHeaderCopy(best_copy) ? best_copy.height : 0;
 
         auto peer_it = peers_.find(peer_id);
         uint32_t peer_claimed_height = (peer_it != peers_.end()) ? peer_it->second.best_height : 0;
@@ -322,45 +337,15 @@ bool HeaderSyncManager::ProcessHeaders(uint64_t peer_id, const std::vector<Block
 }
 
 std::vector<uint256> HeaderSyncManager::GetHeaderLocator() const {
-    std::vector<uint256> locator;
-
-    const HeaderIndexEntry* tip = chain_selector_->GetBestHeader();
-    if (!tip) {
-        // No headers yet, return empty locator (will request from genesis)
-        return locator;
-    }
-
-    // Bitcoin-style exponential backoff locator
-    // Start with tip, then walk back with exponentially increasing gaps
-
-    uint32_t height = tip->height;
-    uint32_t step = 1;
-    const HeaderIndexEntry* current = tip;
-
-    while (current && locator.size() < 10) {
-        locator.push_back(current->hash);
-
-        // Walk back exponentially: 0, 1, 2, 4, 8, 16, 32, 64, 128, 256...
-        if (height < step) {
-            break;
-        }
-        height -= step;
-
-        current = chain_selector_->GetHeaderAtHeight(height);
-
-        // Exponential growth
-        if (locator.size() > 1) {
-            step *= 2;
-        }
-    }
-
-    // Always include genesis if we have it
-    const HeaderIndexEntry* genesis = chain_selector_->GetHeaderAtHeight(0);
-    if (genesis && (locator.empty() || locator.back() != genesis->hash)) {
-        locator.push_back(genesis->hash);
-    }
-
-    return locator;
+    // #441: built entirely under the selector's lock.
+    //
+    // The previous implementation took the tip via GetBestHeader() and then
+    // walked back with repeated GetHeaderAtHeight() calls. That was unsafe
+    // twice: both accessors return raw pointers after releasing the lock (and a
+    // reorg can demote the former best header to an evictable side-branch tip),
+    // and taking the lock once per step meant a concurrent reorg could produce a
+    // locator mixing hashes from different chain states.
+    return chain_selector_->BuildLocatorCopy(10);
 }
 
 bool HeaderSyncManager::ShouldRequestHeaders(uint64_t peer_id) const {
@@ -385,8 +370,10 @@ bool HeaderSyncManager::ShouldRequestHeaders(uint64_t peer_id) const {
         return false;  // Don't request from bad peers
     }
 
-    const HeaderIndexEntry* best = chain_selector_->GetBestHeader();
-    uint32_t our_height = best ? best->height : 0;
+    // #441: copy under the selector's lock (see note above).
+    HeaderIndexEntry best_copy{};
+    uint32_t our_height =
+        chain_selector_->GetBestHeaderCopy(best_copy) ? best_copy.height : 0;
 
     return info.best_height > our_height;
 }
@@ -409,8 +396,10 @@ void HeaderSyncManager::MarkHeadersRequested(uint64_t peer_id) {
 HeaderSyncManager::SyncStats HeaderSyncManager::GetStats() const {
     SyncStats stats;
 
-    const HeaderIndexEntry* best = chain_selector_->GetBestHeader();
-    stats.local_best_height = best ? best->height : 0;
+    // #441: copy under the selector's lock (see note above).
+    HeaderIndexEntry best_copy{};
+    stats.local_best_height =
+        chain_selector_->GetBestHeaderCopy(best_copy) ? best_copy.height : 0;
     stats.peer_best_height = GetPeerBestHeight();
     stats.headers_behind = (stats.peer_best_height > stats.local_best_height)
                           ? (stats.peer_best_height - stats.local_best_height)
@@ -456,8 +445,10 @@ uint64_t HeaderSyncManager::GetCurrentTimeMs() const {
 }
 
 bool HeaderSyncManager::IsBehindPeers() const {
-    const HeaderIndexEntry* best = chain_selector_->GetBestHeader();
-    uint32_t our_height = best ? best->height : 0;
+    // #441: copy under the selector's lock (see note above).
+    HeaderIndexEntry best_copy{};
+    uint32_t our_height =
+        chain_selector_->GetBestHeaderCopy(best_copy) ? best_copy.height : 0;
 
     for (const auto& pair : peers_) {
         const PeerHeaderInfo& info = pair.second;
@@ -511,8 +502,10 @@ void HeaderSyncManager::UpdateSyncTimeout(uint64_t peer_id) {
     uint64_t now = GetCurrentTimeMs();
 
     // Calculate expected headers remaining
-    const HeaderIndexEntry* best = chain_selector_->GetBestHeader();
-    uint32_t our_height = best ? best->height : 0;
+    // #441: copy under the selector's lock (see note above).
+    HeaderIndexEntry best_copy{};
+    uint32_t our_height =
+        chain_selector_->GetBestHeaderCopy(best_copy) ? best_copy.height : 0;
     uint32_t expected_headers = (info.best_height > our_height)
                               ? (info.best_height - our_height)
                               : 0;

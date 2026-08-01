@@ -13,8 +13,7 @@
  *
  * Build:
  *   cc -O2 -o treasury_recover_key treasury_recover_key.c \
- *      -I../third_party/openssl-3.3.2/include \
- *      -L../third_party/openssl-3.3.2 -lssl -lcrypto \
+ *      -I"${OPENSSL_PREFIX}/include" -L"${OPENSSL_PREFIX}/lib" -lcrypto \
  *      -I../third_party/secp256k1-zkp/include \
  *      ../third_party/secp256k1-zkp/src/.libs/libsecp256k1.a
  *
@@ -22,14 +21,16 @@
  *   ./treasury_recover_key <encrypted_blob_248hex> <expected_output_key_64hex>
  */
 
-#include <openssl/sha.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/sha.h>
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 
 #define HARDENED 0x80000000u
 
@@ -41,37 +42,13 @@ static void broken_hmac(const uint8_t *key, size_t keylen,
                         const uint8_t *data, size_t datalen,
                         uint8_t out64[64])
 {
-    uint8_t kbuf[32];
-    const uint8_t *k = key;
-    size_t klen = keylen;
-
-    if (klen > 64) {
-        SHA256(k, klen, kbuf);
-        k = kbuf;
-        klen = 32;
+    unsigned int outlen = 0;
+    if (keylen > INT_MAX ||
+        HMAC(EVP_sha256(), key, (int)keylen, data, datalen, out64, &outlen) == NULL ||
+        outlen != 32) {
+        fputs("HMAC-SHA256 failed\n", stderr);
+        abort();
     }
-
-    uint8_t ipad[64], opad[64];
-    memset(ipad, 0x36, 64);
-    memset(opad, 0x5c, 64);
-    for (size_t i = 0; i < klen; i++) {
-        ipad[i] ^= k[i];
-        opad[i] ^= k[i];
-    }
-
-    /* inner = SHA256(ipad || data) */
-    SHA256_CTX ctx;
-    uint8_t inner[32];
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, ipad, 64);
-    SHA256_Update(&ctx, data, datalen);
-    SHA256_Final(inner, &ctx);
-
-    /* outer = SHA256(opad || inner) */
-    uint8_t buf[96];
-    memcpy(buf, opad, 64);
-    memcpy(buf + 64, inner, 32);
-    SHA256(buf, 96, out64);
 
     memcpy(out64 + 32, out64, 32);   /* ← the bug: duplicate */
 }
@@ -176,13 +153,12 @@ static void tap_tweak_privkey(const uint8_t privkey[32],
     uint8_t tag_hash[32];
     SHA256((const uint8_t *)tag, 8, tag_hash);
 
-    SHA256_CTX ctx;
     uint8_t tweak[32];
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, tag_hash, 32);
-    SHA256_Update(&ctx, tag_hash, 32);
-    SHA256_Update(&ctx, xonly, 32);
-    SHA256_Final(tweak, &ctx);
+    uint8_t tweak_preimage[96];
+    memcpy(tweak_preimage, tag_hash, 32);
+    memcpy(tweak_preimage + 32, tag_hash, 32);
+    memcpy(tweak_preimage + 64, xonly, 32);
+    SHA256(tweak_preimage, sizeof(tweak_preimage), tweak);
 
     /* Get parity of the internal key */
     secp256k1_pubkey P;

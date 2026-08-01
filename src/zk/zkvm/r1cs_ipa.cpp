@@ -3,7 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "zk/zkvm/r1cs_ipa.h"
-#include <openssl/sha.h>
+#include "crypto/sha256.h"
 #include <openssl/rand.h>
 #include <chrono>
 #include <cstdarg>
@@ -53,39 +53,38 @@ void HiddenMemberBindingProfileLog(const char* fmt, ...) {
 
 std::vector<uint8_t> hash_r1cs_structure(const R1CS& cs) {
     uint8_t hash[32];
-    SHA256_CTX h;
-    SHA256_Init(&h);
+    dinero::crypto::CSHA256 h;
 
     uint64_t nc = cs.num_constraints();
     uint64_t nv = cs.num_variables();
-    SHA256_Update(&h, &nc, sizeof(nc));
-    SHA256_Update(&h, &nv, sizeof(nv));
+    h.Write(reinterpret_cast<const uint8_t*>(&nc), sizeof(nc));
+    h.Write(reinterpret_cast<const uint8_t*>(&nv), sizeof(nv));
 
     for (const auto& c : cs.constraints()) {
         // Hash A terms
         uint64_t na = c.a.terms().size();
-        SHA256_Update(&h, &na, sizeof(na));
+        h.Write(reinterpret_cast<const uint8_t*>(&na), sizeof(na));
         for (const auto& t : c.a.terms()) {
-            SHA256_Update(&h, &t.var.index, sizeof(t.var.index));
-            SHA256_Update(&h, t.coeff.data(), 32);
+            h.Write(reinterpret_cast<const uint8_t*>(&t.var.index), sizeof(t.var.index));
+            h.Write(t.coeff.data(), 32);
         }
         // Hash B terms
         uint64_t nb = c.b.terms().size();
-        SHA256_Update(&h, &nb, sizeof(nb));
+        h.Write(reinterpret_cast<const uint8_t*>(&nb), sizeof(nb));
         for (const auto& t : c.b.terms()) {
-            SHA256_Update(&h, &t.var.index, sizeof(t.var.index));
-            SHA256_Update(&h, t.coeff.data(), 32);
+            h.Write(reinterpret_cast<const uint8_t*>(&t.var.index), sizeof(t.var.index));
+            h.Write(t.coeff.data(), 32);
         }
         // Hash C terms
         uint64_t nct = c.c.terms().size();
-        SHA256_Update(&h, &nct, sizeof(nct));
+        h.Write(reinterpret_cast<const uint8_t*>(&nct), sizeof(nct));
         for (const auto& t : c.c.terms()) {
-            SHA256_Update(&h, &t.var.index, sizeof(t.var.index));
-            SHA256_Update(&h, t.coeff.data(), 32);
+            h.Write(reinterpret_cast<const uint8_t*>(&t.var.index), sizeof(t.var.index));
+            h.Write(t.coeff.data(), 32);
         }
     }
 
-    SHA256_Final(hash, &h);
+    h.Finalize(hash);
     return std::vector<uint8_t>(hash, hash + 32);
 }
 
@@ -155,33 +154,31 @@ R1CSIPAProof r1cs_ipa_prove(
     // Generator identity hash (verifier can reproduce from public generators)
     uint8_t gen_hash[32];
     {
-        SHA256_CTX gh;
-        SHA256_Init(&gh);
+        dinero::crypto::CSHA256 gh;
         size_t gen_count = std::min(N, gens.size());
         for (size_t k = 0; k < gen_count; ++k) {
             Point::Compressed gc, hc;
             gens.G()[k].serialize(gc, ctx);
             gens.H()[k].serialize(hc, ctx);
-            SHA256_Update(&gh, gc.data(), 33);
-            SHA256_Update(&gh, hc.data(), 33);
+            gh.Write(gc.data(), 33);
+            gh.Write(hc.data(), 33);
         }
-        SHA256_Final(gen_hash, &gh);
+        gh.Finalize(gen_hash);
     }
 
     // Hash the extended witness: SHA256(W || E || gen_hash || nonce)
     uint8_t witness_hash[32];
     {
-        SHA256_CTX h;
-        SHA256_Init(&h);
+        dinero::crypto::CSHA256 h;
         for (size_t k = 0; k < W.size(); ++k) {
-            SHA256_Update(&h, W[k].data(), 32);
+            h.Write(W[k].data(), 32);
         }
         for (size_t k = 0; k < E.size(); ++k) {
-            SHA256_Update(&h, E[k].data(), 32);
+            h.Write(E[k].data(), 32);
         }
-        SHA256_Update(&h, gen_hash, 32);
-        SHA256_Update(&h, nonce, 32);
-        SHA256_Final(witness_hash, &h);
+        h.Write(gen_hash, 32);
+        h.Write(nonce, 32);
+        h.Finalize(witness_hash);
     }
 
     result.witness_nonce.assign(nonce, nonce + 32);
@@ -591,16 +588,15 @@ bool r1cs_ipa_verify(
     {
         size_t gen_count = std::min(N, gens.size());
         uint8_t expected_gen_hash[32];
-        SHA256_CTX gh;
-        SHA256_Init(&gh);
+        dinero::crypto::CSHA256 gh;
         for (size_t k = 0; k < gen_count; ++k) {
             Point::Compressed gc, hc;
             gens.G()[k].serialize(gc, ctx);
             gens.H()[k].serialize(hc, ctx);
-            SHA256_Update(&gh, gc.data(), 33);
-            SHA256_Update(&gh, hc.data(), 33);
+            gh.Write(gc.data(), 33);
+            gh.Write(hc.data(), 33);
         }
-        SHA256_Final(expected_gen_hash, &gh);
+        gh.Finalize(expected_gen_hash);
         if (std::memcmp(proof.gen_hash.data(), expected_gen_hash, 32) != 0) {
             return false;
         }

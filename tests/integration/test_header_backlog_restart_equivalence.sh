@@ -111,6 +111,7 @@ start_node() {
         --wallet-socket-port="${WALLET_PORT}" \
         --listen=0 \
         --utreexo=1 \
+        --utreexo.checkpoint_interval=5 \
         --p2p.offline=1 \
         >"${log_file}" 2>&1 &
     PID=$!
@@ -165,11 +166,12 @@ assert_backlog_state() {
         --argjson header_height "${expected_header_height}" \
         --argjson header_count "${expected_header_count}" \
         --arg active_hash "${expected_active_hash}" \
+        --argjson expected_ckpt "$(( expected_active_height - (expected_active_height % 5) ))" \
         '
         .active_height == $active_height and
         .chaindb_tip_height == $active_height and
         .latest_utreexo_checkpoint_found == true and
-        .latest_utreexo_checkpoint_height == $active_height and
+        .latest_utreexo_checkpoint_height == $expected_ckpt and
         .latest_utreexo_checkpoint_has_checksum == true and
         .forest_tip_marker_found == true and
         .forest_tip_marker_height == $active_height and

@@ -8,9 +8,240 @@
 #include <secp256k1.h>
 #include <secp256k1_schnorrsig.h>
 #include <algorithm>
+#include <limits>
 
 namespace dinero {
 namespace consensus {
+
+namespace {
+
+size_t CompactSizeLength(uint64_t value) {
+    if (value < 0xfd) return 1;
+    if (value <= 0xffff) return 3;
+    if (value <= 0xffffffffULL) return 5;
+    return 9;
+}
+
+size_t SerializedWitnessSize(const std::vector<std::vector<uint8_t>>& witness) {
+    size_t size = CompactSizeLength(witness.size());
+    for (const auto& element : witness) {
+        size += CompactSizeLength(element.size()) + element.size();
+    }
+    return size;
+}
+
+bool IsActivatedCustomOpcode(uint8_t opcode, uint32_t flags) {
+    return ((opcode == OP_CHECKSIGFROMSTACK ||
+             opcode == OP_CHECKSIGFROMSTACKVERIFY) &&
+            (flags & SCRIPT_VERIFY_CHECKSIGFROMSTACK)) ||
+           (opcode == OP_TXHASH &&
+            (flags & SCRIPT_VERIFY_TXHASH)) ||
+           (opcode == OP_CHECKCONTRACTVERIFY &&
+            (flags & SCRIPT_VERIFY_CHECKCONTRACT));
+}
+
+enum class TapscriptPreScanResult {
+    CONTINUE,
+    SUCCESS,
+    INVALID,
+};
+
+enum class PushDecodeResult {
+    NOT_PUSH,
+    PUSH,
+    INVALID,
+};
+
+PushDecodeResult DecodePushLength(
+    const std::vector<uint8_t>& script,
+    size_t& pc,
+    uint8_t opcode,
+    size_t& push_length,
+    std::string& error
+) {
+    uint64_t decoded_length = 0;
+    if (opcode == OP_0) {
+        decoded_length = 0;
+    } else if (opcode >= 0x01 && opcode <= 0x4b) {
+        decoded_length = opcode;
+    } else if (opcode == OP_PUSHDATA1) {
+        if (pc >= script.size()) {
+            error = "OP_PUSHDATA1: missing length byte";
+            return PushDecodeResult::INVALID;
+        }
+        decoded_length = script[pc++];
+    } else if (opcode == OP_PUSHDATA2) {
+        if (script.size() - pc < 2) {
+            error = "OP_PUSHDATA2: missing length bytes";
+            return PushDecodeResult::INVALID;
+        }
+        decoded_length =
+            static_cast<uint64_t>(script[pc]) |
+            (static_cast<uint64_t>(script[pc + 1]) << 8);
+        pc += 2;
+    } else if (opcode == OP_PUSHDATA4) {
+        if (script.size() - pc < 4) {
+            error = "OP_PUSHDATA4: missing length bytes";
+            return PushDecodeResult::INVALID;
+        }
+        decoded_length =
+            static_cast<uint64_t>(script[pc]) |
+            (static_cast<uint64_t>(script[pc + 1]) << 8) |
+            (static_cast<uint64_t>(script[pc + 2]) << 16) |
+            (static_cast<uint64_t>(script[pc + 3]) << 24);
+        pc += 4;
+    } else {
+        return PushDecodeResult::NOT_PUSH;
+    }
+
+    if (decoded_length > script.size() - pc) {
+        error = "Push operation exceeds script bounds";
+        return PushDecodeResult::INVALID;
+    }
+    push_length = static_cast<size_t>(decoded_length);
+    return PushDecodeResult::PUSH;
+}
+
+TapscriptPreScanResult PreScanTapscript(
+    const std::vector<uint8_t>& script,
+    uint32_t flags,
+    std::string& error
+) {
+    size_t pc = 0;
+    while (pc < script.size()) {
+        const uint8_t opcode = script[pc++];
+        if (TapscriptOpcodes::IsOpSuccess(opcode) &&
+            !IsActivatedCustomOpcode(opcode, flags)) {
+            return TapscriptPreScanResult::SUCCESS;
+        }
+
+        size_t push_length = 0;
+        const PushDecodeResult push_result =
+            DecodePushLength(script, pc, opcode, push_length, error);
+        if (push_result == PushDecodeResult::INVALID) {
+            return TapscriptPreScanResult::INVALID;
+        }
+        if (push_result == PushDecodeResult::PUSH) {
+            pc += push_length;
+        }
+    }
+    return TapscriptPreScanResult::CONTINUE;
+}
+
+ScriptExecutionContext MakeTaprootSighashContext(
+    const Transaction* tx,
+    size_t input_index,
+    uint32_t flags,
+    const std::vector<UTXOEntry>& input_utxos,
+    const PrecomputedTransactionData* covenant_precomputed
+) {
+    if (covenant_precomputed != nullptr &&
+        covenant_precomputed->HasTaprootDataFor(*tx)) {
+        ScriptExecutionContext context(
+            tx, static_cast<uint32_t>(input_index),
+            input_utxos[input_index].value.GetUna(), flags);
+        context.covenant_precomputed = covenant_precomputed;
+        return context;
+    }
+
+    std::vector<uint64_t> amounts;
+    std::vector<std::vector<uint8_t>> scripts;
+    std::vector<uint8_t> confidential_flags;
+    std::vector<std::vector<uint8_t>> commitments;
+    amounts.reserve(input_utxos.size());
+    scripts.reserve(input_utxos.size());
+    confidential_flags.reserve(input_utxos.size());
+    commitments.reserve(input_utxos.size());
+    for (const auto& utxo : input_utxos) {
+        amounts.push_back(utxo.value.GetUna());
+        scripts.push_back(utxo.scriptPubKey);
+        confidential_flags.push_back(utxo.is_confidential ? 1 : 0);
+        commitments.push_back(utxo.commitment);
+    }
+    return ScriptExecutionContext(
+        tx, static_cast<uint32_t>(input_index),
+        amounts[input_index], flags,
+        amounts, scripts, confidential_flags, commitments,
+        covenant_precomputed);
+}
+
+bool ConsumeSignatureBudget(int64_t& validation_weight_left, std::string& error) {
+    validation_weight_left -= 50;
+    if (validation_weight_left < 0) {
+        error = "Tapscript signature validation weight exceeded";
+        return false;
+    }
+    return true;
+}
+
+bool DecodeScriptNum(
+    const std::vector<uint8_t>& bytes,
+    bool require_minimal,
+    size_t max_size,
+    int64_t& value
+) {
+    if (bytes.size() > max_size) return false;
+    if (require_minimal && !bytes.empty() &&
+        (bytes.back() & 0x7f) == 0 &&
+        (bytes.size() == 1 || (bytes[bytes.size() - 2] & 0x80) == 0)) {
+        return false;
+    }
+
+    uint64_t result = 0;
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        result |= static_cast<uint64_t>(bytes[i]) << (8 * i);
+    }
+    if (!bytes.empty() && (bytes.back() & 0x80)) {
+        result &= ~(uint64_t{0x80} << (8 * (bytes.size() - 1)));
+        value = -static_cast<int64_t>(result);
+    } else {
+        value = static_cast<int64_t>(result);
+    }
+    return true;
+}
+
+std::vector<uint8_t> EncodeScriptNum(int64_t value) {
+    if (value == 0) return {};
+    const bool negative = value < 0;
+    uint64_t absolute = negative
+        ? static_cast<uint64_t>(-(value + 1)) + 1
+        : static_cast<uint64_t>(value);
+    std::vector<uint8_t> result;
+    while (absolute != 0) {
+        result.push_back(static_cast<uint8_t>(absolute & 0xff));
+        absolute >>= 8;
+    }
+    if (result.back() & 0x80) {
+        result.push_back(negative ? 0x80 : 0x00);
+    } else if (negative) {
+        result.back() |= 0x80;
+    }
+    return result;
+}
+
+bool IsMinimalPush(uint8_t opcode, const std::vector<uint8_t>& data) {
+    if (data.empty()) {
+        return opcode == OP_0;
+    }
+    if (data.size() == 1 && data[0] >= 1 && data[0] <= 16) {
+        return opcode == OP_1 + (data[0] - 1);
+    }
+    if (data.size() == 1 && data[0] == 0x81) {
+        return opcode == OP_1NEGATE;
+    }
+    if (data.size() <= 75) {
+        return opcode == data.size();
+    }
+    if (data.size() <= 255) {
+        return opcode == OP_PUSHDATA1;
+    }
+    if (data.size() <= 65535) {
+        return opcode == OP_PUSHDATA2;
+    }
+    return true;
+}
+
+} // namespace
 
 // Phase L0.3: Use opcodes from consensus namespace (script.h) instead of TapscriptOpcodes
 // to avoid ambiguity with covenant opcodes
@@ -26,14 +257,36 @@ bool TapscriptInterpreter::ExecuteTapscript(
     size_t input_index,
     const std::vector<UTXOEntry>& input_utxos,
     const std::vector<uint8_t>& tapleaf_hash,
+    const std::array<uint8_t, 32>& internal_key,
+    const std::array<uint8_t, 32>& merkle_root,
+    uint8_t output_key_parity,
     uint32_t flags,
     std::string& error,
-    const std::vector<uint8_t>& annex
+    const std::vector<uint8_t>& annex,
+    const PrecomputedTransactionData* covenant_precomputed
 ) {
-    // BIP342 Fix #3: Enforce maximum script size (10,000 bytes)
-    if (script.size() > 10000) {
-        error = "Script size limit exceeded (BIP342: 10,000 bytes max)";
+    // BIP342 decodes OP_SUCCESS before every resource and execution rule.
+    // Pushed bytes are skipped and therefore cannot masquerade as opcodes.
+    const TapscriptPreScanResult pre_scan =
+        PreScanTapscript(script, flags, error);
+    if (pre_scan == TapscriptPreScanResult::SUCCESS) {
+        return true;
+    }
+    if (pre_scan == TapscriptPreScanResult::INVALID) {
         return false;
+    }
+
+    // BIP342 retains the 1,000-element and 520-byte element limits for the
+    // initial stack, but removes the legacy 10,000-byte script-size limit.
+    if (witness_stack.size() > 1000) {
+        error = "Initial stack exceeds 1,000 elements";
+        return false;
+    }
+    for (const auto& element : witness_stack) {
+        if (element.size() > 520) {
+            error = "Initial stack element exceeds 520 bytes";
+            return false;
+        }
     }
 
     // Initialize execution context
@@ -42,14 +295,24 @@ bool TapscriptInterpreter::ExecuteTapscript(
     ctx.tx = &tx;
     ctx.input_index = input_index;
     ctx.input_utxos = &input_utxos;
+    ctx.tapscript = &script;
     ctx.tapleaf_hash = &tapleaf_hash;
+    ctx.internal_key = &internal_key;
+    ctx.merkle_root = &merkle_root;
+    ctx.output_key_parity = output_key_parity;
     ctx.annex = &annex;  // BIP341 annex for sighash computation
+    ctx.covenant_precomputed = covenant_precomputed;
     ctx.flags = flags;  // Phase L0.3: Pass flags for covenant enforcement
+    ctx.validation_weight_left =
+        static_cast<int64_t>(SerializedWitnessSize(tx.vin[input_index].witness)) + 50;
 
     // Execute the script
     if (!Execute(script, ctx)) {
         error = ctx.error.empty() ? "Script execution failed" : ctx.error;
         return false;
+    }
+    if (ctx.op_success) {
+        return true;
     }
 
     // Script must leave exactly one true value on stack (BIP342)
@@ -76,52 +339,327 @@ bool TapscriptInterpreter::ExecuteTapscript(
 // ============================================================
 
 bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, ExecutionContext& ctx) {
-    size_t pc = 0; // Program counter
+    size_t pc = 0;
+    uint32_t opcode_position = 0;
+
+    // O(1) conditional execution state, matching Bitcoin Core's ConditionStack
+    // behavior without rescanning the nesting vector for every opcode.
+    std::vector<bool> condition_stack;
+    size_t inactive_conditions = 0;
+
+    auto require_stack = [&](size_t count, const char* operation) {
+        if (ctx.stack.size() >= count) {
+            return true;
+        }
+        ctx.error = std::string(operation) + ": insufficient stack elements";
+        return false;
+    };
+    auto stack_top = [&](size_t depth) -> std::vector<uint8_t>& {
+        return ctx.stack[ctx.stack.size() - depth];
+    };
+    auto decode_number = [&](size_t depth, size_t max_size, int64_t& value) {
+        if (!require_stack(depth, "Numeric opcode")) {
+            return false;
+        }
+        if (!DecodeScriptNum(
+                stack_top(depth),
+                (ctx.flags & SCRIPT_VERIFY_MINIMALDATA) != 0,
+                max_size,
+                value)) {
+            ctx.error = "Invalid script number";
+            return false;
+        }
+        return true;
+    };
 
     while (pc < script.size()) {
-        uint8_t opcode = script[pc++];
+        // BIP342 counts decoded opcodes, not byte offsets. A multi-byte push is
+        // one opcode, and opcodes in inactive branches still advance this
+        // position even though they are not executed.
+        const uint32_t current_opcode_position = opcode_position++;
+        const uint8_t opcode = script[pc++];
 
         // OP_SUCCESS opcodes (BIP342 soft fork mechanism)
         if (TapscriptOpcodes::IsOpSuccess(opcode)) {
-            // OP_SUCCESS always succeeds (for future soft forks)
-            return true;
+            if (!IsActivatedCustomOpcode(opcode, ctx.flags)) {
+                ctx.op_success = true;
+                return true;
+            }
         }
 
-        // Push data opcodes (0x01-0x4b: direct push)
-        if (opcode >= 0x01 && opcode <= 0x4b) {
-            size_t push_len = opcode;
-            if (pc + push_len > script.size()) {
-                ctx.error = "Push operation exceeds script bounds";
+        // Decode every push, including pushes in unexecuted branches. Bounds
+        // and the 520-byte element limit remain consensus checks even when the
+        // branch is inactive; only the stack mutation is conditional.
+        size_t push_length = 0;
+        const PushDecodeResult push_result =
+            DecodePushLength(script, pc, opcode, push_length, ctx.error);
+        if (push_result == PushDecodeResult::INVALID) {
+            return false;
+        }
+        if (push_result == PushDecodeResult::PUSH) {
+            if (push_length > 520) {
+                ctx.error =
+                    "Stack element size limit exceeded (BIP342: 520 bytes max)";
                 return false;
             }
-            std::vector<uint8_t> data(script.begin() + pc, script.begin() + pc + push_len);
-            if (!PushStack(ctx, data)) return false;  // BIP342: Check limits
-            pc += push_len;
+            if (inactive_conditions == 0) {
+                std::vector<uint8_t> data(
+                    script.begin() + pc,
+                    script.begin() + pc + push_length);
+                if ((ctx.flags & SCRIPT_VERIFY_MINIMALDATA) &&
+                    !IsMinimalPush(opcode, data)) {
+                    ctx.error = "Non-minimal data push";
+                    return false;
+                }
+                if (!PushStack(ctx, data)) return false;
+            }
+            pc += push_length;
+            continue;
+        }
+
+        // OP_VERIF and OP_VERNOTIF are permanently disabled and fail even in
+        // an unexecuted branch.
+        if (opcode == OP_VERIF || opcode == OP_VERNOTIF) {
+            ctx.error = "Disabled conditional opcode";
+            return false;
+        }
+
+        // IF/NOTIF/ELSE/ENDIF must be processed even inside an inactive branch
+        // so nesting remains balanced. Tapscript enforces MINIMALIF as a
+        // consensus rule: the consumed value is exactly {} or {0x01}.
+        if (opcode == OP_IF || opcode == OP_NOTIF) {
+            bool condition = false;
+            if (inactive_conditions == 0) {
+                std::vector<uint8_t> value;
+                if (!PopStack(ctx, value)) {
+                    ctx.error =
+                        opcode == OP_IF
+                            ? "OP_IF: insufficient stack elements"
+                            : "OP_NOTIF: insufficient stack elements";
+                    return false;
+                }
+                if (!value.empty() &&
+                    !(value.size() == 1 && value[0] == 0x01)) {
+                    ctx.error =
+                        "OP_IF/OP_NOTIF requires a minimal boolean in tapscript";
+                    return false;
+                }
+                condition = !value.empty();
+                if (opcode == OP_NOTIF) {
+                    condition = !condition;
+                }
+            }
+            condition_stack.push_back(condition);
+            if (!condition) {
+                ++inactive_conditions;
+            }
+            continue;
+        }
+
+        if (opcode == OP_ELSE) {
+            if (condition_stack.empty()) {
+                ctx.error = "OP_ELSE without OP_IF/OP_NOTIF";
+                return false;
+            }
+            if (!condition_stack.back()) {
+                --inactive_conditions;
+            }
+            condition_stack.back() = !condition_stack.back();
+            if (!condition_stack.back()) {
+                ++inactive_conditions;
+            }
+            continue;
+        }
+
+        if (opcode == OP_ENDIF) {
+            if (condition_stack.empty()) {
+                ctx.error = "OP_ENDIF without OP_IF/OP_NOTIF";
+                return false;
+            }
+            if (!condition_stack.back()) {
+                --inactive_conditions;
+            }
+            condition_stack.pop_back();
+            continue;
+        }
+
+        // Ordinary opcodes in an inactive branch are parsed but not executed.
+        if (inactive_conditions != 0) {
+            continue;
+        }
+
+        if (opcode == OP_1NEGATE ||
+            (opcode >= OP_1 && opcode <= OP_16)) {
+            const int64_t value =
+                opcode == OP_1NEGATE
+                    ? -1
+                    : static_cast<int64_t>(opcode - (OP_1 - 1));
+            if (!PushStack(ctx, EncodeScriptNum(value))) return false;
             continue;
         }
 
         // Handle opcodes
         switch (opcode) {
-            // Constants
-            case OP_0:  // OP_0 == OP_FALSE (0x00)
-                if (!PushStack(ctx, {})) return false;  // BIP342: Check limits
-                break;
-
-            case OP_1:  // OP_1 == OP_TRUE (0x51)
-                if (!PushStack(ctx, {0x01})) return false;  // BIP342: Check limits
-                break;
-
-            case OP_1NEGATE:
-                if (!PushStack(ctx, {0x81})) return false;  // BIP342: Check limits
-                break;
-
             // Stack operations
+            case OP_TOALTSTACK:
+                if (!require_stack(1, "OP_TOALTSTACK")) return false;
+                ctx.altstack.push_back(std::move(ctx.stack.back()));
+                ctx.stack.pop_back();
+                break;
+
+            case OP_FROMALTSTACK:
+                if (ctx.altstack.empty()) {
+                    ctx.error = "OP_FROMALTSTACK: altstack empty";
+                    return false;
+                }
+                ctx.stack.push_back(std::move(ctx.altstack.back()));
+                ctx.altstack.pop_back();
+                break;
+
+            case OP_2DROP:
+                if (!require_stack(2, "OP_2DROP")) return false;
+                ctx.stack.pop_back();
+                ctx.stack.pop_back();
+                break;
+
+            case OP_2DUP: {
+                if (!require_stack(2, "OP_2DUP")) return false;
+                const auto first = stack_top(2);
+                const auto second = stack_top(1);
+                if (!PushStack(ctx, first) || !PushStack(ctx, second)) {
+                    return false;
+                }
+                break;
+            }
+
+            case OP_3DUP: {
+                if (!require_stack(3, "OP_3DUP")) return false;
+                const auto first = stack_top(3);
+                const auto second = stack_top(2);
+                const auto third = stack_top(1);
+                if (!PushStack(ctx, first) ||
+                    !PushStack(ctx, second) ||
+                    !PushStack(ctx, third)) {
+                    return false;
+                }
+                break;
+            }
+
+            case OP_2OVER: {
+                if (!require_stack(4, "OP_2OVER")) return false;
+                const auto first = stack_top(4);
+                const auto second = stack_top(3);
+                if (!PushStack(ctx, first) || !PushStack(ctx, second)) {
+                    return false;
+                }
+                break;
+            }
+
+            case OP_2ROT: {
+                if (!require_stack(6, "OP_2ROT")) return false;
+                const auto first = stack_top(6);
+                const auto second = stack_top(5);
+                ctx.stack.erase(ctx.stack.end() - 6);
+                ctx.stack.erase(ctx.stack.end() - 5);
+                if (!PushStack(ctx, first) || !PushStack(ctx, second)) {
+                    return false;
+                }
+                break;
+            }
+
+            case OP_2SWAP:
+                if (!require_stack(4, "OP_2SWAP")) return false;
+                std::swap(stack_top(4), stack_top(2));
+                std::swap(stack_top(3), stack_top(1));
+                break;
+
+            case OP_IFDUP:
+                if (!require_stack(1, "OP_IFDUP")) return false;
+                if (CastToBool(ctx.stack.back())) {
+                    const auto value = ctx.stack.back();
+                    if (!PushStack(ctx, value)) return false;
+                }
+                break;
+
+            case OP_DEPTH:
+                if (!PushStack(
+                        ctx,
+                        EncodeScriptNum(
+                            static_cast<int64_t>(ctx.stack.size())))) {
+                    return false;
+                }
+                break;
+
             case OP_DUP:
                 if (!OpDup(ctx)) return false;
                 break;
 
             case OP_DROP:
                 if (!OpDrop(ctx)) return false;
+                break;
+
+            case OP_NIP:
+                if (!require_stack(2, "OP_NIP")) return false;
+                ctx.stack.erase(ctx.stack.end() - 2);
+                break;
+
+            case OP_OVER: {
+                if (!require_stack(2, "OP_OVER")) return false;
+                const auto value = stack_top(2);
+                if (!PushStack(ctx, value)) return false;
+                break;
+            }
+
+            case OP_PICK:
+            case OP_ROLL: {
+                int64_t depth = 0;
+                if (!decode_number(1, 4, depth)) return false;
+                ctx.stack.pop_back();
+                if (depth < 0 ||
+                    static_cast<size_t>(depth) >= ctx.stack.size()) {
+                    ctx.error =
+                        opcode == OP_PICK
+                            ? "OP_PICK: invalid stack depth"
+                            : "OP_ROLL: invalid stack depth";
+                    return false;
+                }
+                const size_t index =
+                    ctx.stack.size() - 1 - static_cast<size_t>(depth);
+                const auto value = ctx.stack[index];
+                if (opcode == OP_ROLL) {
+                    ctx.stack.erase(ctx.stack.begin() + index);
+                }
+                if (!PushStack(ctx, value)) return false;
+                break;
+            }
+
+            case OP_ROT:
+                if (!require_stack(3, "OP_ROT")) return false;
+                std::rotate(ctx.stack.end() - 3,
+                            ctx.stack.end() - 2,
+                            ctx.stack.end());
+                break;
+
+            case OP_SWAP:
+                if (!require_stack(2, "OP_SWAP")) return false;
+                std::swap(stack_top(2), stack_top(1));
+                break;
+
+            case OP_TUCK: {
+                if (!require_stack(2, "OP_TUCK")) return false;
+                const auto value = ctx.stack.back();
+                ctx.stack.insert(ctx.stack.end() - 2, value);
+                break;
+            }
+
+            case OP_SIZE:
+                if (!require_stack(1, "OP_SIZE") ||
+                    !PushStack(
+                        ctx,
+                        EncodeScriptNum(
+                            static_cast<int64_t>(ctx.stack.back().size())))) {
+                    return false;
+                }
                 break;
 
             // Equality
@@ -142,6 +680,146 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
                 if (!OpReturn(ctx)) return false;
                 break;
 
+            // Numeric operations inherited from P2WSH. Tapscript retains
+            // four-byte minimally encoded operands when MINIMALDATA is set.
+            case OP_1ADD:
+            case OP_1SUB:
+            case OP_NEGATE:
+            case OP_ABS:
+            case OP_NOT:
+            case OP_0NOTEQUAL: {
+                int64_t value = 0;
+                if (!decode_number(1, 4, value)) return false;
+                ctx.stack.pop_back();
+                switch (opcode) {
+                    case OP_1ADD: ++value; break;
+                    case OP_1SUB: --value; break;
+                    case OP_NEGATE: value = -value; break;
+                    case OP_ABS:
+                        if (value < 0) value = -value;
+                        break;
+                    case OP_NOT: value = value == 0 ? 1 : 0; break;
+                    case OP_0NOTEQUAL: value = value != 0 ? 1 : 0; break;
+                    default: break;
+                }
+                if (!PushStack(ctx, EncodeScriptNum(value))) return false;
+                break;
+            }
+
+            case OP_ADD:
+            case OP_SUB:
+            case OP_BOOLAND:
+            case OP_BOOLOR:
+            case OP_NUMEQUAL:
+            case OP_NUMEQUALVERIFY:
+            case OP_NUMNOTEQUAL:
+            case OP_LESSTHAN:
+            case OP_GREATERTHAN:
+            case OP_LESSTHANOREQUAL:
+            case OP_GREATERTHANOREQUAL:
+            case OP_MIN:
+            case OP_MAX: {
+                int64_t left = 0;
+                int64_t right = 0;
+                if (!decode_number(2, 4, left) ||
+                    !decode_number(1, 4, right)) {
+                    return false;
+                }
+
+                int64_t result = 0;
+                switch (opcode) {
+                    case OP_ADD: result = left + right; break;
+                    case OP_SUB: result = left - right; break;
+                    case OP_BOOLAND:
+                        result = left != 0 && right != 0 ? 1 : 0;
+                        break;
+                    case OP_BOOLOR:
+                        result = left != 0 || right != 0 ? 1 : 0;
+                        break;
+                    case OP_NUMEQUAL:
+                    case OP_NUMEQUALVERIFY:
+                        result = left == right ? 1 : 0;
+                        break;
+                    case OP_NUMNOTEQUAL:
+                        result = left != right ? 1 : 0;
+                        break;
+                    case OP_LESSTHAN:
+                        result = left < right ? 1 : 0;
+                        break;
+                    case OP_GREATERTHAN:
+                        result = left > right ? 1 : 0;
+                        break;
+                    case OP_LESSTHANOREQUAL:
+                        result = left <= right ? 1 : 0;
+                        break;
+                    case OP_GREATERTHANOREQUAL:
+                        result = left >= right ? 1 : 0;
+                        break;
+                    case OP_MIN: result = std::min(left, right); break;
+                    case OP_MAX: result = std::max(left, right); break;
+                    default: break;
+                }
+                ctx.stack.pop_back();
+                ctx.stack.pop_back();
+
+                if (opcode == OP_NUMEQUALVERIFY) {
+                    if (result == 0) {
+                        ctx.error = "OP_NUMEQUALVERIFY failed";
+                        return false;
+                    }
+                } else if (!PushStack(ctx, EncodeScriptNum(result))) {
+                    return false;
+                }
+                break;
+            }
+
+            case OP_WITHIN: {
+                int64_t value = 0;
+                int64_t minimum = 0;
+                int64_t maximum = 0;
+                if (!decode_number(3, 4, value) ||
+                    !decode_number(2, 4, minimum) ||
+                    !decode_number(1, 4, maximum)) {
+                    return false;
+                }
+                ctx.stack.pop_back();
+                ctx.stack.pop_back();
+                ctx.stack.pop_back();
+                if (!PushStack(
+                        ctx,
+                        EncodeScriptNum(
+                            minimum <= value && value < maximum ? 1 : 0))) {
+                    return false;
+                }
+                break;
+            }
+
+            // Hash operations inherited unchanged from P2WSH.
+            case OP_RIPEMD160:
+            case OP_SHA1:
+            case OP_SHA256:
+            case OP_HASH160:
+            case OP_HASH256: {
+                if (!require_stack(1, "Hash opcode")) return false;
+                const auto input = ctx.stack.back();
+                ctx.stack.pop_back();
+                std::vector<uint8_t> digest;
+                switch (opcode) {
+                    case OP_RIPEMD160: digest = RIPEMD160_Hash(input); break;
+                    case OP_SHA1: digest = SHA1_Hash(input); break;
+                    case OP_SHA256: digest = SHA256_Hash(input); break;
+                    case OP_HASH160: digest = HASH160_Hash(input); break;
+                    case OP_HASH256: digest = HASH256_Hash(input); break;
+                    default: break;
+                }
+                if (!PushStack(ctx, digest)) return false;
+                break;
+            }
+
+            case OP_CODESEPARATOR:
+                ctx.code_separator_position = current_opcode_position;
+                break;
+
             // Crypto (Schnorr signatures - BIP342)
             case OP_CHECKSIG:
                 if (!OpCheckSig(ctx)) return false;
@@ -155,9 +833,128 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
                 if (!OpCheckSigAdd(ctx)) return false;
                 break;
 
+            // BIP342 disables the legacy multisig opcodes. They fail only when
+            // executed; the inactive-branch path above ignores them.
+            case OP_CHECKMULTISIG:
+            case OP_CHECKMULTISIGVERIFY:
+                ctx.error =
+                    "OP_CHECKMULTISIG(VERIFY) is disabled in tapscript";
+                return false;
+
+            case OP_NOP:
+                break;
+
+            case OP_NOP1:
+            case OP_NOP5:
+            case OP_NOP6:
+            case OP_NOP7:
+            case OP_NOP8:
+            case OP_NOP9:
+            case OP_NOP10:
+                if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                    ctx.error = "Discouraged upgradable NOP";
+                    return false;
+                }
+                break;
+
+            case OP_CHECKLOCKTIMEVERIFY: {
+                if (!(ctx.flags & SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY)) {
+                    if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                        ctx.error = "Discouraged OP_CHECKLOCKTIMEVERIFY NOP";
+                        return false;
+                    }
+                    break;
+                }
+
+                int64_t required_lock_time = 0;
+                if (!decode_number(1, 5, required_lock_time)) return false;
+                if (required_lock_time < 0) {
+                    ctx.error = "OP_CHECKLOCKTIMEVERIFY: negative locktime";
+                    return false;
+                }
+                if (!ctx.tx || ctx.input_index >= ctx.tx->vin.size()) {
+                    ctx.error =
+                        "OP_CHECKLOCKTIMEVERIFY: missing transaction context";
+                    return false;
+                }
+
+                constexpr int64_t kLockTimeThreshold = 500'000'000;
+                const int64_t transaction_lock_time = ctx.tx->lockTime;
+                if ((required_lock_time < kLockTimeThreshold) !=
+                        (transaction_lock_time < kLockTimeThreshold) ||
+                    required_lock_time > transaction_lock_time ||
+                    ctx.tx->vin[ctx.input_index].sequence ==
+                        std::numeric_limits<uint32_t>::max()) {
+                    ctx.error = "OP_CHECKLOCKTIMEVERIFY: unsatisfied locktime";
+                    return false;
+                }
+                break;
+            }
+
+            case OP_CHECKSEQUENCEVERIFY: {
+                if (!(ctx.flags & SCRIPT_VERIFY_CHECKSEQUENCEVERIFY)) {
+                    if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                        ctx.error = "Discouraged OP_CHECKSEQUENCEVERIFY NOP";
+                        return false;
+                    }
+                    break;
+                }
+
+                int64_t required_sequence = 0;
+                if (!decode_number(1, 5, required_sequence)) return false;
+                if (required_sequence < 0) {
+                    ctx.error =
+                        "OP_CHECKSEQUENCEVERIFY: negative sequence";
+                    return false;
+                }
+
+                constexpr int64_t kDisableFlag = int64_t{1} << 31;
+                constexpr int64_t kTypeFlag = int64_t{1} << 22;
+                constexpr int64_t kSequenceMask = 0x0000ffff;
+                if (required_sequence & kDisableFlag) {
+                    break;
+                }
+                if (!ctx.tx ||
+                    ctx.tx->version < 2 ||
+                    ctx.input_index >= ctx.tx->vin.size()) {
+                    ctx.error =
+                        "OP_CHECKSEQUENCEVERIFY: transaction is not eligible";
+                    return false;
+                }
+
+                const int64_t transaction_sequence =
+                    ctx.tx->vin[ctx.input_index].sequence;
+                if (transaction_sequence & kDisableFlag) {
+                    ctx.error =
+                        "OP_CHECKSEQUENCEVERIFY: input sequence disabled";
+                    return false;
+                }
+                const int64_t required_masked =
+                    required_sequence & (kTypeFlag | kSequenceMask);
+                const int64_t transaction_masked =
+                    transaction_sequence & (kTypeFlag | kSequenceMask);
+                if ((required_masked & kTypeFlag) !=
+                        (transaction_masked & kTypeFlag) ||
+                    required_masked > transaction_masked) {
+                    ctx.error =
+                        "OP_CHECKSEQUENCEVERIFY: unsatisfied sequence";
+                    return false;
+                }
+                break;
+            }
+
             // Phase L0.3: Covenant opcodes (consensus-critical)
             case OP_CHECKTEMPLATEVERIFY:
-                if (!OpCheckTemplateVerify(ctx)) return false;
+                // BIP119 assigns NOP4. Before activation it remains a NOP;
+                // the 32-byte argument rule is part of the activated opcode.
+                if (ctx.flags & SCRIPT_VERIFY_CHECKTEMPLATEVERIFY) {
+                    if (!OpCheckTemplateVerify(ctx)) return false;
+                } else if (
+                    ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                    ctx.error =
+                        "Discouraged inactive OP_CHECKTEMPLATEVERIFY";
+                    return false;
+                }
                 break;
 
             case OP_CHECKSIGFROMSTACK:
@@ -178,28 +975,22 @@ bool TapscriptInterpreter::Execute(const std::vector<uint8_t>& script, Execution
                 if (!OpCheckContractVerify(ctx)) return false;
                 break;
 
-            // Push data with length prefix
-            case OP_PUSHDATA1: {
-                if (pc >= script.size()) {
-                    ctx.error = "OP_PUSHDATA1: missing length byte";
-                    return false;
-                }
-                size_t len = script[pc++];
-                if (pc + len > script.size()) {
-                    ctx.error = "OP_PUSHDATA1: data exceeds script bounds";
-                    return false;
-                }
-                std::vector<uint8_t> data(script.begin() + pc, script.begin() + pc + len);
-                if (!PushStack(ctx, data)) return false;  // BIP342: Check limits
-                pc += len;
-                break;
-            }
-
             default:
                 ctx.error = "Unknown or unsupported opcode: 0x" +
                            std::to_string(static_cast<int>(opcode));
                 return false;
         }
+
+        if (ctx.stack.size() + ctx.altstack.size() > 1000) {
+            ctx.error =
+                "Stack size limit exceeded (BIP342: 1000 elements max)";
+            return false;
+        }
+    }
+
+    if (!condition_stack.empty()) {
+        ctx.error = "Unbalanced conditional";
+        return false;
     }
 
     return true;
@@ -277,43 +1068,56 @@ bool TapscriptInterpreter::OpCheckSig(ExecutionContext& ctx) {
         return PushStack(ctx, {});  // BIP342: Push false and check limits
     }
 
-    // Schnorr signature must be exactly 64 bytes (BIP340)
-    if (signature.size() != 64) {
-        ctx.error = "OP_CHECKSIG: invalid signature size (expected 64 bytes for Schnorr)";
+    if (pubkey.empty()) {
+        ctx.error = "OP_CHECKSIG: empty public key";
         return false;
     }
 
-    // Public key must be 32 bytes (x-only, BIP340)
+    if (!ConsumeSignatureBudget(ctx.validation_weight_left, ctx.error)) {
+        return false;
+    }
+
+    // BIP342 reserves non-empty, non-32-byte public keys for future
+    // signature algorithms. Consensus treats a non-empty signature as valid;
+    // relay policy may discourage this upgrade path.
     if (pubkey.size() != 32) {
-        ctx.error = "OP_CHECKSIG: invalid pubkey size (expected 32 bytes for x-only)";
+        if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE) {
+            ctx.error = "OP_CHECKSIG: discouraged upgradable public key type";
+            return false;
+        }
+        return PushStack(ctx, {0x01});
+    }
+
+    if (signature.size() != 64 && signature.size() != 65) {
+        ctx.error = "OP_CHECKSIG: invalid Schnorr signature size";
+        return false;
+    }
+    const uint8_t hash_type = signature.size() == 65 ? signature.back() : 0;
+    if (signature.size() == 65 && hash_type == 0) {
+        ctx.error = "OP_CHECKSIG: explicit SIGHASH_DEFAULT byte is invalid";
         return false;
     }
 
-    // Compute BIP341 sighash for script path spending
-    std::vector<uint64_t> prevout_values;
-    std::vector<std::vector<uint8_t>> prevout_scripts;
-
-    for (const auto& utxo : *ctx.input_utxos) {
-        // Phase M.6.2: Extract raw value for signature hashing
-        prevout_values.push_back(utxo.value.GetUna());
-        prevout_scripts.push_back(utxo.scriptPubKey);
+    ScriptExecutionContext sighash_context = MakeTaprootSighashContext(
+        ctx.tx, ctx.input_index, ctx.flags, *ctx.input_utxos,
+        ctx.covenant_precomputed);
+    std::vector<uint8_t> sighash = SignatureHashTaproot(
+        sighash_context, hash_type, *ctx.tapleaf_hash,
+        ctx.annex ? *ctx.annex : std::vector<uint8_t>{},
+        ctx.code_separator_position);
+    if (sighash.size() != 32) {
+        ctx.error = "OP_CHECKSIG: invalid signature hash type";
+        return false;
     }
-
-    // BIP342: hash_type is always 0x00 (SIGHASH_DEFAULT) for Tapscript
-    // BIP341: Include annex in sighash computation if present
-    std::vector<uint8_t> sighash = ScriptVerifier::ComputeTaprootSighash(
-        *ctx.tx,
-        ctx.input_index,
-        prevout_values,
-        prevout_scripts,
-        0x00, // SIGHASH_DEFAULT
-        *ctx.tapleaf_hash, // Script path spending
-        ctx.annex ? *ctx.annex : std::vector<uint8_t>{} // BIP341 annex
-    );
 
     // Verify Schnorr signature
-    bool valid = VerifySchnorrSignature(signature, pubkey, sighash);
-    return PushStack(ctx, valid ? std::vector<uint8_t>{0x01} : std::vector<uint8_t>{});  // BIP342: Check limits
+    const std::vector<uint8_t> schnorr_signature(signature.begin(), signature.begin() + 64);
+    bool valid = VerifySchnorrSignature(schnorr_signature, pubkey, sighash);
+    if (!valid) {
+        ctx.error = "OP_CHECKSIG: non-empty invalid Schnorr signature";
+        return false;
+    }
+    return PushStack(ctx, {0x01});
 }
 
 bool TapscriptInterpreter::OpCheckSigVerify(ExecutionContext& ctx) {
@@ -332,57 +1136,66 @@ bool TapscriptInterpreter::OpCheckSigAdd(ExecutionContext& ctx) {
 
     std::vector<uint8_t> pubkey, signature, n_bytes;
     if (!PopStack(ctx, pubkey)) return false;
-    if (!PopStack(ctx, signature)) return false;
     if (!PopStack(ctx, n_bytes)) return false;
+    if (!PopStack(ctx, signature)) return false;
 
-    // n must be a valid number (CScriptNum in Bitcoin Core)
-    // For simplicity, we'll assume it's a single byte for now
-    if (n_bytes.empty()) {
-        ctx.error = "OP_CHECKSIGADD: n is empty";
+    int64_t n = 0;
+    if (!DecodeScriptNum(
+            n_bytes, (ctx.flags & SCRIPT_VERIFY_MINIMALDATA) != 0, 4, n)) {
+        ctx.error = "OP_CHECKSIGADD: invalid script number";
         return false;
     }
-
-    int64_t n = static_cast<int64_t>(n_bytes[0]);
 
     // Empty signature is always invalid (doesn't increment n)
     if (signature.empty()) {
         return PushStack(ctx, n_bytes);  // BIP342: Push n unchanged and check limits
     }
 
-    // Validate signature format
-    if (signature.size() != 64) {
-        ctx.error = "OP_CHECKSIGADD: invalid signature size";
+    if (pubkey.empty()) {
+        ctx.error = "OP_CHECKSIGADD: empty public key";
         return false;
     }
 
+    if (!ConsumeSignatureBudget(ctx.validation_weight_left, ctx.error)) {
+        return false;
+    }
+
+    bool valid = false;
     if (pubkey.size() != 32) {
-        ctx.error = "OP_CHECKSIGADD: invalid pubkey size";
-        return false;
+        if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE) {
+            ctx.error = "OP_CHECKSIGADD: discouraged upgradable public key type";
+            return false;
+        }
+        valid = true;
+    } else {
+        if (signature.size() != 64 && signature.size() != 65) {
+            ctx.error = "OP_CHECKSIGADD: invalid Schnorr signature size";
+            return false;
+        }
+        const uint8_t hash_type = signature.size() == 65 ? signature.back() : 0;
+        if (signature.size() == 65 && hash_type == 0) {
+            ctx.error = "OP_CHECKSIGADD: explicit SIGHASH_DEFAULT byte is invalid";
+            return false;
+        }
+        ScriptExecutionContext sighash_context = MakeTaprootSighashContext(
+            ctx.tx, ctx.input_index, ctx.flags, *ctx.input_utxos,
+            ctx.covenant_precomputed);
+        std::vector<uint8_t> sighash = SignatureHashTaproot(
+            sighash_context, hash_type, *ctx.tapleaf_hash,
+            ctx.annex ? *ctx.annex : std::vector<uint8_t>{},
+            ctx.code_separator_position);
+        if (sighash.size() != 32) {
+            ctx.error = "OP_CHECKSIGADD: invalid signature hash type";
+            return false;
+        }
+        const std::vector<uint8_t> schnorr_signature(
+            signature.begin(), signature.begin() + 64);
+        valid = VerifySchnorrSignature(schnorr_signature, pubkey, sighash);
+        if (!valid) {
+            ctx.error = "OP_CHECKSIGADD: non-empty invalid Schnorr signature";
+            return false;
+        }
     }
-
-    // Compute sighash
-    std::vector<uint64_t> prevout_values;
-    std::vector<std::vector<uint8_t>> prevout_scripts;
-
-    for (const auto& utxo : *ctx.input_utxos) {
-        // Phase M.6.2: Extract raw value for signature hashing
-        prevout_values.push_back(utxo.value.GetUna());
-        prevout_scripts.push_back(utxo.scriptPubKey);
-    }
-
-    // BIP341: Include annex in sighash computation if present
-    std::vector<uint8_t> sighash = ScriptVerifier::ComputeTaprootSighash(
-        *ctx.tx,
-        ctx.input_index,
-        prevout_values,
-        prevout_scripts,
-        0x00,
-        *ctx.tapleaf_hash,
-        ctx.annex ? *ctx.annex : std::vector<uint8_t>{} // BIP341 annex
-    );
-
-    // Verify signature
-    bool valid = VerifySchnorrSignature(signature, pubkey, sighash);
 
     // Increment n if valid
     if (valid) {
@@ -390,7 +1203,7 @@ bool TapscriptInterpreter::OpCheckSigAdd(ExecutionContext& ctx) {
     }
 
     // Push updated n back to stack
-    return PushStack(ctx, {static_cast<uint8_t>(n & 0xff)});  // BIP342: Check limits
+    return PushStack(ctx, EncodeScriptNum(n));
 }
 
 // ============================================================
@@ -408,8 +1221,8 @@ bool TapscriptInterpreter::PopStack(ExecutionContext& ctx, std::vector<uint8_t>&
 }
 
 bool TapscriptInterpreter::PushStack(ExecutionContext& ctx, const std::vector<uint8_t>& data) {
-    // BIP342 Fix #1: Enforce maximum stack size (1000 elements)
-    if (ctx.stack.size() >= 1000) {
+    // BIP342 inherits the combined main-stack + altstack 1,000-element limit.
+    if (ctx.stack.size() + ctx.altstack.size() >= 1000) {
         ctx.error = "Stack size limit exceeded (BIP342: 1000 elements max)";
         return false;
     }
@@ -497,6 +1310,11 @@ bool TapscriptInterpreter::OpCheckTemplateVerify(ExecutionContext& ctx) {
         ctx.error = "OP_CHECKTEMPLATEVERIFY not enabled (SCRIPT_VERIFY_CHECKTEMPLATEVERIFY flag not set)";
         return false;
     }
+    if (++ctx.ctv_executions > MAX_CTV_OPS_PER_TAPSCRIPT) {
+        ctx.error =
+            "OP_CHECKTEMPLATEVERIFY: per-tapscript execution limit exceeded";
+        return false;
+    }
 
     // Stack: <32-byte template hash>
     if (ctx.stack.empty()) {
@@ -506,10 +1324,14 @@ bool TapscriptInterpreter::OpCheckTemplateVerify(ExecutionContext& ctx) {
 
     const auto& expected_hash = ctx.stack.back();
 
-    // Expected hash must be exactly 32 bytes
+    // BIP119 reserves all non-32-byte arguments as NOP behavior for future
+    // upgrades. Nodes may discourage them as policy, but consensus succeeds.
     if (expected_hash.size() != 32) {
-        ctx.error = "OP_CHECKTEMPLATEVERIFY: hash must be 32 bytes, got " + std::to_string(expected_hash.size());
-        return false;
+        if (ctx.flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+            ctx.error = "OP_CHECKTEMPLATEVERIFY: discouraged non-32-byte argument";
+            return false;
+        }
+        return true;
     }
 
     // Need transaction context
@@ -519,7 +1341,11 @@ bool TapscriptInterpreter::OpCheckTemplateVerify(ExecutionContext& ctx) {
     }
 
     // Verify CTV template hash using covenant verification function
-    if (!VerifyCTV(*ctx.tx, static_cast<uint32_t>(ctx.input_index), expected_hash)) {
+    if (!VerifyCTV(
+            *ctx.tx,
+            static_cast<uint32_t>(ctx.input_index),
+            expected_hash,
+            ctx.covenant_precomputed)) {
         ctx.error = "OP_CHECKTEMPLATEVERIFY: template hash verification failed";
         return false;
     }
@@ -664,6 +1490,11 @@ bool TapscriptInterpreter::OpCheckContractVerify(ExecutionContext& ctx) {
         ctx.error = "OP_CHECKCONTRACTVERIFY not enabled (SCRIPT_VERIFY_CHECKCONTRACT flag not set)";
         return false;
     }
+    if (++ctx.ccv_executions > MAX_CCV_OPS_PER_TAPSCRIPT) {
+        ctx.error =
+            "OP_CHECKCONTRACTVERIFY: per-tapscript execution limit exceeded";
+        return false;
+    }
 
     // Stack: <prev_state_bytes> <new_state_bytes> -> (verify)
     if (ctx.stack.size() < 2) {
@@ -677,10 +1508,11 @@ bool TapscriptInterpreter::OpCheckContractVerify(ExecutionContext& ctx) {
         return false;
     }
 
-    // Pop contract state data from stack
-    const auto& new_state_bytes = ctx.stack.back();
+    // Copy before pop_back: retaining references to vector elements across a
+    // pop is undefined behavior.
+    const auto new_state_bytes = ctx.stack.back();
     ctx.stack.pop_back();
-    const auto& prev_state_bytes = ctx.stack.back();
+    const auto prev_state_bytes = ctx.stack.back();
     ctx.stack.pop_back();
 
     // Deserialize previous state
@@ -697,9 +1529,22 @@ bool TapscriptInterpreter::OpCheckContractVerify(ExecutionContext& ctx) {
         return false;
     }
 
-    // Verify contract state transition using covenant verification function
-    if (!VerifyContractTransition(*ctx.tx, static_cast<uint32_t>(ctx.input_index),
-                                   prev_state, new_state)) {
+    if (!ctx.input_utxos || !ctx.tapscript ||
+        !ctx.internal_key || !ctx.merkle_root) {
+        ctx.error = "OP_CHECKCONTRACTVERIFY: missing Taproot binding context";
+        return false;
+    }
+
+    const ContractSpendContext spend_context{
+        *ctx.input_utxos,
+        *ctx.tapscript,
+        *ctx.internal_key,
+        *ctx.merkle_root,
+        ctx.output_key_parity
+    };
+    if (!VerifyContractTransition(
+            *ctx.tx, static_cast<uint32_t>(ctx.input_index),
+            prev_state, new_state, spend_context)) {
         ctx.error = "OP_CHECKCONTRACTVERIFY: state transition verification failed";
         return false;
     }

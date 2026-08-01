@@ -23,6 +23,45 @@ namespace dinero {
 namespace test {
 
 // ═══════════════════════════════════════════════════════════════════════
+// Daemon path resolution (issue #428)
+// ═══════════════════════════════════════════════════════════════════════
+
+std::string ResolveDinerodPath() {
+    const char* env = std::getenv("DINEROD");
+    if (env && *env) {
+        return env;
+    }
+    // Manual-run fallback only; CI always sets DINEROD.
+    return "./dinerod";
+}
+
+bool DinerodAvailable(std::string* resolved_path_out, std::string* error_out) {
+    const std::string path = ResolveDinerodPath();
+    if (resolved_path_out) {
+        *resolved_path_out = path;
+    }
+    std::error_code ec;
+    if (!fs::exists(path, ec)) {
+        if (error_out) {
+            *error_out = "dinerod not found at \"" + path + "\" (DINEROD=" +
+                         (std::getenv("DINEROD") ? std::getenv("DINEROD") : "<unset>") +
+                         ", cwd=" + fs::current_path().string() +
+                         "). CMake sets DINEROD=$<TARGET_FILE:dinerod> and makes "
+                         "dinerod a build dependency of this test target, so this "
+                         "is a broken environment, not an absent optional feature.";
+        }
+        return false;
+    }
+    if (::access(path.c_str(), X_OK) != 0) {
+        if (error_out) {
+            *error_out = "dinerod at \"" + path + "\" is not executable";
+        }
+        return false;
+    }
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Helper: cURL write callback
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -74,7 +113,7 @@ bool TestDaemon::start(const std::vector<std::string>& args) {
 
     // Build command
     std::vector<std::string> cmd_args;
-    cmd_args.push_back("./dinerod");
+    cmd_args.push_back(ResolveDinerodPath());
     cmd_args.push_back("--regtest");
     cmd_args.push_back("--datadir=" + datadir_);
     cmd_args.push_back("--rpcport=" + std::to_string(rpc_port_));
@@ -176,7 +215,7 @@ bool TestDaemon::restart() {
 
     // Restart with same args
     std::vector<std::string> cmd_args;
-    cmd_args.push_back("./dinerod");
+    cmd_args.push_back(ResolveDinerodPath());
     cmd_args.push_back("--regtest");
     cmd_args.push_back("--datadir=" + datadir_);
     cmd_args.push_back("--rpcport=" + std::to_string(rpc_port_));

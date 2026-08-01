@@ -155,7 +155,7 @@ SUBMIT_RESULT=$(curl -s -X POST http://127.0.0.1:$RPC_PORT -u "__cookie__:$COOKI
 echo "[Step 4] submitblock response (invalid block):"
 echo "$SUBMIT_RESULT" | jq '.'
 
-ERROR=$(echo "$SUBMIT_RESULT" | jq -r '.result.error // empty')
+ERROR=$(echo "$SUBMIT_RESULT" | jq -r '.error.message? // .error // .result.error.message? // .result.error // empty')
 
 if [ -n "$ERROR" ]; then
     echo ""
