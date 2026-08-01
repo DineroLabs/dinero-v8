@@ -1,10 +1,30 @@
-# Dinero v8
+<h1 align="center">Dinero</h1>
 
-This is the canonical Dinero source repository.
+<p align="center">
+  <strong>A proof-of-work cryptocurrency built on Utreexo — full validation without a UTXO database on disk.</strong>
+</p>
 
-[![Release](https://img.shields.io/badge/release-v8.0.18-blue)](https://github.com/DineroLabs/dinero-v8/releases/tag/v8.0.18)
-[![Status](https://img.shields.io/badge/status-stable-brightgreen)](https://github.com/DineroLabs/dinero-v8/releases/tag/v8.0.18)
-[![Website](https://img.shields.io/badge/site-dinerolabs.org-blue)](https://dinerolabs.org)
+<p align="center">
+  <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/release-v8.0.18-blue" alt="Release"></a>
+  <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/status-stable-brightgreen" alt="Status"></a>
+  <a href="https://dinerolabs.org"><img src="https://img.shields.io/badge/site-dinerolabs.org-blue" alt="Website"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License"></a>
+</p>
+
+Dinero uses **Utreexo** accumulators at the consensus layer, so a validating node
+proves coin existence from a compact accumulator rather than maintaining a
+multi-gigabyte UTXO database. The same validation logic runs inside mobile wallets
+through NodeCore — the phone verifies for itself instead of trusting a server.
+
+## Why Dinero Is Different
+
+| | |
+|---|---|
+| **Utreexo at consensus** | Full validation without a UTXO database on disk. Not a layer, not an opt-in mode — it is the consensus rule. |
+| **AssumeUTXO fast sync** | Signed snapshot anchors bring a new node to the tip quickly, then validate history forward in the background. |
+| **~2-minute blocks** | `target_spacing = 120` seconds — roughly 720 blocks/day, with ASERT retargeting every `retarget_interval = 720` blocks. |
+| **Taproot from block 1** | `taproot_scriptpath_activation_height = 1` on mainnet. No activation fork, no legacy script debt. |
+| **Local validation on mobile** | NodeCore runs the same consensus code inside native wallets. |
 
 Dinero v8 is the current release lane for the daemon, CLI, Qt desktop wallet,
 NodeCore mobile runtime, bridge/proof serving, and mining components.
