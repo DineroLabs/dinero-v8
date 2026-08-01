@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
     }
 
     dinero::consensus::HeaderChainSelector selector(&store);
-    const auto* best = selector.GetBestHeader();
+    const auto best = selector.GetBestHeaderValue();
     if (!best) {
         std::cerr << "HeaderStore has no persisted tip to extend\n";
         return 1;
@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
     const std::string base_hash = best->hash.GetHex();
 
     for (int i = 0; i < backlog_count; ++i) {
-        const auto* current_best = selector.GetBestHeader();
+        const auto current_best = selector.GetBestHeaderValue();
         if (!current_best) {
             std::cerr << "Header selector lost its best header while extending backlog\n";
             return 1;
@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    const auto* final_best = selector.GetBestHeader();
+    const auto final_best = selector.GetBestHeaderValue();
     if (!final_best) {
         std::cerr << "Header selector lost best tip after extension\n";
         return 1;

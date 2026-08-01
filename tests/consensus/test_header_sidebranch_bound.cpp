@@ -87,7 +87,7 @@ uint256 ExtendChain(HeaderChainSelector& sel, uint256 tip_hash, int n,
 
 // The number of stored headers minus the best chain length = side branches.
 size_t SideCount(const HeaderChainSelector& sel) {
-    const auto* best = sel.GetBestHeader();
+    const auto best = sel.GetBestHeaderValue();
     const size_t active_len = best ? static_cast<size_t>(best->height) + 1 : 0;
     const size_t total = sel.GetHeaderCount();
     return total > active_len ? total - active_len : 0;
@@ -95,20 +95,20 @@ size_t SideCount(const HeaderChainSelector& sel) {
 
 // Assert the best chain is fully present and correctly linked genesis..tip.
 void AssertBestChainIntact(const HeaderChainSelector& sel) {
-    const auto* best = sel.GetBestHeader();
-    assert(best != nullptr);
+    const auto best = sel.GetBestHeaderValue();
+    assert(best.has_value());
     const uint32_t h = best->height;
-    const HeaderIndexEntry* prev = nullptr;
+    std::optional<uint256> prev_hash;
     for (uint32_t i = 0; i <= h; ++i) {
-        const auto* e = sel.GetHeaderAtHeight(i);
-        assert(e != nullptr && "every best-chain height must be present");
+        const auto e = sel.GetHeaderAtHeightValue(i);
+        assert(e.has_value() && "every best-chain height must be present");
         assert(e->height == i);
-        if (prev != nullptr) {
-            assert(e->prev_hash == prev->hash && "best chain must be linked");
+        if (prev_hash.has_value()) {
+            assert(e->prev_hash == *prev_hash && "best chain must be linked");
         }
-        prev = e;
+        prev_hash = e->hash;
     }
-    assert(prev != nullptr && prev->hash == best->hash);
+    assert(prev_hash.has_value() && *prev_hash == best->hash);
 }
 
 constexpr size_t kCap = 10000;  // mirrors MAX_SIDE_BRANCH_HEADERS
@@ -126,10 +126,10 @@ void TestReorgAfterFlood() {
     const uint256 g = genesis.GetHash();
     uint256 main_tip = ExtendChain(sel, g, 50);
     const uint256 old_main_tip = main_tip;
-    const auto* fork40 = sel.GetHeaderAtHeight(40);
-    assert(fork40 != nullptr);
+    const auto fork40 = sel.GetHeaderAtHeightValue(40);
+    assert(fork40.has_value());
     const uint256 fork40_hash = fork40->hash;
-    assert(sel.GetBestHeader()->height == 50);
+    assert(sel.GetBestHeaderValue()->height == 50);
 
     // Flood the budget with low-work height-1 junk forked off genesis (work ∝ 2).
     size_t accepted = 0;
@@ -140,23 +140,23 @@ void TestReorgAfterFlood() {
     std::cout << "   junk accepted=" << accepted << " sideCount=" << SideCount(sel)
               << std::endl;
     assert(SideCount(sel) == kCap && "budget must be exactly full of junk");
-    assert(sel.GetBestHeader()->hash == old_main_tip && "flood must not move best");
+    assert(sel.GetBestHeaderValue()->hash == old_main_tip && "flood must not move best");
 
     // Now a legitimate competing chain forks at h40 (near the tip = high work) and
     // climbs to h55 (work ∝ 56 > 51). Through a FULL budget, each near-tip fork
     // header must evict a lower-work junk tip and be admitted, until it overtakes.
     uint256 reorg_tip = ExtendChain(sel, fork40_hash, 15);
 
-    const auto* best = sel.GetBestHeader();
-    assert(best != nullptr);
+    const auto best = sel.GetBestHeaderValue();
+    assert(best.has_value());
     std::cout << "   after reorg: best height=" << best->height << std::endl;
     assert(best->height == 55 && "reorg must win even through a full budget");
     assert(best->hash == reorg_tip && "best tip must be the reorg tip");
     // The new best chain at h50 is the reorg header, NOT the old main tip.
-    assert(sel.GetHeaderAtHeight(50) != nullptr);
-    assert(sel.GetHeaderAtHeight(50)->hash != old_main_tip);
+    assert(sel.GetHeaderAtHeightValue(50).has_value());
+    assert(sel.GetHeaderAtHeightValue(50)->hash != old_main_tip);
     // The old main tip survives as a (now losing) side branch.
-    assert(sel.GetHeader(old_main_tip) != nullptr);
+    assert(sel.GetHeaderValue(old_main_tip).has_value());
     AssertBestChainIntact(sel);
     // A reorg demotes the old best-chain headers above the fork into side
     // branches WITHOUT routing them through the admission cap, so side_count may
@@ -179,7 +179,7 @@ void TestStaticBound() {
     assert(sel.AddHeader(genesis));
     const uint256 g = genesis.GetHash();
     const uint256 tip = ExtendChain(sel, g, 2);  // best h2
-    const uint256 best_hash = sel.GetBestHeader()->hash;
+    const uint256 best_hash = sel.GetBestHeaderValue()->hash;
 
     const size_t flood = kCap + 10000;
     size_t accepted = 0, refused = 0;
@@ -191,8 +191,8 @@ void TestStaticBound() {
     assert(accepted == kCap && "equal-work junk is admitted only up to the cap");
     assert(refused > 0 && "the cap must be enforced");
     assert(SideCount(sel) == kCap);
-    assert(sel.GetBestHeader()->hash == best_hash && "best tip unchanged");
-    assert(sel.GetHeader(tip) != nullptr);
+    assert(sel.GetBestHeaderValue()->hash == best_hash && "best tip unchanged");
+    assert(sel.GetHeaderValue(tip).has_value());
     AssertBestChainIntact(sel);
     std::cout << "   ✅ flood bounded; active chain intact" << std::endl;
 }
@@ -212,12 +212,12 @@ void TestNoOrphan() {
     uint256 main_tip = ExtendChain(sel, g, 30, &rec);
 
     // A multi-level shared-prefix side branch off h10: h10 -> s1 -> s2 -> s3.
-    const uint256 fork10 = sel.GetHeaderAtHeight(10)->hash;
+    const uint256 fork10 = sel.GetHeaderAtHeightValue(10)->hash;
     uint256 s_tip = ExtendChain(sel, fork10, 3, &rec);  // 3 stacked side headers
 
     // Storm: alternate low-work junk (off genesis) and deeper higher-work forks
     // (off h20) to drive admission + eviction churn well past the cap.
-    const uint256 fork20 = sel.GetHeaderAtHeight(20)->hash;
+    const uint256 fork20 = sel.GetHeaderAtHeightValue(20)->hash;
     for (size_t i = 0; i < kCap + 3000; ++i) {
         BlockHeader low = MakeHeader(g);            // work ∝ 2
         if (sel.AddHeader(low)) rec.emplace_back(low.GetHash(), g);
@@ -228,15 +228,15 @@ void TestNoOrphan() {
     // Invariant: no SURVIVING header is orphaned — its parent is still stored.
     size_t survivors = 0;
     for (const auto& [h, prev] : rec) {
-        if (sel.GetHeader(h) == nullptr) continue;  // evicted — fine
+        if (!sel.GetHeaderValue(h).has_value()) continue;  // evicted — fine
         ++survivors;
         if (prev.IsNull()) continue;  // genesis
-        assert(sel.GetHeader(prev) != nullptr &&
+        assert(sel.GetHeaderValue(prev).has_value() &&
                "a surviving header must never have an evicted parent (no orphans)");
     }
     AssertBestChainIntact(sel);
     assert(SideCount(sel) <= kCap && "bounded after storm");
-    assert(sel.GetHeader(main_tip) != nullptr && "best tip retained");
+    assert(sel.GetHeaderValue(main_tip).has_value() && "best tip retained");
     std::cout << "   survivors=" << survivors << " sideCount=" << SideCount(sel)
               << " — no orphans" << std::endl;
     std::cout << "   ✅ pruning never orphaned a descendant" << std::endl;
@@ -282,15 +282,15 @@ void TestRestartEquivalence() {
         HeaderChainSelector sel(&store);
         std::cout << "   post-restart: count=" << sel.GetHeaderCount()
                   << " sideCount=" << SideCount(sel) << std::endl;
-        assert(sel.GetBestHeader() != nullptr);
-        assert(sel.GetBestHeader()->hash == main_tip && "best tip survives restart");
+        assert(sel.GetBestHeaderValue().has_value());
+        assert(sel.GetBestHeaderValue()->hash == main_tip && "best tip survives restart");
         assert(SideCount(sel) <= kCap && "bound holds after reload");
         AssertBestChainIntact(sel);
         // No orphan among survivors.
         for (const auto& [h, prev] : rec) {
-            if (sel.GetHeader(h) == nullptr) continue;
+            if (!sel.GetHeaderValue(h).has_value()) continue;
             if (prev.IsNull()) continue;
-            assert(sel.GetHeader(prev) != nullptr && "no orphan after reload");
+            assert(sel.GetHeaderValue(prev).has_value() && "no orphan after reload");
         }
         // The bound is still enforced on the LIVE path after reload: a new
         // equal-work junk header is refused when the budget is full.
@@ -300,7 +300,7 @@ void TestRestartEquivalence() {
                    "equal-work junk must be refused when full, post-restart");
         }
         // And a strictly higher-work fork is still admittable (work-aware).
-        const uint256 fork10 = sel.GetHeaderAtHeight(10)->hash;
+        const uint256 fork10 = sel.GetHeaderAtHeightValue(10)->hash;
         BlockHeader high = MakeHeader(fork10);  // height 11 > height-1 junk
         assert(sel.AddHeader(high) &&
                "higher-work fork must still be admittable post-restart");
@@ -335,23 +335,23 @@ void TestExtendMinTipNoUAF() {
 
     // Fill the rest of the budget with strictly HIGHER-work forks (height-21 off
     // the h20 best-chain header, work ∝ 22) so begin() is unambiguously P.
-    const uint256 fork20 = sel.GetHeaderAtHeight(20)->hash;
+    const uint256 fork20 = sel.GetHeaderAtHeightValue(20)->hash;
     size_t added = 1;  // P already counts as one side branch
     while (added < kCap) {
         BlockHeader hi = MakeHeader(fork20);
         if (sel.AddHeader(hi)) ++added;
     }
     assert(SideCount(sel) == kCap && "budget full");
-    assert(sel.GetHeader(p) != nullptr);
+    assert(sel.GetHeaderValue(p).has_value());
 
     // Extend the lowest-work tip P. Naive eviction would EvictBranch(P) here and
     // free E's parent. Must not crash, must not orphan, must keep P.
     BlockHeader e = MakeHeader(p);  // child of P
     sel.AddHeader(e);               // admitted or refused — both acceptable
-    assert(sel.GetHeader(p) != nullptr &&
+    assert(sel.GetHeaderValue(p).has_value() &&
            "extending the min-work tip must never free it (use-after-free)");
-    if (sel.GetHeader(e.GetHash()) != nullptr) {
-        assert(sel.GetHeader(e.prev_block_hash) != nullptr &&
+    if (sel.GetHeaderValue(e.GetHash()).has_value()) {
+        assert(sel.GetHeaderValue(e.prev_block_hash).has_value() &&
                "if admitted, the new header must not be orphaned");
     }
     AssertBestChainIntact(sel);
@@ -437,6 +437,26 @@ void TestCopiedAncestryAndBranchSnapshots() {
     assert(branch.size() == 7);  // genesis plus heights 1..6
     assert(branch.front().height == 0);
     assert(branch.back().hash == fork_tip);
+
+    HeaderAsertContext asert_context;
+    assert(sel.GetAsertContextByHash(fork_tip, asert_context));
+    assert(asert_context.parent_height == 6);
+    uint32_t expected_mtp = 0;
+    uint32_t expected_height = 0;
+    assert(sel.GetMedianTimePastByHash(
+        fork_tip, expected_mtp, expected_height));
+    assert(asert_context.parent_mtp == static_cast<int64_t>(expected_mtp));
+    assert(expected_height == asert_context.parent_height);
+    const auto block1 = sel.GetHeaderAtHeightValue(1);
+    assert(block1.has_value());
+    assert(asert_context.block1_time ==
+           static_cast<int64_t>(block1->header.timestamp));
+
+    asert_context = HeaderAsertContext{99, 99, 99};
+    assert(!sel.GetAsertContextByHash(unknown, asert_context));
+    assert(asert_context.parent_height == 0);
+    assert(asert_context.parent_mtp == 0);
+    assert(asert_context.block1_time == 0);
 
     // Restore the active-chain-stopped snapshot for the lifetime assertion.
     assert(sel.CollectBranchCopiesByHash(

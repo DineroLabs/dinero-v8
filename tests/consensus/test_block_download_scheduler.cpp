@@ -107,7 +107,7 @@ void AppendForkHeaders(
 }
 
 Block MakeBlockForHash(dcs::HeaderChainSelector& selector, const uint256& hash) {
-    const auto* entry = selector.GetHeader(hash);
+    const auto entry = selector.GetHeaderValue(hash);
     if (!entry) {
         throw std::runtime_error("missing header for block hash " + hash.GetHex());
     }
@@ -265,16 +265,16 @@ int main() {
             return 1;
         }
 
-        const auto* best_header = selector.GetBestHeader();
-        if (!Require(best_header != nullptr, "expected best header after fork build")) {
+        const auto best_header = selector.GetBestHeaderValue();
+        if (!Require(best_header.has_value(), "expected best header after fork build")) {
             return 1;
         }
         if (!Require(best_header->height == 5, "expected fork tip to become best header")) {
             return 1;
         }
 
-        const auto* best_at_tip_height = selector.GetHeaderAtHeight(3);
-        if (!Require(best_at_tip_height != nullptr, "expected best-chain header at local tip height")) {
+        const auto best_at_tip_height = selector.GetHeaderAtHeightValue(3);
+        if (!Require(best_at_tip_height.has_value(), "expected best-chain header at local tip height")) {
             return 1;
         }
         if (!Require(best_at_tip_height->hash == fork_hashes[0], "expected best chain to diverge at height 3")) {
@@ -370,15 +370,15 @@ int main() {
         }
 
         // Sanity: fork tip Y(4) is the best header.
-        const auto* best_header = selector.GetBestHeader();
-        if (!Require(best_header != nullptr && best_header->height == 4,
+        const auto best_header = selector.GetBestHeaderValue();
+        if (!Require(best_header.has_value() && best_header->height == 4,
                      "expected fork tip Y at height 4 as best header")) {
             return 1;
         }
 
         // The best header chain at height 3 should be X (fork), not C (main).
-        const auto* header_at_3 = selector.GetHeaderAtHeight(3);
-        if (!Require(header_at_3 != nullptr && header_at_3->hash == fork_hashes[0],
+        const auto header_at_3 = selector.GetHeaderAtHeightValue(3);
+        if (!Require(header_at_3.has_value() && header_at_3->hash == fork_hashes[0],
                      "expected best-chain header at height 3 to be fork block X")) {
             return 1;
         }

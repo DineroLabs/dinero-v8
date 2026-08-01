@@ -197,8 +197,8 @@ void Test2_HeadersProcessed() {
     assert(accepted == true);
 
     // Verify headers were added
-    const HeaderIndexEntry* best = selector.GetBestHeader();
-    assert(best != nullptr);
+    const auto best = selector.GetBestHeaderValue();
+    assert(best.has_value());
     assert(best->height == 50);
 
     std::cout << "   ✅ Headers processed and added to chain (height = 50)" << std::endl;

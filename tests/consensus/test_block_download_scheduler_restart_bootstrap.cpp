@@ -108,8 +108,8 @@ int main() {
         return 1;
     }
 
-    const auto* best_header = selector.GetBestHeader();
-    if (!Require(best_header != nullptr, "expected persisted best header")) {
+    const auto best_header = selector.GetBestHeaderValue();
+    if (!Require(best_header.has_value(), "expected persisted best header")) {
         return 1;
     }
     if (!Require(best_header->height == 6, "expected best header height 6")) {

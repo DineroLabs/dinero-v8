@@ -110,14 +110,14 @@ int main() {
         const bool accepted = selector.AddHeader(header);
         assert(accepted && "real mainnet header fixture must be accepted");
 
-        const HeaderIndexEntry* best = selector.GetBestHeader();
-        assert(best != nullptr);
+        const auto best = selector.GetBestHeaderValue();
+        assert(best.has_value());
         assert(best->height == height);
         assert(best->hash == header.GetHash());
     }
 
-    const HeaderIndexEntry* best = selector.GetBestHeader();
-    assert(best != nullptr);
+    const auto best = selector.GetBestHeaderValue();
+    assert(best.has_value());
     assert(best->hash == uint256::FromHexUnsafe(kExpectedHashes.back()));
     assert(selector.GetHeaderCount() == kMainnetHeaders.size());
 
@@ -131,8 +131,8 @@ int main() {
     assert(!reject_selector.AddHeader(invalid_pow) &&
            "mutated block 1 header must fail hash <= target");
 
-    const HeaderIndexEntry* reject_best = reject_selector.GetBestHeader();
-    assert(reject_best != nullptr);
+    const auto reject_best = reject_selector.GetBestHeaderValue();
+    assert(reject_best.has_value());
     assert(reject_best->height == 0);
 
     std::cout << "Accepted real mainnet headers 0-" << (kMainnetHeaders.size() - 1)
