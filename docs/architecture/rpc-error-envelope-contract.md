@@ -91,22 +91,22 @@ dinero-qt should gain more correct behaviour from this change, not less: errors
 previously buried in `result` were invisible to the central client and will now
 surface through the standard `rpcError` channel.
 
-**`DineroDPI` (separate repo) — AUDITED, compatible with caveats.** New
-top-level errors are handled correctly and embedded NodeCore is unaffected.
-**Recommended before deployment:** centralized dual-shape normalization plus
-regression tests, rather than per-call-site handling. Not a hard blocker, but
-not a no-op either.
+**`DineroDPI` (separate repo) — READY.** Centralized dual-shape normalization
+and 14 regression tests landed in DineroLabs/DineroDPI#40. New top-level errors
+are handled correctly, legacy nested errors remain accepted during migration,
+and embedded NodeCore is unaffected.
 
-**In-repo scripts — ~30 sites** across `scripts/test_key_import*.sh`,
-`test_wif_support.sh`, `test_encrypted_import*.sh`, `test_rate_limiting_only.sh`,
-`test_final_validation.sh`, `run-a2z.sh`, `continuous_stress_test.sh`. Mostly
-diagnostic printing rather than control flow, but several gate on
-`jq -e '.result.error'`.
+**In-repo scripts — migrated.** The nine operator scripts that consumed nested
+`result.error` now accept both the normalized top-level envelope and the legacy
+nested shape. This includes control-flow gates as well as diagnostic output;
+the migration was fixture-tested against old-error, new-error, and success
+responses, and every edited shell script passes `bash -n`.
 
-**Integration tests — ~25 sites.** Most were written defensively as
-`.result.error == "x" or .error != null` and tolerate the change. Two asserted
-the nested shape strictly and are updated in this PR to accept both:
-`test_shielded_rpc_getaddress.sh`, `test_shielded_rpc_transfer_addressed_e2e.sh`.
+**Integration tests — migrated where shape-sensitive.** Most were already
+defensive (`.result.error == "x" or .error != null`). The strict assertions and
+diagnostic extractors now accept both envelopes, including the two tests that
+regressed in the original sweep: `test_shielded_rpc_getaddress.sh` and
+`test_shielded_rpc_transfer_addressed_e2e.sh`.
 
 ## Rollout
 
@@ -115,11 +115,12 @@ practical. Consumers are the risk, not the nodes.
 
 1. Audit every consumer for `.result.error` (this document; complete — **no
    known hard blocker**).
-2. Update clients to accept **both** the old nested and the new top-level shape.
+2. Update clients to accept **both** the old nested and the new top-level shape
+   (**complete for in-repo scripts and external applications**).
 3. Land DineroDPI's centralized dual-shape normalization and its regression
-   tests. dinero-qt needs no code change. Do not touch the `dinero-qt`
-   `spec/my-node-dashboard` checkout — it has uncommitted work in
-   `src/mainwindow.cpp`.
+   tests (**complete in DineroLabs/DineroDPI#40**). dinero-qt needs no code
+   change. Do not touch the `dinero-qt` `spec/my-node-dashboard` checkout — it
+   has uncommitted work in `src/mainwindow.cpp`.
 4. Merge and deploy the daemon envelope correction across the three nodes in a
    controlled window.
 5. Runtime-verify on every node, with BOTH:

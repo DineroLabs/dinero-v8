@@ -426,7 +426,7 @@ wait_status "$B_RPC" "$B_DIR" '.fatal == true' 60 "B: fatal survives restart"
 # short-circuit fires before the gate.
 SEND_RES="$(rpc "$B_RPC" "$B_DIR" wallet.sendtoaddress \
     '["din1q0000000000000000000000000000000000000", 0.001]' || echo '{}')"
-if jq -e '(.result.error // .error.message // "") | test("disabled while node is in safe mode")' \
+if jq -e '(.error.message? // .error // .result.error.message? // .result.error // "") | test("disabled while node is in safe mode")' \
         <<<"$SEND_RES" >/dev/null 2>&1; then
     pass "B-GATE: wallet.sendtoaddress refused with safe-mode error (gate fires before wallet/balance check)"
 else
@@ -488,7 +488,7 @@ done
 # precondition fires before the header-aware belt — the belt message is
 # unreachable over RPC by construction. Assert the call ERRORS either way.
 LOAD2_RES="$(rpc "$C_RPC" "$C_DIR" loadtxoutset "[\"$SNAP2\"]" || echo '{}')"
-ERR_MSG="$(jq -r '.result.error.message // .result.error // empty' <<<"$LOAD2_RES")"
+ERR_MSG="$(jq -r '.error.message? // .error // .result.error.message? // .result.error // empty' <<<"$LOAD2_RES")"
 if [[ -z "$ERR_MSG" ]] && jq -e '.result.coins_loaded >= 1' <<<"$LOAD2_RES" >/dev/null 2>&1; then
     fail "C1: second loadtxoutset with a DIFFERENT base was ACCEPTED mid-lifecycle: $LOAD2_RES"
 fi
@@ -576,7 +576,7 @@ for h in $(seq $((FORK_H + 1)) "$FORK_TIP"); do
     FH="$(rpc "$F_RPC" "$F_DIR" getblockhash "[$h]" | jq -r '.result')"
     FHEX="$(rpc "$F_RPC" "$F_DIR" getblock "[\"$FH\", 0]" | jq -r '.result')"
     SUB="$(rpc "$AD_RPC" "$AD_DIR" submitblock "[\"$FHEX\"]")"
-    SUB_ERR="$(jq -r '.result.error // empty' <<<"$SUB")"
+    SUB_ERR="$(jq -r '.error.message? // .error // .result.error.message? // .result.error // empty' <<<"$SUB")"
     if jq -e '.fatal == true' <<<"$(snap_status "$AD_RPC" "$AD_DIR")" >/dev/null 2>&1; then
         F_FATAL_SEEN=1
         info "F: fatal observed after submitting fork block at height $h"
