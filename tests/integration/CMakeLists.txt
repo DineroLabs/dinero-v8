@@ -57,7 +57,9 @@ message(STATUS "Configuring Phase E.3 integration tests...")
 message(STATUS "Configuring Phase F.5 end-to-end tests...")
 
 # E2E Test Harness Library (requires curl)
-find_package(CURL QUIET)
+if(NOT TARGET CURL::libcurl)
+  find_package(CURL QUIET)
+endif()
 if(CURL_FOUND)
     add_library(e2e_test_harness STATIC
         e2e_test_harness.cpp
