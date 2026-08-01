@@ -347,6 +347,88 @@ const HeaderIndexEntry* HeaderChainSelector::GetHeader(const uint256& hash) cons
     return it->second.get();
 }
 
+bool HeaderChainSelector::GetBestHeaderCopy(HeaderIndexEntry& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!best_header_) {
+        return false;
+    }
+    out = *best_header_;
+    // Same rule as GetHeaderCopy: a copy never carries the parent pointer out.
+    out.parent = nullptr;
+    return true;
+}
+
+bool HeaderChainSelector::GetMedianTimePastByHash(const uint256& hash,
+                                                  uint32_t& mtp_out,
+                                                  uint32_t& height_out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = header_index_.find(hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+    // Safe to walk parents here: we hold the lock EvictBranch also takes, so no
+    // ancestor can be freed underneath the walk (#441).
+    mtp_out = it->second->GetMedianTimePast();
+    height_out = it->second->height;
+    return true;
+}
+
+bool HeaderChainSelector::GetHeaderAtHeightCopy(uint32_t height,
+                                                HeaderIndexEntry& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!best_header_) {
+        return false;
+    }
+    // Same resolution GetHeaderAtHeight() performs, but the result is copied
+    // before the lock is released rather than handed out as a pointer (#441).
+    const HeaderIndexEntry* entry = best_header_->GetAncestor(height);
+    if (!entry) {
+        return false;
+    }
+    out = *entry;
+    // Same rule as the other *Copy accessors: never let a copy carry the parent
+    // pointer out — parents are subject to the same eviction hazard.
+    out.parent = nullptr;
+    return true;
+}
+
+std::vector<uint256> HeaderChainSelector::BuildLocatorCopy(size_t max_entries) const {
+    std::vector<uint256> locator;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!best_header_ || max_entries == 0) {
+        return locator;
+    }
+
+    // Mirrors the previous GetHeaderLocator() walk exactly, but every step
+    // resolves under THIS lock, so no pointer escapes and the whole locator
+    // reflects one consistent chain state (#441).
+    locator.reserve(max_entries);
+
+    const HeaderIndexEntry* current = best_header_;
+    uint32_t height = best_header_->height;
+    uint32_t step = 1;
+
+    while (current != nullptr && locator.size() < max_entries) {
+        locator.push_back(current->hash);
+
+        if (height < step) {
+            break;
+        }
+        height -= step;
+
+        // Same resolution GetHeaderAtHeight() performs, but inline and still
+        // holding the lock.
+        current = best_header_->GetAncestor(height);
+
+        if (locator.size() > 1) {
+            step *= 2;
+        }
+    }
+
+    return locator;
+}
+
 bool HeaderChainSelector::GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = header_index_.find(hash);
@@ -369,6 +451,7 @@ bool HeaderChainSelector::CollectAncestorsByHash(
     // mutex_) can free side-branch entries, so neither the anchor pointer nor
     // its parent links may escape this critical section.
     std::lock_guard<std::mutex> lock(mutex_);
+    anchor_height_out = 0;
     out_ascending.clear();
 
     auto it = header_index_.find(anchor_hash);
@@ -389,6 +472,74 @@ bool HeaderChainSelector::CollectAncestorsByHash(
             break;  // height-0 guard: `e->height >= 0` is never false (unsigned)
         }
     }
+    if (out_ascending.empty() ||
+        out_ascending.back().second != start_height) {
+        // A persisted/relinked tree must never expose a broken parent chain as
+        // a successful snapshot. Fail closed and leave no partial range.
+        out_ascending.clear();
+        return false;
+    }
+    std::reverse(out_ascending.begin(), out_ascending.end());
+    return true;
+}
+
+bool HeaderChainSelector::GetAncestorHashByHash(
+        const uint256& anchor_hash,
+        uint32_t ancestor_height,
+        uint256& ancestor_hash_out,
+        uint32_t& anchor_height_out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ancestor_hash_out.SetNull();
+    anchor_height_out = 0;
+
+    auto it = header_index_.find(anchor_hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+
+    const HeaderIndexEntry* anchor = it->second.get();
+    anchor_height_out = anchor->height;
+    if (ancestor_height > anchor->height) {
+        return false;
+    }
+
+    // Keep the complete parent walk under the lock EvictBranch also takes.
+    const HeaderIndexEntry* ancestor = anchor->GetAncestor(ancestor_height);
+    if (!ancestor) {
+        return false;
+    }
+    ancestor_hash_out = ancestor->hash;
+    return true;
+}
+
+bool HeaderChainSelector::CollectBranchCopiesByHash(
+        const uint256& anchor_hash,
+        const std::unordered_set<uint256>& stop_hashes,
+        std::vector<HeaderIndexEntry>& out_ascending,
+        uint256& common_ancestor_out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    out_ascending.clear();
+    common_ancestor_out.SetNull();
+
+    auto it = header_index_.find(anchor_hash);
+    if (it == header_index_.end()) {
+        return false;
+    }
+
+    // Copy the non-common portion under one selector snapshot. A concurrent
+    // reorg may make this branch stale immediately after return, but the values
+    // remain coherent and owned by the caller; the next activation rescans.
+    for (const HeaderIndexEntry* entry = it->second.get(); entry;
+         entry = entry->parent) {
+        if (stop_hashes.find(entry->hash) != stop_hashes.end()) {
+            common_ancestor_out = entry->hash;
+            break;
+        }
+
+        out_ascending.push_back(*entry);
+        out_ascending.back().parent = nullptr;
+    }
+
     std::reverse(out_ascending.begin(), out_ascending.end());
     return true;
 }

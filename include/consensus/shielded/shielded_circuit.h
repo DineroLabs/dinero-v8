@@ -16,7 +16,9 @@
  *     6. value is 64-bit
  *     7. post-cv activation: cv = rcv·G + value·V
  *
- *   Constraint count: ~240 × (1 + 1 + TREE_DEPTH + 1) ≈ 8,400
+ *   Legacy constraint count: approximately 8,400. The cv-bound profile adds
+ *   approximately 430,000 EC constraints; use R1CS::num_constraints() for the
+ *   exact count produced by a particular build.
  *
  * Output proof (published with each ShieldedOutput):
  *   Public inputs:  commitment and (post-cv activation) cv
@@ -28,7 +30,9 @@
  *     value is 64-bit
  *     post-cv activation: cv = rcv·G + value·V
  *
- *   Constraint count: ~480
+ *   Legacy constraint count: approximately 480. The cv-bound profile adds
+ *   approximately 430,000 EC constraints; use R1CS::num_constraints() for the
+ *   exact count produced by a particular build.
  *
  * Both circuits use Poseidon-2 over secp256k1's scalar field, matching
  * the native evaluator in commitment_tree.cpp. The R1CS gadget

@@ -37,7 +37,7 @@ for i in {1..5}; do
       --data-binary '{"jsonrpc":"2.0","id":"test'$i'","method":"wallet.importencryptedkey","params":{"enc":"pbkdf2-hmac-sha256","iter":100000,"salt":"VvIZ8/3ZpqRzLbJzT9P8Ow==","cipher":"aes-256-gcm","iv":"AZiU8/3ZpqRzLbJz","ct":"HZiU8/3ZpqRzLbJzT9P8OwHZiU8/3ZpqRzLbJzT9P8Ow","tag":"HZiU8/3ZpqRzLbJzT9P8Ow==","passphrase":"wrong_'$i'"}}' \
       http://127.0.0.1:$PORT/)
     
-    error=$(echo "$response" | jq -r '.result.error // "none"')
+    error=$(echo "$response" | jq -r '.error.message? // .error // .result.error.message? // .result.error // "none"')
     echo "$error"
 done
 
@@ -46,7 +46,7 @@ response=$(curl -s --user "$AUTH" -H 'content-type: application/json' \
   --data-binary '{"jsonrpc":"2.0","id":"test6","method":"wallet.importencryptedkey","params":{"enc":"pbkdf2-hmac-sha256","iter":100000,"salt":"VvIZ8/3ZpqRzLbJzT9P8Ow==","cipher":"aes-256-gcm","iv":"AZiU8/3ZpqRzLbJz","ct":"HZiU8/3ZpqRzLbJzT9P8OwHZiU8/3ZpqRzLbJzT9P8Ow","tag":"HZiU8/3ZpqRzLbJzT9P8Ow==","passphrase":"wrong_6"}}' \
   http://127.0.0.1:$PORT/)
 
-error=$(echo "$response" | jq -r '.result.error // "none"')
+error=$(echo "$response" | jq -r '.error.message? // .error // .result.error.message? // .result.error // "none"')
 echo "$error"
 
 if [[ "$error" == "RATE_LIMITED" ]]; then

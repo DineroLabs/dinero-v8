@@ -171,12 +171,7 @@ TxId Transaction::GetTxid() const {
     return TxId(result);  // Wrap in TxId domain type
 }
 
-// ============================================================================
-// Witness Transaction ID
-// ============================================================================
-// Consensus::ComputeWitnessMerkleRoot() commits these IDs through the coinbase
-// DINW witness commitment. Transaction indexing continues to use txid.
-// ============================================================================
+// Witness transaction ID used by the consensus DINW commitment.
 WTxId Transaction::GetWtxid() const {
     // Wtxid is hash of full serialization (with witness) - Phase M.4.3-A: returns WTxId
     auto bytes = Serialize(true);

@@ -16,6 +16,7 @@
 #include "wallet/p2mr_address.h"
 #include "wallet/pq_derivation.h"
 #include "wallet/v7_p2mr_store.h"
+#include "crypto/sha256.h"
 
 #include <array>
 #include <cstddef>
@@ -27,7 +28,6 @@
 #include <vector>
 
 #include <openssl/rand.h>
-#include <openssl/sha.h>
 #include <unistd.h>
 
 namespace rpc    = dinero::rpc::v7;
@@ -130,9 +130,9 @@ int main() {
         p.address    = r1_address;
         std::string tag = "v7 sighash canary";
         // Trivial test sighash = SHA256(tag).
-        SHA256_CTX ctx; SHA256_Init(&ctx);
-        SHA256_Update(&ctx, tag.data(), tag.size());
-        SHA256_Final(p.sighash.data(), &ctx);
+        dinero::crypto::CSHA256()
+            .Write(tag)
+            .Finalize(p.sighash.data());
         p.master_key = master_key;
 
         auto r3 = rpc::SignP2MR(store, p);
@@ -297,9 +297,9 @@ int main() {
         p.wallet_id  = wallet_id;
         p.address    = r8_address;
         std::string tag = "imported address sign";
-        SHA256_CTX ctx; SHA256_Init(&ctx);
-        SHA256_Update(&ctx, tag.data(), tag.size());
-        SHA256_Final(p.sighash.data(), &ctx);
+        dinero::crypto::CSHA256()
+            .Write(tag)
+            .Finalize(p.sighash.data());
         p.master_key = master_key;
 
         auto r11 = rpc::SignP2MR(store, p);

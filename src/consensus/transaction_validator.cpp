@@ -9,6 +9,7 @@
 #include "consensus/script_validation.h"   // ValidateSpend / P2MR dispatcher
 #include "consensus/script_verify.h"       // Phase C.1: ScriptVerifier::VerifyTaproot (script-path)
 #include "consensus/covenant_activation.h" // Phase C.2: Height-gated covenant activation
+#include "consensus/covenants.h"
 #include "consensus/crypto/sighash_bip143.h"  // Sighash computation (consensus)
 #include "primitives/hash_domains.h"  // Phase M.4.3-B: TxId type
 #include <iostream>
@@ -67,7 +68,8 @@ TransactionValidator::ValidationResult TransactionValidator::ValidateTransaction
     }
 
     // 4. Verify all signatures
-    if (!VerifySignatures(tx, utxo_provider, result.error)) {
+    if (!VerifySignatures(
+            tx, utxo_provider, current_height, result.error)) {
         return result;
     }
 
@@ -223,7 +225,9 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
     const std::vector<uint64_t>& all_input_amounts,
     const std::vector<std::vector<uint8_t>>& all_input_scriptpubkeys,
     const std::vector<uint8_t>& all_input_confidential_flags,
-    const std::vector<std::vector<uint8_t>>& all_input_commitments
+    const std::vector<std::vector<uint8_t>>& all_input_commitments,
+    const consensus::PrecomputedTransactionData*
+        covenant_precomputed
 ) {
     InputVerificationResult result;
     result.valid = false;
@@ -293,6 +297,12 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
     // Get transaction ID for cache key computation - Phase M.4.3-D: Explicit boundary
     // ScriptCache not yet migrated to TxId, so unwrap at boundary
     uint256 txid = tx.GetTxid().AsUint256();
+
+    // The cache key must distinguish activation-boundary semantics. Callers may
+    // add stricter flags, but may not omit the authoritative height-derived
+    // baseline.
+    script_flags |= consensus::CovenantActivationParams::StandardFlags(
+        height, dinero::Params());
 
     // F.8.3: Check script cache before expensive verification
     bool cached_result = false;
@@ -364,7 +374,8 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
 
         const consensus::ScriptValidationResult script_result =
             consensus::ValidateSpend(tx, input_index, all_utxos[input_index],
-                                     height, all_utxos);
+                                     height, all_utxos,
+                                     covenant_precomputed);
 
         if (consensus::g_script_cache) {
             auto cache_key = consensus::ScriptCache::computeKey(
@@ -393,8 +404,14 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
             ctx, dinero::crypto::DineroSecpIllegalCallback, nullptr);
     }
 
-    // SegWit v0 P2WPKH validation
-    if (tx.IsSegWitV0()) {
+    // SegWit v0 P2WPKH validation. Transaction::IsSegWitV0() only reports
+    // witness serialization; it does not identify the spent witness program
+    // and would misroute Taproot spends through this ECDSA path.
+    const bool is_p2wpkh =
+        scriptPubKey.size() == 22 &&
+        scriptPubKey[0] == 0x00 &&
+        scriptPubKey[1] == 0x14;
+    if (is_p2wpkh) {
         // P2WPKH witness: [signature, pubkey]
         if (input.witness.size() != 2) {
             secp256k1_context_destroy(ctx);
@@ -596,167 +613,76 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
         return result;
     }
 
-    // ========================================================================
-    // BIP341 Taproot (SegWit v1) Key-Path Spending
-    // ========================================================================
-    // P2TR scriptPubKey: OP_1 <32-byte x-only pubkey>
-    // Key-path witness: single 64-byte (or 65-byte with sighash) Schnorr sig
-    // ========================================================================
+    // BIP341 Taproot. Key-path and script-path spends share one verifier so
+    // annex parsing, control-block authentication, sighash rules, and covenant
+    // activation cannot drift between mempool and block validation.
     if (scriptPubKey.size() == 34 &&
         scriptPubKey[0] == 0x51 &&  // OP_1 (witness version 1)
         scriptPubKey[1] == 0x20) {  // PUSH32
-
-        // Extract x-only pubkey from scriptPubKey
-        std::vector<uint8_t> x_only_pubkey(scriptPubKey.begin() + 2, scriptPubKey.end());
-
-        // Key-path spend: exactly 1 witness element (the signature)
-        if (input.witness.size() == 1) {
-            const auto& schnorr_sig = input.witness[0];
-
-            // BIP340: Signature must be 64 or 65 bytes
-            if (schnorr_sig.size() != 64 && schnorr_sig.size() != 65) {
-                secp256k1_context_destroy(ctx);
-                result.error = "Invalid Taproot signature size for input " + std::to_string(input_index);
-                return result;
-            }
-
-            // Extract sighash type
-            uint8_t sighash_type = 0x00;  // SIGHASH_DEFAULT
-            if (schnorr_sig.size() == 65) {
-                sighash_type = schnorr_sig[64];
-                uint8_t base_type = sighash_type & 0x7F;
-                if (base_type > 0x03) {
-                    secp256k1_context_destroy(ctx);
-                    result.error = "Invalid Taproot sighash type for input " + std::to_string(input_index);
-                    return result;
-                }
-            }
-
-            // Build context for BIP341 sighash
-            // BIP341 requires ALL input amounts and scriptPubKeys for sighash computation
-            std::vector<uint64_t> amounts_for_sighash;
-            std::vector<std::vector<uint8_t>> scripts_for_sighash;
-            std::vector<uint8_t> confidential_for_sighash;
-            std::vector<std::vector<uint8_t>> commitments_for_sighash;
-
-            if (!all_input_amounts.empty() && !all_input_scriptpubkeys.empty() &&
-                all_input_amounts.size() == tx.vin.size() &&
-                all_input_scriptpubkeys.size() == tx.vin.size() &&
-                all_input_confidential_flags.size() == tx.vin.size() &&
-                all_input_commitments.size() == tx.vin.size()) {
-                // Full UTXO context provided - use it (correct BIP341 behavior)
-                amounts_for_sighash = all_input_amounts;
-                scripts_for_sighash = all_input_scriptpubkeys;
-                confidential_for_sighash = all_input_confidential_flags;
-                commitments_for_sighash = all_input_commitments;
-            } else {
-                secp256k1_context_destroy(ctx);
-                result.error = "Taproot prevout context incomplete for input " +
-                              std::to_string(input_index) + " (need amounts, scripts, flags, and commitments for all " +
-                              std::to_string(tx.vin.size()) + " prevouts)";
-                return result;
-            }
-
-            if (amounts_for_sighash.size() != tx.vin.size() ||
-                scripts_for_sighash.size() != tx.vin.size() ||
-                confidential_for_sighash.size() != tx.vin.size() ||
-                commitments_for_sighash.size() != tx.vin.size()) {
-                secp256k1_context_destroy(ctx);
-                result.error = "Taproot prevout context incomplete for input " +
-                              std::to_string(input_index) + " (missing amounts/scripts for all " +
-                              std::to_string(tx.vin.size()) + " inputs)";
-                return result;
-            }
-
-            consensus::ScriptExecutionContext sighash_ctx(
-                &tx,
-                static_cast<uint32_t>(input_index),
-                value,
-                consensus::SCRIPT_VERIFY_TAPROOT,
-                amounts_for_sighash,
-                scripts_for_sighash,
-                confidential_for_sighash,
-                commitments_for_sighash
-            );
-
-            std::vector<uint8_t> sighash = consensus::SignatureHashTaproot(
-                sighash_ctx, sighash_type, {}, {});
-
-            if (sighash.size() != 32) {
-                secp256k1_context_destroy(ctx);
-                result.error = "Failed to compute Taproot sighash for input " + std::to_string(input_index);
-                return result;
-            }
-
-            // BIP340 Schnorr verification
-            if (!consensus::CheckSchnorrSignature(schnorr_sig, x_only_pubkey, sighash,
-                                                   consensus::SCRIPT_VERIFY_TAPROOT)) {
-                secp256k1_context_destroy(ctx);
-                result.error = "Taproot signature verification failed for input " + std::to_string(input_index);
-                return result;
-            }
-
-            // Success!
-            secp256k1_context_destroy(ctx);
-            result.valid = true;
-            return result;
-        }
-
-        // Script-path spend (>1 witness elements) — delegate to ScriptVerifier
-        // which handles control block, Merkle proof, TapTweak, and Tapscript execution
-        // including covenant opcodes (CTV, CSFS, TXHASH, CCV).
-        if (input.witness.size() >= 2) {
-            secp256k1_context_destroy(ctx);
-
-            // Phase C.2: Check covenant activation height
-            if (!consensus::CovenantActivationParams::IsCovenantActive(height, dinero::GetActiveChain())) {
-                result.error = "Taproot script-path spending not yet active at height " +
-                              std::to_string(height) + " (activates at " +
-                              std::to_string(consensus::CovenantActivationParams::GetActivationHeight(
-                                  dinero::GetActiveChain())) + ")";
-                return result;
-            }
-
-            // Build UTXOEntry vector for ScriptVerifier
-            std::vector<consensus::UTXOEntry> utxo_entries;
-            utxo_entries.reserve(tx.vin.size());
-            for (size_t i = 0; i < tx.vin.size(); ++i) {
-                consensus::UTXOEntry entry;
-                if (i < all_input_amounts.size()) entry.value = AmountUna::Una(all_input_amounts[i]);
-                if (i < all_input_scriptpubkeys.size()) entry.scriptPubKey = all_input_scriptpubkeys[i];
-                if (i < all_input_confidential_flags.size()) entry.is_confidential = (all_input_confidential_flags[i] != 0);
-                if (i < all_input_commitments.size()) entry.commitment = all_input_commitments[i];
-                utxo_entries.push_back(entry);
-            }
-
-            std::string script_error;
-            bool valid = consensus::ScriptVerifier::VerifyTaproot(tx, input_index, utxo_entries, script_error);
-
-            if (valid) {
-                // Cache positive result
-                if (consensus::g_script_cache) {
-                    auto cache_key = consensus::ScriptCache::computeKey(
-                        txid, static_cast<uint32_t>(input_index), script_flags, input.witness
-                    );
-                    consensus::g_script_cache->insert(cache_key, true);
-                }
-                result.valid = true;
-            } else {
-                result.error = "Taproot script-path: " + script_error;
-                // Cache negative result
-                if (consensus::g_script_cache) {
-                    auto cache_key = consensus::ScriptCache::computeKey(
-                        txid, static_cast<uint32_t>(input_index), script_flags, input.witness
-                    );
-                    consensus::g_script_cache->insert(cache_key, false);
-                }
-            }
-            return result;
-        }
-
-        // Empty witness
         secp256k1_context_destroy(ctx);
-        result.error = "Empty witness for Taproot output at input " + std::to_string(input_index);
+
+        if (input.witness.empty()) {
+            result.error = "Empty witness for Taproot output at input " +
+                           std::to_string(input_index);
+            return result;
+        }
+
+        size_t effective_items = input.witness.size();
+        if (effective_items >= 2 &&
+            !input.witness.back().empty() &&
+            input.witness.back()[0] == 0x50) {
+            --effective_items;
+        }
+        const bool is_script_path = effective_items != 1;
+        if (is_script_path &&
+            !consensus::CovenantActivationParams::IsScriptPathActive(
+                height, dinero::Params())) {
+            result.error = "Taproot script-path spending not yet active at height " +
+                           std::to_string(height) + " (activates at " +
+                           std::to_string(
+                               dinero::Params().taproot_scriptpath_activation_height) +
+                           ")";
+            return result;
+        }
+
+        const bool full_context =
+            all_input_amounts.size() == tx.vin.size() &&
+            all_input_scriptpubkeys.size() == tx.vin.size() &&
+            all_input_confidential_flags.size() == tx.vin.size() &&
+            all_input_commitments.size() == tx.vin.size();
+        if (!full_context) {
+            result.error = "Taproot prevout context incomplete for input " +
+                           std::to_string(input_index);
+            return result;
+        }
+
+        std::vector<consensus::UTXOEntry> utxo_entries;
+        utxo_entries.reserve(tx.vin.size());
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            consensus::UTXOEntry entry;
+            entry.value = AmountUna::Una(all_input_amounts[i]);
+            entry.scriptPubKey = all_input_scriptpubkeys[i];
+            entry.is_confidential = (all_input_confidential_flags[i] != 0);
+            entry.commitment = all_input_commitments[i];
+            utxo_entries.push_back(std::move(entry));
+        }
+
+        std::string script_error;
+        const uint32_t taproot_flags =
+            consensus::CovenantActivationParams::StandardFlags(
+                height, dinero::Params());
+        result.valid = consensus::ScriptVerifier::VerifyTaproot(
+            tx, input_index, utxo_entries, script_error, taproot_flags,
+            covenant_precomputed);
+        if (!result.valid) {
+            result.error = "Taproot verification: " + script_error;
+        }
+        if (consensus::g_script_cache) {
+            auto cache_key = consensus::ScriptCache::computeKey(
+                txid, static_cast<uint32_t>(input_index), script_flags,
+                input.witness);
+            consensus::g_script_cache->insert(cache_key, result.valid);
+        }
         return result;
     }
 
@@ -773,6 +699,7 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
 bool TransactionValidator::VerifySignatures(
     const Transaction& tx,
     consensus::IUTXOProvider* utxo_provider,
+    uint32_t validation_height,
     std::string& error
 ) {
     if (!utxo_provider) {
@@ -806,21 +733,25 @@ bool TransactionValidator::VerifySignatures(
         all_input_commitments.push_back(prevouts.back().commitment);
     }
 
+    const consensus::PrecomputedTransactionData
+        covenant_precomputed(tx, prevouts);
     for (size_t i = 0; i < tx.vin.size(); i++) {
         const consensus::UTXOEntry& utxo = prevouts[i];
 
         // F.8.5: Use canonical VerifyInput engine
-        // Mempool context: no block context, so MTP = 0 (permissive for mempool admission)
-        // Height = utxo.height (for height-based CLTV when implemented)
+        // Activation is determined by the block/mempool validation context,
+        // never by the height at which the spent coin was created.
+        // Mempool context has no MTP here, so MTP remains permissive.
         // Phase M.6.2: Extract raw value for script verification
         auto result = VerifyInput(tx, i, utxo.scriptPubKey, utxo.value.GetUna(),
                                    0 /* script_flags */,
-                                   utxo.height,
+                                   validation_height,
                                    0 /* median_time_past - mempool has no MTP context */,
                                    all_input_amounts,
                                    all_input_scriptpubkeys,
                                    all_input_confidential_flags,
-                                   all_input_commitments);
+                                   all_input_commitments,
+                                   &covenant_precomputed);
         if (!result.valid) {
             error = result.error;
             return false;

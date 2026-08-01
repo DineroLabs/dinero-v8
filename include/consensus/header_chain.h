@@ -24,6 +24,7 @@
 #include <set>
 #include <cstdint>
 #include <mutex>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -206,6 +207,28 @@ public:
     const HeaderIndexEntry* GetBestHeader() const;
 
     /**
+     * @brief Copy the best header out under the lock (issue #439).
+     *
+     * Prefer this over GetBestHeader() for anything that reads fields. The raw
+     * accessor takes mutex_ and returns the pointer *after* releasing it, so
+     * every field read through it happens outside the lock.
+     *
+     * This is a USE-AFTER-FREE hazard, not merely a stale/racy read: "best
+     * header" is not a permanent property of an entry. A reorg can make the
+     * former best header a side-branch tip, and side-branch tips are evictable
+     * (EvictBranch, which runs under THIS class's mutex — not the caller's).
+     * So the entry a caller is holding can be freed the moment the lock is
+     * released. The same reasoning that justifies GetHeaderCopy() applies here.
+     *
+     * Copying under the lock removes it. The copy's parent pointer is nulled —
+     * it must not be followed (same eviction hazard).
+     *
+     * @param out Filled with a by-value copy of the best header (parent == nullptr)
+     * @return true iff a best header exists
+     */
+    bool GetBestHeaderCopy(HeaderIndexEntry& out) const;
+
+    /**
      * @brief Get header by hash
      *
      * @param hash Block hash to lookup
@@ -231,6 +254,72 @@ public:
     bool GetHeaderCopy(const uint256& hash, HeaderIndexEntry& out) const;
 
     /**
+     * @brief Build a block locator from the best header, entirely under the lock.
+     *
+     * Bitcoin-style exponential back-off: tip, then walk back with gaps of
+     * 1, 2, 4, 8, ... up to `max_entries` hashes.
+     *
+     * Exists because the obvious composition — GetBestHeader() then repeated
+     * GetHeaderAtHeight() — is unsafe twice over (issue #441):
+     *
+     *   1. Both accessors return raw pointers AFTER releasing mutex_, and a
+     *      reorg can demote the former best header to a side-branch tip, which
+     *      EvictBranch may then free. Dereferencing is use-after-free.
+     *   2. Even ignoring lifetime, the walk takes the lock once PER STEP, so a
+     *      concurrent reorg between steps yields a locator that mixes hashes
+     *      from different chain states — an inconsistent locator, which is
+     *      worse than a stale but coherent one.
+     *
+     * Building the whole locator under a single lock removes both.
+     *
+     * @param max_entries Maximum hashes to emit (Bitcoin uses ~10)
+     * @return Locator hashes, tip first. Empty if no headers are known.
+     */
+    std::vector<uint256> BuildLocatorCopy(size_t max_entries = 10) const;
+
+    /**
+     * @brief Copy the best-chain header at `height` out under the lock (#441).
+     *
+     * Value-returning counterpart to GetHeaderAtHeight(), which resolves
+     * best_header_->GetAncestor(height) and then returns that raw pointer
+     * AFTER releasing mutex_ — the same escape-the-lock hazard as
+     * GetBestHeader(). Ancestors are especially exposed: a reorg can move the
+     * best chain out from under a height that was previously on it, leaving the
+     * entry an evictable side branch.
+     *
+     * The copy's parent pointer is nulled — it must not be followed. Callers
+     * that need to walk ancestry should use CollectAncestorsByHash() or
+     * BuildLocatorCopy() instead, both of which resolve the whole walk under a
+     * single lock.
+     *
+     * @param height Best-chain height to resolve
+     * @param out    Filled with a by-value copy (parent == nullptr)
+     * @return true iff a best-chain header exists at that height
+     */
+    bool GetHeaderAtHeightCopy(uint32_t height, HeaderIndexEntry& out) const;
+
+    /**
+     * @brief Compute a header's Median Time Past entirely under the lock (#441).
+     *
+     * MTP is fork-aware: it walks the entry's own parent chain (11 timestamps).
+     * That makes it unreachable through the *Copy accessors, which deliberately
+     * null the copy's parent pointer — parents carry the same eviction hazard as
+     * the entry itself.
+     *
+     * Rather than export a pointer so the caller can walk, the walk happens
+     * here, holding mutex_ throughout. Same principle as BuildLocatorCopy():
+     * derive the value inside the selector; never let ancestry escape.
+     *
+     * @param hash        Header to compute MTP for (may be a side branch)
+     * @param mtp_out     Median Time Past, seconds since epoch
+     * @param height_out  That header's height (callers usually log it)
+     * @return true iff the hash is known
+     */
+    bool GetMedianTimePastByHash(const uint256& hash,
+                                 uint32_t& mtp_out,
+                                 uint32_t& height_out) const;
+
+    /**
      * @brief Atomically resolve an anchor by hash and copy its ancestor
      *        (hash, height) pairs for heights [start_height, anchor height],
      *        ascending — all under the internal mutex.
@@ -240,8 +329,9 @@ public:
      * GetHeader() can be freed by side-branch eviction (EvictBranch, which
      * runs under THIS class's mutex — not the caller's) the moment this
      * lock is released, so following parent pointers outside the lock is a
-     * use-after-free hazard. Copying under the lock removes it. Best-chain
-     * walks don't need this (best-chain entries are never evicted).
+     * use-after-free hazard. Copying under the lock removes it. A caller must
+     * not special-case the current best entry: fork choice can demote it before
+     * the caller walks its parents, and a later eviction can then free it.
      *
      * @param anchor_hash      Anchor block hash (resolved by hash, never height)
      * @param start_height     Lowest height to include
@@ -254,6 +344,47 @@ public:
                                 uint32_t start_height,
                                 uint32_t& anchor_height_out,
                                 std::vector<std::pair<uint256, uint32_t>>& out_ascending) const;
+
+    /**
+     * @brief Resolve one ancestor hash from a hash-anchored branch while locked.
+     *
+     * The anchor may be the best tip or a side-branch entry. Both it and every
+     * parent traversed remain protected from EvictBranch for the complete walk.
+     * This is the value-only replacement for exporting an entry and calling
+     * HeaderIndexEntry::GetAncestor() after the selector lock is released.
+     *
+     * @param anchor_hash       Branch tip/anchor to resolve by identity
+     * @param ancestor_height   Height requested on that anchor's own branch
+     * @param ancestor_hash_out Filled with the ancestor hash on success
+     * @param anchor_height_out Filled with the anchor height when it is known
+     * @return true iff the anchor exists and reaches ancestor_height
+     */
+    bool GetAncestorHashByHash(const uint256& anchor_hash,
+                               uint32_t ancestor_height,
+                               uint256& ancestor_hash_out,
+                               uint32_t& anchor_height_out) const;
+
+    /**
+     * @brief Copy a hash-anchored branch back to the first supplied stop hash.
+     *
+     * The walk and every HeaderIndexEntry copy happen under mutex_. No selector
+     * pointer or parent link escapes. The common ancestor itself is excluded
+     * from out_ascending; copied branch entries are returned oldest-to-newest
+     * with parent == nullptr. If none of stop_hashes is on the anchor branch,
+     * common_ancestor_out remains null and the complete branch through genesis
+     * is returned so callers can fail closed on incompatibility.
+     *
+     * @param anchor_hash         Branch tip/anchor to resolve by identity
+     * @param stop_hashes         Candidate common-ancestor identities
+     * @param out_ascending       Cleared, then filled oldest-to-newest
+     * @param common_ancestor_out Matching stop hash, or null if none matched
+     * @return true iff anchor_hash is known
+     */
+    bool CollectBranchCopiesByHash(
+        const uint256& anchor_hash,
+        const std::unordered_set<uint256>& stop_hashes,
+        std::vector<HeaderIndexEntry>& out_ascending,
+        uint256& common_ancestor_out) const;
 
     /**
      * @brief Get header at specific height on best chain

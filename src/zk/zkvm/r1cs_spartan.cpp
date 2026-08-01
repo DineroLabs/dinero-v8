@@ -3,7 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "zk/zkvm/r1cs_spartan.h"
-#include <openssl/sha.h>
+#include "crypto/sha256.h"
 #include <cassert>
 #include <cstring>
 
@@ -333,24 +333,23 @@ bool sc_verify_trilinear(
 
 std::vector<uint8_t> spartan_hash_r1cs_structure(const R1CS& cs) {
     uint8_t hash[32];
-    SHA256_CTX h;
-    SHA256_Init(&h);
+    dinero::crypto::CSHA256 h;
     uint64_t nc = cs.num_constraints();
     uint64_t nv = cs.num_variables();
-    SHA256_Update(&h, &nc, sizeof(nc));
-    SHA256_Update(&h, &nv, sizeof(nv));
+    h.Write(reinterpret_cast<const uint8_t*>(&nc), sizeof(nc));
+    h.Write(reinterpret_cast<const uint8_t*>(&nv), sizeof(nv));
     for (const auto& c : cs.constraints()) {
         auto hash_lc = [&](const LinearCombination& lc) {
             uint64_t nt = lc.terms().size();
-            SHA256_Update(&h, &nt, sizeof(nt));
+            h.Write(reinterpret_cast<const uint8_t*>(&nt), sizeof(nt));
             for (const auto& t : lc.terms()) {
-                SHA256_Update(&h, &t.var.index, sizeof(t.var.index));
-                SHA256_Update(&h, t.coeff.data(), 32);
+                h.Write(reinterpret_cast<const uint8_t*>(&t.var.index), sizeof(t.var.index));
+                h.Write(t.coeff.data(), 32);
             }
         };
         hash_lc(c.a); hash_lc(c.b); hash_lc(c.c);
     }
-    SHA256_Final(hash, &h);
+    h.Finalize(hash);
     return std::vector<uint8_t>(hash, hash + 32);
 }
 

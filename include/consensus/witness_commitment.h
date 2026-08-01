@@ -13,13 +13,14 @@
  * Why NOT in block header:
  *   - Avoids hard fork
  *   - Backward compatible
- *   - Can be made mandatory via soft fork
+ *   - Supports height-gated mandatory enforcement without changing the header
  *   - Follows Bitcoin BIP 141 design
  *
- * Status: OPTIONAL (Phase 11c)
- *   - Mining: Creates commitment if block has witness data
- *   - Validation: Validates commitment IF present
- *   - NOT required yet (will become mandatory in Phase 11d)
+ * Consensus status:
+ *   - Mining: Creates a commitment if the block has witness data
+ *   - Validation: Validates a recognized DINW v1 commitment if present
+ *   - Mandatory from the selected chain's configured enforcement height when
+ *     any transaction carries the serialized witness marker
  *
  * Locked by: tests/consensus/test_witness_commitment.cpp (Phase 11c.4)
  */
@@ -37,7 +38,8 @@ namespace dinero::consensus {
  * ⚠️ CRITICAL: Uses Dinero magic, NOT Bitcoin's 0xaa21a9ed
  *
  * Why Dinero-specific magic:
- *   - Bitcoin magic implies BIP141 segwit semantics (NOT active yet)
+ *   - Bitcoin magic would imply Bitcoin BIP141 semantics, which Dinero does
+ *     not adopt
  *   - Prevents false assumptions from external tools/explorers
  *   - Enables clean future migration path
  *   - Avoids accidental soft-fork activation
@@ -56,10 +58,10 @@ struct WitnessCommitment {
     // Default: NEVER used (translation is OFF)
     static constexpr uint32_t BITCOIN_MAGIC = 0xaa21a9ed;  // Bitcoin BIP141
 
-    // Version byte (0x01 = Phase 11c groundwork, NOT enforced)
+    // DINW commitment format version
     // Version semantics:
-    //   0x01 - Witness merkle container only, optional, NOT consensus-active
-    //   Future versions may add enforcement, activation, etc.
+    //   0x01 - Witness merkle commitment format accepted by consensus
+    //   Future versions require their own specification and activation.
     static constexpr uint8_t VERSION = 0x01;
 
     // Commitment size: 4 bytes magic + 1 byte version + 32 bytes hash
@@ -152,11 +154,9 @@ std::optional<uint256> ExtractWitnessCommitment(
 /**
  * Validate witness commitment in a block
  *
- * Phase 11c.3: Validates commitment IF present (not required yet)
- *
  * Steps:
  * 1. Find witness commitment in coinbase
- * 2. If not found: return true (optional in Phase 11c)
+ * 2. If no recognized DINW v1 commitment is found: return true
  * 3. Extract commitment hash
  * 4. Compute expected witness merkle root
  * 5. Compute expected commitment
@@ -164,7 +164,7 @@ std::optional<uint256> ExtractWitnessCommitment(
  *
  * @param vtx Block transactions (must include coinbase at index 0)
  * @param error Output error message if validation fails
- * @return true if valid (or not present), false if present but invalid
+ * @return true if valid (or not recognized), false if recognized but invalid
  */
 bool ValidateWitnessCommitment(
     const std::vector<Transaction>& vtx,
@@ -172,15 +172,18 @@ bool ValidateWitnessCommitment(
 );
 
 /**
- * Check if witness commitment is required for this block (Phase 11d.1)
- *
- * Phase 11d.1: Enforcement plumbing (OFF by default)
+ * Validate and enforce the witness commitment rule for this block.
  *
  * Enforcement rule:
+ * - A recognized DINW v1 commitment is validated at every height, even if
+ *   mandatory enforcement is disabled or has not reached its activation
+ *   height.
  * - If enforce_witness_commitment = true AND height >= enforcement_height:
- *   * Blocks with witness data MUST have valid witness commitment
- *   * Blocks without witness data are NOT affected
- *   * Missing/invalid commitment → block rejected
+ *   * Transactions whose serialized witness marker is present
+ *     (Transaction::HasWitness()) require a valid witness commitment.
+ *   * Blocks without a witness marker are not required to include one.
+ *   * Missing commitment → block rejected; a recognized invalid commitment
+ *     was already rejected by the first rule.
  *
  * @param vtx Block transactions (must include coinbase at index 0)
  * @param height Block height

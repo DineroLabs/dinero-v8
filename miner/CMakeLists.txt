@@ -43,7 +43,9 @@ endif()
 string(TIMESTAMP DINERO_SOLO_MINER_BUILD_TIME "%Y-%m-%dT%H:%M:%S+0000" UTC)
 
 # Find dependencies
-find_package(CURL REQUIRED)
+if(NOT TARGET CURL::libcurl)
+  find_package(CURL REQUIRED)
+endif()
 
 # Homebrew upgrades can leave stale OPENSSL_* cache entries in an existing build dir.
 # Clear invalid cached paths before discovery to keep incremental builds working.

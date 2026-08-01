@@ -2,27 +2,26 @@
  * Phase 11d.2: Witness Commitment Enforcement Tests
  *
  * CRITICAL SAFETY TESTS
- * Locks the enforcement behavior BEFORE any activation.
+ * Locks the deployed enforcement behavior and its activation boundary.
  *
  * These tests ensure:
- * 1. Enforcement is OFF by default (no surprise soft fork)
- * 2. Enforcement only affects blocks with witness data
- * 3. Enforcement is height-gated
- * 4. No witness data = no requirement (even with enforcement ON)
- * 5. Valid commitment passes enforcement
+ * 1. A present commitment is always validated
+ * 2. Mandatory enforcement only affects serialized witness-bearing blocks
+ * 3. Mandatory enforcement is height-gated
+ * 4. No witness marker = no requirement
+ * 5. A valid commitment passes enforcement
  *
  * Invariants enforced:
- *   - enforce=false → always pass (default safe behavior)
- *   - height < enforcement_height → always pass
- *   - no witness data → always pass (even if enforce=true)
- *   - witness data + enforce=true → commitment REQUIRED
- *   - witness data + valid commitment → pass
+ *   - malformed present commitment → fail at every height
+ *   - enforce=false or pre-activation → missing commitment may pass
+ *   - no witness marker → missing commitment may pass
+ *   - witness marker + active enforcement → commitment required
+ *   - witness marker + valid commitment → pass
  *
  * Why this matters:
- *   - Prevents accidental soft fork activation
- *   - Ensures enforcement is opt-in
- *   - Guarantees network safety
- *   - Locks policy before activation
+ *   - Prevents activation drift between helper and production validation
+ *   - Preserves opportunistic validation of present commitments
+ *   - Locks the serialized witness marker as the production predicate
  *
  * If these tests fail:
  *   Phase 11d enforcement logic is broken.
@@ -53,8 +52,8 @@ protected:
 /**
  * Test 1: Optional Acceptance (Enforcement OFF)
  *
- * Block with witness data but no commitment.
- * Enforcement OFF (default).
+ * Block with a witness marker but no commitment.
+ * Mandatory enforcement OFF.
  * ✅ Should be ACCEPTED
  */
 TEST_F(WitnessCommitmentEnforcementTest, EnforcementOff_NoCommitment_Accepted)
@@ -64,6 +63,7 @@ TEST_F(WitnessCommitmentEnforcementTest, EnforcementOff_NoCommitment_Accepted)
 
     // Create coinbase
     Transaction coinbase;
+    coinbase.witness_version = 0xFF;
     coinbase.vin.resize(1);
     coinbase.vin[0].prevout.txid = TxId();
     coinbase.vin[0].prevout.vout = 0xFFFFFFFF;
@@ -73,6 +73,7 @@ TEST_F(WitnessCommitmentEnforcementTest, EnforcementOff_NoCommitment_Accepted)
 
     // Create transaction WITH witness data
     Transaction tx;
+    tx.witness_version = 1;
     tx.vin.resize(1);
     tx.vin[0].prevout.txid = coinbase.GetTxid();
     tx.vin[0].prevout.vout = 0;
@@ -88,12 +89,12 @@ TEST_F(WitnessCommitmentEnforcementTest, EnforcementOff_NoCommitment_Accepted)
     bool enforce = false;
     uint32_t enforcement_height = 50;  // Would be active, but enforce=false
 
-    // Validate enforcement (should pass - enforcement is OFF)
+    // Validate enforcement (should pass - mandatory enforcement is OFF)
     std::string error;
     bool result = EnforceWitnessCommitment(vtx, height, enforce, enforcement_height, error);
 
     EXPECT_TRUE(result)
-        << "Block without commitment should be ACCEPTED when enforcement is OFF: " << error;
+        << "Block without commitment should be accepted when mandatory enforcement is off: " << error;
 }
 
 /**
@@ -110,6 +111,7 @@ TEST_F(WitnessCommitmentEnforcementTest, EnforcementOn_NoCommitment_Rejected)
 
     // Create coinbase
     Transaction coinbase;
+    coinbase.witness_version = 0xFF;
     coinbase.vin.resize(1);
     coinbase.vin[0].prevout.txid = TxId();
     coinbase.vin[0].prevout.vout = 0xFFFFFFFF;
@@ -119,6 +121,7 @@ TEST_F(WitnessCommitmentEnforcementTest, EnforcementOn_NoCommitment_Rejected)
 
     // Create transaction WITH witness data
     Transaction tx;
+    tx.witness_version = 1;
     tx.vin.resize(1);
     tx.vin[0].prevout.txid = coinbase.GetTxid();
     tx.vin[0].prevout.vout = 0;
@@ -142,8 +145,8 @@ TEST_F(WitnessCommitmentEnforcementTest, EnforcementOn_NoCommitment_Rejected)
         << "Block with witness data but NO commitment should be REJECTED when enforcement is ON";
     EXPECT_FALSE(error.empty())
         << "Error message should explain why block was rejected";
-    EXPECT_NE(error.find("REQUIRED"), std::string::npos)
-        << "Error should mention commitment is REQUIRED: " << error;
+    EXPECT_NE(error.find("missing-witness-commitment"), std::string::npos)
+        << "Error should identify the missing commitment: " << error;
 }
 
 /**
@@ -160,6 +163,7 @@ TEST_F(WitnessCommitmentEnforcementTest, EnforcementOn_NoWitness_Accepted)
 
     // Create coinbase
     Transaction coinbase;
+    coinbase.witness_version = 0xFF;
     coinbase.vin.resize(1);
     coinbase.vin[0].prevout.txid = TxId();
     coinbase.vin[0].prevout.vout = 0xFFFFFFFF;
@@ -169,6 +173,7 @@ TEST_F(WitnessCommitmentEnforcementTest, EnforcementOn_NoWitness_Accepted)
 
     // Create transaction WITHOUT witness data
     Transaction tx;
+    tx.witness_version = 0xFF;
     tx.vin.resize(1);
     tx.vin[0].prevout.txid = coinbase.GetTxid();
     tx.vin[0].prevout.vout = 0;
@@ -206,6 +211,7 @@ TEST_F(WitnessCommitmentEnforcementTest, EnforcementOn_ValidCommitment_Accepted)
 
     // Create coinbase
     Transaction coinbase;
+    coinbase.witness_version = 0xFF;
     coinbase.vin.resize(1);
     coinbase.vin[0].prevout.txid = TxId();
     coinbase.vin[0].prevout.vout = 0xFFFFFFFF;
@@ -215,6 +221,7 @@ TEST_F(WitnessCommitmentEnforcementTest, EnforcementOn_ValidCommitment_Accepted)
 
     // Create transaction WITH witness data
     Transaction tx;
+    tx.witness_version = 1;
     tx.vin.resize(1);
     tx.vin[0].prevout.txid = coinbase.GetTxid();
     tx.vin[0].prevout.vout = 0;
@@ -259,6 +266,7 @@ TEST_F(WitnessCommitmentEnforcementTest, BeforeEnforcementHeight_NoCommitment_Ac
 
     // Create coinbase
     Transaction coinbase;
+    coinbase.witness_version = 0xFF;
     coinbase.vin.resize(1);
     coinbase.vin[0].prevout.txid = TxId();
     coinbase.vin[0].prevout.vout = 0xFFFFFFFF;
@@ -268,6 +276,7 @@ TEST_F(WitnessCommitmentEnforcementTest, BeforeEnforcementHeight_NoCommitment_Ac
 
     // Create transaction WITH witness data
     Transaction tx;
+    tx.witness_version = 1;
     tx.vin.resize(1);
     tx.vin[0].prevout.txid = coinbase.GetTxid();
     tx.vin[0].prevout.vout = 0;
@@ -291,38 +300,64 @@ TEST_F(WitnessCommitmentEnforcementTest, BeforeEnforcementHeight_NoCommitment_Ac
         << "Block before enforcement height should be ACCEPTED even without commitment: " << error;
 }
 
+TEST_F(WitnessCommitmentEnforcementTest, RecognizedCommitmentWithWrongHashAlwaysRejected)
+{
+    Transaction coinbase;
+    coinbase.witness_version = 0xFF;
+    coinbase.vin.resize(1);
+    coinbase.vin[0].prevout.txid = TxId();
+    coinbase.vin[0].prevout.vout = 0xFFFFFFFF;
+    coinbase.vout.resize(1);
+    coinbase.vout[0].value = ConsensusSubsidy::GetBlockSubsidy(40);
+    coinbase.vout[0].scriptPubKey = {0x76, 0xa9, 0x14};
+
+    std::vector<Transaction> vtx = {coinbase};
+    TxOutput commitment_output;
+    commitment_output.value = AmountUna::Zero();
+    commitment_output.scriptPubKey = BuildWitnessCommitment(vtx);
+    ASSERT_EQ(commitment_output.scriptPubKey.size(), 39u);
+    commitment_output.scriptPubKey.back() ^= 0x01;
+    vtx[0].vout.push_back(std::move(commitment_output));
+
+    std::string error;
+    EXPECT_FALSE(EnforceWitnessCommitment(
+        vtx,
+        40,
+        false,
+        50,
+        error));
+    EXPECT_NE(error.find("bad-witness-commitment"), std::string::npos)
+        << error;
+}
+
 /**
- * Test 6: Default Network Parameters (Safety Check)
+ * Test 7: Default Network Parameters (Safety Check)
  *
- * Verifies that default network parameters have enforcement OFF.
- * This prevents accidental soft fork activation.
+ * Verifies that every network declares the already-deployed production
+ * boundary instead of advertising stale, unused activation values.
  */
 TEST_F(WitnessCommitmentEnforcementTest, DefaultNetworkParameters_EnforcementOn)
 {
-    // Get mainnet params - enforcement ON from height 2
+    constexpr uint32_t kDeployedBoundary = 10670;
+
     SelectParams(Chain::MAINNET);
     const auto& mainnet_params = Params();
 
     EXPECT_TRUE(mainnet_params.enforce_witness_commitment)
         << "Mainnet should have enforcement ON";
-    EXPECT_EQ(mainnet_params.witness_commitment_enforcement_height, 1u)
-        << "Mainnet enforcement height should be 1 (v7 restart: features live from block 1)";
+    EXPECT_EQ(mainnet_params.witness_commitment_enforcement_height, kDeployedBoundary);
 
-    // Get testnet params - enforcement ON from height 2
     SelectParams(Chain::TESTNET);
     const auto& testnet_params = Params();
 
     EXPECT_TRUE(testnet_params.enforce_witness_commitment)
         << "Testnet should have enforcement ON";
-    EXPECT_EQ(testnet_params.witness_commitment_enforcement_height, 2u)
-        << "Testnet enforcement height should be 2 (first normal block)";
+    EXPECT_EQ(testnet_params.witness_commitment_enforcement_height, kDeployedBoundary);
 
-    // Get regtest params - enforcement OFF by default (configurable for tests)
     SelectParams(Chain::REGTEST);
     const auto& regtest_params = Params();
 
-    EXPECT_FALSE(regtest_params.enforce_witness_commitment)
-        << "Regtest should have enforcement OFF by default";
-    EXPECT_EQ(regtest_params.witness_commitment_enforcement_height, UINT32_MAX)
-        << "Regtest enforcement height should be UINT32_MAX (configurable for tests)";
+    EXPECT_TRUE(regtest_params.enforce_witness_commitment)
+        << "Regtest should match the deployed production rule";
+    EXPECT_EQ(regtest_params.witness_commitment_enforcement_height, kDeployedBoundary);
 }

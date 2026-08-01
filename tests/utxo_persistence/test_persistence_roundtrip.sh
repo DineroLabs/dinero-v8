@@ -200,7 +200,7 @@ TX_RESULT=$(curl -s --user "__cookie__:$COOKIE" -H "Content-Type: application/js
 
 TX_ACCEPTED=$(echo "$TX_RESULT" | jq -r '.result.accepted')
 if [ "$TX_ACCEPTED" != "true" ]; then
-    echo -e "${RED}[FAIL]${NC} Transaction rejected after restart: $(echo "$TX_RESULT" | jq -r '.result.error')"
+    echo -e "${RED}[FAIL]${NC} Transaction rejected after restart: $(echo "$TX_RESULT" | jq -r '.error.message? // .error // .result.error.message? // .result.error // "unknown"')"
     exit 1
 fi
 echo -e "${GREEN}[PASS]${NC} Transaction accepted (UTXOs functional)"

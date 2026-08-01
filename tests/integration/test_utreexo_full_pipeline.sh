@@ -385,8 +385,8 @@ phase4_verify_proof() {
     local proof_response
     proof_response=$(rpc_call "utreexo.getproof" "[\"$coinbase_txid\", 0]")
 
-    if echo "$proof_response" | jq -e '.result.error' > /dev/null 2>&1; then
-        log_fail "utreexo.getproof returned error: $(echo "$proof_response" | jq -r '.result.error')"
+    if echo "$proof_response" | jq -e '(.error.message? // .error // .result.error.message? // .result.error) != null' > /dev/null 2>&1; then
+        log_fail "utreexo.getproof returned error: $(echo "$proof_response" | jq -r '.error.message? // .error // .result.error.message? // .result.error')"
         return 1
     fi
 

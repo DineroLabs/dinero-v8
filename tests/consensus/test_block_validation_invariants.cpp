@@ -19,6 +19,7 @@
 #include "consensus/chainparams.h"
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/subsidy.h"
+#include "consensus/witness_commitment.h"
 #include "network/bridge_node.h"
 #include "network/stateless_node.h"
 #include "primitives/transaction.h"
@@ -120,6 +121,79 @@ UtreexoHash ExpectedPostRoot(const UtreexoForest& base, const Block& block, uint
 void SetHeaderRoot(Block& block, const UtreexoHash& root) {
     ASSERT_EQ(root.size(), 32u);
     std::memcpy(block.header.utreexo_root.data, root.data(), 32);
+}
+
+void RefreshSingleTransactionBlockCommitments(
+    Block& block,
+    const UtreexoForest& base,
+    uint32_t height) {
+    ASSERT_EQ(block.vtx.size(), 1u);
+    block.header.merkle_root = block.vtx[0].GetTxid().AsUint256();
+    SetHeaderRoot(block, ExpectedPostRoot(base, block, height));
+}
+
+void RunWitnessCommitmentBoundaryCases(uint32_t boundary) {
+    {
+        ConsensusUTXOSet utxo_set;
+        Block block = MakeCoinbaseBlock(boundary - 1, MakeTestHash(10669));
+        RefreshSingleTransactionBlockCommitments(
+            block, utxo_set.GetForest(), boundary - 1);
+
+        BlockValidator validator(&utxo_set);
+        BlockUndo undo;
+        std::string error;
+        EXPECT_TRUE(validator.ConnectBlock(
+            block, boundary - 1, MakeTestHash(20669), undo, error, nullptr))
+            << error;
+    }
+
+    {
+        ConsensusUTXOSet utxo_set;
+        Block block = MakeCoinbaseBlock(boundary, MakeTestHash(10670));
+        RefreshSingleTransactionBlockCommitments(
+            block, utxo_set.GetForest(), boundary);
+
+        BlockValidator validator(&utxo_set);
+        BlockUndo undo;
+        std::string error;
+        EXPECT_FALSE(validator.ConnectBlock(
+            block, boundary, MakeTestHash(20670), undo, error, nullptr));
+        EXPECT_NE(error.find("missing-witness-commitment"), std::string::npos)
+            << error;
+    }
+
+    {
+        ConsensusUTXOSet utxo_set;
+        Block block = MakeCoinbaseBlock(boundary, MakeTestHash(10671));
+        block.vtx[0].witness_version = 0xFF;
+        RefreshSingleTransactionBlockCommitments(
+            block, utxo_set.GetForest(), boundary);
+
+        BlockValidator validator(&utxo_set);
+        BlockUndo undo;
+        std::string error;
+        EXPECT_TRUE(validator.ConnectBlock(
+            block, boundary, MakeTestHash(20671), undo, error, nullptr))
+            << error;
+    }
+
+    {
+        ConsensusUTXOSet utxo_set;
+        Block block = MakeCoinbaseBlock(boundary, MakeTestHash(10672));
+        TxOutput commitment;
+        commitment.value = AmountUna::Zero();
+        commitment.scriptPubKey = BuildWitnessCommitment(block.vtx);
+        block.vtx[0].vout.push_back(std::move(commitment));
+        RefreshSingleTransactionBlockCommitments(
+            block, utxo_set.GetForest(), boundary);
+
+        BlockValidator validator(&utxo_set);
+        BlockUndo undo;
+        std::string error;
+        EXPECT_TRUE(validator.ConnectBlock(
+            block, boundary, MakeTestHash(20672), undo, error, nullptr))
+            << error;
+    }
 }
 }  // namespace
 
@@ -675,6 +749,56 @@ TEST(BlockValidationInvariants, StatelessRejectsImmatureV2CoinbaseOnLiveConnectP
         << "v2 maturity metadata is authenticated; it must be enforced, not deferred";
 }
 
+// Issue #453 — a block that genuinely FAILS script validation must never reach
+// the point where BLOCK_VALID_SCRIPTS is persisted.
+//
+// ChainstateService::ConnectTip persists BLOCK_VALID_SCRIPTS (via the
+// updateUndoLocator extra_status_bits argument) only on the success path of
+// this exact ConnectBlock() call. So the durable negative property reduces to:
+// a script-invalid block must make ConnectBlock() return false.
+//
+// The assertion on SCRIPT_VERIFY_FAILED is load-bearing. Without it this test
+// would still pass if the block were rejected for an unrelated reason
+// (maturity, proof format, merkle), which would prove nothing about script
+// validation and would silently stop guarding #453.
+TEST(BlockValidationInvariants, ScriptInvalidSpendIsRejectedBeforeValidityIsRecorded) {
+    ConsensusUTXOSet utxo_set;
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+
+    const uint32_t height = GetUtreexoMaturityLeafActivationHeight() + 200;
+    Block block = MakeStatelessSpendBlock(
+        utxo_set,
+        height,
+        /*spent_created_height=*/1,
+        /*spent_is_coinbase=*/false,
+        GetUtreexoProofFormatVersion(height));
+
+    ASSERT_TRUE(block.utreexo.has_value());
+    ASSERT_FALSE(block.utreexo->spent_outputs.empty());
+
+    // The spend input carries no valid witness/signature for the P2TR output it
+    // claims, so ValidateSpend rejects it. Verified by construction, not
+    // assumed: an earlier revision of this test additionally rewrote the spent
+    // scriptPubKey to OP_RETURN, and removing that rewrite changed nothing —
+    // the fixture already fails script validation on its own. The decorative
+    // mutation was dropped rather than left in place implying a mechanism it
+    // did not provide.
+
+    BlockUndo undo;
+    std::string error;
+    const bool ok = validator.ConnectBlock(block, height, MakeTestHash(4530),
+                                           undo, error, nullptr);
+
+    EXPECT_FALSE(ok)
+        << "A spend whose script does not validate must not connect; if it "
+           "does, ConnectTip would persist BLOCK_VALID_SCRIPTS for a block "
+           "whose scripts never validated. error=" << error;
+    EXPECT_NE(error.find("SCRIPT_VERIFY_FAILED"), std::string::npos)
+        << "Rejection must come from script validation specifically, otherwise "
+           "this test does not guard #453. Got: " << error;
+}
+
 TEST(BlockValidationInvariants, StatelessRejectsProofFormatDowngradeFromTrustedHeight) {
     ConsensusUTXOSet utxo_set;
     BlockValidator validator(&utxo_set);
@@ -1181,6 +1305,84 @@ TEST(BlockValidationInvariants, StatelessForwardConnectRejectsWrongHeaderRoot) {
     EXPECT_NE(error.find("bad-utreexo-root"), std::string::npos) << "error was: " << error;
     EXPECT_EQ(utxo_set.GetForest().getCommitment(), before)
         << "failed connect must not mutate the forest";
+}
+
+// ============================================================================
+// #431: witness-commitment activation must have one consensus source of truth.
+//
+// The deployed validator has enforced DINW at height 10,670 since that rule
+// shipped. These tests pin that historical boundary through the production
+// BlockValidator path and prove that the selected ChainParams, rather than a
+// second hardcoded height in BlockValidator, control enforcement.
+// ============================================================================
+
+TEST(BlockValidationInvariants, WitnessCommitmentParamsMatchDeployedBoundary) {
+    constexpr uint32_t kDeployedBoundary = 10670;
+    for (const Chain chain : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
+        SelectParams(chain);
+        EXPECT_TRUE(Params().enforce_witness_commitment)
+            << "chain " << static_cast<int>(chain);
+        EXPECT_EQ(Params().witness_commitment_enforcement_height, kDeployedBoundary)
+            << "chain " << static_cast<int>(chain);
+    }
+    SelectParams(Chain::REGTEST);
+}
+
+TEST(BlockValidationInvariants, ConsensusChecksumCommitsToWitnessActivation) {
+    SelectParams(Chain::REGTEST);
+    const ChainParams baseline = Params();
+
+    ChainParams changed_height = baseline;
+    changed_height.witness_commitment_enforcement_height++;
+    EXPECT_NE(ConsensusChecksum(baseline), ConsensusChecksum(changed_height));
+
+    ChainParams changed_switch = baseline;
+    changed_switch.enforce_witness_commitment =
+        !changed_switch.enforce_witness_commitment;
+    EXPECT_NE(ConsensusChecksum(baseline), ConsensusChecksum(changed_switch));
+}
+
+TEST(BlockValidationInvariants, WitnessCommitmentBoundaryUsesSerializedMarker) {
+    constexpr uint32_t kBoundary = 10670;
+    for (const Chain chain : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
+        SelectParams(chain);
+        SCOPED_TRACE("chain=" + std::to_string(static_cast<int>(chain)));
+        RunWitnessCommitmentBoundaryCases(kBoundary);
+    }
+    SelectParams(Chain::REGTEST);
+}
+
+TEST(BlockValidationInvariants, WitnessCommitmentProductionPathUsesSelectedParams) {
+    SelectParams(Chain::REGTEST);
+    ChainParams& params = MutableParams();
+    const bool saved_enforce = params.enforce_witness_commitment;
+    const uint32_t saved_height = params.witness_commitment_enforcement_height;
+    struct RestoreParams {
+        ChainParams& params;
+        bool enforce;
+        uint32_t height;
+        ~RestoreParams() {
+            params.enforce_witness_commitment = enforce;
+            params.witness_commitment_enforcement_height = height;
+        }
+    } restore{params, saved_enforce, saved_height};
+
+    constexpr uint32_t kBlockHeight = 10670;
+    params.enforce_witness_commitment = true;
+    params.witness_commitment_enforcement_height = kBlockHeight + 1;
+
+    ConsensusUTXOSet utxo_set;
+    Block block = MakeCoinbaseBlock(kBlockHeight, MakeTestHash(30670));
+    RefreshSingleTransactionBlockCommitments(
+        block, utxo_set.GetForest(), kBlockHeight);
+
+    BlockValidator validator(&utxo_set);
+    BlockUndo undo;
+    std::string error;
+    EXPECT_TRUE(validator.ConnectBlock(
+        block, kBlockHeight, MakeTestHash(40670), undo, error, nullptr))
+        << "BlockValidator ignored the selected witness activation params: "
+        << error;
 }
 
 int main(int argc, char** argv) {

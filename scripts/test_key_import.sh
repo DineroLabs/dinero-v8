@@ -38,9 +38,9 @@ JSON
 echo "Wallet creation result:"
 echo "$WALLET_CREATE" | jq .
 
-if echo "$WALLET_CREATE" | jq -e '.result.error' >/dev/null; then
+if echo "$WALLET_CREATE" | jq -e '(.error.message? // .error // .result.error.message? // .result.error) != null' >/dev/null; then
     echo "⚠️  Wallet creation failed:"
-    echo "$WALLET_CREATE" | jq .result.error
+    echo "$WALLET_CREATE" | jq '.error.message? // .error // .result.error.message? // .result.error'
 elif echo "$WALLET_CREATE" | jq -e '.result.created' | grep -q "true"; then
     echo "✅ Wallet created successfully"
 else
@@ -58,9 +58,9 @@ JSON
 echo "Wallet load result:"
 echo "$WALLET_LOAD" | jq .
 
-if echo "$WALLET_LOAD" | jq -e '.result.error' >/dev/null; then
+if echo "$WALLET_LOAD" | jq -e '(.error.message? // .error // .result.error.message? // .result.error) != null' >/dev/null; then
     echo "⚠️  Wallet load failed:"
-    echo "$WALLET_LOAD" | jq .result.error
+    echo "$WALLET_LOAD" | jq '.error.message? // .error // .result.error.message? // .result.error'
 elif echo "$WALLET_LOAD" | jq -e '.result.active' | grep -q "true"; then
     echo "✅ Wallet loaded successfully"
 else
@@ -99,8 +99,8 @@ if echo "$IMPORT_RESULT" | jq -e '.result.success' | grep -q "true"; then
     echo "   Address: $ADDRESS"
 else
     echo "❌ Private key import failed"
-    if echo "$IMPORT_RESULT" | jq -e '.result.error' >/dev/null; then
-        echo "   Error: $(echo "$IMPORT_RESULT" | jq -r '.result.error')"
+    if echo "$IMPORT_RESULT" | jq -e '(.error.message? // .error // .result.error.message? // .result.error) != null' >/dev/null; then
+        echo "   Error: $(echo "$IMPORT_RESULT" | jq -r '.error.message? // .error // .result.error.message? // .result.error')"
     fi
 fi
 
@@ -116,7 +116,7 @@ JSON
 echo "WIF test result:"
 echo "$WIF_RESULT" | jq .
 
-if echo "$WIF_RESULT" | jq -e '.result.error' | grep -q "WIF.*not.*implemented"; then
+if echo "$WIF_RESULT" | jq -er '.error.message? // .error // .result.error.message? // .result.error // empty' | grep -q "WIF.*not.*implemented"; then
     echo "✅ WIF format correctly identified (implementation pending)"
 else
     echo "⚠️  Unexpected WIF response"
@@ -134,7 +134,7 @@ JSON
 echo "Invalid key test result:"
 echo "$INVALID_RESULT" | jq .
 
-if echo "$INVALID_RESULT" | jq -e '.result.error' | grep -q "Invalid.*format"; then
+if echo "$INVALID_RESULT" | jq -er '.error.message? // .error // .result.error.message? // .result.error // empty' | grep -q "Invalid.*format"; then
     echo "✅ Invalid format correctly rejected"
 else
     echo "⚠️  Unexpected invalid key response"
@@ -153,7 +153,7 @@ JSON
     echo "Export test result:"
     echo "$EXPORT_RESULT" | jq .
     
-    if echo "$EXPORT_RESULT" | jq -e '.result.error' | grep -q "not.*implemented"; then
+    if echo "$EXPORT_RESULT" | jq -er '.error.message? // .error // .result.error.message? // .result.error // empty' | grep -q "not.*implemented"; then
         echo "✅ Export correctly shows not implemented"
     else
         echo "⚠️  Unexpected export response"

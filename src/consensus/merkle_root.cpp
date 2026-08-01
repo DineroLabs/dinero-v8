@@ -57,13 +57,7 @@ uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx) {
     return layer[0];
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Witness Merkle Root (consensus-active through DINW commitments)
-// ═══════════════════════════════════════════════════════════════
-// Used by mining and validation to build/check the coinbase DINW witness
-// commitment. It is not the BlockHeader::merkle_root itself.
-// ═══════════════════════════════════════════════════════════════
-
+// Consensus witness merkle root committed by the DINW coinbase output.
 uint256 ComputeWitnessMerkleRoot(const std::vector<Transaction>& vtx) {
     if (vtx.empty()) {
         return uint256();  // Zero hash for empty block

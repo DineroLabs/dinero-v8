@@ -299,16 +299,17 @@ supports the conclusion.
 
 ## 9. Known open items supplied to the reviewer
 
-1. Issue #431: witness-commitment activation has conflicting sources;
-   production currently uses a hard-coded height while chain parameters
-   advertise another value.
-2. The `aggregated_range_proof` field contains independent Borromean proofs;
+Issue #431 was resolved by PR #435: `ChainParams` is now the single witness-
+commitment activation source and all shipped networks preserve the deployed
+height 10,670. It is supplied as closed historical context, not an open item.
+
+1. The `aggregated_range_proof` field contains independent Borromean proofs;
    aggregation is not deployed.
-3. The block header has no direct shielded-state root; v5 block identity relies
+2. The block header has no direct shielded-state root; v5 block identity relies
    on `DINW`.
-4. The current ciphertext construction has no outgoing-view recovery through
+3. The current ciphertext construction has no outgoing-view recovery through
    `ovk`.
-5. The specification lists missing cross-implementation vectors for Poseidon,
+4. The specification lists missing cross-implementation vectors for Poseidon,
    proof transcripts, canonical rejection, full epoch transactions, and reset
    reorgs.
 

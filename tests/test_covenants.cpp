@@ -193,43 +193,64 @@ void test_contract_state_verification() {
     std::cout << "--------------------------------------------\n";
 
     Transaction tx = createTestTransaction();
+    tx.vin.resize(1);
+    tx.vout.resize(1);
+    const std::vector<uint8_t> tapscript{
+        static_cast<uint8_t>(OP_CHECKCONTRACTVERIFY),
+        static_cast<uint8_t>(OP_TRUE)};
+    std::array<uint8_t, 32> merkleRoot{};
+    merkleRoot.fill(0x11);
 
-    // Create previous state
     ContractState prevState;
-    prevState.codeHash.fill(0x42);
+    prevState.codeHash = ComputeContractCodeHash(tapscript);
     prevState.counter = 5;
     prevState.data = {0x01, 0x02, 0x03};
-    prevState.stateHash.fill(0x00);  // Not checked directly
+    prevState.stateHash = ComputeContractStateHash(prevState);
 
-    // Create valid new state
     ContractState newState;
-    newState.codeHash = prevState.codeHash;  // Same code hash
-    newState.counter = 6;  // Incremented by 1
+    newState.codeHash = prevState.codeHash;
+    newState.counter = 6;
     newState.data = {0x04, 0x05, 0x06};
+    newState.stateHash = ComputeContractStateHash(newState);
 
-    // Compute correct state hash for new state
-    // (This is a simplified test - in practice we'd need the full computation)
-    newState.stateHash.fill(0x00);
+    std::array<uint8_t, 32> internalKey{};
+    assert(DeriveContractInternalKey(prevState, internalKey));
+    uint8_t parity = 0;
+    std::vector<uint8_t> currentScript;
+    assert(ComputeContractOutputScript(
+        prevState, merkleRoot, currentScript, &parity));
+    std::vector<uint8_t> successorScript;
+    assert(ComputeContractOutputScript(
+        newState, merkleRoot, successorScript));
 
-    // Verify contract transition
-    bool result = VerifyContractTransition(tx, 0, prevState, newState);
-    // Will fail because stateHash is not correctly computed, but it tests the flow
-    std::cout << "  Contract transition result: " << (result ? "PASS" : "FAIL (expected - stateHash not computed)\n");
+    constexpr uint64_t contractValue = 50'000;
+    std::vector<UTXOEntry> inputs{
+        UTXOEntry(AmountUna::Una(contractValue), currentScript, 1, false)};
+    tx.vout[0] = TxOutput(AmountUna::Una(contractValue), successorScript);
+    const ContractSpendContext context{
+        inputs, tapscript, internalKey, merkleRoot, parity};
+
+    bool result = VerifyContractTransition(
+        tx, 0, prevState, newState, context);
+    assert(result);
     tests_passed++;
-    std::cout << "  [PASS] Contract state verification executed\n";
+    std::cout << "  [PASS] Accepts fully bound state transition\n";
 
-    // Test: counter not incremented
     ContractState badState1 = newState;
-    badState1.counter = 5;  // Same as prevState
-    result = VerifyContractTransition(tx, 0, prevState, badState1);
+    badState1.counter = 5;
+    badState1.stateHash = ComputeContractStateHash(badState1);
+    result = VerifyContractTransition(
+        tx, 0, prevState, badState1, context);
     assert(result == false);
     tests_passed++;
     std::cout << "  [PASS] Rejects state with unchanged counter\n";
 
     // Test: different code hash
     ContractState badState2 = newState;
-    badState2.codeHash.fill(0x99);  // Different code
-    result = VerifyContractTransition(tx, 0, prevState, badState2);
+    badState2.codeHash.fill(0x99);
+    badState2.stateHash = ComputeContractStateHash(badState2);
+    result = VerifyContractTransition(
+        tx, 0, prevState, badState2, context);
     assert(result == false);
     tests_passed++;
     std::cout << "  [PASS] Rejects state with different code hash\n";

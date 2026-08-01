@@ -48,14 +48,18 @@ Thus the optional window was a consensus-permitted condition but not an
 honest-miner condition. The active-chain scan proves that every actually
 shielded block in that window followed the honest path.
 
-## Remaining defect: policy-source drift
+## Resolved defect: policy-source drift
 
 `ChainParams` says mainnet witness commitment enforcement is enabled from
-height 1. Production block validation does not consume those fields.
-`EnforceWitnessCommitment()` consumes them only in tests, while
-`BlockValidator` uses a separate hard-coded height 10,670.
+height 1 in the audited revision. Production block validation did not consume
+those fields: `EnforceWitnessCommitment()` consumed them only in tests, while
+`BlockValidator` used a separate hard-coded height 10,670.
 
-Tracking issue: [#431](https://github.com/DineroLabs/dinero-v8/issues/431).
+This was resolved after the audit by
+[#435](https://github.com/DineroLabs/dinero-v8/pull/435), which made
+`ChainParams` authoritative and set every shipped network to the already-
+deployed height 10,670. Tracking issue
+[#431](https://github.com/DineroLabs/dinero-v8/issues/431) is closed.
 
 This is not a current shielded inflation finding:
 
@@ -63,8 +67,9 @@ This is not a current shielded inflation finding:
 - current witness-bearing blocks require and validate `DINW`;
 - the pre-value-commitment pool was discarded at shielded epoch reset 61,000.
 
-It is still consensus-maintenance debt: two advertised activation sources
-disagree, and changing either casually could invalidate history or split nodes.
+It was consensus-maintenance debt because two advertised activation sources
+disagreed; the remediation preserved historical behavior rather than changing
+the activation boundary.
 
 ## Recommendations
 

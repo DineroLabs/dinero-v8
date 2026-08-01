@@ -22,8 +22,7 @@
 // Forward declarations of context-aware registration functions
 void registerBlockchainMethodsContext();
 void registerWalletMethodsContext();
-// TODO Phase D: Re-enable when file added to build
-// void register_context_wallet_covenant_methods();  // Phase C.4: Covenant construction RPC methods
+void register_context_wallet_covenant_profile_methods();
 void registerMiningMethodsContext();  // Phase F.5: MiningManager v2 mining RPC
 void registerMiningRPCv14();  // v0.14.0.3: BlockAssembler-based mining RPC
 void registerMempoolMethodsContext();
@@ -193,10 +192,10 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
         registerShieldedWalletMethods();
         dinero::g_logger.info("[RPC Context] ✅ V7 shielded pool handlers registered (wallet.shield, wallet.unshield)");
 
-        // TODO Phase D: Re-enable covenant methods when methods_wallet_covenant.cpp is added to build
-        // // Wallet covenant (Phase C.4: Covenant construction)
-        // register_context_wallet_covenant_methods();
-        // dinero::g_logger.info("[RPC Context] ✅ Wallet covenant handlers registered (CTV/CSFS construction)");
+        // Covenant profile v1. Handlers are compiled on every platform but
+        // fail closed outside regtest while production activation is dormant.
+        register_context_wallet_covenant_profile_methods();
+        dinero::g_logger.info("[RPC Context] ✅ Regtest covenant profile-v1 handlers registered (CTV/CCV construction + recovery)");
 
         // Phase F.5: Mining methods now use MiningManager v2 and jsoncpp API
         // Mining extras (getblocktemplate, generatetoaddress) - REGISTER FIRST so real implementation wins

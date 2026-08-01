@@ -376,12 +376,12 @@ struct Transaction {
     // Transaction ID (hash of non-witness data) - Phase M.4.3-A: TxId semantic type
     TxId GetTxid() const;
 
-    // ═══════════════════════════════════════════════════════════════
-    // Witness Transaction ID
-    // ═══════════════════════════════════════════════════════════════
-    // Used by consensus::ComputeWitnessMerkleRoot() for the coinbase DINW
-    // witness commitment. Transaction indexing and outpoint identity use txid.
-    // ═══════════════════════════════════════════════════════════════
+    // Witness transaction ID: hash of the complete serialization, including
+    // witness data. Consensus::ComputeWitnessMerkleRoot() consumes this value
+    // for the DINW coinbase commitment. Transaction indexing and the block
+    // header merkle root continue to use GetTxid().
+    //
+    // Locked by: tests/consensus/test_witness_merkle_isolation.cpp
     WTxId GetWtxid() const;
     
     // Size calculations

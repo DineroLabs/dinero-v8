@@ -38,19 +38,8 @@ namespace dinero::consensus {
  */
 uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx);
 
-// ═══════════════════════════════════════════════════════════════
-// Witness Merkle Root
-// ═══════════════════════════════════════════════════════════════
-// Consensus-active through the coinbase DINW witness commitment. Mining builds
-// it and block validation checks it. This is not BlockHeader::merkle_root.
-//
-// What this computes:
-//   - Merkle tree of witness transaction IDs (wtxids)
-//   - Coinbase witness hash = 0x00...00 (Bitcoin convention)
-//   - Uses full transaction data (witness included)
-// ═══════════════════════════════════════════════════════════════
 /**
- * Compute the witness Merkle root used by the DINW commitment.
+ * Compute the consensus witness merkle root for a DINW commitment.
  *
  * Algorithm:
  * 1. For each transaction, compute witness transaction ID (wtxid):
@@ -60,8 +49,11 @@ uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx);
  * 3. Return root as uint256 (internal format)
  *
  * Difference from ComputeMerkleRoot():
- *   - ComputeMerkleRoot() uses txid for BlockHeader::merkle_root
- *   - ComputeWitnessMerkleRoot() uses wtxid for the coinbase DINW commitment
+ *   - ComputeMerkleRoot() uses txid (non-witness hash) ← consensus-active
+ *   - ComputeWitnessMerkleRoot() uses wtxid (witness hash) for DINW
+ *
+ * Do not use this value as BlockHeader::merkle_root; the block header commits
+ * to the non-witness transaction IDs returned by GetTxid().
  *
  * @param vtx Vector of transactions
  * @return Witness merkle root as uint256 (zero hash if empty)
