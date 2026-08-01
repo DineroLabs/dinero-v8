@@ -842,25 +842,6 @@ private:
     // a re-Enable with requests on the wire never leaks in-flight slots.
     void DisableBackfillLocked();
 
-    // Collect the header-chain entries for heights [start_height,
-    // anchor->height] into out_ascending (ascending height order) with a
-    // SINGLE backward walk over parent links from the CALLER-RESOLVED anchor
-    // entry (one walk instead of per-height GetHeaderAtHeight() — avoids the
-    // O(n²) #241 scan bug class). Caller MUST hold mutex_. Returns false if
-    // anchor is null or the range is degenerate.
-    //
-    // LIFETIME CAVEAT: this walks raw HeaderIndexEntry parent pointers
-    // WITHOUT the header chain's own lock — safe only for BEST-CHAIN anchors
-    // (best-chain entries are never evicted; ScanForMissingBlocks passes
-    // GetBestHeader()). A possibly-SIDE-BRANCH anchor (the AssumeUTXO
-    // snapshot base) can be freed by HeaderChainSelector::EvictBranch from
-    // another thread mid-walk, so EnableBackfill must NOT use this — it uses
-    // HeaderChainSelector::CollectAncestorsByHash, which copies (hash,
-    // height) under the header chain's internal mutex.
-    bool CollectCanonicalHeadersLocked(
-        uint32_t start_height, const HeaderIndexEntry* anchor,
-        std::vector<const HeaderIndexEntry*>& out_ascending) const;
-
     // Shared verify+persist core for the tip and backfill receive paths
     // (Task 2 DRY): header-match validation, then flat-file write. Caller
     // MUST hold mutex_. track_received: the tip path records the hash in

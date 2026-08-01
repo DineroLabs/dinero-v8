@@ -24,6 +24,7 @@
 #include <set>
 #include <cstdint>
 #include <mutex>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -328,8 +329,9 @@ public:
      * GetHeader() can be freed by side-branch eviction (EvictBranch, which
      * runs under THIS class's mutex — not the caller's) the moment this
      * lock is released, so following parent pointers outside the lock is a
-     * use-after-free hazard. Copying under the lock removes it. Best-chain
-     * walks don't need this (best-chain entries are never evicted).
+     * use-after-free hazard. Copying under the lock removes it. A caller must
+     * not special-case the current best entry: fork choice can demote it before
+     * the caller walks its parents, and a later eviction can then free it.
      *
      * @param anchor_hash      Anchor block hash (resolved by hash, never height)
      * @param start_height     Lowest height to include
@@ -342,6 +344,47 @@ public:
                                 uint32_t start_height,
                                 uint32_t& anchor_height_out,
                                 std::vector<std::pair<uint256, uint32_t>>& out_ascending) const;
+
+    /**
+     * @brief Resolve one ancestor hash from a hash-anchored branch while locked.
+     *
+     * The anchor may be the best tip or a side-branch entry. Both it and every
+     * parent traversed remain protected from EvictBranch for the complete walk.
+     * This is the value-only replacement for exporting an entry and calling
+     * HeaderIndexEntry::GetAncestor() after the selector lock is released.
+     *
+     * @param anchor_hash       Branch tip/anchor to resolve by identity
+     * @param ancestor_height   Height requested on that anchor's own branch
+     * @param ancestor_hash_out Filled with the ancestor hash on success
+     * @param anchor_height_out Filled with the anchor height when it is known
+     * @return true iff the anchor exists and reaches ancestor_height
+     */
+    bool GetAncestorHashByHash(const uint256& anchor_hash,
+                               uint32_t ancestor_height,
+                               uint256& ancestor_hash_out,
+                               uint32_t& anchor_height_out) const;
+
+    /**
+     * @brief Copy a hash-anchored branch back to the first supplied stop hash.
+     *
+     * The walk and every HeaderIndexEntry copy happen under mutex_. No selector
+     * pointer or parent link escapes. The common ancestor itself is excluded
+     * from out_ascending; copied branch entries are returned oldest-to-newest
+     * with parent == nullptr. If none of stop_hashes is on the anchor branch,
+     * common_ancestor_out remains null and the complete branch through genesis
+     * is returned so callers can fail closed on incompatibility.
+     *
+     * @param anchor_hash         Branch tip/anchor to resolve by identity
+     * @param stop_hashes         Candidate common-ancestor identities
+     * @param out_ascending       Cleared, then filled oldest-to-newest
+     * @param common_ancestor_out Matching stop hash, or null if none matched
+     * @return true iff anchor_hash is known
+     */
+    bool CollectBranchCopiesByHash(
+        const uint256& anchor_hash,
+        const std::unordered_set<uint256>& stop_hashes,
+        std::vector<HeaderIndexEntry>& out_ascending,
+        uint256& common_ancestor_out) const;
 
     /**
      * @brief Get header at specific height on best chain

@@ -244,7 +244,7 @@ foreach ($b in $daemonBinaries) {
 Copy-Item (Join-Path $ProjectRoot 'LICENSE') (Join-Path $Stage 'LICENSE')
 
 Write-Host 'Copying runtime DLLs from vcpkg if required...'
-$vcpkgDlls = 'libcurl.dll','libcrypto-3-x64.dll','libssl-3-x64.dll','z.dll'
+$vcpkgDlls = @()  # server lane is fully static (vendored libcurl+OpenSSL 3.5.7 + zlib-off)
 foreach ($d in $vcpkgDlls) {
     $src = Join-Path $VcpkgBin $d
     if (Test-Path $src) {
