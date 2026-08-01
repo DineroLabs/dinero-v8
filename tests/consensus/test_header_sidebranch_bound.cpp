@@ -38,6 +38,7 @@
 #include <filesystem>
 #include <iostream>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #ifdef NDEBUG
@@ -357,6 +358,101 @@ void TestExtendMinTipNoUAF() {
     std::cout << "   ✅ extending the min tip never freed its parent" << std::endl;
 }
 
+// ---------------------------------------------------------------------------
+// #6 copied ancestry/branch snapshots — no HeaderIndexEntry pointer escapes.
+//
+// The block-download scanner and AssumeUTXO continuation logic both need more
+// than a single copied entry: one needs an ancestor identity, the other needs
+// the complete non-active branch including headers and chainwork.  The selector
+// must derive/copy those values while holding the same mutex as EvictBranch.
+// ---------------------------------------------------------------------------
+void TestCopiedAncestryAndBranchSnapshots() {
+    std::cout << "\n#6 copied ancestry and branch snapshots..." << std::endl;
+    HeaderChainSelector sel;
+    BlockHeader genesis = MakeHeader(uint256());
+    assert(sel.AddHeader(genesis));
+    const uint256 g = genesis.GetHash();
+
+    std::vector<uint256> main_hashes;
+    uint256 main_tip = g;
+    for (int i = 0; i < 4; ++i) {
+        BlockHeader h = MakeHeader(main_tip);
+        assert(sel.AddHeader(h));
+        main_tip = h.GetHash();
+        main_hashes.push_back(main_tip);
+    }
+
+    // Fork from main height 2 and extend to height 6 so it wins fork choice.
+    const uint256 fork_point = main_hashes[1];
+    std::vector<uint256> fork_hashes;
+    uint256 fork_tip = fork_point;
+    for (int i = 0; i < 4; ++i) {
+        BlockHeader h = MakeHeader(fork_tip);
+        assert(sel.AddHeader(h));
+        fork_tip = h.GetHash();
+        fork_hashes.push_back(fork_tip);
+    }
+
+    uint256 ancestor_hash;
+    uint32_t anchor_height = 0;
+    assert(sel.GetAncestorHashByHash(
+        fork_tip, /*ancestor_height=*/2, ancestor_hash, anchor_height));
+    assert(anchor_height == 6);
+    assert(ancestor_hash == fork_point);
+    assert(!sel.GetAncestorHashByHash(
+        fork_tip, /*ancestor_height=*/7, ancestor_hash, anchor_height));
+
+    const uint256 unknown = uint256::FromHexUnsafe("01");
+    assert(!sel.GetAncestorHashByHash(
+        unknown, /*ancestor_height=*/0, ancestor_hash, anchor_height));
+
+    std::unordered_set<uint256> active_hashes{
+        g, main_hashes[0], main_hashes[1], main_hashes[2], main_hashes[3]};
+    std::vector<HeaderIndexEntry> branch;
+    uint256 common_ancestor;
+    assert(sel.CollectBranchCopiesByHash(
+        fork_tip, active_hashes, branch, common_ancestor));
+    assert(common_ancestor == fork_point);
+    assert(branch.size() == fork_hashes.size());
+    for (size_t i = 0; i < branch.size(); ++i) {
+        assert(branch[i].hash == fork_hashes[i]);
+        assert(branch[i].height == i + 3);
+        assert(branch[i].parent == nullptr);
+    }
+
+    // Unknown anchors must fail with no stale caller-visible output.
+    branch.push_back(HeaderIndexEntry{});
+    common_ancestor = g;
+    assert(!sel.CollectBranchCopiesByHash(
+        unknown, active_hashes, branch, common_ancestor));
+    assert(branch.empty());
+    assert(common_ancestor.IsNull());
+
+    // A known but incompatible branch returns a complete coherent copy and a
+    // null common ancestor so the caller can reject it explicitly.
+    const uint256 unrelated_stop = uint256::FromHexUnsafe("02");
+    assert(sel.CollectBranchCopiesByHash(
+        fork_tip, {unrelated_stop}, branch, common_ancestor));
+    assert(common_ancestor.IsNull());
+    assert(branch.size() == 7);  // genesis plus heights 1..6
+    assert(branch.front().height == 0);
+    assert(branch.back().hash == fork_tip);
+
+    // Restore the active-chain-stopped snapshot for the lifetime assertion.
+    assert(sel.CollectBranchCopiesByHash(
+        fork_tip, active_hashes, branch, common_ancestor));
+
+    // Value snapshots must remain valid even after every selector-owned entry
+    // has been destroyed. A raw-pointer implementation fails this contract.
+    sel.Clear();
+    assert(branch.front().hash == fork_hashes.front());
+    assert(branch.back().hash == fork_tip);
+    assert(branch.back().height == 6);
+
+    std::cout << "   ✅ ancestry derived under lock; copied branch survives selector clear"
+              << std::endl;
+}
+
 }  // namespace
 
 int main() {
@@ -367,6 +463,7 @@ int main() {
     TestNoOrphan();
     TestExtendMinTipNoUAF();
     TestRestartEquivalence();
+    TestCopiedAncestryAndBranchSnapshots();
     std::cout << "\n✅ ALL side-branch eviction tests passed" << std::endl;
     return 0;
 }
