@@ -13,7 +13,7 @@
  * Why NOT in block header:
  *   - Avoids hard fork
  *   - Backward compatible
- *   - Can be made mandatory via soft fork
+ *   - Supports height-gated mandatory enforcement without changing the header
  *   - Follows Bitcoin BIP 141 design
  *
  * Consensus status:
@@ -38,7 +38,8 @@ namespace dinero::consensus {
  * ⚠️ CRITICAL: Uses Dinero magic, NOT Bitcoin's 0xaa21a9ed
  *
  * Why Dinero-specific magic:
- *   - Bitcoin magic implies BIP141 segwit semantics (NOT active yet)
+ *   - Bitcoin magic would imply Bitcoin BIP141 semantics, which Dinero does
+ *     not adopt
  *   - Prevents false assumptions from external tools/explorers
  *   - Enables clean future migration path
  *   - Avoids accidental soft-fork activation

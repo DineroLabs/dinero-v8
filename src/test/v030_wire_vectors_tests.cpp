@@ -154,6 +154,47 @@ TEST(ShieldedRangeProofContainer, RejectsUnbackedCountsAndLengths) {
     EXPECT_EQ(VerifyBundleRangeProofs(bundle), RangeProofResult::ParseError);
 }
 
+// Pins byte streams that older prose called "BIP143" without specifying their
+// actual layout. Neither vector requires a Spartan proof or randomized
+// range-proof construction.
+TEST(ShieldedV1ProtocolVectors, EnvelopeAndBindingSighashes) {
+    ::dinero::Transaction tx;
+    tx.version = ::dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    tx.vin.clear();
+    tx.vout = {
+        TxOutput(AmountUna::Una(123'456'789), {0x6a, 0x01, 0x42}),
+    };
+    tx.lockTime = 0x11223344;
+
+    const Hash tx_sighash = ComputeShieldedTxSighash(tx);
+    EXPECT_EQ(Hex(tx_sighash),
+              "6c8bd3394e75889ab9a9e10a0f2574a6538ac6bfeaf058c635a60145cb2b43c4");
+
+    ShieldedSpend spend_a{};
+    spend_a.cv.fill(0x22);
+    spend_a.cv[0] = 0x09;
+    ShieldedSpend spend_b{};
+    spend_b.cv.fill(0x11);
+    spend_b.cv[0] = 0x08;
+    ShieldedOutput output{};
+    output.cv.fill(0x33);
+    output.cv[0] = 0x08;
+
+    ShieldedBundle bundle{};
+    bundle.value_balance = -42;
+    // Intentionally reverse cv lexicographic order. The binding transcript
+    // sorts copies, so this also pins order-independence.
+    bundle.spends = {spend_a, spend_b};
+    bundle.outputs = {output};
+
+    const Hash binding_sighash = ComputeBindingSighash(bundle, tx_sighash);
+    EXPECT_EQ(Hex(binding_sighash),
+              "09c6dc4754fc5c2d543aa712b9ff4d923e9828ff10388e84a3baeb0f1f441eb9");
+
+    EXPECT_EQ(EncodeAggregatedRangeProof({{0xaa, 0xbb}, {0xcc}}),
+              (std::vector<uint8_t>{0x02, 0x02, 0xaa, 0xbb, 0x01, 0xcc}));
+}
+
 class V030VectorFixture : public ::testing::Test {
 protected:
     CommitmentTree tree;

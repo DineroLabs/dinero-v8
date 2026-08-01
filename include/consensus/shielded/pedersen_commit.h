@@ -12,25 +12,23 @@
  *   - value is the una-denominated amount (witness-private)
  *   - cv is published on the wire as 33-byte compressed form
  *
- * cv is COMPUTED natively (outside any ZK circuit). The associated
- * Bulletproof range proof on cv proves `value ∈ [0, 2^64)` without
- * revealing value, and Wave 2's binding signature proves the bvk
- * equation `bvk = sum(cv_spend) - sum(cv_output) - value_balance·V`
- * — together those close the inflation hole.
+ * cv is COMPUTED natively and, after cv-binding activation, the Spartan
+ * spend/output circuit also constrains the published point to the same
+ * `(value, blind)` witness. A per-cv Borromean range proof proves
+ * `value ∈ [0, 2^64)`, and the binding signature proves:
  *
- * IMPORTANT: there is no per-cv "verify Pedersen commitment" check
- * available to consensus directly, because consensus does not have
- * `(blind, value)`. The cv binding to the proven value lives entirely
- * in the Bulletproof; the cv binding to the bundle balance lives in
- * the Schnorr binding signature. This header exposes commit /
- * serialize / parse / sum primitives — the helpers consensus and
- * wallet need, not a redundant verify-with-witness function.
+ *   bvk = sum(cv_spend) - sum(cv_output) + value_balance·V
  *
- * Storage: cv is stored as 33-byte compressed-pubkey form on the wire
- * (matches libsecp256k1 conventions). The `Hash cv` (32 bytes) field
- * on ShieldedSpend / ShieldedOutput holds the 32-byte x-coordinate;
- * the parity bit is recovered from the curve equation when consensus
- * needs the full point. Convenience helpers below return either form.
+ * where value_balance = sum(output_value) - sum(spend_value).
+ *
+ * Consensus does not learn `(blind, value)`. It verifies their relationship
+ * to cv through the cv-bound Spartan circuit, verifies the value range through
+ * the per-cv range proof, and verifies bundle conservation through the
+ * Pedersen tally plus BIP340 binding signature.
+ *
+ * Storage: cv is stored as libsecp256k1-zkp's 33-byte Pedersen commitment
+ * encoding (prefix 0x08/0x09 plus x-coordinate). The library-specific sign
+ * prefix is consensus-critical and is never discarded.
  */
 
 #include "consensus/shielded/commitment_tree.h"
@@ -58,9 +56,8 @@ enum class PedersenResult : uint8_t {
  *                supplies fresh randomness; this function does NOT
  *                generate or store the blind.
  * @param value   uint64 una amount.
- * @param out_cv  Output: 32-byte x-coordinate of the resulting point.
- *                The implicit y-parity follows libsecp256k1's
- *                canonical compressed encoding.
+ * @param out_cv  Output: 33-byte Pedersen commitment encoding, including
+ *                the 0x08/0x09 library sign prefix.
  *
  * Returns PedersenResult::Ok on success. The blind MUST be uniformly
  * random; reusing a blind across two cvs leaks the difference in

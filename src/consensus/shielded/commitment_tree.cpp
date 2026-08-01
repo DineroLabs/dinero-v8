@@ -70,7 +70,7 @@ Hash NoteCommitment(const Hash& d,
                     const Hash& recipient_pk,
                     const Hash& value_commitment,
                     const Hash& randomness) {
-    // Phase 2 wave 5: addr_bind = Poseidon(ADDR_TAG, Poseidon(d, pk_d))
+    // Phase 2 wave 5: addr_bind = Poseidon(ADDR_TAG, Poseidon(d, pk_note))
     const Hash addr_bind = Poseidon(AddrBindTag(), Poseidon(d, recipient_pk));
     // commitment = Poseidon(Poseidon(addr_bind, value), randomness)
     return Poseidon(Poseidon(addr_bind, value_commitment), randomness);

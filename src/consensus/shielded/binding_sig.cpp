@@ -1,7 +1,5 @@
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/pedersen_generators.h"
-#include "consensus/crypto/sighash_bip143.h"
-
 #include "crypto/evp_secp256k1.h"
 #include "crypto/sha256.h"
 
@@ -41,7 +39,6 @@ struct Sha256Builder {
 }  // namespace
 
 Hash ComputeShieldedTxSighash(const ::dinero::Transaction& tx) {
-    using ::dinero::consensus::SighashBIP143;
     constexpr const char kDst[] = "DIN/v7/shielded/tx-sighash/v1";
     Sha256Builder b;
     b.Add(kDst, sizeof(kDst) - 1);
@@ -51,12 +48,9 @@ Hash ComputeShieldedTxSighash(const ::dinero::Transaction& tx) {
     for (int i = 0; i < 4; ++i) v[i] = static_cast<unsigned char>((tx.version >> (8 * i)) & 0xFF);
     b.Add(v, 4);
 
-    // BIP143 components covering every transparent malleation.
-    // SighashBIP143's helpers are private; we reproduce the equivalent
-    // commitments here by hashing prevouts, sequences, and outputs
-    // through ComputeSighash on a synthetic SIGHASH_ALL — except we
-    // can't call ComputeSighash without per-input scriptCode/value.
-    // So we hash the raw fields directly; same domain-separation goal.
+    // Custom fixed-layout commitment to every transparent envelope field.
+    // This is not a BIP143 input sighash: it has no per-input scriptCode,
+    // input amount, hash type, or BIP143 component hashes.
     auto hash_u32_le = [&](uint32_t x) {
         unsigned char buf[4];
         for (int i = 0; i < 4; ++i) buf[i] = static_cast<unsigned char>((x >> (8 * i)) & 0xFF);

@@ -1,4 +1,9 @@
-# Shielded Pool — Mainnet Activation Plan (Solo Operator)
+# Shielded Pool — Mainnet Activation Plan (historical)
+
+> **Historical record.** Activation has occurred and the deployed height/epoch
+> rules are normative in
+> [`shielded_protocol_v1.md`](shielded_protocol_v1.md). Forward-looking
+> instructions in this plan are no longer operator guidance.
 
 **Status:** drafted 2026-04-27 (initial), revised 2026-04-27 to drop
 the testnet phase. Owner: project (solo operator).

@@ -32,7 +32,8 @@ static constexpr size_t kTotalRounds = kFullRounds + kPartRounds; // 64
 // ---------------------------------------------------------------------------
 // Round constants (generated deterministically from SHA256)
 //
-// round_const[r][e] = reduce_to_scalar(SHA256("PoseidonC_secp256k1" || BE32(r) || BE32(e)))
+// round_const[r][e] = rehash_to_valid_scalar(
+//     SHA256("PoseidonC_secp256k1" || BE32(r) || BE32(e)))
 // One constant per (round, element) pair.
 // ---------------------------------------------------------------------------
 

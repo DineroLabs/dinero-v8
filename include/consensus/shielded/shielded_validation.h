@@ -103,9 +103,9 @@ struct ValidationContext {
     /// validator falls back to exact-current-root match.
     const AnchorHistory*    anchor_history;
 
-    /// Phase 3 wave 2: BIP143-style sighash of the transparent envelope
-    /// this bundle rides in. Bound into the binding-sig sighash to
-    /// defeat wrap-attacks. Production callers MUST supply the real
+    /// Phase 3 wave 2: custom fixed-layout digest of the transparent envelope
+    /// this bundle rides in (not a BIP143 input sighash). Bound into the
+    /// binding-sig sighash to defeat wrap-attacks. Production callers MUST supply the real
     /// sighash via `ComputeShieldedTxSighash(tx)`. Passing all-zeros
     /// disables wrap-attack protection (intended for unit tests that
     /// exercise pre-activation / structural code paths only — use

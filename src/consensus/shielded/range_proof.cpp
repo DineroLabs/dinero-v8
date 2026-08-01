@@ -74,8 +74,8 @@ bool ReadCompactSize(const std::vector<uint8_t>& bytes,
     return true;
 }
 
-// Parse a 33-byte cv (libsecp pedersen serialization with prefix
-// 0x08/0x09 conveying y-parity) into a pedersen_commitment.
+// Parse a 33-byte cv (libsecp Pedersen encoding with its 0x08/0x09
+// library-specific sign prefix) into a pedersen_commitment.
 bool ParseCv(secp256k1_context* ctx, const ValueCommitment& cv,
              secp256k1_pedersen_commitment& out) {
     return secp256k1_pedersen_commitment_parse(ctx, &out, cv.data()) != 0;
@@ -162,7 +162,7 @@ RangeProofResult VerifyBundleRangeProofs(const ShieldedBundle& bundle) {
     const auto* gen = PedersenGeneratorVInternal();
     if (!gen) return RangeProofResult::GeneratorNotReady;
 
-    // Decode the aggregated blob into per-cv proofs.
+    // Decode the historically misnamed container into per-cv proofs.
     std::vector<std::vector<uint8_t>> proofs;
     if (!DecodeAggregated(bundle.aggregated_range_proof, proofs)) {
         return RangeProofResult::ParseError;

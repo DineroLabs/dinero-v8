@@ -80,7 +80,7 @@ bool ValueGenCoords(Uint256& vx, Uint256& vy) {
 //   y   = sqrt(x^3 + 7)  via the fe_sqrt exponentiation root (set_xquad)
 //   if (cv[0] & 1) y = p - y
 // (set_xquad == secp256k1_fe_sqrt == raising to (p+1)/4, the same root the
-// in-circuit bip340_lift_x computes; the parity bit then matches _load.)
+// in-circuit bip340_lift_x computes; the library sign bit then matches _load.)
 bool LoadCvPoint(const ValueCommitment& cv, Uint256& out_x, Uint256& out_y) {
     using zk::zkvm::uint256_mul_mod_p;
     using zk::zkvm::uint256_add_mod_p;
@@ -94,7 +94,9 @@ bool LoadCvPoint(const ValueCommitment& cv, Uint256& out_x, Uint256& out_y) {
     // val·V + rcv·G. Returns false so callers may reject explicitly too.
     auto fail = [&]() -> bool { out_x = Uint256(uint64_t(0)); out_y = Uint256(uint64_t(0)); return false; };
 
-    // Compressed Pedersen-commitment prefix: 0x08 (even y) / 0x09 (odd y).
+    // libsecp256k1-zkp Pedersen sign prefix: 0x08 selects set_xquad's root;
+    // 0x09 selects its negation. This is a quadratic-residue convention, not
+    // SEC1 y-parity encoding.
     if (cv[0] != 0x08 && cv[0] != 0x09) return fail();
 
     Uint256 x(cv.data() + 1);  // big-endian 32 bytes

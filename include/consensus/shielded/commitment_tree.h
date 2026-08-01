@@ -15,11 +15,13 @@
  *   - Fixed depth (32 levels → 2^32 capacity)
  *   - Incremental (append-only, no deletions — nullifiers handle spending)
  *   - Poseidon hash for ZK-friendliness (low R1CS constraint count)
- *   - Each leaf = Poseidon(value_commitment, recipient_pk, randomness)
+ *   - Each leaf is the address-bound note commitment defined below
  *
- * The tree root is a consensus-committed value — it appears in every
- * block header alongside the Utreexo roots. Validators must maintain
- * this tree to verify shielded transaction proofs.
+ * The tree is deterministic consensus state derived from validated bundle
+ * bytes. BlockHeader v1 does not carry a separate shielded root (its reserved
+ * bytes remain zero). Current mainnet blocks indirectly commit v5 bundle bytes
+ * through the coinbase DINW witness commitment; v6 also commits them in txid.
+ * Validators must maintain the tree to verify later spend anchors.
  */
 
 #include <array>
@@ -45,7 +47,7 @@ Hash PoseidonHash2(const Hash& left, const Hash& right);
 
 /**
  * Address-binding tag scalar: Poseidon-hash domain separator forcing
- * every valid commitment to incorporate (d, pk_d) under a fixed DST.
+ * every valid commitment to incorporate (d, pk_note) under a fixed DST.
  * Phase 2 wave 5 — see spec §6.2.
  *
  * Format: ASCII "DIN/v7/shielded/addr/v1" right-padded to 32 bytes
@@ -57,15 +59,12 @@ const Hash& AddrBindTag();
 /**
  * Compute a note commitment with address binding (Phase 2 wave 5).
  *
- *   addr_bind = Poseidon(AddrBindTag, Poseidon(d, pk_d))
+ *   addr_bind = Poseidon(AddrBindTag, Poseidon(d, pk_note))
  *   inner     = Poseidon(addr_bind, value)
  *   cm        = Poseidon(inner, randomness)
  *
- * Embedding `(d, pk_d)` under a fixed DST means a sender who splices
- * a raw Taproot pubkey in place of pk_d (skipping the bech32m address
- * codec) produces bytes the recipient cannot decode and the canonical
- * wallet refuses to issue. Combined with the daemon-RPC HRP gate, this
- * makes "shield to a transparent address" structurally infeasible.
+ * `pk_note` is derived from the encrypted note's rcm. The diversified address
+ * key pk_d transports that plaintext; it is not itself a circuit input.
  */
 Hash NoteCommitment(const Hash& d,
                     const Hash& recipient_pk,
