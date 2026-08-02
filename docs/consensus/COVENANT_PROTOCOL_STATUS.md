@@ -52,8 +52,8 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
 
 ## Activation policy
 
-- Mainnet CTV and CCV activate together at block **80,000**. Block 79,999
-  retains the historical NOP4/`OP_SUCCESS` meanings; block 80,000 is the first
+- Mainnet CTV and CCV activate together at block **100,000**. Block 99,999
+  retains the historical NOP4/`OP_SUCCESS` meanings; block 100,000 is the first
   block that enforces the profile-v1 CTV/CCV rules.
 - Testnet CTV and CCV remain dormant (`UINT32_MAX`).
 - CSFS and TXHASH do not yet have an approved normative specification or
@@ -63,7 +63,7 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
   unaudited commitment extension.
 
 Regtest activates CTV and CCV at height 20 so boundary, wallet, recovery, and
-multi-node work can exercise the reviewed semantics. Mainnet height 80,000 is
+multi-node work can exercise the reviewed semantics. Mainnet height 100,000 is
 the separately scheduled production boundary; the regtest height is not its
 source.
 
@@ -74,7 +74,7 @@ opcode's activation height while preserving historical consensus NOP/
 `OP_SUCCESS` behavior. `CovenantSystemLifecycle` separates Taproot script-path
 activation from the CTV boundary and proves admission, mining selection,
 rollback, revalidation, and restart behavior across it. Production release
-candidates must repeat this evidence with the height-80,000 parameters.
+candidates must repeat this evidence with the height-100,000 parameters.
 
 ## Interpreter conformance evidence
 
@@ -112,20 +112,24 @@ that no unspent output contains a dormant covenant leaf. The activation is a
 coordinated soft fork and must not treat absence of revealed historical use as
 a substitute for deployment discipline.
 
-## Release gates before block 80,000
+## Release gates before block 100,000
 
-1. Obtain independent consensus and cryptographic review of the frozen
-   specification, implementation diff, vectors, lifecycle tests, and resource
-   results.
+1. Complete the reproducible open-source assurance record: frozen
+   specification and release commit, an implementation-independent CCV
+   reference model, differential and property tests, sanitizer fuzzing,
+   mutation evidence, bounded-state analysis, public review opportunity,
+   resolution of every reported critical/high finding, and explicit owner
+   acceptance of residual unaudited risk.
 2. Repeat the activation-boundary, wallet-recovery, and multi-node deployment
-   tests against the exact release candidate carrying height 80,000.
-3. Deploy that identical release to every validating node by height 79,000 and
+   tests against the exact release candidate carrying height 100,000.
+3. Deploy that identical release to every validating node by height 99,000 and
    verify the expected consensus checksum, tip, peer set, and block-template
    behavior on each node.
-4. If either review or fleet deployment misses the height-79,000 checkpoint,
-   do not compress the rollout window. Schedule a later activation height in a
-   new coordinated release.
+4. If either assurance completion or fleet deployment misses the height-99,000
+   checkpoint, do not compress the rollout window. Schedule a later activation
+   height in a new coordinated release.
 
-The height decision was recorded at mainnet tip 76,305, leaving 3,695 blocks.
-The schedule does not waive independent review or release-candidate evidence.
-The detailed operator plan is `COVENANT_MAINNET_ACTIVATION_80000.md`.
+The final height decision was recorded at mainnet tip 76,663, leaving 23,337
+blocks. External review remains invited, but the achievable release gate is
+the objective open-source assurance record plus release-candidate evidence.
+The detailed operator plan is `COVENANT_MAINNET_ACTIVATION_100000.md`.

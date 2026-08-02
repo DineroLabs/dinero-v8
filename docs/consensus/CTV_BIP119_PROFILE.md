@@ -1,6 +1,6 @@
 # CHECKTEMPLATEVERIFY BIP119 profile
 
-Status: mainnet activation scheduled at block 80,000. Testnet remains dormant
+Status: mainnet activation scheduled at block 100,000. Testnet remains dormant
 (`UINT32_MAX`).
 
 Opcode: `OP_CHECKTEMPLATEVERIFY` / `OP_NOP4` (`0xb3`).
@@ -49,13 +49,14 @@ those forms rather than assigning a custom hash with misleading BIP119
 compatibility.
 
 Supporting any of those forms requires a separately versioned specification,
-vectors, implementation, activation flag, and independent review.
+vectors, implementation, activation flag, reproducible assurance record, and
+public review opportunity.
 
 ## Activation
 
 | Chain | CTV |
 |---|---:|
-| Mainnet | 80,000 |
+| Mainnet | 100,000 |
 | Testnet | dormant |
 | Regtest | 20 |
 
@@ -68,5 +69,5 @@ Boundary, reorg, mempool, mining, and adversarial-cost component coverage is
 recorded in `COVENANT_PROTOCOL_STATUS.md` and
 `COVENANT_RESOURCE_LIMITS.md`. The scheduled activation remains gated on
 release-candidate wallet/recovery and live multi-node coverage, coordinated
-validator deployment, and independent consensus review as specified in
-`COVENANT_MAINNET_ACTIVATION_80000.md`.
+validator deployment, and the reproducible open-source assurance record in
+`COVENANT_MAINNET_ACTIVATION_100000.md`.

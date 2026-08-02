@@ -1,7 +1,7 @@
 # Covenant profile v1 wallet construction and recovery
 
 Status: implemented and exercised on regtest. The mainnet consensus profile is
-scheduled for block 80,000, but these construction RPCs remain regtest-only
+scheduled for block 100,000, but these construction RPCs remain regtest-only
 until a separate production-wallet release enables them.
 
 The wallet layer constructs and recovers the transparent CTV and CCV forms
@@ -11,7 +11,7 @@ new consensus rules and it does not authorize an activation height.
 ## Safety boundary
 
 - Every handler fails closed unless the selected chain is regtest.
-- Mainnet CTV/CCV consensus activation is block 80,000; testnet remains
+- Mainnet CTV/CCV consensus activation is block 100,000; testnet remains
   dormant. The RPC chain guard remains independent and fail-closed.
 - Descriptors contain public construction data only. They contain no seed,
   private key, or signing capability.
@@ -117,7 +117,7 @@ avoids floating-point ambiguity at the covenant construction boundary.
 Owner authorization removes the known permissionless-wallet blocker. It does
 not by itself authorize shipping mainnet construction: the production-wallet
 guard, release-candidate activation boundary, reorg, performance, and
-independent consensus-review gates remain separate requirements.
+open-source consensus-assurance gates remain separate requirements.
 
 ## Signing and recovery workflow
 
@@ -152,5 +152,6 @@ reconfirmation after that rebroadcast.
   explicit rebroadcast, and reconfirmation. It also retains an explicitly
   acknowledged permissionless compatibility check.
 
-These tests are necessary evidence for external review. They are not a
-substitute for independent consensus review or a coordinated activation plan.
+These tests are necessary assurance and public-review evidence. They are not a
+substitute for the complete reproducible assurance record or a coordinated
+activation plan.

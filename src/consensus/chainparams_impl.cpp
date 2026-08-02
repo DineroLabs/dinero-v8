@@ -39,7 +39,7 @@ static constexpr const char* EXPECTED_MERKLE_ROOT =
 
 // CTV and CCV are one reviewed mainnet profile. A single constant prevents a
 // partial-activation window from being introduced by changing only one field.
-static constexpr uint32_t MAINNET_COVENANT_PROFILE_V1_HEIGHT = 80000;
+static constexpr uint32_t MAINNET_COVENANT_PROFILE_V1_HEIGHT = 100000;
 
 // ============================================================================
 // MAINNET PARAMETERS - Dinero Official Mainnet
@@ -78,10 +78,10 @@ static ChainParams g_mainnet = {
     // Confidential transaction activation (after genesis)
     .confidential_activation_height = 1,
 
-    // BIP341 script paths retain their deployed height-1 behavior. The reviewed
-    // transparent CTV/CCV profile activates together at block 80,000. CSFS and
+    // BIP341 script paths retain their deployed height-1 behavior. The
+    // transparent CTV/CCV profile activates together at block 100,000. CSFS and
     // TXHASH remain deliberately dormant pending separate specifications,
-    // resource analysis, vectors, and independent review.
+    // resource analysis, vectors, and an open-source assurance record.
     .taproot_scriptpath_activation_height = 1,
     .ctv_activation_height = MAINNET_COVENANT_PROFILE_V1_HEIGHT,
     .csfs_activation_height = UINT32_MAX,

@@ -72,13 +72,13 @@ private:
 TEST(CovenantActivation, ProductionNetworksPinReviewedActivationPolicy) {
     SelectParams(Chain::MAINNET);
     EXPECT_EQ(Params().taproot_scriptpath_activation_height, 1U);
-    EXPECT_EQ(Params().ctv_activation_height, 80000U);
+    EXPECT_EQ(Params().ctv_activation_height, 100000U);
     EXPECT_EQ(Params().csfs_activation_height, UINT32_MAX);
     EXPECT_EQ(Params().txhash_activation_height, UINT32_MAX);
-    EXPECT_EQ(Params().ccv_activation_height, 80000U);
-    EXPECT_EQ(CovenantActivationParams::CovenantFlags(79999, Params()),
+    EXPECT_EQ(Params().ccv_activation_height, 100000U);
+    EXPECT_EQ(CovenantActivationParams::CovenantFlags(99999, Params()),
               dinero::consensus::SCRIPT_VERIFY_NONE);
-    EXPECT_EQ(CovenantActivationParams::CovenantFlags(80000, Params()),
+    EXPECT_EQ(CovenantActivationParams::CovenantFlags(100000, Params()),
               dinero::consensus::SCRIPT_VERIFY_CHECKTEMPLATEVERIFY |
                   dinero::consensus::SCRIPT_VERIFY_CHECKCONTRACT);
 
@@ -203,20 +203,20 @@ TEST(CovenantActivation, RelayPolicyRejectsDormantRevealedOpcodes) {
     // policy validate the next candidate block height.
     SelectParams(Chain::MAINNET);
     EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
-        ctv, p2trScripts, 79999, Params(), &reason));
+        ctv, p2trScripts, 99999, Params(), &reason));
     EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
-        ctv, p2trScripts, 80000, Params()));
+        ctv, p2trScripts, 100000, Params()));
     EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
-        ccv, p2trScripts, 79999, Params(), &reason));
+        ccv, p2trScripts, 99999, Params(), &reason));
     EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
-        ccv, p2trScripts, 80000, Params()));
+        ccv, p2trScripts, 100000, Params()));
 }
 
 TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
     SelectParams(Chain::MAINNET);
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "480c4b727fe55dff2c3200adeb45da8014fbacac02572a4dc6ddfa5ed7399d2c");
+        "68e0a99766e8ab1224ee040ec715bbbd0a544a59d4b3a96025dd35f77f4e960a");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);
@@ -297,7 +297,7 @@ TEST(CovenantActivation, HighLevelValidationUsesSpendHeightNotCoinHeight) {
     EXPECT_EQ(result.total_fee, dinero::AmountUna::Una(1'000));
 }
 
-TEST(CovenantActivation, MainnetValidationChangesExactlyAtHeight80000) {
+TEST(CovenantActivation, MainnetValidationChangesExactlyAtHeight100000) {
     SelectParams(Chain::MAINNET);
 
     Transaction tx;
@@ -349,10 +349,10 @@ TEST(CovenantActivation, MainnetValidationChangesExactlyAtHeight80000) {
     // The deliberately wrong template is accepted while 0xb3 is still NOP4,
     // then rejected by the very first block enforcing CTV.
     const auto before =
-        TransactionValidator::ValidateTransaction(tx, &provider, 79999);
+        TransactionValidator::ValidateTransaction(tx, &provider, 99999);
     EXPECT_TRUE(before.valid) << before.error;
     const auto active =
-        TransactionValidator::ValidateTransaction(tx, &provider, 80000);
+        TransactionValidator::ValidateTransaction(tx, &provider, 100000);
     EXPECT_FALSE(active.valid);
 }
 
