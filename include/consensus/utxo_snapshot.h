@@ -70,9 +70,60 @@ constexpr uint32_t SNAPSHOT_VERSION_V3 = 3;
 // v4 adds the shielded-pool bootstrap section (frontier + anchor history +
 // nullifiers). Without it a snapshot-bootstrapped node starts with an EMPTY
 // shielded commitment tree, so the first post-snapshot shielded spend fails
-// ShieldedValidationError::AnchorInvalid and the chain wedges. v2/v3 snapshots
-// still load (they just remain affected by that bug — no shielded payload).
+// ShieldedValidationError::AnchorInvalid and the chain wedges.
 constexpr uint32_t SNAPSHOT_VERSION_V4 = 4;
+
+// ===========================================================================
+// Snapshot container format policy (fail closed)
+// ===========================================================================
+//
+// V2 is DEPRECATED AND REJECTED UNCONDITIONALLY. This is a deprecation, not a
+// validation gate: there is no V2 file that can pass. A V2 container carries no
+// utreexo section at all, so LoadSnapshot would have to RECONSTRUCT the forest
+// by sorting UTXOs by OutPoint -- which is not chronological insertion order,
+// as the reconstruction site itself acknowledges. Nothing downstream can repair
+// a wrong leaf ORDER, so accepting V2 means importing a forest whose commitment
+// cannot match the base block's utreexo_root. Do not reintroduce it as a
+// conditional check; that would imply a valid V2 file exists.
+//
+// V3 carries a utreexo section but NO shielded section. Below shielded
+// activation that is harmless. At or after it, a V3-bootstrapped node starts
+// with an empty shielded commitment tree and wedges on the first post-snapshot
+// shielded spend -- the same reasoning that removed the v3 anchors from
+// AssumeUTXORegistry.
+//
+// V4 is the supported production format. Current exporters emit V4 and the
+// registered anchors are V4, so this removes legacy compatibility without
+// disturbing the production bootstrap path.
+enum class SnapshotFormatVerdict {
+    Accept,
+    RejectV2Deprecated,
+    RejectV3PostShieldedActivation,
+    RejectUnknownVersion,
+};
+
+// Pure, side-effect-free policy so the boundary can be tested exhaustively
+// without standing up a chainstate. `shielded_activation_height` is passed in
+// rather than read from Params() so tests can sweep it, including the dormant
+// UINT32_MAX case (no height satisfies `>=`, so V3 stays allowed naturally --
+// no special-casing needed).
+inline SnapshotFormatVerdict EvaluateSnapshotFormat(
+        uint32_t version,
+        uint32_t block_height,
+        uint32_t shielded_activation_height) {
+    if (version == SNAPSHOT_VERSION_V2) {
+        return SnapshotFormatVerdict::RejectV2Deprecated;
+    }
+    if (version == SNAPSHOT_VERSION_V3) {
+        return (block_height >= shielded_activation_height)
+                   ? SnapshotFormatVerdict::RejectV3PostShieldedActivation
+                   : SnapshotFormatVerdict::Accept;
+    }
+    if (version == SNAPSHOT_VERSION_V4) {
+        return SnapshotFormatVerdict::Accept;
+    }
+    return SnapshotFormatVerdict::RejectUnknownVersion;
+}
 constexpr uint32_t SNAPSHOT_VERSION = SNAPSHOT_VERSION_V4;
 
 // Optional v3 section carrying the accumulator bootstrap payload.
