@@ -16,6 +16,12 @@ inline constexpr uint8_t TAPSCRIPT_LEAF_VERSION = 0xc0;
 enum class ProfileType : uint8_t {
     CTV = 1,
     CCV = 2,
+    CCV_OWNER = 3,
+};
+
+enum class CCVAuthorization : uint8_t {
+    Permissionless = 0,
+    OwnerSchnorr = 1,
 };
 
 struct Output {
@@ -86,6 +92,9 @@ Transaction BuildCTVSpend(
 struct CCVPlan {
     consensus::ContractState state;
     TaprootArtifact taproot;
+    CCVAuthorization authorization{CCVAuthorization::Permissionless};
+    std::array<uint8_t, 32> ownerPublicKey{};
+    std::string ownerKeyOrigin;
     std::string recoveryDescriptor;
     std::string descriptorId;
 };
@@ -110,24 +119,66 @@ CCVPlan BuildCCVPlan(
  */
 CCVPlan RecoverCCVPlan(const std::string& descriptor);
 
+/**
+ * Construct an owner-authorized CCV state output.
+ *
+ * ownerPublicKey is a BIP340 x-only public key. ownerKeyOrigin is public
+ * recovery metadata (normally a BIP32 path); it is never executed by
+ * consensus and contains no secret material.
+ */
+CCVPlan BuildOwnerAuthorizedCCVPlan(
+    uint32_t counter,
+    const std::vector<uint8_t>& data,
+    const std::array<uint8_t, 32>& ownerPublicKey,
+    const std::string& ownerKeyOrigin);
+
+/** Derive the BIP340 x-only public key for a 32-byte private key. */
+std::array<uint8_t, 32> OwnerXOnlyPublicKey(
+    const std::vector<uint8_t>& privateKey);
+
 struct CCVTransition {
     Transaction tx;
     CCVPlan successor;
 };
 
+struct Prevout {
+    AmountUna value{AmountUna::Zero()};
+    std::vector<uint8_t> scriptPubKey;
+};
+
 /**
- * Build a witness-complete CCV transition.
+ * Build a witness-complete permissionless CCV transition.
  *
  * The covenant input and successor output are fixed at index zero. Additional
  * inputs and outputs may fund fees, but the CCV value is preserved exactly.
  * Additional inputs are left unsigned for the normal wallet signer.
- * No signature authorizes the covenant input itself.
+ * No signature authorizes the covenant input itself. Owner descriptors are
+ * rejected; use BuildOwnerAuthorizedCCVTransition for those.
  */
 CCVTransition BuildCCVTransition(
     const CCVPlan& current,
     const std::vector<Input>& inputs,
     AmountUna covenantValue,
     const std::vector<uint8_t>& nextData,
+    const std::vector<Output>& additionalOutputs = {},
+    uint32_t lockTime = 0,
+    int32_t version = 2);
+
+/**
+ * Build and sign an owner-authorized CCV transition.
+ *
+ * prevouts must describe every input in the same order. The first entry must
+ * exactly match the current covenant output. All inputs and outputs are fixed
+ * before the SIGHASH_DEFAULT script-path signature is produced. Additional
+ * input witnesses remain empty for the normal wallet signer.
+ */
+CCVTransition BuildOwnerAuthorizedCCVTransition(
+    const CCVPlan& current,
+    const std::vector<Input>& inputs,
+    const std::vector<Prevout>& prevouts,
+    AmountUna covenantValue,
+    const std::vector<uint8_t>& nextData,
+    const std::vector<uint8_t>& ownerPrivateKey,
     const std::vector<Output>& additionalOutputs = {},
     uint32_t lockTime = 0,
     int32_t version = 2);
