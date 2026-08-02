@@ -90,6 +90,8 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 info "pinning ${#SEEDS[@]} seeds against the #490 undo-delta corruption"
 
 failures=0
+forbidden_hits=0
+forbidden_scans=0
 for seed in "${SEEDS[@]}"; do
     log="${WORK_DIR}/seed_${seed}.log"
     status=0
@@ -114,8 +116,15 @@ for seed in "${SEEDS[@]}"; do
     fi
 
     # 2b. The lossy-restore path this repair eliminated must stay eliminated.
+    #
+    # The count is tallied and reported affirmatively at the end. Reporting only
+    # an absence would be unfalsifiable: a scan that never ran also produces no
+    # hits, and ctest suppresses a passing test's output, so "no forbidden
+    # strings in the CI log" proves nothing on its own.
     for forbidden in "${FORBIDDEN_SIGNATURES[@]}"; do
+        forbidden_scans=$((forbidden_scans + 1))
         if grep -q "${forbidden}" "${log}"; then
+            forbidden_hits=$((forbidden_hits + 1))
             printf '[FAIL] seed %s: lossy Snapshot()/Restore() symptom reappeared: %s\n' \
                 "${seed}" "${forbidden}" >&2
             grep -n "${forbidden}" "${log}" | head -3 >&2
@@ -156,7 +165,16 @@ for seed in "${SEEDS[@]}"; do
     fi
 done
 
-[[ "${failures}" -eq 0 ]] || fail "${failures} seed(s) failed (corruption, crash, vacuous run, or an unexplained nonzero exit)"
+# Affirmative, deterministic evidence that the forbidden-signature scan actually
+# ran and what it found. A reviewer can read these two numbers instead of
+# trusting that an absence means anything.
+info "forbidden lossy-restore signature scans: ${forbidden_scans}"
+info "forbidden lossy-restore signatures: ${forbidden_hits}"
+if [[ "${forbidden_scans}" -eq 0 ]]; then
+    fail "forbidden-signature scan never ran; its result is meaningless"
+fi
+
+[[ "${failures}" -eq 0 ]] || fail "${failures} seed(s) failed (corruption, crash, vacuous run, forbidden signature, or an unexplained nonzero exit)"
 
 pass "all ${#SEEDS[@]} pinned seeds free of undo-delta corruption"
 info "Nonzero exits above were CLASSIFIED, not ignored: each was explained by"
