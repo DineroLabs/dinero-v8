@@ -19,11 +19,20 @@ namespace dinero {
  *
  * Decimals: 1 DIN = 100,000,000 una (Bitcoin standard)
  *
- * Supply curve (no hard cap — disinflationary):
- *   Epochs 0-6: ~260.75M DIN from halvings
- *   Epoch 7+:   1 DIN/block = ~1.314M DIN per 5-year epoch
- *   Year 35:    ~260.75M DIN   (0.50%/yr inflation)
- *   Year 100:   ~346.55M DIN   (0.38%/yr inflation → 0% asymptotically)
+ * Supply curve (no hard cap — disinflationary). Figures below are computed
+ * from the constants in this file at the 120-second target spacing
+ * (262,980 blocks/year, so one 1,314,000-block epoch is 5.00 years):
+ *   Epochs 0-6: 260.747M DIN from halvings
+ *   Epoch 7+:   1 DIN/block = ~1.315M DIN per 5-year epoch
+ *   Year 35:    ~260.75M DIN   (0.156%/yr inflation)
+ *   Year 100:   ~277.85M DIN   (0.095%/yr inflation → 0% asymptotically)
+ *
+ * Earlier revisions of this comment claimed ~346.55M DIN at year 100 and
+ * inflation of 0.50%/0.38%/yr. Those did not follow from these constants —
+ * at 1 DIN/block the tail adds only ~262,980 DIN/year, so year 100 is
+ * ~277.85M, not ~346.55M. The executable logic was always correct; only this
+ * prose was wrong. TestSubsidySchedule pins these figures so the comment
+ * cannot drift from the code again.
  *
  * Network Magic: see src/consensus/chainparams_impl.cpp (Dinero mainnet — v7 restart)
  * Genesis Motto: "Dinero: Real Money For Free People - Post-Quantum Native. April 17 2026"
