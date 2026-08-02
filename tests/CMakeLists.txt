@@ -4320,6 +4320,7 @@ add_executable(test_bip119_ctv_vectors
 add_dependencies(test_bip119_ctv_vectors gtest gtest_main)
 target_link_libraries(test_bip119_ctv_vectors PRIVATE
   dinero_consensus
+  jsoncpp_static
   gtest
   gtest_main
 )
@@ -4329,10 +4330,16 @@ target_include_directories(test_bip119_ctv_vectors PRIVATE
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
 )
+# Absolute path to the pinned upstream corpus. Injected rather than resolved
+# relative to the working directory so the test cannot silently find nothing
+# when ctest runs it from a different cwd.
+target_compile_definitions(test_bip119_ctv_vectors PRIVATE
+  DINERO_BIP119_CTVHASH_JSON="${CMAKE_SOURCE_DIR}/tests/vectors/bip119_ctvhash.json"
+)
 add_test(NAME BIP119CTVVectors COMMAND test_bip119_ctv_vectors)
 set_tests_properties(BIP119CTVVectors PROPERTIES
   LABELS "consensus;covenant;ctv"
-  TIMEOUT 10
+  TIMEOUT 60
 )
 
 add_executable(test_taproot_scriptpath_consensus
@@ -4478,6 +4485,30 @@ add_test(NAME CcvSuccessorBinding COMMAND test_ccv_successor_binding)
 set_tests_properties(CcvSuccessorBinding PROPERTIES
   LABELS "consensus;covenant;ccv;scriptpath"
   TIMEOUT 10
+)
+
+# CCV has no upstream BIP, no published vector corpus, and no second
+# implementation to differ against. Adversarial coverage attacking each
+# numbered rule of CCV_SUCCESSOR_BINDING_V1 is the substitute for that.
+add_executable(test_ccv_adversarial
+  tests/consensus/test_ccv_adversarial.cpp
+)
+add_dependencies(test_ccv_adversarial gtest gtest_main)
+target_link_libraries(test_ccv_adversarial PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_ccv_adversarial)
+target_include_directories(test_ccv_adversarial PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CcvAdversarial COMMAND test_ccv_adversarial)
+set_tests_properties(CcvAdversarial PROPERTIES
+  LABELS "consensus;covenant;ccv;scriptpath"
+  TIMEOUT 30
 )
 
 # Production wallet construction and checksummed recovery descriptors for the
