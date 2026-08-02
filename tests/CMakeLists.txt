@@ -4505,6 +4505,32 @@ target_include_directories(test_ccv_adversarial PRIVATE
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
 )
+# Implementation-independent CCV reference model, differentially tested against
+# production. CCV has no upstream vectors and no second implementation; this
+# supplies one, derived from the spec rather than from covenants.cpp.
+add_executable(test_ccv_reference_model
+  tests/consensus/test_ccv_reference_model.cpp
+)
+add_dependencies(test_ccv_reference_model gtest gtest_main)
+target_link_libraries(test_ccv_reference_model PRIVATE
+  dinero_consensus
+  secp256k1
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_ccv_reference_model)
+target_include_directories(test_ccv_reference_model PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CcvReferenceModel COMMAND test_ccv_reference_model)
+set_tests_properties(CcvReferenceModel PROPERTIES
+  LABELS "consensus;covenant;ccv;scriptpath"
+  TIMEOUT 120
+)
+
 add_test(NAME CcvAdversarial COMMAND test_ccv_adversarial)
 set_tests_properties(CcvAdversarial PROPERTIES
   LABELS "consensus;covenant;ccv;scriptpath"
