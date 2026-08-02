@@ -38,6 +38,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <string>
 #include <unordered_map>
@@ -108,21 +109,18 @@ TEST_F(UtxoSetCanonicalActivation, RegtestActivationBoundaryIsTen) {
     EXPECT_TRUE(IsUtreexoCanonicalRootsActive(11));
 }
 
-// Mainnet semantics at the CURRENT chain height, pinned from a live read-only
-// query of the fleet (2026-08-02, height 77700, all four nodes in consensus):
+// Mainnet activation boundary. This pins the HEIGHT LOGIC only.
 //
-//     commitment  e2574c2c86bcf66240ac2cfca2bcfadbaaed05a9cdb5c347af6aaea6fcf9b72d
-//     num_leaves  235186
-//     num_roots   10
+// It deliberately does NOT claim to verify anything about the live chain: the
+// fleet's commitment and leaf/root counts are recorded in issue #490, not here,
+// because a comment in a test file is not an assertion and would rot silently.
 //
-// popcount(235186) == 10 == num_roots, so the invariant Stage 3 restored --
-// roots_[h].has_value() <=> bit h of numLeaves_ -- HOLDS on the live chain.
-// Canonical mode is functioning in production.
-//
-// This asserts the mode our code derives for that height matches. It is not a
-// substitute for an offline replay against real mainnet data; see
-// #490 for that step.
-TEST(UtxoSetCanonicalActivationMainnet, LiveHeightDerivesCanonicalMode) {
+// Note also that popcount(num_leaves) == num_roots does NOT prove canonical
+// mode is enabled -- a healthy LEGACY forest satisfies the same relation
+// whenever no root subtree has been fully drained. The two modes only diverge
+// once a subtree empties. That relation is consistency evidence, not a mode
+// oracle.
+TEST(UtxoSetCanonicalActivationMainnet, MainnetActivationBoundaryIs2870) {
     SelectParams(Chain::MAINNET);
     EXPECT_EQ(GetUtreexoCanonicalRootsActivationHeight(), 2870U)
         << "mainnet activation height moved; the live observations below no "
@@ -130,7 +128,7 @@ TEST(UtxoSetCanonicalActivationMainnet, LiveHeightDerivesCanonicalMode) {
     EXPECT_FALSE(IsUtreexoCanonicalRootsActive(2869));
     EXPECT_TRUE(IsUtreexoCanonicalRootsActive(2870));
     EXPECT_TRUE(IsUtreexoCanonicalRootsActive(77700))
-        << "the live chain height must derive canonical mode";
+        << "a height well past activation must derive canonical mode";
     SelectParams(Chain::REGTEST);
 }
 
@@ -234,6 +232,62 @@ TEST_F(UtxoSetCanonicalActivation, BulkLoadAdoptsCanonicalModeForItsHeight) {
         << "bulk load well past activation did not enable canonical mode";
 }
 
+// Legacy V2 snapshot import at a POST-activation height.
+//
+// This is the live case that actually matters for BulkLoad. Normal startup does
+// NOT keep BulkLoad's forest -- chainstate_service.cpp:2164 discards it
+// immediately, because BulkLoad rebuilds sorted by OutPoint rather than in
+// chronological insertion order, and the real forest comes from checkpoint
+// deserialization or block replay. The consumer that DOES keep it is snapshot
+// import (LoadSnapshot / assumeutxo, chainstate_service.cpp:9196).
+//
+// A v2 payload carries no canonical-mode flag, so deserialize() defaults it to
+// false -- the pre-fork mode it was written under. Importing such a snapshot at
+// a post-activation height therefore yields a forest in the WRONG mode unless
+// something derives the mode from the height.
+TEST_F(UtxoSetCanonicalActivation, LegacyV2PayloadImportedPostActivationNeedsHeightDerivedMode) {
+    // Build a forest in canonical (post-activation) mode.
+    UtreexoForest original;
+    original.setCanonicalEmptyRoots(true);
+    for (uint8_t i = 0; i < 8; ++i) {
+        ASSERT_NE(original.add(UtreexoHash(32, static_cast<uint8_t>(0x40 + i))),
+                  UINT64_MAX);
+    }
+    const std::string canonical_commitment = HexOf(original.getCommitment());
+
+    // Emit a genuine v2 payload via the debug injection knob, so this exercises
+    // the real legacy format rather than a hand-built approximation.
+    ::setenv("DINERO_FOREST_SERIALIZE_LEGACY_V2", "1", 1);
+    const auto v2_bytes = original.serialize();
+    ::unsetenv("DINERO_FOREST_SERIALIZE_LEGACY_V2");
+
+    const auto v3_bytes = original.serialize();
+    ASSERT_NE(HexOf(v2_bytes), HexOf(v3_bytes))
+        << "the v2 injection knob produced a v3 payload; this test would be "
+           "checking nothing";
+
+    // Importing the v2 payload loses the flag: it defaults to legacy.
+    UtreexoForest imported = UtreexoForest::deserialize(v2_bytes);
+    ASSERT_GT(imported.getNumLeaves(), 0U)
+        << "v2 payload failed to deserialize at all";
+    EXPECT_FALSE(imported.isCanonicalEmptyRoots())
+        << "a v2 payload carries no flag; deserialize must default to legacy";
+
+    // Deriving the mode from a post-activation height repairs it. This is what
+    // BulkLoad now does, and what snapshot import relies on.
+    SelectParams(Chain::MAINNET);
+    const uint32_t post_activation_height = 77'700;
+    ASSERT_TRUE(IsUtreexoCanonicalRootsActive(post_activation_height));
+    imported.setCanonicalEmptyRoots(true);
+    imported.rebuildRoots();
+    SelectParams(Chain::REGTEST);
+
+    EXPECT_TRUE(imported.isCanonicalEmptyRoots());
+    EXPECT_EQ(HexOf(imported.getCommitment()), canonical_commitment)
+        << "commitment did not return to the canonical value after applying "
+           "height-derived mode to an imported v2 payload";
+}
+
 // ---------------------------------------------------------------------------
 // Differential: prove()+remove() vs removeAtKnownPosition(), byte-for-byte,
 // with DELIBERATELY DRAINED subtrees -- the construction Stage 3 changed.
@@ -312,12 +366,43 @@ TEST_F(UtxoSetCanonicalActivation,
 
         // Subtrees are now fully drained. Adding on top is where the pre-fix
         // nullopt-vs-sentinel difference cascaded.
+        std::vector<UtreexoHash> refilled;
         for (uint8_t i = 0; i < 4; ++i) {
             const UtreexoHash fresh = LeafFromByte(static_cast<uint8_t>(0xA0 + i));
+            refilled.push_back(fresh);
             ASSERT_NE(via_proof.add(fresh), UINT64_MAX);
             ASSERT_NE(via_trusted.add(fresh), UINT64_MAX);
             ASSERT_EQ(Capture(via_proof), Capture(via_trusted))
                 << "states diverged after post-drain add " << int(i);
+        }
+
+        // REMOVE AGAIN after drain-and-refill. This is the decisive sequence:
+        // pre-fix, the drained subtree left roots_ in a shape that made the
+        // following add() take the "place" branch instead of "merge", and it
+        // was the NEXT proof-based removal that then failed to verify. A test
+        // that stopped at the refill would miss exactly that cascade.
+        for (size_t i = 0; i < refilled.size(); ++i) {
+            const auto pos_proof = via_proof.findLeafPosition(refilled[i]);
+            const auto pos_trusted = via_trusted.findLeafPosition(refilled[i]);
+            ASSERT_TRUE(pos_proof.has_value())
+                << "refilled leaf " << i << " not found after re-add";
+            ASSERT_EQ(pos_proof, pos_trusted)
+                << "positions diverged for refilled leaf " << i;
+
+            const auto proof = via_proof.prove(*pos_proof);
+            ASSERT_TRUE(proof.has_value())
+                << "prove() failed for a refilled leaf at " << *pos_proof;
+            EXPECT_TRUE(proof->verify(refilled[i], via_proof.getRoots()))
+                << "a proof generated after drain-and-refill did not verify "
+                   "(canonical=" << canonical << ") -- this is the exact "
+                   "pre-Stage-3 failure";
+            EXPECT_TRUE(via_proof.remove(refilled[i], *proof))
+                << "proof-based removal failed after drain-and-refill at leaf " << i;
+            EXPECT_TRUE(via_trusted.removeAtKnownPosition(*pos_trusted, refilled[i]))
+                << "trusted removal failed after drain-and-refill at leaf " << i;
+
+            ASSERT_EQ(Capture(via_proof), Capture(via_trusted))
+                << "states diverged removing refilled leaf " << i;
         }
     }
 }
@@ -334,7 +419,8 @@ TEST_F(UtxoSetCanonicalActivation, DrainedForestHoldsInvariantsUnderCanonicalMod
         live.push_back(leaf);
     }
 
-    const auto check_invariants = [&](const std::string& context) {
+    const auto check_invariants = [&](const std::string& context,
+                                     size_t expected_live) {
         // roots-slot / numLeaves invariant -- the one Stage 3 restored.
         const auto indexed = forest.getIndexedRoots();
         const uint64_t n = forest.getNumLeaves();
@@ -345,36 +431,76 @@ TEST_F(UtxoSetCanonicalActivation, DrainedForestHoldsInvariantsUnderCanonicalMod
                 << indexed[h].has_value() << " but bit " << h
                 << " of numLeaves(" << n << ")=" << bit;
         }
-        // Every still-live leaf must remain provable, and its proof verify.
+        // Root slots BEYOND indexed.size() must correspond to unset bits. A
+        // shorter roots_ vector than numLeaves_ requires would otherwise slip
+        // past the loop above entirely.
+        for (size_t h = indexed.size(); h < 64; ++h) {
+            EXPECT_EQ(((n >> h) & 1ULL), 0ULL)
+                << context << ": numLeaves(" << n << ") has bit " << h
+                << " set but roots_ only has " << indexed.size() << " slots";
+        }
+
+        // Every still-live leaf must remain provable and its proof verify.
+        //
+        // `live` is filtered explicitly rather than skipping absent leaves with
+        // a bare continue: a silent skip would let this loop assert nothing at
+        // all if findLeafPosition stopped finding anything, and the test would
+        // still pass.
+        size_t checked = 0;
         for (const auto& leaf : live) {
             const auto pos = forest.findLeafPosition(leaf);
             if (!pos.has_value()) {
-                continue;  // already drained
+                continue;  // drained earlier in this test, by construction
             }
+            ++checked;
             const auto proof = forest.prove(*pos);
             ASSERT_TRUE(proof.has_value())
                 << context << ": prove() failed for live leaf at " << *pos;
             EXPECT_TRUE(proof->verify(leaf, forest.getRoots()))
                 << context << ": proof did not verify for live leaf at " << *pos;
         }
-        // serialize -> deserialize must round-trip, and must not move the
-        // commitment.
+        EXPECT_EQ(checked, expected_live)
+            << context << ": expected " << expected_live
+            << " live leaves but found " << checked
+            << " -- the provability loop is not covering what it claims";
+
+        // serialize -> deserialize must round-trip, must not move the
+        // commitment, AND the reloaded forest must still serve valid proofs
+        // for every live leaf. Byte equality alone would not catch a forest
+        // that reloads identically but can no longer prove membership.
         const auto bytes = forest.serialize();
         const UtreexoForest reloaded = UtreexoForest::deserialize(bytes);
         EXPECT_EQ(HexOf(reloaded.serialize()), HexOf(bytes))
             << context << ": serialize/deserialize is not byte-identical";
         EXPECT_EQ(HexOf(reloaded.getCommitment()), HexOf(forest.getCommitment()))
             << context << ": commitment changed across a round trip";
+        size_t reloaded_checked = 0;
+        for (const auto& leaf : live) {
+            const auto pos = reloaded.findLeafPosition(leaf);
+            if (!pos.has_value()) {
+                continue;
+            }
+            ++reloaded_checked;
+            const auto proof = reloaded.prove(*pos);
+            ASSERT_TRUE(proof.has_value())
+                << context << ": prove() failed after deserialize at " << *pos;
+            EXPECT_TRUE(proof->verify(leaf, reloaded.getRoots()))
+                << context << ": proof did not verify after deserialize at " << *pos;
+        }
+        EXPECT_EQ(reloaded_checked, expected_live)
+            << context << ": deserialized forest lost live leaves ("
+            << reloaded_checked << " vs " << expected_live << ")";
     };
 
-    check_invariants("initial");
+    check_invariants("initial", live.size());
 
     // Drain to empty, checking after every mutation.
     for (size_t i = 0; i < live.size(); ++i) {
         const auto pos = forest.findLeafPosition(live[i]);
         ASSERT_TRUE(pos.has_value());
         ASSERT_TRUE(forest.removeAtKnownPosition(*pos, live[i]));
-        check_invariants("after draining leaf " + std::to_string(i));
+        check_invariants("after draining leaf " + std::to_string(i),
+                         live.size() - (i + 1));
         if (::testing::Test::HasFatalFailure()) {
             return;
         }
@@ -385,7 +511,8 @@ TEST_F(UtxoSetCanonicalActivation, DrainedForestHoldsInvariantsUnderCanonicalMod
         const UtreexoHash fresh = LeafFromByte(static_cast<uint8_t>(0xB0 + i));
         ASSERT_NE(forest.add(fresh), UINT64_MAX);
         live.push_back(fresh);
-        check_invariants("after post-drain add " + std::to_string(i));
+        check_invariants("after post-drain add " + std::to_string(i),
+                         static_cast<size_t>(i) + 1);
         if (::testing::Test::HasFatalFailure()) {
             return;
         }
