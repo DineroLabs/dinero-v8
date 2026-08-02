@@ -37,14 +37,18 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
   watch scripts atomically, and re-derives them after wallet restart. Its
   construction and recovery contract is documented in
   `../wallet/COVENANT_PROFILE_V1_RECOVERY.md`.
-- The wallet CCV artifact proves permissionless state continuity only. Its
-  fixed script has no owner signature and the RPC requires an explicit
-  `permissionless: true` acknowledgement. Owner-authorized CCV construction
-  is not implemented and remains a production blocker.
+- The default wallet CCV artifact is owner-authorized by a BIP340 x-only key.
+  Its script executes CCV continuity first and then `OP_CHECKSIG`; the signed
+  transaction commits the successor output derived from the chosen next state.
+  The public key and wallet derivation origin survive in the checksummed
+  descriptor, while the private key is re-derived and matched at spend time.
+  The original permissionless type remains available only with explicit
+  `permissionless: true` acknowledgement.
 - `CovenantWalletMultinodeLifecycle` exercises two live daemons: CTV and CCV
-  funding, normal peer relay and mining, an ordinary wallet fee input on a CCV
-  transition, wallet restart and descriptor recovery, a longer-chain reorg,
-  mempool revalidation, independent rebroadcast, and reconfirmation.
+  funding, owner and ordinary fee-input signing on a CCV transition, normal
+  peer relay and mining, wallet restart and descriptor/key recovery, a
+  longer-chain reorg, mempool revalidation, independent rebroadcast, and
+  reconfirmation.
 
 ## Deliberately dormant
 
