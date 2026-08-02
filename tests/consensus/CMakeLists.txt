@@ -876,6 +876,33 @@ target_include_directories(consensus_fuzzer PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+# #490: transactionality of ApplyBlock/UndoBlock. Asserts full before/after
+# state equality after injected failures -- the property the repair claims.
+add_executable(test_consensus_utxo_set_transactional
+    test_consensus_utxo_set_transactional.cpp
+)
+add_dependencies(test_consensus_utxo_set_transactional gtest gtest_main)
+target_link_libraries(test_consensus_utxo_set_transactional PRIVATE
+    dinero_consensus
+    dinero_tx_primitives
+    dinero_crypto
+    gtest
+    gtest_main
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+)
+target_include_directories(test_consensus_utxo_set_transactional PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME ConsensusUTXOSetTransactionalUnit
+         COMMAND test_consensus_utxo_set_transactional)
+set_tests_properties(ConsensusUTXOSetTransactionalUnit PROPERTIES
+    LABELS "consensus;utreexo;regression"
+    TIMEOUT 120
+)
+
 # #490 regression pin: the undo delta must never claim a deletion that did not
 # happen. Runs the five seeds that exposed the corruption. Deliberately does NOT
 # assert fuzzer exit status -- see the header of the script for why.

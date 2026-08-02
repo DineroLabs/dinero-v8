@@ -90,15 +90,33 @@ bool ConsensusUTXOSet::ApplyBlock(const Block& block, uint32_t height,
     // ALL-OR-NOTHING (issue #490).
     //
     // ProcessTransaction mutates both the UTXO map and the Utreexo forest as it
-    // goes. Before this, a mid-block failure returned false having already
+    // goes. A mid-block failure previously returned false having already
     // applied part of the block: some coins spent, some leaves removed, some
-    // outputs created. The caller had no way to know how far it got, and no way
-    // to get back. Every subsequent operation then ran against a state that
-    // corresponds to no block boundary.
+    // outputs created, at a state corresponding to no block boundary.
     //
-    // Snapshot first, roll back on any failure. A failed ApplyBlock must leave
-    // the set exactly as it found it.
-    const UTXOSnapshot pre_apply = Snapshot();
+    // Rollback uses an EXACT in-memory copy, deliberately NOT
+    // Snapshot()/Restore(). That path serializes the forest, and its own
+    // deserializer can refuse the payload it just produced -- falling back to a
+    // rebuild that lands on a different leaf count and root:
+    //
+    //   [Utreexo Deserialize] Serialized roots do not match node/deletion state
+    //   WARNING [Restore]: Forest numLeaves (109) != snapshot numLeaves (124)
+    //
+    // Rolling back through a lossy primitive would replace one partial state
+    // with a different corrupted state. UtreexoForest holds only value members
+    // (roots_, numLeaves_, nodes_, leaf_positions_, deleted_positions_,
+    // canonical_empty_roots_), so its implicit copy is exact and needs no
+    // serialization round-trip.
+    auto saved_utxos = utxos_;
+    UtreexoForest saved_forest = forest_;
+    const uint32_t saved_height = height_;
+    const uint256 saved_best_block = best_block_;
+    const auto rollback = [&]() {
+        utxos_ = std::move(saved_utxos);
+        forest_ = std::move(saved_forest);
+        height_ = saved_height;
+        best_block_ = saved_best_block;
+    };
 
     // Initialize undo data
     undo = BlockUndo(height, block_hash);
@@ -111,7 +129,7 @@ bool ConsensusUTXOSet::ApplyBlock(const Block& block, uint32_t height,
         bool is_coinbase = (tx_idx == 0);
 
         if (!ProcessTransaction(tx, height, is_coinbase, undo, utreexo_delta, error)) {
-            Restore(pre_apply);
+            rollback();
             undo = BlockUndo(height, block_hash);  // discard the partial delta
             return false;
         }
@@ -263,17 +281,24 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
         return false;
     }
 
-    // ALL-OR-NOTHING (issue #490), same reasoning as ApplyBlock.
+    // ALL-OR-NOTHING (issue #490), same reasoning and same exact-copy rollback
+    // as ApplyBlock.
     //
     // This walks the UTXO map first and the Utreexo forest afterwards, so a
     // forest failure previously returned with the UTXO map already rewound --
     // the two halves of the same state disagreeing about which block they are
-    // at. That is precisely the shape ConsensusFuzzer hit: restoreDeletedLeaf
-    // rejected a delta entry after the coins had already been moved.
-    //
-    // Snapshotting here also covers the reverse case the scope calls out: a
-    // UTXO-map failure occurring after the forest has already been mutated.
-    const UTXOSnapshot pre_undo = Snapshot();
+    // at. The copy also covers the reverse case: a UTXO-map failure occurring
+    // after the forest has already been mutated.
+    auto saved_utxos = utxos_;
+    UtreexoForest saved_forest = forest_;
+    const uint32_t saved_height = height_;
+    const uint256 saved_best_block = best_block_;
+    const auto rollback = [&]() {
+        utxos_ = std::move(saved_utxos);
+        forest_ = std::move(saved_forest);
+        height_ = saved_height;
+        best_block_ = saved_best_block;
+    };
 
     // Process transactions in reverse order
     size_t spent_index = undo.spent_coins.size();
@@ -304,14 +329,22 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
             for (size_t i = tx.vin.size(); i > 0; --i) {
                 if (spent_index == 0) {
                     error = "Undo data exhausted";
-                    Restore(pre_undo);
+                    rollback();
                     return false;
                 }
                 --spent_index;
 
                 const UndoEntry& undo_entry = undo.spent_coins[spent_index];
                 OutPoint outpoint(TxId(undo_entry.txid), undo_entry.vout);
-                AddCoin(outpoint, undo_entry.coin);
+                // AddCoin returns false when the outpoint already exists.
+                // Ignoring it silently accepted an undo that did not actually
+                // restore the coin, leaving the UTXO map disagreeing with the
+                // undo record it was built from.
+                if (!AddCoin(outpoint, undo_entry.coin)) {
+                    error = "undo-restore-coin-failed: " + outpoint.ToString();
+                    rollback();
+                    return false;
+                }
             }
         }
     }
@@ -324,7 +357,7 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
         if (!delta.addedLeaves.empty()) {
             if (!forest_.removeLastNLeaves(delta.addedLeaves.size())) {
                 error = "utreexo-delta-undo-remove-failed";
-                Restore(pre_undo);
+                rollback();
                 return false;
             }
         }
@@ -334,7 +367,7 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
             if (!forest_.restoreDeletedLeaf(it->position, it->leafHash)) {
                 error = "utreexo-delta-undo-restore-failed at position " +
                         std::to_string(it->position);
-                Restore(pre_undo);
+                rollback();
                 return false;
             }
         }

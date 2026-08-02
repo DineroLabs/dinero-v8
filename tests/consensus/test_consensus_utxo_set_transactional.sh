@@ -17,10 +17,20 @@
 # here. Each is deterministic; the failure only looked intermittent because the
 # fuzzer's default seed is time-based.
 #
-# WHAT THIS DELIBERATELY DOES NOT PIN
-# -----------------------------------
-# It does NOT require the fuzzer to exit 0 on these seeds, and that is not an
-# oversight.
+# WHY NONZERO EXIT IS TOLERATED -- AND HOW NARROWLY
+# -------------------------------------------------
+# An earlier version swallowed the exit status with `|| true`. That was wrong:
+# it would have accepted a segfault, an assertion abort, or any unrelated
+# regression so long as one text marker was absent. The exit code is now
+# captured and classified:
+#
+#   exit 0                   -> ideal
+#   exit != 0 + known sig    -> tolerated, ONLY with that signature
+#   exit != 0, no signature  -> FAIL (unrelated regression)
+#   exit >= 128              -> FAIL always (signal / abort / segfault)
+#
+# The tolerance exists because these seeds still exit nonzero for a DIFFERENT
+# and deeper reason, and that is not an oversight.
 #
 # The underlying reason remove() fails at all is a separate, previously known
 # accumulator defect: a freshly generated proof does not verify against the
@@ -48,6 +58,24 @@ SEEDS=(6 25 27 31 33)
 # Emitted by UtreexoForest::restoreDeletedLeaf when asked to restore a position
 # that was never deleted -- i.e. when the undo delta lied.
 CORRUPTION_MARKER="was not deleted"
+# The precise known accumulator/restore failure that is still tolerated. A
+# nonzero exit must be explained by one of these, or it is a real regression.
+# The ROOT known defect: a freshly generated proof does not verify against the
+# forest it came from (utreexo_accumulator.cpp:1302 -- recomputePath() clearing
+# roots_[h] while numLeaves_ still has bit h set). With this repair in place
+# that now surfaces as a clean ApplyBlock rejection instead of silent undo
+# corruption, which is exactly the intended change in behaviour.
+#
+# The deserialize/restore entries are downstream symptoms that appear only when
+# something routes through the lossy Snapshot()/Restore() path -- the fuzzer
+# harness still does so in its own PerformReorg. They are listed so a harness
+# route is also explained rather than silently tolerated.
+KNOWN_SIGNATURES=(
+    "STEP1 proof.verify FAILED"
+    "Serialized roots do not match node/deletion state"
+    "forest deserialize refused payload"
+    "Forest root mismatch after restore"
+)
 
 info() { printf '[INFO] %s\n' "$*"; }
 pass() { printf '[PASS] %s\n' "$*"; }
@@ -63,33 +91,65 @@ info "pinning ${#SEEDS[@]} seeds against the #490 undo-delta corruption"
 failures=0
 for seed in "${SEEDS[@]}"; do
     log="${WORK_DIR}/seed_${seed}.log"
-    # The fuzzer may still exit non-zero on the separate accumulator defect;
-    # that is expected and is not what this test measures.
-    "${FUZZER}" "${seed}" "${ITERATIONS}" >"${log}" 2>&1 || true
+    status=0
+    "${FUZZER}" "${seed}" "${ITERATIONS}" >"${log}" 2>&1 || status=$?
 
+    # 1. A crash or abort is never acceptable, whatever the log says.
+    if [[ "${status}" -ge 128 ]]; then
+        printf '[FAIL] seed %s: fuzzer terminated by signal (exit %s)\n' "${seed}" "${status}" >&2
+        tail -30 "${log}" >&2
+        failures=$((failures + 1))
+        continue
+    fi
+
+    # 2. The property under repair: no fabricated deletion records.
     hits="$(grep -c "${CORRUPTION_MARKER}" "${log}" || true)"
     if [[ "${hits}" -ne 0 ]]; then
         printf '[FAIL] seed %s: undo delta claimed %s deletion(s) that never happened\n' \
             "${seed}" "${hits}" >&2
         grep -n "${CORRUPTION_MARKER}" "${log}" | head -5 >&2
         failures=$((failures + 1))
-    else
-        pass "seed ${seed}: no corrupt deletion records"
+        continue
     fi
 
-    # Anti-vacuity: a run that never reached the accumulator would trivially
-    # show zero corruption markers. Require evidence the seed actually
-    # exercised block application.
+    # 3. Anti-vacuity: a run that never applied a block shows zero corruption
+    #    markers trivially.
     if ! grep -q "Blocks applied:" "${log}"; then
-        fail "seed ${seed}: fuzzer produced no block-application summary; the run did not exercise the code under test"
+        printf '[FAIL] seed %s: no block-application summary; the run never exercised the code under test\n' \
+            "${seed}" >&2
+        failures=$((failures + 1))
+        continue
+    fi
+
+    # 4. Classify a nonzero exit. Tolerated ONLY for the known accumulator
+    #    defect, never for arbitrary failure.
+    if [[ "${status}" -ne 0 ]]; then
+        matched=""
+        for signature in "${KNOWN_SIGNATURES[@]}"; do
+            if grep -q "${signature}" "${log}"; then
+                matched="${signature}"
+                break
+            fi
+        done
+        if [[ -z "${matched}" ]]; then
+            printf '[FAIL] seed %s: exit %s with no known accumulator signature -- unrelated regression, not the tolerated defect\n' \
+                "${seed}" "${status}" >&2
+            tail -40 "${log}" >&2
+            failures=$((failures + 1))
+            continue
+        fi
+        pass "seed ${seed}: no corrupt deletion records (exit ${status}, known defect)"
+    else
+        pass "seed ${seed}: no corrupt deletion records (exit 0)"
     fi
 done
 
-[[ "${failures}" -eq 0 ]] || fail "${failures} seed(s) still record deletions that never happened"
+[[ "${failures}" -eq 0 ]] || fail "${failures} seed(s) failed (corruption, crash, vacuous run, or an unexplained nonzero exit)"
 
 pass "all ${#SEEDS[@]} pinned seeds free of undo-delta corruption"
-info "Not asserted here: fuzzer exit status. These seeds can still fail on the"
-info "separate accumulator proof/root defect (utreexo_accumulator.cpp:1302),"
-info "which is a coordinated consensus change and out of scope. Tighten this"
-info "test to require exit 0 once that is fixed."
+info "Nonzero exits above were CLASSIFIED, not ignored: each was explained by"
+info "the known accumulator proof/root defect (utreexo_accumulator.cpp:1302), a"
+info "coordinated consensus change that is out of scope here. Any nonzero exit"
+info "without that signature, and any signal/abort, fails this test. Remove the"
+info "tolerance branch and require exit 0 once that defect is fixed."
 exit 0
