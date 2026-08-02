@@ -13,9 +13,9 @@
 #
 #     [Utreexo Restore] Position P was not deleted
 #
-# ConsensusFuzzer reproduced it on 5 of 40 fixed seeds. Those five are pinned
-# here. Each is deterministic; the failure only looked intermittent because the
-# fuzzer's default seed is time-based.
+# ConsensusFuzzer reproduced it on 5 of 40 fixed seeds. The FULL 1..40 sweep is
+# pinned here, not just those five. Each seed is deterministic; the failure only
+# looked intermittent because the fuzzer's default seed is time-based.
 #
 # EXIT STATUS MUST BE ZERO
 # ------------------------
@@ -122,10 +122,11 @@ for seed in "${SEEDS[@]}"; do
     #
     #    Earlier drafts first swallowed the status with `|| true`, then
     #    tolerated nonzero under one named signature, because the seeds still
-    #    tripped the accumulator proof defect. Neither is needed now:
+    #    tripped the legacy-mode proof path (a post-activation forest that never
+    #    had canonical mode applied). Neither is needed now:
     #    ConsensusUTXOSet uses removeAtKnownPosition() -- the same trusted
     #    primitive the live BlockValidator uses -- so it no longer routes
-    #    through the broken proof path, and all 40 pinned seeds exit 0.
+    #    through the legacy-mode proof path, and all 40 pinned seeds exit 0.
     if [[ "${status}" -ne 0 ]]; then
         printf '[FAIL] seed %s: exit %s (exit 0 is required)\n' "${seed}" "${status}" >&2
         tail -40 "${log}" >&2
@@ -148,8 +149,15 @@ fi
 [[ "${failures}" -eq 0 ]] || fail "${failures} seed(s) failed (corruption, crash, vacuous run, forbidden signature, or an unexplained nonzero exit)"
 
 pass "all ${#SEEDS[@]} seeds (1..40) exit 0 and are free of undo-delta corruption"
-info "All seeds exit 0. ConsensusUTXOSet uses removeAtKnownPosition(), the same"
-info "trusted primitive the live BlockValidator uses, so it no longer routes"
-info "through the broken proof path. The underlying prove()/verify() and"
-info "serialization defect is NOT fixed by this and remains tracked in #490."
+info "All 40 seeds exit 0. ConsensusUTXOSet uses removeAtKnownPosition(), the"
+info "same trusted primitive the live BlockValidator uses."
+info ""
+info "The canonical-roots fix (Stage 3) is ALREADY DEPLOYED and active on"
+info "mainnet at height 2870. This change is Stage 2 -- the trusted-position"
+info "path -- applied to this owned-forest API."
+info ""
+info "#490 remains open for a narrower reason: pure ApplyBlock/UndoBlock do not"
+info "apply the height-derived canonical mode (Restore() already does), so this"
+info "API can build a post-activation forest still running legacy semantics."
+info "Wiring that in, and proving Stage 3 equivalence, is the follow-up."
 exit 0

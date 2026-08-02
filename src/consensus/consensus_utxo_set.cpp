@@ -189,9 +189,21 @@ bool ConsensusUTXOSet::ProcessTransaction(const Transaction& tx, uint32_t height
             // leaf_hash from its OWN UTXO, and obtained the position from its
             // own findLeafPosition(). There is no adversarial proof here to
             // re-verify against ourselves, so generating one and verifying it
-            // adds no security -- it only routes through the known-broken
-            // proof path (a freshly generated proof can fail to verify against
-            // the forest it came from; utreexo_accumulator.cpp:1302).
+            // adds no security.
+            //
+            // It also avoids a path that is unsound IN THIS API SPECIFICALLY.
+            // The canonical-roots fix (Stage 3,
+            // utreexo_canonical_roots_activation.h) is deployed and active on
+            // mainnet at height 2870; it is not an open defect. But ApplyBlock
+            // and UndoBlock never apply the height-derived canonical mode --
+            // Restore() does, they do not -- so this API can build a
+            // post-activation forest still running LEGACY semantics, and it is
+            // that mode mismatch, not unrepaired root logic, that makes a
+            // freshly generated proof fail to verify here.
+            //
+            // Wiring height-aware semantics into these two entry points is
+            // tracked in #490. Until then, this uses the same Stage 2 trusted
+            // primitive the live validator uses.
             //
             // removeAtKnownPosition() skips ONLY that verify step. It still
             // enforces bounds, not-already-deleted, and leaf-hash match, so
