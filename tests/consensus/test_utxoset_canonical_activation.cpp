@@ -108,6 +108,32 @@ TEST_F(UtxoSetCanonicalActivation, RegtestActivationBoundaryIsTen) {
     EXPECT_TRUE(IsUtreexoCanonicalRootsActive(11));
 }
 
+// Mainnet semantics at the CURRENT chain height, pinned from a live read-only
+// query of the fleet (2026-08-02, height 77700, all four nodes in consensus):
+//
+//     commitment  e2574c2c86bcf66240ac2cfca2bcfadbaaed05a9cdb5c347af6aaea6fcf9b72d
+//     num_leaves  235186
+//     num_roots   10
+//
+// popcount(235186) == 10 == num_roots, so the invariant Stage 3 restored --
+// roots_[h].has_value() <=> bit h of numLeaves_ -- HOLDS on the live chain.
+// Canonical mode is functioning in production.
+//
+// This asserts the mode our code derives for that height matches. It is not a
+// substitute for an offline replay against real mainnet data; see
+// #490 for that step.
+TEST(UtxoSetCanonicalActivationMainnet, LiveHeightDerivesCanonicalMode) {
+    SelectParams(Chain::MAINNET);
+    EXPECT_EQ(GetUtreexoCanonicalRootsActivationHeight(), 2870U)
+        << "mainnet activation height moved; the live observations below no "
+           "longer describe the same fork";
+    EXPECT_FALSE(IsUtreexoCanonicalRootsActive(2869));
+    EXPECT_TRUE(IsUtreexoCanonicalRootsActive(2870));
+    EXPECT_TRUE(IsUtreexoCanonicalRootsActive(77700))
+        << "the live chain height must derive canonical mode";
+    SelectParams(Chain::REGTEST);
+}
+
 // THE BOUNDARY: 9 -> 10 activates; undo 10 -> 9 restores legacy semantics.
 TEST_F(UtxoSetCanonicalActivation, ApplyAcrossBoundaryActivatesAndUndoRestores) {
     ConsensusUTXOSet set;
