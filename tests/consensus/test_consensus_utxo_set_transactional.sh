@@ -17,36 +17,14 @@
 # here. Each is deterministic; the failure only looked intermittent because the
 # fuzzer's default seed is time-based.
 #
-# WHY NONZERO EXIT IS TOLERATED -- AND HOW NARROWLY
-# -------------------------------------------------
-# An earlier version swallowed the exit status with `|| true`. That was wrong:
-# it would have accepted a segfault, an assertion abort, or any unrelated
-# regression so long as one text marker was absent. The exit code is now
-# captured and classified:
+# EXIT STATUS MUST BE ZERO
+# ------------------------
+# An earlier draft swallowed exit status with `|| true`; a later one tolerated
+# nonzero under one named signature. Neither is needed now -- see step 4 below.
 #
-#   exit 0                   -> ideal
-#   exit != 0 + known sig    -> tolerated, ONLY with that signature
-#   exit != 0, no signature  -> FAIL (unrelated regression)
-#   exit >= 128              -> FAIL always (signal / abort / segfault)
-#
-# The tolerance exists because these seeds still exit nonzero for a DIFFERENT
-# and deeper reason, and that is not an oversight.
-#
-# The underlying reason remove() fails at all is a separate, previously known
-# accumulator defect: a freshly generated proof does not verify against the
-# forest it was generated from (documented at utreexo_accumulator.cpp:1302 --
-# recomputePath() clearing roots_[h] while numLeaves_ still has bit h set).
-# Snapshot/Restore is lossy for the same reason: on rollback the serialized
-# forest is refused by its own deserializer and the fallback rebuild lands on a
-# different leaf count and root.
-#
-# Fixing that is a coordinated consensus change, explicitly out of scope for the
-# repair this test accompanies. Asserting exit 0 here would either fail forever
-# or tempt someone to "fix" root semantics quietly inside an error-handling PR.
-#
-# So this pins exactly what was repaired and nothing more: the undo delta no
-# longer lies about deletions. When the accumulator defect is fixed, this test
-# should be TIGHTENED to require exit 0 on all five seeds.
+# The forbidden-signature check remains: the lossy Snapshot()/Restore()
+# symptoms this repair eliminated must not reappear, and the scan result is
+# reported affirmatively rather than as an absence.
 
 set -euo pipefail
 
@@ -58,17 +36,6 @@ SEEDS=(6 25 27 31 33)
 # Emitted by UtreexoForest::restoreDeletedLeaf when asked to restore a position
 # that was never deleted -- i.e. when the undo delta lied.
 CORRUPTION_MARKER="was not deleted"
-# The precise known accumulator/restore failure that is still tolerated. A
-# nonzero exit must be explained by one of these, or it is a real regression.
-# The ONE tolerated signature: the root known defect -- a freshly generated
-# proof does not verify against the forest it came from
-# (utreexo_accumulator.cpp:1302, recomputePath() clearing roots_[h] while
-# numLeaves_ still has bit h set). With this repair in place it surfaces as a
-# clean ApplyBlock rejection instead of silent undo corruption.
-KNOWN_SIGNATURES=(
-    "STEP1 proof.verify FAILED"
-)
-
 # Symptoms of the LOSSY Snapshot()/Restore() rollback that this repair removed.
 # They must not reappear. Tolerating them would let the lossy path creep back in
 # unnoticed -- an earlier draft of this script did exactly that.
@@ -142,24 +109,19 @@ for seed in "${SEEDS[@]}"; do
         continue
     fi
 
-    # 4. Classify a nonzero exit. Tolerated ONLY for the known accumulator
-    #    defect, never for arbitrary failure.
+    # 4. Exit status must be ZERO. There is no tolerance branch.
+    #
+    #    Earlier drafts first swallowed the status with `|| true`, then
+    #    tolerated nonzero under one named signature, because the seeds still
+    #    tripped the accumulator proof defect. Neither is needed now:
+    #    ConsensusUTXOSet uses removeAtKnownPosition() -- the same trusted
+    #    primitive the live BlockValidator uses -- so it no longer routes
+    #    through the broken proof path, and all five seeds exit 0.
     if [[ "${status}" -ne 0 ]]; then
-        matched=""
-        for signature in "${KNOWN_SIGNATURES[@]}"; do
-            if grep -q "${signature}" "${log}"; then
-                matched="${signature}"
-                break
-            fi
-        done
-        if [[ -z "${matched}" ]]; then
-            printf '[FAIL] seed %s: exit %s with no known accumulator signature -- unrelated regression, not the tolerated defect\n' \
-                "${seed}" "${status}" >&2
-            tail -40 "${log}" >&2
-            failures=$((failures + 1))
-            continue
-        fi
-        pass "seed ${seed}: no corrupt deletion records (exit ${status}, known defect)"
+        printf '[FAIL] seed %s: exit %s (exit 0 is required)\n' "${seed}" "${status}" >&2
+        tail -40 "${log}" >&2
+        failures=$((failures + 1))
+        continue
     else
         pass "seed ${seed}: no corrupt deletion records (exit 0)"
     fi
@@ -177,9 +139,8 @@ fi
 [[ "${failures}" -eq 0 ]] || fail "${failures} seed(s) failed (corruption, crash, vacuous run, forbidden signature, or an unexplained nonzero exit)"
 
 pass "all ${#SEEDS[@]} pinned seeds free of undo-delta corruption"
-info "Nonzero exits above were CLASSIFIED, not ignored: each was explained by"
-info "the known accumulator proof/root defect (utreexo_accumulator.cpp:1302), a"
-info "coordinated consensus change that is out of scope here. Any nonzero exit"
-info "without that signature, and any signal/abort, fails this test. Remove the"
-info "tolerance branch and require exit 0 once that defect is fixed."
+info "All seeds exit 0. ConsensusUTXOSet uses removeAtKnownPosition(), the same"
+info "trusted primitive the live BlockValidator uses, so it no longer routes"
+info "through the broken proof path. The underlying prove()/verify() and"
+info "serialization defect is NOT fixed by this and remains tracked in #490."
 exit 0

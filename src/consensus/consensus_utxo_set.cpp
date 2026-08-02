@@ -184,29 +184,31 @@ bool ConsensusUTXOSet::ProcessTransaction(const Transaction& tx, uint32_t height
 
             // Remove from Utreexo, then record the deletion.
             //
-            // ORDER MATTERS (issue #490). This previously recorded the deletion
-            // BEFORE attempting removal and discarded remove()'s result, so a
-            // failed removal still left "position P was deleted" in the undo
-            // delta. UndoBlock later replayed that delta into
-            // restoreDeletedLeaf(P), which failed with "Position P was not
-            // deleted" because P had never been deleted at all. ConsensusFuzzer
-            // reproduced it on 5 of 40 fixed seeds.
+            // TRUSTED-POSITION REMOVAL, matching the live stateful path
+            // (block_validation.cpp:2198). This caller owns the forest, derived
+            // leaf_hash from its OWN UTXO, and obtained the position from its
+            // own findLeafPosition(). There is no adversarial proof here to
+            // re-verify against ourselves, so generating one and verifying it
+            // adds no security -- it only routes through the known-broken
+            // proof path (a freshly generated proof can fail to verify against
+            // the forest it came from; utreexo_accumulator.cpp:1302).
             //
-            // Every step now fails closed, and the delta is written only after
-            // the accumulator has actually changed. The delta must describe
+            // removeAtKnownPosition() skips ONLY that verify step. It still
+            // enforces bounds, not-already-deleted, and leaf-hash match, so
+            // failure handling is not weakened.
+            //
+            // ORDER MATTERS (issue #490). This previously recorded the deletion
+            // BEFORE attempting removal and discarded the return value, so a
+            // failed removal still left "position P was deleted" in the undo
+            // delta. UndoBlock replayed that into restoreDeletedLeaf(P), which
+            // failed with "Position P was not deleted". The delta must describe
             // what happened, never what was intended.
             auto position = forest_.findLeafPosition(leaf_hash);
             if (!position) {
                 error = "utreexo-leaf-missing: " + outpoint.ToString();
                 return false;
             }
-            auto proof = forest_.prove(*position);
-            if (!proof) {
-                error = "utreexo-proof-unavailable: " + outpoint.ToString() +
-                        " at position " + std::to_string(*position);
-                return false;
-            }
-            if (!forest_.remove(leaf_hash, *proof)) {
+            if (!forest_.removeAtKnownPosition(*position, leaf_hash)) {
                 error = "utreexo-remove-failed: " + outpoint.ToString() +
                         " at position " + std::to_string(*position);
                 return false;
