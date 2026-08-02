@@ -31,8 +31,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FUZZER="${CONSENSUS_FUZZER:-${ROOT_DIR}/build/tests/consensus/consensus_fuzzer}"
 ITERATIONS="${ITERATIONS:-1000}"
-# The exact seeds that exposed the corruption in a 1..40 sweep.
-SEEDS=(6 25 27 31 33)
+# The FULL deterministic sweep, not only the five seeds that originally failed.
+#
+# Pinning just the known-bad seeds would be a weaker gate: a regression that
+# broke a different seed would pass unnoticed. A complete 1..40 sweep costs a
+# few seconds and covers the space the original 5/40 failure was found in.
+#
+# Recorded result with trusted-position removal: 40/40 exit 0, 0 corruption
+# markers. Before it (proof-based removal): seeds 6, 25, 27, 31, 33 exit 1.
+SEEDS=($(seq 1 40))
+KNOWN_PREVIOUSLY_FAILING="6 25 27 31 33"
 # Emitted by UtreexoForest::restoreDeletedLeaf when asked to restore a position
 # that was never deleted -- i.e. when the undo delta lied.
 CORRUPTION_MARKER="was not deleted"
@@ -54,7 +62,8 @@ fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
-info "pinning ${#SEEDS[@]} seeds against the #490 undo-delta corruption"
+info "pinning ${#SEEDS[@]} seeds (full 1..40 sweep) against the #490 undo-delta corruption"
+info "previously failing under proof-based removal: ${KNOWN_PREVIOUSLY_FAILING}"
 
 failures=0
 forbidden_hits=0
@@ -138,7 +147,7 @@ fi
 
 [[ "${failures}" -eq 0 ]] || fail "${failures} seed(s) failed (corruption, crash, vacuous run, forbidden signature, or an unexplained nonzero exit)"
 
-pass "all ${#SEEDS[@]} pinned seeds free of undo-delta corruption"
+pass "all ${#SEEDS[@]} seeds (1..40) exit 0 and are free of undo-delta corruption"
 info "All seeds exit 0. ConsensusUTXOSet uses removeAtKnownPosition(), the same"
 info "trusted primitive the live BlockValidator uses, so it no longer routes"
 info "through the broken proof path. The underlying prove()/verify() and"

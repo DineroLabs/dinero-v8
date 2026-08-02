@@ -904,8 +904,10 @@ set_tests_properties(ConsensusUTXOSetTransactionalUnit PROPERTIES
 )
 
 # #490 regression pin: the undo delta must never claim a deletion that did not
-# happen. Runs the five seeds that exposed the corruption. Deliberately does NOT
-# assert fuzzer exit status -- see the header of the script for why.
+# happen. Runs the FULL deterministic 1..40 seed sweep (the corruption was
+# originally found on 5 of those 40) and REQUIRES exit 0 from every seed --
+# there is no tolerance branch. Also fails if a lossy Snapshot()/Restore()
+# symptom reappears.
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_utxo_set_transactional.sh)
     add_test(
         NAME ConsensusUTXOSetTransactional
