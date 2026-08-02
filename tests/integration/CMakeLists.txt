@@ -173,6 +173,23 @@ endif()
 # test-only ConsensusUTXOSet API? Cannot be answered by unit test -- ConnectBlock
 # transitively pulls chainstate, wallet, vault, RPC and mempool -- so it runs
 # against a real dinerod.
+# Runtime enforcement of the fail-closed snapshot container-format policy.
+# The unit tests prove the predicate; this proves LoadSnapshot() consults it,
+# rejects with the exact policy error (not a checksum/truncation/base-block
+# error), and mutates nothing -- including across a restart.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_snapshot_format_policy_runtime.sh)
+    add_test(
+        NAME SnapshotFormatPolicyRuntime
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_snapshot_format_policy_runtime.sh
+    )
+    set_tests_properties(SnapshotFormatPolicyRuntime PROPERTIES
+        LABELS "integration;assumeutxo;snapshot;policy"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 600
+    )
+    message(STATUS "  ✓ SnapshotFormatPolicyRuntime registered (daemon: $<TARGET_FILE:dinerod>)")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_reorg_state_restoration.sh)
     add_test(
         NAME UtreexoLiveReorgStateRestoration
