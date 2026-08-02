@@ -4525,6 +4525,35 @@ target_include_directories(test_ccv_reference_model PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include
   ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
 )
+# Bounded deterministic fuzz gate for the covenant paths. Deliberately NOT
+# given the `fuzz` label: CI excludes that label, so a fuzz-labelled target
+# produces zero CI signal (see issue #486). The same binary serves as the long
+# campaign via DINERO_COVENANT_FUZZ_ITERATIONS and the documented
+# ASan/UBSan/unsigned-overflow build.
+add_executable(test_covenant_fuzz
+  tests/consensus/test_covenant_fuzz.cpp
+)
+add_dependencies(test_covenant_fuzz gtest gtest_main)
+target_link_libraries(test_covenant_fuzz PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_covenant_fuzz)
+target_include_directories(test_covenant_fuzz PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+target_compile_definitions(test_covenant_fuzz PRIVATE
+  DINERO_COVENANT_FUZZ_SEEDS="${CMAKE_SOURCE_DIR}/tests/vectors/covenant_fuzz_seeds"
+)
+add_test(NAME CovenantFuzz COMMAND test_covenant_fuzz)
+set_tests_properties(CovenantFuzz PROPERTIES
+  LABELS "consensus;covenant;ccv;ctv"
+  TIMEOUT 300
+)
+
 add_test(NAME CcvReferenceModel COMMAND test_ccv_reference_model)
 set_tests_properties(CcvReferenceModel PROPERTIES
   LABELS "consensus;covenant;ccv;scriptpath"
