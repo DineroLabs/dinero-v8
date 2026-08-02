@@ -903,6 +903,34 @@ set_tests_properties(ConsensusUTXOSetTransactionalUnit PROPERTIES
     TIMEOUT 120
 )
 
+# #490 follow-up: canonical-roots activation plumbing in the pure API, and the
+# decisive differential proving prove()+remove() and removeAtKnownPosition()
+# agree byte-for-byte once the mode is correct.
+add_executable(test_utxoset_canonical_activation
+    test_utxoset_canonical_activation.cpp
+)
+add_dependencies(test_utxoset_canonical_activation gtest gtest_main)
+target_link_libraries(test_utxoset_canonical_activation PRIVATE
+    dinero_consensus
+    dinero_tx_primitives
+    dinero_crypto
+    gtest
+    gtest_main
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+)
+target_include_directories(test_utxoset_canonical_activation PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME UtxoSetCanonicalActivation
+         COMMAND test_utxoset_canonical_activation)
+set_tests_properties(UtxoSetCanonicalActivation PROPERTIES
+    LABELS "consensus;utreexo;canonical;activation"
+    TIMEOUT 120
+)
+
 # #490 regression pin: the undo delta must never claim a deletion that did not
 # happen. Runs the FULL deterministic 1..40 seed sweep (the corruption was
 # originally found on 5 of those 40) and REQUIRES exit 0 from every seed --

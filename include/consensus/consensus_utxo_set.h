@@ -287,6 +287,23 @@ private:
     uint32_t height_ = 0;
     uint256 best_block_;
 
+    // Height-aware canonical-roots semantics (issue #490).
+    //
+    // The canonical-roots fork (utreexo_canonical_roots_activation.h, Stage 3)
+    // changes what an empty subtree contributes to the commitment. The live
+    // BlockValidator flips the forest's mode and rebuilds roots when it first
+    // sees the activation height (block_validation.cpp:882), and Restore()
+    // derives the mode from the height being restored to.
+    //
+    // ApplyBlock and UndoBlock did neither, so this API could build a
+    // post-activation forest still running LEGACY semantics. That mode
+    // mismatch — not any unrepaired root logic — is what made a freshly
+    // generated proof fail to verify here.
+    //
+    // Rebuilds ONLY when crossing the boundary; a call at a height whose mode
+    // already matches is a no-op. Returns true iff a transition occurred.
+    bool ApplyCanonicalSemanticsForHeight(uint32_t height);
+
     // Helper: Process a single transaction for ApplyBlock
     bool ProcessTransaction(const struct Transaction& tx, uint32_t height,
                            bool is_coinbase, BlockUndo& undo,
