@@ -216,6 +216,33 @@ TEST_F(CcvAdversarialTest, RejectsOneByteOverMaximumStateDataSize) {
     EXPECT_FALSE(Verify());
 }
 
+// Spec rule 2: both state hashes must recompute from their contents.
+//
+// Found by tools/covenant_mutation_harness.py as a TEST-COVERAGE gap, not a
+// production defect: the recomputation check is present in production and is
+// load-bearing. What was missing was a test that would notice if it were ever
+// removed. Deleting it left this whole lane green, because every other test
+// either builds consistent states or corrupts stateHash in a way that ALSO
+// breaks the derived scripts.
+//
+// The attack the recompute check actually stops: the P2TR scripts commit only
+// to stateHash. counter and data are bound to that hash by nothing else. Keep a
+// stateHash that still derives the correct spent and successor scripts, but lie
+// about the counters, and rule 4 ends up validating attacker-chosen numbers
+// that are not committed to anything -- counter monotonicity stops meaning
+// anything at all. Note these tests deliberately do NOT call RebuildOutputs().
+TEST_F(CcvAdversarialTest, RejectsCounterNotCommittedByTheStateHash) {
+    previous_.counter = 1000;
+    next_.counter = 1001;  // satisfies rule 4 on its face
+    EXPECT_FALSE(Verify());
+}
+
+TEST_F(CcvAdversarialTest, RejectsDataNotCommittedByTheStateHash) {
+    previous_.data.push_back(0xff);
+    next_.data.push_back(0xff);
+    EXPECT_FALSE(Verify());
+}
+
 // Spec rule 12: no other output may carry the same successor script. The
 // existing test appends an adjacent duplicate; this places it far away to be
 // sure detection is not merely a neighbour comparison.
