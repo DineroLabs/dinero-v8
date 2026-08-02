@@ -33,6 +33,13 @@ The v2 mainnet consensus checksum for these parameters is:
 CSFS, TXHASH, confidential covenants, shielded covenants, and testnet
 activation are not part of this decision.
 
+This is a coordinated flag-day soft fork: there is no miner signalling or
+versionbits state machine, and CTV/CCV remain dormant on public testnet. Mainnet
+would therefore be the first public network to enforce this profile. Control of
+the production fleet makes coordinated deployment possible, but does not
+substitute for the independent review, release-candidate evidence, or go/no-go
+rules below.
+
 ## Decision window
 
 The decision was recorded from a fully synchronized mainnet node at height
@@ -67,18 +74,42 @@ reduce the validation or deployment window to preserve height 80,000.
 
 ## Deployment and monitoring
 
-For the controlled three-node fleet:
+The controlled production fleet has four nodes. LA is retired and is not part
+of this rollout.
+
+| Role | Location | Platform/artifact |
+|---|---|---|
+| Non-mining validator | NA | reviewed Linux `dinerod` artifact |
+| Non-mining validator | SJ | reviewed Linux `dinerod` artifact |
+| Non-mining validator | EU1 | reviewed Linux `dinerod` artifact |
+| Mining node | operator host | separately built macOS mining artifact |
+
+The three validators may share one byte-identical Linux artifact. The mining
+node cannot: it requires its own macOS build from the same reviewed commit.
+Record and verify each platform's binary hash independently; equality of the
+Linux and macOS binary hashes is neither expected nor required. Every node must
+nevertheless report the same consensus checksum.
 
 1. Record each node's pre-upgrade height, best hash, binary hash, version, and
    consensus checksum.
-2. Upgrade one non-mining node, verify it fully converges, then upgrade the
-   remaining non-mining node and the mining node. Do not allow mixed consensus
-   binaries to reach block 80,000.
-3. After every upgrade, verify the checksum above through RPC and compare the
-   same best block across all nodes.
-4. At heights 79,999 and 80,000, record the accepted block hash, validation
+2. Build the Linux validator artifact and the separate macOS mining artifact
+   from the exact reviewed commit. Record each artifact's SHA-256 digest and
+   verify the embedded/reported consensus checksum before deployment.
+3. Upgrade NA as the non-mining canary and verify full convergence. Then upgrade
+   SJ and EU1, one at a time, verifying convergence after each. Upgrade the
+   macOS mining node last and confirm block-template readiness. Do not allow
+   mixed consensus binaries to reach block 80,000.
+4. After every upgrade, verify the checksum above through RPC, confirm the
+   node's binary hash matches its recorded platform artifact, and compare the
+   same best block across all four nodes. The mining node's macOS hash and RPC
+   checksum must be recorded explicitly rather than inferred from the Linux
+   validators.
+5. At height 79,000, enumerate NA, SJ, EU1, and the mining node by name and
+   obtain a four-of-four readiness record. A missing node is a failed gate, not
+   an implicit exclusion.
+6. At heights 79,999 and 80,000, record the accepted block hash, validation
    status, peer count, mempool state, and block-template result on every node.
-5. Keep automatic covenant creation disabled initially. After the activation
+7. Keep automatic covenant creation disabled initially. After the activation
    block is stable, use a deliberately small reviewed CTV/CCV canary before
    placing material value under the new rules.
 

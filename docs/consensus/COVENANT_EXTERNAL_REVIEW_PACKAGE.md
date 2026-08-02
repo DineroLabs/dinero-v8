@@ -173,6 +173,10 @@ Wallet/RPC construction and recovery surfaces:
 15. Does `wallet.signrawtransaction` preserve a preconstructed covenant
     script-path witness, sign only the remaining wallet-owned inputs, and
     report `complete` only after canonical validation of every input?
+16. Given that activation is a flag-day soft fork with no miner signalling and
+    CTV/CCV remain dormant on public testnet, are the height-80,000 deployment,
+    four-node readiness checkpoint, monitoring, and abort rules sufficient for
+    first public-network enforcement?
 
 ## 6. Reproduction
 
@@ -266,6 +270,11 @@ reinterpret hidden trees without explicit deployment planning.
 
 - Mainnet CTV/CCV activation is scheduled at block 80,000; testnet remains
   dormant.
+- Activation has no miner-signalling or versionbits phase. Because testnet also
+  remains dormant, mainnet would be the profile's first public-network
+  enforcement. The controlled four-node fleet permits coordinated deployment
+  but provides no public soak period; the independent reviewer must explicitly
+  accept or reject that deployment risk.
 - Independent review has not yet occurred.
 - The profile-v1 wallet/RPC surface remains intentionally regtest-only. The
   consensus activation does not silently expose mainnet construction RPCs;
