@@ -8,7 +8,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+# CTest injects the exact in-tree target path. Keep the conventional fallback
+# for developers invoking this script directly.
+DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 CHECKER="${ROOT_DIR}/tools/check_seed_consistency.py"
 BASE_PORT="${BASE_PORT:-}"
 NODE_A_RPC=""
