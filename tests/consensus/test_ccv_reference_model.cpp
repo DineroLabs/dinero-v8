@@ -23,12 +23,20 @@
 // would not be caught here — that is a genuine and deliberate limit of this
 // technique.
 //
-// HONEST CAVEAT
-// -------------
-// The author of this model had previously read parts of covenants.cpp while
-// reviewing the activation PR. That is weaker than a clean-room implementation
-// written by someone who has never seen the production code. It is recorded here
-// so no reader overstates the strength of the evidence.
+// WHAT THIS IS, AND WHAT IT IS NOT
+// --------------------------------
+// This is an independent implementation derived from the specification. It is
+// NOT a clean-room implementation, and it is NOT an independently authored
+// review.
+//
+// Specifically: the author had already read parts of covenants.cpp while
+// reviewing the activation PR, so this is weaker than a model written by
+// someone who has never seen the production code. And an implementation that
+// agrees with production is evidence about the implementation — it is not a
+// substitute for a human reviewer examining the design itself.
+//
+// Both limits are recorded here so no reader, now or later, overstates the
+// strength of this evidence.
 //
 // WHAT THE TEST DOES
 // ------------------
