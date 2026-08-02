@@ -97,6 +97,57 @@ const std::vector<AssumeUTXOSnapshot> AssumeUTXORegistry::snapshots_ = {
         193812,
         "Mainnet height 65300 v4 trust anchor (UXTO+UTRX+SHLD)"
     ),
+    // Mainnet height 73035 v4 trust anchor — the snapshot SHIPPED INSIDE
+    // DineroDPI.app. Registering it upgrades that artifact from
+    // manifest-verified to content-pinned: LoadSnapshot() will additionally
+    // require the file's SHA-256 and base block hash to match these constants
+    // before importing a single UTXO.
+    //
+    // ⚠️ EXACT-FILE PINNING IS INTENTIONAL. After this entry, a REGENERATED
+    // snapshot at height 73035 — even a perfectly valid one — is REJECTED,
+    // because its bytes will differ. That is the desired behaviour: the shipped
+    // artifact is the trusted anchor. A regenerated snapshot must either get its
+    // own reviewed registry entry or stay on the manifest-only path at an
+    // unregistered height.
+    //
+    // PROVENANCE — every field below was verified from the artifact itself, not
+    // transcribed. Reproduce with:
+    //
+    //   F=/Applications/DineroDPI.app/Contents/Resources/mainnet-snapshot.dat
+    //   shasum -a 256 "$F"        # -> 0a98ab1b…e8a4
+    //   ls -l "$F"                # -> 27015629 bytes
+    //   python3 -c 'import struct,binascii;d=open("'"$F"'","rb").read(52);\
+    //     print(hex(struct.unpack_from("<I",d,0)[0]),      # magic 0x4F545855 "UTXO"
+    //           struct.unpack_from("<I",d,4)[0],           # version    -> 4
+    //           struct.unpack_from("<I",d,40)[0],          # height     -> 73035
+    //           struct.unpack_from("<Q",d,44)[0],          # utxo_count -> 218833
+    //           binascii.hexlify(d[8:40][::-1]).decode())' # block_hash -> 0000004ba0…2756
+    //
+    // Cross-checked against the bundled manifest
+    // (mainnet-snapshot.dat.manifest.json), which independently carries the same
+    // sha256, height, block_hash and byte count; generated 20260726T043539Z by
+    // "EU1 dinero-snapshot-publish (automated, self-check gated)".
+    //
+    // block_hash and chainwork additionally confirmed against the CANONICAL
+    // CHAIN via a live fleet node:
+    //   blockchain.getblockhash   [73035] -> 0000004ba0e611b00543c4210f29e7b72d91fc35007c1bad5c13f7b3a06c2756
+    //   blockchain.getblockheader        -> chainwork 0x…06e15b611f17
+    //
+    // CI CANNOT re-verify the hash: the 27 MB artifact is not in this
+    // repository. The commands above are the permanent provenance record. The
+    // accompanying tests check the constants for self-consistency and against
+    // the manifest's published values — they do NOT hash the artifact.
+    //
+    // Format: v4 UXTO + UTRX + SHLD, so it satisfies the no-v3-anchor rule at
+    // the top of this list (height 73035 is far above shielded activation 8650).
+    AssumeUTXOSnapshot(
+        "0a98ab1bd544d333afae7c8d2b42b0a910fb5e7fcdefd40642c6d3e0c6aae8a4",
+        "0000004ba0e611b00543c4210f29e7b72d91fc35007c1bad5c13f7b3a06c2756",
+        73035,
+        "0x000000000000000000000000000000000000000000000000000006e15b611f17",
+        218833,
+        "Mainnet height 73035 v4 trust anchor (UXTO+UTRX+SHLD) - shipped DineroDPI artifact"
+    ),
 };
 
 std::optional<AssumeUTXOSnapshot> AssumeUTXORegistry::GetSnapshot(uint32_t height) {
