@@ -175,15 +175,15 @@ endif()
 # against a real dinerod.
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_reorg_state_restoration.sh)
     add_test(
-        NAME UtreexoReorgStateRestoration
+        NAME UtreexoLiveReorgStateRestoration
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_reorg_state_restoration.sh
     )
-    set_tests_properties(UtreexoReorgStateRestoration PROPERTIES
+    set_tests_properties(UtreexoLiveReorgStateRestoration PROPERTIES
         LABELS "integration;utreexo;reorg;restart;consensus"
         ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         TIMEOUT 900
     )
-    message(STATUS "  ✓ UtreexoReorgStateRestoration registered (daemon: $<TARGET_FILE:dinerod>)")
+    message(STATUS "  ✓ UtreexoLiveReorgStateRestoration registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_cross_seed_restart_reorg_parity.sh)
