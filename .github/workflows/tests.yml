@@ -184,12 +184,22 @@ jobs:
       # per-test --no-tests=error pattern as the serial lane above: a combined
       # -R would still pass if one of these names vanished from the registry.
       #
-      # ConsensusFuzzer is DELIBERATELY NOT ENABLED YET. Turning the label off
-      # immediately revealed that it fails on 5 of 40 fixed seeds (12.5%) with a
-      # Utreexo restore/deserialize invariant violation after a reorg -- see
-      # issue #490. Enabling a 12.5%-flaky test would be worse than leaving it
-      # excluded, and pinning a known-passing seed to make it green would hide
-      # precisely the bug it just found. Enable it as part of fixing #490.
+      # ConsensusFuzzer is still not selected here, but the reason has CHANGED
+      # and is no longer "it fails".
+      #
+      # It originally failed on 5 of 40 fixed seeds (#490). That is fixed:
+      # ConsensusUTXOSet now uses removeAtKnownPosition(), and a full
+      # deterministic 1..40 sweep is 40/40 exit 0 with zero corruption markers.
+      #
+      # It stays out because its ctest registration takes NO arguments, so the
+      # binary falls back to a TIME-BASED seed -- a different chain every run.
+      # Adding a nondeterministic test to every push buys little and costs
+      # reproducibility: a failure could not be replayed from the log.
+      #
+      # Deterministic coverage of the same binary is provided instead by
+      # ConsensusUTXOSetTransactional, which drives seeds 1..40 explicitly and
+      # requires exit 0 from each. To enable ConsensusFuzzer here, give its
+      # add_test an explicit seed and iteration count first.
       - name: Run fuzz-labelled consensus invariant tests (excluded by label above)
         run: |
           for t in ConsensusUTXOSetFuzz; do
@@ -199,6 +209,26 @@ jobs:
               --no-tests=error \
               -R "^${t}$"
           done
+
+      # #490 seed pin, run VERBOSELY on purpose.
+      #
+      # It already runs in the main ctest step above, but ctest suppresses a
+      # PASSING test's output under --output-on-failure. That makes the
+      # forbidden-signature result unverifiable from the log: an absence of
+      # those strings is produced equally by "the scan found nothing" and "the
+      # scan never ran".
+      #
+      # -V forces the output, so the affirmative counters are visible in CI:
+      #     forbidden lossy-restore signature scans: 120
+      #     forbidden lossy-restore signatures: 0
+      #
+      # Costs a few seconds and makes the claim checkable rather than asserted.
+      - name: "Verify issue-490 seed pin verbosely (log-visible forbidden-signature counts)"
+        run: |
+          ctest --test-dir build-tests \
+            --no-tests=error \
+            -V \
+            -R '^ConsensusUTXOSetTransactional$'
 
       # #453 durable script-validity gate, plus the #458
       # mine-after-invalidate gates.
