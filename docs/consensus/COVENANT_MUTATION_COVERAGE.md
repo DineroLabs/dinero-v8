@@ -50,6 +50,13 @@ state size bound, and successor uniqueness).
 
 ## A gap this actually found
 
+> **This was a test-coverage gap, not a consensus vulnerability.** The
+> recomputation check is present in production and always has been; it is
+> load-bearing and it works. What was missing was a test that would have
+> *noticed* if it were ever removed. Nothing below describes a defect in shipped
+> behaviour — it describes what the check protects against, which is why its
+> removal needed to be detectable and now is.
+
 On its first run the harness reported one survivor: **`ccv_state_hash_recompute`**.
 Deleting the check that both state hashes recompute from their contents left the
 entire covenant lane green.

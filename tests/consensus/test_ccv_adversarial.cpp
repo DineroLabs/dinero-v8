@@ -218,10 +218,12 @@ TEST_F(CcvAdversarialTest, RejectsOneByteOverMaximumStateDataSize) {
 
 // Spec rule 2: both state hashes must recompute from their contents.
 //
-// Found by tools/covenant_mutation_harness.py: deleting the recompute check
-// from production left this whole lane green, because every other test either
-// builds consistent states or corrupts stateHash in a way that ALSO breaks the
-// derived scripts.
+// Found by tools/covenant_mutation_harness.py as a TEST-COVERAGE gap, not a
+// production defect: the recomputation check is present in production and is
+// load-bearing. What was missing was a test that would notice if it were ever
+// removed. Deleting it left this whole lane green, because every other test
+// either builds consistent states or corrupts stateHash in a way that ALSO
+// breaks the derived scripts.
 //
 // The attack the recompute check actually stops: the P2TR scripts commit only
 // to stateHash. counter and data are bound to that hash by nothing else. Keep a
