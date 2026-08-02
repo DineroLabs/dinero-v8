@@ -54,6 +54,7 @@ TARGETS = [
     "test_ccv_successor_binding",
     "test_ccv_adversarial",
     "test_ccv_reference_model",
+    "test_ccv_bounded_state",
     "test_covenant_activation",
 ]
 
@@ -62,6 +63,7 @@ CTEST_TESTS = [
     "CcvSuccessorBinding",
     "CcvAdversarial",
     "CcvReferenceModel",
+    "CcvBoundedState",
     "CovenantActivation",
 ]
 
