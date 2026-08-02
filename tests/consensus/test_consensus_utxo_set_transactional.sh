@@ -60,18 +60,19 @@ SEEDS=(6 25 27 31 33)
 CORRUPTION_MARKER="was not deleted"
 # The precise known accumulator/restore failure that is still tolerated. A
 # nonzero exit must be explained by one of these, or it is a real regression.
-# The ROOT known defect: a freshly generated proof does not verify against the
-# forest it came from (utreexo_accumulator.cpp:1302 -- recomputePath() clearing
-# roots_[h] while numLeaves_ still has bit h set). With this repair in place
-# that now surfaces as a clean ApplyBlock rejection instead of silent undo
-# corruption, which is exactly the intended change in behaviour.
-#
-# The deserialize/restore entries are downstream symptoms that appear only when
-# something routes through the lossy Snapshot()/Restore() path -- the fuzzer
-# harness still does so in its own PerformReorg. They are listed so a harness
-# route is also explained rather than silently tolerated.
+# The ONE tolerated signature: the root known defect -- a freshly generated
+# proof does not verify against the forest it came from
+# (utreexo_accumulator.cpp:1302, recomputePath() clearing roots_[h] while
+# numLeaves_ still has bit h set). With this repair in place it surfaces as a
+# clean ApplyBlock rejection instead of silent undo corruption.
 KNOWN_SIGNATURES=(
     "STEP1 proof.verify FAILED"
+)
+
+# Symptoms of the LOSSY Snapshot()/Restore() rollback that this repair removed.
+# They must not reappear. Tolerating them would let the lossy path creep back in
+# unnoticed -- an earlier draft of this script did exactly that.
+FORBIDDEN_SIGNATURES=(
     "Serialized roots do not match node/deletion state"
     "forest deserialize refused payload"
     "Forest root mismatch after restore"
@@ -111,6 +112,17 @@ for seed in "${SEEDS[@]}"; do
         failures=$((failures + 1))
         continue
     fi
+
+    # 2b. The lossy-restore path this repair eliminated must stay eliminated.
+    for forbidden in "${FORBIDDEN_SIGNATURES[@]}"; do
+        if grep -q "${forbidden}" "${log}"; then
+            printf '[FAIL] seed %s: lossy Snapshot()/Restore() symptom reappeared: %s\n' \
+                "${seed}" "${forbidden}" >&2
+            grep -n "${forbidden}" "${log}" | head -3 >&2
+            failures=$((failures + 1))
+            continue 2
+        fi
+    done
 
     # 3. Anti-vacuity: a run that never applied a block shows zero corruption
     #    markers trivially.

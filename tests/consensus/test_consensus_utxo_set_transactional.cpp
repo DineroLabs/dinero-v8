@@ -85,16 +85,21 @@ StateFingerprint Fingerprint(const ConsensusUTXOSet& set) {
     fp.leaf_count = forest.getNumLeaves();
     fp.commitment = HexOf(forest.getCommitment());
 
-    // Internal forest state: roots plus per-position node/deletion state.
-    // Two forests can agree on a commitment while disagreeing about which
-    // positions are deleted -- precisely the divergence #490 is about.
+    // Internal forest state.
+    //
+    // Roots + deletion bits are NOT sufficient: they omit the node hashes and
+    // the canonical-empty-roots mode flag, so two materially different forests
+    // could fingerprint identically. Compare the full serialization instead.
+    //
+    // Note the serialized bytes need only be DETERMINISTIC to serve as a
+    // before/after fingerprint -- they do not need to deserialize successfully.
+    // That matters here because the deserializer is known to refuse payloads
+    // its own serializer produced (#490); that defect cannot weaken this
+    // comparison, because the bytes are never fed back in.
     std::ostringstream internal;
-    const auto roots = forest.getRoots();
-    internal << "roots=" << roots.size() << ':';
-    for (const auto& root : roots) {
-        internal << HexOf(root) << ',';
-    }
-    internal << "|deleted=";
+    internal << "canonical=" << (forest.isCanonicalEmptyRoots() ? '1' : '0')
+             << "|serialized=" << HexOf(forest.serialize())
+             << "|deleted=";
     for (uint64_t pos = 0; pos < forest.getNumLeaves(); ++pos) {
         internal << (forest.isDeleted(pos) ? '1' : '0');
     }
@@ -105,8 +110,13 @@ StateFingerprint Fingerprint(const ConsensusUTXOSet& set) {
     std::vector<std::string> entries;
     for (const auto& [outpoint, entry] : set.GetUTXOs()) {
         std::ostringstream line;
+        // is_confidential and the Pedersen commitment are part of consensus
+        // state; omitting them would let a rollback silently drop or corrupt
+        // confidential metadata while the fingerprint still matched.
         line << outpoint.ToString() << '=' << entry.value.GetUna() << ':'
              << entry.height << ':' << (entry.isCoinbase ? 1 : 0) << ':'
+             << (entry.is_confidential ? 1 : 0) << ':'
+             << HexOf(entry.commitment) << ':'
              << HexOf(entry.scriptPubKey);
         entries.push_back(line.str());
     }
@@ -286,7 +296,11 @@ TEST_F(ConsensusUTXOSetTransactional, ApplyThenUndoRoundTripsExactly) {
 }
 
 // A mismatched undo record must be rejected without touching state.
-TEST_F(ConsensusUTXOSetTransactional, FailedUndoBlockLeavesStateByteIdentical) {
+//
+// The height guard fires before ANY mutation, so on its own this proves only
+// that the guard exists -- it never reaches the rollback. Kept as a cheap
+// precondition check, explicitly labelled as such.
+TEST_F(ConsensusUTXOSetTransactional, FailedUndoBlockHeightGuardRejectsEarly) {
     Block block = MakeBlock({MakeCoinbase(0x80, 55'000)});
     BlockUndo undo;
     UtreexoHash root{};
@@ -295,10 +309,90 @@ TEST_F(ConsensusUTXOSetTransactional, FailedUndoBlockLeavesStateByteIdentical) {
         << error;
 
     const StateFingerprint before = Fingerprint(set_);
-
-    // Wrong height: rejected up front, but the guard must still hold.
     EXPECT_FALSE(set_.UndoBlock(block, 999, undo, error));
-    ExpectFingerprintsEqual(before, Fingerprint(set_), "failed UndoBlock (height mismatch)");
+    ExpectFingerprintsEqual(before, Fingerprint(set_),
+                            "failed UndoBlock (height guard, pre-mutation)");
+}
+
+// THE undo rollback test: fail AFTER partial mutation.
+//
+// A tampered delta claiming more added leaves than the forest holds passes
+// every up-front check, so UndoBlock proceeds -- rewinding the UTXO map and
+// only then hitting removeLastNLeaves(). At that moment the UTXO map has been
+// mutated and the forest has not. Without rollback the two halves of the state
+// disagree about which block they are at.
+TEST_F(ConsensusUTXOSetTransactional, FailedUndoAfterPartialMutationRestoresExactly) {
+    Block block = MakeBlock({MakeCoinbase(0x90, 44'000)});
+    BlockUndo undo;
+    UtreexoHash root{};
+    std::string error;
+    ASSERT_TRUE(set_.ApplyBlock(block, 15, HashFromByte(0x15), undo, root, error))
+        << error;
+
+    const StateFingerprint before = Fingerprint(set_);
+
+    // Tamper: claim far more added leaves than exist. removeLastNLeaves() must
+    // refuse, and it is reached only after the UTXO map has been rewound.
+    BlockUndo tampered = undo;
+    ASSERT_TRUE(tampered.utreexo_delta.has_value());
+    const uint64_t leaves = set_.GetForest().getNumLeaves();
+    tampered.utreexo_delta->addedLeaves.assign(
+        static_cast<size_t>(leaves) + 64, AddedLeaf(UtreexoHash(32, 0), 0));
+
+    EXPECT_FALSE(set_.UndoBlock(block, 15, tampered, error))
+        << "an undo delta claiming more added leaves than the forest holds must be refused";
+    EXPECT_NE(error.find("utreexo-delta-undo-remove-failed"), std::string::npos)
+        << "expected the forest-side failure, got: " << error;
+
+    ExpectFingerprintsEqual(before, Fingerprint(set_),
+                            "failed UndoBlock after partial mutation");
+}
+
+// Second post-mutation failure mode: a duplicate restored coin. AddCoin()
+// returns false when the outpoint already exists; that result used to be
+// ignored, silently accepting an undo that had not restored the coin.
+TEST_F(ConsensusUTXOSetTransactional, FailedUndoOnDuplicateRestoredCoinRestoresExactly) {
+    std::string error;
+    UtreexoHash root{};
+
+    // The spent coin must exist in the FOREST, not just the UTXO map, so it is
+    // created by applying a real block. AddCoin() alone adds no Utreexo leaf,
+    // and the repaired ProcessTransaction now correctly rejects a spend whose
+    // leaf is absent -- which is why seeding that way does not work.
+    const Transaction funder = MakeCoinbase(0xC1, 90'000);
+    const TxId funder_txid = funder.GetTxid();
+    BlockUndo funding_undo;
+    ASSERT_TRUE(set_.ApplyBlock(MakeBlock({funder}), 20, HashFromByte(0x20),
+                                funding_undo, root, error)) << error;
+
+    Transaction spender;
+    TxInput input;
+    input.prevout.txid = funder_txid;
+    input.prevout.vout = 0;
+    spender.vin.push_back(input);
+    spender.vout.emplace_back(AmountUna::Una(80'000),
+                              std::vector<uint8_t>{0x51, 0xA1});
+    Block two_tx = MakeBlock({MakeCoinbase(0xA2, 22'000), spender});
+
+    BlockUndo undo2;
+    ASSERT_TRUE(set_.ApplyBlock(two_tx, 21, HashFromByte(0x21), undo2, root, error))
+        << error;
+    ASSERT_FALSE(undo2.spent_coins.empty())
+        << "the spend produced no undo record; the restore loop would not run";
+
+    // Re-add the spent coin so the undo's AddCoin() collides mid-restore.
+    UTXOEntry revived(AmountUna::Una(90'000), funder.vout[0].scriptPubKey, 20, true);
+    ASSERT_TRUE(set_.AddCoin(OutPoint(funder_txid, 0), revived));
+
+    const StateFingerprint before = Fingerprint(set_);
+
+    EXPECT_FALSE(set_.UndoBlock(two_tx, 21, undo2, error))
+        << "restoring a coin that is already live must be refused";
+    EXPECT_NE(error.find("undo-restore-coin-failed"), std::string::npos)
+        << "expected the AddCoin failure, got: " << error;
+
+    ExpectFingerprintsEqual(before, Fingerprint(set_),
+                            "failed UndoBlock on duplicate restored coin");
 }
 
 }  // namespace
