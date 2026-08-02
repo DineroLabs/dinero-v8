@@ -232,20 +232,27 @@ TEST_F(UtxoSetCanonicalActivation, BulkLoadAdoptsCanonicalModeForItsHeight) {
         << "bulk load well past activation did not enable canonical mode";
 }
 
-// Legacy V2 snapshot import at a POST-activation height.
+// Legacy V2 FOREST SERIALIZATION at a post-activation height.
 //
-// This is the live case that actually matters for BulkLoad. Normal startup does
-// NOT keep BulkLoad's forest -- chainstate_service.cpp:2164 discards it
-// immediately, because BulkLoad rebuilds sorted by OutPoint rather than in
-// chronological insertion order, and the real forest comes from checkpoint
-// deserialization or block replay. The consumer that DOES keep it is snapshot
-// import (LoadSnapshot / assumeutxo, chainstate_service.cpp:9196).
+// SCOPE — read this before extending the test.
 //
-// A v2 payload carries no canonical-mode flag, so deserialize() defaults it to
-// false -- the pre-fork mode it was written under. Importing such a snapshot at
-// a post-activation height therefore yields a forest in the WRONG mode unless
-// something derives the mode from the height.
-TEST_F(UtxoSetCanonicalActivation, LegacyV2PayloadImportedPostActivationNeedsHeightDerivedMode) {
+// This is about UtreexoForest::serialize()'s own v2/v3 payload format, which
+// is a DIFFERENT thing from the AssumeUTXO snapshot container versions
+// (SNAPSHOT_VERSION_V2/V3/V4). The two version numbers are unrelated and it is
+// easy to conflate them; an earlier draft of this test did exactly that.
+//
+// A forest v2 payload carries no canonical-mode flag, so deserialize() defaults
+// it to false -- the pre-fork mode it was written under. Loading such a payload
+// while at a post-activation height therefore yields the WRONG mode unless
+// something derives the mode from the height. That is what this test covers.
+//
+// It does NOT cover AssumeUTXO snapshot import, and must not be read as doing
+// so. A real SNAPSHOT_VERSION_V2 container has no utreexo section at all
+// (has_v3_utreexo_section = version >= V3), so LoadSnapshot() reconstructs a
+// forest by sorting UTXOs by OutPoint -- which is not chronological insertion
+// order. Setting canonical mode cannot repair a wrong leaf ORDER. That is a
+// separate, real problem tracked outside this PR.
+TEST_F(UtxoSetCanonicalActivation, LegacyV2ForestPayloadNeedsHeightDerivedMode) {
     // Build a forest in canonical (post-activation) mode.
     UtreexoForest original;
     original.setCanonicalEmptyRoots(true);
@@ -274,7 +281,7 @@ TEST_F(UtxoSetCanonicalActivation, LegacyV2PayloadImportedPostActivationNeedsHei
         << "a v2 payload carries no flag; deserialize must default to legacy";
 
     // Deriving the mode from a post-activation height repairs it. This is what
-    // BulkLoad now does, and what snapshot import relies on.
+    // BulkLoad now does for the height it is handed.
     SelectParams(Chain::MAINNET);
     const uint32_t post_activation_height = 77'700;
     ASSERT_TRUE(IsUtreexoCanonicalRootsActive(post_activation_height));
