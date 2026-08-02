@@ -175,9 +175,10 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_cross_seed_restart_reorg_parity.sh)
     )
     set_tests_properties(CrossSeedRestartReorgParity PROPERTIES
         LABELS "integration;p2p;reorg;restart;parity"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         TIMEOUT 240
     )
-    message(STATUS "  ✓ CrossSeedRestartReorgParity registered")
+    message(STATUS "  ✓ CrossSeedRestartReorgParity registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_connecttip_restart_equivalence.sh)

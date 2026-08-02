@@ -8,13 +8,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+# CTest injects the exact in-tree target path. Keep the conventional fallback
+# for developers invoking this script directly.
+DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 CHECKER="${ROOT_DIR}/tools/check_seed_consistency.py"
-BASE_PORT="${BASE_PORT:-35800}"
-NODE_A_RPC=$((BASE_PORT + 0))
-NODE_B_RPC=$((BASE_PORT + 1))
-NODE_A_P2P=$((BASE_PORT + 100))
-NODE_B_P2P=$((BASE_PORT + 101))
+BASE_PORT="${BASE_PORT:-}"
+NODE_A_RPC=""
+NODE_B_RPC=""
+NODE_A_P2P=""
+NODE_B_P2P=""
 PRELOAD_BLOCKS="${PRELOAD_BLOCKS:-120}"
 SHORT_FORK_BLOCKS="${SHORT_FORK_BLOCKS:-2}"
 LONG_FORK_BLOCKS="${LONG_FORK_BLOCKS:-4}"
@@ -32,6 +34,23 @@ pass() { printf '[PASS] %s\n' "$*"; }
 fail() {
     KEEP_ON_FAIL=1
     printf '[FAIL] %s\n' "$*" >&2
+
+    # Capture the live sync state before shutdown flushes the logs.  This is
+    # deliberately best-effort: launch failures may occur before RPC/cookies
+    # exist, while a sync livelock needs the in-memory selector/scheduler state
+    # that is lost as soon as the daemons exit.
+    local _health
+    for _node in A B; do
+        if [[ "${_node}" = "A" ]]; then
+            _health="$(rpc_call "${NODE_A_RPC}" "${DATA_A}" "blockchain.getsynchealth" '[]' 2>/dev/null || true)"
+        else
+            _health="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "blockchain.getsynchealth" '[]' 2>/dev/null || true)"
+        fi
+        if [[ -n "${_health}" ]]; then
+            printf -- '--- node %s live sync health ---\n' "${_node}" >&2
+            jq '.result // .' <<<"${_health}" >&2 2>/dev/null || printf '%s\n' "${_health}" >&2
+        fi
+    done
 
     # Stop the daemons and wait for them to exit BEFORE reading their logs.
     #
@@ -77,8 +96,33 @@ trap cleanup EXIT
 require_tools() {
     command -v curl >/dev/null || fail "curl is required"
     command -v jq >/dev/null || fail "jq is required"
+    command -v lsof >/dev/null || fail "lsof is required for collision-free port selection"
     command -v python3 >/dev/null || fail "python3 is required"
     [[ -x "${DINEROD}" ]] || fail "dinerod not built at ${DINEROD}"
+}
+
+port_range_free() {
+    local base="$1"
+    local port
+    for port in "${base}" "$((base + 1))" "$((base + 100))" "$((base + 101))"; do
+        if lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+pick_base_port() {
+    local candidate
+    for _ in $(seq 1 40); do
+        candidate=$((36000 + RANDOM % 12000))
+        if port_range_free "${candidate}"; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+    printf '[FAIL] unable to find a free RPC/P2P port range after 40 attempts\n' >&2
+    return 1
 }
 
 cookie_file() {
@@ -212,6 +256,17 @@ mine_blocks() {
 }
 
 require_tools
+
+if [[ -z "${BASE_PORT}" ]]; then
+    BASE_PORT="$(pick_base_port)" || fail "No collision-free port range available"
+elif ! port_range_free "${BASE_PORT}"; then
+    fail "Requested BASE_PORT range is already in use: ${BASE_PORT}"
+fi
+NODE_A_RPC=$((BASE_PORT + 0))
+NODE_B_RPC=$((BASE_PORT + 1))
+NODE_A_P2P=$((BASE_PORT + 100))
+NODE_B_P2P=$((BASE_PORT + 101))
+info "Using collision-free port range rooted at ${BASE_PORT}"
 
 PID_A="$(start_node "${DATA_A}" "${NODE_A_RPC}" "${NODE_A_P2P}" "${LOG_A}")"
 wait_rpc "${NODE_A_RPC}" "${DATA_A}" || fail "Node A RPC did not come up"
