@@ -87,6 +87,19 @@ bool ConsensusUTXOSet::ApplyBlock(const Block& block, uint32_t height,
                                   const uint256& block_hash, BlockUndo& undo,
                                   UtreexoHash& computed_utreexo_root,
                                   std::string& error) {
+    // ALL-OR-NOTHING (issue #490).
+    //
+    // ProcessTransaction mutates both the UTXO map and the Utreexo forest as it
+    // goes. Before this, a mid-block failure returned false having already
+    // applied part of the block: some coins spent, some leaves removed, some
+    // outputs created. The caller had no way to know how far it got, and no way
+    // to get back. Every subsequent operation then ran against a state that
+    // corresponds to no block boundary.
+    //
+    // Snapshot first, roll back on any failure. A failed ApplyBlock must leave
+    // the set exactly as it found it.
+    const UTXOSnapshot pre_apply = Snapshot();
+
     // Initialize undo data
     undo = BlockUndo(height, block_hash);
     UtreexoDelta utreexo_delta;
@@ -98,6 +111,8 @@ bool ConsensusUTXOSet::ApplyBlock(const Block& block, uint32_t height,
         bool is_coinbase = (tx_idx == 0);
 
         if (!ProcessTransaction(tx, height, is_coinbase, undo, utreexo_delta, error)) {
+            Restore(pre_apply);
+            undo = BlockUndo(height, block_hash);  // discard the partial delta
             return false;
         }
     }
@@ -149,17 +164,36 @@ bool ConsensusUTXOSet::ProcessTransaction(const Transaction& tx, uint32_t height
                 spent_coin->isCoinbase
             );
 
-            // Generate proof and remove from Utreexo
-            // Note: For simplicity, we track the deletion position
-            // Full implementation would verify proof first
+            // Remove from Utreexo, then record the deletion.
+            //
+            // ORDER MATTERS (issue #490). This previously recorded the deletion
+            // BEFORE attempting removal and discarded remove()'s result, so a
+            // failed removal still left "position P was deleted" in the undo
+            // delta. UndoBlock later replayed that delta into
+            // restoreDeletedLeaf(P), which failed with "Position P was not
+            // deleted" because P had never been deleted at all. ConsensusFuzzer
+            // reproduced it on 5 of 40 fixed seeds.
+            //
+            // Every step now fails closed, and the delta is written only after
+            // the accumulator has actually changed. The delta must describe
+            // what happened, never what was intended.
             auto position = forest_.findLeafPosition(leaf_hash);
-            if (position) {
-                utreexo_delta.recordDelete(*position, leaf_hash);
-                auto proof = forest_.prove(*position);
-                if (proof) {
-                    forest_.remove(leaf_hash, *proof);
-                }
+            if (!position) {
+                error = "utreexo-leaf-missing: " + outpoint.ToString();
+                return false;
             }
+            auto proof = forest_.prove(*position);
+            if (!proof) {
+                error = "utreexo-proof-unavailable: " + outpoint.ToString() +
+                        " at position " + std::to_string(*position);
+                return false;
+            }
+            if (!forest_.remove(leaf_hash, *proof)) {
+                error = "utreexo-remove-failed: " + outpoint.ToString() +
+                        " at position " + std::to_string(*position);
+                return false;
+            }
+            utreexo_delta.recordDelete(*position, leaf_hash);
         }
     }
 
@@ -229,6 +263,18 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
         return false;
     }
 
+    // ALL-OR-NOTHING (issue #490), same reasoning as ApplyBlock.
+    //
+    // This walks the UTXO map first and the Utreexo forest afterwards, so a
+    // forest failure previously returned with the UTXO map already rewound --
+    // the two halves of the same state disagreeing about which block they are
+    // at. That is precisely the shape ConsensusFuzzer hit: restoreDeletedLeaf
+    // rejected a delta entry after the coins had already been moved.
+    //
+    // Snapshotting here also covers the reverse case the scope calls out: a
+    // UTXO-map failure occurring after the forest has already been mutated.
+    const UTXOSnapshot pre_undo = Snapshot();
+
     // Process transactions in reverse order
     size_t spent_index = undo.spent_coins.size();
 
@@ -258,6 +304,7 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
             for (size_t i = tx.vin.size(); i > 0; --i) {
                 if (spent_index == 0) {
                     error = "Undo data exhausted";
+                    Restore(pre_undo);
                     return false;
                 }
                 --spent_index;
@@ -277,6 +324,7 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
         if (!delta.addedLeaves.empty()) {
             if (!forest_.removeLastNLeaves(delta.addedLeaves.size())) {
                 error = "utreexo-delta-undo-remove-failed";
+                Restore(pre_undo);
                 return false;
             }
         }
@@ -284,7 +332,9 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
         // Restore deleted leaves (reverse order)
         for (auto it = delta.deletedLeaves.rbegin(); it != delta.deletedLeaves.rend(); ++it) {
             if (!forest_.restoreDeletedLeaf(it->position, it->leafHash)) {
-                error = "utreexo-delta-undo-restore-failed";
+                error = "utreexo-delta-undo-restore-failed at position " +
+                        std::to_string(it->position);
+                Restore(pre_undo);
                 return false;
             }
         }

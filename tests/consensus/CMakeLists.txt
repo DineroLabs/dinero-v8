@@ -876,6 +876,21 @@ target_include_directories(consensus_fuzzer PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+# #490 regression pin: the undo delta must never claim a deletion that did not
+# happen. Runs the five seeds that exposed the corruption. Deliberately does NOT
+# assert fuzzer exit status -- see the header of the script for why.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_utxo_set_transactional.sh)
+    add_test(
+        NAME ConsensusUTXOSetTransactional
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_utxo_set_transactional.sh
+    )
+    set_tests_properties(ConsensusUTXOSetTransactional PROPERTIES
+        LABELS "consensus;utreexo;regression"
+        ENVIRONMENT "CONSENSUS_FUZZER=$<TARGET_FILE:consensus_fuzzer>"
+        TIMEOUT 300
+    )
+endif()
+
 add_test(NAME ConsensusFuzzer COMMAND consensus_fuzzer)
 set_tests_properties(ConsensusFuzzer
     PROPERTIES
