@@ -125,7 +125,7 @@ for seed in "${SEEDS[@]}"; do
     #    tripped the accumulator proof defect. Neither is needed now:
     #    ConsensusUTXOSet uses removeAtKnownPosition() -- the same trusted
     #    primitive the live BlockValidator uses -- so it no longer routes
-    #    through the broken proof path, and all five seeds exit 0.
+    #    through the broken proof path, and all 40 pinned seeds exit 0.
     if [[ "${status}" -ne 0 ]]; then
         printf '[FAIL] seed %s: exit %s (exit 0 is required)\n' "${seed}" "${status}" >&2
         tail -40 "${log}" >&2
