@@ -4548,6 +4548,30 @@ target_include_directories(test_covenant_fuzz PRIVATE
 target_compile_definitions(test_covenant_fuzz PRIVATE
   DINERO_COVENANT_FUZZ_SEEDS="${CMAKE_SOURCE_DIR}/tests/vectors/covenant_fuzz_seeds"
 )
+# Bounded-state analysis: exhaustive enumeration over reduced domains with
+# verdicts predicted from the spec. Complements the adversarial suite (specific
+# attacks) and the fuzzer (random sampling) -- neither of those enumerates.
+add_executable(test_ccv_bounded_state
+  tests/consensus/test_ccv_bounded_state.cpp
+)
+add_dependencies(test_ccv_bounded_state gtest gtest_main)
+target_link_libraries(test_ccv_bounded_state PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_ccv_bounded_state)
+target_include_directories(test_ccv_bounded_state PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CcvBoundedState COMMAND test_ccv_bounded_state)
+set_tests_properties(CcvBoundedState PROPERTIES
+  LABELS "consensus;covenant;ccv"
+  TIMEOUT 120
+)
+
 add_test(NAME CovenantFuzz COMMAND test_covenant_fuzz)
 set_tests_properties(CovenantFuzz PROPERTIES
   LABELS "consensus;covenant;ccv;ctv"
