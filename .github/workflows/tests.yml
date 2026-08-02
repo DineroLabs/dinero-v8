@@ -168,6 +168,38 @@ jobs:
               -R "^${t}$"
           done
 
+      # Fuzz-labelled consensus invariant tests (issue #486).
+      #
+      # ConsensusFuzzer and ConsensusUTXOSetFuzz are registered and build, but
+      # carry the 'fuzz' label, which the main ctest step above excludes. The
+      # result was that neither had EVER executed in CI: grepping a full Tests
+      # log for "ConsensusFuzzer" returned zero hits. They were not skipped and
+      # reported, they were never selected at all.
+      #
+      # Neither is slow -- both complete in well under a second -- so there was
+      # never a runtime reason to exclude them. The label was doing it silently.
+      #
+      # Selected BY EXACT NAME rather than by removing the label, because the
+      # label legitimately keeps them out of label-driven selections. Same
+      # per-test --no-tests=error pattern as the serial lane above: a combined
+      # -R would still pass if one of these names vanished from the registry.
+      #
+      # ConsensusFuzzer is DELIBERATELY NOT ENABLED YET. Turning the label off
+      # immediately revealed that it fails on 5 of 40 fixed seeds (12.5%) with a
+      # Utreexo restore/deserialize invariant violation after a reorg -- see
+      # issue #490. Enabling a 12.5%-flaky test would be worse than leaving it
+      # excluded, and pinning a known-passing seed to make it green would hide
+      # precisely the bug it just found. Enable it as part of fixing #490.
+      - name: Run fuzz-labelled consensus invariant tests (excluded by label above)
+        run: |
+          for t in ConsensusUTXOSetFuzz; do
+            echo "=== $t ==="
+            ctest --test-dir build-tests \
+              --output-on-failure \
+              --no-tests=error \
+              -R "^${t}$"
+          done
+
       # #453 durable script-validity gate, plus the #458
       # mine-after-invalidate gates.
       #
