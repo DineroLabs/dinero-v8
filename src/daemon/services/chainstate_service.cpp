@@ -9315,6 +9315,53 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                                   ", " + std::to_string(SNAPSHOT_VERSION_V4) + ")";
             return result;
         }
+        // ═════════════════════════════════════════════════════════════════════
+        // Fail-closed container-format policy.
+        //
+        // Placed HERE deliberately: the header has been read and validated, and
+        // NOT ONE UTXO record has been parsed. A rejection below therefore
+        // cannot have mutated any state -- no coins imported, no forest built,
+        // no AssumeUTXO lifecycle transition, no metadata persisted.
+        //
+        // header.block_height is already populated (read before the version
+        // check above), so the V3 boundary can be evaluated here rather than
+        // deeper in, where a rejection would have to unwind work.
+        // ═════════════════════════════════════════════════════════════════════
+        switch (consensus::EvaluateSnapshotFormat(
+                    header.version, header.block_height,
+                    Params().shielded_activation_height)) {
+            case consensus::SnapshotFormatVerdict::RejectV2Deprecated:
+                result.error_message =
+                    "Snapshot container v2 is no longer supported (deprecated). "
+                    "A v2 snapshot carries no Utreexo section, so its forest "
+                    "would be rebuilt in the wrong leaf order and could never "
+                    "match the base block's utreexo_root. Remedy: regenerate or "
+                    "obtain a trusted v4 snapshot.";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            case consensus::SnapshotFormatVerdict::RejectV3PostShieldedActivation:
+                result.error_message =
+                    "Snapshot container v3 is not usable at height " +
+                    std::to_string(header.block_height) +
+                    ": it carries no shielded section, and shielded is active "
+                    "from height " +
+                    std::to_string(Params().shielded_activation_height) +
+                    ". A node bootstrapped from it starts with an empty "
+                    "shielded commitment tree and wedges on the first "
+                    "post-snapshot shielded spend. Remedy: regenerate or obtain "
+                    "a trusted v4 snapshot.";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            case consensus::SnapshotFormatVerdict::RejectUnknownVersion:
+                result.error_message =
+                    "Unsupported snapshot version: " +
+                    std::to_string(header.version);
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            case consensus::SnapshotFormatVerdict::Accept:
+                break;
+        }
+
         const bool has_v3_utreexo_section = (header.version >= SNAPSHOT_VERSION_V3);
         const bool has_v4_shielded_section = (header.version >= SNAPSHOT_VERSION_V4);
         // v4 shielded-pool bootstrap payload (parsed after the utreexo section,
