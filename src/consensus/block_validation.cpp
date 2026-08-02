@@ -863,7 +863,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // ═════════════════════════════════════════════════════════════════════════
     // Apr 13 2026 Stage 3 — Utreexo canonical-roots fork activation.
     //
-    // At `UTREEXO_CANONICAL_ROOTS_HEIGHT_MAINNET` (3000 on mainnet):
+    // At `UTREEXO_CANONICAL_ROOTS_HEIGHT_MAINNET` (2870 on mainnet):
     //   1. Flip `canonical_empty_roots_` on in the live consensus forest.
     //   2. Call `rebuildRoots()` so `roots_` is recomputed from `nodes_`
     //      using the new canonical-zero-sentinel logic. Any pre-activation

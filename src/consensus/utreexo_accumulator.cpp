@@ -1867,7 +1867,7 @@ void UtreexoForest::recomputePath(uint64_t position) {
 // that broke covenant spends. This is the Apr 13 2026 Bug #4 root cause.
 //
 // STAGE 3 BEHAVIOR (canonical_empty_roots_ == true, activated at
-// UTREEXO_CANONICAL_ROOTS_HEIGHT_MAINNET = 3000)
+// UTREEXO_CANONICAL_ROOTS_HEIGHT_MAINNET = 2870)
 // --------------------------------------------------------------
 // Returns a deterministic "zero-filled subtree" hash instead of nullopt for
 // fully-deleted subtrees at size >= 1. This preserves the invariant

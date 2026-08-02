@@ -83,6 +83,22 @@ bool ConsensusUTXOSet::DeleteCoin(const OutPoint& outpoint) {
 // Block Operations
 // =============================================================================
 
+bool ConsensusUTXOSet::ApplyCanonicalSemanticsForHeight(uint32_t height) {
+    // Mirrors the live activation hook (block_validation.cpp:882) and the
+    // symmetric restore path below. Deriving the mode from the height rather
+    // than tracking it statefully makes the transition correct in BOTH
+    // directions: connecting across the boundary flips it on, disconnecting
+    // back across flips it off.
+    const bool expected =
+        consensus::IsUtreexoCanonicalRootsActive(height);
+    if (forest_.isCanonicalEmptyRoots() == expected) {
+        return false;  // already correct for this height; no rebuild
+    }
+    forest_.setCanonicalEmptyRoots(expected);
+    forest_.rebuildRoots();
+    return true;
+}
+
 bool ConsensusUTXOSet::ApplyBlock(const Block& block, uint32_t height,
                                   const uint256& block_hash, BlockUndo& undo,
                                   UtreexoHash& computed_utreexo_root,
@@ -117,6 +133,12 @@ bool ConsensusUTXOSet::ApplyBlock(const Block& block, uint32_t height,
         height_ = saved_height;
         best_block_ = saved_best_block;
     };
+
+    // Adopt the canonical-roots semantics for the height being applied BEFORE
+    // touching the forest (#490). Doing it after would compute leaf hashes and
+    // proofs under the wrong mode. The copy above was taken first, so a
+    // rollback also restores the pre-call mode.
+    ApplyCanonicalSemanticsForHeight(height);
 
     // Initialize undo data
     undo = BlockUndo(height, block_hash);
@@ -391,6 +413,12 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
     if (height > 0) {
         height_ = height - 1;
     }
+
+    // Adopt the semantics of the height we have returned TO (#490). Undoing
+    // across the activation boundary must restore legacy mode, or the forest
+    // keeps post-fork semantics at a pre-fork height -- the asymmetry that
+    // made block 2870 un-disconnectable on mainnet.
+    ApplyCanonicalSemanticsForHeight(height_);
     // Note: best_block_ will be set by caller after successful undo
 
     return true;
@@ -466,14 +494,6 @@ void ConsensusUTXOSet::Restore(const UTXOSnapshot& snapshot) {
         }
     }
 
-    if (forest_.getNumLeaves() != snapshot.utreexo_num_leaves) {
-        std::cerr << "WARNING [Restore]: Forest numLeaves (" << forest_.getNumLeaves()
-                  << ") != snapshot numLeaves (" << snapshot.utreexo_num_leaves << ")" << std::endl;
-    }
-    if (forest_.getCommitment() != snapshot.utreexo_root) {
-        std::cerr << "WARNING [Restore]: Forest root mismatch after restore" << std::endl;
-    }
-
     // ═════════════════════════════════════════════════════════════════════════
     // Apr 13 2026 Stage 3 — symmetric canonical-roots fork activation on Restore.
     //
@@ -501,6 +521,20 @@ void ConsensusUTXOSet::Restore(const UTXOSnapshot& snapshot) {
             forest_.setCanonicalEmptyRoots(expected_flag);
             forest_.rebuildRoots();  // re-canonicalize roots_ to match the new flag
         }
+    }
+
+    // Commitment/leaf validation runs AFTER the mode transition above (#490).
+    //
+    // It used to run before it, so restoring a LEGACY snapshot compared a
+    // forest still in post-fork mode against a pre-fork commitment and emitted
+    // "Forest root mismatch after restore" every time -- a false alarm that
+    // trained readers to ignore a genuinely serious warning.
+    if (forest_.getNumLeaves() != snapshot.utreexo_num_leaves) {
+        std::cerr << "WARNING [Restore]: Forest numLeaves (" << forest_.getNumLeaves()
+                  << ") != snapshot numLeaves (" << snapshot.utreexo_num_leaves << ")" << std::endl;
+    }
+    if (forest_.getCommitment() != snapshot.utreexo_root) {
+        std::cerr << "WARNING [Restore]: Forest root mismatch after restore" << std::endl;
     }
 }
 
@@ -566,6 +600,18 @@ bool ConsensusUTXOSet::BulkLoad(const std::unordered_map<OutPoint, UTXOEntry>& u
             return false;
         }
     }
+
+    // Adopt the canonical-roots semantics for the loaded height (#490).
+    //
+    // Found by the forest-construction audit: Clear() installs a fresh forest,
+    // which is legacy mode, and the rebuild loop above never consulted the
+    // height -- even though BulkLoad is HANDED the height. Bulk-loading a
+    // post-activation UTXO set therefore produced a forest running legacy
+    // semantics, the same defect this change fixes in ApplyBlock/UndoBlock.
+    //
+    // Applied AFTER the leaves are added so rebuildRoots() operates on the
+    // complete forest.
+    ApplyCanonicalSemanticsForHeight(height);
 
     return true;
 }
