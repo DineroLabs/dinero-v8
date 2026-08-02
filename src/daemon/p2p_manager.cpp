@@ -3818,8 +3818,28 @@ constexpr std::pair<const char*, uint16_t> kMainnetRelayPeers[] = {
 void P2PManager::MaybeAutoRegisterWithRelays() {
     // An operator pinned relays via relayregister= — never override them.
     if (relay_endpoints_from_config_.load(std::memory_order_acquire)) return;
-    // Relay path not enabled for this network. This gate also guards the
-    // connect_to_peer() calls below — until it flips, nothing is dialed.
+
+    // Issue #470 — kMainnetRelayPeers below are MAINNET fleet addresses. Only
+    // dial them when this node is actually on mainnet.
+    //
+    // The MainnetRelayReady() gate immediately below does NOT provide this.
+    // Despite its name, and despite the comment that used to sit here claiming
+    // "relay path not enabled for this network", QuicTransport::MainnetRelayReady()
+    // is `return true;` — it never inspects the active network. So every node,
+    // on every network, reached the connect_to_peer() calls below and dialed
+    // 173.249.200.59 / 172.93.167.32 / 92.118.190.62 on port 20999.
+    //
+    // Observed on a regtest integration test: a node that lost its only peer
+    // ran zero-peer recovery, dialed those three mainnet addresses, failed the
+    // handshake against each (mainnet vs regtest), and never recovered its
+    // local peer. Regtest/testnet nodes must not generate traffic to the
+    // production fleet, and must not have their peer recovery consumed by
+    // handshakes that cannot succeed.
+    if (dinero::Params().name != "mainnet") return;
+
+    // Relay path not enabled yet. NOTE: this gate is currently unconditional
+    // (`return true`); the network check above is what actually protects the
+    // dials below.
     if (!dinero::network::QuicTransport::MainnetRelayReady()) return;
 
     // Collect live relay connections and count observed inbound peers.
