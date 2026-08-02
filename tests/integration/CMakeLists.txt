@@ -168,6 +168,24 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_lagging_peer_catchup_no_orphans.sh)
     message(STATUS "  ✓ LaggingPeerCatchupNoOrphans registered")
 endif()
 
+# Live-path reachability test for #490: does BlockValidator's
+# ConnectBlock/DisconnectBlock share the unchecked-remove defect found in the
+# test-only ConsensusUTXOSet API? Cannot be answered by unit test -- ConnectBlock
+# transitively pulls chainstate, wallet, vault, RPC and mempool -- so it runs
+# against a real dinerod.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_reorg_state_restoration.sh)
+    add_test(
+        NAME UtreexoLiveReorgStateRestoration
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_reorg_state_restoration.sh
+    )
+    set_tests_properties(UtreexoLiveReorgStateRestoration PROPERTIES
+        LABELS "integration;utreexo;reorg;restart;consensus"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ UtreexoLiveReorgStateRestoration registered (daemon: $<TARGET_FILE:dinerod>)")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_cross_seed_restart_reorg_parity.sh)
     add_test(
         NAME CrossSeedRestartReorgParity
