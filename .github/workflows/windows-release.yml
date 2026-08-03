@@ -1,0 +1,183 @@
+name: Windows Release
+
+# Windows release artifact lane.
+#
+# Until v8.1.1 there was no Windows *release* workflow — only
+# windows-openssl-release-smoke.yml, which builds the same installer but is
+# dispatch/PR only, hardcodes a CI version string, and uploads the result as a
+# throwaway workflow artifact. A tagged release therefore produced macOS
+# artifacts and nothing for Windows.
+#
+# This lane mirrors macos-release.yml: gated to release tags (plus manual
+# dispatch), derives the version from the tag, and attaches the installer and
+# its SHA256SUMS to the GitHub release.
+#
+# The smoke workflow stays as-is: it guards the Windows build against changes
+# to packaging/OpenSSL/curl scripts on PRs, which is a different job from
+# cutting a release.
+
+on:
+  push:
+    tags: ['v8.*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to attach artifacts to (blank = artifacts only)'
+        required: false
+        type: string
+
+permissions:
+  contents: write        # required to attach artifacts to the release
+
+jobs:
+  windows-release:
+    name: Windows MSVC x86_64 — release installer
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Strip the leading "v" from the tag; fall back to the dispatch input,
+      # else a dev marker so an unflagged run never embeds an empty version.
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ inputs.release_tag }}" ]; then
+            V="${{ inputs.release_tag }}"; V="${V#v}"
+          else
+            V="0.0.0-dev"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Building Windows release for version: $V"
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache vendored OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7
+          key: windows-msvc-openssl-3.5.7-${{ hashFiles('scripts/build-openssl-vendored.ps1') }}
+
+      - name: Build vendored OpenSSL 3.5.7
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-openssl-vendored.ps1
+
+      - name: Build vendored curl
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-curl-vendored.ps1
+
+      - name: Install NSIS
+        shell: powershell
+        run: choco install nsis --no-progress -y
+
+      # The GitHub runner keeps vcpkg at VCPKG_INSTALLATION_ROOT with no
+      # packages installed, so configure would die at find_package(CURL).
+      - name: Provision curl via runner vcpkg
+        shell: powershell
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
+
+      - name: Build Windows server release and installer
+        shell: powershell
+        run: |
+          .\packaging\windows\build-server-installer.ps1 `
+            -Version '${{ steps.ver.outputs.version }}' `
+            -BuildDir 'build-msvc-server' `
+            -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
+            -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+
+      # Policy pin. A release that silently linked a different OpenSSL than the
+      # one the Linux/macOS lanes assert would be a supply-chain divergence.
+      - name: Assert the linked OpenSSL version
+        shell: powershell
+        run: |
+          .\scripts\ci\check_openssl_version.ps1 `
+            -BuildDir 'build-msvc-server' `
+            -ExpectedVersion '3.5.7'
+
+      - name: Daemon startup, mining, and restart smoke
+        shell: powershell
+        run: |
+          .\scripts\native-msvc-regtest-smoke.ps1 `
+            -BuildDir 'build-msvc-server\Release' `
+            -TimeoutSeconds 90
+
+      # Prove the shipped installer actually installs, runs, and uninstalls.
+      # An installer that builds but does not install is not a release.
+      - name: Silent installer and uninstall smoke
+        shell: powershell
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          $installer = Resolve-Path "packaging\windows\dist\Dinero-Server-$version-windows-x86_64-Setup.exe"
+          $installDir = Join-Path $env:ProgramFiles 'Dinero-Server'
+
+          $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "silent installer exited with code $($install.ExitCode)"
+          }
+          foreach ($name in @('dinerod.exe', 'dinero-cli.exe', 'Uninstall.exe')) {
+            $path = Join-Path $installDir $name
+            if (-not (Test-Path $path)) { throw "installer did not produce $path" }
+          }
+
+          $installedVersion = & (Join-Path $installDir 'dinerod.exe') --version 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "installed dinerod --version failed: $installedVersion"
+          }
+          Write-Host $installedVersion
+
+          $uninstall = Start-Process `
+            -FilePath (Join-Path $installDir 'Uninstall.exe') `
+            -ArgumentList '/S' -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) {
+            throw "silent uninstall exited with code $($uninstall.ExitCode)"
+          }
+          if (Test-Path (Join-Path $installDir 'dinerod.exe')) {
+            throw "silent uninstall left dinerod.exe installed"
+          }
+
+      - name: Checksum installer
+        id: sums
+        shell: powershell
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          $installer = "packaging\windows\dist\Dinero-Server-$version-windows-x86_64-Setup.exe"
+          $sumfile = "SHA256SUMS-windows-x86_64-$version"
+          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLower()
+          "$hash  $(Split-Path -Leaf $installer)" | Out-File -Encoding ascii $sumfile
+          Get-Content $sumfile
+          "installer=$installer" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+          "sumfile=$sumfile"     | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinero-server-windows-x86_64-${{ steps.ver.outputs.version }}
+          path: |
+            ${{ steps.sums.outputs.installer }}
+            ${{ steps.sums.outputs.sumfile }}
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            "${{ steps.sums.outputs.installer }}" \
+            "${{ steps.sums.outputs.sumfile }}" \
+            --clobber
