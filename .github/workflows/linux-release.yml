@@ -59,11 +59,25 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Building Linux x86_64 release for version: $V"
 
+      # Kept in sync with tests.yml. The first dry-run of this lane failed at
+      # configure with "Package 'libusb-1.0' ... not found": hardware wallets
+      # are ON (matching the fleet's libudev contract) and need libusb, which
+      # the developer builder happened to have installed and a clean runner
+      # does not. Aligning with the proven list rather than adding only the
+      # package that happened to error first.
       - name: Install build dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config libudev-dev
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            python3 \
+            perl \
+            libcurl4-openssl-dev \
+            libudev-dev \
+            libusb-1.0-0-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
