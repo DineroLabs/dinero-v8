@@ -22,17 +22,24 @@ namespace dinero {
  * Supply curve (no hard cap — disinflationary). Figures below are computed
  * from the constants in this file at the 120-second target spacing
  * (262,980 blocks/year, so one 1,314,000-block epoch is 5.00 years):
- *   Epochs 0-6: 260.747M DIN from halvings
+ *   Epochs 0-6: 260.747M DIN from halvings (through height 9,198,000)
  *   Epoch 7+:   1 DIN/block = ~1.315M DIN per 5-year epoch
- *   Year 35:    ~260.75M DIN   (0.156%/yr inflation)
- *   Year 100:   ~277.85M DIN   (0.095%/yr inflation → 0% asymptotically)
+ *   Year 35:    ~260.75M DIN   (0.101%/yr inflation)
+ *   Year 100:   ~277.85M DIN   (0.0947%/yr inflation → 0% asymptotically)
+ *
+ * The year-35 and year-100 rates are TAIL-ERA rates: forward-looking, at the
+ * 1 DIN/block floor, i.e. 262,980 DIN/year over the supply at that point
+ * (262,980 / 260,753,175 = 0.1009%; 262,980 / 277,846,875 = 0.0947%). Do not
+ * confuse them with the rate during epoch 6, which is ~0.158%/yr — that epoch
+ * still pays 1.5625 DIN/block, so a year-on-year delta measured ACROSS the
+ * epoch-6/7 boundary reports the old, higher rate rather than the tail rate.
  *
  * Earlier revisions of this comment claimed ~346.55M DIN at year 100 and
  * inflation of 0.50%/0.38%/yr. Those did not follow from these constants —
  * at 1 DIN/block the tail adds only ~262,980 DIN/year, so year 100 is
  * ~277.85M, not ~346.55M. The executable logic was always correct; only this
- * prose was wrong. TestSubsidySchedule pins these figures so the comment
- * cannot drift from the code again.
+ * prose was wrong. SubsidySchedule pins these figures so the comment cannot
+ * drift from the code again.
  *
  * Network Magic: see src/consensus/chainparams_impl.cpp (Dinero mainnet — v7 restart)
  * Genesis Motto: "Dinero: Real Money For Free People - Post-Quantum Native. April 17 2026"

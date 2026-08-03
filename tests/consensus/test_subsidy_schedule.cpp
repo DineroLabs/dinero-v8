@@ -210,6 +210,33 @@ void testCumulativeIssuance() {
     CHECK_EQ(ConsensusSubsidy::GetPoWIssuedAtHeight(kYear100Height),
              kYear100Din * UNA);
 
+    // ---- inflation rates quoted in subsidy.h ----------------------------
+    // Pinned as exact integer issuance rather than a rounded percentage, so
+    // there is nothing to fudge. 262,980 blocks/year at the 1 DIN floor:
+    //   year 35:  262,980 / 260,753,175 = 0.1009%/yr
+    //   year 100: 262,980 / 277,846,875 = 0.0947%/yr
+    constexpr uint32_t kBlocksPerYear = 262980u;
+    const uint64_t tail_year_at_35 =
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kYear35Height + kBlocksPerYear) -
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kYear35Height);
+    CHECK_EQ(tail_year_at_35, static_cast<uint64_t>(kBlocksPerYear) * TAIL);
+
+    const uint64_t tail_year_at_100 =
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kYear100Height + kBlocksPerYear) -
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kYear100Height);
+    CHECK_EQ(tail_year_at_100, static_cast<uint64_t>(kBlocksPerYear) * TAIL);
+
+    // The epoch-6 rate is HIGHER (1.5625 DIN/block, ~0.158%/yr) and must not be
+    // mistaken for the tail rate. Measuring a year-on-year delta that straddles
+    // the epoch-6/7 boundary reports this, not the tail -- which is exactly how
+    // the header comment came to quote 0.156%/yr for year 35.
+    constexpr uint32_t kMidEpoch6 = 6u * HALV + 100000u;
+    const uint64_t epoch6_year =
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kMidEpoch6 + kBlocksPerYear) -
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kMidEpoch6);
+    CHECK_EQ(epoch6_year, static_cast<uint64_t>(kBlocksPerYear) * 156250000ULL);
+    CHECK(epoch6_year > tail_year_at_35);
+
     std::cout << (g_failures == 0 ? "PASSED\n" : "FAILED\n");
 }
 

@@ -31,9 +31,37 @@ P2P -> other).
 
 EXEMPTION
 ---------
-A file that does `#undef NDEBUG` before including <cassert> has forced its
-assertions on deliberately, so they do gate. Those files are exempt and counted
-as zero. tests/consensus/test_header_restart_safety.cpp is the existing example.
+A file that does `#undef NDEBUG` has forced its assertions on deliberately, so
+they do gate. Such a file is exempt and counted as zero -- but ONLY when an
+`#include <cassert>` (or <assert.h>) FOLLOWS the #undef.
+
+That specific ordering is what matters, and it is not the same as "the #undef
+comes first in the file". <cassert> is explicitly re-includable: the standard
+requires assert to be redefined according to the current state of NDEBUG each
+time the header is included. So a file may include <cassert> early (or pull it
+in transitively through some other header) while NDEBUG is defined, then
+#undef NDEBUG and re-include <cassert>, and assert becomes active from there.
+Verified empirically, not just read off the standard: a probe including
+<cassert> first under -DNDEBUG, then undefining and re-including, aborts on a
+false assertion.
+
+Conversely, a bare "#undef NDEBUG appears somewhere" match is too weak -- an
+#undef with no subsequent <cassert> include changes nothing, and exempting it
+would hand a free pass to a file whose assertions are still compiled out.
+
+tests/consensus/test_header_restart_safety.cpp and test_header_sidebranch_bound.cpp
+are the existing correct examples: both include other headers first, then
+#undef NDEBUG, then #include <cassert>.
+
+SCOPE -- KNOWN LIMITATION
+-------------------------
+SCAN_DIRS below lists the directories searched. It is not the whole repository:
+compiled test code living outside those roots is NOT covered, and a raw assert()
+introduced there will not be caught. The set is deliberately explicit rather
+than repo-wide so that the blind spot is visible and reviewable instead of
+implied. When a new compiled-test location is added to the build, add it here
+too. Report actual coverage as "the directories in SCAN_DIRS", never as
+"the repository".
 """
 
 import argparse
@@ -51,8 +79,12 @@ BASELINE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 ASSERT_RE = re.compile(r"(?<![A-Za-z0-9_])assert\s*\(")
 LINE_COMMENT_RE = re.compile(r"//.*$")
 UNDEF_NDEBUG_RE = re.compile(r"^\s*#\s*undef\s+NDEBUG", re.MULTILINE)
+CASSERT_INCLUDE_RE = re.compile(
+    r"^\s*#\s*include\s*[<\"](?:cassert|assert\.h)[>\"]", re.MULTILINE)
 
-TEST_DIRS = ("tests",)
+# Directories searched. NOT the whole repo -- see "SCOPE" in the module
+# docstring. Add new compiled-test roots here when the build gains them.
+SCAN_DIRS = ("tests", "fuzz")
 SOURCE_SUFFIXES = (".cpp", ".cc", ".cxx", ".h", ".hpp")
 
 
@@ -75,21 +107,39 @@ def strip_comments(text: str) -> str:
 
 
 def count_asserts(path: str):
-    """Return (count, exempt). Exempt files force NDEBUG off, so their asserts gate."""
+    """Return (count, exempt).
+
+    Exempt means the file does `#undef NDEBUG` and then includes <cassert>
+    AFTER it. That re-inclusion is what actually turns assert back on -- see the
+    EXEMPTION section of the module docstring. An #undef with no subsequent
+    <cassert> include does nothing, so it earns no exemption.
+    """
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             raw = fh.read()
     except OSError:
         return 0, False
-    if UNDEF_NDEBUG_RE.search(raw):
-        return 0, True
-    return len(ASSERT_RE.findall(strip_comments(raw))), False
+
+    body = strip_comments(raw)
+
+    undef = UNDEF_NDEBUG_RE.search(body)
+    if undef:
+        # Any <cassert> include positioned after the #undef re-arms assert.
+        for inc in CASSERT_INCLUDE_RE.finditer(body):
+            if inc.start() > undef.start():
+                return 0, True
+        # Falls through: the #undef is not followed by a <cassert> include, so
+        # assert here is still whatever the earlier inclusion made it.
+
+    return len(ASSERT_RE.findall(body)), False
 
 
 def scan(root: str):
     counts = {}
-    for test_dir in TEST_DIRS:
-        base = os.path.join(root, test_dir)
+    for scan_dir in SCAN_DIRS:
+        base = os.path.join(root, scan_dir)
+        if not os.path.isdir(base):
+            continue
         for dirpath, _dirnames, filenames in os.walk(base):
             for name in filenames:
                 if not name.endswith(SOURCE_SUFFIXES):
@@ -102,41 +152,97 @@ def scan(root: str):
     return counts
 
 
+def find_regressions(current: dict, baseline: dict):
+    """Files that are new to the baseline, or whose count grew."""
+    out = []
+    for path, count in sorted(current.items()):
+        allowed = baseline.get(path)
+        if allowed is None:
+            out.append((path, count, None))
+        elif count > allowed:
+            out.append((path, count, allowed))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--update-baseline", action="store_true",
-                    help="rewrite the baseline from the current tree "
-                         "(only legitimate when counts went DOWN)")
+                    help="rewrite the baseline from the current tree; refuses "
+                         "if any count grew (the baseline may only shrink)")
+    ap.add_argument("--adopt-scope", metavar="DIR", action="append", default=[],
+                    help="when SCAN_DIRS gains a directory, permit new baseline "
+                         "entries under DIR only. Everything outside DIR is "
+                         "still held to the shrink-only rule, so this cannot be "
+                         "used to launder a regression. Repeatable.")
     args = ap.parse_args()
 
     current = scan(REPO_ROOT)
+    existing = {}
+    if os.path.exists(BASELINE_PATH):
+        with open(BASELINE_PATH, "r", encoding="utf-8") as fh:
+            existing = json.load(fh)
 
     if args.update_baseline:
+        # The baseline may only SHRINK. Without this check, --update-baseline
+        # would launder any regression into the new "allowed" figure, which
+        # would quietly turn the ratchet into a no-op.
+        if existing:
+            grew = find_regressions(current, existing)
+            if args.adopt_scope:
+                # Only brand-new entries under an explicitly adopted directory
+                # are forgiven. A COUNT INCREASE in an already-tracked file is
+                # still a regression even inside that directory.
+                adopted = tuple(d.rstrip("/") + "/" for d in args.adopt_scope)
+                newly_covered = [g for g in grew
+                                 if g[2] is None and g[0].startswith(adopted)]
+                grew = [g for g in grew if g not in newly_covered]
+                if newly_covered:
+                    total_new = sum(c for _p, c, _a in newly_covered)
+                    print(f"adopting {len(newly_covered)} newly-scanned file(s) "
+                          f"under {', '.join(args.adopt_scope)} "
+                          f"({total_new} pre-existing assertions):")
+                    for path, count, _ in sorted(newly_covered):
+                        print(f"  + {path}: {count}")
+            if grew:
+                print("REFUSING to update the baseline: it may only shrink.\n",
+                      file=sys.stderr)
+                for path, count, allowed in grew:
+                    if allowed is None:
+                        print(f"  {path}: {count} raw assert(), not in the "
+                              f"current baseline", file=sys.stderr)
+                    else:
+                        print(f"  {path}: {count} raw assert(), baseline has "
+                              f"{allowed} (+{count - allowed})", file=sys.stderr)
+                print("\nRemove or convert those assertions first. The baseline "
+                      "records the backlog\nbeing paid down; it is not a place "
+                      "to record new debt.", file=sys.stderr)
+                return 1
         with open(BASELINE_PATH, "w", encoding="utf-8") as fh:
             json.dump(current, fh, indent=2, sort_keys=True)
             fh.write("\n")
         total = sum(current.values())
-        print(f"baseline updated: {len(current)} files, {total} raw assertions")
+        was = sum(existing.values()) if existing else None
+        delta = f" (was {was})" if was is not None else ""
+        print(f"baseline updated: {len(current)} files, "
+              f"{total} raw assertions{delta}")
         return 0
 
-    if not os.path.exists(BASELINE_PATH):
+    if not existing:
         print(f"ERROR: missing baseline {BASELINE_PATH}", file=sys.stderr)
         print("Generate it with: python3 scripts/ci/check_test_assertions.py "
               "--update-baseline", file=sys.stderr)
         return 2
 
-    with open(BASELINE_PATH, "r", encoding="utf-8") as fh:
-        baseline = json.load(fh)
+    baseline = existing
 
     regressions = []
-    for path, count in sorted(current.items()):
-        allowed = baseline.get(path)
+    for path, count, allowed in find_regressions(current, baseline):
         if allowed is None:
             regressions.append(
                 f"  {path}: {count} raw assert() in a file with no baseline entry\n"
                 f"      New tests must use always-on checks. assert() is compiled\n"
                 f"      out under NDEBUG, so these would not gate in CI.")
-        elif count > allowed:
+        else:
             regressions.append(
                 f"  {path}: {count} raw assert(), baseline allows {allowed} "
                 f"(+{count - allowed})\n"
@@ -149,8 +255,12 @@ def main() -> int:
 
     total_current = sum(current.values())
     total_baseline = sum(baseline.values())
-    print(f"raw assert() in tests: {total_current} across {len(current)} files "
-          f"(baseline {total_baseline} across {len(baseline)})")
+    scanned = ", ".join(d.rstrip("/") + "/" for d in SCAN_DIRS)
+    print(f"raw assert() under {scanned}: {total_current} across "
+          f"{len(current)} files (baseline {total_baseline} across "
+          f"{len(baseline)})")
+    print(f"NOTE: scope is limited to {scanned} -- compiled test code outside "
+          f"these roots is NOT scanned.")
 
     if improved:
         print(f"\n{len(improved)} file(s) improved since the baseline:")

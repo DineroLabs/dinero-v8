@@ -1,4 +1,5 @@
 {
+  "fuzz/fuzz_compact_block.cpp": 13,
   "tests/consensus/test_abi_stability.cpp": 33,
   "tests/consensus/test_assumevalid.cpp": 19,
   "tests/consensus/test_coinbase_maturity.cpp": 18,
