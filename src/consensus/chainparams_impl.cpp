@@ -484,26 +484,16 @@ const ChainParams& ParamsImpl() {
 
 } // namespace detail
 
-void SelectParams(Chain chain) {
-    g_paramsSelected = true;
-    switch (chain) {
-        case Chain::MAINNET:
-            g_active = &g_mainnet;
-            break;
-        case Chain::TESTNET:
-            g_active = &g_testnet;
-            break;
-        case Chain::REGTEST:
-            // Lazy initialize regtest genesis (workaround for std::string in static init)
-            if (g_regtest.genesis.merkleRootHex.empty()) {
-                g_regtest.genesis = CreateRegtestGenesis();
-            }
-            g_active = &g_regtest;
-            break;
-        default:
-            throw std::invalid_argument("Unknown chain");
-    }
-
+// Chain-parameter preconditions, checked against a CANDIDATE rather than the
+// active globals.
+//
+// These must run before SelectParams() publishes anything. g_active and
+// g_paramsSelected are process-wide, so committing them and then throwing would
+// leave Params(), GetActiveChain(), MutableParams(), and IsChainSelected() all
+// reporting a chain that consensus had just rejected. Taking
+// `const ChainParams&` rather than reading the globals is what makes that
+// mistake impossible to reintroduce -- there is no global here to read.
+static void ValidateChainParams(const ChainParams& params) {
     // cv-binding audit invariant (NECESSARY, not sufficient): cv-binding must
     // not activate before input-binding. The cv circuit is only meaningful when
     // public-input binding is on (VerifySpendProof passes `bind` and `cv_bound`
@@ -536,8 +526,8 @@ void SelectParams(Chain chain) {
     // ⚠️ Any NEW chain that sets a cv height above its input height MUST pair it
     // with a pool reset at the same height. Do that in the activation plan, not
     // here — this check only enforces the ordering, never the closure.
-    if (g_active->shielded_cv_binding_activation_height <
-        g_active->shielded_input_binding_activation_height) {
+    if (params.shielded_cv_binding_activation_height <
+        params.shielded_input_binding_activation_height) {
         throw std::runtime_error(
             "invalid chainparams: shielded_cv_binding_activation_height must be >= "
             "shielded_input_binding_activation_height");
@@ -546,12 +536,46 @@ void SelectParams(Chain chain) {
     // The shielded epoch reset must coincide with cv-binding activation: the pool
     // is discarded and cv-binding is enforced from block 1 of the new epoch, so no
     // window can exist where balance is enforced over cv while cv is still unbound.
-    if (g_active->shielded_epoch_reset_height !=
-        g_active->shielded_cv_binding_activation_height) {
+    if (params.shielded_epoch_reset_height !=
+        params.shielded_cv_binding_activation_height) {
         throw std::runtime_error(
             "invalid chainparams: shielded_epoch_reset_height must equal "
             "shielded_cv_binding_activation_height");
     }
+}
+
+void SelectParams(Chain chain) {
+    // Resolve the candidate WITHOUT touching the published globals.
+    const ChainParams* candidate = nullptr;
+    switch (chain) {
+        case Chain::MAINNET:
+            candidate = &g_mainnet;
+            break;
+        case Chain::TESTNET:
+            candidate = &g_testnet;
+            break;
+        case Chain::REGTEST:
+            // Lazy initialize regtest genesis (workaround for std::string in static init).
+            // This initializes the CANDIDATE, it does not select it: the genesis
+            // fields are idempotent and independent of the checks below, so a
+            // later rejection still leaves no chain published.
+            if (g_regtest.genesis.merkleRootHex.empty()) {
+                g_regtest.genesis = CreateRegtestGenesis();
+            }
+            candidate = &g_regtest;
+            break;
+        default:
+            throw std::invalid_argument("Unknown chain");
+    }
+
+    // Throws on any violated precondition. Runs BEFORE the commit below, so a
+    // rejected chain never becomes observable through Params(), GetActiveChain(),
+    // MutableParams(), or IsChainSelected().
+    ValidateChainParams(*candidate);
+
+    // Commit. Nothing above this line mutates g_active or g_paramsSelected.
+    g_active = candidate;
+    g_paramsSelected = true;
 }
 
 Chain GetActiveChain() {

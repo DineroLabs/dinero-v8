@@ -4406,6 +4406,48 @@ set_tests_properties(CovenantActivation PROPERTIES
   TIMEOUT 10
 )
 
+# Deliberately NOT a gtest binary: it must observe the process state before any
+# chain has ever been selected, which no gtest case can reach (and which fork()
+# based death tests inherit rather than reset). Plain main(), explicit exit
+# codes, no assert() -- see the file header.
+add_executable(test_selectparams_fresh_process
+  tests/consensus/test_selectparams_fresh_process.cpp
+)
+target_link_libraries(test_selectparams_fresh_process PRIVATE
+  dinero_consensus
+)
+link_zstd_if_needed(test_selectparams_fresh_process)
+target_include_directories(test_selectparams_fresh_process PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME SelectParamsFreshProcess COMMAND test_selectparams_fresh_process)
+set_tests_properties(SelectParamsFreshProcess PROPERTIES
+  LABELS "consensus;chainparams"
+  TIMEOUT 10
+)
+
+add_executable(test_chainparams_selection
+  tests/consensus/test_chainparams_selection.cpp
+)
+add_dependencies(test_chainparams_selection gtest gtest_main)
+target_link_libraries(test_chainparams_selection PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_chainparams_selection)
+target_include_directories(test_chainparams_selection PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME ChainParamsSelection COMMAND test_chainparams_selection)
+set_tests_properties(ChainParamsSelection PROPERTIES
+  LABELS "consensus;chainparams"
+  TIMEOUT 10
+)
+
 add_executable(test_covenant_system_lifecycle
   tests/consensus/test_covenant_system_lifecycle.cpp
   src/daemon/mempool.cpp
