@@ -69,16 +69,25 @@ private:
     UTXOEntry coin_;
 };
 
-TEST(CovenantActivation, ProductionNetworksDoNotActivateUnreviewedOpcodes) {
+TEST(CovenantActivation, ProductionNetworksPinReviewedActivationPolicy) {
     SelectParams(Chain::MAINNET);
     EXPECT_EQ(Params().taproot_scriptpath_activation_height, 1U);
-    EXPECT_EQ(Params().ctv_activation_height, UINT32_MAX);
+    EXPECT_EQ(Params().ctv_activation_height, 100000U);
     EXPECT_EQ(Params().csfs_activation_height, UINT32_MAX);
     EXPECT_EQ(Params().txhash_activation_height, UINT32_MAX);
-    EXPECT_EQ(Params().ccv_activation_height, UINT32_MAX);
+    EXPECT_EQ(Params().ccv_activation_height, 100000U);
+    EXPECT_EQ(CovenantActivationParams::CovenantFlags(99999, Params()),
+              dinero::consensus::SCRIPT_VERIFY_NONE);
+    EXPECT_EQ(CovenantActivationParams::CovenantFlags(100000, Params()),
+              dinero::consensus::SCRIPT_VERIFY_CHECKTEMPLATEVERIFY |
+                  dinero::consensus::SCRIPT_VERIFY_CHECKCONTRACT);
 
     SelectParams(Chain::TESTNET);
     EXPECT_EQ(Params().taproot_scriptpath_activation_height, 200U);
+    EXPECT_EQ(Params().ctv_activation_height, UINT32_MAX);
+    EXPECT_EQ(Params().ccv_activation_height, UINT32_MAX);
+    EXPECT_EQ(Params().csfs_activation_height, UINT32_MAX);
+    EXPECT_EQ(Params().txhash_activation_height, UINT32_MAX);
     EXPECT_EQ(CovenantActivationParams::CovenantFlags(
                   UINT32_MAX, Params()),
               dinero::consensus::SCRIPT_VERIFY_NONE);
@@ -188,13 +197,26 @@ TEST(CovenantActivation, RelayPolicyRejectsDormantRevealedOpcodes) {
     EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
         ctv, {}, 19, params, &reason));
     EXPECT_NE(reason.find("missing spent output scripts"), std::string::npos);
+
+    // Pin the production boundary through the actual mainnet parameters, not
+    // only through a synthetic ChainParams fixture. Mempool and block-template
+    // policy validate the next candidate block height.
+    SelectParams(Chain::MAINNET);
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        ctv, p2trScripts, 99999, Params(), &reason));
+    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
+        ctv, p2trScripts, 100000, Params()));
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        ccv, p2trScripts, 99999, Params(), &reason));
+    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
+        ccv, p2trScripts, 100000, Params()));
 }
 
 TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
     SelectParams(Chain::MAINNET);
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "48bb4b27879a492dd8a83fd1e4826ec422f6b9ac3b1ae6797c9469783036c76e");
+        "68e0a99766e8ab1224ee040ec715bbbd0a544a59d4b3a96025dd35f77f4e960a");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);
@@ -273,6 +295,65 @@ TEST(CovenantActivation, HighLevelValidationUsesSpendHeightNotCoinHeight) {
         TransactionValidator::ValidateTransaction(tx, &provider, 20);
     EXPECT_TRUE(result.valid) << result.error;
     EXPECT_EQ(result.total_fee, dinero::AmountUna::Una(1'000));
+}
+
+TEST(CovenantActivation, MainnetValidationChangesExactlyAtHeight100000) {
+    SelectParams(Chain::MAINNET);
+
+    Transaction tx;
+    TxInput input;
+    input.prevout.txid = TxId(dinero::uint256::FromHexUnsafe(
+        "0000000000000000000000000000000000000000000000000000000000000080"));
+    input.prevout.vout = 0;
+    tx.vin.push_back(input);
+    tx.vout.emplace_back(
+        dinero::AmountUna::Una(9'000),
+        std::vector<uint8_t>{dinero::consensus::OP_TRUE});
+
+    auto wrong_hash = dinero::consensus::ComputeCTVHash(tx, 0);
+    wrong_hash[0] ^= 0x01;
+    std::vector<uint8_t> script{32};
+    script.insert(script.end(), wrong_hash.begin(), wrong_hash.end());
+    script.push_back(static_cast<uint8_t>(
+        dinero::consensus::OP_CHECKTEMPLATEVERIFY));
+
+    const auto leaf_hash = dinero::consensus::TapLeafHash(0xc0, script);
+    ASSERT_EQ(leaf_hash.size(), 32U);
+    std::array<uint8_t, 32> merkle_root{};
+    std::copy(leaf_hash.begin(), leaf_hash.end(), merkle_root.begin());
+
+    ContractState key_seed{};
+    key_seed.stateHash[31] = 2;
+    std::array<uint8_t, 32> internal_key{};
+    ASSERT_TRUE(dinero::consensus::DeriveContractInternalKey(
+        key_seed, internal_key));
+
+    std::vector<uint8_t> spent_script;
+    uint8_t parity = 0;
+    ASSERT_TRUE(dinero::consensus::ComputeContractOutputScript(
+        key_seed, merkle_root, spent_script, &parity));
+
+    std::vector<uint8_t> control_block{
+        static_cast<uint8_t>(0xc0 | parity)};
+    control_block.insert(
+        control_block.end(), internal_key.begin(), internal_key.end());
+    tx.vin[0].witness = {script, control_block};
+
+    const OutPoint outpoint{tx.vin[0].prevout.txid, 0};
+    OneCoinProvider provider(
+        outpoint,
+        UTXOEntry(
+            dinero::AmountUna::Una(10'000), spent_script,
+            1 /* coin creation height */, false));
+
+    // The deliberately wrong template is accepted while 0xb3 is still NOP4,
+    // then rejected by the very first block enforcing CTV.
+    const auto before =
+        TransactionValidator::ValidateTransaction(tx, &provider, 99999);
+    EXPECT_TRUE(before.valid) << before.error;
+    const auto active =
+        TransactionValidator::ValidateTransaction(tx, &provider, 100000);
+    EXPECT_FALSE(active.valid);
 }
 
 TEST(CovenantActivation, CtvPrecomputationMatchesCanonicalHashing) {

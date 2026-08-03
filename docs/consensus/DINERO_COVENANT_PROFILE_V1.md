@@ -1,8 +1,8 @@
 # Dinero covenant profile v1
 
-Status: normative candidate for independent review. Implemented and active on
-regtest only. Mainnet and testnet CTV/CCV activation heights remain
-`UINT32_MAX`.
+Status: normative profile scheduled for mainnet CTV/CCV activation at block
+100,000, subject to the assurance and deployment gates in
+`COVENANT_MAINNET_ACTIVATION_100000.md`. Testnet remains dormant.
 
 This document defines the complete first Dinero covenant profile. The key
 words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative.
@@ -56,13 +56,14 @@ Each feature has an independent height:
 
 | Chain | Script path | CTV | CCV | CSFS/TXHASH |
 |---|---:|---:|---:|---:|
-| Mainnet | 1 | dormant | dormant | dormant |
+| Mainnet | 1 | 100,000 | 100,000 | dormant |
 | Testnet | 200 | dormant | dormant | dormant |
 | Regtest | 20 | 20 | 20 | dormant |
 
 `dormant` means `UINT32_MAX`, which MUST never be treated as an active height.
-For any future production assignment, CTV and CCV activation MUST NOT precede
-script-path activation.
+CTV and CCV activation MUST NOT precede script-path activation. Mainnet pins
+both reviewed opcodes to the same height so there is no partial profile-v1
+window.
 
 Block validation uses the candidate block height. Mempool admission and mining
 selection use the height of the next candidate block. When a reorg changes
@@ -267,19 +268,21 @@ The following executable sources are part of the profile-v1 review vectors:
 
 The CCV golden values are repeated in `CCV_SUCCESSOR_BINDING_V1.md` for manual
 review. A change to any normative vector requires a versioned specification
-change and new independent review.
+change, a new reproducible assurance record, and a new public review window.
 
 ## 10. Production activation requirements
 
-This specification does not assign a mainnet or testnet activation height.
-Before doing so, the project MUST:
+This specification records the scheduled mainnet height but does not by itself
+authorize release or deployment. Before shipping the activation, the project
+MUST:
 
 1. retain the checksummed, watch-only wallet recovery path and live
    two-daemon relay/restart/reorg coverage implemented for regtest;
 2. repeat those deployment tests against the proposed activation boundaries
    and release candidates;
-3. obtain independent consensus and cryptographic review of this profile,
-   implementation, vectors, lifecycle tests, and resource analysis;
+3. complete the reproducible open-source consensus and cryptographic assurance
+   record for this profile, implementation, vectors, lifecycle tests, and
+   resource analysis, and publish it for review;
 4. publish the chosen activation parameters and release hashes with enough
    fleet-upgrade lead time; and
 5. monitor activation and retain a coordinated incident response procedure.

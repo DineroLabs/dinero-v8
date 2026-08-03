@@ -1,6 +1,8 @@
 # Covenant validation resource limits
 
-Status: implemented for regtest review; production activation remains disabled.
+Status: implemented and bounded for the mainnet CTV/CCV activation scheduled at
+block 100,000. Open-source assurance and release-candidate gates remain
+mandatory.
 
 This note records the deterministic validation limits and the benchmark
 evidence for the CTV/CCV covenant profile. Timing measurements are diagnostic,
@@ -110,12 +112,13 @@ and bounds above; timing remains diagnostic rather than a consensus rule.
 
 ## Remaining activation blockers
 
-These resource limits do not by themselves authorize production activation.
-The protocol still requires:
+These resource limits do not by themselves authorize shipping the activation
+release. The protocol still requires:
 
-- independent consensus and cryptographic review;
+- the reproducible consensus and cryptographic assurance record;
 - a final normative specification with byte-level vectors;
 - production-ready wallet/build/relay surfaces;
-- explicit activation parameters and deployment monitoring; and
+- release-candidate verification of the height-100,000 parameters and
+  deployment monitoring; and
 - a decision on whether the dormant CSFS and TXHASH profiles are removed or
   separately specified, costed, tested, and reviewed.

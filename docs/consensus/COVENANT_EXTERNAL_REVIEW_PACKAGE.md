@@ -1,15 +1,24 @@
 # Covenant profile v1 external-review package
 
-Status: ready for independent review; not ready for production activation.
+Status: ready for public and independent review. Mainnet CTV/CCV activation is
+scheduled for block 100,000, but the activation release must not ship until the
+open-source assurance record and deployment gates are satisfied. External
+review is invited and valuable; a paid audit is not a release prerequisite.
 
-Date: 2026-07-31
+Date: 2026-08-01
 
-Implementation base: `cb21a91d4226a8a0b8b798f065d1b867f7de88bb`
-(`origin/dinero-main` after PR #463)
+Implementation base: `ed3fb9cb8f58485b578dc63708ea8237a57c26c9`
+(`origin/dinero-main` after PR #476)
 
-Review stack branches (resolve and record the exact remote heads when review
-starts; the short hashes below are the original implementation anchors, not a
-substitute for reviewing later amendments):
+Activation review target: the exact head of
+`codex/covenant-mainnet-80000`, including
+`COVENANT_MAINNET_ACTIVATION_100000.md`. Record its full hash before review.
+The branch name is historical; the normative file and consensus parameters pin
+height 100,000.
+
+Historical review stack branches (the short hashes below are implementation
+anchors, not a substitute for reviewing the merged implementation and the
+activation target above):
 
 - foundation and dormant protocol: `codex/covenants-01-foundation`
   (anchor `c7b8cb5612`);
@@ -20,9 +29,10 @@ substitute for reviewing later amendments):
 - wallet/RPC construction, recovery, and live lifecycle:
   `codex/covenants-04-wallet` (anchor `2c1f180618`).
 
-Reviewers should fetch the remote branches, record their full hashes, and
-review the final wallet branch tip—including all merged lower-stack
-amendments and `DINERO_COVENANT_PROFILE_V1.md`—against that base.
+Reviewers should review the activation target against the implementation base
+and use the historical branches only to recover authorship and sequencing.
+The project assurance record must remain reproducible even if no external
+reviewer participates.
 
 ## 1. Review objective
 
@@ -35,9 +45,10 @@ Determine whether the dormant CTV/CCV implementation:
 - can be constructed, recovered, wallet-signed, relayed, revalidated after a
   reorg, and reconfirmed without a non-consensus bypass;
 - has deterministic and sufficient denial-of-service bounds; and
-- is suitable to proceed to a later activation proposal.
+- is suitable for the scheduled block-100,000 mainnet activation.
 
-This review is not a request to approve an activation height.
+This review explicitly includes the height-100,000 boundary and the deployment
+and abort conditions in the activation plan.
 
 ## 2. Normative material
 
@@ -167,6 +178,10 @@ Wallet/RPC construction and recovery surfaces:
 15. Does `wallet.signrawtransaction` preserve a preconstructed covenant
     script-path witness, sign only the remaining wallet-owned inputs, and
     report `complete` only after canonical validation of every input?
+16. Given that activation is a flag-day soft fork with no miner signalling and
+    CTV/CCV remain dormant on public testnet, are the height-100,000 deployment,
+    four-node readiness checkpoint, monitoring, and abort rules sufficient for
+    first public-network enforcement?
 
 ## 6. Reproduction
 
@@ -258,23 +273,36 @@ reinterpret hidden trees without explicit deployment planning.
 
 ## 8. Known limitations and blockers
 
-- Mainnet and testnet CTV/CCV activation heights remain dormant.
-- Independent review has not yet occurred.
-- The profile-v1 wallet/RPC surface is intentionally regtest-only. Its
-  successful lifecycle evidence does not approve testnet or mainnet
-  activation.
-- The profile-v1 wallet CCV artifact is explicitly permissionless
-  (`OP_CHECKCONTRACTVERIFY OP_TRUE`). It proves construction and continuity,
-  not owner authorization. An authenticated application script and its wallet
-  key/recovery design require separate implementation and review.
+- Mainnet CTV/CCV activation is scheduled at block 100,000; testnet remains
+  dormant.
+- Activation has no miner-signalling or versionbits phase. Because testnet also
+  remains dormant, mainnet would be the profile's first public-network
+  enforcement. The controlled four-node fleet permits coordinated deployment
+  but provides no public soak period; this risk must be explicit in the public
+  review package and final owner acceptance record.
+- No paid or formal independent audit is required. External review remains
+  invited, and every substantive report must be resolved publicly, but release
+  readiness is determined by the reproducible open-source assurance gates in
+  `COVENANT_MAINNET_ACTIVATION_100000.md`.
+- The profile-v1 wallet/RPC surface remains intentionally regtest-only. The
+  consensus activation does not silently expose mainnet construction RPCs;
+  production wallet enablement requires a separate reviewed release.
+- The default profile-v1 wallet CCV artifact is owner-authorized with BIP340.
+  The legacy permissionless form remains available only after explicit
+  acknowledgement.
 - Mempool admission and block-template selection reject revealed CTV, CCV,
   CSFS, and TXHASH scripts before each opcode's independent activation height.
   Historical consensus NOP/`OP_SUCCESS` behavior is unchanged. The lifecycle
   suite separates Taproot script-path activation from CTV and exercises
   admission, mining, rollback, revalidation, and restart across that boundary;
   the same tests must be repeated at any proposed production boundaries.
-- Release-candidate tests must be repeated at any proposed activation
-  boundary and on every supported platform before production use.
+- Release-candidate tests must be repeated at the block-100,000 boundary and on
+  every supported platform before production use.
+- Importing the upstream `tx_valid.json` and `tx_invalid.json` interpreter
+  corpus requires an explicit Bitcoin-to-Dinero verification-flag mapping and
+  prevout plumbing. This recommended pre-activation work is tracked in #483;
+  it must be complete by the height-99,000 checkpoint or activation must be
+  rescheduled.
 - CSFS and TXHASH remain incomplete, uncosted, and deliberately dormant.
 - Confidential CTV/CCV is undefined and rejected.
 - A mainnet history scan cannot inspect hidden Taproot leaves.
@@ -282,7 +310,38 @@ reinterpret hidden trees without explicit deployment planning.
 These are blockers, not deferred release notes. They must remain visible in
 any PR and activation proposal.
 
-## 9. Reviewer deliverable
+## 9. Open-source assurance deliverable
+
+The activation record must identify the frozen specification and release
+commit and provide reproducible evidence for:
+
+- an implementation-independent CCV reference model;
+- randomized differential tests for valid and invalid transitions;
+- explicit properties covering value preservation, unique successor mapping,
+  replay/rewind/skip rejection, immutable code/tree binding, and canonical
+  encodings;
+- sanitizer-backed fuzzing of wire parsing and the live Taproot verification
+  path;
+- mutation tests proving every normative CCV clause is load-bearing;
+- bounded exhaustive/model analysis of the transition rules;
+- resource, lifecycle, restart, reorg, and multi-node results; and
+- a public comment period running from the recorded freeze height to height
+  99,000, with every reported critical/high finding resolved.
+
+The comment period is bounded by block height, not by a number of days.
+Observed block spacing has ranged from roughly 36 s to 147 s against a 120 s
+target, so a fixed calendar window corresponds to an unknowable and varying
+number of blocks, while height is what consensus enforces and is identical on
+every node. Publishing the package earlier is therefore the only way to lengthen
+review. See "Everything is measured in block height" in
+COVENANT_MAINNET_ACTIVATION_100000.md.
+
+The owner must then record whether the residual risk is accepted, including
+the explicit fact that no external expert may have signed off. This is an
+achievable open-source assurance gate, not a claim of commercial audit
+equivalence.
+
+## 10. Optional external-review deliverable
 
 For each question in section 5, record:
 
@@ -293,5 +352,7 @@ For each question in section 5, record:
 - whether the finding blocks wallet work, testnet activation, or mainnet
   activation.
 
-At least one reviewer should be independent of the implementation authors and
-should reproduce the vectors and neuter checks from a clean checkout.
+Any external reviewer should state whether they are independent of the
+implementation authors and should reproduce the vectors and neuter checks from
+a clean checkout. Their participation strengthens the record but is not a
+condition that can remain open indefinitely.
