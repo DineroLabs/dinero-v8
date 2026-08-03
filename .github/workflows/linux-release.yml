@@ -1,0 +1,174 @@
+name: Linux Release
+
+# Linux x86_64 release artifact lane.
+#
+# Until v8.1.1 there was no Linux release workflow at all. tests.yml builds the
+# daemon but uploads only ctest logs, so a tagged release produced macOS
+# artifacts and nothing for Linux — the fleet binary was built by hand on a
+# developer machine and copied out.
+#
+# That is how the v8.1.1 first deployment attempt shipped a daemon linked
+# against libOpenCL.so.1: the builder happened to have OpenCL installed, CMake
+# auto-detected it, and the binary died with exit 127 on a validator that has
+# no OpenCL. A second rebuild then leaked libminiupnpc/libnatpmp the same way.
+#
+# So this lane does two things a hand-build cannot guarantee:
+#   1. builds with an explicit, pinned flag set, and
+#   2. ASSERTS the resulting dynamic-dependency set against a declared
+#      allow-list, failing the release if anything else appears.
+#
+# The allow-list is the dependency contract of the deployed fleet binary.
+# Widening it is a deliberate, reviewable change — not something that happens
+# because a package was installed on whichever machine did the build.
+
+on:
+  push:
+    tags: ['v8.*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to attach artifacts to (blank = artifacts only)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  linux-release:
+    name: Linux x86_64 — release daemon
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ inputs.release_tag }}" ]; then
+            V="${{ inputs.release_tag }}"; V="${V#v}"
+          else
+            V="0.0.0-dev"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Building Linux x86_64 release for version: $V"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libudev-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7
+            third_party/bulletproofs_ffi/target
+          key: linux-release-vendored-${{ hashFiles('scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock') }}
+
+      - name: Build vendored OpenSSL 3.5.7
+        run: bash scripts/build-openssl-vendored.sh
+
+      # Pinned release flag set. GPU mining and port mapping are OFF so the
+      # artifact never links libOpenCL / libminiupnpc / libnatpmp regardless of
+      # what the runner happens to have installed. Hardware wallets stay ON
+      # (libudev), matching the deployed fleet contract.
+      - name: Configure
+        run: |
+          cmake -S . -B build-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF \
+            -DENABLE_GPU_MINING=OFF \
+            -DDINERO_ENABLE_PORTMAPPING=OFF \
+            -DDINERO_RELEASE_TAG=${{ steps.ver.outputs.version }}
+
+      - name: Build daemon and CLI
+        run: cmake --build build-release --target dinerod dinero-cli -j"$(nproc)"
+
+      - name: Assert OpenSSL policy pin (3.5.7)
+        run: bash scripts/ci/check_openssl_version.sh build-release 3.5.7
+
+      # The check whose absence shipped a broken artifact. Any NEEDED entry
+      # outside the allow-list fails the release here, not on a validator.
+      - name: Assert dynamic dependency contract
+        run: |
+          ALLOWED="ld-linux-x86-64.so.2 libc.so.6 libgcc_s.so.1 libm.so.6 libstdc++.so.6 libudev.so.1"
+          echo "allow-list: $ALLOWED"
+          ACTUAL=$(objdump -p build-release/dinerod | awk '/NEEDED/{print $2}' | sort)
+          echo "actual:"; echo "$ACTUAL" | sed 's/^/  /'
+          rc=0
+          for lib in $ACTUAL; do
+            case " $ALLOWED " in
+              *" $lib "*) ;;
+              *) echo "::error::unexpected dynamic dependency: $lib"; rc=1 ;;
+            esac
+          done
+          if [ "$rc" -ne 0 ]; then
+            echo "The release artifact links a library outside the declared contract."
+            echo "This is how a builder's ambient packages leak into a release."
+            echo "Either disable the feature that pulled it in, or widen the"
+            echo "allow-list deliberately after confirming every target host has it."
+            exit 1
+          fi
+          echo "dependency contract satisfied"
+
+      - name: Report consensus checksum
+        run: |
+          D=$(mktemp -d)
+          ./build-release/dinerod -datadir="$D" --p2p.offline=1 --rpcport=20997 >"$D/d.log" 2>&1 &
+          PID=$!
+          for i in $(seq 1 60); do
+            R=$(./build-release/dinero-cli -datadir="$D" -rpcport=20997 getconsensusinfo 2>/dev/null) && [ -n "$R" ] && break
+            sleep 1
+          done
+          echo "$R" | grep -E 'consensus_checksum|network' || { echo "::error::daemon did not report consensus info"; }
+          kill "$PID" 2>/dev/null || true
+          for i in $(seq 1 30); do kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done
+          kill -9 "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+          rm -rf "$D"
+
+      - name: Package
+        id: pkg
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          OUT="dinero-linux-x86_64-$V"
+          mkdir -p "$OUT"
+          cp build-release/dinerod build-release/dinero-cli "$OUT/"
+          strip "$OUT/dinerod" "$OUT/dinero-cli"
+          tar -czf "$OUT.tar.gz" "$OUT"
+          sha256sum "$OUT.tar.gz" "$OUT/dinerod" "$OUT/dinero-cli" \
+            > "SHA256SUMS-linux-x86_64-$V"
+          cat "SHA256SUMS-linux-x86_64-$V"
+          echo "tarball=$OUT.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sumfile=SHA256SUMS-linux-x86_64-$V" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinero-linux-x86_64-${{ steps.ver.outputs.version }}
+          path: |
+            ${{ steps.pkg.outputs.tarball }}
+            ${{ steps.pkg.outputs.sumfile }}
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            "${{ steps.pkg.outputs.tarball }}" \
+            "${{ steps.pkg.outputs.sumfile }}" \
+            --clobber

@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.17)
-# VERSION 8.0.0 — Phase E of v8 peer-discovery. The seeder is a small
+# VERSION 8.1.1 — Phase E of v8 peer-discovery. The seeder is a small
 # standalone binary; intentionally light on dependencies so it builds
 # fast and operators can run it without dragging in the daemon's full
 # library graph.
-project(dinero-seeder VERSION 8.0.0 LANGUAGES CXX)
+project(dinero-seeder VERSION 8.1.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

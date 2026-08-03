@@ -18,13 +18,13 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 cmake_minimum_required(VERSION 3.21)
-# VERSION 8.0.0 aligns dinero-qt with the unified monorepo release
+# VERSION 8.1.1 aligns dinero-qt with the unified monorepo release
 # line (was 2.2.6 pre-consolidation). When this CMakeLists is
 # included via add_subdirectory from the dinero root, the parent
-# project also declares VERSION 8.0.0 — both scopes resolve
+# project also declares VERSION 8.1.1 — both scopes resolve
 # PROJECT_VERSION to the same value. When built standalone (legacy
 # mode), this declaration alone supplies it.
-project(dinero-qt VERSION 8.0.0 LANGUAGES CXX)
+project(dinero-qt VERSION 8.1.1 LANGUAGES CXX)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Qt firewall — directory-scope include reset (Phase 2 Step 7 finding, 2026-05-12)
