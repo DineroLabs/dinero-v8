@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/release-v8.0.18-blue" alt="Release"></a>
+  <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/release-v8.1.1-blue" alt="Release"></a>
   <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/status-stable-brightgreen" alt="Status"></a>
   <a href="https://dinerolabs.org"><img src="https://img.shields.io/badge/site-dinerolabs.org-blue" alt="Website"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License"></a>
@@ -58,7 +58,7 @@ working directly with the v8 source tree.
 
 ## Current Downloads
 
-Use the current stable `v8.0.18` release from:
+Use the current stable `v8.1.1` release from:
 
 - [Dinero v8 releases](https://github.com/DineroLabs/dinero-v8/releases)
 - [dinerolabs.org](https://dinerolabs.org)
@@ -640,5 +640,5 @@ from the Dinero v8 releases page and verify the published checksums.
 ---
 
 *Last updated: July 28, 2026*
-*Dinero Version: **v8.0.18 stable***
+*Dinero Version: **v8.1.1 stable***
 *Release: [Dinero v8 releases](https://github.com/DineroLabs/dinero-v8/releases)*

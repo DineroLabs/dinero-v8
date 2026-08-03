@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.17)  # bumped for find_package(CUDAToolkit)
-# VERSION 8.0.0 aligns dinero-solo-miner with the unified monorepo
+# VERSION 8.1.1 aligns dinero-solo-miner with the unified monorepo
 # release line (was 1.0.0 pre-consolidation). When this CMakeLists
 # is included via add_subdirectory from the dinero root, the parent
-# project also declares VERSION 8.0.0; both scopes resolve to the
+# project also declares VERSION 8.1.1; both scopes resolve to the
 # same string. Standalone miner builds keep working with this same
 # declaration.
-project(dinero-solo-miner VERSION 8.0.0 LANGUAGES CXX)
+project(dinero-solo-miner VERSION 8.1.1 LANGUAGES CXX)
 
 # C++20 required: src/build_identity.cpp uses designated initializers, which
 # are a C++20 feature. Clang/GCC accept them as a C++17 extension, but MSVC

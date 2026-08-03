@@ -1,3 +1,45 @@
+dinero-core (8.1.1-1) unstable; urgency=medium
+
+  * v8.1.1 — CONSENSUS RELEASE. Activates OP_CHECKTEMPLATEVERIFY (BIP-119)
+    and OP_CHECKCONTRACTVERIFY together at mainnet block 100,000. The daemon
+    is NOT byte-identical to v8.0.18 and a full fleet redeploy IS required:
+    every validating and mining node must run this release before block
+    99,000, the go/no-go checkpoint. A node still on v8.0.18 at block 100,000
+    will split from the network.
+    .
+    Both opcodes are bound to a single constant
+    (MAINNET_COVENANT_PROFILE_V1_HEIGHT) so neither can activate without the
+    other. OP_CHECKSIGFROMSTACK and OP_TXHASH remain dormant (UINT32_MAX).
+    Consensus checksum changes to
+    68e0a99766e8ab1224ee040ec715bbbd0a544a59d4b3a96025dd35f77f4e960a.
+    .
+    Deploying this release does NOT activate the opcodes: they stay dormant
+    until block 100,000 regardless of when the binary is installed. Public
+    review runs over the block window [78,245 -> 99,000] (issue #503).
+    .
+    Assurance evidence, reproducible from a clean checkout: full upstream
+    BIP-119 vector corpus, CCV adversarial suite, an implementation-independent
+    CCV reference model differentially tested against production, mutation
+    coverage proving every normative CCV clause is load-bearing, sanitizer
+    fuzzing over the live Taproot path, and bounded-state exhaustive
+    enumeration. No paid external audit was obtained; that residual risk is
+    recorded explicitly rather than glossed over.
+    .
+    Also in this release:
+    - SelectParams() now validates chain parameters before publishing them,
+      so a rejected chain can no longer leave the process reporting
+      parameters consensus refused (PR #499).
+    - Test-integrity repairs: assert() is compiled out under NDEBUG, which
+      CI uses, so assert-only tests were passing without checking anything.
+      This had been hiding a stale premine model in the monetary tests --
+      Dinero has no premine. Converted, and a CI ratchet now blocks new raw
+      assertions (PR #498, issue #497).
+    - Fail-closed AssumeUTXO snapshot format policy: V2 deprecated
+      unconditionally, V3 rejected at or after shielded activation (PR #496).
+    - Registered the shipped 73,035 v4 trust anchor (PR #495).
+
+ -- DineroLabs <team@dinerolabs.org>  Mon, 03 Aug 2026 05:30:00 +0000
+
 dinero-core (8.0.18-1) unstable; urgency=medium
 
   * v8.0.18 — GUI startup robustness (qt-only; non-consensus; daemon
