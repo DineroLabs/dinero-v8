@@ -36,11 +36,61 @@ fail() {
     exit 1
 }
 
+# Cleanup must never change the verdict.
+#
+# This trap used to do:
+#     kill "${PID}"; pkill -f ...; rm -rf "${DATA_DIR}" "${LOG}"; return 0
+#
+# kill/pkill only SEND a signal -- they return immediately, without waiting for
+# the process to die. So `rm -rf` raced a dinerod that was still writing its
+# datadir and failed with "Directory not empty". Under `set -e` that failure
+# aborted the function BEFORE `return 0`, and because this is an EXIT trap, the
+# trap's status became the script's status. A run whose every assertion passed
+# reported failure. It only passed when the daemon happened to die fast enough.
+#
+# Two independent fixes, because either alone still leaves a way to lie:
+#   1. wait for the process to actually exit (escalating to SIGKILL), so the
+#      datadir is quiescent before removal;
+#   2. capture the real exit status first and restore it last, and never let a
+#      cleanup command's status escape. Cleanup can no longer turn a pass into
+#      a failure -- nor a failure into a pass.
+wait_for_exit() {
+    local pid="$1" deadline=$((SECONDS + 10))
+    while kill -0 "${pid}" 2>/dev/null; do
+        if (( SECONDS >= deadline )); then
+            kill -9 "${pid}" 2>/dev/null || true
+            break
+        fi
+        sleep 0.1
+    done
+    wait "${pid}" 2>/dev/null || true
+}
+
 cleanup() {
-    [[ -n "${PID}" ]] && kill "${PID}" 2>/dev/null || true
+    local rc=$?   # MUST be the first statement: preserves the real verdict
+
+    if [[ -n "${PID}" ]]; then
+        kill "${PID}" 2>/dev/null || true
+        wait_for_exit "${PID}"
+    fi
+
+    # Any stray daemon still bound to this datadir, then wait for it too.
     pkill -f "dinerod.*${DATA_DIR}" 2>/dev/null || true
-    [[ "${KEEP_ON_FAIL}" != "1" ]] && rm -rf "${DATA_DIR}" "${LOG}"
-    return 0
+    local deadline=$((SECONDS + 10))
+    while pgrep -f "dinerod.*${DATA_DIR}" >/dev/null 2>&1; do
+        if (( SECONDS >= deadline )); then
+            pkill -9 -f "dinerod.*${DATA_DIR}" 2>/dev/null || true
+            break
+        fi
+        sleep 0.1
+    done
+
+    if [[ "${KEEP_ON_FAIL}" != "1" ]]; then
+        # `|| true`: a cleanup hiccup must not mask the verdict in rc.
+        rm -rf "${DATA_DIR}" "${LOG}" 2>/dev/null || true
+    fi
+
+    return "${rc}"
 }
 trap cleanup EXIT
 
