@@ -747,7 +747,7 @@ private:
     // for fully-deleted subtrees instead of `std::nullopt`. This preserves
     // the `roots_[h].has_value() ⟺ bit h of numLeaves_` invariant and fixes
     // the proof.verify cascade that made covenant spends unmineable.
-    // Flipped on at `UTREEXO_CANONICAL_ROOTS_HEIGHT_MAINNET` (3000).
+    // Flipped on at `UTREEXO_CANONICAL_ROOTS_HEIGHT_MAINNET` (2870).
     // Copied by `clone()` so cloned snapshots inherit the flag.
     bool canonical_empty_roots_ = false;
 

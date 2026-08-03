@@ -2,6 +2,7 @@
 #include "daemon/iservice.h"
 #include "daemon/p2p_manager.h"
 #include "daemon/services/prune_service.h"
+#include "daemon/services/header_refresh_coalescer.h"
 #include "daemon/services/stale_tip_recovery.h"  // issue #214: StaleTipState + decision
 #include "network/port_mapper.h"
 #include "network/stun_client.h"      // NAT traversal Phase C1 (unique_ptr<StunClient> member)
@@ -252,6 +253,11 @@ public:
     void BroadcastMessage(const ::P2PMessage& msg) {
         if (p2p_mgr_) p2p_mgr_->broadcast_message(msg);
     }
+
+    // Headers-first block announcements may arrive hundreds of times during a
+    // fast regtest/mining burst.  Coalesce those hints so our own getheaders
+    // requests cannot make an honest peer exceed the inbound headers limiter.
+    void RequestHeadersRefreshForBlockAnnouncement(const std::string& peer_addr);
     
     // Protocol constants (Dinero-specific)
     static constexpr uint32_t GetProtocolVersion() { return 70016; }
@@ -342,6 +348,12 @@ private:
     std::chrono::steady_clock::time_point dynamic_p2p_started_at_{};
     std::chrono::steady_clock::time_point last_dynamic_p2p_churn_{};
     std::chrono::seconds reconnect_probe_interval_{std::chrono::seconds(15)};
+
+    std::mutex header_refresh_mutex_;
+    std::unordered_map<std::string, daemon::HeaderRefreshState> header_refresh_states_;
+    std::chrono::milliseconds header_refresh_minimum_interval_{std::chrono::seconds(1)};
+    bool SendHeadersRefreshNow(const std::string& peer_addr);
+    void FlushTrailingHeaderRefreshes(std::chrono::steady_clock::time_point now);
 
     // ── In-daemon staleness recovery (issue #214) ────────────────────────────
     // A node that has finished syncing relies on inv/headers announcements to

@@ -876,6 +876,132 @@ target_include_directories(consensus_fuzzer PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+# #490: transactionality of ApplyBlock/UndoBlock. Asserts full before/after
+# state equality after injected failures -- the property the repair claims.
+add_executable(test_consensus_utxo_set_transactional
+    test_consensus_utxo_set_transactional.cpp
+)
+add_dependencies(test_consensus_utxo_set_transactional gtest gtest_main)
+target_link_libraries(test_consensus_utxo_set_transactional PRIVATE
+    dinero_consensus
+    dinero_tx_primitives
+    dinero_crypto
+    gtest
+    gtest_main
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+)
+target_include_directories(test_consensus_utxo_set_transactional PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME ConsensusUTXOSetTransactionalUnit
+         COMMAND test_consensus_utxo_set_transactional)
+set_tests_properties(ConsensusUTXOSetTransactionalUnit PROPERTIES
+    LABELS "consensus;utreexo;regression"
+    TIMEOUT 120
+)
+
+# #490 follow-up: canonical-roots activation plumbing in the pure API, and the
+# decisive differential proving prove()+remove() and removeAtKnownPosition()
+# agree byte-for-byte once the mode is correct.
+add_executable(test_utxoset_canonical_activation
+    test_utxoset_canonical_activation.cpp
+)
+add_dependencies(test_utxoset_canonical_activation gtest gtest_main)
+target_link_libraries(test_utxoset_canonical_activation PRIVATE
+    dinero_consensus
+    dinero_tx_primitives
+    dinero_crypto
+    gtest
+    gtest_main
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+)
+target_include_directories(test_utxoset_canonical_activation PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME UtxoSetCanonicalActivation
+         COMMAND test_utxoset_canonical_activation)
+set_tests_properties(UtxoSetCanonicalActivation PROPERTIES
+    LABELS "consensus;utreexo;canonical;activation"
+    TIMEOUT 120
+)
+
+# Fail-closed AssumeUTXO container-format policy: V2 deprecated outright, V3
+# rejected at/above shielded activation, V4 supported. Pure predicate, so the
+# boundary is swept exhaustively without a chainstate.
+add_executable(test_snapshot_format_policy
+    test_snapshot_format_policy.cpp
+)
+add_dependencies(test_snapshot_format_policy gtest gtest_main)
+target_link_libraries(test_snapshot_format_policy PRIVATE
+    dinero_consensus
+    dinero_crypto
+    gtest
+    gtest_main
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+)
+target_include_directories(test_snapshot_format_policy PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SnapshotFormatPolicy COMMAND test_snapshot_format_policy)
+set_tests_properties(SnapshotFormatPolicy PROPERTIES
+    LABELS "consensus;assumeutxo;snapshot;policy"
+    TIMEOUT 60
+)
+
+# AssumeUTXO trust anchor for height 73035 (shipped DineroDPI snapshot).
+# Consistency gate around the provenance recorded in assume_utxo.cpp -- CI
+# cannot hash the 27 MB artifact, which is not in this repository.
+add_executable(test_assumeutxo_anchor_73035
+    test_assumeutxo_anchor_73035.cpp
+    ${CMAKE_SOURCE_DIR}/src/consensus/assume_utxo.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logger.cpp
+)
+add_dependencies(test_assumeutxo_anchor_73035 gtest gtest_main)
+target_link_libraries(test_assumeutxo_anchor_73035 PRIVATE
+    dinero_consensus
+    dinero_crypto
+    gtest
+    gtest_main
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+)
+target_include_directories(test_assumeutxo_anchor_73035 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME AssumeUtxoAnchor73035 COMMAND test_assumeutxo_anchor_73035)
+set_tests_properties(AssumeUtxoAnchor73035 PROPERTIES
+    LABELS "consensus;assumeutxo;registry"
+    TIMEOUT 60
+)
+
+# #490 regression pin: the undo delta must never claim a deletion that did not
+# happen. Runs the FULL deterministic 1..40 seed sweep (the corruption was
+# originally found on 5 of those 40) and REQUIRES exit 0 from every seed --
+# there is no tolerance branch. Also fails if a lossy Snapshot()/Restore()
+# symptom reappears.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_utxo_set_transactional.sh)
+    add_test(
+        NAME ConsensusUTXOSetTransactional
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_utxo_set_transactional.sh
+    )
+    set_tests_properties(ConsensusUTXOSetTransactional PROPERTIES
+        LABELS "consensus;utreexo;regression"
+        ENVIRONMENT "CONSENSUS_FUZZER=$<TARGET_FILE:consensus_fuzzer>"
+        TIMEOUT 300
+    )
+endif()
+
 add_test(NAME ConsensusFuzzer COMMAND consensus_fuzzer)
 set_tests_properties(ConsensusFuzzer
     PROPERTIES

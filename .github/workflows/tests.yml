@@ -140,7 +140,9 @@ jobs:
             --exclude-regex '^(ColdStartConsensus|MiningPolicyE2E)$' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
 
-      # Serial e2e lane (issue #428 plus the covenant wallet lifecycle). These
+      # Serial e2e lane (issue #428, the covenant wallet lifecycle, the
+      # targeted parallel-download regression, and the CrossSeed
+      # header-refresh regression). These
       # spawn real dinerod processes, bind ports, and must not run concurrently
       # with each other or the suite above — hence -j1 and a separate step.
       #
@@ -157,7 +159,7 @@ jobs:
       #                          is a failure (the GTEST_SKIPs are gone)
       - name: Run serial e2e tests (daemon-spawning)
         run: |
-          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle; do
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
@@ -165,6 +167,68 @@ jobs:
               -j1 \
               -R "^${t}$"
           done
+
+      # Fuzz-labelled consensus invariant tests (issue #486).
+      #
+      # ConsensusFuzzer and ConsensusUTXOSetFuzz are registered and build, but
+      # carry the 'fuzz' label, which the main ctest step above excludes. The
+      # result was that neither had EVER executed in CI: grepping a full Tests
+      # log for "ConsensusFuzzer" returned zero hits. They were not skipped and
+      # reported, they were never selected at all.
+      #
+      # Neither is slow -- both complete in well under a second -- so there was
+      # never a runtime reason to exclude them. The label was doing it silently.
+      #
+      # Selected BY EXACT NAME rather than by removing the label, because the
+      # label legitimately keeps them out of label-driven selections. Same
+      # per-test --no-tests=error pattern as the serial lane above: a combined
+      # -R would still pass if one of these names vanished from the registry.
+      #
+      # ConsensusFuzzer is still not selected here, but the reason has CHANGED
+      # and is no longer "it fails".
+      #
+      # It originally failed on 5 of 40 fixed seeds (#490). That is fixed:
+      # ConsensusUTXOSet now uses removeAtKnownPosition(), and a full
+      # deterministic 1..40 sweep is 40/40 exit 0 with zero corruption markers.
+      #
+      # It stays out because its ctest registration takes NO arguments, so the
+      # binary falls back to a TIME-BASED seed -- a different chain every run.
+      # Adding a nondeterministic test to every push buys little and costs
+      # reproducibility: a failure could not be replayed from the log.
+      #
+      # Deterministic coverage of the same binary is provided instead by
+      # ConsensusUTXOSetTransactional, which drives seeds 1..40 explicitly and
+      # requires exit 0 from each. To enable ConsensusFuzzer here, give its
+      # add_test an explicit seed and iteration count first.
+      - name: Run fuzz-labelled consensus invariant tests (excluded by label above)
+        run: |
+          for t in ConsensusUTXOSetFuzz; do
+            echo "=== $t ==="
+            ctest --test-dir build-tests \
+              --output-on-failure \
+              --no-tests=error \
+              -R "^${t}$"
+          done
+
+      # #490 seed pin, run VERBOSELY on purpose.
+      #
+      # It already runs in the main ctest step above, but ctest suppresses a
+      # PASSING test's output under --output-on-failure. That makes the
+      # forbidden-signature result unverifiable from the log: an absence of
+      # those strings is produced equally by "the scan found nothing" and "the
+      # scan never ran".
+      #
+      # -V forces the output, so the affirmative counters are visible in CI:
+      #     forbidden lossy-restore signature scans: 120
+      #     forbidden lossy-restore signatures: 0
+      #
+      # Costs a few seconds and makes the claim checkable rather than asserted.
+      - name: "Verify issue-490 seed pin verbosely (log-visible forbidden-signature counts)"
+        run: |
+          ctest --test-dir build-tests \
+            --no-tests=error \
+            -V \
+            -R '^ConsensusUTXOSetTransactional$'
 
       # #453 durable script-validity gate, plus the #458
       # mine-after-invalidate gates.

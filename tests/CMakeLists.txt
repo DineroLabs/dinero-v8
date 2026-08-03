@@ -3454,6 +3454,22 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_stale_tip_recovery.cpp)
   message(STATUS "✅ StaleTipRecovery (#214) deterministic test enabled")
 endif()
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_header_refresh_coalescer.cpp)
+  add_executable(test_header_refresh_coalescer
+    tests/services/test_header_refresh_coalescer.cpp
+  )
+  add_dependencies(test_header_refresh_coalescer gtest gtest_main)
+  target_include_directories(test_header_refresh_coalescer BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  target_link_libraries(test_header_refresh_coalescer PRIVATE
+    gtest gtest_main
+  )
+  add_test(NAME HeaderRefreshCoalescer COMMAND test_header_refresh_coalescer)
+  set_tests_properties(HeaderRefreshCoalescer PROPERTIES LABELS "p2p;unit")
+endif()
+
 # services-boundary-smoke: PeerScoringService boundary contract.
 # Service owns a unique_ptr<p2p::PeerScoringManager>; tests verify Name(),
 # getManager() identity preservation, Init/Start/Stop safety, and that
@@ -4304,6 +4320,7 @@ add_executable(test_bip119_ctv_vectors
 add_dependencies(test_bip119_ctv_vectors gtest gtest_main)
 target_link_libraries(test_bip119_ctv_vectors PRIVATE
   dinero_consensus
+  jsoncpp_static
   gtest
   gtest_main
 )
@@ -4313,10 +4330,16 @@ target_include_directories(test_bip119_ctv_vectors PRIVATE
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
 )
+# Absolute path to the pinned upstream corpus. Injected rather than resolved
+# relative to the working directory so the test cannot silently find nothing
+# when ctest runs it from a different cwd.
+target_compile_definitions(test_bip119_ctv_vectors PRIVATE
+  DINERO_BIP119_CTVHASH_JSON="${CMAKE_SOURCE_DIR}/tests/vectors/bip119_ctvhash.json"
+)
 add_test(NAME BIP119CTVVectors COMMAND test_bip119_ctv_vectors)
 set_tests_properties(BIP119CTVVectors PROPERTIES
   LABELS "consensus;covenant;ctv"
-  TIMEOUT 10
+  TIMEOUT 60
 )
 
 add_executable(test_taproot_scriptpath_consensus
@@ -4462,6 +4485,109 @@ add_test(NAME CcvSuccessorBinding COMMAND test_ccv_successor_binding)
 set_tests_properties(CcvSuccessorBinding PROPERTIES
   LABELS "consensus;covenant;ccv;scriptpath"
   TIMEOUT 10
+)
+
+# CCV has no upstream BIP, no published vector corpus, and no second
+# implementation to differ against. Adversarial coverage attacking each
+# numbered rule of CCV_SUCCESSOR_BINDING_V1 is the substitute for that.
+add_executable(test_ccv_adversarial
+  tests/consensus/test_ccv_adversarial.cpp
+)
+add_dependencies(test_ccv_adversarial gtest gtest_main)
+target_link_libraries(test_ccv_adversarial PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_ccv_adversarial)
+target_include_directories(test_ccv_adversarial PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+# Implementation-independent CCV reference model, differentially tested against
+# production. CCV has no upstream vectors and no second implementation; this
+# supplies one, derived from the spec rather than from covenants.cpp.
+add_executable(test_ccv_reference_model
+  tests/consensus/test_ccv_reference_model.cpp
+)
+add_dependencies(test_ccv_reference_model gtest gtest_main)
+target_link_libraries(test_ccv_reference_model PRIVATE
+  dinero_consensus
+  secp256k1
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_ccv_reference_model)
+target_include_directories(test_ccv_reference_model PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+# Bounded deterministic fuzz gate for the covenant paths. Deliberately NOT
+# given the `fuzz` label: CI excludes that label, so a fuzz-labelled target
+# produces zero CI signal (see issue #486). The same binary serves as the long
+# campaign via DINERO_COVENANT_FUZZ_ITERATIONS and the documented
+# ASan/UBSan/unsigned-overflow build.
+add_executable(test_covenant_fuzz
+  tests/consensus/test_covenant_fuzz.cpp
+)
+add_dependencies(test_covenant_fuzz gtest gtest_main)
+target_link_libraries(test_covenant_fuzz PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_covenant_fuzz)
+target_include_directories(test_covenant_fuzz PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+target_compile_definitions(test_covenant_fuzz PRIVATE
+  DINERO_COVENANT_FUZZ_SEEDS="${CMAKE_SOURCE_DIR}/tests/vectors/covenant_fuzz_seeds"
+)
+# Bounded-state analysis: exhaustive enumeration over reduced domains with
+# verdicts predicted from the spec. Complements the adversarial suite (specific
+# attacks) and the fuzzer (random sampling) -- neither of those enumerates.
+add_executable(test_ccv_bounded_state
+  tests/consensus/test_ccv_bounded_state.cpp
+)
+add_dependencies(test_ccv_bounded_state gtest gtest_main)
+target_link_libraries(test_ccv_bounded_state PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_ccv_bounded_state)
+target_include_directories(test_ccv_bounded_state PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CcvBoundedState COMMAND test_ccv_bounded_state)
+set_tests_properties(CcvBoundedState PROPERTIES
+  LABELS "consensus;covenant;ccv"
+  TIMEOUT 120
+)
+
+add_test(NAME CovenantFuzz COMMAND test_covenant_fuzz)
+set_tests_properties(CovenantFuzz PROPERTIES
+  LABELS "consensus;covenant;ccv;ctv"
+  TIMEOUT 300
+)
+
+add_test(NAME CcvReferenceModel COMMAND test_ccv_reference_model)
+set_tests_properties(CcvReferenceModel PROPERTIES
+  LABELS "consensus;covenant;ccv;scriptpath"
+  TIMEOUT 120
+)
+
+add_test(NAME CcvAdversarial COMMAND test_ccv_adversarial)
+set_tests_properties(CcvAdversarial PROPERTIES
+  LABELS "consensus;covenant;ccv;scriptpath"
+  TIMEOUT 30
 )
 
 # Production wallet construction and checksummed recovery descriptors for the

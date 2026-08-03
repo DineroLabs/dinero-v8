@@ -784,6 +784,11 @@ void P2PService::StartSchedulerTickLoop() {
 
                 MaybeRunDynamicP2PActiveChurn(now);
 
+                // A burst's final INV may have been coalesced inside the
+                // minimum interval.  Always issue that trailing refresh; an
+                // immediate-only throttle can permanently miss the last tip.
+                FlushTrailingHeaderRefreshes(now);
+
                 // issue #214: detect a frozen best-header (lost announcements on
                 // stale connections) and recover in-daemon (re-getheaders /
                 // rotate stalest peer) instead of relying on an external restart.
@@ -796,6 +801,80 @@ void P2PService::StartSchedulerTickLoop() {
             logger_interface_->info("[P2PService] Scheduler tick loop stopped");
         }
     });
+}
+
+bool P2PService::SendHeadersRefreshNow(const std::string& peer_addr) {
+    if (!p2p_mgr_ || !chainstate_) {
+        return false;
+    }
+
+    const auto locator = chainstate_->GenerateBlockLocator();
+    if (locator.empty()) {
+        return false;
+    }
+
+    std::vector<std::string> locator_hex;
+    locator_hex.reserve(locator.size());
+    for (const auto& hash : locator) {
+        locator_hex.push_back(hash.GetHex());
+    }
+
+    return p2p_mgr_->send_to_peer(
+        peer_addr, ::P2PMessage::create_getheaders(locator_hex));
+}
+
+void P2PService::RequestHeadersRefreshForBlockAnnouncement(
+        const std::string& peer_addr) {
+    const auto now = std::chrono::steady_clock::now();
+    daemon::HeaderRefreshAction action;
+    {
+        std::lock_guard<std::mutex> lock(header_refresh_mutex_);
+        action = daemon::noteHeaderAnnouncement(
+            now, header_refresh_minimum_interval_, header_refresh_states_[peer_addr]);
+    }
+
+    if (action == daemon::HeaderRefreshAction::QUEUE_TRAILING) {
+        if (logger_interface_) {
+            logger_interface_->debug(
+                "[P2PService] Coalesced block announcement into trailing getheaders for " +
+                peer_addr);
+        }
+        return;
+    }
+
+    if (!SendHeadersRefreshNow(peer_addr)) {
+        // A failed immediate send must not consume the only refresh hint.
+        std::lock_guard<std::mutex> lock(header_refresh_mutex_);
+        header_refresh_states_[peer_addr].trailing_request_pending = true;
+    }
+}
+
+void P2PService::FlushTrailingHeaderRefreshes(
+        std::chrono::steady_clock::time_point now) {
+    std::vector<std::string> peers;
+    {
+        std::lock_guard<std::mutex> lock(header_refresh_mutex_);
+        for (auto& [peer_addr, state] : header_refresh_states_) {
+            if (daemon::takeTrailingHeaderRefresh(
+                    now, header_refresh_minimum_interval_, state)) {
+                peers.push_back(peer_addr);
+            }
+        }
+    }
+
+    for (const auto& peer_addr : peers) {
+        if (SendHeadersRefreshNow(peer_addr)) {
+            if (logger_interface_) {
+                logger_interface_->info(
+                    "[P2PService] Sent trailing getheaders for coalesced block announcements to " +
+                    peer_addr);
+            }
+            continue;
+        }
+
+        std::lock_guard<std::mutex> lock(header_refresh_mutex_);
+        header_refresh_states_[peer_addr].trailing_request_pending = true;
+    }
 }
 
 void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now) {
@@ -1682,6 +1761,10 @@ bool P2PService::Start() {
 
         p2p_mgr_->set_peer_disconnected_handler([this](const std::string& peer_addr) {
             logger_interface_->info("[P2PService] Peer disconnected: " + peer_addr);
+            {
+                std::lock_guard<std::mutex> lock(header_refresh_mutex_);
+                header_refresh_states_.erase(peer_addr);
+            }
             if (auto* ctx = DaemonContext::instance(); ctx && ctx->parallel_block_download) {
                 ctx->parallel_block_download->notifyPeerDisconnected(peer_addr);
                 ctx->parallel_block_download->unregisterPeer(peer_addr);

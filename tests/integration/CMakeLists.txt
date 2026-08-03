@@ -150,9 +150,10 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_parallel_block_download_targeted.sh)
     )
     set_tests_properties(ParallelBlockDownloadTargeted PROPERTIES
         LABELS "integration;p2p;block-download"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         TIMEOUT 180
     )
-    message(STATUS "  ✓ ParallelBlockDownloadTargeted registered")
+    message(STATUS "  ✓ ParallelBlockDownloadTargeted registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_lagging_peer_catchup_no_orphans.sh)
@@ -167,6 +168,41 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_lagging_peer_catchup_no_orphans.sh)
     message(STATUS "  ✓ LaggingPeerCatchupNoOrphans registered")
 endif()
 
+# Live-path reachability test for #490: does BlockValidator's
+# ConnectBlock/DisconnectBlock share the unchecked-remove defect found in the
+# test-only ConsensusUTXOSet API? Cannot be answered by unit test -- ConnectBlock
+# transitively pulls chainstate, wallet, vault, RPC and mempool -- so it runs
+# against a real dinerod.
+# Runtime enforcement of the fail-closed snapshot container-format policy.
+# The unit tests prove the predicate; this proves LoadSnapshot() consults it,
+# rejects with the exact policy error (not a checksum/truncation/base-block
+# error), and mutates nothing -- including across a restart.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_snapshot_format_policy_runtime.sh)
+    add_test(
+        NAME SnapshotFormatPolicyRuntime
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_snapshot_format_policy_runtime.sh
+    )
+    set_tests_properties(SnapshotFormatPolicyRuntime PROPERTIES
+        LABELS "integration;assumeutxo;snapshot;policy"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 600
+    )
+    message(STATUS "  ✓ SnapshotFormatPolicyRuntime registered (daemon: $<TARGET_FILE:dinerod>)")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_reorg_state_restoration.sh)
+    add_test(
+        NAME UtreexoLiveReorgStateRestoration
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_reorg_state_restoration.sh
+    )
+    set_tests_properties(UtreexoLiveReorgStateRestoration PROPERTIES
+        LABELS "integration;utreexo;reorg;restart;consensus"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ UtreexoLiveReorgStateRestoration registered (daemon: $<TARGET_FILE:dinerod>)")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_cross_seed_restart_reorg_parity.sh)
     add_test(
         NAME CrossSeedRestartReorgParity
@@ -174,9 +210,10 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_cross_seed_restart_reorg_parity.sh)
     )
     set_tests_properties(CrossSeedRestartReorgParity PROPERTIES
         LABELS "integration;p2p;reorg;restart;parity"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         TIMEOUT 240
     )
-    message(STATUS "  ✓ CrossSeedRestartReorgParity registered")
+    message(STATUS "  ✓ CrossSeedRestartReorgParity registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_connecttip_restart_equivalence.sh)
