@@ -325,8 +325,16 @@ commit and provide reproducible evidence for:
 - mutation tests proving every normative CCV clause is load-bearing;
 - bounded exhaustive/model analysis of the transition rules;
 - resource, lifecycle, restart, reorg, and multi-node results; and
-- a public comment period of at least 14 calendar days, closing before height
+- a public comment period running from the recorded freeze height to height
   99,000, with every reported critical/high finding resolved.
+
+The comment period is bounded by block height, not by a number of days.
+Observed block spacing has ranged from roughly 36 s to 147 s against a 120 s
+target, so a fixed calendar window corresponds to an unknowable and varying
+number of blocks, while height is what consensus enforces and is identical on
+every node. Publishing the package earlier is therefore the only way to lengthen
+review. See "Everything is measured in block height" in
+COVENANT_MAINNET_ACTIVATION_100000.md.
 
 The owner must then record whether the residual risk is accepted, including
 the explicit fact that no external expert may have signed off. This is an

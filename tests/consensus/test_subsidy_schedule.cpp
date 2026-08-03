@@ -1,334 +1,312 @@
-/**
- * E.1: Subsidy Schedule Tests
- *
- * Validates Dinero's monetary policy implementation:
- * - Hard cap: 265,428,000 DIN (total supply)
- * - Genesis (height 0): 100 DIN (unspendable, OP_RETURN)
- * - Premine (height 1): 2,627,900 DIN (~0.99% of total)
- * - PoW blocks (height 2+): 262,800,000 DIN (100 DIN initial, halving every 1,314,000 blocks)
- * - 33 halvings until subsidy reaches 0
- * - Final halving at block 43,362,000
- *
- * Tests verify:
- * 1. Genesis and premine special cases
- * 2. All 33 halving boundaries
- * 3. Subsidy reaches 0 after final halving
- * 4. Total issuance calculations
- * 5. Supply cap enforcement
- */
+// ============================================================================
+// TEST: Subsidy schedule (Fair Launch v3)
+// ============================================================================
+//
+// Pins Dinero's emission curve: no premine, 100 DIN initial subsidy, halving
+// every 1,314,000 blocks, and a perpetual 1 DIN/block tail floor with no hard
+// cap.
+//
+// ----------------------------------------------------------------------------
+// HISTORY -- WHY THIS FILE WAS REWRITTEN
+// ----------------------------------------------------------------------------
+// The previous version was never registered with CTest (so it was never built
+// or run) and was written entirely in assert(). It therefore described a
+// monetary policy Dinero no longer has, and nothing ever noticed:
+//
+//   1. "Hard cap: 265,428,000 DIN"      -- there is no hard cap; emission is
+//                                          perpetual and disinflationary.
+//   2. "Premine (height 1): 2,627,900"  -- there is no premine. Dinero launched
+//                                          fair; height 1 is an ordinary PoW
+//                                          block paying the full 100 DIN.
+//                                          ConsensusSubsidy::PREMINE_UNA no
+//                                          longer exists.
+//   3. "33 halvings until subsidy 0"    -- emission never reaches zero.
+//                                          TAIL_EMISSION_UNA floors it at
+//                                          1 DIN/block forever, binding from
+//                                          epoch 7 onward.
+//
+// See issue #497.
+//
+// ----------------------------------------------------------------------------
+// NO assert() HERE
+// ----------------------------------------------------------------------------
+// CI builds Release and CMAKE_CXX_FLAGS_RELEASE is "-O3 -DNDEBUG", under which
+// assert(x) becomes ((void)0) and its expression is never compiled. That is
+// exactly how the false claims above survived. Every check below is an
+// ordinary if-statement, so it gates in every build configuration.
+//
+// ----------------------------------------------------------------------------
+// EXPECTED VALUES ARE HAND-DERIVED, NOT READ BACK FROM THE CODE
+// ----------------------------------------------------------------------------
+// Totals are computed by hand from the epoch structure and written as literals.
+// Calling GetPoWIssuedAtHeight() to produce its own expected value would be a
+// tautology that passes regardless of what the function does.
+//
+//   epoch n subsidy = 100 DIN >> n, floored at 1 DIN
+//   epoch n spans   = 1,314,000 blocks
+//   epochs 0..6     = 1,314,000 x (100+50+25+12.5+6.25+3.125+1.5625) DIN
+//                   = 1,314,000 x 198.4375 DIN
+//                   = 260,746,875 DIN
+// ============================================================================
 
 #include "consensus/subsidy.h"
+
+#include <cstdint>
 #include <iostream>
-#include <cassert>
-#include <iomanip>
-#include <vector>
 
-using namespace dinero;
+using dinero::ConsensusSubsidy;
 
-// Helper function to convert una to DIN for display
-double unaToDIN(uint64_t una) {
-    return static_cast<double>(una) / 100000000.0;
+namespace {
+
+int g_failures = 0;
+
+#define CHECK(cond)                                                           \
+    do {                                                                      \
+        if (!(cond)) {                                                        \
+            ++g_failures;                                                     \
+            std::cerr << "\n  CHECK FAILED: " #cond "\n    at " << __FILE__   \
+                      << ":" << __LINE__ << "\n";                             \
+        }                                                                     \
+    } while (false)
+
+#define CHECK_EQ(actual, expected)                                            \
+    do {                                                                      \
+        const uint64_t a_ = static_cast<uint64_t>(actual);                    \
+        const uint64_t e_ = static_cast<uint64_t>(expected);                  \
+        if (a_ != e_) {                                                       \
+            ++g_failures;                                                     \
+            std::cerr << "\n  CHECK_EQ FAILED: " #actual " == " #expected     \
+                      << "\n    actual:   " << a_                             \
+                      << "\n    expected: " << e_                             \
+                      << "\n    at " << __FILE__ << ":" << __LINE__ << "\n";  \
+        }                                                                     \
+    } while (false)
+
+constexpr uint64_t UNA = ConsensusSubsidy::UNA_PER_DIN;
+constexpr uint32_t HALV = ConsensusSubsidy::HALVING_INTERVAL;
+constexpr uint64_t INITIAL = ConsensusSubsidy::INITIAL_SUBSIDY;
+constexpr uint64_t TAIL = ConsensusSubsidy::TAIL_EMISSION_UNA;
+
+uint64_t SubsidyAt(uint32_t h) {
+    return ConsensusSubsidy::GetBlockSubsidy(h).GetUna();
 }
 
-// Test 1: Genesis and premine return 0 from GetBlockSubsidy
-void testGenesisAndPremine() {
-    std::cout << "\n[Test 1] Genesis and Premine Special Cases" << std::endl;
+// ---------------------------------------------------------------------------
+// 1. Fair launch: no premine
+// ---------------------------------------------------------------------------
+void testNoPremine() {
+    std::cout << "Test: fair launch, no premine... ";
 
-    // GetBlockSubsidy should return 0 for genesis and premine (handled separately by callers)
-    uint64_t genesis_subsidy = ConsensusSubsidy::GetBlockSubsidy(0);
-    uint64_t premine_subsidy = ConsensusSubsidy::GetBlockSubsidy(1);
+    // Genesis is an unspendable OP_RETURN burn, not a payable coinbase.
+    CHECK_EQ(SubsidyAt(0), 0);
 
-    assert(genesis_subsidy == 0 && "Genesis (height 0) should return 0 from GetBlockSubsidy");
-    assert(premine_subsidy == 0 && "Premine (height 1) should return 0 from GetBlockSubsidy");
+    // Height 1 is the FIRST PoW block and pays a full subsidy. A premine would
+    // show up precisely as height 1 differing from height 2.
+    CHECK_EQ(SubsidyAt(1), INITIAL);
+    CHECK_EQ(SubsidyAt(2), INITIAL);
+    CHECK_EQ(SubsidyAt(1), SubsidyAt(2));
 
-    std::cout << "  [✓] Genesis (height 0): GetBlockSubsidy returns 0 (handled separately)" << std::endl;
-    std::cout << "  [✓] Premine (height 1): GetBlockSubsidy returns 0 (handled separately)" << std::endl;
+    // The whole of epoch 0 pays the same rate.
+    CHECK_EQ(SubsidyAt(HALV), INITIAL);
 
-    // Verify constants are correct
-    assert(ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA == 10000000000ULL && "Genesis should be 100 DIN");
-    assert(ConsensusSubsidy::PREMINE_UNA == 262790000000000ULL && "Premine should be 2,627,900 DIN");
-
-    std::cout << "  [✓] Genesis constant: " << unaToDIN(ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA) << " DIN" << std::endl;
-    std::cout << "  [✓] Premine constant: " << unaToDIN(ConsensusSubsidy::PREMINE_UNA) << " DIN" << std::endl;
+    std::cout << (g_failures == 0 ? "PASSED\n" : "FAILED\n");
 }
 
-// Test 2: First PoW block (height 2) has correct subsidy
-void testFirstPoWBlock() {
-    std::cout << "\n[Test 2] First PoW Block (height 2)" << std::endl;
+// ---------------------------------------------------------------------------
+// 2. Halving boundaries are exact
+// ---------------------------------------------------------------------------
+void testHalvingBoundaries() {
+    std::cout << "Test: halving boundaries... ";
 
-    uint64_t first_pow_subsidy = ConsensusSubsidy::GetBlockSubsidy(2);
-    assert(first_pow_subsidy == ConsensusSubsidy::INITIAL_SUBSIDY && "First PoW block should have 100 DIN subsidy");
+    // Epoch n covers heights [n*HALV + 1, (n+1)*HALV]. Checking the last block
+    // of each epoch AND the first block of the next makes this an exact
+    // boundary test: an off-by-one in the halving arithmetic breaks exactly
+    // one of the two.
+    for (uint32_t n = 0; n < 10; ++n) {
+        const uint64_t halved = (INITIAL >> n);
+        const uint64_t expected_epoch_n = (halved > TAIL) ? halved : TAIL;
 
-    std::cout << "  [✓] Height 2 subsidy: " << unaToDIN(first_pow_subsidy) << " DIN" << std::endl;
-    std::cout << "  [✓] Matches INITIAL_SUBSIDY constant" << std::endl;
-}
+        const uint64_t next_halved = (INITIAL >> (n + 1));
+        const uint64_t expected_epoch_next =
+            (next_halved > TAIL) ? next_halved : TAIL;
 
-// Test 3: All 33 halving boundaries
-void testAllHalvingBoundaries() {
-    std::cout << "\n[Test 3] All 33 Halving Boundaries" << std::endl;
+        const uint32_t last_of_epoch = (n + 1) * HALV;
+        const uint32_t first_of_next = last_of_epoch + 1;
 
-    struct HalvingTest {
-        uint32_t epoch;              // Halving number (0-32)
-        uint32_t first_height;       // First block of this epoch
-        uint32_t last_height;        // Last block of this epoch
-        uint64_t expected_subsidy;   // Expected subsidy in una
-    };
-
-    std::vector<HalvingTest> halvings;
-
-    // Calculate all 33 halving epochs
-    uint64_t subsidy = ConsensusSubsidy::INITIAL_SUBSIDY;
-    uint32_t height_start = 2;  // PoW blocks start at height 2
-
-    for (uint32_t epoch = 0; epoch < 33; epoch++) {
-        HalvingTest test;
-        test.epoch = epoch;
-        test.first_height = height_start + (epoch * ConsensusSubsidy::HALVING_INTERVAL);
-        test.last_height = test.first_height + ConsensusSubsidy::HALVING_INTERVAL - 1;
-        test.expected_subsidy = subsidy >> epoch;  // Halve each epoch
-
-        halvings.push_back(test);
+        CHECK_EQ(SubsidyAt(last_of_epoch), expected_epoch_n);
+        CHECK_EQ(SubsidyAt(first_of_next), expected_epoch_next);
     }
 
-    // Test first block of each halving epoch
-    std::cout << "\n  Halving Schedule:" << std::endl;
-    std::cout << "  " << std::string(80, '-') << std::endl;
-    std::cout << "  Epoch | First Height | Last Height  | Subsidy (DIN)" << std::endl;
-    std::cout << "  " << std::string(80, '-') << std::endl;
+    // Well-known early values stated explicitly, so a change to the loop above
+    // cannot quietly redefine what "correct" means.
+    CHECK_EQ(SubsidyAt(HALV + 1), 50 * UNA);
+    CHECK_EQ(SubsidyAt(2 * HALV + 1), 25 * UNA);
+    CHECK_EQ(SubsidyAt(3 * HALV + 1), 1250000000ULL);  // 12.5 DIN
 
-    for (const auto& test : halvings) {
-        uint64_t actual = ConsensusSubsidy::GetBlockSubsidy(test.first_height);
-        assert(actual == test.expected_subsidy && "Subsidy mismatch at halving boundary");
-
-        // Also test last block of epoch
-        uint64_t last_block_subsidy = ConsensusSubsidy::GetBlockSubsidy(test.last_height);
-        assert(last_block_subsidy == test.expected_subsidy && "Subsidy should be same across entire epoch");
-
-        std::cout << "  " << std::setw(5) << test.epoch << " | "
-                  << std::setw(12) << test.first_height << " | "
-                  << std::setw(12) << test.last_height << " | "
-                  << std::setw(14) << std::fixed << std::setprecision(8) << unaToDIN(actual)
-                  << std::endl;
-    }
-
-    std::cout << "  " << std::string(80, '-') << std::endl;
-    std::cout << "  [✓] All 33 halving boundaries correct" << std::endl;
+    std::cout << (g_failures == 0 ? "PASSED\n" : "FAILED\n");
 }
 
-// Test 4: Subsidy reaches 0 after 33rd halving
-void testSubsidyReachesZero() {
-    std::cout << "\n[Test 4] Subsidy Reaches Zero (Tail Emission)" << std::endl;
+// ---------------------------------------------------------------------------
+// 3. Tail emission: binds at epoch 7, never reaches zero
+// ---------------------------------------------------------------------------
+void testTailEmission() {
+    std::cout << "Test: tail emission floor... ";
 
-    // After 33 halvings, subsidy should be 0
-    // Height of first block after 33rd halving: 2 + (33 * 1,314,000) = 43,362,002
-    uint32_t final_halving_height = 2 + (33 * ConsensusSubsidy::HALVING_INTERVAL);
+    // 100 DIN >> 6 = 1.5625 DIN, still above the floor.
+    CHECK_EQ(SubsidyAt(6 * HALV + 1), 156250000ULL);
 
-    uint64_t subsidy_at_final_halving = ConsensusSubsidy::GetBlockSubsidy(final_halving_height);
-    assert(subsidy_at_final_halving == 0 && "Subsidy should be 0 after 33rd halving");
+    // 100 DIN >> 7 = 0.78125 DIN, BELOW the 1 DIN floor -- epoch 7 is the first
+    // epoch where the tail binds. This is the boundary the old test denied when
+    // it claimed emission reaches zero.
+    CHECK((INITIAL >> 7) < TAIL);
+    CHECK_EQ(SubsidyAt(7 * HALV + 1), TAIL);
 
-    std::cout << "  [✓] Height " << final_halving_height << ": subsidy = 0 DIN" << std::endl;
-
-    // Test several blocks after final halving
-    for (uint32_t offset = 1; offset <= 1000; offset += 100) {
-        uint64_t future_subsidy = ConsensusSubsidy::GetBlockSubsidy(final_halving_height + offset);
-        assert(future_subsidy == 0 && "Subsidy should remain 0 forever after final halving");
+    // Emission never falls below the floor and never becomes zero, however far
+    // out we look -- including past the "33rd halving" the old test expected to
+    // zero out. Heights are kept inside uint32 range.
+    for (uint32_t n : {7u, 8u, 20u, 33u, 40u, 60u}) {
+        const uint64_t h64 = static_cast<uint64_t>(n) * HALV + 1;
+        if (h64 > 0xFFFFFFFFULL) continue;
+        const uint32_t h = static_cast<uint32_t>(h64);
+        CHECK_EQ(SubsidyAt(h), TAIL);
+        CHECK(SubsidyAt(h) > 0);
     }
 
-    std::cout << "  [✓] Subsidy remains 0 for all blocks after final halving" << std::endl;
-    std::cout << "  [✓] Tail emission phase: fees only (no inflation)" << std::endl;
+    std::cout << (g_failures == 0 ? "PASSED\n" : "FAILED\n");
 }
 
-// Test 5: GetPoWIssuedAtHeight() accuracy
-void testPoWIssuedCalculation() {
-    std::cout << "\n[Test 5] PoW Issued Calculation Accuracy" << std::endl;
+// ---------------------------------------------------------------------------
+// 4. Cumulative issuance matches hand-derived totals
+// ---------------------------------------------------------------------------
+void testCumulativeIssuance() {
+    std::cout << "Test: cumulative issuance... ";
 
-    // Test key heights
-    struct IssuanceTest {
-        uint32_t height;
-        uint64_t expected_pow_issued;
-        const char* description;
-    };
+    // Epoch 0 alone: 1,314,000 blocks x 100 DIN.
+    CHECK_EQ(ConsensusSubsidy::GetPoWIssuedAtHeight(HALV),
+             static_cast<uint64_t>(HALV) * INITIAL);
 
-    // Note: GetPoWIssuedAtHeight(H) returns PoW issued BEFORE height H (not including H)
-    // This is consistent with how the function is implemented: pow_blocks = height - 2
-    std::vector<IssuanceTest> tests = {
-        {0, 0, "Genesis (no PoW yet)"},
-        {1, 0, "Premine (no PoW yet)"},
-        {2, 0, "At height 2 (block 2 not yet counted)"},
-        {3, 10000000000ULL, "After height 2 (1 block * 100 DIN)"},
-        {4, 20000000000ULL, "After height 3 (2 blocks * 100 DIN)"},
-        {1314002, 13140000000000000ULL, "After 1,314,000 PoW blocks (131,400,000 DIN)"},
-    };
+    // Through the end of epoch 6 (height 7 x 1,314,000 = 9,198,000):
+    // 260,746,875 DIN, derived in the file header.
+    constexpr uint32_t kEndOfEpoch6 = 7 * HALV;
+    constexpr uint64_t kEpoch0Through6Din = 260746875ULL;
+    CHECK_EQ(kEndOfEpoch6, 9198000u);
+    CHECK_EQ(ConsensusSubsidy::GetPoWIssuedAtHeight(kEndOfEpoch6),
+             kEpoch0Through6Din * UNA);
 
-    for (const auto& test : tests) {
-        uint64_t actual = ConsensusSubsidy::GetPoWIssuedAtHeight(test.height);
-        assert(actual == test.expected_pow_issued && "PoW issued calculation incorrect");
+    // At the 120s target spacing there are 262,980 blocks/year, so year 35 is
+    // height 9,204,300 -- 6,300 tail blocks past the epoch-6 boundary.
+    constexpr uint32_t kYear35Height = 9204300u;
+    CHECK_EQ(kYear35Height - kEndOfEpoch6, 6300u);
+    CHECK_EQ(ConsensusSubsidy::GetPoWIssuedAtHeight(kYear35Height),
+             kEpoch0Through6Din * UNA + 6300ULL * TAIL);
 
-        std::cout << "  [✓] Height " << std::setw(10) << test.height << ": "
-                  << std::setw(16) << std::fixed << std::setprecision(2) << unaToDIN(actual) << " DIN - "
-                  << test.description << std::endl;
+    // Year 100 = height 26,298,000. Everything past 9,198,000 pays 1 DIN:
+    //   260,746,875 + (26,298,000 - 9,198,000) = 277,846,875 DIN
+    // subsidy.h previously claimed ~346.55M here, which does not follow from a
+    // 1 DIN tail. This pins the real figure so the prose cannot drift again.
+    constexpr uint32_t kYear100Height = 26298000u;
+    constexpr uint64_t kYear100Din = 277846875ULL;
+    CHECK_EQ(kEpoch0Through6Din + (kYear100Height - kEndOfEpoch6), kYear100Din);
+    CHECK_EQ(ConsensusSubsidy::GetPoWIssuedAtHeight(kYear100Height),
+             kYear100Din * UNA);
+
+    // ---- inflation rates quoted in subsidy.h ----------------------------
+    // Pinned as exact integer issuance rather than a rounded percentage, so
+    // there is nothing to fudge. 262,980 blocks/year at the 1 DIN floor:
+    //   year 35:  262,980 / 260,753,175 = 0.1009%/yr
+    //   year 100: 262,980 / 277,846,875 = 0.0947%/yr
+    constexpr uint32_t kBlocksPerYear = 262980u;
+    const uint64_t tail_year_at_35 =
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kYear35Height + kBlocksPerYear) -
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kYear35Height);
+    CHECK_EQ(tail_year_at_35, static_cast<uint64_t>(kBlocksPerYear) * TAIL);
+
+    const uint64_t tail_year_at_100 =
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kYear100Height + kBlocksPerYear) -
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kYear100Height);
+    CHECK_EQ(tail_year_at_100, static_cast<uint64_t>(kBlocksPerYear) * TAIL);
+
+    // The epoch-6 rate is HIGHER (1.5625 DIN/block, ~0.158%/yr) and must not be
+    // mistaken for the tail rate. Measuring a year-on-year delta that straddles
+    // the epoch-6/7 boundary reports this, not the tail -- which is exactly how
+    // the header comment came to quote 0.156%/yr for year 35.
+    constexpr uint32_t kMidEpoch6 = 6u * HALV + 100000u;
+    const uint64_t epoch6_year =
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kMidEpoch6 + kBlocksPerYear) -
+        ConsensusSubsidy::GetPoWIssuedAtHeight(kMidEpoch6);
+    CHECK_EQ(epoch6_year, static_cast<uint64_t>(kBlocksPerYear) * 156250000ULL);
+    CHECK(epoch6_year > tail_year_at_35);
+
+    std::cout << (g_failures == 0 ? "PASSED\n" : "FAILED\n");
+}
+
+// ---------------------------------------------------------------------------
+// 5. Total issued includes the genesis burn
+// ---------------------------------------------------------------------------
+void testTotalIssued() {
+    std::cout << "Test: total issued... ";
+
+    // Height 0: only the symbolic 100 DIN OP_RETURN burn.
+    CHECK_EQ(ConsensusSubsidy::GetTotalIssuedAtHeight(0),
+             ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA);
+
+    // Height 1: genesis burn + one full subsidy. NOT a premine.
+    CHECK_EQ(ConsensusSubsidy::GetTotalIssuedAtHeight(1),
+             ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA + INITIAL);
+
+    // Total = genesis burn + PoW issuance at every sampled height.
+    for (uint32_t h : {0u, 1u, 2u, 1000u, HALV, HALV + 1, 7u * HALV}) {
+        CHECK_EQ(ConsensusSubsidy::GetTotalIssuedAtHeight(h),
+                 ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA +
+                     ConsensusSubsidy::GetPoWIssuedAtHeight(h));
     }
 
-    // Calculate total PoW issued at final halving
-    uint32_t final_height = 2 + (33 * ConsensusSubsidy::HALVING_INTERVAL);
-    uint64_t total_pow = ConsensusSubsidy::GetPoWIssuedAtHeight(final_height);
-
-    std::cout << "\n  [✓] Total PoW issued at final halving: "
-              << std::fixed << std::setprecision(2) << unaToDIN(total_pow) << " DIN" << std::endl;
-    std::cout << "  [✓] MAX_POW_MINEABLE constant: "
-              << std::fixed << std::setprecision(2) << unaToDIN(ConsensusSubsidy::MAX_POW_MINEABLE_UNA) << " DIN" << std::endl;
-
-    // Verify PoW output matches MAX_POW_MINEABLE (should be ~262.8M DIN)
-    std::cout << "\n  [✓] PoW halving schedule produces " << unaToDIN(total_pow) << " DIN" << std::endl;
-    std::cout << "      Total supply = Genesis (100) + Premine (2.6279M) + PoW (262.8M)" << std::endl;
-    std::cout << "      = 265.428M DIN (matches MAX_SUPPLY)" << std::endl;
+    std::cout << (g_failures == 0 ? "PASSED\n" : "FAILED\n");
 }
 
-// Test 6: GetTotalIssuedAtHeight() includes all components
-void testTotalIssuedCalculation() {
-    std::cout << "\n[Test 6] Total Issued Calculation (Genesis + Premine + PoW)" << std::endl;
+// ---------------------------------------------------------------------------
+// 6. No hard cap: disinflationary, not bounded
+// ---------------------------------------------------------------------------
+void testNoHardCap() {
+    std::cout << "Test: no hard cap... ";
 
-    struct TotalTest {
-        uint32_t height;
-        uint64_t expected_total;
-        const char* description;
-    };
+    // Deep in the tail, supply must still be strictly increasing. A hard cap
+    // would show up as two distant heights reporting equal totals.
+    const uint64_t a = ConsensusSubsidy::GetTotalIssuedAtHeight(20u * HALV);
+    const uint64_t b = ConsensusSubsidy::GetTotalIssuedAtHeight(20u * HALV + 1);
+    const uint64_t c = ConsensusSubsidy::GetTotalIssuedAtHeight(40u * HALV);
+    CHECK(b > a);
+    CHECK(c > b);
+    CHECK_EQ(b - a, TAIL);
 
-    // Note: GetTotalIssuedAtHeight uses >= for genesis/premine but GetPoWIssuedAtHeight
-    // counts blocks before the given height, so totals don't include current block's subsidy
-    std::vector<TotalTest> tests = {
-        {0, 10000000000ULL, "Genesis only (100 DIN)"},
-        {1, 262800000000000ULL, "Genesis + Premine (100 + 2,627,900 = 2,628,000 DIN)"},
-        {2, 262800000000000ULL, "Genesis + Premine + 0 PoW (block 2 not counted yet)"},
-        {3, 262810000000000ULL, "Genesis + Premine + 1 PoW block (2,628,100 DIN)"},
-    };
-
-    for (const auto& test : tests) {
-        uint64_t actual = ConsensusSubsidy::GetTotalIssuedAtHeight(test.height);
-        assert(actual == test.expected_total && "Total issued calculation incorrect");
-
-        std::cout << "  [✓] Height " << std::setw(10) << test.height << ": "
-                  << std::setw(16) << std::fixed << std::setprecision(2) << unaToDIN(actual) << " DIN - "
-                  << test.description << std::endl;
+    // Monotonic across the early curve as well.
+    uint64_t prev = 0;
+    for (uint32_t h = 0; h < 2000; ++h) {
+        const uint64_t cur = ConsensusSubsidy::GetTotalIssuedAtHeight(h);
+        CHECK(cur >= prev);
+        prev = cur;
     }
 
-    // Verify total never exceeds MAX_SUPPLY
-    uint32_t final_height = 2 + (33 * ConsensusSubsidy::HALVING_INTERVAL);
-    uint64_t total_at_final = ConsensusSubsidy::GetTotalIssuedAtHeight(final_height);
-
-    std::cout << "\n  Total Supply Verification:" << std::endl;
-    std::cout << "  [✓] Genesis:        " << std::fixed << std::setprecision(2)
-              << unaToDIN(ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA) << " DIN" << std::endl;
-    std::cout << "  [✓] Premine:        " << std::fixed << std::setprecision(2)
-              << unaToDIN(ConsensusSubsidy::PREMINE_UNA) << " DIN" << std::endl;
-    std::cout << "  [✓] PoW (at final): " << std::fixed << std::setprecision(2)
-              << unaToDIN(ConsensusSubsidy::GetPoWIssuedAtHeight(final_height)) << " DIN" << std::endl;
-    std::cout << "  [✓] Total issued:   " << std::fixed << std::setprecision(2)
-              << unaToDIN(total_at_final) << " DIN" << std::endl;
-    std::cout << "  [✓] MAX_SUPPLY cap: " << std::fixed << std::setprecision(2)
-              << unaToDIN(ConsensusSubsidy::MAX_SUPPLY_UNA) << " DIN" << std::endl;
-
-    // WARNING: Due to GetPoWIssuedAtHeight counting blocks before height (not at height),
-    // we need to check if total ever ACTUALLY exceeds cap when including current block
-    if (total_at_final > ConsensusSubsidy::MAX_SUPPLY_UNA) {
-        std::cout << "\n  [⚠️ ] WARNING: Total issued (" << unaToDIN(total_at_final)
-                  << " DIN) exceeds MAX_SUPPLY (" << unaToDIN(ConsensusSubsidy::MAX_SUPPLY_UNA)
-                  << " DIN)" << std::endl;
-        std::cout << "      This indicates a design inconsistency in the monetary policy" << std::endl;
-    } else {
-        std::cout << "  [✓] Supply cap never exceeded" << std::endl;
-    }
+    std::cout << (g_failures == 0 ? "PASSED\n" : "FAILED\n");
 }
 
-// Test 7: Halving calculation precision (edge case: first block of each epoch)
-void testHalvingPrecision() {
-    std::cout << "\n[Test 7] Halving Calculation Precision (Edge Cases)" << std::endl;
-
-    // Test transition blocks (last block before halving, first block after halving)
-    for (uint32_t epoch = 0; epoch < 10; epoch++) {  // Test first 10 halvings
-        uint32_t transition_height = 2 + ((epoch + 1) * ConsensusSubsidy::HALVING_INTERVAL);
-
-        uint64_t before_halving = ConsensusSubsidy::GetBlockSubsidy(transition_height - 1);
-        uint64_t after_halving = ConsensusSubsidy::GetBlockSubsidy(transition_height);
-
-        // After should be exactly half of before
-        assert(after_halving == (before_halving >> 1) && "Halving should be exact division by 2");
-
-        std::cout << "  [✓] Epoch " << epoch << " → " << (epoch + 1) << " transition at height "
-                  << transition_height << ": "
-                  << std::fixed << std::setprecision(8) << unaToDIN(before_halving) << " DIN → "
-                  << std::fixed << std::setprecision(8) << unaToDIN(after_halving) << " DIN" << std::endl;
-    }
-
-    std::cout << "  [✓] All halvings are exact (bit-shift division)" << std::endl;
-}
-
-// Test 8: Supply cap static assertion
-void testSupplyCapAssertion() {
-    std::cout << "\n[Test 8] Supply Cap Static Assertions" << std::endl;
-
-    // These compile-time assertions are in subsidy.h, but let's verify them at runtime too
-    assert(ConsensusSubsidy::MAX_SUPPLY_UNA ==
-           ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA +
-           ConsensusSubsidy::PREMINE_UNA +
-           ConsensusSubsidy::MAX_POW_MINEABLE_UNA);
-
-    std::cout << "  [✓] MAX_SUPPLY = GENESIS + PREMINE + MAX_POW_MINEABLE" << std::endl;
-    std::cout << "      " << std::fixed << std::setprecision(2) << unaToDIN(ConsensusSubsidy::MAX_SUPPLY_UNA) << " = "
-              << unaToDIN(ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA) << " + "
-              << unaToDIN(ConsensusSubsidy::PREMINE_UNA) << " + "
-              << unaToDIN(ConsensusSubsidy::MAX_POW_MINEABLE_UNA) << std::endl;
-
-    // Verify premine is immutable at 2,627,900 DIN
-    assert(ConsensusSubsidy::PREMINE_UNA == 262790000000000ULL && "Premine must be exactly 2,627,900 DIN");
-
-    // Calculate actual premine percentage of total supply
-    double premine_percentage = (static_cast<double>(ConsensusSubsidy::PREMINE_UNA) /
-                                 static_cast<double>(ConsensusSubsidy::MAX_SUPPLY_UNA)) * 100.0;
-
-    std::cout << "  [✓] Premine = 2,627,900 DIN (immutable)" << std::endl;
-    std::cout << "      Percentage of total supply: " << std::fixed << std::setprecision(2)
-              << premine_percentage << "% (~1%)" << std::endl;
-    std::cout << "  [✓] MAX_POW_MINEABLE = " << unaToDIN(ConsensusSubsidy::MAX_POW_MINEABLE_UNA)
-              << " DIN (matches halving schedule output)" << std::endl;
-}
+}  // namespace
 
 int main() {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "E.1: Subsidy Schedule Tests" << std::endl;
-    std::cout << "========================================" << std::endl;
-    std::cout << "\nDinero Monetary Policy:" << std::endl;
-    std::cout << "  Hard Cap: 265,428,000 DIN (total supply)" << std::endl;
-    std::cout << "  Genesis: 100 DIN (unspendable)" << std::endl;
-    std::cout << "  Premine: 2,627,900 DIN (~0.99%)" << std::endl;
-    std::cout << "  PoW: 262,800,000 DIN (33 halvings)" << std::endl;
-    std::cout << "  Initial Subsidy: 100 DIN" << std::endl;
-    std::cout << "  Halving Interval: 1,314,000 blocks (5 years)" << std::endl;
-    std::cout << "========================================" << std::endl;
+    std::cout << "\n=== Dinero subsidy schedule (Fair Launch v3) ===\n\n";
 
-    testGenesisAndPremine();
-    testFirstPoWBlock();
-    testAllHalvingBoundaries();
-    testSubsidyReachesZero();
-    testPoWIssuedCalculation();
-    testTotalIssuedCalculation();
-    testHalvingPrecision();
-    testSupplyCapAssertion();
+    testNoPremine();
+    testHalvingBoundaries();
+    testTailEmission();
+    testCumulativeIssuance();
+    testTotalIssued();
+    testNoHardCap();
 
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "[✓✓✓] ALL TESTS PASSED [✓✓✓]" << std::endl;
-    std::cout << "========================================" << std::endl;
-    std::cout << "\n🎉 E.1 COMPLETE: Subsidy Schedule Validated 🎉" << std::endl;
-    std::cout << "✅ Genesis and premine handling correct" << std::endl;
-    std::cout << "✅ All 33 halving boundaries verified" << std::endl;
-    std::cout << "✅ Subsidy reaches 0 after final halving" << std::endl;
-    std::cout << "✅ PoW issuance calculation accurate (262.8M DIN)" << std::endl;
-    std::cout << "✅ Total issuance never exceeds 265.428M DIN cap" << std::endl;
-    std::cout << "✅ Halving precision is exact (bit-shift)" << std::endl;
-    std::cout << "✅ Supply cap static assertions valid" << std::endl;
-    std::cout << "✅ MAX_SUPPLY adjusted to match halving schedule output" << std::endl;
-    std::cout << "\n🎊 SUBSIDY SCHEDULE: PRODUCTION-READY! 🎊" << std::endl;
-    std::cout << "========================================\n" << std::endl;
-
+    std::cout << "\n";
+    if (g_failures != 0) {
+        std::cout << "FAILED - " << g_failures << " check(s) did not hold\n\n";
+        return 1;
+    }
+    std::cout << "PASSED - emission curve matches the documented policy\n\n";
     return 0;
 }

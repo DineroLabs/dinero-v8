@@ -42,45 +42,119 @@ the go/no-go rules below. External review remains invited and valuable; the
 release gate does not depend on purchasing a commercial audit or waiting
 indefinitely for a volunteer reviewer.
 
-## Decision window
+## Everything is measured in block height
 
-The final height decision was recorded from a fully synchronized mainnet node
-at height 76,663, hash
-`000000837e04943234476ea9fb5465d4939407ca80120d39606d7f1652297b7a`.
-Height 100,000 therefore provided 23,337 blocks of lead time. At the consensus
-target spacing of 120 seconds that is roughly 32 days, but recent production
-cadence has varied materially. Block height, not wall-clock time, remains
-authoritative.
+Every gate, window, and deadline in this document is expressed in **block
+height**. No gate is defined in calendar time.
 
-## Release gates
+This is not a stylistic preference. Observed block spacing has ranged from
+~36 s to ~147 s against a 120 s target — a 4x spread — so any fixed number of
+days corresponds to a different, unknowable number of blocks. A "14-day review"
+could mean 10,000 blocks or 20,000 depending on when it happened to run. Height
+is what consensus actually enforces, it is identical on every node, and it is
+not subject to clock skew or interpretation.
 
-The activation binary must not be released to the production fleet until all
-of the following are complete:
+Wall-clock figures appear in this document only as **informational estimates**,
+always labelled as such. They never define a gate.
 
-1. The open-source assurance record is complete: the normative specification
-   and release commit are frozen; an implementation-independent CCV reference
-   model agrees with production across randomized valid and invalid
-   transitions; property, sanitizer-fuzz, mutation, bounded-state, resource,
-   lifecycle, and reorg evidence is reproducible from a clean checkout; the
-   public review package has been announced for at least 14 calendar days and
-   closes before height 99,000; all reported critical/high findings are
-   resolved; and the owner records explicit acceptance of the residual risk
-   that no paid audit is required.
-2. The exact release candidate passes `CovenantActivation`,
-   `CovenantSystemLifecycle`, `CovenantProfileWallet`,
-   `CovenantWalletRecovery`, and `CovenantWalletMultinodeLifecycle`, plus the
-   repository's required CI lanes.
-3. Release artifacts for every shipped platform report the checksum above and
-   contain the assurance-frozen commit.
-4. Every validating/mining node is upgraded by height 99,000 and agrees on
-   tip, headers, checksum, peer connectivity, and block-template readiness.
-5. Operators confirm that CSFS and TXHASH are still dormant and that the
-   mainnet covenant wallet/RPC construction guard remains fail-closed unless a
-   separate production-wallet change has been reviewed and deployed.
+## Two independent gates
 
-Height 99,000 is the go/no-go checkpoint. If any gate is incomplete there,
-operators must schedule a later activation in a new release. They must not
-reduce the validation or deployment window to preserve height 100,000.
+Shipping the binary and authorizing the opcodes are **separate decisions with
+separate evidence**. Conflating them costs activation runway for no safety
+benefit: the covenant opcodes are dormant until block 100,000 regardless of when
+the binary is deployed, so deploying early buys real soak time on the production
+fleet while public review runs in parallel.
+
+| | Gate A — merge, release, deploy | Gate B — activation authorization |
+|---|---|---|
+| Authorizes | merging #480, cutting the release, upgrading the fleet | the opcodes becoming enforceable at 100,000 |
+| Evidence | CI, deterministic reproducible evidence, reference model, mutation/fuzz/resource/lifecycle/reorg tests, artifact digests | review window closed, critical/high findings resolved, residual risk accepted in writing |
+| Deadline | as early as possible; all nodes upgraded **by height 99,000** | **by height 99,000** |
+| If unmet | do not merge or deploy | ship a coordinated activation deferral |
+
+**Gate A does not require Gate B.** Code may be merged, released, and deployed
+while the review window is still open. **Gate B never relaxes Gate A**: a
+completed review does not authorize deploying a binary whose CI evidence is
+incomplete.
+
+## Gate A — merge, release, and deployment readiness
+
+1. The final synchronized head passes all required CI lanes, verified from the
+   logs by exact test name rather than from a badge, and the CI run's head SHA
+   matches the merge candidate.
+2. Covenant evidence is reproducible from a clean checkout: BIP-119 vector
+   corpus, CCV adversarial suite, implementation-independent CCV reference
+   model, mutation coverage, sanitizer-fuzz, bounded-state enumeration,
+   resource limits, lifecycle, and reorg evidence.
+3. Every covenant evidence test is always-on. Tests gated solely on `assert()`
+   do not count as evidence: CI builds Release, `NDEBUG` is defined, and
+   `assert(x)` compiles to `((void)0)`. See issue #497.
+4. Release artifacts are built from the exact assurance-frozen commit for every
+   shipped platform, with SHA-256 digests recorded per platform. Linux and macOS
+   digests will differ and are recorded independently; the consensus checksum
+   must match across both.
+5. `CovenantActivation`, `CovenantSystemLifecycle`, `CovenantProfileWallet`,
+   `CovenantWalletRecovery`, and `CovenantWalletMultinodeLifecycle` pass on the
+   exact release candidate.
+
+## Gate B — activation authorization
+
+1. The normative specification and release commit are frozen. Record the
+   **freeze height** — the chain height at the moment of freezing — and the
+   exact commit the published review package identifies.
+2. The public review window is `[freeze height, 99,000]`. It opens the moment
+   the package is published and runs to the go/no-go checkpoint. There is no
+   separate duration to satisfy and no calendar deadline: publishing earlier is
+   the only way to lengthen review, which is the incentive we want.
+3. All reported critical and high findings are resolved.
+4. The owner records explicit acceptance of the residual risk that no paid
+   external audit was obtained.
+5. Every validating and mining node is upgraded and agrees on tip, headers,
+   consensus checksum, peer connectivity, and block-template readiness, with a
+   four-of-four named readiness record at height 99,000.
+6. CSFS and TXHASH are confirmed still dormant, and the mainnet covenant
+   wallet/RPC construction guard remains fail-closed.
+
+Height 99,000 is the go/no-go checkpoint. If any Gate B item is incomplete
+there, operators must ship a coordinated activation deferral in a new release.
+They must **not** shorten the review or deployment window to preserve height
+100,000.
+
+### Review-window restart rule
+
+The review window restarts — the freeze height is reset to the current height —
+on any material change to **covenant consensus semantics** after the window
+opens: opcode behavior, activation heights, resource limits, or the serialized
+forms the opcodes commit to.
+
+The window does **not** restart for test-only changes, provenance or evidence
+records, or editorial corrections.
+
+Record every post-freeze change with its classification, the height at which it
+landed, and the resulting restart decision, so the judgement is auditable rather
+than remembered.
+
+A restart late in the window can make Gate B unreachable before 99,000. That is
+the intended behavior: it forces a deliberate deferral rather than a shortened
+review.
+
+## Height tracking (informational)
+
+Wall-clock projections are informational and never define a gate. They exist
+only so a deferral can be decided while slack remains rather than at the
+checkpoint.
+
+Reference measurement, recorded so future readers can judge drift rather than
+re-derive it: over the 960 blocks ending at height 77,940, median spacing was
+**59.4 s/block** against the 120 s target, with 7 of 8 sampled 120-block windows
+below target. Difficulty was rising across those samples, so ASERT is expected
+to pull spacing back toward target; that had not yet been observed to persist.
+At the target, 77,940 → 99,000 is ~29 days; at the measured median, ~14.5 days.
+
+Because those differ by ~2x, track rather than assume: recompute the projected
+arrival of height 99,000 from a rolling 720-block window, record each projection
+with the height and window it came from, and escalate if the projection moves
+earlier than expected. A single fast window is not a sustained pace.
 
 ## Deployment and monitoring
 

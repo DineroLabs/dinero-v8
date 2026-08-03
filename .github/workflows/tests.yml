@@ -116,6 +116,20 @@ jobs:
       - name: CTest integrity gate (registered => built)
         run: python3 scripts/ci/check_ctest_integrity.py build-tests
 
+      # Assertion-integrity ratchet (issue #497). This build is Release, so
+      # NDEBUG is defined and assert(x) becomes ((void)0) -- its expression is
+      # never compiled. A test gated only on assert() runs here, prints PASSED,
+      # and checks nothing. That is how test_consensus_core_standalone.cpp kept
+      # asserting a premine Dinero does not have, against a constant that had
+      # already been deleted.
+      #
+      # Existing assertions are grandfathered by a baseline file; this step
+      # fails only when a PR ADDS raw assert() to a test, so the ~2,300-item
+      # backlog can be migrated in risk order without blocking unrelated work.
+      # The baseline may only shrink.
+      - name: Test assertion ratchet (no new raw assert)
+        run: python3 scripts/ci/check_test_assertions.py
+
       - name: OpenSSL version assertion (policy pin 3.5.7)
         run: bash scripts/ci/check_openssl_version.sh build-tests 3.5.7
 

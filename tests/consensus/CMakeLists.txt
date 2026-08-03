@@ -1089,6 +1089,36 @@ target_include_directories(test_stateless_verification PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+# ============================================================================
+# Subsidy schedule (issue #497)
+# ============================================================================
+# This file existed for a long time but was NEVER registered here, so it was
+# never built and never run -- which is how it kept asserting a premine, a hard
+# cap, and emission reaching zero, none of which Dinero has. Registering it is
+# half the fix; the other half is that it no longer uses assert(), which is a
+# no-op under the NDEBUG that Release builds define.
+# ============================================================================
+
+add_executable(test_subsidy_schedule
+    test_subsidy_schedule.cpp
+)
+
+target_link_libraries(test_subsidy_schedule PRIVATE
+    dinero_consensus
+)
+
+target_include_directories(test_subsidy_schedule PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+add_test(NAME SubsidySchedule COMMAND test_subsidy_schedule)
+set_tests_properties(SubsidySchedule
+    PROPERTIES
+    LABELS "consensus;monetary;pure"
+    TIMEOUT 30
+)
+
 add_test(NAME StatelessVerification COMMAND test_stateless_verification)
 set_tests_properties(StatelessVerification
     PROPERTIES
