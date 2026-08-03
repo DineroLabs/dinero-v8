@@ -104,7 +104,7 @@ done
 
 echo ""
 echo "Signing staged app after final packaging mutations..."
-"$PROJECT_ROOT/qt/scripts/sign-release.sh" "$APP"
+"$PROJECT_ROOT/qt/scripts/sign-release.sh" "$APP" "$IDENTITY"
 
 echo ""
 echo "Submitting app bundle for notarization..."

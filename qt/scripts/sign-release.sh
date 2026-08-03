@@ -2,16 +2,25 @@
 # sign-release.sh — Properly sign dinero-qt.app with Developer ID for distribution.
 # Run this after cmake build, before creating the release DMG/ZIP.
 #
-# Usage: ./scripts/sign-release.sh [path/to/dinero-qt.app]
+# Usage: ./scripts/sign-release.sh [path/to/dinero-qt.app] [signing-identity]
+#
+# The identity may also be supplied as DINERO_SIGN_IDENTITY. Callers that sign
+# a whole release (packaging/mac/sign-notarize-release.sh) pass their own
+# --identity through this way, so the app bundle and the DMG cannot end up
+# signed by different certificates.
 #
 # Requirements:
-#   - Developer ID Application: Mirsad Hajdarevic (JXJS6ZA5FJ) in Keychain
+#   - A Developer ID Application certificate in the Keychain. The default below
+#     is the historical personal identity; org releases pass the DineroLabs one.
 #   - Xcode command line tools
 
 set -euo pipefail
 
 APP="${1:-build/bin/dinero-qt.app}"
-IDENTITY="Developer ID Application: Mirsad Hajdarevic (JXJS6ZA5FJ)"
+# Precedence: positional arg, then env, then the historical default. Previously
+# this was hardcoded and BOTH the argument and the environment were ignored, so
+# a caller asking for a different identity was silently overridden.
+IDENTITY="${2:-${DINERO_SIGN_IDENTITY:-Developer ID Application: Mirsad Hajdarevic (JXJS6ZA5FJ)}}"
 ENTITLEMENTS="$(dirname "$0")/../packaging/entitlements.plist"
 TEAM_ID="JXJS6ZA5FJ"
 
