@@ -339,6 +339,15 @@ jobs:
             -j1 \
             -R '^CsnSpendReorgReconciliation$'
 
+          # #321 — shielded wallet reject rollback is integration-labeled and
+          # therefore must be selected explicitly in this serial daemon lane.
+          echo "=== ShieldedWalletRejectRollback ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ShieldedWalletRejectRollback$'
+
       # Daemon logs are printed by the harnesses on failure (tail of daemon.log),
       # so --output-on-failure above captures them. Keep the ctest logs as an
       # artifact too: the harnesses delete their temp datadirs on teardown, so
