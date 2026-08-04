@@ -1433,6 +1433,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_epoch_reset_stateless.sh)
     message(STATUS "  ✓ ShieldedEpochResetStateless registered")
 endif()
 
+# #357: a CSN with real pre-reset nullifier rows crashes after the reset
+# bookkeeping batch commits but before in-memory publication, then restarts
+# offline. The test proves the purge, post-reset marker/blobs, canonical tip,
+# and height index are one durable unit rather than a startup-bricking split.
+add_test(
+    NAME CsnEpochResetCrashAtomicity
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_epoch_reset_crash_atomicity.sh
+)
+set_tests_properties(CsnEpochResetCrashAtomicity PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;shielded;stateless;csn;restart;crash;epoch-reset;canonical-state"
+    TIMEOUT 600
+)
+message(STATUS "  ✓ CsnEpochResetCrashAtomicity registered")
+
 # CSN shielded-spend sync regression: a stateless node must build the shielded
 # tree/anchors/nullifiers during sync so it can validate a shielded spend
 # (previously it early-returned before the shielded-apply section and failed
