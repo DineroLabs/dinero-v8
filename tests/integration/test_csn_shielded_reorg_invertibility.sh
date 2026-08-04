@@ -59,11 +59,15 @@ RESET_HEIGHT=${RESET_HEIGHT:-112}   # must sit ABOVE the pre-reset shielded acti
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-if [[ -x "${PROJECT_ROOT}/build/dinerod" ]]; then DINEROD="${PROJECT_ROOT}/build/dinerod"
+if [[ -n "${DINEROD:-}" ]]; then
+    [[ -x "${DINEROD}" ]] || { echo "dinerod not found at ${DINEROD}"; exit 1; }
+elif [[ -x "${PROJECT_ROOT}/build/dinerod" ]]; then DINEROD="${PROJECT_ROOT}/build/dinerod"
 elif [[ -x "${PROJECT_ROOT}/dinerod" ]]; then DINEROD="${PROJECT_ROOT}/dinerod"
 else echo "dinerod not found"; exit 1; fi
 
-if [[ -x "${PROJECT_ROOT}/build/tests/integration/shielded_tx_builder" ]]; then
+if [[ -n "${BUILDER:-}" ]]; then
+    [[ -x "${BUILDER}" ]] || { echo "shielded_tx_builder not found at ${BUILDER}"; exit 1; }
+elif [[ -x "${PROJECT_ROOT}/build/tests/integration/shielded_tx_builder" ]]; then
     BUILDER="${PROJECT_ROOT}/build/tests/integration/shielded_tx_builder"
 elif [[ -x "${PROJECT_ROOT}/build/shielded_tx_builder" ]]; then
     BUILDER="${PROJECT_ROOT}/build/shielded_tx_builder"
