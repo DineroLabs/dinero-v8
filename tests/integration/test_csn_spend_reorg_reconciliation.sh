@@ -435,20 +435,34 @@ HEIGHT_BRIDGE=$(rpc_scalar "${RPC_PORT_BRIDGE}" "${DATADIR_BRIDGE}" "getblockcou
 TIP_BRIDGE=$(rpc_scalar "${RPC_PORT_BRIDGE}" "${DATADIR_BRIDGE}" "getbestblockhash" '.result')
 wait_for_sync "${RPC_PORT_CSN}" "${DATADIR_CSN}" "${HEIGHT_BRIDGE}" "${TIP_BRIDGE}" "${SYNC_TIMEOUT}" \
     || fail "CSN failed to sync funded chain"
-FUNDED_UTXO=$(wait_for_spendable_utxo "${RPC_PORT_CSN}" "${DATADIR_CSN}" 60) \
+CANDIDATE_UTXO=$(wait_for_spendable_utxo "${RPC_PORT_CSN}" "${DATADIR_CSN}" 60) \
     || fail "CSN wallet never saw a spendable funded UTXO"
-FUNDED_TXID=$(echo "${FUNDED_UTXO}" | jq -r '.txid')
-FUNDED_VOUT=$(echo "${FUNDED_UTXO}" | jq -r '.vout')
-[[ -n "${FUNDED_TXID}" && -n "${FUNDED_VOUT}" ]] || fail "Failed to parse funded UTXO"
+[[ -n "${CANDIDATE_UTXO}" ]] || fail "Failed to capture a spendable funded UTXO"
+PRE_SEND_UTXOS=$(rpc_result "${RPC_PORT_CSN}" "${DATADIR_CSN}" \
+    "wallet.listunspent" "[1,9999999]")
 BASE_STATE=$(capture_state_json "${RPC_PORT_CSN}" "${DATADIR_CSN}")
 BASE_HEIGHT=$(echo "${BASE_STATE}" | jq -r '.height')
-pass "Funded CSN UTXO captured: ${FUNDED_TXID:0:16}...:${FUNDED_VOUT}"
+pass "Spendable CSN funding captured before transaction construction"
 
 info "\n[3/10] Broadcasting a CSN-originated spend"
 SEND_RESULT=$(rpc_call "${RPC_PORT_CSN}" "${DATADIR_CSN}" "wallet.sendtoaddress" "[\"${BRIDGE_RECIPIENT}\",1.0]")
 rpc_has_error "${SEND_RESULT}" && fail "wallet.sendtoaddress failed: $(echo "${SEND_RESULT}" | tr -d '\n\t')"
 SPEND_TXID=$(echo "${SEND_RESULT}" | jq -r '(.result.txid // .result // empty) | strings')
 [[ -n "${SPEND_TXID}" ]] || fail "wallet.sendtoaddress returned empty txid"
+SPEND_DECODED=$(rpc_call "${RPC_PORT_CSN}" "${DATADIR_CSN}" \
+    "wallet.getrawtransaction" "\"${SPEND_TXID}\", true")
+rpc_has_error "${SPEND_DECODED}" \
+    && fail "wallet.getrawtransaction failed for CSN spend"
+[[ "$(echo "${SPEND_DECODED}" | jq -r '.result.vin | length')" == "1" ]] \
+    || fail "test requires one actual spent input"
+FUNDED_TXID=$(echo "${SPEND_DECODED}" | jq -r '.result.vin[0].txid // empty')
+FUNDED_VOUT=$(echo "${SPEND_DECODED}" | jq -r '.result.vin[0].vout // empty')
+[[ -n "${FUNDED_TXID}" && -n "${FUNDED_VOUT}" ]] \
+    || fail "failed to decode the actual spent outpoint"
+[[ "$(echo "${PRE_SEND_UTXOS}" | jq -r --arg txid "${FUNDED_TXID}" \
+    --argjson vout "${FUNDED_VOUT}" \
+    '[.[] | select(.txid == $txid and .vout == $vout and .spendable == true)] | length')" == "1" ]] \
+    || fail "actual spend input was not in the pre-send spendable set"
 wait_for_mempool_contains "${RPC_PORT_BRIDGE}" "${DATADIR_BRIDGE}" "${SPEND_TXID}" 30 \
     || fail "Bridge never observed the CSN spend in mempool"
 wait_for_mempool_contains "${RPC_PORT_CSN}" "${DATADIR_CSN}" "${SPEND_TXID}" 30 \
@@ -466,6 +480,9 @@ wait_for_sync "${RPC_PORT_CSN}" "${DATADIR_CSN}" "${HEIGHT_BRIDGE}" "${TIP_BRIDG
     || fail "CSN failed to sync confirmed spend branch"
 wait_for_confirmed_tx "${RPC_PORT_CSN}" "${DATADIR_CSN}" "${SPEND_TXID}" 30 \
     || fail "CSN wallet never marked spend confirmed"
+wait_for_outpoint_presence "${RPC_PORT_CSN}" "${DATADIR_CSN}" \
+    "${FUNDED_TXID}" "${FUNDED_VOUT}" 0 30 \
+    || fail "precondition not met: confirmed spend never removed the funded outpoint"
 SPEND_CONFIRM_HEIGHT=$((BASE_HEIGHT + 1))
 SPEND_BLOCK_HASH=$(rpc_scalar "${RPC_PORT_BRIDGE}" "${DATADIR_BRIDGE}" "getblockhash" '.result' "[${SPEND_CONFIRM_HEIGHT}]")
 [[ -n "${SPEND_BLOCK_HASH}" ]] || fail "Failed to resolve spend confirmation block hash"
@@ -518,7 +535,7 @@ if [[ "${CSN_HAS_TX}" == "true" ]]; then
 fi
 
 wait_for_outpoint_presence "${RPC_PORT_CSN}" "${DATADIR_CSN}" "${FUNDED_TXID}" "${FUNDED_VOUT}" 1 30 \
-    || fail "Original funded outpoint never returned to the spendable set after reorg reconciliation"
+    || fail "Actual spent outpoint never returned to the spendable set after reorg reconciliation"
 pass "Wallet overlay reconciled and the resurrected coin is spendable again"
 
 info "\n[9/10] Re-proving the resurrected UTXO against the new winning branch"

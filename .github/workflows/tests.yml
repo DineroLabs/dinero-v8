@@ -329,6 +329,16 @@ jobs:
             -j1 \
             -R '^RpcErrorEnvelope$'
 
+          # #287 — the CSN wallet reorg regression is integration-labeled and
+          # must execute serially by exact name rather than disappear behind
+          # the main ctest label exclusions.
+          echo "=== CsnSpendReorgReconciliation ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^CsnSpendReorgReconciliation$'
+
       # Daemon logs are printed by the harnesses on failure (tail of daemon.log),
       # so --output-on-failure above captures them. Keep the ctest logs as an
       # artifact too: the harnesses delete their temp datadirs on teardown, so

@@ -968,8 +968,10 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_spend_reorg_reconciliation.sh)
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_spend_reorg_reconciliation.sh
     )
     set_tests_properties(CsnSpendReorgReconciliation PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "integration;wallet;utreexo;bridge;csn;reorg"
         TIMEOUT 360
+        RUN_SERIAL TRUE
     )
     message(STATUS "  ✓ CsnSpendReorgReconciliation registered")
 endif()
