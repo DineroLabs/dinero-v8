@@ -216,6 +216,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_cross_seed_restart_reorg_parity.sh)
     message(STATUS "  ✓ CrossSeedRestartReorgParity registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_cross_seed_teardown_lifecycle.sh)
+    add_test(
+        NAME CrossSeedTeardownLifecycle
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_cross_seed_teardown_lifecycle.sh
+    )
+    set_tests_properties(CrossSeedTeardownLifecycle PROPERTIES
+        # This fast shell regression starts synthetic writers, not dinerod.
+        # Keep it out of the excluded `integration` label so normal CI really
+        # executes it rather than merely registering it.
+        LABELS "p2p;cleanup;regression"
+        TIMEOUT 30
+    )
+    message(STATUS "  ✓ CrossSeedTeardownLifecycle registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_connecttip_restart_equivalence.sh)
     add_test(
         NAME ConnectTipRestartEquivalence
@@ -1793,7 +1808,8 @@ endif()
 if(WIN32 AND NOT MINGW AND NOT CYGWIN)
     set(_dinero_integration_posix_only
         ParallelBlockDownloadTargeted LaggingPeerCatchupNoOrphans
-        CrossSeedRestartReorgParity ConnectTipRestartEquivalence
+        CrossSeedRestartReorgParity CrossSeedTeardownLifecycle
+        ConnectTipRestartEquivalence
         D3FullUserTxMissingUndo UndoMetadataRestamp
         ReindexChainstateUtreexoEquivalence ReindexPromotionRestartEquivalence
         InvalidityRestartSticky InvalidityCrashRestartEquivalence

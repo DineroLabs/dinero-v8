@@ -8,6 +8,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=helpers/daemon_process_cleanup.sh
+source "${ROOT_DIR}/tests/integration/helpers/daemon_process_cleanup.sh"
 # CTest injects the exact in-tree target path. Keep the conventional fallback
 # for developers invoking this script directly.
 DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
@@ -63,19 +65,7 @@ fail() {
     #
     # which is why this test's CI output has never carried usable diagnostics.
     # The logs were fine on disk; they simply had not been written yet.
-    for _pid in "${PID_A}" "${PID_B}"; do
-        [[ -n "${_pid}" ]] && kill "${_pid}" 2>/dev/null || true
-    done
-    for _pid in "${PID_A}" "${PID_B}"; do
-        [[ -n "${_pid}" ]] || continue
-        for _ in $(seq 1 40); do
-            kill -0 "${_pid}" 2>/dev/null || break
-            sleep 0.25
-        done
-        kill -9 "${_pid}" 2>/dev/null || true
-    done
-    PID_A=""
-    PID_B=""
+    stop_all_test_processes || true
 
     [[ -f "${LOG_A}" ]] && { printf -- '--- node A log tail ---\n' >&2; tail -160 "${LOG_A}" >&2 || true; }
     [[ -f "${LOG_B}" ]] && { printf -- '--- node B log tail ---\n' >&2; tail -160 "${LOG_B}" >&2 || true; }
@@ -83,15 +73,47 @@ fail() {
 }
 
 cleanup() {
-    [[ -n "${PID_A}" ]] && kill "${PID_A}" 2>/dev/null || true
-    [[ -n "${PID_B}" ]] && kill "${PID_B}" 2>/dev/null || true
-    pkill -f "dinerod.*${DATA_A}" 2>/dev/null || true
-    pkill -f "dinerod.*${DATA_B}" 2>/dev/null || true
+    local test_rc=$?  # MUST remain first: preserve the test's real verdict.
+    local cleanup_rc=0
+    trap - EXIT
+    set +e
+
+    stop_all_test_processes || cleanup_rc=1
     if [[ "${KEEP_ON_FAIL}" != "1" ]]; then
-        rm -rf "${DATA_A}" "${DATA_B}" "${LOG_A}" "${LOG_B}" "${REPORT_JSON}"
+        if (( cleanup_rc == 0 )); then
+            rm -rf "${DATA_A}" "${DATA_B}" "${LOG_A}" "${LOG_B}" "${REPORT_JSON}" || cleanup_rc=1
+            for _path in "${DATA_A}" "${DATA_B}" "${LOG_A}" "${LOG_B}" "${REPORT_JSON}"; do
+                if [[ -e "${_path}" ]]; then
+                    printf '[CLEANUP] failed to remove path: %s\n' "${_path}" >&2
+                    cleanup_rc=1
+                fi
+            done
+        else
+            printf '[CLEANUP] retaining datadirs because a writer survived shutdown: %s %s\n' \
+                "${DATA_A}" "${DATA_B}" >&2
+        fi
     fi
+
+    # Never let cleanup replace an existing test failure.  If the assertions
+    # passed, however, a genuine teardown failure is still a failed test.
+    local final_rc=0
+    dinero_cleanup_result "${test_rc}" "${cleanup_rc}" || final_rc=$?
+    exit "${final_rc}"
 }
 trap cleanup EXIT
+
+stop_all_test_processes() {
+    local rc=0
+
+    dinero_stop_process "${PID_A}" "node A" || rc=1
+    dinero_stop_process "${PID_B}" "node B" || rc=1
+    PID_A=""
+    PID_B=""
+
+    dinero_stop_datadir_processes "${DATA_A}" || rc=1
+    dinero_stop_datadir_processes "${DATA_B}" || rc=1
+    return "${rc}"
+}
 
 require_tools() {
     command -v curl >/dev/null || fail "curl is required"
@@ -199,18 +221,10 @@ start_node() {
 stop_node() {
     local pid="$1"
     local datadir="$2"
-    if [[ -n "${pid}" ]]; then
-        kill "${pid}" 2>/dev/null || true
-        wait "${pid}" 2>/dev/null || true
-    fi
-    pkill -f "dinerod.*${datadir}" 2>/dev/null || true
-    for _ in $(seq 1 30); do
-        if ! pgrep -f "dinerod.*${datadir}" >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
-    fail "Timed out waiting for node at ${datadir} to stop"
+    dinero_stop_process "${pid}" "dinerod for ${datadir}" || \
+        fail "Timed out waiting for tracked node at ${datadir} to stop"
+    dinero_stop_datadir_processes "${datadir}" || \
+        fail "Timed out waiting for all writers at ${datadir} to stop"
 }
 
 get_height() {
