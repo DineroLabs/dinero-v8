@@ -10,7 +10,7 @@ namespace {
 
 void Usage(const char* argv0) {
     std::cerr
-        << "Usage: " << argv0 << " <chaindb-dir> [--source-offset-back N] [--bitflip-latest]\n"
+        << "Usage: " << argv0 << " <chaindb-dir> [--source-offset-back N] [--bitflip-latest] [--inspect]\n"
         << "\n"
         << "Rewrites the latest Utreexo checkpoint bytes with an older checkpoint\n"
         << "while preserving a valid checksum. This simulates a stale/contaminated\n"
@@ -18,7 +18,10 @@ void Usage(const char* argv0) {
         << "\n"
         << "If --bitflip-latest is provided, mutate the latest checkpoint bytes in\n"
         << "place instead of sourcing an older checkpoint. This is useful when a\n"
-        << "test datadir only has a single persisted checkpoint.\n";
+        << "test datadir only has a single persisted checkpoint.\n"
+        << "\n"
+        << "If --inspect is provided, make no changes and print the persisted\n"
+        << "checkpoint count and latest height. Empty sets are reported safely.\n";
 }
 
 bool ParsePositiveInt(const std::string& value, int& out) {
@@ -46,6 +49,7 @@ int main(int argc, char** argv) {
     std::filesystem::path chain_db_dir = argv[1];
     int source_offset_back = 1;
     bool bitflip_latest = false;
+    bool inspect = false;
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -60,6 +64,8 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--bitflip-latest") {
             bitflip_latest = true;
+        } else if (arg == "--inspect") {
+            inspect = true;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
             Usage(argv[0]);
@@ -81,6 +87,21 @@ int main(int argc, char** argv) {
     }
 
     auto heights = heights_result.value();
+    if (inspect) {
+        std::cout << "mode=inspect\n";
+        std::cout << "chaindb=" << chain_db_dir << "\n";
+        std::cout << "checkpoint_count=" << heights.size() << "\n";
+        if (!heights.empty()) {
+            std::cout << "latest_height=" << heights.back() << "\n";
+        }
+        return 0;
+    }
+
+    if (heights.empty()) {
+        std::cerr << "No Utreexo checkpoints found\n";
+        return 1;
+    }
+
     const int latest_height = heights.back();
     auto latest_result = chain_db.getUtreexoCheckpoint(latest_height);
     if (latest_result.status() != dinero::Status::Ok) {

@@ -20,6 +20,10 @@
 #                the reverse hazard of #353 bug 2)
 #   F4: final tip >= base+K and >= the max tip ever observed (no regression)
 #   F5: clean exit (not active, not fatal) + advanced-tip promotion log
+#
+# CORRUPTION_RECOVERY_MODE=1 reuses the same V4 snapshot topology for #369.
+# It forks one stopped mismatched-checkpoint datadir into recovery-with-file
+# and fail-closed-without-file legs, then compares exact persisted state.
 set -uo pipefail
 
 DINEROD="${DINEROD:?set DINEROD to the dinerod binary path}"
@@ -29,13 +33,17 @@ POST_BASE_K="${POST_BASE_K:-5}"      # blocks the source mines PAST base (small)
 BG_DELAY_MS="${BG_DELAY_MS:-200}"    # per-block genesis->base replay delay on the consumer
 PREBASE_H="${PREBASE_H:-5}"          # height of the pre-base coinbase used for the core assertion
 PROMO_TIMEOUT="${PROMO_TIMEOUT:-540}" # seconds to wait for promotion / mode exit
+CORRUPTION_RECOVERY_MODE="${CORRUPTION_RECOVERY_MODE:-0}"
+MUTATOR="${MUTATOR:-}"
+CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-500}"
 
 SRC_RPC=$((BASE_PORT + 0)); SRC_P2P=$((BASE_PORT + 100)); SRC_WS=$((BASE_PORT + 200))
 CON_RPC=$((BASE_PORT + 1)); CON_P2P=$((BASE_PORT + 101)); CON_WS=$((BASE_PORT + 201))
+CTL_RPC=$((BASE_PORT + 2)); CTL_P2P=$((BASE_PORT + 102)); CTL_WS=$((BASE_PORT + 202))
 
 WORK="$(mktemp -d -t dinero_fwd_connect_XXXXXX)"
 printf '[INFO] workdir: %s\n' "$WORK"
-SRC_DIR="$WORK/source"; CON_DIR="$WORK/consumer"
+SRC_DIR="$WORK/source"; CON_DIR="$WORK/consumer"; CTL_DIR="$WORK/control-no-snapshot"
 SNAP="$WORK/utxo-snapshot.dat"; HEADERS_AT_BASE="$WORK/headers_at_base"
 KEEP_ON_FAIL="${KEEP_ON_FAIL:-0}"
 FAILED=0
@@ -45,7 +53,7 @@ ck_pass(){ printf '[PASS] %s\n' "$*"; }
 ck_fail(){ printf '[FAIL] %s\n' "$*" >&2; FAILED=1; }
 fail() {   # hard failure: infra/setup broke, the test cannot proceed
     printf '[FAIL] %s\n' "$*" >&2
-    for d in "$SRC_DIR" "$CON_DIR"; do
+    for d in "$SRC_DIR" "$CON_DIR" "$CTL_DIR"; do
         for lg in "$d"/daemon*.log; do
             [[ -f "$lg" ]] || continue
             printf -- '--- tail %s ---\n' "$lg" >&2
@@ -68,6 +76,9 @@ trap cleanup EXIT
 command -v curl >/dev/null || fail "curl is required"
 command -v jq >/dev/null   || fail "jq is required"
 [[ -x "$DINEROD" ]] || fail "dinerod not executable at $DINEROD"
+if [[ "$CORRUPTION_RECOVERY_MODE" == "1" ]]; then
+    [[ -x "$MUTATOR" ]] || fail "recovery mode requires executable MUTATOR"
+fi
 
 cookie_for() {
     if [[ -f "$1/.cookie" ]]; then tr -d '\n' < "$1/.cookie"; return 0; fi
@@ -126,6 +137,174 @@ wait_status() {  # <rpcport> <datadir> <jq-bool-expr over snapshot_bootstrap> <t
     printf '[INFO] wait_status timeout (%ss) for: %s\n[INFO] last status: %s\n' \
         "$timeout" "$desc" "$(snap_status "$port" "$datadir")" >&2
     return 1
+}
+
+rpc_result() {
+    local response
+    response="$(rpc "$1" "$2" "$3" "${4:-[]}")" || return 1
+    jq -e '.error == null and has("result")' <<<"$response" >/dev/null 2>&1 || return 1
+    jq -c '.result' <<<"$response"
+}
+
+sha256_file() {
+    if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+    else sha256sum "$1" | awk '{print $1}'; fi
+}
+
+capture_consensus_state() {
+    local port="$1" datadir="$2" label="$3" dump
+    dump="$WORK/${label}.forest"
+    rpc_result "$port" "$datadir" utreexo.dumpforestinternal "[\"$dump\"]" >/dev/null \
+        || fail "could not dump forest for $label"
+    [[ -s "$dump" ]] || fail "forest dump for $label is empty"
+    jq -n -c \
+        --argjson height "$(rpc_result "$port" "$datadir" getblockcount)" \
+        --arg tip "$(rpc_result "$port" "$datadir" getbestblockhash | jq -r '.')" \
+        --argjson txoutset "$(rpc_result "$port" "$datadir" blockchain.gettxoutsetinfo)" \
+        --argjson commitment "$(rpc_result "$port" "$datadir" blockchain.getutreexocommitment)" \
+        --argjson roots "$(rpc_result "$port" "$datadir" blockchain.getutreexoroots)" \
+        --arg forest_sha256 "$(sha256_file "$dump")" \
+        '{height:$height,tip:$tip,txoutset:$txoutset,commitment:$commitment,roots:$roots,forest_sha256:$forest_sha256}'
+}
+
+assert_same_consensus_state() {
+    if [[ "$(jq -S -c . <<<"$1")" == "$(jq -S -c . <<<"$2")" ]]; then
+        ck_pass "$3: exact tip, UTXO set, commitment, roots, and forest dump"
+    else
+        printf '[INFO] expected state: %s\n[INFO] actual state:   %s\n' "$1" "$2" >&2
+        ck_fail "$3: consensus state differs"
+    fi
+}
+
+prepare_checkpoint_mismatch() {
+    local h=0 active=false mutation
+    info "=== #369: freeze V4 snapshot-active state past base ==="
+    for _ in $(seq 1 60); do
+        h="$(rpc_result "$CON_RPC" "$CON_DIR" getblockcount 2>/dev/null || echo 0)"
+        active="$(snap_status "$CON_RPC" "$CON_DIR" | jq -r '.assumeutxo_active // false')"
+        [[ "$h" -ge "$NET_TIP" && "$active" == "true" ]] && break
+        sleep 1
+    done
+    [[ "$h" -ge "$NET_TIP" ]] || fail "consumer did not reach post-base tip before checkpoint edit"
+    [[ "$active" == "true" ]] || fail "snapshot lifecycle exited before checkpoint edit"
+
+    stop_node "$SRC_DIR"
+    CLEAN_STATE="$(capture_consensus_state "$CON_RPC" "$CON_DIR" clean-pre-edit)"
+    info "clean state: $CLEAN_STATE"
+    stop_node "$CON_DIR"
+
+    local chaindb="$CON_DIR/blockchain/chaindb"
+    [[ -d "$chaindb" ]] || fail "consumer ChainDB missing: $chaindb"
+    mutation="$("$MUTATOR" "$chaindb" --source-offset-back 1)" \
+        || fail "failed to install a distinct valid checkpoint payload"
+    printf '%s\n' "$mutation"
+    cp -R "$CON_DIR" "$CTL_DIR"
+    ck_pass "stopped datadir forked into byte-identical recovery and control legs"
+}
+
+recover_with_snapshot_file() {
+    local h=0 recovered stable
+    info "=== #369 R1: offline restart with trusted V4 snapshot path ==="
+    start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon-recovery.log" \
+        --p2p.offline=1 --listen=0 --assumeutxo_bg_stall_timeout=3600 \
+        --assumeutxo_snapshot="$SNAP" --assumeutxo_forward_connect=1 \
+        --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+    for _ in $(seq 1 180); do
+        h="$(rpc_result "$CON_RPC" "$CON_DIR" getblockcount 2>/dev/null || echo 0)"
+        [[ "$h" -ge "$NET_TIP" ]] && break
+        sleep 1
+    done
+    [[ "$h" -ge "$NET_TIP" ]] || fail "snapshot-path recovery did not reach stored post-base tip"
+    [[ "$(rpc_result "$CON_RPC" "$CON_DIR" getconnectioncount)" == "0" ]] \
+        || fail "snapshot-path recovery was not offline"
+    recovered="$(capture_consensus_state "$CON_RPC" "$CON_DIR" recovered)"
+    assert_same_consensus_state "$CLEAN_STATE" "$recovered" "R1 first offline restart"
+    if grep -qs "FOREST ROOT MISMATCH" "$CON_DIR/daemon-recovery.log"; then
+        ck_pass "R1 detected the valid-payload/wrong-root checkpoint"
+    else
+        ck_fail "R1 did not log the injected root mismatch"
+    fi
+    if grep -qs "AUTO-RECOVERING: wiping corrupt forest checkpoints" "$CON_DIR/daemon-recovery.log"; then
+        ck_pass "R1 reset the mismatched checkpoint set"
+    else
+        ck_fail "R1 did not log checkpoint reset"
+    fi
+    if grep -qs "Snapshot rehydrated from file" "$CON_DIR/daemon-recovery.log"; then
+        ck_pass "R1 rehydrated the trusted V4 snapshot"
+    else
+        ck_fail "R1 did not rehydrate the trusted V4 snapshot"
+    fi
+    grep -qs "REBUILD LOOP DETECTED" "$CON_DIR/daemon-recovery.log" \
+        && ck_fail "R1 entered a rebuild loop"
+
+    stop_node "$CON_DIR"
+    start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon-stable.log" \
+        --p2p.offline=1 --listen=0 --assumeutxo_bg_stall_timeout=3600 \
+        --assumeutxo_snapshot="$SNAP" --assumeutxo_forward_connect=1 \
+        --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+    [[ "$(rpc_result "$CON_RPC" "$CON_DIR" getconnectioncount)" == "0" ]] \
+        || fail "stable restart was not offline"
+    stable="$(capture_consensus_state "$CON_RPC" "$CON_DIR" stable-second-restart)"
+    assert_same_consensus_state "$recovered" "$stable" "R1 second offline restart"
+    grep -qs "FOREST ROOT MISMATCH\|REBUILD LOOP DETECTED" "$CON_DIR/daemon-stable.log" \
+        && ck_fail "R1 stable restart repeated recovery"
+    stop_node "$CON_DIR"
+}
+
+reject_without_snapshot_file() {
+    local pid ready=0 rc=0 inspect count
+    info "=== #369 R2: identical stopped state without snapshot path ==="
+    "$DINEROD" --regtest --datadir="$CTL_DIR" --rpcport="$CTL_RPC" \
+        --port="$CTL_P2P" --wallet-socket-port="$CTL_WS" --p2p.offline=1 --listen=0 \
+        --assumeutxo_bg_stall_timeout=3600 --assumeutxo_forward_connect=1 \
+        --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL" \
+        > "$CTL_DIR/daemon-no-snapshot.log" 2>&1 &
+    pid=$!
+    for _ in $(seq 1 120); do
+        if ! kill -0 "$pid" 2>/dev/null; then break; fi
+        if rpc "$CTL_RPC" "$CTL_DIR" getblockcount 2>/dev/null | jq -e '.result >= 0' >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        sleep 0.5
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    else
+        wait "$pid" || rc=$?
+    fi
+
+    [[ "$ready" == "0" ]] || ck_fail "R2 served RPC despite missing required snapshot path"
+    [[ "$rc" != "0" ]] || ck_fail "R2 exited success after refusing chainstate initialization"
+    grep -qs "no assumeutxo_snapshot path is configured" "$CTL_DIR/daemon-no-snapshot.log" \
+        || ck_fail "R2 did not fail for the expected missing-snapshot reason"
+    grep -qs "FOREST ROOT MISMATCH" "$CTL_DIR/daemon-no-snapshot.log" \
+        || ck_fail "R2 did not reach the injected mismatch"
+    inspect="$("$MUTATOR" "$CTL_DIR/blockchain/chaindb" --inspect)" \
+        || fail "could not inspect control-leg checkpoints"
+    printf '%s\n' "$inspect"
+    count="$(awk -F= '$1=="checkpoint_count" {print $2}' <<<"$inspect")"
+    if [[ "$ready" == "0" && "$rc" != "0" && "$count" == "0" ]] && \
+       grep -qs "no assumeutxo_snapshot path is configured" "$CTL_DIR/daemon-no-snapshot.log" && \
+       grep -qs "FOREST ROOT MISMATCH" "$CTL_DIR/daemon-no-snapshot.log"; then
+        ck_pass "R2 refused startup and left no replacement checkpoint"
+    else
+        [[ "$count" == "0" ]] || ck_fail "R2 wrote a replacement checkpoint after refusal"
+    fi
+}
+
+run_checkpoint_recovery() {
+    prepare_checkpoint_mismatch
+    recover_with_snapshot_file
+    reject_without_snapshot_file
+    stop_node "$SRC_DIR"
+    if [[ "$FAILED" == "0" ]]; then
+        echo "ALL #369 V4 CHECKPOINT/RESTART ASSERTIONS PASSED"
+    else
+        echo "#369 V4 CHECKPOINT/RESTART TEST FAILED" >&2
+    fi
+    exit "$FAILED"
 }
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -191,7 +370,8 @@ cp -R "$HEADERS_AT_BASE" "$CON_DIR/headers"
 # on the consumer (source already started without it).
 export DINERO_DEBUG_BG_VALIDATION_DELAY_MS="$BG_DELAY_MS"
 start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon.log" \
-    --assumeutxo_bg_stall_timeout=3600 --assumeutxo_forward_connect=1
+    --assumeutxo_bg_stall_timeout=3600 --assumeutxo_forward_connect=1 \
+    --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
 
 LOAD_RES="$(rpc "$CON_RPC" "$CON_DIR" loadtxoutset "[\"$SNAP\"]")"
 jq -e '.result.coins_loaded >= 1' <<<"$LOAD_RES" >/dev/null \
@@ -217,7 +397,7 @@ fi
 stop_node "$CON_DIR"
 start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon2.log" \
     --assumeutxo_bg_stall_timeout=3600 --assumeutxo_snapshot="$SNAP" \
-    --assumeutxo_forward_connect=1
+    --assumeutxo_forward_connect=1 --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
 wait_status "$CON_RPC" "$CON_DIR" '.assumeutxo_active == true' 60 "snapshot rehydrated after restart" \
     || fail "consumer did not rehydrate the snapshot lifecycle after restart"
 info "consumer restarted with --assumeutxo_snapshot (lifecycle rehydrated, active)"
@@ -261,6 +441,9 @@ while (( SECONDS - RACE_START < PROMO_TIMEOUT )); do
     [[ "$TIP" -gt "$MAX_TIP_OBSERVED" ]] && MAX_TIP_OBSERVED="$TIP"
     if [[ "$ACTIVE" == "true" ]]; then
         [[ "$TIP" -gt "$BASE" ]] && TIP_PAST_BASE_WHILE_ACTIVE=1
+        if [[ "$CORRUPTION_RECOVERY_MODE" == "1" && "$TIP" -ge "$NET_TIP" ]]; then
+            break
+        fi
     elif [[ "$ACTIVE" == "false" ]]; then
         MODE_EXITED=1
         break
@@ -297,6 +480,10 @@ if [[ "$TIP_PAST_BASE_WHILE_ACTIVE" == "1" ]]; then
     ck_pass "F2: tip advanced past base while background validation was still running (mobile UX: usable at the live tip)"
 else
     ck_fail "F2: tip never passed base while active — forward-connect did not engage"
+fi
+
+if [[ "$CORRUPTION_RECOVERY_MODE" == "1" ]]; then
+    run_checkpoint_recovery
 fi
 
 # ── Wait for mode exit ────────────────────────────────────────────────────
