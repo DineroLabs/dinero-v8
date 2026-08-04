@@ -655,6 +655,25 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
         TIMEOUT 900
     )
     message(STATUS "  ✓ AssumeUtxoForwardConnect registered")
+
+    add_test(
+        NAME AssumeUtxoCorruptCheckpointRecovery
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            "MUTATOR=$<TARGET_FILE:utreexo_checkpoint_mutator>"
+            "CORRUPTION_RECOVERY_MODE=1"
+            "BASE_HEIGHT=120"
+            "POST_BASE_K=5"
+            "BG_DELAY_MS=2000"
+            "CHECKPOINT_INTERVAL=5"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh
+    )
+    set_tests_properties(AssumeUtxoCorruptCheckpointRecovery PROPERTIES
+        LABELS "assumeutxo;replay;e2e;checkpoint-recovery"
+        TIMEOUT 900
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ AssumeUtxoCorruptCheckpointRecovery registered")
 endif()
 
 # issue #214: two-node integration repro of in-daemon staleness recovery.

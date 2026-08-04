@@ -151,7 +151,7 @@ jobs:
           ctest --test-dir build-tests \
             --output-on-failure \
             --no-tests=error \
-            --exclude-regex '^(ColdStartConsensus|MiningPolicyE2E)$' \
+            --exclude-regex '^(ColdStartConsensus|MiningPolicyE2E|AssumeUtxoCorruptCheckpointRecovery)$' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
 
       # Serial e2e lane (issue #428, the covenant wallet lifecycle, the
@@ -175,7 +175,7 @@ jobs:
       #                          is a failure (the GTEST_SKIPs are gone)
       - name: Run serial e2e tests (daemon-spawning)
         run: |
-          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity CSNShieldedReorgInvertibility; do
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
