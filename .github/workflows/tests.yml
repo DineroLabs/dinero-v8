@@ -155,8 +155,8 @@ jobs:
             --label-exclude 'integration|gate|release|canonicality|fuzz'
 
       # Serial e2e lane (issue #428, the covenant wallet lifecycle, the
-      # targeted parallel-download regression, and the CrossSeed
-      # header-refresh regression). These
+      # targeted parallel-download regression, the CrossSeed header-refresh
+      # regression, and the consecutive-CSN-reorg regression). These
       # spawn real dinerod processes, bind ports, and must not run concurrently
       # with each other or the suite above — hence -j1 and a separate step.
       #
@@ -173,7 +173,7 @@ jobs:
       #                          is a failure (the GTEST_SKIPs are gone)
       - name: Run serial e2e tests (daemon-spawning)
         run: |
-          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime; do
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CSNShieldedReorgInvertibility; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \

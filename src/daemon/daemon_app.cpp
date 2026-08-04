@@ -4381,11 +4381,40 @@ bool DaemonApp::Init(int argc, char** argv) {
                         );
                     }
 
+                    // ActivateBestChain publishes this after committing a CSN
+                    // reorg. Consume it while holding buffer_mutex before either
+                    // the worker drains speculative state or the P2P dispatcher
+                    // classifies a newly-arrived block. The dispatcher-side call
+                    // is load-bearing: without it, the first block of a second
+                    // reorg can be buffered into the completed plan, then erased
+                    // when the worker eventually observes the reset (#509).
+                    auto csn_consume_reorg_reset_locked =
+                        [chainstate_service, reorg_state, next_validate_height,
+                         pending_blocks, pending_count_for_scheduler,
+                         retry_counts]() -> bool {
+                            const uint32_t reset_h =
+                                chainstate_service->ConsumeCSNReorgResetHeight();
+                            if (reset_h == 0) {
+                                return false;
+                            }
+                            reorg_state->Reset();
+                            *next_validate_height = reset_h;
+                            pending_blocks->clear();
+                            pending_count_for_scheduler->store(
+                                0, std::memory_order_relaxed);
+                            retry_counts->clear();
+                            g_logger.info(
+                                "[CSN] Reorg committed; validation cursor reset to " +
+                                std::to_string(reset_h));
+                            return true;
+                        };
+
                     auto csn_drain_step = [stateless_node, chainstate_service, block_relay,
                                            block_download_for_csn, pending_blocks, buffer_mutex,
                                            reorg_state,
                                            next_validate_height, retry_counts,
                                            pending_count_for_scheduler, csn_reorg_reset_to,
+                                           csn_consume_reorg_reset_locked,
                                            csn_should_use_transition_proof,
                                            csn_request_frontier_headers]() -> bool {
                         std::unique_lock<std::mutex> lk(*buffer_mutex);
@@ -4393,21 +4422,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // Consume ABC's successful-reorg signal before looking at
                         // speculative work, otherwise a completed plan with no next
                         // buffered block would keep returning early forever.
-                        {
-                            const uint32_t reset_h =
-                                chainstate_service->GetCSNReorgResetHeight();
-                            if (reset_h > 0) {
-                                chainstate_service->ClearCSNReorgReset();
-                                reorg_state->Reset();
-                                *next_validate_height = reset_h;
-                                pending_blocks->clear();
-                                pending_count_for_scheduler->store(
-                                    0, std::memory_order_relaxed);
-                                retry_counts->clear();
-                                g_logger.info("[CSN] Reorg committed; validation cursor reset to " +
-                                              std::to_string(reset_h));
-                            }
-                        }
+                        csn_consume_reorg_reset_locked();
 
                         // A competing branch is validated against an isolated forest.
                         // Nothing in this lane may mutate the canonical forest or tip;
@@ -4851,7 +4866,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                                                  p2p_service_for_csn, frontier_refresh_height,
                                                  next_validate_height, buffer_mutex,
                                                  pending_count_for_scheduler, retry_counts,
-                                                 csn_reorg_reset_to, csn_validation_worker](
+                                                 csn_reorg_reset_to, csn_validation_worker,
+                                                 csn_consume_reorg_reset_locked](
                         const std::string& peer_addr,
                         const ::P2PMessage& msg
                     ) {
@@ -5023,6 +5039,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // --- Thread-safe buffer + drain under lock ---
                         std::lock_guard<std::mutex> lock(*buffer_mutex);
 
+                        // A new competing branch can start immediately after ABC
+                        // committed the previous one, before the validation worker
+                        // gets another drain turn. Consume the reset here so this
+                        // incoming block is classified into a fresh plan rather than
+                        // buffered into the completed plan and subsequently erased.
+                        csn_consume_reorg_reset_locked();
+
                         // #384: reconcile the forward-validate cursor to the active
                         // chain tip BEFORE any cursor-dependent routing below
                         // (backfill-below-cursor, competing-reorg, too-far-ahead
@@ -5083,7 +5106,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // canonical disconnect/replay/bookkeeping. The scheduler's
                         // assembly barrier downloads the rest of the branch. The
                         // worker realigns its cursor afterward via the ABC reorg
-                        // reset signal (GetCSNReorgResetHeight, consumed above).
+                        // reset signal (ConsumeCSNReorgResetHeight, consumed above).
                         bool competing_reorg_block = false;
                         bool starts_competing_reorg = false;
                         if (expected_hash_at_height.has_value() &&
