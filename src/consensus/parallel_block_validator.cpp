@@ -5,13 +5,10 @@
 #include "consensus/outpoint.h"  // OutPoint type
 #include <algorithm>
 #include "consensus/tx_parser.h"
-#include "consensus/block_index.h"      // F.7.1: For FindBlockIndex, CBlockIndex
-#include "consensus/block_lifecycle.h"  // Phase M.0: For BLOCK_HAVE_UNDO
+#include "consensus/block_index.h"      // FindBlockIndex for contextual height checks
 #include "consensus/script_cache.h"     // F.8.3: Script execution cache
 #include "consensus/signature_cache.h"  // F.8.4: Signature cache
 #include "consensus/crypto/sighash_bip143.h"  // Sighash computation (consensus)
-#include "dinero/core/consensus/commitment.h"   // F.7.1: For uint256
-#include "common/status.h"              // F.7.1: For Status, StatusToString
 #include "consensus/chainparams.h"               // GetActiveChain()
 #include "primitives/transaction.h"
 #include <iostream>
@@ -56,28 +53,23 @@ ParallelBlockValidator::Config ParallelBlockValidator::Config::forLowResource() 
 
 void ParallelBlockValidator::Metrics::reset() {
     blocks_validated.store(0);
-    blocks_applied.store(0);
     parallel_validations.store(0);
     serial_validations.store(0);
     total_validation_time_us.store(0);
-    total_apply_time_us.store(0);
 }
 
 std::string ParallelBlockValidator::Metrics::toString() const {
     std::ostringstream oss;
     oss << "ParallelBlockValidator::Metrics {\n";
     oss << "  Blocks validated: " << blocks_validated.load() << "\n";
-    oss << "  Blocks applied:   " << blocks_applied.load() << "\n";
     oss << "  Parallel validations: " << parallel_validations.load() << "\n";
     oss << "  Serial validations:   " << serial_validations.load() << "\n";
 
     uint64_t total_val = total_validation_time_us.load();
-    uint64_t total_app = total_apply_time_us.load();
     uint64_t validated = blocks_validated.load();
 
     if (validated > 0) {
         oss << "  Avg validation time: " << (total_val / validated / 1000.0) << " ms\n";
-        oss << "  Avg apply time:      " << (total_app / validated / 1000.0) << " ms\n";
     }
 
     oss << "}";
@@ -90,12 +82,10 @@ std::string ParallelBlockValidator::Metrics::toString() const {
 ParallelBlockValidator::ParallelBlockValidator(
     IConsensusUTXOSet* consensus_utxo_set,
     ChainstateGuard* chainstate_guard,
-    BlockStorage* block_storage,
     const Config& config)
     : config_(config)
     , consensus_utxo_set_(consensus_utxo_set)
     , chainstate_guard_(chainstate_guard)
-    , block_storage_(block_storage)
 {
     if (!consensus_utxo_set_) {
         throw std::runtime_error("ParallelBlockValidator: ConsensusUTXOSet cannot be null");
@@ -104,9 +94,6 @@ ParallelBlockValidator::ParallelBlockValidator(
     if (!chainstate_guard_) {
         throw std::runtime_error("ParallelBlockValidator: Chainstate guard cannot be null");
     }
-
-    // Phase 2: Create block validator directly with IConsensusUTXOSet (no adapter)
-    block_validator_ = std::make_unique<BlockValidator>(consensus_utxo_set_);
 
     // Create worker pool if parallel validation enabled
     if (config_.enable_parallel) {
@@ -538,78 +525,6 @@ bool ParallelBlockValidator::validateScriptsOnlySerial(const Block& block, std::
             error = "Tx " + std::to_string(i) + " script verification failed: " + result.error;
             return false;
         }
-    }
-
-    return true;
-}
-
-// ========== Block Connection ==========
-
-bool ParallelBlockValidator::connectBlock(const Block& block, uint64_t height, BlockUndo& undo, std::string& error) {
-    auto start_time = high_resolution_clock::now();
-
-    // Acquire WRITE lock (exclusive)
-    auto write_lock = chainstate_guard_->writeLock();
-
-    // Use underlying BlockValidator to connect (Phase 6B: Re-enabled)
-    // Need to compute block hash for undo tracking
-    // Phase M.1: ConnectBlock now takes uint256 directly
-    bool connected = block_validator_->ConnectBlock(block, static_cast<uint32_t>(height), block.GetHash(), undo, error);
-
-    // ========================================================================
-    // F.7.1: Persist undo data after successful connection
-    // ========================================================================
-    if (connected && block_storage_) {
-        // Serialize undo data
-        std::vector<uint8_t> undo_bytes = undo.Serialize();
-
-        // Write to rev*.dat file
-        // Phase M.0: block.GetHash() already returns uint256
-        uint256 block_hash_u256 = block.GetHash();
-        auto undo_pos_result = block_storage_->writeUndo(block_hash_u256, undo_bytes);
-
-        if (undo_pos_result.status() != Status::Ok) {
-            error = "Failed to write undo data: " + std::string(StatusToString(undo_pos_result.status()));
-            return false;
-        }
-
-        // Phase P.2: Update CBlockIndex with undo disk positions
-        // Phase M.0: Use block_hash_u256 computed above
-        CBlockIndex* pindex = FindBlockIndex(block_hash_u256);
-        if (pindex) {
-            FilePosition undo_file_pos = undo_pos_result.value();
-            pindex->undo_file = undo_file_pos.file_number;
-            pindex->undo_pos = undo_file_pos.offset;
-            pindex->undo_size = undo_file_pos.size;
-            pindex->status |= BLOCK_HAVE_UNDO;
-        } else {
-            error = "Failed to find BlockIndex for undo persistence";
-            return false;
-        }
-    }
-
-    auto end_time = high_resolution_clock::now();
-    auto duration_us = duration_cast<microseconds>(end_time - start_time).count();
-    metrics_.total_apply_time_us.fetch_add(duration_us);
-
-    if (connected) {
-        metrics_.blocks_applied.fetch_add(1);
-    }
-
-    return connected;
-}
-
-// ========== Combined Validation + Connection ==========
-
-bool ParallelBlockValidator::validateAndConnect(const Block& block, uint64_t height, BlockUndo& undo, std::string& error) {
-    // Step 1: Validate (read-only, parallel)
-    if (!validateBlock(block, height, error)) {
-        return false;
-    }
-
-    // Step 2: Connect (write, exclusive)
-    if (!connectBlock(block, height, undo, error)) {
-        return false;
     }
 
     return true;

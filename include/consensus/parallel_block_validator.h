@@ -16,16 +16,16 @@
  *   // Validate block (read-only, parallelized)
  *   bool valid = validator.validateBlock(block, error);
  *
- *   // Apply block (write, exclusive)
- *   BlockUndo undo;
- *   bool applied = validator.connectBlock(block, undo, error);
+ * This wrapper is deliberately read-only. Chain connection and undo
+ * persistence belong to the canonical ConnectTip/ValidationQueue path, which
+ * writes the canonical UndoRecord flat-file format. Do not add a mutating
+ * connection API here without an end-to-end persistence contract and test.
  */
 
-#include "consensus/block_validation.h"
 #include "consensus/validation_worker_pool.h"
 #include "consensus/chainstate_guard.h"
 #include "consensus/interfaces/iconsensus_utxo_set.h"  // Phase 2: Direct IConsensusUTXOSet
-#include "storage/block_storage.h"          // F.7.1: Undo persistence
+#include "primitives/block.h"
 #include <memory>
 
 namespace dinero {
@@ -46,13 +46,10 @@ public:
 
     struct Metrics {
         std::atomic<uint64_t> blocks_validated{0};
-        std::atomic<uint64_t> blocks_applied{0};
         std::atomic<uint64_t> parallel_validations{0};
         std::atomic<uint64_t> serial_validations{0};
 
         std::atomic<uint64_t> total_validation_time_us{0};
-        std::atomic<uint64_t> total_apply_time_us{0};
-
         void reset();
         std::string toString() const;
     };
@@ -61,7 +58,6 @@ public:
     explicit ParallelBlockValidator(
         IConsensusUTXOSet* consensus_utxo_set,
         ChainstateGuard* chainstate_guard,
-        BlockStorage* block_storage = nullptr,  // F.7.1: Optional for undo persistence
         const Config& config = Config::forNormalOperation()
     );
 
@@ -82,17 +78,6 @@ public:
      * Use case: BlockAcceptor can call this before RocksDB writes
      */
     bool validateScriptsOnly(const Block& block, std::string& error);
-
-    /**
-     * Connect block to chainstate (write, exclusive)
-     * Acquires: write lock on chainstate
-     */
-    bool connectBlock(const Block& block, uint64_t height, BlockUndo& undo, std::string& error);
-
-    /**
-     * Full validation + connection (convenience method)
-     */
-    bool validateAndConnect(const Block& block, uint64_t height, BlockUndo& undo, std::string& error);
 
     // Metrics
     const Metrics& getMetrics() const { return metrics_; }
@@ -116,13 +101,8 @@ private:
     // Phase 2: Direct IConsensusUTXOSet (owns forest, no adapter needed)
     IConsensusUTXOSet* consensus_utxo_set_;
     ChainstateGuard* chainstate_guard_;
-    BlockStorage* block_storage_ = nullptr;     // F.7.1: Optional for undo persistence
-
     // Worker pool (lazy-initialized)
     std::unique_ptr<ValidationWorkerPool> worker_pool_;
-
-    // Underlying validator (for actual validation logic)
-    std::unique_ptr<BlockValidator> block_validator_;
 };
 
 } // namespace consensus
