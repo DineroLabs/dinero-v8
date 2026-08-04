@@ -379,6 +379,66 @@ bool ShieldedNoteStore::UnmarkSpentByNullifier(const sh::Hash& nullifier) {
     return changed;
 }
 
+bool ShieldedNoteStore::RollbackPendingTransaction(
+    const std::vector<sh::Hash>& spend_nullifiers,
+    const std::vector<sh::Hash>& pending_commitments) {
+    if (!db_) return false;
+
+    char* sqlite_error = nullptr;
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE TRANSACTION", nullptr, nullptr,
+                     &sqlite_error) != SQLITE_OK) {
+        if (sqlite_error) sqlite3_free(sqlite_error);
+        return false;
+    }
+
+    auto fail = [&]() {
+        sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    };
+
+    sqlite3_stmt* unmark = nullptr;
+    const char* unmark_sql =
+        "UPDATE shielded_notes SET spent = 0, spent_height = 0 "
+        "WHERE nullifier = ? AND confirmed = 1 "
+        "AND spent = 1 AND spent_height = 0";
+    if (sqlite3_prepare_v2(db_, unmark_sql, -1, &unmark, nullptr) != SQLITE_OK) {
+        return fail();
+    }
+    for (const auto& nullifier : spend_nullifiers) {
+        sqlite3_reset(unmark);
+        sqlite3_clear_bindings(unmark);
+        BindHash(unmark, 1, nullifier);
+        if (sqlite3_step(unmark) != SQLITE_DONE) {
+            sqlite3_finalize(unmark);
+            return fail();
+        }
+    }
+    sqlite3_finalize(unmark);
+
+    sqlite3_stmt* remove = nullptr;
+    const char* remove_sql =
+        "DELETE FROM shielded_notes WHERE commitment = ? AND confirmed = 0";
+    if (sqlite3_prepare_v2(db_, remove_sql, -1, &remove, nullptr) != SQLITE_OK) {
+        return fail();
+    }
+    for (const auto& commitment : pending_commitments) {
+        sqlite3_reset(remove);
+        sqlite3_clear_bindings(remove);
+        BindHash(remove, 1, commitment);
+        if (sqlite3_step(remove) != SQLITE_DONE) {
+            sqlite3_finalize(remove);
+            return fail();
+        }
+    }
+    sqlite3_finalize(remove);
+
+    if (sqlite3_exec(db_, "COMMIT", nullptr, nullptr, &sqlite_error) != SQLITE_OK) {
+        if (sqlite_error) sqlite3_free(sqlite_error);
+        return fail();
+    }
+    return true;
+}
+
 bool ShieldedNoteStore::ConfirmNote(const sh::Hash& commitment,
                                     uint64_t leaf_index,
                                     uint32_t confirmed_height) {

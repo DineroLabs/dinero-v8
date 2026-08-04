@@ -2004,6 +2004,32 @@ endif()
 
 # ── Phase 5 Wave 1: shielded key-derivation vectors ────────────────
 if(TARGET dinero_wallet AND TARGET gtest)
+  add_executable(test_shielded_note_store_rollback
+    tests/wallet/test_shielded_note_store_rollback.cpp
+  )
+  add_dependencies(test_shielded_note_store_rollback gtest dinero_wallet)
+  target_link_libraries(test_shielded_note_store_rollback PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_wallet
+    dinero_shielded
+    sqlite3
+  )
+  target_include_directories(test_shielded_note_store_rollback BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/sqlite-amalgamation-3480000
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_note_store_rollback PRIVATE "-framework Security")
+  endif()
+  add_test(NAME ShieldedNoteStoreRollback COMMAND test_shielded_note_store_rollback)
+  set_tests_properties(ShieldedNoteStoreRollback PROPERTIES
+    LABELS "shielded;wallet;persistence"
+    TIMEOUT 60
+  )
+
   add_executable(test_shielded_derivation
     src/test/shielded_derivation_tests.cpp
   )

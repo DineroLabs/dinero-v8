@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <memory>
@@ -48,6 +49,66 @@ namespace {
 using namespace dinero;
 namespace ops  = dinero::wallet::shielded_ops;
 using din::Json;
+
+TxAcceptResult SubmitShieldedWalletTransaction(Mempool& mempool,
+                                               const Transaction& tx,
+                                               const std::string& source) {
+    // Deterministic, regtest-only rejection point for proving that wallet
+    // persistence is rolled back when canonical mempool ingress refuses the
+    // already-built transaction. It cannot affect testnet or mainnet.
+    const char* force_reject = std::getenv("DINERO_TEST_REJECT_SHIELDED_WALLET_SUBMIT");
+    if (GetActiveChain() == Chain::REGTEST && force_reject != nullptr &&
+        std::string(force_reject) == "1") {
+        return TxAcceptResult::Rejected(
+            TxRejectCode::INVALID_TX,
+            "regtest-only forced shielded wallet rejection",
+            tx.GetTxid().AsUint256());
+    }
+    return mempool.submitTransaction(tx, source, true);
+}
+
+void RollbackRejectedShieldedWalletMutation(
+    WalletManager& wallet,
+    const std::vector<consensus::shielded::Hash>& spend_nullifiers,
+    const std::vector<consensus::shielded::Hash>& pending_commitments,
+    Json& result) {
+    std::string rollback_error;
+    if (ops::RollbackPendingTransaction(wallet, spend_nullifiers,
+                                        pending_commitments,
+                                        &rollback_error)) {
+        result["wallet_rollback"] = "complete";
+    } else {
+        result["wallet_rollback"] = "failed";
+        result["wallet_rollback_error"] = rollback_error.empty()
+            ? "shielded_pending_rollback_failed"
+            : rollback_error;
+    }
+}
+
+void SetShieldedWalletMempoolRejection(Json& result,
+                                       const TxAcceptResult& submit,
+                                       const Transaction& tx,
+                                       bool fee_autosized) {
+    Json data;
+    data["reject_code"] = TxRejectCodeToString(submit.code);
+    data["reject_reason"] = submit.message;
+    data["txid"] = tx.GetTxid().AsUint256().GetHex();
+    data["fee_autosized"] = fee_autosized;
+    data["vsize"] = static_cast<int64_t>(tx.GetVirtualSize());
+    if (result.isMember("wallet_rollback")) {
+        data["wallet_rollback"] = result["wallet_rollback"];
+    }
+    if (result.isMember("wallet_rollback_error")) {
+        data["wallet_rollback_error"] = result["wallet_rollback_error"];
+    }
+
+    Json error;
+    error["code"] = -32603;
+    error["message"] = "mempool_rejected";
+    error["data"] = std::move(data);
+    result.clear();
+    result["error"] = std::move(error);
+}
 
 // spec Fatal §3: gate shielded spend handlers.  Returns true when safe mode is
 // active and err["error"] has been populated.  Call before AcquireWallet.
@@ -536,16 +597,15 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
 
     // ── Submit to mempool ─────────────────────────────────────────────
     const dinero::Transaction& signed_tx = built.signed_tx;
-    auto submit = mempool_service->mempool().submitTransaction(
-        signed_tx, "rpc:wallet.shield", true);
+    auto submit = SubmitShieldedWalletTransaction(
+        mempool_service->mempool(), signed_tx, "rpc:wallet.shield");
     if (!submit.accepted()) {
-        result["error"] = "mempool_rejected";
-        result["reject_code"] = TxRejectCodeToString(submit.code);
-        result["reject_reason"] = submit.message;
-        // Bundle is already attached; surfacing the txid helps debugging.
-        result["txid"] = signed_tx.GetTxid().AsUint256().GetHex();
-        result["fee_autosized"] = fee_autosized;
-        result["vsize"] = static_cast<int64_t>(signed_tx.GetVirtualSize());
+        if (!have_recipient) {
+            RollbackRejectedShieldedWalletMutation(
+                *wm, {}, {built.attach.commitment}, result);
+        }
+        SetShieldedWalletMempoolRejection(
+            result, submit, signed_tx, fee_autosized);
         return result;
     }
 
@@ -727,15 +787,12 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     }
 
     // ── Submit. No transparent input signing needed — vin is empty. ───
-    auto submit = mempool_service->mempool().submitTransaction(
-        tx, "rpc:wallet.unshield", true);
+    auto submit = SubmitShieldedWalletTransaction(
+        mempool_service->mempool(), tx, "rpc:wallet.unshield");
     if (!submit.accepted()) {
-        result["error"] = "mempool_rejected";
-        result["reject_code"] = TxRejectCodeToString(submit.code);
-        result["reject_reason"] = submit.message;
-        result["txid"] = tx.GetTxid().AsUint256().GetHex();
-        result["fee_autosized"] = fee_autosized;
-        result["vsize"] = static_cast<int64_t>(tx.GetVirtualSize());
+        RollbackRejectedShieldedWalletMutation(
+            *wm, {attach_rc.nullifier}, {}, result);
+        SetShieldedWalletMempoolRejection(result, submit, tx, fee_autosized);
         return result;
     }
 
@@ -930,15 +987,13 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
             result["error_message"] = attach_rc.error;
             return result;
         }
-        auto submit = mempool_service->mempool().submitTransaction(
-            tx, "rpc:wallet.transfer", true);
+        auto submit = SubmitShieldedWalletTransaction(
+            mempool_service->mempool(), tx, "rpc:wallet.transfer");
         if (!submit.accepted()) {
-            result["error"] = "mempool_rejected";
-            result["reject_code"] = TxRejectCodeToString(submit.code);
-            result["reject_reason"] = submit.message;
-            result["txid"] = tx.GetTxid().AsUint256().GetHex();
-            result["fee_autosized"] = fee_autosized;
-            result["vsize"] = static_cast<int64_t>(tx.GetVirtualSize());
+            RollbackRejectedShieldedWalletMutation(
+                *wm, {attach_rc.spend_nullifier},
+                {attach_rc.out_commitment}, result);
+            SetShieldedWalletMempoolRejection(result, submit, tx, fee_autosized);
             return result;
         }
         result["status"]                = "transferred";
@@ -1095,15 +1150,16 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
             result["error_message"] = attach_rc.error;
             return result;
         }
-        auto submit = mempool_service->mempool().submitTransaction(
-            tx, "rpc:wallet.transfer", true);
+        auto submit = SubmitShieldedWalletTransaction(
+            mempool_service->mempool(), tx, "rpc:wallet.transfer");
         if (!submit.accepted()) {
-            result["error"] = "mempool_rejected";
-            result["reject_code"] = TxRejectCodeToString(submit.code);
-            result["reject_reason"] = submit.message;
-            result["txid"] = tx.GetTxid().AsUint256().GetHex();
-            result["fee_autosized"] = fee_autosized;
-            result["vsize"] = static_cast<int64_t>(tx.GetVirtualSize());
+            const std::vector<consensus::shielded::Hash> pending_commitments =
+                attach_rc.had_change
+                    ? std::vector<consensus::shielded::Hash>{attach_rc.change_commitment}
+                    : std::vector<consensus::shielded::Hash>{};
+            RollbackRejectedShieldedWalletMutation(
+                *wm, attach_rc.spend_nullifiers, pending_commitments, result);
+            SetShieldedWalletMempoolRejection(result, submit, tx, fee_autosized);
             return result;
         }
         Json spend_nulls = din::arr();
@@ -1211,15 +1267,17 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
         result["error_message"] = attach_rc.error;
         return result;
     }
-    auto submit = mempool_service->mempool().submitTransaction(
-        tx, "rpc:wallet.transfer", true);
+    auto submit = SubmitShieldedWalletTransaction(
+        mempool_service->mempool(), tx, "rpc:wallet.transfer");
     if (!submit.accepted()) {
-        result["error"] = "mempool_rejected";
-        result["reject_code"] = TxRejectCodeToString(submit.code);
-        result["reject_reason"] = submit.message;
-        result["txid"] = tx.GetTxid().AsUint256().GetHex();
-        result["fee_autosized"] = fee_autosized;
-        result["vsize"] = static_cast<int64_t>(tx.GetVirtualSize());
+        std::vector<consensus::shielded::Hash> pending_commitments;
+        pending_commitments.reserve(attach_rc.outputs.size());
+        for (const auto& output : attach_rc.outputs) {
+            pending_commitments.push_back(output.commitment);
+        }
+        RollbackRejectedShieldedWalletMutation(
+            *wm, attach_rc.spend_nullifiers, pending_commitments, result);
+        SetShieldedWalletMempoolRejection(result, submit, tx, fee_autosized);
         return result;
     }
 

@@ -1198,6 +1198,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_e2e.sh)
     message(STATUS "  ✓ ShieldedRpcTransferEndToEnd registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_wallet_reject_rollback.sh)
+    add_test(
+        NAME ShieldedWalletRejectRollback
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_wallet_reject_rollback.sh
+    )
+    set_tests_properties(ShieldedWalletRejectRollback PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        LABELS "integration;shielded;rpc;wallet;persistence"
+        TIMEOUT 600
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ ShieldedWalletRejectRollback (#321) registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_multi_e2e.sh)
     add_test(
         NAME ShieldedRpcTransferMultiEndToEnd
