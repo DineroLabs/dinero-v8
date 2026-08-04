@@ -17,7 +17,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 RESET_HEIGHT=${RESET_HEIGHT:-115}
 MATURITY_HEIGHT=${MATURITY_HEIGHT:-105}
 SYNC_TIMEOUT=${SYNC_TIMEOUT:-180}

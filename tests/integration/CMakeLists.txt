@@ -1442,6 +1442,7 @@ add_test(
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_epoch_reset_crash_atomicity.sh
 )
 set_tests_properties(CsnEpochResetCrashAtomicity PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "integration;shielded;stateless;csn;restart;crash;epoch-reset;canonical-state"
     TIMEOUT 600
 )
