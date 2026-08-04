@@ -539,6 +539,23 @@ uint64_t GetShieldedTreeSize(dinero::WalletManager& wallet) {
     return g_runtime->tree.Size();
 }
 
+bool RollbackPendingTransaction(
+    dinero::WalletManager& wallet,
+    const std::vector<sh::Hash>& spend_nullifiers,
+    const std::vector<sh::Hash>& pending_commitments,
+    std::string* error) {
+    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    if (!EnsureRuntimeLocked(wallet, error)) {
+        return false;
+    }
+    if (!g_runtime->store.RollbackPendingTransaction(spend_nullifiers,
+                                                     pending_commitments)) {
+        if (error) *error = "shielded_pending_rollback_failed";
+        return false;
+    }
+    return true;
+}
+
 std::optional<ShieldedNote> SelectUnshieldNote(dinero::WalletManager& wallet,
                                                uint64_t min_value_una) {
     std::lock_guard<std::mutex> lock(g_runtime_mutex);
@@ -842,6 +859,8 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
                                          built.out_randomness,
                                          built.out_commitment,
                                          created_height)) {
+        (void)g_runtime->store.RollbackPendingTransaction(
+            {built.spend_nullifier}, {built.out_commitment});
         AttachTransferResult err{};
         err.status = OpStatus::StoreError;
         err.error  = "failed to persist pending transfer-output note";
@@ -971,6 +990,13 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
     // Mark every spent note pending-spent.
     for (const auto& nullifier : built.spend_nullifiers) {
         if (!g_runtime->store.MarkSpentByNullifier(nullifier, /*spent_height=*/0)) {
+            std::vector<sh::Hash> commitments;
+            commitments.reserve(built.outputs.size());
+            for (const auto& output : built.outputs) {
+                commitments.push_back(output.commitment);
+            }
+            (void)g_runtime->store.RollbackPendingTransaction(
+                built.spend_nullifiers, commitments);
             AttachMultiTransferResult err{};
             err.status = OpStatus::StoreError;
             err.error  = "failed to mark spend note pending-spent";
@@ -990,6 +1016,13 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
                                              mat.randomness,
                                              mat.commitment,
                                              created_height)) {
+            std::vector<sh::Hash> commitments;
+            commitments.reserve(built.outputs.size());
+            for (const auto& output : built.outputs) {
+                commitments.push_back(output.commitment);
+            }
+            (void)g_runtime->store.RollbackPendingTransaction(
+                built.spend_nullifiers, commitments);
             AttachMultiTransferResult err{};
             err.status = OpStatus::StoreError;
             err.error  = "failed to persist pending transfer-output note";
@@ -1128,6 +1161,11 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     // Mark spent notes pending-spent.
     for (const auto& nullifier : built.spend_nullifiers) {
         if (!g_runtime->store.MarkSpentByNullifier(nullifier, /*spent_height=*/0)) {
+            const std::vector<sh::Hash> commitments = built.had_change
+                ? std::vector<sh::Hash>{built.change_commitment}
+                : std::vector<sh::Hash>{};
+            (void)g_runtime->store.RollbackPendingTransaction(
+                built.spend_nullifiers, commitments);
             AttachAddressedTransferResult err{};
             err.status = OpStatus::StoreError;
             err.error  = "failed to mark spend note pending-spent";
@@ -1146,6 +1184,8 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
                                              built.change_randomness,
                                              built.change_commitment,
                                              created_height)) {
+            (void)g_runtime->store.RollbackPendingTransaction(
+                built.spend_nullifiers, {built.change_commitment});
             AttachAddressedTransferResult err{};
             err.status = OpStatus::StoreError;
             err.error  = "failed to persist pending change note";

@@ -151,6 +151,14 @@ std::vector<ShieldedNote> ListShieldedNotes(dinero::WalletManager& wallet, bool 
 uint64_t GetShieldedBalance(dinero::WalletManager& wallet);
 uint64_t GetShieldedTreeSize(dinero::WalletManager& wallet);
 
+/** Undo pending note-store mutations when a built shielded wallet
+ *  transaction is rejected before entering the mempool. */
+bool RollbackPendingTransaction(
+    dinero::WalletManager& wallet,
+    const std::vector<consensus::shielded::Hash>& spend_nullifiers,
+    const std::vector<consensus::shielded::Hash>& pending_commitments,
+    std::string* error = nullptr);
+
 // ── Issue #273: size-aware fee floor ─────────────────────────────────
 
 /// Safety margin (una) added on top of the exact mempool floor by
