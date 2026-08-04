@@ -314,8 +314,9 @@ public:
     void setPoolManager(std::shared_ptr<pool::PoolManager> manager) { pool_manager_ = std::move(manager); }
 
     // CSN reorg reset signal: OnUtxoBlock handler checks this to reset next_validate_height
-    uint32_t GetCSNReorgResetHeight() const { return csn_reorg_reset_height_.load(); }
-    void ClearCSNReorgReset() { csn_reorg_reset_height_.store(0); }
+    uint32_t ConsumeCSNReorgResetHeight() {
+        return csn_reorg_reset_height_.exchange(0);
+    }
 
     // Phase 43: Safe Mode Management (Deep Reorg Protection)
     // Safe mode prevents mining during dangerous chain conditions

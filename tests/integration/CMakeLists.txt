@@ -1502,6 +1502,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_reorg_invertibility.sh)
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_reorg_invertibility.sh
     )
     set_tests_properties(CSNShieldedReorgInvertibility PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;BUILDER=$<TARGET_FILE:shielded_tx_builder>"
         LABELS "integration;shielded;stateless;csn;reorg;invertibility;canonical-state"
         TIMEOUT 900
     )
