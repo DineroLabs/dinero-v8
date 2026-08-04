@@ -7113,7 +7113,6 @@ bool DaemonApp::Start() {
                     new dinero::consensus::ParallelBlockValidator(
                         utxo_set,
                         ctx_.chainstate_guard.get(),
-                        nullptr,  // block_storage (optional)
                         validator_config
                     )
                 );

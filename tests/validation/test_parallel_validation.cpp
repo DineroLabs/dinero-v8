@@ -90,10 +90,9 @@ void testParallelVsSerial() {
     InitializeScriptCache(8);  // 8 MB
     InitializeSignatureCache(8);  // 8 MB
 
-    // Create chainstate guard and block storage (minimal setup)
+    // Create chainstate guard (the parallel validator is read-only; chain
+    // connection and canonical UndoRecord persistence live elsewhere).
     ChainstateGuard chainstate_guard;
-    BlockStorage block_storage;
-    block_storage.init(test_dir);
 
     // Create validators
     ParallelBlockValidator::Config config;
@@ -104,7 +103,6 @@ void testParallelVsSerial() {
     ParallelBlockValidator serial_validator(
         &utxo_index,
         &chainstate_guard,
-        &block_storage,
         config
     );
 
@@ -112,7 +110,6 @@ void testParallelVsSerial() {
     ParallelBlockValidator parallel_validator(
         &utxo_index,
         &chainstate_guard,
-        &block_storage,
         config
     );
 
