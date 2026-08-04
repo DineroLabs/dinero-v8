@@ -78,6 +78,15 @@ public:
                               uint32_t spent_height);
     bool UnmarkSpentByNullifier(const consensus::shielded::Hash& nullifier);
 
+    /** Atomically undo wallet mutations for a transaction that was not
+     *  accepted by the mempool. Only pending spends (spent_height = 0) and
+     *  unconfirmed notes are affected; confirmed chain state is never
+     *  removed or unspent. The operation is idempotent so it can also clean
+     *  up a partially-persisted attach operation. */
+    bool RollbackPendingTransaction(
+        const std::vector<consensus::shielded::Hash>& spend_nullifiers,
+        const std::vector<consensus::shielded::Hash>& pending_commitments);
+
     /** Roll back all pending-spent rows (`spent=1 AND spent_height=0`).
      *  Called at wallet runtime startup so notes whose unshield tx never
      *  mined are returned to the unspent set. The mempool's nullifier-
