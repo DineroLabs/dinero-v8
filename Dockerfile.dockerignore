@@ -1,0 +1,129 @@
+# Dockerfile-specific override of the root .dockerignore, used by BuildKit for
+# this Dockerfile ONLY (ops/Dockerfile and scripts/release-build.sh keep using
+# the unmodified root .dockerignore).
+#
+# Why this file exists: the root .dockerignore has a blanket `*.sh` rule (line 83)
+# written for ops/Dockerfile's source-compilation path, which "Scripts not needed
+# for build" correctly describes for that image. This image's Dockerfile instead
+# COPYs a real, checked-in docker-entrypoint.sh into the runtime stage, so that one
+# script IS needed for this build. Everything else below is an exact copy of the
+# root ruleset so this build's context filtering is otherwise identical to before;
+# only the trailing negation differs.
+
+# Build artifacts and binaries
+build*/
+*build*/
+bin/
+lib/
+*.exe
+*.a
+*.o
+dinerod
+dcli
+rpcd
+dinerod-linux
+dinerod-win.exe
+
+# All test directories
+test*/
+*test*/
+Testing/
+smoke*/
+regtest*/
+
+# Data directories
+data*/
+*data*/
+blockchain_data*/
+nodes/
+node*/
+ci_*/
+
+# Deployment packages
+deploy*/
+*deploy*/
+dinero-*/
+*.tar.gz
+*.zip
+
+# Node modules and dependencies
+node_modules/
+_deps/
+# external/  # KEEP external/ for bech32 and secp256k1
+3rd/
+
+# Build system generated
+CMakeFiles/
+cmake_install.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+CTestTestfile.cmake
+Makefile
+DartConfiguration.tcl
+
+# Git
+.git/
+.github/
+.gitignore
+.gitmodules
+
+# IDE and editor files
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Documentation (comment out if you need docs in container)
+docs/
+*.md
+!README.md
+!CMakeLists.txt
+
+# Scripts not needed for build
+*.sh
+*.bat
+*.ps1
+*.command
+
+# Logs and temp files
+logs/
+*.log
+*.err
+*.pid
+*.json
+!package.json
+
+# Python and test files
+*.py
+*.pyc
+__pycache__/
+
+# CI/CD
+.github/
+ci_*/
+
+# Everything else that's not source code
+artifacts/
+backup*/
+duplicates/
+examples/
+fuzz/
+migrations/
+packaging/
+release*/
+schemas/
+systemd/
+# tools/  # KEEP tools/ for genesis_miner, dinero_miner, etc.
+x-legacy/
+zero-errors/
+
+# This image's entrypoint script is real source, not a build/deploy helper —
+# un-ignore it specifically rather than relaxing the blanket *.sh rule above.
+!docker-entrypoint.sh
