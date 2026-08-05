@@ -18,7 +18,7 @@
 #
 #   docker run -d --name dinero --stop-timeout 60 \
 #     --log-opt max-size=50m --log-opt max-file=3 \
-#     -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
+#     -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.1
 
 ARG DINERO_VERSION=8.1.1
 # The snapshot is pinned to the release that actually publishes it, INDEPENDENTLY of
@@ -112,10 +112,12 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV DINERO_SNAPSHOT=/opt/dinero/${SNAPSHOT_INSTALL_NAME}
 
 VOLUME /data
-# 20999 = P2P only. RPC (20998) is deliberately NOT exposed: the entrypoint binds it to
-# 0.0.0.0 inside the container and dinerod has no rpcallowip gate, so an EXPOSEd 20998
-# would be published to 0.0.0.0 by `docker run -P`. `docker exec` and other containers
-# on the same network reach it without EXPOSE.
+# 20999 = P2P only. RPC (20998) is deliberately NOT exposed: `docker run -P` publishes
+# every EXPOSEd port on 0.0.0.0 of the host, and dinerod has no rpcallowip gate, so an
+# EXPOSEd 20998 would hand out an ACL-less RPC endpoint. The entrypoint additionally
+# binds RPC to 127.0.0.1 inside the container (DINERO_RPCBIND overrides), so it is not
+# reachable from other containers on the same network either. `docker exec` runs in the
+# container's own network namespace and reaches it regardless.
 EXPOSE 20999/tcp
 
 USER dinero

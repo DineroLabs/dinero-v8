@@ -96,9 +96,13 @@ All values below were verified empirically against the shipped v8.1.1 artifacts.
 > plan is exactly how that bug would come back. The shipped file is
 > [`docker-entrypoint.sh`](../../../docker-entrypoint.sh) — read it there; it is the only
 > copy. In summary it sets `-datadir`, `-printtoconsole=1`, `-listen=1`, `-port=20999`,
-> `-rpcbind=0.0.0.0`, `-rpcport=20998`, appends `--assumeutxo_snapshot=$DINERO_SNAPSHOT`
-> and `--assumeutxo_forward_connect=1` whenever the bundled snapshot file exists, and
-> `exec`s `dinerod` so it is PID 1.
+> `-rpcbind=${DINERO_RPCBIND:-127.0.0.1}` (loopback by default — pre-merge correction 5;
+> binding `0.0.0.0` exposed RPC to every other container on the same Docker network and
+> the daemon has no `rpcallowip` gate), `-rpcport=20998`, appends
+> `--assumeutxo_snapshot=$DINERO_SNAPSHOT` and `--assumeutxo_forward_connect=1` whenever
+> the bundled snapshot file exists, prints ONE startup line derived from the final argv
+> (never the argument vector itself — pre-merge correction 4: a user's `-rpcpassword=`
+> would otherwise land verbatim in `docker logs`), and `exec`s `dinerod` so it is PID 1.
 
 - [ ] **Step 2: Write `Dockerfile`**
 
@@ -165,7 +169,7 @@ sleep 20
 docker logs dinero-test 2>&1 | head -30
 ```
 
-Expected: log contains `[entrypoint] arming bundled AssumeUTXO snapshot (...)`, and the exec line shows both `--assumeutxo_snapshot=` and `--assumeutxo_forward_connect=1`. On a fresh datadir the daemon then logs `[snapshot] pending — base height 73035 ...`, and `[LoadSnapshot] Manifest trust gate passed: /opt/dinero/mainnet-snapshot.dat.manifest.json` when it imports (never `No snapshot manifest configured`).
+Expected: log contains `[entrypoint] datadir=/data rpcbind=127.0.0.1 assumeutxo_snapshot=yes assumeutxo_forward_connect=yes` (the entrypoint no longer echoes the argument vector — pre-merge correction 4; the flags themselves are asserted mechanically by the workflow's "Restart-regression check" step, which captures the argv `dinerod` actually receives). On a fresh datadir the daemon then logs `[snapshot] pending — base height 73035 ...`, and `[LoadSnapshot] Manifest trust gate passed: /opt/dinero/mainnet-snapshot.dat.manifest.json` when it imports (never `No snapshot manifest configured`).
 
 - [ ] **Step 2: Confirm the snapshot was accepted, not rejected**
 
