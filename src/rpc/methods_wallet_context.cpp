@@ -6107,25 +6107,19 @@ din::Json rpc_context_wallet_exportseed(const ExecutionContext& ctx, const din::
         return result;
     }
 
-    try {
-        auto& mgr = wallet_service->get();
-        auto* hd = mgr.getHDWallet();
-        if (!hd) {
-            result["error"] = "HD wallet not available";
-            return result;
-        }
-
-        std::string mnemonic = hd->GetMnemonic();
-        if (mnemonic.empty()) {
-            result["error"] = "No mnemonic available — wallet may have been created without BIP39";
-            return result;
-        }
-
-        result["mnemonic"] = mnemonic;
-    } catch (const std::exception& e) {
-        result["error"] = std::string("Failed to export seed: ") + e.what();
-    }
-
+    // Runtime wallet identity lives in WalletManager's persisted master seed.
+    // The separately-wired legacy HDWallet sidecar is not an authority for that
+    // identity and can contain unrelated recovery material. Never present its
+    // mnemonic as a backup for the active wallet. Runtime wallets intentionally
+    // require users to retain the mnemonic shown at creation/restore time.
+    (void)params;
+    result["error"] =
+        "Mnemonic export is unavailable: runtime wallets do not persist "
+        "mnemonic sidecar files.";
+    result["suggestion"] =
+        "Use a previously verified offline seed backup. If none exists, create "
+        "a new wallet with a verified backup and transfer funds before removing "
+        "this wallet.";
     return result;
 }
 
