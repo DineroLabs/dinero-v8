@@ -77,7 +77,7 @@ done
 # final argv and cannot disagree with it; this one deliberately does not claim to be.
 echo "[entrypoint] datadir=$DATADIR rpcbind_default=$RPCBIND assumeutxo_snapshot=$snapshot_armed assumeutxo_forward_connect=$forward_connect"
 if [ "$snapshot_armed" = no ]; then
-    echo "[entrypoint] no snapshot armed (looked for $SNAPSHOT) — the daemon will sync from genesis"
+    echo "[entrypoint] no snapshot armed (looked for $SNAPSHOT) — a fresh datadir syncs from genesis; an already-synced one just continues"
 fi
 echo "[entrypoint] starting dinerod (arguments not logged — they may contain secrets)"
 exec dinerod "$@"
