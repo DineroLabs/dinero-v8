@@ -8,6 +8,22 @@ on:
       version:
         description: "Dinero version to build (e.g. 8.1.1)"
         required: true
+  # Without this the image was never built or run on a pull request — the first time
+  # any image change executed was on a release, in front of users. The PR path builds
+  # and runs the image but NEVER pushes: every registry-login and push step below is
+  # gated on `github.event_name != 'pull_request'`, so the PR path holds no registry
+  # credentials at all and requires no secret.
+  #
+  # Path-filtered because the image is assembled from PUBLISHED release artifacts, not
+  # from this tree's source (see Dockerfile stage 1) — a source-only PR cannot change
+  # the image. These are the files that can.
+  pull_request:
+    paths:
+      - Dockerfile
+      - Dockerfile.dockerignore
+      - .dockerignore
+      - docker-entrypoint.sh
+      - .github/workflows/docker-publish.yml
 
 permissions:
   contents: read
@@ -21,6 +37,7 @@ jobs:
     # release. `on: release` cannot be tag-filtered, so the filter lives here — same
     # intent as linux-release.yml's `tags: ['v8.*']`.
     if: >-
+      github.event_name == 'pull_request' ||
       github.event_name == 'workflow_dispatch' ||
       startsWith(github.event.release.tag_name, 'v8.')
     runs-on: ubuntu-latest
@@ -34,7 +51,14 @@ jobs:
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           RELEASE_DRAFT: ${{ github.event.release.draft }}
         run: |
-          if [ -n "$INPUT_VERSION" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            # On a PR GITHUB_REF_NAME is "<n>/merge", which the 8.* guard below would
+            # reject. Take the version the Dockerfile itself defaults to, so the PR
+            # build tests exactly what a credential-less `docker build .` produces and
+            # the two cannot drift.
+            V="$(sed -n 's/^ARG DINERO_VERSION=//p' Dockerfile | head -1)"
+            test -n "$V" || { echo "::error::could not read ARG DINERO_VERSION from Dockerfile"; exit 1; }
+          elif [ -n "$INPUT_VERSION" ]; then
             V="$INPUT_VERSION"
           else
             V="${GITHUB_REF_NAME#v}"
@@ -60,7 +84,10 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # Every registry-touching step from here down is gated off on pull_request, so a
+      # PR run never authenticates to any registry and never reads a secret.
       - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -70,6 +97,7 @@ jobs:
       # Docker Hub is optional: a fork or a secretless run still publishes to GHCR.
       - name: Check Docker Hub credentials
         id: dh
+        if: github.event_name != 'pull_request'
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -82,7 +110,7 @@ jobs:
           fi
 
       - name: Log in to Docker Hub
-        if: steps.dh.outputs.enabled == 'true'
+        if: github.event_name != 'pull_request' && steps.dh.outputs.enabled == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -123,8 +151,59 @@ jobs:
           docker run --rm --entrypoint /bin/sh dinerod:ci -c \
             'test -f "$DINERO_SNAPSHOT" && test -f "$DINERO_SNAPSHOT.manifest.json"'
 
+      # Regression guard for the bug that bricked volumes: the daemon creates
+      # /data/blocks and /data/blockchain seconds into startup, MINUTES before the
+      # AssumeUTXO import at header height 73035. An entrypoint that arms the snapshot
+      # "only on a fresh datadir" therefore stops arming it during that window, and a
+      # restart inside the window leaves persisted AssumeUTXO metadata with no
+      # configured snapshot path — dinerod then exits 2 on every subsequent start.
+      #
+      # This asserts on the argv `dinerod` ACTUALLY receives (a stub earlier on PATH
+      # captures it), not on a log line, so it cannot be satisfied by logging alone. No
+      # sync, no daemon, no network: milliseconds.
+      - name: Restart-regression check — snapshot stays armed when /data/blocks exists
+        run: |
+          set -x
+          docker run --rm --entrypoint /bin/sh dinerod:ci -c '
+            set -eu
+            # the exact on-disk state of an interrupted first sync
+            mkdir -p /data/blocks /data/blockchain
+            mkdir -p /tmp/stub
+            printf "#!/bin/sh\nprintf \"%%s\\n\" \"\$@\" > /tmp/argv\n" > /tmp/stub/dinerod
+            chmod +x /tmp/stub/dinerod
+            PATH=/tmp/stub:$PATH /usr/local/bin/docker-entrypoint.sh > /tmp/startup.log
+            echo "--- argv dinerod received ---"; cat /tmp/argv
+            echo "--- entrypoint startup line ---"; cat /tmp/startup.log
+
+            grep -q -- "^--assumeutxo_snapshot=" /tmp/argv || {
+              echo "::error::snapshot NOT armed with an existing /data/blocks — the interrupted-first-sync brick is back"; exit 1; }
+            # the snapshot without forward-connect holds the tip at the base for the
+            # whole genesis->base replay (PR #393): 0 confirmations for hours
+            grep -qx -- "--assumeutxo_forward_connect=1" /tmp/argv || {
+              echo "::error::--assumeutxo_forward_connect=1 missing"; exit 1; }
+            # correction 5: RPC must not be reachable from other containers
+            grep -qx -- "-rpcbind=127.0.0.1" /tmp/argv || {
+              echo "::error::RPC is not bound to loopback by default"; exit 1; }
+            # the startup line the operator sees must agree with the real argv
+            grep -q "assumeutxo_snapshot=yes" /tmp/startup.log || {
+              echo "::error::startup line does not report the armed snapshot"; exit 1; }
+          '
+
+          # ...and the startup line must NOT echo user-supplied arguments: they can
+          # carry -rpcpassword=, and docker logs are world-readable to anyone with the
+          # socket and are routinely shipped to log aggregators.
+          leak_out="$(docker run --rm --entrypoint /bin/sh dinerod:ci -c '
+            mkdir -p /tmp/stub
+            printf "#!/bin/sh\nexit 0\n" > /tmp/stub/dinerod; chmod +x /tmp/stub/dinerod
+            PATH=/tmp/stub:$PATH /usr/local/bin/docker-entrypoint.sh -rpcpassword=CANARY_SECRET 2>&1')"
+          case "$leak_out" in
+            *CANARY_SECRET*) echo "::error::the entrypoint printed a user-supplied argument: $leak_out"; exit 1 ;;
+            *) echo "no argument leak in entrypoint output" ;;
+          esac
+
       # Same context and build-args, so this reuses the layers built above.
       - name: Build and push
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
