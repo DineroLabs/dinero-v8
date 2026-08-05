@@ -1,0 +1,143 @@
+# syntax=docker/dockerfile:1
+#
+# Official Dinero full-node image.
+#
+# Installs the official release artifacts, verified against the published SHA256SUMS,
+# rather than compiling — so the container ships byte-identical binaries to a manual
+# install and the build takes seconds. Bundles the AssumeUTXO snapshot so a fresh node
+# reaches the tip in minutes with no multi-gigabyte UTXO database — the project's
+# headline claim, true on first run.
+#
+# Verification asymmetry, stated honestly:
+#   * the SNAPSHOT is content-pinned by a trust anchor compiled into dinerod
+#     (src/consensus/assume_utxo.cpp) and by the bundled manifest, so it is verified
+#     independently of the channel it was downloaded over;
+#   * the BINARIES are covered by SHA256SUMS fetched over the same TLS connection from
+#     the same host as the artifacts — a same-channel checksum, not a signature.
+#     There are no detached signatures or attestations published today.
+#
+#   docker run -d --name dinero --stop-timeout 60 \
+#     --log-opt max-size=50m --log-opt max-file=3 \
+#     -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.1
+
+ARG DINERO_VERSION=8.1.1
+# The snapshot is pinned to the release that actually publishes it, INDEPENDENTLY of
+# the daemon version being built: assumeutxo assets were a one-off upload to v8.1.1
+# and are not produced per release, so fetching them from v${DINERO_VERSION} would 404
+# on the next version. Bump this only when a newer release actually ships a snapshot.
+#
+# ⚠️ BUMPING TO A NEW SNAPSHOT HEIGHT HALTS EVERY EXISTING VOLUME. The entrypoint arms
+# the snapshot unconditionally (that is what prevents the interrupted-first-sync brick),
+# so an existing datadir gets a snapshot whose base height differs from the one already
+# in its persisted AssumeUTXO metadata. chainstate_service.cpp refuses that outright
+# ("another snapshot lifecycle is active (base height N); configured assumeutxo_snapshot
+# has a different base") and the daemon exits 2 on start, permanently — and there is no
+# escape by waiting, because AssumeUtxoLifecycle::Disable() has no callers, so a volume
+# never leaves the active state on its own.
+#
+# Operators on an already-synced volume can start without the bundled snapshot:
+#     docker run -e DINERO_SNAPSHOT=/nonexistent ...
+# which makes the entrypoint fall through to its no-snapshot branch. Their node is
+# already past the base, so it simply continues as a normal full node.
+#
+# So a snapshot bump is a BREAKING CHANGE for existing installs, not a routine update.
+# Ship it with release notes carrying the line above, or gate it behind a new image
+# tag that existing volumes are not automatically pulled onto.
+ARG SNAPSHOT_RELEASE=v8.1.1
+ARG SNAPSHOT_NAME=dinero-assumeutxo-73035-v4
+# Filename the snapshot is installed under inside the image. It MUST equal the
+# manifest's "snapshot_file" field: the daemon's manifest trust gate compares the
+# on-disk filename to that field and refuses the snapshot when they differ
+# (chainstate_service.cpp ValidateSnapshotManifestPreflight). Asserted at build time.
+ARG SNAPSHOT_INSTALL_NAME=mainnet-snapshot.dat
+
+# ---------- stage 1: fetch + verify ----------
+FROM debian:13-slim AS fetch
+ARG DINERO_VERSION
+ARG SNAPSHOT_RELEASE
+ARG SNAPSHOT_NAME
+ARG SNAPSHOT_INSTALL_NAME
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/dl
+RUN set -eux; \
+    BASE="https://github.com/DineroLabs/dinero-v8/releases/download/v${DINERO_VERSION}"; \
+    SNAP_BASE="https://github.com/DineroLabs/dinero-v8/releases/download/${SNAPSHOT_RELEASE}"; \
+    # the checksum file name carries the snapshot height — derive it from SNAPSHOT_NAME
+    # so the two cannot drift apart when the snapshot is bumped
+    SNAPSHOT_HEIGHT="$(printf '%s' "${SNAPSHOT_NAME}" | sed -n 's/.*-\([0-9][0-9]*\)-v[0-9][0-9]*$/\1/p')"; \
+    test -n "${SNAPSHOT_HEIGHT}" || { echo "cannot derive snapshot height from SNAPSHOT_NAME=${SNAPSHOT_NAME}"; exit 1; }; \
+    curl -fsSL -O "${BASE}/dinero-linux-x86_64-${DINERO_VERSION}.tar.gz"; \
+    curl -fsSL -O "${BASE}/SHA256SUMS-linux-x86_64-${DINERO_VERSION}"; \
+    curl -fsSL -O "${SNAP_BASE}/${SNAPSHOT_NAME}.dat"; \
+    curl -fsSL -O "${SNAP_BASE}/${SNAPSHOT_NAME}.manifest.json"; \
+    curl -fsSL -O "${SNAP_BASE}/SHA256SUMS-assumeutxo-${SNAPSHOT_HEIGHT}"; \
+    tar xzf "dinero-linux-x86_64-${DINERO_VERSION}.tar.gz"; \
+    # verified AFTER extraction: the checksum file names the two binaries by their
+    # in-tarball paths, so all three entries only resolve once unpacked. Both checksum
+    # files are verified against the artifacts under their PUBLISHED names, before any
+    # rename below.
+    sha256sum -c "SHA256SUMS-linux-x86_64-${DINERO_VERSION}"; \
+    sha256sum -c "SHA256SUMS-assumeutxo-${SNAPSHOT_HEIGHT}"; \
+    # the daemon's manifest trust gate rejects a snapshot whose on-disk filename does
+    # not match the manifest's snapshot_file, so a mismatch must fail the BUILD rather
+    # than every fresh container at runtime
+    MANIFEST_FILE="$(sed -n 's/.*"snapshot_file"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${SNAPSHOT_NAME}.manifest.json")"; \
+    test "${MANIFEST_FILE}" = "${SNAPSHOT_INSTALL_NAME}" || { \
+        echo "manifest declares snapshot_file=\"${MANIFEST_FILE}\" but the image installs the snapshot as \"${SNAPSHOT_INSTALL_NAME}\"; the daemon's manifest trust gate would reject it at runtime"; \
+        exit 1; }; \
+    mkdir -p /out; \
+    cp "dinero-linux-x86_64-${DINERO_VERSION}/dinerod"     /out/dinerod; \
+    cp "dinero-linux-x86_64-${DINERO_VERSION}/dinero-cli"  /out/dinero-cli; \
+    cp "${SNAPSHOT_NAME}.dat"           /out/snapshot.dat; \
+    cp "${SNAPSHOT_NAME}.manifest.json" /out/snapshot.manifest.json; \
+    chmod +x /out/dinerod /out/dinero-cli
+
+# ---------- stage 2: runtime ----------
+FROM debian:13-slim
+ARG DINERO_VERSION
+ARG SNAPSHOT_INSTALL_NAME
+
+LABEL org.opencontainers.image.title="Dinero Full Node"
+LABEL org.opencontainers.image.description="Post-quantum, Utreexo-native proof-of-work full node"
+LABEL org.opencontainers.image.source="https://github.com/DineroLabs/dinero-v8"
+LABEL org.opencontainers.image.documentation="https://github.com/DineroLabs/dinero-v8/blob/dinero-main/README.md"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.version="${DINERO_VERSION}"
+
+# libudev.so.1 is dinerod's only DT_NEEDED library beyond libc/libstdc++ — distroless
+# lacks it. debian:13 (not 12) is required because the binary needs GLIBC_2.38 /
+# GLIBCXX_3.4.32, which debian:12's glibc 2.36 does not provide.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libudev1 ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --create-home --home-dir /data dinero
+
+COPY --from=fetch /out/dinerod                   /usr/local/bin/dinerod
+COPY --from=fetch /out/dinero-cli                /usr/local/bin/dinero-cli
+# installed under the manifest's declared name, with the manifest as its
+# "<snapshot>.manifest.json" sibling — that is the exact path the daemon probes, and
+# the only layout in which the manifest trust gate engages instead of warning.
+COPY --from=fetch /out/snapshot.dat              /opt/dinero/${SNAPSHOT_INSTALL_NAME}
+COPY --from=fetch /out/snapshot.manifest.json    /opt/dinero/${SNAPSHOT_INSTALL_NAME}.manifest.json
+COPY docker-entrypoint.sh                        /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENV DINERO_SNAPSHOT=/opt/dinero/${SNAPSHOT_INSTALL_NAME}
+
+VOLUME /data
+# 20999 = P2P only. RPC (20998) is deliberately NOT exposed: `docker run -P` publishes
+# every EXPOSEd port on 0.0.0.0 of the host, and dinerod has no rpcallowip gate, so an
+# EXPOSEd 20998 would hand out an ACL-less RPC endpoint. The entrypoint additionally
+# binds RPC to 127.0.0.1 inside the container (DINERO_RPCBIND overrides), so it is not
+# reachable from other containers on the same network either. `docker exec` runs in the
+# container's own network namespace and reaches it regardless.
+EXPOSE 20999/tcp
+
+USER dinero
+WORKDIR /data
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

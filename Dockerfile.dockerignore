@@ -1,0 +1,20 @@
+# Dockerfile-specific override of the root .dockerignore, used by BuildKit for
+# this Dockerfile ONLY (any other build keeps using
+# the unmodified root .dockerignore).
+#
+# Why this file exists: the root .dockerignore has a blanket `*.sh` rule
+# (line 83), written for a source-compilation build. This
+# Dockerfile instead COPYs a real, checked-in docker-entrypoint.sh into the
+# runtime stage, so that one script IS needed for this build. The root file
+# is shared and out of this change's scope — other tooling may depend
+# on it as-is.
+#
+# Why `*` is safe here (unlike duplicating the root ruleset): this Dockerfile
+# COPYs exactly one file from the host build context — docker-entrypoint.sh.
+# Everything else it needs comes from COPY --from=fetch (a separate build
+# stage) or curl (fetched from GitHub releases at build time). Ignoring
+# everything except that one file is equivalent to the root ruleset for this
+# Dockerfile's purposes, without hand-duplicating 129 lines that would then
+# silently drift out of sync with future edits to the root file.
+*
+!docker-entrypoint.sh
