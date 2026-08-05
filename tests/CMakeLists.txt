@@ -11259,6 +11259,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
 
   # Passing subcases — graduate to active set (run on every PR via tests.yml).
   set(_wmr_passing
+    AuthoritativeMnemonicBindingAndLegacyFailClosed
     InvalidMnemonicRestoreFailsWithoutPartialWallet
     RejectsNonBip86PolicyWithoutPartialWallet
     RestoreRpcFuzzMalformedPayloadsNoCrashNoPartialWallets
@@ -11296,7 +11297,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     TIMEOUT 300
   )
 
-  message(STATUS "  ✓ Wallet readiness tests registered: 9 active + 0 quarantined (was 1 bundled)")
+  message(STATUS "  ✓ Wallet readiness tests registered: 10 active + 0 quarantined (was 1 bundled)")
 else()
   message(STATUS "  ⚠ Wallet readiness test not found: tests/wallet/test_wallet_mainnet_readiness.cpp")
 endif()

@@ -357,6 +357,7 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         std::string encryption_password = "";
         std::string policy = "bip86";  // Default to BIP86 Taproot
         bool replace_existing = false;
+        bool wallet_created = false;
 
         if (params.isArray()) {
             // First parameter MUST be wallet name
@@ -403,6 +404,46 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
             return result;
         }
 
+        // Complete every fallible cryptographic preflight before creating the
+        // wallet database. A generation/derivation failure must not leave a
+        // usable raw-seed wallet with no authoritative recovery material.
+        dinero::bip39::WordCount wc = dinero::bip39::WordCount::Words12;
+        switch (word_count) {
+            case 15: wc = dinero::bip39::WordCount::Words15; break;
+            case 18: wc = dinero::bip39::WordCount::Words18; break;
+            case 21: wc = dinero::bip39::WordCount::Words21; break;
+            case 24: wc = dinero::bip39::WordCount::Words24; break;
+        }
+
+        std::string mnemonic = dinero::bip39::Generate(wc);
+        if (mnemonic.empty()) {
+            result["error"] = "Failed to generate BIP39 mnemonic";
+            return result;
+        }
+
+        std::vector<uint8_t> seed;
+        if (!dinero::bip39::MnemonicToSeed(mnemonic, bip39_passphrase, seed)) {
+            result["error"] = "Failed to convert mnemonic to seed";
+            return result;
+        }
+
+        auto preflight_first_address = DeriveBip86FirstAddressFromSeed(seed);
+        if (!preflight_first_address.has_value()) {
+            result["error"] = "Failed to derive first BIP86 Taproot address from seed";
+            return result;
+        }
+
+        auto master_fingerprint_opt = DeriveMasterFingerprintFromSeed(seed);
+        if (!master_fingerprint_opt.has_value()) {
+            result["error"] = "Failed to derive BIP32 master fingerprint";
+            return result;
+        }
+        uint32_t master_fingerprint = master_fingerprint_opt.value();
+        char fingerprint_hex[9];
+        snprintf(fingerprint_hex, sizeof(fingerprint_hex), "%08X", master_fingerprint);
+        std::string fingerprint(fingerprint_hex);
+        std::string first_address = preflight_first_address.value();
+
         // Create (if needed) and open target wallet before any DB writes.
         const bool wallet_exists = wallet_manager->exists(wallet_name);
         if (wallet_exists && !replace_existing) {
@@ -411,13 +452,22 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         }
 
         if (!wallet_exists) {
-            wallet_manager->create(wallet_name);
+            // The first seed and recovery record are persisted before registry
+            // publication. A crash can therefore never leave a registered
+            // user-facing wallet whose identity began as an unrelated raw seed.
+            wallet_manager->createFromBip39(
+                wallet_name, mnemonic, bip39_passphrase);
+            wallet_created = true;
+        } else {
+            wallet_manager->open(wallet_name);
         }
-        wallet_manager->open(wallet_name);
 
         // Persist wallet_policy atomically on the active wallet DB.
         std::string policy_error;
         if (!PersistWalletPolicyWithRetry(wallet_manager, wallet_name, policy, "RpcCreateHDWallet", &policy_error)) {
+            if (wallet_created) {
+                TryRollbackWalletCreate(wallet_manager, wallet_name);
+            }
             result["error"] = "Failed to persist wallet policy: " + policy_error;
             return result;
         }
@@ -444,47 +494,6 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
             dinero::g_logger.info("Wallet birth_height set to " + std::to_string(birth_height));
         }
 
-        // Generate BIP39 mnemonic
-        dinero::bip39::WordCount wc = dinero::bip39::WordCount::Words12;
-        switch (word_count) {
-            case 15: wc = dinero::bip39::WordCount::Words15; break;
-            case 18: wc = dinero::bip39::WordCount::Words18; break;
-            case 21: wc = dinero::bip39::WordCount::Words21; break;
-            case 24: wc = dinero::bip39::WordCount::Words24; break;
-        }
-        
-        std::string mnemonic = dinero::bip39::Generate(wc);
-        if (mnemonic.empty()) {
-            result["error"] = "Failed to generate BIP39 mnemonic";
-            return result;
-        }
-        
-        // Convert mnemonic to seed (with optional BIP39 passphrase)
-        std::vector<uint8_t> seed;
-        if (!dinero::bip39::MnemonicToSeed(mnemonic, bip39_passphrase, seed)) {
-            result["error"] = "Failed to convert mnemonic to seed";
-            return result;
-        }
-
-        auto preflight_first_address = DeriveBip86FirstAddressFromSeed(seed);
-        if (!preflight_first_address.has_value()) {
-            result["error"] = "Failed to derive first BIP86 Taproot address from seed";
-            return result;
-        }
-
-        auto master_fingerprint_opt = DeriveMasterFingerprintFromSeed(seed);
-        if (!master_fingerprint_opt.has_value()) {
-            result["error"] = "Failed to derive BIP32 master fingerprint";
-            return result;
-        }
-        uint32_t master_fingerprint = master_fingerprint_opt.value();
-        char fingerprint_hex[9];
-        snprintf(fingerprint_hex, sizeof(fingerprint_hex), "%08X", master_fingerprint);
-        std::string fingerprint(fingerprint_hex);
-
-        // Generate first Taproot address for verification (BIP86-only policy)
-        std::string first_address = preflight_first_address.value();
-
         // Encrypt wallet if password provided
         if (!encryption_password.empty()) {
             try {
@@ -493,11 +502,17 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
                 std::vector<uint8_t> nonce(12);
 
                 if (RAND_bytes(salt.data(), salt.size()) != 1) {
+                    if (wallet_created) {
+                        TryRollbackWalletCreate(wallet_manager, wallet_name);
+                    }
                     result["error"] = "Failed to generate random salt";
                     return result;
                 }
 
                 if (RAND_bytes(nonce.data(), nonce.size()) != 1) {
+                    if (wallet_created) {
+                        TryRollbackWalletCreate(wallet_manager, wallet_name);
+                    }
                     result["error"] = "Failed to generate random nonce";
                     return result;
                 }
@@ -516,6 +531,9 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
                     1,      // parallelism
                     encryption_key
                 )) {
+                    if (wallet_created) {
+                        TryRollbackWalletCreate(wallet_manager, wallet_name);
+                    }
                     result["error"] = "Failed to derive encryption key from password";
                     return result;
                 }
@@ -546,6 +564,9 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
                     1,      // argon2_parallelism
                     master_fingerprint
                 )) {
+                    if (wallet_created) {
+                        TryRollbackWalletCreate(wallet_manager, wallet_name);
+                    }
                     result["error"] = "Failed to store encrypted wallet metadata";
                     return result;
                 }
@@ -554,6 +575,9 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
                 result["encrypted"] = true;
 
             } catch (const std::exception& e) {
+                if (wallet_created) {
+                    TryRollbackWalletCreate(wallet_manager, wallet_name);
+                }
                 result["error"] = std::string("Wallet encryption failed: ") + e.what();
                 return result;
             }
@@ -562,17 +586,23 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
             if (!wallet_manager->storeUnencryptedWallet(
                 wallet_name,
                 seed,
-                master_fingerprint
+                master_fingerprint,
+                wallet_created
             )) {
+                if (wallet_created) {
+                    TryRollbackWalletCreate(wallet_manager, wallet_name);
+                }
                 result["error"] = "Failed to store unencrypted wallet metadata";
                 return result;
             }
             result["encrypted"] = false;
         }
 
-        // Now that seed is stored in database, open the wallet
-        // This allows master_seed to be auto-loaded correctly
-        wallet_manager->open(wallet_name);
+        // Existing-wallet replacement reloads the stored seed. A newly created
+        // BIP39 wallet is already open with the same seed and recovery binding.
+        if (!wallet_created) {
+            wallet_manager->open(wallet_name);
+        }
 
         // Persist canonical index-0 address via WalletManager so derivation metadata
         // is stored in DB (no sidecar files).
@@ -583,6 +613,22 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
                 if (!encryption_password.empty()) {
                     wallet_manager->unlockWallet(encryption_password);
                     relock_after_registration = true;
+                }
+
+                std::string recovery_error;
+                if (!wallet_manager->storeAuthoritativeBip39Mnemonic(
+                        mnemonic, bip39_passphrase, &recovery_error)) {
+                    if (relock_after_registration) {
+                        wallet_manager->lockWallet();
+                        relock_after_registration = false;
+                    }
+                    if (wallet_created) {
+                        TryRollbackWalletCreate(wallet_manager, wallet_name);
+                    }
+                    result["error"] =
+                        "Failed to bind authoritative BIP39 recovery material: " +
+                        recovery_error;
+                    return result;
                 }
 
                 registered_address = wallet_manager->getNewAddress("first", "taproot");
@@ -597,16 +643,25 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
                     } catch (...) {
                     }
                 }
+                if (wallet_created) {
+                    TryRollbackWalletCreate(wallet_manager, wallet_name);
+                }
                 throw;
             }
         }
 
         if (registered_address.empty()) {
+            if (wallet_created) {
+                TryRollbackWalletCreate(wallet_manager, wallet_name);
+            }
             result["error"] = "Failed to register first address in wallet database";
             return result;
         }
 
         if (registered_address != first_address) {
+            if (wallet_created) {
+                TryRollbackWalletCreate(wallet_manager, wallet_name);
+            }
             result["error"] = "Invariant violation: persisted first address diverges from seed-derived BIP86 address";
             result["expected_first_address"] = first_address;
             result["actual_first_address"] = registered_address;
@@ -624,6 +679,9 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         result["word_count"] = word_count;
         result["wallet_name"] = wallet_name;
         result["policy"] = policy;  // BIP86
+        result["backup_required"] = true;
+        result["backup_acknowledged"] = false;
+        result["passphrase_required"] = !bip39_passphrase.empty();
         
         dinero::g_logger.info("Created HD wallet: " + wallet_name + " with " + 
                              std::to_string(word_count) + " words");
@@ -809,6 +867,22 @@ din::Json RpcRestoreWallet(const din::Json& params, dinero::WalletManager* walle
             return result;
         }
 
+        bool recovery_material_stored = false;
+        if (!skip_checksum) {
+            std::string recovery_error;
+            if (!wallet_manager->storeAuthoritativeBip39Mnemonic(
+                    mnemonic, bip39_passphrase, &recovery_error)) {
+                if (wallet_created) {
+                    TryRollbackWalletCreate(wallet_manager, wallet_name);
+                }
+                result["error"] =
+                    "Failed to bind authoritative BIP39 recovery material: " +
+                    recovery_error;
+                return result;
+            }
+            recovery_material_stored = true;
+        }
+
         // Reset birthday to 0 so rescan covers full chain history.
         // The restored seed may have been used before this wallet was created.
         wallet_manager->setBirthdayHeight(0);
@@ -883,6 +957,10 @@ din::Json RpcRestoreWallet(const din::Json& params, dinero::WalletManager* walle
         result["addresses_restored"] = static_cast<int>(restored_addresses.size());
         result["wallet_name"] = wallet_name;
         result["policy"] = policy;  // BIP86
+        result["backup_required"] = recovery_material_stored;
+        result["backup_acknowledged"] = false;
+        result["mnemonic_exportable"] = recovery_material_stored;
+        result["passphrase_required"] = !bip39_passphrase.empty();
 
         // Return all pre-derived addresses (gap limit coverage for rescan)
         din::Json addresses_array;

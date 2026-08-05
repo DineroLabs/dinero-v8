@@ -164,12 +164,13 @@ bool WalletService::Start() {
         if (wallets.empty()) {
             logger_interface_->info("[WalletService] No wallets found - creating default HD wallet");
             try {
-                // Auto-create default wallet with empty passphrase (unencrypted for now)
-                wallet_mgr_->create("default");
-
-                // ⚠️ CRITICAL: Generate HD seed immediately after wallet creation
-                // Without this, wallet is in illegal state (HD wallet with no seed)
-                // Bitcoin Core enforces: HD wallet MUST have seed at creation time
+                // User-facing wallets must begin from BIP39 recovery material.
+                // RpcCreateHDWallet creates the DB, replaces its internal
+                // bootstrap seed before any address can be exposed, binds the
+                // mnemonic entropy to that active seed, and returns the phrase
+                // for client presentation. Calling create() first used to make
+                // the RPC fail with "Wallet already exists", leaving a raw-seed
+                // wallet with no recoverable mnemonic.
                 din::Json createhd_params;
                 createhd_params[0] = "default";  // wallet name
                 createhd_params[1] = 12;         // word count
@@ -180,9 +181,20 @@ bool WalletService::Start() {
                 if (createhd_result.isMember("error")) {
                     throw std::runtime_error("Failed to generate HD seed: " + createhd_result["error"].asString());
                 }
+                if (!createhd_result.isMember("mnemonic") ||
+                    createhd_result["mnemonic"].asString().empty() ||
+                    !wallet_mgr_->hasAuthoritativeBip39Mnemonic()) {
+                    throw std::runtime_error(
+                        "HD wallet creation did not persist authoritative BIP39 recovery material");
+                }
 
-                logger_interface_->info("[WalletService] ✅ HD seed generated for default wallet");
-                logger_interface_->info("[WalletService] ✅ Auto-created and opened 'default' HD wallet with mnemonic");
+                // Do not log the phrase. It remains retrievable from the active
+                // wallet via wallet.exportseed until the user records it.
+                createhd_result["mnemonic"] = "";
+                logger_interface_->info("[WalletService] ✅ Auto-created and opened 'default' BIP39 HD wallet");
+                logger_interface_->warning(
+                    "[WalletService] RECOVERY BACKUP REQUIRED: retrieve the authoritative phrase with "
+                    "wallet.exportseed, store it offline, then call wallet.acknowledgeseedbackup");
 
                 // Load any existing addresses into UTXOIndex (now populated with first address from HD wallet)
                 wallet_mgr_->LoadAddressesIntoUTXOIndex();
@@ -217,6 +229,17 @@ bool WalletService::Start() {
 
         if (wallet_mgr_->hasActiveWallet()) {
             EnsureRuntimeWalletBindings();
+
+            if (!wallet_mgr_->hasAuthoritativeBip39Mnemonic()) {
+                logger_interface_->warning(
+                    "[WalletService] ACTIVE WALLET HAS NO AUTHORITATIVE MNEMONIC: this wallet predates "
+                    "mnemonic-backed creation or uses a raw seed. Preserve a verified encrypted wallet "
+                    "backup and migrate funds to a mnemonic-backed wallet before relying on seed recovery.");
+            } else if (wallet_mgr_->getSetting("bip39_backup_acknowledged") != "1") {
+                logger_interface_->warning(
+                    "[WalletService] RECOVERY BACKUP NOT ACKNOWLEDGED: retrieve wallet.exportseed, "
+                    "store it offline, then call wallet.acknowledgeseedbackup");
+            }
         }
 
         // Snapshot UTXO-set rescan for a wallet that becomes active AFTER an
