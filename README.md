@@ -56,6 +56,37 @@ If you are not building from source, start with [START_HERE.md](START_HERE.md)
 or the current release page. The root file list is for developers and operators
 working directly with the v8 source tree.
 
+## Run a Node
+
+```bash
+docker run -d --name dinero --stop-timeout 60 \
+  -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
+```
+
+That is a full validating node. It fast-syncs from a bundled AssumeUTXO snapshot, so
+it reaches the chain tip in minutes rather than replaying from genesis — and because
+validation is Utreexo-native, it does so without a multi-gigabyte UTXO database on disk.
+
+Check on it:
+
+```bash
+docker exec dinero dinero-cli -datadir=/data getblockcount
+docker exec dinero dinero-cli -datadir=/data getconnectioncount
+```
+
+`-datadir=/data` is required: `dinero-cli` otherwise looks in `$HOME/.dinero` and fails.
+
+Port `20999` is P2P — publishing it lets your node accept inbound peers and serve the
+network. RPC (`20998`) is deliberately **not** published above; only expose it if you
+understand the consequences.
+
+`--stop-timeout 60` matters: a clean shutdown takes roughly 12 seconds, and Docker's
+default 10-second grace period would `SIGKILL` the daemon mid-shutdown on every stop.
+
+Chain data lives in the `dinero-data` volume and survives `docker rm`. Images are
+published to Docker Hub (`dinerolabs/dinerod`) and GHCR
+(`ghcr.io/dinerolabs/dinero-v8`). amd64 only for now.
+
 ## Current Downloads
 
 Use the current stable `v8.1.1` release from:
