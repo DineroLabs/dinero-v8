@@ -25,6 +25,24 @@ ARG DINERO_VERSION=8.1.1
 # the daemon version being built: assumeutxo assets were a one-off upload to v8.1.1
 # and are not produced per release, so fetching them from v${DINERO_VERSION} would 404
 # on the next version. Bump this only when a newer release actually ships a snapshot.
+#
+# ⚠️ BUMPING TO A NEW SNAPSHOT HEIGHT HALTS EVERY EXISTING VOLUME. The entrypoint arms
+# the snapshot unconditionally (that is what prevents the interrupted-first-sync brick),
+# so an existing datadir gets a snapshot whose base height differs from the one already
+# in its persisted AssumeUTXO metadata. chainstate_service.cpp refuses that outright
+# ("another snapshot lifecycle is active (base height N); configured assumeutxo_snapshot
+# has a different base") and the daemon exits 2 on start, permanently — and there is no
+# escape by waiting, because AssumeUtxoLifecycle::Disable() has no callers, so a volume
+# never leaves the active state on its own.
+#
+# Operators on an already-synced volume can start without the bundled snapshot:
+#     docker run -e DINERO_SNAPSHOT=/nonexistent ...
+# which makes the entrypoint fall through to its no-snapshot branch. Their node is
+# already past the base, so it simply continues as a normal full node.
+#
+# So a snapshot bump is a BREAKING CHANGE for existing installs, not a routine update.
+# Ship it with release notes carrying the line above, or gate it behind a new image
+# tag that existing volumes are not automatically pulled onto.
 ARG SNAPSHOT_RELEASE=v8.1.1
 ARG SNAPSHOT_NAME=dinero-assumeutxo-73035-v4
 # Filename the snapshot is installed under inside the image. It MUST equal the

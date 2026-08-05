@@ -269,6 +269,32 @@ Named volume rather than a bind mount: the image runs as non-root, and a bind-mo
 host directory owned by root fails with permission denied — the most common first-run
 failure for containerised nodes. A named volume inherits the image's ownership.
 
+## Bumping the bundled snapshot is a breaking change
+
+The entrypoint arms `--assumeutxo_snapshot` unconditionally — that is what prevents the
+interrupted-first-sync brick, where a restart before import dropped the flag and left the
+daemon unable to rehydrate. The cost of that choice shows up on a snapshot bump.
+
+An existing volume already carries persisted AssumeUTXO metadata for the old base height.
+Raising `SNAPSHOT_RELEASE`/`SNAPSHOT_NAME` hands it a snapshot with a *different* base, and
+`chainstate_service.cpp` refuses: *"another snapshot lifecycle is active (base height N);
+configured assumeutxo_snapshot has a different base"* → **exit 2 on every start**. Waiting
+does not help: `AssumeUtxoLifecycle::Disable()` has no callers in the tree, so a volume
+never leaves the active state by itself.
+
+Operators can recover, or pre-empt it, by starting without the bundled snapshot:
+
+```bash
+docker run -e DINERO_SNAPSHOT=/nonexistent ...
+```
+
+The entrypoint then takes its no-snapshot branch, and a node already past the base simply
+continues as a normal full node.
+
+**Therefore: treat a snapshot bump as a breaking change for existing installs.** Ship it
+with release notes stating the above, or behind an image tag existing volumes are not
+automatically pulled onto. It is not a routine version bump.
+
 ## Testing
 
 Verification is the point here — an official image that does not actually sync is worse
