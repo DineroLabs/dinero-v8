@@ -15,6 +15,14 @@ permissions:
 
 jobs:
   publish:
+    # The repo also publishes dinerodpi-v* releases, which carry no
+    # dinero-linux-x86_64-* asset. Without this guard `${GITHUB_REF_NAME#v}` leaves
+    # such a tag intact, the build curls a 404 and the workflow goes red on every DPI
+    # release. `on: release` cannot be tag-filtered, so the filter lives here — same
+    # intent as linux-release.yml's `tags: ['v8.*']`.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.release.tag_name, 'v8.')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,14 +31,32 @@ jobs:
         id: v
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_DRAFT: ${{ github.event.release.draft }}
         run: |
           if [ -n "$INPUT_VERSION" ]; then
             V="$INPUT_VERSION"
           else
             V="${GITHUB_REF_NAME#v}"
           fi
+          case "$V" in
+            8.*) ;;
+            *) echo "::error::refusing to build '$V' — this image is built from v8.* release assets only"; exit 1 ;;
+          esac
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "Building Dinero $V"
+
+          # `latest` must only ever move forward, and only for a real release. A
+          # workflow_dispatch rebuild of an older version, a prerelease, or a draft
+          # publishes the version tag alone.
+          if [ "$GITHUB_EVENT_NAME" = "release" ] \
+             && [ "$RELEASE_PRERELEASE" != "true" ] \
+             && [ "$RELEASE_DRAFT" != "true" ]; then
+            LATEST=true
+          else
+            LATEST=false
+          fi
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Building Dinero $V (tag latest: $LATEST)"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -62,6 +88,42 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Build first WITHOUT pushing, load into the runner's daemon, and run the
+      # binary. A build check alone is not enough: this image's own first bug was a
+      # runtime one (the daemon built fine and then could not start for want of a
+      # shared library). The runner is native amd64, so this costs seconds.
+      - name: Build and load
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          build-args: |
+            DINERO_VERSION=${{ steps.v.outputs.version }}
+          tags: dinerod:ci
+
+      - name: Run check — the image must actually start
+        run: |
+          set -x
+          docker run --rm --entrypoint /usr/local/bin/dinerod dinerod:ci --version
+
+          # dinero-cli has no --version and exits 1 on an unknown option, so assert
+          # on its output instead: what this check is really proving is that the
+          # binary's dynamic dependencies resolve and it reaches main().
+          cli_out="$(docker run --rm --entrypoint /usr/local/bin/dinero-cli dinerod:ci --version 2>&1 || true)"
+          case "$cli_out" in
+            *"Dinero RPC client"*) echo "dinero-cli runs" ;;
+            *) echo "::error::dinero-cli did not run: $cli_out"; exit 1 ;;
+          esac
+
+          # the bundled snapshot must be installed under the name its manifest
+          # declares, with the manifest as its sibling, or the daemon's trust gate
+          # silently downgrades to a warning
+          docker run --rm --entrypoint /bin/sh dinerod:ci -c \
+            'test -f "$DINERO_SNAPSHOT" && test -f "$DINERO_SNAPSHOT.manifest.json"'
+
+      # Same context and build-args, so this reuses the layers built above.
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -72,6 +134,6 @@ jobs:
             DINERO_VERSION=${{ steps.v.outputs.version }}
           tags: |
             ghcr.io/dinerolabs/dinero-v8:${{ steps.v.outputs.version }}
-            ghcr.io/dinerolabs/dinero-v8:latest
+            ${{ steps.v.outputs.latest == 'true' && 'ghcr.io/dinerolabs/dinero-v8:latest' || '' }}
             ${{ steps.dh.outputs.enabled == 'true' && format('dinerolabs/dinerod:{0}', steps.v.outputs.version) || '' }}
-            ${{ steps.dh.outputs.enabled == 'true' && 'dinerolabs/dinerod:latest' || '' }}
+            ${{ (steps.dh.outputs.enabled == 'true' && steps.v.outputs.latest == 'true') && 'dinerolabs/dinerod:latest' || '' }}
