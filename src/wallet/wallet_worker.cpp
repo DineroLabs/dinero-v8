@@ -313,25 +313,27 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
                         utxos_spent++;
                         tx_spends_wallet_inputs = true;
 
-                        // ✅ CRITICAL FIX: Remove UTXO from wallet database
+                        // Preserve the wallet row across confirmation so a
+                        // later block disconnect can mark it unspent again.
+                        // Deleting it here made onBlockDisconnected()'s
+                        // UPDATE ... SET is_spent=0 a no-op (#287).
                         if (wallet_manager_) {
                             try {
-                                // Phase M.4.3-B Step 1: Unwrap TxId for logging and string conversion
-                                const bool removed = wallet_manager_->removeUTXO(
+                                const bool marked = wallet_manager_->spendUTXO(
                                     input.prevout.txid.AsUint256().GetHex(),
                                     input.prevout.vout
                                 );
-                                if (removed) {
-                                    std::cerr << "[WalletWorker] 🗑️  Removed spent UTXO from database: "
+                                if (marked) {
+                                    std::cerr << "[WalletWorker] Marked UTXO spent in database: "
                                               << input.prevout.txid.AsUint256().GetHex().substr(0, 16) << "..." << ":"
                                               << input.prevout.vout << std::endl;
                                 } else {
-                                    std::cerr << "[WalletWorker] ⚠️  removeUTXO returned false for: "
+                                    std::cerr << "[WalletWorker] WARNING: spendUTXO returned false for: "
                                               << input.prevout.txid.AsUint256().GetHex().substr(0, 16) << "..." << ":"
                                               << input.prevout.vout << std::endl;
                                 }
                             } catch (const std::exception& e) {
-                                std::cerr << "[WalletWorker] ⚠️  Failed to remove UTXO from database: "
+                                std::cerr << "[WalletWorker] WARNING: Failed to mark UTXO spent in database: "
                                           << e.what() << std::endl;
                             }
                         }

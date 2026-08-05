@@ -329,6 +329,16 @@ jobs:
             -j1 \
             -R '^RpcErrorEnvelope$'
 
+          # #287 — the CSN wallet reorg regression is integration-labeled and
+          # must execute serially by exact name rather than disappear behind
+          # the main ctest label exclusions.
+          echo "=== CsnSpendReorgReconciliation ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^CsnSpendReorgReconciliation$'
+
           # #321 — shielded wallet reject rollback is integration-labeled and
           # therefore must be selected explicitly in this serial daemon lane.
           echo "=== ShieldedWalletRejectRollback ==="
