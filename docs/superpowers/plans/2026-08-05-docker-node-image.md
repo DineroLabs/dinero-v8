@@ -37,6 +37,13 @@ All values below were verified empirically against the shipped v8.1.1 artifacts.
 - **Working directory:** `/Users/haydarevich/src/dinero-v8-docker` (git worktree, branch `feat/docker-node-image`). Do NOT touch `/Users/haydarevich/src/dinero-v8` — it has unrelated uncommitted work on another branch.
 - **Do not modify** `ops/Dockerfile` (referenced by `scripts/release-build.sh`) or `.dockerignore`.
 - **Do not push.** The operator pushes.
+- **⚠️ FOUND IN TASK 2 RUNTIME VERIFICATION (both were plan errors):**
+  - **`dinero-cli` REQUIRES `-datadir=/data`.** Without it, it looks in `$HOME/.dinero`
+    and fails. Every documented `dinero-cli` invocation must pass it.
+  - **`docker stop` needs a longer grace period.** Clean shutdown takes ~11.8s; Docker's
+    default is 10s, so the default `docker stop` SIGKILLs the daemon (exit 137) mid-shutdown
+    on every stop. The documented run command uses `--stop-timeout 60`. A Dockerfile cannot
+    set this — it must be on the run command or in the compose file.
 
 ---
 
@@ -419,7 +426,8 @@ Insert a `## Run a Node` section immediately BEFORE the first section that discu
 ## Run a Node
 
 ```bash
-docker run -d --name dinero -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
+docker run -d --name dinero --stop-timeout 60 \
+  -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
 ```
 
 That is a full validating node. It fast-syncs from a bundled AssumeUTXO snapshot, so
@@ -429,13 +437,18 @@ validation is Utreexo-native, it does so without a multi-gigabyte UTXO database 
 Check on it:
 
 ```bash
-docker exec dinero dinero-cli getblockcount
-docker exec dinero dinero-cli getconnectioncount
+docker exec dinero dinero-cli -datadir=/data getblockcount
+docker exec dinero dinero-cli -datadir=/data getconnectioncount
 ```
+
+`-datadir=/data` is required: `dinero-cli` otherwise looks in `$HOME/.dinero` and fails.
 
 Port `20999` is P2P — publishing it lets your node accept inbound peers and serve the
 network. RPC (`20998`) is deliberately **not** published above; only expose it if you
 understand the consequences.
+
+`--stop-timeout 60` matters: a clean shutdown takes roughly 12 seconds, and Docker's
+default 10-second grace period would `SIGKILL` the daemon mid-shutdown on every stop.
 
 Chain data lives in the `dinero-data` volume and survives `docker rm`. Images are
 published to Docker Hub (`dinerolabs/dinerod`) and GHCR
