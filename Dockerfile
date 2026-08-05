@@ -13,7 +13,7 @@ ARG DINERO_VERSION=8.1.1
 ARG SNAPSHOT_NAME=dinero-assumeutxo-73035-v4
 
 # ---------- stage 1: fetch + verify ----------
-FROM debian:12-slim AS fetch
+FROM debian:13-slim AS fetch
 ARG DINERO_VERSION
 ARG SNAPSHOT_NAME
 
@@ -42,7 +42,7 @@ RUN set -eux; \
     chmod +x /out/dinerod /out/dinero-cli
 
 # ---------- stage 2: runtime ----------
-FROM debian:12-slim
+FROM debian:13-slim
 ARG DINERO_VERSION
 
 LABEL org.opencontainers.image.title="Dinero Full Node"
@@ -52,10 +52,12 @@ LABEL org.opencontainers.image.documentation="https://github.com/DineroLabs/dine
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.version="${DINERO_VERSION}"
 
-# Exactly dinerod's DT_NEEDED set beyond libc/libstdc++ — distroless lacks these three.
+# libudev.so.1 is dinerod's only DT_NEEDED library beyond libc/libstdc++ — distroless
+# lacks it. debian:13 (not 12) is required because the binary needs GLIBC_2.38 /
+# GLIBCXX_3.4.32, which debian:12's glibc 2.36 does not provide.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      libminiupnpc17 libnatpmp1 libudev1 ca-certificates \
+      libudev1 ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --create-home --home-dir /data dinero
 
