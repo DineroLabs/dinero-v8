@@ -571,6 +571,18 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND ENABLE_HARDWARE_WALLETS)
 
   add_subdirectory(third_party/hidapi)
 
+  # hidapi's Windows sources (hid.c, hidapi_hidpi.h, hidapi_cfgmgr32.h) rely on
+  # <windows.h> transitively pulling in <winioctl.h> (FILE_DEVICE_KEYBOARD,
+  # METHOD_OUT_DIRECT, FILE_ANY_ACCESS, CTL_CODE) and the device-property /
+  # NTSTATUS declarations. The project defines WIN32_LEAN_AND_MEAN globally
+  # (CMakeLists.txt), which excludes those headers and breaks the hidapi compile
+  # on a clean build. Undefine it for this vendored target only — hidapi is a
+  # self-contained HID library that doesn't want the lean windows.h, and this
+  # keeps the fix scoped (no vendored source edits, no effect on other targets).
+  if(WIN32 AND MSVC AND TARGET hidapi_winapi)
+    target_compile_options(hidapi_winapi PRIVATE /UWIN32_LEAN_AND_MEAN)
+  endif()
+
   # Restore BUILD_SHARED_LIBS for rest of project
   set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVED})
 
