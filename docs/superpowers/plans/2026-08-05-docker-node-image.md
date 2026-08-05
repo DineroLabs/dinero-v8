@@ -1,5 +1,11 @@
 # Official Docker Node Image — Implementation Plan
 
+> **Later change (2026-08-05):** the Docker Hub mirror described below was removed.
+> `dinero`/`dinerolabs` are Docker Hub *organization* namespaces, which need a paid
+> Team plan; a GitHub-linked personal account only yields the operator's own username.
+> GHCR already carries the `dinerolabs` org identity for free and cannot be squatted,
+> so it is the only registry. The shipped workflow is authoritative.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **Status: EXECUTED.** This plan has been implemented and then corrected by a final

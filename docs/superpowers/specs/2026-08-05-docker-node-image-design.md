@@ -213,9 +213,6 @@ Both registries, from one workflow:
 - **GHCR** `ghcr.io/dinerolabs/dinero-v8` — the README one-liner (pre-merge correction
   1), pinned to an explicit version tag; authenticates with the existing `GITHUB_TOKEN`,
   so it is the one registry that is always published to.
-- **Docker Hub** `dinerolabs/dinerod` — secondary mirror, pushed only when the optional
-  credentials are configured. The namespace is not registered today, so it must not
-  appear as a copy-pasteable command anywhere.
 
 Triggered on published release. Without CI the published image goes stale the moment
 the next version ships and someone has to remember to rebuild; that is exactly how an
@@ -244,9 +241,8 @@ only, so `latest` can never be moved backwards by a manual run.
 build check alone would have shipped this branch's own missing-shared-library bug; the
 image only has to start once to catch that class.
 
-Docker Hub requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets.
-The workflow must skip the Docker Hub push (not fail the job) when they are absent, so
-a fork or a secretless run still publishes to GHCR.
+GHCR is the only registry. It authenticates with the built-in `GITHUB_TOKEN`, so no
+repository secret is required and a fork can run the workflow unchanged.
 
 ## The one-liner
 

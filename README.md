@@ -102,11 +102,6 @@ CI publishes `:latest` only from a real (non-draft, non-prerelease) release even
 manually dispatched build publishes the version tag alone and an unpinned reference
 would not resolve.
 
-A Docker Hub mirror (`dinerolabs/dinerod`) is published in addition **only if** the
-registry credentials are configured for this repo; that namespace is not registered
-today, so treat GHCR as the source of truth and do not use a Docker Hub reference
-unless you have confirmed the tag exists.
-
 Until the first release lands in a registry, build the image yourself from this repo:
 
 ```bash

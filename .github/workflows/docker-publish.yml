@@ -94,28 +94,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Docker Hub is optional: a fork or a secretless run still publishes to GHCR.
-      - name: Check Docker Hub credentials
-        id: dh
-        if: github.event_name != 'pull_request'
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::DOCKERHUB_USERNAME/DOCKERHUB_TOKEN not set — publishing to GHCR only"
-          fi
-
-      - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request' && steps.dh.outputs.enabled == 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       # Build first WITHOUT pushing, load into the runner's daemon, and run the
       # binary. A build check alone is not enough: this image's own first bug was a
       # runtime one (the daemon built fine and then could not start for want of a
@@ -214,5 +192,3 @@ jobs:
           tags: |
             ghcr.io/dinerolabs/dinero-v8:${{ steps.v.outputs.version }}
             ${{ steps.v.outputs.latest == 'true' && 'ghcr.io/dinerolabs/dinero-v8:latest' || '' }}
-            ${{ steps.dh.outputs.enabled == 'true' && format('dinerolabs/dinerod:{0}', steps.v.outputs.version) || '' }}
-            ${{ (steps.dh.outputs.enabled == 'true' && steps.v.outputs.latest == 'true') && 'dinerolabs/dinerod:latest' || '' }}
