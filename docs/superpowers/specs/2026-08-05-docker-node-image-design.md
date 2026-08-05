@@ -178,12 +178,15 @@ shipped to Qt and DineroDPI users.
 
 - `-listen=1`, and **expose 20999/tcp** so the node accepts inbound peers
 - DNS seeding left **on** so peer discovery works out of the box
-- RPC bound to `0.0.0.0` **only inside the container**, not published by the documented
-  one-liner, and **not `EXPOSE`d at all**. `EXPOSE` is not just documentation:
-  `docker run -P` publishes every `EXPOSE`d port on `0.0.0.0`, and unlike Bitcoin Core
-  there is no `rpcallowip` gate — `rpc_service.cpp` takes `rpcbind` literally — so an
-  `EXPOSE 20998` would put an unfiltered RPC on the internet for anyone who runs `-P`.
-  `docker exec` and containers on the same network reach RPC without it being exposed.
+- RPC bound to **`127.0.0.1` inside the container** (pre-merge correction 5;
+  `DINERO_RPCBIND` is the documented opt-in for operators who front it themselves), not
+  published by the documented one-liner, and **not `EXPOSE`d at all**. Unlike Bitcoin
+  Core there is no `rpcallowip` gate — `rpc_service.cpp` takes `rpcbind` literally — so
+  `rpcbind` *is* the access control. Binding `0.0.0.0` made RPC reachable from every
+  other container on the same Docker network regardless of published ports, which
+  `EXPOSE`/`-p` does nothing to prevent; and `docker run -P` publishes every `EXPOSE`d
+  port on `0.0.0.0`, so `EXPOSE 20998` would additionally put it on the host.
+  `docker exec` runs in the container's own network namespace and reaches RPC anyway.
 - `VOLUME /data` so chain data survives `docker rm`
 - `dinero-cli` included, so `docker exec <c> dinero-cli getblockcount` works
 
@@ -203,14 +206,23 @@ shipped to Qt and DineroDPI users.
 
 Both registries, from one workflow:
 
-- **Docker Hub** `dinerolabs/dinerod` — the README one-liner; shortest and most
-  familiar, and the registry people actually search.
-- **GHCR** `ghcr.io/dinerolabs/dinero-v8` — always-available mirror, authenticates
-  with the existing `GITHUB_TOKEN`.
+- **GHCR** `ghcr.io/dinerolabs/dinero-v8` — the README one-liner (pre-merge correction
+  1), pinned to an explicit version tag; authenticates with the existing `GITHUB_TOKEN`,
+  so it is the one registry that is always published to.
+- **Docker Hub** `dinerolabs/dinerod` — secondary mirror, pushed only when the optional
+  credentials are configured. The namespace is not registered today, so it must not
+  appear as a copy-pasteable command anywhere.
 
 Triggered on published release. Without CI the published image goes stale the moment
 the next version ships and someone has to remember to rebuild; that is exactly how an
 official image loses trust.
+
+**Also triggered on pull request, build-and-run only** (pre-merge correction 2).
+Previously nothing tested the image until a release, in front of users. The PR path
+builds, loads, and runs the same checks, but every registry-login and push step is
+gated on `github.event_name != 'pull_request'`, so it holds no credentials and cannot
+push. It is path-filtered to the files that can actually change the image, because the
+image is assembled from published release artifacts rather than from this tree's source.
 
 **Guard the trigger on `v8.*`.** The repo also publishes `dinerodpi-v*` releases, which
 carry no `dinero-linux-x86_64-*` asset; `${GITHUB_REF_NAME#v}` leaves such a tag intact
@@ -237,7 +249,7 @@ a fork or a secretless run still publishes to GHCR.
 ```bash
 docker run -d --name dinero --stop-timeout 60 \
   --log-opt max-size=50m --log-opt max-file=3 \
-  -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
+  -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.1
 ```
 
 `--stop-timeout 60`: a clean shutdown takes roughly 12 seconds and Docker's default

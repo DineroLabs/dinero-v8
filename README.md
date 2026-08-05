@@ -61,7 +61,7 @@ working directly with the v8 source tree.
 ```bash
 docker run -d --name dinero --stop-timeout 60 \
   --log-opt max-size=50m --log-opt max-file=3 \
-  -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
+  -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.1
 ```
 
 That is a full validating node. It fast-syncs from a bundled AssumeUTXO snapshot, so
@@ -78,8 +78,13 @@ docker exec dinero dinero-cli -datadir=/data getconnectioncount
 `-datadir=/data` is required: `dinero-cli` otherwise looks in `$HOME/.dinero` and fails.
 
 Port `20999` is P2P — publishing it lets your node accept inbound peers and serve the
-network. RPC (`20998`) is deliberately **not** published above; only expose it if you
-understand the consequences.
+network. RPC (`20998`) is bound to `127.0.0.1` **inside** the container and is not
+published: `docker exec` reaches it, other containers on the same Docker network do not.
+Publishing a port is not the only way RPC gets exposed — a container listening on
+`0.0.0.0` is reachable by every container sharing its network, and this daemon has no
+`rpcallowip` allowlist, so `rpcbind` is the whole access control. If you genuinely need
+remote RPC, set `-e DINERO_RPCBIND=0.0.0.0` and put an authenticated proxy in front of
+it on a private network; do not publish 20998 to the internet.
 
 `--stop-timeout 60` matters: a clean shutdown takes roughly 12 seconds, and Docker's
 default 10-second grace period would `SIGKILL` the daemon mid-shutdown on every stop.
@@ -91,12 +96,25 @@ stays small.
 
 Chain data lives in the `dinero-data` volume and survives `docker rm`.
 
-Images are built and published by CI on each `v8.*` release: always to GHCR
-(`ghcr.io/dinerolabs/dinero-v8`), and to Docker Hub (`dinerolabs/dinerod`) when the
-registry credentials are configured. amd64 only for now. Until the first release lands
-there, build the image yourself from this repo — `docker build -t dinerolabs/dinerod .`
-builds the v8.1.1 image the workflow publishes today; pass
-`--build-arg DINERO_VERSION=<version>` for any other release.
+Images are built and published by CI on each `v8.*` release, always to GHCR
+(`ghcr.io/dinerolabs/dinero-v8`). amd64 only for now. The tag is pinned deliberately:
+CI publishes `:latest` only from a real (non-draft, non-prerelease) release event, so a
+manually dispatched build publishes the version tag alone and an unpinned reference
+would not resolve.
+
+A Docker Hub mirror (`dinerolabs/dinerod`) is published in addition **only if** the
+registry credentials are configured for this repo; that namespace is not registered
+today, so treat GHCR as the source of truth and do not use a Docker Hub reference
+unless you have confirmed the tag exists.
+
+Until the first release lands in a registry, build the image yourself from this repo:
+
+```bash
+docker build -t ghcr.io/dinerolabs/dinero-v8:8.1.1 .
+```
+
+That builds the v8.1.1 image the workflow publishes today, under the same name the
+command above uses; pass `--build-arg DINERO_VERSION=<version>` for any other release.
 
 ## Current Downloads
 
