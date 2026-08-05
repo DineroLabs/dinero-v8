@@ -60,6 +60,7 @@ working directly with the v8 source tree.
 
 ```bash
 docker run -d --name dinero --stop-timeout 60 \
+  --log-opt max-size=50m --log-opt max-file=3 \
   -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
 ```
 
@@ -83,9 +84,19 @@ understand the consequences.
 `--stop-timeout 60` matters: a clean shutdown takes roughly 12 seconds, and Docker's
 default 10-second grace period would `SIGKILL` the daemon mid-shutdown on every stop.
 
-Chain data lives in the `dinero-data` volume and survives `docker rm`. Images are
-published to Docker Hub (`dinerolabs/dinerod`) and GHCR
-(`ghcr.io/dinerolabs/dinero-v8`). amd64 only for now.
+The `--log-opt` flags matter too: the node logs verbosely — measured at roughly 1 GB per
+hour (39 MB in 2.5 minutes) — and Docker's default `json-file` driver never rotates.
+Without them the container writes multi-gigabyte logs even though the chain data itself
+stays small.
+
+Chain data lives in the `dinero-data` volume and survives `docker rm`.
+
+Images are built and published by CI on each `v8.*` release: always to GHCR
+(`ghcr.io/dinerolabs/dinero-v8`), and to Docker Hub (`dinerolabs/dinerod`) when the
+registry credentials are configured. amd64 only for now. Until the first release lands
+there, build the image yourself from this repo — `docker build -t dinerolabs/dinerod .`
+builds the v8.1.1 image the workflow publishes today; pass
+`--build-arg DINERO_VERSION=<version>` for any other release.
 
 ## Current Downloads
 

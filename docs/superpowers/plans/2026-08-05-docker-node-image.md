@@ -2,9 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: EXECUTED.** This plan has been implemented and then corrected by a final
+> whole-branch review. The full file listings that its steps used to contain were
+> removed afterwards — several of them carried bugs the review found — and replaced by
+> pointers. **The shipped files are authoritative; the steps below are a record of how
+> the work was done, not text to copy.** See the post-review correction block in Global
+> Constraints, and `.superpowers/sdd/2026-08-05-docker-node-image/final-fix-report.md`.
+
 **Goal:** Let a stranger run a validating Dinero node with one `docker run`, syncing to the tip in minutes via a bundled AssumeUTXO snapshot.
 
-**Architecture:** Two-stage Dockerfile. Stage 1 downloads the official v8.1.1 release bundle and the AssumeUTXO snapshot from GitHub Releases and verifies both against published SHA256SUMS. Stage 2 is `debian:13-slim` (bookworm's glibc 2.36 is too old) with the one shared library `dinerod` actually needs. An entrypoint script arms the snapshot **only** on a fresh datadir, then `exec`s dinerod as PID 1.
+**Architecture:** Two-stage Dockerfile. Stage 1 downloads the official v8.1.1 release bundle and the AssumeUTXO snapshot from GitHub Releases and verifies both against published SHA256SUMS. Stage 2 is `debian:13-slim` (bookworm's glibc 2.36 is too old) with the one shared library `dinerod` actually needs. An entrypoint script arms the snapshot on **every** start — see the post-review correction below; the original "only on a fresh datadir" design bricked volumes — then `exec`s dinerod as PID 1.
 
 **Tech Stack:** Docker (BuildKit), debian:13-slim, POSIX shell, GitHub Actions.
 
@@ -31,7 +38,7 @@ All values below were verified empirically against the shipped v8.1.1 artifacts.
   - **distroless still will NOT work** — it lacks `libudev.so.1` and ships an older glibc.
 - **No libssl/libsqlite3 dependency** — statically linked.
 - **Ports:** RPC `20998`, P2P `20999`, WS `21001` (`include/crypto/config.h:11-12`).
-- **Fresh-datadir rule, copied from `qt/src/main.cpp:105-107`:** fresh = `datadir/blocks` does NOT exist AND `datadir/blockchain` does NOT exist. On a non-fresh datadir the snapshot MUST NOT be passed.
+- **~~Fresh-datadir rule, copied from `qt/src/main.cpp:105-107`~~ — WRONG, see the post-review correction below.** The snapshot is passed on every start; the daemon's own preconditions decide.
 - **Snapshot args:** `--assumeutxo_snapshot=<path>` **and** `--assumeutxo_forward_connect=1`. Omitting the second holds the tip at the snapshot base for the whole background replay (PR #393) — that shipped as a real user-facing bug.
 - **amd64 only.** Release assets are linux-x86_64. The dev machine is **Apple Silicon (aarch64)**, so every local docker command MUST pass `--platform linux/amd64` and will run under emulation (slow but functional).
 - **Working directory:** `/Users/haydarevich/src/dinero-v8-docker` (git worktree, branch `feat/docker-node-image`). Do NOT touch `/Users/haydarevich/src/dinero-v8` — it has unrelated uncommitted work on another branch.
@@ -44,6 +51,30 @@ All values below were verified empirically against the shipped v8.1.1 artifacts.
     default is 10s, so the default `docker stop` SIGKILLs the daemon (exit 137) mid-shutdown
     on every stop. The documented run command uses `--stop-timeout 60`. A Dockerfile cannot
     set this — it must be on the run command or in the compose file.
+- **⚠️ FOUND IN FINAL WHOLE-BRANCH REVIEW (all shipped; this plan's original text was wrong):**
+  - **Arm the snapshot UNCONDITIONALLY.** The "only on a fresh datadir" rule below was
+    transplanted from the Qt app, which predates the daemon's restart-restore path. The
+    daemon creates `/data/blocks` and `/data/blockchain` seconds into startup, minutes
+    before the import, so the rule reads "existing datadir" for the entire window in which
+    it matters; the daemon then finds persisted AssumeUTXO metadata, no configured
+    snapshot path, and exits 2 on that start and every later one — an unrecoverable volume.
+    Reproduced and fixed; see `.superpowers/sdd/2026-08-05-docker-node-image/final-fix-report.md`.
+  - **Bundle the manifest as `<snapshot>.manifest.json`, under the manifest's own name.**
+    `/opt/dinero/snapshot.manifest.json` was never read. The manifest declares
+    `snapshot_file: "mainnet-snapshot.dat"` and the daemon's trust gate compares that to
+    the on-disk filename, so the snapshot ships as `/opt/dinero/mainnet-snapshot.dat` with
+    `/opt/dinero/mainnet-snapshot.dat.manifest.json` beside it. Naming it
+    `snapshot.dat.manifest.json` would hard-fail the load, not fix the warning.
+  - **Pin the snapshot's release separately** (`ARG SNAPSHOT_RELEASE=v8.1.1`). No workflow
+    produces the assumeutxo assets; they were a one-off upload, so fetching them from
+    `v${DINERO_VERSION}` 404s on the next release. The checksum file's height is derived
+    from `SNAPSHOT_NAME` rather than hardcoded.
+  - **Do NOT `EXPOSE` 20998.** `docker run -P` publishes every EXPOSEd port on 0.0.0.0 and
+    `dinerod` has no `rpcallowip` gate.
+  - **The artifacts are not signed.** SHA256SUMS only, over the same channel. Say
+    "verified against the published SHA256SUMS".
+  - **The documented run command also needs `--log-opt max-size=50m --log-opt max-file=3`.**
+    Measured ~0.96 GB of logs per hour; the default `json-file` driver never rotates.
 
 ---
 
@@ -54,131 +85,34 @@ All values below were verified empirically against the shipped v8.1.1 artifacts.
 - Create: `docker-entrypoint.sh` (repo root)
 
 **Interfaces:**
-- Produces: image with `/usr/local/bin/dinerod`, `/usr/local/bin/dinero-cli`, `/opt/dinero/snapshot.dat`, `/opt/dinero/snapshot.manifest.json`, entrypoint `/usr/local/bin/docker-entrypoint.sh`, `VOLUME /data`, user `dinero` (uid 10001).
-- Produces: build args `DINERO_VERSION` (default `8.1.1`) and `SNAPSHOT_NAME` (default `dinero-assumeutxo-73035-v4`).
+- Produces: image with `/usr/local/bin/dinerod`, `/usr/local/bin/dinero-cli`, `/opt/dinero/mainnet-snapshot.dat`, `/opt/dinero/mainnet-snapshot.dat.manifest.json` (corrected — see above), entrypoint `/usr/local/bin/docker-entrypoint.sh`, `VOLUME /data`, user `dinero` (uid 10001).
+- Produces: build args `DINERO_VERSION` (default `8.1.1`), `SNAPSHOT_RELEASE` (default `v8.1.1`), `SNAPSHOT_NAME` (default `dinero-assumeutxo-73035-v4`) and `SNAPSHOT_INSTALL_NAME` (default `mainnet-snapshot.dat`).
 
 - [ ] **Step 1: Write `docker-entrypoint.sh`**
 
-```sh
-#!/bin/sh
-# Entrypoint for the official Dinero node image.
-#
-# Arms the bundled AssumeUTXO snapshot ONLY on a fresh datadir. The rule and the
-# reason are copied from qt/src/main.cpp:105 — "on an existing datadir we must NOT
-# pass the snapshot (the node is past it)". --assumeutxo_forward_connect=1 must
-# accompany it or the active tip is held at the snapshot base for the whole
-# genesis->base replay (PR #393), which surfaces to users as 0 confirmations for hours.
-set -eu
-
-DATADIR="${DINERO_DATADIR:-/data}"
-SNAPSHOT="/opt/dinero/snapshot.dat"
-
-# Base flags: serve the network (listen), talk RPC inside the container only.
-set -- \
-    -datadir="$DATADIR" \
-    -printtoconsole=1 \
-    -listen=1 \
-    -port=20999 \
-    -rpcbind=0.0.0.0 \
-    -rpcport=20998 \
-    "$@"
-
-if [ ! -d "$DATADIR/blocks" ] && [ ! -d "$DATADIR/blockchain" ]; then
-    if [ -f "$SNAPSHOT" ]; then
-        echo "[entrypoint] fresh datadir — fast-syncing from bundled AssumeUTXO snapshot"
-        set -- "$@" "--assumeutxo_snapshot=$SNAPSHOT" "--assumeutxo_forward_connect=1"
-    else
-        echo "[entrypoint] fresh datadir but no bundled snapshot — syncing from genesis"
-    fi
-else
-    echo "[entrypoint] existing datadir — not arming snapshot (node is past it)"
-fi
-
-echo "[entrypoint] exec dinerod $*"
-exec dinerod "$@"
-```
+> **The full listing that used to sit here has been removed.** It contained the
+> fresh-datadir arming rule that the final review found bricks volumes (see the
+> post-review correction in Global Constraints), and leaving a copyable copy of it in the
+> plan is exactly how that bug would come back. The shipped file is
+> [`docker-entrypoint.sh`](../../../docker-entrypoint.sh) — read it there; it is the only
+> copy. In summary it sets `-datadir`, `-printtoconsole=1`, `-listen=1`, `-port=20999`,
+> `-rpcbind=0.0.0.0`, `-rpcport=20998`, appends `--assumeutxo_snapshot=$DINERO_SNAPSHOT`
+> and `--assumeutxo_forward_connect=1` whenever the bundled snapshot file exists, and
+> `exec`s `dinerod` so it is PID 1.
 
 - [ ] **Step 2: Write `Dockerfile`**
 
-```dockerfile
-# syntax=docker/dockerfile:1
-#
-# Official Dinero full-node image.
-#
-# Installs the SIGNED release artifacts rather than compiling, so the container ships
-# byte-identical binaries to a manual install and the build takes seconds. Bundles the
-# AssumeUTXO snapshot so a fresh node reaches the tip in minutes with no multi-gigabyte
-# UTXO database — the project's headline claim, true on first run.
-#
-#   docker run -d --name dinero -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
-
-ARG DINERO_VERSION=8.1.1
-ARG SNAPSHOT_NAME=dinero-assumeutxo-73035-v4
-
-# ---------- stage 1: fetch + verify ----------
-FROM debian:13-slim AS fetch
-ARG DINERO_VERSION
-ARG SNAPSHOT_NAME
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl \
- && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /tmp/dl
-RUN set -eux; \
-    BASE="https://github.com/DineroLabs/dinero-v8/releases/download/v${DINERO_VERSION}"; \
-    curl -fsSL -O "${BASE}/dinero-linux-x86_64-${DINERO_VERSION}.tar.gz"; \
-    curl -fsSL -O "${BASE}/SHA256SUMS-linux-x86_64-${DINERO_VERSION}"; \
-    curl -fsSL -O "${BASE}/${SNAPSHOT_NAME}.dat"; \
-    curl -fsSL -O "${BASE}/${SNAPSHOT_NAME}.manifest.json"; \
-    curl -fsSL -O "${BASE}/SHA256SUMS-assumeutxo-73035"; \
-    tar xzf "dinero-linux-x86_64-${DINERO_VERSION}.tar.gz"; \
-    # verified AFTER extraction: the checksum file names the two binaries by their
-    # in-tarball paths, so all three entries only resolve once unpacked
-    sha256sum -c "SHA256SUMS-linux-x86_64-${DINERO_VERSION}"; \
-    sha256sum -c "SHA256SUMS-assumeutxo-73035"; \
-    mkdir -p /out; \
-    cp "dinero-linux-x86_64-${DINERO_VERSION}/dinerod"     /out/dinerod; \
-    cp "dinero-linux-x86_64-${DINERO_VERSION}/dinero-cli"  /out/dinero-cli; \
-    cp "${SNAPSHOT_NAME}.dat"           /out/snapshot.dat; \
-    cp "${SNAPSHOT_NAME}.manifest.json" /out/snapshot.manifest.json; \
-    chmod +x /out/dinerod /out/dinero-cli
-
-# ---------- stage 2: runtime ----------
-FROM debian:13-slim
-ARG DINERO_VERSION
-
-LABEL org.opencontainers.image.title="Dinero Full Node"
-LABEL org.opencontainers.image.description="Post-quantum, Utreexo-native proof-of-work full node"
-LABEL org.opencontainers.image.source="https://github.com/DineroLabs/dinero-v8"
-LABEL org.opencontainers.image.documentation="https://github.com/DineroLabs/dinero-v8/blob/dinero-main/README.md"
-LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.version="${DINERO_VERSION}"
-
-# dinerod's only DT_NEEDED beyond libc/libstdc++ is libudev. debian:13 (not 12) is
-# required: the binary needs GLIBC_2.38 / GLIBCXX_3.4.32; bookworm ships glibc 2.36.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      libudev1 ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
- && useradd --system --uid 10001 --create-home --home-dir /data dinero
-
-COPY --from=fetch /out/dinerod                   /usr/local/bin/dinerod
-COPY --from=fetch /out/dinero-cli                /usr/local/bin/dinero-cli
-COPY --from=fetch /out/snapshot.dat              /opt/dinero/snapshot.dat
-COPY --from=fetch /out/snapshot.manifest.json    /opt/dinero/snapshot.manifest.json
-COPY docker-entrypoint.sh                        /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
-VOLUME /data
-# 20999 = P2P (publish this to serve the network). 20998 = RPC — deliberately NOT in
-# the documented run command so nobody exposes RPC to the internet by copy-paste.
-EXPOSE 20999/tcp 20998/tcp
-
-USER dinero
-WORKDIR /data
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-```
+> **The full listing that used to sit here has been removed** for the same reason: it
+> carried the "SIGNED release artifacts" claim, `EXPOSE ... 20998/tcp`, the unused
+> `/opt/dinero/snapshot.manifest.json` path and the snapshot fetched from
+> `v${DINERO_VERSION}` — all four corrected in the final review. The shipped file is
+> [`Dockerfile`](../../../Dockerfile); it is the only copy. Shape: two stages on
+> `debian:13-slim`; stage 1 curls the release bundle from `v${DINERO_VERSION}` and the
+> snapshot + manifest + checksums from `${SNAPSHOT_RELEASE}`, verifies both SHA256SUMS
+> files against the published names, and asserts the manifest's `snapshot_file` matches
+> `SNAPSHOT_INSTALL_NAME`; stage 2 installs `libudev1`, copies the two binaries and the
+> snapshot pair, sets `DINERO_SNAPSHOT`, `VOLUME /data`, `EXPOSE 20999/tcp` only, and runs
+> as uid 10001.
 
 - [ ] **Step 3: Build it**
 
@@ -231,7 +165,7 @@ sleep 20
 docker logs dinero-test 2>&1 | head -30
 ```
 
-Expected: log contains `[entrypoint] fresh datadir — fast-syncing from bundled AssumeUTXO snapshot`, and the exec line shows both `--assumeutxo_snapshot=` and `--assumeutxo_forward_connect=1`.
+Expected: log contains `[entrypoint] arming bundled AssumeUTXO snapshot (...)`, and the exec line shows both `--assumeutxo_snapshot=` and `--assumeutxo_forward_connect=1`. On a fresh datadir the daemon then logs `[snapshot] pending — base height 73035 ...`, and `[LoadSnapshot] Manifest trust gate passed: /opt/dinero/mainnet-snapshot.dat.manifest.json` when it imports (never `No snapshot manifest configured`).
 
 - [ ] **Step 2: Confirm the snapshot was accepted, not rejected**
 
@@ -254,12 +188,28 @@ Expected: greater than 0, proving DNS seed discovery works from a clean containe
 - [ ] **Step 4: Restart safety — the entrypoint's core logic**
 
 ```bash
-docker restart dinero-test
-sleep 20
-docker logs dinero-test 2>&1 | tail -20 | grep entrypoint
+docker stop -t 90 dinero-test && docker start dinero-test
+sleep 60
+docker inspect dinero-test --format '{{.State.Status}} {{.State.ExitCode}}'
+docker logs dinero-test 2>&1 | grep -E "AssumeUTXO restore|existing datadir|LoadSnapshot"
 ```
 
-Expected: `[entrypoint] existing datadir — not arming snapshot (node is past it)`. If it says "fresh datadir" again, the fresh-detection is broken and the node would restart sync forever — stop and report.
+Expected: still `running`. On a datadir already past the base:
+`[snapshot] existing datadir (height N > 0) — NOT auto-loading snapshot` and **no**
+`LoadSnapshot` lines — it must not re-import. Mid-sync it may instead log
+`[AssumeUTXO restore] ... rehydrating from configured snapshot`, which is correct and is
+the whole point of passing the flag every time.
+
+**It must NEVER log** `Persisted AssumeUTXO metadata exists, but ... no
+assumeutxo_snapshot path is configured`, and must never exit 2 — that state is
+unrecoverable without deleting the volume.
+
+The reproducing window is **not** "before the import": a restart in the first seconds is
+benign. It is the minutes *after* `[LoadSnapshot]` completes but before the consensus
+UTXO/forest state is durably at the base — the signature is
+`utxo-tip=...@0` versus `snapshot=...@73035` on the next boot. Restart repeatedly across
+the first few minutes, and to prove the failure mode is real, start `dinerod` on that
+same datadir *without* `--assumeutxo_snapshot` and watch it exit 2.
 
 - [ ] **Step 5: Data survives container removal**
 
@@ -302,80 +252,16 @@ Record every command's actual output in the task report. No commit — this task
 
 - [ ] **Step 1: Write the workflow**
 
-```yaml
-name: Publish Docker image
-
-on:
-  release:
-    types: [published]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Dinero version to build (e.g. 8.1.1)"
-        required: true
-
-permissions:
-  contents: read
-  packages: write
-
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve version
-        id: v
-        run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            V="${{ github.event.inputs.version }}"
-          else
-            V="${GITHUB_REF_NAME#v}"
-          fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "Building Dinero $V"
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Docker Hub is optional: a fork or a secretless run still publishes to GHCR.
-      - name: Check Docker Hub credentials
-        id: dh
-        run: |
-          if [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::DOCKERHUB_TOKEN not set — publishing to GHCR only"
-          fi
-
-      - name: Log in to Docker Hub
-        if: steps.dh.outputs.enabled == 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          build-args: |
-            DINERO_VERSION=${{ steps.v.outputs.version }}
-          tags: |
-            ghcr.io/dinerolabs/dinero-v8:${{ steps.v.outputs.version }}
-            ghcr.io/dinerolabs/dinero-v8:latest
-            ${{ steps.dh.outputs.enabled == 'true' && format('dinerolabs/dinerod:{0}', steps.v.outputs.version) || '' }}
-            ${{ steps.dh.outputs.enabled == 'true' && 'dinerolabs/dinerod:latest' || '' }}
-```
+> **The full workflow listing that used to sit here has been removed.** It had no
+> `v8.*` trigger guard (so it went red on every `dinerodpi-v*` release), pushed
+> `:latest` unconditionally (so a prerelease or a dispatch of an older version could move
+> it backwards), and went straight from build to `push: true` with no run check. The
+> shipped file is [`.github/workflows/docker-publish.yml`](../../../.github/workflows/docker-publish.yml);
+> it is the only copy. Shape: job-level
+> `if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v8.')`,
+> a resolve step that also decides whether `:latest` is emitted, GHCR login, optional
+> Docker Hub login, build with `load: true`, a run check that actually starts the image,
+> then build + push.
 
 - [ ] **Step 2: Validate the YAML parses**
 
@@ -422,38 +308,10 @@ Insert a `## Run a Node` section immediately BEFORE the first section that discu
 
 - [ ] **Step 2: Add the section**
 
-```markdown
-## Run a Node
-
-```bash
-docker run -d --name dinero --stop-timeout 60 \
-  -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
-```
-
-That is a full validating node. It fast-syncs from a bundled AssumeUTXO snapshot, so
-it reaches the chain tip in minutes rather than replaying from genesis — and because
-validation is Utreexo-native, it does so without a multi-gigabyte UTXO database on disk.
-
-Check on it:
-
-```bash
-docker exec dinero dinero-cli -datadir=/data getblockcount
-docker exec dinero dinero-cli -datadir=/data getconnectioncount
-```
-
-`-datadir=/data` is required: `dinero-cli` otherwise looks in `$HOME/.dinero` and fails.
-
-Port `20999` is P2P — publishing it lets your node accept inbound peers and serve the
-network. RPC (`20998`) is deliberately **not** published above; only expose it if you
-understand the consequences.
-
-`--stop-timeout 60` matters: a clean shutdown takes roughly 12 seconds, and Docker's
-default 10-second grace period would `SIGKILL` the daemon mid-shutdown on every stop.
-
-Chain data lives in the `dinero-data` volume and survives `docker rm`. Images are
-published to Docker Hub (`dinerolabs/dinerod`) and GHCR
-(`ghcr.io/dinerolabs/dinero-v8`). amd64 only for now.
-```
+> **The README snippet that used to sit here has been removed.** It claimed the images
+> are already published (they are not — that is an operator action) and lacked the log
+> rotation flags. The shipped text is in [`README.md`](../../../README.md) under
+> "Run a Node"; it is the only copy.
 
 - [ ] **Step 3: Verify the code fences survived**
 
@@ -478,7 +336,7 @@ git show --stat --format= HEAD
 
 ## Self-Review
 
-**Spec coverage:** "Install the official release" → Task 1 Step 2 (fetch stage). "Bundle the snapshot" → Task 1 Step 2. "Arm only on fresh datadir" → Task 1 Step 1 + Task 2 Step 4. "Good network citizen" → entrypoint `-listen=1`, `EXPOSE 20999`, Task 2 Step 3. "Files" table → Tasks 1/3/4. "Publishing to both registries" → Task 3. "The one-liner" → Task 4. Spec testing items 1-7 → Task 1 Steps 3-4 and Task 2 Steps 1-6.
+**Spec coverage:** "Install the official release" → Task 1 Step 2 (fetch stage). "Bundle the snapshot" → Task 1 Step 2. "Arm the snapshot unconditionally" (spec, as corrected) → Task 1 Step 1 + Task 2 Step 4. "Good network citizen" → entrypoint `-listen=1`, `EXPOSE 20999`, Task 2 Step 3. "Files" table → Tasks 1/3/4. "Publishing to both registries" → Task 3. "The one-liner" → Task 4. Spec testing items 1-7 → Task 1 Steps 3-4 and Task 2 Steps 1-6.
 
 **Placeholder scan:** none. Every step carries the actual file content or command.
 

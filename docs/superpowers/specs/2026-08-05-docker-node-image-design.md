@@ -54,22 +54,47 @@ The bundle is one download, both binaries, and checksum-verifiable.
 Downloading and checksum-verifying that beats compiling in-image:
 
 - builds in seconds instead of a long C++ compile
-- final image is small (~50 MB) with no build toolchain in it
-- ships **the exact signed artifacts** a human would download, so the container and
+- the image stays small with no build toolchain in it: **141 MB unpacked**, measured
+  with `du -sb / --exclude=/proc --exclude=/sys --exclude=/data` inside a running
+  container, of which ~65 MB is Dinero's own content on top of `debian:13-slim`
+  (33 MB `dinerod`, 27 MB snapshot, 4.7 MB apt layer). Two other numbers are visible
+  for the same build and neither is the unpacked size: `docker images` displays
+  ~212 MB, and `docker inspect --format '{{.Size}}'` reports 59.5 MB — the spread is
+  BuildKit attestation-manifest accounting, not three different images.
+- ships **the exact release artifacts** a human would download, so the container and
   the manual install are the same binaries
-- the SHA256 verification is a real supply-chain check, and it fails the build loudly
+- the SHA256 verification fails the build loudly
+
+Do not describe these as *signed* artifacts. There are no signatures: no cosign, gpg
+or sigstore step exists in any workflow, and the repo publishes no attestations. What
+exists is `SHA256SUMS`, fetched over the same TLS connection from the same host as the
+artifacts it covers — a same-channel checksum, which detects corruption and a partial
+upload but not a compromised release host.
+
+The snapshot is the genuinely stronger half of that asymmetry, and it is worth stating
+explicitly: `dinerod` carries a **compiled-in trust anchor** for the height-73035
+snapshot (`src/consensus/assume_utxo.cpp`), so the snapshot's SHA256 and base block
+hash are verified against a constant inside the binary — independently of the channel
+the file arrived over. The binaries themselves have same-channel checksums only.
 
 ### Runtime base must be debian-slim, NOT distroless
 
 `dinerod`'s `DT_NEEDED` list, read from the shipped v8.1.1 ELF, is:
 
-    libminiupnpc.so.17  libnatpmp.so.1  libudev.so.1
+    libudev.so.1
     libstdc++.so.6  libm.so.6  libgcc_s.so.1  libc.so.6  ld-linux-x86-64.so.2
 
-`gcr.io/distroless/cc` supplies only the last five. **A distroless image would build
-successfully and then fail to start**, which is why `ops/Dockerfile`'s distroless base
-is not reused. Runtime is `debian:12-slim` with `libminiupnpc17`, `libnatpmp1` and
-`libudev1` installed, running as a non-root user.
+`gcr.io/distroless/cc` supplies everything except `libudev.so.1`. **A distroless image
+would build successfully and then fail to start**, which is why `ops/Dockerfile`'s
+distroless base is not reused. Runtime is `debian:13-slim` with `libudev1` installed,
+running as a non-root user.
+
+`debian:13`, not `debian:12`: the released binary needs `GLIBC_2.38` /
+`GLIBCXX_3.4.32`, which debian:12's glibc 2.36 does not provide.
+
+There is **no** `libminiupnpc`/`libnatpmp` dependency — the v8.1.1 Linux release lane
+pins the flag set that previously leaked those in (see `linux-release.yml`), so do not
+install them "just in case"; they are dead weight in the runtime layer.
 
 Note there is no `libssl` or `libsqlite3` dependency — those are linked statically —
 so the runtime layer stays small.
@@ -86,28 +111,79 @@ if anyone asks.
 headline claim true out of the box: a fresh `docker run` reaches the tip in minutes
 without a multi-gigabyte UTXO database, with no extra steps and no first-run download.
 
-### Arm the snapshot ONLY on a fresh datadir — this needs an entrypoint script
+**Bundle the manifest as the snapshot's sibling, under the manifest's own filename.**
+The daemon probes `<snapshot_path>.manifest.json`, and `ValidateSnapshotManifestPreflight`
+compares the on-disk filename with the manifest's `snapshot_file` field. The published
+manifest declares `snapshot_file: "mainnet-snapshot.dat"`, so the image installs the
+snapshot as `/opt/dinero/mainnet-snapshot.dat` with the manifest at
+`/opt/dinero/mainnet-snapshot.dat.manifest.json`. Any other naming either silently
+downgrades to `[WARNING] No snapshot manifest configured` (manifest not found) or hard-
+fails the load with `Snapshot manifest snapshot_file mismatch` (manifest found, name
+wrong). The install name is an `ARG` and the build asserts it equals the manifest's
+`snapshot_file`, so drift fails the build instead of every fresh container.
 
-From `qt/src/main.cpp:105`: *"On an existing datadir we must NOT pass the snapshot
-(the node is past it)."* And per PR #393, arming a snapshot without
-`--assumeutxo_forward_connect=1` holds the active tip at the snapshot base for the
-whole genesis→base validation, so a fresh node shows 0 confirmations for hours — the
-exact bug that shipped to Qt and DineroDPI users.
+**Pin the snapshot's source release independently of the daemon version.** The
+assumeutxo assets (`.dat`, `.manifest.json`, `SHA256SUMS-assumeutxo-73035`) were a
+one-off upload to v8.1.1; no workflow produces them, and v8.0.18 has none. Fetching
+them from `v${DINERO_VERSION}` would therefore 404 on the next release. `ARG
+SNAPSHOT_RELEASE=v8.1.1` fetches them from the release that actually has them, while
+the binaries still come from the version being built. The checksum file's height is
+derived from `SNAPSHOT_NAME` rather than hardcoded, so the two cannot drift.
 
-So a static `CMD` is not sufficient. `docker-entrypoint.sh`:
+### Arm the snapshot UNCONDITIONALLY and let the daemon decide
 
-1. If `/data` contains no existing chainstate → pass
-   `--assumeutxo_snapshot=/opt/dinero/snapshot.dat --assumeutxo_forward_connect=1`
-2. If `/data` is already initialised → pass neither
-3. `exec` dinerod so it is PID 1 and receives signals (clean `docker stop`)
+An earlier revision of this spec said "arm only on a fresh datadir", quoting
+`qt/src/main.cpp:105`: *"On an existing datadir we must NOT pass the snapshot (the node
+is past it)."* **That rule is wrong for the daemon and it bricks volumes.** The daemon
+has since grown a restart-restore path (`chainstate_service.cpp`, `[AssumeUTXO
+restore]`): when persisted AssumeUTXO metadata exists but the consensus UTXO state is
+not yet at the snapshot base, it *rehydrates from the configured `assumeutxo_snapshot`*
+— and if no path is configured, it logs
+
+    Persisted AssumeUTXO metadata exists, but consensus UTXO state is not at the
+    snapshot base and no assumeutxo_snapshot path is configured
+
+and exits 2, on that start and on every start after it. There is no recovery short of
+deleting the volume. A container restarted during first-run sync — host reboot,
+`docker compose down/up`, Ctrl-C, OOM, or `--restart unless-stopped` turning it into a
+crash loop — lands exactly there, because the daemon creates `/data/blocks` and
+`/data/blockchain` seconds into startup while the snapshot import only happens once
+headers reach height 73035, minutes later. Any "does the datadir look fresh?" heuristic
+based on those directories is therefore false for the whole window in which it matters.
+
+So `docker-entrypoint.sh` passes `--assumeutxo_snapshot=$DINERO_SNAPSHOT
+--assumeutxo_forward_connect=1` on **every** start, and the daemon's own preconditions
+decide:
+
+1. fresh datadir → deferred bootstrap arms (`[snapshot] pending`), imports when headers
+   reach the base
+2. existing datadir already past the base → `[snapshot] existing datadir (height N > 0)
+   — NOT auto-loading snapshot`; the flag is inert, no re-import
+3. existing datadir mid first-run sync → the restore path rehydrates from the flag
+   instead of dying
+4. a different-base or mismatched snapshot is still rejected loudly by the daemon's own
+   belts (base-height/hash peek, genesis-only UTXO precondition, manifest trust gate).
+   Note the behaviour change this implies for anyone mounting an existing bare-metal
+   datadir that was bootstrapped from a *different* snapshot (e.g. the 65300 anchor from
+   v8.0.17): the daemon now refuses to start rather than silently ignoring the configured
+   snapshot. That is the intended, safe outcome — but it is a refusal, not a warning.
+5. `exec` dinerod so it is PID 1 and receives signals (clean `docker stop`)
+
+`--assumeutxo_forward_connect=1` must accompany it: per PR #393, arming a snapshot
+without it holds the active tip at the snapshot base for the whole genesis→base
+validation, so a fresh node shows 0 confirmations for hours — the exact bug that
+shipped to Qt and DineroDPI users.
 
 ### Be a good network citizen by default
 
 - `-listen=1`, and **expose 20999/tcp** so the node accepts inbound peers
 - DNS seeding left **on** so peer discovery works out of the box
-- RPC bound to `0.0.0.0` **only inside the container**, and not published by the
-  documented one-liner — the README command maps the P2P port only, so RPC is not
-  exposed to the internet by an operator copying a command they did not read
+- RPC bound to `0.0.0.0` **only inside the container**, not published by the documented
+  one-liner, and **not `EXPOSE`d at all**. `EXPOSE` is not just documentation:
+  `docker run -P` publishes every `EXPOSE`d port on `0.0.0.0`, and unlike Bitcoin Core
+  there is no `rpcallowip` gate — `rpc_service.cpp` takes `rpcbind` literally — so an
+  `EXPOSE 20998` would put an unfiltered RPC on the internet for anyone who runs `-P`.
+  `docker exec` and containers on the same network reach RPC without it being exposed.
 - `VOLUME /data` so chain data survives `docker rm`
 - `dinero-cli` included, so `docker exec <c> dinero-cli getblockcount` works
 
@@ -116,11 +192,12 @@ So a static `CMD` is not sufficient. `docker-entrypoint.sh`:
 | File | Purpose |
 |---|---|
 | `Dockerfile` (repo root) | The image. Root so `docker build .` works and people find it. |
-| `docker-entrypoint.sh` | Fresh-datadir detection and snapshot arming. |
-| `.github/workflows/docker-publish.yml` | Build + push on release tag. |
+| `docker-entrypoint.sh` | Base flags and unconditional snapshot arming. |
+| `Dockerfile.dockerignore` | Per-Dockerfile context override; the root `.dockerignore` blanket-ignores `*.sh`. |
+| `.github/workflows/docker-publish.yml` | Build + run-check + push on a `v8.*` release. |
 | `README.md` (edit) | The one-liner, in the node-running section. |
 
-`ops/Dockerfile` and `.dockerignore` are not modified.
+`ops/Dockerfile` and the root `.dockerignore` are not modified.
 
 ## Publishing
 
@@ -131,9 +208,25 @@ Both registries, from one workflow:
 - **GHCR** `ghcr.io/dinerolabs/dinero-v8` — always-available mirror, authenticates
   with the existing `GITHUB_TOKEN`.
 
-Triggered on published release, tagged with both the release version and `latest`.
-Without CI the published image goes stale the moment the next version ships and
-someone has to remember to rebuild; that is exactly how an official image loses trust.
+Triggered on published release. Without CI the published image goes stale the moment
+the next version ships and someone has to remember to rebuild; that is exactly how an
+official image loses trust.
+
+**Guard the trigger on `v8.*`.** The repo also publishes `dinerodpi-v*` releases, which
+carry no `dinero-linux-x86_64-*` asset; `${GITHUB_REF_NAME#v}` leaves such a tag intact
+and the build would curl a 404 and go red on every DPI release. `on: release` cannot be
+tag-filtered, so the job carries
+`if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v8.')`
+— the same intent as `linux-release.yml`'s `tags: ['v8.*']`.
+
+**Gate `:latest` separately.** It is pushed only for a real, non-draft, non-prerelease
+`v8.*` release. A `workflow_dispatch` rebuild of an older version pushes the version tag
+only, so `latest` can never be moved backwards by a manual run.
+
+**Run the binary before pushing.** The runner is native amd64, so `load: true`, then
+`docker run --rm --entrypoint /usr/local/bin/dinerod <img> --version`, then push. A
+build check alone would have shipped this branch's own missing-shared-library bug; the
+image only has to start once to catch that class.
 
 Docker Hub requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets.
 The workflow must skip the Docker Hub push (not fail the job) when they are absent, so
@@ -142,8 +235,23 @@ a fork or a secretless run still publishes to GHCR.
 ## The one-liner
 
 ```bash
-docker run -d --name dinero -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
+docker run -d --name dinero --stop-timeout 60 \
+  --log-opt max-size=50m --log-opt max-file=3 \
+  -v dinero-data:/data -p 20999:20999 dinerolabs/dinerod
 ```
+
+`--stop-timeout 60`: a clean shutdown takes roughly 12 seconds and Docker's default
+grace period is 10, so the default would `SIGKILL` the daemon mid-shutdown against a
+live chain DB on every stop.
+
+`--log-opt`: the node logs at roughly 0.8-1 GB/hour (measured twice: 41 MB in ~3 minutes,
+and 39,184,716 bytes / 630,084 lines in 2 min 26 s) and Docker's default `json-file`
+driver never rotates. A
+README that promises no multi-gigabyte UTXO database must not quietly write
+multi-gigabyte logs instead.
+
+This one-liner appears in three places — README, the `Dockerfile` header comment, and
+here. Keep them byte-identical.
 
 Named volume rather than a bind mount: the image runs as non-root, and a bind-mounted
 host directory owned by root fails with permission denied — the most common first-run
@@ -159,12 +267,32 @@ than none.
    within minutes, and `getblockchaininfo` reports `assumeutxo_active`.
 3. **Peer connectivity** — `getconnectioncount` > 0, proving DNS seeding works from a
    clean container. This is what the existing `ops/Dockerfile` would fail.
-4. **Restart safety** — stop and restart the container; confirm the snapshot is NOT
-   re-armed on the now-populated datadir, and the node resumes rather than restarting
-   sync. This is the entrypoint's core logic and the one most likely to regress.
-5. Data survives `docker rm` + re-run against the same named volume.
-6. `docker exec dinero dinero-cli getblockcount` works.
-7. `docker stop` exits promptly and cleanly (signal handling / PID 1).
+4. **Restart safety, already-synced** — stop and restart a container whose datadir is
+   already past the snapshot base, with the flag present (it always is). The node must
+   resume, log `[snapshot] existing datadir (height N > 0) — NOT auto-loading snapshot`,
+   and neither re-import nor error.
+5. **Restart safety during first-run sync** — the regression that matters. Fresh volume,
+   restart the container repeatedly across the first few minutes. The node must survive
+   every restart and still reach the tip. It must never log `no assumeutxo_snapshot path
+   is configured` or exit 2; that state is unrecoverable without deleting the volume.
+
+   Aim at the right window. A restart in the first seconds is **benign** — no AssumeUTXO
+   metadata has been persisted yet, and the node simply re-arms the deferred bootstrap.
+   The window that reproduces is the minutes *after* `[LoadSnapshot]` completes but
+   before the consensus UTXO / forest state is durably at the base; its signature on the
+   next boot is `[AssumeUTXO restore] Consensus UTXO set is not at snapshot base
+   (utxo-tip=...@0, snapshot=...@73035)`. Measured: a restart at t=31s on a fresh volume
+   landed there.
+
+   Prove the failure mode is real rather than assuming it: start `dinerod` on that same
+   datadir *without* `--assumeutxo_snapshot` — what the old "existing datadir" branch
+   did — and watch it exit 2 in about a second.
+6. **Manifest trust gate engages** — a fresh run logs `[LoadSnapshot] Manifest trust
+   gate passed: /opt/dinero/mainnet-snapshot.dat.manifest.json` and does NOT log
+   `No snapshot manifest configured`.
+7. Data survives `docker rm` + re-run against the same named volume.
+8. `docker exec dinero dinero-cli getblockcount` works.
+9. `docker stop` exits promptly and cleanly (signal handling / PID 1).
 
 ## Out of scope
 
