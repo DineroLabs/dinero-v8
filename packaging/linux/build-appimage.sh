@@ -55,7 +55,11 @@ if [ ! -x "${DINERO_QT}" ]; then
     echo "Build it with: cmake --build ${BUILD_DIR} --target dinero-qt -j6" >&2
     exit 1
 fi
-DAEMON_BINS=(dinerod dinero-cli dinero-miner dinero-stratum-worker dinero-wallet-cli)
+# dinero-gpu-miner and dinero-seeder are part of the shipped desktop stack --
+# the macOS .app embeds both, and the Qt GUI exposes GPU mining plus a Start
+# Seeder control. Omitting them here meant the Linux desktop bundle silently
+# shipped without the GPU miner users are told to mine with.
+DAEMON_BINS=(dinerod dinero-cli dinero-miner dinero-stratum-worker dinero-wallet-cli dinero-gpu-miner)
 for b in "${DAEMON_BINS[@]}"; do
     if [ ! -x "${BUILD_DIR}/${b}" ]; then
         echo "ERROR: ${b} not found at ${BUILD_DIR}/${b}" >&2
@@ -67,6 +71,29 @@ if [ ! -x "${SOLO_MINER}" ]; then
     echo "ERROR: dinero-solo-miner not found at ${SOLO_MINER}" >&2
     exit 1
 fi
+# Like the solo miner, the seeder builds into its own subdirectory.
+SEEDER="${BUILD_DIR}/seeder/dinero-seeder"
+if [ ! -x "${SEEDER}" ]; then
+    echo "ERROR: dinero-seeder not found at ${SEEDER}" >&2
+    echo "Build it with: cmake --build ${BUILD_DIR} --target dinero-seeder" >&2
+    exit 1
+fi
+
+# SV2 pool miners come from the separate Rust repo (DineroLabs/dinero-sv2),
+# built to target/release/. They are NOT produced by this project's CMake, so
+# a missing checkout silently yields a bundle with no pool miners -- which is
+# exactly how the first v8.1.1 macOS build shipped without them. Fail loudly
+# instead, and allow an explicit override for out-of-tree checkouts.
+SV2_ROOT="${DINERO_SV2_SOURCE_ROOT:-${PROJECT_ROOT}/../dinero-sv2}"
+SV2_BINS=(dinero-sv2-miner dinero-sv2-gpu-miner)
+for b in "${SV2_BINS[@]}"; do
+    if [ ! -x "${SV2_ROOT}/target/release/${b}" ]; then
+        echo "ERROR: ${b} not found at ${SV2_ROOT}/target/release/${b}" >&2
+        echo "Clone DineroLabs/dinero-sv2 and run: cargo build --release" >&2
+        echo "Or point DINERO_SV2_SOURCE_ROOT at an existing checkout." >&2
+        exit 1
+    fi
+done
 
 # Reset AppDir
 rm -rf "${APPDIR}"
@@ -82,6 +109,35 @@ for b in "${DAEMON_BINS[@]}"; do
     cp "${BUILD_DIR}/${b}" "${APPDIR}/usr/bin/${b}"
 done
 cp "${SOLO_MINER}" "${APPDIR}/usr/bin/dinero-solo-miner"
+cp "${SEEDER}" "${APPDIR}/usr/bin/dinero-seeder"
+for b in "${SV2_BINS[@]}"; do
+    cp "${SV2_ROOT}/target/release/${b}" "${APPDIR}/usr/bin/${b}"
+done
+
+# Assert the shipped binary set. Both bugs this guard exists for were SILENT:
+# build-appimage.sh simply never listed dinero-gpu-miner/dinero-seeder, and the
+# macOS build resolved an SV2 path that did not exist and bundled nothing. In
+# both cases packaging reported success while shipping an incomplete wallet.
+# Bundling "whatever resolved" is not a release contract; this is.
+EXPECTED_BINS=(
+    dinerod dinero-cli dinero-qt dinero-seeder
+    dinero-miner dinero-solo-miner dinero-gpu-miner
+    dinero-stratum-worker dinero-wallet-cli
+    dinero-sv2-miner dinero-sv2-gpu-miner
+)
+missing=0
+for b in "${EXPECTED_BINS[@]}"; do
+    if [ ! -x "${APPDIR}/usr/bin/${b}" ]; then
+        echo "ERROR: expected binary missing from bundle: ${b}" >&2
+        missing=1
+    fi
+done
+if [ "${missing}" -ne 0 ]; then
+    echo "The desktop bundle is incomplete. Either build the missing target or" >&2
+    echo "remove it from EXPECTED_BINS deliberately -- do not ship silently." >&2
+    exit 1
+fi
+echo "Bundle contains all ${#EXPECTED_BINS[@]} expected binaries."
 
 # Icon. The qt/ subdir's Dinero.png is the canonical 1024x1024 source
 # that the macOS .icns and Windows .ico are regenerated from. linuxdeploy
