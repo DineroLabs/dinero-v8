@@ -41,16 +41,38 @@ and untouched**. This spec adds a separate, purpose-built image.
 
 ### Install the official release; do not compile
 
-The v8.1.1 release already publishes `dinero-core-8.1.1-linux-x86_64.tar.gz` (16 MB),
-`dinero-cli-8.1.1-linux-x86_64.tar.gz` (0.2 MB), and `SHA256SUMS-linux-x86_64-8.1.1`.
+The v8.1.1 release publishes `dinero-linux-x86_64-8.1.1.tar.gz` (14.9 MB), which
+contains **both** `dinerod` and `dinero-cli`.
 
-Downloading and checksum-verifying those beats compiling in-image:
+**Use that bundle, not the separate `dinero-core`/`dinero-cli` tarballs.** Verified
+empirically: `SHA256SUMS-linux-x86_64-8.1.1` contains exactly **3 entries** — the
+bundle tarball, `dinero-linux-x86_64-8.1.1/dinerod`, and
+`dinero-linux-x86_64-8.1.1/dinero-cli`. The `dinero-core-*` and `dinero-cli-*`
+tarballs are **not covered by any published checksum**, so they cannot be verified.
+The bundle is one download, both binaries, and checksum-verifiable.
+
+Downloading and checksum-verifying that beats compiling in-image:
 
 - builds in seconds instead of a long C++ compile
 - final image is small (~50 MB) with no build toolchain in it
 - ships **the exact signed artifacts** a human would download, so the container and
   the manual install are the same binaries
 - the SHA256 verification is a real supply-chain check, and it fails the build loudly
+
+### Runtime base must be debian-slim, NOT distroless
+
+`dinerod`'s `DT_NEEDED` list, read from the shipped v8.1.1 ELF, is:
+
+    libminiupnpc.so.17  libnatpmp.so.1  libudev.so.1
+    libstdc++.so.6  libm.so.6  libgcc_s.so.1  libc.so.6  ld-linux-x86-64.so.2
+
+`gcr.io/distroless/cc` supplies only the last five. **A distroless image would build
+successfully and then fail to start**, which is why `ops/Dockerfile`'s distroless base
+is not reused. Runtime is `debian:12-slim` with `libminiupnpc17`, `libnatpmp1` and
+`libudev1` installed, running as a non-root user.
+
+Note there is no `libssl` or `libsqlite3` dependency — those are linked statically —
+so the runtime layer stays small.
 
 Trade-off: the image can only be built for platforms with published release assets.
 Assets are **linux-x86_64 only**, so this image is **amd64-only**. arm64 (Raspberry Pi,
