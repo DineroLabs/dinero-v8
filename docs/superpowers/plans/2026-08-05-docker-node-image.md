@@ -4,7 +4,7 @@
 
 **Goal:** Let a stranger run a validating Dinero node with one `docker run`, syncing to the tip in minutes via a bundled AssumeUTXO snapshot.
 
-**Architecture:** Two-stage Dockerfile. Stage 1 downloads the official v8.1.1 release bundle and the AssumeUTXO snapshot from GitHub Releases and verifies both against published SHA256SUMS. Stage 2 is `debian:12-slim` with only the three shared libraries `dinerod` actually needs. An entrypoint script arms the snapshot **only** on a fresh datadir, then `exec`s dinerod as PID 1.
+**Architecture:** Two-stage Dockerfile. Stage 1 downloads the official v8.1.1 release bundle and the AssumeUTXO snapshot from GitHub Releases and verifies both against published SHA256SUMS. Stage 2 is `debian:13-slim` (bookworm's glibc 2.36 is too old) with the one shared library `dinerod` actually needs. An entrypoint script arms the snapshot **only** on a fresh datadir, then `exec`s dinerod as PID 1.
 
 **Tech Stack:** Docker (BuildKit), debian:12-slim, POSIX shell, GitHub Actions.
 
@@ -17,7 +17,18 @@ All values below were verified empirically against the shipped v8.1.1 artifacts.
 - **`SHA256SUMS-linux-x86_64-8.1.1` has exactly 3 entries:** the bundle tarball, and the two binaries by their in-tarball paths. So run `sha256sum -c` **after** extracting, when all three paths exist.
 - **Snapshot:** `dinero-assumeutxo-73035-v4.dat` (27 MB) + `dinero-assumeutxo-73035-v4.manifest.json`, verified by `SHA256SUMS-assumeutxo-73035` (2 entries).
 - **Height 73035 IS a compiled-in trust anchor in v8.1.1** (`src/consensus/assume_utxo.cpp:100`), so the daemon will accept this snapshot. Do not swap in a different height.
-- **Runtime deps (from `dinerod`'s DT_NEEDED):** `libminiupnpc.so.17`, `libnatpmp.so.1`, `libudev.so.1`, plus libstdc++/libm/libgcc_s/libc. Debian 12 packages: `libminiupnpc17`, `libnatpmp1`, `libudev1`. **distroless will NOT work** — it lacks the first three.
+- **⚠️ CORRECTED 2026-08-05 (both were plan errors, found during Task 1):**
+  - **Runtime base is `debian:13-slim`, NOT `debian:12-slim`.** The bundle binary requires
+    **GLIBC_2.38** and **GLIBCXX_3.4.32**; Debian 12 (bookworm) ships glibc 2.36 and cannot
+    run it — the image builds and then dies with `GLIBC_2.38 not found`. Debian 13 (trixie)
+    ships glibc 2.41 / GCC 14. `ubuntu:24.04` also works (glibc 2.39) if a base change is
+    ever needed.
+  - **Runtime deps are `libudev.so.1` ONLY** (plus libstdc++/libm/libgcc_s/libc from the
+    base). `libminiupnpc`/`libnatpmp` are **NOT** in the bundle binary's DT_NEEDED. The
+    original list was read from `dinero-core-8.1.1/dinerod`; the plan then switched to
+    `dinero-linux-x86_64-8.1.1.tar.gz`, and those are **different builds**. Verified on the
+    bundle binary. Debian package: `libudev1`.
+  - **distroless still will NOT work** — it lacks `libudev.so.1` and ships an older glibc.
 - **No libssl/libsqlite3 dependency** — statically linked.
 - **Ports:** RPC `20998`, P2P `20999`, WS `21001` (`include/crypto/config.h:11-12`).
 - **Fresh-datadir rule, copied from `qt/src/main.cpp:105-107`:** fresh = `datadir/blocks` does NOT exist AND `datadir/blockchain` does NOT exist. On a non-fresh datadir the snapshot MUST NOT be passed.
@@ -98,7 +109,7 @@ ARG DINERO_VERSION=8.1.1
 ARG SNAPSHOT_NAME=dinero-assumeutxo-73035-v4
 
 # ---------- stage 1: fetch + verify ----------
-FROM debian:12-slim AS fetch
+FROM debian:13-slim AS fetch
 ARG DINERO_VERSION
 ARG SNAPSHOT_NAME
 
@@ -127,7 +138,7 @@ RUN set -eux; \
     chmod +x /out/dinerod /out/dinero-cli
 
 # ---------- stage 2: runtime ----------
-FROM debian:12-slim
+FROM debian:13-slim
 ARG DINERO_VERSION
 
 LABEL org.opencontainers.image.title="Dinero Full Node"
@@ -137,10 +148,11 @@ LABEL org.opencontainers.image.documentation="https://github.com/DineroLabs/dine
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.version="${DINERO_VERSION}"
 
-# Exactly dinerod's DT_NEEDED set beyond libc/libstdc++ — distroless lacks these three.
+# dinerod's only DT_NEEDED beyond libc/libstdc++ is libudev. debian:13 (not 12) is
+# required: the binary needs GLIBC_2.38 / GLIBCXX_3.4.32; bookworm ships glibc 2.36.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      libminiupnpc17 libnatpmp1 libudev1 ca-certificates \
+      libudev1 ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --create-home --home-dir /data dinero
 
