@@ -72,7 +72,10 @@ for a in "$@"; do
     esac
 done
 
-echo "[entrypoint] datadir=$DATADIR rpcbind=$RPCBIND assumeutxo_snapshot=$snapshot_armed assumeutxo_forward_connect=$forward_connect"
+# NOTE the field name: rpcbind_default reports what THIS script set, which a trailing
+# user-supplied -rpcbind= would override. The two assumeutxo fields are derived from the
+# final argv and cannot disagree with it; this one deliberately does not claim to be.
+echo "[entrypoint] datadir=$DATADIR rpcbind_default=$RPCBIND assumeutxo_snapshot=$snapshot_armed assumeutxo_forward_connect=$forward_connect"
 if [ "$snapshot_armed" = no ]; then
     echo "[entrypoint] no snapshot armed (looked for $SNAPSHOT) — the daemon will sync from genesis"
 fi

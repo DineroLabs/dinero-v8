@@ -169,7 +169,7 @@ sleep 20
 docker logs dinero-test 2>&1 | head -30
 ```
 
-Expected: log contains `[entrypoint] datadir=/data rpcbind=127.0.0.1 assumeutxo_snapshot=yes assumeutxo_forward_connect=yes` (the entrypoint no longer echoes the argument vector — pre-merge correction 4; the flags themselves are asserted mechanically by the workflow's "Restart-regression check" step, which captures the argv `dinerod` actually receives). On a fresh datadir the daemon then logs `[snapshot] pending — base height 73035 ...`, and `[LoadSnapshot] Manifest trust gate passed: /opt/dinero/mainnet-snapshot.dat.manifest.json` when it imports (never `No snapshot manifest configured`).
+Expected: log contains `[entrypoint] datadir=/data rpcbind_default=127.0.0.1 assumeutxo_snapshot=yes assumeutxo_forward_connect=yes` (the entrypoint no longer echoes the argument vector — pre-merge correction 4; the flags themselves are asserted mechanically by the workflow's "Restart-regression check" step, which captures the argv `dinerod` actually receives). On a fresh datadir the daemon then logs `[snapshot] pending — base height 73035 ...`, and `[LoadSnapshot] Manifest trust gate passed: /opt/dinero/mainnet-snapshot.dat.manifest.json` when it imports (never `No snapshot manifest configured`).
 
 - [ ] **Step 2: Confirm the snapshot was accepted, not rejected**
 
