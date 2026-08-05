@@ -93,8 +93,8 @@ jobs:
             -DDINERO_ENABLE_PORTMAPPING=OFF \
             -DDINERO_RELEASE_TAG=${{ steps.ver.outputs.version }}
 
-      - name: Build daemon, CLI, and solo miner
-        run: cmake --build build-cuda --target dinerod dinero-cli dinero-solo-miner-cli -j"$(nproc)"
+      - name: Build daemon, CLI, and GPU miner
+        run: cmake --build build-cuda --target dinerod dinero-cli dinero-gpu-miner -j"$(nproc)"
 
       - name: Assert OpenSSL policy pin (3.5.7)
         run: bash scripts/ci/check_openssl_version.sh build-cuda 3.5.7
@@ -120,7 +120,7 @@ jobs:
           OUT="dinero-linux-x86_64-cuda-$V"
           mkdir -p "$OUT"
           cp build-cuda/dinerod build-cuda/dinero-cli "$OUT/"
-          if [ -f build-cuda/dinero-solo-miner-cli ]; then cp build-cuda/dinero-solo-miner-cli "$OUT/"; fi
+          if [ -f build-cuda/dinero-gpu-miner ]; then cp build-cuda/dinero-gpu-miner "$OUT/"; fi
           strip "$OUT"/* || true
           tar -czf "$OUT.tar.gz" "$OUT"
           sha256sum "$OUT.tar.gz" "$OUT"/* > "SHA256SUMS-linux-x86_64-cuda-$V"
