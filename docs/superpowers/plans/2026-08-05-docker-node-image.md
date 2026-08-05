@@ -6,7 +6,7 @@
 
 **Architecture:** Two-stage Dockerfile. Stage 1 downloads the official v8.1.1 release bundle and the AssumeUTXO snapshot from GitHub Releases and verifies both against published SHA256SUMS. Stage 2 is `debian:13-slim` (bookworm's glibc 2.36 is too old) with the one shared library `dinerod` actually needs. An entrypoint script arms the snapshot **only** on a fresh datadir, then `exec`s dinerod as PID 1.
 
-**Tech Stack:** Docker (BuildKit), debian:12-slim, POSIX shell, GitHub Actions.
+**Tech Stack:** Docker (BuildKit), debian:13-slim, POSIX shell, GitHub Actions.
 
 ## Global Constraints
 
@@ -180,7 +180,7 @@ cd /Users/haydarevich/src/dinero-v8-docker
 docker build --platform linux/amd64 -t dinerod:test .
 ```
 
-Expected: build succeeds. If `apt-get install` fails on a package name, that is a real finding — report the exact name rather than guessing a substitute.
+Expected: build succeeds. If `apt-get install` fails on a package name, that is a real finding — report the exact name rather than guessing a substitute. Then confirm the binary actually RUNS: `docker run --rm --platform linux/amd64 --entrypoint /usr/local/bin/dinerod dinerod:test --version`. A build that succeeds but cannot execute (glibc too old) is a failure.
 
 - [ ] **Step 4: Prove the checksum gate actually fires**
 
