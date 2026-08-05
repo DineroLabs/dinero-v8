@@ -1214,20 +1214,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_wallet_reject_rollback.sh)
     message(STATUS "  ✓ ShieldedWalletRejectRollback (#321) registered")
 endif()
 
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_exportseed_fail_closed.sh)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_authoritative_mnemonic.sh)
     add_test(
-        NAME WalletExportSeedFailClosed
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_exportseed_fail_closed.sh
+        NAME WalletAuthoritativeMnemonic
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_authoritative_mnemonic.sh
     )
     # Deliberately not integration-labeled: this short daemon test must execute
     # in the main CI ctest lane instead of disappearing behind label exclusion.
-    set_tests_properties(WalletExportSeedFailClosed PROPERTIES
+    set_tests_properties(WalletAuthoritativeMnemonic PROPERTIES
         ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "wallet;backup;regression;e2e"
-        TIMEOUT 120
+        TIMEOUT 240
         RUN_SERIAL TRUE
     )
-    message(STATUS "  ✓ WalletExportSeedFailClosed (#518) registered")
+    message(STATUS "  ✓ WalletAuthoritativeMnemonic (#520) registered")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_multi_e2e.sh)
@@ -1889,7 +1889,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         ShieldedRpcTransferEndToEnd ShieldedRpcTransferMultiEndToEnd
         ShieldedRpcGetAddress ShieldedRpcTransferAddressedEndToEnd
         ShieldedRpcTransferAddressedDetectEndToEnd
-        WalletExportSeedFailClosed
+        WalletAuthoritativeMnemonic
         ShieldedTipMarkerRestartEquivalence
         ShieldedDaemonRestartEquivalence
         ShieldedTipPersistRestartEquivalence

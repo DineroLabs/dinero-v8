@@ -74,6 +74,12 @@ struct CovenantDescriptorRecord {
     int64_t created_at = 0;
 };
 
+struct Bip39RecoveryMaterial {
+    std::string mnemonic;
+    bool passphrase_required = false;
+    bool backup_acknowledged = false;
+};
+
 // Week 1 Day 5: WalletManager now implements WalletKeyStore interface
 // This enables IsMine logic to query wallet keys for script ownership
 class WalletManager : public WalletNotifier, public dinero::wallet::WalletKeyStore {
@@ -94,6 +100,9 @@ public:
     bool exists(const std::string& name) const;
 
     void create(const std::string& name);
+    void createFromBip39(const std::string& name,
+                         const std::string& mnemonic,
+                         const std::string& bip39_passphrase);
     void open(const std::string& name);
     void unload();
     void rename(const std::string& oldName, const std::string& newName);
@@ -320,7 +329,8 @@ public:
     bool storeUnencryptedWallet(
         const std::string& wallet_name,
         const std::vector<uint8_t>& seed,
-        uint32_t master_fingerprint
+        uint32_t master_fingerprint,
+        bool seed_already_stored = false
     );
     
     // Balance calculation from database
@@ -829,7 +839,43 @@ public:
                          const std::string& passphrase,
                          bool reset_address_state = true);
 
+    /**
+     * Persist the entropy behind an authoritative BIP39 mnemonic.
+     *
+     * The entropy is AES-GCM sealed under a domain-separated key derived from
+     * the active WalletManager seed. The supplied mnemonic/passphrase must
+     * reproduce that exact seed before anything is written. Raw-seed legacy
+     * wallets therefore cannot acquire a fabricated mnemonic.
+     */
+    bool storeAuthoritativeBip39Mnemonic(const std::string& mnemonic,
+                                         const std::string& bip39_passphrase,
+                                         std::string* error_out = nullptr);
+
+    /**
+     * Load and authenticate the mnemonic bound to the active wallet seed.
+     * Encrypted wallets must be unlocked first. Returns nullopt for legacy
+     * raw-seed wallets, locked wallets, or corrupt/mismatched records.
+     */
+    std::optional<Bip39RecoveryMaterial> loadAuthoritativeBip39Mnemonic(
+        std::string* error_out = nullptr) const;
+
+    bool hasAuthoritativeBip39Mnemonic() const;
+
+    /**
+     * Record that a client re-presented the exact authoritative mnemonic.
+     * Passphrase-backed wallets additionally require explicit confirmation
+     * that the separate BIP39 passphrase was backed up.
+     */
+    bool acknowledgeBip39Backup(const std::string& mnemonic,
+                                bool passphrase_backed_up,
+                                std::string* error_out = nullptr);
+
 private:
+    void createWithInitialSeed(const std::string& name,
+                               const std::vector<uint8_t>& initial_master_seed,
+                               const std::string* authoritative_mnemonic,
+                               const std::string& bip39_passphrase);
+
 #ifdef FFI_WALLET_ONLY
     std::string dataDir_;
 #else

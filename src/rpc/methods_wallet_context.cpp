@@ -862,6 +862,24 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         result["locked"] = mgr.isWalletLocked();
         result["unlocked"] = !mgr.isWalletLocked();
 
+        // Recovery status is intentionally non-secret so GUI/DineroDPI can
+        // warn before a legacy raw-seed wallet receives more funds.
+        const bool mnemonic_backed = mgr.hasAuthoritativeBip39Mnemonic();
+        const bool backup_acknowledged =
+            mnemonic_backed && mgr.getSetting("bip39_backup_acknowledged") == "1";
+        result["mnemonic_backup_available"] = mnemonic_backed;
+        result["backup_acknowledged"] = backup_acknowledged;
+        result["backup_required"] = !backup_acknowledged;
+        result["recovery_status"] = !mnemonic_backed
+            ? "legacy_raw_seed"
+            : (backup_acknowledged ? "mnemonic_acknowledged" : "mnemonic_backup_required");
+        if (!mnemonic_backed) {
+            result["recovery_warning"] =
+                "No authoritative mnemonic exists for this wallet. Stop the daemon and preserve "
+                "the active wallet database as the exact identity backup, then migrate funds to "
+                "a mnemonic-backed wallet.";
+        }
+
         // Scanning status (future: rescan progress tracking)
         result["scanning"] = false;
 
@@ -2209,6 +2227,21 @@ din::Json rpc_context_wallet_getinfo(const ExecutionContext& ctx, const din::Jso
             result["locked"] = mgr.isWalletLocked();
             result["hd_enabled"] = true;  // All Dinero wallets are HD (BIP86)
             result["unlocked"] = !mgr.isWalletLocked();
+
+            const bool mnemonic_backed = mgr.hasAuthoritativeBip39Mnemonic();
+            const bool backup_acknowledged =
+                mnemonic_backed && mgr.getSetting("bip39_backup_acknowledged") == "1";
+            result["mnemonic_backup_available"] = mnemonic_backed;
+            result["backup_acknowledged"] = backup_acknowledged;
+            result["backup_required"] = !backup_acknowledged;
+            result["recovery_status"] = !mnemonic_backed
+                ? "legacy_raw_seed"
+                : (backup_acknowledged ? "mnemonic_acknowledged" : "mnemonic_backup_required");
+            if (!mnemonic_backed) {
+                result["recovery_warning"] =
+                    "No authoritative mnemonic exists for this wallet. Preserve the active wallet "
+                    "database as the exact backup and migrate funds to a mnemonic-backed wallet.";
+            }
 
             auto balance = mgr.getBalance();
             result["balance"] = balance.total;
@@ -6091,7 +6124,9 @@ din::Json rpc_context_wallet_importprivkey(const ExecutionContext& ctx, const di
  *
  * Params: none
  *
- * Returns: {mnemonic: "word1 word2 ..."}
+ * Returns an authenticated mnemonic only when the active WalletManager seed
+ * was created/restored from that exact BIP39 material. Legacy raw-seed wallets
+ * remain fail-closed because no equivalent mnemonic can be reconstructed.
  */
 din::Json rpc_context_wallet_exportseed(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
@@ -6107,19 +6142,91 @@ din::Json rpc_context_wallet_exportseed(const ExecutionContext& ctx, const din::
         return result;
     }
 
-    // Runtime wallet identity lives in WalletManager's persisted master seed.
-    // The separately-wired legacy HDWallet sidecar is not an authority for that
-    // identity and can contain unrelated recovery material. Never present its
-    // mnemonic as a backup for the active wallet. Runtime wallets intentionally
-    // require users to retain the mnemonic shown at creation/restore time.
     (void)params;
-    result["error"] =
-        "Mnemonic export is unavailable: runtime wallets do not persist "
-        "mnemonic sidecar files.";
-    result["suggestion"] =
-        "Use a previously verified offline seed backup. If none exists, create "
-        "a new wallet with a verified backup and transfer funds before removing "
-        "this wallet.";
+    std::string recovery_error;
+    auto material = wallet_service->get().loadAuthoritativeBip39Mnemonic(&recovery_error);
+    if (!material.has_value()) {
+        result["error"] = "Mnemonic export is unavailable: " + recovery_error;
+        result["suggestion"] =
+            "Stop the daemon and preserve wallets/wallet_<name>.db as the exact active identity "
+            "backup. This legacy raw seed cannot be converted to BIP39. Create a mnemonic-backed "
+            "wallet, verify its recovery material, and transfer funds before retiring this wallet.";
+        return result;
+    }
+
+    result["mnemonic"] = material->mnemonic;
+    result["authoritative"] = true;
+    result["wallet_name"] = wallet_service->getCurrentWalletName();
+    result["backup_acknowledged"] = material->backup_acknowledged;
+    result["backup_required"] = !material->backup_acknowledged;
+    result["passphrase_required"] = material->passphrase_required;
+    if (material->passphrase_required) {
+        result["warning"] =
+            "This mnemonic does not restore the wallet without the separate BIP39 passphrase. "
+            "The passphrase is intentionally not stored by Dinero.";
+    }
+    return result;
+}
+
+/**
+ * wallet.acknowledgeseedbackup - Confirm possession of active recovery material
+ *
+ * Params:
+ *   [0] mnemonic (required)
+ *   [1] passphrase_backed_up (required true for passphrase-backed wallets)
+ */
+din::Json rpc_context_wallet_acknowledgeseedbackup(const ExecutionContext& ctx,
+                                                   const din::Json& params) {
+    din::Json result;
+
+    if (!ctx.daemon || !ctx.daemon->wallet) {
+        result["error"] = "Wallet service not available";
+        return result;
+    }
+
+    auto wallet_service = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+    if (!wallet_service || !wallet_service->hasActiveWallet()) {
+        result["error"] = "No active wallet";
+        return result;
+    }
+
+    std::string mnemonic;
+    bool passphrase_backed_up = false;
+    if (params.isArray()) {
+        if (!params.empty() && params[0].is<std::string>()) {
+            mnemonic = params[0].as<std::string>();
+        }
+        if (params.size() > 1 && params[1].isBool()) {
+            passphrase_backed_up = params[1].asBool();
+        }
+    } else if (params.isObject()) {
+        if (params.isMember("mnemonic") && params["mnemonic"].is<std::string>()) {
+            mnemonic = params["mnemonic"].as<std::string>();
+        }
+        if (params.isMember("passphrase_backed_up") &&
+            params["passphrase_backed_up"].isBool()) {
+            passphrase_backed_up = params["passphrase_backed_up"].asBool();
+        }
+    }
+
+    if (mnemonic.empty()) {
+        result["error"] =
+            "Usage: wallet.acknowledgeseedbackup {mnemonic, passphrase_backed_up?}";
+        return result;
+    }
+
+    std::string recovery_error;
+    const bool acknowledged = wallet_service->get().acknowledgeBip39Backup(
+        mnemonic, passphrase_backed_up, &recovery_error);
+    OPENSSL_cleanse(mnemonic.data(), mnemonic.size());
+    if (!acknowledged) {
+        result["error"] = "Backup acknowledgment failed: " + recovery_error;
+        return result;
+    }
+
+    result["success"] = true;
+    result["backup_acknowledged"] = true;
+    result["wallet_name"] = wallet_service->getCurrentWalletName();
     return result;
 }
 
@@ -6174,7 +6281,12 @@ din::Json rpc_context_wallet_dumpwallet(const ExecutionContext& ctx, const din::
         file << "# Wallet dump created by Dinero\n";
         file << "# * Created on " << std::ctime(&time);
         file << "# * Best block at time of backup was unknown\n";
-        file << "# * mnemonic available via wallet.exportmnemonic\n\n";
+        if (wallet.hasAuthoritativeBip39Mnemonic()) {
+            file << "# * authoritative mnemonic available via wallet.exportmnemonic\n\n";
+        } else {
+            file << "# * WARNING: no authoritative mnemonic exists for this legacy raw-seed wallet\n";
+            file << "# * This key dump is not a complete future-HD-identity backup; preserve the wallet database\n\n";
+        }
 
         // Export all addresses with their private keys
         auto addresses = wallet.getWalletAddresses();
@@ -8050,6 +8162,11 @@ void registerWalletMethodsContext() {
 
     g_rpcRegistry.registerHandler("wallet.exportseed",
                                  rpc_context_wallet_exportseed,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+
+    g_rpcRegistry.registerHandler("wallet.acknowledgeseedbackup",
+                                 rpc_context_wallet_acknowledgeseedbackup,
                                  RegisterMode::Overwrite,
                                  "context-aware");
 

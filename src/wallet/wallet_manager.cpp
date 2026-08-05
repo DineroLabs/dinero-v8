@@ -22,6 +22,7 @@
 #include "crypto/secure_random.h"
 #include "crypto/hd_keychain.h"  // For HD wallet key derivation
 #include "wallet/bip32_deriver.h"  // For BIP32 derivation (canonical engine)
+#include "wallet/bip39.h"
 #include "wallet/v7_p2mr_store.h"
 #include "crypto/pbkdf2.h"       // For key derivation from passphrase
 #include "crypto/wallet_crypto.h"// For AES-256-GCM encryption/decryption
@@ -215,6 +216,43 @@ static void secureClearString(std::string& data) {
 static constexpr bool kResetAddressStateDuringEncryption = false;
 static_assert(!kResetAddressStateDuringEncryption,
               "Wallet encryption must not reset address/derivation state");
+
+namespace {
+
+constexpr char kBip39RecoverySetting[] = "bip39_recovery_v1";
+constexpr char kBip39BackupAcknowledgedSetting[] = "bip39_backup_acknowledged";
+constexpr uint8_t kBip39RecoveryRecordVersion = 1;
+constexpr uint8_t kBip39PassphraseRequired = 1u << 0;
+constexpr size_t kBip39RecoveryNonceSize = 12;
+constexpr char kBip39RecoveryKeyDomain[] = "Dinero WalletManager BIP39 recovery v1";
+
+std::array<uint8_t, 32> DeriveBip39RecoveryKey(const std::vector<uint8_t>& seed) {
+    std::vector<uint8_t> material;
+    material.reserve(sizeof(kBip39RecoveryKeyDomain) - 1 + seed.size());
+    material.insert(material.end(),
+                    kBip39RecoveryKeyDomain,
+                    kBip39RecoveryKeyDomain + sizeof(kBip39RecoveryKeyDomain) - 1);
+    material.insert(material.end(), seed.begin(), seed.end());
+
+    std::array<uint8_t, 32> key{};
+    ::sha256(material.data(), material.size(), key.data());
+    OPENSSL_cleanse(material.data(), material.size());
+    return key;
+}
+
+bool ConstantTimeEqual(const std::vector<uint8_t>& lhs,
+                       const std::vector<uint8_t>& rhs) {
+    return lhs.size() == rhs.size() &&
+           CRYPTO_memcmp(lhs.data(), rhs.data(), lhs.size()) == 0;
+}
+
+void SetRecoveryError(std::string* error_out, const std::string& message) {
+    if (error_out) {
+        *error_out = message;
+    }
+}
+
+}  // namespace
 
 // Helper function to convert bytes to hex string
 static std::string bytesToHex(const uint8_t* bytes, size_t size) {
@@ -1556,6 +1594,47 @@ bool WalletManager::exists(const std::string& name) const {
 }
 
 void WalletManager::create(const std::string& name) {
+    std::vector<uint8_t> seed(64);
+    if (!CF_GenerateRandomBytes(seed.data(), seed.size())) {
+        throw std::runtime_error("Failed to generate initial HD wallet seed");
+    }
+    try {
+        createWithInitialSeed(name, seed, nullptr, "");
+    } catch (...) {
+        secureClearBytes(seed);
+        throw;
+    }
+    secureClearBytes(seed);
+}
+
+void WalletManager::createFromBip39(const std::string& name,
+                                    const std::string& mnemonic,
+                                    const std::string& bip39_passphrase) {
+    if (!bip39::ValidateMnemonic(mnemonic)) {
+        throw std::invalid_argument("Invalid BIP39 mnemonic");
+    }
+    std::vector<uint8_t> seed;
+    if (!bip39::MnemonicToSeed(mnemonic, bip39_passphrase, seed) || seed.size() != 64) {
+        secureClearBytes(seed);
+        throw std::runtime_error("Failed to derive BIP39 wallet seed");
+    }
+    try {
+        createWithInitialSeed(name, seed, &mnemonic, bip39_passphrase);
+    } catch (...) {
+        secureClearBytes(seed);
+        throw;
+    }
+    secureClearBytes(seed);
+}
+
+void WalletManager::createWithInitialSeed(
+    const std::string& name,
+    const std::vector<uint8_t>& initial_master_seed,
+    const std::string* authoritative_mnemonic,
+    const std::string& bip39_passphrase) {
+    if (initial_master_seed.size() != 64) {
+        throw std::invalid_argument("Initial wallet seed must be exactly 64 bytes");
+    }
     const std::string cleanName = sanitize(name);
     if (cleanName.empty()) {
         throw std::invalid_argument("Invalid wallet name");
@@ -1699,13 +1778,6 @@ void WalletManager::create(const std::string& name) {
         // Checkpoint WAL to ensure all changes are persisted to disk
         exec(new_wallet_db, "PRAGMA wal_checkpoint(FULL)");
 
-        // Create and persist an initial seed before first wallet open.
-        // This avoids opening a brand-new wallet in an uninitialized seed state.
-        std::vector<uint8_t> initial_master_seed(64);
-        if (!CF_GenerateRandomBytes(initial_master_seed.data(), initial_master_seed.size())) {
-            throw std::runtime_error("Failed to generate initial HD wallet seed");
-        }
-
         sqlite3* previous_db = db_;
         std::string previous_current = current_;
         int previous_wallet_id = current_wallet_id_;
@@ -1724,6 +1796,14 @@ void WalletManager::create(const std::string& name) {
             if (!storeMasterSeed(initial_master_seed, "", false)) {
                 throw std::runtime_error("Failed to persist initial HD wallet seed");
             }
+            if (authoritative_mnemonic) {
+                std::string recovery_error;
+                if (!storeAuthoritativeBip39Mnemonic(
+                        *authoritative_mnemonic, bip39_passphrase, &recovery_error)) {
+                    throw std::runtime_error(
+                        "Failed to persist initial BIP39 recovery material: " + recovery_error);
+                }
+            }
         } catch (...) {
             db_ = previous_db;
             current_ = previous_current;
@@ -1732,7 +1812,6 @@ void WalletManager::create(const std::string& name) {
             wallet_locked_ = previous_locked;
             master_seed_ = previous_master_seed;
             secureClearBytes(previous_master_seed);
-            secureClearBytes(initial_master_seed);
             throw;
         }
 
@@ -1743,7 +1822,6 @@ void WalletManager::create(const std::string& name) {
         wallet_locked_ = previous_locked;
         master_seed_ = previous_master_seed;
         secureClearBytes(previous_master_seed);
-        secureClearBytes(initial_master_seed);
 
         // Close the wallet DB (will be reopened by open())
         sqlite3_close(new_wallet_db);
@@ -2476,9 +2554,18 @@ bool WalletManager::registerWalletInRegistry(
 
     try {
         sqlite3_stmt* stmt = nullptr;
+        // Metadata refreshes must not use INSERT OR REPLACE. SQLite implements
+        // REPLACE as delete-then-insert, which changes the registry row id and
+        // clears last_opened. That can make a different wallet active after a
+        // clean restart even though this wallet was the last one opened.
         const char* sql = R"(
-            INSERT OR REPLACE INTO wallets (name, path, network, encrypted, fingerprint, created_at)
+            INSERT INTO wallets (name, path, network, encrypted, fingerprint, created_at)
             VALUES (?, ?, ?, ?, ?, strftime('%s','now'))
+            ON CONFLICT(name) DO UPDATE SET
+                path = excluded.path,
+                network = excluded.network,
+                encrypted = excluded.encrypted,
+                fingerprint = excluded.fingerprint
         )";
 
         if (sqlite3_prepare_v2(registry_db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -7217,6 +7304,20 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
             }
         }
 
+        // Any operation that replaces the seed invalidates the old mnemonic
+        // binding. Clear it after the seed write succeeds; encryption passes
+        // reset_address_state=false because they preserve the same identity.
+        if (reset_address_state) {
+            try {
+                setSetting(kBip39RecoverySetting, "");
+                setSetting(kBip39BackupAcknowledgedSetting, "0");
+            } catch (const std::exception& e) {
+                WLOG_ERR("Failed to invalidate old BIP39 recovery record: " +
+                         std::string(e.what()));
+                break;
+            }
+        }
+
         // ✅ CRITICAL FIX: Set master_seed_ in memory so getNewAddress works immediately
         // Without this, wallet.restore can't generate addresses after storing seed
         master_seed_ = seed;
@@ -7231,6 +7332,202 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
     OPENSSL_cleanse(aes_key, sizeof(aes_key));
 
     return success;
+}
+
+bool WalletManager::storeAuthoritativeBip39Mnemonic(
+    const std::string& mnemonic,
+    const std::string& bip39_passphrase,
+    std::string* error_out) {
+    if (!db_ || current_wallet_id_ < 0) {
+        SetRecoveryError(error_out, "no active wallet");
+        return false;
+    }
+    if (master_seed_.size() != 64) {
+        SetRecoveryError(error_out, "active wallet seed is unavailable; unlock the wallet first");
+        return false;
+    }
+    if (!bip39::ValidateMnemonic(mnemonic)) {
+        SetRecoveryError(error_out, "mnemonic is not valid BIP39 recovery material");
+        return false;
+    }
+
+    std::vector<uint8_t> entropy;
+    std::vector<uint8_t> derived_seed;
+    if (!bip39::MnemonicToEntropy(mnemonic, entropy) || entropy.empty() ||
+        !bip39::MnemonicToSeed(mnemonic, bip39_passphrase, derived_seed)) {
+        SetRecoveryError(error_out, "failed to derive BIP39 recovery material");
+        secureClearBytes(entropy);
+        secureClearBytes(derived_seed);
+        return false;
+    }
+    if (!ConstantTimeEqual(derived_seed, master_seed_)) {
+        SetRecoveryError(error_out, "mnemonic/passphrase does not reproduce the active wallet seed");
+        secureClearBytes(entropy);
+        secureClearBytes(derived_seed);
+        return false;
+    }
+
+    std::array<uint8_t, 32> key{};
+    std::vector<uint8_t> plaintext;
+    try {
+        key = DeriveBip39RecoveryKey(master_seed_);
+        std::vector<uint8_t> nonce(kBip39RecoveryNonceSize);
+        if (RAND_bytes(nonce.data(), nonce.size()) != 1) {
+            OPENSSL_cleanse(key.data(), key.size());
+            SetRecoveryError(error_out, "failed to generate recovery-record nonce");
+            secureClearBytes(entropy);
+            secureClearBytes(derived_seed);
+            return false;
+        }
+
+        plaintext.reserve(1 + entropy.size());
+        plaintext.push_back(bip39_passphrase.empty() ? 0 : kBip39PassphraseRequired);
+        plaintext.insert(plaintext.end(), entropy.begin(), entropy.end());
+        std::vector<uint8_t> ciphertext = crypto::encryptAesGcm(plaintext, key, nonce);
+
+        std::vector<uint8_t> record;
+        record.reserve(1 + nonce.size() + ciphertext.size());
+        record.push_back(kBip39RecoveryRecordVersion);
+        record.insert(record.end(), nonce.begin(), nonce.end());
+        record.insert(record.end(), ciphertext.begin(), ciphertext.end());
+
+        setSetting(kBip39RecoverySetting, util::hex(record));
+        setSetting(kBip39BackupAcknowledgedSetting, "0");
+
+        OPENSSL_cleanse(key.data(), key.size());
+        secureClearBytes(plaintext);
+        secureClearBytes(entropy);
+        secureClearBytes(derived_seed);
+        return true;
+    } catch (const std::exception& e) {
+        SetRecoveryError(error_out, std::string("failed to persist recovery record: ") + e.what());
+        OPENSSL_cleanse(key.data(), key.size());
+        secureClearBytes(plaintext);
+        secureClearBytes(entropy);
+        secureClearBytes(derived_seed);
+        return false;
+    }
+}
+
+std::optional<Bip39RecoveryMaterial> WalletManager::loadAuthoritativeBip39Mnemonic(
+    std::string* error_out) const {
+    if (!db_ || current_wallet_id_ < 0) {
+        SetRecoveryError(error_out, "no active wallet");
+        return std::nullopt;
+    }
+
+    const std::string encoded = getSetting(kBip39RecoverySetting);
+    if (encoded.empty()) {
+        SetRecoveryError(error_out,
+                         "no authoritative mnemonic exists for this wallet; it predates mnemonic-backed creation or was created from a raw seed");
+        return std::nullopt;
+    }
+    if (master_seed_.size() != 64) {
+        SetRecoveryError(error_out, "wallet is locked; unlock it before exporting recovery material");
+        return std::nullopt;
+    }
+
+    std::vector<unsigned char> record;
+    if (!util::unhex(encoded, record) ||
+        record.size() < 1 + kBip39RecoveryNonceSize + 16 + 2 ||
+        record[0] != kBip39RecoveryRecordVersion) {
+        SetRecoveryError(error_out, "authoritative mnemonic record is corrupt or unsupported");
+        secureClearBytes(record);
+        return std::nullopt;
+    }
+
+    std::array<uint8_t, 32> key{};
+    std::vector<uint8_t> plaintext;
+    try {
+        std::vector<uint8_t> nonce(record.begin() + 1,
+                                   record.begin() + 1 + kBip39RecoveryNonceSize);
+        std::vector<uint8_t> ciphertext(record.begin() + 1 + kBip39RecoveryNonceSize,
+                                        record.end());
+        key = DeriveBip39RecoveryKey(master_seed_);
+        plaintext = crypto::decryptAesGcm(ciphertext, key, nonce);
+        OPENSSL_cleanse(key.data(), key.size());
+        secureClearBytes(record);
+
+        if (plaintext.size() < 2 || (plaintext[0] & ~kBip39PassphraseRequired) != 0) {
+            SetRecoveryError(error_out, "authoritative mnemonic record has invalid flags or entropy");
+            secureClearBytes(plaintext);
+            return std::nullopt;
+        }
+
+        const bool passphrase_required =
+            (plaintext[0] & kBip39PassphraseRequired) != 0;
+        std::vector<uint8_t> entropy(plaintext.begin() + 1, plaintext.end());
+        const std::string mnemonic = bip39::EntropyToMnemonic(entropy.data(), entropy.size());
+        secureClearBytes(entropy);
+        secureClearBytes(plaintext);
+        if (mnemonic.empty() || !bip39::ValidateMnemonic(mnemonic)) {
+            SetRecoveryError(error_out, "authoritative mnemonic record does not contain valid BIP39 entropy");
+            return std::nullopt;
+        }
+
+        // Without a BIP39 passphrase, independently re-derive and compare the
+        // seed at every export. With a passphrase, AES-GCM authentication under
+        // a key derived from the active seed preserves the creation-time binding;
+        // the passphrase itself is deliberately never persisted.
+        if (!passphrase_required) {
+            std::vector<uint8_t> derived_seed;
+            if (!bip39::MnemonicToSeed(mnemonic, "", derived_seed) ||
+                !ConstantTimeEqual(derived_seed, master_seed_)) {
+                SetRecoveryError(error_out, "authoritative mnemonic no longer matches the active wallet seed");
+                secureClearBytes(derived_seed);
+                return std::nullopt;
+            }
+            secureClearBytes(derived_seed);
+        }
+
+        Bip39RecoveryMaterial material;
+        material.mnemonic = mnemonic;
+        material.passphrase_required = passphrase_required;
+        material.backup_acknowledged =
+            getSetting(kBip39BackupAcknowledgedSetting) == "1";
+        return material;
+    } catch (const std::exception& e) {
+        SetRecoveryError(error_out, std::string("authoritative mnemonic authentication failed: ") + e.what());
+        OPENSSL_cleanse(key.data(), key.size());
+        secureClearBytes(plaintext);
+        secureClearBytes(record);
+        return std::nullopt;
+    }
+}
+
+bool WalletManager::hasAuthoritativeBip39Mnemonic() const {
+    return !getSetting(kBip39RecoverySetting).empty();
+}
+
+bool WalletManager::acknowledgeBip39Backup(const std::string& mnemonic,
+                                           bool passphrase_backed_up,
+                                           std::string* error_out) {
+    auto material = loadAuthoritativeBip39Mnemonic(error_out);
+    if (!material.has_value()) {
+        return false;
+    }
+    if (material->mnemonic.size() != mnemonic.size() ||
+        CRYPTO_memcmp(material->mnemonic.data(), mnemonic.data(), mnemonic.size()) != 0) {
+        SetRecoveryError(error_out, "mnemonic does not match the active wallet recovery record");
+        OPENSSL_cleanse(material->mnemonic.data(), material->mnemonic.size());
+        return false;
+    }
+    if (material->passphrase_required && !passphrase_backed_up) {
+        SetRecoveryError(error_out,
+                         "this wallet requires its separate BIP39 passphrase; confirm that it is backed up too");
+        OPENSSL_cleanse(material->mnemonic.data(), material->mnemonic.size());
+        return false;
+    }
+
+    try {
+        setSetting(kBip39BackupAcknowledgedSetting, "1");
+        OPENSSL_cleanse(material->mnemonic.data(), material->mnemonic.size());
+        return true;
+    } catch (const std::exception& e) {
+        SetRecoveryError(error_out, std::string("failed to record backup acknowledgment: ") + e.what());
+        OPENSSL_cleanse(material->mnemonic.data(), material->mnemonic.size());
+        return false;
+    }
 }
 
 std::optional<std::vector<uint8_t>> WalletManager::loadMasterSeed(const std::string& passphrase) {
@@ -8435,7 +8732,8 @@ bool WalletManager::storeEncryptedWallet(
 bool WalletManager::storeUnencryptedWallet(
     const std::string& wallet_name,
     const std::vector<uint8_t>& seed,
-    uint32_t master_fingerprint
+    uint32_t master_fingerprint,
+    bool seed_already_stored
 ) {
     try {
         // Per-wallet DB: No wallet_id needed (always id=1)
@@ -8457,11 +8755,21 @@ bool WalletManager::storeUnencryptedWallet(
         fingerprint_blob[2] = (master_fingerprint >> 8) & 0xFF;
         fingerprint_blob[3] = master_fingerprint & 0xFF;
 
-        // Store unencrypted seed using existing storeMasterSeed with empty passphrase
-        // storeMasterSeed will encrypt it with empty passphrase (still uses AES-GCM but no Argon2id)
-        if (!storeMasterSeed(seed, "")) {
-            WLOG_ERR("Failed to store unencrypted seed");
-            return false;
+        if (seed_already_stored) {
+            // createFromBip39() persisted this exact seed and its recovery
+            // binding before registry publication. Do not rewrite it here:
+            // storeMasterSeed(reset=true) would briefly clear that binding.
+            if (!ConstantTimeEqual(seed, master_seed_)) {
+                WLOG_ERR("Pre-stored seed does not match active wallet identity");
+                return false;
+            }
+        } else {
+            // Existing-wallet replacement/restoration still needs to persist
+            // the supplied seed and reset its derivation state.
+            if (!storeMasterSeed(seed, "")) {
+                WLOG_ERR("Failed to store unencrypted seed");
+                return false;
+            }
         }
 
         // Store encryption metadata (mark as unencrypted, id=1 for per-wallet DB)
