@@ -20,6 +20,9 @@
 #                the reverse hazard of #353 bug 2)
 #   F4: final tip >= base+K and >= the max tip ever observed (no regression)
 #   F5: clean exit (not active, not fatal) + advanced-tip promotion log
+#   F6: an owned pre-base coin is wallet-spendable after promotion; the wallet
+#       selects real pre-base inputs, signs and relays the spend, and the source
+#       confirms it in a block
 #
 # CORRUPTION_RECOVERY_MODE=1 reuses the same V4 snapshot topology for #369.
 # It forks one stopped mismatched-checkpoint datadir into recovery-with-file
@@ -311,11 +314,21 @@ run_checkpoint_recovery() {
 # Setup: source mines to base, exports snapshot, then keeps mining K PAST base
 # ═════════════════════════════════════════════════════════════════════════
 info "=== Setup: source mines to base=$BASE_HEIGHT, exports snapshot, mines +$POST_BASE_K past base ==="
+
+# Create the consumer wallet FIRST and mine the entire snapshot-base chain to
+# one of its addresses. This models a wallet whose owned coins predate the
+# snapshot without copying wallet databases or relying on seed-export APIs.
+start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/wallet-seed.log"
+OWNER_ADDRESS="$(rpc "$CON_RPC" "$CON_DIR" wallet.getnewaddress '[]' \
+    | jq -r '.result.address // .result // empty')"
+[[ -n "$OWNER_ADDRESS" ]] || fail "consumer wallet.getnewaddress returned no snapshot-owner address"
+stop_node "$CON_DIR"
+
 start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/daemon.log"
 
-rpc "$SRC_RPC" "$SRC_DIR" generate "[$BASE_HEIGHT]" \
+rpc "$SRC_RPC" "$SRC_DIR" generatetoaddress "[$BASE_HEIGHT,\"$OWNER_ADDRESS\"]" \
     | jq -e ".result.blocks | length == $BASE_HEIGHT" >/dev/null \
-    || fail "source failed to mine $BASE_HEIGHT base blocks"
+    || fail "source failed to mine $BASE_HEIGHT base blocks to consumer-owned address"
 
 BASE="$(rpc "$SRC_RPC" "$SRC_DIR" getblockcount | jq -re '.result')"
 [[ "$BASE" -eq "$BASE_HEIGHT" ]] || fail "source height $BASE != expected base $BASE_HEIGHT"
@@ -363,7 +376,8 @@ info "source now at $SRC_TIP (base $BASE + K $POST_BASE_K), running + connectabl
 # ═════════════════════════════════════════════════════════════════════════
 info "=== Consumer: load snapshot with slowed replay (${BG_DELAY_MS}ms/block), then race ==="
 mkdir -p "$CON_DIR"
-cp -R "$HEADERS_AT_BASE" "$CON_DIR/headers"
+mkdir -p "$CON_DIR/headers"
+cp -R "$HEADERS_AT_BASE/." "$CON_DIR/headers/"
 
 # Long stall timeout so the peerless->stall path never trips before backfill
 # heals it; the delay is what slows replay, not the stall knob. Env delay only
@@ -543,6 +557,81 @@ else
     else
         ck_fail "F5b: no promotion completion line found"
     fi
+fi
+
+# ── F6 (USER-VISIBLE #353 CONTRACT): owned pre-base funds spend ──────────
+# The specific height-$PREBASE_H coin is owned by the consumer wallet and was
+# accumulator-only before promotion. It must now be reported spendable. Then
+# spend more than all post-base coinbases combined can provide; those outputs
+# are also immature, so a successful wallet-selected transaction necessarily
+# consumes promoted pre-base coins. Finally inspect every actual input against
+# the source's authoritative chain state and confirm the transaction on-chain.
+WALLET_PB="$(rpc "$CON_RPC" "$CON_DIR" wallet.listunspent '[1,9999999]' \
+    | jq -c --arg txid "$PB_TXID" \
+        '.result | map(select(.txid == $txid and .vout == 0))[0] // null')"
+if jq -e '.spendable == true and .solvable == true' <<<"$WALLET_PB" >/dev/null 2>&1; then
+    ck_pass "F6a: consumer wallet lists the promoted pre-base coin as spendable + solvable"
+else
+    ck_fail "F6a: consumer wallet does not expose the promoted pre-base coin as spendable: $WALLET_PB"
+fi
+
+RECIPIENT="$(rpc "$CON_RPC" "$CON_DIR" wallet.getnewaddress '[]' \
+    | jq -r '.result.address // .result // empty')"
+[[ -n "$RECIPIENT" ]] || fail "consumer wallet.getnewaddress returned no recipient"
+
+SEND_AMOUNT_DIN=$((POST_BASE_K * 100 + 100))
+SEND_RES="$(rpc "$CON_RPC" "$CON_DIR" wallet.sendtoaddress \
+    "[\"$RECIPIENT\",${SEND_AMOUNT_DIN}.0]")"
+SPEND_TXID="$(jq -r '.result.txid // .result // empty' <<<"$SEND_RES")"
+[[ "$SPEND_TXID" =~ ^[0-9a-fA-F]{64}$ ]] \
+    || fail "wallet.sendtoaddress could not spend promoted pre-base funds: $SEND_RES"
+
+SPEND_VERBOSE="$(rpc "$CON_RPC" "$CON_DIR" wallet.getrawtransaction \
+    "[\"$SPEND_TXID\",true]")"
+INPUTS="$(jq -c '.result.vin // []' <<<"$SPEND_VERBOSE")"
+jq -e 'length > 0' <<<"$INPUTS" >/dev/null \
+    || fail "promoted-funds transaction has no decoded inputs: $SPEND_VERBOSE"
+
+PREBASE_INPUTS=0
+while IFS=$'\t' read -r input_txid input_vout; do
+    [[ -n "$input_txid" && -n "$input_vout" ]] || continue
+    INPUT_COIN="$(rpc "$SRC_RPC" "$SRC_DIR" gettxout \
+        "[\"$input_txid\",$input_vout,false]")"
+    INPUT_HEIGHT="$(jq -r '.result.height // -1' <<<"$INPUT_COIN")"
+    if [[ "$INPUT_HEIGHT" -ge 1 && "$INPUT_HEIGHT" -le "$BASE" ]]; then
+        PREBASE_INPUTS=$((PREBASE_INPUTS + 1))
+    fi
+done < <(jq -r '.[] | [.txid, (.vout | tostring)] | @tsv' <<<"$INPUTS")
+
+if [[ "$PREBASE_INPUTS" -ge 1 ]]; then
+    ck_pass "F6b: wallet selected, signed, and mempool accepted $PREBASE_INPUTS promoted pre-base input(s)"
+else
+    ck_fail "F6b: accepted wallet transaction used no source-confirmed pre-base input: $INPUTS"
+fi
+
+SOURCE_SEES_SPEND=0
+for i in $(seq 1 30); do
+    if rpc "$SRC_RPC" "$SRC_DIR" getrawmempool '[]' \
+        | jq -e --arg txid "$SPEND_TXID" '.result | index($txid) != null' >/dev/null 2>&1; then
+        SOURCE_SEES_SPEND=1
+        break
+    fi
+    sleep 1
+done
+[[ "$SOURCE_SEES_SPEND" == "1" ]] \
+    || fail "source never received promoted-funds transaction $SPEND_TXID"
+
+CONFIRM_RES="$(rpc "$SRC_RPC" "$SRC_DIR" generate '[1]')"
+CONFIRM_BLOCK="$(jq -r '.result.blocks[0] // empty' <<<"$CONFIRM_RES")"
+[[ "$CONFIRM_BLOCK" =~ ^[0-9a-fA-F]{64}$ ]] \
+    || fail "source failed to mine confirmation block: $CONFIRM_RES"
+CONFIRM_VERBOSE="$(rpc "$SRC_RPC" "$SRC_DIR" getblock "[\"$CONFIRM_BLOCK\",1]")"
+if jq -e --arg txid "$SPEND_TXID" \
+        '.result.tx | map(if type == "string" then . else .txid end) | index($txid) != null' \
+        <<<"$CONFIRM_VERBOSE" >/dev/null; then
+    ck_pass "F6c: promoted pre-base wallet spend confirmed in block ${CONFIRM_BLOCK:0:16}..."
+else
+    ck_fail "F6c: confirmation block omitted promoted-funds transaction: $CONFIRM_VERBOSE"
 fi
 
 stop_node "$CON_DIR"
