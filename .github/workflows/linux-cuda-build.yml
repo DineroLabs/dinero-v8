@@ -1,0 +1,138 @@
+name: Linux CUDA Build (opt-in)
+
+# Opt-in, manually-triggered build of the Linux x86_64 daemon + solo miner with
+# the CUDA GPU backend ENABLED. This is intentionally SEPARATE from
+# linux-release.yml, which ships a portable daemon (GPU OFF) whose strict
+# dependency-contract forbids linking CUDA. Enabling GPU mining pulls
+# CUDA::cuda_driver (libcuda.so.1) + CUDA::nvrtc into dinero_core -> dinerod, so
+# the artifacts produced here REQUIRE the NVIDIA driver + CUDA runtime on the
+# host and must never replace the portable release build.
+#
+# GitHub-hosted runners have no GPU, but nvcc/NVRTC are not invoked at build
+# time (the CUDA kernel is embedded and compiled by NVRTC at runtime), so the
+# CUDA Toolkit is only needed to compile/link against the CUDA headers + stubs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version string to embed / name artifacts (blank = 0.0.0-cuda-dev)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  linux-cuda-build:
+    name: Linux x86_64 — CUDA daemon + miner (opt-in)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"; V="${V#v}"
+          else
+            V="0.0.0-cuda-dev"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Building Linux x86_64 CUDA build for version: $V"
+
+      # Same base deps as linux-release.yml, plus the CUDA toolkit. The distro
+      # package provides nvcc + NVRTC headers/stubs (~CUDA 12.x on 24.04);
+      # find_package(CUDAToolkit) discovers it via /usr/bin/nvcc on PATH.
+      - name: Install build dependencies + CUDA toolkit
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            python3 \
+            perl \
+            libcurl4-openssl-dev \
+            libudev-dev \
+            libusb-1.0-0-dev \
+            nvidia-cuda-toolkit
+          echo "nvcc: $(command -v nvcc || echo 'NOT FOUND')"
+          nvcc --version || true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7
+            third_party/bulletproofs_ffi/target
+          key: linux-cuda-vendored-${{ hashFiles('scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock') }}
+
+      - name: Build vendored OpenSSL 3.5.7
+        run: bash scripts/build-openssl-vendored.sh
+
+      # GPU mining + CUDA ON (the whole point of this lane). OpenSSL 3.5.7
+      # baseline and other release flags mirror linux-release.yml.
+      - name: Configure (GPU/CUDA ON)
+        run: |
+          cmake -S . -B build-cuda -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF \
+            -DENABLE_GPU_MINING=ON \
+            -DMINER_ENABLE_CUDA=ON \
+            -DDINERO_ENABLE_PORTMAPPING=OFF \
+            -DDINERO_RELEASE_TAG=${{ steps.ver.outputs.version }}
+
+      - name: Build daemon, CLI, and GPU miner
+        run: cmake --build build-cuda --target dinerod dinero-cli dinero-gpu-miner -j"$(nproc)"
+
+      - name: Assert OpenSSL policy pin (3.5.7)
+        run: bash scripts/ci/check_openssl_version.sh build-cuda 3.5.7
+
+      # This build INTENTIONALLY links CUDA. We don't enforce the portable
+      # dependency contract here; instead we surface the NEEDED libs and confirm
+      # the CUDA runtime deps are present, so it's obvious this artifact requires
+      # the NVIDIA driver + CUDA to run.
+      - name: Report dynamic dependencies (CUDA expected)
+        run: |
+          echo "dinerod NEEDED:"
+          objdump -p build-cuda/dinerod | awk '/NEEDED/{print "  " $2}' | sort
+          if objdump -p build-cuda/dinerod | grep -qE 'libcuda\.so|libnvrtc\.so'; then
+            echo "note: dinerod links CUDA (libcuda/libnvrtc) — requires the NVIDIA driver + CUDA runtime at execution time."
+          else
+            echo "::warning::expected CUDA libraries in NEEDED but none found — check MINER_ENABLE_CUDA/ENABLE_GPU_MINING wiring."
+          fi
+
+      - name: Package (CUDA variant)
+        id: pkg
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          OUT="dinero-linux-x86_64-cuda-$V"
+          mkdir -p "$OUT"
+          cp build-cuda/dinerod build-cuda/dinero-cli "$OUT/"
+          if [ -f build-cuda/dinero-gpu-miner ]; then cp build-cuda/dinero-gpu-miner "$OUT/"; fi
+          strip "$OUT"/* || true
+          tar -czf "$OUT.tar.gz" "$OUT"
+          sha256sum "$OUT.tar.gz" "$OUT"/* > "SHA256SUMS-linux-x86_64-cuda-$V"
+          cat "SHA256SUMS-linux-x86_64-cuda-$V"
+          echo "tarball=$OUT.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sumfile=SHA256SUMS-linux-x86_64-cuda-$V" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinero-linux-x86_64-cuda-${{ steps.ver.outputs.version }}
+          path: |
+            ${{ steps.pkg.outputs.tarball }}
+            ${{ steps.pkg.outputs.sumfile }}
+          if-no-files-found: error
