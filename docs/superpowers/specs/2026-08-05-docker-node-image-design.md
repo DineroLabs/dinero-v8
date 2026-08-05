@@ -34,8 +34,11 @@ UTXO database, synced in minutes via AssumeUTXO — is not reachable in one comm
     The container would report unhealthy forever.
   - Metadata is stale: `version="v1.0.0"`, source `github.com/dinero/dinero`.
 
-`ops/Dockerfile` is referenced by `scripts/release-build.sh`, so it is **left in place
-and untouched**. This spec adds a separate, purpose-built image.
+**`ops/Dockerfile` was deleted** (2026-08-05). Investigation showed nothing built it:
+`scripts/release-build.sh` only *printed* `docker build -f ops/Dockerfile .` as a
+suggested next step, and no workflow referenced it. Fixing its `build/bin/dinerod`
+path would still have left a distroless image missing `libudev.so.1`, so it would
+have built and then failed to start. The script now points at this image instead.
 
 ## Approach
 
@@ -200,7 +203,8 @@ shipped to Qt and DineroDPI users.
 | `.github/workflows/docker-publish.yml` | Build + run-check + push on a `v8.*` release. |
 | `README.md` (edit) | The one-liner, in the node-running section. |
 
-`ops/Dockerfile` and the root `.dockerignore` are not modified.
+The root `.dockerignore` is not modified. `ops/Dockerfile` was deleted as dead,
+unbuildable code — see above.
 
 ## Publishing
 
@@ -335,4 +339,4 @@ than none.
 ## Out of scope
 
 arm64; mining in the image; the Qt wallet; publishing a `docker-compose.yml`; changing
-`ops/Dockerfile`; anything on dinerolabs.org.
+anything on dinerolabs.org.

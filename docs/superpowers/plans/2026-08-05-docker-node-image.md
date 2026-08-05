@@ -42,7 +42,8 @@ All values below were verified empirically against the shipped v8.1.1 artifacts.
 - **Snapshot args:** `--assumeutxo_snapshot=<path>` **and** `--assumeutxo_forward_connect=1`. Omitting the second holds the tip at the snapshot base for the whole background replay (PR #393) — that shipped as a real user-facing bug.
 - **amd64 only.** Release assets are linux-x86_64. The dev machine is **Apple Silicon (aarch64)**, so every local docker command MUST pass `--platform linux/amd64` and will run under emulation (slow but functional).
 - **Working directory:** `/Users/haydarevich/src/dinero-v8-docker` (git worktree, branch `feat/docker-node-image`). Do NOT touch `/Users/haydarevich/src/dinero-v8` — it has unrelated uncommitted work on another branch.
-- **Do not modify** `ops/Dockerfile` (referenced by `scripts/release-build.sh`) or `.dockerignore`.
+- **Do not modify** the root `.dockerignore`. (`ops/Dockerfile` was deleted in a follow-up
+  commit as dead, unbuildable code — nothing ever built it.)
 - **Do not push.** The operator pushes.
 - **⚠️ FOUND IN TASK 2 RUNTIME VERIFICATION (both were plan errors):**
   - **`dinero-cli` REQUIRES `-datadir=/data`.** Without it, it looks in `$HOME/.dinero`
