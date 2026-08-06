@@ -1785,11 +1785,21 @@ MAX_BACKOFF = 1800.0
 # promptly once maintenance ends.
 MAINTENANCE_DEFER_SECONDS = 60.0
 
+# How often the synthetic canary exercises the real alert path.
+CANARY_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def canary_due(store, now: float,
+               interval: float = CANARY_INTERVAL_SECONDS) -> bool:
+    """True when the alert path has not been exercised within `interval`."""
+    last = store.last_canary_at()
+    return last is None or (now - last) >= interval
+
 # A maintenance window may silence these. It may never silence safe_mode,
 # tip_divergence or observer_divergence: a node on the wrong chain is not
 # excused by someone doing maintenance.
 SILENCEABLE = {"node_behind", "majority_unreachable", "node_unreachable",
-               "telemetry_degraded"}
+               "telemetry_degraded", "canary"}
 
 # Recorded as incidents so the history is queryable, but never delivered. This
 # is where "recorded but never notified" is enforced — the engine opens them
@@ -1902,11 +1912,82 @@ class TestShouldPing(unittest.TestCase):
         self.assertFalse(should_ping(self.store, cycle_committed=True,
                                      worker_alive=True, now=1e6, deadline=300.0))
 
+    def test_an_emergency_within_its_deadline_does_not_suppress_ping(self):
+        """Pins the deadline term. Neutering it to 0.0 left every other test in
+        this file green — the gate-as-constant regression already fixed once in
+        the store, undetected here."""
+        self.store.open_incident("safe_mode", ("a",), "emergency", "halted")
+        self.assertTrue(should_ping(self.store, cycle_committed=True,
+                                    worker_alive=True, now=1.0, deadline=300.0))
+
+    def test_a_non_numeric_now_fails_closed(self):
+        """A None `now` makes the SQL comparison NULL, which reads as "nothing
+        overdue" and pings. A dead-man must never fail open."""
+        self.assertFalse(should_ping(self.store, cycle_committed=True,
+                                     worker_alive=True, now=None, deadline=300.0))
+
     def test_unreachable_nodes_do_not_suppress_ping(self):
         """The heartbeat means the watcher works, not that the fleet is healthy."""
         self.store.open_incident("majority_unreachable", ("a", "b"), "normal", "down")
         self.assertTrue(should_ping(self.store, cycle_committed=True,
                                     worker_alive=True, now=1.0, deadline=300.0))
+
+
+class TestHeartbeatPing(unittest.TestCase):
+    """The Heartbeat class had no coverage; ping() is the half that talks to
+    the network, and its exception set is exactly what Task 6 had to fix."""
+
+    class _Response:
+        def __init__(self, status):
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _with_urlopen(self, fake):
+        import heartbeat as hb
+        original = hb.urllib.request.urlopen
+        hb.urllib.request.urlopen = fake
+        self.addCleanup(setattr, hb.urllib.request, "urlopen", original)
+
+    def test_a_2xx_response_is_a_successful_ping(self):
+        from heartbeat import Heartbeat
+        self._with_urlopen(lambda r, timeout=None: self._Response(200))
+        self.assertTrue(Heartbeat("https://example.invalid/hb").ping())
+
+    def test_transport_exceptions_return_false_rather_than_propagating(self):
+        import http.client
+        import ssl
+
+        from heartbeat import Heartbeat
+        for exc in (ConnectionResetError("reset"),
+                    http.client.RemoteDisconnected("closed"),
+                    ssl.SSLError("handshake"),
+                    OSError("unreachable")):
+            def boom(request, timeout=None, _e=exc):
+                raise _e
+
+            self._with_urlopen(boom)
+            self.assertFalse(Heartbeat("https://example.invalid/hb").ping(),
+                             f"{type(exc).__name__} must not propagate")
+
+    def test_the_request_carries_no_body(self):
+        """Liveness only — no node details, no secrets."""
+        captured = {}
+
+        def fake(request, timeout=None):
+            captured["data"] = request.data
+            captured["method"] = request.get_method()
+            return self._Response(200)
+
+        from heartbeat import Heartbeat
+        self._with_urlopen(fake)
+        Heartbeat("https://example.invalid/hb").ping()
+        self.assertIsNone(captured["data"])
+        self.assertEqual(captured["method"], "GET")
 
 
 if __name__ == "__main__":
@@ -2414,6 +2495,14 @@ def run_once(config, store, engine, rpc, notifier, heartbeat, previous):
     except Exception as exc:            # noqa: BLE001
         worker_alive = False
         print(f"[watcher] delivery worker failed: {exc}", file=sys.stderr)
+
+    # Exercise the real alert path on a schedule, so a bad credential is
+    # discovered before an incident needs it rather than during one.
+    try:
+        if canary_due(store, time.time()):
+            store.enqueue_canary()
+    except Exception as exc:            # noqa: BLE001
+        print(f"[watcher] canary enqueue failed: {exc}", file=sys.stderr)
 
     if heartbeat and should_ping(store, cycle_committed=committed,
                                  worker_alive=worker_alive, now=time.time(),
