@@ -84,9 +84,14 @@ Given a node list, returns one `Observation` per node per cycle. Pure I/O; conta
 **A cycle has two stages, because quorum cannot be computed from current tips alone.**
 
 1. **Position.** Query every node for its current height and tip hash.
-2. **Comparison hashes.** For every reachable voting node, query its block hash at each height
-   needed to compare it against the other voters — that is, at `min(height_a, height_b)` for
-   each pair it participates in (`blockchain.getblockhash`).
+2. **Comparison hashes.** Query `blockchain.getblockhash` for every height needed to make the
+   cycle's comparisons:
+   - for each pair of reachable **voting** nodes, at `min(height_a, height_b)`;
+   - for each reachable **observer**, at the height needed to compare it against the established
+     quorum — `min(observer_height, quorum_median_height)`.
+
+   Observers are compared too. Omitting their hashes would leave `observer_divergence`
+   unimplementable for the same reason the voting comparison was.
 
 Stage 2 is what makes the common-height comparison implementable. Without it the store holds
 only current tips, and any comparison would either require the nodes to be at identical heights
@@ -167,8 +172,13 @@ Computed over **voting nodes only**:
 
 Pairwise comparison at the pairwise minimum height is the crux. It lets nodes sit at different
 heights, as they always do, without either paging on ordinary propagation or comparing
-mismatched heights and hiding a genuine fork. A node one block ahead is compatible; a node on a
-different chain is not, at any depth they share.
+mismatched heights and hiding a genuine fork.
+
+A node one block ahead is compatible. A node on a different chain is incompatible **once both
+have reached the divergence height** — below that point they legitimately share the same
+ancestor, so a matching hash there proves nothing about the fork above it. This is why the
+comparison must be made at the deepest height *both* have reached, and why a fork is only
+detectable after both nodes have built past its base.
 
 #### Rules
 
