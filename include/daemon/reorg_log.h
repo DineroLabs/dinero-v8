@@ -50,10 +50,10 @@ struct ReorgLogEvent {
  * short string, and returns. It observes a decision already made and can never
  * change one.
  *
- * Total() is the process-lifetime count and is NOT the ring length. A consumer
- * that sees Total() advance further than the events it can account for knows
- * the ring overflowed. That is the only overflow signal, which is why the
- * counter is exposed separately.
+ * Take().total is the process-lifetime count and is NOT the ring length. A
+ * consumer that sees it advance further than the events it can account for
+ * knows the ring overflowed. That is the only overflow signal, which is why
+ * the counter is reported separately from the ring.
  */
 class ReorgLog {
 public:
@@ -79,21 +79,24 @@ public:
             while (events_.size() > kCapacity) {
                 events_.pop_front();
             }
-        } catch (...) {
-            // A failure to record an observation must never disturb chain
-            // activation. Dropping the event is the correct outcome; Total()
-            // then outruns the ring, which is exactly how a consumer learns
-            // something was lost.
+        } catch (...) {  // NOLINT(bugprone-empty-catch)
+            // Swallowing here is the requirement, not an oversight: a failure
+            // to record an observation must never disturb chain activation,
+            // and there is no action available inside this path that is safer
+            // than dropping the event. Dropping it is also self-reporting —
+            // total_ has already been incremented, so it outruns the ring,
+            // which is exactly how a consumer learns something was lost.
         }
     }
 
     /// The counter and the ring read together, under ONE lock.
     ///
-    /// This is the accessor callers should use. Reading Total() and Events()
-    /// separately allows a Record() to land between them, so the total would
-    /// exceed the events a consumer can account for with no overflow having
-    /// occurred — and that comparison is the design's ONLY overflow signal, so
-    /// the false positive lands exactly on the thing it exists to detect.
+    /// This is the only accessor, and deliberately so. Separate counter and
+    /// ring accessors would allow a Record() to land between two calls, so the
+    /// total would exceed the events a consumer can account for with no
+    /// overflow having occurred — and that comparison is the design's ONLY
+    /// overflow signal, so the false positive would land exactly on the thing
+    /// it exists to detect.
     struct Snapshot {
         std::string boot_id;
         uint64_t total = 0;
