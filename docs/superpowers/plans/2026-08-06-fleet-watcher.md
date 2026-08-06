@@ -1233,7 +1233,12 @@ class Store:
                  self._clock(), 0.0))
 
     def has_stale_canary(self, now: float, max_age: float) -> bool:
-        """True when the newest canary is still UNSENT past `max_age`.
+        """True when ANY canary is still UNSENT past `max_age`.
+
+        Deliberately not "the newest": an older stuck canary keeps the gate
+        tripped even if a later one delivered. That over-reports slightly and
+        fails in the safe direction for a dead-man, which is the direction to
+        fail in.
 
         This is what makes the canary self-verifying. Without it the canary
         exercises the alert path but nothing reads the result: if delivery is
@@ -2448,6 +2453,7 @@ git commit -m "feat(watcher): config and two-stage poller with comparison hashes
 import json
 import shlex
 import subprocess
+import urllib.request
 
 
 class SSHRPC:
@@ -2470,11 +2476,16 @@ class SSHRPC:
         payload = json.dumps({"jsonrpc": "2.0", "id": "w",
                               "method": method, "params": list(params or ())})
         if entry.get("transport") == "local":
-            command = ["curl", "-sS", "--max-time", str(int(self._timeout)),
-                       "-X", "POST", f"http://{entry['target']}/",
-                       "-H", "Content-Type: application/json", "-d", payload]
-        else:
-            command = self.SSH_BASE + [entry["target"], "rpc", shlex.quote(payload)]
+            # stdlib, not curl. The watcher has no third-party dependencies and
+            # should not acquire one through a subprocess either — a missing
+            # curl would fail at runtime on the one host that matters.
+            request = urllib.request.Request(
+                f"http://{entry['target']}/", data=payload.encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                return json.loads(response.read())
+
+        command = self.SSH_BASE + [entry["target"], "rpc", shlex.quote(payload)]
         result = subprocess.run(command, capture_output=True, timeout=self._timeout)
         if result.returncode != 0:
             raise RuntimeError(f"{node}: transport failed")
