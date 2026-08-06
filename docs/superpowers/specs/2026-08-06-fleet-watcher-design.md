@@ -81,12 +81,25 @@ Four units with clear boundaries, each independently testable.
 
 Given a node list, returns one `Observation` per node per cycle. Pure I/O; contains no rules.
 
+**A cycle has two stages, because quorum cannot be computed from current tips alone.**
+
+1. **Position.** Query every node for its current height and tip hash.
+2. **Comparison hashes.** For every reachable voting node, query its block hash at each height
+   needed to compare it against the other voters — that is, at `min(height_a, height_b)` for
+   each pair it participates in (`blockchain.getblockhash`).
+
+Stage 2 is what makes the common-height comparison implementable. Without it the store holds
+only current tips, and any comparison would either require the nodes to be at identical heights
+or would silently compare different heights to each other. Both are wrong: the first pages on
+ordinary propagation, the second can hide a real fork.
+
 | field | meaning |
 |---|---|
 | `cycle_id` | groups all observations from one cycle |
 | `timestamp` | watcher clock, UTC |
 | `node`, `role` | fleet identifier; voting or observer |
-| `height`, `tip_hash` | chain position |
+| `height`, `tip_hash` | chain position (stage 1) |
+| `hashes_at` | map of height -> block hash for comparison heights (stage 2) |
 | `peers_in`, `peers_out` | connectivity |
 | `synced` | daemon's own sync flag |
 | `safe_mode` | `active` / `inactive` / **`unknown`** |
@@ -100,7 +113,8 @@ reachable with degraded telemetry; those are different conditions with different
 
 **`safe_mode` is tri-state.** A daemon too old to register `safemode.status` answers -32601.
 That is `unknown`, never `inactive`. **Unknown must not behave like safe.** Sustained unknown
-opens a `telemetry_degraded` incident after the confirmation threshold — logged, not paged.
+opens a `telemetry_degraded` incident after the confirmation threshold — notified at normal
+priority, not paged.
 
 **`restart_id`** distinguishes a restarted node from a stalled one, read from **systemd
 (`InvocationID`) or `/proc/<pid>/stat` start ticks** — never from locale-formatted
@@ -113,8 +127,8 @@ must never synthesise a false one.
 SQLite. Three tables:
 
 - `observations` — one row per node per cycle, carrying `cycle_id`.
-- `incidents` — one row per rule transition: `incident_id`, rule, node(s), `opened_at`,
-  `closed_at`, severity, detail.
+- `incidents` — **one row per incident**, updated in place as it opens and closes:
+  `incident_id`, rule, node(s), `opened_at`, `closed_at`, severity, detail.
 - `outbox` — durable pending notifications.
 
 **All observations for a cycle are written in a single transaction, keyed by `cycle_id`.** Rules
@@ -142,17 +156,19 @@ not independently prove the chain is correct. A quorum can be wrong together.
 
 Computed over **voting nodes only**:
 
-1. Choose a **common height** at which reachable voting nodes can be compared — the highest
-   height for which enough of them have reported a hash.
-2. Group those nodes by their block hash **at that common height**, not by their current tip.
-3. A **fleet quorum** is a unique mutually agreeing group of at least **2 of the 3 voting
-   nodes**.
-4. The quorum's **median tip height** is the reference height for lag rules.
-5. If **two equally sized competing groups** exist, there is no unique quorum: that is
-   `consensus_health` failure.
+1. **Compare every pair of reachable voting nodes at `min(height_a, height_b)`** — the deepest
+   height both have reached — using the hashes collected in stage 2. Two nodes are *compatible*
+   if their hashes match at that height.
+2. Build the groups of mutually compatible voters. **The fleet quorum is the unique largest
+   such group containing at least 2 voters.**
+3. The quorum's **median tip height** is the reference height for lag rules.
+4. If there is **no unique largest group** — two equally sized competing groups — there is no
+   quorum: that is `consensus_health` failure.
 
-Comparing at a common height is the crux. Comparing current tips would page whenever healthy
-nodes are momentarily one block apart, which is ordinary propagation, not divergence.
+Pairwise comparison at the pairwise minimum height is the crux. It lets nodes sit at different
+heights, as they always do, without either paging on ordinary propagation or comparing
+mismatched heights and hiding a genuine fork. A node one block ahead is compatible; a node on a
+different chain is not, at any depth they share.
 
 #### Rules
 
@@ -163,14 +179,22 @@ nodes are momentarily one block apart, which is ordinary propagation, not diverg
 | `tip_divergence` | reachable voting nodes report different hashes at the common height |
 | `majority_unreachable` | 2 or more of the 3 voting nodes unreachable |
 | `node_behind` | a reachable node is ≥ 10 blocks below the quorum's median tip height |
+| `observer_divergence` | an observer's hash disagrees with the quorum at a shared height |
+| `node_restart` | `restart_id` changed between cycles (logged only) |
 | `telemetry_degraded` | sustained `unknown` safe-mode, or missing optional fields |
 
 `majority_unreachable` and `consensus_health` can both hold at once, since losing voting nodes
 destroys any quorum. In that case only `majority_unreachable` is reported: it names the cause
 rather than the symptom.
 
+**`observer_divergence`** applies the same pairwise common-height comparison to observer nodes,
+against the quorum. It **never affects quorum**, opens after the normal 3-cycle threshold, and
+notifies at **normal priority** — an observer on the wrong chain is a real problem worth knowing
+about, but it is not a fleet-integrity emergency. Without this rule an observer could sit on a
+different chain indefinitely: recorded every cycle, and never reported.
+
 **Logged, never paged:** short lag, a single missed poll, peer-count changes, shallow expected
-reorgs, and `telemetry_degraded`.
+reorgs, and `node_restart`.
 
 ### 4. Notifier
 
@@ -184,6 +208,11 @@ persisted regardless of severity.
 
 **Paged:** `safe_mode`, `consensus_health`, `tip_divergence`, `majority_unreachable`,
 `node_behind`, and heartbeat silence (raised externally — see below).
+
+**Notified at normal priority:** `observer_divergence`, and `telemetry_degraded` once sustained.
+Silently logging `telemetry_degraded` would mean a node whose safe-mode reporting has failed
+goes unnoticed — losing exactly the visibility that makes the `safe_mode` page possible. One
+normal-priority notification per incident, not per cycle.
 
 **Opening threshold:** a condition must hold for **3 consecutive cycles** before paging, **except
 `safe_mode`, which pages on first detection.** Safe mode is a halt, not a lag.
@@ -216,9 +245,10 @@ persisted regardless of severity.
 A maintenance window may temporarily suppress **delivery** of `node_behind`,
 `majority_unreachable`, and `telemetry_degraded`.
 
-It must **never** suppress `safe_mode` or `tip_divergence`. Those indicate chain-integrity
-problems that a maintenance window does not explain, and silencing them is how a real incident
-gets missed during routine work.
+It must **never** suppress `safe_mode`, `tip_divergence`, or `observer_divergence`. Those
+indicate chain-integrity problems that a maintenance window does not explain, and silencing them
+is how a real incident gets missed during routine work. A node being on the wrong chain is not
+excused by the fact that someone is doing maintenance.
 
 Suppression affects delivery only. Incidents are still opened, recorded, and closed normally.
 
@@ -229,8 +259,15 @@ therefore lives outside it, at an external dead-man service.
 
 - The watcher pings the heartbeat URL **every cycle (60s)**; the receiver alerts after roughly
   **5 minutes** of silence.
-- **The ping is sent only after a cycle completes and its observations are committed.** A watcher
-  that polls but cannot persist is broken and must not appear healthy.
+- **The ping is sent only when all three of the following hold**, so the heartbeat covers the
+  whole alarm system rather than only data collection:
+  1. the cycle committed successfully;
+  2. the delivery worker is alive;
+  3. no critical outbox item is overdue beyond its retry deadline.
+
+  A watcher that polls and persists happily while its delivery worker is dead is *worse* than one
+  that has crashed: it looks healthy and will never tell you anything again. Collection working
+  is not the property worth monitoring — the ability to raise an alarm is.
 - A cycle containing unreachable nodes still pings. **The heartbeat means "the watcher is
   functioning," not "the fleet is healthy."** Fleet problems raise their own incidents.
 - The dead-man service must be configured to **deliver to the operator's phone independently of
@@ -249,13 +286,19 @@ therefore lives outside it, at an external dead-man service.
 ## Testing
 
 - **Rules are pure functions over cycle sequences and are unit-tested directly**, including:
-  voting nodes one block apart (must not page), hash disagreement at the common height (must
-  page), no unique quorum (must report `consensus_health`), `unknown` safe mode (must not read as
-  inactive), and an observer node that is down or behind (must never affect quorum).
+  voting nodes one block apart (must not page), hash disagreement at the pairwise minimum height
+  (must page), no unique largest compatible group (must report `consensus_health`), `unknown`
+  safe mode (must not read as inactive), an observer down or behind (must never affect quorum),
+  and an observer on a different chain (must raise `observer_divergence` at normal priority while
+  leaving quorum intact).
 - Poller tested against recorded RPC fixtures, including a timing-out node and a node answering
   -32601 for `safemode.status`.
 - Store tested for single-transaction cycle writes, and for outbox durability across a simulated
   crash between incident creation and delivery.
+- Heartbeat gating tested for all three conditions independently: a failed cycle commit, a dead
+  delivery worker, and an overdue critical outbox item must each suppress the ping. The
+  dead-delivery-worker case is the one that matters most — it is the failure this gating exists
+  for.
 - Notifier tested with a fake transport for dedup, retry, and recovery notifications.
 - **The dead-man switch is tested explicitly by stopping the watcher and confirming an alert
   arrives.** An untested dead-man is indistinguishable from a dead one.
