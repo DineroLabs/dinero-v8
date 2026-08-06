@@ -202,6 +202,19 @@ class Store:
                 "UPDATE outbox SET attempts=attempts+1, next_attempt_at=? "
                 "WHERE outbox_id=?", (self._clock() + backoff_seconds, outbox_id))
 
+    def defer(self, outbox_id: int, seconds: float) -> None:
+        """Postpone delivery WITHOUT consuming the item or counting an attempt.
+
+        Distinct from mark_failed: nothing went wrong, policy simply says not
+        yet. Distinct from mark_sent: the notification has not been delivered
+        and must still be. Marking a suppressed item as sent loses it forever —
+        the operator would later receive a resolution for a condition they were
+        never told about.
+        """
+        with self.conn:
+            self.conn.execute("UPDATE outbox SET next_attempt_at=? WHERE outbox_id=?",
+                              (self._clock() + seconds, outbox_id))
+
     def has_overdue_critical(self, now: float, deadline: float) -> bool:
         """An emergency notification still unsent past its deadline. This is one
         of the three heartbeat gates: alerting is broken even if polling works."""

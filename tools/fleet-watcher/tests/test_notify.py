@@ -24,6 +24,10 @@ class TestDelivery(unittest.TestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
+        # clock=lambda: 0.0 so the store's own timestamps (used by mark_failed
+        # / defer) and the synthetic `now` values passed to drain/pending_outbox
+        # share one time domain. A real clock (>1e9 since 2001) would push
+        # next_attempt_at past any of the synthetic `now` values used below.
         self.store = Store(self.path, clock=lambda: 0.0)
 
     def tearDown(self):
@@ -95,6 +99,131 @@ class TestDelivery(unittest.TestCase):
         n = FakeNotifier()
         drain(self.store, n, now=1.0, maintenance=True)
         self.assertEqual(len(n.sent), 1)
+
+    def test_silenced_item_is_deferred_not_consumed(self):
+        """A silenced item must remain deliverable once the window ends, and
+        once delivered its title still names the rule. Consuming it via
+        mark_sent would mean the operator's only message for the whole
+        episode is the eventual "resolved", for a condition they were never
+        told about."""
+        self.store.open_incident("node_behind", ("c",), "normal", "12 blocks")
+        n = FakeNotifier()
+        drain(self.store, n, now=1.0, maintenance=True)
+        self.assertEqual(n.sent, [])
+        # Not consumed: still present and undelivered, attempts untouched —
+        # nothing went wrong, so this isn't a failure either.
+        pending = self.store.pending_outbox(now=1e9)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].attempts, 0)
+        # Once maintenance ends (or the window is re-evaluated), it delivers.
+        drain(self.store, n, now=1e9, maintenance=False)
+        self.assertEqual(len(n.sent), 1)
+        self.assertIn("node_behind", n.sent[0][0])
+
+    def test_a_raising_transport_does_not_block_later_items(self):
+        """A transport exception on one item must not abort the whole drain
+        cycle. A later, unrelated item (e.g. tip_divergence queued behind a
+        raising safe_mode send) still gets its chance, and the raising item
+        backs off instead of retrying immediately with attempts=0."""
+        self.store.open_incident("safe_mode", ("a",), "emergency", "halted")
+        self.store.open_incident("tip_divergence", ("b",), "emergency", "forked")
+
+        class RaisingThenOkNotifier:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, title, message, priority):
+                if "safe_mode" in title:
+                    raise ConnectionResetError("boom")
+                self.sent.append((title, message, priority))
+                return True
+
+        n = RaisingThenOkNotifier()
+        delivered = drain(self.store, n, now=1.0)
+        self.assertEqual(delivered, 1)
+        self.assertTrue(any("tip_divergence" in t for t, _, _ in n.sent),
+                        "later item must not be head-of-line-blocked")
+        # The raising item must have backed off, not stayed at
+        # attempts=0/next_attempt_at=0.0 (which would retry with no delay).
+        self.assertEqual(self.store.pending_outbox(now=1.0), [],
+                         "raising item must not be immediately retryable")
+        self.assertEqual(len(self.store.pending_outbox(now=1e9)), 1)
+
+
+class TestPushoverNotifier(unittest.TestCase):
+    """notify.py had no coverage at all — half the deliverable. These pin the
+    two things that decide whether a page actually arrives."""
+
+    def _notifier(self):
+        from notify import PushoverNotifier
+        return PushoverNotifier("tok", "usr")
+
+    class _Response:
+        status = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _with_urlopen(self, fake):
+        import notify
+        original = notify.urllib.request.urlopen
+        notify.urllib.request.urlopen = fake
+        self.addCleanup(setattr, notify.urllib.request, "urlopen", original)
+
+    def test_emergency_sets_priority_retry_and_a_three_hour_expire(self):
+        captured = {}
+
+        def fake(request, timeout=None):
+            captured["body"] = request.data.decode()
+            return self._Response(b'{"status":1}')
+
+        self._with_urlopen(fake)
+        self.assertTrue(self._notifier().send("t", "m", "emergency"))
+        self.assertIn("priority=2", captured["body"])
+        self.assertIn("expire=10800", captured["body"])
+        self.assertIn("retry=", captured["body"])
+
+    def test_normal_priority_sets_no_retry_parameters(self):
+        captured = {}
+
+        def fake(request, timeout=None):
+            captured["body"] = request.data.decode()
+            return self._Response(b'{"status":1}')
+
+        self._with_urlopen(fake)
+        self._notifier().send("t", "m", "normal")
+        self.assertNotIn("priority=2", captured["body"])
+        self.assertNotIn("expire=", captured["body"])
+
+    def test_transport_exceptions_return_false_rather_than_propagating(self):
+        import http.client
+        import ssl
+
+        for exc in (ConnectionResetError("reset"),
+                    http.client.IncompleteRead(b""),
+                    ssl.SSLError("handshake"),
+                    OSError("unreachable"),
+                    ValueError("not json")):
+            def boom(request, timeout=None, _e=exc):
+                raise _e
+
+            self._with_urlopen(boom)
+            self.assertFalse(self._notifier().send("t", "m", "normal"),
+                             f"{type(exc).__name__} must not propagate")
+
+    def test_a_rejected_message_is_not_reported_as_sent(self):
+        self._with_urlopen(lambda request, timeout=None:
+                           self._Response(b'{"status":0}'))
+        self.assertFalse(self._notifier().send("t", "m", "normal"))
 
 
 if __name__ == "__main__":

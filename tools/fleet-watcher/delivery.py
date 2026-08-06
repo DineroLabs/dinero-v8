@@ -13,6 +13,11 @@ from store import Store
 BACKOFF_SECONDS = (30.0, 60.0, 300.0, 900.0)
 MAX_BACKOFF = 1800.0
 
+# How long a maintenance-silenced item waits before being reconsidered. One
+# poll cycle: the window is re-evaluated on the next drain, so delivery resumes
+# promptly once maintenance ends.
+MAINTENANCE_DEFER_SECONDS = 60.0
+
 # A maintenance window may silence these. It may never silence safe_mode,
 # tip_divergence or observer_divergence: a node on the wrong chain is not
 # excused by someone doing maintenance.
@@ -43,9 +48,22 @@ def drain(store: Store, notifier: Notifier, now: float,
             store.mark_sent(item.outbox_id)   # recorded, deliberately not sent
             continue
         if maintenance and item.rule in SILENCEABLE:
-            store.mark_sent(item.outbox_id)   # suppressed, not retried forever
+            # Deferred, NOT consumed. When the window ends, anything still
+            # unresolved is delivered. Consuming it would mean the operator's
+            # only message for the whole episode is the eventual "resolved",
+            # for a condition they were never told about.
+            store.defer(item.outbox_id, MAINTENANCE_DEFER_SECONDS)
             continue
-        if notifier.send(item.title, item.message, item.priority):
+        try:
+            sent = notifier.send(item.title, item.message, item.priority)
+        except Exception:
+            # A transport that raises must not abort the cycle. Without this,
+            # one unreachable provider head-of-line-blocks every later item —
+            # including a tip_divergence page queued behind a safe_mode one —
+            # and the raising item keeps attempts=0, so it retries with no
+            # backoff at all.
+            sent = False
+        if sent:
             store.mark_sent(item.outbox_id)
             delivered += 1
         else:
