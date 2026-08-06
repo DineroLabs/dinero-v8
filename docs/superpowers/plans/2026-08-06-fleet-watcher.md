@@ -1199,6 +1199,19 @@ class Store:
                 "UPDATE outbox SET attempts=attempts+1, next_attempt_at=? "
                 "WHERE outbox_id=?", (self._clock() + backoff_seconds, outbox_id))
 
+    def defer(self, outbox_id: int, seconds: float) -> None:
+        """Postpone delivery WITHOUT consuming the item or counting an attempt.
+
+        Distinct from mark_failed: nothing went wrong, policy simply says not
+        yet. Distinct from mark_sent: the notification has not been delivered
+        and must still be. Marking a suppressed item as sent loses it forever —
+        the operator would later receive a resolution for a condition they were
+        never told about.
+        """
+        with self.conn:
+            self.conn.execute("UPDATE outbox SET next_attempt_at=? WHERE outbox_id=?",
+                              (self._clock() + seconds, outbox_id))
+
     def has_overdue_critical(self, now: float, deadline: float) -> bool:
         """An emergency notification still unsent past its deadline. This is one
         of the three heartbeat gates: alerting is broken even if polling works."""
@@ -1590,8 +1603,8 @@ delivery failure is an expected condition the outbox already handles.
 """
 from __future__ import annotations
 
+import http.client
 import json
-import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Protocol
@@ -1604,11 +1617,23 @@ class Notifier(Protocol):
 
 
 class PushoverNotifier:
-    """Emergency priority repeats until acknowledged. A 3am safe-mode page that
-    scrolls away unread is the same as no page at all."""
+    """Pushover transport.
+
+    Emergency priority repeats until acknowledged OR until `expire` elapses —
+    three hours, Pushover's maximum. It is not indefinite re-paging, and this
+    docstring deliberately does not claim otherwise: `send()` returns True when
+    Pushover ACCEPTS the message, which is submission, not operator
+    acknowledgement. After the window lapses unacknowledged nothing re-pages,
+    though the incident stays open and queryable, and the normal recovery
+    notification still fires when the condition clears.
+
+    True indefinite escalation needs receipt polling and persisted
+    acknowledgement state. That is a separate feature, not something a
+    docstring should imply.
+    """
 
     def __init__(self, token: str, user_key: str, timeout: float = 10.0,
-                 retry: int = 60, expire: int = 3600) -> None:
+                 retry: int = 60, expire: int = 10800) -> None:
         self._token = token
         self._user = user_key
         self._timeout = timeout
@@ -1626,7 +1651,12 @@ class PushoverNotifier:
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 return json.loads(response.read()).get("status") == 1
-        except (urllib.error.URLError, ValueError, TimeoutError):
+        except (OSError, http.client.HTTPException, ValueError):
+            # urllib only wraps errors from h.request(); getresponse() and
+            # read() propagate raw, so ConnectionResetError, IncompleteRead and
+            # ssl.SSLError all reach here. urllib.error.URLError and
+            # socket.timeout are both subclasses of OSError, so this set covers
+            # them without naming them.
             return False
 ```
 
@@ -1647,6 +1677,11 @@ from store import Store
 
 BACKOFF_SECONDS = (30.0, 60.0, 300.0, 900.0)
 MAX_BACKOFF = 1800.0
+
+# How long a maintenance-silenced item waits before being reconsidered. One
+# poll cycle: the window is re-evaluated on the next drain, so delivery resumes
+# promptly once maintenance ends.
+MAINTENANCE_DEFER_SECONDS = 60.0
 
 # A maintenance window may silence these. It may never silence safe_mode,
 # tip_divergence or observer_divergence: a node on the wrong chain is not
@@ -1678,9 +1713,22 @@ def drain(store: Store, notifier: Notifier, now: float,
             store.mark_sent(item.outbox_id)   # recorded, deliberately not sent
             continue
         if maintenance and item.rule in SILENCEABLE:
-            store.mark_sent(item.outbox_id)   # suppressed, not retried forever
+            # Deferred, NOT consumed. When the window ends, anything still
+            # unresolved is delivered. Consuming it would mean the operator's
+            # only message for the whole episode is the eventual "resolved",
+            # for a condition they were never told about.
+            store.defer(item.outbox_id, MAINTENANCE_DEFER_SECONDS)
             continue
-        if notifier.send(item.title, item.message, item.priority):
+        try:
+            sent = notifier.send(item.title, item.message, item.priority)
+        except Exception:
+            # A transport that raises must not abort the cycle. Without this,
+            # one unreachable provider head-of-line-blocks every later item —
+            # including a tip_divergence page queued behind a safe_mode one —
+            # and the raising item keeps attempts=0, so it retries with no
+            # backoff at all.
+            sent = False
+        if sent:
             store.mark_sent(item.outbox_id)
             delivered += 1
         else:
