@@ -2797,6 +2797,101 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
+- [ ] **Step 2b: Test the cycle loop's three binding behaviours**
+
+`run_once` had no tests at all, so the three constraints the loop exists to
+enforce were unverified. Nothing would have caught a regression that pings the
+dead-man after a failed commit.
+
+```python
+# append to tools/fleet-watcher/tests/test_watcher.py
+import os
+import tempfile
+import unittest
+
+import watcher
+from config import Config
+from engine import Engine
+from store import Store
+
+
+class _Rpc:
+    def call(self, node, method, params=None):
+        if method == "getdaemonstatus":
+            return {"result": {"height": 100}}
+        if method == "blockchain.getbestblockhash":
+            return {"result": "H100"}
+        if method == "blockchain.getblockhash":
+            return {"result": "H100"}
+        return {"result": {}}
+
+    def restart_id(self, node):
+        return "r1"
+
+
+class _Notifier:
+    def send(self, title, message, priority):
+        return True
+
+
+class _Heartbeat:
+    def __init__(self):
+        self.pings = 0
+
+    def ping(self):
+        self.pings += 1
+        return True
+
+
+class TestRunOnce(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.addCleanup(os.unlink, self.path)
+        self.store = Store(self.path)
+        self.engine = Engine(self.store, open_after=3, close_after=3)
+        self.config = Config(
+            nodes=[{"name": "a", "role": "voting", "transport": "ssh", "target": "t"}],
+            db_path=self.path, cycle_seconds=60, open_after=3, close_after=3,
+            node_behind_blocks=10, overdue_deadline_seconds=300.0)
+
+    def _run(self, previous=None):
+        hb = _Heartbeat()
+        result = watcher.run_once(self.config, self.store, self.engine, _Rpc(),
+                                  _Notifier(), hb, previous)
+        return result, hb
+
+    def test_a_healthy_cycle_pings_once(self):
+        _, hb = self._run()
+        self.assertEqual(hb.pings, 1)
+
+    def test_a_failed_commit_does_not_ping(self):
+        """A watcher that polls but cannot persist is broken, and the dead-man
+        is exactly what should notice."""
+        def explode(_observations):
+            raise RuntimeError("disk full")
+        self.store.write_cycle = explode
+        _, hb = self._run()
+        self.assertEqual(hb.pings, 0)
+
+    def test_a_failed_commit_preserves_the_previous_cycle(self):
+        sentinel = ["previous-cycle"]
+        def explode(_observations):
+            raise RuntimeError("disk full")
+        self.store.write_cycle = explode
+        result, _ = self._run(previous=sentinel)
+        self.assertIs(result, sentinel)
+
+    def test_a_dead_delivery_worker_does_not_ping(self):
+        """Collection working is not the property worth monitoring; the
+        ability to raise an alarm is."""
+        original = watcher.drain
+        watcher.drain = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        self.addCleanup(setattr, watcher, "drain", original)
+        _, hb = self._run()
+        self.assertEqual(hb.pings, 0)
+```
+
 - [ ] **Step 3: Verify the whole suite still passes**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest discover -s tests -v`
