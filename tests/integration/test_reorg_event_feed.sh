@@ -67,6 +67,14 @@ fail() {
 
 cleanup() {
     local rc=$?   # preserve the real verdict; nothing below may override it
+    # `fail()` sets KEEP_ON_FAIL=1 itself, but a `set -e` abort from a bare
+    # harness command (a nonzero exit outside any `|| fail ...`) never runs
+    # `fail()` at all -- and that is the most opaque failure mode there is.
+    # Key off the real exit code here too, or exactly the failures you
+    # can't predict are the ones whose datadir and log get deleted.
+    if [ "${rc}" != "0" ]; then
+        KEEP_ON_FAIL=1
+    fi
     stop_node 2>/dev/null || true
     if [ "${KEEP_ON_FAIL}" != "1" ] && [ -n "${REORG_HARNESS_DATA_DIR:-}" ]; then
         rm -rf "${REORG_HARNESS_DATA_DIR}" "${REORG_HARNESS_LOG:-}" 2>/dev/null || true
@@ -122,10 +130,12 @@ assert_total() {  # assert_total <expected> <message>
 info "Gate 1: reorg.status is reachable on a fresh node"
 start_node
 answer="$(rpc reorg.status)"
+# An unregistered method returns an error envelope with no "boot_id" member,
+# so THIS check is what fails on that case. A separate `grep -q -- '-32601'`
+# after it would be unreachable on exactly the failure it names -- deleted
+# rather than kept as test theatre.
 echo "${answer}" | grep -q '"boot_id"' \
     || fail "reorg.status did not return a result: ${answer}"
-echo "${answer}" | grep -q -- '-32601' \
-    && fail "reorg.status is not registered: ${answer}"
 assert_field "${answer}" total 0 "a fresh node should report total 0"
 pass "reorg.status answers and a fresh node reports total 0"
 
@@ -157,9 +167,9 @@ info "Gate 2b: an ordinary connect-only advance must not be counted"
 # mode, not a hypothetical: generatetoaddress reports failure as a bare
 # {code,message} with no top-level "error" member, which the harness's own
 # rpc-failed check does not catch.
-height_before="$(rpc_result blockchain.getblockcount)"
+height_before="$(rpc_result getblockcount)"
 extend_chain --blocks 3            # connect-only, no disconnect
-height_after="$(rpc_result blockchain.getblockcount)"
+height_after="$(rpc_result getblockcount)"
 [ "$((height_after - height_before))" -eq 3 ] \
     || fail "positive control failed: expected +3 blocks, got ${height_before} -> ${height_after}"
 
@@ -168,7 +178,7 @@ pass "ordinary block advance mined (verified) and left the reorg count unchanged
 
 # ── Gate 3: a restart records nothing ───────────────────────────────────────
 info "Gate 3: a restart must not manufacture phantom reorgs"
-height_before_restart="$(rpc_result blockchain.getblockcount)"
+height_before_restart="$(rpc_result getblockcount)"
 stop_node
 start_node
 
@@ -177,7 +187,7 @@ start_node
 # total:0 with an empty ring -- passing this gate for entirely the wrong
 # reason, since there would be no completed reorg in its history to replay
 # in the first place.
-height_after_restart="$(rpc_result blockchain.getblockcount)"
+height_after_restart="$(rpc_result getblockcount)"
 [ "${height_after_restart}" = "${height_before_restart}" ] \
     || fail "node did not reload the same chain: ${height_before_restart} -> ${height_after_restart}"
 

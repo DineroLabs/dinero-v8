@@ -1880,6 +1880,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         ReconsiderCrashRestartEquivalence InvalidityImportEquivalence
         TipPersistRestartEquivalence RecoveryMarkerRestartEquivalence
         ReorgMarkerAlignedRestartEquivalence InterruptedReorgFailSafe
+        ReorgEventFeed
         HeaderCFRestartEquivalence HeaderFilterReplayEquivalence
         PositionIndexRestartEquivalence HeaderBacklogRestartEquivalence
         CompactBlockRelayE2E PeerMetadataRuntimeIdentity

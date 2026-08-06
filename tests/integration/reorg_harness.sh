@@ -265,10 +265,20 @@ extend_chain() {
 #   1. Mine M blocks from the current tip ("branch NEW"). Remember the hash
 #      of NEW's first block (NEW1) and the fork height/hash.
 #   2. invalidateblock(NEW1). ChainstateService::InvalidateBlock disconnects
-#      NEW's blocks itself, directly via DisconnectTip, WITHOUT going through
-#      ActivateBestChain's disconnect_path/connect_path bookkeeping — so this
-#      step produces no reorg.status event (confirmed empirically: total
-#      stays 0 here). Active tip is back at the fork.
+#      NEW's blocks itself, directly via DisconnectTip in its own loop, and
+#      only THEN calls ActivateBestChain() (chainstate_service.cpp:10607) to
+#      pick up any new best candidate. It DOES call ActivateBestChain — the
+#      reason this step produces no reorg.status event is that by the time
+#      it runs, InvalidateBlock's manual loop has already moved active_tip_
+#      back to the fork itself. ActivateBestChain computes disconnect_path by
+#      walking from the CURRENT active_tip_ to the fork point (chainstate_
+#      service.cpp:7712-7717) — with active_tip_ already AT the fork, that
+#      walk is zero-length, so disconnect_path is empty regardless of what
+#      ActivateBestChain does next (confirmed empirically: total stays 0
+#      here). This is load-bearing for Gate 2's exact total==1: if a future
+#      refactor moves the manual disconnect out of InvalidateBlock (or drops
+#      it), ActivateBestChain would see active_tip_ still on NEW and compute
+#      a real disconnect_path here too, and total would read 2, not 1.
 #   3. Mine N blocks from the fork ("branch OLD"). This is a plain connect-
 #      only extension (is_reorg is keyed on a nonempty disconnect_path, and
 #      there isn't one) — not recorded either, and it establishes what will
