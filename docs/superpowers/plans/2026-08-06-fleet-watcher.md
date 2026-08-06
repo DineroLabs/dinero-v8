@@ -2998,6 +2998,42 @@ command="/usr/local/bin/fleet-watcher-rpc",no-port-forwarding,no-agent-forwardin
 The wrapper accepts only the read RPCs this tool uses and `invocation-id`. It
 must never provide a shell.
 
+**The quoting contract is load-bearing.** The watcher invokes
+`rpc <shlex.quoted-json>`, so the wrapper MUST word-split `$SSH_ORIGINAL_COMMAND`
+through the shell and read the payload as `$2`:
+
+```sh
+#!/bin/sh
+# /usr/local/bin/fleet-watcher-rpc — forced command, no shell for the caller.
+set -eu
+set -- $SSH_ORIGINAL_COMMAND          # deliberate word-splitting: the payload
+                                      # arrives shell-quoted from the watcher
+case "${1:-}" in
+  rpc)
+    printf '%s' "$2" | curl -sS --max-time 10 -X POST \
+        -H 'Content-Type: application/json' --data-binary @- \
+        "http://127.0.0.1:${DINERO_RPC_PORT:?}/"
+    ;;
+  invocation-id)
+    systemctl show "${DINERO_UNIT:-dinerod}" -p InvocationID --value
+    ;;
+  *)
+    echo "refused: ${1:-<empty>}" >&2; exit 64
+    ;;
+esac
+```
+
+A wrapper that instead does `${SSH_ORIGINAL_COMMAND#rpc }` receives the single
+quotes literally and every RPC fails to parse — so this must be verified once
+at install time, not assumed. Verify with:
+
+```bash
+ssh -o BatchMode=yes watcher@<node> "rpc '{\"jsonrpc\":\"2.0\",\"id\":\"t\",\"method\":\"getdaemonstatus\",\"params\":[]}'"
+```
+
+Expected: a JSON reply containing `"height"`. Anything else means the quoting
+contract is broken and the watcher will report every node unreachable.
+
 ## Tests
 
 ```bash
