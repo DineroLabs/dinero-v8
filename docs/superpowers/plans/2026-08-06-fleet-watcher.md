@@ -2615,7 +2615,6 @@ git commit -m "feat(watcher): config and two-stage poller with comparison hashes
 
 ```python
 import json
-import shlex
 import subprocess
 import tempfile
 import urllib.request
@@ -2634,7 +2633,7 @@ class SSHRPC:
     SSH_BASE = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                 "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=8",
                 "-o", "ControlMaster=auto", "-o", "ControlPersist=90",
-                "-T", "-n"]
+                "-T"]
 
     def __init__(self, nodes, timeout: float = CORE_TIMEOUT,
                  control_dir: Optional[str] = None) -> None:
@@ -2660,8 +2659,21 @@ class SSHRPC:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 return json.loads(response.read())
 
-        command = self._ssh_argv(entry["target"]) + ["rpc", shlex.quote(payload)]
-        result = subprocess.run(command, capture_output=True, timeout=self._timeout)
+        # The payload goes on STDIN, never in the command line.
+        #
+        # Passing it as an argument means the remote wrapper has to recover it
+        # from $SSH_ORIGINAL_COMMAND, and every way of doing that is wrong in a
+        # different way: `set -- $SSH_ORIGINAL_COMMAND` word-splits but does not
+        # perform quote removal, so the payload arrives truncated with literal
+        # quotes; `${SSH_ORIGINAL_COMMAND#rpc }` keeps them whole; `eval` fixes
+        # both by executing attacker-influenced text. All three fail as a
+        # fleet-wide "every node unreachable", which reads as a real outage.
+        #
+        # On stdin there is nothing to quote and nothing to parse, and the
+        # payload never appears in the remote process table.
+        command = self._ssh_argv(entry["target"]) + ["rpc"]
+        result = subprocess.run(command, input=payload.encode(),
+                                capture_output=True, timeout=self._timeout)
         if result.returncode != 0:
             raise RuntimeError(f"{node}: transport failed")
         return json.loads(result.stdout.decode())
@@ -2681,7 +2693,7 @@ class SSHRPC:
         else:
             command = self._ssh_argv(entry["target"]) + ["invocation-id"]
         try:
-            result = subprocess.run(command, capture_output=True,
+            result = subprocess.run(command, input=b"", capture_output=True,
                                     timeout=self._timeout)
         except (subprocess.SubprocessError, OSError):
             return None
@@ -2998,19 +3010,23 @@ command="/usr/local/bin/fleet-watcher-rpc",no-port-forwarding,no-agent-forwardin
 The wrapper accepts only the read RPCs this tool uses and `invocation-id`. It
 must never provide a shell.
 
-**The quoting contract is load-bearing.** The watcher invokes
-`rpc <shlex.quoted-json>`, so the wrapper MUST word-split `$SSH_ORIGINAL_COMMAND`
-through the shell and read the payload as `$2`:
+**The payload arrives on stdin, so there is nothing to quote.** An earlier
+design passed it as an argument, which forced the wrapper to recover it from
+`$SSH_ORIGINAL_COMMAND` — and every way of doing that is wrong in a different
+way. `set -- $SSH_ORIGINAL_COMMAND` word-splits without quote removal, so the
+payload arrives truncated with literal quotes; `${SSH_ORIGINAL_COMMAND#rpc }`
+keeps the quotes; `eval` fixes both by executing text the caller influenced.
+All three present identically: every node unreachable, which reads as a
+fleet-wide outage rather than a one-line shell mistake.
 
 ```sh
 #!/bin/sh
-# /usr/local/bin/fleet-watcher-rpc — forced command, no shell for the caller.
+# /usr/local/bin/fleet-watcher-rpc — forced command; the caller never gets a shell.
 set -eu
-set -- $SSH_ORIGINAL_COMMAND          # deliberate word-splitting: the payload
-                                      # arrives shell-quoted from the watcher
-case "${1:-}" in
+case "${SSH_ORIGINAL_COMMAND:-}" in
   rpc)
-    printf '%s' "$2" | curl -sS --max-time 10 -X POST \
+    # JSON-RPC body on stdin, straight through to the node's loopback RPC.
+    curl -sS --max-time 10 -X POST \
         -H 'Content-Type: application/json' --data-binary @- \
         "http://127.0.0.1:${DINERO_RPC_PORT:?}/"
     ;;
@@ -3018,21 +3034,27 @@ case "${1:-}" in
     systemctl show "${DINERO_UNIT:-dinerod}" -p InvocationID --value
     ;;
   *)
-    echo "refused: ${1:-<empty>}" >&2; exit 64
+    echo "refused: ${SSH_ORIGINAL_COMMAND:-<empty>}" >&2
+    exit 64
     ;;
 esac
 ```
 
-A wrapper that instead does `${SSH_ORIGINAL_COMMAND#rpc }` receives the single
-quotes literally and every RPC fails to parse — so this must be verified once
-at install time, not assumed. Verify with:
+`SSH_ORIGINAL_COMMAND` is now compared whole against two fixed strings. There is
+no parsing to get wrong.
+
+Verify the contract at install time, from the watcher host, as the watcher's own
+account — this exercises the key, the host-key policy and the wrapper together:
 
 ```bash
-ssh -o BatchMode=yes watcher@<node> "rpc '{\"jsonrpc\":\"2.0\",\"id\":\"t\",\"method\":\"getdaemonstatus\",\"params\":[]}'"
+printf '%s' '{"jsonrpc": "2.0", "id": "t", "method": "getdaemonstatus", "params": []}' \
+  | sudo -u fleet-watcher ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+        watcher@<node> rpc
 ```
 
-Expected: a JSON reply containing `"height"`. Anything else means the quoting
-contract is broken and the watcher will report every node unreachable.
+Expected: a JSON reply containing `"height"`. Note the spaces in the payload —
+they match what `json.dumps` emits, so this exercises the real traffic shape
+rather than a compact hand-typed one.
 
 ## Tests
 
