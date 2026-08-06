@@ -864,7 +864,10 @@ class TestStore(unittest.TestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        self.store = Store(self.path)
+        # Frozen clock: the store's timestamps and the tests' synthetic `now`
+        # values must live in ONE time domain, or assertions about deadlines
+        # test nothing.
+        self.store = Store(self.path, clock=lambda: 0.0)
 
     def tearDown(self):
         os.unlink(self.path)
@@ -879,6 +882,22 @@ class TestStore(unittest.TestCase):
         with self.assertRaises(Exception):
             self.store.write_cycle(bad)
         self.assertEqual(self.store.cycle("c1"), [])
+
+    def test_rollback_happens_inside_the_transaction_not_before_it(self):
+        """The type-check test above fails BEFORE the transaction opens, so it
+        proves nothing about atomicity. This one passes validation and dies at
+        SQLite bind time, inside executemany, which is the real rollback path."""
+        good = obs("a")
+        unbindable = Observation(
+            cycle_id="c1", timestamp="2026-08-06T00:00:00Z", node="b",
+            role="voting", reachable=True, height=object(), tip_hash="H",
+            hashes_at={100: "H100"}, peers_in=1, peers_out=1, synced=True,
+            safe_mode="inactive", safe_mode_reason=None, restart_id="r1",
+        )
+        with self.assertRaises(Exception):
+            self.store.write_cycle([good, unbindable])
+        self.assertEqual(self.store.cycle("c1"), [],
+                         "row one must roll back with row two")
 
     def test_hashes_at_round_trips(self):
         self.store.write_cycle([obs("a")])
@@ -915,10 +934,42 @@ class TestStore(unittest.TestCase):
         self.store.mark_sent(self.store.pending_outbox(now=0.0)[0].outbox_id)
         self.assertFalse(self.store.has_overdue_critical(now=1e9, deadline=300.0))
 
+    def test_closing_twice_enqueues_only_one_recovery(self):
+        iid = self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        self.store.mark_sent(self.store.pending_outbox(now=0.0)[0].outbox_id)
+        self.store.close_incident(iid)
+        self.store.close_incident(iid)
+        recoveries = [i for i in self.store.pending_outbox(now=0.0)
+                      if i.kind == "recovery"]
+        self.assertEqual(len(recoveries), 1)
+
+    def test_open_incidents_nodes_round_trip_sorted(self):
+        """open_incident stores sorted nodes, so open_incidents() returns them
+        sorted. Any consumer keying on (rule, nodes) must sort too, or its keys
+        never match and incidents never close."""
+        self.store.open_incident("node_behind", ("c", "a"), "normal", "x")
+        self.assertEqual(self.store.open_incidents()[0].nodes, ("a", "c"))
+
+    def test_failed_delivery_is_hidden_until_its_backoff_elapses(self):
+        self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        item = self.store.pending_outbox(now=0.0)[0]
+        self.store.mark_failed(item.outbox_id, backoff_seconds=30.0)
+        self.assertEqual(self.store.pending_outbox(now=10.0), [])
+        due = self.store.pending_outbox(now=40.0)
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0].attempts, 1)
+
+    def test_overdue_deadline_actually_depends_on_the_deadline(self):
+        """Guards the regression where created_at and now lived in different
+        time domains, making this gate a constant."""
+        self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        self.assertFalse(self.store.has_overdue_critical(now=100.0, deadline=300.0))
+        self.assertTrue(self.store.has_overdue_critical(now=400.0, deadline=300.0))
+
     def test_outbox_survives_reopen(self):
         """The crash window: incident opened, process dies before delivery."""
         self.store.open_incident("safe_mode", ("a",), "emergency", "x")
-        reopened = Store(self.path)
+        reopened = Store(self.path, clock=lambda: 0.0)
         self.assertEqual(len(reopened.pending_outbox(now=0.0)), 1)
 
 
@@ -954,7 +1005,7 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Sequence, Tuple
 
 from models import Incident, Observation, OutboxItem
 
@@ -991,7 +1042,19 @@ def _now_iso() -> str:
 
 
 class Store:
-    def __init__(self, path: str) -> None:
+    """The store owns exactly one clock, injected.
+
+    Reading `time.time()` internally while callers pass their own `now` created
+    three coexisting time domains and made `has_overdue_critical` a constant:
+    with `created_at` seeded at 0.0 and a real `now` of ~1.78e9, the deadline
+    term stopped mattering entirely and the gate returned True the moment any
+    emergency item was unsent — before a single delivery attempt. A gate that
+    carries no information is worse than no gate, because it trains the
+    operator to ignore it.
+    """
+
+    def __init__(self, path: str, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
         self.conn = sqlite3.connect(path, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -1014,8 +1077,11 @@ class Store:
         with self.conn:
             self.conn.execute("BEGIN")
             self.conn.executemany(
-                "INSERT OR REPLACE INTO observations VALUES "
-                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                "INSERT OR REPLACE INTO observations "
+                "(cycle_id, timestamp, node, role, reachable, height, tip_hash,"
+                " hashes_at, peers_in, peers_out, synced, safe_mode,"
+                " safe_mode_reason, restart_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
     def cycle(self, cycle_id: str) -> List[Observation]:
         rows = self.conn.execute(
@@ -1054,13 +1120,16 @@ class Store:
                 " message, attempts, created_at, next_attempt_at, sent_at)"
                 " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
                 (incident_id, rule, "open", priority, f"[dinero] {rule}",
-                 f"{rule}: {detail}", time.time(), time.time()))
+                 f"{rule}: {detail}", self._clock(), 0.0))
         return incident_id
 
     def close_incident(self, incident_id: str) -> None:
+        # `closed_at IS NULL` is not decoration: without it, closing twice
+        # enqueues two recovery notifications and the operator is told the same
+        # incident resolved twice.
         row = self.conn.execute(
-            "SELECT rule, detail FROM incidents WHERE incident_id=?",
-            (incident_id,)).fetchone()
+            "SELECT rule, detail FROM incidents WHERE incident_id=? "
+            "AND closed_at IS NULL", (incident_id,)).fetchone()
         if row is None:
             return
         with self.conn:
@@ -1073,7 +1142,7 @@ class Store:
                 " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
                 (incident_id, row["rule"], "recovery", "normal",
                  f"[dinero] resolved: {row['rule']}",
-                 f"{row['rule']} cleared", time.time(), time.time()))
+                 f"{row['rule']} cleared", self._clock(), 0.0))
 
     def open_incidents(self) -> List[Incident]:
         rows = self.conn.execute(
@@ -1104,7 +1173,7 @@ class Store:
         with self.conn:
             self.conn.execute(
                 "UPDATE outbox SET attempts=attempts+1, next_attempt_at=? "
-                "WHERE outbox_id=?", (time.time() + backoff_seconds, outbox_id))
+                "WHERE outbox_id=?", (self._clock() + backoff_seconds, outbox_id))
 
     def has_overdue_critical(self, now: float, deadline: float) -> bool:
         """An emergency notification still unsent past its deadline. This is one
@@ -1256,7 +1325,11 @@ class Engine:
         self._absent: Dict[str, int] = {}
 
     def process(self, hits: Sequence[RuleHit]) -> None:
-        seen = {(h.rule, h.nodes): h for h in hits}
+        # Sort the node tuple when keying. The store persists nodes sorted, so
+        # open_incidents() returns them sorted; comparing against an unsorted
+        # RuleHit tuple would never match, the close countdown would never
+        # start, and incidents would stay open forever.
+        seen = {(h.rule, tuple(sorted(h.nodes))): h for h in hits}
 
         for key, hit in seen.items():
             if hit.rule in SILENT_RULES:
