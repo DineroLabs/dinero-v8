@@ -640,6 +640,36 @@ set -eu
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# Exact numeric comparison, never a substring grep. `grep '"total" *: *1'`
+# matches "total": 10 through 19 — and chainstate_service.cpp warns in its own
+# comment that an abort path can turn one logical reorg into N records, so a
+# false pass there lands on exactly the regression the source flags as the
+# danger.
+json_field() {   # json_field <json> <key>  -> the scalar value, or empty
+    printf '%s' "$1" | python3 -c '
+import json,sys
+doc = json.load(sys.stdin)
+node = doc.get("result", doc)
+for key in sys.argv[1].split("."):
+    if isinstance(node, list):
+        node = node[int(key)]
+    else:
+        node = node.get(key)
+    if node is None:
+        sys.exit(0)
+print(node)
+' "$2"
+}
+
+assert_field() {  # assert_field <json> <key> <expected> <message>
+    actual=$(json_field "$1" "$2")
+    [ "$actual" = "$3" ] || fail "$4 (expected $2=$3, got '$actual'): $1"
+}
+
+assert_total() {  # assert_total <expected> <message>
+    assert_field "$(rpc reorg.status)" total "$1" "$2"
+}
+
 # ── Gate 1: the method answers at all ───────────────────────────────────────
 start_node
 answer=$(rpc reorg.status)
@@ -653,12 +683,20 @@ echo "$answer" | grep -q '"total" *: *0' \
 # ── Gate 2: a real reorg produces a matching event ──────────────────────────
 force_reorg --disconnect 2 --connect 3
 answer=$(rpc reorg.status)
-echo "$answer" | grep -q '"total" *: *1' \
-  || fail "expected exactly one recorded reorg: $answer"
-echo "$answer" | grep -q '"disconnected" *: *2' \
-  || fail "recorded depth does not match the forced reorg: $answer"
-echo "$answer" | grep -q '"connected" *: *3' \
-  || fail "recorded connect depth does not match: $answer"
+assert_field "$answer" total 1 "expected exactly one recorded reorg"
+# Depths asserted on the SAME event, by index — independent greps could match
+# different events once the ring holds more than one.
+assert_field "$answer" events.0.disconnected 2 "recorded disconnect depth is wrong"
+assert_field "$answer" events.0.connected 3 "recorded connect depth is wrong"
+# seq and timestamp are asserted because this gate is the ONLY thing that
+# exercises the handler's field assignments. Without these, renaming seq to
+# sequence in the handler would keep the whole suite green.
+assert_field "$answer" events.0.seq 1 "first recorded event should have seq 1"
+timestamp=$(json_field "$answer" events.0.timestamp)
+case "$timestamp" in
+  ????-??-??T??:??:??Z) : ;;
+  *) fail "timestamp is not RFC 3339 UTC: '$timestamp'" ;;
+esac
 
 first_boot=$(echo "$answer" | sed -n 's/.*"boot_id" *: *"\([^"]*\)".*/\1/p')
 
@@ -667,23 +705,42 @@ first_boot=$(echo "$answer" | sed -n 's/.*"boot_id" *: *"\([^"]*\)".*/\1/p')
 # adjacent log line fires on (disconnect || connect), and reusing that condition
 # would count every ordinary block as a reorg, making every downstream rate
 # meaningless. Nothing else in the suite would catch it.
+# POSITIVE CONTROL FIRST. Without it this gate is unfalsifiable: if
+# extend_chain mines nothing, the counter trivially stays at 1 and the gate
+# reports PASS having tested nothing. generatetoaddress reports failure as a
+# bare {code,message} with no "error" member, so the harness's failure check
+# does not catch it — a silent zero-block mine is a real path, not a
+# hypothetical.
+height_before=$(rpc_result blockchain.getblockcount)
 extend_chain --blocks 3            # connect-only, no disconnect
-answer=$(rpc reorg.status)
-echo "$answer" | grep -q '"total" *: *1' \
-  || fail "an ordinary block advance was counted as a reorg: $answer"
+height_after=$(rpc_result blockchain.getblockcount)
+[ "$((height_after - height_before))" -eq 3 ] \
+  || fail "positive control failed: expected +3 blocks, got $height_before -> $height_after"
+
+assert_total 1 "an ordinary block advance was counted as a reorg"
 
 # ── Gate 3: a restart records nothing ───────────────────────────────────────
 # ChainstateService exposes no initial-block-download flag, so whether chain
 # activation replays through the reorg path on startup CANNOT be settled by
 # reading the code. This settles it. A failure here means the recorder needs a
 # replay guard — a finding worth having before anyone trusts this feed.
+height_before_restart=$(rpc_result blockchain.getblockcount)
 stop_node
 start_node
+
+# POSITIVE CONTROL: prove the node reloaded the SAME chain. A node that failed
+# to open the datadir and started from genesis would also report total 0 with an
+# empty ring — passing this gate for entirely the wrong reason, since there
+# would be no completed reorg in its history to replay in the first place.
+height_after_restart=$(rpc_result blockchain.getblockcount)
+[ "$height_after_restart" = "$height_before_restart" ] \
+  || fail "node did not reload the same chain: $height_before_restart -> $height_after_restart"
+
 answer=$(rpc reorg.status)
-echo "$answer" | grep -q '"total" *: *0' \
-  || fail "restart manufactured phantom reorgs: $answer"
-echo "$answer" | grep -q '"events" *: *\[\]' \
-  || fail "restart left events in the ring: $answer"
+assert_field "$answer" total 0 "restart manufactured phantom reorgs"
+events_len=$(printf '%s' "$answer" | python3 -c \
+  'import json,sys; print(len(json.load(sys.stdin).get("result",{}).get("events",[])))')
+[ "$events_len" = "0" ] || fail "restart left $events_len events in the ring: $answer"
 
 second_boot=$(echo "$answer" | sed -n 's/.*"boot_id" *: *"\([^"]*\)".*/\1/p')
 [ "$first_boot" != "$second_boot" ] \
@@ -704,14 +761,37 @@ Temporarily change the recording condition in `chainstate_service.cpp` from
 `if (!disconnect_path.empty())` to `if (false)` and re-run.
 Expected: FAIL at "expected exactly one recorded reorg". Restore and re-run green.
 
-- [ ] **Step 4: Register the test**
+- [ ] **Step 4: Register the test AND make CI actually run it**
 
-Add to `tests/integration/CMakeLists.txt`, following the existing reorg-test entries:
+Add to `tests/integration/CMakeLists.txt`, following the existing reorg-test entries.
 
-```cmake
-add_test(NAME test_reorg_event_feed
-         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/test_reorg_event_feed.sh)
+Then — and this step is the whole point of the task — add it to the serial e2e
+lane in `.github/workflows/tests.yml`, immediately after the `RpcErrorEnvelope`
+block:
+
+```yaml
+          # Reorg event feed. Integration-labeled, so the main lane's
+          # --label-exclude skips it; selected here by exact name.
+          echo "=== ReorgEventFeed ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ReorgEventFeed$'
 ```
+
+**Without this the gate never executes.** The main lanes at `tests.yml:155` and
+`:476` both carry `--label-exclude 'integration|gate|release|canonicality|fuzz'`,
+and the serial lane at `:264` selects purely by exact name — which is why
+`MineAfterInvalidate`, `ScriptValidityReorg` and `RpcErrorEnvelope` are each
+listed there individually.
+
+A gate that exists, passes locally, and is never run by CI is precisely the
+condition this entire feature was written to detect. Shipping one would be the
+fourth instance in this repository.
+
+Note `--no-tests=error`: without it, a test that silently stops matching the
+regex reports success. `tests.yml:190` documents that exact failure recurring.
 
 - [ ] **Step 5: Run the whole suite**
 
