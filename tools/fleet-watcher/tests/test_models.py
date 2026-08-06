@@ -33,6 +33,27 @@ class TestObservation(unittest.TestCase):
                 safe_mode="inactive", safe_mode_reason=None, restart_id=None,
             )
 
+    def test_hashes_at_rejects_item_assignment(self):
+        obs = Observation(
+            cycle_id="c1", timestamp="t", node="n1", role="voting",
+            reachable=True, height=1, tip_hash="aa", hashes_at={1: "x"},
+            peers_in=0, peers_out=0, synced=True,
+            safe_mode="inactive", safe_mode_reason=None, restart_id=None,
+        )
+        with self.assertRaises(TypeError):
+            obs.hashes_at[2] = "y"
+
+    def test_hashes_at_is_defensively_copied(self):
+        original = {1: "x"}
+        obs = Observation(
+            cycle_id="c1", timestamp="t", node="n1", role="voting",
+            reachable=True, height=1, tip_hash="aa", hashes_at=original,
+            peers_in=0, peers_out=0, synced=True,
+            safe_mode="inactive", safe_mode_reason=None, restart_id=None,
+        )
+        original[2] = "y"
+        self.assertNotIn(2, obs.hashes_at)
+
 
 class TestRuleHit(unittest.TestCase):
     def test_rule_hit_is_hashable_for_set_comparison(self):

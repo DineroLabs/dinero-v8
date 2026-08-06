@@ -1,4 +1,3 @@
-# tools/fleet-watcher/models.py
 """Data models shared by every watcher component.
 
 Frozen dataclasses: an Observation is a fact about a moment and must never be
@@ -7,8 +6,9 @@ a set, which is how the engine detects "same condition still present".
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Mapping, Optional, Tuple
 
 SAFE_MODE_VALUES = ("active", "inactive", "unknown")
 ROLES = ("voting", "observer")
@@ -25,7 +25,7 @@ class Observation:
     reachable: bool
     height: Optional[int]
     tip_hash: Optional[str]
-    hashes_at: Dict[int, str]
+    hashes_at: Mapping[int, str]
     peers_in: Optional[int]
     peers_out: Optional[int]
     synced: Optional[bool]
@@ -34,6 +34,8 @@ class Observation:
     restart_id: Optional[str]
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "hashes_at",
+                           MappingProxyType(dict(self.hashes_at)))
         if self.safe_mode not in SAFE_MODE_VALUES:
             raise ValueError(f"safe_mode must be one of {SAFE_MODE_VALUES}")
         if self.role not in ROLES:
