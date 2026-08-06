@@ -32,6 +32,7 @@
 #include <atomic>  // Phase 44: For thread-safe stop signal
 #include <mutex>   // Phase 44: For background validation state protection
 #include <condition_variable>  // #298: wake-on-store for background validation
+#include <algorithm>
 
 // Phase C.1.5: Forward declaration for P2P message handlers
 struct P2PMessage;
@@ -140,8 +141,9 @@ public:
     // wallet's scan watermark to `base_height`. Complements the block-replay
     // rescan, which cannot see pre-base coins (no block bodies in headers-only
     // mode). Idempotent. Returns the number of owned coins recorded, or -1 if no
-    // snapshot UTXO set is loaded. Used by both the LoadSnapshot completion hook
-    // and the wallet-opened-after-snapshot trigger in WalletService.
+    // snapshot UTXO set is loaded. Used by the LoadSnapshot completion hook,
+    // WalletService startup sweep, and wallet.importmnemonic when the mnemonic
+    // is imported only after snapshot activation.
     int RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height);
 
     // v7 shielded pool state accessors.
@@ -354,6 +356,11 @@ public:
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }
     uint256 GetAssumeUTXOBaseBlock() const { return assumeutxo_base_block_; }
     uint32_t GetAssumeUTXOBaseHeight() const { return assumeutxo_base_height_; }
+    // Wallet recovery must remain available after background validation
+    // promotes the snapshot and clears assumeutxo_active_. Snapshot-bootstrapped
+    // nodes still lack pre-base block bodies after promotion, so a wallet opened
+    // or imported later must scan the configured snapshot UTXO section.
+    uint32_t GetSnapshotWalletRecoveryBaseHeight() const;
 
     // Fatal-state-machine lifecycle (docs/design/assumeutxo-fatal-state-machine.md).
     // Never nullptr after Initialize(); guarded internally.

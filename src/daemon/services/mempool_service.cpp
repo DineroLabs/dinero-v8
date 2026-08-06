@@ -4,6 +4,7 @@
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/p2p_service.h"  // For tx broadcast
 #include "daemon/daemon_context.h"
+#include "daemon/config.h"
 #include "common/ilogger.h"  // For ILogger interface dependency injection
 #include <sstream>
 #include <iostream>
@@ -47,9 +48,14 @@ bool MempoolService::Init(DaemonContext& ctx) {
             return false;
         }
 
-        mempool_ = std::make_unique<Mempool>(chain_db);
+        mempool_ = std::make_unique<Mempool>(
+            chain_db,
+            chainstate_->GetConsensusUTXOSet(),
+            GetConfig().utreexo_stateless);
         mempool_->setLogger(logger_interface_);  // Inject logger for dependency injection
-        logger_interface_->info("[MempoolService] Mempool instance created with ChainDB");
+        logger_interface_->info(
+            std::string("[MempoolService] Mempool instance created with active consensus UTXO view") +
+            (GetConfig().utreexo_stateless ? " and stateless ChainDB fallback" : ""));
 
         // Apply RBF/CPFP policy from config
         // Default: RBF off (preserves payment finality), CPFP on (safe fee bumping)
