@@ -24,12 +24,40 @@ class Config:
         return sum(1 for n in self.nodes if n["role"] == "voting")
 
 
+TRANSPORTS = ("ssh", "local")
+
+
 def load_config(path: str) -> Config:
+    """Validate loudly at load time.
+
+    A malformed inventory that starts anyway becomes a runtime failure on the
+    one host that matters, and several of these mistakes are indistinguishable
+    from real fleet problems once the watcher is running — a duplicate node
+    name, for instance, makes voting_total exceed the observations and raises a
+    permanent, unclosable telemetry_degraded.
+    """
     with open(path, "r", encoding="utf-8") as handle:
         raw = json.load(handle)
-    for node in raw["nodes"]:
+
+    nodes = raw.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        raise ValueError("config must define a non-empty 'nodes' list")
+
+    seen = set()
+    for node in nodes:
+        for key in ("name", "role", "transport", "target"):
+            if key not in node:
+                raise ValueError(f"node missing required key {key!r}: {node!r}")
+        if node["name"] in seen:
+            raise ValueError(f"duplicate node name: {node['name']}")
+        seen.add(node["name"])
         if node["role"] not in ("voting", "observer"):
             raise ValueError(f"bad role for {node['name']}: {node['role']}")
+        if node["transport"] not in TRANSPORTS:
+            raise ValueError(f"bad transport for {node['name']}: {node['transport']}")
+
+    if not any(n["role"] == "voting" for n in nodes):
+        raise ValueError("config defines no voting nodes; quorum is impossible")
     return Config(
         nodes=raw["nodes"],
         db_path=raw.get("db_path", "/var/lib/fleet-watcher/watcher.db"),

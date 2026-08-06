@@ -29,23 +29,39 @@ def parse_safe_mode(response: Optional[Dict[str, Any]]) -> Tuple[str, Optional[s
 
 
 def comparison_heights(voter_heights: Dict[str, int],
-                       observer_heights: Dict[str, int],
-                       quorum_median: Optional[int]) -> Dict[str, Set[int]]:
+                       observer_heights: Dict[str, int]) -> Dict[str, Set[int]]:
     """Which heights each node must be asked about.
 
-    Voters: min(height_a, height_b) for every pair they participate in.
-    Observers: min(observer_height, quorum_median) — omitting these would leave
-    observer_divergence unimplementable for the same reason.
+    PAIRWISE, always. `rules.compatible()` compares two nodes at
+    `min(height_a, height_b)`, so both sides of every pair the rules will
+    evaluate need a hash at exactly that height.
+
+    Voters pair with each other. Observers pair with every voter — NOT with a
+    quorum median. An earlier version asked observers for
+    `min(height, quorum_median)`, which made `observer_divergence` unable to
+    fire at all: no voter was ever asked for a hash at that height, so every
+    observer-vs-member comparison came back UNDETERMINED and a fully forked
+    observer was invisible. The median was also computed before the quorum
+    existed, so it was not even the median the rules would use.
+
+    Observers still never vote. Being comparable and being counted are
+    different things.
     """
     needed: Dict[str, Set[int]] = {n: set() for n in voter_heights}
+    for name in observer_heights:
+        needed.setdefault(name, set())
+
     for a, b in combinations(sorted(voter_heights), 2):
         h = min(voter_heights[a], voter_heights[b])
         needed[a].add(h)
         needed[b].add(h)
-    for name, height in observer_heights.items():
-        needed.setdefault(name, set())
-        if quorum_median is not None:
-            needed[name].add(min(height, quorum_median))
+
+    for observer in sorted(observer_heights):
+        for voter in sorted(voter_heights):
+            h = min(observer_heights[observer], voter_heights[voter])
+            needed[observer].add(h)
+            needed[voter].add(h)
+
     return needed
 
 
@@ -95,12 +111,7 @@ def poll_cycle(nodes: Sequence[Dict[str, Any]], rpc: Any, cycle_id: str,
                      if e["role"] == "voting" and e["reachable"]}
     observer_heights = {n: e["height"] for n, e in stage1.items()
                         if e["role"] == "observer" and e["reachable"]}
-    median = None
-    if voter_heights:
-        ordered = sorted(voter_heights.values())
-        median = ordered[len(ordered) // 2]
-
-    needed = comparison_heights(voter_heights, observer_heights, median)
+    needed = comparison_heights(voter_heights, observer_heights)
     hashes: Dict[str, Dict[int, str]] = {n: {} for n in stage1}
     for name, heights in needed.items():
         for height in sorted(heights):

@@ -42,16 +42,43 @@ class TestParseSafeMode(unittest.TestCase):
 class TestComparisonHeights(unittest.TestCase):
     def test_pairwise_minimum_for_voters(self):
         heights = {"a": 100, "b": 105, "c": 90}
-        self.assertEqual(comparison_heights(heights, {}, None), {
+        self.assertEqual(comparison_heights(heights, {}), {
             "a": {90, 100}, "b": {90, 100}, "c": {90},
         })
 
-    def test_observer_compared_against_quorum_median(self):
-        result = comparison_heights({"a": 100}, {"w": 95}, quorum_median=100)
-        self.assertIn(95, result["w"])
+    def test_observer_pairs_with_every_voter_on_both_sides(self):
+        """The comparison the rules actually make is observer-vs-MEMBER at the
+        pairwise minimum. Asking only the observer, or asking against a median,
+        leaves every such comparison UNDETERMINED and makes a forked observer
+        invisible."""
+        result = comparison_heights({"a": 100, "b": 90}, {"w": 95})
+        self.assertEqual(result["w"], {90, 95})
+        self.assertIn(95, result["a"], "the voter needs the observer's height too")
+        self.assertIn(90, result["b"])
 
 
 class TestPollCycle(unittest.TestCase):
+    def test_stage_two_fetches_both_sides_of_every_comparison(self):
+        """Stage 2's entire purpose is WHICH (node, height) pairs get fetched.
+        Asserting only on the returned observations cannot see this."""
+        nodes = [{"name": "a", "role": "voting"},
+                 {"name": "b", "role": "voting"},
+                 {"name": "w", "role": "observer"}]
+        heights = {"a": 100, "b": 90, "w": 95}
+        responses = {}
+        for name, height in heights.items():
+            responses[(name, "getdaemonstatus")] = {"result": {"height": height}}
+            responses[(name, "blockchain.getbestblockhash")] = {"result": f"H{height}"}
+        rpc = FakeRPC(responses)
+        poll_cycle(nodes, rpc, "c1", "2026-08-06T00:00:00Z")
+
+        asked = {(n, p[0]) for n, m, p in rpc.calls
+                 if m == "blockchain.getblockhash"}
+        # a-b pair at 90; w-a pair at 95; w-b pair at 90 — both sides each.
+        for pair in (("a", 90), ("b", 90), ("w", 95), ("a", 95), ("w", 90)):
+            self.assertIn(pair, asked, f"missing comparison hash for {pair}")
+
+
     def test_unreachable_node_still_produces_an_observation(self):
         nodes = [{"name": "a", "role": "voting"}]
         rpc = FakeRPC({("a", "getdaemonstatus"): TimeoutError("no route")})
