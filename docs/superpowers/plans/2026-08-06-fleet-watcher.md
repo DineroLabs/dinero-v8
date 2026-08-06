@@ -2138,9 +2138,17 @@ git commit -m "feat(watcher): dead-man heartbeat gated on the whole alarm path"
 - Create: `tools/fleet-watcher/config.py`, `tools/fleet-watcher/poller.py`
 - Test: `tools/fleet-watcher/tests/test_poller.py`
 - Create: `tools/fleet-watcher/deploy/config.example.json`
+- Create: `tools/fleet-watcher/.gitignore` containing `deploy/config.json` — the real
+  inventory must never be committed, and convention alone has not been enough anywhere else
+  in this repo
 
 **Interfaces:**
 - Consumes: `Observation` (Task 1).
+- **Requires of the RPC object** (implemented in Task 9): `call(node, method, params=None)`
+  returning the parsed JSON-RPC reply, AND `restart_id(node)` returning a process-identity
+  string or `None`. `restart_id` is easy to overlook because the poller wraps it in a bare
+  except — if Task 9 omits it, `restart_id` stays `None` forever and `node_restart` silently
+  never fires. It is part of the contract, not an optional extra.
 - Produces: `load_config(path) -> Config` with `.nodes` (each `name`, `role`, `transport`, `target`); `poll_cycle(nodes, rpc, cycle_id, now_iso) -> list[Observation]`; `parse_safe_mode(response) -> str`. Used by Task 9.
 
 - [ ] **Step 1: Write the failing test**
