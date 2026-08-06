@@ -111,15 +111,10 @@ public:
         return snapshot;
     }
 
-    uint64_t Total() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return total_;
-    }
-
-    std::vector<ReorgLogEvent> Events() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return std::vector<ReorgLogEvent>(events_.begin(), events_.end());
-    }
+    // Total() and Events() were deliberately removed (they read the counter
+    // and ring under SEPARATE locks, which is the exact false-overflow-signal
+    // hazard documented on Take() above). Take() is the only accessor now;
+    // every caller — the RPC handler and the unit tests — reads through it.
 
     const std::string& BootId() const { return boot_id_; }
 
@@ -145,14 +140,35 @@ private:
         // here is distinctness ACROSS PROCESSES, so that a consumer can tell a
         // restart from data loss. Mixing in the pid and a high-resolution clock
         // read makes that hold even where random_device does not.
-        std::random_device rd;
         const auto pid = static_cast<uint64_t>(DINERO_GETPID());
         const auto tick = static_cast<uint64_t>(
             std::chrono::steady_clock::now().time_since_epoch().count());
         std::ostringstream out;
         out << std::hex << std::setw(16) << std::setfill('0') << (pid ^ tick);
-        for (int i = 0; i < 2; ++i) {
-            out << std::hex << std::setw(8) << std::setfill('0') << rd();
+
+        // random_device's constructor and operator() are both permitted to
+        // throw (the entropy source can be unavailable — a sandboxed or
+        // /dev/urandom-less environment). ReorgLog's constructor is NOT
+        // noexcept, and ChainstateService now owns a ReorgLog member, so an
+        // uncaught throw here would abort daemon startup over what should be
+        // a best-effort entropy mix-in. On failure, fall back to wall-clock
+        // time (system_clock — a different clock from the steady_clock tick
+        // already mixed in above) combined with the pid: this still gives
+        // CROSS-PROCESS distinctness, not just non-emptiness, without a fixed
+        // literal that would collide between any two processes that hit this
+        // fallback at the same time.
+        try {
+            std::random_device rd;
+            for (int i = 0; i < 2; ++i) {
+                out << std::hex << std::setw(8) << std::setfill('0') << rd();
+            }
+        } catch (...) {
+            const auto wall = static_cast<uint64_t>(
+                std::chrono::system_clock::now().time_since_epoch().count());
+            out << std::hex << std::setw(8) << std::setfill('0')
+                << static_cast<uint32_t>(wall & 0xffffffffu);
+            out << std::hex << std::setw(8) << std::setfill('0')
+                << static_cast<uint32_t>((wall >> 32) ^ pid);
         }
         return out.str();
     }
@@ -164,5 +180,11 @@ private:
 };
 
 }  // namespace dinero
+
+// Leaked no further than necessary: DINERO_GETPID's last use is MakeBootId()
+// above. Left defined, it would leak into every translation unit that
+// includes chainstate_service.h (which pulls this header in) via one of the
+// riskiest headers in the daemon.
+#undef DINERO_GETPID
 
 #endif  // DINERO_DAEMON_REORG_LOG_H
