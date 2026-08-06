@@ -448,22 +448,45 @@ And in the private member area, alongside the other mutable state:
     ReorgLog reorg_log_;
 ```
 
-- [ ] **Step 2: Add the recording call**
+- [ ] **Step 2: Add the recording call — AFTER the commit point**
 
-In `src/daemon/services/chainstate_service.cpp`, immediately after the existing block that logs
-`"[ActivateBestChain] REORG DETECTED"`, add:
+In `src/daemon/services/chainstate_service.cpp`, find the line
 
 ```cpp
-    // Read-only observability. Keyed on disconnect_path ALONE, deliberately not
-    // on the ||-condition the log above uses: a connect-only advance is an
-    // ordinary new block, and counting those would make every downstream reorg
-    // rate meaningless. Record() is noexcept and takes only a short mutex, so
-    // it cannot disturb activation.
-    if (!disconnect_path.empty()) {
+    // Update active tip (already done by ConnectTip, but ensure consistency)
+    PublishActiveTip(best_candidate, TipPublishReason::kSelfHealRealign);
+```
+
+and add IMMEDIATELY AFTER it:
+
+```cpp
+    // Read-only observability, recorded only once the reorg has actually
+    // COMPLETED.
+    //
+    // Placing this earlier — next to the "REORG DETECTED" log, where the paths
+    // are first built — would record intent rather than outcome: roughly twenty
+    // return statements between there and here abort the reorg, so a failed
+    // forest restore would publish a reorg that provably never began. Worse, the
+    // disconnect-failure abort re-adds the pre-reorg tip "so the next pass
+    // restores it", and ActivateBestChain runs on a periodic tick — so one
+    // logical reorg would become N records with differing depths and flood the
+    // 64-entry ring with retries of a single event.
+    //
+    // `is_reorg` is already computed above as `!disconnect_path.empty()`.
+    // Keyed on the disconnect path ALONE, deliberately not the ||-condition the
+    // REORG DETECTED log uses: a connect-only advance is an ordinary new block,
+    // and counting those would make every downstream rate meaningless.
+    //
+    // Record() is noexcept and formats its timestamp outside its own lock, so
+    // it cannot disturb activation. Do not wrap it in a try/catch.
+    if (is_reorg) {
         reorg_log_.Record(static_cast<uint32_t>(disconnect_path.size()),
                           static_cast<uint32_t>(connect_path.size()));
     }
 ```
+
+Both `disconnect_path` and `connect_path` are still in scope here — the line
+above already reads `disconnect_path` to compute `is_reorg`.
 
 - [ ] **Step 3: Build the daemon**
 
@@ -638,6 +661,16 @@ echo "$answer" | grep -q '"connected" *: *3' \
   || fail "recorded connect depth does not match: $answer"
 
 first_boot=$(echo "$answer" | sed -n 's/.*"boot_id" *: *"\([^"]*\)".*/\1/p')
+
+# ── Gate 2b: an ordinary block does NOT count as a reorg ────────────────────
+# The trigger is the single most likely thing a future edit gets wrong: the
+# adjacent log line fires on (disconnect || connect), and reusing that condition
+# would count every ordinary block as a reorg, making every downstream rate
+# meaningless. Nothing else in the suite would catch it.
+extend_chain --blocks 3            # connect-only, no disconnect
+answer=$(rpc reorg.status)
+echo "$answer" | grep -q '"total" *: *1' \
+  || fail "an ordinary block advance was counted as a reorg: $answer"
 
 # ── Gate 3: a restart records nothing ───────────────────────────────────────
 # ChainstateService exposes no initial-block-download flag, so whether chain
