@@ -83,9 +83,29 @@ public:
             // Swallowing here is the requirement, not an oversight: a failure
             // to record an observation must never disturb chain activation,
             // and there is no action available inside this path that is safer
-            // than dropping the event. Dropping it is also self-reporting —
-            // total_ has already been incremented, so it outruns the ring,
-            // which is exactly how a consumer learns something was lost.
+            // than dropping the event.
+            //
+            // Detectability is NOT uniform across the two throw windows, and
+            // the asymmetry is worth stating precisely:
+            //
+            //   - A throw at or after `++total_` (realistically push_back's
+            //     bad_alloc) IS self-reporting. The counter has advanced past
+            //     the ring, so a consumer comparing total against the events
+            //     it can account for sees the gap.
+            //
+            //   - A throw from NowIso8601() above is INVISIBLE. It runs before
+            //     the counter is touched, so the reorg leaves no trace at all
+            //     — not in the ring, not in the total. This is also the more
+            //     likely of the two, since the timestamp format is the only
+            //     allocating, locale-touching work in the function.
+            //
+            // The counter is deliberately not incremented earlier to close
+            // that window: doing so means either holding the mutex across the
+            // format (the slow-work-under-a-consensus-path-lock problem this
+            // function is arranged to avoid) or splitting the counter from
+            // the ring behind a second synchronisation point, which is the
+            // torn-read hazard Take() exists to prevent. A silent drop on
+            // ostringstream failure is the accepted cost of both.
         }
     }
 
