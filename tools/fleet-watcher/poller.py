@@ -7,12 +7,63 @@ computed from current tips: comparing tips either demands identical heights
 """
 from __future__ import annotations
 
+import json
+import shlex
+import subprocess
+import urllib.request
 from itertools import combinations
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from models import Observation
 
 CORE_TIMEOUT = 10.0
+
+
+class SSHRPC:
+    """Calls a node's loopback RPC through a forced-command read-only wrapper.
+
+    No shell, no port/agent/X11 forwarding, strict host-key checking, and a hard
+    timeout so one hung node cannot stall the cycle.
+    """
+
+    SSH_BASE = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+                "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=8",
+                "-T", "-n"]
+
+    def __init__(self, nodes, timeout: float = CORE_TIMEOUT) -> None:
+        self._targets = {n["name"]: n for n in nodes}
+        self._timeout = timeout
+
+    def call(self, node: str, method: str, params=None):
+        entry = self._targets[node]
+        payload = json.dumps({"jsonrpc": "2.0", "id": "w",
+                              "method": method, "params": list(params or ())})
+        if entry.get("transport") == "local":
+            # stdlib, not curl. The watcher has no third-party dependencies and
+            # should not acquire one through a subprocess either — a missing
+            # curl would fail at runtime on the one host that matters.
+            request = urllib.request.Request(
+                f"http://{entry['target']}/", data=payload.encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                return json.loads(response.read())
+
+        command = self.SSH_BASE + [entry["target"], "rpc", shlex.quote(payload)]
+        result = subprocess.run(command, capture_output=True, timeout=self._timeout)
+        if result.returncode != 0:
+            raise RuntimeError(f"{node}: transport failed")
+        return json.loads(result.stdout.decode())
+
+    def restart_id(self, node: str):
+        """systemd InvocationID — never locale-formatted ps output."""
+        entry = self._targets[node]
+        if entry.get("transport") == "local":
+            command = ["systemctl", "show", "dinerod", "-p", "InvocationID", "--value"]
+        else:
+            command = self.SSH_BASE + [entry["target"], "invocation-id"]
+        result = subprocess.run(command, capture_output=True, timeout=self._timeout)
+        value = result.stdout.decode().strip()
+        return value or None
 
 
 def parse_safe_mode(response: Optional[Dict[str, Any]]) -> Tuple[str, Optional[str]]:
