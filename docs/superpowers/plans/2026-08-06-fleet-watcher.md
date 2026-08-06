@@ -2137,6 +2137,7 @@ git commit -m "feat(watcher): dead-man heartbeat gated on the whole alarm path"
 **Files:**
 - Create: `tools/fleet-watcher/config.py`, `tools/fleet-watcher/poller.py`
 - Test: `tools/fleet-watcher/tests/test_poller.py`
+- Test: `tools/fleet-watcher/tests/test_config.py`
 - Create: `tools/fleet-watcher/deploy/config.example.json`
 - Create: `tools/fleet-watcher/.gitignore` containing `deploy/config.json` — the real
   inventory must never be committed, and convention alone has not been enough anywhere else
@@ -2476,6 +2477,78 @@ def poll_cycle(nodes: Sequence[Dict[str, Any]], rpc: Any, cycle_id: str,
         peers_out=e["peers_out"], synced=e["synced"], safe_mode=e["safe_mode"],
         safe_mode_reason=e["safe_mode_reason"], restart_id=e["restart_id"],
     ) for name, e in stage1.items()]
+```
+
+- [ ] **Step 4b: Write the config validation tests**
+
+Validation that is never exercised is indistinguishable from validation that
+does not work. Each case below is a real mistake with a real downstream effect —
+a duplicate node name in particular makes `voting_total` exceed the observed
+nodes and raises a permanent, unclosable `telemetry_degraded` that looks like a
+fleet fault rather than a typo.
+
+```python
+# tools/fleet-watcher/tests/test_config.py
+import json
+import os
+import tempfile
+import unittest
+
+from config import load_config
+
+VALID = {
+    "nodes": [
+        {"name": "a", "role": "voting", "transport": "ssh", "target": "w@a"},
+        {"name": "b", "role": "voting", "transport": "local", "target": "127.0.0.1:1"},
+        {"name": "w", "role": "observer", "transport": "ssh", "target": "w@w"},
+    ]
+}
+
+
+class TestLoadConfig(unittest.TestCase):
+    def _write(self, payload):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as handle:
+            json.dump(payload, handle)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def _rejects(self, payload, fragment):
+        with self.assertRaises(ValueError) as caught:
+            load_config(self._write(payload))
+        self.assertIn(fragment, str(caught.exception).lower())
+
+    def test_a_valid_config_loads_and_counts_voters(self):
+        config = load_config(self._write(VALID))
+        self.assertEqual(len(config.nodes), 3)
+        self.assertEqual(config.voting_total, 2)
+
+    def test_duplicate_node_names_are_rejected(self):
+        payload = {"nodes": [dict(VALID["nodes"][0]), dict(VALID["nodes"][0])]}
+        self._rejects(payload, "duplicate")
+
+    def test_an_empty_node_list_is_rejected(self):
+        self._rejects({"nodes": []}, "non-empty")
+
+    def test_a_config_with_no_voting_nodes_is_rejected(self):
+        payload = {"nodes": [dict(VALID["nodes"][2])]}
+        self._rejects(payload, "voting")
+
+    def test_an_unknown_transport_is_rejected(self):
+        payload = {"nodes": [{**VALID["nodes"][0], "transport": "carrier-pigeon"}]}
+        self._rejects(payload, "transport")
+
+    def test_an_unknown_role_is_rejected(self):
+        payload = {"nodes": [{**VALID["nodes"][0], "role": "auditor"}]}
+        self._rejects(payload, "role")
+
+    def test_a_missing_required_key_is_rejected(self):
+        payload = {"nodes": [{"name": "a", "role": "voting"}]}
+        self._rejects(payload, "missing")
+
+
+if __name__ == "__main__":
+    unittest.main()
 ```
 
 - [ ] **Step 5: Write the example config**
