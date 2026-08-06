@@ -108,7 +108,8 @@ NODE_BEHIND_BLOCKS = 10
 
 def evaluate(observations: Sequence[Observation],
              voting_total: int,
-             previous: Optional[Sequence[Observation]] = None) -> List[RuleHit]:
+             previous: Optional[Sequence[Observation]] = None,
+             node_behind_blocks: int = NODE_BEHIND_BLOCKS) -> List[RuleHit]:
     """Detect every rule for one complete cycle. Order is not significant."""
     hits: List[RuleHit] = []
     voting = [o for o in observations if o.role == "voting"]
@@ -183,10 +184,10 @@ def evaluate(observations: Sequence[Observation],
         # node_behind — measured against the quorum's median tip height.
         behind = [o.node for o in observations
                   if o.reachable and o.height is not None
-                  and quorum.median_height - o.height >= NODE_BEHIND_BLOCKS]
+                  and quorum.median_height - o.height >= node_behind_blocks]
         if behind:
             hits.append(RuleHit("node_behind", tuple(behind),
-                                f">= {NODE_BEHIND_BLOCKS} blocks below quorum median "
+                                f">= {node_behind_blocks} blocks below quorum median "
                                 f"{quorum.median_height}"))
 
         # observer_divergence — at least one DISAGREE and no AGREE. Requiring

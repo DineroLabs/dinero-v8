@@ -1,6 +1,8 @@
+import subprocess
 import unittest
+from unittest import mock
 
-from poller import parse_safe_mode, comparison_heights, poll_cycle
+from poller import SSHRPC, parse_safe_mode, comparison_heights, poll_cycle
 
 
 class FakeRPC:
@@ -97,6 +99,63 @@ class TestPollCycle(unittest.TestCase):
         result = poll_cycle(nodes, rpc, "c1", "2026-08-06T00:00:00Z")
         self.assertTrue(result[0].reachable, "core RPCs answered")
         self.assertEqual(result[0].safe_mode, "unknown")
+
+    def test_stage_two_is_abandoned_once_the_budget_elapses(self):
+        """Abandoning stage 2 is safe: an absent hash reads as UNDETERMINED,
+        which raises telemetry_degraded rather than a fork page. The budget
+        exists so one hung node cannot push the cycle past the dead-man's
+        overdue deadline — this proves the deadline is actually enforced
+        against a fake clock, not just accepted as an unused parameter."""
+        nodes = [{"name": "a", "role": "voting"},
+                 {"name": "b", "role": "voting"},
+                 {"name": "w", "role": "observer"}]
+        heights = {"a": 100, "b": 90, "w": 95}
+        responses = {}
+        for name, height in heights.items():
+            responses[(name, "getdaemonstatus")] = {"result": {"height": height}}
+            responses[(name, "blockchain.getbestblockhash")] = {"result": f"H{height}"}
+        rpc = FakeRPC(responses)
+
+        # First call establishes the deadline; every call after it reports
+        # time already past that deadline, so stage 2 must abandon before
+        # issuing a single blockchain.getblockhash call.
+        clock = iter([0.0] + [100.0] * 10)
+        result = poll_cycle(nodes, rpc, "c1", "2026-08-06T00:00:00Z",
+                            budget=45.0, monotonic=lambda: next(clock))
+
+        hash_calls = [c for c in rpc.calls if c[1] == "blockchain.getblockhash"]
+        self.assertEqual(hash_calls, [], "budget elapsed before stage 2 started")
+        self.assertEqual(len(result), 3, "stage 1 observations still returned")
+        for observation in result:
+            self.assertEqual(observation.hashes_at, {},
+                             "absent hash, not a fabricated one")
+
+
+class TestSSHRPCRestartId(unittest.TestCase):
+    """A non-zero exit must yield None, never stdout.
+
+    A forced-command wrapper that prints a constant string on failure (e.g.
+    an error banner, or a stale cached value) would otherwise become a
+    stable but BOGUS restart identity — masking every real restart forever.
+    That is worse than no signal at all, because node_restart would look
+    like it was working.
+    """
+
+    def test_non_zero_exit_yields_none_even_with_stdout(self):
+        nodes = [{"name": "a", "role": "voting", "transport": "ssh", "target": "w@a"}]
+        rpc = SSHRPC(nodes)
+        fake_result = subprocess.CompletedProcess(
+            args=["ssh"], returncode=1, stdout=b"bogus-but-stable-id\n", stderr=b"")
+        with mock.patch("poller.subprocess.run", return_value=fake_result):
+            self.assertIsNone(rpc.restart_id("a"))
+
+    def test_zero_exit_returns_the_stripped_stdout(self):
+        nodes = [{"name": "a", "role": "voting", "transport": "ssh", "target": "w@a"}]
+        rpc = SSHRPC(nodes)
+        fake_result = subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout=b"real-invocation-id\n", stderr=b"")
+        with mock.patch("poller.subprocess.run", return_value=fake_result):
+            self.assertEqual(rpc.restart_id("a"), "real-invocation-id")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+import watcher
+from config import Config
+from engine import Engine
+from store import Store
 from watcher import main
 
 VALID_NODES = [
@@ -44,6 +48,104 @@ class TestMainCredentialGate(unittest.TestCase):
             exit_code = main(["--config", config_path, "--once"])
 
         self.assertEqual(exit_code, 2)
+
+
+class _Rpc:
+    def call(self, node, method, params=None):
+        if method == "getdaemonstatus":
+            return {"result": {"height": 100}}
+        if method == "blockchain.getbestblockhash":
+            return {"result": "H100"}
+        if method == "blockchain.getblockhash":
+            return {"result": "H100"}
+        return {"result": {}}
+
+    def restart_id(self, node):
+        return "r1"
+
+
+class _Notifier:
+    def send(self, title, message, priority):
+        return True
+
+
+class _Heartbeat:
+    def __init__(self):
+        self.pings = 0
+
+    def ping(self):
+        self.pings += 1
+        return True
+
+
+class TestRunOnce(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.addCleanup(os.unlink, self.path)
+        self.store = Store(self.path)
+        self.engine = Engine(self.store, open_after=3, close_after=3)
+        self.config = Config(
+            nodes=[{"name": "a", "role": "voting", "transport": "ssh", "target": "t"}],
+            db_path=self.path, cycle_seconds=60, open_after=3, close_after=3,
+            node_behind_blocks=10, overdue_deadline_seconds=300.0)
+
+    def _run(self, previous=None):
+        hb = _Heartbeat()
+        result = watcher.run_once(self.config, self.store, self.engine, _Rpc(),
+                                  _Notifier(), hb, previous)
+        return result, hb
+
+    def test_a_healthy_cycle_pings_once(self):
+        _, hb = self._run()
+        self.assertEqual(hb.pings, 1)
+
+    def test_a_failed_commit_does_not_ping(self):
+        """A watcher that polls but cannot persist is broken, and the dead-man
+        is exactly what should notice."""
+        def explode(_observations):
+            raise RuntimeError("disk full")
+        self.store.write_cycle = explode
+        _, hb = self._run()
+        self.assertEqual(hb.pings, 0)
+
+    def test_a_failed_commit_preserves_the_previous_cycle(self):
+        sentinel = ["previous-cycle"]
+        def explode(_observations):
+            raise RuntimeError("disk full")
+        self.store.write_cycle = explode
+        result, _ = self._run(previous=sentinel)
+        self.assertIs(result, sentinel)
+
+    def test_a_dead_delivery_worker_does_not_ping(self):
+        """Collection working is not the property worth monitoring; the
+        ability to raise an alarm is."""
+        original = watcher.drain
+        watcher.drain = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        self.addCleanup(setattr, watcher, "drain", original)
+        _, hb = self._run()
+        self.assertEqual(hb.pings, 0)
+
+    def test_the_configured_node_behind_threshold_reaches_evaluate(self):
+        """config.node_behind_blocks was dead config until this round:
+        rules.evaluate() hard-coded 10, so an operator setting 50 would
+        still be paged at 10. evaluate() now takes it as a keyword with the
+        constant as default — this proves run_once actually forwards
+        config.node_behind_blocks rather than relying on that default."""
+        seen = {}
+        original = watcher.evaluate
+
+        def spy(*args, **kwargs):
+            seen.update(kwargs)
+            return original(*args, **kwargs)
+
+        watcher.evaluate = spy
+        self.addCleanup(setattr, watcher, "evaluate", original)
+
+        self.config = Config(**{**self.config.__dict__, "node_behind_blocks": 50})
+        self._run()
+
+        self.assertEqual(seen.get("node_behind_blocks"), 50)
 
 
 if __name__ == "__main__":

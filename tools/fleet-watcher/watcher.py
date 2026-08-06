@@ -39,7 +39,8 @@ def run_once(config, store, engine, rpc, notifier, heartbeat, previous):
         print(f"[watcher] cycle commit failed: {exc}", file=sys.stderr)
 
     if committed:
-        engine.process(evaluate(observations, config.voting_total, previous))
+        engine.process(evaluate(observations, config.voting_total, previous,
+                                node_behind_blocks=config.node_behind_blocks))
 
     worker_alive = True
     try:
