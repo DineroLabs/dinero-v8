@@ -191,8 +191,13 @@ class Incident:
 
 @dataclass(frozen=True)
 class OutboxItem:
+    """Carries every immutable routing fact needed to deliver itself, so it
+    stays deliverable after its incident closes or the watcher restarts.
+    `rule` is stored here rather than looked up: silencing must never depend on
+    parsing a human-readable title, which is presentation and may change."""
     outbox_id: int
     incident_id: str
+    rule: str
     kind: str          # "open" | "recovery"
     priority: str      # "emergency" | "normal"
     title: str
@@ -205,7 +210,7 @@ class OutboxItem:
 - [ ] **Step 4: Run the tests**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_models -v`
-Expected: PASS, 4 tests
+Expected: PASS (report the actual count)
 
 - [ ] **Step 5: Commit**
 
@@ -399,7 +404,7 @@ def compute_quorum(observations: Sequence[Observation]) -> Optional[Quorum]:
 - [ ] **Step 4: Run the tests**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_rules -v`
-Expected: PASS, 11 tests
+Expected: PASS (report the actual count)
 
 - [ ] **Step 5: Commit**
 
@@ -590,7 +595,7 @@ def evaluate(observations: Sequence[Observation],
 - [ ] **Step 4: Run the tests**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_rules -v`
-Expected: PASS, 22 tests
+Expected: PASS (report the actual count)
 
 - [ ] **Step 5: Commit**
 
@@ -750,7 +755,7 @@ CREATE INDEX IF NOT EXISTS idx_inc_open ON incidents(rule, nodes, closed_at);
 
 CREATE TABLE IF NOT EXISTS outbox (
     outbox_id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id TEXT NOT NULL,
-    kind TEXT NOT NULL, priority TEXT NOT NULL, title TEXT NOT NULL,
+    rule TEXT NOT NULL, kind TEXT NOT NULL, priority TEXT NOT NULL, title TEXT NOT NULL,
     message TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL, next_attempt_at REAL NOT NULL, sent_at TEXT
 );
@@ -822,10 +827,10 @@ class Store:
                 "INSERT INTO incidents VALUES (?,?,?,?,?,?,NULL)",
                 (incident_id, rule, key, severity, detail, _now_iso()))
             self.conn.execute(
-                "INSERT INTO outbox (incident_id, kind, priority, title, message,"
-                " attempts, created_at, next_attempt_at, sent_at)"
-                " VALUES (?,?,?,?,?,0,?,?,NULL)",
-                (incident_id, "open", priority, f"[dinero] {rule}",
+                "INSERT INTO outbox (incident_id, rule, kind, priority, title,"
+                " message, attempts, created_at, next_attempt_at, sent_at)"
+                " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
+                (incident_id, rule, "open", priority, f"[dinero] {rule}",
                  f"{rule}: {detail}", time.time(), time.time()))
         return incident_id
 
@@ -840,10 +845,10 @@ class Store:
             self.conn.execute("UPDATE incidents SET closed_at=? WHERE incident_id=?",
                               (_now_iso(), incident_id))
             self.conn.execute(
-                "INSERT INTO outbox (incident_id, kind, priority, title, message,"
-                " attempts, created_at, next_attempt_at, sent_at)"
-                " VALUES (?,?,?,?,?,0,?,?,NULL)",
-                (incident_id, "recovery", "normal",
+                "INSERT INTO outbox (incident_id, rule, kind, priority, title,"
+                " message, attempts, created_at, next_attempt_at, sent_at)"
+                " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
+                (incident_id, row["rule"], "recovery", "normal",
                  f"[dinero] resolved: {row['rule']}",
                  f"{row['rule']} cleared", time.time(), time.time()))
 
@@ -861,7 +866,8 @@ class Store:
             "SELECT * FROM outbox WHERE sent_at IS NULL AND next_attempt_at<=? "
             "ORDER BY outbox_id", (now,)).fetchall()
         return [OutboxItem(outbox_id=r["outbox_id"], incident_id=r["incident_id"],
-                           kind=r["kind"], priority=r["priority"], title=r["title"],
+                           rule=r["rule"], kind=r["kind"], priority=r["priority"],
+                           title=r["title"],
                            message=r["message"], attempts=r["attempts"],
                            next_attempt_at=r["next_attempt_at"],
                            sent_at=r["sent_at"]) for r in rows]
@@ -889,7 +895,7 @@ class Store:
 - [ ] **Step 4: Run the tests**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_store -v`
-Expected: PASS, 9 tests
+Expected: PASS (report the actual count)
 
 - [ ] **Step 5: Commit**
 
@@ -1058,7 +1064,7 @@ class Engine:
 - [ ] **Step 4: Run the tests**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_engine -v`
-Expected: PASS, 8 tests
+Expected: PASS (report the actual count)
 
 - [ ] **Step 5: Commit**
 
@@ -1148,6 +1154,24 @@ class TestDelivery(unittest.TestCase):
         self.assertTrue(any("safe_mode" in r for r in rules))
         self.assertFalse(any("node_behind" in r for r in rules))
 
+    def test_title_text_cannot_affect_silencing(self):
+        """Silencing reads the stored rule, never the human-readable title."""
+        self.store.open_incident("node_behind", ("c",), "normal", "12 blocks")
+        self.store.conn.execute("UPDATE outbox SET title='completely unrelated'")
+        n = FakeNotifier()
+        drain(self.store, n, now=1.0, maintenance=True)
+        self.assertEqual(n.sent, [], "still silenced despite the retitle")
+        drain(self.store, FakeNotifier(), now=2.0, maintenance=False)
+
+    def test_recovery_item_is_silenceable_after_its_incident_closed(self):
+        """The outbox row must stand alone once the incident is gone."""
+        iid = self.store.open_incident("node_behind", ("c",), "normal", "12")
+        self.store.mark_sent(self.store.pending_outbox(now=0.0)[0].outbox_id)
+        self.store.close_incident(iid)
+        n = FakeNotifier()
+        drain(self.store, n, now=1.0, maintenance=True)
+        self.assertEqual(n.sent, [])
+
     def test_maintenance_never_suppresses_observer_divergence(self):
         self.store.open_incident("observer_divergence", ("w",), "normal", "forked")
         n = FakeNotifier()
@@ -1228,8 +1252,6 @@ must not become an unbounded retry storm, and must not silently drop the item.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from notify import Notifier
 from store import Store
 
@@ -1252,11 +1274,11 @@ def drain(store: Store, notifier: Notifier, now: float,
           maintenance: bool = False) -> int:
     """Send every due outbox item. Returns the number delivered."""
     delivered = 0
-    incidents = {i.incident_id: i for i in store.open_incidents()}
     for item in store.pending_outbox(now=now):
-        incident = incidents.get(item.incident_id)
-        rule = incident.rule if incident else _rule_from_title(item.title)
-        if maintenance and rule in SILENCEABLE:
+        # The rule travels on the outbox row. Never derived from the title:
+        # titles are presentation and must be free to change without altering
+        # who gets paged.
+        if maintenance and item.rule in SILENCEABLE:
             store.mark_sent(item.outbox_id)   # suppressed, not retried forever
             continue
         if notifier.send(item.title, item.message, item.priority):
@@ -1266,19 +1288,12 @@ def drain(store: Store, notifier: Notifier, now: float,
             store.mark_failed(item.outbox_id, _backoff(item.attempts))
     return delivered
 
-
-def _rule_from_title(title: str) -> Optional[str]:
-    """Recovery items outlive their open incident row lookup; the rule name is
-    still in the title, which is enough to apply silencing consistently."""
-    marker = "[dinero] "
-    text = title[len(marker):] if title.startswith(marker) else title
-    return text.replace("resolved: ", "").strip()
 ```
 
 - [ ] **Step 5: Run the tests**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_notify -v`
-Expected: PASS, 5 tests
+Expected: PASS (report the actual count)
 
 - [ ] **Step 6: Commit**
 
@@ -1407,7 +1422,7 @@ class Heartbeat:
 - [ ] **Step 4: Run the tests**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_heartbeat -v`
-Expected: PASS, 5 tests
+Expected: PASS (report the actual count)
 
 - [ ] **Step 5: Commit**
 
@@ -1712,7 +1727,7 @@ def poll_cycle(nodes: Sequence[Dict[str, Any]], rpc: Any, cycle_id: str,
 - [ ] **Step 6: Run the tests**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_poller -v`
-Expected: PASS, 8 tests
+Expected: PASS (report the actual count)
 
 - [ ] **Step 7: Commit**
 
@@ -1884,7 +1899,7 @@ if __name__ == "__main__":
 - [ ] **Step 3: Verify the whole suite still passes**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest discover -s tests -v`
-Expected: PASS, 62 tests
+Expected: PASS (report the actual count)
 
 - [ ] **Step 4: Verify the entrypoint refuses to run without credentials**
 
@@ -2037,7 +2052,7 @@ Expected: no syntax errors (unresolved `User=`/paths are expected off-host)
 - [ ] **Step 4: Run the full suite one final time**
 
 Run: `cd tools/fleet-watcher && python3 -m unittest discover -s tests -v`
-Expected: PASS, 62 tests
+Expected: PASS (report the actual count)
 
 - [ ] **Step 5: Commit**
 
