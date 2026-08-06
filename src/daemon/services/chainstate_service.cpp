@@ -7734,6 +7734,16 @@ void ChainstateService::ActivateBestChain() {
         }
     }
 
+    // Read-only observability. Keyed on disconnect_path ALONE, deliberately not
+    // on the ||-condition the log above uses: a connect-only advance is an
+    // ordinary new block, and counting those would make every downstream reorg
+    // rate meaningless. Record() is noexcept and takes only a short mutex, so
+    // it cannot disturb activation.
+    if (!disconnect_path.empty()) {
+        reorg_log_.Record(static_cast<uint32_t>(disconnect_path.size()),
+                          static_cast<uint32_t>(connect_path.size()));
+    }
+
     // Proof freshness hardening: targeted bridge cache eviction at reorg entry.
     // Keep deep historical cache entries and drop only fork-sensitive entries.
     if (!disconnect_path.empty() && bridge_node_) {

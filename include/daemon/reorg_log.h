@@ -27,7 +27,11 @@
 
 namespace dinero {
 
-struct ReorgEvent {
+// Named ReorgLogEvent (not ReorgEvent) to avoid an ODR collision with the
+// unrelated dinero::ReorgEvent in include/wallet/reorg_event.h (wallet-side
+// reorg detection). Both are in namespace dinero; chainstate_service.h now
+// pulls this header in, and several translation units already include both.
+struct ReorgLogEvent {
     uint64_t seq = 0;
     std::string timestamp;   // ISO 8601, UTC
     uint32_t disconnected = 0;
@@ -66,7 +70,7 @@ public:
             std::string stamp = NowIso8601();
 
             std::lock_guard<std::mutex> lock(mutex_);
-            ReorgEvent event;
+            ReorgLogEvent event;
             event.seq = ++total_;
             event.timestamp = std::move(stamp);
             event.disconnected = disconnected;
@@ -93,7 +97,7 @@ public:
     struct Snapshot {
         std::string boot_id;
         uint64_t total = 0;
-        std::vector<ReorgEvent> events;
+        std::vector<ReorgLogEvent> events;
     };
 
     Snapshot Take() const {
@@ -112,9 +116,9 @@ public:
         return total_;
     }
 
-    std::vector<ReorgEvent> Events() const {
+    std::vector<ReorgLogEvent> Events() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return std::vector<ReorgEvent>(events_.begin(), events_.end());
+        return std::vector<ReorgLogEvent>(events_.begin(), events_.end());
     }
 
     const std::string& BootId() const { return boot_id_; }
@@ -154,7 +158,7 @@ private:
     }
 
     mutable std::mutex mutex_;
-    std::deque<ReorgEvent> events_;
+    std::deque<ReorgLogEvent> events_;
     uint64_t total_ = 0;
     const std::string boot_id_;
 };
