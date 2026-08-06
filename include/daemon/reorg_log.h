@@ -6,7 +6,9 @@
 #define DINERO_DAEMON_REORG_LOG_H
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <deque>
 #include <iomanip>
 #include <mutex>
@@ -14,6 +16,14 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#define DINERO_GETPID _getpid
+#else
+#include <unistd.h>
+#define DINERO_GETPID getpid
+#endif
 
 namespace dinero {
 
@@ -49,20 +59,52 @@ public:
 
     void Record(uint32_t disconnected, uint32_t connected) noexcept {
         try {
+            // Format the timestamp BEFORE taking the lock. put_time does
+            // locale/facet work through an ostringstream, which is by far the
+            // slowest thing here, and this mutex is held against the chain-
+            // activation path. Nothing inside the critical section may be slow.
+            std::string stamp = NowIso8601();
+
             std::lock_guard<std::mutex> lock(mutex_);
             ReorgEvent event;
             event.seq = ++total_;
-            event.timestamp = NowIso8601();
+            event.timestamp = std::move(stamp);
             event.disconnected = disconnected;
             event.connected = connected;
             events_.push_back(std::move(event));
-            while (events_.size() > kCapacity) events_.pop_front();
+            while (events_.size() > kCapacity) {
+                events_.pop_front();
+            }
         } catch (...) {
             // A failure to record an observation must never disturb chain
             // activation. Dropping the event is the correct outcome; Total()
             // then outruns the ring, which is exactly how a consumer learns
             // something was lost.
         }
+    }
+
+    /// The counter and the ring read together, under ONE lock.
+    ///
+    /// This is the accessor callers should use. Reading Total() and Events()
+    /// separately allows a Record() to land between them, so the total would
+    /// exceed the events a consumer can account for with no overflow having
+    /// occurred — and that comparison is the design's ONLY overflow signal, so
+    /// the false positive lands exactly on the thing it exists to detect.
+    struct Snapshot {
+        std::string boot_id;
+        uint64_t total = 0;
+        std::vector<ReorgEvent> events;
+    };
+
+    Snapshot Take() const {
+        Snapshot snapshot;
+        snapshot.boot_id = boot_id_;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot.total = total_;
+            snapshot.events.assign(events_.begin(), events_.end());
+        }
+        return snapshot;
     }
 
     uint64_t Total() const {
@@ -93,9 +135,19 @@ private:
     }
 
     static std::string MakeBootId() {
+        // random_device alone is not enough. [rand.device] explicitly permits
+        // an implementation to substitute a deterministic engine when it cannot
+        // produce non-deterministic values — and the property actually required
+        // here is distinctness ACROSS PROCESSES, so that a consumer can tell a
+        // restart from data loss. Mixing in the pid and a high-resolution clock
+        // read makes that hold even where random_device does not.
         std::random_device rd;
+        const auto pid = static_cast<uint64_t>(DINERO_GETPID());
+        const auto tick = static_cast<uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
         std::ostringstream out;
-        for (int i = 0; i < 4; ++i) {
+        out << std::hex << std::setw(16) << std::setfill('0') << (pid ^ tick);
+        for (int i = 0; i < 2; ++i) {
             out << std::hex << std::setw(8) << std::setfill('0') << rd();
         }
         return out.str();

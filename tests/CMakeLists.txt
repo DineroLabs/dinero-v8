@@ -11646,3 +11646,4 @@ target_link_libraries(test_reorg_log PRIVATE
   GTest::gtest_main
 )
 add_test(NAME test_reorg_log COMMAND test_reorg_log)
+set_tests_properties(test_reorg_log PROPERTIES TIMEOUT 60)

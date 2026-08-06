@@ -29,6 +29,11 @@ TEST(ReorgLogTest, two_instances_have_different_boot_ids) {
 TEST(ReorgLogTest, records_depth_and_assigns_sequence_from_one) {
     ReorgLog log;
     log.Record(3, 4);
+    // Hoist the snapshot into a local. `Events()` returns BY VALUE, so
+    // `log.Events().front()` would bind a reference into a temporary that dies
+    // at the end of the full expression — lifetime extension does not apply
+    // through a member call. Clang catches it with -Wdangling-gsl; at runtime
+    // it reads garbage.
     const auto events = log.Events();
     ASSERT_EQ(events.size(), 1u);
     const auto& e = events.front();
@@ -69,6 +74,54 @@ TEST(ReorgLogTest, events_returns_a_snapshot_not_a_reference) {
     auto snapshot = log.Events();
     log.Record(2, 2);
     EXPECT_EQ(snapshot.size(), 1u) << "a caller's snapshot must not grow underneath it";
+}
+
+TEST(ReorgLogTest, take_reads_the_counter_and_ring_under_one_lock) {
+    // Reading Total() and Events() separately lets a Record() land between
+    // them, so the total would outrun the accountable events with no overflow —
+    // a false positive on the design's only overflow signal.
+    ReorgLog log;
+    for (int i = 0; i < 5; ++i) log.Record(1, 1);
+    const auto snapshot = log.Take();
+    EXPECT_EQ(snapshot.total, 5u);
+    EXPECT_EQ(snapshot.events.size(), 5u);
+    EXPECT_EQ(snapshot.boot_id, log.BootId());
+    EXPECT_EQ(snapshot.events.back().seq, snapshot.total);
+}
+
+TEST(ReorgLogTest, take_stays_self_consistent_while_recording) {
+    // The property that matters: within one snapshot, the newest seq never
+    // exceeds the total. A torn read breaks exactly this.
+    ReorgLog log;
+    std::thread writer([&log] {
+        for (int i = 0; i < 2000; ++i) log.Record(1, 1);
+    });
+    for (int i = 0; i < 2000; ++i) {
+        const auto snapshot = log.Take();
+        if (!snapshot.events.empty()) {
+            ASSERT_LE(snapshot.events.back().seq, snapshot.total)
+                << "torn read: a recorded event is newer than the total";
+        }
+    }
+    writer.join();
+}
+
+TEST(ReorgLogTest, timestamp_is_rfc3339_utc) {
+    // Nothing tested the format, so a regression would ship straight into the
+    // JSON a consumer parses.
+    ReorgLog log;
+    log.Record(1, 1);
+    const auto events = log.Events();
+    ASSERT_EQ(events.size(), 1u);
+    const std::string& ts = events.front().timestamp;
+    ASSERT_EQ(ts.size(), 20u) << "expected YYYY-MM-DDTHH:MM:SSZ, got: " << ts;
+    EXPECT_EQ(ts[4], '-');
+    EXPECT_EQ(ts[7], '-');
+    EXPECT_EQ(ts[10], 'T');
+    EXPECT_EQ(ts[13], ':');
+    EXPECT_EQ(ts[16], ':');
+    EXPECT_EQ(ts[19], 'Z');
+    EXPECT_NE(ts.substr(0, 4), "1900") << "gmtime failed and left a zeroed tm";
 }
 
 TEST(ReorgLogTest, concurrent_record_loses_nothing) {
