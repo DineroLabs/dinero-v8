@@ -7734,16 +7734,6 @@ void ChainstateService::ActivateBestChain() {
         }
     }
 
-    // Read-only observability. Keyed on disconnect_path ALONE, deliberately not
-    // on the ||-condition the log above uses: a connect-only advance is an
-    // ordinary new block, and counting those would make every downstream reorg
-    // rate meaningless. Record() is noexcept and takes only a short mutex, so
-    // it cannot disturb activation.
-    if (!disconnect_path.empty()) {
-        reorg_log_.Record(static_cast<uint32_t>(disconnect_path.size()),
-                          static_cast<uint32_t>(connect_path.size()));
-    }
-
     // Proof freshness hardening: targeted bridge cache eviction at reorg entry.
     // Keep deep historical cache entries and drop only fork-sensitive entries.
     if (!disconnect_path.empty() && bridge_node_) {
@@ -8526,6 +8516,30 @@ void ChainstateService::ActivateBestChain() {
 
     // Update active tip (already done by ConnectTip, but ensure consistency)
     PublishActiveTip(best_candidate, TipPublishReason::kSelfHealRealign);
+
+    // Read-only observability, recorded only once the reorg has actually
+    // COMPLETED.
+    //
+    // Placing this earlier — next to the "REORG DETECTED" log, where the paths
+    // are first built — would record intent rather than outcome: roughly twenty
+    // return statements between there and here abort the reorg, so a failed
+    // forest restore would publish a reorg that provably never began. Worse, the
+    // disconnect-failure abort re-adds the pre-reorg tip "so the next pass
+    // restores it", and ActivateBestChain runs on a periodic tick — so one
+    // logical reorg would become N records with differing depths and flood the
+    // 64-entry ring with retries of a single event.
+    //
+    // `is_reorg` is already computed above as `!disconnect_path.empty()`.
+    // Keyed on the disconnect path ALONE, deliberately not the ||-condition the
+    // REORG DETECTED log uses: a connect-only advance is an ordinary new block,
+    // and counting those would make every downstream rate meaningless.
+    //
+    // Record() is noexcept and formats its timestamp outside its own lock, so
+    // it cannot disturb activation. Do not wrap it in a try/catch.
+    if (is_reorg) {
+        reorg_log_.Record(static_cast<uint32_t>(disconnect_path.size()),
+                          static_cast<uint32_t>(connect_path.size()));
+    }
 
     // Post-activation cache hygiene: prune any expired/non-canonical leftovers.
     if (bridge_node_) {
