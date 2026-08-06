@@ -707,7 +707,8 @@ NODE_BEHIND_BLOCKS = 10
 
 def evaluate(observations: Sequence[Observation],
              voting_total: int,
-             previous: Optional[Sequence[Observation]] = None) -> List[RuleHit]:
+             previous: Optional[Sequence[Observation]] = None,
+             node_behind_blocks: int = NODE_BEHIND_BLOCKS) -> List[RuleHit]:
     """Detect every rule for one complete cycle. Order is not significant."""
     hits: List[RuleHit] = []
     voting = [o for o in observations if o.role == "voting"]
@@ -782,10 +783,10 @@ def evaluate(observations: Sequence[Observation],
         # node_behind — measured against the quorum's median tip height.
         behind = [o.node for o in observations
                   if o.reachable and o.height is not None
-                  and quorum.median_height - o.height >= NODE_BEHIND_BLOCKS]
+                  and quorum.median_height - o.height >= node_behind_blocks]
         if behind:
             hits.append(RuleHit("node_behind", tuple(behind),
-                                f">= {NODE_BEHIND_BLOCKS} blocks below quorum median "
+                                f">= {node_behind_blocks} blocks below quorum median "
                                 f"{quorum.median_height}"))
 
         # observer_divergence — at least one DISAGREE and no AGREE. Requiring
@@ -2354,6 +2355,7 @@ computed from current tips: comparing tips either demands identical heights
 """
 from __future__ import annotations
 
+import time
 from itertools import combinations
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -2412,8 +2414,12 @@ def comparison_heights(voter_heights: Dict[str, int],
     return needed
 
 
+CYCLE_BUDGET_SECONDS = 45.0
+
+
 def poll_cycle(nodes: Sequence[Dict[str, Any]], rpc: Any, cycle_id: str,
-               now_iso: str) -> List[Observation]:
+               now_iso: str, budget: float = CYCLE_BUDGET_SECONDS,
+               monotonic: Any = time.monotonic) -> List[Observation]:
     """One complete cycle. A node that fails a core RPC still yields an
     Observation with reachable=False: absence is data, not a gap."""
     stage1: Dict[str, Dict[str, Any]] = {}
@@ -2460,8 +2466,16 @@ def poll_cycle(nodes: Sequence[Dict[str, Any]], rpc: Any, cycle_id: str,
                         if e["role"] == "observer" and e["reachable"]}
     needed = comparison_heights(voter_heights, observer_heights)
     hashes: Dict[str, Dict[int, str]] = {n: {} for n in stage1}
+    deadline = monotonic() + budget
     for name, heights in needed.items():
         for height in sorted(heights):
+            if monotonic() >= deadline:
+                # Abandoning stage 2 is safe: an absent hash reads as
+                # UNDETERMINED, which raises telemetry_degraded rather than a
+                # fork page. Overrunning the cycle is NOT safe — per-call
+                # timeouts alone let one hung node push the cycle past the
+                # overdue deadline and fire the dead-man from slowness.
+                break
             try:
                 response = rpc.call(name, "blockchain.getblockhash", [height])
                 value = (response or {}).get("result")
@@ -2469,6 +2483,9 @@ def poll_cycle(nodes: Sequence[Dict[str, Any]], rpc: Any, cycle_id: str,
                     hashes[name][height] = value
             except Exception:
                 continue   # a missing hash is never agreement
+        else:
+            continue
+        break
 
     return [Observation(
         cycle_id=cycle_id, timestamp=now_iso, node=name, role=e["role"],
@@ -2600,6 +2617,7 @@ git commit -m "feat(watcher): config and two-stage poller with comparison hashes
 import json
 import shlex
 import subprocess
+import tempfile
 import urllib.request
 
 
@@ -2610,13 +2628,23 @@ class SSHRPC:
     timeout so one hung node cannot stall the cycle.
     """
 
+    # ControlMaster reuses one connection per node for the whole cycle window.
+    # Without it every RPC is a fresh handshake — ~30 per cycle for a small
+    # fleet — which is most of the cycle's wall clock and all of its variance.
     SSH_BASE = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                 "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=8",
+                "-o", "ControlMaster=auto", "-o", "ControlPersist=90",
                 "-T", "-n"]
 
-    def __init__(self, nodes, timeout: float = CORE_TIMEOUT) -> None:
+    def __init__(self, nodes, timeout: float = CORE_TIMEOUT,
+                 control_dir: Optional[str] = None) -> None:
         self._targets = {n["name"]: n for n in nodes}
         self._timeout = timeout
+        self._control_dir = control_dir or tempfile.mkdtemp(prefix="fleet-watcher-ssh-")
+
+    def _ssh_argv(self, target: str):
+        return self.SSH_BASE + [
+            "-o", f"ControlPath={self._control_dir}/%r@%h:%p", target]
 
     def call(self, node: str, method: str, params=None):
         entry = self._targets[node]
@@ -2632,22 +2660,34 @@ class SSHRPC:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 return json.loads(response.read())
 
-        command = self.SSH_BASE + [entry["target"], "rpc", shlex.quote(payload)]
+        command = self._ssh_argv(entry["target"]) + ["rpc", shlex.quote(payload)]
         result = subprocess.run(command, capture_output=True, timeout=self._timeout)
         if result.returncode != 0:
             raise RuntimeError(f"{node}: transport failed")
         return json.loads(result.stdout.decode())
 
-    def restart_id(self, node: str):
-        """systemd InvocationID — never locale-formatted ps output."""
+    def restart_id(self, node: str) -> Optional[str]:
+        """systemd InvocationID — never locale-formatted ps output.
+
+        A non-zero exit yields None, not stdout. Without that check any output
+        on failure becomes a stable but bogus identity, which would mask every
+        real restart forever — worse than having no signal, because
+        `node_restart` would look like it was working.
+        """
         entry = self._targets[node]
         if entry.get("transport") == "local":
-            command = ["systemctl", "show", "dinerod", "-p", "InvocationID", "--value"]
+            unit = entry.get("unit", "dinerod")
+            command = ["systemctl", "show", unit, "-p", "InvocationID", "--value"]
         else:
-            command = self.SSH_BASE + [entry["target"], "invocation-id"]
-        result = subprocess.run(command, capture_output=True, timeout=self._timeout)
-        value = result.stdout.decode().strip()
-        return value or None
+            command = self._ssh_argv(entry["target"]) + ["invocation-id"]
+        try:
+            result = subprocess.run(command, capture_output=True,
+                                    timeout=self._timeout)
+        except (subprocess.SubprocessError, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout.decode().strip() or None
 ```
 
 - [ ] **Step 2: Implement watcher.py**
@@ -2694,7 +2734,8 @@ def run_once(config, store, engine, rpc, notifier, heartbeat, previous):
         print(f"[watcher] cycle commit failed: {exc}", file=sys.stderr)
 
     if committed:
-        engine.process(evaluate(observations, config.voting_total, previous))
+        engine.process(evaluate(observations, config.voting_total, previous,
+                                node_behind_blocks=config.node_behind_blocks))
 
     worker_alive = True
     try:
