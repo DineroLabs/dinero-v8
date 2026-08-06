@@ -85,8 +85,14 @@ TEST(ReorgLogTest, two_instances_have_different_boot_ids) {
 TEST(ReorgLogTest, records_depth_and_assigns_sequence_from_one) {
     ReorgLog log;
     log.Record(3, 4);
-    ASSERT_EQ(log.Events().size(), 1u);
-    const auto& e = log.Events().front();
+    // Hoist the snapshot into a local. `Events()` returns BY VALUE, so
+    // `log.Events().front()` would bind a reference into a temporary that dies
+    // at the end of the full expression — lifetime extension does not apply
+    // through a member call. Clang catches it with -Wdangling-gsl; at runtime
+    // it reads garbage.
+    const auto events = log.Events();
+    ASSERT_EQ(events.size(), 1u);
+    const auto& e = events.front();
     EXPECT_EQ(e.seq, 1u);
     EXPECT_EQ(e.disconnected, 3u);
     EXPECT_EQ(e.connected, 4u);
@@ -288,7 +294,7 @@ private:
 
 - [ ] **Step 5: Run the tests**
 
-Run: `cmake --build build --target test_reorg_log && ./build/tests/test_reorg_log`
+Run: `cmake --build build --target test_reorg_log && ./build/test_reorg_log`
 Expected: PASS, 7 tests
 
 - [ ] **Step 6: Prove the tests gate**
