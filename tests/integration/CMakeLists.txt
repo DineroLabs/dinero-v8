@@ -203,6 +203,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_reorg_state_restoration.sh)
     message(STATUS "  ✓ UtreexoLiveReorgStateRestoration registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_reorg_event_feed.sh)
+    add_test(
+        NAME ReorgEventFeed
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_reorg_event_feed.sh
+    )
+    set_tests_properties(ReorgEventFeed PROPERTIES
+        LABELS "integration;reorg;rpc;observability"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ReorgEventFeed registered (daemon: $<TARGET_FILE:dinerod>)")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_cross_seed_restart_reorg_parity.sh)
     add_test(
         NAME CrossSeedRestartReorgParity
