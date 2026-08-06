@@ -19,7 +19,10 @@ class TestStore(unittest.TestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        self.store = Store(self.path)
+        # Frozen clock: the store's timestamps and the tests' synthetic `now`
+        # values must live in ONE time domain, or assertions about deadlines
+        # test nothing.
+        self.store = Store(self.path, clock=lambda: 0.0)
 
     def tearDown(self):
         os.unlink(self.path)
@@ -34,6 +37,22 @@ class TestStore(unittest.TestCase):
         with self.assertRaises(Exception):
             self.store.write_cycle(bad)
         self.assertEqual(self.store.cycle("c1"), [])
+
+    def test_rollback_happens_inside_the_transaction_not_before_it(self):
+        """The type-check test above fails BEFORE the transaction opens, so it
+        proves nothing about atomicity. This one passes validation and dies at
+        SQLite bind time, inside executemany, which is the real rollback path."""
+        good = obs("a")
+        unbindable = Observation(
+            cycle_id="c1", timestamp="2026-08-06T00:00:00Z", node="b",
+            role="voting", reachable=True, height=object(), tip_hash="H",
+            hashes_at={100: "H100"}, peers_in=1, peers_out=1, synced=True,
+            safe_mode="inactive", safe_mode_reason=None, restart_id="r1",
+        )
+        with self.assertRaises(Exception):
+            self.store.write_cycle([good, unbindable])
+        self.assertEqual(self.store.cycle("c1"), [],
+                         "row one must roll back with row two")
 
     def test_hashes_at_round_trips(self):
         self.store.write_cycle([obs("a")])
@@ -70,10 +89,42 @@ class TestStore(unittest.TestCase):
         self.store.mark_sent(self.store.pending_outbox(now=0.0)[0].outbox_id)
         self.assertFalse(self.store.has_overdue_critical(now=1e9, deadline=300.0))
 
+    def test_closing_twice_enqueues_only_one_recovery(self):
+        iid = self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        self.store.mark_sent(self.store.pending_outbox(now=0.0)[0].outbox_id)
+        self.store.close_incident(iid)
+        self.store.close_incident(iid)
+        recoveries = [i for i in self.store.pending_outbox(now=0.0)
+                      if i.kind == "recovery"]
+        self.assertEqual(len(recoveries), 1)
+
+    def test_open_incidents_nodes_round_trip_sorted(self):
+        """open_incident stores sorted nodes, so open_incidents() returns them
+        sorted. Any consumer keying on (rule, nodes) must sort too, or its keys
+        never match and incidents never close."""
+        self.store.open_incident("node_behind", ("c", "a"), "normal", "x")
+        self.assertEqual(self.store.open_incidents()[0].nodes, ("a", "c"))
+
+    def test_failed_delivery_is_hidden_until_its_backoff_elapses(self):
+        self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        item = self.store.pending_outbox(now=0.0)[0]
+        self.store.mark_failed(item.outbox_id, backoff_seconds=30.0)
+        self.assertEqual(self.store.pending_outbox(now=10.0), [])
+        due = self.store.pending_outbox(now=40.0)
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0].attempts, 1)
+
+    def test_overdue_deadline_actually_depends_on_the_deadline(self):
+        """Guards the regression where created_at and now lived in different
+        time domains, making this gate a constant."""
+        self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        self.assertFalse(self.store.has_overdue_critical(now=100.0, deadline=300.0))
+        self.assertTrue(self.store.has_overdue_critical(now=400.0, deadline=300.0))
+
     def test_outbox_survives_reopen(self):
         """The crash window: incident opened, process dies before delivery."""
         self.store.open_incident("safe_mode", ("a",), "emergency", "x")
-        reopened = Store(self.path)
+        reopened = Store(self.path, clock=lambda: 0.0)
         self.assertEqual(len(reopened.pending_outbox(now=0.0)), 1)
 
 

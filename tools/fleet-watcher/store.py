@@ -17,7 +17,7 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Sequence, Tuple
 
 from models import Incident, Observation, OutboxItem
 
@@ -54,7 +54,19 @@ def _now_iso() -> str:
 
 
 class Store:
-    def __init__(self, path: str) -> None:
+    """The store owns exactly one clock, injected.
+
+    Reading `time.time()` internally while callers pass their own `now` created
+    three coexisting time domains and made `has_overdue_critical` a constant:
+    with `created_at` seeded at 0.0 and a real `now` of ~1.78e9, the deadline
+    term stopped mattering entirely and the gate returned True the moment any
+    emergency item was unsent — before a single delivery attempt. A gate that
+    carries no information is worse than no gate, because it trains the
+    operator to ignore it.
+    """
+
+    def __init__(self, path: str, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
         self.conn = sqlite3.connect(path, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -77,8 +89,11 @@ class Store:
         with self.conn:
             self.conn.execute("BEGIN")
             self.conn.executemany(
-                "INSERT OR REPLACE INTO observations VALUES "
-                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                "INSERT OR REPLACE INTO observations "
+                "(cycle_id, timestamp, node, role, reachable, height, tip_hash,"
+                " hashes_at, peers_in, peers_out, synced, safe_mode,"
+                " safe_mode_reason, restart_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
     def cycle(self, cycle_id: str) -> List[Observation]:
         rows = self.conn.execute(
@@ -117,13 +132,16 @@ class Store:
                 " message, attempts, created_at, next_attempt_at, sent_at)"
                 " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
                 (incident_id, rule, "open", priority, f"[dinero] {rule}",
-                 f"{rule}: {detail}", 0.0, 0.0))
+                 f"{rule}: {detail}", self._clock(), 0.0))
         return incident_id
 
     def close_incident(self, incident_id: str) -> None:
+        # `closed_at IS NULL` is not decoration: without it, closing twice
+        # enqueues two recovery notifications and the operator is told the same
+        # incident resolved twice.
         row = self.conn.execute(
-            "SELECT rule, detail FROM incidents WHERE incident_id=?",
-            (incident_id,)).fetchone()
+            "SELECT rule, detail FROM incidents WHERE incident_id=? "
+            "AND closed_at IS NULL", (incident_id,)).fetchone()
         if row is None:
             return
         with self.conn:
@@ -136,7 +154,7 @@ class Store:
                 " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
                 (incident_id, row["rule"], "recovery", "normal",
                  f"[dinero] resolved: {row['rule']}",
-                 f"{row['rule']} cleared", 0.0, 0.0))
+                 f"{row['rule']} cleared", self._clock(), 0.0))
 
     def open_incidents(self) -> List[Incident]:
         rows = self.conn.execute(
@@ -167,7 +185,7 @@ class Store:
         with self.conn:
             self.conn.execute(
                 "UPDATE outbox SET attempts=attempts+1, next_attempt_at=? "
-                "WHERE outbox_id=?", (time.time() + backoff_seconds, outbox_id))
+                "WHERE outbox_id=?", (self._clock() + backoff_seconds, outbox_id))
 
     def has_overdue_critical(self, now: float, deadline: float) -> bool:
         """An emergency notification still unsent past its deadline. This is one
