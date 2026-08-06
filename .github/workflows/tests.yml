@@ -329,6 +329,15 @@ jobs:
             -j1 \
             -R '^RpcErrorEnvelope$'
 
+          # Reorg event feed. Integration-labeled, so the main lane's
+          # --label-exclude skips it; selected here by exact name.
+          echo "=== ReorgEventFeed ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^ReorgEventFeed$'
+
           # #287 — the CSN wallet reorg regression is integration-labeled and
           # must execute serially by exact name rather than disappear behind
           # the main ctest label exclusions.

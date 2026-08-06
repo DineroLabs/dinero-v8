@@ -19,6 +19,7 @@
 #   stop_node                           — graceful stop, waits for exit
 #   rpc <method> [params_json]          — raw JSON-RPC call, prints the
 #                                          full response envelope
+#   rpc_result <method> [params_json]   — same call, prints only .result
 #   force_reorg --disconnect N --connect M
 #                                       — force exactly one reorg event with
 #                                          disconnected=N, connected=M
@@ -103,6 +104,13 @@ rpc() {
     curl -s --user "${cookie}" -H 'Content-Type: application/json' \
         -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}" \
         "http://127.0.0.1:${REORG_HARNESS_RPC_PORT}/"
+}
+
+# rpc_result <method> [params_json] — the RPC call's bare .result value
+# (e.g. a number or string), unquoted. Used by positive controls that need
+# to compare a scalar (height before/after) rather than inspect the envelope.
+rpc_result() {
+    rpc "$1" "${2:-[]}" | jq -r '.result'
 }
 
 _reorg_harness_rpc_failed() {
