@@ -1,7 +1,7 @@
 import unittest
 from models import Observation
 from rules import (AGREE, DISAGREE, UNDETERMINED, compatible, compute_quorum,
-                   undetermined_voter_pairs)
+                   evaluate, undetermined_voter_pairs)
 
 
 def obs(node, role="voting", height=100, tip="tip", hashes=None, reachable=True):
@@ -136,6 +136,98 @@ class TestUndeterminedPairs(unittest.TestCase):
              obs("b", height=100, hashes={100: "X"}),
              obs("c", height=100, hashes={100: "FORK"})]
         self.assertEqual(undetermined_voter_pairs(o), [])
+
+
+def rules_fired(hits):
+    return {h.rule for h in hits}
+
+
+class TestEvaluate(unittest.TestCase):
+    def _healthy(self):
+        return [obs(n, height=100, hashes={100: "H100"}) for n in ("a", "b", "c")]
+
+    def test_healthy_fleet_fires_nothing(self):
+        self.assertEqual(rules_fired(evaluate(self._healthy(), 3)), set())
+
+    def test_one_block_apart_fires_nothing(self):
+        o = [
+            obs("a", height=100, hashes={100: "H100"}),
+            obs("b", height=101, hashes={100: "H100"}),
+            obs("c", height=100, hashes={100: "H100"}),
+        ]
+        self.assertEqual(rules_fired(evaluate(o, 3)), set())
+
+    def test_safe_mode_fires_for_any_node(self):
+        o = self._healthy()
+        o[0] = Observation(**{**o[0].__dict__, "safe_mode": "active",
+                              "safe_mode_reason": "bad-utreexo-root"})
+        self.assertIn("safe_mode", rules_fired(evaluate(o, 3)))
+
+    def test_unknown_safe_mode_fires_telemetry_not_safe_mode(self):
+        o = self._healthy()
+        o[0] = Observation(**{**o[0].__dict__, "safe_mode": "unknown"})
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("telemetry_degraded", fired)
+        self.assertNotIn("safe_mode", fired)
+
+    def test_tip_divergence_fires_on_fork(self):
+        o = self._healthy()
+        o[2] = Observation(**{**o[2].__dict__, "hashes_at": {100: "FORK"}})
+        self.assertIn("tip_divergence", rules_fired(evaluate(o, 3)))
+
+    def test_no_quorum_from_real_disagreement_fires_consensus_health(self):
+        o = [obs(n, height=100, hashes={100: h})
+             for n, h in (("a", "X"), ("b", "Y"), ("c", "Z"))]
+        self.assertIn("consensus_health", rules_fired(evaluate(o, 3)))
+
+    def test_no_quorum_from_missing_hashes_fires_telemetry_not_consensus(self):
+        """The healthy-fleet false page. All three are on the same chain."""
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={99: "W", 100: "X"}),
+             obs("c", height=99, hashes={99: "W"})]
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("telemetry_degraded", fired)
+        self.assertNotIn("consensus_health", fired)
+
+    def test_uncomparable_observer_is_not_reported_as_diverged(self):
+        o = self._healthy()
+        o.append(obs("watch", role="observer", height=50, hashes={}))
+        self.assertNotIn("observer_divergence", rules_fired(evaluate(o, 3)))
+
+    def test_majority_unreachable_suppresses_consensus_health(self):
+        """It names the cause rather than the symptom."""
+        o = [obs("a", height=100, hashes={100: "H100"}),
+             obs("b", reachable=False, height=None, hashes={}),
+             obs("c", reachable=False, height=None, hashes={})]
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("majority_unreachable", fired)
+        self.assertNotIn("consensus_health", fired)
+
+    def test_node_behind_fires_beyond_threshold(self):
+        o = [obs("a", height=200, hashes={100: "H100", 200: "H200"}),
+             obs("b", height=200, hashes={100: "H100", 200: "H200"}),
+             obs("c", height=100, hashes={100: "H100"})]
+        self.assertIn("node_behind", rules_fired(evaluate(o, 3)))
+
+    def test_observer_divergence_fires_without_touching_quorum(self):
+        o = self._healthy()
+        o.append(obs("watch", role="observer", height=100, hashes={100: "FORK"}))
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("observer_divergence", fired)
+        self.assertNotIn("consensus_health", fired)
+        self.assertNotIn("tip_divergence", fired)
+
+    def test_observer_down_never_affects_quorum(self):
+        o = self._healthy()
+        o.append(obs("watch", role="observer", reachable=False,
+                     height=None, hashes={}))
+        self.assertEqual(rules_fired(evaluate(o, 3)), set())
+
+    def test_node_restart_detected_from_changed_restart_id(self):
+        prev = self._healthy()
+        cur = [Observation(**{**x.__dict__, "restart_id": "r2"}) for x in prev]
+        self.assertIn("node_restart",
+                      rules_fired(evaluate(cur, 3, previous=prev)))
 
 
 if __name__ == "__main__":
