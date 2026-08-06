@@ -49,7 +49,7 @@ building the daemon.
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `dinero::ReorgLog` with `void Record(uint32_t disconnected, uint32_t connected)`, `uint64_t Total() const`, `std::vector<ReorgEvent> Events() const`, `const std::string& BootId() const`; and `struct ReorgEvent { uint64_t seq; std::string timestamp; uint32_t disconnected; uint32_t connected; }`. Used by Tasks 2 and 3.
+- Produces: `dinero::ReorgLog` with `void Record(uint32_t disconnected, uint32_t connected) noexcept`, `ReorgLog::Snapshot Take() const` (the accessor callers should use — counter and ring under one lock), `uint64_t Total() const`, `std::vector<ReorgEvent> Events() const`, `const std::string& BootId() const`; `struct Snapshot { std::string boot_id; uint64_t total; std::vector<ReorgEvent> events; }`; and `struct ReorgEvent { uint64_t seq; std::string timestamp; uint32_t disconnected; uint32_t connected; }`. Used by Tasks 2 and 3.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -132,6 +132,54 @@ TEST(ReorgLogTest, events_returns_a_snapshot_not_a_reference) {
     EXPECT_EQ(snapshot.size(), 1u) << "a caller's snapshot must not grow underneath it";
 }
 
+TEST(ReorgLogTest, take_reads_the_counter_and_ring_under_one_lock) {
+    // Reading Total() and Events() separately lets a Record() land between
+    // them, so the total would outrun the accountable events with no overflow —
+    // a false positive on the design's only overflow signal.
+    ReorgLog log;
+    for (int i = 0; i < 5; ++i) log.Record(1, 1);
+    const auto snapshot = log.Take();
+    EXPECT_EQ(snapshot.total, 5u);
+    EXPECT_EQ(snapshot.events.size(), 5u);
+    EXPECT_EQ(snapshot.boot_id, log.BootId());
+    EXPECT_EQ(snapshot.events.back().seq, snapshot.total);
+}
+
+TEST(ReorgLogTest, take_stays_self_consistent_while_recording) {
+    // The property that matters: within one snapshot, the newest seq never
+    // exceeds the total. A torn read breaks exactly this.
+    ReorgLog log;
+    std::thread writer([&log] {
+        for (int i = 0; i < 2000; ++i) log.Record(1, 1);
+    });
+    for (int i = 0; i < 2000; ++i) {
+        const auto snapshot = log.Take();
+        if (!snapshot.events.empty()) {
+            ASSERT_LE(snapshot.events.back().seq, snapshot.total)
+                << "torn read: a recorded event is newer than the total";
+        }
+    }
+    writer.join();
+}
+
+TEST(ReorgLogTest, timestamp_is_rfc3339_utc) {
+    // Nothing tested the format, so a regression would ship straight into the
+    // JSON a consumer parses.
+    ReorgLog log;
+    log.Record(1, 1);
+    const auto events = log.Events();
+    ASSERT_EQ(events.size(), 1u);
+    const std::string& ts = events.front().timestamp;
+    ASSERT_EQ(ts.size(), 20u) << "expected YYYY-MM-DDTHH:MM:SSZ, got: " << ts;
+    EXPECT_EQ(ts[4], '-');
+    EXPECT_EQ(ts[7], '-');
+    EXPECT_EQ(ts[10], 'T');
+    EXPECT_EQ(ts[13], ':');
+    EXPECT_EQ(ts[16], ':');
+    EXPECT_EQ(ts[19], 'Z');
+    EXPECT_NE(ts.substr(0, 4), "1900") << "gmtime failed and left a zeroed tm";
+}
+
 TEST(ReorgLogTest, concurrent_record_loses_nothing) {
     // Record() runs on the chain-activation path; Events() runs on an RPC
     // thread. Losing an event to a race would be a silent under-report.
@@ -166,6 +214,7 @@ target_link_libraries(test_reorg_log PRIVATE
   GTest::gtest_main
 )
 add_test(NAME test_reorg_log COMMAND test_reorg_log)
+set_tests_properties(test_reorg_log PROPERTIES TIMEOUT 60)
 ```
 
 - [ ] **Step 3: Run it to confirm it fails**
@@ -186,7 +235,9 @@ picked up; re-run `cmake -S . -B build` and try again.
 #define DINERO_DAEMON_REORG_LOG_H
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <deque>
 #include <iomanip>
 #include <mutex>
@@ -194,6 +245,14 @@ picked up; re-run `cmake -S . -B build` and try again.
 #include <sstream>
 #include <string>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#define DINERO_GETPID _getpid
+#else
+#include <unistd.h>
+#define DINERO_GETPID getpid
+#endif
 
 namespace dinero {
 
@@ -229,20 +288,52 @@ public:
 
     void Record(uint32_t disconnected, uint32_t connected) noexcept {
         try {
+            // Format the timestamp BEFORE taking the lock. put_time does
+            // locale/facet work through an ostringstream, which is by far the
+            // slowest thing here, and this mutex is held against the chain-
+            // activation path. Nothing inside the critical section may be slow.
+            std::string stamp = NowIso8601();
+
             std::lock_guard<std::mutex> lock(mutex_);
             ReorgEvent event;
             event.seq = ++total_;
-            event.timestamp = NowIso8601();
+            event.timestamp = std::move(stamp);
             event.disconnected = disconnected;
             event.connected = connected;
             events_.push_back(std::move(event));
-            while (events_.size() > kCapacity) events_.pop_front();
+            while (events_.size() > kCapacity) {
+                events_.pop_front();
+            }
         } catch (...) {
             // A failure to record an observation must never disturb chain
             // activation. Dropping the event is the correct outcome; Total()
             // then outruns the ring, which is exactly how a consumer learns
             // something was lost.
         }
+    }
+
+    /// The counter and the ring read together, under ONE lock.
+    ///
+    /// This is the accessor callers should use. Reading Total() and Events()
+    /// separately allows a Record() to land between them, so the total would
+    /// exceed the events a consumer can account for with no overflow having
+    /// occurred — and that comparison is the design's ONLY overflow signal, so
+    /// the false positive lands exactly on the thing it exists to detect.
+    struct Snapshot {
+        std::string boot_id;
+        uint64_t total = 0;
+        std::vector<ReorgEvent> events;
+    };
+
+    Snapshot Take() const {
+        Snapshot snapshot;
+        snapshot.boot_id = boot_id_;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot.total = total_;
+            snapshot.events.assign(events_.begin(), events_.end());
+        }
+        return snapshot;
     }
 
     uint64_t Total() const {
@@ -273,9 +364,19 @@ private:
     }
 
     static std::string MakeBootId() {
+        // random_device alone is not enough. [rand.device] explicitly permits
+        // an implementation to substitute a deterministic engine when it cannot
+        // produce non-deterministic values — and the property actually required
+        // here is distinctness ACROSS PROCESSES, so that a consumer can tell a
+        // restart from data loss. Mixing in the pid and a high-resolution clock
+        // read makes that hold even where random_device does not.
         std::random_device rd;
+        const auto pid = static_cast<uint64_t>(DINERO_GETPID());
+        const auto tick = static_cast<uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
         std::ostringstream out;
-        for (int i = 0; i < 4; ++i) {
+        out << std::hex << std::setw(16) << std::setfill('0') << (pid ^ tick);
+        for (int i = 0; i < 2; ++i) {
             out << std::hex << std::setw(8) << std::setfill('0') << rd();
         }
         return out.str();
@@ -410,12 +511,16 @@ static din::Json rpc_reorg_status(const ExecutionContext& ctx, const din::Json& 
         result["error"] = "chainstate_not_initialized";
         return result;
     }
-    const auto& log = daemon_ctx->chainstate->GetReorgLog();
-    result["boot_id"] = log.BootId();
-    result["total"] = static_cast<Json::UInt64>(log.Total());
+    // ONE snapshot, taken under a single lock. Calling BootId()/Total()/Events()
+    // separately would let a Record() land between them, so total could outrun
+    // the events in the same reply — a fabricated overflow on the one signal a
+    // consumer uses to detect real ones.
+    const auto snapshot = daemon_ctx->chainstate->GetReorgLog().Take();
+    result["boot_id"] = snapshot.boot_id;
+    result["total"] = static_cast<Json::UInt64>(snapshot.total);
 
     din::Json events(Json::arrayValue);
-    for (const auto& event : log.Events()) {
+    for (const auto& event : snapshot.events) {
         din::Json item(Json::objectValue);
         item["seq"] = static_cast<Json::UInt64>(event.seq);
         item["timestamp"] = event.timestamp;
