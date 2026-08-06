@@ -132,8 +132,9 @@ a set, which is how the engine detects "same condition still present".
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Mapping, Optional, Tuple
 
 SAFE_MODE_VALUES = ("active", "inactive", "unknown")
 ROLES = ("voting", "observer")
@@ -150,7 +151,7 @@ class Observation:
     reachable: bool
     height: Optional[int]
     tip_hash: Optional[str]
-    hashes_at: Dict[int, str]
+    hashes_at: Mapping[int, str]
     peers_in: Optional[int]
     peers_out: Optional[int]
     synced: Optional[bool]
@@ -159,6 +160,11 @@ class Observation:
     restart_id: Optional[str]
 
     def __post_init__(self) -> None:
+        # Defensive copy BEFORE wrapping: proxying the caller's own dict would
+        # leave them a live handle, and the "frozen" observation would change
+        # underneath us. frozen=True only stops attribute reassignment.
+        object.__setattr__(self, "hashes_at",
+                           MappingProxyType(dict(self.hashes_at)))
         if self.safe_mode not in SAFE_MODE_VALUES:
             raise ValueError(f"safe_mode must be one of {SAFE_MODE_VALUES}")
         if self.role not in ROLES:
@@ -784,7 +790,7 @@ class Store:
                 raise TypeError(f"not an Observation: {o!r}")
             rows.append((o.cycle_id, o.timestamp, o.node, o.role,
                          int(o.reachable), o.height, o.tip_hash,
-                         json.dumps({str(k): v for k, v in o.hashes_at.items()}),
+                         json.dumps({str(k): v for k, v in dict(o.hashes_at).items()}),
                          o.peers_in, o.peers_out,
                          None if o.synced is None else int(o.synced),
                          o.safe_mode, o.safe_mode_reason, o.restart_id))
