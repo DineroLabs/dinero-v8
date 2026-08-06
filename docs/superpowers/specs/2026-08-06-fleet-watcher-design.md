@@ -97,8 +97,6 @@ gives every alert a **stable incident ID** for deduplication and recovery.
 Pure functions over recent observations. No I/O. This is where the false-positive discipline
 lives, and it is the part most worth testing.
 
-**Paging rules** (see Alerting for thresholds):
-
 **Healthy majority** is used by two rules and is defined once here: the largest set of
 *reachable* nodes that agree on `tip_hash` at the same height, provided that set contains at
 least **3 of 5** nodes. If no such set exists, there is no healthy majority — that is itself the
@@ -111,6 +109,8 @@ least **3 of 5** nodes. If no such set exists, there is no healthy majority — 
 | `tip_divergence` | two or more nodes report different `tip_hash` **at the same height** |
 | `majority_unreachable` | 3 or more of 5 nodes unreachable |
 | `node_behind` | a reachable node is ≥ 10 blocks below the healthy-majority height |
+
+(Thresholds are listed under Alerting policy.)
 
 `majority_unreachable` and `consensus_health` can both be true at once (losing three nodes
 destroys the majority). They are deduplicated by reporting `majority_unreachable` alone in that
