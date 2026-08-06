@@ -2380,7 +2380,7 @@ import uuid
 from datetime import datetime, timezone
 
 from config import load_config
-from delivery import drain
+from delivery import canary_due, drain
 from engine import Engine
 from heartbeat import Heartbeat, should_ping
 from notify import PushoverNotifier
