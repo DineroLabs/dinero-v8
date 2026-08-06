@@ -235,6 +235,23 @@ class Store:
                  "Scheduled canary: the alert path is working.",
                  self._clock(), 0.0))
 
+    def has_stale_canary(self, now: float, max_age: float) -> bool:
+        """True when the newest canary is still UNSENT past `max_age`.
+
+        This is what makes the canary self-verifying. Without it the canary
+        exercises the alert path but nothing reads the result: if delivery is
+        broken, the canary fails silently, the heartbeat keeps pinging, and the
+        dead-man stays quiet — the exact failure the canary was added to catch.
+
+        Wired into should_ping, a stuck canary suppresses the heartbeat, the
+        external dead-man fires, and the operator learns the alert path is dead
+        BEFORE an incident needs it.
+        """
+        row = self.conn.execute(
+            "SELECT 1 FROM outbox WHERE rule='canary' AND sent_at IS NULL "
+            "AND created_at + ? < ? LIMIT 1", (max_age, now)).fetchone()
+        return row is not None
+
     def last_canary_at(self) -> Optional[float]:
         row = self.conn.execute(
             "SELECT MAX(created_at) AS t FROM outbox WHERE rule='canary'"

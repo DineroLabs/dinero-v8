@@ -3,7 +3,7 @@ import tempfile
 import unittest
 
 from delivery import CANARY_INTERVAL_SECONDS, SILENCEABLE, canary_due
-from heartbeat import Heartbeat, should_ping
+from heartbeat import CANARY_MAX_AGE_SECONDS, Heartbeat, should_ping
 from store import Store
 
 
@@ -58,6 +58,31 @@ class TestShouldPing(unittest.TestCase):
         self.assertTrue(self.store.has_overdue_critical(now=1000.0, deadline=300.0))
         self.assertFalse(should_ping(self.store, cycle_committed=True,
                                      worker_alive=True, now=None, deadline=300.0))
+
+    def test_an_undeliverable_canary_suppresses_the_ping(self):
+        """The canary is the only proactive test of the alert path. If it
+        cannot be delivered, alerting is broken even though nothing has
+        failed yet -- the operator must learn this from the dead-man, not
+        from the next real incident going unreported."""
+        self.store.enqueue_canary()
+        self.assertFalse(should_ping(
+            self.store, cycle_committed=True, worker_alive=True,
+            now=CANARY_MAX_AGE_SECONDS + 1, deadline=300.0))
+
+    def test_a_delivered_canary_does_not_suppress_the_ping(self):
+        self.store.enqueue_canary()
+        self.store.mark_sent(self.store.pending_outbox(now=0.0)[0].outbox_id)
+        self.assertTrue(should_ping(
+            self.store, cycle_committed=True, worker_alive=True,
+            now=CANARY_MAX_AGE_SECONDS + 1, deadline=300.0))
+
+    def test_a_bool_now_fails_closed(self):
+        """True is an int subclass, so without an explicit bool exclusion it
+        passes the numeric isinstance check and is silently read as one
+        second past the epoch -- fail open, the wrong direction for a
+        dead-man."""
+        self.assertFalse(should_ping(self.store, cycle_committed=True,
+                                     worker_alive=True, now=True, deadline=300.0))
 
 
 class TestHeartbeatPing(unittest.TestCase):

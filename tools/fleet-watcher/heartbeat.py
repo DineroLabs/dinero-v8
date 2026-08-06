@@ -17,23 +17,32 @@ import urllib.request
 from store import Store
 
 
-def should_ping(store: Store, cycle_committed: bool, worker_alive: bool,
-                 now: float, deadline: float) -> bool:
-    """`now` must come from the SAME clock the Store was built with, or the
-    deadline comparison tests nothing.
+CANARY_MAX_AGE_SECONDS = 2 * 24 * 60 * 60   # two canary intervals of grace
 
-    A dead-man must never fail open. A bad clock read (e.g. `now=None`) binds
-    as SQL NULL, and every comparison against NULL reads as "nothing is
-    overdue" — silently turning a broken clock into a healthy-looking ping.
-    The isinstance guard below fails closed instead.
+
+def should_ping(store: Store, cycle_committed: bool, worker_alive: bool,
+                 now: float, deadline: float,
+                 canary_max_age: float = CANARY_MAX_AGE_SECONDS) -> bool:
+    """`now` MUST come from the same clock the Store was constructed with.
+
+    Mixing domains silently disables the overdue gate — a monotonic `now`
+    against wall-clock `created_at` compares nonsense, and a None `now` makes
+    the SQL comparison NULL, which reads as "nothing overdue" and pings. Both
+    fail OPEN, which is the wrong direction for a dead-man, so guard first.
     """
-    if not isinstance(now, (int, float)):
+    if not isinstance(now, (int, float)) or isinstance(now, bool):
         return False
     if not cycle_committed:
         return False
     if not worker_alive:
         return False
     if store.has_overdue_critical(now=now, deadline=deadline):
+        return False
+    if store.has_stale_canary(now=now, max_age=canary_max_age):
+        # The canary is the only proactive test of the alert path. If it cannot
+        # be delivered, alerting is broken even though nothing has failed yet,
+        # and the operator must find out from the dead-man rather than from the
+        # next real incident going unreported.
         return False
     return True
 
