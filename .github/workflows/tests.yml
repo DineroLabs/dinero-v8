@@ -348,6 +348,16 @@ jobs:
             -j1 \
             -R '^ShieldedWalletRejectRollback$'
 
+          # #353 continuation — snapshot-first / mnemonic-later is the exact
+          # mobile Full Utreexo Node ordering.  The older #353 gate creates the
+          # wallet before snapshot loading and therefore cannot cover it.
+          echo "=== AssumeUtxoLateWalletImport ==="
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -j1 \
+            -R '^AssumeUtxoLateWalletImport$'
+
       # Daemon logs are printed by the harnesses on failure (tail of daemon.log),
       # so --output-on-failure above captures them. Keep the ctest logs as an
       # artifact too: the harnesses delete their temp datadirs on teardown, so

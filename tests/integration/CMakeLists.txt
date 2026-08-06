@@ -676,6 +676,28 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
     message(STATUS "  ✓ AssumeUtxoCorruptCheckpointRecovery registered")
 endif()
 
+# #353 late-import continuation: the snapshot is active before the funded
+# mnemonic is imported.  The import RPC must scan the configured V4 snapshot's
+# UTXO section after installing watch scripts; block replay alone cannot find
+# pre-base coins because their transaction bodies are absent.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_late_wallet_import.sh)
+    add_test(
+        NAME AssumeUtxoLateWalletImport
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_late_wallet_import.sh
+    )
+    # The broad CI lane excludes integration tests, so tests.yml invokes this
+    # exact name serially with --no-tests=error.  Keeping the label honest also
+    # prevents a second expensive daemon run in the broad lane.
+    set_tests_properties(AssumeUtxoLateWalletImport PROPERTIES
+        LABELS "integration;assumeutxo;snapshot;wallet;recovery"
+        TIMEOUT 600
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ AssumeUtxoLateWalletImport registered")
+endif()
+
 # issue #214: two-node integration repro of in-daemon staleness recovery.
 # CONTROL (recovery off -> stays stuck) vs EXPERIMENT (recovery on -> re-getheaders
 # and catches up). Needs the DINERO_TEST_* regtest hooks built into dinerod.
