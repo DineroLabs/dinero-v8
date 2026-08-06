@@ -1,3 +1,4 @@
+# tools/fleet-watcher/tests/test_store.py
 import os
 import tempfile
 import unittest
@@ -73,11 +74,20 @@ class TestStore(unittest.TestCase):
         self.assertEqual(self.store.open_incidents(), [])
         self.assertEqual(self.store.pending_outbox(now=0.0)[0].kind, "recovery")
 
-    def test_only_one_open_incident_per_rule_and_nodes(self):
+    def test_only_one_open_incident_per_rule(self):
         a = self.store.open_incident("safe_mode", ("a",), "emergency", "x")
         b = self.store.open_incident("safe_mode", ("a",), "emergency", "x")
         self.assertEqual(a, b)
         self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_a_different_node_set_reuses_the_open_incident_and_updates_it(self):
+        """Membership is a mutable fact about an open incident, not identity."""
+        a = self.store.open_incident("node_unreachable", ("a",), "normal", "a down")
+        b = self.store.open_incident("node_unreachable", ("a", "b"), "normal", "a,b down")
+        self.assertEqual(a, b)
+        only = self.store.open_incidents()[0]
+        self.assertEqual(only.nodes, ("a", "b"))
+        self.assertEqual(only.detail, "a,b down")
 
     def test_overdue_critical_detects_stuck_emergency_item(self):
         self.store.open_incident("safe_mode", ("a",), "emergency", "x")

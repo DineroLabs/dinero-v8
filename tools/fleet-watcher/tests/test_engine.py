@@ -59,6 +59,68 @@ class TestEngine(unittest.TestCase):
         self.engine.process([SAFE])
         self.assertEqual(self.store.open_incidents()[0].severity, "emergency")
 
+    def test_drifting_node_set_still_opens_after_three_cycles(self):
+        """A fleet always missing SOME node, never the same one three cycles
+        running, previously opened nothing at all."""
+        for nodes in (("a",), ("a", "b"), ("b",)):
+            self.engine.process([RuleHit("telemetry_degraded", nodes, "gap")])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_widening_node_set_updates_membership_not_a_second_incident(self):
+        for _ in range(3):
+            self.engine.process([RuleHit("node_unreachable", ("a",), "a down")])
+        self.engine.process([RuleHit("node_unreachable", ("a", "b"), "a,b down")])
+        incidents = self.store.open_incidents()
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0].nodes, ("a", "b"))
+        self.assertEqual(incidents[0].detail, "a,b down")
+
+    def test_unsorted_node_tuple_still_closes(self):
+        """The store persists nodes sorted; a naive key comparison against the
+        raw tuple would never match and the incident would never close."""
+        hit = RuleHit("node_behind", ("b", "a"), "behind")
+        for _ in range(3):
+            self.engine.process([hit])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+        for _ in range(3):
+            self.engine.process([])
+        self.assertEqual(self.store.open_incidents(), [])
+
+    def test_emergency_but_not_immediate_rule_still_needs_three_cycles(self):
+        hit = RuleHit("consensus_health", ("a", "b"), "no quorum")
+        self.engine.process([hit]); self.engine.process([hit])
+        self.assertEqual(self.store.open_incidents(), [])
+        self.engine.process([hit])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_silent_rule_is_recorded_as_an_incident(self):
+        """'Recorded but never notified' — the engine records it; the delivery
+        worker is what declines to send."""
+        hit = RuleHit("node_restart", ("a",), "restart id changed")
+        for _ in range(3):
+            self.engine.process([hit])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_steady_condition_opens_exactly_one_incident_and_one_notification(self):
+        hit = RuleHit("node_behind", ("c",), "12 blocks")
+        for _ in range(7):
+            self.engine.process([hit])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+        opens = [i for i in self.store.pending_outbox(now=0.0) if i.kind == "open"]
+        self.assertEqual(len(opens), 1)
+
+    def test_close_then_recur_costs_the_full_open_threshold_again(self):
+        hit = RuleHit("node_behind", ("c",), "12 blocks")
+        for _ in range(3):
+            self.engine.process([hit])
+        for _ in range(3):
+            self.engine.process([])
+        self.assertEqual(self.store.open_incidents(), [])
+        self.engine.process([hit]); self.engine.process([hit])
+        self.assertEqual(self.store.open_incidents(), [])
+        self.engine.process([hit])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
     def test_normal_severity_for_observer_divergence(self):
         hit = RuleHit("observer_divergence", ("w",), "forked")
         for _ in range(3):

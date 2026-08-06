@@ -19,7 +19,10 @@ EMERGENCY_RULES = {"safe_mode", "consensus_health", "tip_divergence"}
 # safe_mode is a halt, not a lag. Delaying that page buys nothing.
 IMMEDIATE_RULES = {"safe_mode"}
 
-# Recorded, never notified.
+# Recorded like any other incident, but never delivered. Suppression happens in
+# the delivery worker, not here: "recorded but never notified" means the row
+# exists and is queryable. Skipping it in the engine would leave no history at
+# all, which is a different contract.
 SILENT_RULES = {"node_restart"}
 
 
@@ -32,29 +35,26 @@ class Engine:
         self._absent: Dict[str, int] = {}
 
     def process(self, hits: Sequence[RuleHit]) -> None:
-        # Sort the node tuple when keying. The store persists nodes sorted, so
-        # open_incidents() returns them sorted; comparing against an unsorted
-        # RuleHit tuple would never match, the close countdown would never
-        # start, and incidents would stay open forever.
-        seen = {(h.rule, tuple(sorted(h.nodes))): h for h in hits}
+        # Keyed on the RULE alone, never on the node set. Membership drifts
+        # between cycles, and keying on it meant a persistent condition whose
+        # affected nodes kept changing never reached the open threshold at all.
+        seen = {h.rule: h for h in hits}
 
-        for key, hit in seen.items():
-            if hit.rule in SILENT_RULES:
-                continue
-            self._present[key] = self._present.get(key, 0) + 1
-            threshold = 1 if hit.rule in IMMEDIATE_RULES else self.open_after
-            if self._present[key] >= threshold:
-                severity = "emergency" if hit.rule in EMERGENCY_RULES else "normal"
-                iid = self.store.open_incident(hit.rule, hit.nodes, severity, hit.detail)
+        for rule, hit in seen.items():
+            self._present[rule] = self._present.get(rule, 0) + 1
+            threshold = 1 if rule in IMMEDIATE_RULES else self.open_after
+            if self._present[rule] >= threshold:
+                severity = "emergency" if rule in EMERGENCY_RULES else "normal"
+                iid = self.store.open_incident(rule, hit.nodes, severity, hit.detail)
                 self._absent.pop(iid, None)   # recurrence cancels a close countdown
 
-        for key in list(self._present):
-            if key not in seen:
-                del self._present[key]
+        for rule in list(self._present):
+            if rule not in seen:
+                del self._present[rule]
 
-        open_now = {(i.rule, i.nodes): i for i in self.store.open_incidents()}
-        for key, incident in open_now.items():
-            if key in seen:
+        open_now = {i.rule: i for i in self.store.open_incidents()}
+        for rule, incident in open_now.items():
+            if rule in seen:
                 self._absent.pop(incident.incident_id, None)
                 continue
             count = self._absent.get(incident.incident_id, 0) + 1

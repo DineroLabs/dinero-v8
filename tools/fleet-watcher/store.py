@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS incidents (
     severity TEXT NOT NULL, detail TEXT NOT NULL, opened_at TEXT NOT NULL,
     closed_at TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_inc_open ON incidents(rule, nodes, closed_at);
+CREATE INDEX IF NOT EXISTS idx_inc_open ON incidents(rule, closed_at);
 
 CREATE TABLE IF NOT EXISTS outbox (
     outbox_id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id TEXT NOT NULL,
@@ -112,12 +112,27 @@ class Store:
     # ---- incidents + outbox -------------------------------------------
     def open_incident(self, rule: str, nodes: Tuple[str, ...], severity: str,
                       detail: str) -> str:
-        """Idempotent per (rule, nodes) while open. Enqueues in the same txn."""
+        """One open incident per RULE. Enqueues its notification in the same txn.
+
+        Deliberately NOT keyed on the node set. A fleet condition's membership
+        drifts between cycles — a node recovers, another degrades — and keying
+        on it produced two failures at once: the confirmation counter reset on
+        every change so a persistent problem never opened, and when a set
+        widened after opening, a "resolved" notification fired for the narrower
+        incident while the condition was getting worse.
+
+        Membership and detail are therefore mutable facts about an open
+        incident, refreshed on every call, not part of its identity.
+        """
         key = json.dumps(sorted(nodes))
         existing = self.conn.execute(
-            "SELECT incident_id FROM incidents WHERE rule=? AND nodes=? "
-            "AND closed_at IS NULL", (rule, key)).fetchone()
+            "SELECT incident_id FROM incidents WHERE rule=? "
+            "AND closed_at IS NULL", (rule,)).fetchone()
         if existing:
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE incidents SET nodes=?, detail=? WHERE incident_id=?",
+                    (key, detail, existing["incident_id"]))
             return existing["incident_id"]
 
         incident_id = uuid.uuid4().hex
