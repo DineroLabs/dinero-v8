@@ -1410,7 +1410,7 @@ class Engine:
         self.store = store
         self.open_after = open_after
         self.close_after = close_after
-        self._present: Dict[Tuple[str, Tuple[str, ...]], int] = {}
+        self._present: Dict[str, int] = {}   # keyed on rule, not on nodes
         self._absent: Dict[str, int] = {}
 
     def process(self, hits: Sequence[RuleHit]) -> None:
