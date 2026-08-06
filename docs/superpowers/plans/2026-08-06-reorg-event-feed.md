@@ -49,7 +49,7 @@ building the daemon.
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `dinero::ReorgLog` with `void Record(uint32_t disconnected, uint32_t connected) noexcept`, `ReorgLog::Snapshot Take() const` (the accessor callers should use — counter and ring under one lock), `uint64_t Total() const`, `std::vector<ReorgLogEvent> Events() const`, `const std::string& BootId() const`; `struct Snapshot { std::string boot_id; uint64_t total; std::vector<ReorgLogEvent> events; }`; and `struct ReorgLogEvent { uint64_t seq; std::string timestamp; uint32_t disconnected; uint32_t connected; }`. Used by Tasks 2 and 3.
+- Produces: `dinero::ReorgLog` with `void Record(uint32_t disconnected, uint32_t connected) noexcept`, `ReorgLog::Snapshot Take() const` (the ONLY accessor — counter and ring under one lock; separate `Total()`/`Events()` accessors were tried and removed, because reading them independently lets a `Record()` land between the two calls and produce a false overflow signal, which is the one thing the counter exists to detect), `const std::string& BootId() const`; `struct Snapshot { std::string boot_id; uint64_t total; std::vector<ReorgLogEvent> events; }`; and `struct ReorgLogEvent { uint64_t seq; std::string timestamp; uint32_t disconnected; uint32_t connected; }`. Used by Tasks 2 and 3.
 
 - [ ] **Step 1: Write the failing test**
 
