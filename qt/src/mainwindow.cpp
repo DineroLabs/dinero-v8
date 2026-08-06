@@ -68,6 +68,7 @@
 #include <QFile>
 #include <QTextCursor>
 #include <QRegularExpression>
+#include <QRegularExpressionValidator>
 #include <QInputDialog>
 #include <QHeaderView>
 #include <QTableWidgetItem>
@@ -2895,7 +2896,12 @@ void MainWindow::setupUI() {
     auto *amountLayout = new QHBoxLayout;
     edtAmount_ = new QLineEdit;
     edtAmount_->setPlaceholderText("0.00000000");
-    edtAmount_->setValidator(new QDoubleValidator(0.0, 99000000.0, 8, this));
+    // Validate decimal syntax only. Spendability and amount-range limits are
+    // determined from the wallet balance, fees, and daemon consensus checks;
+    // the obsolete 99-million-DIN UI cap was not a consensus rule.
+    edtAmount_->setValidator(new QRegularExpressionValidator(
+        QRegularExpression(QStringLiteral("^(?:0|[1-9][0-9]*)(?:\\.[0-9]{0,8})?$")),
+        this));
     amountLayout->addWidget(edtAmount_);
     
     btnUseMax_ = new QPushButton("Max");

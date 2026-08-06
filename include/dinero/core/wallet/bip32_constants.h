@@ -28,16 +28,6 @@ const uint32_t WALLET_MAGIC = 0x44494E52;  // "DINR" in ASCII
 // Coinbase maturity (blocks before coinbase outputs can be spent)
 const uint32_t COINBASE_MATURITY = 100;
 
-// Economics constants
-namespace Economics {
-    const uint64_t UNA_PER_DIN = 100000000ULL;  // 1 DIN = 100,000,000 una (8 decimals like Bitcoin)
-    const uint64_t MAX_MONEY = 97850000ULL * UNA_PER_DIN;  // 97.85M DIN max supply
-    const uint64_t INITIAL_BLOCK_REWARD = 100 * UNA_PER_DIN;  // 100 DIN Phase 1 reward
-    const uint32_t HALVING_INTERVAL = 800000;  // 800k blocks (~15.2 years)
-    const uint64_t MIN_RELAY_FEE = 1000;  // 1000 una minimum relay fee
-    const uint64_t DUST_THRESHOLD = 546;  // 546 una dust threshold
-}
-
 // Network/economics constants removed — use consensus headers:
 //   include/consensus/limits.h         — MAX_BLOCK_SIZE, MAX_TX_SIZE
 //   include/consensus/subsidy.h        — INITIAL_SUBSIDY, HALVING_INTERVAL

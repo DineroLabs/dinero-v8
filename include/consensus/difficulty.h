@@ -8,7 +8,6 @@ namespace dinero {
 // Forward declarations
 class CBlockIndex;
 struct ChainParams;
-class SupplyTracker;
 struct ConsensusParams;
 
 /**

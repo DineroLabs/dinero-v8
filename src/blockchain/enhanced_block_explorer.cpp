@@ -615,25 +615,6 @@ QJsonObject EnhancedBlockExplorer::getMiningStats() {
     }
 }
 
-QJsonObject EnhancedBlockExplorer::getSupplyStats() {
-    if (!initialized_) {
-        return createErrorResponse("Block explorer not initialized");
-    }
-    
-    try {
-        QJsonObject supply;
-        supply["total_supply"] = static_cast<qint64>(9900000000000000); // 99M DIN in una
-        supply["circulating_supply"] = static_cast<qint64>(2000000000000000); // 20M DIN in una
-        supply["max_supply"] = static_cast<qint64>(9900000000000000); // 99M DIN in una
-        supply["premine"] = static_cast<qint64>(0);  // Fair Launch v3: no premine
-        supply["mined"] = 0; // 0 DIN mined so far
-        return supply;
-        
-    } catch (const std::exception& e) {
-        return createErrorResponse(QString("Failed to get supply stats: %1").arg(e.what()));
-    }
-}
-
 QJsonObject EnhancedBlockExplorer::getDifficultyStats() {
     if (!initialized_) {
         return createErrorResponse("Block explorer not initialized");

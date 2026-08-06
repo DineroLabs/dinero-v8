@@ -78,7 +78,8 @@
    Real: YES - Validates din1q/tdin1q/rdin1q prefix
 
 ✅ Amount Field
-   Real: YES - QDoubleValidator (0 to 99M, 8 decimals)
+   Real: YES - Validates non-negative decimal syntax with up to 8 decimals;
+   wallet balance, fees, and daemon consensus checks determine spendability
 
 ✅ "Max" Button
    Code: Calculates balance - fee
