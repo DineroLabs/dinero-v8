@@ -245,7 +245,8 @@ This is the heart of the design and the task most worth getting right. Pairwise 
 # tools/fleet-watcher/tests/test_rules.py
 import unittest
 from models import Observation
-from rules import compute_quorum, compatible
+from rules import (AGREE, DISAGREE, UNDETERMINED, compatible, compute_quorum,
+                   undetermined_voter_pairs)
 
 
 def obs(node, role="voting", height=100, tip="tip", hashes=None, reachable=True):
@@ -258,32 +259,33 @@ def obs(node, role="voting", height=100, tip="tip", hashes=None, reachable=True)
 
 
 class TestCompatible(unittest.TestCase):
-    def test_same_hash_at_shared_height_is_compatible(self):
+    def test_same_hash_at_shared_height_agrees(self):
         a = obs("a", height=100, hashes={100: "H100"})
         b = obs("b", height=101, hashes={100: "H100"})
-        self.assertTrue(compatible(a, b))
+        self.assertEqual(compatible(a, b), AGREE)
 
-    def test_one_block_ahead_is_compatible(self):
+    def test_one_block_ahead_agrees(self):
         """The false positive this whole design exists to avoid."""
         a = obs("a", height=100, tip="H100", hashes={100: "H100"})
         b = obs("b", height=101, tip="H101", hashes={100: "H100"})
-        self.assertTrue(compatible(a, b))
+        self.assertEqual(compatible(a, b), AGREE)
 
-    def test_different_hash_at_shared_height_is_incompatible(self):
+    def test_different_hash_at_shared_height_disagrees(self):
         a = obs("a", height=100, hashes={100: "H100"})
         b = obs("b", height=101, hashes={100: "FORK"})
-        self.assertFalse(compatible(a, b))
+        self.assertEqual(compatible(a, b), DISAGREE)
 
-    def test_missing_comparison_hash_is_not_compatible(self):
-        """A missing signal must never synthesise agreement."""
+    def test_missing_comparison_hash_is_undetermined_not_agreement(self):
+        """A missing signal must never synthesise agreement — but it is also
+        not a fork, and calling it one pages on a healthy fleet."""
         a = obs("a", height=100, hashes={})
         b = obs("b", height=101, hashes={100: "H100"})
-        self.assertFalse(compatible(a, b))
+        self.assertEqual(compatible(a, b), UNDETERMINED)
 
-    def test_unreachable_node_is_never_compatible(self):
+    def test_unreachable_node_is_undetermined(self):
         a = obs("a", reachable=False, height=None, hashes={})
         b = obs("b", height=100, hashes={100: "H100"})
-        self.assertFalse(compatible(a, b))
+        self.assertEqual(compatible(a, b), UNDETERMINED)
 
 
 class TestComputeQuorum(unittest.TestCase):
@@ -325,6 +327,61 @@ class TestComputeQuorum(unittest.TestCase):
              for n, h in (("a", "X"), ("b", "Y"), ("c", "Z"))]
         self.assertIsNone(compute_quorum(o))
 
+    def test_majority_of_three_beats_minority_of_two(self):
+        """A larger group wins outright — this is not a tie."""
+        o = [obs(n, height=100, hashes={100: "X"}) for n in ("a", "b", "c")]
+        o += [obs(n, height=100, hashes={100: "Y"}) for n in ("d", "e")]
+        q = compute_quorum(o)
+        self.assertEqual(set(q.members), {"a", "b", "c"})
+
+    def test_unreachable_voter_is_excluded_from_the_group_search(self):
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={100: "X"}),
+             obs("c", reachable=False, height=None, hashes={})]
+        q = compute_quorum(o)
+        self.assertEqual(set(q.members), {"a", "b"})
+
+    def test_agreeing_observer_is_not_added_to_the_quorum(self):
+        """Stronger than a bare count check: two voters DO form a quorum here,
+        so passing requires the observer to be excluded by role, not by size."""
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={100: "X"}),
+             obs("w", role="observer", height=100, hashes={100: "X"})]
+        q = compute_quorum(o)
+        self.assertEqual(set(q.members), {"a", "b"})
+
+    def test_median_height_on_an_even_member_count(self):
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=200, hashes={100: "X"})]
+        self.assertEqual(compute_quorum(o).median_height, 200)
+
+    def test_string_keyed_hashes_do_not_silently_agree(self):
+        """Guards a JSON round-trip that forgets to coerce keys back to int."""
+        a = obs("a", height=100, hashes={"100": "X"})
+        b = obs("b", height=100, hashes={100: "X"})
+        self.assertEqual(compatible(a, b), UNDETERMINED)
+
+
+class TestUndeterminedPairs(unittest.TestCase):
+    def test_the_non_transitive_chain_reports_undetermined_not_a_fork(self):
+        """a, b, c are all on the SAME chain, but a and c share no hash.
+
+        Under a binary rule this produced two tied cliques and therefore an
+        emergency consensus page on a healthy fleet. It must be reported as a
+        telemetry gap instead.
+        """
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={99: "W", 100: "X"}),
+             obs("c", height=99, hashes={99: "W"})]
+        self.assertIsNone(compute_quorum(o))
+        self.assertIn(("a", "c"), undetermined_voter_pairs(o))
+
+    def test_a_genuine_fork_reports_no_undetermined_pairs(self):
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={100: "X"}),
+             obs("c", height=100, hashes={100: "FORK"})]
+        self.assertEqual(undetermined_voter_pairs(o), [])
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -347,7 +404,7 @@ the false-positive discipline testable.
 from __future__ import annotations
 
 from itertools import combinations
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 from models import Observation, Quorum
 
@@ -358,26 +415,40 @@ def _voters(observations: Sequence[Observation]) -> List[Observation]:
     return [o for o in observations if o.role == "voting" and o.reachable]
 
 
-def compatible(a: Observation, b: Observation) -> bool:
-    """True when two nodes agree at the deepest height BOTH have reached.
+AGREE = "agree"
+DISAGREE = "disagree"
+UNDETERMINED = "undetermined"
 
-    Compared at min(height_a, height_b). A node one block ahead is compatible.
-    A node on a different chain is incompatible once both have reached the
-    divergence height — below that point they share the same ancestor and a
-    matching hash proves nothing.
 
-    A missing hash is never agreement. Absence of evidence must not become
-    evidence of agreement.
+def compatible(a: Observation, b: Observation) -> str:
+    """Compare two nodes at the deepest height BOTH have reached.
+
+    Returns AGREE, DISAGREE, or UNDETERMINED — three states, not two.
+
+    Compared at min(height_a, height_b). A node one block ahead AGREEs. A node
+    on a different chain DISAGREEs once both have reached the divergence
+    height; below that point they share the same ancestor and a matching hash
+    proves nothing.
+
+    UNDETERMINED is the important one. A missing hash is not agreement — but it
+    is not a fork either, and collapsing the two produces a false consensus
+    page on a healthy fleet. Worked example: a@100{100:X}, b@100{99:X,100:X},
+    c@99{99:X} are all on the same chain, yet a~c has no shared hash. Under a
+    binary rule that yields two tied cliques and no quorum, i.e. an emergency
+    page caused by one missing RPC response.
+
+    Missing data raises telemetry_degraded. Only DISAGREE evidence raises a
+    consensus alarm.
     """
     if not (a.reachable and b.reachable):
-        return False
+        return UNDETERMINED
     if a.height is None or b.height is None:
-        return False
+        return UNDETERMINED
     h = min(a.height, b.height)
     ha, hb = a.hashes_at.get(h), b.hashes_at.get(h)
     if ha is None or hb is None:
-        return False
-    return ha == hb
+        return UNDETERMINED
+    return AGREE if ha == hb else DISAGREE
 
 
 def compute_quorum(observations: Sequence[Observation]) -> Optional[Quorum]:
@@ -389,10 +460,14 @@ def compute_quorum(observations: Sequence[Observation]) -> Optional[Quorum]:
     voters = _voters(observations)
     by_node = {o.node: o for o in voters}
 
+    # Exhaustive over subsets. Cost is exponential in voter count and peaks
+    # during a genuine fork; measured at ~0.3s for 20 voters. The intended
+    # fleet is a handful of nodes, so this is deliberate simplicity, not an
+    # oversight. Revisit above ~16 voters.
     groups: List[List[str]] = []
     for size in range(len(voters), QUORUM_MIN - 1, -1):
         for combo in combinations(sorted(by_node), size):
-            if all(compatible(by_node[x], by_node[y])
+            if all(compatible(by_node[x], by_node[y]) == AGREE
                    for x, y in combinations(combo, 2)):
                 groups.append(list(combo))
         if groups:
@@ -403,8 +478,24 @@ def compute_quorum(observations: Sequence[Observation]) -> Optional[Quorum]:
 
     members = tuple(groups[0])
     heights = sorted(by_node[n].height for n in members)
+    # Upper median on an even count: integer, no interpolation. It biases the
+    # lag baseline high, which is the safe direction — a node is called behind
+    # slightly sooner rather than slightly later.
     median = heights[len(heights) // 2]
     return Quorum(members=members, median_height=median)
+
+
+def undetermined_voter_pairs(observations: Sequence[Observation]) -> List[Tuple[str, str]]:
+    """Voting pairs that could not be compared at all.
+
+    Used to tell "we cannot see" apart from "they disagree": the first is a
+    telemetry problem, the second is a consensus problem, and only the second
+    justifies an emergency page.
+    """
+    voters = _voters(observations)
+    by_node = {o.node: o for o in voters}
+    return [(x, y) for x, y in combinations(sorted(by_node), 2)
+            if compatible(by_node[x], by_node[y]) == UNDETERMINED]
 ```
 
 - [ ] **Step 4: Run the tests**
@@ -474,10 +565,24 @@ class TestEvaluate(unittest.TestCase):
         o[2] = Observation(**{**o[2].__dict__, "hashes_at": {100: "FORK"}})
         self.assertIn("tip_divergence", rules_fired(evaluate(o, 3)))
 
-    def test_no_quorum_fires_consensus_health(self):
+    def test_no_quorum_from_real_disagreement_fires_consensus_health(self):
         o = [obs(n, height=100, hashes={100: h})
              for n, h in (("a", "X"), ("b", "Y"), ("c", "Z"))]
         self.assertIn("consensus_health", rules_fired(evaluate(o, 3)))
+
+    def test_no_quorum_from_missing_hashes_fires_telemetry_not_consensus(self):
+        """The healthy-fleet false page. All three are on the same chain."""
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={99: "W", 100: "X"}),
+             obs("c", height=99, hashes={99: "W"})]
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("telemetry_degraded", fired)
+        self.assertNotIn("consensus_health", fired)
+
+    def test_uncomparable_observer_is_not_reported_as_diverged(self):
+        o = self._healthy()
+        o.append(obs("watch", role="observer", height=50, hashes={}))
+        self.assertNotIn("observer_divergence", rules_fired(evaluate(o, 3)))
 
     def test_majority_unreachable_suppresses_consensus_health(self):
         """It names the cause rather than the symptom."""
@@ -527,6 +632,9 @@ from models import RuleHit
 
 NODE_BEHIND_BLOCKS = 10
 
+# compatible() returns AGREE / DISAGREE / UNDETERMINED and is defined above;
+# call sites must compare against those constants, never truthiness.
+
 
 def evaluate(observations: Sequence[Observation],
              voting_total: int,
@@ -557,8 +665,18 @@ def evaluate(observations: Sequence[Observation],
         hits.append(RuleHit("majority_unreachable", tuple(unreachable),
                             f"{len(unreachable)} of {voting_total} voting nodes unreachable"))
     elif quorum is None:
-        hits.append(RuleHit("consensus_health", tuple(o.node for o in voting),
-                            "no unique largest compatible group of voting nodes"))
+        # No quorum has two very different causes. If any voting pair could not
+        # be compared at all, we cannot see — that is a telemetry gap, not a
+        # fork, and must not raise an emergency consensus page. Only genuine
+        # disagreement between comparable nodes is a consensus failure.
+        blind = undetermined_voter_pairs(observations)
+        if blind:
+            hits.append(RuleHit("telemetry_degraded",
+                                tuple(sorted({n for pair in blind for n in pair})),
+                                f"voting pairs not comparable: {blind}"))
+        else:
+            hits.append(RuleHit("consensus_health", tuple(o.node for o in voting),
+                                "no unique largest compatible group of voting nodes"))
 
     if quorum is not None:
         # tip_divergence — a reachable voter outside the quorum disagrees.
@@ -579,9 +697,13 @@ def evaluate(observations: Sequence[Observation],
 
         # observer_divergence — same comparison, never affects quorum.
         by_node = {o.node: o for o in observations}
+        # DISAGREE with every quorum member, not merely "not AGREE": an
+        # observer we cannot compare is a telemetry gap, not a wrong chain.
         diverged = [o.node for o in observations
                     if o.role == "observer" and o.reachable
-                    and not any(compatible(o, by_node[m]) for m in quorum.members)]
+                    and quorum.members
+                    and all(compatible(o, by_node[m]) == DISAGREE
+                            for m in quorum.members)]
         if diverged:
             hits.append(RuleHit("observer_divergence", tuple(diverged),
                                 "observer disagrees with quorum at shared height"))
