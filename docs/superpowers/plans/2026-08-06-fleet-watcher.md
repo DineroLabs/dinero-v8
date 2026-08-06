@@ -2719,6 +2719,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from config import load_config
 from delivery import canary_due, drain
@@ -2732,6 +2733,30 @@ from store import Store
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _secret(key: str, credential: str) -> Optional[str]:
+    """Read a secret from systemd's credential directory, else the environment.
+
+    Credentials are preferred because they are never placed in the process
+    environment, so they never appear in /proc/PID/environ. The environment
+    fallback keeps the tool runnable outside systemd — tests, a manual --once.
+
+    The credential file uses `KEY=value` lines, so one file can carry several
+    related secrets.
+    """
+    directory = os.environ.get("CREDENTIALS_DIRECTORY")
+    if directory:
+        try:
+            with open(os.path.join(directory, credential), "r",
+                      encoding="utf-8") as handle:
+                for line in handle:
+                    name, _, value = line.partition("=")
+                    if name.strip() == key:
+                        return value.strip().strip("\"'") or None
+        except OSError:
+            pass
+    return os.environ.get(key)
 
 
 def run_once(config, store, engine, rpc, notifier, heartbeat, previous):
@@ -2785,14 +2810,14 @@ def main(argv=None) -> int:
                     close_after=config.close_after)
     rpc = SSHRPC(config.nodes)
 
-    token = os.environ.get("PUSHOVER_TOKEN")
-    user = os.environ.get("PUSHOVER_USER")
+    token = _secret("PUSHOVER_TOKEN", "pushover")
+    user = _secret("PUSHOVER_USER", "pushover")
     if not token or not user:
         print("[watcher] PUSHOVER_TOKEN/PUSHOVER_USER not set", file=sys.stderr)
         return 2
     notifier = PushoverNotifier(token, user)
 
-    hb_url = os.environ.get("HEARTBEAT_URL")
+    hb_url = _secret("HEARTBEAT_URL", "heartbeat")
     heartbeat = Heartbeat(hb_url) if hb_url else None
     if heartbeat is None:
         print("[watcher] HEARTBEAT_URL not set — dead-man disabled", file=sys.stderr)
@@ -2949,12 +2974,22 @@ ExecStart=/usr/bin/python3 /opt/fleet-watcher/watcher.py --config /etc/fleet-wat
 Restart=always
 RestartSec=30
 
-# Secrets are supplied as credentials and never appear in the unit, in Git,
-# or in the process environment of anything but this service.
-LoadCredential=pushover:/etc/fleet-watcher/pushover.env
-LoadCredential=heartbeat:/etc/fleet-watcher/heartbeat.env
-EnvironmentFile=/etc/fleet-watcher/pushover.env
-EnvironmentFile=/etc/fleet-watcher/heartbeat.env
+# Secrets arrive as systemd credentials, which land in $CREDENTIALS_DIRECTORY
+# with 0400 and are NOT placed in the process environment, so they never appear
+# in /proc/PID/environ. watcher.py reads them from there.
+#
+# EnvironmentFile is deliberately absent: it would put the same secrets into the
+# environment and quietly undo the protection above. A unit carrying
+# LoadCredential while the program reads os.environ is decoration, and a comment
+# claiming protection would simply be false.
+LoadCredential=pushover:/etc/fleet-watcher/pushover.creds
+LoadCredential=heartbeat:/etc/fleet-watcher/heartbeat.creds
+
+# SSH needs a real HOME for its identity and known_hosts. ProtectHome=true
+# blanks /home, /root and /run/user, so the account's home MUST live elsewhere
+# or StrictHostKeyChecking=yes meets an empty known_hosts and every node reports
+# unreachable — a plausible-looking fleet-wide outage caused by the unit itself.
+Environment=HOME=/var/lib/fleet-watcher
 
 NoNewPrivileges=true
 PrivateTmp=true
@@ -2978,6 +3013,17 @@ Design: `docs/superpowers/specs/2026-08-06-fleet-watcher-design.md`
 
 ## Install
 
+**1. Create the service account.** Its home must be `/var/lib/fleet-watcher`,
+not under `/home` — the unit sets `ProtectHome=true`, which blanks `/home`, and
+SSH needs a readable home for its identity and `known_hosts`.
+
+```bash
+useradd --system --home-dir /var/lib/fleet-watcher --create-home \
+        --shell /usr/sbin/nologin fleet-watcher
+```
+
+**2. Install the code and directories.**
+
 ```bash
 install -d -m 0750 -o fleet-watcher -g fleet-watcher /opt/fleet-watcher /var/lib/fleet-watcher
 install -m 0644 tools/fleet-watcher/*.py /opt/fleet-watcher/
@@ -2985,18 +3031,46 @@ install -d -m 0700 /etc/fleet-watcher
 install -m 0600 tools/fleet-watcher/deploy/config.example.json /etc/fleet-watcher/config.json
 ```
 
-Write the two credential files, both `0600` and root-owned:
+**3. EDIT the config.** The example ships placeholder targets. Starting the
+service against them polls hosts that do not exist and pages
+`majority_unreachable` on a perfectly healthy fleet.
+
+```bash
+$EDITOR /etc/fleet-watcher/config.json      # real names, roles, transports, targets
+python3 -c "import sys; sys.path.insert(0,'/opt/fleet-watcher'); \
+            import config; print(config.load_config('/etc/fleet-watcher/config.json'))"
+```
+
+The second command is the validator: it rejects duplicate names, unknown
+transports, a missing role and a config with no voting nodes. Do not proceed
+until it prints a `Config(...)`.
+
+**4. Provision SSH.** As the service account, generate a key, install its public
+half in each node's `authorized_keys` behind the forced command, and populate
+`known_hosts` — `StrictHostKeyChecking=yes` means an unknown host is a failed
+poll, not a prompt.
+
+```bash
+sudo -u fleet-watcher ssh-keygen -t ed25519 -N '' -f /var/lib/fleet-watcher/.ssh/id_ed25519
+sudo -u fleet-watcher ssh-keyscan -H <node> >> /var/lib/fleet-watcher/.ssh/known_hosts
+```
+
+**5. Write the two credential files**, both `0600` and root-owned. These are
+systemd credentials, not environment files:
 
 ```
-/etc/fleet-watcher/pushover.env     PUSHOVER_TOKEN=... / PUSHOVER_USER=...
-/etc/fleet-watcher/heartbeat.env    HEARTBEAT_URL=...
+/etc/fleet-watcher/pushover.creds    PUSHOVER_TOKEN=... and PUSHOVER_USER=...
+/etc/fleet-watcher/heartbeat.creds   HEARTBEAT_URL=...
 ```
 
-Neither belongs in Git. Then:
+Neither belongs in Git.
+
+**6. Start it.**
 
 ```bash
 cp tools/fleet-watcher/deploy/fleet-watcher.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now fleet-watcher
+journalctl -u fleet-watcher -f          # confirm cycles are running
 ```
 
 ## Node-side access
@@ -3068,19 +3142,45 @@ cd tools/fleet-watcher && python3 -m unittest discover -s tests -v
 untested dead-man is indistinguishable from a dead one, and it is the failure
 mode that hides all the others.
 
+First, set the grace period at the dead-man provider — the watcher pings every
+60s, so a period of about 5 minutes catches a real stop without firing on a slow
+cycle. **The provider's default may be an hour**; if you leave it there, the
+test below will appear to fail when it is only slow.
+
+Then confirm delivery works while everything is healthy:
+
 ```bash
-systemctl stop fleet-watcher
-# wait ~6 minutes
+sudo -u fleet-watcher HEARTBEAT_URL="$(sudo sed -n 's/^HEARTBEAT_URL=//p' \
+    /etc/fleet-watcher/heartbeat.creds)" \
+    curl -sS -o /dev/null -w '%{http_code}\n' "$HEARTBEAT_URL"
 ```
 
-Confirm an alert arrives from the dead-man service. Then:
+Expected: `200`. Now the actual test:
+
+```bash
+systemctl stop fleet-watcher
+# wait for the grace period you configured, plus a minute
+```
+
+**Success looks like:** an alert arrives on the channel you configured at the
+dead-man provider — which must be a DIFFERENT path from Pushover, so a single
+provider outage cannot silence both. Then:
 
 ```bash
 systemctl start fleet-watcher
 ```
 
-Confirm the check returns to healthy. If no alert arrived, the heartbeat is not
-protecting you and must be fixed before relying on this tool.
+**Success looks like:** the provider's check returns to healthy within two
+minutes.
+
+**If no alert arrived**, work through these in order before relying on the tool:
+
+1. `journalctl -u fleet-watcher | grep -i heartbeat` — is the watcher pinging?
+2. Is the grace period still at the provider default?
+3. Is the notification channel on the provider actually configured and verified?
+4. Is `HEARTBEAT_URL` in the credential file the check URL, not the dashboard URL?
+
+A heartbeat that is not verified is not protecting you.
 
 ## Maintenance windows
 
