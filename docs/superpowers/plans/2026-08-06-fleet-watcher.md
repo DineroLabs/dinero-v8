@@ -485,6 +485,20 @@ def compute_quorum(observations: Sequence[Observation]) -> Optional[Quorum]:
     return Quorum(members=members, median_height=median)
 
 
+def disagreeing_voter_pairs(observations: Sequence[Observation]) -> List[Tuple[str, str]]:
+    """Voting pairs that positively DISAGREE at a height they both reached.
+
+    Deliberately independent of whether a quorum formed. Fork evidence is fork
+    evidence: if two voters hold different hashes at a shared height, that is
+    the condition this system exists to report, and it must not be downgraded
+    because some third node happened to drop an RPC and prevented a quorum.
+    """
+    voters = _voters(observations)
+    by_node = {o.node: o for o in voters}
+    return [(x, y) for x, y in combinations(sorted(by_node), 2)
+            if compatible(by_node[x], by_node[y]) == DISAGREE]
+
+
 def undetermined_voter_pairs(observations: Sequence[Observation]) -> List[Tuple[str, str]]:
     """Voting pairs that could not be compared at all.
 
@@ -612,6 +626,21 @@ class TestEvaluate(unittest.TestCase):
         o.append(obs("watch", role="observer", reachable=False,
                      height=None, hashes={}))
         self.assertEqual(rules_fired(evaluate(o, 3)), set())
+
+    def test_a_fork_pages_even_when_no_quorum_forms(self):
+        """A confirmed fork must not be downgraded because a third node dropped
+        an RPC. The DISAGREE evidence is in hand either way."""
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={}),          # one missing getblockhash
+             obs("c", height=100, hashes={100: "Y"})]
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("tip_divergence", fired)
+
+    def test_tip_divergence_names_the_disagreeing_nodes(self):
+        o = self._healthy()
+        o[2] = Observation(**{**o[2].__dict__, "hashes_at": {100: "FORK"}})
+        hit = [h for h in evaluate(o, 3) if h.rule == "tip_divergence"][0]
+        self.assertIn("c", hit.nodes)
 
     def test_uncomparable_voter_does_not_fire_tip_divergence(self):
         """A quorum exists and one voter simply cannot be compared. That is a
@@ -768,18 +797,19 @@ def evaluate(observations: Sequence[Observation],
         hits.append(RuleHit("consensus_health", tuple(o.node for o in voting),
                             "no unique largest compatible group of voting nodes"))
 
-    if quorum is not None:
-        # tip_divergence requires positive DISAGREE evidence against a quorum
-        # member. "Not in the quorum" is not enough: a node we merely could not
-        # compare would otherwise raise an emergency fork page.
-        diverging = [o.node for o in voting
-                     if o.reachable and o.node not in quorum.members
-                     and any(compatible(o, by_node[m]) == DISAGREE
-                             for m in quorum.members)]
-        if diverging:
-            hits.append(RuleHit("tip_divergence", tuple(diverging),
-                                f"disagrees with quorum {quorum.members}"))
+    # tip_divergence is evaluated OUTSIDE the quorum block, because a fork is
+    # not conditional on a quorum forming. Previously it sat inside, so a single
+    # missing getblockhash on an uninvolved node destroyed the quorum and
+    # downgraded a confirmed fork to a normal-priority telemetry notice — with
+    # the DISAGREE evidence already in hand and discarded.
+    forked = disagreeing_voter_pairs(observations)
+    if forked:
+        hits.append(RuleHit(
+            "tip_divergence",
+            tuple(sorted({n for pair in forked for n in pair})),
+            f"voting nodes disagree at a shared height: {forked}"))
 
+    if quorum is not None:
         # node_behind — measured against the quorum's median tip height.
         behind = [o.node for o in observations
                   if o.reachable and o.height is not None
@@ -952,6 +982,14 @@ class TestStore(unittest.TestCase):
         recoveries = [i for i in self.store.pending_outbox(now=0.0)
                       if i.kind == "recovery"]
         self.assertEqual(len(recoveries), 1)
+
+    def test_the_notification_names_the_affected_nodes(self):
+        """A page saying only ">= 10 blocks below quorum median" tells the
+        operator nothing about WHERE to look."""
+        self.store.open_incident("node_behind", ("c",), "normal", "12 blocks")
+        item = self.store.pending_outbox(now=0.0)[0]
+        self.assertIn("c", item.title)
+        self.assertIn("c", item.message)
 
     def test_open_incidents_nodes_round_trip_sorted(self):
         """open_incident stores sorted nodes, so open_incidents() returns them
@@ -1144,8 +1182,10 @@ class Store:
                 "INSERT INTO outbox (incident_id, rule, kind, priority, title,"
                 " message, attempts, created_at, next_attempt_at, sent_at)"
                 " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
-                (incident_id, rule, "open", priority, f"[dinero] {rule}",
-                 f"{rule}: {detail}", self._clock(), 0.0))
+                (incident_id, rule, "open", priority,
+                 f"[dinero] {rule}: {', '.join(nodes) or 'fleet'}",
+                 f"{rule} [{', '.join(nodes) or 'fleet'}]: {detail}",
+                 self._clock(), 0.0))
         return incident_id
 
     def close_incident(self, incident_id: str) -> None:
@@ -1153,7 +1193,7 @@ class Store:
         # enqueues two recovery notifications and the operator is told the same
         # incident resolved twice.
         row = self.conn.execute(
-            "SELECT rule, detail FROM incidents WHERE incident_id=? "
+            "SELECT rule, detail, nodes FROM incidents WHERE incident_id=? "
             "AND closed_at IS NULL", (incident_id,)).fetchone()
         if row is None:
             return
@@ -1167,7 +1207,8 @@ class Store:
                 " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
                 (incident_id, row["rule"], "recovery", "normal",
                  f"[dinero] resolved: {row['rule']}",
-                 f"{row['rule']} cleared", self._clock(), 0.0))
+                 f"{row['rule']} cleared for {json.loads(row['nodes']) or 'fleet'}",
+                 self._clock(), 0.0))
 
     def open_incidents(self) -> List[Incident]:
         rows = self.conn.execute(
@@ -2329,8 +2370,13 @@ def load_config(path: str) -> Config:
         if node["transport"] not in TRANSPORTS:
             raise ValueError(f"bad transport for {node['name']}: {node['transport']}")
 
-    if not any(n["role"] == "voting" for n in nodes):
-        raise ValueError("config defines no voting nodes; quorum is impossible")
+    voters = sum(1 for n in nodes if n["role"] == "voting")
+    if voters < 2:
+        # A single voter can never reach QUORUM_MIN, so consensus_health would
+        # fire every three cycles forever on a perfectly healthy fleet.
+        raise ValueError(
+            f"config defines {voters} voting node(s); at least 2 are required "
+            "to form a quorum")
     return Config(
         nodes=raw["nodes"],
         db_path=raw.get("db_path", "/var/lib/fleet-watcher/watcher.db"),
@@ -2550,6 +2596,12 @@ class TestLoadConfig(unittest.TestCase):
     def test_a_config_with_no_voting_nodes_is_rejected(self):
         payload = {"nodes": [dict(VALID["nodes"][2])]}
         self._rejects(payload, "voting")
+
+    def test_a_single_voter_config_is_rejected(self):
+        """One voter can never reach QUORUM_MIN, so consensus_health would page
+        every three cycles forever on a healthy fleet."""
+        payload = {"nodes": [dict(VALID["nodes"][0]), dict(VALID["nodes"][2])]}
+        self._rejects(payload, "at least 2")
 
     def test_an_unknown_transport_is_rejected(self):
         payload = {"nodes": [{**VALID["nodes"][0], "transport": "carrier-pigeon"}]}

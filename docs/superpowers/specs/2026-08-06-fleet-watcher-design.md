@@ -191,7 +191,8 @@ detectable after both nodes have built past its base.
 |---|---|
 | `safe_mode` | any node (voting or observer) reports safe mode active |
 | `consensus_health` | no unique fleet quorum exists among voting nodes |
-| `tip_divergence` | reachable voting nodes report different hashes at the common height |
+| `tip_divergence` | reachable voting nodes report different hashes at a shared height — evaluated independently of whether a quorum formed, because fork evidence is not conditional on quorum |
+| `node_unreachable` | a voting node is unreachable, below the majority threshold |
 | `majority_unreachable` | 2 or more of the 3 voting nodes unreachable |
 | `node_behind` | a reachable node is ≥ 10 blocks below the quorum's median tip height |
 | `observer_divergence` | an observer's hash disagrees with the quorum at a shared height |
