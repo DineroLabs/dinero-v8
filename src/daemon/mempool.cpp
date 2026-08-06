@@ -230,23 +230,29 @@ public:
 // "not found".
 class ConsensusUTXOStateView : public consensus::ChainStateView {
     const consensus::IConsensusUTXOSet* utxo_set_;
+    std::unique_ptr<ChainDBStateView> chain_db_fallback_;
 public:
-    explicit ConsensusUTXOStateView(const consensus::IConsensusUTXOSet* utxo_set)
-        : utxo_set_(utxo_set) {}
+    explicit ConsensusUTXOStateView(const consensus::IConsensusUTXOSet* utxo_set,
+                                    ChainDB* chain_db_fallback = nullptr)
+        : utxo_set_(utxo_set)
+        , chain_db_fallback_(chain_db_fallback
+              ? std::make_unique<ChainDBStateView>(chain_db_fallback)
+              : nullptr) {}
 
     StatusOr<consensus::UTXOEntry> getCoin(const OutPoint& outpoint) const override {
-        if (!utxo_set_) {
-            return Status::NotFound;
+        if (utxo_set_) {
+            if (const auto* coin = utxo_set_->GetCoin(outpoint)) {
+                return *coin;
+            }
         }
-        const auto* coin = utxo_set_->GetCoin(outpoint);
-        if (!coin) {
-            return Status::NotFound;
-        }
-        return *coin;
+        return chain_db_fallback_
+            ? chain_db_fallback_->getCoin(outpoint)
+            : StatusOr<consensus::UTXOEntry>(Status::NotFound);
     }
 
     bool hasCoin(const OutPoint& outpoint) const override {
-        return utxo_set_ && utxo_set_->HaveCoin(outpoint);
+        return (utxo_set_ && utxo_set_->HaveCoin(outpoint)) ||
+               (chain_db_fallback_ && chain_db_fallback_->hasCoin(outpoint));
     }
 
     uint32_t getHeight() const override {
@@ -455,11 +461,14 @@ void EraseFeeIndexEntry(std::multimap<double, uint256>& fee_index, const uint256
 }  // namespace
 
 Mempool::Mempool(ChainDB* chain_db,
-                 const consensus::IConsensusUTXOSet* consensus_utxo_set)
+                 const consensus::IConsensusUTXOSet* consensus_utxo_set,
+                 bool allow_chain_db_fallback)
     : chain_db_(chain_db)
     , chain_state_view_(consensus_utxo_set
           ? std::unique_ptr<consensus::ChainStateView>(
-                std::make_unique<ConsensusUTXOStateView>(consensus_utxo_set))
+                std::make_unique<ConsensusUTXOStateView>(
+                    consensus_utxo_set,
+                    allow_chain_db_fallback ? chain_db : nullptr))
           : std::unique_ptr<consensus::ChainStateView>(
                 std::make_unique<ChainDBStateView>(chain_db)))
     , coins_view_(chain_state_view_.get())  // v0.11.0: Initialize UTXO overlay with ChainStateView adapter

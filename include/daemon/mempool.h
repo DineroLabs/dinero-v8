@@ -166,7 +166,8 @@ public:
     };
 
     explicit Mempool(ChainDB* chain_db,
-                     const consensus::IConsensusUTXOSet* consensus_utxo_set = nullptr);
+                     const consensus::IConsensusUTXOSet* consensus_utxo_set = nullptr,
+                     bool allow_chain_db_fallback = false);
     ~Mempool();
 
     // ========================================================================
