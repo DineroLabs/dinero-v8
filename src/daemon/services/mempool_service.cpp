@@ -47,9 +47,11 @@ bool MempoolService::Init(DaemonContext& ctx) {
             return false;
         }
 
-        mempool_ = std::make_unique<Mempool>(chain_db);
+        mempool_ = std::make_unique<Mempool>(
+            chain_db, chainstate_->GetConsensusUTXOSet());
         mempool_->setLogger(logger_interface_);  // Inject logger for dependency injection
-        logger_interface_->info("[MempoolService] Mempool instance created with ChainDB");
+        logger_interface_->info(
+            "[MempoolService] Mempool instance created with active consensus UTXO view");
 
         // Apply RBF/CPFP policy from config
         // Default: RBF off (preserves payment finality), CPFP on (safe fee bumping)

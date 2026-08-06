@@ -3838,14 +3838,15 @@ bool ChainstateService::Start() {
         }
     }
 
-    if (utxo_position_index_ && chain_db_ && consensus_utxo_set_) {
+    if (utxo_position_index_ && consensus_utxo_set_) {
         const auto& forest = consensus_utxo_set_->GetForest();
         if (forest.getNumLeaves() == 0) {
             utxo_position_index_->Clear();
             if (logger_) logger_->info("[ChainstateService] UTXO position index cleared for empty forest");
         } else {
-            if (logger_) logger_->info("[ChainstateService] Rebuilding UTXO position index from restored forest");
-            const auto rebuild_report = utxo_position_index_->Rebuild(*chain_db_, forest);
+            if (logger_) logger_->info("[ChainstateService] Rebuilding UTXO position index from active consensus set");
+            const auto rebuild_report = utxo_position_index_->Rebuild(
+                consensus_utxo_set_->GetUTXOs(), forest);
             if (!rebuild_report.success) {
                 if (logger_) logger_->warning("[ChainstateService] UTXO position index rebuild incomplete — proof serving may be degraded");
             } else if (rebuild_report.missing > 0) {
@@ -9071,6 +9072,54 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
     return result;
 }
 
+uint32_t ChainstateService::GetSnapshotWalletRecoveryBaseHeight() const {
+    const uint32_t lifecycle_base = std::max(
+        assumeutxo_active_ ? assumeutxo_base_height_ : 0u,
+        promoted_base_height_);
+    if (lifecycle_base > 0) {
+        return lifecycle_base;
+    }
+
+    // New snapshots persist a wallet-recovery marker which deliberately
+    // survives AssumeUTXO mode exit. It is separate from the active lifecycle
+    // keys because promotion removes those once history is proven, while the
+    // node still lacks pre-base block bodies needed by a later-opened wallet.
+    if (utxo_index_) {
+        if (const auto persisted =
+                utxo_index_->GetMetadata("wallet_snapshot_recovery_base_height")) {
+            try {
+                const auto parsed = std::stoull(*persisted);
+                if (parsed > 0 && parsed <= std::numeric_limits<uint32_t>::max()) {
+                    return static_cast<uint32_t>(parsed);
+                }
+            } catch (const std::exception&) {
+                // Fall through to the legacy compatibility path below.
+            }
+        }
+    }
+
+    // Compatibility for nodes promoted by older releases, before the durable
+    // wallet-recovery marker existed. DineroDPI keeps the exact validated V4
+    // snapshot configured after promotion; recover its base from the header.
+    // Require the active chainstate to have reached the base so merely pointing
+    // a fresh/full node at an unrelated file cannot seed wallet rows early.
+    const std::string snapshot_path =
+        config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
+    if (snapshot_path.empty()) {
+        return 0;
+    }
+
+    consensus::SnapshotMetadata header;
+    std::string error;
+    if (!ReadSnapshotHeaderPreview(snapshot_path, header, error) ||
+        header.version != consensus::SNAPSHOT_VERSION_V4 ||
+        header.block_height == 0 ||
+        getBlockHeight() < header.block_height) {
+        return 0;
+    }
+    return header.block_height;
+}
+
 int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height) {
     // PRIMARY PATH: read the configured snapshot .dat directly. On a utreexo node
     // the in-memory consensus_utxo_set_ does NOT hold the snapshot's UTXOs (they
@@ -9862,6 +9911,8 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         if (utxo_index_) {
             utxo_index_->SetMetadata(assumeutxo::kExpectedCommitmentKey,
                                      snapshot_commitment_hex);
+            utxo_index_->SetMetadata("wallet_snapshot_recovery_base_height",
+                                     std::to_string(header.block_height));
             if (has_v3_utreexo_section) {
                 utxo_index_->SetMetadata(assumeutxo::kExpectedUtreexoRootKey,
                                          utreexo_section.utreexo_root.GetHex());
@@ -9878,6 +9929,29 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             // processing. Override with the snapshot's serialized forest to match the
             // block header's utreexo_root commitment.
             consensus_utxo_set_->GetForest() = std::move(*snapshot_forest);
+
+            // LoadSnapshot bypasses ordinary ConnectBlock, so the rebuildable
+            // (txid,vout)->forest-position index does not receive the per-output
+            // AddPosition hooks. Without rebuilding it here, balances recover
+            // but snapshot coins remain unspendable because proof RPCs cannot
+            // locate them. ChainDB intentionally does not contain this imported
+            // coin set, so rebuild from the verified active consensus map.
+            if (utxo_position_index_) {
+                const auto position_report = utxo_position_index_->Rebuild(
+                    consensus_utxo_set_->GetUTXOs(),
+                    consensus_utxo_set_->GetForest());
+                logger_->info(
+                    "[LoadSnapshot] UTXO position index rebuilt from snapshot: matched=" +
+                    std::to_string(position_report.matched) +
+                    " missing=" + std::to_string(position_report.missing) +
+                    " skipped_unspendable=" +
+                    std::to_string(position_report.skipped_unspendable));
+                if (!position_report.success || position_report.missing > 0) {
+                    logger_->warning(
+                        "[LoadSnapshot] Some snapshot UTXOs are missing from the restored forest; "
+                        "proof serving is degraded for those outputs");
+                }
+            }
 
             // Persist imported forest as a checkpoint so restart does not require rebuild.
             auto serialized = consensus_utxo_set_->GetForest().serialize();

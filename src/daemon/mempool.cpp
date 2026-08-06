@@ -18,6 +18,7 @@
 #include "consensus/script_validation.h"   // Phase 6 Commit 4: unified ValidateSpend dispatcher (single consensus script validator)
 #include "consensus/pq/p2mr_consensus.h"   // Phase 8 Commit 2: ComputeVWU for fee/eviction/RBF ordering
 #include "consensus/chainparams.h"
+#include "consensus/interfaces/iconsensus_utxo_set.h"
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/shielded_validation.h"
@@ -222,6 +223,37 @@ public:
     }
 };
 
+// The in-memory ConsensusUTXOSet is the active chainstate authority used by
+// BlockValidator. AssumeUTXO imports live there but intentionally are not
+// copied into ChainDB, so mempool admission must query the same view or a
+// wallet can prove ownership of a snapshot coin that the mempool then calls
+// "not found".
+class ConsensusUTXOStateView : public consensus::ChainStateView {
+    const consensus::IConsensusUTXOSet* utxo_set_;
+public:
+    explicit ConsensusUTXOStateView(const consensus::IConsensusUTXOSet* utxo_set)
+        : utxo_set_(utxo_set) {}
+
+    StatusOr<consensus::UTXOEntry> getCoin(const OutPoint& outpoint) const override {
+        if (!utxo_set_) {
+            return Status::NotFound;
+        }
+        const auto* coin = utxo_set_->GetCoin(outpoint);
+        if (!coin) {
+            return Status::NotFound;
+        }
+        return *coin;
+    }
+
+    bool hasCoin(const OutPoint& outpoint) const override {
+        return utxo_set_ && utxo_set_->HaveCoin(outpoint);
+    }
+
+    uint32_t getHeight() const override {
+        return utxo_set_ ? utxo_set_->GetHeight() : 0;
+    }
+};
+
 // v0.11.0: CoinsViewMemPool-backed UTXO view for policy validation
 // Wraps CoinsViewMemPool to provide UTXOView interface for mempool validation
 // This allows validation to see unconfirmed outputs created by mempool transactions
@@ -265,15 +297,6 @@ public:
         if (result.status() == Status::Ok) {
             return true;
         }
-        if (!chain_db_) {
-            consensus::UTXOEntry mempool_prevout;
-            return GetMempoolPrevout(txid, vout, mempool_prevout);
-        }
-        auto chain_coin = chain_db_->getCoinWithConfidentialFallback(txid, vout);
-        if (chain_coin.status() == Status::Ok) {
-            return true;
-        }
-
         consensus::UTXOEntry mempool_prevout;
         return GetMempoolPrevout(txid, vout, mempool_prevout);
     }
@@ -288,30 +311,6 @@ public:
             value = utxo.value.GetUna();
             // Convert vector<uint8_t> to string
             script.assign(utxo.scriptPubKey.begin(), utxo.scriptPubKey.end());
-            return true;
-        }
-
-        if (!chain_db_) {
-            consensus::UTXOEntry mempool_prevout;
-            if (!GetMempoolPrevout(txid, vout, mempool_prevout)) {
-                return false;
-            }
-            value = mempool_prevout.value.GetUna();
-            script.assign(mempool_prevout.scriptPubKey.begin(), mempool_prevout.scriptPubKey.end());
-            return true;
-        }
-
-        auto chain_coin = chain_db_->getCoinWithConfidentialFallback(txid, vout);
-        if (chain_coin.status() == Status::Ok) {
-            value = chain_coin.value().amount;
-            // script_pubkey is stored as hex string in ChainDB — decode to binary
-            const std::string& hex = chain_coin.value().script_pubkey;
-            script.clear();
-            script.reserve(hex.size() / 2);
-            for (size_t i = 0; i + 1 < hex.size(); i += 2) {
-                script.push_back(static_cast<char>(
-                    (uint8_t)std::stoi(hex.substr(i, 2), nullptr, 16)));
-            }
             return true;
         }
 
@@ -348,23 +347,6 @@ public:
             const consensus::UTXOEntry& utxo = result.value();
             is_confidential = utxo.is_confidential;
             commitment = utxo.commitment;
-            return true;
-        }
-
-        if (!chain_db_) {
-            consensus::UTXOEntry mempool_prevout;
-            if (!GetMempoolPrevout(txid, vout, mempool_prevout)) {
-                return false;
-            }
-            is_confidential = mempool_prevout.is_confidential;
-            commitment = mempool_prevout.commitment;
-            return true;
-        }
-
-        auto chain_coin = chain_db_->getCoinWithConfidentialFallback(txid, vout);
-        if (chain_coin.status() == Status::Ok) {
-            is_confidential = chain_coin.value().is_confidential;
-            commitment = chain_coin.value().commitment;
             return true;
         }
 
@@ -472,9 +454,14 @@ void EraseFeeIndexEntry(std::multimap<double, uint256>& fee_index, const uint256
 
 }  // namespace
 
-Mempool::Mempool(ChainDB* chain_db)
+Mempool::Mempool(ChainDB* chain_db,
+                 const consensus::IConsensusUTXOSet* consensus_utxo_set)
     : chain_db_(chain_db)
-    , chain_state_view_(std::make_unique<ChainDBStateView>(chain_db))
+    , chain_state_view_(consensus_utxo_set
+          ? std::unique_ptr<consensus::ChainStateView>(
+                std::make_unique<ConsensusUTXOStateView>(consensus_utxo_set))
+          : std::unique_ptr<consensus::ChainStateView>(
+                std::make_unique<ChainDBStateView>(chain_db)))
     , coins_view_(chain_state_view_.get())  // v0.11.0: Initialize UTXO overlay with ChainStateView adapter
     , m_logger(nullptr)
     , m_max_size(DEFAULT_MAX_SIZE)
@@ -1142,14 +1129,15 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
                        " value: " + std::to_string(coin_value));
         }
 
-        // 2️⃣ Fallback to ChainDB (confirmed UTXO)
+        // 2️⃣ Fallback to the active confirmed UTXO view.
         if (!found) {
-            auto coin_result = chain_db_->getCoin(input_txid.AsUint256(), input.prevout.vout);
+            auto coin_result = chain_state_view_->getCoin(
+                OutPoint{input_txid, input.prevout.vout});
             if (coin_result.status() == Status::Ok) {
-                coin_value = coin_result.value().amount;  // Coin.amount is already uint64_t
+                coin_value = coin_result.value().value.GetUna();
                 found = true;
                 OutPoint outpoint{input_txid, input.prevout.vout};
-                MPLOG_DEBUG("TEST_ONLY: Input from ChainDB: " + outpoint.ToString() +
+                MPLOG_DEBUG("TEST_ONLY: Input from active chainstate: " + outpoint.ToString() +
                            " value: " + std::to_string(coin_value));
             }
         }
@@ -3293,24 +3281,16 @@ std::optional<consensus::UTXOEntry> Mempool::recoverConflictedInputUTXO(const Ou
         return recovered;
     }
 
-    if (!chain_db_) {
+    if (!chain_state_view_) {
         return std::nullopt;
     }
 
-    auto chain_coin = chain_db_->getCoinWithConfidentialFallback(outpoint.txid.AsUint256(), outpoint.vout);
+    auto chain_coin = chain_state_view_->getCoin(outpoint);
     if (chain_coin.status() != Status::Ok) {
         return std::nullopt;
     }
 
-    consensus::UTXOEntry recovered;
-    recovered.value = AmountUna::Una(chain_coin.value().amount);
-    auto script_bytes = TransactionSerializer::FromHex(chain_coin.value().script_pubkey);
-    recovered.scriptPubKey.assign(script_bytes.begin(), script_bytes.end());
-    recovered.height = static_cast<uint32_t>(std::max(chain_coin.value().height, 0));
-    recovered.isCoinbase = chain_coin.value().coinbase;
-    recovered.is_confidential = chain_coin.value().is_confidential;
-    recovered.commitment = chain_coin.value().commitment;
-    return recovered;
+    return chain_coin.value();
 }
 
 void Mempool::updateDependencies(const uint256& removed_txid) {

@@ -249,16 +249,20 @@ bool WalletService::Start() {
         // block-replay catch-up below cannot recover them because the node is
         // headers-only with no block bodies under the snapshot base height.
         //
-        // Gate: only when an AssumeUTXO snapshot is loaded (IsAssumeUTXOActive()),
-        // never on a normal full node with real block bodies. The rescan upsert is
-        // idempotent, so a redundant run is harmless.
+        // Gate: while an AssumeUTXO snapshot is active OR after its history has
+        // been promoted. Promotion proves history but does not materialize the
+        // missing pre-base block bodies, so late wallet recovery still requires
+        // the snapshot UTXO section. Never run on a normal full node. The rescan
+        // upsert is idempotent, so a redundant run is harmless.
         //
         // The rescan operates on the ACTIVE wallet only, so on a multi-wallet node
         // sweep EVERY wallet: open each, rescan from the snapshot, then restore the
         // originally-active wallet. This surfaces every wallet's pre-snapshot coins
         // at once instead of only the auto-opened one.
-        if (chainstate_ && chainstate_->IsAssumeUTXOActive() && !wallets.empty()) {
-            const uint32_t base_height = chainstate_->GetAssumeUTXOBaseHeight();
+        const uint32_t snapshot_recovery_base = chainstate_
+            ? chainstate_->GetSnapshotWalletRecoveryBaseHeight() : 0u;
+        if (chainstate_ && snapshot_recovery_base > 0 && !wallets.empty()) {
+            const uint32_t base_height = snapshot_recovery_base;
             // Capture the wallet to restore as active afterward (open() below
             // overwrites the "most recently opened" marker).
             const std::string preferred_wallet = wallet_mgr_->hasActiveWallet()
@@ -267,10 +271,31 @@ bool WalletService::Start() {
                 try {
                     wallet_mgr_->open(wname);
                     int recorded = chainstate_->RescanWalletFromSnapshotUTXOs(*wallet_mgr_, base_height);
+                    if (recorded < 0) {
+                        throw std::runtime_error("snapshot UTXO source unavailable");
+                    }
                     if (recorded > 0) {
                         logger_interface_->info("[WalletService] Snapshot UTXO-set rescan: wallet '"
                             + wname + "' recorded " + std::to_string(recorded)
                             + " owned coin(s) from base height " + std::to_string(base_height));
+                    }
+
+                    // The wallet may already claim to be at the current tip even
+                    // though the snapshot coins were absent when it originally
+                    // scanned the post-base blocks. Replaying only when the old
+                    // watermark is behind would resurrect snapshot coins spent
+                    // after the base. Always replay base+1..tip immediately for
+                    // EACH wallet after inserting its base UTXOs.
+                    if (base_height < actual_blockchain_height) {
+                        auto* chain_db = chainstate_->GetChainDB();
+                        if (!chain_db || !wallet_mgr_->rescanBlockchain(
+                                static_cast<int>(base_height + 1),
+                                /*gap_limit=*/20,
+                                chain_db,
+                                block_storage_)) {
+                            throw std::runtime_error(
+                                "post-snapshot wallet replay failed");
+                        }
                     }
                 } catch (const std::exception& e) {
                     logger_interface_->warning("[WalletService] Snapshot rescan failed for wallet '"
@@ -284,13 +309,11 @@ bool WalletService::Start() {
                     EnsureRuntimeWalletBindings();
                 } catch (const std::exception&) {}
             }
-            // Floor the scan watermark at the snapshot base so the catch-up below
-            // starts at base+1 (heights with block bodies), never from 0 (no
-            // bodies on a fast-synced node -> would re-spend the recorded coins).
-            if (base_height > wallet_scan_height) {
-                wallet_scan_height = base_height;
-            }
-            needs_catchup_scan = (wallet_scan_height < actual_blockchain_height);
+            // Every wallet was synchronously replayed through the current tip
+            // above. Do not enqueue a second asynchronous pass against whichever
+            // wallet happened to be restored as active.
+            wallet_scan_height = actual_blockchain_height;
+            needs_catchup_scan = false;
         }
 
         // Trigger catch-up scan if wallet is behind blockchain

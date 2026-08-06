@@ -7452,6 +7452,81 @@ din::Json rpc_context_wallet_importmnemonic(const ExecutionContext& ctx, const d
         result.isMember("success") &&
         result["success"].isBool() &&
         result["success"].asBool()) {
+        auto chainstate_service =
+            std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (!chainstate_service) {
+            result["warning"] = "Mnemonic imported, but snapshot-aware wallet rescan could not access chainstate";
+            result["rescan_success"] = false;
+            result["rescan_error"] = "Chainstate service not available after mnemonic import";
+            return result;
+        }
+
+        // A wallet imported AFTER an AssumeUTXO snapshot was loaded cannot
+        // recover its pre-snapshot coins by replaying blocks: a snapshot node
+        // deliberately has no transaction bodies below the base.  The startup
+        // and LoadSnapshot hooks cover wallets that already exist, but not this
+        // RPC ordering (snapshot first, mnemonic later).  Scan the configured
+        // snapshot's UTXO section after the import has installed watch scripts,
+        // then replay only the post-base blocks that actually exist.
+        const uint32_t snapshot_recovery_base =
+            chainstate_service->GetSnapshotWalletRecoveryBaseHeight();
+        if (snapshot_recovery_base > 0) {
+            const uint32_t base_height = snapshot_recovery_base;
+            try {
+                const int recorded = chainstate_service->RescanWalletFromSnapshotUTXOs(
+                    *wallet_manager, base_height);
+                if (recorded < 0) {
+                    result["warning"] = "Mnemonic imported, but the active snapshot UTXO set could not be scanned";
+                    result["rescan_success"] = false;
+                    result["rescan_error"] =
+                        "AssumeUTXO is active but no snapshot UTXO source is available";
+                    result["snapshot_utxo_rescan"]["attempted"] = true;
+                    result["snapshot_utxo_rescan"]["base_height"] = base_height;
+                    result["snapshot_utxo_rescan"]["recorded"] = recorded;
+                    return result;
+                }
+
+                result["snapshot_utxo_rescan"]["attempted"] = true;
+                result["snapshot_utxo_rescan"]["base_height"] = base_height;
+                result["snapshot_utxo_rescan"]["recorded"] = recorded;
+                result["rescan_triggered"] = true;
+
+                // rescanUtxoSet() persists the wallet watermark at the base.
+                // Never send the block replay back through absent pre-base
+                // bodies and risk clearing the snapshot-anchored rows it just
+                // recovered. Preserve a later user-supplied birthday height.
+                if (base_height < std::numeric_limits<uint32_t>::max()) {
+                    rescan_start_height = std::max(
+                        rescan_start_height,
+                        static_cast<int>(base_height + 1));
+                }
+            } catch (const std::exception& e) {
+                result["warning"] = "Mnemonic imported, but snapshot UTXO rescan failed";
+                result["rescan_success"] = false;
+                result["rescan_error"] = e.what();
+                result["snapshot_utxo_rescan"]["attempted"] = true;
+                result["snapshot_utxo_rescan"]["base_height"] = base_height;
+                return result;
+            }
+        }
+
+        const uint32_t current_height = chainstate_service->getBlockHeight();
+        if (rescan_start_height > static_cast<int>(current_height)) {
+            // Snapshot base equals the current tip: the UTXO-section scan above
+            // completed the entire available range, so there are no post-base
+            // blocks to replay. Do not turn that successful recovery into a
+            // false "stop_height cannot be less than start_height" failure.
+            result["rescan_success"] = true;
+            result["rescan"]["start_height"] = rescan_start_height;
+            result["rescan"]["stop_height"] = static_cast<Json::Int>(current_height);
+            result["rescan"]["scanned_blocks"] = 0;
+            result["rescan"]["complete"] = true;
+            result["rescan"]["success"] = true;
+            result["rescan"]["detail"] =
+                "Snapshot UTXO scan complete; no post-base blocks require replay";
+            return result;
+        }
+
         din::Json rescan_params(Json::arrayValue);
         rescan_params.append(rescan_start_height);
         din::Json rescan_result = rpc_context_wallet_rescanblockchain(ctx, rescan_params);

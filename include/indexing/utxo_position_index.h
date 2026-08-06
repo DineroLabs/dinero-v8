@@ -2,6 +2,8 @@
 
 #include "primitives/uint256.h"
 #include "primitives/hash_domains.h"  // For TxId
+#include "consensus/outpoint.h"
+#include "consensus/utxo_entry.h"
 #include <optional>
 #include <cstdint>
 #include <unordered_map>
@@ -176,6 +178,19 @@ public:
      */
     UTXOPositionRebuildReport Rebuild(const ChainDB& chain_db,
                                      const consensus::UtreexoForest& forest);
+
+    /**
+     * Rebuild positions from the active in-memory consensus UTXO set.
+     *
+     * This is the authoritative rebuild source after AssumeUTXO import:
+     * snapshot coins live in ConsensusUTXOSet but are intentionally absent
+     * from ChainDB until normal post-snapshot block processing persists
+     * incremental changes. Rebuilding from ChainDB in that state silently
+     * drops proof coverage for every snapshot coin.
+     */
+    UTXOPositionRebuildReport Rebuild(
+        const std::unordered_map<OutPoint, consensus::UTXOEntry>& utxos,
+        const consensus::UtreexoForest& forest);
 
 private:
     // OutPoint hash function for unordered_map
