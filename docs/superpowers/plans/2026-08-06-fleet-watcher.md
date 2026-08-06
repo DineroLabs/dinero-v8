@@ -1,0 +1,2059 @@
+# Fleet Watcher (Sub-project B) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build an external fleet watcher that polls node RPCs on a cycle, detects chain-integrity problems, persists every observation, and pages only for genuinely dangerous conditions.
+
+**Architecture:** Four isolated units — a two-stage poller (pure I/O), pure rule functions over complete cycles, a SQLite store with atomic cycles and a durable notification outbox, and a notifier driven only from that outbox. An engine applies confirmation thresholds and ties them together. A heartbeat pings an external dead-man only when the whole alarm path is provably healthy.
+
+**Tech Stack:** Python 3, **standard library only** (`sqlite3`, `urllib.request`, `json`, `dataclasses`, `subprocess`, `unittest`). systemd for service management.
+
+**Spec:** `docs/superpowers/specs/2026-08-06-fleet-watcher-design.md` (status: approved). Read it before Task 1.
+
+## Global Constraints
+
+- **Standard library only.** No third-party packages. This matches `tools/check_seed_consistency.py` and means no venv on the watcher host.
+- **Rules are pure functions over complete cycles.** No I/O, no clock reads, no config lookups inside rule functions. Time and config are passed in.
+- **A cycle is atomic.** All observations for one `cycle_id` commit in a single transaction. Rules never see a partial cycle.
+- **Incident creation and notification enqueue are one transaction.** Never open an incident without enqueuing its notification in the same commit.
+- **`safe_mode` is tri-state:** `"active"` / `"inactive"` / `"unknown"`. A daemon answering -32601 is `unknown`. **Unknown must never be treated as `inactive`.**
+- **`reachable` means the daemon answered a core RPC** (height and tip hash), not that every optional field succeeded.
+- **Only voting nodes count toward quorum.** Observers are polled and evaluated but never affect quorum.
+- **Secrets never in Git and never logged:** Pushover token/user key and the heartbeat URL come from environment supplied by systemd credentials.
+- **`incidents` holds one row per incident**, updated in place — not one row per transition.
+- Fleet inventory (hosts, addresses, roles) is configuration, never committed.
+- Thresholds: cycle 60s; open after 3 consecutive cycles (`safe_mode` opens immediately); close after 3 consecutive healthy cycles; quorum 2 of 3 voting; `node_behind` ≥ 10 blocks below quorum median; `majority_unreachable` ≥ 2 of 3 voting unreachable.
+
+## File Structure
+
+```
+tools/fleet-watcher/
+  README.md               operator documentation, including the dead-man test
+  models.py               Observation, Incident, OutboxItem, RuleHit, Quorum dataclasses
+  config.py               config loading; node inventory and roles
+  rules.py                PURE: quorum computation and all rule detection
+  engine.py               confirmation thresholds; drives store from rule hits
+  store.py                SQLite: observations, incidents, outbox
+  notify.py               Notifier interface + PushoverNotifier
+  delivery.py             outbox drain worker with bounded backoff
+  poller.py               two-stage poll over SSH / local loopback
+  heartbeat.py            dead-man ping, gated on the whole alarm path
+  watcher.py              entrypoint: cycle loop wiring the above
+  tests/
+    test_rules.py         quorum + rule detection (the most valuable tests)
+    test_engine.py        open/close thresholds
+    test_store.py         atomic cycles, outbox durability
+    test_notify.py        priority, dedup, recovery
+    test_heartbeat.py     three-gate ping suppression
+    test_poller.py        parsing against recorded fixtures
+  deploy/
+    fleet-watcher.service systemd unit
+    config.example.json   inventory shape, no real hosts
+```
+
+Rules and store are deliberately separate: rules are the part worth testing exhaustively and must never need a database to test.
+
+---
+
+### Task 1: Data models
+
+**Files:**
+- Create: `tools/fleet-watcher/models.py`
+- Test: `tools/fleet-watcher/tests/test_models.py`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `Observation`, `Quorum`, `RuleHit`, `Incident`, `OutboxItem` dataclasses used by every later task.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tools/fleet-watcher/tests/test_models.py
+import unittest
+from models import Observation, RuleHit
+
+
+class TestObservation(unittest.TestCase):
+    def test_unreachable_observation_has_null_measurements(self):
+        obs = Observation(
+            cycle_id="c1", timestamp="2026-08-06T00:00:00Z", node="n1",
+            role="voting", reachable=False, height=None, tip_hash=None,
+            hashes_at={}, peers_in=None, peers_out=None, synced=None,
+            safe_mode="unknown", safe_mode_reason=None, restart_id=None,
+        )
+        self.assertFalse(obs.reachable)
+        self.assertIsNone(obs.height)
+        self.assertEqual(obs.safe_mode, "unknown")
+
+    def test_safe_mode_rejects_unknown_values(self):
+        with self.assertRaises(ValueError):
+            Observation(
+                cycle_id="c1", timestamp="t", node="n1", role="voting",
+                reachable=True, height=1, tip_hash="aa", hashes_at={},
+                peers_in=0, peers_out=0, synced=True,
+                safe_mode="maybe", safe_mode_reason=None, restart_id=None,
+            )
+
+    def test_role_rejects_unknown_values(self):
+        with self.assertRaises(ValueError):
+            Observation(
+                cycle_id="c1", timestamp="t", node="n1", role="auditor",
+                reachable=True, height=1, tip_hash="aa", hashes_at={},
+                peers_in=0, peers_out=0, synced=True,
+                safe_mode="inactive", safe_mode_reason=None, restart_id=None,
+            )
+
+
+class TestRuleHit(unittest.TestCase):
+    def test_rule_hit_is_hashable_for_set_comparison(self):
+        a = RuleHit(rule="safe_mode", nodes=("n1",), detail="x")
+        b = RuleHit(rule="safe_mode", nodes=("n1",), detail="x")
+        self.assertEqual({a}, {b})
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run it to confirm it fails**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_models -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'models'`
+
+- [ ] **Step 3: Implement the models**
+
+```python
+# tools/fleet-watcher/models.py
+"""Data models shared by every watcher component.
+
+Frozen dataclasses: an Observation is a fact about a moment and must never be
+edited after the fact. RuleHit is hashable so a cycle's hits can be compared as
+a set, which is how the engine detects "same condition still present".
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Tuple
+
+SAFE_MODE_VALUES = ("active", "inactive", "unknown")
+ROLES = ("voting", "observer")
+
+
+@dataclass(frozen=True)
+class Observation:
+    """One node, one cycle. Unreachable nodes still produce an Observation:
+    absence is data, never a gap in the table."""
+    cycle_id: str
+    timestamp: str
+    node: str
+    role: str
+    reachable: bool
+    height: Optional[int]
+    tip_hash: Optional[str]
+    hashes_at: Dict[int, str]
+    peers_in: Optional[int]
+    peers_out: Optional[int]
+    synced: Optional[bool]
+    safe_mode: str
+    safe_mode_reason: Optional[str]
+    restart_id: Optional[str]
+
+    def __post_init__(self) -> None:
+        if self.safe_mode not in SAFE_MODE_VALUES:
+            raise ValueError(f"safe_mode must be one of {SAFE_MODE_VALUES}")
+        if self.role not in ROLES:
+            raise ValueError(f"role must be one of {ROLES}")
+
+
+@dataclass(frozen=True)
+class Quorum:
+    members: Tuple[str, ...]
+    median_height: int
+
+
+@dataclass(frozen=True)
+class RuleHit:
+    rule: str
+    nodes: Tuple[str, ...]
+    detail: str
+
+
+@dataclass(frozen=True)
+class Incident:
+    incident_id: str
+    rule: str
+    nodes: Tuple[str, ...]
+    severity: str
+    detail: str
+    opened_at: str
+    closed_at: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class OutboxItem:
+    outbox_id: int
+    incident_id: str
+    kind: str          # "open" | "recovery"
+    priority: str      # "emergency" | "normal"
+    title: str
+    message: str
+    attempts: int
+    next_attempt_at: float
+    sent_at: Optional[str]
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_models -v`
+Expected: PASS, 4 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/fleet-watcher/models.py tools/fleet-watcher/tests/test_models.py
+git commit -m "feat(watcher): data models with tri-state safe mode"
+```
+
+---
+
+### Task 2: Quorum computation
+
+This is the heart of the design and the task most worth getting right. Pairwise comparison at `min(height_a, height_b)`; quorum is the unique largest mutually compatible group of at least 2 voters.
+
+**Files:**
+- Create: `tools/fleet-watcher/rules.py`
+- Test: `tools/fleet-watcher/tests/test_rules.py`
+
+**Interfaces:**
+- Consumes: `Observation`, `Quorum` from Task 1.
+- Produces: `compute_quorum(observations) -> Quorum | None` and `compatible(a, b) -> bool`, used by Task 3.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tools/fleet-watcher/tests/test_rules.py
+import unittest
+from models import Observation
+from rules import compute_quorum, compatible
+
+
+def obs(node, role="voting", height=100, tip="tip", hashes=None, reachable=True):
+    return Observation(
+        cycle_id="c", timestamp="t", node=node, role=role, reachable=reachable,
+        height=height, tip_hash=tip, hashes_at=hashes or {}, peers_in=1,
+        peers_out=1, synced=True, safe_mode="inactive", safe_mode_reason=None,
+        restart_id="r1",
+    )
+
+
+class TestCompatible(unittest.TestCase):
+    def test_same_hash_at_shared_height_is_compatible(self):
+        a = obs("a", height=100, hashes={100: "H100"})
+        b = obs("b", height=101, hashes={100: "H100"})
+        self.assertTrue(compatible(a, b))
+
+    def test_one_block_ahead_is_compatible(self):
+        """The false positive this whole design exists to avoid."""
+        a = obs("a", height=100, tip="H100", hashes={100: "H100"})
+        b = obs("b", height=101, tip="H101", hashes={100: "H100"})
+        self.assertTrue(compatible(a, b))
+
+    def test_different_hash_at_shared_height_is_incompatible(self):
+        a = obs("a", height=100, hashes={100: "H100"})
+        b = obs("b", height=101, hashes={100: "FORK"})
+        self.assertFalse(compatible(a, b))
+
+    def test_missing_comparison_hash_is_not_compatible(self):
+        """A missing signal must never synthesise agreement."""
+        a = obs("a", height=100, hashes={})
+        b = obs("b", height=101, hashes={100: "H100"})
+        self.assertFalse(compatible(a, b))
+
+    def test_unreachable_node_is_never_compatible(self):
+        a = obs("a", reachable=False, height=None, hashes={})
+        b = obs("b", height=100, hashes={100: "H100"})
+        self.assertFalse(compatible(a, b))
+
+
+class TestComputeQuorum(unittest.TestCase):
+    def test_three_agreeing_voters_form_quorum(self):
+        o = [obs(n, height=100 + i, hashes={100: "H100", 101: "H101"})
+             for i, n in enumerate(("a", "b", "c"))]
+        q = compute_quorum(o)
+        self.assertEqual(set(q.members), {"a", "b", "c"})
+        self.assertEqual(q.median_height, 101)
+
+    def test_two_of_three_form_quorum_when_one_forks(self):
+        o = [
+            obs("a", height=100, hashes={100: "H100"}),
+            obs("b", height=100, hashes={100: "H100"}),
+            obs("c", height=100, hashes={100: "FORK"}),
+        ]
+        q = compute_quorum(o)
+        self.assertEqual(set(q.members), {"a", "b"})
+
+    def test_observers_never_count_toward_quorum(self):
+        o = [
+            obs("a", height=100, hashes={100: "H100"}),
+            obs("obs1", role="observer", height=100, hashes={100: "H100"}),
+        ]
+        self.assertIsNone(compute_quorum(o), "one voter cannot form a quorum")
+
+    def test_no_unique_largest_group_means_no_quorum(self):
+        """2 v 2 — two equally sized competing groups."""
+        o = [
+            obs("a", height=100, hashes={100: "X"}),
+            obs("b", height=100, hashes={100: "X"}),
+            obs("c", height=100, hashes={100: "Y"}),
+            obs("d", height=100, hashes={100: "Y"}),
+        ]
+        self.assertIsNone(compute_quorum(o))
+
+    def test_all_voters_disagree_means_no_quorum(self):
+        o = [obs(n, height=100, hashes={100: h})
+             for n, h in (("a", "X"), ("b", "Y"), ("c", "Z"))]
+        self.assertIsNone(compute_quorum(o))
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run it to confirm it fails**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_rules -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'rules'`
+
+- [ ] **Step 3: Implement quorum**
+
+```python
+# tools/fleet-watcher/rules.py
+"""Pure rule functions. No I/O, no clock, no config reads.
+
+Everything here is a function of the observations passed in, which is what makes
+the false-positive discipline testable.
+"""
+from __future__ import annotations
+
+from itertools import combinations
+from typing import List, Optional, Sequence
+
+from models import Observation, Quorum
+
+QUORUM_MIN = 2
+
+
+def _voters(observations: Sequence[Observation]) -> List[Observation]:
+    return [o for o in observations if o.role == "voting" and o.reachable]
+
+
+def compatible(a: Observation, b: Observation) -> bool:
+    """True when two nodes agree at the deepest height BOTH have reached.
+
+    Compared at min(height_a, height_b). A node one block ahead is compatible.
+    A node on a different chain is incompatible once both have reached the
+    divergence height — below that point they share the same ancestor and a
+    matching hash proves nothing.
+
+    A missing hash is never agreement. Absence of evidence must not become
+    evidence of agreement.
+    """
+    if not (a.reachable and b.reachable):
+        return False
+    if a.height is None or b.height is None:
+        return False
+    h = min(a.height, b.height)
+    ha, hb = a.hashes_at.get(h), b.hashes_at.get(h)
+    if ha is None or hb is None:
+        return False
+    return ha == hb
+
+
+def compute_quorum(observations: Sequence[Observation]) -> Optional[Quorum]:
+    """The unique largest mutually compatible group of >= QUORUM_MIN voters.
+
+    Returns None when no such group exists, or when two equally sized groups
+    compete — both are consensus_health failures, not quorums.
+    """
+    voters = _voters(observations)
+    by_node = {o.node: o for o in voters}
+
+    groups: List[List[str]] = []
+    for size in range(len(voters), QUORUM_MIN - 1, -1):
+        for combo in combinations(sorted(by_node), size):
+            if all(compatible(by_node[x], by_node[y])
+                   for x, y in combinations(combo, 2)):
+                groups.append(list(combo))
+        if groups:
+            break  # only the largest size matters
+
+    if len(groups) != 1:
+        return None  # none found, or a tie between competing groups
+
+    members = tuple(groups[0])
+    heights = sorted(by_node[n].height for n in members)
+    median = heights[len(heights) // 2]
+    return Quorum(members=members, median_height=median)
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_rules -v`
+Expected: PASS, 11 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/fleet-watcher/rules.py tools/fleet-watcher/tests/test_rules.py
+git commit -m "feat(watcher): quorum by pairwise comparison at shared height"
+```
+
+---
+
+### Task 3: Rule detection
+
+**Files:**
+- Modify: `tools/fleet-watcher/rules.py`
+- Modify: `tools/fleet-watcher/tests/test_rules.py`
+
+**Interfaces:**
+- Consumes: `compute_quorum`, `compatible` from Task 2.
+- Produces: `evaluate(observations, voting_total) -> list[RuleHit]`, consumed by Task 5.
+
+- [ ] **Step 1: Write the failing test (append to tests/test_rules.py)**
+
+```python
+from rules import evaluate
+
+
+def rules_fired(hits):
+    return {h.rule for h in hits}
+
+
+class TestEvaluate(unittest.TestCase):
+    def _healthy(self):
+        return [obs(n, height=100, hashes={100: "H100"}) for n in ("a", "b", "c")]
+
+    def test_healthy_fleet_fires_nothing(self):
+        self.assertEqual(rules_fired(evaluate(self._healthy(), 3)), set())
+
+    def test_one_block_apart_fires_nothing(self):
+        o = [
+            obs("a", height=100, hashes={100: "H100"}),
+            obs("b", height=101, hashes={100: "H100"}),
+            obs("c", height=100, hashes={100: "H100"}),
+        ]
+        self.assertEqual(rules_fired(evaluate(o, 3)), set())
+
+    def test_safe_mode_fires_for_any_node(self):
+        o = self._healthy()
+        o[0] = Observation(**{**o[0].__dict__, "safe_mode": "active",
+                              "safe_mode_reason": "bad-utreexo-root"})
+        self.assertIn("safe_mode", rules_fired(evaluate(o, 3)))
+
+    def test_unknown_safe_mode_fires_telemetry_not_safe_mode(self):
+        o = self._healthy()
+        o[0] = Observation(**{**o[0].__dict__, "safe_mode": "unknown"})
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("telemetry_degraded", fired)
+        self.assertNotIn("safe_mode", fired)
+
+    def test_tip_divergence_fires_on_fork(self):
+        o = self._healthy()
+        o[2] = Observation(**{**o[2].__dict__, "hashes_at": {100: "FORK"}})
+        self.assertIn("tip_divergence", rules_fired(evaluate(o, 3)))
+
+    def test_no_quorum_fires_consensus_health(self):
+        o = [obs(n, height=100, hashes={100: h})
+             for n, h in (("a", "X"), ("b", "Y"), ("c", "Z"))]
+        self.assertIn("consensus_health", rules_fired(evaluate(o, 3)))
+
+    def test_majority_unreachable_suppresses_consensus_health(self):
+        """It names the cause rather than the symptom."""
+        o = [obs("a", height=100, hashes={100: "H100"}),
+             obs("b", reachable=False, height=None, hashes={}),
+             obs("c", reachable=False, height=None, hashes={})]
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("majority_unreachable", fired)
+        self.assertNotIn("consensus_health", fired)
+
+    def test_node_behind_fires_beyond_threshold(self):
+        o = [obs("a", height=200, hashes={100: "H100", 200: "H200"}),
+             obs("b", height=200, hashes={100: "H100", 200: "H200"}),
+             obs("c", height=100, hashes={100: "H100"})]
+        self.assertIn("node_behind", rules_fired(evaluate(o, 3)))
+
+    def test_observer_divergence_fires_without_touching_quorum(self):
+        o = self._healthy()
+        o.append(obs("watch", role="observer", height=100, hashes={100: "FORK"}))
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("observer_divergence", fired)
+        self.assertNotIn("consensus_health", fired)
+        self.assertNotIn("tip_divergence", fired)
+
+    def test_observer_down_never_affects_quorum(self):
+        o = self._healthy()
+        o.append(obs("watch", role="observer", reachable=False,
+                     height=None, hashes={}))
+        self.assertEqual(rules_fired(evaluate(o, 3)), set())
+
+    def test_node_restart_detected_from_changed_restart_id(self):
+        prev = self._healthy()
+        cur = [Observation(**{**x.__dict__, "restart_id": "r2"}) for x in prev]
+        self.assertIn("node_restart",
+                      rules_fired(evaluate(cur, 3, previous=prev)))
+```
+
+- [ ] **Step 2: Run it to confirm it fails**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_rules -v`
+Expected: FAIL — `ImportError: cannot import name 'evaluate'`
+
+- [ ] **Step 3: Implement evaluate (append to rules.py)**
+
+```python
+from models import RuleHit
+
+NODE_BEHIND_BLOCKS = 10
+
+
+def evaluate(observations: Sequence[Observation],
+             voting_total: int,
+             previous: Optional[Sequence[Observation]] = None) -> List[RuleHit]:
+    """Detect every rule for one complete cycle. Order is not significant."""
+    hits: List[RuleHit] = []
+    voting = [o for o in observations if o.role == "voting"]
+    unreachable = [o.node for o in voting if not o.reachable]
+
+    # safe_mode — any node, voting or observer. Active only; unknown is separate.
+    active = [o for o in observations if o.safe_mode == "active"]
+    if active:
+        hits.append(RuleHit("safe_mode", tuple(o.node for o in active),
+                            "; ".join(f"{o.node}: {o.safe_mode_reason or 'no reason given'}"
+                                      for o in active)))
+
+    # telemetry_degraded — unknown must never read as inactive.
+    unknown = [o.node for o in observations if o.reachable and o.safe_mode == "unknown"]
+    if unknown:
+        hits.append(RuleHit("telemetry_degraded", tuple(unknown),
+                            "safe-mode state unavailable"))
+
+    quorum = compute_quorum(observations)
+
+    # majority_unreachable names the cause; it suppresses consensus_health below.
+    majority_gone = len(unreachable) >= (voting_total - QUORUM_MIN + 1)
+    if majority_gone:
+        hits.append(RuleHit("majority_unreachable", tuple(unreachable),
+                            f"{len(unreachable)} of {voting_total} voting nodes unreachable"))
+    elif quorum is None:
+        hits.append(RuleHit("consensus_health", tuple(o.node for o in voting),
+                            "no unique largest compatible group of voting nodes"))
+
+    if quorum is not None:
+        # tip_divergence — a reachable voter outside the quorum disagrees.
+        outside = [o.node for o in voting
+                   if o.reachable and o.node not in quorum.members]
+        if outside:
+            hits.append(RuleHit("tip_divergence", tuple(outside),
+                                f"disagrees with quorum {quorum.members}"))
+
+        # node_behind — measured against the quorum's median tip height.
+        behind = [o.node for o in observations
+                  if o.reachable and o.height is not None
+                  and quorum.median_height - o.height >= NODE_BEHIND_BLOCKS]
+        if behind:
+            hits.append(RuleHit("node_behind", tuple(behind),
+                                f">= {NODE_BEHIND_BLOCKS} blocks below quorum median "
+                                f"{quorum.median_height}"))
+
+        # observer_divergence — same comparison, never affects quorum.
+        by_node = {o.node: o for o in observations}
+        diverged = [o.node for o in observations
+                    if o.role == "observer" and o.reachable
+                    and not any(compatible(o, by_node[m]) for m in quorum.members)]
+        if diverged:
+            hits.append(RuleHit("observer_divergence", tuple(diverged),
+                                "observer disagrees with quorum at shared height"))
+
+    # node_restart — logged only; needs the prior cycle.
+    if previous:
+        prev_ids = {o.node: o.restart_id for o in previous}
+        restarted = [o.node for o in observations
+                     if o.restart_id and prev_ids.get(o.node)
+                     and o.restart_id != prev_ids[o.node]]
+        if restarted:
+            hits.append(RuleHit("node_restart", tuple(restarted), "restart id changed"))
+
+    return hits
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_rules -v`
+Expected: PASS, 22 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/fleet-watcher/rules.py tools/fleet-watcher/tests/test_rules.py
+git commit -m "feat(watcher): rule detection over complete cycles"
+```
+
+---
+
+### Task 4: Store — atomic cycles, incidents, outbox
+
+**Files:**
+- Create: `tools/fleet-watcher/store.py`
+- Test: `tools/fleet-watcher/tests/test_store.py`
+
+**Interfaces:**
+- Consumes: models from Task 1.
+- Produces: `Store` with `write_cycle`, `open_incident`, `close_incident`, `open_incidents`, `pending_outbox`, `mark_sent`, `mark_failed`, `has_overdue_critical`. Used by Tasks 5, 6, 7.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tools/fleet-watcher/tests/test_store.py
+import os
+import tempfile
+import unittest
+
+from models import Observation
+from store import Store
+
+
+def obs(node, cycle="c1"):
+    return Observation(
+        cycle_id=cycle, timestamp="2026-08-06T00:00:00Z", node=node,
+        role="voting", reachable=True, height=100, tip_hash="H",
+        hashes_at={100: "H100"}, peers_in=1, peers_out=1, synced=True,
+        safe_mode="inactive", safe_mode_reason=None, restart_id="r1",
+    )
+
+
+class TestStore(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def test_cycle_writes_all_observations(self):
+        self.store.write_cycle([obs("a"), obs("b"), obs("c")])
+        self.assertEqual(len(self.store.cycle("c1")), 3)
+
+    def test_partial_cycle_is_not_visible_when_write_fails(self):
+        """Rules must never evaluate half a cycle."""
+        bad = [obs("a"), "not-an-observation"]
+        with self.assertRaises(Exception):
+            self.store.write_cycle(bad)
+        self.assertEqual(self.store.cycle("c1"), [])
+
+    def test_hashes_at_round_trips(self):
+        self.store.write_cycle([obs("a")])
+        self.assertEqual(self.store.cycle("c1")[0].hashes_at, {100: "H100"})
+
+    def test_open_incident_enqueues_notification_atomically(self):
+        iid = self.store.open_incident("safe_mode", ("a",), "emergency", "halted")
+        self.assertEqual(len(self.store.open_incidents()), 1)
+        pending = self.store.pending_outbox(now=0.0)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].incident_id, iid)
+        self.assertEqual(pending[0].kind, "open")
+
+    def test_close_incident_enqueues_recovery(self):
+        iid = self.store.open_incident("safe_mode", ("a",), "emergency", "halted")
+        self.store.mark_sent(self.store.pending_outbox(now=0.0)[0].outbox_id)
+        self.store.close_incident(iid)
+        self.assertEqual(self.store.open_incidents(), [])
+        self.assertEqual(self.store.pending_outbox(now=0.0)[0].kind, "recovery")
+
+    def test_only_one_open_incident_per_rule_and_nodes(self):
+        a = self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        b = self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        self.assertEqual(a, b)
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_overdue_critical_detects_stuck_emergency_item(self):
+        self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        self.assertFalse(self.store.has_overdue_critical(now=0.0, deadline=300.0))
+        self.assertTrue(self.store.has_overdue_critical(now=1000.0, deadline=300.0))
+
+    def test_sent_item_is_never_overdue(self):
+        self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        self.store.mark_sent(self.store.pending_outbox(now=0.0)[0].outbox_id)
+        self.assertFalse(self.store.has_overdue_critical(now=1e9, deadline=300.0))
+
+    def test_outbox_survives_reopen(self):
+        """The crash window: incident opened, process dies before delivery."""
+        self.store.open_incident("safe_mode", ("a",), "emergency", "x")
+        reopened = Store(self.path)
+        self.assertEqual(len(reopened.pending_outbox(now=0.0)), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run it to confirm it fails**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_store -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'store'`
+
+- [ ] **Step 3: Implement the store**
+
+```python
+# tools/fleet-watcher/store.py
+"""SQLite persistence.
+
+Two invariants matter more than anything else here:
+
+1. A cycle commits atomically. Rules must never evaluate a partial cycle — a
+   half-written cycle can look exactly like lost quorum.
+2. Opening an incident and enqueuing its notification happen in ONE
+   transaction. Without that there is a silent failure window: open the
+   incident, crash before contacting the provider, and on restart dedup sees an
+   open incident and never notifies. The alert is lost precisely because the
+   system believes it was already sent.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import List, Optional, Sequence, Tuple
+
+from models import Incident, Observation, OutboxItem
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS observations (
+    cycle_id TEXT NOT NULL, timestamp TEXT NOT NULL, node TEXT NOT NULL,
+    role TEXT NOT NULL, reachable INTEGER NOT NULL, height INTEGER,
+    tip_hash TEXT, hashes_at TEXT NOT NULL, peers_in INTEGER,
+    peers_out INTEGER, synced INTEGER, safe_mode TEXT NOT NULL,
+    safe_mode_reason TEXT, restart_id TEXT,
+    PRIMARY KEY (cycle_id, node)
+);
+CREATE INDEX IF NOT EXISTS idx_obs_time ON observations(timestamp);
+
+CREATE TABLE IF NOT EXISTS incidents (
+    incident_id TEXT PRIMARY KEY, rule TEXT NOT NULL, nodes TEXT NOT NULL,
+    severity TEXT NOT NULL, detail TEXT NOT NULL, opened_at TEXT NOT NULL,
+    closed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_inc_open ON incidents(rule, nodes, closed_at);
+
+CREATE TABLE IF NOT EXISTS outbox (
+    outbox_id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id TEXT NOT NULL,
+    kind TEXT NOT NULL, priority TEXT NOT NULL, title TEXT NOT NULL,
+    message TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL, next_attempt_at REAL NOT NULL, sent_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(sent_at, next_attempt_at);
+"""
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class Store:
+    def __init__(self, path: str) -> None:
+        self.conn = sqlite3.connect(path, isolation_level=None)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        self.conn.executescript(SCHEMA)
+
+    # ---- observations -------------------------------------------------
+    def write_cycle(self, observations: Sequence[Observation]) -> None:
+        """All-or-nothing. A validation failure rolls the whole cycle back."""
+        rows = []
+        for o in observations:
+            if not isinstance(o, Observation):
+                raise TypeError(f"not an Observation: {o!r}")
+            rows.append((o.cycle_id, o.timestamp, o.node, o.role,
+                         int(o.reachable), o.height, o.tip_hash,
+                         json.dumps({str(k): v for k, v in o.hashes_at.items()}),
+                         o.peers_in, o.peers_out,
+                         None if o.synced is None else int(o.synced),
+                         o.safe_mode, o.safe_mode_reason, o.restart_id))
+        with self.conn:
+            self.conn.execute("BEGIN")
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO observations VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+
+    def cycle(self, cycle_id: str) -> List[Observation]:
+        rows = self.conn.execute(
+            "SELECT * FROM observations WHERE cycle_id=? ORDER BY node",
+            (cycle_id,)).fetchall()
+        return [Observation(
+            cycle_id=r["cycle_id"], timestamp=r["timestamp"], node=r["node"],
+            role=r["role"], reachable=bool(r["reachable"]), height=r["height"],
+            tip_hash=r["tip_hash"],
+            hashes_at={int(k): v for k, v in json.loads(r["hashes_at"]).items()},
+            peers_in=r["peers_in"], peers_out=r["peers_out"],
+            synced=None if r["synced"] is None else bool(r["synced"]),
+            safe_mode=r["safe_mode"], safe_mode_reason=r["safe_mode_reason"],
+            restart_id=r["restart_id"]) for r in rows]
+
+    # ---- incidents + outbox -------------------------------------------
+    def open_incident(self, rule: str, nodes: Tuple[str, ...], severity: str,
+                      detail: str) -> str:
+        """Idempotent per (rule, nodes) while open. Enqueues in the same txn."""
+        key = json.dumps(sorted(nodes))
+        existing = self.conn.execute(
+            "SELECT incident_id FROM incidents WHERE rule=? AND nodes=? "
+            "AND closed_at IS NULL", (rule, key)).fetchone()
+        if existing:
+            return existing["incident_id"]
+
+        incident_id = uuid.uuid4().hex
+        priority = "emergency" if severity == "emergency" else "normal"
+        with self.conn:
+            self.conn.execute("BEGIN")
+            self.conn.execute(
+                "INSERT INTO incidents VALUES (?,?,?,?,?,?,NULL)",
+                (incident_id, rule, key, severity, detail, _now_iso()))
+            self.conn.execute(
+                "INSERT INTO outbox (incident_id, kind, priority, title, message,"
+                " attempts, created_at, next_attempt_at, sent_at)"
+                " VALUES (?,?,?,?,?,0,?,?,NULL)",
+                (incident_id, "open", priority, f"[dinero] {rule}",
+                 f"{rule}: {detail}", time.time(), time.time()))
+        return incident_id
+
+    def close_incident(self, incident_id: str) -> None:
+        row = self.conn.execute(
+            "SELECT rule, detail FROM incidents WHERE incident_id=?",
+            (incident_id,)).fetchone()
+        if row is None:
+            return
+        with self.conn:
+            self.conn.execute("BEGIN")
+            self.conn.execute("UPDATE incidents SET closed_at=? WHERE incident_id=?",
+                              (_now_iso(), incident_id))
+            self.conn.execute(
+                "INSERT INTO outbox (incident_id, kind, priority, title, message,"
+                " attempts, created_at, next_attempt_at, sent_at)"
+                " VALUES (?,?,?,?,?,0,?,?,NULL)",
+                (incident_id, "recovery", "normal",
+                 f"[dinero] resolved: {row['rule']}",
+                 f"{row['rule']} cleared", time.time(), time.time()))
+
+    def open_incidents(self) -> List[Incident]:
+        rows = self.conn.execute(
+            "SELECT * FROM incidents WHERE closed_at IS NULL").fetchall()
+        return [Incident(incident_id=r["incident_id"], rule=r["rule"],
+                         nodes=tuple(json.loads(r["nodes"])), severity=r["severity"],
+                         detail=r["detail"], opened_at=r["opened_at"],
+                         closed_at=None) for r in rows]
+
+    # ---- delivery -----------------------------------------------------
+    def pending_outbox(self, now: float) -> List[OutboxItem]:
+        rows = self.conn.execute(
+            "SELECT * FROM outbox WHERE sent_at IS NULL AND next_attempt_at<=? "
+            "ORDER BY outbox_id", (now,)).fetchall()
+        return [OutboxItem(outbox_id=r["outbox_id"], incident_id=r["incident_id"],
+                           kind=r["kind"], priority=r["priority"], title=r["title"],
+                           message=r["message"], attempts=r["attempts"],
+                           next_attempt_at=r["next_attempt_at"],
+                           sent_at=r["sent_at"]) for r in rows]
+
+    def mark_sent(self, outbox_id: int) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE outbox SET sent_at=? WHERE outbox_id=?",
+                              (_now_iso(), outbox_id))
+
+    def mark_failed(self, outbox_id: int, backoff_seconds: float) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE outbox SET attempts=attempts+1, next_attempt_at=? "
+                "WHERE outbox_id=?", (time.time() + backoff_seconds, outbox_id))
+
+    def has_overdue_critical(self, now: float, deadline: float) -> bool:
+        """An emergency notification still unsent past its deadline. This is one
+        of the three heartbeat gates: alerting is broken even if polling works."""
+        row = self.conn.execute(
+            "SELECT 1 FROM outbox WHERE sent_at IS NULL AND priority='emergency' "
+            "AND created_at + ? < ? LIMIT 1", (deadline, now)).fetchone()
+        return row is not None
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_store -v`
+Expected: PASS, 9 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/fleet-watcher/store.py tools/fleet-watcher/tests/test_store.py
+git commit -m "feat(watcher): sqlite store with atomic cycles and durable outbox"
+```
+
+---
+
+### Task 5: Engine — confirmation thresholds
+
+**Files:**
+- Create: `tools/fleet-watcher/engine.py`
+- Test: `tools/fleet-watcher/tests/test_engine.py`
+
+**Interfaces:**
+- Consumes: `RuleHit` (Task 1), `Store` (Task 4).
+- Produces: `Engine(store, open_after=3, close_after=3)` with `process(hits)`. Used by Task 9.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tools/fleet-watcher/tests/test_engine.py
+import os
+import tempfile
+import unittest
+
+from engine import Engine
+from models import RuleHit
+from store import Store
+
+SAFE = RuleHit("safe_mode", ("a",), "halted")
+BEHIND = RuleHit("node_behind", ("c",), "12 blocks")
+
+
+class TestEngine(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+        self.engine = Engine(self.store, open_after=3, close_after=3)
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def test_ordinary_rule_needs_three_cycles_to_open(self):
+        self.engine.process([BEHIND]); self.engine.process([BEHIND])
+        self.assertEqual(self.store.open_incidents(), [])
+        self.engine.process([BEHIND])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_safe_mode_opens_immediately(self):
+        self.engine.process([SAFE])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_intermittent_condition_never_opens(self):
+        """One good cycle resets the count — this is the anti-flap property."""
+        for _ in range(5):
+            self.engine.process([BEHIND])
+            self.engine.process([])
+        self.assertEqual(self.store.open_incidents(), [])
+
+    def test_incident_needs_three_healthy_cycles_to_close(self):
+        self.engine.process([SAFE])
+        self.engine.process([]); self.engine.process([])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+        self.engine.process([])
+        self.assertEqual(self.store.open_incidents(), [])
+
+    def test_safe_mode_does_not_flap_closed_on_one_good_cycle(self):
+        self.engine.process([SAFE])
+        self.engine.process([])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_recurrence_during_close_countdown_keeps_incident_open(self):
+        self.engine.process([SAFE])
+        self.engine.process([]); self.engine.process([SAFE]); self.engine.process([])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_emergency_severity_for_chain_integrity_rules(self):
+        self.engine.process([SAFE])
+        self.assertEqual(self.store.open_incidents()[0].severity, "emergency")
+
+    def test_normal_severity_for_observer_divergence(self):
+        hit = RuleHit("observer_divergence", ("w",), "forked")
+        for _ in range(3):
+            self.engine.process([hit])
+        self.assertEqual(self.store.open_incidents()[0].severity, "normal")
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run it to confirm it fails**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_engine -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'engine'`
+
+- [ ] **Step 3: Implement the engine**
+
+```python
+# tools/fleet-watcher/engine.py
+"""Confirmation thresholds between rule detection and incident storage.
+
+Rules say "this is true right now". The engine decides whether that is worth an
+incident. Opening needs persistence so ordinary propagation never pages;
+closing needs persistence so nothing flaps shut on a single good response.
+"""
+from __future__ import annotations
+
+from typing import Dict, Sequence, Tuple
+
+from models import RuleHit
+from store import Store
+
+# Chain-integrity failures page at emergency priority: they must persist until
+# acknowledged rather than scroll away among ordinary notifications.
+EMERGENCY_RULES = {"safe_mode", "consensus_health", "tip_divergence"}
+
+# safe_mode is a halt, not a lag. Delaying that page buys nothing.
+IMMEDIATE_RULES = {"safe_mode"}
+
+# Recorded, never notified.
+SILENT_RULES = {"node_restart"}
+
+
+class Engine:
+    def __init__(self, store: Store, open_after: int = 3, close_after: int = 3) -> None:
+        self.store = store
+        self.open_after = open_after
+        self.close_after = close_after
+        self._present: Dict[Tuple[str, Tuple[str, ...]], int] = {}
+        self._absent: Dict[str, int] = {}
+
+    def process(self, hits: Sequence[RuleHit]) -> None:
+        seen = {(h.rule, h.nodes): h for h in hits}
+
+        for key, hit in seen.items():
+            if hit.rule in SILENT_RULES:
+                continue
+            self._present[key] = self._present.get(key, 0) + 1
+            threshold = 1 if hit.rule in IMMEDIATE_RULES else self.open_after
+            if self._present[key] >= threshold:
+                severity = "emergency" if hit.rule in EMERGENCY_RULES else "normal"
+                iid = self.store.open_incident(hit.rule, hit.nodes, severity, hit.detail)
+                self._absent.pop(iid, None)   # recurrence cancels a close countdown
+
+        for key in list(self._present):
+            if key not in seen:
+                del self._present[key]
+
+        open_now = {(i.rule, i.nodes): i for i in self.store.open_incidents()}
+        for key, incident in open_now.items():
+            if key in seen:
+                self._absent.pop(incident.incident_id, None)
+                continue
+            count = self._absent.get(incident.incident_id, 0) + 1
+            self._absent[incident.incident_id] = count
+            if count >= self.close_after:
+                self.store.close_incident(incident.incident_id)
+                del self._absent[incident.incident_id]
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_engine -v`
+Expected: PASS, 8 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/fleet-watcher/engine.py tools/fleet-watcher/tests/test_engine.py
+git commit -m "feat(watcher): confirmation thresholds for opening and closing incidents"
+```
+
+---
+
+### Task 6: Notifier and delivery worker
+
+**Files:**
+- Create: `tools/fleet-watcher/notify.py`, `tools/fleet-watcher/delivery.py`
+- Test: `tools/fleet-watcher/tests/test_notify.py`
+
+**Interfaces:**
+- Consumes: `Store` (Task 4), `OutboxItem` (Task 1).
+- Produces: `Notifier` protocol with `send(title, message, priority) -> bool`; `PushoverNotifier`; `drain(store, notifier, now, maintenance)`. Used by Tasks 7 and 9.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tools/fleet-watcher/tests/test_notify.py
+import os
+import tempfile
+import unittest
+
+from delivery import drain
+from store import Store
+
+
+class FakeNotifier:
+    def __init__(self, fail_times=0):
+        self.sent = []
+        self.fail_times = fail_times
+
+    def send(self, title, message, priority):
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            return False
+        self.sent.append((title, message, priority))
+        return True
+
+
+class TestDelivery(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def test_pending_item_is_delivered_once(self):
+        self.store.open_incident("safe_mode", ("a",), "emergency", "halted")
+        n = FakeNotifier()
+        drain(self.store, n, now=1.0)
+        drain(self.store, n, now=2.0)
+        self.assertEqual(len(n.sent), 1)
+        self.assertEqual(n.sent[0][2], "emergency")
+
+    def test_failed_delivery_is_retried_later_not_lost(self):
+        self.store.open_incident("safe_mode", ("a",), "emergency", "halted")
+        n = FakeNotifier(fail_times=1)
+        drain(self.store, n, now=1.0)
+        self.assertEqual(n.sent, [])
+        self.assertEqual(len(self.store.pending_outbox(now=1e9)), 1)
+        drain(self.store, n, now=1e9)
+        self.assertEqual(len(n.sent), 1)
+
+    def test_recovery_notification_is_sent_on_close(self):
+        iid = self.store.open_incident("safe_mode", ("a",), "emergency", "halted")
+        n = FakeNotifier()
+        drain(self.store, n, now=1.0)
+        self.store.close_incident(iid)
+        drain(self.store, n, now=2.0)
+        self.assertEqual(len(n.sent), 2)
+        self.assertIn("resolved", n.sent[1][0])
+
+    def test_maintenance_suppresses_silenceable_rules_only(self):
+        self.store.open_incident("node_behind", ("c",), "normal", "12 blocks")
+        self.store.open_incident("safe_mode", ("a",), "emergency", "halted")
+        n = FakeNotifier()
+        drain(self.store, n, now=1.0, maintenance=True)
+        rules = [t for t, _, _ in n.sent]
+        self.assertTrue(any("safe_mode" in r for r in rules))
+        self.assertFalse(any("node_behind" in r for r in rules))
+
+    def test_maintenance_never_suppresses_observer_divergence(self):
+        self.store.open_incident("observer_divergence", ("w",), "normal", "forked")
+        n = FakeNotifier()
+        drain(self.store, n, now=1.0, maintenance=True)
+        self.assertEqual(len(n.sent), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run it to confirm it fails**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_notify -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'delivery'`
+
+- [ ] **Step 3: Implement notify.py**
+
+```python
+# tools/fleet-watcher/notify.py
+"""Notification transports.
+
+The interface is deliberately tiny so another provider can be added without
+touching rules or storage. send() returns success rather than raising, because
+delivery failure is an expected condition the outbox already handles.
+"""
+from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Protocol
+
+PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
+
+
+class Notifier(Protocol):
+    def send(self, title: str, message: str, priority: str) -> bool: ...
+
+
+class PushoverNotifier:
+    """Emergency priority repeats until acknowledged. A 3am safe-mode page that
+    scrolls away unread is the same as no page at all."""
+
+    def __init__(self, token: str, user_key: str, timeout: float = 10.0,
+                 retry: int = 60, expire: int = 3600) -> None:
+        self._token = token
+        self._user = user_key
+        self._timeout = timeout
+        self._retry = retry
+        self._expire = expire
+
+    def send(self, title: str, message: str, priority: str) -> bool:
+        fields = {"token": self._token, "user": self._user,
+                  "title": title, "message": message}
+        if priority == "emergency":
+            fields.update({"priority": "2", "retry": str(self._retry),
+                           "expire": str(self._expire)})
+        data = urllib.parse.urlencode(fields).encode()
+        request = urllib.request.Request(PUSHOVER_URL, data=data, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                return json.loads(response.read()).get("status") == 1
+        except (urllib.error.URLError, ValueError, TimeoutError):
+            return False
+```
+
+- [ ] **Step 4: Implement delivery.py**
+
+```python
+# tools/fleet-watcher/delivery.py
+"""Outbox drain.
+
+Delivery reads only from the outbox, so an alert that was raised is always
+recoverable even if every send fails. Backoff is bounded: a provider outage
+must not become an unbounded retry storm, and must not silently drop the item.
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+from notify import Notifier
+from store import Store
+
+BACKOFF_SECONDS = (30.0, 60.0, 300.0, 900.0)
+MAX_BACKOFF = 1800.0
+
+# A maintenance window may silence these. It may never silence safe_mode,
+# tip_divergence or observer_divergence: a node on the wrong chain is not
+# excused by someone doing maintenance.
+SILENCEABLE = {"node_behind", "majority_unreachable", "telemetry_degraded"}
+
+
+def _backoff(attempts: int) -> float:
+    if attempts < len(BACKOFF_SECONDS):
+        return BACKOFF_SECONDS[attempts]
+    return MAX_BACKOFF
+
+
+def drain(store: Store, notifier: Notifier, now: float,
+          maintenance: bool = False) -> int:
+    """Send every due outbox item. Returns the number delivered."""
+    delivered = 0
+    incidents = {i.incident_id: i for i in store.open_incidents()}
+    for item in store.pending_outbox(now=now):
+        incident = incidents.get(item.incident_id)
+        rule = incident.rule if incident else _rule_from_title(item.title)
+        if maintenance and rule in SILENCEABLE:
+            store.mark_sent(item.outbox_id)   # suppressed, not retried forever
+            continue
+        if notifier.send(item.title, item.message, item.priority):
+            store.mark_sent(item.outbox_id)
+            delivered += 1
+        else:
+            store.mark_failed(item.outbox_id, _backoff(item.attempts))
+    return delivered
+
+
+def _rule_from_title(title: str) -> Optional[str]:
+    """Recovery items outlive their open incident row lookup; the rule name is
+    still in the title, which is enough to apply silencing consistently."""
+    marker = "[dinero] "
+    text = title[len(marker):] if title.startswith(marker) else title
+    return text.replace("resolved: ", "").strip()
+```
+
+- [ ] **Step 5: Run the tests**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_notify -v`
+Expected: PASS, 5 tests
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tools/fleet-watcher/notify.py tools/fleet-watcher/delivery.py tools/fleet-watcher/tests/test_notify.py
+git commit -m "feat(watcher): pushover notifier and outbox delivery worker"
+```
+
+---
+
+### Task 7: Heartbeat with three gates
+
+**Files:**
+- Create: `tools/fleet-watcher/heartbeat.py`
+- Test: `tools/fleet-watcher/tests/test_heartbeat.py`
+
+**Interfaces:**
+- Consumes: `Store` (Task 4).
+- Produces: `should_ping(store, cycle_committed, worker_alive, now, deadline) -> bool` and `Heartbeat(url).ping()`. Used by Task 9.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tools/fleet-watcher/tests/test_heartbeat.py
+import os
+import tempfile
+import unittest
+
+from heartbeat import should_ping
+from store import Store
+
+
+class TestShouldPing(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def test_pings_when_everything_is_healthy(self):
+        self.assertTrue(should_ping(self.store, cycle_committed=True,
+                                    worker_alive=True, now=1.0, deadline=300.0))
+
+    def test_failed_cycle_suppresses_ping(self):
+        self.assertFalse(should_ping(self.store, cycle_committed=False,
+                                     worker_alive=True, now=1.0, deadline=300.0))
+
+    def test_dead_delivery_worker_suppresses_ping(self):
+        """The failure this gating exists for: collection fine, alerting dead."""
+        self.assertFalse(should_ping(self.store, cycle_committed=True,
+                                     worker_alive=False, now=1.0, deadline=300.0))
+
+    def test_overdue_emergency_item_suppresses_ping(self):
+        self.store.open_incident("safe_mode", ("a",), "emergency", "halted")
+        self.assertFalse(should_ping(self.store, cycle_committed=True,
+                                     worker_alive=True, now=1e6, deadline=300.0))
+
+    def test_unreachable_nodes_do_not_suppress_ping(self):
+        """The heartbeat means the watcher works, not that the fleet is healthy."""
+        self.store.open_incident("majority_unreachable", ("a", "b"), "normal", "down")
+        self.assertTrue(should_ping(self.store, cycle_committed=True,
+                                    worker_alive=True, now=1.0, deadline=300.0))
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run it to confirm it fails**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_heartbeat -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'heartbeat'`
+
+- [ ] **Step 3: Implement the heartbeat**
+
+```python
+# tools/fleet-watcher/heartbeat.py
+"""External dead-man ping.
+
+Software on this host cannot report that this host has disappeared, so absence
+detection lives at an external service.
+
+The ping is gated on the WHOLE alarm path, not just collection. A watcher that
+polls and persists happily while its delivery worker is dead is worse than one
+that crashed: it looks healthy and will never tell you anything again.
+Collection working is not the property worth monitoring — the ability to raise
+an alarm is.
+"""
+from __future__ import annotations
+
+import urllib.error
+import urllib.request
+
+from store import Store
+
+
+def should_ping(store: Store, cycle_committed: bool, worker_alive: bool,
+                now: float, deadline: float) -> bool:
+    if not cycle_committed:
+        return False
+    if not worker_alive:
+        return False
+    if store.has_overdue_critical(now=now, deadline=deadline):
+        return False
+    return True
+
+
+class Heartbeat:
+    """Carries no node details and no secrets — liveness only."""
+
+    def __init__(self, url: str, timeout: float = 10.0) -> None:
+        self._url = url
+        self._timeout = timeout
+
+    def ping(self) -> bool:
+        try:
+            request = urllib.request.Request(self._url, method="GET")
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                return 200 <= response.status < 300
+        except (urllib.error.URLError, TimeoutError):
+            return False
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_heartbeat -v`
+Expected: PASS, 5 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/fleet-watcher/heartbeat.py tools/fleet-watcher/tests/test_heartbeat.py
+git commit -m "feat(watcher): dead-man heartbeat gated on the whole alarm path"
+```
+
+---
+
+### Task 8: Config and two-stage poller
+
+**Files:**
+- Create: `tools/fleet-watcher/config.py`, `tools/fleet-watcher/poller.py`
+- Test: `tools/fleet-watcher/tests/test_poller.py`
+- Create: `tools/fleet-watcher/deploy/config.example.json`
+
+**Interfaces:**
+- Consumes: `Observation` (Task 1).
+- Produces: `load_config(path) -> Config` with `.nodes` (each `name`, `role`, `transport`, `target`); `poll_cycle(nodes, rpc, cycle_id, now_iso) -> list[Observation]`; `parse_safe_mode(response) -> str`. Used by Task 9.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tools/fleet-watcher/tests/test_poller.py
+import unittest
+
+from poller import parse_safe_mode, comparison_heights, poll_cycle
+
+
+class FakeRPC:
+    """Records calls and replays canned responses keyed by (node, method)."""
+
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = []
+
+    def call(self, node, method, params=None):
+        self.calls.append((node, method, tuple(params or ())))
+        value = self.responses.get((node, method))
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+class TestParseSafeMode(unittest.TestCase):
+    def test_active_is_active(self):
+        self.assertEqual(
+            parse_safe_mode({"result": {"active": True, "reason": "bad root"}}),
+            ("active", "bad root"))
+
+    def test_inactive_is_inactive(self):
+        self.assertEqual(
+            parse_safe_mode({"result": {"active": False, "reason": ""}}),
+            ("inactive", None))
+
+    def test_method_not_found_is_unknown_never_inactive(self):
+        """An older daemon must not read as healthy."""
+        response = {"error": {"code": -32601, "message": "Method not found"}}
+        self.assertEqual(parse_safe_mode(response), ("unknown", None))
+
+    def test_malformed_response_is_unknown(self):
+        self.assertEqual(parse_safe_mode({"result": {}}), ("unknown", None))
+        self.assertEqual(parse_safe_mode(None), ("unknown", None))
+
+
+class TestComparisonHeights(unittest.TestCase):
+    def test_pairwise_minimum_for_voters(self):
+        heights = {"a": 100, "b": 105, "c": 90}
+        self.assertEqual(comparison_heights(heights, {}, None), {
+            "a": {90, 100}, "b": {90, 100}, "c": {90},
+        })
+
+    def test_observer_compared_against_quorum_median(self):
+        result = comparison_heights({"a": 100}, {"w": 95}, quorum_median=100)
+        self.assertIn(95, result["w"])
+
+
+class TestPollCycle(unittest.TestCase):
+    def test_unreachable_node_still_produces_an_observation(self):
+        nodes = [{"name": "a", "role": "voting"}]
+        rpc = FakeRPC({("a", "getdaemonstatus"): TimeoutError("no route")})
+        result = poll_cycle(nodes, rpc, "c1", "2026-08-06T00:00:00Z")
+        self.assertEqual(len(result), 1)
+        self.assertFalse(result[0].reachable)
+        self.assertEqual(result[0].safe_mode, "unknown")
+
+    def test_reachable_means_core_rpc_answered_not_every_field(self):
+        nodes = [{"name": "a", "role": "voting"}]
+        rpc = FakeRPC({
+            ("a", "getdaemonstatus"): {"result": {"height": 100}},
+            ("a", "blockchain.getbestblockhash"): {"result": "H100"},
+            ("a", "safemode.status"): {"error": {"code": -32601}},
+        })
+        result = poll_cycle(nodes, rpc, "c1", "2026-08-06T00:00:00Z")
+        self.assertTrue(result[0].reachable, "core RPCs answered")
+        self.assertEqual(result[0].safe_mode, "unknown")
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run it to confirm it fails**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_poller -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'poller'`
+
+- [ ] **Step 3: Implement config.py**
+
+```python
+# tools/fleet-watcher/config.py
+"""Configuration loading.
+
+Fleet inventory is configuration, never code, and is never committed.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Dict, List
+
+
+@dataclass(frozen=True)
+class Config:
+    nodes: List[Dict[str, Any]]
+    db_path: str
+    cycle_seconds: int
+    open_after: int
+    close_after: int
+    node_behind_blocks: int
+    overdue_deadline_seconds: float
+
+    @property
+    def voting_total(self) -> int:
+        return sum(1 for n in self.nodes if n["role"] == "voting")
+
+
+def load_config(path: str) -> Config:
+    with open(path, "r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+    for node in raw["nodes"]:
+        if node["role"] not in ("voting", "observer"):
+            raise ValueError(f"bad role for {node['name']}: {node['role']}")
+    return Config(
+        nodes=raw["nodes"],
+        db_path=raw.get("db_path", "/var/lib/fleet-watcher/watcher.db"),
+        cycle_seconds=raw.get("cycle_seconds", 60),
+        open_after=raw.get("open_after", 3),
+        close_after=raw.get("close_after", 3),
+        node_behind_blocks=raw.get("node_behind_blocks", 10),
+        overdue_deadline_seconds=raw.get("overdue_deadline_seconds", 300.0),
+    )
+```
+
+- [ ] **Step 4: Implement poller.py**
+
+```python
+# tools/fleet-watcher/poller.py
+"""Two-stage poll. Pure I/O — contains no rules.
+
+Stage 1 establishes position. Stage 2 fetches the block hashes needed to
+compare nodes at shared heights. Stage 2 exists because quorum cannot be
+computed from current tips: comparing tips either demands identical heights
+(pages on ordinary propagation) or compares mismatched heights (hides a fork).
+"""
+from __future__ import annotations
+
+from itertools import combinations
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+
+from models import Observation
+
+CORE_TIMEOUT = 10.0
+
+
+def parse_safe_mode(response: Optional[Dict[str, Any]]) -> Tuple[str, Optional[str]]:
+    """Tri-state. A daemon answering -32601 is 'unknown', NEVER 'inactive':
+    reporting an unmonitorable node as healthy is worse than saying nothing."""
+    if not response or response.get("error"):
+        return ("unknown", None)
+    result = response.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("active"), bool):
+        return ("unknown", None)
+    if result["active"]:
+        return ("active", result.get("reason") or None)
+    return ("inactive", None)
+
+
+def comparison_heights(voter_heights: Dict[str, int],
+                       observer_heights: Dict[str, int],
+                       quorum_median: Optional[int]) -> Dict[str, Set[int]]:
+    """Which heights each node must be asked about.
+
+    Voters: min(height_a, height_b) for every pair they participate in.
+    Observers: min(observer_height, quorum_median) — omitting these would leave
+    observer_divergence unimplementable for the same reason.
+    """
+    needed: Dict[str, Set[int]] = {n: set() for n in voter_heights}
+    for a, b in combinations(sorted(voter_heights), 2):
+        h = min(voter_heights[a], voter_heights[b])
+        needed[a].add(h)
+        needed[b].add(h)
+    for name, height in observer_heights.items():
+        needed.setdefault(name, set())
+        if quorum_median is not None:
+            needed[name].add(min(height, quorum_median))
+    return needed
+
+
+def poll_cycle(nodes: Sequence[Dict[str, Any]], rpc: Any, cycle_id: str,
+               now_iso: str) -> List[Observation]:
+    """One complete cycle. A node that fails a core RPC still yields an
+    Observation with reachable=False: absence is data, not a gap."""
+    stage1: Dict[str, Dict[str, Any]] = {}
+    for node in nodes:
+        name = node["name"]
+        entry: Dict[str, Any] = {"role": node["role"], "reachable": False,
+                                 "height": None, "tip_hash": None,
+                                 "peers_in": None, "peers_out": None,
+                                 "synced": None, "safe_mode": "unknown",
+                                 "safe_mode_reason": None, "restart_id": None}
+        try:
+            status = rpc.call(name, "getdaemonstatus")
+            tip = rpc.call(name, "blockchain.getbestblockhash")
+            entry["height"] = (status or {}).get("result", {}).get("height")
+            entry["tip_hash"] = (tip or {}).get("result")
+            entry["reachable"] = entry["height"] is not None and entry["tip_hash"] is not None
+        except Exception:
+            stage1[name] = entry
+            continue
+
+        # Optional fields never affect `reachable`.
+        try:
+            node_status = rpc.call(name, "node.status") or {}
+            peers = node_status.get("result", {}).get("peers", {})
+            entry["peers_in"] = peers.get("in")
+            entry["peers_out"] = peers.get("out")
+            entry["synced"] = node_status.get("result", {}).get("sync", {}).get("synced")
+        except Exception:
+            pass
+        try:
+            entry["safe_mode"], entry["safe_mode_reason"] = parse_safe_mode(
+                rpc.call(name, "safemode.status"))
+        except Exception:
+            entry["safe_mode"] = "unknown"
+        try:
+            entry["restart_id"] = rpc.restart_id(name)
+        except Exception:
+            entry["restart_id"] = None
+        stage1[name] = entry
+
+    voter_heights = {n: e["height"] for n, e in stage1.items()
+                     if e["role"] == "voting" and e["reachable"]}
+    observer_heights = {n: e["height"] for n, e in stage1.items()
+                        if e["role"] == "observer" and e["reachable"]}
+    median = None
+    if voter_heights:
+        ordered = sorted(voter_heights.values())
+        median = ordered[len(ordered) // 2]
+
+    needed = comparison_heights(voter_heights, observer_heights, median)
+    hashes: Dict[str, Dict[int, str]] = {n: {} for n in stage1}
+    for name, heights in needed.items():
+        for height in sorted(heights):
+            try:
+                response = rpc.call(name, "blockchain.getblockhash", [height])
+                value = (response or {}).get("result")
+                if isinstance(value, str):
+                    hashes[name][height] = value
+            except Exception:
+                continue   # a missing hash is never agreement
+
+    return [Observation(
+        cycle_id=cycle_id, timestamp=now_iso, node=name, role=e["role"],
+        reachable=e["reachable"], height=e["height"], tip_hash=e["tip_hash"],
+        hashes_at=hashes.get(name, {}), peers_in=e["peers_in"],
+        peers_out=e["peers_out"], synced=e["synced"], safe_mode=e["safe_mode"],
+        safe_mode_reason=e["safe_mode_reason"], restart_id=e["restart_id"],
+    ) for name, e in stage1.items()]
+```
+
+- [ ] **Step 5: Write the example config**
+
+```json
+{
+  "nodes": [
+    {"name": "node-a", "role": "voting", "transport": "ssh", "target": "watcher@example-a"},
+    {"name": "node-b", "role": "voting", "transport": "ssh", "target": "watcher@example-b"},
+    {"name": "node-c", "role": "voting", "transport": "local", "target": "127.0.0.1:20998"},
+    {"name": "node-d", "role": "observer", "transport": "ssh", "target": "watcher@example-d"}
+  ],
+  "db_path": "/var/lib/fleet-watcher/watcher.db",
+  "cycle_seconds": 60,
+  "open_after": 3,
+  "close_after": 3,
+  "node_behind_blocks": 10,
+  "overdue_deadline_seconds": 300.0
+}
+```
+
+- [ ] **Step 6: Run the tests**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest tests.test_poller -v`
+Expected: PASS, 8 tests
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add tools/fleet-watcher/config.py tools/fleet-watcher/poller.py tools/fleet-watcher/tests/test_poller.py tools/fleet-watcher/deploy/config.example.json
+git commit -m "feat(watcher): config and two-stage poller with comparison hashes"
+```
+
+---
+
+### Task 9: RPC transport and main loop
+
+**Files:**
+- Create: `tools/fleet-watcher/watcher.py`
+- Modify: `tools/fleet-watcher/poller.py` (add `SSHRPC`)
+
+**Interfaces:**
+- Consumes: everything from Tasks 1–8.
+- Produces: `main(argv)` entrypoint. Consumed by the systemd unit in Task 10.
+
+- [ ] **Step 1: Add the SSH transport to poller.py**
+
+```python
+import json
+import shlex
+import subprocess
+
+
+class SSHRPC:
+    """Calls a node's loopback RPC through a forced-command read-only wrapper.
+
+    No shell, no port/agent/X11 forwarding, strict host-key checking, and a hard
+    timeout so one hung node cannot stall the cycle.
+    """
+
+    SSH_BASE = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+                "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=8",
+                "-T", "-n"]
+
+    def __init__(self, nodes, timeout: float = CORE_TIMEOUT) -> None:
+        self._targets = {n["name"]: n for n in nodes}
+        self._timeout = timeout
+
+    def call(self, node: str, method: str, params=None):
+        entry = self._targets[node]
+        payload = json.dumps({"jsonrpc": "2.0", "id": "w",
+                              "method": method, "params": list(params or ())})
+        if entry.get("transport") == "local":
+            command = ["curl", "-sS", "--max-time", str(int(self._timeout)),
+                       "-X", "POST", f"http://{entry['target']}/",
+                       "-H", "Content-Type: application/json", "-d", payload]
+        else:
+            command = self.SSH_BASE + [entry["target"], "rpc", shlex.quote(payload)]
+        result = subprocess.run(command, capture_output=True, timeout=self._timeout)
+        if result.returncode != 0:
+            raise RuntimeError(f"{node}: transport failed")
+        return json.loads(result.stdout.decode())
+
+    def restart_id(self, node: str):
+        """systemd InvocationID — never locale-formatted ps output."""
+        entry = self._targets[node]
+        if entry.get("transport") == "local":
+            command = ["systemctl", "show", "dinerod", "-p", "InvocationID", "--value"]
+        else:
+            command = self.SSH_BASE + [entry["target"], "invocation-id"]
+        result = subprocess.run(command, capture_output=True, timeout=self._timeout)
+        value = result.stdout.decode().strip()
+        return value or None
+```
+
+- [ ] **Step 2: Implement watcher.py**
+
+```python
+#!/usr/bin/env python3
+"""Fleet watcher entrypoint.
+
+One cycle: poll -> commit atomically -> evaluate rules -> apply thresholds ->
+drain the outbox -> ping the dead-man only if the whole alarm path is healthy.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+
+from config import load_config
+from delivery import drain
+from engine import Engine
+from heartbeat import Heartbeat, should_ping
+from notify import PushoverNotifier
+from poller import SSHRPC, poll_cycle
+from rules import evaluate
+from store import Store
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def run_once(config, store, engine, rpc, notifier, heartbeat, previous):
+    cycle_id = uuid.uuid4().hex
+    observations = poll_cycle(config.nodes, rpc, cycle_id, _now_iso())
+
+    committed = True
+    try:
+        store.write_cycle(observations)
+    except Exception as exc:            # noqa: BLE001 - must not kill the loop
+        committed = False
+        print(f"[watcher] cycle commit failed: {exc}", file=sys.stderr)
+
+    if committed:
+        engine.process(evaluate(observations, config.voting_total, previous))
+
+    worker_alive = True
+    try:
+        drain(store, notifier, now=time.time(),
+              maintenance=os.environ.get("WATCHER_MAINTENANCE") == "1")
+    except Exception as exc:            # noqa: BLE001
+        worker_alive = False
+        print(f"[watcher] delivery worker failed: {exc}", file=sys.stderr)
+
+    if heartbeat and should_ping(store, cycle_committed=committed,
+                                 worker_alive=worker_alive, now=time.time(),
+                                 deadline=config.overdue_deadline_seconds):
+        heartbeat.ping()
+
+    return observations if committed else previous
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Dinero fleet watcher")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--once", action="store_true")
+    args = parser.parse_args(argv)
+
+    config = load_config(args.config)
+    store = Store(config.db_path)
+    engine = Engine(store, open_after=config.open_after,
+                    close_after=config.close_after)
+    rpc = SSHRPC(config.nodes)
+
+    token = os.environ.get("PUSHOVER_TOKEN")
+    user = os.environ.get("PUSHOVER_USER")
+    if not token or not user:
+        print("[watcher] PUSHOVER_TOKEN/PUSHOVER_USER not set", file=sys.stderr)
+        return 2
+    notifier = PushoverNotifier(token, user)
+
+    hb_url = os.environ.get("HEARTBEAT_URL")
+    heartbeat = Heartbeat(hb_url) if hb_url else None
+    if heartbeat is None:
+        print("[watcher] HEARTBEAT_URL not set — dead-man disabled", file=sys.stderr)
+
+    previous = None
+    while True:
+        previous = run_once(config, store, engine, rpc, notifier, heartbeat, previous)
+        if args.once:
+            return 0
+        time.sleep(config.cycle_seconds)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 3: Verify the whole suite still passes**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest discover -s tests -v`
+Expected: PASS, 62 tests
+
+- [ ] **Step 4: Verify the entrypoint refuses to run without credentials**
+
+Run: `cd tools/fleet-watcher && python3 watcher.py --config deploy/config.example.json --once; echo "exit=$?"`
+Expected: `exit=2` and `PUSHOVER_TOKEN/PUSHOVER_USER not set` on stderr
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/fleet-watcher/watcher.py tools/fleet-watcher/poller.py
+git commit -m "feat(watcher): ssh transport and cycle loop"
+```
+
+---
+
+### Task 10: Deployment unit and operator documentation
+
+**Files:**
+- Create: `tools/fleet-watcher/deploy/fleet-watcher.service`
+- Create: `tools/fleet-watcher/README.md`
+
+**Interfaces:**
+- Consumes: `watcher.py` (Task 9).
+- Produces: nothing consumed by later tasks. This is the final task.
+
+- [ ] **Step 1: Write the systemd unit**
+
+```ini
+# tools/fleet-watcher/deploy/fleet-watcher.service
+[Unit]
+Description=Dinero fleet watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fleet-watcher
+ExecStart=/usr/bin/python3 /opt/fleet-watcher/watcher.py --config /etc/fleet-watcher/config.json
+Restart=always
+RestartSec=30
+
+# Secrets are supplied as credentials and never appear in the unit, in Git,
+# or in the process environment of anything but this service.
+LoadCredential=pushover:/etc/fleet-watcher/pushover.env
+LoadCredential=heartbeat:/etc/fleet-watcher/heartbeat.env
+EnvironmentFile=/etc/fleet-watcher/pushover.env
+EnvironmentFile=/etc/fleet-watcher/heartbeat.env
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/fleet-watcher
+
+[Install]
+WantedBy=multi-user.target
+```
+
+- [ ] **Step 2: Write the README**
+
+````markdown
+# Fleet Watcher
+
+External fleet observability. Polls each node's loopback RPC on a cycle, records
+every observation, and pages only for genuinely dangerous conditions.
+
+Design: `docs/superpowers/specs/2026-08-06-fleet-watcher-design.md`
+
+## Install
+
+```bash
+install -d -m 0750 -o fleet-watcher -g fleet-watcher /opt/fleet-watcher /var/lib/fleet-watcher
+install -m 0644 tools/fleet-watcher/*.py /opt/fleet-watcher/
+install -d -m 0700 /etc/fleet-watcher
+install -m 0600 tools/fleet-watcher/deploy/config.example.json /etc/fleet-watcher/config.json
+```
+
+Write the two credential files, both `0600` and root-owned:
+
+```
+/etc/fleet-watcher/pushover.env     PUSHOVER_TOKEN=... / PUSHOVER_USER=...
+/etc/fleet-watcher/heartbeat.env    HEARTBEAT_URL=...
+```
+
+Neither belongs in Git. Then:
+
+```bash
+cp tools/fleet-watcher/deploy/fleet-watcher.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now fleet-watcher
+```
+
+## Node-side access
+
+Each polled node needs an unprivileged account restricted to a forced command:
+
+```
+command="/usr/local/bin/fleet-watcher-rpc",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA...
+```
+
+The wrapper accepts only the read RPCs this tool uses and `invocation-id`. It
+must never provide a shell.
+
+## Tests
+
+```bash
+cd tools/fleet-watcher && python3 -m unittest discover -s tests -v
+```
+
+## Verifying the dead-man switch
+
+**Do this at install time and after any change to the heartbeat path.** An
+untested dead-man is indistinguishable from a dead one, and it is the failure
+mode that hides all the others.
+
+```bash
+systemctl stop fleet-watcher
+# wait ~6 minutes
+```
+
+Confirm an alert arrives from the dead-man service. Then:
+
+```bash
+systemctl start fleet-watcher
+```
+
+Confirm the check returns to healthy. If no alert arrived, the heartbeat is not
+protecting you and must be fixed before relying on this tool.
+
+## Maintenance windows
+
+Set `WATCHER_MAINTENANCE=1` in the service environment to suppress **delivery**
+of `node_behind`, `majority_unreachable` and `telemetry_degraded`.
+
+It can never suppress `safe_mode`, `tip_divergence` or `observer_divergence`.
+Incidents are still recorded normally either way.
+
+## Reading the data
+
+```bash
+sqlite3 /var/lib/fleet-watcher/watcher.db \
+  "SELECT opened_at, rule, nodes, closed_at FROM incidents ORDER BY opened_at DESC LIMIT 20;"
+```
+````
+
+- [ ] **Step 3: Validate the unit file parses**
+
+Run: `systemd-analyze verify tools/fleet-watcher/deploy/fleet-watcher.service 2>&1 | head`
+Expected: no syntax errors (unresolved `User=`/paths are expected off-host)
+
+- [ ] **Step 4: Run the full suite one final time**
+
+Run: `cd tools/fleet-watcher && python3 -m unittest discover -s tests -v`
+Expected: PASS, 62 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tools/fleet-watcher/deploy/fleet-watcher.service tools/fleet-watcher/README.md
+git commit -m "feat(watcher): systemd unit and operator documentation"
+```
+
+---
+
+## Self-Review
+
+**Spec coverage.** Two-stage poll (Task 8); quorum by pairwise minimum height (Task 2); all seven rules including `observer_divergence` and `node_restart` (Task 3); atomic cycles and the outbox (Task 4); open/close thresholds with `safe_mode` immediate (Task 5); Pushover emergency priority, dedup, recovery, bounded backoff, maintenance silencing (Task 6); three-gate heartbeat (Task 7); access contract in the unit and README (Tasks 9–10); tri-state `safe_mode` and core-RPC `reachable` (Task 8); `restart_id` from systemd (Task 9); inventory as config (Task 8).
+
+**Placeholders.** None. Every step carries runnable code or an exact command.
+
+**Type consistency.** `Observation`, `Quorum`, `RuleHit`, `Incident`, `OutboxItem` are defined once in Task 1 and used unchanged. `compute_quorum`/`compatible` (Task 2) feed `evaluate` (Task 3). `Store` methods used by Tasks 5–7 all exist in Task 4. `Notifier.send` returns `bool` consistently in Tasks 6 and 9.
+
+**Known gap, deliberate:** the node-side forced-command wrapper (`fleet-watcher-rpc`) is specified in the README but not implemented here — it is deployed per node, not part of this repo's build, and its exact allowlist depends on the deployment. It must exist before the watcher can poll anything.
