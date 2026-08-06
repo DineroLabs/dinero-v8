@@ -8,7 +8,6 @@ computed from current tips: comparing tips either demands identical heights
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 import tempfile
 import time
@@ -34,7 +33,7 @@ class SSHRPC:
     SSH_BASE = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                 "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=8",
                 "-o", "ControlMaster=auto", "-o", "ControlPersist=90",
-                "-T", "-n"]
+                "-T"]
 
     def __init__(self, nodes, timeout: float = CORE_TIMEOUT,
                  control_dir: Optional[str] = None) -> None:
@@ -60,8 +59,21 @@ class SSHRPC:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 return json.loads(response.read())
 
-        command = self._ssh_argv(entry["target"]) + ["rpc", shlex.quote(payload)]
-        result = subprocess.run(command, capture_output=True, timeout=self._timeout)
+        # The payload goes on STDIN, never in the command line.
+        #
+        # Passing it as an argument means the remote wrapper has to recover it
+        # from $SSH_ORIGINAL_COMMAND, and every way of doing that is wrong in a
+        # different way: `set -- $SSH_ORIGINAL_COMMAND` word-splits but does not
+        # perform quote removal, so the payload arrives truncated with literal
+        # quotes; `${SSH_ORIGINAL_COMMAND#rpc }` keeps them whole; `eval` fixes
+        # both by executing attacker-influenced text. All three fail as a
+        # fleet-wide "every node unreachable", which reads as a real outage.
+        #
+        # On stdin there is nothing to quote and nothing to parse, and the
+        # payload never appears in the remote process table.
+        command = self._ssh_argv(entry["target"]) + ["rpc"]
+        result = subprocess.run(command, input=payload.encode(),
+                                capture_output=True, timeout=self._timeout)
         if result.returncode != 0:
             raise RuntimeError(f"{node}: transport failed")
         return json.loads(result.stdout.decode())
@@ -81,7 +93,7 @@ class SSHRPC:
         else:
             command = self._ssh_argv(entry["target"]) + ["invocation-id"]
         try:
-            result = subprocess.run(command, capture_output=True,
+            result = subprocess.run(command, input=b"", capture_output=True,
                                     timeout=self._timeout)
         except (subprocess.SubprocessError, OSError):
             return None

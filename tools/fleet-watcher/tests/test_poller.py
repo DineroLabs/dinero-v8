@@ -1,3 +1,4 @@
+import json
 import subprocess
 import unittest
 from unittest import mock
@@ -156,6 +157,58 @@ class TestSSHRPCRestartId(unittest.TestCase):
             args=["ssh"], returncode=0, stdout=b"real-invocation-id\n", stderr=b"")
         with mock.patch("poller.subprocess.run", return_value=fake_result):
             self.assertEqual(rpc.restart_id("a"), "real-invocation-id")
+
+    def test_restart_id_sends_empty_stdin_now_that_dash_n_is_gone(self):
+        """-n was removed from SSH_BASE (it fought the call() stdin path), so
+        every invocation, including restart_id's, must now explicitly close
+        stdin with input=b"" rather than relying on the flag."""
+        nodes = [{"name": "a", "role": "voting", "transport": "ssh", "target": "w@a"}]
+        rpc = SSHRPC(nodes)
+        fake_result = subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout=b"id\n", stderr=b"")
+        with mock.patch("poller.subprocess.run",
+                        return_value=fake_result) as run:
+            rpc.restart_id("a")
+        self.assertEqual(run.call_args.kwargs.get("input"), b"")
+
+
+class TestSSHRPCCall(unittest.TestCase):
+    """The quoting-contract regression: the payload MUST travel on stdin, not
+    as a shell-quoted argv element.
+
+    This is the discriminating check for the bug the design went through
+    three failed iterations to avoid: `set -- $SSH_ORIGINAL_COMMAND` word-
+    splits without quote removal, `${SSH_ORIGINAL_COMMAND#rpc }` keeps the
+    quotes literally, and `eval` executes attacker-influenced text. All three
+    make every RPC fail to parse and every node report unreachable — a
+    fleet-wide false outage caused by a one-line shell mistake. Putting the
+    payload on stdin removes the parsing step entirely, so this test must
+    fail against a `["rpc", shlex.quote(payload)]`-style argv and pass
+    against the stdin-only version.
+    """
+
+    def test_payload_travels_on_stdin_not_argv(self):
+        nodes = [{"name": "a", "role": "voting", "transport": "ssh", "target": "w@a"}]
+        rpc = SSHRPC(nodes)
+        fake_result = subprocess.CompletedProcess(
+            args=["ssh"], returncode=0,
+            stdout=b'{"jsonrpc": "2.0", "id": "w", "result": {"height": 1}}',
+            stderr=b"")
+        with mock.patch("poller.subprocess.run",
+                        return_value=fake_result) as run:
+            rpc.call("a", "getdaemonstatus")
+
+        argv = run.call_args.args[0]
+        kwargs = run.call_args.kwargs
+
+        # The command ends with the bare literal "rpc" — nothing after it.
+        # A regression to the old argument-passing form would append a
+        # second, shell-quoted element here.
+        self.assertEqual(argv[-1], "rpc")
+        self.assertNotIn("-n", argv)
+
+        payload = json.loads(kwargs["input"].decode())
+        self.assertEqual(payload["method"], "getdaemonstatus")
 
 
 if __name__ == "__main__":

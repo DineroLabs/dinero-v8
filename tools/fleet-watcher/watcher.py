@@ -12,6 +12,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from config import load_config
 from delivery import canary_due, drain
@@ -25,6 +26,30 @@ from store import Store
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _secret(key: str, credential: str) -> Optional[str]:
+    """Read a secret from systemd's credential directory, else the environment.
+
+    Credentials are preferred because they are never placed in the process
+    environment, so they never appear in /proc/PID/environ. The environment
+    fallback keeps the tool runnable outside systemd — tests, a manual --once.
+
+    The credential file uses `KEY=value` lines, so one file can carry several
+    related secrets.
+    """
+    directory = os.environ.get("CREDENTIALS_DIRECTORY")
+    if directory:
+        try:
+            with open(os.path.join(directory, credential), "r",
+                      encoding="utf-8") as handle:
+                for line in handle:
+                    name, _, value = line.partition("=")
+                    if name.strip() == key:
+                        return value.strip().strip("\"'") or None
+        except OSError:
+            pass
+    return os.environ.get(key)
 
 
 def run_once(config, store, engine, rpc, notifier, heartbeat, previous):
@@ -78,8 +103,8 @@ def main(argv=None) -> int:
     # sqlite file+WAL as a side effect). A watcher that starts without a
     # notifier would page nobody, and that must be true even before it has
     # written anything to disk.
-    token = os.environ.get("PUSHOVER_TOKEN")
-    user = os.environ.get("PUSHOVER_USER")
+    token = _secret("PUSHOVER_TOKEN", "pushover")
+    user = _secret("PUSHOVER_USER", "pushover")
     if not token or not user:
         print("[watcher] PUSHOVER_TOKEN/PUSHOVER_USER not set", file=sys.stderr)
         return 2
@@ -90,7 +115,7 @@ def main(argv=None) -> int:
                     close_after=config.close_after)
     rpc = SSHRPC(config.nodes)
 
-    hb_url = os.environ.get("HEARTBEAT_URL")
+    hb_url = _secret("HEARTBEAT_URL", "heartbeat")
     heartbeat = Heartbeat(hb_url) if hb_url else None
     if heartbeat is None:
         print("[watcher] HEARTBEAT_URL not set — dead-man disabled", file=sys.stderr)

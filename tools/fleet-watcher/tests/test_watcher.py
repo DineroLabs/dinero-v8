@@ -50,6 +50,54 @@ class TestMainCredentialGate(unittest.TestCase):
         self.assertEqual(exit_code, 2)
 
 
+class TestSecret(unittest.TestCase):
+    """The unit's LoadCredential comment claims secrets never touch the
+    process environment. That claim is only true if _secret actually reads
+    $CREDENTIALS_DIRECTORY first — this proves the wiring, not just the
+    environment fallback the older test already covered."""
+
+    def test_reads_from_credentials_directory_before_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "pushover"), "w",
+                      encoding="utf-8") as handle:
+                handle.write("PUSHOVER_TOKEN=from-credential\n")
+                handle.write("PUSHOVER_USER=from-credential-user\n")
+
+            env = dict(os.environ)
+            env["CREDENTIALS_DIRECTORY"] = directory
+            env["PUSHOVER_TOKEN"] = "from-environment"  # must be ignored
+            with mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(
+                    watcher._secret("PUSHOVER_TOKEN", "pushover"),
+                    "from-credential")
+                self.assertEqual(
+                    watcher._secret("PUSHOVER_USER", "pushover"),
+                    "from-credential-user")
+
+    def test_falls_back_to_environment_when_no_credentials_directory(self):
+        env = dict(os.environ)
+        env.pop("CREDENTIALS_DIRECTORY", None)
+        env["HEARTBEAT_URL"] = "https://example.invalid/hb"
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                watcher._secret("HEARTBEAT_URL", "heartbeat"),
+                "https://example.invalid/hb")
+
+    def test_missing_key_in_credential_file_falls_back_to_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "heartbeat"), "w",
+                      encoding="utf-8") as handle:
+                handle.write("UNRELATED_KEY=x\n")
+
+            env = dict(os.environ)
+            env["CREDENTIALS_DIRECTORY"] = directory
+            env["HEARTBEAT_URL"] = "https://example.invalid/hb"
+            with mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(
+                    watcher._secret("HEARTBEAT_URL", "heartbeat"),
+                    "https://example.invalid/hb")
+
+
 class _Rpc:
     def call(self, node, method, params=None):
         if method == "getdaemonstatus":

@@ -11,12 +11,22 @@ ExecStart=/usr/bin/python3 /opt/fleet-watcher/watcher.py --config /etc/fleet-wat
 Restart=always
 RestartSec=30
 
-# Secrets are supplied as credentials and never appear in the unit, in Git,
-# or in the process environment of anything but this service.
-LoadCredential=pushover:/etc/fleet-watcher/pushover.env
-LoadCredential=heartbeat:/etc/fleet-watcher/heartbeat.env
-EnvironmentFile=/etc/fleet-watcher/pushover.env
-EnvironmentFile=/etc/fleet-watcher/heartbeat.env
+# Secrets arrive as systemd credentials, which land in $CREDENTIALS_DIRECTORY
+# with 0400 and are NOT placed in the process environment, so they never appear
+# in /proc/PID/environ. watcher.py reads them from there.
+#
+# EnvironmentFile is deliberately absent: it would put the same secrets into the
+# environment and quietly undo the protection above. A unit carrying
+# LoadCredential while the program reads os.environ is decoration, and a comment
+# claiming protection would simply be false.
+LoadCredential=pushover:/etc/fleet-watcher/pushover.creds
+LoadCredential=heartbeat:/etc/fleet-watcher/heartbeat.creds
+
+# SSH needs a real HOME for its identity and known_hosts. ProtectHome=true
+# blanks /home, /root and /run/user, so the account's home MUST live elsewhere
+# or StrictHostKeyChecking=yes meets an empty known_hosts and every node reports
+# unreachable — a plausible-looking fleet-wide outage caused by the unit itself.
+Environment=HOME=/var/lib/fleet-watcher
 
 NoNewPrivileges=true
 PrivateTmp=true
