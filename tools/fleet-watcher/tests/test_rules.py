@@ -223,6 +223,75 @@ class TestEvaluate(unittest.TestCase):
                      height=None, hashes={}))
         self.assertEqual(rules_fired(evaluate(o, 3)), set())
 
+    def test_uncomparable_voter_does_not_fire_tip_divergence(self):
+        """A quorum exists and one voter simply cannot be compared. That is a
+        telemetry gap, not a fork, and must not raise an emergency page."""
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={100: "X"}),
+             obs("c", height=99, hashes={99: "W"})]
+        fired = rules_fired(evaluate(o, 3))
+        self.assertNotIn("tip_divergence", fired)
+        self.assertIn("telemetry_degraded", fired)
+
+    def test_voting_node_absent_from_cycle_does_not_fire_consensus_health(self):
+        """A collector gap must not masquerade as a fork."""
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", reachable=False, height=None, hashes={})]
+        fired = rules_fired(evaluate(o, 3))
+        self.assertNotIn("consensus_health", fired)
+        self.assertIn("telemetry_degraded", fired)
+
+    def test_single_unreachable_voter_fires_node_unreachable(self):
+        o = self._healthy()
+        o[2] = obs("c", reachable=False, height=None, hashes={})
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("node_unreachable", fired)
+        self.assertNotIn("majority_unreachable", fired)
+
+    def test_majority_unreachable_suppresses_node_unreachable(self):
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", reachable=False, height=None, hashes={}),
+             obs("c", reachable=False, height=None, hashes={})]
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("majority_unreachable", fired)
+        self.assertNotIn("node_unreachable", fired)
+
+    def test_three_of_five_unreachable_is_a_majority(self):
+        """The older threshold stayed silent here — 2 survivors formed a
+        'quorum' that was not a majority of the fleet."""
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={100: "X"})]
+        o += [obs(n, reachable=False, height=None, hashes={})
+              for n in ("c", "d", "e")]
+        self.assertIn("majority_unreachable", rules_fired(evaluate(o, 5)))
+
+    def test_observer_diverging_from_a_subset_of_quorum_still_fires(self):
+        """DISAGREE with one member and uncomparable with another is still a
+        different chain — quorum members agree with each other by construction."""
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={100: "X"}),
+             obs("c", height=100, hashes={100: "X"})]
+        o.append(obs("w", role="observer", height=100, hashes={100: "FORK"}))
+        self.assertIn("observer_divergence", rules_fired(evaluate(o, 3)))
+
+    def test_node_behind_boundary_is_inclusive_at_ten(self):
+        base = [obs(n, height=110, hashes={100: "X", 110: "X"})
+                for n in ("a", "b")]
+        at_ten = base + [obs("c", height=100, hashes={100: "X"})]
+        self.assertIn("node_behind", rules_fired(evaluate(at_ten, 3)))
+        at_nine = base + [obs("c", height=101, hashes={100: "X", 101: "X"})]
+        self.assertNotIn("node_behind", rules_fired(evaluate(at_nine, 3)))
+
+    def test_telemetry_degraded_is_emitted_at_most_once_per_cycle(self):
+        """Two keys for one condition would let a shifting node set reset the
+        engine's counter, so a persistent gap would never open an incident."""
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={99: "W", 100: "X"}),
+             obs("c", height=99, hashes={99: "W"})]
+        o[0] = Observation(**{**o[0].__dict__, "safe_mode": "unknown"})
+        hits = [h for h in evaluate(o, 3) if h.rule == "telemetry_degraded"]
+        self.assertEqual(len(hits), 1)
+
     def test_node_restart_detected_from_changed_restart_id(self):
         prev = self._healthy()
         cur = [Observation(**{**x.__dict__, "restart_id": "r2"}) for x in prev]

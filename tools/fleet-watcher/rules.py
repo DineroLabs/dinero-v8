@@ -112,7 +112,14 @@ def evaluate(observations: Sequence[Observation],
     """Detect every rule for one complete cycle. Order is not significant."""
     hits: List[RuleHit] = []
     voting = [o for o in observations if o.role == "voting"]
+    by_node = {o.node: o for o in observations}
     unreachable = [o.node for o in voting if not o.reachable]
+
+    # A configured voting node absent from the cycle entirely is neither
+    # reachable nor unreachable — it is invisible. Counting only what we
+    # observed would let a collector gap masquerade as a healthy small fleet.
+    missing = max(0, voting_total - len(voting))
+    blind_count = len(unreachable) + missing
 
     # safe_mode — any node, voting or observer. Active only; unknown is separate.
     active = [o for o in observations if o.safe_mode == "active"]
@@ -121,39 +128,56 @@ def evaluate(observations: Sequence[Observation],
                             "; ".join(f"{o.node}: {o.safe_mode_reason or 'no reason given'}"
                                       for o in active)))
 
-    # telemetry_degraded — unknown must never read as inactive.
-    unknown = [o.node for o in observations if o.reachable and o.safe_mode == "unknown"]
-    if unknown:
-        hits.append(RuleHit("telemetry_degraded", tuple(unknown),
-                            "safe-mode state unavailable"))
-
     quorum = compute_quorum(observations)
+    blind_pairs = undetermined_voter_pairs(observations)
 
-    # majority_unreachable names the cause; it suppresses consensus_health below.
-    majority_gone = len(unreachable) >= (voting_total - QUORUM_MIN + 1)
+    # telemetry_degraded is emitted at most ONCE per cycle. Emitting it twice
+    # with different node tuples would give the engine two keys for one
+    # condition, and a persistent gap whose node set shifts between cycles
+    # would never accumulate to the open threshold — a silent false negative.
+    degraded_nodes = {o.node for o in observations
+                      if o.reachable and o.safe_mode == "unknown"}
+    degraded_why: List[str] = []
+    if degraded_nodes:
+        degraded_why.append("safe-mode state unavailable")
+    if blind_pairs:
+        degraded_nodes.update(n for pair in blind_pairs for n in pair)
+        degraded_why.append(f"voting pairs not comparable: {blind_pairs}")
+    if missing:
+        degraded_why.append(f"{missing} configured voting node(s) absent from the cycle")
+    if degraded_why:
+        hits.append(RuleHit("telemetry_degraded", tuple(sorted(degraded_nodes)),
+                            "; ".join(degraded_why)))
+
+    # A true majority, so the rule matches its name at any fleet size. The
+    # older form fired only when fewer than QUORUM_MIN nodes remained, which
+    # at 5 voters stayed silent with 3 of them down.
+    majority_gone = blind_count * 2 > voting_total
     if majority_gone:
         hits.append(RuleHit("majority_unreachable", tuple(unreachable),
+                            f"{blind_count} of {voting_total} voting nodes unavailable"))
+    elif unreachable:
+        # Named separately so one dead node is visible immediately rather than
+        # only once a second failure costs the fleet its quorum.
+        hits.append(RuleHit("node_unreachable", tuple(unreachable),
                             f"{len(unreachable)} of {voting_total} voting nodes unreachable"))
-    elif quorum is None:
-        # No quorum has two very different causes. If any voting pair could not
-        # be compared at all, we cannot see — that is a telemetry gap, not a
-        # fork, and must not raise an emergency consensus page. Only genuine
-        # disagreement between comparable nodes is a consensus failure.
-        blind = undetermined_voter_pairs(observations)
-        if blind:
-            hits.append(RuleHit("telemetry_degraded",
-                                tuple(sorted({n for pair in blind for n in pair})),
-                                f"voting pairs not comparable: {blind}"))
-        else:
-            hits.append(RuleHit("consensus_health", tuple(o.node for o in voting),
-                                "no unique largest compatible group of voting nodes"))
+
+    if quorum is None and not majority_gone and not blind_pairs and not missing:
+        # Only genuine disagreement between comparable nodes is a consensus
+        # failure. Every "we cannot see" path above already reported itself.
+        hits.append(RuleHit("consensus_health", tuple(o.node for o in voting),
+                            "no unique largest compatible group of voting nodes"))
 
     if quorum is not None:
-        # tip_divergence — a reachable voter outside the quorum disagrees.
-        outside = [o.node for o in voting
-                   if o.reachable and o.node not in quorum.members]
-        if outside:
-            hits.append(RuleHit("tip_divergence", tuple(outside),
+        # tip_divergence requires positive DISAGREE evidence against a quorum
+        # member. "Not in the quorum" is not enough: a node we merely could not
+        # compare would otherwise raise an emergency fork page.
+        diverging = [o.node for o in voting
+                     if o.reachable and o.node not in quorum.members
+                     and any(compatible(o, by_node[m]) == DISAGREE
+                             for m in quorum.members)]
+        if diverging:
+            hits.append(RuleHit("tip_divergence", tuple(diverging),
                                 f"disagrees with quorum {quorum.members}"))
 
         # node_behind — measured against the quorum's median tip height.
@@ -165,15 +189,17 @@ def evaluate(observations: Sequence[Observation],
                                 f">= {NODE_BEHIND_BLOCKS} blocks below quorum median "
                                 f"{quorum.median_height}"))
 
-        # observer_divergence — same comparison, never affects quorum.
-        by_node = {o.node: o for o in observations}
-        # DISAGREE with every quorum member, not merely "not AGREE": an
-        # observer we cannot compare is a telemetry gap, not a wrong chain.
-        diverged = [o.node for o in observations
-                    if o.role == "observer" and o.reachable
-                    and quorum.members
-                    and all(compatible(o, by_node[m]) == DISAGREE
-                            for m in quorum.members)]
+        # observer_divergence — at least one DISAGREE and no AGREE. Requiring
+        # DISAGREE with EVERY member would miss a real fork whenever one pair
+        # happened to be uncomparable; requiring merely "not AGREE" would page
+        # on blindness. This is the predicate that means "on another chain".
+        diverged = []
+        for o in observations:
+            if o.role != "observer" or not o.reachable or not quorum.members:
+                continue
+            verdicts = [compatible(o, by_node[m]) for m in quorum.members]
+            if DISAGREE in verdicts and AGREE not in verdicts:
+                diverged.append(o.node)
         if diverged:
             hits.append(RuleHit("observer_divergence", tuple(diverged),
                                 "observer disagrees with quorum at shared height"))
