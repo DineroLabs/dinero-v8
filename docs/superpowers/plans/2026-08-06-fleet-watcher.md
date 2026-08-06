@@ -1232,6 +1232,23 @@ class Store:
                  "Scheduled canary: the alert path is working.",
                  self._clock(), 0.0))
 
+    def has_stale_canary(self, now: float, max_age: float) -> bool:
+        """True when the newest canary is still UNSENT past `max_age`.
+
+        This is what makes the canary self-verifying. Without it the canary
+        exercises the alert path but nothing reads the result: if delivery is
+        broken, the canary fails silently, the heartbeat keeps pinging, and the
+        dead-man stays quiet — the exact failure the canary was added to catch.
+
+        Wired into should_ping, a stuck canary suppresses the heartbeat, the
+        external dead-man fires, and the operator learns the alert path is dead
+        BEFORE an incident needs it.
+        """
+        row = self.conn.execute(
+            "SELECT 1 FROM outbox WHERE rule='canary' AND sent_at IS NULL "
+            "AND created_at + ? < ? LIMIT 1", (max_age, now)).fetchone()
+        return row is not None
+
     def last_canary_at(self) -> Optional[float]:
         row = self.conn.execute(
             "SELECT MAX(created_at) AS t FROM outbox WHERE rule='canary'"
@@ -1920,6 +1937,29 @@ class TestShouldPing(unittest.TestCase):
         self.assertTrue(should_ping(self.store, cycle_committed=True,
                                     worker_alive=True, now=1.0, deadline=300.0))
 
+    def test_a_bool_now_fails_closed(self):
+        """`True` is an int subclass, so a plain isinstance check lets it
+        through and silently means "1 second since the epoch"."""
+        self.assertFalse(should_ping(self.store, cycle_committed=True,
+                                     worker_alive=True, now=True, deadline=300.0))
+
+    def test_an_undeliverable_canary_suppresses_the_ping(self):
+        """Closes the loop: without this the canary exercises the alert path
+        but nothing reads the result, so a dead path stays invisible."""
+        self.store.enqueue_canary()
+        self.assertTrue(should_ping(self.store, cycle_committed=True,
+                                    worker_alive=True, now=1.0, deadline=300.0))
+        self.assertFalse(should_ping(self.store, cycle_committed=True,
+                                     worker_alive=True, now=1e7, deadline=300.0))
+
+    def test_a_delivered_canary_does_not_suppress_the_ping(self):
+        self.store.enqueue_canary()
+        pending = [i for i in self.store.pending_outbox(now=0.0)
+                   if i.rule == "canary"]
+        self.store.mark_sent(pending[0].outbox_id)
+        self.assertTrue(should_ping(self.store, cycle_committed=True,
+                                    worker_alive=True, now=1e7, deadline=300.0))
+
     def test_a_non_numeric_now_fails_closed(self):
         """A None `now` makes the SQL comparison NULL, which reads as "nothing
         overdue" and pings. A dead-man must never fail open."""
@@ -2022,8 +2062,12 @@ import urllib.request
 from store import Store
 
 
+CANARY_MAX_AGE_SECONDS = 2 * 24 * 60 * 60   # two canary intervals of grace
+
+
 def should_ping(store: Store, cycle_committed: bool, worker_alive: bool,
-                now: float, deadline: float) -> bool:
+                now: float, deadline: float,
+                canary_max_age: float = CANARY_MAX_AGE_SECONDS) -> bool:
     """`now` MUST come from the same clock the Store was constructed with.
 
     Mixing domains silently disables the overdue gate — a monotonic `now`
@@ -2038,6 +2082,12 @@ def should_ping(store: Store, cycle_committed: bool, worker_alive: bool,
     if not worker_alive:
         return False
     if store.has_overdue_critical(now=now, deadline=deadline):
+        return False
+    if store.has_stale_canary(now=now, max_age=canary_max_age):
+        # The canary is the only proactive test of the alert path. If it cannot
+        # be delivered, alerting is broken even though nothing has failed yet,
+        # and the operator must find out from the dead-man rather than from the
+        # next real incident going unreported.
         return False
     return True
 
