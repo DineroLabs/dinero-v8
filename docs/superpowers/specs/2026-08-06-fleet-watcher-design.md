@@ -87,8 +87,13 @@ Given a node list, returns one `Observation` per node per cycle. Pure I/O; conta
 2. **Comparison hashes.** Query `blockchain.getblockhash` for every height needed to make the
    cycle's comparisons:
    - for each pair of reachable **voting** nodes, at `min(height_a, height_b)`;
-   - for each reachable **observer**, at the height needed to compare it against the established
-     quorum — `min(observer_height, quorum_median_height)`.
+   - for each reachable **observer** paired with each reachable **voter**, at
+     `min(observer_height, voter_height)`.
+
+   Observers pair with individual voters, not with a quorum median. The comparison the rules
+   make is observer-against-member at the pairwise minimum, and a median is not known until
+   after stage 2 anyway. Being comparable and being counted remain different things: observers
+   still never vote.
 
    Observers are compared too. Omitting their hashes would leave `observer_divergence`
    unimplementable for the same reason the voting comparison was.

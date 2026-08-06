@@ -2191,16 +2191,43 @@ class TestParseSafeMode(unittest.TestCase):
 class TestComparisonHeights(unittest.TestCase):
     def test_pairwise_minimum_for_voters(self):
         heights = {"a": 100, "b": 105, "c": 90}
-        self.assertEqual(comparison_heights(heights, {}, None), {
+        self.assertEqual(comparison_heights(heights, {}), {
             "a": {90, 100}, "b": {90, 100}, "c": {90},
         })
 
-    def test_observer_compared_against_quorum_median(self):
-        result = comparison_heights({"a": 100}, {"w": 95}, quorum_median=100)
-        self.assertIn(95, result["w"])
+    def test_observer_pairs_with_every_voter_on_both_sides(self):
+        """The comparison the rules actually make is observer-vs-MEMBER at the
+        pairwise minimum. Asking only the observer, or asking against a median,
+        leaves every such comparison UNDETERMINED and makes a forked observer
+        invisible."""
+        result = comparison_heights({"a": 100, "b": 90}, {"w": 95})
+        self.assertEqual(result["w"], {90, 95})
+        self.assertIn(95, result["a"], "the voter needs the observer's height too")
+        self.assertIn(90, result["b"])
 
 
 class TestPollCycle(unittest.TestCase):
+    def test_stage_two_fetches_both_sides_of_every_comparison(self):
+        """Stage 2's entire purpose is WHICH (node, height) pairs get fetched.
+        Asserting only on the returned observations cannot see this."""
+        nodes = [{"name": "a", "role": "voting"},
+                 {"name": "b", "role": "voting"},
+                 {"name": "w", "role": "observer"}]
+        heights = {"a": 100, "b": 90, "w": 95}
+        responses = {}
+        for name, height in heights.items():
+            responses[(name, "getdaemonstatus")] = {"result": {"height": height}}
+            responses[(name, "blockchain.getbestblockhash")] = {"result": f"H{height}"}
+        rpc = FakeRPC(responses)
+        poll_cycle(nodes, rpc, "c1", "2026-08-06T00:00:00Z")
+
+        asked = {(n, p[0]) for n, m, p in rpc.calls
+                 if m == "blockchain.getblockhash"}
+        # a-b pair at 90; w-a pair at 95; w-b pair at 90 — both sides each.
+        for pair in (("a", 90), ("b", 90), ("w", 95), ("a", 95), ("w", 90)):
+            self.assertIn(pair, asked, f"missing comparison hash for {pair}")
+
+
     def test_unreachable_node_still_produces_an_observation(self):
         nodes = [{"name": "a", "role": "voting"}]
         rpc = FakeRPC({("a", "getdaemonstatus"): TimeoutError("no route")})
@@ -2260,12 +2287,40 @@ class Config:
         return sum(1 for n in self.nodes if n["role"] == "voting")
 
 
+TRANSPORTS = ("ssh", "local")
+
+
 def load_config(path: str) -> Config:
+    """Validate loudly at load time.
+
+    A malformed inventory that starts anyway becomes a runtime failure on the
+    one host that matters, and several of these mistakes are indistinguishable
+    from real fleet problems once the watcher is running — a duplicate node
+    name, for instance, makes voting_total exceed the observations and raises a
+    permanent, unclosable telemetry_degraded.
+    """
     with open(path, "r", encoding="utf-8") as handle:
         raw = json.load(handle)
-    for node in raw["nodes"]:
+
+    nodes = raw.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        raise ValueError("config must define a non-empty 'nodes' list")
+
+    seen = set()
+    for node in nodes:
+        for key in ("name", "role", "transport", "target"):
+            if key not in node:
+                raise ValueError(f"node missing required key {key!r}: {node!r}")
+        if node["name"] in seen:
+            raise ValueError(f"duplicate node name: {node['name']}")
+        seen.add(node["name"])
         if node["role"] not in ("voting", "observer"):
             raise ValueError(f"bad role for {node['name']}: {node['role']}")
+        if node["transport"] not in TRANSPORTS:
+            raise ValueError(f"bad transport for {node['name']}: {node['transport']}")
+
+    if not any(n["role"] == "voting" for n in nodes):
+        raise ValueError("config defines no voting nodes; quorum is impossible")
     return Config(
         nodes=raw["nodes"],
         db_path=raw.get("db_path", "/var/lib/fleet-watcher/watcher.db"),
@@ -2312,23 +2367,39 @@ def parse_safe_mode(response: Optional[Dict[str, Any]]) -> Tuple[str, Optional[s
 
 
 def comparison_heights(voter_heights: Dict[str, int],
-                       observer_heights: Dict[str, int],
-                       quorum_median: Optional[int]) -> Dict[str, Set[int]]:
+                       observer_heights: Dict[str, int]) -> Dict[str, Set[int]]:
     """Which heights each node must be asked about.
 
-    Voters: min(height_a, height_b) for every pair they participate in.
-    Observers: min(observer_height, quorum_median) — omitting these would leave
-    observer_divergence unimplementable for the same reason.
+    PAIRWISE, always. `rules.compatible()` compares two nodes at
+    `min(height_a, height_b)`, so both sides of every pair the rules will
+    evaluate need a hash at exactly that height.
+
+    Voters pair with each other. Observers pair with every voter — NOT with a
+    quorum median. An earlier version asked observers for
+    `min(height, quorum_median)`, which made `observer_divergence` unable to
+    fire at all: no voter was ever asked for a hash at that height, so every
+    observer-vs-member comparison came back UNDETERMINED and a fully forked
+    observer was invisible. The median was also computed before the quorum
+    existed, so it was not even the median the rules would use.
+
+    Observers still never vote. Being comparable and being counted are
+    different things.
     """
     needed: Dict[str, Set[int]] = {n: set() for n in voter_heights}
+    for name in observer_heights:
+        needed.setdefault(name, set())
+
     for a, b in combinations(sorted(voter_heights), 2):
         h = min(voter_heights[a], voter_heights[b])
         needed[a].add(h)
         needed[b].add(h)
-    for name, height in observer_heights.items():
-        needed.setdefault(name, set())
-        if quorum_median is not None:
-            needed[name].add(min(height, quorum_median))
+
+    for observer in sorted(observer_heights):
+        for voter in sorted(voter_heights):
+            h = min(observer_heights[observer], voter_heights[voter])
+            needed[observer].add(h)
+            needed[voter].add(h)
+
     return needed
 
 
@@ -2378,12 +2449,7 @@ def poll_cycle(nodes: Sequence[Dict[str, Any]], rpc: Any, cycle_id: str,
                      if e["role"] == "voting" and e["reachable"]}
     observer_heights = {n: e["height"] for n, e in stage1.items()
                         if e["role"] == "observer" and e["reachable"]}
-    median = None
-    if voter_heights:
-        ordered = sorted(voter_heights.values())
-        median = ordered[len(ordered) // 2]
-
-    needed = comparison_heights(voter_heights, observer_heights, median)
+    needed = comparison_heights(voter_heights, observer_heights)
     hashes: Dict[str, Dict[int, str]] = {n: {} for n in stage1}
     for name, heights in needed.items():
         for height in sorted(heights):
