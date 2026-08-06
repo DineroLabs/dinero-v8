@@ -1,0 +1,28 @@
+# tools/fleet-watcher/deploy/fleet-watcher.service
+[Unit]
+Description=Dinero fleet watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fleet-watcher
+ExecStart=/usr/bin/python3 /opt/fleet-watcher/watcher.py --config /etc/fleet-watcher/config.json
+Restart=always
+RestartSec=30
+
+# Secrets are supplied as credentials and never appear in the unit, in Git,
+# or in the process environment of anything but this service.
+LoadCredential=pushover:/etc/fleet-watcher/pushover.env
+LoadCredential=heartbeat:/etc/fleet-watcher/heartbeat.env
+EnvironmentFile=/etc/fleet-watcher/pushover.env
+EnvironmentFile=/etc/fleet-watcher/heartbeat.env
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/fleet-watcher
+
+[Install]
+WantedBy=multi-user.target
