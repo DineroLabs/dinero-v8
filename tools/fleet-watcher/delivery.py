@@ -18,11 +18,21 @@ MAX_BACKOFF = 1800.0
 # promptly once maintenance ends.
 MAINTENANCE_DEFER_SECONDS = 60.0
 
+# How often the synthetic canary exercises the real alert path.
+CANARY_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def canary_due(store: Store, now: float,
+               interval: float = CANARY_INTERVAL_SECONDS) -> bool:
+    """True when the alert path has not been exercised within `interval`."""
+    last = store.last_canary_at()
+    return last is None or (now - last) >= interval
+
 # A maintenance window may silence these. It may never silence safe_mode,
 # tip_divergence or observer_divergence: a node on the wrong chain is not
 # excused by someone doing maintenance.
 SILENCEABLE = {"node_behind", "majority_unreachable", "node_unreachable",
-               "telemetry_degraded"}
+               "telemetry_degraded", "canary"}
 
 # Recorded as incidents so the history is queryable, but never delivered. This
 # is where "recorded but never notified" is enforced — the engine opens them

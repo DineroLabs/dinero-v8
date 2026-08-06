@@ -17,7 +17,7 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, List, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from models import Incident, Observation, OutboxItem
 
@@ -214,6 +214,32 @@ class Store:
         with self.conn:
             self.conn.execute("UPDATE outbox SET next_attempt_at=? WHERE outbox_id=?",
                               (self._clock() + seconds, outbox_id))
+
+    def enqueue_canary(self) -> None:
+        """Queue a synthetic low-priority notification.
+
+        The overdue gate is reactive: it can only test a path that already had
+        traffic. With a bad credential and no emergencies yet, nothing is ever
+        overdue, so the heartbeat pings happily while alerting is dead. A canary
+        exercises the real credentials against the real provider on a schedule,
+        so the alert path is known good BEFORE it is needed rather than
+        discovered broken during an incident.
+        """
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO outbox (incident_id, rule, kind, priority, title,"
+                " message, attempts, created_at, next_attempt_at, sent_at)"
+                " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
+                ("canary", "canary", "canary", "normal",
+                 "[dinero] watcher alive",
+                 "Scheduled canary: the alert path is working.",
+                 self._clock(), 0.0))
+
+    def last_canary_at(self) -> Optional[float]:
+        row = self.conn.execute(
+            "SELECT MAX(created_at) AS t FROM outbox WHERE rule='canary'"
+        ).fetchone()
+        return row["t"] if row and row["t"] is not None else None
 
     def has_overdue_critical(self, now: float, deadline: float) -> bool:
         """An emergency notification still unsent past its deadline. This is one
