@@ -918,11 +918,20 @@ class TestStore(unittest.TestCase):
         self.assertEqual(self.store.open_incidents(), [])
         self.assertEqual(self.store.pending_outbox(now=0.0)[0].kind, "recovery")
 
-    def test_only_one_open_incident_per_rule_and_nodes(self):
+    def test_only_one_open_incident_per_rule(self):
         a = self.store.open_incident("safe_mode", ("a",), "emergency", "x")
         b = self.store.open_incident("safe_mode", ("a",), "emergency", "x")
         self.assertEqual(a, b)
         self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_a_different_node_set_reuses_the_open_incident_and_updates_it(self):
+        """Membership is a mutable fact about an open incident, not identity."""
+        a = self.store.open_incident("node_unreachable", ("a",), "normal", "a down")
+        b = self.store.open_incident("node_unreachable", ("a", "b"), "normal", "a,b down")
+        self.assertEqual(a, b)
+        only = self.store.open_incidents()[0]
+        self.assertEqual(only.nodes, ("a", "b"))
+        self.assertEqual(only.detail, "a,b down")
 
     def test_overdue_critical_detects_stuck_emergency_item(self):
         self.store.open_incident("safe_mode", ("a",), "emergency", "x")
@@ -1025,7 +1034,7 @@ CREATE TABLE IF NOT EXISTS incidents (
     severity TEXT NOT NULL, detail TEXT NOT NULL, opened_at TEXT NOT NULL,
     closed_at TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_inc_open ON incidents(rule, nodes, closed_at);
+CREATE INDEX IF NOT EXISTS idx_inc_open ON incidents(rule, closed_at);
 
 CREATE TABLE IF NOT EXISTS outbox (
     outbox_id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id TEXT NOT NULL,
@@ -1100,12 +1109,27 @@ class Store:
     # ---- incidents + outbox -------------------------------------------
     def open_incident(self, rule: str, nodes: Tuple[str, ...], severity: str,
                       detail: str) -> str:
-        """Idempotent per (rule, nodes) while open. Enqueues in the same txn."""
+        """One open incident per RULE. Enqueues its notification in the same txn.
+
+        Deliberately NOT keyed on the node set. A fleet condition's membership
+        drifts between cycles — a node recovers, another degrades — and keying
+        on it produced two failures at once: the confirmation counter reset on
+        every change so a persistent problem never opened, and when a set
+        widened after opening, a "resolved" notification fired for the narrower
+        incident while the condition was getting worse.
+
+        Membership and detail are therefore mutable facts about an open
+        incident, refreshed on every call, not part of its identity.
+        """
         key = json.dumps(sorted(nodes))
         existing = self.conn.execute(
-            "SELECT incident_id FROM incidents WHERE rule=? AND nodes=? "
-            "AND closed_at IS NULL", (rule, key)).fetchone()
+            "SELECT incident_id FROM incidents WHERE rule=? "
+            "AND closed_at IS NULL", (rule,)).fetchone()
         if existing:
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE incidents SET nodes=?, detail=? WHERE incident_id=?",
+                    (key, detail, existing["incident_id"]))
             return existing["incident_id"]
 
         incident_id = uuid.uuid4().hex
@@ -1272,6 +1296,68 @@ class TestEngine(unittest.TestCase):
         self.engine.process([SAFE])
         self.assertEqual(self.store.open_incidents()[0].severity, "emergency")
 
+    def test_drifting_node_set_still_opens_after_three_cycles(self):
+        """A fleet always missing SOME node, never the same one three cycles
+        running, previously opened nothing at all."""
+        for nodes in (("a",), ("a", "b"), ("b",)):
+            self.engine.process([RuleHit("telemetry_degraded", nodes, "gap")])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_widening_node_set_updates_membership_not_a_second_incident(self):
+        for _ in range(3):
+            self.engine.process([RuleHit("node_unreachable", ("a",), "a down")])
+        self.engine.process([RuleHit("node_unreachable", ("a", "b"), "a,b down")])
+        incidents = self.store.open_incidents()
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0].nodes, ("a", "b"))
+        self.assertEqual(incidents[0].detail, "a,b down")
+
+    def test_unsorted_node_tuple_still_closes(self):
+        """The store persists nodes sorted; a naive key comparison against the
+        raw tuple would never match and the incident would never close."""
+        hit = RuleHit("node_behind", ("b", "a"), "behind")
+        for _ in range(3):
+            self.engine.process([hit])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+        for _ in range(3):
+            self.engine.process([])
+        self.assertEqual(self.store.open_incidents(), [])
+
+    def test_emergency_but_not_immediate_rule_still_needs_three_cycles(self):
+        hit = RuleHit("consensus_health", ("a", "b"), "no quorum")
+        self.engine.process([hit]); self.engine.process([hit])
+        self.assertEqual(self.store.open_incidents(), [])
+        self.engine.process([hit])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_silent_rule_is_recorded_as_an_incident(self):
+        """'Recorded but never notified' — the engine records it; the delivery
+        worker is what declines to send."""
+        hit = RuleHit("node_restart", ("a",), "restart id changed")
+        for _ in range(3):
+            self.engine.process([hit])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
+    def test_steady_condition_opens_exactly_one_incident_and_one_notification(self):
+        hit = RuleHit("node_behind", ("c",), "12 blocks")
+        for _ in range(7):
+            self.engine.process([hit])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+        opens = [i for i in self.store.pending_outbox(now=0.0) if i.kind == "open"]
+        self.assertEqual(len(opens), 1)
+
+    def test_close_then_recur_costs_the_full_open_threshold_again(self):
+        hit = RuleHit("node_behind", ("c",), "12 blocks")
+        for _ in range(3):
+            self.engine.process([hit])
+        for _ in range(3):
+            self.engine.process([])
+        self.assertEqual(self.store.open_incidents(), [])
+        self.engine.process([hit]); self.engine.process([hit])
+        self.assertEqual(self.store.open_incidents(), [])
+        self.engine.process([hit])
+        self.assertEqual(len(self.store.open_incidents()), 1)
+
     def test_normal_severity_for_observer_divergence(self):
         hit = RuleHit("observer_divergence", ("w",), "forked")
         for _ in range(3):
@@ -1312,7 +1398,10 @@ EMERGENCY_RULES = {"safe_mode", "consensus_health", "tip_divergence"}
 # safe_mode is a halt, not a lag. Delaying that page buys nothing.
 IMMEDIATE_RULES = {"safe_mode"}
 
-# Recorded, never notified.
+# Recorded like any other incident, but never delivered. Suppression happens in
+# the delivery worker, not here: "recorded but never notified" means the row
+# exists and is queryable. Skipping it in the engine would leave no history at
+# all, which is a different contract.
 SILENT_RULES = {"node_restart"}
 
 
@@ -1325,29 +1414,26 @@ class Engine:
         self._absent: Dict[str, int] = {}
 
     def process(self, hits: Sequence[RuleHit]) -> None:
-        # Sort the node tuple when keying. The store persists nodes sorted, so
-        # open_incidents() returns them sorted; comparing against an unsorted
-        # RuleHit tuple would never match, the close countdown would never
-        # start, and incidents would stay open forever.
-        seen = {(h.rule, tuple(sorted(h.nodes))): h for h in hits}
+        # Keyed on the RULE alone, never on the node set. Membership drifts
+        # between cycles, and keying on it meant a persistent condition whose
+        # affected nodes kept changing never reached the open threshold at all.
+        seen = {h.rule: h for h in hits}
 
-        for key, hit in seen.items():
-            if hit.rule in SILENT_RULES:
-                continue
-            self._present[key] = self._present.get(key, 0) + 1
-            threshold = 1 if hit.rule in IMMEDIATE_RULES else self.open_after
-            if self._present[key] >= threshold:
-                severity = "emergency" if hit.rule in EMERGENCY_RULES else "normal"
-                iid = self.store.open_incident(hit.rule, hit.nodes, severity, hit.detail)
+        for rule, hit in seen.items():
+            self._present[rule] = self._present.get(rule, 0) + 1
+            threshold = 1 if rule in IMMEDIATE_RULES else self.open_after
+            if self._present[rule] >= threshold:
+                severity = "emergency" if rule in EMERGENCY_RULES else "normal"
+                iid = self.store.open_incident(rule, hit.nodes, severity, hit.detail)
                 self._absent.pop(iid, None)   # recurrence cancels a close countdown
 
-        for key in list(self._present):
-            if key not in seen:
-                del self._present[key]
+        for rule in list(self._present):
+            if rule not in seen:
+                del self._present[rule]
 
-        open_now = {(i.rule, i.nodes): i for i in self.store.open_incidents()}
-        for key, incident in open_now.items():
-            if key in seen:
+        open_now = {i.rule: i for i in self.store.open_incidents()}
+        for rule, incident in open_now.items():
+            if rule in seen:
                 self._absent.pop(incident.incident_id, None)
                 continue
             count = self._absent.get(incident.incident_id, 0) + 1
@@ -1468,6 +1554,14 @@ class TestDelivery(unittest.TestCase):
         drain(self.store, n, now=1.0, maintenance=True)
         self.assertEqual(n.sent, [])
 
+    def test_silent_rule_is_recorded_but_never_delivered(self):
+        self.store.open_incident("node_restart", ("a",), "normal", "restarted")
+        n = FakeNotifier()
+        drain(self.store, n, now=1.0)
+        self.assertEqual(n.sent, [])
+        self.assertEqual(self.store.pending_outbox(now=1e9), [],
+                         "consumed, not left retrying forever")
+
     def test_maintenance_never_suppresses_observer_divergence(self):
         self.store.open_incident("observer_divergence", ("w",), "normal", "forked")
         n = FakeNotifier()
@@ -1560,6 +1654,11 @@ MAX_BACKOFF = 1800.0
 SILENCEABLE = {"node_behind", "majority_unreachable", "node_unreachable",
                "telemetry_degraded"}
 
+# Recorded as incidents so the history is queryable, but never delivered. This
+# is where "recorded but never notified" is enforced — the engine opens them
+# like anything else.
+NEVER_DELIVERED = {"node_restart"}
+
 
 def _backoff(attempts: int) -> float:
     if attempts < len(BACKOFF_SECONDS):
@@ -1575,6 +1674,9 @@ def drain(store: Store, notifier: Notifier, now: float,
         # The rule travels on the outbox row. Never derived from the title:
         # titles are presentation and must be free to change without altering
         # who gets paged.
+        if item.rule in NEVER_DELIVERED:
+            store.mark_sent(item.outbox_id)   # recorded, deliberately not sent
+            continue
         if maintenance and item.rule in SILENCEABLE:
             store.mark_sent(item.outbox_id)   # suppressed, not retried forever
             continue
