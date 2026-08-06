@@ -146,8 +146,10 @@ class Store:
                 "INSERT INTO outbox (incident_id, rule, kind, priority, title,"
                 " message, attempts, created_at, next_attempt_at, sent_at)"
                 " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
-                (incident_id, rule, "open", priority, f"[dinero] {rule}",
-                 f"{rule}: {detail}", self._clock(), 0.0))
+                (incident_id, rule, "open", priority,
+                 f"[dinero] {rule}: {', '.join(nodes) or 'fleet'}",
+                 f"{rule} [{', '.join(nodes) or 'fleet'}]: {detail}",
+                 self._clock(), 0.0))
         return incident_id
 
     def close_incident(self, incident_id: str) -> None:
@@ -155,7 +157,7 @@ class Store:
         # enqueues two recovery notifications and the operator is told the same
         # incident resolved twice.
         row = self.conn.execute(
-            "SELECT rule, detail FROM incidents WHERE incident_id=? "
+            "SELECT rule, detail, nodes FROM incidents WHERE incident_id=? "
             "AND closed_at IS NULL", (incident_id,)).fetchone()
         if row is None:
             return
@@ -169,7 +171,8 @@ class Store:
                 " VALUES (?,?,?,?,?,?,0,?,?,NULL)",
                 (incident_id, row["rule"], "recovery", "normal",
                  f"[dinero] resolved: {row['rule']}",
-                 f"{row['rule']} cleared", self._clock(), 0.0))
+                 f"{row['rule']} cleared for {json.loads(row['nodes']) or 'fleet'}",
+                 self._clock(), 0.0))
 
     def open_incidents(self) -> List[Incident]:
         rows = self.conn.execute(

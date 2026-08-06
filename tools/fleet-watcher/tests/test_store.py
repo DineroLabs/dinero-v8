@@ -108,6 +108,14 @@ class TestStore(unittest.TestCase):
                       if i.kind == "recovery"]
         self.assertEqual(len(recoveries), 1)
 
+    def test_the_notification_names_the_affected_nodes(self):
+        """A page saying only ">= 10 blocks below quorum median" tells the
+        operator nothing about WHERE to look."""
+        self.store.open_incident("node_behind", ("c",), "normal", "12 blocks")
+        item = self.store.pending_outbox(now=0.0)[0]
+        self.assertIn("c", item.title)
+        self.assertIn("c", item.message)
+
     def test_open_incidents_nodes_round_trip_sorted(self):
         """open_incident stores sorted nodes, so open_incidents() returns them
         sorted. Any consumer keying on (rule, nodes) must sort too, or its keys

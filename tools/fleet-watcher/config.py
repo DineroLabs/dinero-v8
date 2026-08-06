@@ -56,8 +56,13 @@ def load_config(path: str) -> Config:
         if node["transport"] not in TRANSPORTS:
             raise ValueError(f"bad transport for {node['name']}: {node['transport']}")
 
-    if not any(n["role"] == "voting" for n in nodes):
-        raise ValueError("config defines no voting nodes; quorum is impossible")
+    voters = sum(1 for n in nodes if n["role"] == "voting")
+    if voters < 2:
+        # A single voter can never reach QUORUM_MIN, so consensus_health would
+        # fire every three cycles forever on a perfectly healthy fleet.
+        raise ValueError(
+            f"config defines {voters} voting node(s); at least 2 are required "
+            "to form a quorum")
     return Config(
         nodes=raw["nodes"],
         db_path=raw.get("db_path", "/var/lib/fleet-watcher/watcher.db"),

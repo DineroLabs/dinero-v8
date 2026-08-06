@@ -298,6 +298,21 @@ class TestEvaluate(unittest.TestCase):
         self.assertIn("node_restart",
                       rules_fired(evaluate(cur, 3, previous=prev)))
 
+    def test_a_fork_pages_even_when_no_quorum_forms(self):
+        """A confirmed fork must not be downgraded because a third node dropped
+        an RPC. The DISAGREE evidence is in hand either way."""
+        o = [obs("a", height=100, hashes={100: "X"}),
+             obs("b", height=100, hashes={}),          # one missing getblockhash
+             obs("c", height=100, hashes={100: "Y"})]
+        fired = rules_fired(evaluate(o, 3))
+        self.assertIn("tip_divergence", fired)
+
+    def test_tip_divergence_names_the_disagreeing_nodes(self):
+        o = self._healthy()
+        o[2] = Observation(**{**o[2].__dict__, "hashes_at": {100: "FORK"}})
+        hit = [h for h in evaluate(o, 3) if h.rule == "tip_divergence"][0]
+        self.assertIn("c", hit.nodes)
+
 
 if __name__ == "__main__":
     unittest.main()

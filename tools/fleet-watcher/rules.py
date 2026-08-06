@@ -100,6 +100,21 @@ def undetermined_voter_pairs(observations: Sequence[Observation]) -> List[Tuple[
             if compatible(by_node[x], by_node[y]) == UNDETERMINED]
 
 
+def disagreeing_voter_pairs(observations: Sequence[Observation]) -> List[Tuple[str, str]]:
+    """Voting pairs that positively DISAGREE at a shared height.
+
+    This is the evidence a fork page is built on. It is independent of
+    whether a quorum forms: a quorum can be destroyed by a third node's
+    missing RPC response while two other voters still hold a confirmed
+    DISAGREE between them. That evidence must not be discarded just because
+    compute_quorum() found nothing.
+    """
+    voters = _voters(observations)
+    by_node = {o.node: o for o in voters}
+    return [(x, y) for x, y in combinations(sorted(by_node), 2)
+            if compatible(by_node[x], by_node[y]) == DISAGREE]
+
+
 NODE_BEHIND_BLOCKS = 10
 
 # compatible() returns AGREE / DISAGREE / UNDETERMINED and is defined above;
@@ -169,18 +184,19 @@ def evaluate(observations: Sequence[Observation],
         hits.append(RuleHit("consensus_health", tuple(o.node for o in voting),
                             "no unique largest compatible group of voting nodes"))
 
-    if quorum is not None:
-        # tip_divergence requires positive DISAGREE evidence against a quorum
-        # member. "Not in the quorum" is not enough: a node we merely could not
-        # compare would otherwise raise an emergency fork page.
-        diverging = [o.node for o in voting
-                     if o.reachable and o.node not in quorum.members
-                     and any(compatible(o, by_node[m]) == DISAGREE
-                             for m in quorum.members)]
-        if diverging:
-            hits.append(RuleHit("tip_divergence", tuple(diverging),
-                                f"disagrees with quorum {quorum.members}"))
+    # tip_divergence is evaluated OUTSIDE the quorum block, because a fork is
+    # not conditional on a quorum forming. Previously it sat inside, so a single
+    # missing getblockhash on an uninvolved node destroyed the quorum and
+    # downgraded a confirmed fork to a normal-priority telemetry notice — with
+    # the DISAGREE evidence already in hand and discarded.
+    forked = disagreeing_voter_pairs(observations)
+    if forked:
+        hits.append(RuleHit(
+            "tip_divergence",
+            tuple(sorted({n for pair in forked for n in pair})),
+            f"voting nodes disagree at a shared height: {forked}"))
 
+    if quorum is not None:
         # node_behind — measured against the quorum's median tip height.
         behind = [o.node for o in observations
                   if o.reachable and o.height is not None

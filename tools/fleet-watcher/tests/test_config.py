@@ -43,6 +43,12 @@ class TestLoadConfig(unittest.TestCase):
         payload = {"nodes": [dict(VALID["nodes"][2])]}
         self._rejects(payload, "voting")
 
+    def test_a_single_voter_config_is_rejected(self):
+        """One voter can never reach QUORUM_MIN, so consensus_health would page
+        every three cycles forever on a healthy fleet."""
+        payload = {"nodes": [dict(VALID["nodes"][0]), dict(VALID["nodes"][2])]}
+        self._rejects(payload, "at least 2")
+
     def test_an_unknown_transport_is_rejected(self):
         payload = {"nodes": [{**VALID["nodes"][0], "transport": "carrier-pigeon"}]}
         self._rejects(payload, "transport")
