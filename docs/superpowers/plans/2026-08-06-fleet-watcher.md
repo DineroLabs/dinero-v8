@@ -1582,6 +1582,82 @@ class TestDelivery(unittest.TestCase):
         self.assertEqual(len(n.sent), 1)
 
 
+class TestPushoverNotifier(unittest.TestCase):
+    """notify.py had no coverage at all — half the deliverable. These pin the
+    two things that decide whether a page actually arrives."""
+
+    def _notifier(self):
+        from notify import PushoverNotifier
+        return PushoverNotifier("tok", "usr")
+
+    class _Response:
+        status = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _with_urlopen(self, fake):
+        import notify
+        original = notify.urllib.request.urlopen
+        notify.urllib.request.urlopen = fake
+        self.addCleanup(setattr, notify.urllib.request, "urlopen", original)
+
+    def test_emergency_sets_priority_retry_and_a_three_hour_expire(self):
+        captured = {}
+
+        def fake(request, timeout=None):
+            captured["body"] = request.data.decode()
+            return self._Response(b'{"status":1}')
+
+        self._with_urlopen(fake)
+        self.assertTrue(self._notifier().send("t", "m", "emergency"))
+        self.assertIn("priority=2", captured["body"])
+        self.assertIn("expire=10800", captured["body"])
+        self.assertIn("retry=", captured["body"])
+
+    def test_normal_priority_sets_no_retry_parameters(self):
+        captured = {}
+
+        def fake(request, timeout=None):
+            captured["body"] = request.data.decode()
+            return self._Response(b'{"status":1}')
+
+        self._with_urlopen(fake)
+        self._notifier().send("t", "m", "normal")
+        self.assertNotIn("priority=2", captured["body"])
+        self.assertNotIn("expire=", captured["body"])
+
+    def test_transport_exceptions_return_false_rather_than_propagating(self):
+        import http.client
+        import ssl
+
+        for exc in (ConnectionResetError("reset"),
+                    http.client.IncompleteRead(b""),
+                    ssl.SSLError("handshake"),
+                    OSError("unreachable"),
+                    ValueError("not json")):
+            def boom(request, timeout=None, _e=exc):
+                raise _e
+
+            self._with_urlopen(boom)
+            self.assertFalse(self._notifier().send("t", "m", "normal"),
+                             f"{type(exc).__name__} must not propagate")
+
+    def test_a_rejected_message_is_not_reported_as_sent(self):
+        self._with_urlopen(lambda request, timeout=None:
+                           self._Response(b'{"status":0}'))
+        self.assertFalse(self._notifier().send("t", "m", "normal"))
+
+
 if __name__ == "__main__":
     unittest.main()
 ```
