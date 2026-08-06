@@ -49,7 +49,7 @@ building the daemon.
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `dinero::ReorgLog` with `void Record(uint32_t disconnected, uint32_t connected) noexcept`, `ReorgLog::Snapshot Take() const` (the accessor callers should use — counter and ring under one lock), `uint64_t Total() const`, `std::vector<ReorgEvent> Events() const`, `const std::string& BootId() const`; `struct Snapshot { std::string boot_id; uint64_t total; std::vector<ReorgEvent> events; }`; and `struct ReorgEvent { uint64_t seq; std::string timestamp; uint32_t disconnected; uint32_t connected; }`. Used by Tasks 2 and 3.
+- Produces: `dinero::ReorgLog` with `void Record(uint32_t disconnected, uint32_t connected) noexcept`, `ReorgLog::Snapshot Take() const` (the accessor callers should use — counter and ring under one lock), `uint64_t Total() const`, `std::vector<ReorgLogEvent> Events() const`, `const std::string& BootId() const`; `struct Snapshot { std::string boot_id; uint64_t total; std::vector<ReorgLogEvent> events; }`; and `struct ReorgLogEvent { uint64_t seq; std::string timestamp; uint32_t disconnected; uint32_t connected; }`. Used by Tasks 2 and 3.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -256,7 +256,11 @@ picked up; re-run `cmake -S . -B build` and try again.
 
 namespace dinero {
 
-struct ReorgEvent {
+/// Named ReorgLogEvent, not ReorgEvent: dinero::ReorgEvent already exists in
+/// include/wallet/reorg_event.h. The collision is invisible until some
+/// translation unit includes both headers, which first happens when this is
+/// wired into ChainstateService — an ODR clash discovered at the worst moment.
+struct ReorgLogEvent {
     uint64_t seq = 0;
     std::string timestamp;   // ISO 8601, UTC
     uint32_t disconnected = 0;
@@ -295,7 +299,7 @@ public:
             std::string stamp = NowIso8601();
 
             std::lock_guard<std::mutex> lock(mutex_);
-            ReorgEvent event;
+            ReorgLogEvent event;
             event.seq = ++total_;
             event.timestamp = std::move(stamp);
             event.disconnected = disconnected;
@@ -322,7 +326,7 @@ public:
     struct Snapshot {
         std::string boot_id;
         uint64_t total = 0;
-        std::vector<ReorgEvent> events;
+        std::vector<ReorgLogEvent> events;
     };
 
     Snapshot Take() const {
@@ -341,9 +345,9 @@ public:
         return total_;
     }
 
-    std::vector<ReorgEvent> Events() const {
+    std::vector<ReorgLogEvent> Events() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return std::vector<ReorgEvent>(events_.begin(), events_.end());
+        return std::vector<ReorgLogEvent>(events_.begin(), events_.end());
     }
 
     const std::string& BootId() const { return boot_id_; }
@@ -383,7 +387,7 @@ private:
     }
 
     mutable std::mutex mutex_;
-    std::deque<ReorgEvent> events_;
+    std::deque<ReorgLogEvent> events_;
     uint64_t total_ = 0;
     const std::string boot_id_;
 };
@@ -700,7 +704,7 @@ proven-live path (Task 3 Step 2); all three spec gates (Task 4); overflow unit-t
 
 **Placeholders.** None. Every step carries runnable code or an exact command.
 
-**Type consistency.** `ReorgEvent`'s four fields are defined once in Task 1 and read unchanged in
+**Type consistency.** `ReorgLogEvent`'s four fields are defined once in Task 1 and read unchanged in
 Task 3. `GetReorgLog()` is produced in Task 2 and consumed in Task 3. `kCapacity` is referenced
 by name in the Task 1 tests rather than duplicating 64.
 
