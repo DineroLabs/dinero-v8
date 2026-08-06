@@ -141,12 +141,35 @@ TEST(ReorgLogTest, concurrent_record_loses_nothing) {
 }
 ```
 
-- [ ] **Step 2: Run it to confirm it fails**
+- [ ] **Step 2: Register the test target**
 
-Run: `cmake --build build --target test_reorg_log`
-Expected: FAIL — `fatal error: daemon/reorg_log.h: No such file or directory`
+The target must exist before it can be built, so this comes before the
+confirm-it-fails step. Append to `tests/CMakeLists.txt`, following the
+`test_clock_source` pattern already in that file:
 
-- [ ] **Step 3: Implement ReorgLog**
+```cmake
+add_executable(test_reorg_log
+  tests/test_reorg_log.cpp
+)
+add_dependencies(test_reorg_log gtest gtest_main)
+target_include_directories(test_reorg_log BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_reorg_log PRIVATE
+  GTest::gtest_main
+)
+add_test(NAME test_reorg_log COMMAND test_reorg_log)
+```
+
+- [ ] **Step 3: Run it to confirm it fails**
+
+Run: `cmake --build build --target test_reorg_log 2>&1 | tail -20`
+Expected: FAIL — `fatal error: daemon/reorg_log.h: No such file or directory`.
+If instead you see "no rule to make target", the CMake change has not been
+picked up; re-run `cmake -S . -B build` and try again.
+
+- [ ] **Step 4: Implement ReorgLog**
 
 ```cpp
 // include/daemon/reorg_log.h
@@ -261,25 +284,6 @@ private:
 }  // namespace dinero
 
 #endif  // DINERO_DAEMON_REORG_LOG_H
-```
-
-- [ ] **Step 4: Register the test target**
-
-Append to `tests/CMakeLists.txt`, following the `test_clock_source` pattern already in that file:
-
-```cmake
-add_executable(test_reorg_log
-  tests/test_reorg_log.cpp
-)
-add_dependencies(test_reorg_log gtest gtest_main)
-target_include_directories(test_reorg_log BEFORE PRIVATE
-  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
-  ${CMAKE_SOURCE_DIR}/include
-)
-target_link_libraries(test_reorg_log PRIVATE
-  GTest::gtest_main
-)
-add_test(NAME test_reorg_log COMMAND test_reorg_log)
 ```
 
 - [ ] **Step 5: Run the tests**
