@@ -11647,3 +11647,30 @@ target_link_libraries(test_reorg_log PRIVATE
 )
 add_test(NAME test_reorg_log COMMAND test_reorg_log)
 set_tests_properties(test_reorg_log PROPERTIES TIMEOUT 60)
+
+# ---------------------------------------------------------------------------
+# FleetWatcherTests — the fleet watcher's Python suite (tools/fleet-watcher).
+#
+# Registered here, deliberately UNLABELLED, so it runs in the ordinary ctest
+# sweep of the "Linux x86_64 - full build + ctest" job. That job is a required
+# check, and the main lanes filter with
+# `--label-exclude 'integration|gate|release|canonicality|fuzz'` — a label from
+# that set would remove this from every lane that gates a merge.
+#
+# Registered UNCONDITIONALLY, with no find_package(Python3) guard. A guard is
+# how this test would quietly cease to exist: if the interpreter probe failed,
+# add_test() would never run, ctest would report success over zero tests, and
+# the suite would be exactly what it was before this registration — 142 tests
+# that pass locally and gate nothing. A loud failure on a host without python3
+# is the better error. scripts/ci/check_ctest_integrity.py resolves bare
+# `python3` on PATH, so this satisfies that gate rather than tripping it.
+#
+# unittest, not pytest: the suite has no third-party dependency and neither
+# should running it. `discover -t .` sets the top-level directory so that
+# `tests/` is importable as a package and the modules under test resolve.
+add_test(
+    NAME FleetWatcherTests
+    COMMAND python3 -m unittest discover -s tests -t .
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools/fleet-watcher
+)
+set_tests_properties(FleetWatcherTests PROPERTIES TIMEOUT 120)
