@@ -127,6 +127,13 @@ public:
     // Phase 39: Set ChainDB pointer (called by DaemonApp during initialization)
     void setChainDB(ChainDB* db) { chain_db_ = db; }
 
+    // Flat-file body storage. Normally wired from DaemonContext by Init(); this
+    // setter is the same shape as setChainDB above and lets a caller assemble a
+    // minimal service around just ChainDB + BlockStorage.
+    void setBlockStorage(std::shared_ptr<BlockStorage> storage) {
+        block_storage_ = std::move(storage);
+    }
+
     // Phase 11a: BlockValidator accessor (for BlockAcceptor to update Utreexo)
     consensus::BlockValidator* GetBlockValidator() { return block_validator_.get(); }
     const consensus::BlockValidator* GetBlockValidator() const { return block_validator_.get(); }

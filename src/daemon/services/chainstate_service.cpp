@@ -5369,17 +5369,54 @@ void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const Fil
 
     ChainDB::PersistedHeaderMetadata metadata;
     if (persist_result.status() == Status::NotFound) {
-        // No metadata row yet: the competing header may live only in the in-memory
-        // block index (added by the better-branch import path, never persisted).
-        // Build the row from the index so the stored body becomes discoverable.
+        // No metadata row yet. Two sources can supply one, tried in order.
+        //
+        // 1. The in-memory block index: a competing header added by the
+        //    better-branch import path and never persisted.
+        //
+        // 2. The HeaderChainSelector — the ONLY source for an AssumeUTXO
+        //    PRE-BASE body. g_block_index is rebuilt from ChainDB's HEIGHT
+        //    index, which a snapshot-bootstrapped node does not populate below
+        //    its base height, so FindBlockIndex misses every pre-base hash
+        //    (observed in the field: "Loaded 1 block index entries"). Without
+        //    this fallback the backfilled body sits in the flatfile with
+        //    nothing pointing at it — HasArchivalBlockBody / ReadArchivalBlock
+        //    resolve a body ONLY through this metadata row — so background
+        //    validation reports it missing forever and the genesis->base
+        //    replay livelocks, re-downloading the same bodies every pass.
+        //
+        //    Scope: this restores READABILITY only. The height index is not
+        //    touched, so getBlockHashByHeight still misses for such a block.
+        //    Background validation resolves pre-base hashes from the header
+        //    chain (canonical_hashes_fallback), so that is sufficient for the
+        //    replay to converge.
         CBlockIndex* idx = FindBlockIndex(hash);
-        if (!idx) {
-            return;  // truly unknown header; nothing to record
+        consensus::HeaderIndexEntry header_entry;
+        if (idx) {
+            metadata.parent_hash = idx->pprev ? idx->pprev->hash : uint256();
+            metadata.height = static_cast<int32_t>(idx->height);
+            metadata.chainwork = ChainworkFromHex(idx->chainwork);
+            metadata.status_flags = idx->status | BLOCK_VALID_HEADER;
+        } else if (header_chain_selector_ &&
+                   header_chain_selector_->GetHeaderCopy(hash, header_entry)) {
+            metadata.parent_hash = header_entry.prev_hash;
+            metadata.height = static_cast<int32_t>(header_entry.height);
+            metadata.chainwork = header_entry.chainwork;
+            // The selector carries no validation status. Claim only what is
+            // true here: the header is known and the body is on disk. Never
+            // BLOCK_VALID_CHAIN — nothing has connected this block.
+            metadata.status_flags = BLOCK_VALID_HEADER;
+        } else {
+            // Truly unknown header; nothing to record. This used to return
+            // silently, which is exactly how the pre-base livelock above hid
+            // through two fix iterations — never make it quiet again.
+            if (logger_) {
+                logger_->error("[#309] PersistStoredBodyPosition: stored body has no header "
+                               "in ChainDB, the block index, or the header chain — position "
+                               "DISCARDED, body unreadable: " + hash.GetHex().substr(0, 16));
+            }
+            return;
         }
-        metadata.parent_hash = idx->pprev ? idx->pprev->hash : uint256();
-        metadata.height = static_cast<int32_t>(idx->height);
-        metadata.chainwork = ChainworkFromHex(idx->chainwork);
-        metadata.status_flags = idx->status | BLOCK_VALID_HEADER;
     } else {
         if (logger_) {
             logger_->warning("[#309] PersistStoredBodyPosition: existing metadata check failed for " +
@@ -5837,7 +5874,7 @@ void ChainstateService::setChainOracleClient(std::unique_ptr<dinero::ipc::ChainO
 
 void ChainstateService::setHeaderChainSelector(std::shared_ptr<dinero::consensus::HeaderChainSelector> header_chain) {
     header_chain_selector_ = header_chain;
-    if (header_chain_selector_) {
+    if (header_chain_selector_ && logger_) {
         logger_->info("[ChainstateService] HeaderChainSelector wired for header sync");
     }
 }
