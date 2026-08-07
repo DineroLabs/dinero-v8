@@ -2362,18 +2362,37 @@ bool DaemonApp::Init(int argc, char** argv) {
 
             std::vector<uint256> chain_hashes;
             chain_hashes.reserve(static_cast<size_t>(tip_height) + 1);
+            std::vector<BlockHeader> chain_headers;
+            chain_headers.reserve(static_cast<size_t>(tip_height) + 1);
 
             uint256 current_hash = tip_hash;
             bool reached_genesis = false;
             uint64_t selector_fallbacks = 0;
+            bool selector_preferred = false;
 
             auto resolve_seed_header = [&](const uint256& hash)
                 -> StatusOr<daemon::StartupHeaderResolution> {
+                // Snapshot promotion leaves a contiguous pre-base range absent
+                // from ChainDB. After the first verified selector fallback,
+                // avoid tens of thousands of guaranteed RocksDB misses. If the
+                // selector unexpectedly lacks a later hash, fall back to the
+                // normal ChainDB-first resolver rather than assuming absence.
+                if (selector_preferred) {
+                    consensus::HeaderIndexEntry entry;
+                    if (header_chain->GetHeaderCopy(hash, entry) &&
+                        entry.header.GetHash() == hash) {
+                        ++selector_fallbacks;
+                        return daemon::StartupHeaderResolution{
+                            std::move(entry.header),
+                            daemon::StartupHeaderSource::HeaderChainSelector};
+                    }
+                }
                 auto resolved = daemon::ResolveStartupHeader(
                     *chain_db_ptr, header_chain.get(), hash);
                 if (resolved.status() == Status::Ok &&
                     resolved.value().source == daemon::StartupHeaderSource::HeaderChainSelector) {
                     ++selector_fallbacks;
+                    selector_preferred = true;
                 }
                 return resolved;
             };
@@ -2389,6 +2408,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 }
 
                 const BlockHeader& header = header_result.value().header;
+                chain_headers.push_back(header);
                 if (header.prev_block_hash.IsNull()) {
                     reached_genesis = true;
                     break;
@@ -2401,20 +2421,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                           << tip_hash.GetHex().substr(0, 16) << "..." << std::endl;
             } else {
                 std::reverse(chain_hashes.begin(), chain_hashes.end());
+                std::reverse(chain_headers.begin(), chain_headers.end());
 
                 uint32_t headers_added = 0;
                 bool replay_failed = false;
-                for (const auto& hash : chain_hashes) {
-                    auto header_result = resolve_seed_header(hash);
-                    if (header_result.status() != Status::Ok) {
-                        std::cerr << "[DaemonApp] ❌ HeaderChainSelector seed failed: missing header during replay "
-                                  << hash.GetHex().substr(0, 16) << "..." << std::endl;
-                        replay_failed = true;
-                        break;
-                    }
-                    if (!header_chain->AddHeader(header_result.value().header)) {
+                for (size_t i = 0; i < chain_headers.size(); ++i) {
+                    if (!header_chain->AddHeader(chain_headers[i])) {
                         std::cerr << "[DaemonApp] ❌ HeaderChainSelector seed failed: parent-link rejection at "
-                                  << hash.GetHex().substr(0, 16) << "..." << std::endl;
+                                  << chain_hashes[i].GetHex().substr(0, 16) << "..." << std::endl;
                         replay_failed = true;
                         break;
                     }
@@ -2430,12 +2444,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                     header_chain->Clear();
                     headers_added = 0;
 
-                    for (const auto& hash : chain_hashes) {
-                        auto header_result = resolve_seed_header(hash);
-                        if (header_result.status() != Status::Ok) {
-                            break;
-                        }
-                        if (!header_chain->AddHeader(header_result.value().header)) {
+                    for (const auto& header : chain_headers) {
+                        if (!header_chain->AddHeader(header)) {
                             break;
                         }
                         headers_added++;
