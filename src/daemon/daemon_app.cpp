@@ -2370,6 +2370,31 @@ bool DaemonApp::Init(int argc, char** argv) {
             uint64_t selector_fallbacks = 0;
             bool selector_preferred = false;
 
+            // Fast restart path: the selector constructor already loaded its
+            // durable store. Copy the entire tip branch under one lock; when it
+            // is complete, there is nothing to seed or revalidate here because
+            // AddHeader would only find the same existing hashes and return.
+            std::vector<consensus::HeaderIndexEntry> selector_entries;
+            uint256 unused_common_ancestor;
+            const std::unordered_set<uint256> no_stop_hashes;
+            const bool selector_already_complete =
+                header_chain->CollectBranchCopiesByHash(
+                    tip_hash, no_stop_hashes, selector_entries,
+                    unused_common_ancestor) &&
+                selector_entries.size() == static_cast<size_t>(tip_height) + 1 &&
+                !selector_entries.empty() &&
+                selector_entries.front().height == 0 &&
+                selector_entries.back().height == tip_height;
+
+            if (selector_already_complete) {
+                for (const auto& entry : selector_entries) {
+                    chain_hashes.push_back(entry.hash);
+                    chain_headers.push_back(entry.header);
+                }
+                selector_fallbacks = selector_entries.size();
+                reached_genesis = true;
+            }
+
             auto resolve_seed_header = [&](const uint256& hash)
                 -> StatusOr<daemon::StartupHeaderResolution> {
                 // Snapshot promotion leaves a contiguous pre-base range absent
@@ -2397,7 +2422,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                 return resolved;
             };
 
-            for (uint32_t steps = 0; steps <= tip_height + 1; ++steps) {
+            for (uint32_t steps = 0;
+                 !selector_already_complete && steps <= tip_height + 1;
+                 ++steps) {
                 chain_hashes.push_back(current_hash);
 
                 auto header_result = resolve_seed_header(current_hash);
@@ -2420,19 +2447,25 @@ bool DaemonApp::Init(int argc, char** argv) {
                 std::cerr << "[DaemonApp] ❌ HeaderChainSelector seeding aborted: could not reach genesis from tip "
                           << tip_hash.GetHex().substr(0, 16) << "..." << std::endl;
             } else {
-                std::reverse(chain_hashes.begin(), chain_hashes.end());
-                std::reverse(chain_headers.begin(), chain_headers.end());
+                if (!selector_already_complete) {
+                    std::reverse(chain_hashes.begin(), chain_hashes.end());
+                    std::reverse(chain_headers.begin(), chain_headers.end());
+                }
 
                 uint32_t headers_added = 0;
                 bool replay_failed = false;
-                for (size_t i = 0; i < chain_headers.size(); ++i) {
-                    if (!header_chain->AddHeader(chain_headers[i])) {
-                        std::cerr << "[DaemonApp] ❌ HeaderChainSelector seed failed: parent-link rejection at "
-                                  << chain_hashes[i].GetHex().substr(0, 16) << "..." << std::endl;
-                        replay_failed = true;
-                        break;
+                if (selector_already_complete) {
+                    headers_added = static_cast<uint32_t>(chain_headers.size());
+                } else {
+                    for (size_t i = 0; i < chain_headers.size(); ++i) {
+                        if (!header_chain->AddHeader(chain_headers[i])) {
+                            std::cerr << "[DaemonApp] ❌ HeaderChainSelector seed failed: parent-link rejection at "
+                                      << chain_hashes[i].GetHex().substr(0, 16) << "..." << std::endl;
+                            replay_failed = true;
+                            break;
+                        }
+                        headers_added++;
                     }
-                    headers_added++;
                 }
 
                 // Recovery fallback:
