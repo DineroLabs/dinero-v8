@@ -18,6 +18,24 @@ inline bool IsQueryable(const RuntimeQueryState& state) {
     return state.running && !state.shutdown_requested && state.has_app;
 }
 
+struct AuthoritativeTipSnapshot {
+    uint64_t height = 0;
+    std::string hash;
+};
+
+/// Adapt ChainstateService's coherent, mutex-protected sync snapshot for the
+/// NodeCore ABI. This deliberately does not accept a ChainDB/storage frontier:
+/// during AssumeUTXO the storage tip may lag at genesis while the verified
+/// active tip is already the snapshot base. Height and hash must come from the
+/// same snapshot so a concurrent block connection cannot produce a torn pair.
+template <typename SyncSnapshot>
+AuthoritativeTipSnapshot CaptureAuthoritativeTip(const SyncSnapshot& sync) {
+    if (!sync.has_active_tip) return {};
+    return AuthoritativeTipSnapshot{
+        static_cast<uint64_t>(sync.active_tip_height),
+        sync.active_tip_hash.GetHex()};
+}
+
 struct EventCallbackSnapshot {
     nodecore_event_callback_t callback = nullptr;
     void* user_data = nullptr;
