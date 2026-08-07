@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""Forced command for the fleet watcher's node account. The caller never gets a shell.
+
+Install as /usr/local/bin/fleet-watcher-rpc, mode 0755, root-owned, and pin it
+from the node's authorized_keys:
+
+    command="/usr/local/bin/fleet-watcher-rpc",no-port-forwarding,\
+no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA...
+
+Two commands are accepted, compared WHOLE against fixed strings:
+
+    rpc             JSON-RPC request body on stdin, response on stdout
+    invocation-id   the daemon unit's systemd InvocationID
+
+`SSH_ORIGINAL_COMMAND` is never parsed, split, or expanded. An earlier design
+passed the payload as an argument, which forced this script to recover it from
+that variable, and every way of doing that is wrong in a different way:
+`set -- $SSH_ORIGINAL_COMMAND` word-splits without performing quote removal, so
+the payload arrives truncated with literal quotes; `${SSH_ORIGINAL_COMMAND#rpc }`
+keeps them whole; `eval` fixes both by executing caller-influenced text. On
+stdin there is nothing to quote and nothing to parse, and the payload never
+appears in the remote process table.
+
+WHY THIS ENFORCES A METHOD ALLOWLIST
+------------------------------------
+The threat this defends against is the watcher's private key being stolen. That
+adversary controls the request body completely, so "the watcher only sends read
+RPCs" is not a property of the request — it is a hope about the client. Without
+the check below, holding the key means calling ANY method the node's RPC server
+exposes, on every node in the fleet, from an account whose whole purpose is
+read-only observation.
+
+The check is a real JSON parse, deliberately, not a grep for the method name.
+A hostile body can carry duplicate `method` keys, `\\u`-escaped spellings, or a
+decoy inside a nested string, and every text-matching approach loses to at least
+one of those.
+
+The request forwarded to the node is REBUILT from validated fields rather than
+relayed verbatim. Anything the caller smuggled alongside — extra members, a
+second method, an oversized id — never reaches the daemon.
+
+Fails closed everywhere: any parse error, any unknown method, any malformed
+parameter, and nothing is forwarded.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+# Exactly the read methods tools/fleet-watcher/poller.py calls. Adding a method
+# here widens what a stolen key can reach, so add one only when the poller
+# genuinely needs it — and never a method that writes.
+ALLOWED = {
+    "getdaemonstatus":               (),
+    "blockchain.getbestblockhash":   (),
+    "node.status":                   (),
+    "safemode.status":               (),
+    "blockchain.getblockhash":       ("height",),
+}
+
+MAX_BODY_BYTES = 8192      # far above any real request; bounds a hostile one
+RPC_TIMEOUT = 10.0
+
+
+def refuse(reason: str) -> int:
+    # stderr, never stdout: stdout carries the JSON-RPC response and must not be
+    # polluted with diagnostics the client would then try to parse.
+    print(f"refused: {reason}", file=sys.stderr)
+    return 64
+
+
+def validated_request(raw: bytes):
+    """Return a rebuilt request dict, or None if anything is off."""
+    if len(raw) > MAX_BODY_BYTES:
+        return None
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    # A JSON-RPC batch is a list. Rejected: one allowed method per call keeps
+    # the audit trail one-to-one, and a batch is a way to bury a denied call
+    # among permitted ones.
+    if not isinstance(body, dict):
+        return None
+
+    method = body.get("method")
+    if not isinstance(method, str) or method not in ALLOWED:
+        return None
+
+    params = body.get("params", [])
+    if params is None:
+        params = []
+    if not isinstance(params, list):
+        return None
+    expected = ALLOWED[method]
+    if len(params) != len(expected):
+        return None
+    # The only parameter any allowed method takes is a block height.
+    if expected == ("height",):
+        height = params[0]
+        # bool is a subclass of int; True would otherwise pass as height 1.
+        if not isinstance(height, int) or isinstance(height, bool) or height < 0:
+            return None
+
+    request_id = body.get("id", "w")
+    if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
+        request_id = "w"
+    if isinstance(request_id, str) and len(request_id) > 64:
+        request_id = "w"
+
+    return {"jsonrpc": "2.0", "id": request_id,
+            "method": method, "params": params}
+
+
+def do_rpc() -> int:
+    port = os.environ.get("DINERO_RPC_PORT", "").strip()
+    if not port.isdigit():
+        # Fails closed and says which knob is wrong. The forced command does not
+        # inherit an interactive shell's environment, so this must be set in the
+        # authorized_keys entry (environment="DINERO_RPC_PORT=...") or in a
+        # wrapper the key points at.
+        return refuse("DINERO_RPC_PORT unset or not numeric")
+
+    request = validated_request(sys.stdin.buffer.read(MAX_BODY_BYTES + 1))
+    if request is None:
+        return refuse("request rejected by allowlist")
+
+    payload = json.dumps(request).encode()
+    http = urllib.request.Request(
+        f"http://127.0.0.1:{port}/", data=payload,
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(http, timeout=RPC_TIMEOUT) as response:
+            sys.stdout.buffer.write(response.read())
+    except urllib.error.HTTPError as exc:
+        # The daemon answered with a non-2xx; its body is still the JSON-RPC
+        # error the watcher needs to see.
+        sys.stdout.buffer.write(exc.read())
+    except Exception:
+        return refuse("node rpc unreachable")
+    return 0
+
+
+def do_invocation_id() -> int:
+    unit = os.environ.get("DINERO_UNIT", "dinerod")
+    if not unit.replace("-", "").replace("_", "").replace(".", "").isalnum():
+        return refuse("DINERO_UNIT is not a plain unit name")
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", unit, "-p", "InvocationID", "--value"],
+            capture_output=True, timeout=RPC_TIMEOUT)
+    except (subprocess.SubprocessError, OSError):
+        return refuse("systemctl failed")
+    if result.returncode != 0:
+        return refuse("systemctl failed")
+    sys.stdout.buffer.write(result.stdout)
+    return 0
+
+
+def main() -> int:
+    command = os.environ.get("SSH_ORIGINAL_COMMAND", "")
+    if command == "rpc":
+        return do_rpc()
+    if command == "invocation-id":
+        return do_invocation_id()
+    return refuse(f"{command or '<empty>'}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
