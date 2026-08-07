@@ -24,6 +24,7 @@
  */
 
 #include "daemon/services/chainstate_service.h"
+#include "daemon/header_seed_resolver.h"
 #include "consensus/block_index.h"
 #include "consensus/block_lifecycle.h"
 #include "consensus/chainparams.h"
@@ -34,6 +35,7 @@
 #include "primitives/uint256.h"
 #include "storage/block_storage.h"
 #include "storage/chain_db.h"
+#include "storage/chain_write_token.h"
 
 #include <filesystem>
 #include <iostream>
@@ -243,6 +245,64 @@ void test02_UnknownHashWritesNoRow(const std::filesystem::path& root) {
     std::cout << "  [OK] unknown hash writes no row" << std::endl;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #3 — promoted snapshot restart: ChainDB lacks a pre-base header, while the
+//       separately persisted selector still has the complete verified chain.
+// ─────────────────────────────────────────────────────────────────────────────
+void test03_StartupSeedFallsBackOnlyForMissingChainDbHeader(
+        const std::filesystem::path& root) {
+    const auto dir = root / "t03";
+    std::filesystem::create_directories(dir);
+
+    ChainDB db;
+    require(db.init(dir / "chaindb") == Status::Ok, "t03: ChainDB::init failed");
+
+    auto selector = std::make_shared<HeaderChainSelector>();
+    const Transaction cb0 = MakeCoinbaseTx(0x04);
+    const BlockHeader genesis =
+        MakeHeader(uint256(), 2000000, cb0.GetTxid().AsUint256());
+    require(selector->AddHeader(genesis), "t03: genesis AddHeader rejected");
+
+    const Transaction cb1 = MakeCoinbaseTx(0x05);
+    const BlockHeader h1 =
+        MakeHeader(genesis.GetHash(), 2000001, cb1.GetTxid().AsUint256());
+    require(selector->AddHeader(h1), "t03: h1 AddHeader rejected");
+
+    // Field restart state: the promoted tip references a header absent from
+    // ChainDB, but HeaderStore/HeaderChainSelector retained the verified entry.
+    require(db.getHeader(h1.GetHash()).status() == Status::NotFound,
+            "t03: precondition — ChainDB header must be missing");
+    auto resolved = daemon::ResolveStartupHeader(db, selector.get(), h1.GetHash());
+    require(resolved.status() == Status::Ok,
+            "t03: selector-backed startup resolution failed");
+    require(resolved.value().source == daemon::StartupHeaderSource::HeaderChainSelector,
+            "t03: missing ChainDB header must report selector source");
+    require(resolved.value().header.GetHash() == h1.GetHash(),
+            "t03: selector fallback returned the wrong header");
+
+    // ChainDB remains authoritative whenever it has the row.
+    const auto entry = selector->GetHeaderValue(h1.GetHash());
+    require(entry.has_value(), "t03: selector lost h1");
+    const ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    require(db.putHeader(token, h1.GetHash(), h1, 1, entry->chainwork) == Status::Ok,
+            "t03: putHeader failed");
+    resolved = daemon::ResolveStartupHeader(db, selector.get(), h1.GetHash());
+    require(resolved.status() == Status::Ok,
+            "t03: ChainDB-backed startup resolution failed");
+    require(resolved.value().source == daemon::StartupHeaderSource::ChainDB,
+            "t03: existing ChainDB header must remain authoritative");
+
+    const uint256 unknown = uint256::FromHexUnsafe(
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20");
+    require(daemon::ResolveStartupHeader(db, selector.get(), unknown).status() ==
+                Status::NotFound,
+            "t03: header missing from both stores must remain NotFound");
+
+    db.close();
+    std::cout << "  [OK] startup seed resolves promoted pre-base header from selector"
+              << std::endl;
+}
+
 int main() {
     SelectParams(Chain::REGTEST);
     const auto root = MakeTempRoot();
@@ -250,6 +310,7 @@ int main() {
     std::cout << "=== PersistStoredBodyPosition pre-base body tests ===\n";
     test01_PreBaseBodyBecomesReadableFromHeaderChain(root);
     test02_UnknownHashWritesNoRow(root);
+    test03_StartupSeedFallsBackOnlyForMissingChainDbHeader(root);
     std::cout << "ALL PRE-BASE BODY PERSIST TESTS PASSED\n";
 
     std::filesystem::remove_all(root);
