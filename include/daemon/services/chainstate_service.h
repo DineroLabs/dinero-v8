@@ -11,6 +11,7 @@
 #include "daemon/services/unreadable_block_set.h"  // thread-safe unreadable-block tracking
 #include "daemon/services/stateless_replay_shielded_decision.h"  // #356: marker-guard decision
 #include "daemon/sync_stats_recorder.h"  // Forest checkpoint delta campaign phase 0
+#include "daemon/reorg_log.h"
 #include "consensus/block_validation.h"  // Reorg fix: Production consensus validator
 #include "consensus/consensus_utxo_set.h"  // Phase 2: Pure in-memory UTXO set
 #include "consensus/shielded/anchor_history.h"
@@ -324,6 +325,10 @@ public:
     // Safe mode prevents mining during dangerous chain conditions
     bool IsInSafeMode() const { return safe_mode_active_; }
     std::string GetSafeModeReason() const { return safe_mode_reason_; }
+
+    /// Read-only observability: reorganisations recorded this process lifetime.
+    /// Exposed over RPC as reorg.status. Never consulted by consensus logic.
+    const ReorgLog& GetReorgLog() const { return reorg_log_; }
     void EnterSafeMode(const std::string& reason);
     void RequestChainstateRecovery(const std::string& reason,
                                    const std::string& source_tag = "[external]");
@@ -1158,6 +1163,7 @@ private:
     // catches a startup-side partial-commit; it would just race.
     bool journal_verified_at_startup_ = false;
     std::string safe_mode_reason_;
+    ReorgLog reorg_log_;
     std::chrono::steady_clock::time_point safe_mode_entered_time_;
 
     // Crash safety: Incomplete reorg detection

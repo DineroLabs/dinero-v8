@@ -11632,3 +11632,18 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_chainwork_from_hex.cpp)
   add_test(NAME ChainworkFromHex COMMAND test_chainwork_from_hex)
   set_tests_properties(ChainworkFromHex PROPERTIES LABELS "consensus;chainwork" TIMEOUT 30)
 endif()
+
+# ─── reorg event feed, Task 1: ReorgLog — bounded reorg ring ────────────────
+add_executable(test_reorg_log
+  tests/test_reorg_log.cpp
+)
+add_dependencies(test_reorg_log gtest gtest_main)
+target_include_directories(test_reorg_log BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_reorg_log PRIVATE
+  GTest::gtest_main
+)
+add_test(NAME test_reorg_log COMMAND test_reorg_log)
+set_tests_properties(test_reorg_log PROPERTIES TIMEOUT 60)
