@@ -75,8 +75,37 @@ Each polled node needs an unprivileged account restricted to a forced command:
 command="/usr/local/bin/fleet-watcher-rpc",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA...
 ```
 
-The wrapper accepts only the read RPCs this tool uses and `invocation-id`. It
-must never provide a shell.
+The wrapper ships as [`deploy/fleet-watcher-rpc`](deploy/fleet-watcher-rpc).
+Install it rather than transcribing it — it is a security boundary, and a
+security boundary assembled by copy-paste is one nobody can diff against an
+original:
+
+```bash
+sudo install -o root -g root -m 0755 \
+    deploy/fleet-watcher-rpc /usr/local/bin/fleet-watcher-rpc
+```
+
+It accepts two commands, `rpc` and `invocation-id`, compared **whole** against
+fixed strings. It never provides a shell.
+
+**It enforces a method allowlist.** The threat is the watcher's private key
+being stolen: that adversary writes the request body, so "the watcher only
+sends read RPCs" is a hope about the client, not a property of the request.
+Without the check, holding the key means calling *any* method the node's RPC
+server exposes, on every node, from an account whose entire purpose is
+read-only observation. Permitted methods are exactly the five
+[`poller.py`](poller.py) calls — `getdaemonstatus`,
+`blockchain.getbestblockhash`, `blockchain.getblockhash`, `node.status`,
+`safemode.status`. Adding one widens what a stolen key reaches.
+
+The allowlist is a real JSON parse, not a grep for the method name: a hostile
+body can carry duplicate `method` keys, `\u`-escaped spellings, or a decoy
+inside a nested string, and every text-matching approach loses to at least one
+of those. The request forwarded to the daemon is **rebuilt from validated
+fields**, so anything smuggled alongside never arrives. Parameters are shape-
+checked — `blockchain.getblockhash` takes one non-negative integer, and
+because `bool` subclasses `int`, `true` is rejected rather than read as
+height 1.
 
 **The payload arrives on stdin, so there is nothing to quote.** An earlier
 design passed it as an argument, which forced the wrapper to recover it from
@@ -87,29 +116,17 @@ keeps the quotes; `eval` fixes both by executing text the caller influenced.
 All three present identically: every node unreachable, which reads as a
 fleet-wide outage rather than a one-line shell mistake.
 
-```sh
-#!/bin/sh
-# /usr/local/bin/fleet-watcher-rpc — forced command; the caller never gets a shell.
-set -eu
-case "${SSH_ORIGINAL_COMMAND:-}" in
-  rpc)
-    # JSON-RPC body on stdin, straight through to the node's loopback RPC.
-    curl -sS --max-time 10 -X POST \
-        -H 'Content-Type: application/json' --data-binary @- \
-        "http://127.0.0.1:${DINERO_RPC_PORT:?}/"
-    ;;
-  invocation-id)
-    systemctl show "${DINERO_UNIT:-dinerod}" -p InvocationID --value
-    ;;
-  *)
-    echo "refused: ${SSH_ORIGINAL_COMMAND:-<empty>}" >&2
-    exit 64
-    ;;
-esac
+`DINERO_RPC_PORT` must be set for the forced command — it does not inherit an
+interactive shell's environment. Set it in the `authorized_keys` entry:
+
+```
+environment="DINERO_RPC_PORT=20998",command="/usr/local/bin/fleet-watcher-rpc",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA...
 ```
 
-`SSH_ORIGINAL_COMMAND` is now compared whole against two fixed strings. There is
-no parsing to get wrong.
+`environment=` requires `PermitUserEnvironment=yes` in `sshd_config`. If that
+is not acceptable, hardcode the port in the installed copy instead — the
+wrapper fails closed when the variable is absent, so a missing port shows up
+as every node unreachable rather than as a silent default.
 
 Verify the contract at install time, from the watcher host, as the watcher's own
 account — this exercises the key, the host-key policy and the wrapper together:
@@ -123,6 +140,27 @@ printf '%s' '{"jsonrpc": "2.0", "id": "t", "method": "getdaemonstatus", "params"
 Expected: a JSON reply containing `"height"`. Note the spaces in the payload —
 they match what `json.dumps` emits, so this exercises the real traffic shape
 rather than a compact hand-typed one.
+
+Then verify the **negative** case, which is the one that actually matters. A
+wrapper with no allowlist passes the check above just as happily:
+
+```bash
+printf '%s' '{"jsonrpc": "2.0", "id": "t", "method": "stop", "params": []}' \
+  | sudo -u fleet-watcher ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+        watcher@<node> rpc; echo "exit=$?"
+```
+
+Expected: `refused: request rejected by allowlist` on stderr and `exit=64`. If
+this returns a JSON-RPC reply instead, the installed wrapper is a full RPC
+proxy and the node account is not read-only.
+
+And that a shell is genuinely unreachable:
+
+```bash
+sudo -u fleet-watcher ssh -o BatchMode=yes watcher@<node> 'bash -i'; echo "exit=$?"
+```
+
+Expected: `refused: bash -i` and `exit=64`.
 
 ## Tests
 
