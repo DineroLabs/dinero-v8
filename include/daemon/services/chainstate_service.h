@@ -11,6 +11,7 @@
 #include "daemon/services/unreadable_block_set.h"  // thread-safe unreadable-block tracking
 #include "daemon/services/stateless_replay_shielded_decision.h"  // #356: marker-guard decision
 #include "daemon/sync_stats_recorder.h"  // Forest checkpoint delta campaign phase 0
+#include "daemon/reorg_log.h"
 #include "consensus/block_validation.h"  // Reorg fix: Production consensus validator
 #include "consensus/consensus_utxo_set.h"  // Phase 2: Pure in-memory UTXO set
 #include "consensus/shielded/anchor_history.h"
@@ -31,6 +32,7 @@
 #include <atomic>  // Phase 44: For thread-safe stop signal
 #include <mutex>   // Phase 44: For background validation state protection
 #include <condition_variable>  // #298: wake-on-store for background validation
+#include <algorithm>
 
 // Phase C.1.5: Forward declaration for P2P message handlers
 struct P2PMessage;
@@ -139,8 +141,9 @@ public:
     // wallet's scan watermark to `base_height`. Complements the block-replay
     // rescan, which cannot see pre-base coins (no block bodies in headers-only
     // mode). Idempotent. Returns the number of owned coins recorded, or -1 if no
-    // snapshot UTXO set is loaded. Used by both the LoadSnapshot completion hook
-    // and the wallet-opened-after-snapshot trigger in WalletService.
+    // snapshot UTXO set is loaded. Used by the LoadSnapshot completion hook,
+    // WalletService startup sweep, and wallet.importmnemonic when the mnemonic
+    // is imported only after snapshot activation.
     int RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height);
 
     // v7 shielded pool state accessors.
@@ -322,6 +325,10 @@ public:
     // Safe mode prevents mining during dangerous chain conditions
     bool IsInSafeMode() const { return safe_mode_active_; }
     std::string GetSafeModeReason() const { return safe_mode_reason_; }
+
+    /// Read-only observability: reorganisations recorded this process lifetime.
+    /// Exposed over RPC as reorg.status. Never consulted by consensus logic.
+    const ReorgLog& GetReorgLog() const { return reorg_log_; }
     void EnterSafeMode(const std::string& reason);
     void RequestChainstateRecovery(const std::string& reason,
                                    const std::string& source_tag = "[external]");
@@ -349,6 +356,11 @@ public:
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }
     uint256 GetAssumeUTXOBaseBlock() const { return assumeutxo_base_block_; }
     uint32_t GetAssumeUTXOBaseHeight() const { return assumeutxo_base_height_; }
+    // Wallet recovery must remain available after background validation
+    // promotes the snapshot and clears assumeutxo_active_. Snapshot-bootstrapped
+    // nodes still lack pre-base block bodies after promotion, so a wallet opened
+    // or imported later must scan the configured snapshot UTXO section.
+    uint32_t GetSnapshotWalletRecoveryBaseHeight() const;
 
     // Fatal-state-machine lifecycle (docs/design/assumeutxo-fatal-state-machine.md).
     // Never nullptr after Initialize(); guarded internally.
@@ -1151,6 +1163,7 @@ private:
     // catches a startup-side partial-commit; it would just race.
     bool journal_verified_at_startup_ = false;
     std::string safe_mode_reason_;
+    ReorgLog reorg_log_;
     std::chrono::steady_clock::time_point safe_mode_entered_time_;
 
     // Crash safety: Incomplete reorg detection

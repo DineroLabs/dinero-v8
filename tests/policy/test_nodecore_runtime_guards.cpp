@@ -12,6 +12,20 @@ namespace {
 void CallbackA(int32_t, const char*, void*) {}
 void CallbackB(int32_t, const char*, void*) {}
 
+struct FakeHash {
+    std::string value;
+
+    std::string GetHex() const { return value; }
+};
+
+struct DivergedAssumeUtxoSnapshot {
+    bool has_active_tip = true;
+    uint32_t active_tip_height = 83572;
+    FakeHash active_tip_hash{"snapshot-base"};
+    uint32_t storage_height = 0;
+    std::string storage_hash = "genesis";
+};
+
 TEST(NodeCoreRuntimeGuards, QueryGateRequiresLiveAppAndNoShutdown) {
     dinero::nodecore::RuntimeQueryState state;
 
@@ -25,6 +39,25 @@ TEST(NodeCoreRuntimeGuards, QueryGateRequiresLiveAppAndNoShutdown) {
 
     state.shutdown_requested = true;
     EXPECT_FALSE(dinero::nodecore::IsQueryable(state));
+}
+
+TEST(NodeCoreRuntimeGuards, ReportedTipUsesConsensusActiveViewNotStorageFrontier) {
+    const DivergedAssumeUtxoSnapshot snapshot;
+    const auto tip = dinero::nodecore::CaptureAuthoritativeTip(snapshot);
+
+    EXPECT_EQ(tip.height, snapshot.active_tip_height);
+    EXPECT_EQ(tip.hash, snapshot.active_tip_hash.value);
+    EXPECT_NE(tip.height, snapshot.storage_height);
+    EXPECT_NE(tip.hash, snapshot.storage_hash);
+}
+
+TEST(NodeCoreRuntimeGuards, ReportedTipIsEmptyUntilActiveTipIsPublished) {
+    DivergedAssumeUtxoSnapshot snapshot;
+    snapshot.has_active_tip = false;
+
+    const auto tip = dinero::nodecore::CaptureAuthoritativeTip(snapshot);
+    EXPECT_EQ(tip.height, 0U);
+    EXPECT_TRUE(tip.hash.empty());
 }
 
 TEST(NodeCoreRuntimeGuards, EventCallbackSlotSnapshotsCoherentPairsUnderContention) {

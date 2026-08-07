@@ -203,6 +203,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_reorg_state_restoration.sh)
     message(STATUS "  ✓ UtreexoLiveReorgStateRestoration registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_reorg_event_feed.sh)
+    add_test(
+        NAME ReorgEventFeed
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_reorg_event_feed.sh
+    )
+    set_tests_properties(ReorgEventFeed PROPERTIES
+        LABELS "integration;reorg;rpc;observability"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ ReorgEventFeed registered (daemon: $<TARGET_FILE:dinerod>)")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_cross_seed_restart_reorg_parity.sh)
     add_test(
         NAME CrossSeedRestartReorgParity
@@ -674,6 +687,28 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
         RUN_SERIAL TRUE
     )
     message(STATUS "  ✓ AssumeUtxoCorruptCheckpointRecovery registered")
+endif()
+
+# #353 late-import continuation: the snapshot is active before the funded
+# mnemonic is imported.  The import RPC must scan the configured V4 snapshot's
+# UTXO section after installing watch scripts; block replay alone cannot find
+# pre-base coins because their transaction bodies are absent.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_late_wallet_import.sh)
+    add_test(
+        NAME AssumeUtxoLateWalletImport
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_late_wallet_import.sh
+    )
+    # The broad CI lane excludes integration tests, so tests.yml invokes this
+    # exact name serially with --no-tests=error.  Keeping the label honest also
+    # prevents a second expensive daemon run in the broad lane.
+    set_tests_properties(AssumeUtxoLateWalletImport PROPERTIES
+        LABELS "integration;assumeutxo;snapshot;wallet;recovery"
+        TIMEOUT 600
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ AssumeUtxoLateWalletImport registered")
 endif()
 
 # issue #214: two-node integration repro of in-daemon staleness recovery.
@@ -1867,6 +1902,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         ReconsiderCrashRestartEquivalence InvalidityImportEquivalence
         TipPersistRestartEquivalence RecoveryMarkerRestartEquivalence
         ReorgMarkerAlignedRestartEquivalence InterruptedReorgFailSafe
+        ReorgEventFeed
         HeaderCFRestartEquivalence HeaderFilterReplayEquivalence
         PositionIndexRestartEquivalence HeaderBacklogRestartEquivalence
         CompactBlockRelayE2E PeerMetadataRuntimeIdentity
