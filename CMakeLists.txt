@@ -927,6 +927,7 @@ add_library(dinero_core STATIC
   src/mining/payout_spec.cpp  # Phase C1: Daemon-defined pool payouts
   src/daemon/mining_safety_gates.cpp
   ${DINERO_CORE_MINING_TELEMETRY_SOURCES}
+  src/daemon/header_seed_resolver.cpp
   src/daemon/header_metadata_recovery.cpp
   src/daemon/undo_rebuild_orchestrator.cpp  # Offline --rebuild-undo-range orchestrator (commit #4 of post-Apr 30 series)
 
