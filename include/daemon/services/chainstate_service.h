@@ -609,8 +609,9 @@ public:
     // #309: record a stored body's flatfile position (file/pos/size) + BLOCK_HAVE_DATA
     // in the block's existing ChainDB header metadata, so a stored-but-not-yet-
     // connected block (competing side-branch above the active tip) is recognized
-    // by HasArchivalBlockBody / the import loop. No-op if header metadata is absent
-    // or the body position is already recorded. Wired from the scheduler's
+    // by HasArchivalBlockBody / the import loop. An existing position is retained
+    // only when it still reads back as this exact block; stale/unreadable metadata
+    // is replaced by the newly verified position. Wired from the scheduler's
     // SetPersistBodyPositionCallback (invoked outside the scheduler mutex).
     void PersistStoredBodyPosition(const uint256& hash, const FilePosition& pos);
     bool hasFlatfileBlockByHash(const uint256& hash) const;

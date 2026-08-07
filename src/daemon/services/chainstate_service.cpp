@@ -5353,14 +5353,22 @@ void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const Fil
                                       hash.GetHex().substr(0, 16));
         return;
     }
-    ChainDB::PersistedHeaderMetadata metadata;
-    auto md_result = chain_db_->getHeaderMetadata(hash);
-    if (md_result.status() == Status::Ok) {
-        metadata = md_result.value();
-        if ((metadata.status_flags & BLOCK_HAVE_DATA) && metadata.data_size > 0) {
-            return;  // body position already recorded
+    const auto persist_result = storage::PersistVerifiedArchivalBodyPosition(
+        *chain_db_, block_storage_.get(), hash, pos);
+    if (persist_result.status() == Status::Ok) {
+        if (logger_) {
+            if (persist_result.value() == storage::BodyPositionPersistResult::ReplacedStale) {
+                logger_->warning("[#309] PersistStoredBodyPosition: replaced stale body position " +
+                                 hash.GetHex().substr(0, 16));
+            } else if (persist_result.value() == storage::BodyPositionPersistResult::Stored) {
+                logger_->info("[#309] persisted body position " + hash.GetHex().substr(0, 16));
+            }
         }
-    } else {
+        return;
+    }
+
+    ChainDB::PersistedHeaderMetadata metadata;
+    if (persist_result.status() == Status::NotFound) {
         // No metadata row yet: the competing header may live only in the in-memory
         // block index (added by the better-branch import path, never persisted).
         // Build the row from the index so the stored body becomes discoverable.
@@ -5372,6 +5380,12 @@ void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const Fil
         metadata.height = static_cast<int32_t>(idx->height);
         metadata.chainwork = ChainworkFromHex(idx->chainwork);
         metadata.status_flags = idx->status | BLOCK_VALID_HEADER;
+    } else {
+        if (logger_) {
+            logger_->warning("[#309] PersistStoredBodyPosition: existing metadata check failed for " +
+                             hash.GetHex().substr(0, 16));
+        }
+        return;
     }
     metadata.file_number = pos.file_number;
     metadata.data_pos = static_cast<uint32_t>(pos.offset);

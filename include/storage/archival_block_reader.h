@@ -2,6 +2,9 @@
 
 #include "storage/block_storage.h"
 #include "storage/chain_db.h"
+#include "consensus/block_lifecycle.h"
+
+#include <limits>
 
 namespace dinero::storage {
 
@@ -109,6 +112,61 @@ inline StatusOr<Block> ReadArchivalBlock(const ChainDB& chain_db,
                                          const uint256& hash,
                                          ArchivalReadMode mode = ArchivalReadMode::AllowLegacyFallback) {
     return ReadArchivalBlockDetailed(chain_db, block_storage, hash, mode).result;
+}
+
+enum class BodyPositionPersistResult {
+    Stored,
+    ReplacedStale,
+    RetainedReadable
+};
+
+// Record a newly-written, already-verified body position for an existing
+// header. A HAVE_DATA bit is only a claim: interrupted writes and stale
+// flatfile references can leave it pointing at a missing, corrupt, or wrong
+// block. Preserve an existing position only when a strict read resolves to the
+// requested hash; otherwise replace it with the scheduler's verified copy.
+//
+// Status::NotFound means the header metadata row does not exist. The caller
+// that owns the in-memory block index may synthesize that row; storage code
+// deliberately does not know how to do so.
+inline StatusOr<BodyPositionPersistResult> PersistVerifiedArchivalBodyPosition(
+    ChainDB& chain_db,
+    const BlockStorage* block_storage,
+    const uint256& hash,
+    const FilePosition& pos) {
+    if (pos.offset > std::numeric_limits<uint32_t>::max()) {
+        return Status::Invalid;
+    }
+
+    auto metadata_result = chain_db.getHeaderMetadata(hash);
+    if (metadata_result.status() != Status::Ok) {
+        return metadata_result.status();
+    }
+
+    auto metadata = metadata_result.value();
+    const bool claimed_existing_body =
+        (metadata.status_flags & BLOCK_HAVE_DATA) != 0 && metadata.data_size > 0;
+    if (claimed_existing_body) {
+        const auto existing = ReadArchivalBlockDetailed(
+            chain_db, block_storage, hash, ArchivalReadMode::RequireFlatfiles);
+        if (existing.result.status() == Status::Ok &&
+            existing.result.value().GetHash() == hash) {
+            return BodyPositionPersistResult::RetainedReadable;
+        }
+    }
+
+    metadata.file_number = pos.file_number;
+    metadata.data_pos = static_cast<uint32_t>(pos.offset);
+    metadata.data_size = pos.size;
+    metadata.status_flags |= BLOCK_HAVE_DATA;
+    const ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    const Status status = chain_db.putHeaderMetadataPreservingExistingUndo(
+        token, hash, metadata, nullptr);
+    if (status != Status::Ok) {
+        return status;
+    }
+    return claimed_existing_body ? BodyPositionPersistResult::ReplacedStale
+                                 : BodyPositionPersistResult::Stored;
 }
 
 inline ArchivalReadOutcome<UndoRecord> ReadArchivalUndoDetailed(
