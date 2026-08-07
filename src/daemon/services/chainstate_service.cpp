@@ -2683,8 +2683,24 @@ bool ChainstateService::Start() {
                     invalid_descendants_backfilled++;
                 }
                 if (idx->status & BLOCK_VALID_CHAIN) {
-                    AddCandidate(idx);
-                    candidates_seeded++;
+                    // Startup rebuild is parent-first, and
+                    // BackfillFailedChildFromParent() immediately above has
+                    // already propagated persisted invalidity onto this entry.
+                    // Re-running AddCandidate() here would call
+                    // HasInvalidAncestor() for every connected block, walking
+                    // back to genesis each time (O(n^2) restart time on a long
+                    // chain).  Apply the remaining candidate gate directly and
+                    // preserve AddCandidate's parent-tip replacement semantics.
+                    const uint32_t failure_flags =
+                        idx->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
+                    if (failure_flags == 0 && (idx->status & BLOCK_HAVE_DATA)) {
+                        std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+                        if (idx->pprev) {
+                            candidates_.erase(idx->pprev);
+                        }
+                        candidates_.insert(idx);
+                        candidates_seeded++;
+                    }
                 }
             }
         }
