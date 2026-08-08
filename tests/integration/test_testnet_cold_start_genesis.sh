@@ -21,7 +21,14 @@ fail() {
 }
 
 cleanup() {
-    [[ -n "${PID}" ]] && kill "${PID}" 2>/dev/null || true
+    if [[ -n "${PID}" ]]; then
+        kill "${PID}" 2>/dev/null || true
+        # The daemon writes its final state while handling SIGTERM.  Removing
+        # the datadir before the child exits races those writes and can make a
+        # completely successful test fail with "Directory not empty".
+        wait "${PID}" 2>/dev/null || true
+        PID=""
+    fi
     if [[ "${KEEP_ON_FAIL}" != "1" ]]; then
         rm -rf "${DATADIR}" "${LOGFILE}"
     fi

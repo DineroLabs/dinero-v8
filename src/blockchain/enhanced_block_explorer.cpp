@@ -5,6 +5,7 @@
 #include "wallet/wallet_balance_service.h"
 #include "common/sha256d.h"
 #include "crypto/ripemd160.h"
+#include "consensus/subsidy.h"
 #include <QDebug>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -619,16 +620,23 @@ QJsonObject EnhancedBlockExplorer::getSupplyStats() {
     if (!initialized_) {
         return createErrorResponse("Block explorer not initialized");
     }
-    
+
     try {
+        const uint32_t height = static_cast<uint32_t>(blockchain_->getBlockHeight());
+        const uint64_t totalIssued = dinero::ConsensusSubsidy::GetTotalIssuedAtHeight(height);
+        const uint64_t spendableIssued = dinero::ConsensusSubsidy::GetPoWIssuedAtHeight(height);
+
         QJsonObject supply;
-        supply["total_supply"] = static_cast<qint64>(9900000000000000); // 99M DIN in una
-        supply["circulating_supply"] = static_cast<qint64>(2000000000000000); // 20M DIN in una
-        supply["max_supply"] = static_cast<qint64>(9900000000000000); // 99M DIN in una
-        supply["premine"] = static_cast<qint64>(0);  // Fair Launch v3: no premine
-        supply["mined"] = 0; // 0 DIN mined so far
+        supply["height"] = static_cast<int>(height);
+        supply["total_issued_una"] = static_cast<qint64>(totalIssued);
+        supply["spendable_issued_una"] = static_cast<qint64>(spendableIssued);
+        supply["genesis_burned_una"] =
+            static_cast<qint64>(dinero::ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA);
+        supply["max_supply_una"] = QJsonValue::Null;
+        supply["tail_emission_una_per_block"] =
+            static_cast<qint64>(dinero::ConsensusSubsidy::TAIL_EMISSION_UNA);
+        supply["monetary_policy"] = "uncapped_tail_emission";
         return supply;
-        
     } catch (const std::exception& e) {
         return createErrorResponse(QString("Failed to get supply stats: %1").arg(e.what()));
     }
