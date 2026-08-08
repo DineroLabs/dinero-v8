@@ -180,6 +180,43 @@ static din::Json rpc_safemode_status(const ExecutionContext& ctx, const din::Jso
 }
 
 // ═══════════════════════════════════════════════════════════════
+// reorg.status — read-only record of reorganisations this process lifetime.
+//
+// `total` is the process-lifetime count, NOT the ring length. A consumer that
+// sees total outrun the events it can account for knows the ring overflowed and
+// can report a gap instead of silently under-reporting. `boot_id` changes on
+// restart, so a consumer can tell a reset apart from data loss.
+// ═══════════════════════════════════════════════════════════════
+static din::Json rpc_reorg_status(const ExecutionContext& ctx, const din::Json& params) {
+    (void)params;
+    din::Json result;
+    auto* daemon_ctx = ctx.daemon ? ctx.daemon : DaemonContext::instance();
+    if (!daemon_ctx || !daemon_ctx->chainstate) {
+        result["error"] = "chainstate_not_initialized";
+        return result;
+    }
+    // ONE snapshot, taken under a single lock. Calling BootId()/Total()/Events()
+    // separately would let a Record() land between them, so total could outrun
+    // the events in the same reply — a fabricated overflow on the one signal a
+    // consumer uses to detect real ones.
+    const auto snapshot = daemon_ctx->chainstate->GetReorgLog().Take();
+    result["boot_id"] = snapshot.boot_id;
+    result["total"] = static_cast<Json::UInt64>(snapshot.total);
+
+    din::Json events(Json::arrayValue);
+    for (const auto& event : snapshot.events) {
+        din::Json item(Json::objectValue);
+        item["seq"] = static_cast<Json::UInt64>(event.seq);
+        item["timestamp"] = event.timestamp;
+        item["disconnected"] = static_cast<Json::UInt>(event.disconnected);
+        item["connected"] = static_cast<Json::UInt>(event.connected);
+        events.append(item);
+    }
+    result["events"] = events;
+    return result;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // daemon.shieldedstatehash — composite hash of every reorg-bound
 // state container (utreexo forest + shielded tree + nullifier set
 // + anchor history). Drives the ShieldedReorgInvertibility property
@@ -410,6 +447,25 @@ void register_daemon_status_rpc_methods(RpcRegistry& registry) {
     sm_status_meta.result.type = "object";
     sm_status_meta.result.desc = "{ active: bool, reason: string }";
     registry.registerHandler("safemode.status", rpc_safemode_status, sm_status_meta, "Safe Mode");
+
+    // reorg.status — read-only reorganisation record.
+    //
+    // Registered HERE, alongside safemode.status, deliberately. This function is
+    // reached from RegisterDiagnosticsRPC(ctx) at src/rpc/rpc_init.cpp:32 and is
+    // empirically live — safemode.status answers on production nodes. Creating a
+    // new registration function is exactly how getchaintips, getchainwork and
+    // getreorgstatus became unreachable: they are defined, compiled, and called
+    // from nowhere.
+    RpcMethodMeta reorg_status_meta;
+    reorg_status_meta.name = "status";
+    reorg_status_meta.ns = "reorg";
+    reorg_status_meta.description =
+        "Read the in-memory record of chain reorganisations for this process: "
+        "a bounded ring of recent events plus a process-lifetime total.";
+    reorg_status_meta.result.type = "object";
+    reorg_status_meta.result.desc =
+        "{ boot_id: string, total: uint, events: [{seq, timestamp, disconnected, connected}] }";
+    registry.registerHandler("reorg.status", rpc_reorg_status, reorg_status_meta, "Reorg");
 
     // safemode.exit — operator manually clears safe mode
     RpcMethodMeta sm_exit_meta;

@@ -1873,19 +1873,21 @@ void WalletManager::open(const std::string& name) {
 
     WLOG_INFO("[OPEN] Wallet database path: " + walletPath);
 
-    // Check if wallet file exists.  On iOS the app container UUID changes
-    // on reinstall/rebuild, so the absolute path stored in the registry may
-    // be stale.  Try the canonical location under current dataDir_ first.
-    if (!std::filesystem::exists(walletPath)) {
-        std::filesystem::path expected = dataDir_ / "wallets" / ("wallet_" + name + ".db");
-        if (std::filesystem::exists(expected)) {
-            WLOG_WARN("[OPEN] Registry path stale, repairing to: " + expected.string());
-            walletPath = expected.string();
-            // Update registry so future opens are fast
-            updateWalletPathInRegistry(name, walletPath);
-        } else {
-            throw std::runtime_error("Wallet database file not found: " + walletPath);
-        }
+    // On iOS the app container UUID changes on reinstall/rebuild. The old
+    // container can remain readable briefly, so "stored path still exists" is
+    // NOT evidence that it belongs to the current app container. Prefer the
+    // canonical wallet file under the current dataDir_ whenever it exists and
+    // repair the registry even if the stale absolute path also still exists.
+    const std::filesystem::path expected =
+        dataDir_ / "wallets" / ("wallet_" + name + ".db");
+    if (std::filesystem::exists(expected) &&
+        std::filesystem::path(walletPath).lexically_normal() != expected.lexically_normal()) {
+        WLOG_WARN("[OPEN] Registry path belongs to an old data directory; repairing to: " +
+                  expected.string());
+        walletPath = expected.string();
+        updateWalletPathInRegistry(name, walletPath);
+    } else if (!std::filesystem::exists(walletPath)) {
+        throw std::runtime_error("Wallet database file not found: " + walletPath);
     }
 
     // Close current wallet if open
@@ -5915,7 +5917,7 @@ int WalletManager::rescanUtxoSet(
             INSERT INTO utxos
             (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, is_mature, snapshot_anchored, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?)
-            ON CONFLICT(txid, vout) DO UPDATE SET
+            ON CONFLICT DO UPDATE SET
                 is_spent = 0,
                 spent_txid = NULL,
                 spent_height = NULL,
@@ -5929,29 +5931,48 @@ int WalletManager::rescanUtxoSet(
         )";
 
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            int bind_index = 1;
-            sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
-            sqlite3_bind_text(stmt, bind_index++, e.txid_hex.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.vout));
-            sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64(stmt, bind_index++, static_cast<int64_t>(e.amount_una));
-            sqlite3_bind_text(stmt, bind_index++, script_pubkey_hex.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.height));
-            sqlite3_bind_int(stmt, bind_index++, e.is_coinbase ? 1 : 0);
-            sqlite3_bind_int(stmt, bind_index++, is_mature);
-            sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-            if (sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0) {
-                recorded++;
-            }
-            sqlite3_finalize(stmt);
+        const int prepare_rc = sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr);
+        if (prepare_rc != SQLITE_OK) {
+            throw std::runtime_error(
+                "snapshot UTXO upsert prepare failed: " + std::string(sqlite3_errmsg(db_)));
         }
+
+        int bind_index = 1;
+        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
+        sqlite3_bind_text(stmt, bind_index++, e.txid_hex.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.vout));
+        sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, bind_index++, static_cast<int64_t>(e.amount_una));
+        sqlite3_bind_text(stmt, bind_index++, script_pubkey_hex.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.height));
+        sqlite3_bind_int(stmt, bind_index++, e.is_coinbase ? 1 : 0);
+        sqlite3_bind_int(stmt, bind_index++, is_mature);
+        sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
+
+        const int step_rc = sqlite3_step(stmt);
+        if (step_rc != SQLITE_DONE) {
+            const std::string error = sqlite3_errmsg(db_);
+            sqlite3_finalize(stmt);
+            throw std::runtime_error("snapshot UTXO upsert failed: " + error);
+        }
+        if (sqlite3_changes(db_) > 0) {
+            recorded++;
+        }
+        sqlite3_finalize(stmt);
     };
 
-    produce(sink);
-
-    exec(db_, "COMMIT");
+    try {
+        produce(sink);
+        exec(db_, "COMMIT");
+    } catch (const std::exception& e) {
+        try {
+            exec(db_, "ROLLBACK");
+        } catch (const std::exception&) {
+            // Preserve the original SQL/producer error below.
+        }
+        WLOG_ERR(std::string("rescanUtxoSet: atomic snapshot import failed: ") + e.what());
+        return -1;
+    }
 
     WLOG_INFO("rescanUtxoSet: recorded " + std::to_string(recorded) +
               " owned UTXO(s) from snapshot UTXO set");

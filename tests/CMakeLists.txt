@@ -623,6 +623,42 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_reconstruct_spent_coins.cpp)
   message(STATUS "✅ Stateless undo spent-coin reconstruction test enabled (#274)")
 endif()
 
+# AssumeUTXO pre-base backfill bodies: the #309 persist callback could only
+# synthesize a missing ChainDB header-metadata row from g_block_index, which a
+# snapshot-bootstrapped node does not populate below its base height. The body
+# was stored to flatfiles and then permanently unreadable, livelocking the
+# genesis->base replay. Pins the HeaderChainSelector fallback.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_persist_pre_base_body_position.cpp)
+  add_executable(test_persist_pre_base_body_position
+    tests/daemon/test_persist_pre_base_body_position.cpp
+    tests/stubs/mempool_test_stubs.cpp  # no-op Mempool seams (chainstate_service.obj refs)
+    tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault isolation seams
+    src/daemon/config.cpp               # GetConfig() — referenced by chainstate_service.obj
+  )
+  target_link_libraries(test_persist_pre_base_body_position PRIVATE
+    dinero_core
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_persist_pre_base_body_position)
+  target_link_directories(test_persist_pre_base_body_position PRIVATE /opt/homebrew/lib)
+  if(APPLE)
+    target_link_libraries(test_persist_pre_base_body_position PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_include_directories(test_persist_pre_base_body_position PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME PersistPreBaseBodyPosition COMMAND test_persist_pre_base_body_position)
+  set_tests_properties(PersistPreBaseBodyPosition PROPERTIES
+    LABELS "daemon;assumeutxo;storage;regression"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ Pre-base body position persist regression test enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reindexer_anchor_seed.cpp)
   # Commit #1 of the offline --rebuild-undo-range series: tests that
   # BlockReindexer::seedFromAnchor() correctly populates in-memory state
@@ -11632,3 +11668,45 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_chainwork_from_hex.cpp)
   add_test(NAME ChainworkFromHex COMMAND test_chainwork_from_hex)
   set_tests_properties(ChainworkFromHex PROPERTIES LABELS "consensus;chainwork" TIMEOUT 30)
 endif()
+
+# ─── reorg event feed, Task 1: ReorgLog — bounded reorg ring ────────────────
+add_executable(test_reorg_log
+  tests/test_reorg_log.cpp
+)
+add_dependencies(test_reorg_log gtest gtest_main)
+target_include_directories(test_reorg_log BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_reorg_log PRIVATE
+  GTest::gtest_main
+)
+add_test(NAME test_reorg_log COMMAND test_reorg_log)
+set_tests_properties(test_reorg_log PROPERTIES TIMEOUT 60)
+
+# ---------------------------------------------------------------------------
+# FleetWatcherTests — the fleet watcher's Python suite (tools/fleet-watcher).
+#
+# Registered here, deliberately UNLABELLED, so it runs in the ordinary ctest
+# sweep of the "Linux x86_64 - full build + ctest" job. That job is a required
+# check, and the main lanes filter with
+# `--label-exclude 'integration|gate|release|canonicality|fuzz'` — a label from
+# that set would remove this from every lane that gates a merge.
+#
+# Registered UNCONDITIONALLY, with no find_package(Python3) guard. A guard is
+# how this test would quietly cease to exist: if the interpreter probe failed,
+# add_test() would never run, ctest would report success over zero tests, and
+# the suite would be exactly what it was before this registration — 142 tests
+# that pass locally and gate nothing. A loud failure on a host without python3
+# is the better error. scripts/ci/check_ctest_integrity.py resolves bare
+# `python3` on PATH, so this satisfies that gate rather than tripping it.
+#
+# unittest, not pytest: the suite has no third-party dependency and neither
+# should running it. `discover -t .` sets the top-level directory so that
+# `tests/` is importable as a package and the modules under test resolve.
+add_test(
+    NAME FleetWatcherTests
+    COMMAND python3 -m unittest discover -s tests -t .
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools/fleet-watcher
+)
+set_tests_properties(FleetWatcherTests PROPERTIES TIMEOUT 120)

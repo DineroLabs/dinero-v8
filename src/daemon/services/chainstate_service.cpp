@@ -2683,8 +2683,24 @@ bool ChainstateService::Start() {
                     invalid_descendants_backfilled++;
                 }
                 if (idx->status & BLOCK_VALID_CHAIN) {
-                    AddCandidate(idx);
-                    candidates_seeded++;
+                    // Startup rebuild is parent-first, and
+                    // BackfillFailedChildFromParent() immediately above has
+                    // already propagated persisted invalidity onto this entry.
+                    // Re-running AddCandidate() here would call
+                    // HasInvalidAncestor() for every connected block, walking
+                    // back to genesis each time (O(n^2) restart time on a long
+                    // chain).  Apply the remaining candidate gate directly and
+                    // preserve AddCandidate's parent-tip replacement semantics.
+                    const uint32_t failure_flags =
+                        idx->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
+                    if (failure_flags == 0 && (idx->status & BLOCK_HAVE_DATA)) {
+                        std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+                        if (idx->pprev) {
+                            candidates_.erase(idx->pprev);
+                        }
+                        candidates_.insert(idx);
+                        candidates_seeded++;
+                    }
                 }
             }
         }
@@ -3838,14 +3854,15 @@ bool ChainstateService::Start() {
         }
     }
 
-    if (utxo_position_index_ && chain_db_ && consensus_utxo_set_) {
+    if (utxo_position_index_ && consensus_utxo_set_) {
         const auto& forest = consensus_utxo_set_->GetForest();
         if (forest.getNumLeaves() == 0) {
             utxo_position_index_->Clear();
             if (logger_) logger_->info("[ChainstateService] UTXO position index cleared for empty forest");
         } else {
-            if (logger_) logger_->info("[ChainstateService] Rebuilding UTXO position index from restored forest");
-            const auto rebuild_report = utxo_position_index_->Rebuild(*chain_db_, forest);
+            if (logger_) logger_->info("[ChainstateService] Rebuilding UTXO position index from active consensus set");
+            const auto rebuild_report = utxo_position_index_->Rebuild(
+                consensus_utxo_set_->GetUTXOs(), forest);
             if (!rebuild_report.success) {
                 if (logger_) logger_->warning("[ChainstateService] UTXO position index rebuild incomplete — proof serving may be degraded");
             } else if (rebuild_report.missing > 0) {
@@ -5352,25 +5369,76 @@ void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const Fil
                                       hash.GetHex().substr(0, 16));
         return;
     }
+    const auto persist_result = storage::PersistVerifiedArchivalBodyPosition(
+        *chain_db_, block_storage_.get(), hash, pos);
+    if (persist_result.status() == Status::Ok) {
+        if (logger_) {
+            if (persist_result.value() == storage::BodyPositionPersistResult::ReplacedStale) {
+                logger_->warning("[#309] PersistStoredBodyPosition: replaced stale body position " +
+                                 hash.GetHex().substr(0, 16));
+            } else if (persist_result.value() == storage::BodyPositionPersistResult::Stored) {
+                logger_->info("[#309] persisted body position " + hash.GetHex().substr(0, 16));
+            }
+        }
+        return;
+    }
+
     ChainDB::PersistedHeaderMetadata metadata;
-    auto md_result = chain_db_->getHeaderMetadata(hash);
-    if (md_result.status() == Status::Ok) {
-        metadata = md_result.value();
-        if ((metadata.status_flags & BLOCK_HAVE_DATA) && metadata.data_size > 0) {
-            return;  // body position already recorded
+    if (persist_result.status() == Status::NotFound) {
+        // No metadata row yet. Two sources can supply one, tried in order.
+        //
+        // 1. The in-memory block index: a competing header added by the
+        //    better-branch import path and never persisted.
+        //
+        // 2. The HeaderChainSelector — the ONLY source for an AssumeUTXO
+        //    PRE-BASE body. g_block_index is rebuilt from ChainDB's HEIGHT
+        //    index, which a snapshot-bootstrapped node does not populate below
+        //    its base height, so FindBlockIndex misses every pre-base hash
+        //    (observed in the field: "Loaded 1 block index entries"). Without
+        //    this fallback the backfilled body sits in the flatfile with
+        //    nothing pointing at it — HasArchivalBlockBody / ReadArchivalBlock
+        //    resolve a body ONLY through this metadata row — so background
+        //    validation reports it missing forever and the genesis->base
+        //    replay livelocks, re-downloading the same bodies every pass.
+        //
+        //    Scope: this restores READABILITY only. The height index is not
+        //    touched, so getBlockHashByHeight still misses for such a block.
+        //    Background validation resolves pre-base hashes from the header
+        //    chain (canonical_hashes_fallback), so that is sufficient for the
+        //    replay to converge.
+        CBlockIndex* idx = FindBlockIndex(hash);
+        consensus::HeaderIndexEntry header_entry;
+        if (idx) {
+            metadata.parent_hash = idx->pprev ? idx->pprev->hash : uint256();
+            metadata.height = static_cast<int32_t>(idx->height);
+            metadata.chainwork = ChainworkFromHex(idx->chainwork);
+            metadata.status_flags = idx->status | BLOCK_VALID_HEADER;
+        } else if (header_chain_selector_ &&
+                   header_chain_selector_->GetHeaderCopy(hash, header_entry)) {
+            metadata.parent_hash = header_entry.prev_hash;
+            metadata.height = static_cast<int32_t>(header_entry.height);
+            metadata.chainwork = header_entry.chainwork;
+            // The selector carries no validation status. Claim only what is
+            // true here: the header is known and the body is on disk. Never
+            // BLOCK_VALID_CHAIN — nothing has connected this block.
+            metadata.status_flags = BLOCK_VALID_HEADER;
+        } else {
+            // Truly unknown header; nothing to record. This used to return
+            // silently, which is exactly how the pre-base livelock above hid
+            // through two fix iterations — never make it quiet again.
+            if (logger_) {
+                logger_->error("[#309] PersistStoredBodyPosition: stored body has no header "
+                               "in ChainDB, the block index, or the header chain — position "
+                               "DISCARDED, body unreadable: " + hash.GetHex().substr(0, 16));
+            }
+            return;
         }
     } else {
-        // No metadata row yet: the competing header may live only in the in-memory
-        // block index (added by the better-branch import path, never persisted).
-        // Build the row from the index so the stored body becomes discoverable.
-        CBlockIndex* idx = FindBlockIndex(hash);
-        if (!idx) {
-            return;  // truly unknown header; nothing to record
+        if (logger_) {
+            logger_->warning("[#309] PersistStoredBodyPosition: existing metadata check failed for " +
+                             hash.GetHex().substr(0, 16));
         }
-        metadata.parent_hash = idx->pprev ? idx->pprev->hash : uint256();
-        metadata.height = static_cast<int32_t>(idx->height);
-        metadata.chainwork = ChainworkFromHex(idx->chainwork);
-        metadata.status_flags = idx->status | BLOCK_VALID_HEADER;
+        return;
     }
     metadata.file_number = pos.file_number;
     metadata.data_pos = static_cast<uint32_t>(pos.offset);
@@ -5822,7 +5890,7 @@ void ChainstateService::setChainOracleClient(std::unique_ptr<dinero::ipc::ChainO
 
 void ChainstateService::setHeaderChainSelector(std::shared_ptr<dinero::consensus::HeaderChainSelector> header_chain) {
     header_chain_selector_ = header_chain;
-    if (header_chain_selector_) {
+    if (header_chain_selector_ && logger_) {
         logger_->info("[ChainstateService] HeaderChainSelector wired for header sync");
     }
 }
@@ -8517,6 +8585,30 @@ void ChainstateService::ActivateBestChain() {
     // Update active tip (already done by ConnectTip, but ensure consistency)
     PublishActiveTip(best_candidate, TipPublishReason::kSelfHealRealign);
 
+    // Read-only observability, recorded only once the reorg has actually
+    // COMPLETED.
+    //
+    // Placing this earlier — next to the "REORG DETECTED" log, where the paths
+    // are first built — would record intent rather than outcome: roughly twenty
+    // return statements between there and here abort the reorg, so a failed
+    // forest restore would publish a reorg that provably never began. Worse, the
+    // disconnect-failure abort re-adds the pre-reorg tip "so the next pass
+    // restores it", and ActivateBestChain runs on a periodic tick — so one
+    // logical reorg would become N records with differing depths and flood the
+    // 64-entry ring with retries of a single event.
+    //
+    // `is_reorg` is already computed above as `!disconnect_path.empty()`.
+    // Keyed on the disconnect path ALONE, deliberately not the ||-condition the
+    // REORG DETECTED log uses: a connect-only advance is an ordinary new block,
+    // and counting those would make every downstream rate meaningless.
+    //
+    // Record() is noexcept and formats its timestamp outside its own lock, so
+    // it cannot disturb activation. Do not wrap it in a try/catch.
+    if (is_reorg) {
+        reorg_log_.Record(static_cast<uint32_t>(disconnect_path.size()),
+                          static_cast<uint32_t>(connect_path.size()));
+    }
+
     // Post-activation cache hygiene: prune any expired/non-canonical leftovers.
     if (bridge_node_) {
         const size_t evicted = bridge_node_->PruneStaleCacheEntries();
@@ -9069,6 +9161,54 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
     }
 
     return result;
+}
+
+uint32_t ChainstateService::GetSnapshotWalletRecoveryBaseHeight() const {
+    const uint32_t lifecycle_base = std::max(
+        assumeutxo_active_ ? assumeutxo_base_height_ : 0u,
+        promoted_base_height_);
+    if (lifecycle_base > 0) {
+        return lifecycle_base;
+    }
+
+    // New snapshots persist a wallet-recovery marker which deliberately
+    // survives AssumeUTXO mode exit. It is separate from the active lifecycle
+    // keys because promotion removes those once history is proven, while the
+    // node still lacks pre-base block bodies needed by a later-opened wallet.
+    if (utxo_index_) {
+        if (const auto persisted =
+                utxo_index_->GetMetadata("wallet_snapshot_recovery_base_height")) {
+            try {
+                const auto parsed = std::stoull(*persisted);
+                if (parsed > 0 && parsed <= std::numeric_limits<uint32_t>::max()) {
+                    return static_cast<uint32_t>(parsed);
+                }
+            } catch (const std::exception&) {
+                // Fall through to the legacy compatibility path below.
+            }
+        }
+    }
+
+    // Compatibility for nodes promoted by older releases, before the durable
+    // wallet-recovery marker existed. DineroDPI keeps the exact validated V4
+    // snapshot configured after promotion; recover its base from the header.
+    // Require the active chainstate to have reached the base so merely pointing
+    // a fresh/full node at an unrelated file cannot seed wallet rows early.
+    const std::string snapshot_path =
+        config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
+    if (snapshot_path.empty()) {
+        return 0;
+    }
+
+    consensus::SnapshotMetadata header;
+    std::string error;
+    if (!ReadSnapshotHeaderPreview(snapshot_path, header, error) ||
+        header.version != consensus::SNAPSHOT_VERSION_V4 ||
+        header.block_height == 0 ||
+        getBlockHeight() < header.block_height) {
+        return 0;
+    }
+    return header.block_height;
 }
 
 int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height) {
@@ -9862,6 +10002,8 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         if (utxo_index_) {
             utxo_index_->SetMetadata(assumeutxo::kExpectedCommitmentKey,
                                      snapshot_commitment_hex);
+            utxo_index_->SetMetadata("wallet_snapshot_recovery_base_height",
+                                     std::to_string(header.block_height));
             if (has_v3_utreexo_section) {
                 utxo_index_->SetMetadata(assumeutxo::kExpectedUtreexoRootKey,
                                          utreexo_section.utreexo_root.GetHex());
@@ -9878,6 +10020,29 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             // processing. Override with the snapshot's serialized forest to match the
             // block header's utreexo_root commitment.
             consensus_utxo_set_->GetForest() = std::move(*snapshot_forest);
+
+            // LoadSnapshot bypasses ordinary ConnectBlock, so the rebuildable
+            // (txid,vout)->forest-position index does not receive the per-output
+            // AddPosition hooks. Without rebuilding it here, balances recover
+            // but snapshot coins remain unspendable because proof RPCs cannot
+            // locate them. ChainDB intentionally does not contain this imported
+            // coin set, so rebuild from the verified active consensus map.
+            if (utxo_position_index_) {
+                const auto position_report = utxo_position_index_->Rebuild(
+                    consensus_utxo_set_->GetUTXOs(),
+                    consensus_utxo_set_->GetForest());
+                logger_->info(
+                    "[LoadSnapshot] UTXO position index rebuilt from snapshot: matched=" +
+                    std::to_string(position_report.matched) +
+                    " missing=" + std::to_string(position_report.missing) +
+                    " skipped_unspendable=" +
+                    std::to_string(position_report.skipped_unspendable));
+                if (!position_report.success || position_report.missing > 0) {
+                    logger_->warning(
+                        "[LoadSnapshot] Some snapshot UTXOs are missing from the restored forest; "
+                        "proof serving is degraded for those outputs");
+                }
+            }
 
             // Persist imported forest as a checkpoint so restart does not require rebuild.
             auto serialized = consensus_utxo_set_->GetForest().serialize();

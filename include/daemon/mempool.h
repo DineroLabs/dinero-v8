@@ -27,6 +27,10 @@ namespace din::sp {
 
 namespace dinero {
 
+namespace consensus {
+class IConsensusUTXOSet;
+}
+
 // ============================================================================
 // Step 3/5: Structured Transaction Ingress (Phase G.3 → Step 5)
 // ============================================================================
@@ -161,7 +165,9 @@ public:
         size_t max_replacement_count = 0;
     };
 
-    explicit Mempool(ChainDB* chain_db);
+    explicit Mempool(ChainDB* chain_db,
+                     const consensus::IConsensusUTXOSet* consensus_utxo_set = nullptr,
+                     bool allow_chain_db_fallback = false);
     ~Mempool();
 
     // ========================================================================

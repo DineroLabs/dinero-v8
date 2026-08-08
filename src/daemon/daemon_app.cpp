@@ -3,6 +3,7 @@
 #include <TargetConditionals.h>
 #endif
 #include "daemon/chainstate_recovery_marker.h"
+#include "daemon/header_seed_resolver.h"
 #include "daemon/header_metadata_recovery.h"
 #include "daemon/undo_rebuild_orchestrator.h"  // Commit #5: --rebuild-undo-range
 #include "daemon/config.h"  // Phase 8: For GetConfig()
@@ -2349,6 +2350,10 @@ bool DaemonApp::Init(int argc, char** argv) {
     // Phase N: Seed HeaderChainSelector with the full active header chain from ChainDB.
     // IMPORTANT: Do not rely on height index ordering here (it may be stale after prior forks).
     // We reconstruct by walking tip -> genesis via prev_block_hash, then replay genesis -> tip.
+    // An AssumeUTXO-promoted datadir may have no pre-base ChainDB header rows even
+    // though its separately persisted HeaderChainSelector contains the verified
+    // chain. ResolveStartupHeader preserves the normal ChainDB-first behavior and
+    // uses that selector only for genuine NotFound results.
     if (chain_db_ptr) {
         auto tip_result = chain_db_ptr->getTip();
         if (tip_result.status() == Status::Ok) {
@@ -2357,21 +2362,80 @@ bool DaemonApp::Init(int argc, char** argv) {
 
             std::vector<uint256> chain_hashes;
             chain_hashes.reserve(static_cast<size_t>(tip_height) + 1);
+            std::vector<BlockHeader> chain_headers;
+            chain_headers.reserve(static_cast<size_t>(tip_height) + 1);
 
             uint256 current_hash = tip_hash;
             bool reached_genesis = false;
+            uint64_t selector_fallbacks = 0;
+            bool selector_preferred = false;
 
-            for (uint32_t steps = 0; steps <= tip_height + 1; ++steps) {
+            // Fast restart path: the selector constructor already loaded its
+            // durable store. Copy the entire tip branch under one lock; when it
+            // is complete, there is nothing to seed or revalidate here because
+            // AddHeader would only find the same existing hashes and return.
+            std::vector<consensus::HeaderIndexEntry> selector_entries;
+            uint256 unused_common_ancestor;
+            const std::unordered_set<uint256> no_stop_hashes;
+            const bool selector_already_complete =
+                header_chain->CollectBranchCopiesByHash(
+                    tip_hash, no_stop_hashes, selector_entries,
+                    unused_common_ancestor) &&
+                selector_entries.size() == static_cast<size_t>(tip_height) + 1 &&
+                !selector_entries.empty() &&
+                selector_entries.front().height == 0 &&
+                selector_entries.back().height == tip_height;
+
+            if (selector_already_complete) {
+                for (const auto& entry : selector_entries) {
+                    chain_hashes.push_back(entry.hash);
+                    chain_headers.push_back(entry.header);
+                }
+                selector_fallbacks = selector_entries.size();
+                reached_genesis = true;
+            }
+
+            auto resolve_seed_header = [&](const uint256& hash)
+                -> StatusOr<daemon::StartupHeaderResolution> {
+                // Snapshot promotion leaves a contiguous pre-base range absent
+                // from ChainDB. After the first verified selector fallback,
+                // avoid tens of thousands of guaranteed RocksDB misses. If the
+                // selector unexpectedly lacks a later hash, fall back to the
+                // normal ChainDB-first resolver rather than assuming absence.
+                if (selector_preferred) {
+                    consensus::HeaderIndexEntry entry;
+                    if (header_chain->GetHeaderCopy(hash, entry) &&
+                        entry.header.GetHash() == hash) {
+                        ++selector_fallbacks;
+                        return daemon::StartupHeaderResolution{
+                            std::move(entry.header),
+                            daemon::StartupHeaderSource::HeaderChainSelector};
+                    }
+                }
+                auto resolved = daemon::ResolveStartupHeader(
+                    *chain_db_ptr, header_chain.get(), hash);
+                if (resolved.status() == Status::Ok &&
+                    resolved.value().source == daemon::StartupHeaderSource::HeaderChainSelector) {
+                    ++selector_fallbacks;
+                    selector_preferred = true;
+                }
+                return resolved;
+            };
+
+            for (uint32_t steps = 0;
+                 !selector_already_complete && steps <= tip_height + 1;
+                 ++steps) {
                 chain_hashes.push_back(current_hash);
 
-                auto header_result = chain_db_ptr->getHeader(current_hash);
+                auto header_result = resolve_seed_header(current_hash);
                 if (header_result.status() != Status::Ok) {
                     std::cerr << "[DaemonApp] ❌ HeaderChainSelector seed walk failed: missing header "
                               << current_hash.GetHex().substr(0, 16) << "..." << std::endl;
                     break;
                 }
 
-                const BlockHeader& header = header_result.value();
+                const BlockHeader& header = header_result.value().header;
+                chain_headers.push_back(header);
                 if (header.prev_block_hash.IsNull()) {
                     reached_genesis = true;
                     break;
@@ -2383,25 +2447,25 @@ bool DaemonApp::Init(int argc, char** argv) {
                 std::cerr << "[DaemonApp] ❌ HeaderChainSelector seeding aborted: could not reach genesis from tip "
                           << tip_hash.GetHex().substr(0, 16) << "..." << std::endl;
             } else {
-                std::reverse(chain_hashes.begin(), chain_hashes.end());
+                if (!selector_already_complete) {
+                    std::reverse(chain_hashes.begin(), chain_hashes.end());
+                    std::reverse(chain_headers.begin(), chain_headers.end());
+                }
 
                 uint32_t headers_added = 0;
                 bool replay_failed = false;
-                for (const auto& hash : chain_hashes) {
-                    auto header_result = chain_db_ptr->getHeader(hash);
-                    if (header_result.status() != Status::Ok) {
-                        std::cerr << "[DaemonApp] ❌ HeaderChainSelector seed failed: missing header during replay "
-                                  << hash.GetHex().substr(0, 16) << "..." << std::endl;
-                        replay_failed = true;
-                        break;
+                if (selector_already_complete) {
+                    headers_added = static_cast<uint32_t>(chain_headers.size());
+                } else {
+                    for (size_t i = 0; i < chain_headers.size(); ++i) {
+                        if (!header_chain->AddHeader(chain_headers[i])) {
+                            std::cerr << "[DaemonApp] ❌ HeaderChainSelector seed failed: parent-link rejection at "
+                                      << chain_hashes[i].GetHex().substr(0, 16) << "..." << std::endl;
+                            replay_failed = true;
+                            break;
+                        }
+                        headers_added++;
                     }
-                    if (!header_chain->AddHeader(header_result.value())) {
-                        std::cerr << "[DaemonApp] ❌ HeaderChainSelector seed failed: parent-link rejection at "
-                                  << hash.GetHex().substr(0, 16) << "..." << std::endl;
-                        replay_failed = true;
-                        break;
-                    }
-                    headers_added++;
                 }
 
                 // Recovery fallback:
@@ -2413,12 +2477,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                     header_chain->Clear();
                     headers_added = 0;
 
-                    for (const auto& hash : chain_hashes) {
-                        auto header_result = chain_db_ptr->getHeader(hash);
-                        if (header_result.status() != Status::Ok) {
-                            break;
-                        }
-                        if (!header_chain->AddHeader(header_result.value())) {
+                    for (const auto& header : chain_headers) {
+                        if (!header_chain->AddHeader(header)) {
                             break;
                         }
                         headers_added++;
@@ -2428,6 +2488,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 std::cout << "[DaemonApp] ✅ Seeded HeaderChainSelector with " << headers_added
                           << "/" << chain_hashes.size()
                           << " headers from active tip walk (tip height " << tip_height
+                          << ", selector fallbacks " << selector_fallbacks
                           << ", preserved persisted side branches when valid)" << std::endl;
 
                 if (headers_added != chain_hashes.size()) {

@@ -625,15 +625,22 @@ char* nodecore_get_status_json(void) {
     // Chain info
     if (ctx.chainstate) {
         auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.chainstate);
-        if (cs && cs->GetChainDB()) {
-            auto tip_result = cs->GetChainDB()->getTip();
-            if (tip_result.ok()) {
-                auto& tip = tip_result.value();
-                status["height"] = tip.height;
-                status["best_hash"] = tip.hash.ToString();
+        if (cs) {
+            // ChainstateService owns the authoritative active view. During an
+            // AssumeUTXO bootstrap its active tip is the verified snapshot base
+            // while ChainDB can legitimately remain at genesis until historical
+            // validation promotes the replayed chain. Reporting ChainDB here made
+            // a healthy embedded node appear to rewind by tens of thousands of
+            // blocks after restart.
+            const auto active_tip = dinero::nodecore::CaptureAuthoritativeTip(
+                cs->GetSyncSnapshot());
+            status["height"] = static_cast<Json::UInt64>(active_tip.height);
+            status["best_hash"] = active_tip.hash;
 
-                // Mining info: difficulty/nbits/target from tip header
-                auto hdr_result = cs->GetChainDB()->getHeader(tip.hash);
+            // Mining info: difficulty/nbits/target from the active-tip header.
+            if (cs->GetChainDB()) {
+                auto hdr_result = cs->GetChainDB()->getHeader(
+                    dinero::uint256::FromHexUnsafe(active_tip.hash));
                 if (hdr_result.ok()) {
                     uint32_t bits = hdr_result.value().difficulty;
                     status["nbits"] = bits;
@@ -784,11 +791,12 @@ uint64_t nodecore_get_height(void) {
     auto& ctx = s.app->GetContext();
     if (ctx.chainstate) {
         auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.chainstate);
-        if (cs && cs->GetChainDB()) {
-            auto tip_result = cs->GetChainDB()->getTip();
-            if (tip_result.ok()) {
-                return static_cast<uint64_t>(tip_result.value().height);
-            }
+        if (cs) {
+            // Do not expose ChainDB's storage frontier as the node's chain tip.
+            // In AssumeUTXO mode the authoritative active tip is the verified
+            // snapshot base and ChainDB intentionally lags during history replay.
+            return dinero::nodecore::CaptureAuthoritativeTip(
+                cs->GetSyncSnapshot()).height;
         }
     }
     return 0;
@@ -802,11 +810,9 @@ char* nodecore_get_best_hash(void) {
     auto& ctx = s.app->GetContext();
     if (ctx.chainstate) {
         auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.chainstate);
-        if (cs && cs->GetChainDB()) {
-            auto tip_result = cs->GetChainDB()->getTip();
-            if (tip_result.ok()) {
-                return strdup_c(tip_result.value().hash.ToString());
-            }
+        if (cs) {
+            return strdup_c(dinero::nodecore::CaptureAuthoritativeTip(
+                cs->GetSyncSnapshot()).hash);
         }
     }
     return nullptr;

@@ -167,5 +167,56 @@ UTXOPositionRebuildReport UTXOPositionIndex::Rebuild(const ChainDB& chain_db,
     return report;
 }
 
+UTXOPositionRebuildReport UTXOPositionIndex::Rebuild(
+    const std::unordered_map<OutPoint, consensus::UTXOEntry>& utxos,
+    const consensus::UtreexoForest& forest) {
+    UTXOPositionRebuildReport report;
+    std::unordered_map<std::pair<TxId, uint32_t>, uint64_t, OutPointHash> rebuilt_positions;
+    rebuilt_positions.reserve(utxos.size());
+
+    for (const auto& [outpoint, entry] : utxos) {
+        if (!entry.scriptPubKey.empty() && entry.scriptPubKey[0] == 0x6a) {
+            report.skipped_unspendable++;
+            continue;
+        }
+
+        const auto leaf_hash = consensus::HashUTXOForCreationHeight(
+            outpoint.txid.AsUint256(),
+            outpoint.vout,
+            entry.is_confidential ? 0 : entry.value.GetUna(),
+            entry.scriptPubKey,
+            entry.height,
+            entry.isCoinbase);
+        const auto position = forest.findLeafPosition(leaf_hash);
+        if (!position.has_value()) {
+            report.missing++;
+            continue;
+        }
+
+        rebuilt_positions[std::make_pair(outpoint.txid, outpoint.vout)] = *position;
+        report.matched++;
+    }
+
+    if (report.missing > 0) {
+        g_logger.warn("[UTXOPositionIndex] In-memory rebuild: " +
+                      std::to_string(report.missing) +
+                      " UTXO(s) missing from forest (proof serving degraded, not fatal)");
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(index_mutex_);
+        position_map_.swap(rebuilt_positions);
+    }
+
+    report.success = true;
+    g_logger.info("[UTXOPositionIndex] Rebuilt " + std::to_string(report.matched) +
+                  " position entries from active consensus UTXO set + forest" +
+                  (report.skipped_unspendable > 0
+                       ? " (skipped " + std::to_string(report.skipped_unspendable) +
+                             " provably unspendable output(s))"
+                       : ""));
+    return report;
+}
+
 } // namespace indexing
 } // namespace dinero
