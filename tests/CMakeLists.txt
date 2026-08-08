@@ -623,6 +623,42 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_reconstruct_spent_coins.cpp)
   message(STATUS "✅ Stateless undo spent-coin reconstruction test enabled (#274)")
 endif()
 
+# AssumeUTXO pre-base backfill bodies: the #309 persist callback could only
+# synthesize a missing ChainDB header-metadata row from g_block_index, which a
+# snapshot-bootstrapped node does not populate below its base height. The body
+# was stored to flatfiles and then permanently unreadable, livelocking the
+# genesis->base replay. Pins the HeaderChainSelector fallback.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_persist_pre_base_body_position.cpp)
+  add_executable(test_persist_pre_base_body_position
+    tests/daemon/test_persist_pre_base_body_position.cpp
+    tests/stubs/mempool_test_stubs.cpp  # no-op Mempool seams (chainstate_service.obj refs)
+    tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault isolation seams
+    src/daemon/config.cpp               # GetConfig() — referenced by chainstate_service.obj
+  )
+  target_link_libraries(test_persist_pre_base_body_position PRIVATE
+    dinero_core
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_persist_pre_base_body_position)
+  target_link_directories(test_persist_pre_base_body_position PRIVATE /opt/homebrew/lib)
+  if(APPLE)
+    target_link_libraries(test_persist_pre_base_body_position PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_include_directories(test_persist_pre_base_body_position PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME PersistPreBaseBodyPosition COMMAND test_persist_pre_base_body_position)
+  set_tests_properties(PersistPreBaseBodyPosition PROPERTIES
+    LABELS "daemon;assumeutxo;storage;regression"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ Pre-base body position persist regression test enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reindexer_anchor_seed.cpp)
   # Commit #1 of the offline --rebuild-undo-range series: tests that
   # BlockReindexer::seedFromAnchor() correctly populates in-memory state

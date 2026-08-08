@@ -2683,8 +2683,24 @@ bool ChainstateService::Start() {
                     invalid_descendants_backfilled++;
                 }
                 if (idx->status & BLOCK_VALID_CHAIN) {
-                    AddCandidate(idx);
-                    candidates_seeded++;
+                    // Startup rebuild is parent-first, and
+                    // BackfillFailedChildFromParent() immediately above has
+                    // already propagated persisted invalidity onto this entry.
+                    // Re-running AddCandidate() here would call
+                    // HasInvalidAncestor() for every connected block, walking
+                    // back to genesis each time (O(n^2) restart time on a long
+                    // chain).  Apply the remaining candidate gate directly and
+                    // preserve AddCandidate's parent-tip replacement semantics.
+                    const uint32_t failure_flags =
+                        idx->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
+                    if (failure_flags == 0 && (idx->status & BLOCK_HAVE_DATA)) {
+                        std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+                        if (idx->pprev) {
+                            candidates_.erase(idx->pprev);
+                        }
+                        candidates_.insert(idx);
+                        candidates_seeded++;
+                    }
                 }
             }
         }
@@ -5353,25 +5369,76 @@ void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const Fil
                                       hash.GetHex().substr(0, 16));
         return;
     }
+    const auto persist_result = storage::PersistVerifiedArchivalBodyPosition(
+        *chain_db_, block_storage_.get(), hash, pos);
+    if (persist_result.status() == Status::Ok) {
+        if (logger_) {
+            if (persist_result.value() == storage::BodyPositionPersistResult::ReplacedStale) {
+                logger_->warning("[#309] PersistStoredBodyPosition: replaced stale body position " +
+                                 hash.GetHex().substr(0, 16));
+            } else if (persist_result.value() == storage::BodyPositionPersistResult::Stored) {
+                logger_->info("[#309] persisted body position " + hash.GetHex().substr(0, 16));
+            }
+        }
+        return;
+    }
+
     ChainDB::PersistedHeaderMetadata metadata;
-    auto md_result = chain_db_->getHeaderMetadata(hash);
-    if (md_result.status() == Status::Ok) {
-        metadata = md_result.value();
-        if ((metadata.status_flags & BLOCK_HAVE_DATA) && metadata.data_size > 0) {
-            return;  // body position already recorded
+    if (persist_result.status() == Status::NotFound) {
+        // No metadata row yet. Two sources can supply one, tried in order.
+        //
+        // 1. The in-memory block index: a competing header added by the
+        //    better-branch import path and never persisted.
+        //
+        // 2. The HeaderChainSelector — the ONLY source for an AssumeUTXO
+        //    PRE-BASE body. g_block_index is rebuilt from ChainDB's HEIGHT
+        //    index, which a snapshot-bootstrapped node does not populate below
+        //    its base height, so FindBlockIndex misses every pre-base hash
+        //    (observed in the field: "Loaded 1 block index entries"). Without
+        //    this fallback the backfilled body sits in the flatfile with
+        //    nothing pointing at it — HasArchivalBlockBody / ReadArchivalBlock
+        //    resolve a body ONLY through this metadata row — so background
+        //    validation reports it missing forever and the genesis->base
+        //    replay livelocks, re-downloading the same bodies every pass.
+        //
+        //    Scope: this restores READABILITY only. The height index is not
+        //    touched, so getBlockHashByHeight still misses for such a block.
+        //    Background validation resolves pre-base hashes from the header
+        //    chain (canonical_hashes_fallback), so that is sufficient for the
+        //    replay to converge.
+        CBlockIndex* idx = FindBlockIndex(hash);
+        consensus::HeaderIndexEntry header_entry;
+        if (idx) {
+            metadata.parent_hash = idx->pprev ? idx->pprev->hash : uint256();
+            metadata.height = static_cast<int32_t>(idx->height);
+            metadata.chainwork = ChainworkFromHex(idx->chainwork);
+            metadata.status_flags = idx->status | BLOCK_VALID_HEADER;
+        } else if (header_chain_selector_ &&
+                   header_chain_selector_->GetHeaderCopy(hash, header_entry)) {
+            metadata.parent_hash = header_entry.prev_hash;
+            metadata.height = static_cast<int32_t>(header_entry.height);
+            metadata.chainwork = header_entry.chainwork;
+            // The selector carries no validation status. Claim only what is
+            // true here: the header is known and the body is on disk. Never
+            // BLOCK_VALID_CHAIN — nothing has connected this block.
+            metadata.status_flags = BLOCK_VALID_HEADER;
+        } else {
+            // Truly unknown header; nothing to record. This used to return
+            // silently, which is exactly how the pre-base livelock above hid
+            // through two fix iterations — never make it quiet again.
+            if (logger_) {
+                logger_->error("[#309] PersistStoredBodyPosition: stored body has no header "
+                               "in ChainDB, the block index, or the header chain — position "
+                               "DISCARDED, body unreadable: " + hash.GetHex().substr(0, 16));
+            }
+            return;
         }
     } else {
-        // No metadata row yet: the competing header may live only in the in-memory
-        // block index (added by the better-branch import path, never persisted).
-        // Build the row from the index so the stored body becomes discoverable.
-        CBlockIndex* idx = FindBlockIndex(hash);
-        if (!idx) {
-            return;  // truly unknown header; nothing to record
+        if (logger_) {
+            logger_->warning("[#309] PersistStoredBodyPosition: existing metadata check failed for " +
+                             hash.GetHex().substr(0, 16));
         }
-        metadata.parent_hash = idx->pprev ? idx->pprev->hash : uint256();
-        metadata.height = static_cast<int32_t>(idx->height);
-        metadata.chainwork = ChainworkFromHex(idx->chainwork);
-        metadata.status_flags = idx->status | BLOCK_VALID_HEADER;
+        return;
     }
     metadata.file_number = pos.file_number;
     metadata.data_pos = static_cast<uint32_t>(pos.offset);
@@ -5823,7 +5890,7 @@ void ChainstateService::setChainOracleClient(std::unique_ptr<dinero::ipc::ChainO
 
 void ChainstateService::setHeaderChainSelector(std::shared_ptr<dinero::consensus::HeaderChainSelector> header_chain) {
     header_chain_selector_ = header_chain;
-    if (header_chain_selector_) {
+    if (header_chain_selector_ && logger_) {
         logger_->info("[ChainstateService] HeaderChainSelector wired for header sync");
     }
 }

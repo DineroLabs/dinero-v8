@@ -507,6 +507,79 @@ TEST(ArchivalReader_RejectsMismatchedFlatfileBodyHash) {
     std::filesystem::remove_all(root);
 }
 
+TEST(PersistStoredBodyPosition_ReplacesStaleMetadataOnly) {
+    const auto root = MakeTempRoot();
+    const auto chain_db_dir = root / "chaindb";
+    std::filesystem::create_directories(chain_db_dir);
+
+    ChainDB chain_db;
+    ASSERT_TRUE(chain_db.init(chain_db_dir) == Status::Ok);
+
+    auto block_storage = std::make_shared<BlockStorage>();
+    ASSERT_TRUE(block_storage->init(root) == Status::Ok);
+
+    const ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    const Block block = MakeBlock(77);
+    const uint256 hash = block.GetHash();
+    const auto fresh_pos_result = block_storage->writeBlock(hash, block);
+    ASSERT_TRUE(fresh_pos_result.status() == Status::Ok);
+    const FilePosition fresh_pos = fresh_pos_result.value();
+
+    // Model the field failure: metadata still claims BLOCK_HAVE_DATA, but its
+    // flatfile position is outside every real file. The scheduler stores a
+    // verified replacement at fresh_pos before calling the service callback.
+    ChainDB::PersistedHeaderMetadata stale;
+    stale.height = 34396;
+    stale.status_flags = BLOCK_VALID_HEADER | BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO;
+    stale.file_number = fresh_pos.file_number + 1000;
+    stale.data_pos = 123;
+    stale.data_size = fresh_pos.size;
+    stale.undo_file = 7;
+    stale.undo_pos = 456;
+    stale.undo_size = 789;
+    ASSERT_TRUE(chain_db.putHeaderMetadata(token, hash, stale) == Status::Ok);
+
+    auto repair_result = storage::PersistVerifiedArchivalBodyPosition(
+        chain_db, block_storage.get(), hash, fresh_pos);
+    ASSERT_TRUE(repair_result.status() == Status::Ok);
+    ASSERT_TRUE(repair_result.value() == storage::BodyPositionPersistResult::ReplacedStale);
+
+    auto repaired_result = chain_db.getHeaderMetadata(hash);
+    ASSERT_TRUE(repaired_result.status() == Status::Ok);
+    const auto repaired = repaired_result.value();
+    ASSERT_TRUE(repaired.file_number == fresh_pos.file_number);
+    ASSERT_TRUE(repaired.data_pos == fresh_pos.offset);
+    ASSERT_TRUE(repaired.data_size == fresh_pos.size);
+    ASSERT_TRUE((repaired.status_flags & BLOCK_HAVE_UNDO) != 0);
+    ASSERT_TRUE(repaired.undo_file == stale.undo_file);
+    ASSERT_TRUE(repaired.undo_pos == stale.undo_pos);
+    ASSERT_TRUE(repaired.undo_size == stale.undo_size);
+
+    auto strict_read = storage::ReadArchivalBlockDetailed(
+        chain_db, block_storage.get(), hash,
+        storage::ArchivalReadMode::RequireFlatfiles);
+    ASSERT_TRUE(strict_read.result.status() == Status::Ok);
+    ASSERT_TRUE(strict_read.result.value().GetHash() == hash);
+
+    // A later duplicate download must not churn a position that is already
+    // readable and hash-correct.
+    const auto duplicate_pos_result = block_storage->writeBlock(hash, block);
+    ASSERT_TRUE(duplicate_pos_result.status() == Status::Ok);
+    auto retain_result = storage::PersistVerifiedArchivalBodyPosition(
+        chain_db, block_storage.get(), hash, duplicate_pos_result.value());
+    ASSERT_TRUE(retain_result.status() == Status::Ok);
+    ASSERT_TRUE(retain_result.value() == storage::BodyPositionPersistResult::RetainedReadable);
+    auto retained_result = chain_db.getHeaderMetadata(hash);
+    ASSERT_TRUE(retained_result.status() == Status::Ok);
+    ASSERT_TRUE(retained_result.value().file_number == fresh_pos.file_number);
+    ASSERT_TRUE(retained_result.value().data_pos == fresh_pos.offset);
+    ASSERT_TRUE(retained_result.value().data_size == fresh_pos.size);
+
+    block_storage->close();
+    chain_db.close();
+    std::filesystem::remove_all(root);
+}
+
 int main() {
     SelectParams(Chain::MAINNET);
     std::cout << "\n===========================================================\n";
@@ -532,6 +605,9 @@ int main() {
     std::cout << " OK" << std::endl;
     std::cout << "Running: ArchivalReader_RejectsMismatchedFlatfileBodyHash..." << std::flush;
     test_ArchivalReader_RejectsMismatchedFlatfileBodyHash();
+    std::cout << " OK" << std::endl;
+    std::cout << "Running: PersistStoredBodyPosition_ReplacesStaleMetadataOnly..." << std::flush;
+    test_PersistStoredBodyPosition_ReplacesStaleMetadataOnly();
     std::cout << " OK" << std::endl;
     std::cout << "\nALL ARCHIVAL BLOCK READER TESTS PASSED!" << std::endl;
     std::cout << "===========================================================\n" << std::endl;
