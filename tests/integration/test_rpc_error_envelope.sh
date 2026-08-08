@@ -34,8 +34,15 @@ fail() {
 }
 
 cleanup() {
-    [[ -n "${PID}" ]] && kill "${PID}" 2>/dev/null || true
-    pkill -f "dinerod.*${DATA_DIR}" 2>/dev/null || true
+    if [[ -n "${PID}" ]]; then
+        kill "${PID}" 2>/dev/null || true
+        # dinerod removes and may briefly recreate its cookie while shutting
+        # down.  Wait for the child to finish before removing the datadir;
+        # otherwise cleanup races those final writes and a passing test exits
+        # non-zero with "Directory not empty".
+        wait "${PID}" 2>/dev/null || true
+        PID=""
+    fi
     [[ "${KEEP_ON_FAIL}" != "1" ]] && rm -rf "${DATA_DIR}" "${LOG}"
     return 0
 }
@@ -50,8 +57,17 @@ P2P_PORT=$((RPC_PORT + 1))
 WALLET_PORT=$((RPC_PORT + 2))
 
 rpc_call() {
+    local cookie_path
+    if [[ -f "${DATA_DIR}/.cookie" ]]; then
+        cookie_path="${DATA_DIR}/.cookie"
+    elif [[ -f "${DATA_DIR}/regtest/.cookie" ]]; then
+        cookie_path="${DATA_DIR}/regtest/.cookie"
+    else
+        return 1
+    fi
     local cookie
-    cookie="$(tr -d '\n' < "${DATA_DIR}/.cookie" 2>/dev/null || tr -d '\n' < "${DATA_DIR}/regtest/.cookie" 2>/dev/null)"
+    cookie="$(tr -d '\n' < "${cookie_path}")"
+    [[ -n "${cookie}" ]] || return 1
     curl -s --user "${cookie}" -H 'Content-Type: application/json' \
         -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" \
         "http://127.0.0.1:${RPC_PORT}/"
