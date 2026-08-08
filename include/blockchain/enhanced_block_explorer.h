@@ -70,6 +70,7 @@ public:
     // Network statistics
     QJsonObject getNetworkStats();
     QJsonObject getMiningStats();
+    QJsonObject getSupplyStats();
     QJsonObject getDifficultyStats();
     QJsonObject getBlocks24hStats();
 
