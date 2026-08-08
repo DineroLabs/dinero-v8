@@ -24,6 +24,9 @@ KEEP_TMP_ON_FAIL=${KEEP_TMP_ON_FAIL:-1}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+# shellcheck source=helpers/failure_log_capture.sh
+source "${SCRIPT_DIR}/helpers/failure_log_capture.sh"
+
 if [[ -n "${DINEROD:-}" && -x "${DINEROD}" ]]; then
     DINEROD="${DINEROD}"
 elif [[ -x "${PROJECT_ROOT}/build/dinerod" ]]; then
@@ -46,8 +49,26 @@ DATADIR_CSN=""
 PID_BRIDGE=""
 PID_CSN=""
 EXIT_CODE=0
+# Issue #538 — byte offsets recorded immediately before invalidateblock, so the
+# failure dump starts at the action under test rather than at whatever the
+# rewind poll loop logged for the following 60 seconds.
+LOG_MARK_BRIDGE=0
+LOG_MARK_CSN=0
 
-info() { echo -e "${CYAN}$1${NC}"; }
+# Issue #538 — re-anchor the failure dump on the step about to run.  The
+# cleanup dump serves EVERY fail in this script, not just the rewind one, and
+# several later steps poll for up to SYNC_TIMEOUT (240s).  Marking once before
+# invalidateblock would leave those failures dumping from step 5 onward and
+# hitting the line cap — the same eviction, merely relocated.
+#
+# Folded into info() because info() announces the ten step headers and nothing
+# else, so every step re-anchors and a future step 11 inherits it for free.
+mark_logs() {
+    LOG_MARK_BRIDGE="$(dinero_log_mark "${DATADIR_BRIDGE}/daemon.log")"
+    LOG_MARK_CSN="$(dinero_log_mark "${DATADIR_CSN}/daemon.log")"
+}
+
+info() { mark_logs; echo -e "${CYAN}$1${NC}"; }
 pass() { echo -e "${GREEN}  $1${NC}"; }
 fail() { echo -e "${RED}FAILED: $1${NC}"; exit 1; }
 
@@ -59,10 +80,15 @@ cleanup() {
     [[ -n "${DATADIR_BRIDGE}" ]] && pkill -9 -f "dinerod.*${DATADIR_BRIDGE}" 2>/dev/null || true
     sleep 1
     if [[ ${EXIT_CODE} -ne 0 ]]; then
-        echo -e "\n${RED}=== Bridge daemon.log (last 120 lines) ===${NC}"
-        [[ -f "${DATADIR_BRIDGE}/daemon.log" ]] && tail -120 "${DATADIR_BRIDGE}/daemon.log"
-        echo -e "\n${RED}=== CSN daemon.log (last 120 lines) ===${NC}"
-        [[ -f "${DATADIR_CSN}/daemon.log" ]] && tail -120 "${DATADIR_CSN}/daemon.log"
+        # Issue #538 — do NOT tail the end of the log here.  The rewind wait
+        # polls getblockcount for up to 60s, and a plain `tail -120` showed
+        # only that polling: 115 of 123 lines, with zero matches for
+        # REORG|invalidate|Disconnect|rewind.  Anchor at the marked action and
+        # grep the whole file for signal instead.
+        echo -e "\n${RED}=== Bridge daemon.log ===${NC}"
+        dinero_dump_failure_log "${DATADIR_BRIDGE}/daemon.log" "${LOG_MARK_BRIDGE}" "Bridge"
+        echo -e "\n${RED}=== CSN daemon.log ===${NC}"
+        dinero_dump_failure_log "${DATADIR_CSN}/daemon.log" "${LOG_MARK_CSN}" "CSN"
         if [[ "${KEEP_TMP_ON_FAIL}" == "1" ]]; then
             echo -e "\n${YELLOW}Keeping temp dirs for debugging:${NC}"
             [[ -n "${DATADIR_BRIDGE}" ]] && echo "  Bridge: ${DATADIR_BRIDGE}"
@@ -490,6 +516,8 @@ CONFIRMED_STATE=$(capture_state_json "${RPC_PORT_CSN}" "${DATADIR_CSN}")
 CONFIRMED_ROOT=$(echo "${CONFIRMED_STATE}" | jq -r '.commitment')
 pass "Spend confirmed on branch rooted at ${SPEND_BLOCK_HASH:0:16}..."
 
+# info() marked both logs immediately above, so everything the rewind wait
+# below emits falls INSIDE the captured window rather than pushing it off the end.
 info "\n[5/10] Invalidating the spend block and clearing bridge mempool"
 INVALIDATE_RESULT=$(rpc_call "${RPC_PORT_BRIDGE}" "${DATADIR_BRIDGE}" "invalidateblock" "\"${SPEND_BLOCK_HASH}\"")
 rpc_has_error "${INVALIDATE_RESULT}" && fail "invalidateblock failed: $(echo "${INVALIDATE_RESULT}" | tr -d '\n\t')"

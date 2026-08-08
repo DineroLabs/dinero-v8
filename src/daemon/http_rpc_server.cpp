@@ -16,6 +16,7 @@
 #include <cctype>
 #include <limits>
 #include <unordered_set>
+#include <cstdlib>  // std::getenv — DINERO_RPC_DEBUG gate (issue #538)
 
 // Phase 2A/3A: We get mempool/utxo/wallet_manager from DaemonContext instead of globals
 
@@ -697,15 +698,29 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
                 ctx.wallet_manager = (daemon_context_ && daemon_context_->wallet) ?
                     &daemon_context_->wallet->get() : nullptr;
 
+                // Issue #538 — these four lines fired on EVERY RPC, unconditionally,
+                // in every daemon.  At ~4 lines per call they drown daemon.log: a
+                // harness polling getblockcount for 60s emits ~115 of them, which is
+                // what evicted the reorg evidence from a failure dump and made the
+                // diagnostic useless under exactly the condition it exists to
+                // diagnose.  Gated behind DINERO_RPC_DEBUG (default off), matching
+                // the DINERO_* env-hook convention already used in block_relay_manager
+                // and block_acceptor.  Read once: this is on the per-request path.
+                static const bool rpc_debug_enabled = (std::getenv("DINERO_RPC_DEBUG") != nullptr);
+
                 // Call the unified handler
-                std::cout << "[RPC DEBUG] Calling handler for method: " << dispatch_method << std::endl;
-                std::cout << "[RPC DEBUG] handler_ptr address: " << (void*)handler_ptr << std::endl;
-                std::cout << "[RPC DEBUG] daemon_context_ address: " << (void*)daemon_context_ << std::endl;
-                
+                if (rpc_debug_enabled) {
+                    std::cout << "[RPC DEBUG] Calling handler for method: " << dispatch_method << std::endl;
+                    std::cout << "[RPC DEBUG] handler_ptr address: " << (void*)handler_ptr << std::endl;
+                    std::cout << "[RPC DEBUG] daemon_context_ address: " << (void*)daemon_context_ << std::endl;
+                }
+
                 din::Json result;
                 try {
                     result = (*handler_ptr)(ctx, params);
-                    std::cout << "[RPC DEBUG] Handler completed successfully for: " << dispatch_method << std::endl;
+                    if (rpc_debug_enabled) {
+                        std::cout << "[RPC DEBUG] Handler completed successfully for: " << dispatch_method << std::endl;
+                    }
                 } catch (const std::bad_function_call& e) {
                     std::cerr << "[RPC ERROR] bad_function_call for method: " << dispatch_method << std::endl;
                     std::cerr << "[RPC ERROR] This means the RpcHandler function object is empty/null" << std::endl;
