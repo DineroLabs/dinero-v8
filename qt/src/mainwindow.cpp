@@ -149,6 +149,12 @@ bool miningModeNeedsDaemon(const QString& mode) {
 constexpr int kPublicSendEstimateVbytes = 250;
 constexpr int kPrivateSendEstimateVbytes = 1000;
 
+QString hardwareWalletPsbtTooltip() {
+  return QStringLiteral(
+      "<b>Dinero transaction in PSBT format</b><br>"
+      "A partially signed Dinero transaction encoded using the BIP174 PSBT signing container.");
+}
+
 double estimatedFeeDin(double feeRateUnaPerVb, int txSizeVbytes) {
   if (!std::isfinite(feeRateUnaPerVb) || feeRateUnaPerVb <= 0.0 || txSizeVbytes <= 0) {
     return 0.0;
@@ -1118,16 +1124,38 @@ QString compactProcessOutput(const QString& rawOutput) {
   return out;
 }
 
-QString peerHeightBreakdownTooltip(int startHeight, int syncedHeaders, int syncedBlocks) {
+QString peerHeightDisplayText(int peerHeight, int localTip) {
+  if (peerHeight < 0) {
+    return QStringLiteral("N/A");
+  }
+  if (localTip > 0 && peerHeight + 2 < localTip) {
+    return QString("%1 seen").arg(peerHeight);
+  }
+  return QString::number(peerHeight);
+}
+
+QString peerHeightBreakdownTooltip(int startHeight,
+                                   int syncedHeaders,
+                                   int syncedBlocks,
+                                   int bestKnown,
+                                   int localTip) {
   auto fmt = [](int value) -> QString {
     return value >= 0 ? QString::number(value) : QStringLiteral("N/A");
   };
 
-  return QString("Advertised peer height breakdown\n"
-                 "startingheight: %1\n"
-                 "synced_headers: %2\n"
-                 "synced_blocks: %3")
-      .arg(fmt(startHeight), fmt(syncedHeaders), fmt(syncedBlocks));
+  QString tooltip =
+      QString("Last-seen peer height from local P2P telemetry.\n"
+              "This is not a live RPC query to that server.\n\n"
+              "Breakdown\n"
+              "startingheight: %1\n"
+              "synced_headers: %2\n"
+              "synced_blocks: %3\n"
+              "best_known_height: %4")
+          .arg(fmt(startHeight), fmt(syncedHeaders), fmt(syncedBlocks), fmt(bestKnown));
+  if (localTip > 0) {
+    tooltip += QString("\nlocal node tip: %1").arg(localTip);
+  }
+  return tooltip;
 }
 
 QString miningReadinessSummaryText(const QJsonObject& readiness) {
@@ -2459,9 +2487,11 @@ void MainWindow::setupUI() {
     peersLayout->addWidget(lblPeersStatus_);
 
     tblPeersOverview_ = new QTableWidget(0, 5);  // 5 columns
-    tblPeersOverview_->setHorizontalHeaderLabels({"Location", "Activity", "Last Seen", "Height", "Client"});
+    tblPeersOverview_->setHorizontalHeaderLabels({"Location", "Activity", "Last Seen", "Seen Height", "Client"});
     if (auto* advertisedHeader = tblPeersOverview_->horizontalHeaderItem(3)) {
-      advertisedHeader->setToolTip("Best available peer-advertised height.\nTooltip on each row shows startingheight, synced_headers, and synced_blocks.");
+      advertisedHeader->setToolTip(
+          "Last height this local node observed for the peer.\n"
+          "This is P2P telemetry, not a live RPC query to that server.");
     }
     tblPeersOverview_->horizontalHeader()->setStretchLastSection(true);
     tblPeersOverview_->verticalHeader()->setVisible(false);
@@ -3118,7 +3148,7 @@ void MainWindow::setupUI() {
     // Create PSBT for hardware wallet
     btnHardwareWalletSend_ = new QPushButton("🔐 Hardware Wallet PSBT");
     btnHardwareWalletSend_->setStyleSheet(chromeButtonStyle());
-    btnHardwareWalletSend_->setToolTip("Create a Partially Signed Dinero Transaction (PSBT) and continue in the Hardware Wallet tab");
+    btnHardwareWalletSend_->setToolTip(hardwareWalletPsbtTooltip());
     connect(btnHardwareWalletSend_, &QPushButton::clicked, this, &MainWindow::onCreatePSBT);
     sendBtnLayout->addWidget(btnHardwareWalletSend_);
 
@@ -4282,9 +4312,11 @@ void MainWindow::setupUI() {
 
     // Peer table
     tblPeers_ = new QTableWidget(0, 6);
-    tblPeers_->setHorizontalHeaderLabels({"ID", "Location", "Type", "Client", "Advertised Height", "Direction"});
+    tblPeers_->setHorizontalHeaderLabels({"ID", "Location", "Type", "Client", "Seen Height", "Direction"});
     if (auto* advertisedHeader = tblPeers_->horizontalHeaderItem(4)) {
-      advertisedHeader->setToolTip("Best available peer-advertised height.\nTooltip on each row shows startingheight, synced_headers, and synced_blocks.");
+      advertisedHeader->setToolTip(
+          "Last height this local node observed for the peer.\n"
+          "This is P2P telemetry, not a live RPC query to that server.");
     }
     tblPeers_->horizontalHeader()->setStretchLastSection(true);
     tblPeers_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -5082,7 +5114,7 @@ void MainWindow::updateSendModeUi() {
     const bool hwSupported = (mode == "public_transfer");
     btnHardwareWalletSend_->setEnabled(hwSupported && btnSend_ && btnSend_->isEnabled());
     btnHardwareWalletSend_->setToolTip(hwSupported
-      ? "Create a Partially Signed Dinero Transaction (PSBT) and continue in the Hardware Wallet tab"
+      ? hardwareWalletPsbtTooltip()
       : "Hardware-wallet signing is currently wired only for public Taproot transfers");
   }
 
@@ -6500,9 +6532,16 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         if (syncedHeaders > peerHeight) peerHeight = syncedHeaders;
         if (startHeight > peerHeight) peerHeight = startHeight;
         if (bestKnown > peerHeight) peerHeight = bestKnown;
-        const QString peerHeightText = (peerHeight >= 0) ? QString::number(peerHeight) : "N/A";
+        const QString peerHeightText = peerHeightDisplayText(peerHeight, cachedHeight_);
         auto* heightItem = new QTableWidgetItem(peerHeightText);
-        heightItem->setToolTip(peerHeightBreakdownTooltip(startHeight, syncedHeaders, syncedBlocks));
+        heightItem->setToolTip(peerHeightBreakdownTooltip(startHeight,
+                                                          syncedHeaders,
+                                                          syncedBlocks,
+                                                          bestKnown,
+                                                          cachedHeight_));
+        if (cachedHeight_ > 0 && peerHeight >= 0 && peerHeight + 2 < cachedHeight_) {
+          heightItem->setForeground(QColor("#d9b36a"));
+        }
         tblPeersOverview_->setItem(row, 3, heightItem);
 
         // Client
@@ -13306,7 +13345,7 @@ void MainWindow::updateWalletUIState() {
     } else if (!standardSendMode) {
       btnHardwareWalletSend_->setToolTip("Hardware-wallet signing is currently wired only for public Taproot transfers");
     } else {
-      btnHardwareWalletSend_->setToolTip("Create a Partially Signed Dinero Transaction (PSBT) and continue in the Hardware Wallet tab");
+      btnHardwareWalletSend_->setToolTip(hardwareWalletPsbtTooltip());
     }
   }
 
@@ -15108,8 +15147,15 @@ void MainWindow::updatePeerTable(const QJsonArray& peers) {
     auto* clientItem = new QTableWidgetItem(peerClientLabel(rawClient));
     clientItem->setToolTip(peerClientTooltip(rawClient));
     tblPeers_->setItem(row, 3, clientItem);
-    auto* heightItem = new QTableWidgetItem(bestHeight >= 0 ? QString::number(bestHeight) : "?");
-    heightItem->setToolTip(peerHeightBreakdownTooltip(startHeight, syncedHeaders, syncedBlocks));
+    auto* heightItem = new QTableWidgetItem(peerHeightDisplayText(bestHeight, cachedHeight_));
+    heightItem->setToolTip(peerHeightBreakdownTooltip(startHeight,
+                                                      syncedHeaders,
+                                                      syncedBlocks,
+                                                      bestKnown,
+                                                      cachedHeight_));
+    if (cachedHeight_ > 0 && bestHeight >= 0 && bestHeight + 2 < cachedHeight_) {
+      heightItem->setForeground(QColor("#d9b36a"));
+    }
     tblPeers_->setItem(row, 4, heightItem);
     tblPeers_->setItem(row, 5, new QTableWidgetItem(inbound ? "Inbound" : "Outbound"));
   }
@@ -15284,7 +15330,7 @@ void MainWindow::onExportMetrics() {
     
     // Add peers
     out << "\nPeers\n";
-    out << "Location,Endpoint,Activity,Uptime,Advertised Height,Client\n";
+    out << "Location,Endpoint,Activity,Uptime,Seen Height,Client\n";
     for (const QJsonValue& peerVal : peers) {
       QJsonObject peer = peerVal.toObject();
       out << peer["location"].toString() << ","
