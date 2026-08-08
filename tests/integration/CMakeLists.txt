@@ -997,6 +997,21 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_bridge_assisted_spend_flow.sh)
     message(STATUS "  ✓ CsnBridgeAssistedSpendFlow registered")
 endif()
 
+# Issue #538 — failure-diagnostic capture guard.  Pure shell, spawns no daemon,
+# binds no port, finishes in well under a second.  Registered WITHOUT the
+# 'integration' label on purpose: that label is excluded by the Tests workflow's
+# main ctest lane, and an unlabeled fast test runs there without needing an
+# exact-name carve-out that could later be dropped.
+add_test(
+    NAME FailureLogCapture
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_failure_log_capture.sh
+)
+set_tests_properties(FailureLogCapture PROPERTIES
+    LABELS "diagnostics;reorg"
+    TIMEOUT 60
+)
+message(STATUS "  ✓ FailureLogCapture registered")
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_spend_reorg_reconciliation.sh)
     add_test(
         NAME CsnSpendReorgReconciliation

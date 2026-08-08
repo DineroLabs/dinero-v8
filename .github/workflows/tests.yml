@@ -367,10 +367,16 @@ jobs:
             -j1 \
             -R '^AssumeUtxoLateWalletImport$'
 
-      # Daemon logs are printed by the harnesses on failure (tail of daemon.log),
-      # so --output-on-failure above captures them. Keep the ctest logs as an
+      # Daemon logs are printed by the harnesses on failure, so
+      # --output-on-failure above captures them. Keep the ctest logs as an
       # artifact too: the harnesses delete their temp datadirs on teardown, so
       # the CI log is the only durable record.
+      #
+      # #538: harnesses that detect failure by polling must anchor that dump at
+      # the action under test (tests/integration/helpers/failure_log_capture.sh),
+      # not tail the end of daemon.log. A plain tail shows the poll loop's own
+      # output and evicts the evidence — which is precisely when the log is
+      # needed, and the CI artifact is the only copy that survives teardown.
       - name: Upload ctest logs
         if: always()
         uses: actions/upload-artifact@v4
