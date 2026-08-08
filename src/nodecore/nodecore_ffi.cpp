@@ -322,6 +322,7 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     std::string sync_profile = dinero::nodecore::DefaultSyncProfile();
     std::string wallet_schema_path;
     std::string assumeutxo_snapshot_path;
+    std::vector<std::string> assumeutxo_snapshot_fallback_paths;
     std::string assumeutxo_manifest_path;
     bool assumeutxo_require_manifest = false;
     std::optional<std::string> explicit_profile;
@@ -364,6 +365,31 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
                     return NODECORE_ERROR_INVALID_ARGS;
                 }
                 assumeutxo_snapshot_path = config["assumeutxo_snapshot"].asString();
+            }
+            if (config.isMember("assumeutxo_snapshot_fallbacks")) {
+                const auto& fallbacks = config["assumeutxo_snapshot_fallbacks"];
+                if (!fallbacks.isArray()) {
+                    return NODECORE_ERROR_INVALID_ARGS;
+                }
+                for (const auto& fallback : fallbacks) {
+                    if (!fallback.isString()) {
+                        return NODECORE_ERROR_INVALID_ARGS;
+                    }
+                    const std::string path = fallback.asString();
+                    // ConfigService transports this internal candidate list as
+                    // a semicolon-delimited value. App-managed snapshot paths
+                    // are controlled filenames, so reject an ambiguous path
+                    // instead of silently splitting it into extra candidates.
+                    if (path.find(';') != std::string::npos) {
+                        return NODECORE_ERROR_INVALID_ARGS;
+                    }
+                    if (!path.empty() &&
+                        std::find(assumeutxo_snapshot_fallback_paths.begin(),
+                                  assumeutxo_snapshot_fallback_paths.end(), path) ==
+                            assumeutxo_snapshot_fallback_paths.end()) {
+                        assumeutxo_snapshot_fallback_paths.push_back(path);
+                    }
+                }
             }
             if (config.isMember("assumeutxo_manifest")) {
                 if (!config["assumeutxo_manifest"].isString()) {
@@ -425,6 +451,14 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     // snapshot was ignored and the node fell back to genesis IBD. Match the read keys.
     if (!assumeutxo_snapshot_path.empty()) {
         args_storage.push_back("--assumeutxo_snapshot=" + assumeutxo_snapshot_path);
+    }
+    if (!assumeutxo_snapshot_fallback_paths.empty()) {
+        std::ostringstream encoded;
+        for (size_t i = 0; i < assumeutxo_snapshot_fallback_paths.size(); ++i) {
+            if (i != 0) encoded << ';';
+            encoded << assumeutxo_snapshot_fallback_paths[i];
+        }
+        args_storage.push_back("--assumeutxo_snapshot_fallbacks=" + encoded.str());
     }
     if (!assumeutxo_manifest_path.empty()) {
         args_storage.push_back("--assumeutxo_manifest=" + assumeutxo_manifest_path);

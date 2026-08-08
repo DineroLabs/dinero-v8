@@ -648,6 +648,101 @@ bool ReadSnapshotHeaderPreview(
     return true;
 }
 
+std::vector<std::string> ConfiguredSnapshotPaths(
+    const std::shared_ptr<ConfigService>& config) {
+    std::vector<std::string> paths;
+    if (!config) return paths;
+
+    const auto append = [&paths](std::string value) {
+        const auto first = value.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) return;
+        const auto last = value.find_last_not_of(" \t\r\n");
+        value = value.substr(first, last - first + 1);
+        if (std::find(paths.begin(), paths.end(), value) == paths.end()) {
+            paths.push_back(std::move(value));
+        }
+    };
+
+    append(config->GetString("assumeutxo_snapshot", ""));
+    std::stringstream fallbacks(
+        config->GetString("assumeutxo_snapshot_fallbacks", ""));
+    std::string path;
+    while (std::getline(fallbacks, path, ';')) append(std::move(path));
+    return paths;
+}
+
+struct SnapshotPathResolution {
+    bool ok = true;
+    std::string path;
+    std::string error;
+};
+
+SnapshotPathResolution ResolveConfiguredSnapshotPath(
+    const std::shared_ptr<ConfigService>& config,
+    const std::shared_ptr<LoggerService>& logger,
+    bool lifecycle_active,
+    uint32_t lifecycle_height,
+    const uint256& lifecycle_block) {
+    const auto paths = ConfiguredSnapshotPaths(config);
+    std::vector<assumeutxo::SnapshotCandidate> candidates;
+    candidates.reserve(paths.size());
+    for (const auto& path : paths) {
+        consensus::SnapshotMetadata header;
+        std::string error;
+        if (!ReadSnapshotHeaderPreview(path, header, error) ||
+            header.magic != consensus::SNAPSHOT_MAGIC) {
+            if (logger) {
+                logger->warning(
+                    "[snapshot] ignoring unreadable candidate " + path +
+                    " during selection: " +
+                    (error.empty() ? "invalid snapshot magic" : error));
+            }
+            continue;
+        }
+        candidates.push_back({path, header.block_height, header.block_hash});
+    }
+
+    const auto selection = assumeutxo::SelectSnapshotCandidate(
+        candidates, lifecycle_active, lifecycle_height, lifecycle_block);
+    if (selection.status ==
+        assumeutxo::SnapshotSelectionStatus::NoMatchingActiveLifecycle) {
+        std::ostringstream available;
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            if (i != 0) available << ", ";
+            available << candidates[i].height;
+        }
+        return {
+            false,
+            {},
+            "persisted AssumeUTXO lifecycle at height " +
+                std::to_string(lifecycle_height) +
+                " has no matching configured snapshot candidate (available heights: " +
+                available.str() + ")",
+        };
+    }
+    if (selection.status == assumeutxo::SnapshotSelectionStatus::NoCandidates) {
+        return {};
+    }
+
+    const std::string primary =
+        config ? config->GetString("assumeutxo_snapshot", "") : "";
+    if (config && selection.candidate.path != primary) {
+        config->Set("assumeutxo_snapshot", selection.candidate.path);
+        // An explicit manifest belongs to the primary snapshot. A fallback uses
+        // its adjacent <snapshot>.manifest.json so the two trust records cannot
+        // be accidentally crossed during an upgrade.
+        config->Set("assumeutxo_manifest", "");
+    }
+    if (logger && paths.size() > 1) {
+        logger->info(
+            "[snapshot] selected candidate at height " +
+            std::to_string(selection.candidate.height) +
+            (lifecycle_active ? " for persisted lifecycle: " : " for fresh bootstrap: ") +
+            selection.candidate.path);
+    }
+    return {true, selection.candidate.path, {}};
+}
+
 bool ValidateSnapshotTransportPreflight(
     const std::filesystem::path& snapshot_path,
     uint64_t max_snapshot_bytes,
@@ -3440,6 +3535,20 @@ bool ChainstateService::Start() {
                               std::chrono::steady_clock::now()).fatal_reason);
         }
 
+        // Release upgrades may bundle a newer snapshot for fresh nodes while
+        // retaining older artifacts for in-flight lifecycles. Resolve the
+        // configured candidate set against the persisted base BEFORE any
+        // different-base belt or file rehydrate. This is fail-closed: when
+        // candidates exist but none matches, never fall forward to the newest.
+        if (!lifecycle_fatal_at_restore) {
+            const auto snapshot_resolution = ResolveConfiguredSnapshotPath(
+                config_, logger_, true, assumeutxo_base_height_, assumeutxo_base_block_);
+            if (!snapshot_resolution.ok) {
+                logger_->error("[AssumeUTXO restore] " + snapshot_resolution.error);
+                return false;
+            }
+        }
+
         logger_->info("⚠️  AssumeUTXO mode ACTIVE (restored from metadata)");
         logger_->info("⚠️  Snapshot base height: " + std::to_string(assumeutxo_base_height_));
         logger_->info("⚠️  Snapshot base block: " + assumeutxo_base_block_.GetHex());
@@ -3686,8 +3795,9 @@ bool ChainstateService::Start() {
         // headers pass the base height without it, it falls back to full IBD
         // (RULES 2-4, see TryDeferredSnapshotBootstrap).
         ibd_status_ = IBDStatus::InIBD;
-        const std::string snapshot_path =
-            config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
+        const auto snapshot_resolution = ResolveConfiguredSnapshotPath(
+            config_, logger_, false, 0, uint256{});
+        const std::string snapshot_path = snapshot_resolution.path;
         if (!snapshot_path.empty()) {
             if (height > 0) {
                 // RULE 5: never auto-load onto an existing datadir.
