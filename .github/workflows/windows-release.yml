@@ -39,6 +39,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # A manual recovery run must still build the immutable release tag,
+          # not whichever commit happens to be at the selected workflow ref.
+          ref: ${{ inputs.release_tag || github.ref }}
           submodules: recursive
 
       # Strip the leading "v" from the tag; fall back to the dispatch input,
@@ -49,13 +52,34 @@ jobs:
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
             V="${GITHUB_REF_NAME#v}"
+            TAG="$GITHUB_REF_NAME"
           elif [ -n "${{ inputs.release_tag }}" ]; then
             V="${{ inputs.release_tag }}"; V="${V#v}"
+            TAG="${{ inputs.release_tag }}"
           else
             V="0.0.0-dev"
+            TAG=""
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Building Windows release for version: $V"
+
+      # Draft-release assets are intentionally unavailable through the public
+      # /releases/download/<tag>/ URL. Fetch them through authenticated GitHub
+      # access so the Windows installer can be built and tested before the
+      # release is published.
+      - name: Fetch snapshot assets from draft release
+        if: steps.ver.outputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p packaging/windows/dist
+          gh release download "${{ steps.ver.outputs.release_tag }}" \
+            --pattern 'dinero-assumeutxo-84131-v4.dat' \
+            --pattern 'dinero-assumeutxo-84131-v4.manifest.json' \
+            --dir packaging/windows/dist \
+            --clobber
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -183,12 +207,12 @@ jobs:
           if-no-files-found: error
 
       - name: Attach to release
-        if: github.ref_type == 'tag'
+        if: steps.ver.outputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release upload "${GITHUB_REF_NAME}" \
+          gh release upload "${{ steps.ver.outputs.release_tag }}" \
             "${{ steps.sums.outputs.installer }}" \
             "${{ steps.sums.outputs.sumfile }}" \
             --clobber
