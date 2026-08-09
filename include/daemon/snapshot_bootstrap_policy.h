@@ -3,7 +3,51 @@
 #include "consensus/interfaces/iconsensus_utxo_set.h"
 #include "primitives/transaction.h"
 
+#include <string>
+#include <vector>
+
 namespace dinero::assumeutxo {
+
+struct SnapshotCandidate {
+    std::string path;
+    uint32_t height = 0;
+    uint256 block_hash;
+};
+
+enum class SnapshotSelectionStatus {
+    Selected,
+    NoCandidates,
+    NoMatchingActiveLifecycle,
+};
+
+struct SnapshotSelection {
+    SnapshotSelectionStatus status = SnapshotSelectionStatus::NoCandidates;
+    SnapshotCandidate candidate;
+};
+
+// Fresh nodes use the first valid candidate (packaging orders newest first).
+// A node with persisted AssumeUTXO state MUST instead use the candidate whose
+// header matches that lifecycle exactly. Falling forward to a newer snapshot
+// would strand or overwrite the older assumed state during an upgrade.
+inline SnapshotSelection SelectSnapshotCandidate(
+    const std::vector<SnapshotCandidate>& candidates,
+    bool lifecycle_active,
+    uint32_t lifecycle_height,
+    const uint256& lifecycle_block) {
+    if (candidates.empty()) {
+        return {};
+    }
+    if (!lifecycle_active) {
+        return {SnapshotSelectionStatus::Selected, candidates.front()};
+    }
+    for (const auto& candidate : candidates) {
+        if (candidate.height == lifecycle_height &&
+            candidate.block_hash == lifecycle_block) {
+            return {SnapshotSelectionStatus::Selected, candidate};
+        }
+    }
+    return {SnapshotSelectionStatus::NoMatchingActiveLifecycle, {}};
+}
 
 // A fresh node initializes the canonical genesis coin before deferred snapshot
 // loading. Identify that state by exact UTXO identity and contents rather than

@@ -119,6 +119,87 @@ TEST_F(AssumeUTXOMetadataLifecycleTest, InMemoryClearDoesNotDeletePersistedMetad
     EXPECT_EQ(ReadMetadata(assumeutxo::kBaseHeightKey).value_or(""), "27727");
 }
 
+TEST(SnapshotCandidateSelectionTest, FreshNodeUsesNewestPrimaryCandidate) {
+    const uint256 old_hash = uint256::FromHexUnsafe(
+        "0000004ba0e611b00543c4210f29e7b72d91fc35007c1bad5c13f7b3a06c2756");
+    const uint256 new_hash = uint256::FromHexUnsafe(
+        "0000000023974d67c7a1a5dc04b7d63764b0f41b756796330615d39bc6792123");
+    const std::vector<assumeutxo::SnapshotCandidate> candidates = {
+        {"snapshot-84131.dat", 84131, new_hash},
+        {"snapshot-73035.dat", 73035, old_hash},
+    };
+
+    const auto selected = assumeutxo::SelectSnapshotCandidate(
+        candidates, false, 0, uint256{});
+
+    ASSERT_EQ(selected.status, assumeutxo::SnapshotSelectionStatus::Selected);
+    EXPECT_EQ(selected.candidate.path, "snapshot-84131.dat");
+    EXPECT_EQ(selected.candidate.height, 84131u);
+    EXPECT_EQ(selected.candidate.block_hash, new_hash);
+}
+
+TEST(SnapshotCandidateSelectionTest, ActiveOldLifecycleSelectsMatchingFallback) {
+    const uint256 old_hash = uint256::FromHexUnsafe(
+        "0000004ba0e611b00543c4210f29e7b72d91fc35007c1bad5c13f7b3a06c2756");
+    const uint256 new_hash = uint256::FromHexUnsafe(
+        "0000000023974d67c7a1a5dc04b7d63764b0f41b756796330615d39bc6792123");
+    const std::vector<assumeutxo::SnapshotCandidate> candidates = {
+        {"snapshot-84131.dat", 84131, new_hash},
+        {"snapshot-73035.dat", 73035, old_hash},
+    };
+
+    const auto selected = assumeutxo::SelectSnapshotCandidate(
+        candidates, true, 73035, old_hash);
+
+    ASSERT_EQ(selected.status, assumeutxo::SnapshotSelectionStatus::Selected);
+    EXPECT_EQ(selected.candidate.path, "snapshot-73035.dat");
+    EXPECT_EQ(selected.candidate.height, 73035u);
+    EXPECT_EQ(selected.candidate.block_hash, old_hash);
+}
+
+TEST(SnapshotCandidateSelectionTest, ActiveLifecycleNeverFallsForward) {
+    const uint256 old_hash = uint256::FromHexUnsafe(
+        "0000004ba0e611b00543c4210f29e7b72d91fc35007c1bad5c13f7b3a06c2756");
+    const uint256 new_hash = uint256::FromHexUnsafe(
+        "0000000023974d67c7a1a5dc04b7d63764b0f41b756796330615d39bc6792123");
+    const std::vector<assumeutxo::SnapshotCandidate> candidates = {
+        {"snapshot-84131.dat", 84131, new_hash},
+    };
+
+    const auto selected = assumeutxo::SelectSnapshotCandidate(
+        candidates, true, 73035, old_hash);
+
+    EXPECT_EQ(selected.status,
+              assumeutxo::SnapshotSelectionStatus::NoMatchingActiveLifecycle);
+    EXPECT_TRUE(selected.candidate.path.empty());
+}
+
+TEST(SnapshotCandidateSelectionTest, SameHeightWithWrongHashIsNotAMatch) {
+    const uint256 lifecycle_hash = uint256::FromHexUnsafe(
+        "0000004ba0e611b00543c4210f29e7b72d91fc35007c1bad5c13f7b3a06c2756");
+    const uint256 wrong_hash = uint256::FromHexUnsafe(
+        "0000000023974d67c7a1a5dc04b7d63764b0f41b756796330615d39bc6792123");
+    const std::vector<assumeutxo::SnapshotCandidate> candidates = {
+        {"same-height-wrong-chain.dat", 73035, wrong_hash},
+    };
+
+    const auto selected = assumeutxo::SelectSnapshotCandidate(
+        candidates, true, 73035, lifecycle_hash);
+
+    EXPECT_EQ(selected.status,
+              assumeutxo::SnapshotSelectionStatus::NoMatchingActiveLifecycle);
+    EXPECT_TRUE(selected.candidate.path.empty());
+}
+
+TEST(SnapshotCandidateSelectionTest, EmptyConfigurationIsNotAnError) {
+    const auto selected = assumeutxo::SelectSnapshotCandidate(
+        {}, false, 0, uint256{});
+
+    EXPECT_EQ(selected.status,
+              assumeutxo::SnapshotSelectionStatus::NoCandidates);
+    EXPECT_TRUE(selected.candidate.path.empty());
+}
+
 TEST(SnapshotBootstrapPolicyTest, AcceptsOnlyExactGenesisCoinbaseState) {
     SelectParams(Chain::MAINNET);
     Transaction genesis_coinbase;

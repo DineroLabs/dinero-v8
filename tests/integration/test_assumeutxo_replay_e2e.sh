@@ -23,14 +23,17 @@
 #                  the never-cleared promoted base height). The fork node is a
 #                  full source-datadir copy taken at height 50, which then
 #                  mines its own longer chain.
-#   Scenario C   = re-entry: loading a DIFFERENT snapshot mid-lifecycle is
+#   Scenario C   = re-entry and release upgrade: loading a DIFFERENT snapshot mid-lifecycle is
 #                  refused. C1: the live RPC path refuses (the consensus set is
 #                  populated by the active snapshot, so the empty-set
 #                  precondition fires first — the belt is unreachable over RPC
 #                  by construction). C2: the belt itself ("another snapshot
 #                  lifecycle is active") fires on the startup-rehydrate path
 #                  when a DIFFERENT-base assumeutxo_snapshot is configured
-#                  mid-lifecycle, and the daemon refuses to start.
+#                  mid-lifecycle, and the daemon refuses to start. C3: the same
+#                  newer primary is safe when the release also retains the old
+#                  artifact as assumeutxo_snapshot_fallbacks; startup selects the
+#                  exact persisted base and never falls forward.
 #
 # TOPOLOGY NOTES (discovered empirically; they shape this script):
 #   * loadtxoutset requires an EMPTY consensus UTXO set, and the snapshot
@@ -497,10 +500,9 @@ fi
     || fail "C1: unexpected refusal shape for different-base mid-lifecycle load: $LOAD2_RES"
 pass "C1: different-base load refused over RPC mid-lifecycle: $ERR_MSG"
 
-# C2: the belt itself. Restart nodeC with a DIFFERENT-base snapshot configured:
-# the startup rehydrate clears the stale consensus set (making the belt
-# reachable), reads the new header, and must refuse with the belt message —
-# and the daemon must NOT come up serving from it.
+# C2: the startup belt. Restart nodeC with only a DIFFERENT-base snapshot
+# configured. Candidate selection now rejects it before rehydrate can clear or
+# mutate the consensus set; the daemon must NOT come up serving from it.
 stop_node "$C_DIR"
 mkdir -p "$C_DIR"
 "$DINEROD" --regtest --datadir="$C_DIR" \
@@ -509,20 +511,41 @@ mkdir -p "$C_DIR"
     --assumeutxo_snapshot="$SNAP2" > "$C_DIR/daemon2.log" 2>&1 &
 C2_OK=0
 for i in $(seq 1 90); do
-    if grep -q "another snapshot lifecycle is active" "$C_DIR/daemon2.log" 2>/dev/null; then
+    if grep -q "has no matching configured snapshot candidate" "$C_DIR/daemon2.log" 2>/dev/null; then
         C2_OK=1
         break
     fi
     sleep 1
 done
 [[ "$C2_OK" == "1" ]] \
-    || fail "C2: belt message 'another snapshot lifecycle is active' never appeared on different-base startup rehydrate"
-pass "C2: belt refusal fired on startup rehydrate: $(grep -m1 -o 'another snapshot lifecycle is active[^"]*' "$C_DIR/daemon2.log" | head -1)"
+    || fail "C2: exact-base candidate refusal never appeared on different-base startup"
+pass "C2: candidate belt refused different-base startup: $(grep -m1 -o 'persisted AssumeUTXO lifecycle[^]]*' "$C_DIR/daemon2.log" | head -1)"
 # The node must not have come up fully_validated/healthy on the wrong snapshot.
 if rpc "$C_RPC" "$C_DIR" getsnapshotbootstrapstatus 2>/dev/null \
         | jq -e '.result.snapshot_bootstrap.history_fully_validated == true' >/dev/null 2>&1; then
     fail "C2: node reached fully_validated after a refused different-base rehydrate"
 fi
+stop_node "$C_DIR"
+
+# C3: release-upgrade compatibility. The new snapshot remains the primary for
+# fresh nodes, but this datadir has a persisted lifecycle at SNAP's older base.
+# Supplying the old artifact as a fallback must select that exact base, start
+# successfully, and leave the persisted lifecycle unchanged. This is the
+# deployment shape used when a release advances its bundled snapshot.
+start_node "$C_DIR" "$C_RPC" "$C_P2P" "$C_WS" "$C_DIR/daemon3.log" \
+    --assumeutxo_bg_stall_timeout=3600 \
+    --assumeutxo_snapshot="$SNAP2" \
+    --assumeutxo_snapshot_fallbacks="$SNAP"
+wait_status "$C_RPC" "$C_DIR" \
+    ".assumeutxo_active == true and .snapshot_base_height == $BASE and .fatal == false" \
+    60 "C3: upgrade selected the exact older snapshot fallback"
+grep -q "selected candidate at height $BASE for persisted lifecycle: $SNAP" \
+    "$C_DIR/daemon3.log" \
+    || fail "C3: daemon did not report selecting the older lifecycle fallback"
+C3_HEIGHT="$(rpc "$C_RPC" "$C_DIR" getblockcount | jq -r '.result // 0')"
+[[ "$C3_HEIGHT" -lt "$NEW_TIP" ]] \
+    || fail "C3: active tip fell forward to the newer snapshot base (height $C3_HEIGHT)"
+pass "C3: newer primary plus older fallback preserves the in-flight lifecycle"
 stop_node "$C_DIR"
 unset DINERO_DEBUG_BG_VALIDATION_DELAY_MS
 fi
