@@ -148,6 +148,36 @@ const std::vector<AssumeUTXOSnapshot> AssumeUTXORegistry::snapshots_ = {
         218833,
         "Mainnet height 73035 v4 trust anchor (UXTO+UTRX+SHLD) - shipped DineroDPI artifact"
     ),
+    // Mainnet height 84131 v4 trust anchor. This is the preferred snapshot for
+    // fresh v8.1.2 installations; 73035 remains registered and is shipped as a
+    // fallback so an interrupted older AssumeUTXO lifecycle can restart against
+    // its exact original base instead of being forced onto this newer one.
+    //
+    // Provenance (2026-08-08): the signed EU1 publisher manifest was fetched
+    // independently and verified with DineroDPI's embedded Ed25519 publisher
+    // key. The artifact then passed the real offline LoadSnapshot/loadtxoutset
+    // path against a header store containing the canonical base header. That
+    // path verified the whole-file checksum, manifest-pinned file and block hashes,
+    // Utreexo section root against the base header, deserialized forest root and
+    // leaf count, and the restored v4 shielded commitment root/nullifier payload.
+    // The daemon had zero peers throughout the import.
+    //
+    // Reproduce the artifact fields with:
+    //   shasum -a 256 dinero-assumeutxo-84131-v4.dat
+    //   python3 -c 'import struct,binascii;d=open("dinero-assumeutxo-84131-v4.dat","rb").read(52);\
+    //     print(hex(struct.unpack_from("<I",d,0)[0]), struct.unpack_from("<I",d,4)[0],\
+    //       struct.unpack_from("<I",d,40)[0], struct.unpack_from("<Q",d,44)[0],\
+    //       binascii.hexlify(d[8:40][::-1]).decode())'
+    // Expected: magic 0x4f545855, version 4, height 84131, 252129 UTXOs,
+    // block 0000000023974d67...c6792123; file size 31,122,296 bytes.
+    AssumeUTXOSnapshot(
+        "7defc1897055ba24a92985e30ce35123181debc272c86e5fd2d190e436802845",
+        "0000000023974d67c7a1a5dc04b7d63764b0f41b756796330615d39bc6792123",
+        84131,
+        "0x00000000000000000000000000000000000000000000000000002733d734bd86",
+        252129,
+        "Mainnet height 84131 v4 trust anchor (UXTO+UTRX+SHLD) - signed EU1 artifact"
+    ),
 };
 
 std::optional<AssumeUTXOSnapshot> AssumeUTXORegistry::GetSnapshot(uint32_t height) {
