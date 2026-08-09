@@ -89,6 +89,13 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
+      - name: Checkout reviewed release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          fetch-depth: 1
+
       - name: Checkout pinned SV2 miners
         uses: actions/checkout@v4
         with:
@@ -103,18 +110,27 @@ jobs:
           set -euo pipefail
           test "$(git describe --tags --exact-match HEAD)" = "${{ inputs.release_tag }}"
           SOURCE_HEAD=$(git rev-parse HEAD)
+          TOOLING_HEAD=$(git -C "${GITHUB_WORKSPACE}/tooling" rev-parse HEAD)
           SV2_HEAD=$(git -C "${GITHUB_WORKSPACE}/dinero-sv2" rev-parse HEAD)
+          test "$TOOLING_HEAD" = "$GITHUB_SHA"
           test "$SV2_HEAD" = "$SV2_REF"
           V="${{ inputs.release_tag }}"; V="${V#v}"
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "source_head=$SOURCE_HEAD" >> "$GITHUB_OUTPUT"
+          echo "tooling_head=$TOOLING_HEAD" >> "$GITHUB_OUTPUT"
           {
             echo "release_tag=${{ inputs.release_tag }}"
             echo "source_commit=$SOURCE_HEAD"
-            echo "tooling_commit=${GITHUB_SHA}"
+            echo "tooling_commit=$TOOLING_HEAD"
             echo "sv2_commit=$SV2_HEAD"
             echo "runner=${RUNNER_OS} ${RUNNER_ARCH}"
           } | tee desktop-release-provenance-linux.txt
+
+      - name: Overlay reviewed Linux packaging helpers
+        run: |
+          cp "${GITHUB_WORKSPACE}/tooling/packaging/linux/build-qt-deb.sh" packaging/linux/
+          cp "${GITHUB_WORKSPACE}/tooling/packaging/linux/build-qt-tarball.sh" packaging/linux/
+          chmod +x packaging/linux/build-qt-deb.sh packaging/linux/build-qt-tarball.sh
 
       - name: Install build and packaging dependencies
         run: |
