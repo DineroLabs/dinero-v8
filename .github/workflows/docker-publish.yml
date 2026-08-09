@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Dinero version to build (e.g. 8.1.1)"
+        description: "Dinero version to build (e.g. 8.1.2)"
         required: true
   # Without this the image was never built or run on a pull request — the first time
   # any image change executed was on a release, in front of users. The PR path builds
@@ -127,11 +127,12 @@ jobs:
           # declares, with the manifest as its sibling, or the daemon's trust gate
           # silently downgrades to a warning
           docker run --rm --entrypoint /bin/sh dinerod:ci -c \
-            'test -f "$DINERO_SNAPSHOT" && test -f "$DINERO_SNAPSHOT.manifest.json"'
+            'test -f "$DINERO_SNAPSHOT" && test -f "$DINERO_SNAPSHOT.manifest.json" && \
+             test -f "$DINERO_SNAPSHOT_FALLBACKS" && test -f "$DINERO_SNAPSHOT_FALLBACKS.manifest.json"'
 
       # Regression guard for the bug that bricked volumes: the daemon creates
       # /data/blocks and /data/blockchain seconds into startup, MINUTES before the
-      # AssumeUTXO import at header height 73035. An entrypoint that arms the snapshot
+      # AssumeUTXO import at its configured header height. An entrypoint that arms the snapshot
       # "only on a fresh datadir" therefore stops arming it during that window, and a
       # restart inside the window leaves persisted AssumeUTXO metadata with no
       # configured snapshot path — dinerod then exits 2 on every subsequent start.
@@ -155,6 +156,8 @@ jobs:
 
             grep -q -- "^--assumeutxo_snapshot=" /tmp/argv || {
               echo "::error::snapshot NOT armed with an existing /data/blocks — the interrupted-first-sync brick is back"; exit 1; }
+            grep -q -- "^--assumeutxo_snapshot_fallbacks=" /tmp/argv || {
+              echo "::error::older exact-base snapshot fallback NOT armed — image upgrade can brick an in-progress lifecycle"; exit 1; }
             # the snapshot without forward-connect holds the tip at the base for the
             # whole genesis->base replay (PR #393): 0 confirmations for hours
             grep -qx -- "--assumeutxo_forward_connect=1" /tmp/argv || {
@@ -165,6 +168,8 @@ jobs:
             # the startup line the operator sees must agree with the real argv
             grep -q "assumeutxo_snapshot=yes" /tmp/startup.log || {
               echo "::error::startup line does not report the armed snapshot"; exit 1; }
+            grep -q "assumeutxo_fallbacks=yes" /tmp/startup.log || {
+              echo "::error::startup line does not report the armed fallback"; exit 1; }
           '
 
           # ...and the startup line must NOT echo user-supplied arguments: they can
