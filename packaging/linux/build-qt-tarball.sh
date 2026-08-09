@@ -54,7 +54,7 @@ cat > "${STAGE}/README.txt" <<EOF
 Dinero v${VERSION} -- linux-x86_64-qt user bundle
 ========================================
 
-Build:      gcc ${GCCVER} (Ubuntu 22.04, WSL2)
+Build:      gcc ${GCCVER} (Ubuntu 22.04)
 Qt:         ${QTVER} (system, bundled in usr/lib/)
 Built UTC:  ${BUILTON}
 Linkage:    Vendored OpenSSL 3.5.7 (static, no-shared) + bundled Qt6 .so

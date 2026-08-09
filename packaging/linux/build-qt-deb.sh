@@ -4,7 +4,7 @@
 # Produces: dist/dinero-qt-desktop_<VERSION>-1_amd64.deb
 #
 # This package is intentionally self-contained: it ships dinero-qt
-# alongside its bundled dinerod + dinero-solo-miner under
+# alongside the same complete daemon/miner/helper set as the AppImage under
 # /opt/dinero-qt-desktop/ rather than depending on the dinero-core
 # .deb. That keeps the two packages decoupled — installing the GUI
 # does NOT also enable the systemd packaged-service node.
@@ -35,13 +35,32 @@ echo "----------------------------------------------------------"
 echo "Building dinero-qt-desktop .deb -- v${VERSION} (deb ${DEB_VERSION})"
 echo "----------------------------------------------------------"
 
-# Verify input binaries.
-DINERO_QT="${BUILD_DIR}/bin/dinero-qt"
-DINEROD="${BUILD_DIR}/dinerod"
-DINERO_SOLO_MINER="${BUILD_DIR}/miner/dinero-solo-miner"
-for f in "${DINERO_QT}" "${DINEROD}" "${DINERO_SOLO_MINER}"; do
-    if [ ! -x "${f}" ]; then
-        echo "ERROR: ${f} not found or not executable" >&2
+# Verify the complete desktop binary contract. Keeping this list aligned with
+# build-appimage.sh prevents one Linux package from silently losing controls
+# that work in another package format.
+SV2_ROOT="${DINERO_SV2_SOURCE_ROOT:-${PROJECT_ROOT}/../dinero-sv2}"
+BIN_NAMES=(
+    dinero-qt dinerod dinero-cli dinero-seeder
+    dinero-miner dinero-solo-miner dinero-gpu-miner
+    dinero-stratum-worker dinero-wallet-cli
+    dinero-sv2-miner dinero-sv2-gpu-miner
+)
+BIN_PATHS=(
+    "${BUILD_DIR}/bin/dinero-qt"
+    "${BUILD_DIR}/dinerod"
+    "${BUILD_DIR}/dinero-cli"
+    "${BUILD_DIR}/seeder/dinero-seeder"
+    "${BUILD_DIR}/dinero-miner"
+    "${BUILD_DIR}/miner/dinero-solo-miner"
+    "${BUILD_DIR}/dinero-gpu-miner"
+    "${BUILD_DIR}/dinero-stratum-worker"
+    "${BUILD_DIR}/dinero-wallet-cli"
+    "${SV2_ROOT}/target/release/dinero-sv2-miner"
+    "${SV2_ROOT}/target/release/dinero-sv2-gpu-miner"
+)
+for i in "${!BIN_NAMES[@]}"; do
+    if [ ! -x "${BIN_PATHS[$i]}" ]; then
+        echo "ERROR: expected desktop binary missing: ${BIN_NAMES[$i]} (${BIN_PATHS[$i]})" >&2
         exit 1
     fi
 done
@@ -60,10 +79,11 @@ mkdir -p "${STAGE}/usr/share/doc/dinero-qt-desktop"
 # dinero-core later — dinero-core's /usr/bin/dinerod will win in
 # PATH order, which is fine because the GUI uses an explicit path).
 echo "Staging binaries..."
-cp "${DINERO_QT}"          "${STAGE}/opt/dinero-qt-desktop/bin/dinero-qt"
-cp "${DINEROD}"            "${STAGE}/opt/dinero-qt-desktop/bin/dinerod"
-cp "${DINERO_SOLO_MINER}"  "${STAGE}/opt/dinero-qt-desktop/bin/dinero-solo-miner"
+for i in "${!BIN_NAMES[@]}"; do
+    cp "${BIN_PATHS[$i]}" "${STAGE}/opt/dinero-qt-desktop/bin/${BIN_NAMES[$i]}"
+done
 chmod 0755 "${STAGE}/opt/dinero-qt-desktop/bin/"*
+echo "Staged all ${#BIN_NAMES[@]} expected desktop binaries."
 
 # Keep the snapshot files beside dinero-qt, matching its runtime lookup.
 "${SCRIPT_DIR}/stage-snapshot-pair.sh" "${STAGE}/opt/dinero-qt-desktop/bin"
@@ -121,12 +141,12 @@ Architecture: amd64
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: Trucker2827 <trucker2827@gmail.com>
 Homepage: https://github.com/DineroLabs/dinero-v8
-Depends: libqt6widgets6 (>= 6.2), libqt6gui6 (>= 6.2), libqt6network6 (>= 6.2), libqt6core6 (>= 6.2), libqt6dbus6 (>= 6.2), libc6 (>= 2.34), xdg-utils
+Depends: libqt6widgets6 (>= 6.2), libqt6gui6 (>= 6.2), libqt6network6 (>= 6.2), libqt6core6 (>= 6.2), libqt6dbus6 (>= 6.2), libc6 (>= 2.34), libudev1, libusb-1.0-0, libhidapi-hidraw0 | libhidapi-libusb0, ocl-icd-libopencl1, xdg-utils
 Description: Dinero (DIN) Qt desktop wallet
  dinero-qt-desktop ships dinero-qt, the Qt6 GUI wallet for the Dinero
- blockchain, together with a bundled dinerod node daemon and the
- dinero-solo-miner tool. The GUI auto-starts the bundled daemon and
- connects to the v8 bootstrap peers on launch.
+ blockchain, together with its full bundled daemon, CLI, seeder, CPU/GPU,
+ solo, Stratum, SV2, and wallet helper set. The GUI auto-starts the bundled
+ daemon and connects to the v8 bootstrap peers on launch.
  .
  This package is independent from dinero-core. Installing it does NOT
  enable the systemd packaged-service node — the daemon runs only while
