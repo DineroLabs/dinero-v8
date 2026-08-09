@@ -65,10 +65,14 @@ Included binaries (usr/bin/):
   dinero-qt              Qt6 GUI wallet (start here)
   dinerod                Full node daemon (started by dinero-qt automatically)
   dinero-cli             CLI RPC client
+  dinero-seeder          Network seeder
   dinero-miner           CPU miner
+  dinero-gpu-miner       OpenCL GPU miner
   dinero-stratum-worker  Stratum worker client
   dinero-wallet-cli      Reference wallet CLI
   dinero-solo-miner      Solo miner (mines against the bundled daemon)
+  dinero-sv2-miner       Stratum V2 CPU miner
+  dinero-sv2-gpu-miner   Stratum V2 GPU miner
 
 Quick start:
   tar -xzf $(basename "${STAGE}").tar.gz
@@ -80,8 +84,8 @@ The AppRun wrapper sets LD_LIBRARY_PATH and QT_PLUGIN_PATH so the
 bundled Qt6 libraries take precedence over any system Qt install. This
 makes the bundle portable across distros that ship a different Qt6 ABI.
 
-Not included (use the AppImage or system .deb for these):
-  dinero-gpu-miner       GPU miner — CUDA toolkit not in the build env
+The OpenCL GPU binaries are included. CUDA acceleration remains an optional
+runtime path and is not required to launch or use the wallet and full node.
 
 SHA256SUMS.txt at the archive root has per-file hashes for verification.
 The archive itself has its own SHA256, listed on the GitHub release page.
