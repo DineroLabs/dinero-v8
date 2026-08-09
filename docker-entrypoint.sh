@@ -26,7 +26,8 @@
 set -eu
 
 DATADIR="${DINERO_DATADIR:-/data}"
-SNAPSHOT="${DINERO_SNAPSHOT:-/opt/dinero/mainnet-snapshot.dat}"
+SNAPSHOT="${DINERO_SNAPSHOT:-/opt/dinero/dinero-assumeutxo-84131-v4.dat}"
+SNAPSHOT_FALLBACKS="${DINERO_SNAPSHOT_FALLBACKS:-/opt/dinero/dinero-assumeutxo-73035-v4.dat}"
 
 # RPC listens on loopback INSIDE the container only. Binding 0.0.0.0 would expose the
 # RPC port to every other container on the same Docker network no matter which ports
@@ -53,6 +54,11 @@ set -- \
 
 if [ -f "$SNAPSHOT" ]; then
     set -- "$@" "--assumeutxo_snapshot=$SNAPSHOT" "--assumeutxo_forward_connect=1"
+    if [ -n "$SNAPSHOT_FALLBACKS" ] && [ -f "$SNAPSHOT_FALLBACKS" ]; then
+        set -- "$@" "--assumeutxo_snapshot_fallbacks=$SNAPSHOT_FALLBACKS"
+    elif [ -n "$SNAPSHOT_FALLBACKS" ]; then
+        echo "[entrypoint] configured AssumeUTXO fallback not found; continuing without it" >&2
+    fi
 fi
 
 # NEVER echo "$@": a user-supplied -rpcpassword=... (or any other secret flag) would be
@@ -65,17 +71,19 @@ fi
 # (and on the argv dinerod actually receives).
 snapshot_armed=no
 forward_connect=no
+fallbacks_armed=no
 for a in "$@"; do
     case "$a" in
         --assumeutxo_snapshot=*|-assumeutxo_snapshot=*)             snapshot_armed=yes ;;
         --assumeutxo_forward_connect=1|-assumeutxo_forward_connect=1) forward_connect=yes ;;
+        --assumeutxo_snapshot_fallbacks=*|-assumeutxo_snapshot_fallbacks=*) fallbacks_armed=yes ;;
     esac
 done
 
 # NOTE the field name: rpcbind_default reports what THIS script set, which a trailing
 # user-supplied -rpcbind= would override. The two assumeutxo fields are derived from the
 # final argv and cannot disagree with it; this one deliberately does not claim to be.
-echo "[entrypoint] datadir=$DATADIR rpcbind_default=$RPCBIND assumeutxo_snapshot=$snapshot_armed assumeutxo_forward_connect=$forward_connect"
+echo "[entrypoint] datadir=$DATADIR rpcbind_default=$RPCBIND assumeutxo_snapshot=$snapshot_armed assumeutxo_fallbacks=$fallbacks_armed assumeutxo_forward_connect=$forward_connect"
 if [ "$snapshot_armed" = no ]; then
     echo "[entrypoint] no snapshot armed (looked for $SNAPSHOT) — a fresh datadir syncs from genesis; an already-synced one just continues"
 fi

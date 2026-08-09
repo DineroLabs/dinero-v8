@@ -18,45 +18,33 @@
 #
 #   docker run -d --name dinero --stop-timeout 60 \
 #     --log-opt max-size=50m --log-opt max-file=3 \
-#     -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.1
+#     -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.2
 
-ARG DINERO_VERSION=8.1.1
-# The snapshot is pinned to the release that actually publishes it, INDEPENDENTLY of
-# the daemon version being built: assumeutxo assets were a one-off upload to v8.1.1
-# and are not produced per release, so fetching them from v${DINERO_VERSION} would 404
-# on the next version. Bump this only when a newer release actually ships a snapshot.
-#
-# ⚠️ BUMPING TO A NEW SNAPSHOT HEIGHT HALTS EVERY EXISTING VOLUME. The entrypoint arms
-# the snapshot unconditionally (that is what prevents the interrupted-first-sync brick),
-# so an existing datadir gets a snapshot whose base height differs from the one already
-# in its persisted AssumeUTXO metadata. chainstate_service.cpp refuses that outright
-# ("another snapshot lifecycle is active (base height N); configured assumeutxo_snapshot
-# has a different base") and the daemon exits 2 on start, permanently — and there is no
-# escape by waiting, because AssumeUtxoLifecycle::Disable() has no callers, so a volume
-# never leaves the active state on its own.
-#
-# Operators on an already-synced volume can start without the bundled snapshot:
-#     docker run -e DINERO_SNAPSHOT=/nonexistent ...
-# which makes the entrypoint fall through to its no-snapshot branch. Their node is
-# already past the base, so it simply continues as a normal full node.
-#
-# So a snapshot bump is a BREAKING CHANGE for existing installs, not a routine update.
-# Ship it with release notes carrying the line above, or gate it behind a new image
-# tag that existing volumes are not automatically pulled onto.
-ARG SNAPSHOT_RELEASE=v8.1.1
-ARG SNAPSHOT_NAME=dinero-assumeutxo-73035-v4
+ARG DINERO_VERSION=8.1.2
+# The snapshot release is explicit rather than inferred from the daemon version.
+# Bump it only when that release actually publishes the named snapshot artifacts.
+# v8.1.2 makes snapshot upgrades backward-compatible: fresh volumes choose 84131,
+# while a persisted lifecycle created by v8.1.1 can select the exact 73035 artifact.
+# Never remove a fallback until no supported image can have an active lifecycle at
+# that base. A newer primary alone would recreate the interrupted-first-sync brick.
+ARG SNAPSHOT_RELEASE=v8.1.2
+ARG SNAPSHOT_NAME=dinero-assumeutxo-84131-v4
+ARG SNAPSHOT_FALLBACK_NAME=dinero-assumeutxo-73035-v4
 # Filename the snapshot is installed under inside the image. It MUST equal the
 # manifest's "snapshot_file" field: the daemon's manifest trust gate compares the
 # on-disk filename to that field and refuses the snapshot when they differ
 # (chainstate_service.cpp ValidateSnapshotManifestPreflight). Asserted at build time.
-ARG SNAPSHOT_INSTALL_NAME=mainnet-snapshot.dat
+ARG SNAPSHOT_INSTALL_NAME=dinero-assumeutxo-84131-v4.dat
+ARG SNAPSHOT_FALLBACK_INSTALL_NAME=dinero-assumeutxo-73035-v4.dat
 
 # ---------- stage 1: fetch + verify ----------
 FROM debian:13-slim AS fetch
 ARG DINERO_VERSION
 ARG SNAPSHOT_RELEASE
 ARG SNAPSHOT_NAME
+ARG SNAPSHOT_FALLBACK_NAME
 ARG SNAPSHOT_INSTALL_NAME
+ARG SNAPSHOT_FALLBACK_INSTALL_NAME
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
@@ -74,6 +62,10 @@ RUN set -eux; \
     curl -fsSL -O "${BASE}/SHA256SUMS-linux-x86_64-${DINERO_VERSION}"; \
     curl -fsSL -O "${SNAP_BASE}/${SNAPSHOT_NAME}.dat"; \
     curl -fsSL -O "${SNAP_BASE}/${SNAPSHOT_NAME}.manifest.json"; \
+    curl -fsSL -O "${SNAP_BASE}/${SNAPSHOT_FALLBACK_NAME}.dat"; \
+    curl -fsSL -O "${SNAP_BASE}/${SNAPSHOT_FALLBACK_NAME}.manifest.json"; \
+    curl -fsSL -O "${SNAP_BASE}/${SNAPSHOT_NAME}.publisher.manifest.json"; \
+    curl -fsSL -O "${SNAP_BASE}/${SNAPSHOT_NAME}.publisher.manifest.sig"; \
     curl -fsSL -O "${SNAP_BASE}/SHA256SUMS-assumeutxo-${SNAPSHOT_HEIGHT}"; \
     tar xzf "dinero-linux-x86_64-${DINERO_VERSION}.tar.gz"; \
     # verified AFTER extraction: the checksum file names the two binaries by their
@@ -89,17 +81,24 @@ RUN set -eux; \
     test "${MANIFEST_FILE}" = "${SNAPSHOT_INSTALL_NAME}" || { \
         echo "manifest declares snapshot_file=\"${MANIFEST_FILE}\" but the image installs the snapshot as \"${SNAPSHOT_INSTALL_NAME}\"; the daemon's manifest trust gate would reject it at runtime"; \
         exit 1; }; \
+    FALLBACK_MANIFEST_FILE="$(sed -n 's/.*"snapshot_file"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${SNAPSHOT_FALLBACK_NAME}.manifest.json")"; \
+    test "${FALLBACK_MANIFEST_FILE}" = "${SNAPSHOT_FALLBACK_INSTALL_NAME}" || { \
+        echo "fallback manifest declares snapshot_file=\"${FALLBACK_MANIFEST_FILE}\" but the image installs \"${SNAPSHOT_FALLBACK_INSTALL_NAME}\""; \
+        exit 1; }; \
     mkdir -p /out; \
     cp "dinero-linux-x86_64-${DINERO_VERSION}/dinerod"     /out/dinerod; \
     cp "dinero-linux-x86_64-${DINERO_VERSION}/dinero-cli"  /out/dinero-cli; \
     cp "${SNAPSHOT_NAME}.dat"           /out/snapshot.dat; \
     cp "${SNAPSHOT_NAME}.manifest.json" /out/snapshot.manifest.json; \
+    cp "${SNAPSHOT_FALLBACK_NAME}.dat"           /out/snapshot-fallback.dat; \
+    cp "${SNAPSHOT_FALLBACK_NAME}.manifest.json" /out/snapshot-fallback.manifest.json; \
     chmod +x /out/dinerod /out/dinero-cli
 
 # ---------- stage 2: runtime ----------
 FROM debian:13-slim
 ARG DINERO_VERSION
 ARG SNAPSHOT_INSTALL_NAME
+ARG SNAPSHOT_FALLBACK_INSTALL_NAME
 
 LABEL org.opencontainers.image.title="Dinero Full Node"
 LABEL org.opencontainers.image.description="Post-quantum, Utreexo-native proof-of-work full node"
@@ -124,10 +123,13 @@ COPY --from=fetch /out/dinero-cli                /usr/local/bin/dinero-cli
 # the only layout in which the manifest trust gate engages instead of warning.
 COPY --from=fetch /out/snapshot.dat              /opt/dinero/${SNAPSHOT_INSTALL_NAME}
 COPY --from=fetch /out/snapshot.manifest.json    /opt/dinero/${SNAPSHOT_INSTALL_NAME}.manifest.json
+COPY --from=fetch /out/snapshot-fallback.dat     /opt/dinero/${SNAPSHOT_FALLBACK_INSTALL_NAME}
+COPY --from=fetch /out/snapshot-fallback.manifest.json /opt/dinero/${SNAPSHOT_FALLBACK_INSTALL_NAME}.manifest.json
 COPY docker-entrypoint.sh                        /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV DINERO_SNAPSHOT=/opt/dinero/${SNAPSHOT_INSTALL_NAME}
+ENV DINERO_SNAPSHOT_FALLBACKS=/opt/dinero/${SNAPSHOT_FALLBACK_INSTALL_NAME}
 
 VOLUME /data
 # 20999 = P2P only. RPC (20998) is deliberately NOT exposed: `docker run -P` publishes
