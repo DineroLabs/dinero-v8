@@ -61,7 +61,7 @@ working directly with the v8 source tree.
 ```bash
 docker run -d --name dinero --stop-timeout 60 \
   --log-opt max-size=50m --log-opt max-file=3 \
-  -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.2
+  -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.3
 ```
 
 That is a full validating node. It fast-syncs from a bundled AssumeUTXO snapshot, so
@@ -105,10 +105,10 @@ would not resolve.
 Until the first release lands in a registry, build the image yourself from this repo:
 
 ```bash
-docker build -t ghcr.io/dinerolabs/dinero-v8:8.1.2 .
+docker build -t ghcr.io/dinerolabs/dinero-v8:8.1.3 .
 ```
 
-That builds the v8.1.2 image the workflow publishes today, under the same name the
+That builds the v8.1.3 image the workflow publishes today, under the same name the
 command above uses; pass `--build-arg DINERO_VERSION=<version>` for any other release.
 
 ## Current Downloads

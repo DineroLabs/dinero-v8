@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Dinero version to build (e.g. 8.1.2)"
+        description: "Dinero version to build (e.g. 8.1.3)"
         required: true
   # Without this the image was never built or run on a pull request — the first time
   # any image change executed was on a release, in front of users. The PR path builds
