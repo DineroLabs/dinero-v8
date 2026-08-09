@@ -23,8 +23,10 @@ param(
     [string]$Makensis           = 'C:\Program Files (x86)\NSIS\makensis.exe',
     [string]$VcRedistPath       = '',
     [string]$SnapshotPath       = '',
-    [string]$SnapshotFileName   = 'utxo-snapshot-47176.dat',
-    [string]$SnapshotReleaseTag = 'v8.0.4',
+    [string]$SnapshotManifestPath = '',
+    [string]$SnapshotAssetName  = '',
+    [string]$SnapshotFileName   = 'dinero-assumeutxo-84131-v4.dat',
+    [string]$SnapshotReleaseTag = 'v8.1.2',
     [switch]$SkipBuild
 )
 
@@ -34,6 +36,16 @@ $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = (Resolve-Path (Join-Path $ScriptDir '..\..')).Path
 $DistDir     = Join-Path $ScriptDir 'dist'
 $Stage       = Join-Path $DistDir 'server-installer-stage'
+
+# Release assets and their trusted runtime filename are normally identical.
+# Older releases are not: v8.1.1 published
+# dinero-assumeutxo-73035-v4.dat with a manifest that deliberately names the
+# installed file mainnet-snapshot.dat. Keep those two identities separate so a
+# compatibility smoke does not either fetch the wrong URL or produce a package
+# the daemon's manifest preflight will reject.
+if (-not $SnapshotAssetName) {
+    $SnapshotAssetName = $SnapshotFileName
+}
 
 if (-not $BuildDir) {
     $BuildDir = Join-Path $ProjectRoot 'build-msvc-server'
@@ -141,14 +153,15 @@ function Resolve-Snapshot {
     #
     # Precedence:
     #   1. -SnapshotPath (explicit local file; for offline / mirrored builds)
-    #   2. Cached copy at $DistDir\$SnapshotFileName
-    #   3. Download $SnapshotFileName from the v8 release tagged by -SnapshotReleaseTag.
+    #   2. Cached copy at $DistDir\$SnapshotAssetName
+    #   3. Download $SnapshotAssetName from the v8 release tagged by -SnapshotReleaseTag.
     #
-    # Default is the height-47176 anchor published with v8.0.4. The daemon
-    # verifies the file's sha256 against its compiled-in trust anchors (it
-    # accepts both 47176 and the older 33048) at load time, so a tampered file
-    # is rejected. When a future cut publishes a new snapshot height, bump
-    # -SnapshotFileName + -SnapshotReleaseTag together.
+    # Default is the height-84131 v4 anchor published with v8.1.2. The daemon
+    # verifies the exact file sha256 and base hash against its compiled registry.
+    # Existing installs keep their prior dinero.conf and datadir snapshot, so an
+    # in-progress older lifecycle is not rewritten by an installer upgrade. When
+    # a future cut publishes a new snapshot height, bump
+    # -SnapshotAssetName + -SnapshotFileName + -SnapshotReleaseTag together.
 
     if ($SnapshotPath) {
         if (-not (Test-Path $SnapshotPath)) {
@@ -162,13 +175,68 @@ function Resolve-Snapshot {
         New-Item $DistDir -ItemType Directory | Out-Null
     }
 
-    $cached = Join-Path $DistDir $SnapshotFileName
+    $cached = Join-Path $DistDir $SnapshotAssetName
     if (-not (Test-Path $cached)) {
-        $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$SnapshotReleaseTag/$SnapshotFileName"
+        $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$SnapshotReleaseTag/$SnapshotAssetName"
         Write-Host "Downloading AssumeUTXO snapshot from $url..."
         Invoke-WebRequest $url -OutFile $cached
     }
     return $cached
+}
+
+function Resolve-SnapshotManifest([string]$SnapshotSourcePath) {
+    if ($SnapshotManifestPath) {
+        if (-not (Test-Path $SnapshotManifestPath)) {
+            throw "-SnapshotManifestPath not found: $SnapshotManifestPath"
+        }
+        return (Resolve-Path $SnapshotManifestPath).Path
+    }
+
+    # Release history contains both <snapshot>.dat.manifest.json and
+    # <snapshot>.manifest.json. The installer always places the selected one
+    # adjacent to the data under the runtime path <snapshot>.manifest.json.
+    $localCandidates = @(
+        "$SnapshotSourcePath.manifest.json",
+        ([IO.Path]::Combine([IO.Path]::GetDirectoryName($SnapshotSourcePath),
+            ([IO.Path]::GetFileName($SnapshotSourcePath) -replace '\.dat$', '.manifest.json')))
+    ) | Select-Object -Unique
+    foreach ($candidate in $localCandidates) {
+        if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
+    }
+
+    $assetCandidates = @(
+        "$SnapshotAssetName.manifest.json",
+        ($SnapshotAssetName -replace '\.dat$', '.manifest.json')
+    ) | Select-Object -Unique
+    foreach ($asset in $assetCandidates) {
+        $cached = Join-Path $DistDir $asset
+        if (Test-Path $cached) { return $cached }
+        $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$SnapshotReleaseTag/$asset"
+        try {
+            Write-Host "Downloading AssumeUTXO manifest from $url..."
+            Invoke-WebRequest $url -OutFile $cached -ErrorAction Stop
+            return $cached
+        } catch {
+            if (Test-Path $cached) { Remove-Item $cached -Force }
+        }
+    }
+    throw "No adjacent manifest found for AssumeUTXO snapshot asset $SnapshotAssetName"
+}
+
+function Assert-SnapshotManifest([string]$DataPath, [string]$ManifestPath) {
+    $manifest = (Get-Content -Raw $ManifestPath | ConvertFrom-Json).snapshot
+    if ($manifest.snapshot_file -ne $SnapshotFileName) {
+        throw "Snapshot manifest filename '$($manifest.snapshot_file)' does not match '$SnapshotFileName'"
+    }
+    $actualHash = (Get-FileHash -Algorithm SHA256 $DataPath).Hash.ToLowerInvariant()
+    if ([string]$manifest.sha256 -ne $actualHash) {
+        throw "Snapshot sha256 '$actualHash' does not match manifest '$($manifest.sha256)'"
+    }
+    $actualBytes = (Get-Item $DataPath).Length
+    if ([int64]$manifest.bytes -ne $actualBytes) {
+        throw "Snapshot length '$actualBytes' does not match manifest '$($manifest.bytes)'"
+    }
+    Write-Host "Verified AssumeUTXO manifest: $actualBytes bytes, sha256 $actualHash"
 }
 
 function Resolve-DaemonBinaryPath([string]$BinaryName) {
@@ -262,18 +330,27 @@ Write-Host '  vc_redist.x64.exe'
 $snapshot = Resolve-Snapshot
 Copy-Item $snapshot (Join-Path $Stage $SnapshotFileName)
 Write-Host "  $SnapshotFileName"
+$snapshotManifest = Resolve-SnapshotManifest $snapshot
+Assert-SnapshotManifest $snapshot $snapshotManifest
+Copy-Item $snapshotManifest (Join-Path $Stage "$SnapshotFileName.manifest.json")
+Write-Host "  $SnapshotFileName.manifest.json"
 
 $totalSize = (Get-ChildItem $Stage -Recurse | Measure-Object Length -Sum).Sum
 $fileCount = (Get-ChildItem $Stage -Recurse -File).Count
 Write-Host ("Stage: $fileCount files, {0:N2} MB" -f ($totalSize / 1MB))
 
 Write-Host 'Running makensis (LZMA solid compression)...'
+$numericVersion = if ($Version -match '^(\d+)\.(\d+)\.(\d+)') {
+    "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+} else {
+    '0.0.0.0'
+}
 Push-Location $ScriptDir
 try {
     $oldEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $Makensis "/DVERSION=$Version" "/DSNAPSHOT_FILE=$SnapshotFileName" 'dinero-server-installer.nsi' | Out-Null
+        & $Makensis "/DVERSION=$Version" "/DVERSION_NUMERIC=$numericVersion" "/DSNAPSHOT_FILE=$SnapshotFileName" 'dinero-server-installer.nsi' | Out-Null
     } finally {
         $ErrorActionPreference = $oldEAP
     }

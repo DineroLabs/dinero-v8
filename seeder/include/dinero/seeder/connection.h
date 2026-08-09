@@ -15,6 +15,10 @@
 namespace dinero {
 namespace seeder {
 
+#ifndef DINERO_SEEDER_VERSION
+#define DINERO_SEEDER_VERSION "unknown"
+#endif
+
 enum class ProbeOutcome {
     Success,                  // version + verack exchanged; addr (possibly empty) received
     ConnectTimeout,           // TCP connect didn't complete in budget
@@ -45,7 +49,7 @@ struct ProbeConfig {
     std::chrono::milliseconds handshake_timeout{8000};
     std::chrono::milliseconds addr_timeout{5000};   // wait this long after getaddr for addr reply
     uint32_t protocol_version_floor = 70014;        // reject ancient peers
-    std::string user_agent = "/dinero-seeder:8.0.0/";
+    std::string user_agent = "/dinero-seeder:" DINERO_SEEDER_VERSION "/";
     uint32_t best_height = 0;                       // seeder doesn't track chain state
 };
 

@@ -90,30 +90,21 @@ QStringList currentBootstrapAddnodes() {
     };
 }
 
-// Bundled AssumeUTXO snapshot shipped in the app's Resources. On a FRESH datadir
-// the embedded daemon is pointed at it so a new wallet fast-syncs to the snapshot
-// height instead of syncing from genesis — the slow path that maximizes exposure
-// to the block-download catch-up. The daemon verifies the file's SHA256 against
-// its compiled-in trust anchor (consensus/assume_utxo.cpp) before trusting it.
-constexpr char kBundledSnapshotFile[] = "utxo-snapshot-65300.dat";
+// Height-specific snapshots shipped in the app's Resources. The newest is the
+// fresh-install primary; the older file is retained only to restart an exact
+// persisted AssumeUTXO lifecycle created by the previous desktop release.
+// Both remain armed on every start. The daemon treats them as inert on an
+// ordinary synced datadir, but an interrupted first sync needs the exact old
+// artifact even after the app bundle has been upgraded.
+constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-84131-v4.dat";
+constexpr char kBundledSnapshotFallback[] = "utxo-snapshot-65300.dat";
 
-void appendAssumeUtxoSnapshotArgIfFresh(QStringList& args, const QString& datadir) {
-    if (datadir.isEmpty()) {
-        return;
-    }
-    // "Fresh" = no chain data written yet (block flatfiles + chaindb absent).
-    // On an existing datadir we must NOT pass the snapshot (the node is past it).
-    const bool fresh = !QDir(datadir + "/blocks").exists() &&
-                       !QDir(datadir + "/blockchain").exists();
-    if (!fresh) {
-        return;
-    }
-    // Locate the bundled snapshot across platform install layouts:
+QString findBundledSnapshot(const char* filename) {
+    // Locate a bundled snapshot across platform install layouts:
     //  - macOS .app: applicationDirPath() == <app>/Contents/MacOS → ../Resources/<file>
     //  - Windows / Linux: bundled next to the executable (install root)
-    // Resolves to nonexistent in dev builds (no bundled .dat) → we simply sync normally.
     const QString appDir = QCoreApplication::applicationDirPath();
-    const QString file = QString::fromLatin1(kBundledSnapshotFile);
+    const QString file = QString::fromLatin1(filename);
     const QStringList candidates = {
         QFileInfo(appDir + "/../Resources/" + file).absoluteFilePath(),  // macOS .app bundle
         QFileInfo(appDir + "/" + file).absoluteFilePath(),               // Windows/Linux next-to-exe
@@ -121,18 +112,37 @@ void appendAssumeUtxoSnapshotArgIfFresh(QStringList& args, const QString& datadi
     QString snapshotPath;
     for (const QString& candidate : candidates) {
         if (QFile::exists(candidate)) {
-            snapshotPath = candidate;
-            break;
+            return candidate;
         }
     }
-    if (snapshotPath.isEmpty()) {
-        qWarning() << "Fresh datadir but bundled AssumeUTXO snapshot" << file
-                   << "not found (looked in" << candidates << ") — daemon will sync from genesis";
+    return {};
+}
+
+void appendAssumeUtxoSnapshotArgs(QStringList& args, const QString& datadir) {
+    if (datadir.isEmpty()) {
         return;
     }
-    qInfo() << "Fresh datadir: fast-syncing from bundled AssumeUTXO snapshot"
-            << snapshotPath;
-    args << QString("--assumeutxo_snapshot=%1").arg(snapshotPath);
+
+    QString primary = findBundledSnapshot(kBundledSnapshotPrimary);
+    const QString fallback = findBundledSnapshot(kBundledSnapshotFallback);
+    if (primary.isEmpty()) {
+        primary = fallback;
+    }
+    if (primary.isEmpty()) {
+        qWarning() << "No bundled AssumeUTXO snapshot found — a fresh datadir will sync from genesis";
+        return;
+    }
+
+    qInfo() << "Arming bundled AssumeUTXO primary" << primary;
+    args << QString("--assumeutxo_snapshot=%1").arg(primary);
+    if (!fallback.isEmpty() && fallback != primary) {
+        if (fallback.contains(';')) {
+            qWarning() << "AssumeUTXO fallback path contains unsupported ';' delimiter; skipping";
+        } else {
+            qInfo() << "Arming exact-lifecycle AssumeUTXO fallback" << fallback;
+            args << QString("--assumeutxo_snapshot_fallbacks=%1").arg(fallback);
+        }
+    }
     // Wallet-usable-at-tip during background validation: without this the
     // desktop default profile (mac_fullblock) holds the active tip at the
     // snapshot base until the genesis->base replay completes, so a payment
@@ -788,7 +798,7 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
 
     // Fresh wallet: fast-sync from the bundled AssumeUTXO snapshot rather than
     // syncing from genesis (removes the long, catch-up-stall-prone first run).
-    appendAssumeUtxoSnapshotArgIfFresh(args, datadir);
+    appendAssumeUtxoSnapshotArgs(args, datadir);
 
     // Track C: Liquidity Vault. Daemon defaults are vault=1 and
     // (as of v2.1.29) shadow=0 — credits open for real once a

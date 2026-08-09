@@ -20,10 +20,14 @@
   !define VERSION "0.0.0-dev"
 !endif
 
+!ifndef VERSION_NUMERIC
+  !define VERSION_NUMERIC "0.0.0.0"
+!endif
+
 ; Bundled AssumeUTXO snapshot filename. Passed in by build-server-installer.ps1
-; (/DSNAPSHOT_FILE=...). Defaults to the current height-47176 trust anchor.
+; (/DSNAPSHOT_FILE=...). Defaults to the current height-84131 v4 trust anchor.
 !ifndef SNAPSHOT_FILE
-  !define SNAPSHOT_FILE "utxo-snapshot-47176.dat"
+  !define SNAPSHOT_FILE "dinero-assumeutxo-84131-v4.dat"
 !endif
 
 !define APP_NAME       "Dinero Server"
@@ -47,8 +51,8 @@ InstallDirRegKey HKLM "${APP_REGKEY}" "InstallDir"
 RequestExecutionLevel admin
 Unicode true
 
-VIProductVersion "8.0.0.0"
-VIFileVersion    "8.0.0.0"
+VIProductVersion "${VERSION_NUMERIC}"
+VIFileVersion    "${VERSION_NUMERIC}"
 VIAddVersionKey "ProductName"      "${APP_NAME}"
 VIAddVersionKey "CompanyName"      "${APP_PUBLISHER}"
 VIAddVersionKey "LegalCopyright"   "Copyright (C) 2026 ${APP_PUBLISHER}"
@@ -141,11 +145,14 @@ Function MaybeConfigureSnapshot
   IfFileExists "$AppDataDir\dinero.conf" snapshot_cleanup 0
   IfFileExists "$AppDataDir\blockchain\*.*" snapshot_cleanup 0
   IfFileExists "$INSTDIR\${SNAPSHOT_FILE}" 0 snapshot_cleanup
+  IfFileExists "$INSTDIR\${SNAPSHOT_FILE}.manifest.json" 0 snapshot_cleanup
 
   DetailPrint "Copying AssumeUTXO snapshot to $AppDataDir..."
   CopyFiles /SILENT "$INSTDIR\${SNAPSHOT_FILE}" "$AppDataDir\${SNAPSHOT_FILE}"
+  CopyFiles /SILENT "$INSTDIR\${SNAPSHOT_FILE}.manifest.json" "$AppDataDir\${SNAPSHOT_FILE}.manifest.json"
 
   IfFileExists "$AppDataDir\${SNAPSHOT_FILE}" 0 snapshot_cleanup
+  IfFileExists "$AppDataDir\${SNAPSHOT_FILE}.manifest.json" 0 snapshot_cleanup
 
   DetailPrint "Writing $AppDataDir\dinero.conf (fast-sync via AssumeUTXO)..."
   FileOpen $0 "$AppDataDir\dinero.conf" w
@@ -164,6 +171,7 @@ Function MaybeConfigureSnapshot
     ; daemon reads. Remove the install-dir copy so it isn't carried around
     ; for the lifetime of the install.
     Delete "$INSTDIR\${SNAPSHOT_FILE}"
+    Delete "$INSTDIR\${SNAPSHOT_FILE}.manifest.json"
 FunctionEnd
 
 Section "Dinero Server (required)" SecCore

@@ -124,6 +124,17 @@ jobs:
           $installer = Resolve-Path "packaging\windows\dist\Dinero-Server-$version-windows-x86_64-Setup.exe"
           $installDir = Join-Path $env:ProgramFiles 'Dinero-Server'
 
+          $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($installer)
+          $numericVersion = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart).$($info.FilePrivatePart)"
+          $expectedNumericVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') {
+            "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+          } else {
+            '0.0.0.0'
+          }
+          if ($numericVersion -ne $expectedNumericVersion) {
+            throw "installer numeric file version is $numericVersion, expected $expectedNumericVersion"
+          }
+
           $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
           if ($install.ExitCode -ne 0) {
             throw "silent installer exited with code $($install.ExitCode)"

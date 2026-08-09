@@ -77,11 +77,19 @@ jobs:
       - name: Build Windows server release and installer
         shell: powershell
         run: |
+          # A pull-request runner cannot fetch the new default from v8.1.2:
+          # that release is created only after this PR merges. Exercise the
+          # identical native manifest/NSIS path with the already-published
+          # 73035 anchor here. The tag-triggered windows-release.yml lane uses
+          # the production 84131 default after its assets exist.
           .\packaging\windows\build-server-installer.ps1 `
             -Version '8.0.18-openssl357-ci' `
             -BuildDir 'build-msvc-server' `
             -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
-            -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+            -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" `
+            -SnapshotAssetName 'dinero-assumeutxo-73035-v4.dat' `
+            -SnapshotFileName 'mainnet-snapshot.dat' `
+            -SnapshotReleaseTag 'v8.1.1'
 
       - name: Assert the linked OpenSSL version
         shell: powershell
@@ -102,6 +110,12 @@ jobs:
         run: |
           $installer = Resolve-Path 'packaging\windows\dist\Dinero-Server-8.0.18-openssl357-ci-windows-x86_64-Setup.exe'
           $installDir = Join-Path $env:ProgramFiles 'Dinero-Server'
+
+          $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($installer)
+          $numericVersion = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart).$($info.FilePrivatePart)"
+          if ($numericVersion -ne '8.0.18.0') {
+            throw "installer numeric file version is $numericVersion, expected 8.0.18.0"
+          }
 
           $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
           if ($install.ExitCode -ne 0) {

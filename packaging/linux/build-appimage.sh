@@ -114,6 +114,11 @@ for b in "${SV2_BINS[@]}"; do
     cp "${SV2_ROOT}/target/release/${b}" "${APPDIR}/usr/bin/${b}"
 done
 
+# dinero-qt searches next to its executable on Linux. Carry the newest verified
+# primary for fresh installs and the prior desktop anchor only as an exact-base
+# restart fallback for an interrupted pre-upgrade lifecycle.
+"${SCRIPT_DIR}/stage-snapshot-pair.sh" "${APPDIR}/usr/bin"
+
 # Assert the shipped binary set. Both bugs this guard exists for were SILENT:
 # build-appimage.sh simply never listed dinero-gpu-miner/dinero-seeder, and the
 # macOS build resolved an SV2 path that did not exist and bundled nothing. In

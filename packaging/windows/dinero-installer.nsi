@@ -18,6 +18,10 @@
   !define VERSION "0.0.0-dev"
 !endif
 
+!ifndef VERSION_NUMERIC
+  !define VERSION_NUMERIC "0.0.0.0"
+!endif
+
 !define APP_NAME       "Dinero"
 !define APP_VERSION    "${VERSION}"
 !define APP_PUBLISHER  "DineroLabs"
@@ -49,8 +53,8 @@ Unicode true
 ; metadata is embedded.
 ;
 ; VIProductVersion requires X.Y.Z.W numeric format (no -rc suffix).
-VIProductVersion "8.0.0.0"
-VIFileVersion    "8.0.0.0"
+VIProductVersion "${VERSION_NUMERIC}"
+VIFileVersion    "${VERSION_NUMERIC}"
 VIAddVersionKey "ProductName"      "${APP_NAME}"
 VIAddVersionKey "CompanyName"      "${APP_PUBLISHER}"
 VIAddVersionKey "LegalCopyright"   "Copyright (C) 2026 ${APP_PUBLISHER}"

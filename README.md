@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/release-v8.1.1-blue" alt="Release"></a>
+  <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/release-v8.1.2-blue" alt="Release"></a>
   <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/status-stable-brightgreen" alt="Status"></a>
   <a href="https://dinerolabs.org"><img src="https://img.shields.io/badge/site-dinerolabs.org-blue" alt="Website"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License"></a>
@@ -61,7 +61,7 @@ working directly with the v8 source tree.
 ```bash
 docker run -d --name dinero --stop-timeout 60 \
   --log-opt max-size=50m --log-opt max-file=3 \
-  -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.1
+  -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.2
 ```
 
 That is a full validating node. It fast-syncs from a bundled AssumeUTXO snapshot, so
@@ -105,15 +105,15 @@ would not resolve.
 Until the first release lands in a registry, build the image yourself from this repo:
 
 ```bash
-docker build -t ghcr.io/dinerolabs/dinero-v8:8.1.1 .
+docker build -t ghcr.io/dinerolabs/dinero-v8:8.1.2 .
 ```
 
-That builds the v8.1.1 image the workflow publishes today, under the same name the
+That builds the v8.1.2 image the workflow publishes today, under the same name the
 command above uses; pass `--build-arg DINERO_VERSION=<version>` for any other release.
 
 ## Current Downloads
 
-Use the current stable `v8.1.1` release from:
+Use the current stable `v8.1.2` release from:
 
 - [Dinero v8 releases](https://github.com/DineroLabs/dinero-v8/releases)
 - [dinerolabs.org](https://dinerolabs.org)
@@ -694,6 +694,6 @@ from the Dinero v8 releases page and verify the published checksums.
 
 ---
 
-*Last updated: July 28, 2026*
-*Dinero Version: **v8.1.1 stable***
+*Last updated: August 8, 2026*
+*Dinero Version: **v8.1.2 stable***
 *Release: [Dinero v8 releases](https://github.com/DineroLabs/dinero-v8/releases)*
