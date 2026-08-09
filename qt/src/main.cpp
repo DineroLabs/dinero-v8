@@ -1286,7 +1286,10 @@ int main(int argc, char** argv) {
   qmlRegisterType<MinerController>("Dinero", 1, 0, "MinerController");
 #endif
 
-  MainWindow w;
+  // ensureDaemonRunning() above is the sole production bootstrap owner. Tell
+  // MainWindow not to schedule a second launch while this daemon is still in
+  // its (potentially long) wallet-replay startup phase.
+  MainWindow w(dinero::qt::kProductionDaemonBootstrapOwner);
   w.setDatadir(datadir);
 
   // Show window first

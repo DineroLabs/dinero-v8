@@ -12,6 +12,21 @@
 # Tests (only if we have working test files)
 enable_testing()
 
+# This policy is intentionally pure C++ and registered in the default test
+# build, not qt/CMakeLists.txt. CI builds with DINERO_BUILD_QT=OFF, so keeping
+# the regression under the optional GUI subtree would silently omit it.
+add_executable(test_daemon_startup_policy
+  qt/tests/test_daemon_startup_policy.cpp
+)
+target_include_directories(test_daemon_startup_policy PRIVATE
+  ${CMAKE_SOURCE_DIR}/qt/src
+)
+add_test(NAME DaemonStartupPolicy COMMAND test_daemon_startup_policy)
+set_tests_properties(DaemonStartupPolicy PROPERTIES
+  LABELS "qt;daemon;regression"
+  TIMEOUT 5
+)
+
 add_executable(test_ripemd160_src_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/crypto/ripemd160.cpp

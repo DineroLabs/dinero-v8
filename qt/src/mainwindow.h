@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QMainWindow>
+
+#include "daemonstartuppolicy.h"
 #include <QMap>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -55,7 +57,8 @@ class QQuickWidget;
 class MainWindow : public QMainWindow {
   Q_OBJECT
 public:
-  explicit MainWindow(QWidget* parent = nullptr);
+  explicit MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
+                      QWidget* parent = nullptr);
   ~MainWindow(); // Destructor to clean up mining process
   void setDatadir(const QString& datadir);
 
