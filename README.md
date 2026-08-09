@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/release-v8.1.2-blue" alt="Release"></a>
+  <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/release-v8.1.3-blue" alt="Release"></a>
   <a href="https://github.com/DineroLabs/dinero-v8/releases/latest"><img src="https://img.shields.io/badge/status-stable-brightgreen" alt="Status"></a>
   <a href="https://dinerolabs.org"><img src="https://img.shields.io/badge/site-dinerolabs.org-blue" alt="Website"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License"></a>
@@ -113,7 +113,7 @@ command above uses; pass `--build-arg DINERO_VERSION=<version>` for any other re
 
 ## Current Downloads
 
-Use the current stable `v8.1.2` release from:
+Use the current stable `v8.1.3` release from:
 
 - [Dinero v8 releases](https://github.com/DineroLabs/dinero-v8/releases)
 - [dinerolabs.org](https://dinerolabs.org)
@@ -694,6 +694,6 @@ from the Dinero v8 releases page and verify the published checksums.
 
 ---
 
-*Last updated: August 8, 2026*
-*Dinero Version: **v8.1.2 stable***
+*Last updated: August 9, 2026*
+*Dinero Version: **v8.1.3 stable***
 *Release: [Dinero v8 releases](https://github.com/DineroLabs/dinero-v8/releases)*

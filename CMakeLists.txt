@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 # Project name is lowercase `dinero` to match the target monorepo
-# repository name (DineroLabs/dinero). VERSION 8.1.2 is the current
+# repository name (DineroLabs/dinero). VERSION 8.1.3 is the current
 # unified release line after the monorepo consolidation; daemon,
 # CLI, Qt GUI, and solo miner all derive their version from this
 # declaration; in-tree subprojects consume DINERO_MONOREPO_VERSION below.
-project(dinero VERSION 8.1.2 LANGUAGES C CXX)
+project(dinero VERSION 8.1.3 LANGUAGES C CXX)
 # In-tree subprojects consume this value instead of each independently deciding
 # the version of binaries shipped in the same release bundle. Standalone builds
 # retain a local fallback in their own CMakeLists.txt.
