@@ -65,6 +65,9 @@ cp "${DINEROD}"            "${STAGE}/opt/dinero-qt-desktop/bin/dinerod"
 cp "${DINERO_SOLO_MINER}"  "${STAGE}/opt/dinero-qt-desktop/bin/dinero-solo-miner"
 chmod 0755 "${STAGE}/opt/dinero-qt-desktop/bin/"*
 
+# Keep the snapshot files beside dinero-qt, matching its runtime lookup.
+"${SCRIPT_DIR}/stage-snapshot-pair.sh" "${STAGE}/opt/dinero-qt-desktop/bin"
+
 # Convenience symlink in /usr/bin so `dinero-qt` is on PATH after
 # install. Path is relative so dpkg --root install paths work.
 ln -s ../../opt/dinero-qt-desktop/bin/dinero-qt "${STAGE}/usr/bin/dinero-qt"

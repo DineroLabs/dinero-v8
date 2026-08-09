@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.17)
-# VERSION 8.1.1 — Phase E of v8 peer-discovery. The seeder is a small
-# standalone binary; intentionally light on dependencies so it builds
-# fast and operators can run it without dragging in the daemon's full
-# library graph.
-project(dinero-seeder VERSION 8.1.1 LANGUAGES CXX)
+# In a monorepo release the root owns the shared version. Keep a standalone
+# fallback for legacy direct builds of seeder/.
+if(NOT DEFINED DINERO_MONOREPO_VERSION)
+  set(DINERO_MONOREPO_VERSION 8.1.2)
+endif()
+project(dinero-seeder VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -84,7 +85,7 @@ target_link_libraries(dinero-seeder-lib
 
 # Compile-time provenance — surfaced via --help/--version if the binary
 # gains those flags later.
-target_compile_definitions(dinero-seeder-lib PRIVATE
+target_compile_definitions(dinero-seeder-lib PUBLIC
     DINERO_SEEDER_VERSION="${PROJECT_VERSION}"
 )
 

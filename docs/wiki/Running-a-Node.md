@@ -4,7 +4,7 @@ A Dinero v8 node can be run as a local wallet backend, an operator node, a bridg
 
 ## Normal Operator Guidance
 
-- Use the current stable v8.1.1 release from the Releases page.
+- Use the current stable v8.1.2 release from the Releases page.
 - Keep RPC behind TLS or a trusted local proxy.
 - Do not expose unauthenticated RPC publicly.
 - Monitor height, best hash, peer count, disk free space, and logs.

@@ -1,11 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 # Project name is lowercase `dinero` to match the target monorepo
-# repository name (DineroLabs/dinero). VERSION 8.1.1 is the current
+# repository name (DineroLabs/dinero). VERSION 8.1.2 is the current
 # unified release line after the monorepo consolidation; daemon,
 # CLI, Qt GUI, and solo miner all derive their version from this
-# declaration (sub-project project() calls in qt/ and miner/ also
-# pin to 8.1.1, see the comments there).
-project(dinero VERSION 8.1.1 LANGUAGES C CXX)
+# declaration; in-tree subprojects consume DINERO_MONOREPO_VERSION below.
+project(dinero VERSION 8.1.2 LANGUAGES C CXX)
+# In-tree subprojects consume this value instead of each independently deciding
+# the version of binaries shipped in the same release bundle. Standalone builds
+# retain a local fallback in their own CMakeLists.txt.
+set(DINERO_MONOREPO_VERSION "${PROJECT_VERSION}")
 
 # Enable Objective-C++ at the root scope on Apple platforms so that
 # qt/ (which has .mm sources via Qt6 + macOS native frameworks like

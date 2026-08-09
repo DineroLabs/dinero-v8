@@ -4,7 +4,7 @@ Most users should not start from the source tree.
 
 ## I Want To Download Dinero
 
-Use the current stable release, v8.1.1:
+Use the current stable release, v8.1.2:
 
 - Downloads: https://github.com/DineroLabs/dinero-v8/releases
 - Website: https://dinerolabs.org

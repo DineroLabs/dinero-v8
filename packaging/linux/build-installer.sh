@@ -162,6 +162,10 @@ pack_full_bundle() {
     add_required_binary "$BUILD_DIR/miner/dinero-solo-miner" "dinero-solo-miner"
     add_required_binary "$BUILD_DIR/seeder/dinero-seeder" "dinero-seeder"
 
+    # The full desktop bundle must behave like the AppImage/.deb: current
+    # primary for fresh installs, exact previous anchor for upgrade recovery.
+    "$PROJECT_ROOT/packaging/linux/stage-snapshot-pair.sh" "$root/bin"
+
     # Optional mining/worker tools. Include them when the builder produced them.
     add_optional_binary "$BUILD_DIR/dinero-gpu-miner" "dinero-gpu-miner"
     add_optional_binary "$BUILD_DIR/dinero-miner" "dinero-miner"

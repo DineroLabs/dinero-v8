@@ -1,3 +1,15 @@
+dinero-core (8.1.2-1) unstable; urgency=medium
+
+  * v8.1.2 — replace the default AssumeUTXO bootstrap with the independently
+    verified V4 snapshot at height 84,131. Fresh installs select the newest
+    anchor; upgrades retain exact older artifacts only as restart fallbacks for
+    an already-active snapshot lifecycle.
+  * Add atomic snapshot-candidate selection across daemon and NodeCore so a
+    configured new primary cannot strand persisted metadata from an older app.
+  * Keep consensus rules and the height-100,000 covenant activation unchanged.
+
+ -- DineroLabs <team@dinerolabs.org>  Sun, 09 Aug 2026 00:30:00 +0000
+
 dinero-core (8.1.1-1) unstable; urgency=medium
 
   * v8.1.1 — CONSENSUS RELEASE. Activates OP_CHECKTEMPLATEVERIFY (BIP-119)

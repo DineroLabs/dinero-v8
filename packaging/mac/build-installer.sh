@@ -133,21 +133,66 @@ mkdir -p "$STAGE_DIR/dinero-qt.app/Contents/Resources"
 cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-seeder"
 chmod +x "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-seeder"
 
-# Bundle the AssumeUTXO snapshot so a FRESH wallet fast-syncs from it instead of
-# syncing from genesis (the slow, catch-up-stall-prone first run). qt/src/main.cpp
-# passes --assumeutxo_snapshot pointing at this file on a fresh datadir, and the
-# daemon verifies its SHA256 against the compiled-in trust anchor before use.
-# The .dat is NOT committed to git (~19 MB) — place it at $DINERO_SNAPSHOT_DAT or
-# the default path below (e.g. the published release asset) before packaging.
-# Missing → the wallet still works, just syncs from genesis (logged); build does
-# not fail.
-SNAPSHOT_DAT="${DINERO_SNAPSHOT_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/utxo-snapshot-65300.dat}"
-if [[ -f "$SNAPSHOT_DAT" ]]; then
-    echo "Bundling AssumeUTXO snapshot: $(basename "$SNAPSHOT_DAT") ($(stat -f%z "$SNAPSHOT_DAT") bytes)"
-    cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/utxo-snapshot-65300.dat"
+# Bundle the new primary plus the previous desktop release's exact-base fallback.
+# The fallback prevents an app upgrade during first-run validation from stranding
+# the persisted 65300 lifecycle after the old app bundle has been replaced.
+SNAPSHOT_DAT="${DINERO_SNAPSHOT_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/dinero-assumeutxo-84131-v4.dat}"
+SNAPSHOT_FALLBACK_DAT="${DINERO_SNAPSHOT_FALLBACK_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/utxo-snapshot-65300.dat}"
+SNAPSHOT_MANIFEST="${DINERO_SNAPSHOT_MANIFEST:-${SNAPSHOT_DAT%.dat}.manifest.json}"
+SNAPSHOT_FALLBACK_MANIFEST="${DINERO_SNAPSHOT_FALLBACK_MANIFEST:-${SNAPSHOT_FALLBACK_DAT}.manifest.json}"
+
+verify_snapshot_pair() {
+    local data_path="$1"
+    local manifest_path="$2"
+    local installed_name="$3"
+    python3 - "$data_path" "$manifest_path" "$installed_name" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+data_path = pathlib.Path(sys.argv[1])
+manifest_path = pathlib.Path(sys.argv[2])
+installed_name = sys.argv[3]
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))["snapshot"]
+if manifest.get("snapshot_file") != installed_name:
+    raise SystemExit(
+        f"manifest snapshot_file={manifest.get('snapshot_file')!r}, expected {installed_name!r}"
+    )
+payload = data_path.read_bytes()
+actual_sha256 = hashlib.sha256(payload).hexdigest()
+if manifest.get("sha256", "").lower() != actual_sha256:
+    raise SystemExit(
+        f"snapshot sha256={actual_sha256}, manifest={manifest.get('sha256')!r}"
+    )
+if int(manifest.get("bytes", -1)) != len(payload):
+    raise SystemExit(
+        f"snapshot bytes={len(payload)}, manifest={manifest.get('bytes')!r}"
+    )
+print(f"Verified {installed_name}: {len(payload)} bytes, sha256 {actual_sha256}")
+PY
+}
+
+if [[ "${DINERO_SKIP_SNAPSHOTS:-0}" == "1" ]]; then
+    echo "WARNING: snapshot bundling explicitly disabled (DINERO_SKIP_SNAPSHOTS=1)" >&2
+elif [[ ! -f "$SNAPSHOT_DAT" ]]; then
+    echo "ERROR: required primary AssumeUTXO snapshot missing at $SNAPSHOT_DAT" >&2
+    echo "       Set DINERO_SNAPSHOT_DAT or use DINERO_SKIP_SNAPSHOTS=1 only for a developer package." >&2
+    exit 1
+elif [[ ! -f "$SNAPSHOT_FALLBACK_DAT" ]]; then
+    echo "ERROR: required AssumeUTXO lifecycle fallback missing at $SNAPSHOT_FALLBACK_DAT" >&2
+    exit 1
 else
-    echo "WARNING: AssumeUTXO snapshot not found at $SNAPSHOT_DAT — fresh wallets will sync from genesis." >&2
-    echo "         Set DINERO_SNAPSHOT_DAT or place the .dat there to bundle fast-sync." >&2
+    echo "Bundling AssumeUTXO snapshot: $(basename "$SNAPSHOT_DAT") ($(stat -f%z "$SNAPSHOT_DAT") bytes)"
+    [[ -f "$SNAPSHOT_MANIFEST" ]] || { echo "ERROR: primary snapshot manifest missing at $SNAPSHOT_MANIFEST" >&2; exit 1; }
+    verify_snapshot_pair "$SNAPSHOT_DAT" "$SNAPSHOT_MANIFEST" "dinero-assumeutxo-84131-v4.dat"
+    cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-84131-v4.dat"
+    cp "$SNAPSHOT_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-84131-v4.dat.manifest.json"
+    echo "Bundling AssumeUTXO lifecycle fallback: $(basename "$SNAPSHOT_FALLBACK_DAT")"
+    [[ -f "$SNAPSHOT_FALLBACK_MANIFEST" ]] || { echo "ERROR: fallback snapshot manifest missing at $SNAPSHOT_FALLBACK_MANIFEST" >&2; exit 1; }
+    verify_snapshot_pair "$SNAPSHOT_FALLBACK_DAT" "$SNAPSHOT_FALLBACK_MANIFEST" "utxo-snapshot-65300.dat"
+    cp "$SNAPSHOT_FALLBACK_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/utxo-snapshot-65300.dat"
+    cp "$SNAPSHOT_FALLBACK_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/utxo-snapshot-65300.dat.manifest.json"
 fi
 
 # Embed the standalone daemon stack alongside the .app for users who

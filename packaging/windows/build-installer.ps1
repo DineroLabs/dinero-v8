@@ -55,19 +55,19 @@ param(
     # installer, just without the SV2 Pool lane).
     [string]$Sv2BuildDir   = '',
     [switch]$SkipOperatorZip,
-    # AssumeUTXO snapshot bundled next to dinero-qt.exe so a FRESH GUI datadir
-    # fast-syncs instead of syncing from genesis (qt/src/main.cpp finds it next
-    # to the exe; the daemon verifies its sha256 against the compiled-in trust
-    # anchor at load, so the installer is just transport). HEIGHT-AGNOSTIC: when
-    # -SnapshotFileName is empty it's auto-derived from qt/src/main.cpp's
-    # kBundledSnapshotFile, so the bundled file always matches what the GUI looks
-    # for - no drift when the ship anchor height changes. Source precedence:
-    # -SnapshotPath (local) > cached in dist\ > download from -SnapshotReleaseTag.
-    # Unresolvable (offline / no path) -> soft-warn + ship WITHOUT it (valid
-    # installer; fresh users just sync from genesis). -NoSnapshot forces skip.
+    # AssumeUTXO primary + exact-lifecycle fallback bundled next to dinero-qt.exe.
+    # Their installed names are derived from qt/src/main.cpp, preventing drift
+    # between the package and the paths the GUI passes to dinerod. Source
+    # precedence is explicit path > dist cache > release download. The fallback
+    # stays on the release that originally published the previous desktop anchor.
     [string]$SnapshotFileName   = '',
     [string]$SnapshotPath       = '',
-    [string]$SnapshotReleaseTag = '',
+    [string]$SnapshotManifestPath = '',
+    [string]$SnapshotReleaseTag = 'v8.1.2',
+    [string]$SnapshotFallbackFileName   = '',
+    [string]$SnapshotFallbackPath       = '',
+    [string]$SnapshotFallbackManifestPath = '',
+    [string]$SnapshotFallbackReleaseTag = 'v8.0.17',
     [switch]$NoSnapshot
 )
 
@@ -92,42 +92,116 @@ if (-not $QtRepoDir) {
 $Stage   = Join-Path $ScriptDir 'dist\installer-stage'
 $DistDir = Join-Path $ScriptDir 'dist'
 
-# Height-agnostic: derive the bundled-snapshot filename from the GUI's compiled-in
-# kBundledSnapshotFile so the installer always bundles exactly what dinero-qt looks
-# for on a fresh datadir (no manual sync when the ship anchor height changes).
-if (-not $SnapshotFileName -and -not $NoSnapshot) {
+# Derive both installed filenames from the GUI's compiled-in constants.
+if ((-not $SnapshotFileName -or -not $SnapshotFallbackFileName) -and -not $NoSnapshot) {
     $qtMain = Join-Path $ProjectRoot 'qt\src\main.cpp'
     if (Test-Path $qtMain) {
-        $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotFile\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
-        if ($m) {
-            $SnapshotFileName = $m.Matches[0].Groups[1].Value
-            Write-Host "Bundled-snapshot filename (from qt/src/main.cpp): $SnapshotFileName"
+        if (-not $SnapshotFileName) {
+            $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotPrimary\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
+            if ($m) { $SnapshotFileName = $m.Matches[0].Groups[1].Value }
         }
+        if (-not $SnapshotFallbackFileName) {
+            $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotFallback\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
+            if ($m) { $SnapshotFallbackFileName = $m.Matches[0].Groups[1].Value }
+        }
+        Write-Host "Bundled snapshot names (from qt/src/main.cpp): primary=$SnapshotFileName fallback=$SnapshotFallbackFileName"
     }
 }
 
 function Resolve-BundledSnapshot {
-    # Returns an absolute path to the snapshot to bundle, or $null to ship without
-    # one (soft-fail - a valid installer that genesis-syncs). The daemon verifies
-    # the file's sha256 against its compiled-in trust anchor at load, so transport
-    # integrity here is not security-critical.
-    if ($NoSnapshot -or -not $SnapshotFileName) { return $null }
-    if ($SnapshotPath) {
-        if (Test-Path $SnapshotPath) { return (Resolve-Path $SnapshotPath).Path }
-        Write-Host "WARN: -SnapshotPath not found ($SnapshotPath) - shipping WITHOUT bundled snapshot" -ForegroundColor Yellow
+    param(
+        [string]$FileName,
+        [string]$ExplicitPath,
+        [string]$ReleaseTag,
+        [string]$Role
+    )
+    if ($NoSnapshot -or -not $FileName) { return $null }
+    if ($ExplicitPath) {
+        if (Test-Path $ExplicitPath) { return (Resolve-Path $ExplicitPath).Path }
+        Write-Host "WARN: $Role snapshot path not found ($ExplicitPath)" -ForegroundColor Yellow
         return $null
     }
     if (-not (Test-Path $DistDir)) { New-Item $DistDir -ItemType Directory | Out-Null }
-    $cached = Join-Path $DistDir $SnapshotFileName
+    $cached = Join-Path $DistDir $FileName
     if (Test-Path $cached) { return $cached }
-    if ($SnapshotReleaseTag) {
-        $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$SnapshotReleaseTag/$SnapshotFileName"
-        Write-Host "Downloading AssumeUTXO snapshot from $url..."
+    if ($ReleaseTag) {
+        $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$ReleaseTag/$FileName"
+        Write-Host "Downloading $Role AssumeUTXO snapshot from $url..."
         try { Invoke-WebRequest $url -OutFile $cached -ErrorAction Stop; return $cached }
-        catch { Write-Host "WARN: snapshot download failed ($_) - shipping WITHOUT bundled snapshot" -ForegroundColor Yellow; return $null }
+        catch { Write-Host "WARN: $Role snapshot download failed ($_)" -ForegroundColor Yellow; return $null }
     }
-    Write-Host "WARN: no -SnapshotPath/-SnapshotReleaseTag and no cached $SnapshotFileName - shipping WITHOUT bundled snapshot (fresh users sync from genesis)" -ForegroundColor Yellow
+    Write-Host "WARN: no source for $Role snapshot $FileName" -ForegroundColor Yellow
     return $null
+}
+
+function Resolve-BundledSnapshotManifest {
+    param(
+        [string]$FileName,
+        [string]$SnapshotSourcePath,
+        [string]$ExplicitManifestPath,
+        [string]$ReleaseTag,
+        [string]$Role
+    )
+    if ($NoSnapshot -or -not $FileName -or -not $SnapshotSourcePath) { return $null }
+    if ($ExplicitManifestPath) {
+        if (Test-Path $ExplicitManifestPath) { return (Resolve-Path $ExplicitManifestPath).Path }
+        Write-Host "WARN: $Role manifest path not found ($ExplicitManifestPath)" -ForegroundColor Yellow
+        return $null
+    }
+
+    # Historical assets used both <snapshot>.dat.manifest.json and
+    # <snapshot>.manifest.json. Accept either source name, but always stage it
+    # beside the installed data as <installed snapshot>.manifest.json.
+    $sourceCandidates = @(
+        "$SnapshotSourcePath.manifest.json",
+        (([IO.Path]::Combine([IO.Path]::GetDirectoryName($SnapshotSourcePath),
+            ([IO.Path]::GetFileName($SnapshotSourcePath) -replace '\.dat$', '.manifest.json'))))
+    ) | Select-Object -Unique
+    foreach ($candidate in $sourceCandidates) {
+        if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
+    }
+
+    if ($ReleaseTag) {
+        $assetCandidates = @(
+            "$FileName.manifest.json",
+            ($FileName -replace '\.dat$', '.manifest.json')
+        ) | Select-Object -Unique
+        foreach ($asset in $assetCandidates) {
+            $cached = Join-Path $DistDir $asset
+            if (Test-Path $cached) { return $cached }
+            $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$ReleaseTag/$asset"
+            try {
+                Invoke-WebRequest $url -OutFile $cached -ErrorAction Stop
+                return $cached
+            } catch {
+                if (Test-Path $cached) { Remove-Item $cached -Force }
+            }
+        }
+    }
+    Write-Host "WARN: no adjacent manifest found for $Role snapshot $FileName" -ForegroundColor Yellow
+    return $null
+}
+
+function Assert-SnapshotManifest {
+    param(
+        [string]$DataPath,
+        [string]$ManifestPath,
+        [string]$InstalledName,
+        [string]$Role
+    )
+    $manifest = (Get-Content -Raw $ManifestPath | ConvertFrom-Json).snapshot
+    if ($manifest.snapshot_file -ne $InstalledName) {
+        throw "$Role manifest snapshot_file '$($manifest.snapshot_file)' does not match '$InstalledName'"
+    }
+    $actualHash = (Get-FileHash -Algorithm SHA256 $DataPath).Hash.ToLowerInvariant()
+    if ([string]$manifest.sha256 -ne $actualHash) {
+        throw "$Role snapshot sha256 '$actualHash' does not match manifest '$($manifest.sha256)'"
+    }
+    $actualBytes = (Get-Item $DataPath).Length
+    if ([int64]$manifest.bytes -ne $actualBytes) {
+        throw "$Role snapshot length '$actualBytes' does not match manifest '$($manifest.bytes)'"
+    }
+    Write-Host "Verified $Role snapshot manifest: $actualBytes bytes, sha256 $actualHash"
 }
 
 Write-Host '----------------------------------------------------------'
@@ -238,17 +312,38 @@ try {
     $ErrorActionPreference = $oldEAP
 }
 
-# Bundle the AssumeUTXO snapshot next to dinero-qt.exe. The NSI ships the whole
-# stage (File /r installer-stage\*.*) into INSTDIR, where qt/src/main.cpp looks
-# for kBundledSnapshotFile on a fresh datadir -> fresh GUI users fast-sync instead
-# of syncing from genesis. Optional + soft: a cut without a resolvable snapshot
-# still produces a valid installer (genesis-sync fallback).
-$snap = Resolve-BundledSnapshot
+# Bundle the newest primary and the previous desktop anchor. The latter is not
+# chosen on a fresh install; it exists only so an interrupted older lifecycle can
+# restart after an installer upgrade replaces Program Files.
+$snap = Resolve-BundledSnapshot $SnapshotFileName $SnapshotPath $SnapshotReleaseTag 'primary'
 if ($snap) {
     Copy-Item $snap (Join-Path $Stage $SnapshotFileName)
     Write-Host ("Bundled AssumeUTXO snapshot: {0} ({1:N1} MB)" -f $SnapshotFileName, ((Get-Item $snap).Length / 1MB))
+    $manifest = Resolve-BundledSnapshotManifest $SnapshotFileName $snap $SnapshotManifestPath $SnapshotReleaseTag 'primary'
+    if ($manifest) {
+        Assert-SnapshotManifest $snap $manifest $SnapshotFileName 'primary'
+        Copy-Item $manifest (Join-Path $Stage "$SnapshotFileName.manifest.json")
+        Write-Host "Bundled AssumeUTXO primary manifest"
+    } else {
+        throw 'Primary snapshot has no adjacent manifest; refusing to produce the installer.'
+    }
 } else {
     Write-Host "No AssumeUTXO snapshot bundled - fresh GUI users will sync from genesis." -ForegroundColor Yellow
+}
+$fallbackSnap = Resolve-BundledSnapshot $SnapshotFallbackFileName $SnapshotFallbackPath $SnapshotFallbackReleaseTag 'fallback'
+if ($fallbackSnap) {
+    Copy-Item $fallbackSnap (Join-Path $Stage $SnapshotFallbackFileName)
+    Write-Host ("Bundled AssumeUTXO fallback: {0} ({1:N1} MB)" -f $SnapshotFallbackFileName, ((Get-Item $fallbackSnap).Length / 1MB))
+    $fallbackManifest = Resolve-BundledSnapshotManifest $SnapshotFallbackFileName $fallbackSnap $SnapshotFallbackManifestPath $SnapshotFallbackReleaseTag 'fallback'
+    if ($fallbackManifest) {
+        Assert-SnapshotManifest $fallbackSnap $fallbackManifest $SnapshotFallbackFileName 'fallback'
+        Copy-Item $fallbackManifest (Join-Path $Stage "$SnapshotFallbackFileName.manifest.json")
+        Write-Host "Bundled AssumeUTXO fallback manifest"
+    } else {
+        throw 'Fallback snapshot has no adjacent manifest; refusing to produce the installer.'
+    }
+} elseif (-not $NoSnapshot) {
+    Write-Host "WARN: no exact-lifecycle fallback bundled - interrupted older desktop syncs cannot rehydrate after upgrade." -ForegroundColor Yellow
 }
 
 $totalSize = (Get-ChildItem $Stage -Recurse | Measure-Object Length -Sum).Sum
@@ -256,12 +351,17 @@ $fileCount = (Get-ChildItem $Stage -Recurse -File).Count
 Write-Host ("Stage: $fileCount files, {0:N2} MB" -f ($totalSize / 1MB))
 
 Write-Host "Running makensis (LZMA solid compression, takes ~1 min)..."
+$numericVersion = if ($Version -match '^(\d+)\.(\d+)\.(\d+)') {
+    "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+} else {
+    '0.0.0.0'
+}
 Push-Location $ScriptDir
 try {
     $oldEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $Makensis "/DVERSION=$Version" 'dinero-installer.nsi' | Out-Null
+        & $Makensis "/DVERSION=$Version" "/DVERSION_NUMERIC=$numericVersion" 'dinero-installer.nsi' | Out-Null
     } finally {
         $ErrorActionPreference = $oldEAP
     }
