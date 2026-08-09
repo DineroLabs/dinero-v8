@@ -1717,7 +1717,8 @@ qint64 MainWindow::appUptimeSeconds() const {
     return (QDateTime::currentMSecsSinceEpoch() - app_started_at_ms_) / 1000;
 }
 
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
+                       QWidget* parent)
     : QMainWindow(parent)
     , rpc_(new RpcClient(this))
     , changeAddrMgr_(new ChangeAddressManager(QString(), this))
@@ -1991,9 +1992,14 @@ MainWindow::MainWindow(QWidget* parent)
     refresh();
   });
 
-  // Release builds should feel self-contained: if no local daemon is already
-  // reachable, make one silent attempt to start the bundled dinerod.
-  QTimer::singleShot(1500, this, &MainWindow::maybeAutoStartDaemon);
+  // Production main.cpp already bootstraps dinerod before constructing this
+  // window. Scheduling another launch while that daemon is still rebuilding
+  // wallet state races two processes against the same datadir; the losing
+  // process's retry cleanup can then kill the legitimate first daemon. Only a
+  // standalone MainWindow owner may schedule this fallback.
+  if (dinero::qt::ShouldScheduleWindowDaemonStart(daemonBootstrapOwner)) {
+    QTimer::singleShot(1500, this, &MainWindow::maybeAutoStartDaemon);
+  }
 
   // #295: visible timeout on the startup wait. If RPC never comes up the
   // user previously stared at "Connecting..." forever with no explanation.
