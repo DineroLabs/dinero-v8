@@ -12,8 +12,8 @@
 # What it does:
 #   Builds the HEADLESS macOS operator stack (dinerod + dinero-cli) NATIVELY
 #   on both architectures:
-#     • macos-13  → Intel  x86_64   (fills the Intel-Mac lineup gap)
-#     • macos-14  → Apple Silicon arm64
+#     • macos-26-intel → Intel x86_64 (fills the Intel-Mac lineup gap)
+#     • macos-14       → Apple Silicon arm64
 #   Because each slice is built on its own native runner, every vendored dep
 #   (OpenSSL, the Rust bulletproofs FFI, RocksDB, depends/ miniupnpc+libnatpmp)
 #   compiles for the right arch automatically — no cross-compile juggling, and
@@ -64,7 +64,7 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: macos-13   # last Intel image — the x86_64 slice
+            runner: macos-26-intel # standard Intel image; macos-13 retired 2025-12-04
           - arch: arm64
             runner: macos-14   # Apple Silicon
 
@@ -72,6 +72,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # Manual recovery runs must build the immutable release tag, not the
+          # workflow branch that supplied this updated workflow definition.
+          ref: ${{ inputs.release_tag || github.ref }}
           submodules: recursive
           fetch-depth: 1
 
@@ -115,6 +118,12 @@ jobs:
             V="8.0.0-dev"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${{ inputs.release_tag }}"
+          fi
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Building macOS ${{ matrix.arch }} for version: $V"
 
       # Native OpenSSL build for this runner's arch (script keys off uname -m).
@@ -190,11 +199,11 @@ jobs:
 
       # Attach to the GitHub release for this tag (only on a real tag push).
       - name: Attach to release
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" \
+          gh release upload "${{ steps.ver.outputs.release_tag }}" \
             "${{ steps.pkg.outputs.tarball }}" \
             "SHA256SUMS-macos-${{ matrix.arch }}-${{ steps.ver.outputs.version }}" \
             --clobber
