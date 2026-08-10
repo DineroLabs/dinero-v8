@@ -5,9 +5,9 @@
 # already invoked by qt/CMakeLists.txt POST_BUILD), then produce the macOS
 # user package and a headless operator tarball:
 #
-#   dist/Dinero-v<VERSION>-macOS-arm64-qt.zip
-#   dist/Dinero-v<VERSION>-macOS-arm64.dmg
-#   dist/dinero-operator-v<VERSION>-macOS-arm64.tar.gz
+#   dist/Dinero-v<VERSION>-macOS-<ARCH>-qt.zip
+#   dist/Dinero-v<VERSION>-macOS-<ARCH>.dmg
+#   dist/dinero-operator-v<VERSION>-macOS-<ARCH>.tar.gz
 #
 # Operator runs packaging/mac/sign-notarize-release.sh after this script.
 # That finalizer signs the *final staged app* after all helper binaries have
@@ -35,6 +35,7 @@
 # Usage:
 #   ./packaging/mac/build-installer.sh --version 8.0.0-rc1
 #   ./packaging/mac/build-installer.sh --version 8.0.0 --build-dir build-release
+#   ./packaging/mac/build-installer.sh --version 8.0.0 --arch x86_64
 #
 # After this script:
 #   ./packaging/mac/sign-notarize-release.sh \
@@ -45,18 +46,26 @@ set -euo pipefail
 
 VERSION="8.0.0-dev"
 BUILD_DIR=""
+ARCH="${DINERO_RELEASE_ARCH:-$(uname -m)}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) VERSION="$2"; shift 2 ;;
         --build-dir) BUILD_DIR="$2"; shift 2 ;;
+        --arch) ARCH="$2"; shift 2 ;;
         -h|--help)
             sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
+
+[[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
+case "$ARCH" in
+    arm64|x86_64) ;;
+    *) echo "ERROR: unsupported macOS release architecture: $ARCH" >&2; exit 2 ;;
+esac
 
 if [[ -z "$BUILD_DIR" ]]; then
     BUILD_DIR="$PROJECT_ROOT/build-release"
@@ -114,6 +123,7 @@ echo "  OK: daemon stack launches cleanly"
 
 echo "----------------------------------------------------------"
 echo "Building Dinero macOS installer -- v$VERSION"
+echo "Architecture: $ARCH"
 echo "----------------------------------------------------------"
 
 rm -rf "$DIST_DIR"
@@ -227,7 +237,7 @@ find "$STAGE_DIR" -maxdepth 2 -type f -o -type d -maxdepth 1 | sort
 
 # Produce a .zip first for notarization (Apple's notarytool takes
 # .zip or .dmg; .zip avoids the disk-image quirks).
-ZIP_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-arm64-qt.zip"
+ZIP_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-${ARCH}-qt.zip"
 echo ""
 echo "Producing $ZIP_PATH..."
 ditto -c -k --sequesterRsrc --keepParent "$STAGE_DIR/dinero-qt.app" "$ZIP_PATH"
@@ -239,7 +249,7 @@ ditto -c -k --sequesterRsrc --keepParent "$STAGE_DIR/dinero-qt.app" "$ZIP_PATH"
 # dinero-qt.app; the loose binaries beside it are optional standalone copies for
 # advanced users and are not needed to install or run the wallet.
 ln -sfn /Applications "$STAGE_DIR/Applications"
-DMG_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-arm64.dmg"
+DMG_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-${ARCH}.dmg"
 echo "Producing $DMG_PATH..."
 hdiutil create \
     -volname "Dinero v${VERSION}" \
@@ -250,7 +260,7 @@ hdiutil create \
 # Produce a headless operator archive for macOS node operators. This is
 # intentionally separate from the GUI DMG so server-style macOS hosts do
 # not have to install or notarize the wallet bundle just to run dinerod.
-OPERATOR_ROOT="$OPERATOR_STAGE_DIR/dinero-operator-v${VERSION}-macOS-arm64"
+OPERATOR_ROOT="$OPERATOR_STAGE_DIR/dinero-operator-v${VERSION}-macOS-${ARCH}"
 mkdir -p "$OPERATOR_ROOT/bin"
 cp "$BUILD_DIR/dinerod" "$OPERATOR_ROOT/bin/dinerod"
 cp "$BUILD_DIR/dinero-cli" "$OPERATOR_ROOT/bin/dinero-cli"
@@ -268,7 +278,7 @@ Common entry points:
   ./bin/dinero-seeder
 EOF
 (cd "$OPERATOR_ROOT" && shasum -a 256 bin/* > SHA256SUMS)
-OPERATOR_TARBALL="$DIST_DIR/dinero-operator-v${VERSION}-macOS-arm64.tar.gz"
+OPERATOR_TARBALL="$DIST_DIR/dinero-operator-v${VERSION}-macOS-${ARCH}.tar.gz"
 echo "Producing $OPERATOR_TARBALL..."
 tar -czf "$OPERATOR_TARBALL" -C "$OPERATOR_STAGE_DIR" "$(basename "$OPERATOR_ROOT")"
 
@@ -283,6 +293,7 @@ echo "Stage ready (unsigned/not notarized). Next step for the operator:"
 echo "----------------------------------------------------------"
 echo "  ./packaging/mac/sign-notarize-release.sh \\"
 echo "      --version $VERSION \\"
+echo "      --arch $ARCH \\"
 echo "      --notary-profile dinero-notarytool"
 echo ""
 echo "  Unsigned $ZIP_PATH"

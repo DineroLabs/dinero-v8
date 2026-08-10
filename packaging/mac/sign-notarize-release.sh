@@ -15,27 +15,38 @@
 # Usage:
 #   ./packaging/mac/sign-notarize-release.sh \
 #     --version 8.0.0-rc21 \
+#     --arch arm64 \
 #     --notary-profile dinero-notary
 
 set -euo pipefail
 
 VERSION="8.0.0-dev"
-IDENTITY="Developer ID Application: Mirsad Hajdarevic (JXJS6ZA5FJ)"
+ARCH="${DINERO_RELEASE_ARCH:-$(uname -m)}"
+IDENTITY="Developer ID Application: DineroLabs LLC (JXJS6ZA5FJ)"
 NOTARY_PROFILE=""
+EXPECTED_SOURCE_HEAD=""
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="$PROJECT_ROOT/packaging/mac/dist"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) VERSION="$2"; shift 2 ;;
+        --arch) ARCH="$2"; shift 2 ;;
         --identity) IDENTITY="$2"; shift 2 ;;
         --notary-profile) NOTARY_PROFILE="$2"; shift 2 ;;
+        --expected-source-head) EXPECTED_SOURCE_HEAD="$2"; shift 2 ;;
         -h|--help)
             sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
+
+[[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
+case "$ARCH" in
+    arm64|x86_64) ;;
+    *) echo "ERROR: unsupported macOS release architecture: $ARCH" >&2; exit 2 ;;
+esac
 
 if [[ -z "$NOTARY_PROFILE" ]]; then
     echo "ERROR: --notary-profile is required for public macOS releases." >&2
@@ -45,11 +56,12 @@ fi
 STAGE_DIR="$DIST_DIR/stage"
 APP="$STAGE_DIR/dinero-qt.app"
 OPERATOR_STAGE_DIR="$DIST_DIR/operator-stage"
-OPERATOR_ROOT="$OPERATOR_STAGE_DIR/dinero-operator-v${VERSION}-macOS-arm64"
-ZIP_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-arm64-qt.zip"
-DMG_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-arm64.dmg"
-OPERATOR_TARBALL="$DIST_DIR/dinero-operator-v${VERSION}-macOS-arm64.tar.gz"
-SUMS_PATH="$DIST_DIR/SHA256SUMS-macos-${VERSION}"
+OPERATOR_ROOT="$OPERATOR_STAGE_DIR/dinero-operator-v${VERSION}-macOS-${ARCH}"
+ZIP_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-${ARCH}-qt.zip"
+DMG_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-${ARCH}.dmg"
+OPERATOR_TARBALL="$DIST_DIR/dinero-operator-v${VERSION}-macOS-${ARCH}.tar.gz"
+DESKTOP_SUMS_PATH="$DIST_DIR/SHA256SUMS-macos-${ARCH}-desktop-${VERSION}"
+OPERATOR_SUMS_PATH="$DIST_DIR/SHA256SUMS-macos-${ARCH}-${VERSION}"
 
 if [[ ! -d "$APP" ]]; then
     echo "ERROR: staged app not found at $APP" >&2
@@ -57,9 +69,11 @@ if [[ ! -d "$APP" ]]; then
     exit 1
 fi
 
-"$PROJECT_ROOT/packaging/mac/assert-v8-release-lane.sh" \
-    --version "$VERSION" \
-    --app "$APP"
+guard_args=(--version "$VERSION" --app "$APP")
+if [[ -n "$EXPECTED_SOURCE_HEAD" ]]; then
+    guard_args+=(--expected-repo-head "$EXPECTED_SOURCE_HEAD")
+fi
+"$PROJECT_ROOT/packaging/mac/assert-v8-release-lane.sh" "${guard_args[@]}"
 
 for path in \
     "$APP/Contents/MacOS/dinero-seeder" \
@@ -75,6 +89,7 @@ done
 echo "----------------------------------------------------------"
 echo "Finalizing Dinero macOS release -- v$VERSION"
 echo "----------------------------------------------------------"
+echo "Architecture:   $ARCH"
 echo "Identity:       $IDENTITY"
 echo "Notary profile: $NOTARY_PROFILE"
 
@@ -180,14 +195,18 @@ echo "Writing checksums..."
     shasum -a 256 \
         "$(basename "$ZIP_PATH")" \
         "$(basename "$DMG_PATH")" \
+        > "$DESKTOP_SUMS_PATH"
+    shasum -a 256 \
         "$(basename "$OPERATOR_TARBALL")" \
-        > "$SUMS_PATH"
+        > "$OPERATOR_SUMS_PATH"
 )
-cat "$SUMS_PATH"
+cat "$DESKTOP_SUMS_PATH"
+cat "$OPERATOR_SUMS_PATH"
 
 echo ""
 echo "macOS release artifacts are signed, notarized, stapled, and ready:"
 echo "  $ZIP_PATH"
 echo "  $DMG_PATH"
 echo "  $OPERATOR_TARBALL"
-echo "  $SUMS_PATH"
+echo "  $DESKTOP_SUMS_PATH"
+echo "  $OPERATOR_SUMS_PATH"

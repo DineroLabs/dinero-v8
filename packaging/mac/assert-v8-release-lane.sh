@@ -11,6 +11,7 @@ set -euo pipefail
 BUILD_DIR=""
 APP=""
 VERSION=""
+EXPECTED_REPO_HEAD=""
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
@@ -18,6 +19,7 @@ while [[ $# -gt 0 ]]; do
         --build-dir) BUILD_DIR="$2"; shift 2 ;;
         --app) APP="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
+        --expected-repo-head) EXPECTED_REPO_HEAD="$2"; shift 2 ;;
         -h|--help)
             sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -62,6 +64,12 @@ case "$origin_url" in
 esac
 
 repo_head="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
+if [[ -n "$EXPECTED_REPO_HEAD" ]]; then
+    expected_head="$(git -C "$PROJECT_ROOT" rev-parse "${EXPECTED_REPO_HEAD}^{commit}" 2>/dev/null || true)"
+    [[ -n "$expected_head" ]] || fail "expected source commit does not resolve: $EXPECTED_REPO_HEAD"
+else
+    expected_head="$repo_head"
+fi
 
 grep -q 'kShowAiAssistantPanel = false' "$PROJECT_ROOT/qt/src/mainwindow.cpp" \
     || fail "Cmd+K AI panel is not gated off in qt/src/mainwindow.cpp"
@@ -96,7 +104,7 @@ if [[ -n "$APP" ]]; then
     require_file "$identity"
     require_file "$exe"
 
-    python3 - "$identity" "$repo_head" <<'PY'
+    python3 - "$identity" "$expected_head" <<'PY'
 import json
 import sys
 
