@@ -489,7 +489,10 @@ jobs:
           [ "$MACHO_COUNT" -gt 10 ] || { echo "::error::too few Mach-O files checked: $MACHO_COUNT"; exit 1; }
 
           TEST_HOME=$(mktemp -d)
-          HOME="$TEST_HOME" QT_QPA_PLATFORM=offscreen \
+          # macdeployqt ships the native cocoa platform plugin on macOS; it does
+          # not ship Qt's offscreen plugin. Hosted macOS runners have a WindowServer,
+          # so exercise the same platform plugin end users will actually load.
+          HOME="$TEST_HOME" QT_QPA_PLATFORM=cocoa \
             "$APP/Contents/MacOS/dinero-qt" >"$TEST_HOME/qt.log" 2>&1 &
           QT_PID=$!
           DAEMON_PID=""
