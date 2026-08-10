@@ -228,11 +228,11 @@ jobs:
         run: |
           mkdir -p dist
           bash packaging/linux/build-appimage.sh \
-            "${{ steps.provenance.outputs.version }}" build-desktop dist
+            "${{ steps.provenance.outputs.version }}" "$PWD/build-desktop" "$PWD/dist"
           bash packaging/linux/build-qt-tarball.sh \
-            "${{ steps.provenance.outputs.version }}" dist
+            "${{ steps.provenance.outputs.version }}" "$PWD/dist"
           bash packaging/linux/build-qt-deb.sh \
-            "${{ steps.provenance.outputs.version }}" build-desktop dist
+            "${{ steps.provenance.outputs.version }}" "$PWD/build-desktop" "$PWD/dist"
 
       - name: Verify Linux desktop artifacts and real Qt daemon launch
         run: |
