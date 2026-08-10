@@ -1,0 +1,2 @@
+# Must exactly match the locally transported voting node in config.json.
+LOCAL_NODE=node-c

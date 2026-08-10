@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,8 @@ class Config:
     close_after: int
     node_behind_blocks: int
     overdue_deadline_seconds: float
+    remediation_node: Optional[str] = None
+    remediation_request_path: Optional[str] = None
 
     @property
     def voting_total(self) -> int:
@@ -25,6 +27,7 @@ class Config:
 
 
 TRANSPORTS = ("ssh", "local")
+REMEDIATION_REQUEST_PATH = "/run/fleet-watcher/restart-dinero.json"
 
 
 def load_config(path: str) -> Config:
@@ -63,6 +66,27 @@ def load_config(path: str) -> Config:
         raise ValueError(
             f"config defines {voters} voting node(s); at least 2 are required "
             "to form a quorum")
+    remediation = raw.get("remediation")
+    remediation_node = None
+    remediation_request_path = None
+    if remediation is not None:
+        if not isinstance(remediation, dict):
+            raise ValueError("remediation must be an object")
+        remediation_node = remediation.get("local_node")
+        remediation_request_path = remediation.get("request_path")
+        if not remediation_node or not remediation_request_path:
+            raise ValueError("remediation requires local_node and request_path")
+        if voters < 3:
+            raise ValueError("remediation requires at least 3 voting nodes")
+        matches = [n for n in nodes if n["name"] == remediation_node]
+        if not matches:
+            raise ValueError("remediation local_node is not configured")
+        if matches[0]["role"] != "voting" or matches[0]["transport"] != "local":
+            raise ValueError("remediation local_node must be a local voting node")
+        if remediation_request_path != REMEDIATION_REQUEST_PATH:
+            raise ValueError(
+                f"remediation request_path must be {REMEDIATION_REQUEST_PATH}")
+
     return Config(
         nodes=raw["nodes"],
         db_path=raw.get("db_path", "/var/lib/fleet-watcher/watcher.db"),
@@ -71,4 +95,6 @@ def load_config(path: str) -> Config:
         close_after=raw.get("close_after", 3),
         node_behind_blocks=raw.get("node_behind_blocks", 10),
         overdue_deadline_seconds=raw.get("overdue_deadline_seconds", 300.0),
+        remediation_node=remediation_node,
+        remediation_request_path=remediation_request_path,
     )

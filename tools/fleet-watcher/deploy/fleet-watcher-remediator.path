@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a fleet-confirmed local Dinero restart request
+
+[Path]
+PathExists=/run/fleet-watcher/restart-dinero.json
+Unit=fleet-watcher-remediator.service
+
+[Install]
+WantedBy=multi-user.target

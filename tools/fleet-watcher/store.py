@@ -46,6 +46,11 @@ CREATE TABLE IF NOT EXISTS outbox (
     created_at REAL NOT NULL, next_attempt_at REAL NOT NULL, sent_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox(sent_at, next_attempt_at);
+
+CREATE TABLE IF NOT EXISTS remediations (
+    incident_id TEXT PRIMARY KEY, node TEXT NOT NULL, status TEXT NOT NULL,
+    created_at REAL NOT NULL, submitted_at REAL
+);
 """
 
 
@@ -181,6 +186,34 @@ class Store:
                          nodes=tuple(json.loads(r["nodes"])), severity=r["severity"],
                          detail=r["detail"], opened_at=r["opened_at"],
                          closed_at=None) for r in rows]
+
+    # ---- remediation -------------------------------------------------
+    def enqueue_remediation(self, incident_id: str, node: str) -> None:
+        """Queue at most one restart request for an incident.
+
+        The row is durable before the filesystem request is emitted. A crash
+        before emission leaves it queued; a crash after emission may replay
+        the same incident, which the root helper deduplicates by receipt.
+        """
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO remediations "
+                "(incident_id, node, status, created_at, submitted_at) "
+                "VALUES (?,?,'queued',?,NULL)",
+                (incident_id, node, self._clock()))
+
+    def pending_remediations(self) -> List[Tuple[str, str, float]]:
+        rows = self.conn.execute(
+            "SELECT incident_id, node, created_at FROM remediations "
+            "WHERE status='queued' ORDER BY created_at").fetchall()
+        return [(r["incident_id"], r["node"], r["created_at"]) for r in rows]
+
+    def mark_remediation_submitted(self, incident_id: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE remediations SET status='submitted', submitted_at=? "
+                "WHERE incident_id=? AND status='queued'",
+                (self._clock(), incident_id))
 
     # ---- delivery -----------------------------------------------------
     def pending_outbox(self, now: float) -> List[OutboxItem]:

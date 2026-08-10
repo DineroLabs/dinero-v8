@@ -20,6 +20,7 @@ from engine import Engine
 from heartbeat import Heartbeat, should_ping
 from notify import PushoverNotifier
 from poller import SSHRPC, poll_cycle
+from remediation import eligible_incident, emit_pending
 from rules import evaluate
 from store import Store
 
@@ -66,6 +67,16 @@ def run_once(config, store, engine, rpc, notifier, heartbeat, previous):
     if committed:
         engine.process(evaluate(observations, config.voting_total, previous,
                                 node_behind_blocks=config.node_behind_blocks))
+        if config.remediation_node and config.remediation_request_path:
+            incident_id = eligible_incident(
+                observations, store.open_incidents(), config.remediation_node,
+                config.node_behind_blocks)
+            if incident_id:
+                store.enqueue_remediation(incident_id, config.remediation_node)
+            try:
+                emit_pending(store, config.remediation_request_path)
+            except Exception as exc:  # noqa: BLE001 - retry queued request next cycle
+                print(f"[watcher] remediation request failed: {exc}", file=sys.stderr)
 
     worker_alive = True
     try:

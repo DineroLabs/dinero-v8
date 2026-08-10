@@ -27,12 +27,14 @@ LoadCredential=heartbeat:/etc/fleet-watcher/heartbeat.creds
 # or StrictHostKeyChecking=yes meets an empty known_hosts and every node reports
 # unreachable — a plausible-looking fleet-wide outage caused by the unit itself.
 Environment=HOME=/var/lib/fleet-watcher
+RuntimeDirectory=fleet-watcher
+RuntimeDirectoryMode=0750
 
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/fleet-watcher
+ReadWritePaths=/var/lib/fleet-watcher /run/fleet-watcher
 
 [Install]
 WantedBy=multi-user.target

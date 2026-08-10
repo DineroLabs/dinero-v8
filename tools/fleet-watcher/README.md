@@ -222,6 +222,61 @@ of `node_behind`, `majority_unreachable` and `telemetry_degraded`.
 It can never suppress `safe_mode`, `tip_divergence` or `observer_divergence`.
 Incidents are still recorded normally either way.
 
+## Optional fleet-confirmed local restart
+
+Automatic repair is **off by default**. Never use elapsed time alone to restart
+a node: on a low-hash network, a perfectly healthy fleet may wait longer than
+the local timeout for its next block.
+
+The optional remediator acts only after the ordinary watcher has opened a
+confirmed `node_behind` incident. At request time it rechecks all of these:
+
+- a unique fleet quorum exists;
+- there is no positive fork evidence;
+- the local node is still on the quorum chain;
+- at least two other voting nodes agree with it at the common comparison
+  heights; and
+- the local node remains at least `node_behind_blocks` behind the quorum median.
+
+Configure it only on the watcher host, and only for that host's `local`
+transported voting node:
+
+```json
+"remediation": {
+  "local_node": "node-c",
+  "request_path": "/run/fleet-watcher/restart-dinero.json"
+}
+```
+
+Install the privilege-separated helper. The watcher stays unprivileged and
+cannot invoke `systemctl`; it can only create the fixed-shape request watched by
+the root-owned path unit:
+
+```bash
+install -o root -g root -m 0755 tools/fleet-watcher/remediator.py \
+    /opt/fleet-watcher/remediator.py
+install -o root -g root -m 0644 \
+    tools/fleet-watcher/deploy/fleet-watcher-remediator.service \
+    tools/fleet-watcher/deploy/fleet-watcher-remediator.path \
+    /etc/systemd/system/
+install -o root -g root -m 0600 \
+    tools/fleet-watcher/deploy/remediator.conf.example \
+    /etc/fleet-watcher/remediator.conf
+$EDITOR /etc/fleet-watcher/remediator.conf
+systemctl daemon-reload
+systemctl enable --now fleet-watcher-remediator.path
+```
+
+The helper writes a root-owned receipt *before* restarting. The same incident
+can therefore restart the daemon at most once across watcher crashes, repeated
+path triggers and service-manager failures. A failed one-time repair remains an
+open, notified incident for an operator; it never becomes an automatic restart
+loop.
+
+Until this fleet-relative path is deployed, use
+`deploy/dinero-height-watchdog-log-only` for any legacy local timer. It retains
+the frozen-height evidence in the journal but cannot restart from silence.
+
 ## Reading the data
 
 ```bash
