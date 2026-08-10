@@ -8,6 +8,7 @@ import watcher
 from config import Config
 from engine import Engine
 from store import Store
+from models import Observation
 from watcher import main
 
 VALID_NODES = [
@@ -194,6 +195,41 @@ class TestRunOnce(unittest.TestCase):
         self._run()
 
         self.assertEqual(seen.get("node_behind_blocks"), 50)
+
+    def test_remediation_is_emitted_only_after_confirmed_open_incident(self):
+        with tempfile.TemporaryDirectory() as directory:
+            request = os.path.join(directory, "restart.json")
+            nodes = [
+                {"name": "local", "role": "voting", "transport": "local",
+                 "target": "127.0.0.1:1"},
+                {"name": "b", "role": "voting", "transport": "ssh", "target": "b"},
+                {"name": "c", "role": "voting", "transport": "ssh", "target": "c"},
+            ]
+            self.config = Config(
+                nodes=nodes, db_path=self.path, cycle_seconds=60,
+                open_after=3, close_after=3, node_behind_blocks=10,
+                overdue_deadline_seconds=300.0, remediation_node="local",
+                remediation_request_path=request)
+
+            def item(name, height, hashes):
+                return Observation(
+                    cycle_id="cycle", timestamp="2026-08-10T00:00:00Z",
+                    node=name, role="voting", reachable=True, height=height,
+                    tip_hash=hashes.get(height), hashes_at=hashes,
+                    peers_in=1, peers_out=1, synced=True,
+                    safe_mode="inactive", safe_mode_reason=None,
+                    restart_id="r1")
+
+            observations = [
+                item("local", 80, {80: "H80"}),
+                item("b", 100, {80: "H80", 100: "H100"}),
+                item("c", 100, {80: "H80", 100: "H100"}),
+            ]
+            with mock.patch.object(watcher, "poll_cycle", return_value=observations):
+                self._run(); self._run()
+                self.assertFalse(os.path.exists(request))
+                self._run()
+                self.assertTrue(os.path.exists(request))
 
 
 if __name__ == "__main__":

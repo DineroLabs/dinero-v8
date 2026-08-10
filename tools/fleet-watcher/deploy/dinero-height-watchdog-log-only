@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Transitional local watchdog: observe a frozen tip, but never restart from
+# elapsed time alone. A quiet chain and a stuck node are indistinguishable
+# without an external fleet reference.
+set -u
+
+STALL_SECONDS="${STALL_SECONDS:-900}"
+STATE="${STATE:-/var/lib/dinero/.height-watchdog}"
+SERVICE="${SERVICE:-dinero.service}"
+DINERO_CLI="${DINERO_CLI:-/usr/bin/dinero-cli}"
+DATADIR="${DATADIR:-/var/lib/dinero}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+LOGGER="${LOGGER:-logger}"
+
+"$SYSTEMCTL" is-active --quiet "$SERVICE" || exit 0
+height=$("$DINERO_CLI" -datadir="$DATADIR" getblockcount 2>/dev/null)
+case "$height" in ''|*[!0-9]*) exit 0;; esac
+
+now=$(date +%s)
+if [[ -f "$STATE" ]]; then
+    read -r previous_height previous_time < "$STATE" || {
+        printf '%s %s\n' "$height" "$now" > "$STATE"
+        exit 0
+    }
+    if [[ "$height" != "$previous_height" ]]; then
+        printf '%s %s\n' "$height" "$now" > "$STATE"
+        exit 0
+    fi
+    elapsed=$((now - previous_time))
+    if (( elapsed >= STALL_SECONDS )); then
+        "$LOGGER" -t dinero-watchdog \
+            "tip unchanged at $height for ${elapsed}s; observation only — no restart without fleet-relative evidence"
+        # Reset the observation window so a quiet chain produces one periodic
+        # log entry, not one entry every timer tick.
+        printf '%s %s\n' "$height" "$now" > "$STATE"
+    fi
+else
+    printf '%s %s\n' "$height" "$now" > "$STATE"
+fi

@@ -61,6 +61,38 @@ class TestLoadConfig(unittest.TestCase):
         payload = {"nodes": [{"name": "a", "role": "voting"}]}
         self._rejects(payload, "missing")
 
+    def test_remediation_must_target_a_local_voting_node(self):
+        nodes = VALID["nodes"] + [
+            {"name": "c", "role": "voting", "transport": "ssh", "target": "w@c"}]
+        payload = {"nodes": nodes, "remediation": {
+            "local_node": "a",
+            "request_path": "/run/fleet-watcher/restart-dinero.json"}}
+        self._rejects(payload, "local voting")
+
+    def test_valid_remediation_config_is_loaded(self):
+        nodes = VALID["nodes"] + [
+            {"name": "c", "role": "voting", "transport": "ssh", "target": "w@c"}]
+        payload = {"nodes": nodes, "remediation": {
+            "local_node": "b",
+            "request_path": "/run/fleet-watcher/restart-dinero.json"}}
+        config = load_config(self._write(payload))
+        self.assertEqual(config.remediation_node, "b")
+        self.assertEqual(config.remediation_request_path,
+                         "/run/fleet-watcher/restart-dinero.json")
+
+    def test_remediation_requires_three_voters(self):
+        payload = {**VALID, "remediation": {
+            "local_node": "b",
+            "request_path": "/run/fleet-watcher/restart-dinero.json"}}
+        self._rejects(payload, "at least 3")
+
+    def test_remediation_request_path_is_fixed(self):
+        nodes = VALID["nodes"] + [
+            {"name": "c", "role": "voting", "transport": "ssh", "target": "w@c"}]
+        payload = {"nodes": nodes, "remediation": {
+            "local_node": "b", "request_path": "/tmp/restart.json"}}
+        self._rejects(payload, "request_path")
+
 
 if __name__ == "__main__":
     unittest.main()

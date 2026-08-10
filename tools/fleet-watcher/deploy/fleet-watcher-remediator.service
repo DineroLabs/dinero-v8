@@ -1,0 +1,23 @@
+[Unit]
+Description=Restart local Dinero once for a fleet-confirmed lag incident
+After=fleet-watcher.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/fleet-watcher/remediator.conf
+StateDirectory=fleet-watcher-remediator
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 /opt/fleet-watcher/remediator.py \
+    --request /run/fleet-watcher/restart-dinero.json \
+    --receipts /var/lib/fleet-watcher-remediator \
+    --local-node ${LOCAL_NODE} \
+    --service dinero.service \
+    --max-request-age 300
+
+User=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/fleet-watcher /var/lib/fleet-watcher-remediator
+RestrictAddressFamilies=AF_UNIX

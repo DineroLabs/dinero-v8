@@ -1,0 +1,7 @@
+[Unit]
+Description=Observe an unchanged Dinero tip (log only; no local restart)
+
+[Service]
+Type=oneshot
+Environment=STALL_SECONDS=900
+ExecStart=/usr/local/bin/dinero-height-watchdog.sh
