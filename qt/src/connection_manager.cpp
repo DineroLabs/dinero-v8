@@ -235,8 +235,17 @@ void ConnectionManager::performHealthCheck() {
             setState(Reconnecting);
             reconnect();
         } else {
-            Q_EMIT statusMessage("Cannot connect: cookie file not found", "error");
-            setState(Failed);
+            // The RPC cookie isn't there YET. This is not a permanent failure:
+            // the daemon is still starting and hasn't bound RPC / written its
+            // .cookie. On a fully-synced node a cold start can take 1-2 minutes
+            // to open the DB + build the block index before RPC comes up. The
+            // old setState(Failed) here made the GUI give up ~5s in and never
+            // reconnect, even though the daemon came up healthy moments later —
+            // the "daemon didn't start even after 3 minutes" bug. Keep retrying
+            // within the retry budget (reconnect() still Fails after maxRetries_
+            // if the cookie genuinely never appears).
+            Q_EMIT statusMessage("Waiting for the daemon to finish starting…", "info");
+            reconnect();
         }
         return;
     }
