@@ -1,3 +1,17 @@
+dinero-core (8.1.4-1) unstable; urgency=medium
+
+  * v8.1.4 -- dinero-qt no longer gives up permanently when the embedded
+    daemon needs 1-2 minutes to write its RPC cookie on a cold start of a
+    fully-synced node; the GUI now waits with exponential backoff and
+    connects when the daemon comes up ("daemon didn't start after 3
+    minutes" fix).
+  * First release with Authenticode-signed Windows binaries (Azure
+    Artifact Signing; publisher Microsoft-ID-verified).
+  * Consensus rules, height-84,131 AssumeUTXO anchor, and the daemon are
+    unchanged from v8.1.3.
+
+ -- Dinero Labs <team@dinerolabs.org>  Sat, 15 Aug 2026 16:00:00 -0400
+
 dinero-core (8.1.3-1) unstable; urgency=medium
 
   * v8.1.3 — prevent dinero-qt from launching a second embedded daemon while
