@@ -7,7 +7,7 @@ Identity Verification Root that ships in Windows).
 
 One-time prereqs on the build box:
   1. Azure CLI:   winget install -e --id Microsoft.AzureCLI
-  2. az login     (as haydarevich69@gmail.com — the account holding the
+  2. az login     (as haydarevich69@gmail.com - the account holding the
                    "Artifact Signing Certificate Profile Signer" role)
   3. signtool.exe from the Windows 10/11 SDK >= 10.0.22621
                   (installed with Visual Studio / Build Tools)
@@ -21,7 +21,7 @@ The Microsoft.Trusted.Signing.Client package (the signtool dlib) is
 downloaded automatically on first run and cached under %LOCALAPPDATA%.
 Azure infra this talks to (provisioned 2026-08-15): account
 "dinerolabs-signing" / profile "dinerolabs" in resource group
-dinerolabs-signing, endpoint https://eus.codesigning.azure.net/ —
+dinerolabs-signing, endpoint https://eus.codesigning.azure.net/ -
 the same profile that signs the dinero-sv2 miner releases in CI.
 #>
 param(
@@ -38,7 +38,7 @@ $CertProfile = "dinerolabs"
 $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
     -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
 if (-not $signtool) {
-    throw "signtool.exe not found — install the Windows 10/11 SDK (ships with VS Build Tools)"
+    throw "signtool.exe not found - install the Windows 10/11 SDK (ships with VS Build Tools)"
 }
 
 # --- fetch the Trusted Signing dlib once, cache locally ---
