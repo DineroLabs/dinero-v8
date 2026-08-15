@@ -245,7 +245,16 @@ void ConnectionManager::performHealthCheck() {
             // within the retry budget (reconnect() still Fails after maxRetries_
             // if the cookie genuinely never appears).
             Q_EMIT statusMessage("Waiting for the daemon to finish starting…", "info");
-            reconnect();
+            // Re-entry guard: reconnect() ends with a synchronous
+            // performHealthCheck() probe, so calling it unconditionally
+            // here recurses (probe -> miss -> reconnect -> probe -> ...)
+            // and burns the whole retry budget in milliseconds. Only
+            // start the retry machinery when no retry is scheduled yet;
+            // afterwards the single-shot backoff timer re-invokes
+            // reconnect() on its own schedule.
+            if (state_ != Reconnecting) {
+                reconnect();
+            }
         }
         return;
     }
