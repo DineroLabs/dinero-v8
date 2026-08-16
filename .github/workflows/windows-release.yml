@@ -205,7 +205,7 @@ jobs:
 
       - name: Sign installer
         if: ${{ vars.WINDOWS_SIGNING_READY == 'true' }}
-        uses: azure/trusted-signing-action@v0
+        uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293 # v0
         with:
           endpoint: ${{ vars.SIGNING_ENDPOINT }}
           trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT }}

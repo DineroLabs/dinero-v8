@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import stat
 import time
 
 
@@ -23,9 +24,19 @@ EXPECTED_KEYS = {"version", "incident_id", "node", "rule", "requested_at"}
 
 
 def _read_request(path: str) -> dict:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK: opening a FIFO planted at this path would otherwise block
+    # this root helper forever (DoS of the remediation service). With
+    # O_NONBLOCK the open returns immediately and fstat unmasks the fake.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
     fd = os.open(path, flags)
     try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("request is not a regular file")
+        if info.st_size > 4096:
+            raise ValueError("request exceeds 4096 bytes")
+        if info.st_mode & 0o022:
+            raise ValueError("request is group/other writable")
         data = os.read(fd, 4097)
     finally:
         os.close(fd)
