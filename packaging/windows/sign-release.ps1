@@ -48,7 +48,18 @@ if (-not (Test-Path $dlib)) {
     Write-Host "Downloading Microsoft.Trusted.Signing.Client (first run only)..."
     New-Item -ItemType Directory -Force -Path $toolDir | Out-Null
     $zip = Join-Path $toolDir "Microsoft.Trusted.Signing.Client.zip"
-    Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client" -OutFile $zip
+    # Pinned version + hash: this DLL runs under signtool on the machine
+    # holding the Azure signing session. An unpinned "latest" download is a
+    # supply-chain hole - a poisoned package could mint trusted signatures.
+    # To upgrade: bump the version, download, verify provenance, update hash.
+    $TscVersion = "1.0.95"
+    $TscSha256  = "3BFCF1E0A3CB42AF1692F0A8ED45C15DE070C2DE86F28A59B2795D904D8A920F"
+    Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client/$TscVersion" -OutFile $zip
+    $actual = (Get-FileHash $zip -Algorithm SHA256).Hash
+    if ($actual -ne $TscSha256) {
+        Remove-Item $zip
+        throw "Trusted Signing client checksum mismatch (got $actual, expected $TscSha256) - refusing to sign"
+    }
     Expand-Archive $zip -DestinationPath $toolDir -Force
     Remove-Item $zip
 }
