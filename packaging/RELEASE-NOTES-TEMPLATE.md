@@ -33,9 +33,13 @@
 
 ## 🪟 Windows (x64)
 
+All Windows binaries are Authenticode-signed (publisher: Microsoft-ID-verified).
+
 | Download | |
 |---|---|
-| **Node installer** (dinerod as a Windows Service) · Authenticode-signed | [Dinero-Server-{VERSION}-Setup.exe](https://github.com/DineroLabs/dinero-v8/releases/download/v{VERSION}/Dinero-Server-{VERSION}-windows-x86_64-Setup.exe) |
+| **Desktop wallet** (dinero-qt GUI installer) | [Dinero-{VERSION}-Setup.exe](https://github.com/DineroLabs/dinero-v8/releases/download/v{VERSION}/Dinero-{VERSION}-windows-x86_64-Setup.exe) |
+| **Node installer** (dinerod as a Windows Service) | [Dinero-Server-{VERSION}-Setup.exe](https://github.com/DineroLabs/dinero-v8/releases/download/v{VERSION}/Dinero-Server-{VERSION}-windows-x86_64-Setup.exe) |
+| **Portable operator zip** (binaries, no installer) | [dinero-v{VERSION}-windows-x86_64-msvc.zip](https://github.com/DineroLabs/dinero-v8/releases/download/v{VERSION}/dinero-v{VERSION}-windows-x86_64-msvc.zip) |
 
 ## 🐧 Linux (x86_64)
 
