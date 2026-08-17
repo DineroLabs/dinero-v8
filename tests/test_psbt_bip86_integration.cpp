@@ -29,7 +29,9 @@ std::vector<uint8_t> createTaprootWitnessUTXO(uint64_t amount) {
         witness_utxo.push_back((amount >> (i * 8)) & 0xFF);
     }
 
-    // Taproot scriptPubKey: OP_1 (0x51) + 0x20 (push 32 bytes) + 32-byte pubkey
+    // Compact-size script length per BIP-174, then the Taproot scriptPubKey:
+    // OP_1 (0x51) + 0x20 (push 32 bytes) + 32-byte pubkey
+    witness_utxo.push_back(0x22); // 34-byte script follows
     witness_utxo.push_back(0x51); // OP_1
     witness_utxo.push_back(0x20); // Push 32 bytes
     for (int i = 0; i < 32; i++) {

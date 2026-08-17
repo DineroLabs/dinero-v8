@@ -11364,6 +11364,7 @@ add_executable(test_psbt_guardrails
   src/wallet/psbt_taproot_validator.cpp
 )
 target_link_libraries(test_psbt_guardrails PRIVATE jsoncpp_static)
+add_test(NAME PsbtBip86Guardrails COMMAND test_psbt_guardrails)
 
 # BIP86 signing demonstration
 # TEMPORARILY DISABLED (2026-02-02): Missing sha256/HASH160 includes when compiling hd_wallet.cpp directly
@@ -11394,6 +11395,7 @@ else()
     target_link_libraries(test_descriptor_psbt_integration dinero_wallet dinero_core dinero_crypto OpenSSL::SSL OpenSSL::Crypto)
 endif()
 target_include_directories(test_descriptor_psbt_integration PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME DescriptorPsbtIntegration COMMAND test_descriptor_psbt_integration)
 
 # Simple Descriptor PSBT Test (Phase 2 Step 3)
 # Tests core fixes: address→scriptPubKey and complete key derivation
@@ -11406,6 +11408,7 @@ else()
     target_link_libraries(test_descriptor_psbt_simple dinero_wallet dinero_core dinero_crypto OpenSSL::SSL OpenSSL::Crypto)
 endif()
 target_include_directories(test_descriptor_psbt_simple PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME DescriptorPsbtSimple COMMAND test_descriptor_psbt_simple)
 
 # KeyStoreImpl Test (Phase 3A)
 # Tests BIP32 HD wallet implementation with BIP84/BIP86 address derivation
@@ -11466,6 +11469,7 @@ else()
     target_link_libraries(test_psbt_bip86_integration dinero_wallet dinero_core dinero_crypto OpenSSL::SSL OpenSSL::Crypto)
 endif()
 target_include_directories(test_psbt_bip86_integration PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME PsbtBip86Integration COMMAND test_psbt_bip86_integration)
 
 # Hardware Wallet BIP86 Integration Test (Phase 3C - HW Wallet Support)
 # Tests complete Coldcard-style workflow: KeyStore → Descriptor → PSBT → Export → Sign → Import
