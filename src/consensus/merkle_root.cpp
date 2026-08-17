@@ -11,7 +11,8 @@
 
 namespace dinero::consensus {
 
-uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx) {
+uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx, bool* mutated) {
+    if (mutated) *mutated = false;
     if (vtx.empty()) {
         return uint256();  // Zero hash for empty block
     }
@@ -35,8 +36,18 @@ uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx) {
         next.reserve((layer.size() + 1) / 2);
 
         for (size_t i = 0; i < layer.size(); i += 2) {
+            const bool have_right = (i + 1 < layer.size());
             const uint256& left = layer[i];
-            const uint256& right = (i + 1 < layer.size()) ? layer[i + 1] : layer[i];
+            const uint256& right = have_right ? layer[i + 1] : layer[i];
+
+            // CVE-2012-2459: two REAL adjacent nodes being equal means a
+            // duplicated subtree that preserves the root. Distinct valid txids
+            // never collide, so this only happens with a duplicated transaction
+            // crafted to forge another block's merkle root. The legitimate
+            // odd-count self-duplication (!have_right) is NOT a mutation.
+            if (have_right && mutated && left == right) {
+                *mutated = true;
+            }
 
             // Concatenate internal uint256 bytes (64 bytes total)
             uint8_t buf[64];
@@ -58,7 +69,8 @@ uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx) {
 }
 
 // Consensus witness merkle root committed by the DINW coinbase output.
-uint256 ComputeWitnessMerkleRoot(const std::vector<Transaction>& vtx) {
+uint256 ComputeWitnessMerkleRoot(const std::vector<Transaction>& vtx, bool* mutated) {
+    if (mutated) *mutated = false;
     if (vtx.empty()) {
         return uint256();  // Zero hash for empty block
     }
@@ -89,8 +101,14 @@ uint256 ComputeWitnessMerkleRoot(const std::vector<Transaction>& vtx) {
         next.reserve((layer.size() + 1) / 2);
 
         for (size_t i = 0; i < layer.size(); i += 2) {
+            const bool have_right = (i + 1 < layer.size());
             const uint256& left = layer[i];
-            const uint256& right = (i + 1 < layer.size()) ? layer[i + 1] : layer[i];
+            const uint256& right = have_right ? layer[i + 1] : layer[i];
+
+            // CVE-2012-2459 mutation detection (see ComputeMerkleRoot).
+            if (have_right && mutated && left == right) {
+                *mutated = true;
+            }
 
             // Concatenate internal uint256 bytes (64 bytes total)
             uint8_t buf[64];

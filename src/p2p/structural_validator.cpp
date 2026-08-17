@@ -155,7 +155,20 @@ StructuralValidationResult StructuralValidator::validateBlock(const std::vector<
         }
     }
 
-    if (dinero::consensus::ComputeMerkleRoot(transactions) != header.merkle_root) {
+    bool merkle_mutated = false;
+    const uint256 computed_merkle =
+        dinero::consensus::ComputeMerkleRoot(transactions, &merkle_mutated);
+    // CVE-2012-2459: reject a block whose merkle tree has a duplicated subtree —
+    // a crafted duplicate transaction that preserves another (valid) block's
+    // merkle root, and thus its block hash. A valid block can never contain a
+    // duplicated transaction (that is a double-spend), so this never rejects a
+    // valid block. Checked before the root comparison because a mutated block's
+    // root MATCHES the header by construction.
+    if (merkle_mutated) {
+        return StructuralValidationResult::Fail(
+            "bad-txns-duplicate: duplicated transaction in merkle tree (CVE-2012-2459)");
+    }
+    if (computed_merkle != header.merkle_root) {
         return StructuralValidationResult::Fail("Block merkle root does not match serialized transactions");
     }
 
