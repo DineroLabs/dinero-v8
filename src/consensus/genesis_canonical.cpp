@@ -21,6 +21,7 @@
 #include "consensus/utreexo_accumulator.h"
 #include "primitives/uint256.h"
 #include <cassert>
+#include <cstdlib>  // std::abort — genesis-integrity gate must fire even under NDEBUG
 #include <cstring>
 #include <iostream>
 #include <iomanip>
@@ -152,7 +153,14 @@ CanonicalGenesis BuildCanonicalGenesis(const ChainParams& params) {
 
         std::cerr << "Computed header: " << computed_hex.str() << "\n";
         std::cerr << "\n";
-        assert(false && "FATAL: Genesis hash mismatch - binary is invalid");
+        // MUST abort even in release builds. This is the daemon's genesis
+        // self-test (genesis_init.cpp calls BuildCanonicalGenesis() purely for
+        // this check). Release builds define NDEBUG, which turns assert() into a
+        // no-op — so an assert() here would let a binary with the WRONG compiled-in
+        // genesis start and serve a divergent chain. std::abort() is unconditional.
+        std::cerr << "FATAL: Genesis hash mismatch — binary is invalid; refusing to start.\n";
+        std::cerr.flush();
+        std::abort();
     }
 
     // ========================================================================
