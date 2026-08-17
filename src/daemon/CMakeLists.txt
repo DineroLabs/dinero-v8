@@ -221,11 +221,17 @@ if(CARGO_EXECUTABLE)
   add_dependencies(dinerod build_bulletproofs_ffi)
 endif()
 # Ensure production code path remains on canonical daemon mempool.
-add_dependencies(dinerod
-  check_no_legacy_mempool_prod
-  check_no_deprecated_openssl_hmac
-  check_no_deprecated_openssl_sha256
-)
+# These guardrails are POSIX bash scripts; on Windows CMake runs them via
+# git-bash where they intermittently hang the build (observed hanging git
+# children during v8.1.1/v8.1.3 cuts). They are source-hygiene checks already
+# enforced by Linux/Mac CI on every tag, so gate them off the Windows build.
+if(NOT WIN32)
+  add_dependencies(dinerod
+    check_no_legacy_mempool_prod
+    check_no_deprecated_openssl_hmac
+    check_no_deprecated_openssl_sha256
+  )
+endif()
 
 # Windows: sockets + CSPRNG
 if(WIN32)
