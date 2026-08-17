@@ -90,6 +90,13 @@ int main(int argc, char** argv) {
                 const std::size_t leaves = 64 + (k % 512);
                 set.ReplaceForestGuarded(makeForest(leaves, static_cast<uint64_t>(w) * 7919 + k));
                 if ((k & 3) == 0) set.RemoveLastNLeavesGuarded(1 + (k % 8));
+                // Also exercise MutateForestGuarded — the exclusive-lock primitive
+                // StatelessNode's CSN-mode forest writes route through.
+                if ((k & 1) == 0) {
+                    set.MutateForestGuarded([&](UtreexoForest& f) {
+                        f = makeForest(96 + (k % 256), static_cast<uint64_t>(w) * 104729 + k);
+                    });
+                }
                 ++k;
                 progress.fetch_add(1, std::memory_order_relaxed);
             }
