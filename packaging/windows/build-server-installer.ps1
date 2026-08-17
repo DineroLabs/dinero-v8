@@ -137,11 +137,38 @@ function Resolve-VcRedist {
         New-Item $DistDir -ItemType Directory | Out-Null
     }
 
+    # Pinned SHA256 for the VC++ 2015-2022 x64 redistributable.
+    # aka.ms/vs/17/release/vc_redist.x64.exe is a MOVING permalink: whatever bytes
+    # arrive are cached here, staged into the installer payload, and run silently and
+    # elevated (/install /quiet /norestart) on every end-user machine. Pin the hash so
+    # a rotated/compromised download fails the build loudly instead of shipping, and so
+    # the bundled runtime cannot drift silently when Microsoft updates the permalink.
+    #
+    # Verified 2026-08-17 by downloading the exact permalink (25,635,768 bytes); the
+    # same SHA256 is embedded in Microsoft's CDN download URL path, corroborating it.
+    # To refresh: download the new redist, confirm its hash from an official Microsoft
+    # source, and bump the pin in BOTH installer scripts (build-server-installer.ps1 and
+    # build-installer.ps1 share the dist\ cache and must stay in sync).
+    $VCRedistSha256 = 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
+
     $cached = Join-Path $DistDir 'vc_redist.x64.exe'
     if (-not (Test-Path $cached)) {
         Write-Host 'Downloading Microsoft VC++ 2015-2022 x64 Redistributable...'
         Invoke-WebRequest 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $cached
     }
+
+    # Verify after download AND on cache hit — a poisoned cache is as dangerous as a
+    # poisoned download. Delete + fail loudly on mismatch so a stale pin is a deliberate,
+    # reviewed bump rather than a silent drift.
+    $actualHash = (Get-FileHash -Algorithm SHA256 $cached).Hash.ToLowerInvariant()
+    if ($actualHash -ne $VCRedistSha256) {
+        Remove-Item $cached -Force -ErrorAction SilentlyContinue
+        throw ("vc_redist.x64.exe SHA256 mismatch: got '$actualHash', expected '$VCRedistSha256'. " +
+               "Microsoft may have updated the redistributable at aka.ms/vs/17/release. " +
+               "Verify the new hash from an official Microsoft source and bump the pin in BOTH " +
+               "build-server-installer.ps1 and build-installer.ps1 (they share the dist\ cache).")
+    }
+    Write-Host "  Verified vc_redist.x64.exe SHA256: $actualHash"
     return $cached
 }
 
