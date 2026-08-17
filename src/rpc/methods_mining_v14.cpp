@@ -300,6 +300,7 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
             static_cast<dinero::consensus::IUTXOProvider*>(consensus_utxo_set),
             [](dinero::consensus::IUTXOProvider*) { /* non-owning: chainstate owns the backing set */ });
         assembler.SetUtreexoForest(utreexo_forest);
+        assembler.SetConsensusUTXOSet(consensus_utxo_set);  // snapshot forest under shared lock (UAF guard)
         assembler.SetUTXOProvider(utxo_adapter);
         ::dinero::g_logger.debug("[v14 GBT] Utreexo forest + chain-scoped ConsensusUTXOSet configured");
     } else {
@@ -821,6 +822,7 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
     if (utreexo_forest && utxo_index) {
         utxo_adapter = std::make_shared<dinero::consensus::WalletUTXOAdapter>(utxo_index);
         assembler.SetUtreexoForest(utreexo_forest);
+        assembler.SetConsensusUTXOSet(chainstate->GetConsensusUTXOSet());  // snapshot forest under shared lock (UAF guard)
         assembler.SetUTXOProvider(utxo_adapter);
     }
 

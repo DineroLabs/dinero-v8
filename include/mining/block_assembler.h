@@ -31,6 +31,7 @@ namespace dinero {
         class UtreexoForest;  // Utreexo accumulator
         class IUTXOProvider;  // UTXO provider interface
         class BlockValidator; // Utreexo root computation oracle
+        class IConsensusUTXOSet;  // Owns the forest + its read/write lock (forest UAF guard)
     }
 }
 
@@ -183,6 +184,18 @@ public:
      */
     void SetUtreexoForest(consensus::UtreexoForest* forest) {
         utreexo_forest_ = forest;
+    }
+
+    /**
+     * @brief Set the ConsensusUTXOSet that owns the forest + its read/write lock.
+     *
+     * Required alongside SetUtreexoForest so CreateNewBlock can snapshot the
+     * forest under its shared lock (block template building runs on the mining
+     * thread, which would otherwise race the block-connect writer freeing the
+     * forest — audit: forest read-during-free UAF).
+     */
+    void SetConsensusUTXOSet(consensus::IConsensusUTXOSet* uset) {
+        consensus_utxo_set_ = uset;
     }
 
     /**
@@ -502,6 +515,7 @@ private:
 
     // Utreexo integration
     consensus::UtreexoForest* utreexo_forest_ = nullptr;  // Utreexo accumulator for proof generation
+    consensus::IConsensusUTXOSet* consensus_utxo_set_ = nullptr;  // Owns forest + lock (snapshot under shared lock)
     std::shared_ptr<consensus::IUTXOProvider> utxo_provider_;   // UTXO provider for spent output data
     consensus::BlockValidator* block_validator_ = nullptr; // Oracle for Utreexo root computation (single source of truth)
 
