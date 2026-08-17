@@ -419,6 +419,17 @@ int main(int argc, char* argv[]) {
 
     // Print result
     if (result) {
+        // Defensive: a well-formed JSON-RPC reply is an object. If the server or
+        // a proxy returns anything else (e.g. a bare-string error body), do NOT
+        // call isMember()/operator[] on it — jsoncpp's find() throws
+        // Json::LogicError on a non-object/non-null value, which is uncaught and
+        // aborts the process. Print it and fail cleanly instead.
+        if (!result->isObject()) {
+            std::cerr << "RPC Error: malformed (non-object) response: ";
+            print_json(*result);
+            delete client;
+            return 1;
+        }
         // Check if there's an error in the response
         if (result->isMember("error") && !(*result)["error"].isNull()) {
             std::cerr << "RPC Error: ";
