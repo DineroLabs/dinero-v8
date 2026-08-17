@@ -11703,6 +11703,57 @@ target_link_libraries(test_reorg_log PRIVATE
 add_test(NAME test_reorg_log COMMAND test_reorg_log)
 set_tests_properties(test_reorg_log PROPERTIES TIMEOUT 60)
 
+# ─── GuardedForest — Utreexo forest read-during-free UAF regression ─────────
+# Plain exit-code test (no gtest): proves a whole-value Replace() cannot
+# complete while a reader holds the shared lock — the property whose absence
+# is the read-during-free UAF. Registered UNLABELLED so it runs in the
+# required "full build + ctest" job (the main lanes filter with
+# `--label-exclude 'integration|gate|release|canonicality|fuzz'`).
+add_executable(test_guarded_forest
+  tests/consensus/test_guarded_forest.cpp
+)
+target_include_directories(test_guarded_forest BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+find_package(Threads REQUIRED)
+target_link_libraries(test_guarded_forest PRIVATE Threads::Threads)
+add_test(NAME GuardedForestExclusion COMMAND test_guarded_forest)
+set_tests_properties(GuardedForestExclusion PROPERTIES TIMEOUT 30)
+
+# ─── Forest lock concurrency stress (deadlock-freedom under contention) ─────
+# Drives the real ConsensusUTXOSet guarded accessors from many reader/writer
+# threads with a watchdog that hard-fails on a stall (deadlock). Short default
+# duration so it fits the required full-ctest lane; run longer manually via
+#   ./test_forest_lock_stress <readers> <writers> <seconds>
+add_executable(test_forest_lock_stress
+  tests/consensus/test_forest_lock_stress.cpp
+)
+target_include_directories(test_forest_lock_stress PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(test_forest_lock_stress PRIVATE
+  dinero_chainstate
+  dinero_consensus
+  dinero_shielded
+  dinero_crypto
+  jsoncpp_static
+  RocksDB::rocksdb
+  OpenSSL::Crypto
+  OpenSSL::SSL
+  pthread
+  sqlite3
+)
+link_zstd_if_needed(test_forest_lock_stress)
+if(APPLE)
+  target_link_libraries(test_forest_lock_stress PRIVATE
+    "-framework Security"
+    "-framework CoreFoundation"
+  )
+endif()
+add_test(NAME ForestLockStress COMMAND test_forest_lock_stress 8 2 3)
+set_tests_properties(ForestLockStress PROPERTIES TIMEOUT 60)
+
 # ─── ASERT fixed-point exponent on the fast-block (negative excessTime) path ──
 # Header-only (CalculateASERT_Target / TargetFromBitsBE are inline). Locks the
 # fast=harder / slow=easier behavior of the branch whose left-shift was UB

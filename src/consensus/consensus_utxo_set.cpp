@@ -546,6 +546,47 @@ UtreexoHash ConsensusUTXOSet::GetUtreexoRoot() const {
     return forest_.getCommitment();
 }
 
+// ── Thread-safe forest access (audit: forest read-during-free UAF) ──────────
+// Readers take a SHARED lock and return a COPY so nothing points into forest_
+// after the lock is released. Writers take the EXCLUSIVE lock so a replacement
+// (which frees the old buffers) or in-place removal cannot run while any reader
+// is inside. forest_mutex_ is a LEAF lock (never held while taking another).
+
+std::vector<UtreexoHash> ConsensusUTXOSet::SnapshotForestRoots() const {
+    std::shared_lock<std::shared_mutex> lock(forest_mutex_);
+    return forest_.getRoots();
+}
+
+UtreexoHash ConsensusUTXOSet::SnapshotForestCommitment() const {
+    std::shared_lock<std::shared_mutex> lock(forest_mutex_);
+    return forest_.getCommitment();
+}
+
+uint64_t ConsensusUTXOSet::SnapshotForestLeafCount() const {
+    std::shared_lock<std::shared_mutex> lock(forest_mutex_);
+    return forest_.getNumLeaves();
+}
+
+uint64_t ConsensusUTXOSet::SnapshotForestRootCount() const {
+    std::shared_lock<std::shared_mutex> lock(forest_mutex_);
+    return forest_.getNumRoots();
+}
+
+void ConsensusUTXOSet::ReplaceForestGuarded(UtreexoForest next) {
+    std::unique_lock<std::shared_mutex> lock(forest_mutex_);
+    forest_ = std::move(next);
+}
+
+bool ConsensusUTXOSet::RemoveLastNLeavesGuarded(uint64_t count) {
+    std::unique_lock<std::shared_mutex> lock(forest_mutex_);
+    return forest_.removeLastNLeaves(count);
+}
+
+void ConsensusUTXOSet::MutateForestGuarded(const std::function<void(UtreexoForest&)>& fn) {
+    std::unique_lock<std::shared_mutex> lock(forest_mutex_);
+    fn(forest_);
+}
+
 size_t ConsensusUTXOSet::GetMemoryUsage() const {
     size_t usage = sizeof(ConsensusUTXOSet);
 

@@ -15,6 +15,7 @@
 #include "consensus/utreexo_canonical_roots_activation.h"  // Apr 13 2026 Stage 3 fork
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/block_validation.h"  // For BlockValidator::ComputeUtreexoRootPure
+#include "consensus/interfaces/iconsensus_utxo_set.h"  // Forest snapshot under shared lock (UAF guard)
 #include "consensus/script.h"  // For Script::pushInt64 (BIP34 height encoding)
 // Phase 39: chain_manager.h deleted (ChainManager removed)
 #include "daemon/mining_payout_resolver.h"
@@ -1384,9 +1385,24 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
         }
         uint256 template_determinism_hash = ComputeTemplateDeterminismHash(block->vtx, template_flags);
 
-        if (utreexo_forest_ && utxo_provider_) {
+        if (consensus_utxo_set_ && utxo_provider_) {
             consensus::BlockUtreexoData utreexo_data;
-            utreexo_data.accumulator_root_before = utreexo_forest_->getCommitment();
+
+            // Snapshot the live forest ONCE under its shared lock, then derive BOTH
+            // the root-before and the spend proof from the local clone. This keeps
+            // them mutually consistent (a proof must be valid against the reported
+            // root) AND prevents the block-connect writer on another thread from
+            // freeing the forest mid-read (audit: forest read-during-free UAF).
+            // Leaf-safe: the lock is held only around the in-memory clone.
+            // (Perf note: ComputeUtreexoRootPure below clones again; a follow-up
+            //  could pass forest_view to ComputeUtreexoRootPureFromForest.)
+            consensus::UtreexoForest forest_view;
+            {
+                auto forest_lock = consensus_utxo_set_->LockForestShared();
+                forest_view = consensus_utxo_set_->GetForest().clone();
+            }
+
+            utreexo_data.accumulator_root_before = forest_view.getCommitment();
 
             std::vector<consensus::UtreexoHash> proof_targets;
             std::vector<consensus::SpentOutputData> spent_outputs;
@@ -1452,7 +1468,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
             }
 
             consensus::BlockUtreexoProof batch_proof =
-                utreexo_forest_->generateBlockProof(
+                forest_view.generateBlockProof(
                     proof_targets,
                     consensus::GetUtreexoProofFormatVersion(height));
             utreexo_data.spend_proof = batch_proof;
@@ -1478,7 +1494,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
                 dinero::g_logger.error(msg);
                 return fail(msg);
             }
-        } else if (utreexo_forest_) {
+        } else if (consensus_utxo_set_) {
             dinero::g_logger.warning("⚠️  [Utreexo Miner] Forest available but no UTXO provider - skipping proof generation");
         }
 

@@ -25,19 +25,46 @@
 #include "consensus/utxo_snapshot_state.h"
 #include "consensus/block_undo.h"
 #include "primitives/uint256.h"
+#include "consensus/utreexo_accumulator.h"  // UtreexoForest + UtreexoHash (guarded forest access)
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
+#include <vector>
 
 // Forward declarations
 namespace dinero {
 struct Block;
+}
 
+namespace dinero {
 namespace consensus {
-class UtreexoForest;
-using UtreexoHash = std::vector<uint8_t>;
-}
-}
+
+// Scoped SHARED lock over the forest, returned by
+// IConsensusUTXOSet::LockForestShared(). A reader that must walk forest
+// internals (e.g. proof generation, or several reads that must be mutually
+// consistent) holds this for the whole read so a concurrent replace/mutate on
+// the block-connect thread cannot free the storage underneath it. A
+// default-constructed instance (the interface default, and interface mocks in
+// tests) owns no lock and is a harmless no-op.
+class ForestReadLock {
+public:
+    ForestReadLock() = default;
+    explicit ForestReadLock(std::shared_lock<std::shared_mutex> lock)
+        : lock_(std::move(lock)) {}
+    ForestReadLock(ForestReadLock&&) = default;
+    ForestReadLock& operator=(ForestReadLock&&) = default;
+    ForestReadLock(const ForestReadLock&) = delete;
+    ForestReadLock& operator=(const ForestReadLock&) = delete;
+
+private:
+    std::shared_lock<std::shared_mutex> lock_;
+};
+
+}  // namespace consensus
+}  // namespace dinero
 
 namespace dinero {
 namespace consensus {
@@ -158,6 +185,53 @@ public:
      */
     virtual UtreexoForest& GetForest() = 0;
     virtual const UtreexoForest& GetForest() const = 0;
+
+    // =========================================================================
+    // Thread-safe forest access (audit: forest read-during-free UAF)
+    // =========================================================================
+    // The forest is replaced/mutated on the block-connect (activation) thread
+    // while RPC/mining/FFI threads read it. GetForest() is UNLOCKED and safe
+    // only on the activation thread. Cross-thread callers MUST use these:
+    // readers via the Snapshot* copies (shared lock), writers via
+    // ReplaceForestGuarded / RemoveLastNLeavesGuarded (exclusive lock).
+    //
+    // The default bodies below preserve the historical UNLOCKED behavior so
+    // that test doubles of this interface keep compiling unchanged; the real
+    // ConsensusUTXOSet overrides them to take a std::shared_mutex.
+    virtual std::vector<UtreexoHash> SnapshotForestRoots() const {
+        return GetForest().getRoots();
+    }
+    virtual UtreexoHash SnapshotForestCommitment() const {
+        return GetForest().getCommitment();
+    }
+    virtual uint64_t SnapshotForestLeafCount() const {
+        return GetForest().getNumLeaves();
+    }
+    virtual uint64_t SnapshotForestRootCount() const {
+        return GetForest().getNumRoots();
+    }
+    virtual void ReplaceForestGuarded(UtreexoForest next) {
+        GetForest() = std::move(next);
+    }
+    virtual bool RemoveLastNLeavesGuarded(uint64_t count) {
+        return GetForest().removeLastNLeaves(count);
+    }
+
+    // Run an arbitrary mutation (whole-value replace/restore, or in-place) on
+    // the forest under the EXCLUSIVE lock. For writers that hold a separate
+    // pointer/alias to the forest (e.g. StatelessNode in CSN mode) so their
+    // move-assigns/restores exclude the shared-lock readers. Default runs
+    // unlocked so mocks keep compiling; ConsensusUTXOSet overrides to lock.
+    virtual void MutateForestGuarded(const std::function<void(UtreexoForest&)>& fn) {
+        fn(GetForest());
+    }
+
+    // Acquire the forest's SHARED lock for the duration of a multi-step read
+    // (proof generation, or several reads that must be consistent). Hold the
+    // returned handle while calling GetForest(); release it when done. The
+    // default returns an empty (no-op) handle so mocks keep compiling; the real
+    // ConsensusUTXOSet returns a handle owning the shared lock.
+    virtual ForestReadLock LockForestShared() const { return ForestReadLock{}; }
 
     // =========================================================================
     // Metrics

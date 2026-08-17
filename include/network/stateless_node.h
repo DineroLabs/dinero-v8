@@ -53,6 +53,7 @@ namespace dinero {
 
 // Forward declaration
 class PeerConnection;
+namespace consensus { class IConsensusUTXOSet; }  // owns the forest + its lock
 
 namespace network {
 
@@ -159,7 +160,16 @@ public:
      * StatelessNode node(&forest);
      * ```
      */
-    explicit StatelessNode(consensus::UtreexoForest* utreexo_forest);
+    // `owner` is the ConsensusUTXOSet that owns the forest + its read/write
+    // lock. StatelessNode's forest writes/reads route through the owner's
+    // guarded API so they exclude the shared-lock RPC/FFI readers (CSN-mode UAF
+    // fix). The raw forest pointer used internally is derived from the owner.
+    explicit StatelessNode(consensus::IConsensusUTXOSet* owner);
+
+    // Scratch/speculative constructor over a caller-owned LOCAL forest that is
+    // NOT shared with any reader (e.g. reorg planning). No owner ⇒ forest
+    // access is unlocked; the caller must guarantee single-threaded use.
+    explicit StatelessNode(consensus::UtreexoForest* scratch_forest);
 
     /**
      * @brief Destructor
@@ -656,7 +666,24 @@ private:
         consensus::UtreexoStump& stump,
         std::string& err_out);
 
-    /// Utreexo accumulator (NOT owned by this class)
+    // Delegated-to implementation for both public constructors.
+    StatelessNode(consensus::IConsensusUTXOSet* owner, consensus::UtreexoForest* forest);
+
+    // Route a forest mutation through the owner's EXCLUSIVE lock when there is an
+    // owner; otherwise (scratch forest, single-threaded) mutate directly.
+    void mutateForest(const std::function<void(consensus::UtreexoForest&)>& fn);
+    // Read the forest under the owner's SHARED lock when there is an owner;
+    // otherwise (scratch forest) read directly.
+    void readForestShared(const std::function<void(const consensus::UtreexoForest&)>& fn) const;
+
+    /// Forest owner — StatelessNode routes its forest writes/reads through this
+    /// guarded API (MutateForestGuarded / LockForestShared) so they exclude the
+    /// shared-lock RPC/FFI readers. Not owned by this class. Null for scratch nodes.
+    consensus::IConsensusUTXOSet* owner_;
+
+    /// Utreexo accumulator (NOT owned by this class) — &owner_->GetForest().
+    /// Read directly only on StatelessNode's own thread; cross-thread-visible
+    /// mutations go through owner_->MutateForestGuarded().
     consensus::UtreexoForest* utreexo_forest_;
 
     /// Stump accumulator — canonical CSN state tracker.

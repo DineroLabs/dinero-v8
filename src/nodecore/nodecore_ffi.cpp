@@ -717,6 +717,12 @@ char* nodecore_get_status_json(void) {
         if (cs) {
             auto forest = cs->GetUtreexoForest();
             if (forest) {
+                // One shared lock over ALL forest reads in this block: keeps the
+                // reported status self-consistent and prevents a concurrent
+                // block-connect replace/mutate from freeing the forest (incl. the
+                // getIndexedRoots() reference held across the loop below).
+                // Leaf-safe: no other lock is acquired while it is held.
+                auto forest_lock = cs->GetConsensusUTXOSet()->LockForestShared();
                 Json::Value utreexo;
                 utreexo["leaves"] = static_cast<Json::UInt64>(forest->getNumLeaves());
                 utreexo["roots"] = static_cast<Json::UInt>(forest->getNumRoots());

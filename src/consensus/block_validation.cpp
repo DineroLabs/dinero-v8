@@ -324,13 +324,22 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
         return true;  // No forest = empty root
     }
 
-    std::cout << "   Forest leaves before: " << consensus_utxo_set_->GetForest().getNumLeaves() << std::endl;
+    std::cout << "   Forest leaves before: " << consensus_utxo_set_->SnapshotForestLeafCount() << std::endl;
 
     // Clone current forest promoted to the semantics at `height`. This is
     // the single-source-of-truth factory (Apr 13 2026 Stage 3 — the old
     // scattered IsUtreexoCanonicalRootsActive+setCanonicalEmptyRoots+
     // rebuildRoots triples are gone).
-    UtreexoForest snapshot = consensus_utxo_set_->GetForest().cloneForHeight(height);
+    //
+    // Clone under the forest's SHARED lock: ComputeUtreexoRootPure runs on the
+    // block-assembler/mining thread (block_assembler.cpp), which would otherwise
+    // race the block-connect writer's forest replace/mutate (audit: forest UAF).
+    // The lock is held only around the in-memory clone, so it stays a leaf lock.
+    UtreexoForest snapshot;
+    {
+        auto forest_lock = consensus_utxo_set_->LockForestShared();
+        snapshot = consensus_utxo_set_->GetForest().cloneForHeight(height);
+    }
     std::cout << "   Cloned forest, snapshot leaves: " << snapshot.getNumLeaves() << std::endl;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -2434,7 +2443,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         // the UTXO map is consistent with the pending state.
 
         // 7. Commit snapshot to canonical accumulator (AFTER-state becomes current state)
-        consensus_utxo_set_->GetForest() = std::move(snapshot);
+        // Guarded: takes the forest's exclusive lock so a concurrent RPC/mining/FFI
+        // reader cannot be walking the old buffers this move-assign frees.
+        consensus_utxo_set_->ReplaceForestGuarded(std::move(snapshot));
         std::cout << "🔍 [DEBUG] Forest leaves after commit: " << consensus_utxo_set_->GetForest().getNumLeaves() << std::endl;
 
         // ═════════════════════════════════════════════════════════════════════════
@@ -2717,7 +2728,9 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
             // unchanged — but the UTXO map is mutated above, so
             // rollback the snapshot.
             if (!delta.addedLeaves.empty()) {
-                if (!consensus_utxo_set_->GetForest().removeLastNLeaves(delta.addedLeaves.size())) {
+                // Guarded: exclusive forest lock so this in-place shrink cannot
+                // race a concurrent reader walking the buffers it reallocates.
+                if (!consensus_utxo_set_->RemoveLastNLeavesGuarded(delta.addedLeaves.size())) {
                     restore_legacy_on_failure();
                     error = "utreexo-delta-undo-remove-failed";
                     return false;

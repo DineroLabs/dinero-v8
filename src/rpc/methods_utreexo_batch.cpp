@@ -210,7 +210,15 @@ Json rpc_getutxoproofs_batch(const ExecutionContext& ctx, const Json& params) {
         }
 
         // Get current Utreexo root for batch result
-        dinero::consensus::UtreexoHash utreexo_root = forest->getCommitment();
+        // Snapshot the live forest once under its shared lock; derive the root
+        // and all batch proofs from the local clone — consistent AND free of a
+        // race with the block-connect writer (audit: forest read-during-free UAF).
+        dinero::consensus::UtreexoForest forest_view;
+        {
+            auto forest_lock = chainstate->GetConsensusUTXOSet()->LockForestShared();
+            forest_view = forest->clone();
+        }
+        dinero::consensus::UtreexoHash utreexo_root = forest_view.getCommitment();
 
         // Process each UTXO
         Json proofs_array(::Json::arrayValue);
@@ -276,7 +284,7 @@ Json rpc_getutxoproofs_batch(const ExecutionContext& ctx, const Json& params) {
             uint64_t position = position_opt.value();
 
             // Generate proof from forest
-            auto proof_opt = forest->prove(position);
+            auto proof_opt = forest_view.prove(position);
             if (!proof_opt.has_value()) {
                 proof_result["success"] = false;
                 proof_result["error_code"] = "proof-generation-failed";
@@ -419,8 +427,16 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
         }
 
         // Get current forest roots and commitment for verification
-        std::vector<dinero::consensus::UtreexoHash> roots = forest->getRoots();
-        dinero::consensus::UtreexoHash utreexo_root = forest->getCommitment();
+        // Snapshot the live forest once under its shared lock; derive the root
+        // and all batch proofs from the local clone — consistent AND free of a
+        // race with the block-connect writer (audit: forest read-during-free UAF).
+        dinero::consensus::UtreexoForest forest_view;
+        {
+            auto forest_lock = chainstate->GetConsensusUTXOSet()->LockForestShared();
+            forest_view = forest->clone();
+        }
+        std::vector<dinero::consensus::UtreexoHash> roots = forest_view.getRoots();
+        dinero::consensus::UtreexoHash utreexo_root = forest_view.getCommitment();
 
         // Process each proof
         Json results_array(::Json::arrayValue);

@@ -1812,7 +1812,12 @@ din::Json rpc_context_utreexo_dumpforestinternal(const ExecutionContext& ctx, co
     }
 
     const std::string output_path = params[0].as<std::string>();
-    const auto dump = utxo_set->GetForest().dumpInternalState();
+    // Structural dump of the live forest under the shared lock (audit: forest UAF).
+    std::string dump;
+    {
+        auto forest_lock = utxo_set->LockForestShared();
+        dump = utxo_set->GetForest().dumpInternalState();
+    }
 
     std::ofstream out(output_path, std::ios::trunc);
     if (!out) {
@@ -1830,8 +1835,11 @@ din::Json rpc_context_utreexo_dumpforestinternal(const ExecutionContext& ctx, co
 
     result["path"] = output_path;
     result["bytes"] = static_cast<int64_t>(dump.size());
-    result["numLeaves"] = static_cast<int64_t>(utxo_set->GetForest().getNumLeaves());
-    result["activeLeaves"] = static_cast<int64_t>(utxo_set->GetForest().getActiveLeaves());
+    {
+        auto forest_lock = utxo_set->LockForestShared();
+        result["numLeaves"] = static_cast<int64_t>(utxo_set->GetForest().getNumLeaves());
+        result["activeLeaves"] = static_cast<int64_t>(utxo_set->GetForest().getActiveLeaves());
+    }
     result["tip_height"] = static_cast<int>(chainstate->getBlockHeight());
     return result;
 }
