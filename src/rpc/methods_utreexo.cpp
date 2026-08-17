@@ -105,16 +105,16 @@ Json rpc_getutreexoroots(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
-        auto* forest = chainstate->utreexoForest();
-        if (!forest) {
+        auto* uset = chainstate->GetConsensusUTXOSet();
+        if (!uset) {
             result["error"]["code"] = -1;
             result["error"]["message"] = "Utreexo forest not available";
             return result;
         }
 
-        // Get forest roots
-        std::vector<dinero::consensus::UtreexoHash> roots = forest->getRoots();
-        uint64_t num_leaves = forest->getNumLeaves();
+        // Guarded reads: shared lock + copy out (audit: forest read-during-free UAF)
+        std::vector<dinero::consensus::UtreexoHash> roots = uset->SnapshotForestRoots();
+        uint64_t num_leaves = uset->SnapshotForestLeafCount();
 
         result["num_leaves"] = static_cast<Json::Int64>(num_leaves);
         result["num_roots"] = static_cast<Json::Int64>(roots.size());
@@ -169,17 +169,17 @@ Json rpc_getutreexocommitment(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
-        auto* forest = chainstate->utreexoForest();
-        if (!forest) {
+        auto* uset = chainstate->GetConsensusUTXOSet();
+        if (!uset) {
             result["error"]["code"] = -1;
             result["error"]["message"] = "Utreexo forest not available";
             return result;
         }
 
-        // Get commitment
-        dinero::consensus::UtreexoHash commitment = forest->getCommitment();
-        uint64_t num_leaves = forest->getNumLeaves();
-        std::vector<dinero::consensus::UtreexoHash> roots = forest->getRoots();
+        // Guarded reads: shared lock + copy out (audit: forest read-during-free UAF)
+        dinero::consensus::UtreexoHash commitment = uset->SnapshotForestCommitment();
+        uint64_t num_leaves = uset->SnapshotForestLeafCount();
+        std::vector<dinero::consensus::UtreexoHash> roots = uset->SnapshotForestRoots();
 
         result["commitment"] = hashToHex(commitment);
         result["num_leaves"] = static_cast<Json::Int64>(num_leaves);

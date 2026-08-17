@@ -39,6 +39,8 @@
 #include <unordered_map>
 #include <memory>
 #include <string>
+#include <shared_mutex>
+#include <vector>
 
 // Forward declarations
 namespace dinero {
@@ -233,6 +235,17 @@ public:
     UtreexoForest& GetForest() override { return forest_; }
     const UtreexoForest& GetForest() const override { return forest_; }
 
+    // Thread-safe forest access (audit: forest read-during-free UAF).
+    // Readers on non-activation threads take a shared lock and copy out;
+    // replacement / in-place removal take the exclusive lock. GetForest()
+    // stays unlocked for the activation thread (already serialized by
+    // activation_mutex_). See guarded_forest.h for the tested lock discipline.
+    std::vector<UtreexoHash> SnapshotForestRoots() const override;
+    UtreexoHash SnapshotForestCommitment() const override;
+    uint64_t SnapshotForestLeafCount() const override;
+    void ReplaceForestGuarded(UtreexoForest next) override;
+    bool RemoveLastNLeavesGuarded(uint64_t count) override;
+
     // =========================================================================
     // Metrics
     // =========================================================================
@@ -282,6 +295,14 @@ private:
 
     // Utreexo accumulator (owned)
     UtreexoForest forest_;
+
+    // Guards forest_ against the read-during-free UAF: the activation thread
+    // replaces/mutates forest_ (freeing its buffers) while RPC/mining/FFI
+    // threads read it. Readers take a shared lock and copy out; the guarded
+    // writers (ReplaceForestGuarded / RemoveLastNLeavesGuarded) take the
+    // exclusive lock. LEAF lock — never held while acquiring another lock, so
+    // it cannot invert with activation_mutex_ / g_block_index_mutex.
+    mutable std::shared_mutex forest_mutex_;
 
     // Current state
     uint32_t height_ = 0;

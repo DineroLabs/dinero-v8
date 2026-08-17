@@ -25,18 +25,15 @@
 #include "consensus/utxo_snapshot_state.h"
 #include "consensus/block_undo.h"
 #include "primitives/uint256.h"
+#include "consensus/utreexo_accumulator.h"  // UtreexoForest + UtreexoHash (guarded forest access)
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 // Forward declarations
 namespace dinero {
 struct Block;
-
-namespace consensus {
-class UtreexoForest;
-using UtreexoHash = std::vector<uint8_t>;
-}
 }
 
 namespace dinero {
@@ -158,6 +155,34 @@ public:
      */
     virtual UtreexoForest& GetForest() = 0;
     virtual const UtreexoForest& GetForest() const = 0;
+
+    // =========================================================================
+    // Thread-safe forest access (audit: forest read-during-free UAF)
+    // =========================================================================
+    // The forest is replaced/mutated on the block-connect (activation) thread
+    // while RPC/mining/FFI threads read it. GetForest() is UNLOCKED and safe
+    // only on the activation thread. Cross-thread callers MUST use these:
+    // readers via the Snapshot* copies (shared lock), writers via
+    // ReplaceForestGuarded / RemoveLastNLeavesGuarded (exclusive lock).
+    //
+    // The default bodies below preserve the historical UNLOCKED behavior so
+    // that test doubles of this interface keep compiling unchanged; the real
+    // ConsensusUTXOSet overrides them to take a std::shared_mutex.
+    virtual std::vector<UtreexoHash> SnapshotForestRoots() const {
+        return GetForest().getRoots();
+    }
+    virtual UtreexoHash SnapshotForestCommitment() const {
+        return GetForest().getCommitment();
+    }
+    virtual uint64_t SnapshotForestLeafCount() const {
+        return GetForest().getNumLeaves();
+    }
+    virtual void ReplaceForestGuarded(UtreexoForest next) {
+        GetForest() = std::move(next);
+    }
+    virtual bool RemoveLastNLeavesGuarded(uint64_t count) {
+        return GetForest().removeLastNLeaves(count);
+    }
 
     // =========================================================================
     // Metrics
