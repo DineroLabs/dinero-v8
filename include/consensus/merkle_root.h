@@ -34,9 +34,16 @@ namespace dinero::consensus {
  * - No serialization dependency
  *
  * @param vtx Vector of transactions
+ * @param mutated Optional out-param. Set true iff the tree contains a duplicated
+ *   subtree — two REAL adjacent nodes that are equal (CVE-2012-2459). Distinct
+ *   valid txids never collide, so this only happens when the block carries a
+ *   duplicated transaction crafted to preserve the merkle root (and thus the
+ *   block hash) of a different, valid block. The legitimate odd-count
+ *   self-duplication of the last node is NOT flagged. Callers verifying an
+ *   untrusted block should reject `bad-txns-duplicate` when this is true.
  * @return Merkle root as uint256 (zero hash if empty)
  */
-uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx);
+uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx, bool* mutated = nullptr);
 
 /**
  * Compute the consensus witness merkle root for a DINW commitment.
@@ -56,8 +63,10 @@ uint256 ComputeMerkleRoot(const std::vector<Transaction>& vtx);
  * to the non-witness transaction IDs returned by GetTxid().
  *
  * @param vtx Vector of transactions
+ * @param mutated Optional out-param — same CVE-2012-2459 semantics as
+ *   ComputeMerkleRoot(): set true iff a real adjacent pair is equal.
  * @return Witness merkle root as uint256 (zero hash if empty)
  */
-uint256 ComputeWitnessMerkleRoot(const std::vector<Transaction>& vtx);
+uint256 ComputeWitnessMerkleRoot(const std::vector<Transaction>& vtx, bool* mutated = nullptr);
 
 } // namespace dinero::consensus

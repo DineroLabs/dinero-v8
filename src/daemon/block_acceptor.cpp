@@ -1227,7 +1227,17 @@ bool BlockAcceptor::ValidateMerkleRoot(const ParsedBlock& block, std::string& er
     dinero::Block consensus_block = ConvertParsedBlockToBlock(block);
 
     // Compute merkle root using canonical API
-    uint256 computed_merkle = dinero::consensus::ComputeMerkleRoot(consensus_block.vtx);
+    bool merkle_mutated = false;
+    uint256 computed_merkle = dinero::consensus::ComputeMerkleRoot(consensus_block.vtx, &merkle_mutated);
+    // CVE-2012-2459: a duplicated subtree forges another valid block's merkle
+    // root/hash. A valid block cannot contain a duplicated transaction
+    // (double-spend), so this never rejects a valid block; checked before the
+    // root comparison because a mutated block's root matches the header.
+    if (merkle_mutated) {
+        error = "bad-txns-duplicate: duplicated transaction in merkle tree (CVE-2012-2459)";
+        LOG_ERROR("❌ " + error);
+        return false;
+    }
     std::string computedMerkleRoot = computed_merkle.GetHex();
 
     // Compare with block header merkle root
