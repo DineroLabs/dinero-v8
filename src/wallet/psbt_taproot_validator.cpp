@@ -88,8 +88,19 @@ TaprootValidationResult PSBTTaprootValidator::validateInput(
 
         if (kv.key[0] == 0x01) {  // WITNESS_UTXO
             const auto& value = kv.value;
-            if (extractWitnessUtxoScript(value, witness_utxo_script) &&
-                isTaprootScriptPubKey(witness_utxo_script)) {
+            if (!extractWitnessUtxoScript(value, witness_utxo_script)) {
+                // Fail CLOSED: a witness UTXO we cannot canonically decode
+                // means we cannot prove the input is not Taproot, so the
+                // BIP86 guardrail cannot be evaluated. Refusing is the only
+                // safe answer; skipping the guardrail here previously let a
+                // malformed witness UTXO bypass the policy entirely.
+                result.valid = false;
+                result.error =
+                    "BIP86 Policy Violation: witness UTXO could not be decoded; "
+                    "refusing to validate this input (fail closed).";
+                return result;
+            }
+            if (isTaprootScriptPubKey(witness_utxo_script)) {
                 is_taproot_input = true;
                 result.is_taproot = true;
             }
