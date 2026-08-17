@@ -1107,12 +1107,6 @@ target_compile_definitions(dinero_core PRIVATE
 # ─────────────────────────────────────────────────────────────────────────
 add_subdirectory(src/daemon)
 
-# Preserve the previous root-scope compile definition for subsequent
-# non-Apple targets. The daemon target also gets it directly in src/daemon.
-if(NOT APPLE)
-  add_compile_definitions(NO_WALLET_ENCRYPTION)
-endif()
-
 # Platform-specific linking with proper crypto libraries
 # NOTE: OpenSSL is already configured earlier (lines 110-152)
 # Don't call find_package again as it overrides vendored imported targets

@@ -138,7 +138,6 @@ else()
     # hd_wallet_manager.cpp excluded (depends on wallet_crypto)
     # wallet_crypto.cpp excluded (needs OpenSSL 3.2+)
   )
-  target_compile_definitions(dinerod PRIVATE NO_WALLET_ENCRYPTION)
 endif()
 
 set_target_properties(dinerod PROPERTIES
