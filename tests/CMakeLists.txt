@@ -11699,6 +11699,23 @@ target_link_libraries(test_reorg_log PRIVATE
 add_test(NAME test_reorg_log COMMAND test_reorg_log)
 set_tests_properties(test_reorg_log PROPERTIES TIMEOUT 60)
 
+# ─── GuardedForest — Utreexo forest read-during-free UAF regression ─────────
+# Plain exit-code test (no gtest): proves a whole-value Replace() cannot
+# complete while a reader holds the shared lock — the property whose absence
+# is the read-during-free UAF. Registered UNLABELLED so it runs in the
+# required "full build + ctest" job (the main lanes filter with
+# `--label-exclude 'integration|gate|release|canonicality|fuzz'`).
+add_executable(test_guarded_forest
+  tests/consensus/test_guarded_forest.cpp
+)
+target_include_directories(test_guarded_forest BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+find_package(Threads REQUIRED)
+target_link_libraries(test_guarded_forest PRIVATE Threads::Threads)
+add_test(NAME GuardedForestExclusion COMMAND test_guarded_forest)
+set_tests_properties(GuardedForestExclusion PROPERTIES TIMEOUT 30)
+
 # ---------------------------------------------------------------------------
 # FleetWatcherTests — the fleet watcher's Python suite (tools/fleet-watcher).
 #
