@@ -1,4 +1,5 @@
 #include "network/bridge_node.h"
+#include "consensus/interfaces/iconsensus_utxo_set.h"
 #include "storage/archival_block_reader.h"
 #include "storage/chain_db.h"
 #include "storage/forest_restore.h"
@@ -79,13 +80,15 @@ BridgeNode::BridgeNode(
     consensus::UtreexoForest* utreexo_forest,
     consensus::ProofCache* proof_cache,
     ChainDB* chain_db,
-    BlockStorage* block_storage
+    BlockStorage* block_storage,
+    consensus::IConsensusUTXOSet* owner
 )
     : utxo_provider_(std::move(utxo_provider))
     , utreexo_forest_(utreexo_forest)
     , proof_cache_(proof_cache)
     , chain_db_(chain_db)
     , block_storage_(block_storage)
+    , owner_(owner)
 {
     if (!utxo_provider_) {
         throw std::invalid_argument("BridgeNode: utxo_provider cannot be null");
@@ -103,6 +106,24 @@ BridgeNode::BridgeNode(
 
 BridgeNode::~BridgeNode() {
     StopProofWorkers();
+}
+
+void BridgeNode::readForestShared(
+    const std::function<void(const consensus::UtreexoForest&)>& fn) const {
+    if (owner_) {
+        auto forest_lock = owner_->LockForestShared();
+        fn(*utreexo_forest_);
+    } else {
+        fn(*utreexo_forest_);
+    }
+}
+
+consensus::UtreexoHash BridgeNode::GetCurrentForestCommitment() const {
+    consensus::UtreexoHash commitment{};
+    readForestShared([&](const consensus::UtreexoForest& f) {
+        commitment = f.getCommitment();
+    });
+    return commitment;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -135,6 +156,7 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
 
     consensus::BlockUtreexoData proof_data;
     std::optional<consensus::UtreexoForest> historical_forest;
+    std::optional<consensus::UtreexoForest> live_forest_clone;
     consensus::UtreexoForest* proof_forest = utreexo_forest_;
 
     // 1. Capture accumulator root before applying block.
@@ -157,7 +179,9 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
             proof_data.accumulator_root_before.assign(32, 0x00);
         } else {
             // Fallback when historical lookup is unavailable.
-            proof_data.accumulator_root_before = utreexo_forest_->getCommitment();
+            readForestShared([&](const consensus::UtreexoForest& f) {
+                proof_data.accumulator_root_before = f.getCommitment();
+            });
         }
     }
 
@@ -168,7 +192,10 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
     // verified per replayed block) when the live forest no longer matches
     // the requested block's pre-state commitment.
     if (chain_db_ && block_height > 0) {
-        const auto live_commitment = utreexo_forest_->getCommitment();
+        consensus::UtreexoHash live_commitment{};
+        readForestShared([&](const consensus::UtreexoForest& f) {
+            live_commitment = f.getCommitment();
+        });
         if (live_commitment != proof_data.accumulator_root_before) {
             historical_forest.emplace();
             std::string restore_error;
@@ -206,6 +233,22 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
 
             proof_forest = &*historical_forest;
         }
+    }
+
+    // Issue #578: when the LIVE forest is the serving forest, proof
+    // generation below performs long structural reads (findLeafPosition /
+    // prove / verifyBatchProofStateless / getRoots) on P2P worker threads,
+    // racing guarded forest writes on the activation side. Snapshot the live
+    // forest ONCE under the owner's shared lock and serve from the clone —
+    // the same shape historical serving already uses. The historical path is
+    // an owned local restore and needs no lock.
+    const bool serving_live_state = (proof_forest == utreexo_forest_);
+    if (serving_live_state) {
+        live_forest_clone.emplace();
+        readForestShared([&](const consensus::UtreexoForest& f) {
+            *live_forest_clone = f;
+        });
+        proof_forest = &*live_forest_clone;
     }
 
     if (!block.header.prev_block_hash.IsNull()) {
@@ -260,7 +303,7 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
             } else {
                 // Look up UTXO from current chainstate
                 std::optional<consensus::UTXOEntry> utxo_opt;
-                if (proof_forest == utreexo_forest_) {
+                if (serving_live_state) {
                     utxo_opt = utxo_provider_->GetUTXO(outpoint);
                 }
 
@@ -444,15 +487,18 @@ BridgeNode::GenerateProofForUTXO(const uint256& txid, uint32_t vout) {
         utxo.isCoinbase
     );
 
-    // Find position
-    auto position_opt = utreexo_forest_->findLeafPosition(leaf_hash);
-    if (!position_opt.has_value()) {
-        return std::nullopt;
-    }
-
-    // Generate proof
-    auto proof_opt = utreexo_forest_->prove(position_opt.value());
-    if (!proof_opt.has_value()) {
+    // Find position + generate proof under ONE shared-lock span (#578): the
+    // pair must observe a mutually consistent forest, and this path runs on
+    // P2P threads concurrent with guarded forest writes.
+    std::optional<uint64_t> position_opt;
+    std::optional<consensus::UtreexoProof> proof_opt;
+    readForestShared([&](const consensus::UtreexoForest& f) {
+        position_opt = f.findLeafPosition(leaf_hash);
+        if (position_opt.has_value()) {
+            proof_opt = f.prove(position_opt.value());
+        }
+    });
+    if (!position_opt.has_value() || !proof_opt.has_value()) {
         return std::nullopt;
     }
 
@@ -471,7 +517,7 @@ BridgeNode::GenerateProofForUTXO(const uint256& txid, uint32_t vout) {
 std::optional<std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>>>
 BridgeNode::GenerateProofsForTransaction(const Transaction& tx) {
     const uint256 txid = tx.GetTxid().AsUint256();
-    const auto current_root = utreexo_forest_->getCommitment();
+    const auto current_root = GetCurrentForestCommitment();
 
     // Check tx-proof cache first (valid only for current root).
     {
@@ -1326,7 +1372,7 @@ void BridgeNode::InvalidateTxProofCache() {
 }
 
 size_t BridgeNode::PruneStaleCacheEntries() {
-    const auto current_root = utreexo_forest_->getCommitment();
+    const auto current_root = GetCurrentForestCommitment();
     std::lock_guard<std::mutex> lock(cache_mutex_);
     std::vector<uint256> stale_keys;
     stale_keys.reserve(block_proof_cache_.size());

@@ -11720,6 +11720,42 @@ target_link_libraries(test_guarded_forest PRIVATE Threads::Threads)
 add_test(NAME GuardedForestExclusion COMMAND test_guarded_forest)
 set_tests_properties(GuardedForestExclusion PROPERTIES TIMEOUT 30)
 
+# ─── BridgeNode forest reads honor the owner's shared lock (issue #578) ─────
+# Proves the WIRING, not just the primitive: a BridgeNode constructed with an
+# IConsensusUTXOSet owner must block its live-forest read across a guarded
+# exclusive mutation (the TSan-caught bridge proof-serving race). Exit-code
+# gated; registered unlabelled so it runs in the required full-ctest lane.
+add_executable(test_bridge_forest_read_lock
+  tests/network/test_bridge_forest_read_lock.cpp
+  src/common/logger.cpp
+)
+target_include_directories(test_bridge_forest_read_lock PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(test_bridge_forest_read_lock PRIVATE
+  dinero_bridge
+  dinero_chainstate
+  dinero_consensus
+  dinero_shielded
+  dinero_crypto
+  jsoncpp_static
+  RocksDB::rocksdb
+  OpenSSL::Crypto
+  OpenSSL::SSL
+  pthread
+  sqlite3
+)
+link_zstd_if_needed(test_bridge_forest_read_lock)
+if(APPLE)
+  target_link_libraries(test_bridge_forest_read_lock PRIVATE
+    "-framework Security"
+    "-framework CoreFoundation"
+  )
+endif()
+add_test(NAME BridgeForestReadLock COMMAND test_bridge_forest_read_lock)
+set_tests_properties(BridgeForestReadLock PROPERTIES TIMEOUT 30)
+
 # ─── Forest lock concurrency stress (deadlock-freedom under contention) ─────
 # Drives the real ConsensusUTXOSet guarded accessors from many reader/writer
 # threads with a watchdog that hard-fails on a stall (deadlock). Short default
