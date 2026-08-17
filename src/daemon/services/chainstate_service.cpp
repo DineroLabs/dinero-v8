@@ -2255,7 +2255,7 @@ bool ChainstateService::Init(DaemonContext& ctx) {
         //   1. Checkpoint deserialization (below), or
         //   2. ActivateBestChain block replay
         // The UTXO map (for spend validation) is preserved.
-        consensus_utxo_set_->GetForest() = consensus::UtreexoForest();
+        consensus_utxo_set_->ReplaceForestGuarded(consensus::UtreexoForest());
         logger_->info("[ChainstateService] Forest reset after BulkLoad (will restore from checkpoint or replay)");
 
         // Create BlockValidator directly with ConsensusUTXOSet (no adapter chain)
@@ -3087,7 +3087,7 @@ bool ChainstateService::Start() {
                         "Checkpoint forest deserialize refused payload (" +
                         std::to_string(serialized_forest.size()) + " bytes)");
                 }
-                consensus_utxo_set_->GetForest() = std::move(restored_forest);
+                consensus_utxo_set_->ReplaceForestGuarded(std::move(restored_forest));
 
                 // Apr 13 2026 Stage 3 — Utreexo canonical-roots fork.
                 // If the checkpoint is already past the activation height, the
@@ -3204,7 +3204,7 @@ bool ChainstateService::Start() {
                     chain_db_->putRecoveryMarker(rm);
 
                     // Reset forest to empty
-                    consensus_utxo_set_->GetForest() = consensus::UtreexoForest();
+                    consensus_utxo_set_->ReplaceForestGuarded(consensus::UtreexoForest());
                     if (active_tip_) {
                         consensus_utxo_set_->SetBestBlock(active_tip_->hash,
                                                           static_cast<uint32_t>(active_tip_->height));
@@ -3284,7 +3284,7 @@ bool ChainstateService::Start() {
                                  " leaves but active_tip_ stuck at genesis (height=0)");
                     logger_->error("[ChainstateService] Resetting forest to empty to prevent ROOT MISMATCH");
                     logger_->error("[ChainstateService] Chain will replay from genesis (may require --reindex)");
-                    consensus_utxo_set_->GetForest() = consensus::UtreexoForest();
+                    consensus_utxo_set_->ReplaceForestGuarded(consensus::UtreexoForest());
                 }
             } catch (const std::exception& e) {
                 logger_->error("[ChainstateService] ❌ Failed to deserialize Utreexo checkpoint: " +
@@ -8324,7 +8324,7 @@ void ChainstateService::ActivateBestChain() {
                           std::to_string(consensus_utxo_set_->GetForest().getNumLeaves()) + " leaves (expected 0)");
             logger_->error("[ActivateBestChain] Resetting forest for clean chain activation");
         }
-        consensus_utxo_set_->GetForest() = consensus::UtreexoForest();
+        consensus_utxo_set_->ReplaceForestGuarded(consensus::UtreexoForest());
     }
 
     // Phase 43: Deep Reorg Detection and Safe Mode
@@ -10129,7 +10129,7 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             // which produces a different tree than the one that evolved through block-by-block
             // processing. Override with the snapshot's serialized forest to match the
             // block header's utreexo_root commitment.
-            consensus_utxo_set_->GetForest() = std::move(*snapshot_forest);
+            consensus_utxo_set_->ReplaceForestGuarded(std::move(*snapshot_forest));
 
             // LoadSnapshot bypasses ordinary ConnectBlock, so the rebuildable
             // (txid,vout)->forest-position index does not receive the per-output
@@ -11036,7 +11036,7 @@ bool ChainstateService::RestoreUtreexoCheckpoint(uint32_t height, std::string& e
             if (consensus::IsUtreexoCanonicalRootsActive(0)) {
                 empty.setCanonicalEmptyRoots(true);
             }
-            consensus_utxo_set_->GetForest() = std::move(empty);
+            consensus_utxo_set_->ReplaceForestGuarded(std::move(empty));
             return true;
         }
 
@@ -11056,7 +11056,7 @@ bool ChainstateService::RestoreUtreexoCheckpoint(uint32_t height, std::string& e
             }
             return false;
         }
-        consensus_utxo_set_->GetForest() = std::move(restored);
+        consensus_utxo_set_->ReplaceForestGuarded(std::move(restored));
         return true;
     } catch (const std::exception& e) {
         error = std::string("Failed to restore Utreexo checkpoint: ") + e.what();
@@ -14032,7 +14032,7 @@ bool ChainstateService::ReplayForestDeltasToTip(uint32_t checkpoint_height,
         return fail(range_error);
     }
 
-    consensus_utxo_set_->GetForest() = std::move(working);
+    consensus_utxo_set_->ReplaceForestGuarded(std::move(working));
     if (logger_) {
         logger_->info("[ForestDeltaReplay] forest restored to tip height " +
                       std::to_string(target_height) + " via checkpoint " +

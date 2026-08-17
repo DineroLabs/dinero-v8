@@ -243,8 +243,12 @@ public:
     std::vector<UtreexoHash> SnapshotForestRoots() const override;
     UtreexoHash SnapshotForestCommitment() const override;
     uint64_t SnapshotForestLeafCount() const override;
+    uint64_t SnapshotForestRootCount() const override;
     void ReplaceForestGuarded(UtreexoForest next) override;
     bool RemoveLastNLeavesGuarded(uint64_t count) override;
+    ForestReadLock LockForestShared() const override {
+        return ForestReadLock{std::shared_lock<std::shared_mutex>(forest_mutex_)};
+    }
 
     // =========================================================================
     // Metrics

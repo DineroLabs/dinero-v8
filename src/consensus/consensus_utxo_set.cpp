@@ -567,6 +567,11 @@ uint64_t ConsensusUTXOSet::SnapshotForestLeafCount() const {
     return forest_.getNumLeaves();
 }
 
+uint64_t ConsensusUTXOSet::SnapshotForestRootCount() const {
+    std::shared_lock<std::shared_mutex> lock(forest_mutex_);
+    return forest_.getNumRoots();
+}
+
 void ConsensusUTXOSet::ReplaceForestGuarded(UtreexoForest next) {
     std::unique_lock<std::shared_mutex> lock(forest_mutex_);
     forest_ = std::move(next);

@@ -286,8 +286,13 @@ Json rpc_getutxoproof(const ExecutionContext& ctx, const Json& params) {
 
         uint64_t position = *position_opt;
 
-        // 4. Generate proof using forest
-        std::optional<dinero::consensus::UtreexoProof> proof_opt = forest->prove(position);
+        // 4. Generate proof using forest. Hold the forest's shared lock ONLY
+        //    around this structural read so it stays a leaf lock (audit: UAF).
+        std::optional<dinero::consensus::UtreexoProof> proof_opt;
+        {
+            auto forest_lock = chainstate->GetConsensusUTXOSet()->LockForestShared();
+            proof_opt = forest->prove(position);
+        }
 
         if (!proof_opt) {
             result["error"]["code"] = -1;
@@ -336,7 +341,7 @@ Json rpc_getutxoproof(const ExecutionContext& ctx, const Json& params) {
         result["created_height"] = static_cast<uint64_t>(coin.height);
         result["coinbase"] = coin.coinbase;
         result["position"] = position;
-        result["num_leaves"] = forest->getNumLeaves();
+        result["num_leaves"] = chainstate->GetConsensusUTXOSet()->SnapshotForestLeafCount();
         result["proof_size"] = static_cast<uint64_t>(proof.siblings.size());
 
         Json siblings = din::arr();
@@ -346,7 +351,7 @@ Json rpc_getutxoproof(const ExecutionContext& ctx, const Json& params) {
         result["siblings"] = siblings;
 
         // Accumulator root this proof is valid against
-        auto commitment = forest->getCommitment();
+        auto commitment = chainstate->GetConsensusUTXOSet()->SnapshotForestCommitment();
         result["accumulator_root"] = hashToHex(commitment);
 
         // Chain context: which tip state the proof was generated at
@@ -435,7 +440,7 @@ Json rpc_getproofupdates(const ExecutionContext& ctx, const Json& params) {
         const Json& request = params[0];
 
         // Get current root for comparison
-        auto commitment = forest->getCommitment();
+        auto commitment = chainstate->GetConsensusUTXOSet()->SnapshotForestCommitment();
         std::string current_root = hashToHex(commitment);
 
         auto* active_tip = chainstate->GetActiveTip();
@@ -577,8 +582,8 @@ Json rpc_getutreexostats(const ExecutionContext& ctx, const Json& params) {
         }
 
         // Get statistics
-        uint64_t num_leaves = forest->getNumLeaves();
-        std::vector<dinero::consensus::UtreexoHash> roots = forest->getRoots();
+        uint64_t num_leaves = chainstate->GetConsensusUTXOSet()->SnapshotForestLeafCount();
+        std::vector<dinero::consensus::UtreexoHash> roots = chainstate->GetConsensusUTXOSet()->SnapshotForestRoots();
 
         // Calculate approximate proof size: log2(n) * 32 bytes
         uint64_t avg_proof_size = 0;
@@ -858,12 +863,19 @@ Json rpc_rebuildutreexo(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
+        // NOTE (audit: forest read-during-free UAF): this structural read walks
+        // the live forest across a long ChainDB iteration. It is intentionally
+        // NOT wrapped in LockForestShared() — holding the forest lock across
+        // ChainDB locks would break the leaf-lock invariant and risk inversion
+        // with the block-connect writer. rebuildutreexo is an operator-triggered
+        // maintenance RPC; serialize it with connect (run under activation_mutex_)
+        // or quiesce the node before running it. Tracked as follow-up.
         const auto report = position_index->Rebuild(*chain_db, *forest);
 
         result["success"] = report.success;
-        result["num_leaves"] = static_cast<Json::UInt64>(forest->getNumLeaves());
-        result["num_roots"] = static_cast<Json::UInt64>(forest->getNumRoots());
-        result["utreexo_root"] = hashToHex(forest->getCommitment());
+        result["num_leaves"] = static_cast<Json::UInt64>(chainstate->GetConsensusUTXOSet()->SnapshotForestLeafCount());
+        result["num_roots"] = static_cast<Json::UInt64>(chainstate->GetConsensusUTXOSet()->SnapshotForestRootCount());
+        result["utreexo_root"] = hashToHex(chainstate->GetConsensusUTXOSet()->SnapshotForestCommitment());
         result["position_count"] = static_cast<Json::UInt64>(position_index->GetPositionCount());
         result["matched"] = static_cast<Json::UInt64>(report.matched);
         result["missing"] = static_cast<Json::UInt64>(report.missing);

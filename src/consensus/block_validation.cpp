@@ -324,13 +324,22 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
         return true;  // No forest = empty root
     }
 
-    std::cout << "   Forest leaves before: " << consensus_utxo_set_->GetForest().getNumLeaves() << std::endl;
+    std::cout << "   Forest leaves before: " << consensus_utxo_set_->SnapshotForestLeafCount() << std::endl;
 
     // Clone current forest promoted to the semantics at `height`. This is
     // the single-source-of-truth factory (Apr 13 2026 Stage 3 — the old
     // scattered IsUtreexoCanonicalRootsActive+setCanonicalEmptyRoots+
     // rebuildRoots triples are gone).
-    UtreexoForest snapshot = consensus_utxo_set_->GetForest().cloneForHeight(height);
+    //
+    // Clone under the forest's SHARED lock: ComputeUtreexoRootPure runs on the
+    // block-assembler/mining thread (block_assembler.cpp), which would otherwise
+    // race the block-connect writer's forest replace/mutate (audit: forest UAF).
+    // The lock is held only around the in-memory clone, so it stays a leaf lock.
+    UtreexoForest snapshot;
+    {
+        auto forest_lock = consensus_utxo_set_->LockForestShared();
+        snapshot = consensus_utxo_set_->GetForest().cloneForHeight(height);
+    }
     std::cout << "   Cloned forest, snapshot leaves: " << snapshot.getNumLeaves() << std::endl;
 
     // ═══════════════════════════════════════════════════════════════════════════
