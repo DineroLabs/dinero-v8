@@ -9044,11 +9044,20 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
         }
 
         SnapshotUtreexoSection utreexo_section;
-        std::vector<uint8_t> serialized_forest = consensus_utxo_set_->GetForest().serialize();
-        utreexo_section.forest_bytes = serialized_forest.size();
-        utreexo_section.forest_leaves = consensus_utxo_set_->GetForest().getNumLeaves();
+        // ExportSnapshot is RPC-reachable (dumptxoutset) and holds no
+        // activation_mutex_, so snapshot the live forest ONCE under its shared
+        // lock and serialize/measure the local clone — consistent AND free of a
+        // race with the block-connect writer (audit: forest read-during-free UAF).
+        consensus::UtreexoForest forest_view;
         {
-            const consensus::UtreexoHash forest_commitment = consensus_utxo_set_->GetForest().getCommitment();
+            auto forest_lock = consensus_utxo_set_->LockForestShared();
+            forest_view = consensus_utxo_set_->GetForest().clone();
+        }
+        std::vector<uint8_t> serialized_forest = forest_view.serialize();
+        utreexo_section.forest_bytes = serialized_forest.size();
+        utreexo_section.forest_leaves = forest_view.getNumLeaves();
+        {
+            const consensus::UtreexoHash forest_commitment = forest_view.getCommitment();
             std::memcpy(utreexo_section.utreexo_root.begin(), forest_commitment.data(), 32);
         }
 
@@ -10155,7 +10164,14 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             }
 
             // Persist imported forest as a checkpoint so restart does not require rebuild.
-            auto serialized = consensus_utxo_set_->GetForest().serialize();
+            // LoadSnapshot is RPC-reachable (loadtxoutset) and holds no
+            // activation_mutex_; read under the forest's shared lock (audit: forest
+            // read-during-free UAF).
+            std::vector<uint8_t> serialized;
+            {
+                auto forest_lock = consensus_utxo_set_->LockForestShared();
+                serialized = consensus_utxo_set_->GetForest().serialize();
+            }
             ChainWriteToken token;
             auto status = chain_db_->putUtreexoCheckpointWithChecksum(
                 token, static_cast<int>(header.block_height), serialized);
