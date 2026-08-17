@@ -308,11 +308,32 @@ foreach ($d in $vcpkgDlls) {
 # dinero-qt.exe depend on VCRUNTIME140/MSVCP140; without the redist a clean
 # machine fails to launch with a "Qt6Core.dll" error. Reuse the cached copy in
 # dist\ (shared with build-server-installer.ps1), else fetch the official one.
+# Pinned SHA256 for the VC++ 2015-2022 x64 redistributable. aka.ms/vs/17/release is
+# a MOVING permalink; whatever bytes arrive are cached, staged, and run silently and
+# elevated on end-user machines (see EnsureVCRedist in dinero-installer.nsi). Pin the
+# hash so a rotated/compromised download fails the build loudly instead of shipping.
+# Verified 2026-08-17 against the exact permalink (25,635,768 bytes); the same SHA256
+# is embedded in Microsoft's CDN download URL path. Keep this in sync with the pin in
+# build-server-installer.ps1 — both scripts share the dist\ cache.
+$VCRedistSha256 = 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
+
 $vcRedist = Join-Path $DistDir 'vc_redist.x64.exe'
 if (-not (Test-Path $vcRedist)) {
     Write-Host 'Downloading vc_redist.x64.exe...'
     Invoke-WebRequest -UseBasicParsing 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $vcRedist
 }
+
+# Verify after download AND on cache hit (a poisoned cache is as dangerous as a
+# poisoned download); delete + fail loudly on mismatch.
+$vcRedistHash = (Get-FileHash -Algorithm SHA256 $vcRedist).Hash.ToLowerInvariant()
+if ($vcRedistHash -ne $VCRedistSha256) {
+    Remove-Item $vcRedist -Force -ErrorAction SilentlyContinue
+    throw ("vc_redist.x64.exe SHA256 mismatch: got '$vcRedistHash', expected '$VCRedistSha256'. " +
+           "Microsoft may have updated the redistributable at aka.ms/vs/17/release. " +
+           "Verify the new hash from an official Microsoft source and bump the pin in BOTH " +
+           "build-installer.ps1 and build-server-installer.ps1 (they share the dist\ cache).")
+}
+Write-Host "  Verified vc_redist.x64.exe SHA256: $vcRedistHash"
 Copy-Item $vcRedist (Join-Path $Stage 'vc_redist.x64.exe')
 Write-Host ("  vc_redist.x64.exe ({0:N1} MB)" -f ((Get-Item $vcRedist).Length / 1MB))
 
