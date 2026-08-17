@@ -258,7 +258,13 @@ bool WalletUtxoIsPresentInLiveUtreexoForest(
             utxo.height,
             utxo.is_coinbase);
 
-        if (!forest->findLeafPosition(leaf_hash).has_value()) {
+        bool leaf_present;
+        {
+            // Tight shared lock around the single structural read (audit: forest UAF).
+            auto forest_lock = chainstate->GetConsensusUTXOSet()->LockForestShared();
+            leaf_present = forest->findLeafPosition(leaf_hash).has_value();
+        }
+        if (!leaf_present) {
             if (reason) {
                 *reason = "leaf missing from live Utreexo forest";
             }
@@ -3827,7 +3833,9 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
         std::string root_hex;
 
         for (int attempt = 0; attempt < kMaxAttempts && !consistent; ++attempt) {
-            const auto commitment_before = forest->getCommitment();
+            // Atomic guarded read; the before/after comparison intentionally
+            // reads the LIVE forest at two moments (audit: forest UAF).
+            const auto commitment_before = chainstate_service->GetConsensusUTXOSet()->SnapshotForestCommitment();
 
             din::Json batch_result = din::rpc_getutxoproofs_batch(ctx, batch_params);
             if (batch_result.isMember("error")) {
@@ -3837,12 +3845,16 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
 
             din::Json attempt_result;
             // Bind to the exact compact accumulator context used by the proofs.
-            AppendWalletProofRootsSnapshot(attempt_result, *forest);
+            {
+                // Structural read of the live forest — hold the shared lock (audit: forest UAF).
+                auto forest_lock = chainstate_service->GetConsensusUTXOSet()->LockForestShared();
+                AppendWalletProofRootsSnapshot(attempt_result, *forest);
+            }
             const uint64_t stump_num_leaves = attempt_result["stump_num_leaves"].asUInt64();
 
             // commitment_after must be the LAST forest read so the whole window
             // (proof gen + stump snapshot) is provably inside the unchanged span.
-            const auto commitment_after = forest->getCommitment();
+            const auto commitment_after = chainstate_service->GetConsensusUTXOSet()->SnapshotForestCommitment();
             root_hex = BytesToHex(commitment_after);
             if (commitment_before != commitment_after) {
                 continue;  // a block connected mid-assembly; re-assemble

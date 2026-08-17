@@ -598,7 +598,18 @@ din::Json handle_generatetoaddress(
                                 "generatetoaddress: utreexo forest unavailable for accumulator_root_before");
                         }
                         auto* proof_forest = chainstate_service->utreexoForest();
-                        utreexo_data.accumulator_root_before = proof_forest->getCommitment();
+                        // Snapshot the live forest ONCE under its shared lock; derive the
+                        // root, the spend proof, and the self-verify roots from the local
+                        // clone so they stay consistent AND cannot race the block-connect
+                        // writer freeing the forest (audit: forest read-during-free UAF).
+                        // Leaf-safe: the lock is held only around the in-memory clone.
+                        dinero::consensus::UtreexoForest forest_view;
+                        {
+                            auto forest_lock =
+                                chainstate_service->GetConsensusUTXOSet()->LockForestShared();
+                            forest_view = proof_forest->clone();
+                        }
+                        utreexo_data.accumulator_root_before = forest_view.getCommitment();
 
                         const auto ephemeral_outputs = CollectEphemeralOutputs(block);
                         const auto intra_block_spent_outputs = CollectIntraBlockSpentOutputs(block, height);
@@ -647,7 +658,7 @@ din::Json handle_generatetoaddress(
                             }
                         }
 
-                        utreexo_data.spend_proof = proof_forest->generateBlockProof(
+                        utreexo_data.spend_proof = forest_view.generateBlockProof(
                             proof_targets,
                             dinero::consensus::GetUtreexoProofFormatVersion(height));
                         if (utreexo_data.spend_proof.targets.size() != proof_targets.size() ||
@@ -658,12 +669,12 @@ din::Json handle_generatetoaddress(
                         }
 
                         if (!utreexo_data.spend_proof.targets.empty() &&
-                            !proof_forest->verifyBatchProofStateless(
+                            !forest_view.verifyBatchProofStateless(
                                 utreexo_data.spend_proof.targets,
                                 utreexo_data.spend_proof.positions,
                                 utreexo_data.spend_proof.proof_hashes,
                                 utreexo_data.spend_proof.numLeaves,
-                                proof_forest->getRoots())) {
+                                forest_view.getRoots())) {
                             throw std::runtime_error(
                                 "generatetoaddress: self-verification failed for block " +
                                 std::to_string(height));

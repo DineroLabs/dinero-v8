@@ -71,9 +71,14 @@ static void AttachUtreexoProofs(din::Json& result,
     // Stump snapshot (inline — solves freshness race condition)
     auto commitment = bridge_node->GetCurrentForestCommitment();
     utreexo_proofs["stump_commitment"] = BytesToHex(commitment.data(), commitment.size());
-    utreexo_proofs["stump_num_leaves"] = static_cast<din::Json::UInt64>(forest->getNumLeaves());
-
-    auto roots = forest->getRoots();
+    // Guard the live-forest reads with the shared lock (audit: forest UAF).
+    // Leaf-safe: only forest reads inside; roots copied out for the loop below.
+    std::vector<dinero::consensus::UtreexoHash> roots;
+    {
+        auto forest_lock = chainstate->GetConsensusUTXOSet()->LockForestShared();
+        utreexo_proofs["stump_num_leaves"] = static_cast<din::Json::UInt64>(forest->getNumLeaves());
+        roots = forest->getRoots();
+    }
     din::Json roots_json = din::arr();
     for (size_t h = 0; h < roots.size(); ++h) {
         // Only include non-zero roots
