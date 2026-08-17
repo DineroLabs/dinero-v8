@@ -11703,6 +11703,21 @@ target_link_libraries(test_reorg_log PRIVATE
 add_test(NAME test_reorg_log COMMAND test_reorg_log)
 set_tests_properties(test_reorg_log PROPERTIES TIMEOUT 60)
 
+# ─── ASERT fixed-point exponent on the fast-block (negative excessTime) path ──
+# Header-only (CalculateASERT_Target / TargetFromBitsBE are inline). Locks the
+# fast=harder / slow=easier behavior of the branch whose left-shift was UB
+# pre-C++20. Registered unlabelled so it runs in the required full-ctest job.
+add_executable(test_asert_signed_shift
+  tests/consensus/test_asert_signed_shift.cpp
+)
+target_include_directories(test_asert_signed_shift PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/src/consensus
+)
+add_test(NAME AsertSignedShift COMMAND test_asert_signed_shift)
+set_tests_properties(AsertSignedShift PROPERTIES TIMEOUT 30)
+
 # ---------------------------------------------------------------------------
 # FleetWatcherTests — the fleet watcher's Python suite (tools/fleet-watcher).
 #

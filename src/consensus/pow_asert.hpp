@@ -75,9 +75,18 @@ inline uint32_t CalculateASERT_Target(
     const int64_t halfLife = c.asertHalfLifeSec;
 
     // Compute integer and fractional parts
-    // exponent_fp = (excessTime << 16) / halfLife
-    // This gives us a 16.16 fixed-point number
-    int64_t exponent_fp = (excessTime << 16) / halfLife;
+    // exponent_fp = (excessTime * 2^16) / halfLife  (16.16 fixed-point)
+    //
+    // NB: this is a signed MULTIPLY, not `excessTime << 16`. excessTime is
+    // negative on the fast-block branch, and left-shifting a negative signed
+    // value is UNDEFINED BEHAVIOR before C++20 — and the iOS/NodeCore toolchain
+    // still builds this consensus code with -std=c++17. The multiply is
+    // well-defined in every standard and, on two's-complement platforms, yields
+    // the exact value the arithmetic shift produced, so the ASERT result is
+    // unchanged. (excessTime is bounded by the 32-bit header timestamp, so the
+    // 2^16 scaling cannot overflow int64 for any real block — the same bound the
+    // shift already relied on.)
+    int64_t exponent_fp = (excessTime * 65536) / halfLife;
 
     // Extract integer part (k) and fractional part (r)
     int64_t k = exponent_fp >> 16;  // Integer part
