@@ -1231,7 +1231,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             if (validation_mode_ != ValidationMode::STATELESS &&
                 block.utreexo.has_value() &&
                 !block.utreexo->accumulator_root_before.empty()) {
-                UtreexoHash current_root = consensus_utxo_set_->GetForest().getCommitment();
+                UtreexoHash current_root = consensus_utxo_set_->SnapshotForestCommitment();
                 if (current_root != block.utreexo->accumulator_root_before) {
                     std::cout << "[UTREEXO] root_before metadata mismatch (ignored — local forest authoritative)" << std::endl;
                 }
@@ -1248,14 +1248,14 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             }
 
             // Initialize delta with current state
-            delta.numLeavesBefore = consensus_utxo_set_->GetForest().getNumLeaves();
+            delta.numLeavesBefore = consensus_utxo_set_->SnapshotForestLeafCount();
             utreexo_validation_active = true;
             std::cout << "📊 [UTREEXO] Delta initialized | Leaves: "
                       << delta.numLeavesBefore << std::endl;
         } else {
             std::cout << "⏳ [UTREEXO] Not active yet - accumulator tracking only" << std::endl;
             // Still track leaves even if not enforcing yet
-            delta.numLeavesBefore = consensus_utxo_set_->GetForest().getNumLeaves();
+            delta.numLeavesBefore = consensus_utxo_set_->SnapshotForestLeafCount();
             utreexo_validation_active = true;  // Track but don't enforce
         }
         (void)utreexo_validation_active; // flag tracked for future enforcement
@@ -1709,7 +1709,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         const auto& utreexo_data = block.utreexo.value();
 
         // 1. Get current accumulator state (BEFORE applying block)
-        UtreexoHash current_root = consensus_utxo_set_->GetForest().getCommitment();
+        UtreexoHash current_root = consensus_utxo_set_->SnapshotForestCommitment();
         UtreexoHash expected_root_before = utreexo_data.accumulator_root_before;
 
         // 2. Verify root_before matches current state
@@ -2095,7 +2095,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
     if (consensus_utxo_set_) {
         std::cout << "🔍 [DEBUG] Utreexo forest exists, IsUtreexoActive(" << height << ") = " << IsUtreexoActive(height) << std::endl;
-        std::cout << "🔍 [DEBUG] Forest leaves before: " << consensus_utxo_set_->GetForest().getNumLeaves() << std::endl;
+        std::cout << "🔍 [DEBUG] Forest leaves before: " << consensus_utxo_set_->SnapshotForestLeafCount() << std::endl;
 
         // 1. Clone current accumulator state (non-destructive simulation)
         UtreexoForest snapshot = consensus_utxo_set_->GetForest().clone();
@@ -2454,7 +2454,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         // Guarded: takes the forest's exclusive lock so a concurrent RPC/mining/FFI
         // reader cannot be walking the old buffers this move-assign frees.
         consensus_utxo_set_->ReplaceForestGuarded(std::move(snapshot));
-        std::cout << "🔍 [DEBUG] Forest leaves after commit: " << consensus_utxo_set_->GetForest().getNumLeaves() << std::endl;
+        std::cout << "🔍 [DEBUG] Forest leaves after commit: " << consensus_utxo_set_->SnapshotForestLeafCount() << std::endl;
 
         // ═════════════════════════════════════════════════════════════════════════
         // INV-1: Post-commit forest verification
@@ -2464,7 +2464,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         // or a move-semantic bug silently corrupting forest state.
         // ═════════════════════════════════════════════════════════════════════════
         {
-            UtreexoHash post_commit_root = consensus_utxo_set_->GetForest().getCommitment();
+            UtreexoHash post_commit_root = consensus_utxo_set_->SnapshotForestCommitment();
             if (post_commit_root != computed_root) {
                 std::cerr << "INVARIANT VIOLATION: forest commit produced wrong root" << std::endl;
                 std::cerr << "  Post-commit root: ";
@@ -2757,7 +2757,7 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
             }
 
             // Verify numLeaves
-            if (consensus_utxo_set_->GetForest().getNumLeaves() != delta.numLeavesBefore) {
+            if (consensus_utxo_set_->SnapshotForestLeafCount() != delta.numLeavesBefore) {
                 restore_legacy_on_failure();
                 error = "utreexo-delta-undo-numleaves-mismatch";
                 return false;
