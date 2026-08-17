@@ -603,7 +603,20 @@ bool StatelessNode::ValidateUtreexoProof(
     }
 
     std::string err;
-    if (!ValidateAndApplyProofInto(block, proof_msg, *utreexo_forest_, local_stump_, err)) {
+    // Guarded: ValidateAndApplyProofInto mutates the live forest in place, so it
+    // must hold the forest's EXCLUSIVE lock to exclude the shared-lock RPC/FFI/
+    // block_assembler readers (CSN-mode forest read-during-free UAF — the class
+    // this PR closes). Mirrors the transition-proof path in
+    // ValidateWithTransitionProof (see the mutateForest wrap below): that branch
+    // was guarded and this non-transition else-branch was missed.
+    // ValidateAndApplyProofInto does no internal forest locking, so wrapping it
+    // here is re-entrancy-safe. (When owner_ is null — scratch ctor — mutateForest
+    // runs fn directly on the raw forest, so behavior is unchanged for that case.)
+    bool applied = false;
+    mutateForest([&](consensus::UtreexoForest& f) {
+        applied = ValidateAndApplyProofInto(block, proof_msg, f, local_stump_, err);
+    });
+    if (!applied) {
         g_logger.error("[StatelessNode] FAIL " + err);
         if (err.find("step 2") != std::string::npos ||
             err.find("step 6") != std::string::npos) {
