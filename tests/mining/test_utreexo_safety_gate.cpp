@@ -202,7 +202,7 @@ static Transaction MakeUncheckedTransparentTx(uint32_t input_seed) {
 TEST_F(UtreexoSafetyGateTest, CreateNewBlockFailsWithoutValidator) {
     // Create assembler WITHOUT wiring BlockValidator
     BlockAssembler assembler(chain_db_.get());
-    assembler.SetUtreexoForest(&utxo_set_->GetForest());
+    assembler.SetConsensusUTXOSet(utxo_set_.get());
 
     // Attempt to create block — MUST return nullptr (not a block with null root)
     auto block = assembler.CreateNewBlock(MINING_ADDRESS);
@@ -218,7 +218,7 @@ TEST_F(UtreexoSafetyGateTest, CreateNewBlockFailsWithoutValidator) {
 
 TEST_F(UtreexoSafetyGateTest, CreateNewBlockSucceedsWithValidator) {
     BlockAssembler assembler(chain_db_.get());
-    assembler.SetUtreexoForest(&utxo_set_->GetForest());
+    assembler.SetConsensusUTXOSet(utxo_set_.get());
     assembler.SetBlockValidator(validator_.get());
     assembler.SetUTXOProvider(std::shared_ptr<consensus::IUTXOProvider>(
         utxo_set_.get(), [](auto*){}));  // non-owning shared_ptr
@@ -238,7 +238,7 @@ TEST_F(UtreexoSafetyGateTest, CreateNewBlockSucceedsWithValidator) {
 
 TEST_F(UtreexoSafetyGateTest, CreateJobFailsWithoutValidator) {
     BlockAssembler assembler(chain_db_.get());
-    assembler.SetUtreexoForest(&utxo_set_->GetForest());
+    assembler.SetConsensusUTXOSet(utxo_set_.get());
     assembler.SetMiningAddress(MINING_ADDRESS);
 
     // Attempt to create job — MUST return nullptr
@@ -259,7 +259,7 @@ TEST_F(UtreexoSafetyGateTest, CreateNewBlockQuarantinesTemplatePoisoningTx) {
     mempool_->addUnchecked(bad_tx);
 
     BlockAssembler assembler(chain_db_.get());
-    assembler.SetUtreexoForest(&utxo_set_->GetForest());
+    assembler.SetConsensusUTXOSet(utxo_set_.get());
     assembler.SetBlockValidator(validator_.get());
     assembler.SetUTXOProvider(std::shared_ptr<consensus::IUTXOProvider>(
         utxo_set_.get(), [](auto*){}));
