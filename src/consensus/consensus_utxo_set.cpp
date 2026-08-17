@@ -429,6 +429,12 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
 // =============================================================================
 
 UTXOSnapshot ConsensusUTXOSet::Snapshot() const {
+    // #578: the forest reads below (getCommitment / getNumLeaves / serialize)
+    // walk live forest structures and previously ran with NO lock — TSan
+    // caught them racing guarded forest writes. Shared lock: coexists with
+    // other readers, excludes exclusive writers. forest_mutex_ stays a leaf
+    // lock (nothing below acquires another lock).
+    std::shared_lock<std::shared_mutex> forest_lock(forest_mutex_);
     UTXOSnapshot snapshot;
     snapshot.height = height_;
     snapshot.block_hash = best_block_;
@@ -440,6 +446,12 @@ UTXOSnapshot ConsensusUTXOSet::Snapshot() const {
 }
 
 void ConsensusUTXOSet::Restore(const UTXOSnapshot& snapshot) {
+    // #578: Restore rewrites forest_ wholesale (deserialize / reset / add-loop
+    // rebuild / fork-flag rebuildRoots) and previously ran with NO lock — TSan
+    // caught its add()/operator= racing RemoveLastNLeavesGuarded during reorg
+    // repair. Exclusive lock across the whole restore; forest_mutex_ stays a
+    // leaf lock (hashing and rebuildRoots acquire nothing).
+    std::unique_lock<std::shared_mutex> forest_lock(forest_mutex_);
     height_ = snapshot.height;
     best_block_ = snapshot.block_hash;
     utxos_ = snapshot.utxos;  // Deep copy
