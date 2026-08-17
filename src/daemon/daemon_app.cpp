@@ -4476,7 +4476,7 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                     auto csn_drain_step = [stateless_node, chainstate_service, block_relay,
                                            block_download_for_csn, pending_blocks, buffer_mutex,
-                                           reorg_state,
+                                           reorg_state, header_chain_for_csn,
                                            next_validate_height, retry_counts,
                                            pending_count_for_scheduler, csn_reorg_reset_to,
                                            csn_consume_reorg_reset_locked,
@@ -4899,6 +4899,48 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                             return true;
                         }
+                        const uint256 failed_hash = pending.proof_msg.block_hash;
+
+                        // #579 pass 2: a proof that fails only because our forest is
+                        // still on a stale branch during a reorg (root_before mismatch)
+                        // is NOT a bad block — a new-branch block above the fork cannot
+                        // connect until ActivateBestChain rewinds us to the fork point.
+                        // Counting these toward the retry cap poisons the very reorg that
+                        // would fix it: MarkBlockInvalid stops the scheduler re-requesting
+                        // and the "halting CSN IBD" branch stops the worker draining, so
+                        // ABC never gets the fork-range bodies it needs to select a
+                        // candidate above our tip. Detect the reorg-lag window: the best
+                        // header chain holds a DIFFERENT block at our active-tip height,
+                        // i.e. our tip is on the losing branch. In that window re-request
+                        // and keep draining WITHOUT counting toward either terminal state
+                        // (retry_counts is not incremented). Outside it, behavior is
+                        // exactly as before — genuine bad blocks still get marked after
+                        // MAX_RETRIES. No CBlockIndex/consensus state is touched here.
+                        bool reorg_lag_window = false;
+                        uint32_t lag_tip_height = 0;
+                        if (chainstate_service && header_chain_for_csn) {
+                            if (const CBlockIndex* tip = chainstate_service->GetActiveTip()) {
+                                lag_tip_height = static_cast<uint32_t>(tip->height);
+                                consensus::HeaderIndexEntry hdr{};
+                                if (header_chain_for_csn->GetHeaderAtHeightCopy(lag_tip_height, hdr) &&
+                                    hdr.hash != tip->hash) {
+                                    reorg_lag_window = true;
+                                }
+                            }
+                        }
+                        if (reorg_lag_window) {
+                            g_logger.warning("[CSN] Proof failed at height " + std::to_string(h) +
+                                             " during a reorg-lag window (best header forks at/below "
+                                             "active tip " + std::to_string(lag_tip_height) +
+                                             ") — re-requesting without invalidating; ABC reorgs "
+                                             "once the fork range connects (#579)");
+                            if (block_download_for_csn) {
+                                block_download_for_csn->ReRequestBlock(failed_hash);
+                                block_download_for_csn->Tick();
+                            }
+                            return false;
+                        }
+
                         uint32_t attempts = 0;
                         {
                             std::lock_guard<std::mutex> rl(*buffer_mutex);
@@ -4908,7 +4950,6 @@ bool DaemonApp::Init(int argc, char** argv) {
                                       std::to_string(h) + " from " + pending.peer_addr +
                                       " (attempt " + std::to_string(attempts) + "/" +
                                       std::to_string(MAX_RETRIES_PER_HEIGHT) + ")");
-                        const uint256 failed_hash = pending.proof_msg.block_hash;
                         if (block_download_for_csn) {
                             if (attempts >= MAX_RETRIES_PER_HEIGHT) {
                                 g_logger.error("[CSN] Proof failed " + std::to_string(attempts) +
