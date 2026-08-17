@@ -37,6 +37,7 @@ int main() {
         witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
         witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
         // Taproot scriptPubKey: OP_1 + 0x20 + 32-byte pubkey
+        witness_utxo.push_back(0x22); // compact-size script length (34) per BIP-174
         witness_utxo.push_back(0x51); // OP_1
         witness_utxo.push_back(0x20); // Push 32 bytes
         for (int i = 0; i < 32; i++) {
@@ -74,6 +75,7 @@ int main() {
         witness_utxo.push_back(0x01); witness_utxo.push_back(0x00);
         witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
         witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
+        witness_utxo.push_back(0x22); // compact-size script length (34) per BIP-174
         witness_utxo.push_back(0x51); // OP_1
         witness_utxo.push_back(0x20); // Push 32 bytes
         for (int i = 0; i < 32; i++) {
@@ -111,6 +113,7 @@ int main() {
         witness_utxo.push_back(0x01); witness_utxo.push_back(0x00);
         witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
         witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
+        witness_utxo.push_back(0x22); // compact-size script length (34) per BIP-174
         witness_utxo.push_back(0x51); // OP_1
         witness_utxo.push_back(0x20); // Push 32 bytes
         for (int i = 0; i < 32; i++) {
@@ -149,6 +152,7 @@ int main() {
         witness_utxo.push_back(0x01); witness_utxo.push_back(0x00);
         witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
         witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
+        witness_utxo.push_back(0x22); // compact-size script length (34) per BIP-174
         witness_utxo.push_back(0x51);
         witness_utxo.push_back(0x20);
         for (int i = 0; i < 32; i++) {
@@ -186,6 +190,7 @@ int main() {
         witness_utxo.push_back(0x01); witness_utxo.push_back(0x00);
         witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
         witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
+        witness_utxo.push_back(0x22); // compact-size script length (34) per BIP-174
         witness_utxo.push_back(0x51);
         witness_utxo.push_back(0x20);
         for (int i = 0; i < 32; i++) {
@@ -208,6 +213,48 @@ int main() {
         std::cout << "  Valid: " << (result.valid ? "YES" : "NO") << std::endl;
         std::cout << "  Expected: NO (merkle root indicates script tree)" << std::endl;
         always_assert(!result.valid && "BIP86 wallet should reject non-zero TAP_MERKLE_ROOT");
+        std::cout << "  ✅ PASS" << std::endl << std::endl;
+    }
+
+    // Test 6: BIP86 wallet with UNDECODABLE witness UTXO + TAP_SCRIPT_SIG.
+    // The guardrail must fail CLOSED: if we cannot decode the witness UTXO we
+    // cannot prove the input is not Taproot, so a script-path indicator must
+    // still be rejected. (Regression: the validator used to skip the guardrail
+    // entirely when DecodeWitnessUtxoValue failed, declaring the input valid.)
+    {
+        std::cout << "Test 6: BIP86 with undecodable witness UTXO + TAP_SCRIPT_SIG (should reject)" << std::endl;
+
+        PsbtInput input;
+
+        // Malformed witness UTXO: amount + raw script with NO compact-size
+        // length byte. 0x51 parses as compact-size 81 but only 33 bytes
+        // remain, so strict canonical decoding fails.
+        std::vector<uint8_t> witness_utxo;
+        witness_utxo.push_back(0xa0); witness_utxo.push_back(0x86);
+        witness_utxo.push_back(0x01); witness_utxo.push_back(0x00);
+        witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
+        witness_utxo.push_back(0x00); witness_utxo.push_back(0x00);
+        witness_utxo.push_back(0x51); // missing 0x22 length byte on purpose
+        witness_utxo.push_back(0x20);
+        for (int i = 0; i < 32; i++) {
+            witness_utxo.push_back(0xaa);
+        }
+
+        PsbtMapKV witness_kv;
+        witness_kv.key = {0x01};
+        witness_kv.value = witness_utxo;
+        input.kv.push_back(witness_kv);
+
+        PsbtMapKV script_sig_kv;
+        script_sig_kv.key = {0x14}; // TAP_SCRIPT_SIG type
+        script_sig_kv.value = std::vector<uint8_t>(64, 0xcc);
+        input.kv.push_back(script_sig_kv);
+
+        auto result = PSBTTaprootValidator::validateInput(input.kv, "bip86");
+
+        std::cout << "  Valid: " << (result.valid ? "YES" : "NO") << std::endl;
+        std::cout << "  Expected: NO (undecodable witness UTXO must fail closed)" << std::endl;
+        always_assert(!result.valid && "BIP86 wallet must fail closed on undecodable witness UTXO");
         std::cout << "  ✅ PASS" << std::endl << std::endl;
     }
 

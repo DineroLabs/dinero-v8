@@ -170,7 +170,16 @@ bool ValidateWitnessCommitment(
     uint256 extracted_commitment = extracted_commitment_opt.value();
 
     // Step 4: Compute expected witness merkle root
-    uint256 witness_merkle_root = ComputeWitnessMerkleRoot(vtx);
+    // CVE-2012-2459 (witness tree): a duplicated transaction forges the witness
+    // merkle root / commitment of another valid block. A valid block cannot
+    // contain a duplicated transaction (double-spend), so this never rejects a
+    // valid block.
+    bool witness_mutated = false;
+    uint256 witness_merkle_root = ComputeWitnessMerkleRoot(vtx, &witness_mutated);
+    if (witness_mutated) {
+        error = "bad-witness-duplicate: duplicated transaction in witness merkle tree (CVE-2012-2459)";
+        return false;
+    }
 
     // Step 5: Compute expected commitment
     // Commitment = SHA256(witness_merkle_root || witness_nonce)

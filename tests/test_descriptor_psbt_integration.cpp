@@ -2,6 +2,7 @@
 // Dinero - Descriptor PSBT Integration Test (Phase 2 Step 3)
 
 #include "wallet/descriptor_psbt.h"
+#include "daemon/bech32_encoder.h"
 #include "wallet/descriptor_checksum.h"
 #include <iostream>
 #include <cstdio>
@@ -48,7 +49,7 @@ void test_bip86_descriptor_to_psbt() {
     std::cout << "========================================" << std::endl;
 
     // Test descriptor (BIP86 Taproot)
-    std::string descriptor = "tr([f802fb0e/86h/1447h/0h]xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/0/*)";
+    std::string descriptor = "tr([f802fb0e/86h/1448h/0h]xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/0/*)";
 
     // Add checksum
     descriptor = din::DescriptorChecksum::AddChecksum(descriptor);
@@ -69,7 +70,10 @@ void test_bip86_descriptor_to_psbt() {
 
     // Add mock output
     PsbtOutputInfo output;
-    output.address = "din1pexampleaddresstestingtaprootoutput1234567890";
+    // Valid bech32m Taproot address (checksum must match the "din" HRP,
+    // so encode with the same library the wallet decodes with).
+    output.address = ::Bech32Encoder::encode_segwit_address(
+        "din", 1, std::vector<uint8_t>(32, 0xaa));
     output.amount = 95000; // 95k sats (5k fee)
     request.outputs.push_back(output);
 
@@ -84,6 +88,9 @@ void test_bip86_descriptor_to_psbt() {
     );
 
     // Verify result
+    if (!result.success) {
+        std::cout << "createPsbtFromDescriptor error: " << result.error << std::endl;
+    }
     always_assert(result.success);
     always_assert(result.descriptor_type == "tr");
     always_assert(result.wallet_policy == WalletPolicy::BIP86_TAPROOT);
@@ -107,7 +114,7 @@ void test_bip84_descriptor_to_psbt() {
     std::cout << "========================================" << std::endl;
 
     // Test descriptor (BIP84 SegWit)
-    std::string descriptor = "wpkh([ae6a04bd/84h/0h/0h]xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/0/*)";
+    std::string descriptor = "wpkh([ae6a04bd/84h/1448h/0h]xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/0/*)";
 
     // Add checksum
     descriptor = din::DescriptorChecksum::AddChecksum(descriptor);
@@ -128,7 +135,9 @@ void test_bip84_descriptor_to_psbt() {
 
     // Add mock output
     PsbtOutputInfo output;
-    output.address = "din1qexampleaddressfortestingsegwitoutputs";
+    // Valid bech32 SegWit v0 address, same round-trip approach.
+    output.address = ::Bech32Encoder::encode_segwit_address(
+        "din", 0, std::vector<uint8_t>(20, 0xbb));
     output.amount = 48000; // 48k sats (2k fee)
     request.outputs.push_back(output);
 
@@ -143,6 +152,9 @@ void test_bip84_descriptor_to_psbt() {
     );
 
     // Verify result
+    if (!result.success) {
+        std::cout << "createPsbtFromDescriptor error: " << result.error << std::endl;
+    }
     always_assert(result.success);
     always_assert(result.descriptor_type == "wpkh");
     always_assert(result.wallet_policy == WalletPolicy::BIP84_LEGACY);
@@ -166,7 +178,7 @@ void test_policy_mismatch_rejection() {
     std::cout << "========================================" << std::endl;
 
     // BIP86 descriptor but BIP84 wallet policy - should fail
-    std::string descriptor = "tr([f802fb0e/86h/1447h/0h]xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/0/*)";
+    std::string descriptor = "tr([f802fb0e/86h/1448h/0h]xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/0/*)";
     descriptor = din::DescriptorChecksum::AddChecksum(descriptor);
 
     DescriptorPsbtRequest request;
@@ -180,7 +192,10 @@ void test_policy_mismatch_rejection() {
     request.inputs.push_back(input);
 
     PsbtOutputInfo output;
-    output.address = "din1pexampleaddressfortestingpolicymismatch";
+    // Valid Taproot address: the rejection below must come from the
+    // POLICY mismatch, not from an undecodable address.
+    output.address = ::Bech32Encoder::encode_segwit_address(
+        "din", 1, std::vector<uint8_t>(32, 0xcc));
     output.amount = 95000;
     request.outputs.push_back(output);
 

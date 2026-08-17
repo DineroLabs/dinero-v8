@@ -12337,8 +12337,18 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             std::cerr << "   Expected next height: " << expected_height << std::endl;
             std::cerr << "   Received block height: " << tip_to_connect->height << std::endl;
             std::cerr << "   This indicates a bug in block download ordering." << std::endl;
-            assert(tip_to_connect->height == expected_height &&
-                   "Phase G Safety: Blocks must be connected in sequential order");
+            // REJECT — do not fall through and connect an out-of-order block.
+            // The old assert() no-ops under NDEBUG (release builds define it), so
+            // in shipped binaries execution fell through here and connected a block
+            // whose height != tip+1, corrupting pprev links, chainwork, and reorg
+            // correctness. Returning fail() rejects the block cleanly in every build
+            // instead of silently corrupting the chain (release) or aborting the
+            // whole daemon (debug). ActivateBestChain only ever calls ConnectTip on
+            // sequential heights (it disconnects to the fork point first, then walks
+            // an ordered connect_path), so this fires only on a genuine ordering bug.
+            return fail("connect-out-of-order: expected height " +
+                        std::to_string(expected_height) + ", got " +
+                        std::to_string(tip_to_connect->height));
         }
     }
 

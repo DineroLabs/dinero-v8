@@ -11364,6 +11364,7 @@ add_executable(test_psbt_guardrails
   src/wallet/psbt_taproot_validator.cpp
 )
 target_link_libraries(test_psbt_guardrails PRIVATE jsoncpp_static)
+add_test(NAME PsbtBip86Guardrails COMMAND test_psbt_guardrails)
 
 # BIP86 signing demonstration
 # TEMPORARILY DISABLED (2026-02-02): Missing sha256/HASH160 includes when compiling hd_wallet.cpp directly
@@ -11394,6 +11395,7 @@ else()
     target_link_libraries(test_descriptor_psbt_integration dinero_wallet dinero_core dinero_crypto OpenSSL::SSL OpenSSL::Crypto)
 endif()
 target_include_directories(test_descriptor_psbt_integration PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME DescriptorPsbtIntegration COMMAND test_descriptor_psbt_integration)
 
 # Simple Descriptor PSBT Test (Phase 2 Step 3)
 # Tests core fixes: address→scriptPubKey and complete key derivation
@@ -11406,6 +11408,7 @@ else()
     target_link_libraries(test_descriptor_psbt_simple dinero_wallet dinero_core dinero_crypto OpenSSL::SSL OpenSSL::Crypto)
 endif()
 target_include_directories(test_descriptor_psbt_simple PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME DescriptorPsbtSimple COMMAND test_descriptor_psbt_simple)
 
 # KeyStoreImpl Test (Phase 3A)
 # Tests BIP32 HD wallet implementation with BIP84/BIP86 address derivation
@@ -11466,6 +11469,7 @@ else()
     target_link_libraries(test_psbt_bip86_integration dinero_wallet dinero_core dinero_crypto OpenSSL::SSL OpenSSL::Crypto)
 endif()
 target_include_directories(test_psbt_bip86_integration PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME PsbtBip86Integration COMMAND test_psbt_bip86_integration)
 
 # Hardware Wallet BIP86 Integration Test (Phase 3C - HW Wallet Support)
 # Tests complete Coldcard-style workflow: KeyStore → Descriptor → PSBT → Export → Sign → Import
@@ -11749,6 +11753,21 @@ if(APPLE)
 endif()
 add_test(NAME ForestLockStress COMMAND test_forest_lock_stress 8 2 3)
 set_tests_properties(ForestLockStress PROPERTIES TIMEOUT 60)
+
+# ─── ASERT fixed-point exponent on the fast-block (negative excessTime) path ──
+# Header-only (CalculateASERT_Target / TargetFromBitsBE are inline). Locks the
+# fast=harder / slow=easier behavior of the branch whose left-shift was UB
+# pre-C++20. Registered unlabelled so it runs in the required full-ctest job.
+add_executable(test_asert_signed_shift
+  tests/consensus/test_asert_signed_shift.cpp
+)
+target_include_directories(test_asert_signed_shift PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/src/consensus
+)
+add_test(NAME AsertSignedShift COMMAND test_asert_signed_shift)
+set_tests_properties(AsertSignedShift PROPERTIES TIMEOUT 30)
 
 # ---------------------------------------------------------------------------
 # FleetWatcherTests — the fleet watcher's Python suite (tools/fleet-watcher).

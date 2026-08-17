@@ -318,8 +318,12 @@ void HttpRpcServer::server_loop() {
                 // endpoints except /serverinfo.
 
                 if (active_connections_.load(std::memory_order_relaxed) >= kMaxConcurrentConnections) {
+                    // Well-formed JSON-RPC error (error is an OBJECT, not a bare
+                    // string) so strict clients don't choke. id is null: the
+                    // request is rejected before it is parsed.
                     const std::string response = build_http_response(
-                        "{\"error\":\"RPC server busy: too many open connections\"}",
+                        "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32000,"
+                        "\"message\":\"RPC server busy: too many open connections\"}}",
                         "application/json",
                         503);
                     SendAll(client_socket, response.c_str(), response.size());
@@ -332,12 +336,16 @@ void HttpRpcServer::server_loop() {
                     char rate_ip[INET_ADDRSTRLEN];
                     inet_ntop(AF_INET, &client_addr.sin_addr, rate_ip, sizeof(rate_ip));
                     if (!checkRpcRate(std::string(rate_ip))) {
-                        const char* response = "HTTP/1.1 429 Too Many Requests\r\n"
-                            "Content-Type: application/json\r\n"
-                            "Content-Length: 52\r\n"
-                            "Connection: close\r\n\r\n"
-                            "{\"error\":\"Rate limit exceeded. Try again shortly.\"}";
-                        SendAll(client_socket, response, strlen(response));
+                        // Well-formed JSON-RPC error (error is an OBJECT). The old
+                        // reply was a bare-string error with a hand-counted
+                        // Content-Length, which made strict clients (incl.
+                        // dinero-cli) abort instead of surfacing the limit.
+                        const std::string response = build_http_response(
+                            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32000,"
+                            "\"message\":\"Rate limit exceeded. Try again shortly.\"}}",
+                            "application/json",
+                            429);
+                        SendAll(client_socket, response.c_str(), response.size());
                         close_socket(client_socket);
                         continue;
                     }

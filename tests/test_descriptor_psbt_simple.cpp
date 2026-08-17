@@ -9,6 +9,7 @@
 #include "wallet/descriptor_checksum.h"
 #include "crypto/extended_pubkey.h"
 #include "common/address_script_builder.h"
+#include "daemon/bech32_encoder.h"
 #include <iostream>
 #include <cstdio>
 #include <cstdlib>
@@ -31,8 +32,11 @@ void test_address_to_scriptpubkey() {
     std::cout << "TEST: Address → scriptPubKey Conversion" << std::endl;
     std::cout << "========================================" << std::endl;
 
-    // Test Taproot address (din1p...)
-    std::string taproot_addr = "din1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr";
+    // Test Taproot address (din1p...). Encode with the repo's own encoder so
+    // the bech32m checksum matches the "din" HRP — a hardcoded literal with a
+    // hand-swapped HRP has an invalid checksum and can never decode.
+    const std::vector<uint8_t> taproot_program(32, 0xaa);
+    std::string taproot_addr = ::Bech32Encoder::encode_segwit_address("din", 1, taproot_program);
     std::vector<uint8_t> spk;
     std::string error;
 
@@ -49,8 +53,9 @@ void test_address_to_scriptpubkey() {
         always_assert(false);
     }
 
-    // Test SegWit address (din1q...)
-    std::string segwit_addr = "din1q8c6fshw2dlwun7ekn9qwf37cu2rn755upcp6el";
+    // Test SegWit v0 address (din1q...), same round-trip approach.
+    const std::vector<uint8_t> segwit_program(20, 0xbb);
+    std::string segwit_addr = ::Bech32Encoder::encode_segwit_address("din", 0, segwit_program);
     spk.clear();
     error.clear();
 
@@ -118,7 +123,7 @@ void test_descriptor_parsing() {
     std::cout << "========================================" << std::endl;
 
     // BIP86 descriptor without checksum
-    std::string descriptor = "tr([f802fb0e/86h/1447h/0h]xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/0/*)";
+    std::string descriptor = "tr([f802fb0e/86h/1448h/0h]xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8/0/*)";
 
     // Add checksum
     std::string with_checksum = din::DescriptorChecksum::AddChecksum(descriptor);

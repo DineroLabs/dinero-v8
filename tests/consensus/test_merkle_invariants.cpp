@@ -120,3 +120,59 @@ TEST_F(MerkleInvariantsTest, MultiTransactionMerkleTree)
     ASSERT_NE(merkle_root, tx1_txid.AsUint256())
         << "SANITY FAILURE: Multi-TX merkle_root equals tx1 txid";
 }
+
+/**
+ * CVE-2012-2459: a block that duplicates a transaction to forge another (valid)
+ * block's merkle root — and thus its block hash — must be flagged as `mutated`.
+ * The malleated block's root is IDENTICAL to the valid block's by construction
+ * (that IS the attack); the valid block is never flagged.
+ */
+TEST_F(MerkleInvariantsTest, DetectsCve20122459Mutation)
+{
+    uint32_t height = 2;
+    AmountUna subsidy = ConsensusSubsidy::GetBlockSubsidy(height);
+
+    Transaction coinbase;
+    coinbase.vin.resize(1);
+    coinbase.vin[0].prevout.txid = TxId();
+    coinbase.vin[0].prevout.vout = 0xFFFFFFFF;
+    coinbase.vout.resize(1);
+    coinbase.vout[0].value = subsidy;
+
+    Transaction tx1;
+    tx1.vin.resize(1);
+    tx1.vin[0].prevout.txid = coinbase.GetTxid();
+    tx1.vin[0].prevout.vout = 0;
+    tx1.vout.resize(1);
+    tx1.vout[0].value = subsidy.Div(2).value();
+
+    // Distinct from tx1 only by prevout vout -> different txid.
+    Transaction tx2;
+    tx2.vin.resize(1);
+    tx2.vin[0].prevout.txid = coinbase.GetTxid();
+    tx2.vin[0].prevout.vout = 1;
+    tx2.vout.resize(1);
+    tx2.vout[0].value = subsidy.Div(2).value();
+
+    ASSERT_NE(tx1.GetTxid(), tx2.GetTxid());
+
+    // Valid: 3 distinct txs (odd -> tx2 is self-duplicated inside the tree, which
+    // is legitimate and must NOT be flagged).
+    std::vector<Transaction> valid = {coinbase, tx1, tx2};
+    // Malleated: tx2 duplicated as a REAL adjacent pair -> identical root.
+    std::vector<Transaction> malleated = {coinbase, tx1, tx2, tx2};
+
+    bool valid_mutated = true;       // seed opposite of expected
+    bool malleated_mutated = false;  // seed opposite of expected
+    uint256 valid_root = consensus::ComputeMerkleRoot(valid, &valid_mutated);
+    uint256 malleated_root = consensus::ComputeMerkleRoot(malleated, &malleated_mutated);
+
+    // The CVE property: the malleated block forges the SAME merkle root/hash.
+    // Without this the test would prove nothing about CVE-2012-2459.
+    ASSERT_EQ(valid_root, malleated_root)
+        << "test is meaningless unless both blocks share a merkle root";
+    EXPECT_FALSE(valid_mutated)
+        << "valid block (legitimate odd-count self-duplication) must not be flagged";
+    EXPECT_TRUE(malleated_mutated)
+        << "duplicated-transaction block must be flagged as mutated (CVE-2012-2459)";
+}

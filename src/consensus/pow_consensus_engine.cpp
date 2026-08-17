@@ -64,7 +64,15 @@ public:
 
         // 3. Verify merkle root matches transactions
         // Phase 11a: Use canonical merkle computation
-        uint256 computed_merkle = consensus::ComputeMerkleRoot(block.vtx);
+        bool merkle_mutated = false;
+        uint256 computed_merkle = consensus::ComputeMerkleRoot(block.vtx, &merkle_mutated);
+        // CVE-2012-2459: a duplicated subtree forges the merkle root/hash of a
+        // valid block. A valid block cannot contain a duplicated transaction
+        // (double-spend), so this never rejects a valid block.
+        if (merkle_mutated) {
+            g_logger.error("PowConsensusEngine: duplicated transaction in merkle tree (CVE-2012-2459)");
+            return false;
+        }
         if (computed_merkle != block.header.merkle_root) {
             g_logger.error("PowConsensusEngine: Merkle root mismatch (header: " +
                           block.header.merkle_root.GetHex() + ", computed: " + computed_merkle.GetHex() + ")");

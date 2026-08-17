@@ -303,6 +303,19 @@ foreach ($d in $vcpkgDlls) {
     }
 }
 
+# Bundle the Microsoft Visual C++ 2015-2022 x64 Redistributable and let the NSIS
+# installer run it (see EnsureVCRedist in dinero-installer.nsi). Qt6Core.dll +
+# dinero-qt.exe depend on VCRUNTIME140/MSVCP140; without the redist a clean
+# machine fails to launch with a "Qt6Core.dll" error. Reuse the cached copy in
+# dist\ (shared with build-server-installer.ps1), else fetch the official one.
+$vcRedist = Join-Path $DistDir 'vc_redist.x64.exe'
+if (-not (Test-Path $vcRedist)) {
+    Write-Host 'Downloading vc_redist.x64.exe...'
+    Invoke-WebRequest -UseBasicParsing 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $vcRedist
+}
+Copy-Item $vcRedist (Join-Path $Stage 'vc_redist.x64.exe')
+Write-Host ("  vc_redist.x64.exe ({0:N1} MB)" -f ((Get-Item $vcRedist).Length / 1MB))
+
 Write-Host "Running windeployqt..."
 $oldEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
