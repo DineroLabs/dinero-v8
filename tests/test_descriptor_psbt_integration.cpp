@@ -4,7 +4,19 @@
 #include "wallet/descriptor_psbt.h"
 #include "wallet/descriptor_checksum.h"
 #include <iostream>
-#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+
+// Always-on check: assert() compiles out under NDEBUG and gates nothing in
+// release/CI builds (scripts/ci/check_test_assertions.py, issue #497).
+#define always_assert(cond)                                                    \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            std::fprintf(stderr, "CHECK FAILED: %s\n  at %s:%d\n", #cond,      \
+                         __FILE__, __LINE__);                                  \
+            std::abort();                                                      \
+        }                                                                      \
+    } while (0)
 
 using namespace dinero;
 
@@ -72,13 +84,13 @@ void test_bip86_descriptor_to_psbt() {
     );
 
     // Verify result
-    assert(result.success);
-    assert(result.descriptor_type == "tr");
-    assert(result.wallet_policy == WalletPolicy::BIP86_TAPROOT);
-    assert(result.input_count == 1);
-    assert(result.output_count == 1);
-    assert(result.fee == 5000);
-    assert(!result.psbt_base64.empty());
+    always_assert(result.success);
+    always_assert(result.descriptor_type == "tr");
+    always_assert(result.wallet_policy == WalletPolicy::BIP86_TAPROOT);
+    always_assert(result.input_count == 1);
+    always_assert(result.output_count == 1);
+    always_assert(result.fee == 5000);
+    always_assert(!result.psbt_base64.empty());
 
     std::cout << "✅ PSBT created successfully!" << std::endl;
     std::cout << "   Descriptor type: " << result.descriptor_type << std::endl;
@@ -131,13 +143,13 @@ void test_bip84_descriptor_to_psbt() {
     );
 
     // Verify result
-    assert(result.success);
-    assert(result.descriptor_type == "wpkh");
-    assert(result.wallet_policy == WalletPolicy::BIP84_LEGACY);
-    assert(result.input_count == 1);
-    assert(result.output_count == 1);
-    assert(result.fee == 2000);
-    assert(!result.psbt_base64.empty());
+    always_assert(result.success);
+    always_assert(result.descriptor_type == "wpkh");
+    always_assert(result.wallet_policy == WalletPolicy::BIP84_LEGACY);
+    always_assert(result.input_count == 1);
+    always_assert(result.output_count == 1);
+    always_assert(result.fee == 2000);
+    always_assert(!result.psbt_base64.empty());
 
     std::cout << "✅ PSBT created successfully!" << std::endl;
     std::cout << "   Descriptor type: " << result.descriptor_type << std::endl;
@@ -183,9 +195,9 @@ void test_policy_mismatch_rejection() {
     );
 
     // Should fail
-    assert(!result.success);
-    assert(!result.error.empty());
-    assert(result.error.find("does not match wallet policy") != std::string::npos);
+    always_assert(!result.success);
+    always_assert(!result.error.empty());
+    always_assert(result.error.find("does not match wallet policy") != std::string::npos);
 
     std::cout << "✅ Policy mismatch correctly rejected!" << std::endl;
     std::cout << "   Error: " << result.error << std::endl;

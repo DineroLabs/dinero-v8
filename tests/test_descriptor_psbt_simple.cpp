@@ -10,7 +10,19 @@
 #include "crypto/extended_pubkey.h"
 #include "common/address_script_builder.h"
 #include <iostream>
-#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+
+// Always-on check: assert() compiles out under NDEBUG and gates nothing in
+// release/CI builds (scripts/ci/check_test_assertions.py, issue #497).
+#define always_assert(cond)                                                    \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            std::fprintf(stderr, "CHECK FAILED: %s\n  at %s:%d\n", #cond,      \
+                         __FILE__, __LINE__);                                  \
+            std::abort();                                                      \
+        }                                                                      \
+    } while (0)
 
 using namespace dinero;
 
@@ -29,12 +41,12 @@ void test_address_to_scriptpubkey() {
     if (result) {
         std::cout << "✅ Taproot address decoded successfully" << std::endl;
         std::cout << "   scriptPubKey size: " << spk.size() << " bytes" << std::endl;
-        assert(spk.size() == 34); // OP_1 <32-byte-pubkey>
-        assert(spk[0] == 0x51); // OP_1
-        assert(spk[1] == 0x20); // Push 32 bytes
+        always_assert(spk.size() == 34); // OP_1 <32-byte-pubkey>
+        always_assert(spk[0] == 0x51); // OP_1
+        always_assert(spk[1] == 0x20); // Push 32 bytes
     } else {
         std::cout << "❌ Failed: " << error << std::endl;
-        assert(false);
+        always_assert(false);
     }
 
     // Test SegWit address (din1q...)
@@ -47,12 +59,12 @@ void test_address_to_scriptpubkey() {
     if (result) {
         std::cout << "✅ SegWit address decoded successfully" << std::endl;
         std::cout << "   scriptPubKey size: " << spk.size() << " bytes" << std::endl;
-        assert(spk.size() == 22); // OP_0 <20-byte-hash>
-        assert(spk[0] == 0x00); // OP_0
-        assert(spk[1] == 0x14); // Push 20 bytes
+        always_assert(spk.size() == 22); // OP_0 <20-byte-hash>
+        always_assert(spk[0] == 0x00); // OP_0
+        always_assert(spk[1] == 0x14); // Push 20 bytes
     } else {
         std::cout << "❌ Failed: " << error << std::endl;
-        assert(false);
+        always_assert(false);
     }
 
     std::cout << std::endl;
@@ -77,7 +89,7 @@ void test_key_derivation_path() {
         std::vector<uint8_t> pubkey = address_key.GetPublicKey();
         std::cout << "✅ Derived to m/.../0/5" << std::endl;
         std::cout << "   Public key size: " << pubkey.size() << " bytes" << std::endl;
-        assert(pubkey.size() == 33); // Compressed pubkey
+        always_assert(pubkey.size() == 33); // Compressed pubkey
 
         // Derive m/1/10 (change path, address index 10)
         auto change_key = ext_key.Derive(1); // m/.../1
@@ -86,15 +98,15 @@ void test_key_derivation_path() {
         std::vector<uint8_t> change_pubkey = change_address_key.GetPublicKey();
         std::cout << "✅ Derived to m/.../1/10" << std::endl;
         std::cout << "   Public key size: " << change_pubkey.size() << " bytes" << std::endl;
-        assert(change_pubkey.size() == 33);
+        always_assert(change_pubkey.size() == 33);
 
         // Verify different keys
-        assert(pubkey != change_pubkey);
+        always_assert(pubkey != change_pubkey);
         std::cout << "✅ Receive and change keys are different" << std::endl;
 
     } catch (const std::exception& e) {
         std::cout << "❌ Failed: " << e.what() << std::endl;
-        assert(false);
+        always_assert(false);
     }
 
     std::cout << std::endl;
@@ -114,12 +126,12 @@ void test_descriptor_parsing() {
 
     // Verify checksum
     bool valid = din::DescriptorChecksum::Verify(with_checksum);
-    assert(valid);
+    always_assert(valid);
     std::cout << "✅ Checksum verified" << std::endl;
 
     // Strip checksum
     std::string stripped = din::DescriptorChecksum::StripChecksum(with_checksum);
-    assert(stripped == descriptor);
+    always_assert(stripped == descriptor);
     std::cout << "✅ Stripped checksum correctly" << std::endl;
 
     std::cout << std::endl;

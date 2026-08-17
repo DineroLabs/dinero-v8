@@ -1,7 +1,19 @@
 #include "wallet/psbt_taproot_validator.h"
 #include "dinero/core/wallet/psbt.h"
 #include <iostream>
-#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+
+// Always-on check: assert() compiles out under NDEBUG and gates nothing in
+// release/CI builds (scripts/ci/check_test_assertions.py, issue #497).
+#define always_assert(cond)                                                    \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            std::fprintf(stderr, "CHECK FAILED: %s\n  at %s:%d\n", #cond,      \
+                         __FILE__, __LINE__);                                  \
+            std::abort();                                                      \
+        }                                                                      \
+    } while (0)
 
 using namespace dinero;
 using namespace din;
@@ -46,7 +58,7 @@ int main() {
 
         std::cout << "  Valid: " << (result.valid ? "YES" : "NO") << std::endl;
         std::cout << "  Expected: YES (BIP84 has no Taproot restrictions)" << std::endl;
-        assert(result.valid && "BIP84 wallet should allow script-path spending");
+        always_assert(result.valid && "BIP84 wallet should allow script-path spending");
         std::cout << "  ✅ PASS" << std::endl << std::endl;
     }
 
@@ -83,7 +95,7 @@ int main() {
 
         std::cout << "  Valid: " << (result.valid ? "YES" : "NO") << std::endl;
         std::cout << "  Expected: YES (key-path spending is allowed)" << std::endl;
-        assert(result.valid && "BIP86 wallet should allow key-path spending");
+        always_assert(result.valid && "BIP86 wallet should allow key-path spending");
         std::cout << "  ✅ PASS" << std::endl << std::endl;
     }
 
@@ -121,7 +133,7 @@ int main() {
         std::cout << "  Valid: " << (result.valid ? "YES" : "NO") << std::endl;
         std::cout << "  Expected: NO (script-path spending forbidden for BIP86)" << std::endl;
         std::cout << "  Error: " << (result.error.empty() ? "(none)" : result.error.substr(0, 50) + "...") << std::endl;
-        assert(!result.valid && "BIP86 wallet should reject TAP_SCRIPT_SIG");
+        always_assert(!result.valid && "BIP86 wallet should reject TAP_SCRIPT_SIG");
         std::cout << "  ✅ PASS" << std::endl << std::endl;
     }
 
@@ -158,7 +170,7 @@ int main() {
 
         std::cout << "  Valid: " << (result.valid ? "YES" : "NO") << std::endl;
         std::cout << "  Expected: NO (script tree forbidden for BIP86)" << std::endl;
-        assert(!result.valid && "BIP86 wallet should reject TAP_LEAF_SCRIPT");
+        always_assert(!result.valid && "BIP86 wallet should reject TAP_LEAF_SCRIPT");
         std::cout << "  ✅ PASS" << std::endl << std::endl;
     }
 
@@ -195,7 +207,7 @@ int main() {
 
         std::cout << "  Valid: " << (result.valid ? "YES" : "NO") << std::endl;
         std::cout << "  Expected: NO (merkle root indicates script tree)" << std::endl;
-        assert(!result.valid && "BIP86 wallet should reject non-zero TAP_MERKLE_ROOT");
+        always_assert(!result.valid && "BIP86 wallet should reject non-zero TAP_MERKLE_ROOT");
         std::cout << "  ✅ PASS" << std::endl << std::endl;
     }
 

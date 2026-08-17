@@ -3,7 +3,19 @@
 #include "wallet/wallet_manager.h"
 #include "dinero/core/wallet/psbt.h"
 #include <iostream>
-#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+
+// Always-on check: assert() compiles out under NDEBUG and gates nothing in
+// release/CI builds (scripts/ci/check_test_assertions.py, issue #497).
+#define always_assert(cond)                                                    \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            std::fprintf(stderr, "CHECK FAILED: %s\n  at %s:%d\n", #cond,      \
+                         __FILE__, __LINE__);                                  \
+            std::abort();                                                      \
+        }                                                                      \
+    } while (0)
 
 using namespace dinero;
 using namespace din;
@@ -63,8 +75,8 @@ void test_bip86_rejects_script_path() {
     std::cout << "  Valid: " << (result.valid ? "YES ❌" : "NO ✅") << std::endl;
     std::cout << "  Error: " << result.error << std::endl;
 
-    assert(!result.valid && "BIP86 should reject TAP_SCRIPT_SIG");
-    assert(result.error.find("BIP86 Policy Violation") != std::string::npos);
+    always_assert(!result.valid && "BIP86 should reject TAP_SCRIPT_SIG");
+    always_assert(result.error.find("BIP86 Policy Violation") != std::string::npos);
 
     std::cout << "  ✅ PASS: BIP86 wallet correctly rejected script-path spending" << std::endl;
     std::cout << std::endl;
@@ -91,8 +103,8 @@ void test_bip86_accepts_key_path() {
     std::cout << "  Wallet policy: bip86" << std::endl;
     std::cout << "  Valid: " << (result.valid ? "YES ✅" : "NO ❌") << std::endl;
 
-    assert(result.valid && "BIP86 should accept TAP_KEY_SIG");
-    assert(result.error.empty());
+    always_assert(result.valid && "BIP86 should accept TAP_KEY_SIG");
+    always_assert(result.error.empty());
 
     std::cout << "  ✅ PASS: BIP86 wallet correctly accepted key-path spending" << std::endl;
     std::cout << std::endl;
@@ -120,7 +132,7 @@ void test_bip86_rejects_leaf_script() {
     std::cout << "  Valid: " << (result.valid ? "YES ❌" : "NO ✅") << std::endl;
     std::cout << "  Error: " << result.error << std::endl;
 
-    assert(!result.valid && "BIP86 should reject TAP_LEAF_SCRIPT");
+    always_assert(!result.valid && "BIP86 should reject TAP_LEAF_SCRIPT");
 
     std::cout << "  ✅ PASS: BIP86 wallet correctly rejected script tree" << std::endl;
     std::cout << std::endl;
@@ -148,7 +160,7 @@ void test_bip86_rejects_merkle_root() {
     std::cout << "  Valid: " << (result.valid ? "YES ❌" : "NO ✅") << std::endl;
     std::cout << "  Error: " << result.error << std::endl;
 
-    assert(!result.valid && "BIP86 should reject non-zero TAP_MERKLE_ROOT");
+    always_assert(!result.valid && "BIP86 should reject non-zero TAP_MERKLE_ROOT");
 
     std::cout << "  ✅ PASS: BIP86 wallet correctly rejected merkle root" << std::endl;
     std::cout << std::endl;
@@ -185,7 +197,7 @@ void test_bip84_allows_script_path() {
     std::cout << "  Wallet policy: bip84" << std::endl;
     std::cout << "  Valid: " << (result.valid ? "YES ✅" : "NO ❌") << std::endl;
 
-    assert(result.valid && "BIP84 should allow all script-path fields");
+    always_assert(result.valid && "BIP84 should allow all script-path fields");
 
     std::cout << "  ✅ PASS: BIP84 wallet has no Taproot restrictions" << std::endl;
     std::cout << std::endl;
@@ -212,7 +224,7 @@ void test_empty_policy_no_restrictions() {
     std::cout << "  Wallet policy: (empty/legacy)" << std::endl;
     std::cout << "  Valid: " << (result.valid ? "YES ✅" : "NO ❌") << std::endl;
 
-    assert(result.valid && "Empty policy should allow script-path");
+    always_assert(result.valid && "Empty policy should allow script-path");
 
     std::cout << "  ✅ PASS: Legacy wallet has no restrictions" << std::endl;
     std::cout << std::endl;
