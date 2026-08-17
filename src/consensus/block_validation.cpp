@@ -2061,8 +2061,16 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         verify_root && IsUtreexoActive(height)) {
         const auto& utreexo_data = block.utreexo.value();
 
+        // #578: same treatment as the ConnectTip pre-cache site — snapshot the
+        // live forest under the SHARED lock before transition-proof generation
+        // (generate() clones and walks it; the raw read raced guarded writers).
+        UtreexoForest forest_for_transition;
+        {
+            auto forest_lock = consensus_utxo_set_->LockForestShared();
+            forest_for_transition = consensus_utxo_set_->GetForest();
+        }
         auto transition = UtreexoTransitionProof::generate(
-            consensus_utxo_set_->GetForest(),
+            forest_for_transition,
             block,
             utreexo_data.spend_proof,
             height);

@@ -12475,8 +12475,17 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 }
 
                 // Generate transition proof while forest is at pre-block state
+                // #578: snapshot the live forest under the SHARED lock before
+                // handing it to transition-proof generation — generate() clones
+                // and walks the forest, and the raw GetForest() read raced
+                // guarded forest writers (TSan round 3, the last forest race).
+                consensus::UtreexoForest forest_for_tp;
+                {
+                    auto forest_lock = consensus_utxo_set_->LockForestShared();
+                    forest_for_tp = consensus_utxo_set_->GetForest();
+                }
                 auto tp = consensus::UtreexoTransitionProof::generate(
-                    consensus_utxo_set_->GetForest(),
+                    forest_for_tp,
                     block,
                     proof_data.spend_proof,
                     tip_to_connect->height);
