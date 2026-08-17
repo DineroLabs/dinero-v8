@@ -26,6 +26,7 @@
 #include "consensus/block_undo.h"
 #include "primitives/uint256.h"
 #include "consensus/utreexo_accumulator.h"  // UtreexoForest + UtreexoHash (guarded forest access)
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -214,6 +215,15 @@ public:
     }
     virtual bool RemoveLastNLeavesGuarded(uint64_t count) {
         return GetForest().removeLastNLeaves(count);
+    }
+
+    // Run an arbitrary mutation (whole-value replace/restore, or in-place) on
+    // the forest under the EXCLUSIVE lock. For writers that hold a separate
+    // pointer/alias to the forest (e.g. StatelessNode in CSN mode) so their
+    // move-assigns/restores exclude the shared-lock readers. Default runs
+    // unlocked so mocks keep compiling; ConsensusUTXOSet overrides to lock.
+    virtual void MutateForestGuarded(const std::function<void(UtreexoForest&)>& fn) {
+        fn(GetForest());
     }
 
     // Acquire the forest's SHARED lock for the duration of a multi-step read

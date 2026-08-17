@@ -582,6 +582,11 @@ bool ConsensusUTXOSet::RemoveLastNLeavesGuarded(uint64_t count) {
     return forest_.removeLastNLeaves(count);
 }
 
+void ConsensusUTXOSet::MutateForestGuarded(const std::function<void(UtreexoForest&)>& fn) {
+    std::unique_lock<std::shared_mutex> lock(forest_mutex_);
+    fn(forest_);
+}
+
 size_t ConsensusUTXOSet::GetMemoryUsage() const {
     size_t usage = sizeof(ConsensusUTXOSet);
 

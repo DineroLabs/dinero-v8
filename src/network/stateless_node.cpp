@@ -1,4 +1,5 @@
 #include "network/stateless_node.h"
+#include "consensus/interfaces/iconsensus_utxo_set.h"  // guarded forest access (CSN UAF fix)
 #include "network/types.h"
 #include "daemon/peer_connection.h"
 #include "common/logger.h"
@@ -287,14 +288,39 @@ bool ApplyAccumulatorDelta(
 // Constructor
 // ═════════════════════════════════════════════════════════════════════════════
 
-StatelessNode::StatelessNode(consensus::UtreexoForest* utreexo_forest)
-    : utreexo_forest_(utreexo_forest)
+StatelessNode::StatelessNode(consensus::IConsensusUTXOSet* owner)
+    : StatelessNode(owner, owner ? &owner->GetForest() : nullptr) {}
+
+StatelessNode::StatelessNode(consensus::UtreexoForest* scratch_forest)
+    : StatelessNode(nullptr, scratch_forest) {}
+
+void StatelessNode::mutateForest(const std::function<void(consensus::UtreexoForest&)>& fn) {
+    // Owner present ⇒ take the forest's EXCLUSIVE lock (excludes shared-lock
+    // RPC/FFI readers). Scratch node ⇒ local forest, no sharing, mutate directly.
+    if (owner_) owner_->MutateForestGuarded(fn);
+    else fn(*utreexo_forest_);
+}
+
+void StatelessNode::readForestShared(
+    const std::function<void(const consensus::UtreexoForest&)>& fn) const {
+    if (owner_) {
+        auto forest_lock = owner_->LockForestShared();
+        fn(*utreexo_forest_);
+    } else {
+        fn(*utreexo_forest_);
+    }
+}
+
+StatelessNode::StatelessNode(consensus::IConsensusUTXOSet* owner,
+                             consensus::UtreexoForest* forest)
+    : owner_(owner)
+    , utreexo_forest_(forest)
     , current_sync_height_(0)
     , sync_state_(StatelessSyncState::IDLE)
     , next_bridge_index_(0)
 {
     if (!utreexo_forest_) {
-        throw std::invalid_argument("StatelessNode: utreexo_forest cannot be null");
+        throw std::invalid_argument("StatelessNode: forest cannot be null");
     }
 
     // Seed stump from forest (extracts roots only — ~2KB)
@@ -767,8 +793,13 @@ bool StatelessNode::ValidateWithTransitionProof(
             return false;
         }
 
-        *utreexo_forest_ = std::move(working_forest);
-        local_stump_ = consensus::UtreexoStump::fromForest(*utreexo_forest_);
+        // Guarded: take the forest's EXCLUSIVE lock so this move-assign (which
+        // frees the old forest's buffers) excludes the shared-lock RPC/FFI
+        // readers (CSN-mode forest read-during-free UAF).
+        mutateForest([&](consensus::UtreexoForest& f) {
+            f = std::move(working_forest);
+            local_stump_ = consensus::UtreexoStump::fromForest(f);
+        });
     }
 
     local_commitment_ = tp.commitment_after;
@@ -898,7 +929,12 @@ void StatelessNode::SyncToForestState(std::optional<uint32_t> height) {
         return;
     }
 
-    local_stump_ = consensus::UtreexoStump::fromForest(*utreexo_forest_);
+    // Read the forest under the SHARED lock so this stump derivation cannot race
+    // a concurrent forest write (CSN-mode forest read-during-free UAF); mirrors
+    // the other structural readers.
+    readForestShared([&](const consensus::UtreexoForest& f) {
+        local_stump_ = consensus::UtreexoStump::fromForest(f);
+    });
     local_commitment_ = local_stump_.getCommitment();
     local_num_leaves_ = local_stump_.getNumLeaves();
     if (height.has_value()) {
@@ -1019,11 +1055,13 @@ consensus::UtreexoHash StatelessNode::ComputeLeafHash(
 void StatelessNode::RewindToCheckpoint(uint32_t height, const consensus::UtreexoForest& restored_forest) {
     g_logger.info("[StatelessNode] RewindToCheckpoint: height=" + std::to_string(height));
 
-    // Deep copy the restored forest into our forest pointer
-    *utreexo_forest_ = restored_forest;
-
-    // Rebuild stump from restored forest
-    local_stump_ = consensus::UtreexoStump::fromForest(*utreexo_forest_);
+    // Deep copy the restored forest into our forest pointer, and rebuild the
+    // stump from it, under the forest's EXCLUSIVE lock so this replace excludes
+    // the shared-lock RPC/FFI readers (CSN-mode forest read-during-free UAF).
+    mutateForest([&](consensus::UtreexoForest& f) {
+        f = restored_forest;
+        local_stump_ = consensus::UtreexoStump::fromForest(f);
+    });
     local_commitment_ = local_stump_.getCommitment();
     local_num_leaves_ = local_stump_.getNumLeaves();
     current_sync_height_ = height;
@@ -1093,8 +1131,13 @@ bool StatelessNode::ReplayBlock(
         }
 
         // 4. Commit atomically to live forest + local state.
-        *utreexo_forest_ = std::move(working_forest);
-        local_stump_ = consensus::UtreexoStump::fromForest(*utreexo_forest_);
+        // Guarded: take the forest's EXCLUSIVE lock so this move-assign (which
+        // frees the old forest's buffers) excludes the shared-lock RPC/FFI
+        // readers (CSN-mode forest read-during-free UAF).
+        mutateForest([&](consensus::UtreexoForest& f) {
+            f = std::move(working_forest);
+            local_stump_ = consensus::UtreexoStump::fromForest(f);
+        });
         local_commitment_ = replayed_commitment;
         local_num_leaves_ = local_stump_.getNumLeaves();
         current_sync_height_++;

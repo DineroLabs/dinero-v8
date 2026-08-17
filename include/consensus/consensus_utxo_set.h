@@ -246,6 +246,7 @@ public:
     uint64_t SnapshotForestRootCount() const override;
     void ReplaceForestGuarded(UtreexoForest next) override;
     bool RemoveLastNLeavesGuarded(uint64_t count) override;
+    void MutateForestGuarded(const std::function<void(UtreexoForest&)>& fn) override;
     ForestReadLock LockForestShared() const override {
         return ForestReadLock{std::shared_lock<std::shared_mutex>(forest_mutex_)};
     }

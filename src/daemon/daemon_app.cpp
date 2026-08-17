@@ -2933,7 +2933,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                 // Phase P.3: Create StatelessNode for CSN block+proof validation
                 std::shared_ptr<network::StatelessNode> stateless_node;
                 if (GetConfig().utreexo_stateless && utreexo_forest) {
-                    stateless_node = std::make_shared<network::StatelessNode>(utreexo_forest);
+                    // Pass the forest OWNER (ConsensusUTXOSet), not a raw forest
+                    // alias, so StatelessNode's writes/reads go through the
+                    // guarded lock (CSN-mode forest read-during-free UAF fix).
+                    stateless_node = std::make_shared<network::StatelessNode>(
+                        chainstate_service->GetConsensusUTXOSet());
 
                     // Wire block provider (for fetching blocks by hash during sync loop)
                     // Capture chainstate_service (shared_ptr) to ensure ChainDB lifetime
