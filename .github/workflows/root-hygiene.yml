@@ -1,0 +1,18 @@
+name: Root hygiene
+
+# Guards the repository root against regrowth of loose scripts/sources and
+# against any script reintroducing allow-all RPC configs
+# (rpcbind=0.0.0.0 + rpcallowip=0.0.0.0/0). Seconds-cheap, runs everywhere.
+on:
+  push:
+    branches: [dinero-main]
+  pull_request:
+
+jobs:
+  root-hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check root hygiene
+        run: bash scripts/ci/check_root_hygiene.sh

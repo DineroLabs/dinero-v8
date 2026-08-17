@@ -436,7 +436,7 @@ target_include_directories(wallet_test_deps PUBLIC
 # test_reindex - Standalone reindex tester (no mempool dependencies)
 # ═══════════════════════════════════════════════════════════════════════════
 add_executable(test_reindex
-  test_reindex.cpp
+  tests/test_reindex.cpp
   src/consensus/reindexer.cpp
   src/consensus/genesis_canonical.cpp
   src/common/logger.cpp
@@ -11360,7 +11360,7 @@ message(STATUS "✅ Phase W.1 Wallet Validation: Restore + rescan test registere
 
 # PSBT Taproot Guardrails Test
 add_executable(test_psbt_guardrails
-  test_psbt_guardrails.cpp
+  tests/test_psbt_guardrails.cpp
   src/wallet/psbt_taproot_validator.cpp
 )
 target_link_libraries(test_psbt_guardrails PRIVATE jsoncpp_static)
@@ -11386,7 +11386,7 @@ target_link_libraries(test_psbt_guardrails PRIVATE jsoncpp_static)
 # Minimal test - synthetic data, no wallet DB/RPC dependencies
 # PSBT helpers exported from dinero_core (Phase 2 Step 4 complete)
 add_executable(test_descriptor_psbt_integration
-    test_descriptor_psbt_integration.cpp
+    tests/test_descriptor_psbt_integration.cpp
 )
 if(APPLE)
     target_link_libraries(test_descriptor_psbt_integration dinero_wallet dinero_core dinero_crypto OpenSSL::SSL OpenSSL::Crypto "-framework Security")
@@ -11398,7 +11398,7 @@ target_include_directories(test_descriptor_psbt_integration PRIVATE ${CMAKE_SOUR
 # Simple Descriptor PSBT Test (Phase 2 Step 3)
 # Tests core fixes: address→scriptPubKey and complete key derivation
 add_executable(test_descriptor_psbt_simple
-    test_descriptor_psbt_simple.cpp
+    tests/test_descriptor_psbt_simple.cpp
 )
 if(APPLE)
     target_link_libraries(test_descriptor_psbt_simple dinero_wallet dinero_core dinero_crypto OpenSSL::SSL OpenSSL::Crypto "-framework Security")
@@ -11458,7 +11458,7 @@ target_include_directories(test_bip86_taproot_workflow PRIVATE ${CMAKE_SOURCE_DI
 # BIP86 Tapscript Guardrail Test (Phase 3C - Security Hardening)
 # Tests that BIP86 wallets reject script-path spending PSBTs (tapscript safety)
 add_executable(test_psbt_bip86_integration
-    test_psbt_bip86_integration.cpp
+    tests/test_psbt_bip86_integration.cpp
 )
 if(APPLE)
     target_link_libraries(test_psbt_bip86_integration dinero_wallet dinero_core dinero_crypto OpenSSL::SSL OpenSSL::Crypto "-framework Security")
