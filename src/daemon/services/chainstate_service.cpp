@@ -12522,7 +12522,9 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     if (GetConfig().utreexo_stateless && stateless_node_ && consensus_utxo_set_ &&
         block.utreexo.has_value() &&
         !block.utreexo->accumulator_root_before.empty()) {
-        const auto current_commitment = consensus_utxo_set_->GetForest().getCommitment();
+        // #578 (TSan round 4): SnapshotForestCommitment takes the shared lock;
+        // the raw GetForest().getCommitment() read raced guarded forest writers.
+        const auto current_commitment = consensus_utxo_set_->SnapshotForestCommitment();
         if (current_commitment == block.utreexo->accumulator_root_before) {
             if (logger_) {
                 logger_->info("[ConnectTip] Stateless replay path: advancing shared forest from stored proof data at height " +
