@@ -7250,7 +7250,6 @@ bool DaemonApp::Start() {
             auto utxo_index = chainstate->utxoIndex();
 
             if (utreexo_forest && utxo_index) {
-                ctx_.block_assembler->SetUtreexoForest(utreexo_forest);
                 ctx_.block_assembler->SetConsensusUTXOSet(chainstate->GetConsensusUTXOSet());  // snapshot forest under shared lock (UAF guard)
                 // v2.2.0: Create adapter to bridge wallet UTXOIndex to consensus IUTXOProvider
                 // BlockAssembler takes shared_ptr<IUTXOProvider> - lifetime managed automatically

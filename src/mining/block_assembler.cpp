@@ -1385,7 +1385,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
         }
         uint256 template_determinism_hash = ComputeTemplateDeterminismHash(block->vtx, template_flags);
 
-        if (utreexo_forest_ && utxo_provider_) {
+        if (consensus_utxo_set_ && utxo_provider_) {
             consensus::BlockUtreexoData utreexo_data;
 
             // Snapshot the live forest ONCE under its shared lock, then derive BOTH
@@ -1397,13 +1397,9 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
             // (Perf note: ComputeUtreexoRootPure below clones again; a follow-up
             //  could pass forest_view to ComputeUtreexoRootPureFromForest.)
             consensus::UtreexoForest forest_view;
-            if (consensus_utxo_set_) {
+            {
                 auto forest_lock = consensus_utxo_set_->LockForestShared();
                 forest_view = consensus_utxo_set_->GetForest().clone();
-            } else {
-                // Fallback for callers that did not wire the ConsensusUTXOSet:
-                // unsynchronized clone (pre-existing behavior).
-                forest_view = utreexo_forest_->clone();
             }
 
             utreexo_data.accumulator_root_before = forest_view.getCommitment();
@@ -1498,7 +1494,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
                 dinero::g_logger.error(msg);
                 return fail(msg);
             }
-        } else if (utreexo_forest_) {
+        } else if (consensus_utxo_set_) {
             dinero::g_logger.warning("⚠️  [Utreexo Miner] Forest available but no UTXO provider - skipping proof generation");
         }
 

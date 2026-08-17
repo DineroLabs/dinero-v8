@@ -175,24 +175,14 @@ public:
     }
 
     /**
-     * @brief Set Utreexo forest for proof generation (Utreexo integration)
-     *
-     * Enables miner to generate batched Utreexo proofs for block templates.
-     * Required for Utreexo-enforced blocks.
-     *
-     * @param forest Utreexo forest instance (non-owning pointer)
-     */
-    void SetUtreexoForest(consensus::UtreexoForest* forest) {
-        utreexo_forest_ = forest;
-    }
-
-    /**
      * @brief Set the ConsensusUTXOSet that owns the forest + its read/write lock.
      *
-     * Required alongside SetUtreexoForest so CreateNewBlock can snapshot the
-     * forest under its shared lock (block template building runs on the mining
-     * thread, which would otherwise race the block-connect writer freeing the
-     * forest — audit: forest read-during-free UAF).
+     * Required for Utreexo-enforced blocks: CreateNewBlock snapshots the forest
+     * under its shared lock (block template building runs on the mining thread,
+     * which would otherwise race the block-connect writer freeing the forest —
+     * audit: forest read-during-free UAF). This is the ONLY way the assembler
+     * reaches the forest — there is deliberately no raw-pointer setter, so the
+     * alias-that-bypasses-the-lock pattern cannot recur.
      */
     void SetConsensusUTXOSet(consensus::IConsensusUTXOSet* uset) {
         consensus_utxo_set_ = uset;
@@ -514,7 +504,6 @@ private:
     BlockRelayManager* block_relay_manager_;  // Phase W.1.3: For network-aware mining (optional)
 
     // Utreexo integration
-    consensus::UtreexoForest* utreexo_forest_ = nullptr;  // Utreexo accumulator for proof generation
     consensus::IConsensusUTXOSet* consensus_utxo_set_ = nullptr;  // Owns forest + lock (snapshot under shared lock)
     std::shared_ptr<consensus::IUTXOProvider> utxo_provider_;   // UTXO provider for spent output data
     consensus::BlockValidator* block_validator_ = nullptr; // Oracle for Utreexo root computation (single source of truth)
