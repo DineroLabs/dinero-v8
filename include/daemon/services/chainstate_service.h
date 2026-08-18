@@ -946,6 +946,10 @@ private:
     // Mismatches encountered now are real corruption and fail loud.
     bool VerifyOrBootstrapShieldedTipMarker(const uint256& tip_hash, uint32_t tip_height);
     bool RewindShieldedStateToActiveTipForStartup(uint32_t stored_tip_height);
+    // #585: shielded arm of the self-heal realign — rewind the shielded state +
+    // tip marker down to active_tip_ after the self-heal lowers it, so the shielded
+    // invariant does not trip SAFE MODE. No-op when the marker is not ahead.
+    void RealignShieldedStateToActiveTipAfterHeal();
     bool RangeHasShieldedActivity(uint32_t start_height, uint32_t end_height) const;
 
     // Centralized AssumeUTXO state transitions keep in-memory flags and
