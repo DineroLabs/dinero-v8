@@ -14463,6 +14463,22 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             return fail("persist-height-index-stage-failed");
         }
 
+        // #579 core, sub-layer 2: persist the connected block HEADER too.
+        // ConnectTip stages putHeader for every block it connects, but this
+        // lightweight funnel (ABC-CSN replay + ConnectTip recovery) staged
+        // only tip + height index — so reorg-connected blocks had a height-
+        // index entry and NO header record. Any later checkpoint replay whose
+        // range crossed a reorg then failed its header-root verification
+        // ("replay-missing-header-at-N") even with correct identity
+        // resolution, wedging the speculative reorg plan. Same batch, same
+        // token: the header commits atomically with tip/height-index.
+        const auto header_status = chain_db_->putHeader(
+            token, block_index->hash, block.header,
+            static_cast<int>(block_index->height), work, &utxo_batch);
+        if (header_status != Status::Ok) {
+            return fail("persist-header-stage-failed");
+        }
+
         auto status = chain_db_->writeBatch(token, std::move(utxo_batch), true);
         if (status != Status::Ok) {
             if (logger_) {
