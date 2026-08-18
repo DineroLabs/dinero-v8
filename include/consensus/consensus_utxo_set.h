@@ -135,6 +135,19 @@ public:
     // Block Operations
     // =========================================================================
 
+    // NOTE (concurrency / scope): ApplyBlock, UndoBlock, ProcessTransaction, and
+    // ApplyCanonicalSemanticsForHeight mutate this instance's `forest_` IN PLACE
+    // and take NO forest lock. That is intentional and safe because they have
+    // ZERO production callers — the only invocations are in tests, on test-local
+    // ConsensusUTXOSet instances (working copies). The LIVE connect path does NOT
+    // route through these: it clones the forest under `LockForestShared`
+    // (block_validation.cpp cloneForHeight), mutates the clone, and publishes it
+    // via `ReplaceForestGuarded` / `RemoveLastNLeavesGuarded` (the guarded
+    // writers), so shared-lock readers (RPC/FFI/bridge) are protected. Do NOT add
+    // a `mutateForest` wrap here to "fix a race" — there is no live race; wrapping
+    // would guard code that never runs on the shared forest. If a future caller
+    // ever invokes one of these on the LIVE `consensus_utxo_set_`, THAT caller
+    // must guard it (or this note must change). (#578/#580 forest-lock audit.)
     /**
      * Apply a block to the UTXO set
      *
