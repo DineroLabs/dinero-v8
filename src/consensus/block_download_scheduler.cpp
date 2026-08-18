@@ -1554,6 +1554,43 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
         expected_blocks_.insert(hash);
     }
 
+    // #579 pass 2b (unified root fix): when a fork below our tip was queued
+    // (start_height was pulled down to fork_point+1), the overlap heights
+    // [fork_point+1 .. old local tip] can still carry STALE OLD-BRANCH hashes.
+    // The REQUEST side resolves which block to fetch from the header chain (the
+    // truth), but the RECEIPT side matches arriving blocks BY HASH against these
+    // queue entries — so a correctly-requested new-branch block whose entry still
+    // holds the old hash is received, indexed, and silently dropped (no
+    // OnBlockReceived match), leaving the frontier pinned forever (the mode-2
+    // stall). Align every overlap entry's hash with the header chain so receipts
+    // match and the cursor advances. Heights above the old tip are freshly built
+    // from the header window and already correct, so they are skipped. This is the
+    // same entry/header hash-divergence defect the INVALID-frontier re-seat (pass
+    // 1) handled as its special case (a stale entry additionally marked INVALID).
+    if (start_height <= local_tip_height_) {
+        for (auto& fs : missing_blocks_) {
+            if (fs.height > local_tip_height_) {
+                continue;  // above the old tip: fresh header-window entry, already correct
+            }
+            uint256 header_hash;
+            if (GetExpectedHashAtHeight(fs.height, header_hash) &&
+                header_hash != fs.block_hash) {
+                in_flight_blocks_.erase(fs.block_hash);
+                received_blocks_.erase(fs.block_hash);
+                expected_blocks_.erase(fs.block_hash);
+                g_logger.info("[BlockDownloadScheduler] Fork re-seat at height " +
+                              std::to_string(fs.height) + ": " +
+                              fs.block_hash.GetHex().substr(0, 16) + "... -> " +
+                              header_hash.GetHex().substr(0, 16) +
+                              "... (stale old-branch entry aligned to the header chain)");
+                fs.block_hash = header_hash;
+                fs.status = FetchStatus::MISSING;
+                fs.stored_pos = FilePosition();
+                expected_blocks_.insert(header_hash);
+            }
+        }
+    }
+
     g_logger.info("[BlockDownloadScheduler] Queued " + std::to_string(missing_blocks_.size()) +
                  " blocks for download (" + std::to_string(preserved_count) + " preserved states)");
 }
