@@ -15,14 +15,27 @@ Status ReplayUtreexoDeltaRange(const ChainDB& db,
                                consensus::UtreexoForest& forest,
                                uint32_t from_exclusive,
                                uint32_t to_inclusive,
-                               std::string& error) {
+                               std::string& error,
+                               const BlockHashAtHeightResolver& resolve_hash) {
     for (uint32_t h = from_exclusive + 1; h <= to_inclusive; ++h) {
-        auto hash_result = db.getBlockHashByHeight(static_cast<int>(h));
-        if (hash_result.status() != Status::Ok) {
-            error = "replay-missing-height-index-at-" + std::to_string(h);
-            return Status::NotFound;
+        // #579: identity first. The persisted height index can remain stale
+        // across reorgs; a replay that trusts it pulls the rewritten branch's
+        // hashes and fails ("replay-missing-header-at-N"), which permanently
+        // wedged CSN reorg recovery (the speculative reorg-plan restore).
+        uint256 block_hash;
+        if (resolve_hash) {
+            if (!resolve_hash(h, block_hash)) {
+                error = "replay-anchor-walk-missing-hash-at-" + std::to_string(h);
+                return Status::NotFound;
+            }
+        } else {
+            auto hash_result = db.getBlockHashByHeight(static_cast<int>(h));
+            if (hash_result.status() != Status::Ok) {
+                error = "replay-missing-height-index-at-" + std::to_string(h);
+                return Status::NotFound;
+            }
+            block_hash = hash_result.value();
         }
-        const uint256 block_hash = hash_result.value();
 
         std::string delta_blob;
         const auto blob_status =
@@ -78,7 +91,8 @@ Status ReplayUtreexoDeltaRange(const ChainDB& db,
 
 Status RestoreHistoricalForest(const ChainDB& db, uint32_t target_height,
                                consensus::UtreexoForest& out,
-                               std::string& error) {
+                               std::string& error,
+                               const BlockHashAtHeightResolver& resolve_hash) {
     auto checkpoint_result =
         db.getLatestUtreexoCheckpointAtOrBelow(static_cast<int>(target_height));
     if (checkpoint_result.status() != Status::Ok) {
@@ -124,14 +138,28 @@ Status RestoreHistoricalForest(const ChainDB& db, uint32_t target_height,
     // exempt: an empty forest is its own evidence, and any replay from it
     // verifies block 1+ against headers immediately.)
     if (checkpoint_height > 0) {
-        auto ckpt_hash_result =
-            db.getBlockHashByHeight(static_cast<int>(checkpoint_height));
-        if (ckpt_hash_result.status() != Status::Ok) {
-            error = "restore-missing-height-index-at-checkpoint-" +
-                    std::to_string(checkpoint_height);
-            return Status::NotFound;
+        // #579: same identity-first rule as the replay loop — the checkpoint
+        // self-check must verify against the header of the block the RESTORED
+        // CHAIN holds at the checkpoint height, not whatever a possibly-stale
+        // height index answers.
+        uint256 ckpt_hash;
+        if (resolve_hash) {
+            if (!resolve_hash(checkpoint_height, ckpt_hash)) {
+                error = "restore-anchor-walk-missing-hash-at-checkpoint-" +
+                        std::to_string(checkpoint_height);
+                return Status::NotFound;
+            }
+        } else {
+            auto ckpt_hash_result =
+                db.getBlockHashByHeight(static_cast<int>(checkpoint_height));
+            if (ckpt_hash_result.status() != Status::Ok) {
+                error = "restore-missing-height-index-at-checkpoint-" +
+                        std::to_string(checkpoint_height);
+                return Status::NotFound;
+            }
+            ckpt_hash = ckpt_hash_result.value();
         }
-        auto ckpt_header_result = db.getHeader(ckpt_hash_result.value());
+        auto ckpt_header_result = db.getHeader(ckpt_hash);
         if (ckpt_header_result.status() != Status::Ok) {
             error = "restore-missing-header-at-checkpoint-" +
                     std::to_string(checkpoint_height);
@@ -150,7 +178,7 @@ Status RestoreHistoricalForest(const ChainDB& db, uint32_t target_height,
     }
 
     const Status replay_status = ReplayUtreexoDeltaRange(
-        db, restored, checkpoint_height, target_height, error);
+        db, restored, checkpoint_height, target_height, error, resolve_hash);
     if (replay_status != Status::Ok) {
         return replay_status;
     }
