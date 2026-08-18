@@ -1828,6 +1828,47 @@ bool ChainstateService::RewindShieldedStateToActiveTipForStartup(uint32_t stored
     return true;
 }
 
+// #585: shielded arm of the self-heal realign. The regtest invalidateblock leg
+// (BlockAcceptor::ApplyTipInvalidation) rolls back ChainDB UTXO only and touches
+// NOTHING in-memory; ActivateBestChain's self-heal is the designed in-memory
+// realign, but it only moves active_tip_ (see IsCanonicalStateAligned, which does
+// not consider the shielded marker). So after a disconnect the shielded tip marker
+// and state stay at the pre-invalidation tip, and VerifyOrBootstrapShieldedTipMarker
+// then trips SAFE MODE -> mining paused -> livelock. This is the missing seam: once
+// the self-heal has lowered active_tip_ to the consensus tip, rewind the shielded
+// state + marker down to match, reusing the startup rewind (idempotent — a no-op
+// when the marker is not ahead). NB: called only from the pre-flight self-heal path,
+// which holds no unified WriteBatch (PublishActiveTip already persists on its own
+// path there), so the rewind's independent persists are consistent with that site.
+// (#586: the forest-leaf rollback arm for the same disconnect leg belongs here too.)
+void ChainstateService::RealignShieldedStateToActiveTipAfterHeal() {
+    if (!chain_db_ || !active_tip_) {
+        return;
+    }
+    const auto marker_result = chain_db_->getShieldedTipMarker();
+    if (marker_result.status() != Status::Ok) {
+        return;  // No marker yet (pre-shielded chain) — nothing to realign.
+    }
+    const int raw_marker_height = marker_result.value().height;
+    const uint32_t marker_height = raw_marker_height < 0 ? 0u : static_cast<uint32_t>(raw_marker_height);
+    const uint32_t active_height = static_cast<uint32_t>(active_tip_->height);
+    if (marker_height <= active_height) {
+        return;  // Marker not ahead of the realigned tip — no rollback needed.
+    }
+    if (logger_) {
+        logger_->warning("[ChainstateService] Self-heal: shielded tip marker (@" +
+                         std::to_string(marker_height) + ") is ahead of the realigned active tip (@" +
+                         std::to_string(active_height) +
+                         ") — rewinding shielded state + marker to the active tip (#585)");
+    }
+    if (!RewindShieldedStateToActiveTipForStartup(marker_height)) {
+        if (logger_) {
+            logger_->error("[ChainstateService] Self-heal: failed to rewind shielded state to the "
+                           "active tip; the shielded invariant may still trip SAFE MODE");
+        }
+    }
+}
+
 bool ChainstateService::RangeHasShieldedActivity(uint32_t start_height, uint32_t end_height) const {
     if (!chain_db_ || start_height > end_height) {
         return false;
@@ -7187,6 +7228,8 @@ void ChainstateService::ActivateBestChain() {
                                              " — realigning active_tip_ to consensus UTXO tip (height=" +
                                              std::to_string(utxo_height) + ")");
                 PublishActiveTip(utxo_tip_idx, TipPublishReason::kSelfHealRealign);
+                // #585: bring the shielded state + marker down to the realigned tip.
+                RealignShieldedStateToActiveTipAfterHeal();
 
                 // Re-check alignment after realignment.
                 std::string recheck_reason;
@@ -7218,6 +7261,8 @@ void ChainstateService::ActivateBestChain() {
                                                  "active_tip_ to consensus UTXO tip (height=" +
                                                  std::to_string(utxo_height) + ")");
                     PublishActiveTip(materialized, TipPublishReason::kSelfHealRealign);
+                    // #585: bring the shielded state + marker down to the realigned tip.
+                    RealignShieldedStateToActiveTipAfterHeal();
                     std::string recheck_reason;
                     if (IsCanonicalStateAligned(&recheck_reason)) {
                         healed = true;
