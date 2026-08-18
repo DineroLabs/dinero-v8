@@ -269,6 +269,7 @@ din::Json handle_generatetoaddress(
         din::Json block_hashes = din::arr();
 
         // Mine each block
+        int stale_tip_retries = 0;  // #589: bounded retry when a reorg moves the tip mid-mine
         for (int i = 0; i < nblocks; i++) {
             // ✅ CRITICAL: Fetch fresh tip on EVERY iteration
             // Each block must build on the new tip created by the previous block
@@ -1019,22 +1020,35 @@ din::Json handle_generatetoaddress(
                 throw std::runtime_error("Block serialize failed for height " + std::to_string(height) + ": " + std::string(e.what()));
             }
 
-            // ✅ DEBUG ASSERT: Verify block builds on current tip (not stale template)
-            // This assert catches bugs where:
-            // - Block template is cached incorrectly
-            // - prevHash is not refreshed per iteration
-            // - Code refactoring breaks the "fresh tip per block" invariant
-            #ifndef NDEBUG
-                std::string current_tip = dinero::storage::GetBestBlockHash(chain_db);
-                std::string block_parent = block.header.prev_block_hash.GetHex();
+            // #589: verify the block still extends the current tip — in BOTH build
+            // configs. A concurrent reorg (e.g. invalidateblock) can legitimately
+            // move the tip between template construction and submission; that is
+            // a RETRY, not a crash. The old #ifndef NDEBUG assert aborted the
+            // whole daemon in Debug and no-oped in release (proceeding with a
+            // stale-parent block) — the load-bearing-assert class fixed in #576.
+            // Re-run this iteration against the fresh tip, bounded so a
+            // thrashing tip cannot loop forever.
+            {
+                const std::string current_tip = dinero::storage::GetBestBlockHash(chain_db);
+                const std::string block_parent = block.header.prev_block_hash.GetHex();
                 if (block_parent != current_tip) {
-                    dinero::g_logger.error("[DEBUG ASSERT] RPC mining built block on STALE tip!");
-                    dinero::g_logger.error("  Block parent: " + block_parent);
-                    dinero::g_logger.error("  Current tip:  " + current_tip);
-                    dinero::g_logger.error("  Height:       " + std::to_string(height));
-                    assert(false && "RPC mining invariant violated: block must extend current tip");
+                    dinero::g_logger.warning(
+                        "[generatetoaddress] tip moved during mining (block parent " +
+                        block_parent.substr(0, 16) + "... vs current tip " +
+                        current_tip.substr(0, 16) + "...) — retrying block " +
+                        std::to_string(i + 1) + "/" + std::to_string(nblocks) +
+                        " against the fresh tip (#589)");
+                    if (++stale_tip_retries > 32) {
+                        result["error"]["code"] = -32000;
+                        result["error"]["message"] =
+                            "generatetoaddress: chain tip kept moving (reorg storm); retry later";
+                        return result;
+                    }
+                    --i;
+                    continue;
                 }
-            #endif
+                stale_tip_retries = 0;
+            }
 
             dinero::BlockAcceptResult accept_result;
             try {
