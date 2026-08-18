@@ -4506,9 +4506,30 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     auto* cdb = chainstate_service->GetChainDB();
                                     consensus::UtreexoForest restored;
                                     std::string restore_error;
+                                    // #579 core fix: resolve every replay-range hash by
+                                    // IDENTITY (pprev ancestry from the active tip) instead
+                                    // of the persisted height index, which can stay stale
+                                    // across reorgs. A restore whose [checkpoint..fork]
+                                    // replay range crossed an EARLIER reorg pulled the
+                                    // rewritten index's hashes and failed
+                                    // ("replay-missing-header-at-N"), so no spend targets
+                                    // were ever persisted, ABC's reorg_plan_validated gate
+                                    // stayed shut, and the CSN wedged permanently. The
+                                    // range [checkpoint..fork_height] is common history —
+                                    // ancestors of the active tip — and the anchor was
+                                    // verified against that same tip walk just above.
+                                    const CBlockIndex* replay_anchor_tip =
+                                        chainstate_service->GetActiveTip();
+                                    storage::BlockHashAtHeightResolver resolve_by_ancestry =
+                                        [replay_anchor_tip](uint32_t height,
+                                                            uint256& out_hash) -> bool {
+                                        return consensus::GetActiveChainHashAtHeight(
+                                            replay_anchor_tip, height, out_hash);
+                                    };
                                     if (!cdb || storage::RestoreHistoricalForest(
                                             *cdb, reorg_state->fork_height,
-                                            restored, restore_error) != Status::Ok) {
+                                            restored, restore_error,
+                                            resolve_by_ancestry) != Status::Ok) {
                                         g_logger.error("[CSN-ReorgPlan] Failed to restore scratch forest at fork " +
                                                        std::to_string(reorg_state->fork_height) + ": " +
                                                        restore_error);
