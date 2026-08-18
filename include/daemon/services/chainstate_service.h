@@ -888,6 +888,22 @@ public:
         return ReadStoredUndo(hash);
     }
 
+    // #585/#588 test seams. RealignShieldedStateToActiveTipAfterHeal() is
+    // private and only reachable in production from the ActivateBestChain
+    // self-heal path (a misaligned consensus_utxo_set_, impractical to stage in
+    // a focused unit test). These thin forwarders let the regression test drive
+    // the realign directly with a synthetically-staged "marker ahead of active
+    // tip" desync — same pattern as ReadStoredUndoPublic above. The frontier
+    // path is otherwise only assigned inside Init(DaemonContext&); the setter
+    // lets PersistShieldedState() succeed so the rewind reaches its marker
+    // persist (the assertion under test). Test-only — not called in production.
+    void RealignShieldedStateToActiveTipAfterHealForTesting() {
+        RealignShieldedStateToActiveTipAfterHeal();
+    }
+    void SetShieldedFrontierPathForTesting(const std::filesystem::path& p) {
+        shielded_frontier_path_ = p;
+    }
+
     // #274: stateless ConnectBlock cannot populate BlockUndo.spent_coins (no UTXO
     // set), so ConnectTip reconstructs the spent list from ChainDB coin rows —
     // the only source carrying full fidelity (height + coinbase flag, which
@@ -946,6 +962,10 @@ private:
     // Mismatches encountered now are real corruption and fail loud.
     bool VerifyOrBootstrapShieldedTipMarker(const uint256& tip_hash, uint32_t tip_height);
     bool RewindShieldedStateToActiveTipForStartup(uint32_t stored_tip_height);
+    // #585: shielded arm of the self-heal realign — rewind the shielded state +
+    // tip marker down to active_tip_ after the self-heal lowers it, so the shielded
+    // invariant does not trip SAFE MODE. No-op when the marker is not ahead.
+    void RealignShieldedStateToActiveTipAfterHeal();
     bool RangeHasShieldedActivity(uint32_t start_height, uint32_t end_height) const;
 
     // Centralized AssumeUTXO state transitions keep in-memory flags and

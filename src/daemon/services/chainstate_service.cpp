@@ -1828,6 +1828,47 @@ bool ChainstateService::RewindShieldedStateToActiveTipForStartup(uint32_t stored
     return true;
 }
 
+// #585: shielded arm of the self-heal realign. The regtest invalidateblock leg
+// (BlockAcceptor::ApplyTipInvalidation) rolls back ChainDB UTXO only and touches
+// NOTHING in-memory; ActivateBestChain's self-heal is the designed in-memory
+// realign, but it only moves active_tip_ (see IsCanonicalStateAligned, which does
+// not consider the shielded marker). So after a disconnect the shielded tip marker
+// and state stay at the pre-invalidation tip, and VerifyOrBootstrapShieldedTipMarker
+// then trips SAFE MODE -> mining paused -> livelock. This is the missing seam: once
+// the self-heal has lowered active_tip_ to the consensus tip, rewind the shielded
+// state + marker down to match, reusing the startup rewind (idempotent — a no-op
+// when the marker is not ahead). NB: called only from the pre-flight self-heal path,
+// which holds no unified WriteBatch (PublishActiveTip already persists on its own
+// path there), so the rewind's independent persists are consistent with that site.
+// (#586: the forest-leaf rollback arm for the same disconnect leg belongs here too.)
+void ChainstateService::RealignShieldedStateToActiveTipAfterHeal() {
+    if (!chain_db_ || !active_tip_) {
+        return;
+    }
+    const auto marker_result = chain_db_->getShieldedTipMarker();
+    if (marker_result.status() != Status::Ok) {
+        return;  // No marker yet (pre-shielded chain) — nothing to realign.
+    }
+    const int raw_marker_height = marker_result.value().height;
+    const uint32_t marker_height = raw_marker_height < 0 ? 0u : static_cast<uint32_t>(raw_marker_height);
+    const uint32_t active_height = static_cast<uint32_t>(active_tip_->height);
+    if (marker_height <= active_height) {
+        return;  // Marker not ahead of the realigned tip — no rollback needed.
+    }
+    if (logger_) {
+        logger_->warning("[ChainstateService] Self-heal: shielded tip marker (@" +
+                         std::to_string(marker_height) + ") is ahead of the realigned active tip (@" +
+                         std::to_string(active_height) +
+                         ") — rewinding shielded state + marker to the active tip (#585)");
+    }
+    if (!RewindShieldedStateToActiveTipForStartup(marker_height)) {
+        if (logger_) {
+            logger_->error("[ChainstateService] Self-heal: failed to rewind shielded state to the "
+                           "active tip; the shielded invariant may still trip SAFE MODE");
+        }
+    }
+}
+
 bool ChainstateService::RangeHasShieldedActivity(uint32_t start_height, uint32_t end_height) const {
     if (!chain_db_ || start_height > end_height) {
         return false;
@@ -2620,7 +2661,12 @@ bool ChainstateService::Start() {
             }
         }
 
-        auto serialized = consensus_utxo_set_->GetForest().serialize();
+        std::vector<uint8_t> serialized;
+        {
+            // #578: serialize() walks the whole forest — shared lock.
+            auto forest_lock = consensus_utxo_set_->LockForestShared();
+            serialized = consensus_utxo_set_->GetForest().serialize();
+        }
         auto checkpoint_status =
             chain_db_->putUtreexoCheckpointWithChecksum(token, db_tip_idx->height, serialized);
         if (checkpoint_status != Status::Ok) {
@@ -2635,7 +2681,7 @@ bool ChainstateService::Start() {
         ChainDB::ForestTipMarker marker;
         marker.height = db_tip_idx->height;
         marker.block_hash = db_tip_idx->hash;
-        const auto commitment = consensus_utxo_set_->GetForest().getCommitment();
+        const auto commitment = consensus_utxo_set_->SnapshotForestCommitment();
         if (commitment.size() != 32) {
             return fail_recovery("forest-commitment-size-invalid-after-recovery");
         }
@@ -3135,7 +3181,7 @@ bool ChainstateService::Start() {
                             std::memcpy(expected_root.data, header_result.value().utreexo_root.data, 32);
 
                             // Compute the forest's current root commitment
-                            consensus::UtreexoHash computed = consensus_utxo_set_->GetForest().getCommitment();
+                            consensus::UtreexoHash computed = consensus_utxo_set_->SnapshotForestCommitment();
                             uint256 computed_root;
                             if (computed.size() == 32)
                                 std::memcpy(computed_root.data, computed.data(), 32);
@@ -3278,9 +3324,9 @@ bool ChainstateService::Start() {
                 // ActivateBestChain will replay from genesis.
                 // ═══════════════════════════════════════════════════════════════════
                 if (active_tip_ && active_tip_->height == 0 &&
-                    consensus_utxo_set_ && consensus_utxo_set_->GetForest().getNumLeaves() > 0) {
+                    consensus_utxo_set_ && consensus_utxo_set_->SnapshotForestLeafCount() > 0) {
                     logger_->error("[ChainstateService] CRITICAL: Forest has " +
-                                 std::to_string(consensus_utxo_set_->GetForest().getNumLeaves()) +
+                                 std::to_string(consensus_utxo_set_->SnapshotForestLeafCount()) +
                                  " leaves but active_tip_ stuck at genesis (height=0)");
                     logger_->error("[ChainstateService] Resetting forest to empty to prevent ROOT MISMATCH");
                     logger_->error("[ChainstateService] Chain will replay from genesis (may require --reindex)");
@@ -3310,7 +3356,7 @@ bool ChainstateService::Start() {
         //                ActivateBestChain will replay from genesis.
         //                If that fails, node must replay blocks via --reindex.
         // ═════════════════════════════════════════════════════════════════════════
-        if (consensus_utxo_set_ && consensus_utxo_set_->GetForest().getNumLeaves() == 0 && height > 0) {
+        if (consensus_utxo_set_ && consensus_utxo_set_->SnapshotForestLeafCount() == 0 && height > 0) {
             // ═══════════════════════════════════════════════════════════
             // GRACEFUL RECOVERY: No checkpoint at height > 0
             // ═══════════════════════════════════════════════════════════
@@ -3348,7 +3394,7 @@ bool ChainstateService::Start() {
             active_tip_->height != static_cast<uint32_t>(db_tip.height);
         if (utxo_already_at_db_tip &&
             side_state_behind_tip &&
-            consensus_utxo_set_->GetForest().getNumLeaves() > 0) {
+            consensus_utxo_set_->SnapshotForestLeafCount() > 0) {
             std::string recovery_error;
             if (!recoverTipSideStateToUtxoTip(db_tip, &recovery_error)) {
                 logger_->error("[ChainstateService] Failed tip-side recovery after checkpoint lag: " +
@@ -4408,7 +4454,7 @@ void ChainstateService::notifyBlockConnected(const Block& block, uint32_t height
 
         std::vector<uint8_t> new_root;
         if (consensus_utxo_set_) {
-            new_root = consensus_utxo_set_->GetForest().getCommitment();
+            new_root = consensus_utxo_set_->SnapshotForestCommitment();
         }
         ctx->mempool->mempool().onBlockConnected(block, height, new_root);
 
@@ -7177,7 +7223,7 @@ void ChainstateService::ActivateBestChain() {
         if (consensus_utxo_set_) {
             const uint256 utxo_best = consensus_utxo_set_->GetBestBlock();
             const uint32_t utxo_height = consensus_utxo_set_->GetHeight();
-            const uint64_t forest_leaves = consensus_utxo_set_->GetForest().getNumLeaves();
+            const uint64_t forest_leaves = consensus_utxo_set_->SnapshotForestLeafCount();
             CBlockIndex* utxo_tip_idx = dinero::FindBlockIndex(utxo_best);
             if (forest_leaves == 0 && utxo_height > 0) {
                 if (logger_) logger_->warning("[ActivateBestChain] Misaligned: " + alignment_reason +
@@ -7187,6 +7233,8 @@ void ChainstateService::ActivateBestChain() {
                                              " — realigning active_tip_ to consensus UTXO tip (height=" +
                                              std::to_string(utxo_height) + ")");
                 PublishActiveTip(utxo_tip_idx, TipPublishReason::kSelfHealRealign);
+                // #585: bring the shielded state + marker down to the realigned tip.
+                RealignShieldedStateToActiveTipAfterHeal();
 
                 // Re-check alignment after realignment.
                 std::string recheck_reason;
@@ -7218,6 +7266,8 @@ void ChainstateService::ActivateBestChain() {
                                                  "active_tip_ to consensus UTXO tip (height=" +
                                                  std::to_string(utxo_height) + ")");
                     PublishActiveTip(materialized, TipPublishReason::kSelfHealRealign);
+                    // #585: bring the shielded state + marker down to the realigned tip.
+                    RealignShieldedStateToActiveTipAfterHeal();
                     std::string recheck_reason;
                     if (IsCanonicalStateAligned(&recheck_reason)) {
                         healed = true;
@@ -8117,7 +8167,7 @@ void ChainstateService::ActivateBestChain() {
             }
 
             // CRITICAL ASSERTION: replayed forest commitment must match block header utreexo_root
-            auto replayed_commitment = consensus_utxo_set_->GetForest().getCommitment();
+            auto replayed_commitment = consensus_utxo_set_->SnapshotForestCommitment();
             uint256 forest_root;
             if (replayed_commitment.size() == 32) {
                 std::memcpy(forest_root.begin(), replayed_commitment.data(), 32);
@@ -8208,7 +8258,7 @@ void ChainstateService::ActivateBestChain() {
     // Full proof-level validation comes in Phase 3.3.
     // ═══════════════════════════════════════════════════════════════════════════
     if (!disconnect_path.empty() && consensus_utxo_set_) {
-        uint64_t forest_leaves = consensus_utxo_set_->GetForest().getNumLeaves();
+        uint64_t forest_leaves = consensus_utxo_set_->SnapshotForestLeafCount();
         uint32_t active_height = active_tip_ ? active_tip_->height : 0;
         uint32_t fork_height = fork_point ? fork_point->height : 0;
 
@@ -8260,7 +8310,7 @@ void ChainstateService::ActivateBestChain() {
     // ═══════════════════════════════════════════════════════════════════════════
     if (!disconnect_path.empty() && consensus_utxo_set_ && active_tip_) {
         // Get current forest commitment
-        auto current_commitment = consensus_utxo_set_->GetForest().getCommitment();
+        auto current_commitment = consensus_utxo_set_->SnapshotForestCommitment();
 
         // Fetch the active tip block to get its utreexo_root (AFTER-state)
         auto block_result = ReadStoredBlock(active_tip_->hash);
@@ -8318,10 +8368,10 @@ void ChainstateService::ActivateBestChain() {
     if (!GetConfig().utreexo_stateless &&
         disconnect_path.empty() && !connect_path.empty() &&
         fork_point && fork_point->height == 0 &&
-        consensus_utxo_set_ && consensus_utxo_set_->GetForest().getNumLeaves() > 0) {
+        consensus_utxo_set_ && consensus_utxo_set_->SnapshotForestLeafCount() > 0) {
         if (logger_) {
             logger_->error("[ActivateBestChain] FOREST/GENESIS MISMATCH: fork_point=genesis but forest has " +
-                          std::to_string(consensus_utxo_set_->GetForest().getNumLeaves()) + " leaves (expected 0)");
+                          std::to_string(consensus_utxo_set_->SnapshotForestLeafCount()) + " leaves (expected 0)");
             logger_->error("[ActivateBestChain] Resetting forest for clean chain activation");
         }
         consensus_utxo_set_->ReplaceForestGuarded(consensus::UtreexoForest());
@@ -8493,7 +8543,7 @@ void ChainstateService::ActivateBestChain() {
         }
         const uint256& expected_fp_root = fp_block_result.value().header.utreexo_root;
 
-        auto forest_commitment = consensus_utxo_set_->GetForest().getCommitment();
+        auto forest_commitment = consensus_utxo_set_->SnapshotForestCommitment();
         if (forest_commitment.size() != 32) {
             if (logger_) {
                 logger_->error("[ActivateBestChain] Invalid forest commitment size after disconnect: " +
@@ -10748,6 +10798,16 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
 // ============================================================================
 
 bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error) {
+    // #586 bolt 3: this runs on the RPC thread and walks DisconnectTip in a
+    // loop — WITHOUT this lock it races ActivateBestChain's ConnectTips on
+    // P2P threads (activation_mutex_ holders). Observed live: a connect
+    // completing mid-disconnect diverges the forest from the delta-undo
+    // sidecar (utreexo-delta-undo-numleaves-mismatch), and pre-guard the
+    // stale plan disconnected a non-tip block outright (forest corruption,
+    // utreexo-add-failed livelock). Serializing the whole invalidation walk
+    // against activation closes the interleave; recursive_mutex, same
+    // acquisition order as ABC (activation -> forest), no inversion.
+    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
     CBlockIndex* target = FindBlockIndex(hash);
     if (!target) {
         error = "Block not found in block index";
@@ -11506,6 +11566,30 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         logger_->error("[DisconnectTip] BlockValidator not initialized");
         return false;
     }
+    // #586: REFUSE to disconnect a non-tip block. Disconnecting in the middle
+    // of the chain applies that block's undo against a forest/UTXO state that
+    // still contains its descendants — the observed corruption: an
+    // invalidateblock-driven rollback planned against a stale tip view while a
+    // concurrent connect advanced the chain, DisconnectTip(57) ran with the
+    // active tip at 58, the delta-undo tripped
+    // utreexo-delta-undo-numleaves-mismatch, and every later connect looped
+    // utreexo-add-failed (chain livelock). A caller whose plan went stale must
+    // fail loudly and re-plan from the CURRENT tip (ActivateBestChain re-enters
+    // and recomputes); silently corrupting the accumulator is never acceptable.
+    // Mirrors ConnectTip's out-of-order guard (#576).
+    if (active_tip_ && tip_to_disconnect != active_tip_) {
+        const std::string msg =
+            "[DisconnectTip] REFUSING out-of-order disconnect: target height " +
+            std::to_string(tip_to_disconnect->height) + " hash " +
+            tip_to_disconnect->hash.GetHex().substr(0, 16) +
+            "... is not the active tip (height " +
+            std::to_string(active_tip_->height) + " hash " +
+            active_tip_->hash.GetHex().substr(0, 16) +
+            "...) — caller must re-plan from the current tip (#586)";
+        std::cout << "❌ " << msg << std::endl;
+        if (logger_) logger_->error(msg);
+        return false;
+    }
     ChainWriteToken token;  // Required for canonical tip persistence during reorg
 
     auto schedule_chainstate_recovery = [&](const std::string& reason) {
@@ -12107,7 +12191,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         forest_marker.height = static_cast<int32_t>(new_tip->height);
         forest_marker.block_hash = new_tip->hash;
         const consensus::UtreexoHash commitment =
-            consensus_utxo_set_->GetForest().getCommitment();
+            consensus_utxo_set_->SnapshotForestCommitment();
         if (commitment.size() == 32) {
             std::memcpy(forest_marker.forest_root.data, commitment.data(), 32);
         } else {
@@ -12475,8 +12559,17 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 }
 
                 // Generate transition proof while forest is at pre-block state
+                // #578: snapshot the live forest under the SHARED lock before
+                // handing it to transition-proof generation — generate() clones
+                // and walks the forest, and the raw GetForest() read raced
+                // guarded forest writers (TSan round 3, the last forest race).
+                consensus::UtreexoForest forest_for_tp;
+                {
+                    auto forest_lock = consensus_utxo_set_->LockForestShared();
+                    forest_for_tp = consensus_utxo_set_->GetForest();
+                }
                 auto tp = consensus::UtreexoTransitionProof::generate(
-                    consensus_utxo_set_->GetForest(),
+                    forest_for_tp,
                     block,
                     proof_data.spend_proof,
                     tip_to_connect->height);
@@ -12513,7 +12606,9 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     if (GetConfig().utreexo_stateless && stateless_node_ && consensus_utxo_set_ &&
         block.utreexo.has_value() &&
         !block.utreexo->accumulator_root_before.empty()) {
-        const auto current_commitment = consensus_utxo_set_->GetForest().getCommitment();
+        // #578 (TSan round 4): SnapshotForestCommitment takes the shared lock;
+        // the raw GetForest().getCommitment() read raced guarded forest writers.
+        const auto current_commitment = consensus_utxo_set_->SnapshotForestCommitment();
         if (current_commitment == block.utreexo->accumulator_root_before) {
             if (logger_) {
                 logger_->info("[ConnectTip] Stateless replay path: advancing shared forest from stored proof data at height " +
@@ -13018,7 +13113,12 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         // structure of ConnectTip is still readable.
         std::vector<uint8_t> forest_serialized;
         if (consensus_utxo_set_ && write_full_checkpoint) {
-            forest_serialized = consensus_utxo_set_->GetForest().serialize();
+            {
+                // #578 (TSan round 5): serialize() walks the whole forest —
+                // shared lock so it cannot race guarded forest writers.
+                auto forest_lock = consensus_utxo_set_->LockForestShared();
+                forest_serialized = consensus_utxo_set_->GetForest().serialize();
+            }
             pending_forest_checkpoint_bytes_ = forest_serialized.size();
             const auto checkpoint_status = chain_db_->putUtreexoCheckpointWithChecksum(
                 token, tip_to_connect->height, forest_serialized, &utxo_batch);
@@ -13046,8 +13146,9 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             ChainDB::ForestTipMarker forest_marker;
             forest_marker.height = tip_to_connect->height;
             forest_marker.block_hash = tip_to_connect->hash;
+            // #578 (TSan round 5): guarded accessor, not a raw forest read.
             const consensus::UtreexoHash commitment =
-                consensus_utxo_set_->GetForest().getCommitment();
+                consensus_utxo_set_->SnapshotForestCommitment();
             if (commitment.size() == 32) {
                 std::memcpy(forest_marker.forest_root.data, commitment.data(), 32);
             } else {
@@ -13866,10 +13967,11 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // Capture post-block forest root for BridgeNode proof metadata
     // Must happen AFTER ConnectBlock (forest updated) and BEFORE checkpoint serialization
     if (precache_success && bridge_node_ && consensus_utxo_set_) {
+        // #578 (TSan round 5): guarded accessor, not a raw forest read.
         bridge_node_->SetCachedRootAfter(
             tip_to_connect->hash,
             tip_to_connect->height,
-            consensus_utxo_set_->GetForest().getCommitment()
+            consensus_utxo_set_->SnapshotForestCommitment()
         );
     }
 
@@ -14463,6 +14565,22 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             return fail("persist-height-index-stage-failed");
         }
 
+        // #579 core, sub-layer 2: persist the connected block HEADER too.
+        // ConnectTip stages putHeader for every block it connects, but this
+        // lightweight funnel (ABC-CSN replay + ConnectTip recovery) staged
+        // only tip + height index — so reorg-connected blocks had a height-
+        // index entry and NO header record. Any later checkpoint replay whose
+        // range crossed a reorg then failed its header-root verification
+        // ("replay-missing-header-at-N") even with correct identity
+        // resolution, wedging the speculative reorg plan. Same batch, same
+        // token: the header commits atomically with tip/height-index.
+        const auto header_status = chain_db_->putHeader(
+            token, block_index->hash, block.header,
+            static_cast<int>(block_index->height), work, &utxo_batch);
+        if (header_status != Status::Ok) {
+            return fail("persist-header-stage-failed");
+        }
+
         auto status = chain_db_->writeBatch(token, std::move(utxo_batch), true);
         if (status != Status::Ok) {
             if (logger_) {
@@ -14495,7 +14613,12 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             GetConfig().utreexo_checkpoint_interval > 1
                 ? GetConfig().utreexo_checkpoint_interval : 1;
         if (static_cast<uint64_t>(block_index->height) % bk_checkpoint_interval == 0) {
-            auto serialized = consensus_utxo_set_->GetForest().serialize();
+            std::vector<uint8_t> serialized;
+            {
+                // #578: serialize() walks the whole forest — shared lock.
+                auto forest_lock = consensus_utxo_set_->LockForestShared();
+                serialized = consensus_utxo_set_->GetForest().serialize();
+            }
             pending_forest_checkpoint_bytes_ = serialized.size();
             auto checkpoint_status = chain_db_->putUtreexoCheckpointWithChecksum(
                 token, block_index->height, serialized);

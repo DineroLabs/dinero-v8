@@ -246,4 +246,68 @@ TEST_F(ForestRestoreFixture, TamperedHeaderRootFailsLoudly) {
     EXPECT_NE(error.find("12"), std::string::npos) << error;
 }
 
+TEST_F(ForestRestoreFixture, StaleHeightIndexAcrossReorgFailsDefaultRestore) {
+    // #579 core: the persisted height index can remain stale across reorgs.
+    // Simulate the observed field state: an earlier reorg rewrote height 7,
+    // and the index now answers with a hash that has no header (the exact
+    // "replay-missing-header-at-N" wedge from the CSN-ReorgPlan scratch
+    // restore). The default (index-trusting) restore across that height must
+    // fail — this documents the pre-fix behavior the resolver exists to
+    // bypass; it is NOT the desired end state for index-trusting callers.
+    ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    dinero::uint256 orphaned = MakeBlockHash(707);  // no header stored for this
+    ASSERT_EQ(db_.putHeightIndex(token, 7, orphaned), Status::Ok);
+
+    UtreexoForest restored;
+    std::string error;
+    EXPECT_NE(RestoreHistoricalForest(db_, 9, restored, error), Status::Ok);
+    EXPECT_NE(error.find("7"), std::string::npos) << error;
+}
+
+TEST_F(ForestRestoreFixture, IdentityResolverSurvivesStaleHeightIndex) {
+    // #579 core fix: with an identity-based resolver (the caller's authoritative
+    // chain view, e.g. pprev ancestry from the active tip), the restore must
+    // succeed byte-identically even when the height index is stale at BOTH a
+    // replay height (7) and the checkpoint height (5) — covering the replay
+    // loop and the checkpoint self-check.
+    ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    ASSERT_EQ(db_.putHeightIndex(token, 7, MakeBlockHash(707)), Status::Ok);
+    ASSERT_EQ(db_.putHeightIndex(token, 5, MakeBlockHash(505)), Status::Ok);
+
+    const auto resolve_true_chain = [](uint32_t height,
+                                       dinero::uint256& out) -> bool {
+        out = MakeBlockHash(height);  // the chain this fixture actually built
+        return true;
+    };
+
+    UtreexoForest restored;
+    std::string error;
+    ASSERT_EQ(RestoreHistoricalForest(db_, 9, restored, error, resolve_true_chain),
+              Status::Ok)
+        << error;
+    EXPECT_EQ(restored.serialize(), serialized_after_[9]);
+
+    // Neuter check, inline: the SAME corrupted DB without the resolver still
+    // fails — proving the resolver (not test setup) is what heals the restore.
+    UtreexoForest unfixed;
+    std::string unfixed_error;
+    EXPECT_NE(RestoreHistoricalForest(db_, 9, unfixed, unfixed_error),
+              Status::Ok);
+}
+
+TEST_F(ForestRestoreFixture, ResolverMissReportsAnchorWalkError) {
+    // A resolver that cannot answer (anchor below the requested height) must
+    // fail loudly with the anchor-walk error, not fall back to the index —
+    // falling back would silently reintroduce the stale-index trust the
+    // resolver was passed to avoid.
+    const auto resolve_nothing = [](uint32_t, dinero::uint256&) -> bool {
+        return false;
+    };
+    UtreexoForest restored;
+    std::string error;
+    EXPECT_NE(RestoreHistoricalForest(db_, 9, restored, error, resolve_nothing),
+              Status::Ok);
+    EXPECT_NE(error.find("anchor-walk"), std::string::npos) << error;
+}
+
 }  // namespace

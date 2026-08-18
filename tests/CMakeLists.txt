@@ -638,6 +638,38 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_reconstruct_spent_coins.cpp)
   message(STATUS "✅ Stateless undo spent-coin reconstruction test enabled (#274)")
 endif()
 
+# #585/#588 — self-heal shielded-marker realign regression.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_realign_shielded_after_heal.cpp)
+  add_executable(test_realign_shielded_after_heal
+    tests/daemon/test_realign_shielded_after_heal.cpp
+    tests/stubs/mempool_test_stubs.cpp  # no-op Mempool seams (chainstate_service.obj refs)
+    tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault isolation seams
+    src/daemon/config.cpp               # GetConfig() — referenced by chainstate_service.obj
+  )
+  target_link_libraries(test_realign_shielded_after_heal PRIVATE
+    dinero_core
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_realign_shielded_after_heal)
+  target_link_directories(test_realign_shielded_after_heal PRIVATE /opt/homebrew/lib)
+  if(APPLE)
+    target_link_libraries(test_realign_shielded_after_heal PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_include_directories(test_realign_shielded_after_heal PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME RealignShieldedAfterHeal COMMAND test_realign_shielded_after_heal)
+  set_tests_properties(RealignShieldedAfterHeal PROPERTIES
+    LABELS "daemon;shielded;reorg;regression"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ Self-heal shielded-marker realign test enabled (#585/#588)")
+endif()
+
 # AssumeUTXO pre-base backfill bodies: the #309 persist callback could only
 # synthesize a missing ChainDB header-metadata row from g_block_index, which a
 # snapshot-bootstrapped node does not populate below its base height. The body
@@ -11719,6 +11751,42 @@ find_package(Threads REQUIRED)
 target_link_libraries(test_guarded_forest PRIVATE Threads::Threads)
 add_test(NAME GuardedForestExclusion COMMAND test_guarded_forest)
 set_tests_properties(GuardedForestExclusion PROPERTIES TIMEOUT 30)
+
+# ─── BridgeNode forest reads honor the owner's shared lock (issue #578) ─────
+# Proves the WIRING, not just the primitive: a BridgeNode constructed with an
+# IConsensusUTXOSet owner must block its live-forest read across a guarded
+# exclusive mutation (the TSan-caught bridge proof-serving race). Exit-code
+# gated; registered unlabelled so it runs in the required full-ctest lane.
+add_executable(test_bridge_forest_read_lock
+  tests/network/test_bridge_forest_read_lock.cpp
+  src/common/logger.cpp
+)
+target_include_directories(test_bridge_forest_read_lock PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(test_bridge_forest_read_lock PRIVATE
+  dinero_bridge
+  dinero_chainstate
+  dinero_consensus
+  dinero_shielded
+  dinero_crypto
+  jsoncpp_static
+  RocksDB::rocksdb
+  OpenSSL::Crypto
+  OpenSSL::SSL
+  pthread
+  sqlite3
+)
+link_zstd_if_needed(test_bridge_forest_read_lock)
+if(APPLE)
+  target_link_libraries(test_bridge_forest_read_lock PRIVATE
+    "-framework Security"
+    "-framework CoreFoundation"
+  )
+endif()
+add_test(NAME BridgeForestReadLock COMMAND test_bridge_forest_read_lock)
+set_tests_properties(BridgeForestReadLock PROPERTIES TIMEOUT 30)
 
 # ─── Forest lock concurrency stress (deadlock-freedom under contention) ─────
 # Drives the real ConsensusUTXOSet guarded accessors from many reader/writer

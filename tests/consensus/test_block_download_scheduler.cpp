@@ -2511,6 +2511,97 @@ int main() {
                      "on height change / progress" << std::endl;
     }
 
+    {
+        std::cout << "\n#579: reorg-superseded INVALID frontier re-seats to the new branch..."
+                  << std::endl;
+        // Regression for #579 (CSN permanent-desync wedge, found by the TSan
+        // forest-lock stress run). A reorg that invalidates the block at the CSN's
+        // frontier height leaves a stale old-branch entry — marked INVALID after
+        // proof-retry exhaustion — at that height. FindStatelessFrontierLocked
+        // returns it as the frontier, and the pre-fix halt at that check stopped
+        // ALL tip requests, including the new-branch block that is now the best
+        // chain at that height. The CSN wedged forever (ABC saw the better header
+        // chain but deferred body fetches to this halted scheduler). The fix
+        // re-seats the entry to the new-branch hash so TIP requests resume.
+        //
+        // Exact-frontier boundary — the case that actually wedged (frontier ==
+        // invalidated height); a fork BEHIND the frontier never engaged the halt.
+        //   Main:  g -> 1 -> 2 -> M3           (M3 = old block at height 3)
+        //   Fork:  g -> 1 -> 2 -> X3 -> Y4     (X3 = new best-chain block at h3)
+        // CSN local/active tip = 2; frontier height = 3.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> main_hashes;   // [g, 1, 2, M3]
+        std::vector<uint256> fork_hashes;   // [X3, Y4]
+        try {
+            BuildLinearHeaders(selector, 3, &main_hashes, 8'000'000);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build main header chain: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetStatelessMode(true);
+        scheduler.SetLocalTipHeight(2);
+        scheduler.SetGetTipHeightCallback([]() -> uint32_t { return 2; });
+
+        std::vector<uint256> requested;
+        scheduler.SetSendGetDataCallback(
+            [&requested](const uint256& h, uint32_t /*height*/) { requested.push_back(h); });
+
+        // Active chain = main up to the CSN's connected tip (height 2). Heights
+        // above 2 are not on the active chain (the CSN is stuck at 2).
+        auto active_chain = BuildActiveChainIndex({main_hashes[0], main_hashes[1], main_hashes[2]});
+        scheduler.SetGetBlockHashAtHeightCallback(
+            [&active_chain](uint32_t height, uint256& out_hash) -> bool {
+                return dcs::GetActiveChainHashAtHeight(active_chain.back().get(), height, out_hash);
+            });
+
+        // 1) Queue + request the old frontier block M3 at height 3.
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();
+        if (!Require(!requested.empty() && requested.back() == main_hashes[3],
+                     "expected the old frontier block M3 to be requested first")) {
+            return 1;
+        }
+
+        // 2) M3's proof fails (the reorg invalidated it) -> marked INVALID.
+        if (!Require(scheduler.MarkBlockInvalid(main_hashes[3]),
+                     "expected M3 to be queued so it can be marked INVALID")) {
+            return 1;
+        }
+
+        // 3) The reorg: a fork at height 2 introduces X3(3), Y4(4). Y4 outweighs
+        //    M3, so the best chain's block at height 3 is now X3 (!= M3).
+        try {
+            AppendForkHeaders(selector, main_hashes[2], 2, &fork_hashes, 9'000'000);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build fork header chain: " << e.what() << std::endl;
+            return 1;
+        }
+        const auto header_at_3 = selector.GetHeaderAtHeightValue(3);
+        if (!Require(header_at_3.has_value() && header_at_3->hash == fork_hashes[0],
+                     "expected best-chain header at height 3 to be the fork block X3")) {
+            return 1;
+        }
+
+        // 4) The wedge tick. Pre-fix: FindStatelessFrontierLocked returns the
+        //    INVALID M3 and the halt stops all TIP requests -> X3 never requested.
+        //    With the fix: M3's slot is re-seated to X3 and requested THIS tick.
+        const size_t before = requested.size();
+        scheduler.Tick();
+        bool requested_x3 = false;
+        for (size_t i = before; i < requested.size(); ++i) {
+            if (requested[i] == fork_hashes[0]) { requested_x3 = true; break; }
+        }
+        if (!Require(requested_x3,
+                     "REGRESSION #579: a reorg-superseded INVALID frontier must re-seat to the "
+                     "new-branch block and resume TIP requests (pre-fix: halted permanently)")) {
+            return 1;
+        }
+        std::cout << "   ✅ re-seated INVALID M3 -> requested new-branch X3="
+                  << fork_hashes[0].GetHex().substr(0, 16) << "..." << std::endl;
+    }
+
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
     return 0;
 }
