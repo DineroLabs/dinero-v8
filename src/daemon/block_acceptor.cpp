@@ -2833,22 +2833,46 @@ bool BlockAcceptor::ApplyTipInvalidation(const std::string& blockhash, std::stri
         LOG_INFO("📦 Loaded undo record: " + std::to_string(undo.spent.size()) +
                  " spent coins, " + std::to_string(undo.created.size()) + " created outputs");
 
-        // Step 3: Get current tip height
-        // Week 3: MIGRATED - Use chain_db from context
-        uint32_t tipHeight = dinero::storage::GetChainHeight(chain_db);
-        uint32_t newHeight = tipHeight - 1;
-
-        LOG_INFO("📊 Current height: " + std::to_string(tipHeight) +
-                 " → new height: " + std::to_string(newHeight));
-
-        // Step 4: Get new tip (parent block)
-        auto parentHashResult = chain_db->getBlockHashByHeight(newHeight);
-        if (parentHashResult.status() != dinero::Status::Ok) {
-            error = "Failed to get parent block at height " + std::to_string(newHeight);
+        // Step 3+4 (#586): resolve the target block and its parent by IDENTITY,
+        // not the height index. The old code assumed the target IS the current
+        // tip (newHeight = ChainDB-tip - 1) and looked the parent up via
+        // getBlockHashByHeight — both go stale the moment a concurrent connect
+        // advances the chain between the RPC arriving and this running, which
+        // produced an out-of-order rollback plan (DisconnectTip(57) while the
+        // tip was 58) and a corrupted forest (utreexo-add-failed livelock).
+        // The target's own header names its parent; its own height record
+        // names its height. Neither can go stale.
+        uint256 target_hash;
+        if (!uint256::FromHex(blockhash, target_hash)) {
+            error = "Invalid block hash hex: " + blockhash.substr(0, 16) + "...";
             LOG_ERROR("❌ " + error);
             return false;
         }
-        uint256 newTipHash = parentHashResult.value();  // Phase M.0: Returns uint256
+        auto target_header_result = chain_db->getHeader(target_hash);
+        if (target_header_result.status() != dinero::Status::Ok) {
+            error = "No header found for invalidation target " + blockhash.substr(0, 16) + "...";
+            LOG_ERROR("❌ " + error);
+            return false;
+        }
+        auto target_height_result = chain_db->getBlockHeight(target_hash);
+        if (target_height_result.status() != dinero::Status::Ok || target_height_result.value() <= 0) {
+            error = "No height record for invalidation target " + blockhash.substr(0, 16) + "...";
+            LOG_ERROR("❌ " + error);
+            return false;
+        }
+        const uint32_t targetHeight = static_cast<uint32_t>(target_height_result.value());
+        const uint32_t tipHeight = dinero::storage::GetChainHeight(chain_db);
+        if (targetHeight != tipHeight) {
+            LOG_INFO("⚠️ Invalidation target height " + std::to_string(targetHeight) +
+                     " != ChainDB tip " + std::to_string(tipHeight) +
+                     " (concurrent connect?) — proceeding with identity-resolved parent");
+        }
+        uint32_t newHeight = targetHeight - 1;
+
+        LOG_INFO("📊 Target height: " + std::to_string(targetHeight) +
+                 " → new height: " + std::to_string(newHeight));
+
+        uint256 newTipHash = target_header_result.value().prev_block_hash;
 
         LOG_INFO("🔗 New tip will be: " + newTipHash.GetHex().substr(0, 16) + "... at height " +
                  std::to_string(newHeight));
