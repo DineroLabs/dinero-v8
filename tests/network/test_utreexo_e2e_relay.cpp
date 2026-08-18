@@ -22,7 +22,9 @@
 #include "primitives/hash_domains.h"
 #include "consensus/chainparams.h"
 #include "storage/chain_db.h"
+#include "storage/chain_write_token.h"
 #include <iostream>
+#include <optional>
 #include <cassert>
 #include <vector>
 #include <cstring>
@@ -818,6 +820,94 @@ static void test_csn_to_csn_tx_relay() {
 // Main
 // ============================================================================
 
+// ============================================================================
+// #583 regression: getheaders from a peer stranded on a DEAD branch must serve
+// the fork block, not an empty / fork-skipping reply.
+// ============================================================================
+static void test_getheaders_dead_branch_serves_fork_block() {
+    std::cout << "E2E Test: #583 getheaders dead-branch locator must serve the fork block..."
+              << std::endl;
+
+    const auto temp_root = std::filesystem::temp_directory_path() /
+                           std::filesystem::path("dinero_bridge_583_getheaders");
+    std::filesystem::remove_all(temp_root);
+    std::filesystem::create_directories(temp_root);
+
+    ChainDB chain_db;
+    TEST_ASSERT(chain_db.init(temp_root) == Status::Ok, "ChainDB temp init must succeed");
+
+    // Reorg geometry: fork at height 83. The requester's tip is the DEAD block at
+    // 83; the ACTIVE chain has a DIFFERENT block at 83 and extends to 85. Height 82
+    // is the shared common ancestor.
+    auto make_header = [](const uint256& prev, uint32_t nonce) {
+        BlockHeader h;
+        std::memset(&h, 0, sizeof(BlockHeader));
+        h.version = 1;
+        h.prev_block_hash = prev;
+        h.timestamp = 1700000000 + nonce;
+        h.difficulty = 0x1d00ffff;
+        h.nonce = nonce;
+        return h;
+    };
+    BlockHeader h82    = make_header(uint256(), 82);
+    BlockHeader hdead  = make_header(h82.GetHash(), 8300);    // dead-83 (prev = 82)
+    BlockHeader hnew83 = make_header(h82.GetHash(), 8301);    // new-83  (prev = 82, distinct)
+    BlockHeader hnew84 = make_header(hnew83.GetHash(), 8400);
+    BlockHeader hnew85 = make_header(hnew84.GetHash(), 8500);
+
+    // getBlockHeight resolves BOTH 83s (both putHeader'd — the bridge indexes the
+    // competing branch), but the canonical height index points to the ACTIVE chain.
+    auto token = ChainWriteToken::CreateForTesting();
+    arith_uint256 w;  // work value is not consulted by FindCommonAncestor
+    TEST_ASSERT(chain_db.putHeader(token, h82.GetHash(),    h82,    82, w) == Status::Ok, "putHeader 82");
+    TEST_ASSERT(chain_db.putHeader(token, hdead.GetHash(),  hdead,  83, w) == Status::Ok, "putHeader dead-83");
+    TEST_ASSERT(chain_db.putHeader(token, hnew83.GetHash(), hnew83, 83, w) == Status::Ok, "putHeader new-83");
+    TEST_ASSERT(chain_db.putHeightIndex(token, 82, h82.GetHash())    == Status::Ok, "heightIndex 82");
+    TEST_ASSERT(chain_db.putHeightIndex(token, 83, hnew83.GetHash()) == Status::Ok, "heightIndex new-83");
+    TEST_ASSERT(chain_db.putHeightIndex(token, 84, hnew84.GetHash()) == Status::Ok, "heightIndex new-84");
+    TEST_ASSERT(chain_db.putHeightIndex(token, 85, hnew85.GetHash()) == Status::Ok, "heightIndex new-85");
+
+    UtreexoForest bridge_forest;
+    auto mock_utxo = std::make_shared<MockUTXOProvider>();
+    BridgeNode bridge(mock_utxo, &bridge_forest, nullptr, &chain_db);
+
+    // Stranded-CSN locator: densest entry is its dead tip; next is the shared 82.
+    GetUtreexoHeadersMessage request;
+    request.locator_hashes = { hdead.GetHash(), h82.GetHash() };
+
+    // Serve the ACTIVE chain forward from start_height + 1.
+    std::unordered_map<uint32_t, BlockHeader> active_by_height =
+        { {83, hnew83}, {84, hnew84}, {85, hnew85} };
+    auto header_by_height = [&](uint32_t height) -> std::optional<BlockHeader> {
+        auto it = active_by_height.find(height);
+        if (it == active_by_height.end()) return std::nullopt;
+        return it->second;
+    };
+    auto header_by_hash = [&](const uint256&) -> std::optional<BlockHeader> {
+        return std::nullopt;  // not consulted by the common-ancestor path under test
+    };
+
+    UtreexoHeadersMessage response =
+        bridge.HandleHeadersRequest(request, header_by_hash, header_by_height);
+
+    // Fixed: FindCommonAncestor skips the non-canonical dead-83 and lands on the
+    // shared 82, so serving starts at 83 and INCLUDES the fork block new-83.
+    // Pre-fix: it accepts dead-83's height (83) and serves from 84 — the fork block
+    // is skipped and the CSN can never switch branches (the silent freeze).
+    TEST_ASSERT(!response.headers.empty(),
+                "#583: dead-branch getheaders must not return an empty reply");
+    bool has_fork_block = false;
+    for (const auto& hdr : response.headers) {
+        if (hdr.GetHash() == hnew83.GetHash()) { has_fork_block = true; break; }
+    }
+    TEST_ASSERT(has_fork_block,
+                "#583: reply must contain the fork block (new-83), not skip past it");
+
+    chain_db.close();
+    std::filesystem::remove_all(temp_root);
+    std::cout << "  PASSED" << std::endl;
+}
+
 int main() {
     SelectParams(Chain::REGTEST);
 
@@ -831,6 +921,7 @@ int main() {
     test_block1_missing_genesis_checkpoint_fallback();
     test_batch_proof_with_intra_block_spend();
     test_csn_to_csn_tx_relay();
+    test_getheaders_dead_branch_serves_fork_block();
 
     std::cout << std::endl;
     std::cout << "═══════════════════════════════════════════════════" << std::endl;

@@ -269,6 +269,7 @@ din::Json handle_generatetoaddress(
         din::Json block_hashes = din::arr();
 
         // Mine each block
+        int stale_tip_retries = 0;  // #589: bounded retry when a reorg moves the tip mid-mine
         for (int i = 0; i < nblocks; i++) {
             // ✅ CRITICAL: Fetch fresh tip on EVERY iteration
             // Each block must build on the new tip created by the previous block
@@ -876,20 +877,42 @@ din::Json handle_generatetoaddress(
                             // TEMPORARY ASSERT: Verify miner and validator compute same root
                             // Remove after 48 hours of successful testing
                             // ════════════════════════════════════════════════════════════════
+                            // #589 sibling: the re-verification stays Debug-only (the root
+                            // recompute clones the forest — too costly for release mining),
+                            // but a mismatch is a RETRY, not an abort: under a concurrent
+                            // reorg the forest can advance between the first computation and
+                            // this one (benign TOCTOU), and the old assert killed the whole
+                            // daemon for it. Retry rebuilds the template against fresh state;
+                            // the shared stale-tip retry bound applies.
                             #ifndef NDEBUG
                             {
                                 dinero::uint256 verify_root;
                                 std::string verify_error;
-                                bool verify_ok = block_validator->ComputeUtreexoRootPure(block, height, verify_root, verify_error);
-                                if (!verify_ok) {
-                                    g_logger.error("[MINING ASSERT] Re-computation FAILED: " + verify_error);
-                                    assert(false && "ComputeUtreexoRootPure failed on re-verification");
-                                }
-                                if (verify_root != block.header.utreexo_root) {
-                                    g_logger.error("[MINING ASSERT] ROOT MISMATCH!");
-                                    g_logger.error("  Header root:   " + block.header.utreexo_root.GetHex());
-                                    g_logger.error("  Recomputed:    " + verify_root.GetHex());
-                                    assert(false && "Utreexo root mismatch between miner computation and header");
+                                const bool verify_ok = block_validator->ComputeUtreexoRootPure(block, height, verify_root, verify_error);
+                                if (!verify_ok || verify_root != block.header.utreexo_root) {
+                                    g_logger.warning("[generatetoaddress] utreexo root moved during mining (" +
+                                                     (verify_ok ? ("header " + block.header.utreexo_root.GetHex().substr(0, 16) +
+                                                                   "... vs recomputed " + verify_root.GetHex().substr(0, 16) + "...")
+                                                                : ("recompute failed: " + verify_error)) +
+                                                     ") — retrying block " + std::to_string(i + 1) +
+                                                     " against fresh state (#589)");
+                                    if (++stale_tip_retries > 32) {
+                                        // Owner-required observability: a genuine (non-race)
+                                        // miner/validator root divergence exhausts this budget
+                                        // too — the log line below is the searchable signal
+                                        // that replaced the old abort-with-stacktrace.
+                                        dinero::g_logger.error(
+                                            "[generatetoaddress] RETRY-BUDGET-EXHAUSTED (#589): "
+                                            "utreexo root mismatch persisted across 32 rebuilds — "
+                                            "either a reorg storm or a GENUINE miner/validator "
+                                            "root divergence (investigate if not reorging)");
+                                        result["error"]["code"] = -32000;
+                                        result["error"]["message"] =
+                                            "generatetoaddress: forest state kept moving (reorg storm); retry later";
+                                        return result;
+                                    }
+                                    --i;
+                                    continue;
                                 }
                                 g_logger.info("[MINING ASSERT] ✅ Root verified: miner == header");
                             }
@@ -1019,22 +1042,41 @@ din::Json handle_generatetoaddress(
                 throw std::runtime_error("Block serialize failed for height " + std::to_string(height) + ": " + std::string(e.what()));
             }
 
-            // ✅ DEBUG ASSERT: Verify block builds on current tip (not stale template)
-            // This assert catches bugs where:
-            // - Block template is cached incorrectly
-            // - prevHash is not refreshed per iteration
-            // - Code refactoring breaks the "fresh tip per block" invariant
-            #ifndef NDEBUG
-                std::string current_tip = dinero::storage::GetBestBlockHash(chain_db);
-                std::string block_parent = block.header.prev_block_hash.GetHex();
+            // #589: verify the block still extends the current tip — in BOTH build
+            // configs. A concurrent reorg (e.g. invalidateblock) can legitimately
+            // move the tip between template construction and submission; that is
+            // a RETRY, not a crash. The old #ifndef NDEBUG assert aborted the
+            // whole daemon in Debug and no-oped in release (proceeding with a
+            // stale-parent block) — the load-bearing-assert class fixed in #576.
+            // Re-run this iteration against the fresh tip, bounded so a
+            // thrashing tip cannot loop forever.
+            {
+                const std::string current_tip = dinero::storage::GetBestBlockHash(chain_db);
+                const std::string block_parent = block.header.prev_block_hash.GetHex();
                 if (block_parent != current_tip) {
-                    dinero::g_logger.error("[DEBUG ASSERT] RPC mining built block on STALE tip!");
-                    dinero::g_logger.error("  Block parent: " + block_parent);
-                    dinero::g_logger.error("  Current tip:  " + current_tip);
-                    dinero::g_logger.error("  Height:       " + std::to_string(height));
-                    assert(false && "RPC mining invariant violated: block must extend current tip");
+                    dinero::g_logger.warning(
+                        "[generatetoaddress] tip moved during mining (block parent " +
+                        block_parent.substr(0, 16) + "... vs current tip " +
+                        current_tip.substr(0, 16) + "...) — retrying block " +
+                        std::to_string(i + 1) + "/" + std::to_string(nblocks) +
+                        " against the fresh tip (#589)");
+                    if (++stale_tip_retries > 32) {
+                        // Owner-required observability: the bounded give-up must be
+                        // loud and searchable in logs, not just in the RPC reply.
+                        dinero::g_logger.error(
+                            "[generatetoaddress] RETRY-BUDGET-EXHAUSTED (#589): chain tip "
+                            "kept moving across 32 consecutive rebuilds — giving up with an "
+                            "RPC error (reorg storm, or a genuine tip-thrash bug)");
+                        result["error"]["code"] = -32000;
+                        result["error"]["message"] =
+                            "generatetoaddress: chain tip kept moving (reorg storm); retry later";
+                        return result;
+                    }
+                    --i;
+                    continue;
                 }
-            #endif
+                stale_tip_retries = 0;
+            }
 
             dinero::BlockAcceptResult accept_result;
             try {

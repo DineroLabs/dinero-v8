@@ -691,6 +691,12 @@ private:
     GetBlockHashAtHeightCallback get_block_hash_at_height_callback_;
     ExternalBackpressureCallback external_backpressure_callback_;
 
+    // #579: the last stale INVALID stateless frontier we re-seated to a new-branch
+    // hash / halted on. Used only to log each distinct event once — the pre-fix
+    // halt spammed ~265 identical lines per reorg. Not consensus state.
+    uint256 last_reseated_invalid_frontier_;
+    uint256 last_halted_invalid_frontier_;
+
     // Parent request throttling to avoid spamming repeated getdata for the same
     // missing parent while waiting for network delivery.
     std::unordered_map<uint256, std::chrono::steady_clock::time_point> parent_request_times_;

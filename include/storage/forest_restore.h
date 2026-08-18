@@ -13,9 +13,11 @@
 // BridgeNode's historical proof generation.
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include "common/status.h"
+#include "primitives/uint256.h"
 
 namespace dinero {
 
@@ -26,6 +28,20 @@ class UtreexoForest;
 }
 
 namespace storage {
+
+// Resolves the block hash that belongs at `height` on the chain being
+// restored. When empty, the functions below fall back to the ChainDB
+// persisted height index — which can lag or remain STALE ACROSS REORGS
+// (issue #579: a scratch-forest restore whose replay range crossed an
+// earlier reorg pulled the rewritten index's hashes, failed
+// "replay-missing-header-at-N", and permanently wedged CSN reorg
+// recovery). Callers that hold an authoritative chain view (an in-memory
+// CBlockIndex tip/anchor) should pass an identity-based resolver — e.g.
+// consensus::GetActiveChainHashAtHeight over pprev ancestry, which
+// "deliberately ignores persisted height indexes" for exactly this
+// reason.
+using BlockHashAtHeightResolver =
+    std::function<bool(uint32_t height, uint256& out_hash)>;
 
 // Replays the UD sidecars for heights (from_exclusive, to_inclusive]
 // onto `forest`, in ascending order, mirroring live validation exactly:
@@ -39,7 +55,8 @@ Status ReplayUtreexoDeltaRange(const ChainDB& db,
                                consensus::UtreexoForest& forest,
                                uint32_t from_exclusive,
                                uint32_t to_inclusive,
-                               std::string& error);
+                               std::string& error,
+                               const BlockHashAtHeightResolver& resolve_hash = {});
 
 // Rebuilds the forest state at exactly `target_height`: loads the nearest
 // full checkpoint at-or-below, sets the canonical-roots flag per the
@@ -47,7 +64,8 @@ Status ReplayUtreexoDeltaRange(const ChainDB& db,
 // `out` holds the verified forest; on failure `out` must be discarded.
 Status RestoreHistoricalForest(const ChainDB& db, uint32_t target_height,
                                consensus::UtreexoForest& out,
-                               std::string& error);
+                               std::string& error,
+                               const BlockHashAtHeightResolver& resolve_hash = {});
 
 }  // namespace storage
 }  // namespace dinero

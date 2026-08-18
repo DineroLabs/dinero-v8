@@ -10793,6 +10793,16 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
 // ============================================================================
 
 bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error) {
+    // #586 bolt 3: this runs on the RPC thread and walks DisconnectTip in a
+    // loop — WITHOUT this lock it races ActivateBestChain's ConnectTips on
+    // P2P threads (activation_mutex_ holders). Observed live: a connect
+    // completing mid-disconnect diverges the forest from the delta-undo
+    // sidecar (utreexo-delta-undo-numleaves-mismatch), and pre-guard the
+    // stale plan disconnected a non-tip block outright (forest corruption,
+    // utreexo-add-failed livelock). Serializing the whole invalidation walk
+    // against activation closes the interleave; recursive_mutex, same
+    // acquisition order as ABC (activation -> forest), no inversion.
+    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
     CBlockIndex* target = FindBlockIndex(hash);
     if (!target) {
         error = "Block not found in block index";
@@ -11549,6 +11559,30 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
     if (!block_validator_) {
         std::cout << "❌ [DisconnectTip] NULL block_validator_" << std::endl;
         logger_->error("[DisconnectTip] BlockValidator not initialized");
+        return false;
+    }
+    // #586: REFUSE to disconnect a non-tip block. Disconnecting in the middle
+    // of the chain applies that block's undo against a forest/UTXO state that
+    // still contains its descendants — the observed corruption: an
+    // invalidateblock-driven rollback planned against a stale tip view while a
+    // concurrent connect advanced the chain, DisconnectTip(57) ran with the
+    // active tip at 58, the delta-undo tripped
+    // utreexo-delta-undo-numleaves-mismatch, and every later connect looped
+    // utreexo-add-failed (chain livelock). A caller whose plan went stale must
+    // fail loudly and re-plan from the CURRENT tip (ActivateBestChain re-enters
+    // and recomputes); silently corrupting the accumulator is never acceptable.
+    // Mirrors ConnectTip's out-of-order guard (#576).
+    if (active_tip_ && tip_to_disconnect != active_tip_) {
+        const std::string msg =
+            "[DisconnectTip] REFUSING out-of-order disconnect: target height " +
+            std::to_string(tip_to_disconnect->height) + " hash " +
+            tip_to_disconnect->hash.GetHex().substr(0, 16) +
+            "... is not the active tip (height " +
+            std::to_string(active_tip_->height) + " hash " +
+            active_tip_->hash.GetHex().substr(0, 16) +
+            "...) — caller must re-plan from the current tip (#586)";
+        std::cout << "❌ " << msg << std::endl;
+        if (logger_) logger_->error(msg);
         return false;
     }
     ChainWriteToken token;  // Required for canonical tip persistence during reorg
@@ -14506,6 +14540,22 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             &utxo_batch);
         if (height_idx_status != Status::Ok) {
             return fail("persist-height-index-stage-failed");
+        }
+
+        // #579 core, sub-layer 2: persist the connected block HEADER too.
+        // ConnectTip stages putHeader for every block it connects, but this
+        // lightweight funnel (ABC-CSN replay + ConnectTip recovery) staged
+        // only tip + height index — so reorg-connected blocks had a height-
+        // index entry and NO header record. Any later checkpoint replay whose
+        // range crossed a reorg then failed its header-root verification
+        // ("replay-missing-header-at-N") even with correct identity
+        // resolution, wedging the speculative reorg plan. Same batch, same
+        // token: the header commits atomically with tip/height-index.
+        const auto header_status = chain_db_->putHeader(
+            token, block_index->hash, block.header,
+            static_cast<int>(block_index->height), work, &utxo_batch);
+        if (header_status != Status::Ok) {
+            return fail("persist-header-stage-failed");
         }
 
         auto status = chain_db_->writeBatch(token, std::move(utxo_batch), true);

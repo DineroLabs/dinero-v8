@@ -726,10 +726,23 @@ uint32_t BridgeNode::FindCommonAncestor(
     const std::vector<uint256>& locator_hashes,
     std::function<std::optional<uint32_t>(const uint256&)> header_provider
 ) const {
-    // Iterate through locator hashes to find first one on our chain
+    // Return the height of the first locator hash that is on our ACTIVE chain.
+    //
+    // #583: a locator hash may be INDEXED yet belong to a DEAD (orphaned) branch
+    // — after a reorg the bridge holds both competing branches in its index, so
+    // header_provider (chain_db_->getBlockHeight) resolves a height for either.
+    // Accepting a dead-branch hash on its height alone makes us serve forward
+    // from the dead branch's tip (start_height + 1), PAST the fork block the
+    // requester actually needs — so a peer stranded on a dead branch after a
+    // reorg receives an empty / fork-skipping reply and silently freezes,
+    // believing it is synced. Verify canonicality (the hash IS the active-chain
+    // block at that height) before accepting, so we keep walking the locator's
+    // deeper, exponentially-spaced entries down to the last common ancestor with
+    // the active chain — from which serving covers the fork block forward.
     for (const auto& hash : locator_hashes) {
         auto height_opt = header_provider(hash);
-        if (height_opt.has_value()) {
+        if (height_opt.has_value() &&
+            IsCanonicalHashAtHeight(hash, height_opt.value())) {
             return height_opt.value();
         }
     }
