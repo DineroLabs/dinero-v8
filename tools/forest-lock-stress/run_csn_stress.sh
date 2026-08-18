@@ -31,6 +31,7 @@ SECONDS_TO_RUN="${1:-90}"
 READERS="${2:-6}"
 STALL_SECS="${STALL_SECS:-30}"
 REORG_EVERY="${REORG_EVERY:-15}"
+REORG_DEPTH="${REORG_DEPTH:-2}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-25}"
 READER_SLEEP="${READER_SLEEP:-0.15}"
 
@@ -43,7 +44,8 @@ DINEROD="${DINEROD:-$ROOT/build/dinerod}"
 CLI_BIN="${DINERO_CLI:-$ROOT/build/dinero-cli}"
 DIR_B="$(mktemp -d "${TMPDIR:-/tmp}/csn-stress-bridge.XXXXXX")"
 DIR_C="$(mktemp -d "${TMPDIR:-/tmp}/csn-stress-csn.XXXXXX")"
-LOG_B="$DIR_B/dinerod.log"; LOG_C="$DIR_C/dinerod.log"
+LOG_B="${KEEP_LOG:+${KEEP_LOG}.bridge}"; LOG_B="${LOG_B:-$DIR_B/dinerod.log}"
+LOG_C="${KEEP_LOG:+${KEEP_LOG}.csn}"; LOG_C="${LOG_C:-$DIR_C/dinerod.log}"
 KEEP_LOG="${KEEP_LOG:-}"
 
 PIDS=()
@@ -52,7 +54,6 @@ cleanup() {
   [[ -n "${PID_B:-}" ]] && kill "$PID_B" 2>/dev/null
   [[ -n "${PID_C:-}" ]] && kill "$PID_C" 2>/dev/null
   wait 2>/dev/null
-  if [[ -n "$KEEP_LOG" ]]; then cp "$LOG_C" "${KEEP_LOG}.csn" 2>/dev/null; cp "$LOG_B" "${KEEP_LOG}.bridge" 2>/dev/null; fi
   rm -rf "$DIR_B" "$DIR_C"
 }
 trap cleanup EXIT
@@ -135,21 +136,24 @@ for _ in $(seq 1 "$READERS"); do reader_loop & PIDS+=($!); done
 # WRITER: continuous mining on the bridge -> continuous CSN proof application.
 ( while [[ ! -f "$STOP" ]]; do rpc "$URL_B" "{\"method\":\"generatetoaddress\",\"params\":[1,\"$ADDR\"]}" >/dev/null; sleep 0.3; done ) & PIDS+=($!)
 
+# REORGER stops when $STOP2 appears (45s before end) so the final reorg settles.
 # REORGER: every REORG_EVERY s, invalidate tip-2 on the bridge and mine past it
 # -> the CSN must rewind (RewindToCheckpoint) and replay (ReplayBlock).
-( while [[ ! -f "$STOP" ]]; do
+STOP2="$DIR_C/stop-reorg"
+( while [[ ! -f "$STOP" && ! -f "$STOP2" ]]; do
     sleep "$REORG_EVERY"
-    [[ -f "$STOP" ]] && break
+    [[ -f "$STOP" || -f "$STOP2" ]] && break
     hb="$(height "$URL_B")"; [[ -z "$hb" || "$hb" -lt 5 ]] && continue
-    target="$(blockhash "$URL_B" $((hb - 2)))"; [[ -z "$target" ]] && continue
+    target="$(blockhash "$URL_B" $((hb - REORG_DEPTH)))"; [[ -z "$target" ]] && continue
     rpc "$URL_B" "{\"method\":\"invalidateblock\",\"params\":[\"$target\"]}" >/dev/null
-    for _ in 1 2 3 4; do rpc "$URL_B" "{\"method\":\"generatetoaddress\",\"params\":[1,\"$ADDR\"]}" >/dev/null; done
-    echo "[csn-harness] reorg injected at bridge height $hb (invalidated $((hb-2)))"
+    for _ in $(seq 1 $((REORG_DEPTH + 2))); do rpc "$URL_B" "{\"method\":\"generatetoaddress\",\"params\":[1,\"$ADDR\"]}" >/dev/null; done
+    echo "[csn-harness] reorg injected at bridge height $hb (invalidated $((hb-REORG_DEPTH)))"
   done ) & PIDS+=($!)
 
 start_c="$(height "$URL_C")"; last_h="$start_c"; last_change=0; elapsed=0; rc=0
 while [[ "$elapsed" -lt "$SECONDS_TO_RUN" ]]; do
   sleep 3; elapsed=$((elapsed+3))
+  [[ "$elapsed" -ge $((SECONDS_TO_RUN - 45)) && ! -f "$DIR_C/stop-reorg" ]] && touch "$DIR_C/stop-reorg"
   if ! kill -0 "$PID_C" 2>/dev/null; then
     echo "FAIL: CSN dinerod died (possible UAF/crash) at ${elapsed}s"; tail -40 "$LOG_C"; rc=1; break
   fi
@@ -190,7 +194,7 @@ if [[ "$rc" -eq 0 ]]; then
 fi
 if [[ "$rc" -eq 0 ]]; then
   # Convergence: after the last reorg settles, tips must agree.
-  sleep 5
+  sleep 20
   bh_b="$(besthash "$URL_B")"; bh_c="$(besthash "$URL_C")"
   if [[ -n "$bh_b" && "$bh_b" == "$bh_c" ]]; then
     echo "PASS: CSN forest-lock stress — csn height $start_c -> $(height "$URL_C") over ${SECONDS_TO_RUN}s;"
