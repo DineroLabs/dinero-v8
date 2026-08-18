@@ -889,14 +889,20 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // network produce the same commitment at the fork boundary.
     // ═════════════════════════════════════════════════════════════════════════
     if (consensus_utxo_set_ && consensus::IsUtreexoCanonicalRootsActive(height)) {
-        auto& live_forest = consensus_utxo_set_->GetForest();
-        if (!live_forest.isCanonicalEmptyRoots()) {
-            std::cout << "🪐 [Canonical Roots Fork] Activating at height "
-                      << height << " — rebuilding roots_ from nodes_"
-                      << std::endl;
-            live_forest.setCanonicalEmptyRoots(true);
-            live_forest.rebuildRoots();
-        }
+        // #578 completeness: this one-time fork-activation flip is the last
+        // in-place LIVE-forest write outside the guarded API. It is idempotent,
+        // fires at a single historical boundary, and runs on the activation
+        // thread — but shared-lock readers on other threads make even that a
+        // formal race, so take the exclusive lock like every other live write.
+        consensus_utxo_set_->MutateForestGuarded([&](consensus::UtreexoForest& live_forest) {
+            if (!live_forest.isCanonicalEmptyRoots()) {
+                std::cout << "🪐 [Canonical Roots Fork] Activating at height "
+                          << height << " — rebuilding roots_ from nodes_"
+                          << std::endl;
+                live_forest.setCanonicalEmptyRoots(true);
+                live_forest.rebuildRoots();
+            }
+        });
     }
 
     // STATELESS PROOF PRESENCE — hoisted ABOVE the Phase-2 snapshot/rollback
