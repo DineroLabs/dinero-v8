@@ -1828,6 +1828,47 @@ bool ChainstateService::RewindShieldedStateToActiveTipForStartup(uint32_t stored
     return true;
 }
 
+// #585: shielded arm of the self-heal realign. The regtest invalidateblock leg
+// (BlockAcceptor::ApplyTipInvalidation) rolls back ChainDB UTXO only and touches
+// NOTHING in-memory; ActivateBestChain's self-heal is the designed in-memory
+// realign, but it only moves active_tip_ (see IsCanonicalStateAligned, which does
+// not consider the shielded marker). So after a disconnect the shielded tip marker
+// and state stay at the pre-invalidation tip, and VerifyOrBootstrapShieldedTipMarker
+// then trips SAFE MODE -> mining paused -> livelock. This is the missing seam: once
+// the self-heal has lowered active_tip_ to the consensus tip, rewind the shielded
+// state + marker down to match, reusing the startup rewind (idempotent — a no-op
+// when the marker is not ahead). NB: called only from the pre-flight self-heal path,
+// which holds no unified WriteBatch (PublishActiveTip already persists on its own
+// path there), so the rewind's independent persists are consistent with that site.
+// (#586: the forest-leaf rollback arm for the same disconnect leg belongs here too.)
+void ChainstateService::RealignShieldedStateToActiveTipAfterHeal() {
+    if (!chain_db_ || !active_tip_) {
+        return;
+    }
+    const auto marker_result = chain_db_->getShieldedTipMarker();
+    if (marker_result.status() != Status::Ok) {
+        return;  // No marker yet (pre-shielded chain) — nothing to realign.
+    }
+    const int raw_marker_height = marker_result.value().height;
+    const uint32_t marker_height = raw_marker_height < 0 ? 0u : static_cast<uint32_t>(raw_marker_height);
+    const uint32_t active_height = static_cast<uint32_t>(active_tip_->height);
+    if (marker_height <= active_height) {
+        return;  // Marker not ahead of the realigned tip — no rollback needed.
+    }
+    if (logger_) {
+        logger_->warning("[ChainstateService] Self-heal: shielded tip marker (@" +
+                         std::to_string(marker_height) + ") is ahead of the realigned active tip (@" +
+                         std::to_string(active_height) +
+                         ") — rewinding shielded state + marker to the active tip (#585)");
+    }
+    if (!RewindShieldedStateToActiveTipForStartup(marker_height)) {
+        if (logger_) {
+            logger_->error("[ChainstateService] Self-heal: failed to rewind shielded state to the "
+                           "active tip; the shielded invariant may still trip SAFE MODE");
+        }
+    }
+}
+
 bool ChainstateService::RangeHasShieldedActivity(uint32_t start_height, uint32_t end_height) const {
     if (!chain_db_ || start_height > end_height) {
         return false;
@@ -7192,6 +7233,8 @@ void ChainstateService::ActivateBestChain() {
                                              " — realigning active_tip_ to consensus UTXO tip (height=" +
                                              std::to_string(utxo_height) + ")");
                 PublishActiveTip(utxo_tip_idx, TipPublishReason::kSelfHealRealign);
+                // #585: bring the shielded state + marker down to the realigned tip.
+                RealignShieldedStateToActiveTipAfterHeal();
 
                 // Re-check alignment after realignment.
                 std::string recheck_reason;
@@ -7223,6 +7266,8 @@ void ChainstateService::ActivateBestChain() {
                                                  "active_tip_ to consensus UTXO tip (height=" +
                                                  std::to_string(utxo_height) + ")");
                     PublishActiveTip(materialized, TipPublishReason::kSelfHealRealign);
+                    // #585: bring the shielded state + marker down to the realigned tip.
+                    RealignShieldedStateToActiveTipAfterHeal();
                     std::string recheck_reason;
                     if (IsCanonicalStateAligned(&recheck_reason)) {
                         healed = true;
@@ -10753,6 +10798,16 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
 // ============================================================================
 
 bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error) {
+    // #586 bolt 3: this runs on the RPC thread and walks DisconnectTip in a
+    // loop — WITHOUT this lock it races ActivateBestChain's ConnectTips on
+    // P2P threads (activation_mutex_ holders). Observed live: a connect
+    // completing mid-disconnect diverges the forest from the delta-undo
+    // sidecar (utreexo-delta-undo-numleaves-mismatch), and pre-guard the
+    // stale plan disconnected a non-tip block outright (forest corruption,
+    // utreexo-add-failed livelock). Serializing the whole invalidation walk
+    // against activation closes the interleave; recursive_mutex, same
+    // acquisition order as ABC (activation -> forest), no inversion.
+    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
     CBlockIndex* target = FindBlockIndex(hash);
     if (!target) {
         error = "Block not found in block index";
@@ -11509,6 +11564,30 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
     if (!block_validator_) {
         std::cout << "❌ [DisconnectTip] NULL block_validator_" << std::endl;
         logger_->error("[DisconnectTip] BlockValidator not initialized");
+        return false;
+    }
+    // #586: REFUSE to disconnect a non-tip block. Disconnecting in the middle
+    // of the chain applies that block's undo against a forest/UTXO state that
+    // still contains its descendants — the observed corruption: an
+    // invalidateblock-driven rollback planned against a stale tip view while a
+    // concurrent connect advanced the chain, DisconnectTip(57) ran with the
+    // active tip at 58, the delta-undo tripped
+    // utreexo-delta-undo-numleaves-mismatch, and every later connect looped
+    // utreexo-add-failed (chain livelock). A caller whose plan went stale must
+    // fail loudly and re-plan from the CURRENT tip (ActivateBestChain re-enters
+    // and recomputes); silently corrupting the accumulator is never acceptable.
+    // Mirrors ConnectTip's out-of-order guard (#576).
+    if (active_tip_ && tip_to_disconnect != active_tip_) {
+        const std::string msg =
+            "[DisconnectTip] REFUSING out-of-order disconnect: target height " +
+            std::to_string(tip_to_disconnect->height) + " hash " +
+            tip_to_disconnect->hash.GetHex().substr(0, 16) +
+            "... is not the active tip (height " +
+            std::to_string(active_tip_->height) + " hash " +
+            active_tip_->hash.GetHex().substr(0, 16) +
+            "...) — caller must re-plan from the current tip (#586)";
+        std::cout << "❌ " << msg << std::endl;
+        if (logger_) logger_->error(msg);
         return false;
     }
     ChainWriteToken token;  // Required for canonical tip persistence during reorg
@@ -14484,6 +14563,22 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             &utxo_batch);
         if (height_idx_status != Status::Ok) {
             return fail("persist-height-index-stage-failed");
+        }
+
+        // #579 core, sub-layer 2: persist the connected block HEADER too.
+        // ConnectTip stages putHeader for every block it connects, but this
+        // lightweight funnel (ABC-CSN replay + ConnectTip recovery) staged
+        // only tip + height index — so reorg-connected blocks had a height-
+        // index entry and NO header record. Any later checkpoint replay whose
+        // range crossed a reorg then failed its header-root verification
+        // ("replay-missing-header-at-N") even with correct identity
+        // resolution, wedging the speculative reorg plan. Same batch, same
+        // token: the header commits atomically with tip/height-index.
+        const auto header_status = chain_db_->putHeader(
+            token, block_index->hash, block.header,
+            static_cast<int>(block_index->height), work, &utxo_batch);
+        if (header_status != Status::Ok) {
+            return fail("persist-header-stage-failed");
         }
 
         auto status = chain_db_->writeBatch(token, std::move(utxo_batch), true);
