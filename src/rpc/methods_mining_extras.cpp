@@ -877,20 +877,33 @@ din::Json handle_generatetoaddress(
                             // TEMPORARY ASSERT: Verify miner and validator compute same root
                             // Remove after 48 hours of successful testing
                             // ════════════════════════════════════════════════════════════════
+                            // #589 sibling: the re-verification stays Debug-only (the root
+                            // recompute clones the forest — too costly for release mining),
+                            // but a mismatch is a RETRY, not an abort: under a concurrent
+                            // reorg the forest can advance between the first computation and
+                            // this one (benign TOCTOU), and the old assert killed the whole
+                            // daemon for it. Retry rebuilds the template against fresh state;
+                            // the shared stale-tip retry bound applies.
                             #ifndef NDEBUG
                             {
                                 dinero::uint256 verify_root;
                                 std::string verify_error;
-                                bool verify_ok = block_validator->ComputeUtreexoRootPure(block, height, verify_root, verify_error);
-                                if (!verify_ok) {
-                                    g_logger.error("[MINING ASSERT] Re-computation FAILED: " + verify_error);
-                                    assert(false && "ComputeUtreexoRootPure failed on re-verification");
-                                }
-                                if (verify_root != block.header.utreexo_root) {
-                                    g_logger.error("[MINING ASSERT] ROOT MISMATCH!");
-                                    g_logger.error("  Header root:   " + block.header.utreexo_root.GetHex());
-                                    g_logger.error("  Recomputed:    " + verify_root.GetHex());
-                                    assert(false && "Utreexo root mismatch between miner computation and header");
+                                const bool verify_ok = block_validator->ComputeUtreexoRootPure(block, height, verify_root, verify_error);
+                                if (!verify_ok || verify_root != block.header.utreexo_root) {
+                                    g_logger.warning("[generatetoaddress] utreexo root moved during mining (" +
+                                                     (verify_ok ? ("header " + block.header.utreexo_root.GetHex().substr(0, 16) +
+                                                                   "... vs recomputed " + verify_root.GetHex().substr(0, 16) + "...")
+                                                                : ("recompute failed: " + verify_error)) +
+                                                     ") — retrying block " + std::to_string(i + 1) +
+                                                     " against fresh state (#589)");
+                                    if (++stale_tip_retries > 32) {
+                                        result["error"]["code"] = -32000;
+                                        result["error"]["message"] =
+                                            "generatetoaddress: forest state kept moving (reorg storm); retry later";
+                                        return result;
+                                    }
+                                    --i;
+                                    continue;
                                 }
                                 g_logger.info("[MINING ASSERT] ✅ Root verified: miner == header");
                             }
