@@ -643,17 +643,63 @@ void BlockDownloadScheduler::TickLocked() {
             const uint32_t want = gap_state.height;
             const bool gap_in_flight = in_flight_blocks_.count(gap_state.block_hash) > 0;
             if (gap_state.status == FetchStatus::INVALID) {
-                g_logger.error("[BlockDownloadScheduler] Stateless frontier is INVALID at height " +
-                               std::to_string(want) + " hash=" +
-                               gap_state.block_hash.GetHex().substr(0, 16) +
-                               "... — halting further TIP block requests"
-                               " (backfill continues)");
-                // #378: halt TIP requests only. The pre-base backfill queue is
-                // independent of the forward frontier; returning out of the
-                // whole tick here wedged a healthy backfill at 34,630/52,287
-                // on the DineroTX e2e run when the forward frontier failed.
-                ServiceBackfillLocked();
-                return;
+                // #579: an INVALID frontier is only terminal if the best header
+                // chain still expects THIS block here. When a reorg invalidates the
+                // block that was at the frontier height, the best header chain now
+                // holds a DIFFERENT block there, but the stale old-branch entry
+                // (marked INVALID after MAX_RETRIES proof failures) survives in the
+                // TIP queue and — because FindStatelessFrontierLocked returns it as
+                // the frontier — its halt below stops ALL tip requests, including
+                // the new-branch block that is legitimately queued/needed. The
+                // scheduler wedges: ABC sees the better header chain but defers body
+                // fetches to this scheduler, which never issues them. Re-seat the
+                // entry to the new-branch hash so requests resume from the fork
+                // point; the old INVALID mark stays correct for its (now dead) hash.
+                uint256 header_hash;
+                const bool superseded_by_reorg =
+                    GetExpectedHashAtHeight(want, header_hash) &&
+                    header_hash != gap_state.block_hash;
+                if (superseded_by_reorg) {
+                    if (last_reseated_invalid_frontier_ != gap_state.block_hash) {
+                        g_logger.warning(
+                            "[BlockDownloadScheduler] Stateless frontier INVALID at height " +
+                            std::to_string(want) + " hash=" +
+                            gap_state.block_hash.GetHex().substr(0, 16) +
+                            "... was superseded by a reorg (best header now " +
+                            header_hash.GetHex().substr(0, 16) +
+                            "...) — re-seating the frontier to the new branch and "
+                            "resuming TIP block requests");
+                        last_reseated_invalid_frontier_ = gap_state.block_hash;
+                    }
+                    in_flight_blocks_.erase(gap_state.block_hash);
+                    received_blocks_.erase(gap_state.block_hash);
+                    expected_blocks_.erase(gap_state.block_hash);
+                    gap_state.block_hash = header_hash;
+                    gap_state.status = FetchStatus::MISSING;
+                    gap_state.stored_pos = FilePosition();
+                    expected_blocks_.insert(header_hash);
+                    // Point the request cursor at the re-seated frontier so
+                    // RequestNextBlock issues its getdata on THIS tick (Tick() is
+                    // arrival-driven; deferring to a later tick could re-wedge).
+                    next_missing_idx_ = frontier->idx;
+                    // Fall through to the request loop (do NOT halt).
+                } else {
+                    if (last_halted_invalid_frontier_ != gap_state.block_hash) {
+                        g_logger.error(
+                            "[BlockDownloadScheduler] Stateless frontier is INVALID at height " +
+                            std::to_string(want) + " hash=" +
+                            gap_state.block_hash.GetHex().substr(0, 16) +
+                            "... — halting further TIP block requests"
+                            " (backfill continues)");
+                        last_halted_invalid_frontier_ = gap_state.block_hash;
+                    }
+                    // #378: halt TIP requests only. The pre-base backfill queue is
+                    // independent of the forward frontier; returning out of the
+                    // whole tick here wedged a healthy backfill at 34,630/52,287
+                    // on the DineroTX e2e run when the forward frontier failed.
+                    ServiceBackfillLocked();
+                    return;
+                }
             }
             bool retry_gap = false;
             std::string retry_reason;
@@ -1506,6 +1552,43 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
             missing_blocks_.emplace_back(hash, height);
         }
         expected_blocks_.insert(hash);
+    }
+
+    // #579 pass 2b (unified root fix): when a fork below our tip was queued
+    // (start_height was pulled down to fork_point+1), the overlap heights
+    // [fork_point+1 .. old local tip] can still carry STALE OLD-BRANCH hashes.
+    // The REQUEST side resolves which block to fetch from the header chain (the
+    // truth), but the RECEIPT side matches arriving blocks BY HASH against these
+    // queue entries — so a correctly-requested new-branch block whose entry still
+    // holds the old hash is received, indexed, and silently dropped (no
+    // OnBlockReceived match), leaving the frontier pinned forever (the mode-2
+    // stall). Align every overlap entry's hash with the header chain so receipts
+    // match and the cursor advances. Heights above the old tip are freshly built
+    // from the header window and already correct, so they are skipped. This is the
+    // same entry/header hash-divergence defect the INVALID-frontier re-seat (pass
+    // 1) handled as its special case (a stale entry additionally marked INVALID).
+    if (start_height <= local_tip_height_) {
+        for (auto& fs : missing_blocks_) {
+            if (fs.height > local_tip_height_) {
+                continue;  // above the old tip: fresh header-window entry, already correct
+            }
+            uint256 header_hash;
+            if (GetExpectedHashAtHeight(fs.height, header_hash) &&
+                header_hash != fs.block_hash) {
+                in_flight_blocks_.erase(fs.block_hash);
+                received_blocks_.erase(fs.block_hash);
+                expected_blocks_.erase(fs.block_hash);
+                g_logger.info("[BlockDownloadScheduler] Fork re-seat at height " +
+                              std::to_string(fs.height) + ": " +
+                              fs.block_hash.GetHex().substr(0, 16) + "... -> " +
+                              header_hash.GetHex().substr(0, 16) +
+                              "... (stale old-branch entry aligned to the header chain)");
+                fs.block_hash = header_hash;
+                fs.status = FetchStatus::MISSING;
+                fs.stored_pos = FilePosition();
+                expected_blocks_.insert(header_hash);
+            }
+        }
     }
 
     g_logger.info("[BlockDownloadScheduler] Queued " + std::to_string(missing_blocks_.size()) +
