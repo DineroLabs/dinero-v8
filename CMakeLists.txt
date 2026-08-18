@@ -434,7 +434,7 @@ add_library(dinero_crypto STATIC
 )
 
 # Enable ARM Crypto Extensions on ARM64 platforms
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64" AND NOT CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
     if(APPLE)
         target_compile_options(dinero_crypto PRIVATE -march=armv8-a+crypto)
         target_compile_definitions(dinero_crypto PRIVATE ENABLE_ARM_SHANI)
