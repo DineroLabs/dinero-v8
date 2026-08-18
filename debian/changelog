@@ -1,3 +1,20 @@
+dinero-core (8.1.5-1) unstable; urgency=medium
+
+  * v8.1.5 -- stability release: the August merge-train hardening is now in
+    shipping binaries. Utreexo forest access is fully lock-protected
+    (concurrent RPC/bridge readers vs connect-path writers), CSN stateless
+    nodes recover correctly after chain reorganizations (identity-first
+    scratch-forest restore, header persistence in the lightweight connect
+    funnel, scheduler re-seat), out-of-order disconnects are refused and
+    block invalidation is serialized against activation, mining RPC aborts
+    are replaced with bounded retries, and PSBT taproot validation fails
+    closed on undecodable witness UTXOs.
+  * Consensus rules and the height-84,131 AssumeUTXO anchor are unchanged.
+  * Fleet redeploy REQUIRED: the daemon changed (first daemon change since
+    v8.1.2-era binaries).
+
+ -- Dinero Labs <team@dinerolabs.org>  Tue, 18 Aug 2026 18:00:00 -0400
+
 dinero-core (8.1.4-1) unstable; urgency=medium
 
   * v8.1.4 -- dinero-qt no longer gives up permanently when the embedded
