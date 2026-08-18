@@ -50,6 +50,8 @@ namespace dinero {
 class ChainDB;  // Forward declaration for height lookups
 class BlockStorage;
 
+namespace consensus { class IConsensusUTXOSet; }  // forest lock owner
+
 namespace network {
 
 /**
@@ -114,13 +116,19 @@ public:
      * @param utxo_provider UTXO provider (shared ownership for lifetime safety)
      * @param utreexo_forest Utreexo accumulator for generating proofs
      * @param proof_cache Optional LRU cache for proof storage
+     * @param owner Forest lock owner. When set, every live-forest read goes
+     *        through the owner's shared lock (LockForestShared) so proof
+     *        serving on P2P threads cannot race guarded forest writes on the
+     *        activation side (TSan finding, issue #578). When null (tests,
+     *        standalone forests) reads are direct, as before.
      */
     BridgeNode(
         std::shared_ptr<consensus::IUTXOProvider> utxo_provider,
         consensus::UtreexoForest* utreexo_forest,
         consensus::ProofCache* proof_cache = nullptr,
         ChainDB* chain_db = nullptr,
-        BlockStorage* block_storage = nullptr
+        BlockStorage* block_storage = nullptr,
+        consensus::IConsensusUTXOSet* owner = nullptr
     );
 
     virtual ~BridgeNode();
@@ -257,9 +265,7 @@ public:
     /**
      * @brief Get current forest commitment (accumulator root)
      */
-    consensus::UtreexoHash GetCurrentForestCommitment() const {
-        return utreexo_forest_->getCommitment();
-    }
+    consensus::UtreexoHash GetCurrentForestCommitment() const;
 
     /**
      * @brief Get proof cache statistics
@@ -473,6 +479,13 @@ private:
 
     std::shared_ptr<consensus::IUTXOProvider> utxo_provider_;  // UTXO provider (shared ownership)
     consensus::UtreexoForest* utreexo_forest_; // Utreexo accumulator (not owned)
+    consensus::IConsensusUTXOSet* owner_;      // Forest lock owner (may be null; not owned)
+
+    // Run fn over the live forest under the owner's SHARED lock (issue #578):
+    // excludes guarded exclusive writers while allowing concurrent readers.
+    // Ownerless bridges (tests / standalone forests) read directly.
+    void readForestShared(
+        const std::function<void(const consensus::UtreexoForest&)>& fn) const;
     consensus::ProofCache* proof_cache_;       // Proof cache (optional, not owned)
     ChainDB* chain_db_ = nullptr;              // Block height lookups (optional, not owned)
     BlockStorage* block_storage_ = nullptr;    // Flatfile block body access (optional, not owned)

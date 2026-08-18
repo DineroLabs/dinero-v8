@@ -2880,7 +2880,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                         utreexo_forest,
                         nullptr,                           // No proof cache for now
                         chainstate_service->GetChainDB(),  // ChainDB for height lookups
-                        ctx_.block_storage.get()           // Flatfile-first block body reads
+                        ctx_.block_storage.get(),          // Flatfile-first block body reads
+                        consensus_utxo_set                 // Forest lock owner (#578): proof
+                                                           // serving reads take the shared lock
                     );
                     std::cout << "[DaemonApp] BridgeNode created with consensus UTXO set (Phase P.2)" << std::endl;
 
