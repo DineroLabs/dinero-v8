@@ -2833,7 +2833,13 @@ bool BlockAcceptor::ApplyTipInvalidation(const std::string& blockhash, std::stri
         LOG_INFO("📦 Loaded undo record: " + std::to_string(undo.spent.size()) +
                  " spent coins, " + std::to_string(undo.created.size()) + " created outputs");
 
-        // Step 3+4 (#586): resolve the target block and its parent by IDENTITY,
+        // Step 3+4 (#586, hardening of an UNWIRED path): a bare invalidateblock
+        // RPC routes to ChainstateService::InvalidateBlock (which received the
+        // #586 guard + activation-mutex serialization); registerBlockInvalidation
+        // has no live callers, and the rig confirmed 18/18 harness invalidations
+        // hit the ChainstateService path, 0 this one. Hardened anyway so future
+        // wiring cannot resurrect the stale-authority defect.
+        // Resolve the target block and its parent by IDENTITY,
         // not the height index. The old code assumed the target IS the current
         // tip (newHeight = ChainDB-tip - 1) and looked the parent up via
         // getBlockHashByHeight — both go stale the moment a concurrent connect
