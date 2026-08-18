@@ -897,6 +897,15 @@ din::Json handle_generatetoaddress(
                                                      ") — retrying block " + std::to_string(i + 1) +
                                                      " against fresh state (#589)");
                                     if (++stale_tip_retries > 32) {
+                                        // Owner-required observability: a genuine (non-race)
+                                        // miner/validator root divergence exhausts this budget
+                                        // too — the log line below is the searchable signal
+                                        // that replaced the old abort-with-stacktrace.
+                                        dinero::g_logger.error(
+                                            "[generatetoaddress] RETRY-BUDGET-EXHAUSTED (#589): "
+                                            "utreexo root mismatch persisted across 32 rebuilds — "
+                                            "either a reorg storm or a GENUINE miner/validator "
+                                            "root divergence (investigate if not reorging)");
                                         result["error"]["code"] = -32000;
                                         result["error"]["message"] =
                                             "generatetoaddress: forest state kept moving (reorg storm); retry later";
@@ -1052,6 +1061,12 @@ din::Json handle_generatetoaddress(
                         std::to_string(i + 1) + "/" + std::to_string(nblocks) +
                         " against the fresh tip (#589)");
                     if (++stale_tip_retries > 32) {
+                        // Owner-required observability: the bounded give-up must be
+                        // loud and searchable in logs, not just in the RPC reply.
+                        dinero::g_logger.error(
+                            "[generatetoaddress] RETRY-BUDGET-EXHAUSTED (#589): chain tip "
+                            "kept moving across 32 consecutive rebuilds — giving up with an "
+                            "RPC error (reorg storm, or a genuine tip-thrash bug)");
                         result["error"]["code"] = -32000;
                         result["error"]["message"] =
                             "generatetoaddress: chain tip kept moving (reorg storm); retry later";
