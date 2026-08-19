@@ -86,14 +86,14 @@ Function IsVCRedistInstalled
 FunctionEnd
 
 Function EnsureVCRedist
-  Call IsVCRedistInstalled
-  ${If} $R0 = "1"
-    DetailPrint "Microsoft Visual C++ runtime already installed."
-    Return
-  ${EndIf}
-
-  IfFileExists "$INSTDIR\vc_redist.x64.exe" 0 missing_redist
-    DetailPrint "Installing Microsoft Visual C++ 2015-2022 x64 Redistributable..."
+  ; Always run the bundled (current) redistributable rather than skipping
+  ; when *some* VC++ runtime is already present. A machine carrying an OLDER
+  ; redist would pass a presence-only check yet still fail to load Qt 6.9's
+  ; Qt6Core.dll. vc_redist is idempotent: exit 1638 ("newer already
+  ; installed") and 3010 ("reboot required") are both success, so re-running
+  ; on an already-current machine is a fast no-op.
+  IfFileExists "$INSTDIR\vc_redist.x64.exe" 0 no_bundled_redist
+    DetailPrint "Installing/updating Microsoft Visual C++ 2015-2022 x64 Redistributable..."
     ExecWait '"$INSTDIR\vc_redist.x64.exe" /install /quiet /norestart' $0
     ${If} $0 = 0
     ${OrIf} $0 = 3010
@@ -105,9 +105,44 @@ Function EnsureVCRedist
     MessageBox MB_ICONSTOP "Microsoft Visual C++ 2015-2022 x64 Redistributable installation failed with exit code $0. Dinero cannot start without the MSVC runtime."
     Abort
 
-  missing_redist:
+  no_bundled_redist:
+    ; No bundled installer in this package: fall back to a presence check.
+    Call IsVCRedistInstalled
+    ${If} $R0 = "1"
+      DetailPrint "Microsoft Visual C++ runtime already installed."
+      Return
+    ${EndIf}
     MessageBox MB_ICONSTOP "Microsoft Visual C++ 2015-2022 x64 Redistributable is not installed, and vc_redist.x64.exe was not bundled in this installer. Install the official x64 redistributable from Microsoft, then rerun this installer."
     Abort
+FunctionEnd
+
+; Close any running Dinero before overwriting its files. A running GUI or its
+; embedded/standalone daemon holds Qt6Core.dll / dinerod.exe open, which makes
+; the File overwrite in SecCore fail with a "file in use" Retry prompt on
+; upgrade. Try a graceful close on the GUI first (so it can shut its embedded
+; daemon down cleanly), then force-kill anything still holding a handle.
+Function CloseRunningDinero
+  DetailPrint "Closing any running Dinero instance..."
+  nsExec::Exec 'taskkill /IM dinero-qt.exe'
+  Pop $0
+  Sleep 3000
+  nsExec::Exec 'taskkill /F /T /IM dinero-qt.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM dinerod.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /IM dinero-gpu-miner.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /IM dinero-miner.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /IM dinero-stratum-worker.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /IM dinero-solo-miner.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /IM dinero-sv2-miner.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /IM dinero-sv2-gpu-miner.exe'
+  Pop $0
+  Sleep 1000
 FunctionEnd
 
 !define MUI_ABORTWARNING
@@ -144,6 +179,10 @@ Section "Dinero (required)" SecCore
   ; readers expect it. Add/Remove Programs reads both views and
   ; aggregates, but only the 64-bit hive is the canonical home.
   SetRegView 64
+
+  ; Close any running Dinero so the overwrite below can't fail on a locked
+  ; Qt6Core.dll / dinerod.exe (the "file in use" Retry prompt on upgrade).
+  Call CloseRunningDinero
 
   SetOutPath "$INSTDIR"
   File /r "dist\installer-stage\*.*"
