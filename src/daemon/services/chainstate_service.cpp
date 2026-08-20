@@ -109,6 +109,15 @@ namespace {
 constexpr const char* kActivationLastErrorKey = "activation_last_error";
 constexpr const char* kActivationLastErrorTimeKey = "activation_last_error_time";
 constexpr const char* kActivationFailureStreakKey = "activation_failure_streak";
+// Loop-guard for the incomplete-reorg clean re-bootstrap (chainstate_service
+// Init): the tip HASH that was last recovered. Keyed on tip identity, not
+// wall-clock, because a legitimate base->tip re-bootstrap can take many
+// minutes on a throttled device and iOS kills mid-rebuild are routine — an
+// elapsed-time window would misflag a slow-but-working recovery as a loop.
+// A loop is only declared when we would recover the EXACT same tip again.
+// Distinct from the checkpoint-restore RecoveryMarker so the two recovery
+// sites never interfere.
+constexpr const char* kIncompleteReorgRecoveryTipKey = "incomplete_reorg_recovery_tip";
 constexpr const char* kStartupCatchupSource = "startup-catchup";
 constexpr uint32_t kInvMsgBlock = 2u;
 constexpr uint32_t kInvMsgUtreexoBlock = 0x50000002u;
@@ -2224,24 +2233,120 @@ bool ChainstateService::Init(DaemonContext& ctx) {
                 logger_->warning("═══════════════════════════════════════════════════════════════════════════");
                 utxo_index_->DeleteMetadata("reorg_in_progress");
             } else {
-                logger_->error("═══════════════════════════════════════════════════════════════════════════");
-                logger_->error("⚠️  CRITICAL: Incomplete reorg detected from previous shutdown!");
-                logger_->error("═══════════════════════════════════════════════════════════════════════════");
-                logger_->error("Marker: " + reorg_marker.value());
-                logger_->error("");
-                logger_->error("The daemon crashed or was killed during a blockchain reorganization.");
-                logger_->error("The UTXO database may be in an inconsistent state.");
-                logger_->error("Auto-recovery failed: forest checkpoint does not match ChainDB tip.");
-                logger_->error("");
-                logger_->error("Recovery options:");
-                logger_->error("  1. Resync from genesis: Delete blockchain directory and restart");
-                logger_->error("  2. Restore from backup: Replace with known-good backup");
-                logger_->error("");
-                logger_->error("Startup is aborted to avoid serving from an inconsistent chainstate.");
-                logger_->error("═══════════════════════════════════════════════════════════════════════════");
+                // The forest at the ChainDB tip cannot be reconstructed: a crash
+                // (iOS SIGKILL is the common case) killed the daemon mid-reorg,
+                // leaving the forest checkpoint out of sync with the ChainDB tip.
+                //
+                // For a snapshot-bootstrapped node the correct, bounded recovery is
+                // a clean re-bootstrap: wipe the utreexo checkpoints and reset the
+                // consensus forest to empty. The checkpoint-restore block below is
+                // then skipped (getLatestUtreexoCheckpoint returns not-Ok), and the
+                // AssumeUTXO re-arm rehydrates from the snapshot base and forward-
+                // connects back to the tip through the (intact) stored blocks —
+                // self-healing past the crash region. This is the same end state
+                // the app-side self-heal produces, without its multi-hour lockout,
+                // so a killed-mid-reorg node recovers on its own instead of
+                // aborting every startup forever. A tip-rollback was rejected: it
+                // cannot roll below the AssumeUTXO base, would need a matching
+                // shielded-marker rewind, and risks inverting the mismatch if the
+                // ChainDB coin rows were half-applied at the crashed tip.
+                //
+                // A dedicated loop-guard (distinct from the checkpoint-restore
+                // RecoveryMarker) fails loud if a recovery did not stick, and the
+                // recovery is gated to snapshot-configured nodes — a from-genesis
+                // archival node keeps the manual abort rather than being surprised
+                // by an unbounded genesis replay.
+                const bool snapshot_configured =
+                    config_ && !config_->GetString("assumeutxo_snapshot", "").empty();
+                // Loop-guard keyed on the crashed tip identity (see the key's
+                // declaration). Only a genuine same-tip repeat — the wipe+rebuild
+                // did not let the node advance past the crashed tip — is a loop.
+                std::string crashed_tip_hex;
+                if (chain_db_) {
+                    auto tip_now = chain_db_->getTip();
+                    if (tip_now.ok()) crashed_tip_hex = tip_now.value().hash.GetHex();
+                }
+                const auto prev_recovery_tip =
+                    utxo_index_->GetMetadata(kIncompleteReorgRecoveryTipKey);
+                const bool recovery_looping =
+                    prev_recovery_tip.has_value() && !crashed_tip_hex.empty() &&
+                    prev_recovery_tip.value() == crashed_tip_hex;
 
-                incomplete_reorg_detected_ = true;
-                return false;
+                if (snapshot_configured && !recovery_looping && chain_db_ && consensus_utxo_set_) {
+                    logger_->warning("═══════════════════════════════════════════════════════════════════════════");
+                    logger_->warning("🔧 Incomplete reorg detected from previous shutdown — AUTO-RECOVERING");
+                    logger_->warning("Marker: " + reorg_marker.value());
+                    logger_->warning("Forest checkpoint does not match ChainDB tip; clean re-bootstrap from snapshot.");
+                    logger_->warning("═══════════════════════════════════════════════════════════════════════════");
+
+                    // Record the crashed tip BEFORE mutating so a re-kill mid-
+                    // recovery still trips the loop-guard on the next start.
+                    utxo_index_->SetMetadata(kIncompleteReorgRecoveryTipKey, crashed_tip_hex);
+
+                    // Crash-safety is via ORDERING, not a single WriteBatch
+                    // (wipeAllUtreexoCheckpoints takes no batch and Init has no
+                    // natural write token): each destructive step is durable and
+                    // the reorg marker is cleared LAST, so a re-kill at any point
+                    // leaves a re-attemptable state — every step is idempotent.
+
+                    // (1) Forest checkpoints.
+                    auto wipe_status = chain_db_->wipeAllUtreexoCheckpoints();
+                    if (wipe_status != Status::Ok) {
+                        logger_->error("[ChainstateService] Failed to wipe utreexo checkpoints during incomplete-reorg recovery");
+                        incomplete_reorg_detected_ = true;
+                        return false;
+                    }
+
+                    // (2) utxo CF coin rows. Orphan rows from the crashed
+                    // divergent tip would otherwise persist as phantom balances
+                    // (getCoin/forEachUTXO). The snapshot's base coins are NOT in
+                    // the CF (BulkLoad is in-memory only), so clearing it whole
+                    // reproduces the clean fresh-bootstrap state; forward-connect
+                    // rebuilds it. Any bg-validated pre-base rows are wiped too, so
+                    // background validation redoes genesis->base — acceptable on a
+                    // recovery path that is re-bootstrapping regardless.
+                    auto cleared = chain_db_->clearAllCoins(ChainWriteToken::CreateForTesting());
+                    if (!cleared.ok()) {
+                        logger_->error("[ChainstateService] Failed to clear utxo CF during incomplete-reorg recovery");
+                        incomplete_reorg_detected_ = true;
+                        return false;
+                    }
+                    logger_->warning("[ChainstateService] Cleared " + std::to_string(cleared.value()) +
+                                     " utxo CF coin rows (clean-slate re-bootstrap; bg-validation will redo genesis->base)");
+
+                    // (3) In-memory forest + best-block → empty, so the AssumeUTXO
+                    // re-arm below sees utxo_set below base and rehydrates.
+                    consensus_utxo_set_->ReplaceForestGuarded(consensus::UtreexoForest());
+                    consensus_utxo_set_->SetBestBlock(uint256{}, 0);
+
+                    // (4) Clear the marker ONLY after the inconsistent state is
+                    // wiped — never before, or a re-kill would continue on it.
+                    utxo_index_->DeleteMetadata("reorg_in_progress");
+                    // Fall through: the AssumeUTXO re-arm below re-establishes the base.
+                } else {
+                    logger_->error("═══════════════════════════════════════════════════════════════════════════");
+                    logger_->error("⚠️  CRITICAL: Incomplete reorg detected from previous shutdown!");
+                    logger_->error("═══════════════════════════════════════════════════════════════════════════");
+                    logger_->error("Marker: " + reorg_marker.value());
+                    logger_->error("");
+                    logger_->error("The daemon crashed or was killed during a blockchain reorganization.");
+                    logger_->error("The UTXO database may be in an inconsistent state.");
+                    logger_->error("Auto-recovery failed: forest checkpoint does not match ChainDB tip.");
+                    if (recovery_looping) {
+                        logger_->error("A clean re-bootstrap already recovered this exact tip and the node");
+                        logger_->error("crashed mid-reorg at it again — refusing to wipe again (recovery loop).");
+                    }
+                    logger_->error("");
+                    logger_->error("Recovery options:");
+                    logger_->error("  1. Resync from genesis: Delete blockchain directory and restart");
+                    logger_->error("  2. Restore from backup: Replace with known-good backup");
+                    logger_->error("");
+                    logger_->error("Startup is aborted to avoid serving from an inconsistent chainstate.");
+                    logger_->error("═══════════════════════════════════════════════════════════════════════════");
+
+                    incomplete_reorg_detected_ = true;
+                    return false;
+                }
             }
         }
 
