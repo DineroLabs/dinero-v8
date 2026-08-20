@@ -74,65 +74,15 @@ struct TxInput {
     // SegWit witness data
     std::vector<std::vector<uint8_t>> witness;
 
-    // ═══════════════════════════════════════════════════════════════
-    // Ring signature data (Phase R.4: Private pool spends)
-    // ═══════════════════════════════════════════════════════════════
-    // Present only for private-pool inputs (tx version 3).
-    // Transparent inputs leave these empty.
-
-    // Mandatory ring size for all private pool spends (CLSAG_RING_SIZE).
-    static constexpr size_t MANDATORY_RING_SIZE = 16;
-
-    // 16 global CT output indices forming the anonymity set.
-    // Serialized with delta encoding (first absolute, rest as deltas).
-    std::vector<uint64_t> ring_members;
-
-    // 33-byte compressed secp256k1 key image (prevents double-spend).
-    std::vector<uint8_t> key_image;
-
-    // Serialized CLSAG signature (see zk/clsag.h CLSAGSignature::Serialize).
-    std::vector<uint8_t> clsag_signature;
-
-    // 33-byte pseudo-output commitment C' (proves amount balance without revealing it).
-    // The CLSAG signature proves that C_real - C' commits to zero.
-    std::vector<uint8_t> pseudo_commitment;
-
-    // ═══════════════════════════════════════════════════════════════
-    // Ring-covenant data (ZKVM: v4 transactions)
-    // ═══════════════════════════════════════════════════════════════
-    // Present only for ring-covenant inputs (tx version 4).
-    // Current verifier plumbing: CLSAG key ownership + ZK Tapscript
-    // satisfaction + compact hidden-member proof + transitional public
-    // TapLeaf/Taproot-key binding.
-
-    // Serialized ZK Tapscript proof (Nova IVC + IPA)
-    std::vector<uint8_t> tapscript_zk_proof;
-
-    // 32-byte BIP341 TapLeaf hash binding CLSAG to ZK proof
-    std::vector<uint8_t> tapleaf_hash;
-
-    // Legacy public BIP341 control block slot for the hidden script path.
-    // Secure anonymous/hybrid ring-covenant proofs leave this empty; the field
-    // remains for decoding legacy envelopes and test vectors.
-    std::vector<uint8_t> taproot_control_block;
-
-    // Serialized hidden-member binding proof wrapper.
-    // Accepted consensus shapes are the anonymous/hybrid proof versions that
-    // bind the CLSAG signer and the hidden Taproot path to the same member.
-    // Legacy compact-ring envelopes remain parseable for compatibility but are
-    // rejected by VerifyRingCovenant.
-    std::vector<uint8_t> hidden_member_binding_proof;
-
-    // Poseidon-2 privkey commitment: Poseidon2(privkey, nonce) over secp256k1 scalar field.
-    // Included in the CLSAG signing message for cryptographic binding soundness.
-    // Fixed 32 bytes; all-zero = legacy (no commitment binding).
-    std::array<uint8_t, 32> privkey_commitment{};
-
-    // Helper: true when this input spends from the private pool.
-    bool IsPrivateInput() const { return !ring_members.empty(); }
-
-    // Helper: true when this input has a covenant ZK proof.
-    bool IsCovenantInput() const { return !tapscript_zk_proof.empty(); }
+    // NOTE: the retired v3 RingCT / v4 ring-covenant "private pool" input fields
+    // (ring_members, key_image, clsag_signature, pseudo_commitment, and the
+    // ring-covenant ZK slots) were removed with the v7 restart. v7 is a fresh
+    // transparent-genesis chain (tx.version==2 only, no ring signatures); those
+    // formats belonged to the retired v5 chain and were never valid on v7, are
+    // rejected at CheckStructure (version>2), and were never part of the v2 wire
+    // format — so removing the struct members cannot affect any v7 tx bytes or
+    // txid. Do not re-add: "ring" privacy is gone; the current private lane is
+    // the note/nullifier shielded pool (TX_VERSION_SHIELDED, consensus/shielded).
 
     TxInput() : sequence(0xfffffffe) {}  // Default: RBF-enabled
 };
