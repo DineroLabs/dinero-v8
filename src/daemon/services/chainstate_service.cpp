@@ -8877,6 +8877,24 @@ uint32_t ChainstateService::getBlockHeight() const {
     return tip_result.value().height;
 }
 
+bool ChainstateService::ForEachActiveUTXO(
+    const std::function<bool(const OutPoint&, const consensus::UTXOEntry&)>& callback) const {
+    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    if (!consensus_utxo_set_) return false;
+    for (const auto& [outpoint, coin] : consensus_utxo_set_->GetUTXOs()) {
+        if (!callback(outpoint, coin)) break;
+    }
+    return true;
+}
+
+std::optional<consensus::UTXOEntry> ChainstateService::GetActiveUTXO(
+    const OutPoint& outpoint) const {
+    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    if (!consensus_utxo_set_) return std::nullopt;
+    const auto* coin = consensus_utxo_set_->GetCoin(outpoint);
+    return coin ? std::optional<consensus::UTXOEntry>(*coin) : std::nullopt;
+}
+
 std::string ChainstateService::getBestBlockHash() const {
     // In AssumeUTXO mode, active_tip_ is the authoritative tip (snapshot base).
     if (active_tip_) return active_tip_->hash.GetHex();

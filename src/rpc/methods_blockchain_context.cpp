@@ -81,6 +81,7 @@ namespace din {
 // Forward declarations: Address-indexed query methods (defined in methods_address_index.cpp)
 namespace din {
     din::Json rpc_getaddressbalance(const ExecutionContext& ctx, const din::Json& params);
+    din::Json rpc_getaddressbatch(const ExecutionContext& ctx, const din::Json& params);
     din::Json rpc_getaddressmempool(const ExecutionContext& ctx, const din::Json& params);
     din::Json rpc_getaddresshistory(const ExecutionContext& ctx, const din::Json& params);
     din::Json rpc_reindextx(const ExecutionContext& ctx, const din::Json& params);
@@ -3946,6 +3947,14 @@ void registerBlockchainMethodsContext() {
                                  RegisterMode::Overwrite,
                                  "context-aware");
     g_rpcRegistry.registerAlias("getaddressbalance", "blockchain.getaddressbalance");
+
+    g_rpcRegistry.registerHandler("blockchain.getaddressbatch",
+                                 [](const ExecutionContext& ctx, const din::Json& params) {
+                                     return din::rpc_getaddressbatch(ctx, params);
+                                 },
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+    g_rpcRegistry.registerAlias("getaddressbatch", "blockchain.getaddressbatch");
 
     g_rpcRegistry.registerHandler("blockchain.getaddressmempool",
                                  [](const ExecutionContext& ctx, const din::Json& params) {

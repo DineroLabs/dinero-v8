@@ -87,6 +87,23 @@ wait_for_daemon() {
     return 1
 }
 
+wait_for_wallet_scan() {
+    local target_height="$1"
+    local max_wait=30
+    local waited=0
+    while [ "$waited" -lt "$max_wait" ]; do
+        local snapshot
+        snapshot="$(rpc_result "wallet.snapshot" '[{"history_count":10,"funded_address_limit":5}]')"
+        if echo "$snapshot" | jq -e --argjson target "$target_height" \
+            '.sync.wallet_scan_height >= $target' >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
 start_daemon() {
     rm -rf "$DATADIR"
     mkdir -p "$DATADIR"
@@ -132,6 +149,8 @@ ADDR="$(rpc_scalar "wallet.getnewaddress" "[]" '.address // empty')"
 info "Mining address: $ADDR"
 
 rpc_result "generatetoaddress" "[2,\"$ADDR\"]" >/dev/null
+TIP_HEIGHT="$(rpc_scalar "getblockcount" "[]" '.')"
+wait_for_wallet_scan "$TIP_HEIGHT" || fail "wallet worker did not scan through height $TIP_HEIGHT"
 
 SNAPSHOT="$(rpc_result "wallet.snapshot" '[{"history_count":10,"funded_address_limit":5}]' | jq -c '.')"
 echo "$SNAPSHOT" | jq -e '.rpc_schema == "din.wallet.snapshot.v1"' >/dev/null || fail "unexpected rpc_schema: $SNAPSHOT"
