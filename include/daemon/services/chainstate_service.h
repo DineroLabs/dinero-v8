@@ -143,6 +143,16 @@ public:
     consensus::IConsensusUTXOSet* GetConsensusUTXOSet() { return consensus_utxo_set_.get(); }
     const consensus::IConsensusUTXOSet* GetConsensusUTXOSet() const { return consensus_utxo_set_.get(); }
 
+    // Execute a read-only walk of the authoritative in-memory UTXO set while
+    // tip activation is excluded. Intended for snapshot-aware RPC/indexing
+    // reads; callbacks must be short and must not call back into chainstate.
+    bool ForEachActiveUTXO(
+        const std::function<bool(const OutPoint&, const consensus::UTXOEntry&)>& callback) const;
+
+    // Snapshot-safe point lookup used when resolving mempool spends while
+    // ChainDB is still behind an active AssumeUTXO base.
+    std::optional<consensus::UTXOEntry> GetActiveUTXO(const OutPoint& outpoint) const;
+
     // Scan the in-memory snapshot (AssumeUTXO) UTXO set for coins owned by
     // `wallet` and record them into the wallet's local UTXO table, advancing the
     // wallet's scan watermark to `base_height`. Complements the block-replay

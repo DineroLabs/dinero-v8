@@ -94,6 +94,7 @@ din::Json rpc_context_wallet_rescanblockchain(const ExecutionContext& ctx, const
 namespace din {
 din::Json rpc_getaddressbalance(const ExecutionContext& ctx, const din::Json& params);
 din::Json rpc_getaddresshistory(const ExecutionContext& ctx, const din::Json& params);
+din::Json rpc_getaddressbatch(const ExecutionContext& ctx, const din::Json& params);
 }
 
 namespace {
@@ -941,7 +942,7 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
         }
     }
 
-    history_count = std::max(1, std::min(history_count, 200));
+    history_count = std::max(1, std::min(history_count, 50));
     funded_address_limit = std::max(1, std::min(funded_address_limit, 200));
     const auto scoped_addresses = ParseScopedSnapshotAddresses(params);
 
@@ -1075,15 +1076,26 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
         std::unordered_set<std::string> outgoing_txids;
         std::vector<din::Json> history_items;
 
+        din::Json batch_params;
+        batch_params["addresses"] = din::arr();
+        batch_params["history_count"] = history_count;
+        for (const auto& entry : scoped_addresses) {
+            batch_params["addresses"].append(entry.address);
+        }
+        const auto batch_response = din::rpc_getaddressbatch(ctx, batch_params);
+        if (batch_response.isMember("error")) {
+            result["error"] = "Failed to aggregate scoped address snapshot";
+            result["detail"] = batch_response["error"];
+            return result;
+        }
+        const auto& batch_addresses = batch_response["addresses"];
+
         for (const auto& scoped_entry : scoped_addresses) {
-            din::Json balance_params = din::arr();
-            balance_params.append(scoped_entry.address);
-            auto balance_response = din::rpc_getaddressbalance(ctx, balance_params);
-            if (balance_response.isMember("error")) {
-                result["error"] = "Failed to aggregate balance for address " + scoped_entry.address;
-                result["detail"] = balance_response["error"];
+            if (!batch_addresses.isObject() || !batch_addresses.isMember(scoped_entry.address)) {
+                result["error"] = "Batch result missing address " + scoped_entry.address;
                 return result;
             }
+            const auto& balance_response = batch_addresses[scoped_entry.address];
 
             const uint64_t confirmed_una = ParseUnsignedUnaField(balance_response["confirmed"]);
             const int64_t unconfirmed_una = ParseSignedUnaField(balance_response["unconfirmed"]);
@@ -1121,17 +1133,7 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
                 receive_obj["current_path"] = scoped_entry.metadata["path"].asString();
             }
 
-            din::Json history_params = din::arr();
-            history_params.append(scoped_entry.address);
-            history_params.append(history_count);
-            auto history_response = din::rpc_getaddresshistory(ctx, history_params);
-            if (history_response.isMember("error")) {
-                result["error"] = "Failed to aggregate history for address " + scoped_entry.address;
-                result["detail"] = history_response["error"];
-                return result;
-            }
-
-            const auto txs = history_response["transactions"];
+            const auto txs = balance_response["transactions"];
             if (!txs.isArray()) {
                 continue;
             }

@@ -23,12 +23,69 @@
 #include "common/logger.h"
 #include "wallet/recipient_descriptor.h"
 #include "primitives/block.h"
+#include "rpc/methods_utreexo.h"
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace din {
 using ExecutionContext = ::ExecutionContext;
 using dinero::uint256;
+
+namespace {
+using BatchClock = std::chrono::steady_clock;
+
+constexpr size_t MAX_BATCH_ADDRESSES = 100;
+constexpr int MAX_BATCH_HISTORY = 50;
+constexpr auto BATCH_SCAN_TIMEOUT = std::chrono::seconds(40);
+constexpr auto BATCH_WAIT_TIMEOUT = std::chrono::seconds(45);
+constexpr auto BATCH_SCAN_COOLDOWN = std::chrono::seconds(2);
+constexpr auto BATCH_CACHE_TTL = std::chrono::seconds(2);
+
+struct BatchDiscoveryState {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool running = false;
+    std::string running_key;
+    std::string cached_key;
+    Json cached_result;
+    BatchClock::time_point cached_at{};
+    BatchClock::time_point last_scan_started{};
+    uint64_t requests = 0;
+    uint64_t cache_hits = 0;
+    uint64_t waiters = 0;
+    uint64_t scans = 0;
+    uint64_t rejected = 0;
+    uint64_t failures = 0;
+    uint64_t total_scan_ms = 0;
+};
+
+BatchDiscoveryState g_batch_discovery;
+
+void addBatchMetadata(Json& result,
+                      bool cache_hit,
+                      uint64_t scan_ms,
+                      size_t address_count,
+                      const BatchDiscoveryState& state) {
+    Json meta;
+    meta["cache_hit"] = cache_hit;
+    meta["scan_ms"] = static_cast<::Json::Value::UInt64>(scan_ms);
+    meta["address_count"] = static_cast<::Json::Value::UInt64>(address_count);
+    meta["requests"] = static_cast<::Json::Value::UInt64>(state.requests);
+    meta["cache_hits"] = static_cast<::Json::Value::UInt64>(state.cache_hits);
+    meta["singleflight_waiters"] = static_cast<::Json::Value::UInt64>(state.waiters);
+    meta["scans"] = static_cast<::Json::Value::UInt64>(state.scans);
+    meta["rejected"] = static_cast<::Json::Value::UInt64>(state.rejected);
+    meta["failures"] = static_cast<::Json::Value::UInt64>(state.failures);
+    meta["total_scan_ms"] = static_cast<::Json::Value::UInt64>(state.total_scan_ms);
+    result["batch_meta"] = meta;
+}
+} // namespace
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -136,6 +193,20 @@ static bool decodeAddressToScriptHex(const std::string& address,
     return true;
 }
 
+static std::optional<std::pair<std::string, uint64_t>> getAuthoritativeCoin(
+    const std::shared_ptr<dinero::ChainstateService>& chainstate,
+    dinero::ChainDB* chain_db,
+    const dinero::TxOutPoint& outpoint) {
+    if (chainstate->IsAssumeUTXOActive()) {
+        auto coin = chainstate->GetActiveUTXO(dinero::OutPoint{outpoint.txid, outpoint.vout});
+        if (!coin) return std::nullopt;
+        return std::make_pair(bytesToHex(coin->scriptPubKey), coin->value.GetUna());
+    }
+    auto coin = chain_db->getCoin(outpoint.txid.AsUint256(), outpoint.vout);
+    if (coin.status() != dinero::Status::Ok) return std::nullopt;
+    return std::make_pair(coin.value().script_pubkey, coin.value().amount);
+}
+
 // ─── RPC: getaddressbalance ─────────────────────────────────────────────
 
 /**
@@ -182,15 +253,21 @@ Json rpc_getaddressbalance(const ExecutionContext& ctx, const Json& params) {
 
         // Sum confirmed UTXOs
         uint64_t confirmed = 0;
-        auto status = chain_db->forEachUTXO(
-            [&](const uint256& txid, uint32_t vout, const dinero::Coin& coin) -> bool {
-                if (coin.script_pubkey == target_script) {
-                    confirmed += coin.amount;
-                }
-                return true;
-            });
-
-        if (status != dinero::Status::Ok) {
+        bool scan_ok = true;
+        if (chainstate->IsAssumeUTXOActive()) {
+            scan_ok = chainstate->ForEachActiveUTXO(
+                [&](const dinero::OutPoint&, const dinero::consensus::UTXOEntry& coin) {
+                    if (bytesToHex(coin.scriptPubKey) == target_script) confirmed += coin.value.GetUna();
+                    return true;
+                });
+        } else {
+            scan_ok = chain_db->forEachUTXO(
+                [&](const uint256&, uint32_t, const dinero::Coin& coin) -> bool {
+                    if (coin.script_pubkey == target_script) confirmed += coin.amount;
+                    return true;
+                }) == dinero::Status::Ok;
+        }
+        if (!scan_ok) {
             result["error"]["code"] = -1;
             result["error"]["message"] = "Failed to scan UTXO set";
             return result;
@@ -223,10 +300,9 @@ Json rpc_getaddressbalance(const ExecutionContext& ctx, const Json& params) {
                     }
 
                     if (!matched_input) {
-                        auto coin_result = chain_db->getCoin(input.prevout.txid.AsUint256(), input.prevout.vout);
-                        if (coin_result.status() == dinero::Status::Ok &&
-                            coin_result.value().script_pubkey == target_script) {
-                            unconfirmed -= static_cast<int64_t>(coin_result.value().amount);
+                        auto coin = getAuthoritativeCoin(chainstate, chain_db, input.prevout);
+                        if (coin && coin->first == target_script) {
+                            unconfirmed -= static_cast<int64_t>(coin->second);
                         }
                     }
                 }
@@ -288,7 +364,8 @@ Json rpc_getaddressmempool(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
-        dinero::ChainDB* chain_db = ctx.daemon->chainstate ? ctx.daemon->chainstate->GetChainDB() : nullptr;
+        auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        dinero::ChainDB* chain_db = chainstate ? chainstate->GetChainDB() : nullptr;
         if (!chain_db) {
             result["error"]["code"] = -1;
             result["error"]["message"] = "ChainDB not initialized";
@@ -329,10 +406,9 @@ Json rpc_getaddressmempool(const ExecutionContext& ctx, const Json& params) {
                 }
 
                 if (!matched_input) {
-                    auto coin_result = chain_db->getCoin(input.prevout.txid.AsUint256(), input.prevout.vout);
-                    if (coin_result.status() == dinero::Status::Ok &&
-                        coin_result.value().script_pubkey == target_script) {
-                        net_amount -= static_cast<int64_t>(coin_result.value().amount);
+                    auto coin = getAuthoritativeCoin(chainstate, chain_db, input.prevout);
+                    if (coin && coin->first == target_script) {
+                        net_amount -= static_cast<int64_t>(coin->second);
                         has_input = true;
                     }
                 }
@@ -414,7 +490,10 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
-        int tip_height = tip_result.value().height;
+        const bool assumed_utxo = chainstate->IsAssumeUTXOActive();
+        int tip_height = assumed_utxo
+            ? static_cast<int>(chainstate->getBlockHeight())
+            : tip_result.value().height;
 
         int from_height = tip_height;
         if (params.size() > 2 && params[2].isInt()) {
@@ -426,8 +505,10 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
         ::Json::Value txs_arr(::Json::arrayValue);
         int found = 0;
 
-        // Scan blocks from from_height down to genesis
-        for (int h = from_height; h >= 0 && found < count; --h) {
+        // AssumeUTXO proves current spendable state but does not promise that
+        // pre-base block bodies are locally available. Report this explicitly
+        // instead of returning a deceptively complete empty history.
+        for (int h = assumed_utxo ? -1 : from_height; h >= 0 && found < count; --h) {
             auto hash_result = chain_db->getBlockHashByHeight(h);
             if (!hash_result.ok()) continue;
 
@@ -527,6 +608,7 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
         result["address"] = address;
         result["from_height"] = from_height;
         result["transactions"] = txs_arr;
+        result["history_complete"] = !assumed_utxo;
 
     } catch (const std::exception& e) {
         result["error"]["code"] = -1;
@@ -536,6 +618,362 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
 
     return result;
 }
+
+// Internal batch primitive used by wallet.snapshot. It performs one UTXO pass and
+// one chain pass for the complete address gap window instead of repeating both
+// scans once per address.
+static Json computeAddressBatch(const ExecutionContext& ctx,
+                                const Json& params,
+                                BatchClock::time_point deadline) {
+    Json result;
+    try {
+        if (!params.isObject() || !params.isMember("addresses") || !params["addresses"].isArray()) {
+            result["error"]["code"] = -8;
+            result["error"]["message"] = "addresses array is required";
+            return result;
+        }
+        if (!ctx.daemon || !ctx.daemon->chainstate) {
+            result["error"]["code"] = -1;
+            result["error"]["message"] = "Daemon/chainstate not available";
+            return result;
+        }
+        auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        dinero::ChainDB* chain_db = chainstate ? chainstate->GetChainDB() : nullptr;
+        if (!chain_db) {
+            result["error"]["code"] = -1;
+            result["error"]["message"] = "ChainDB not initialized";
+            return result;
+        }
+
+        int count = params.isMember("history_count") && params["history_count"].isInt()
+            ? params["history_count"].asInt() : 50;
+        count = std::max(1, std::min(count, MAX_BATCH_HISTORY));
+
+        struct AddressState {
+            std::string address;
+            std::string script;
+            uint64_t confirmed = 0;
+            int64_t unconfirmed = 0;
+            Json transactions = Json(::Json::arrayValue);
+        };
+        std::vector<AddressState> states;
+        std::unordered_map<std::string, size_t> script_to_index;
+        for (const auto& value : params["addresses"]) {
+            if (!value.isString() || states.size() >= MAX_BATCH_ADDRESSES) continue;
+            std::string script;
+            Json decode_error;
+            if (!decodeAddressToScriptHex(value.asString(), script, decode_error)) {
+                result["error"] = decode_error;
+                return result;
+            }
+            if (script_to_index.find(script) != script_to_index.end()) continue;
+            script_to_index.emplace(script, states.size());
+            states.push_back({value.asString(), std::move(script)});
+        }
+        if (states.empty()) {
+            result["error"]["code"] = -8;
+            result["error"]["message"] = "no valid addresses supplied";
+            return result;
+        }
+
+        if (chainstate->IsAssumeUTXOActive()) {
+            // An assumed UTXO set is active before its background replay has
+            // populated ChainDB. Read that authoritative in-memory set so a
+            // snapshot-bootstrapped bridge cannot report false zero balances.
+            const bool scanned = chainstate->ForEachActiveUTXO(
+                [&](const dinero::OutPoint&, const dinero::consensus::UTXOEntry& coin) {
+                    auto found = script_to_index.find(bytesToHex(coin.scriptPubKey));
+                    if (found != script_to_index.end()) {
+                        states[found->second].confirmed += coin.value.GetUna();
+                    }
+                    return true;
+                });
+            if (!scanned) {
+                result["error"]["code"] = -1;
+                result["error"]["message"] = "Active AssumeUTXO set is unavailable";
+                return result;
+            }
+        } else {
+            auto utxo_status = chain_db->forEachUTXO(
+                [&](const uint256&, uint32_t, const dinero::Coin& coin) -> bool {
+                    auto found = script_to_index.find(coin.script_pubkey);
+                    if (found != script_to_index.end()) states[found->second].confirmed += coin.amount;
+                    return true;
+                });
+            if (utxo_status != dinero::Status::Ok) {
+                result["error"]["code"] = -1;
+                result["error"]["message"] = "Failed to scan UTXO set";
+                return result;
+            }
+        }
+        if (BatchClock::now() > deadline) {
+            result["error"]["code"] = -32006;
+            result["error"]["message"] = "batch discovery timed out";
+            return result;
+        }
+
+        if (ctx.daemon->mempool && ctx.daemon->mempool->isInitialized()) {
+            for (auto& state : states) {
+                auto mempool_txs = ctx.daemon->mempool->mempool().getTransactionsForAddress(state.address);
+                for (const auto& tx : mempool_txs) {
+                    for (const auto& output : tx.vout) {
+                        if (bytesToHex(output.scriptPubKey) == state.script)
+                            state.unconfirmed += static_cast<int64_t>(output.value.GetUna());
+                    }
+                    for (const auto& input : tx.vin) {
+                        auto previous = chain_db->getTransaction(input.prevout.txid.AsUint256());
+                        if (previous.ok() && input.prevout.vout < previous.value().vout.size()) {
+                            const auto& output = previous.value().vout[input.prevout.vout];
+                            if (bytesToHex(output.scriptPubKey) == state.script)
+                                state.unconfirmed -= static_cast<int64_t>(output.value.GetUna());
+                        }
+                    }
+                }
+            }
+        }
+
+        auto tip_result = chain_db->getTip();
+        if (!tip_result.ok()) {
+            result["error"]["code"] = -1;
+            result["error"]["message"] = "Failed to get chain tip";
+            return result;
+        }
+        const bool assumed_utxo = chainstate->IsAssumeUTXOActive();
+        const int tip_height = assumed_utxo
+            ? static_cast<int>(chainstate->GetConsensusUTXOSet()->GetHeight())
+            : tip_result.value().height;
+        size_t saturated = 0;
+        // Snapshot bootstrap guarantees the current UTXO set, not historical
+        // block bodies. Do not turn a balance query into a futile 90k-height
+        // scan while background history validation is incomplete.
+        for (int height = assumed_utxo ? -1 : tip_height;
+             height >= 0 && saturated < states.size(); --height) {
+            if ((height & 0x3f) == 0 && BatchClock::now() > deadline) {
+                result.clear();
+                result["error"]["code"] = -32006;
+                result["error"]["message"] = "batch discovery timed out";
+                return result;
+            }
+            auto hash_result = chain_db->getBlockHashByHeight(height);
+            if (!hash_result.ok()) continue;
+            auto block_result = chainstate->getBlockByHash(hash_result.value());
+            if (!block_result.ok()) continue;
+            for (const auto& tx : block_result.value().vtx) {
+                struct Match {
+                    bool input = false;
+                    bool output = false;
+                    bool conf_input = false;
+                    bool conf_output = false;
+                    bool tx_conf_inputs = false;
+                    bool tx_conf_outputs = false;
+                    int64_t visible = 0;
+                    std::string commitment;
+                    uint64_t range_proof_bytes = 0;
+                    uint64_t nonce_bytes = 0;
+                };
+                std::unordered_map<size_t, Match> matches;
+                bool tx_has_conf_outputs = false;
+                for (const auto& output : tx.vout) {
+                    tx_has_conf_outputs = tx_has_conf_outputs || output.is_confidential;
+                    auto found = script_to_index.find(bytesToHex(output.scriptPubKey));
+                    if (found == script_to_index.end()) continue;
+                    auto& match = matches[found->second];
+                    match.output = true;
+                    if (output.is_confidential) {
+                        match.conf_output = true;
+                        match.commitment = bytesToHex(output.commitment);
+                        match.range_proof_bytes = output.range_proof.size();
+                        match.nonce_bytes = output.nonce.size();
+                    } else {
+                        match.visible += static_cast<int64_t>(output.value.GetUna());
+                    }
+                }
+                bool tx_has_conf_inputs = false;
+                if (!tx.IsCoinbase()) {
+                    for (const auto& input : tx.vin) {
+                        auto previous = chain_db->getTransaction(input.prevout.txid.AsUint256());
+                        if (!previous.ok() || input.prevout.vout >= previous.value().vout.size()) continue;
+                        const auto& output = previous.value().vout[input.prevout.vout];
+                        tx_has_conf_inputs = tx_has_conf_inputs || output.is_confidential;
+                        auto found = script_to_index.find(bytesToHex(output.scriptPubKey));
+                        if (found == script_to_index.end()) continue;
+                        auto& match = matches[found->second];
+                        match.input = true;
+                        if (output.is_confidential) match.conf_input = true;
+                        else match.visible -= static_cast<int64_t>(output.value.GetUna());
+                    }
+                }
+                for (auto& [index, match] : matches) {
+                    auto& state = states[index];
+                    if (state.transactions.size() >= static_cast<::Json::ArrayIndex>(count)) continue;
+                    match.tx_conf_inputs = tx_has_conf_inputs;
+                    match.tx_conf_outputs = tx_has_conf_outputs;
+                    Json entry;
+                    entry["txid"] = tx.GetTxid().AsUint256().GetHex();
+                    entry["height"] = height;
+                    entry["confirmations"] = tip_height - height + 1;
+                    entry["type"] = match.input ? "send" : "receive";
+                    entry["is_coinbase"] = tx.IsCoinbase();
+                    const std::string flow = classifyAddressPrivacyFlow(
+                        match.input, match.output, match.conf_input, match.conf_output,
+                        match.tx_conf_inputs, match.tx_conf_outputs);
+                    entry["privacy_flow"] = flow;
+                    entry["classification"] = flow;
+                    entry["has_confidential_activity"] = tx_has_conf_inputs || tx_has_conf_outputs;
+                    setHistoryAmountFields(entry, match.conf_input || match.conf_output, absUna(match.visible));
+                    if (match.conf_output) {
+                        entry["commitment"] = match.commitment;
+                        entry["range_proof_bytes"] = static_cast<::Json::Value::UInt64>(match.range_proof_bytes);
+                        entry["nonce_bytes"] = static_cast<::Json::Value::UInt64>(match.nonce_bytes);
+                    }
+                    state.transactions.append(entry);
+                    if (state.transactions.size() == static_cast<::Json::ArrayIndex>(count)) ++saturated;
+                }
+            }
+        }
+
+        Json address_results(::Json::objectValue);
+        for (const auto& state : states) {
+            Json item;
+            item["confirmed"] = static_cast<::Json::Value::UInt64>(state.confirmed);
+            item["unconfirmed"] = static_cast<::Json::Value::Int64>(state.unconfirmed);
+            item["estimated_balance"] = static_cast<::Json::Value::UInt64>(
+                applySignedDelta(state.confirmed, state.unconfirmed));
+            item["transactions"] = state.transactions;
+            address_results[state.address] = item;
+        }
+        result["tip_height"] = tip_height;
+        result["history_complete"] = !assumed_utxo;
+        result["addresses"] = address_results;
+        Json proof_context;
+        proof_context["tip_height"] = tip_height;
+        proof_context["tip_hash"] = ctx.daemon->chainstate->getBestBlockHash();
+        const auto commitment = din::rpc_getutreexocommitment(ctx, din::arr());
+        proof_context["utreexo_root"] = commitment.isMember("commitment")
+            ? commitment["commitment"] : Json("");
+        proof_context["available"] = proof_context["tip_hash"].isString() &&
+            !proof_context["tip_hash"].asString().empty() &&
+            proof_context["utreexo_root"].isString() &&
+            !proof_context["utreexo_root"].asString().empty();
+        result["proof_context"] = proof_context;
+    } catch (const std::exception& e) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = std::string("Exception: ") + e.what();
+    }
+    return result;
+}
+
+Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
+    Json result;
+    if (!params.isObject() || !params.isMember("addresses") || !params["addresses"].isArray()) {
+        result["error"]["code"] = -8;
+        result["error"]["message"] = "addresses array is required";
+        return result;
+    }
+    if (!ctx.daemon || !ctx.daemon->chainstate) {
+        result["error"]["code"] = -1;
+        result["error"]["message"] = "Daemon/chainstate not available";
+        return result;
+    }
+
+    std::vector<std::string> addresses;
+    addresses.reserve(params["addresses"].size());
+    for (const auto& value : params["addresses"]) {
+        if (value.isString()) addresses.push_back(value.asString());
+    }
+    std::sort(addresses.begin(), addresses.end());
+    addresses.erase(std::unique(addresses.begin(), addresses.end()), addresses.end());
+    if (addresses.empty() || addresses.size() > MAX_BATCH_ADDRESSES) {
+        result["error"]["code"] = -8;
+        result["error"]["message"] = "addresses must contain between 1 and 100 unique strings";
+        return result;
+    }
+    int history_count = params.isMember("history_count") && params["history_count"].isInt()
+        ? params["history_count"].asInt() : 50;
+    if (history_count < 1 || history_count > MAX_BATCH_HISTORY) {
+        result["error"]["code"] = -8;
+        result["error"]["message"] = "history_count must be between 1 and 50";
+        return result;
+    }
+
+    std::ostringstream key_builder;
+    key_builder << ctx.daemon->chainstate->getBestBlockHash() << ':' << history_count;
+    for (const auto& address : addresses) key_builder << ':' << address;
+    const std::string key = key_builder.str();
+    const auto now = BatchClock::now();
+
+    {
+        std::unique_lock<std::mutex> lock(g_batch_discovery.mutex);
+        ++g_batch_discovery.requests;
+        if (g_batch_discovery.cached_key == key &&
+            g_batch_discovery.cached_at != BatchClock::time_point{} &&
+            now - g_batch_discovery.cached_at <= BATCH_CACHE_TTL) {
+            ++g_batch_discovery.cache_hits;
+            result = g_batch_discovery.cached_result;
+            addBatchMetadata(result, true, 0, addresses.size(), g_batch_discovery);
+            return result;
+        }
+        if (g_batch_discovery.running) {
+            if (g_batch_discovery.running_key != key) {
+                ++g_batch_discovery.rejected;
+                result["error"]["code"] = -32005;
+                result["error"]["message"] = "batch discovery busy";
+                addBatchMetadata(result, false, 0, addresses.size(), g_batch_discovery);
+                return result;
+            }
+            ++g_batch_discovery.waiters;
+            const bool completed = g_batch_discovery.changed.wait_for(
+                lock, BATCH_WAIT_TIMEOUT, [&] { return !g_batch_discovery.running; });
+            if (completed && g_batch_discovery.cached_key == key) {
+                ++g_batch_discovery.cache_hits;
+                result = g_batch_discovery.cached_result;
+                addBatchMetadata(result, true, 0, addresses.size(), g_batch_discovery);
+                return result;
+            }
+            ++g_batch_discovery.rejected;
+            result["error"]["code"] = -32006;
+            result["error"]["message"] = completed
+                ? "batch discovery failed" : "batch discovery wait timed out";
+            addBatchMetadata(result, false, 0, addresses.size(), g_batch_discovery);
+            return result;
+        }
+        if (g_batch_discovery.last_scan_started != BatchClock::time_point{} &&
+            now - g_batch_discovery.last_scan_started < BATCH_SCAN_COOLDOWN) {
+            ++g_batch_discovery.rejected;
+            result["error"]["code"] = -32005;
+            result["error"]["message"] = "batch discovery rate limited; retry shortly";
+            addBatchMetadata(result, false, 0, addresses.size(), g_batch_discovery);
+            return result;
+        }
+        g_batch_discovery.running = true;
+        g_batch_discovery.running_key = key;
+        g_batch_discovery.last_scan_started = now;
+        ++g_batch_discovery.scans;
+    }
+
+    result = computeAddressBatch(ctx, params, now + BATCH_SCAN_TIMEOUT);
+    const uint64_t scan_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(BatchClock::now() - now).count());
+    {
+        std::lock_guard<std::mutex> lock(g_batch_discovery.mutex);
+        g_batch_discovery.total_scan_ms += scan_ms;
+        if (result.isMember("error")) {
+            ++g_batch_discovery.failures;
+            dinero::g_logger.warning("[getaddressbatch] scan failed after " +
+                std::to_string(scan_ms) + " ms: " + result["error"]["message"].asString());
+        } else {
+            g_batch_discovery.cached_key = key;
+            g_batch_discovery.cached_result = result;
+            g_batch_discovery.cached_at = BatchClock::now();
+        }
+        g_batch_discovery.running = false;
+        g_batch_discovery.running_key.clear();
+        addBatchMetadata(result, false, scan_ms, addresses.size(), g_batch_discovery);
+    }
+    g_batch_discovery.changed.notify_all();
+    return result;
+}
+
 
 // ─── RPC: reindextx ─────────────────────────────────────────────────────
 

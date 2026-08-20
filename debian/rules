@@ -11,7 +11,7 @@
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 DEB_VERSION_UPSTREAM := $(shell dpkg-parsechangelog -S Version | sed 's/-[^-]*$$//' | sed 's/~/-/g')
-DEB_OPENSSL_VERSION := 3.5.6
+DEB_OPENSSL_VERSION := 3.5.7
 
 # Reduce parallelism if needed to keep build memory under control on
 # small CI runners. Default lets debhelper detect cores.
