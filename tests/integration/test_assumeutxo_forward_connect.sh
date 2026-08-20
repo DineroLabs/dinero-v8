@@ -27,6 +27,15 @@
 # CORRUPTION_RECOVERY_MODE=1 reuses the same V4 snapshot topology for #369.
 # It forks one stopped mismatched-checkpoint datadir into recovery-with-file
 # and fail-closed-without-file legs, then compares exact persisted state.
+#
+# PREBASE_SPEND_MODE=1 is the block-90391 regression (STATELESS undo path). A
+# CSN consumer forward-connects a post-base block that spends a pre-base coin;
+# the CSN undo reconstruction must recover that coin from the in-memory
+# AssumeUTXO set (it is absent from the consumer's ChainDB). Self-contained
+# branch: source-signed pre-base spend + stateless consumer; asserts the
+# fidelity log (height + coinbase flag). EXPECT_PREBASE_STALL=1 flips it to the
+# neuter expectation (un-fixed binary must stall with undo-spent-reconstruction-
+# failed on the exact outpoint).
 set -uo pipefail
 
 DINEROD="${DINEROD:?set DINEROD to the dinerod binary path}"
@@ -48,6 +57,16 @@ CORRUPTION_RECOVERY_MODE="${CORRUPTION_RECOVERY_MODE:-0}"
 # reorg constructed in-harness; the divergent-tip orphan-row removal is covered
 # by the ChainDB::clearAllCoins unit test (assertion a).
 INCOMPLETE_REORG_MODE="${INCOMPLETE_REORG_MODE:-0}"
+# PREBASE_SPEND_MODE=1 is the regression for the block-90391 stall: a STATELESS
+# (ios_utreexo / CSN) consumer forward-connects a post-base block that SPENDS a
+# pre-base coin. That coin lives only in the in-memory AssumeUTXO set (never in
+# the consumer's ChainDB coin CF), so the CSN undo path's
+# ReconstructSpentCoinsFromChainDb misses it and, without the fix, aborts the
+# connection with undo-spent-reconstruction-failed. With the fix, the spent coin
+# is reconstructed from the AssumeUTXO set and the node crosses the block.
+PREBASE_SPEND_MODE="${PREBASE_SPEND_MODE:-0}"
+SRC_PREBASE_H="${SRC_PREBASE_H:-3}"   # height of the SOURCE-owned pre-base COINBASE spent post-export
+EXPECT_PREBASE_STALL="${EXPECT_PREBASE_STALL:-0}"  # neuter expectation: assert the un-fixed stall instead
 MUTATOR="${MUTATOR:-}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-500}"
 
@@ -395,6 +414,263 @@ run_checkpoint_recovery() {
 # ═════════════════════════════════════════════════════════════════════════
 # Setup: source mines to base, exports snapshot, then keeps mining K PAST base
 # ═════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+# PREBASE_SPEND_MODE — block-90391 regression (stateless CSN undo path).
+#
+# A STATELESS consumer (utreexo-stateless=1 => ios_utreexo profile, the phone's
+# mode) forward-connects a post-base block that SPENDS a pre-base COINBASE. On a
+# stateless node ConnectBlock leaves the undo spent list empty, so ConnectTip
+# calls ReconstructSpentCoinsFromChainDb. The spent coin predates the snapshot
+# base, so it lives ONLY in the in-memory AssumeUTXO coin map (BulkLoad) and is
+# absent from the consumer's ChainDB coin CF. Without the fix, reconstruction
+# fails -> undo-spent-reconstruction-failed -> the node stalls at base (exactly
+# the phone's 90391 brick). With the fix, GetActiveUTXO recovers it from the
+# AssumeUTXO set and the node crosses the block.
+#
+# Self-contained: the SOURCE owns and signs the spend (a stateless consumer runs
+# gen=0 and cannot wallet-sign). Separate SRC_PREBASE_H leaves the other modes'
+# PREBASE_H assertions untouched.
+# ═════════════════════════════════════════════════════════════════════════════
+if [[ "$PREBASE_SPEND_MODE" == "1" ]]; then
+    info "=== PREBASE_SPEND_MODE: stateless CSN undo reconstructs a pre-base spent coin (90391 regression) ==="
+    [[ "$SRC_PREBASE_H" -ge 1 && "$SRC_PREBASE_H" -lt "$BASE_HEIGHT" ]] \
+        || fail "SRC_PREBASE_H=$SRC_PREBASE_H must be in [1, BASE_HEIGHT)"
+
+    # --- source: full/bridge node; owns every coin; serves utreexo proofs ---
+    start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/daemon.log" \
+        --utreexo-bridge=1
+    SRC_ADDR="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.getnewaddress '[]' \
+        | jq -r '.result.address // .result // empty')"
+    [[ -n "$SRC_ADDR" ]] || fail "source wallet.getnewaddress returned no address"
+
+    # Mine the whole base to the SOURCE's own address so a pre-base COINBASE is
+    # source-spendable. base >> coinbase maturity(=10 regtest), so SRC_PREBASE_H
+    # is deeply mature by the time we spend it.
+    rpc "$SRC_RPC" "$SRC_DIR" generatetoaddress "[$BASE_HEIGHT,\"$SRC_ADDR\"]" \
+        | jq -e ".result.blocks | length == $BASE_HEIGHT" >/dev/null \
+        || fail "source failed to mine $BASE_HEIGHT base blocks"
+    BASE="$(rpc "$SRC_RPC" "$SRC_DIR" getblockcount | jq -re '.result')"
+    [[ "$BASE" -eq "$BASE_HEIGHT" ]] || fail "source height $BASE != base $BASE_HEIGHT"
+
+    # Export snapshot at base. Every source coin is an UNSPENT pre-base coinbase
+    # (no spends yet), so all land in the snapshot's in-memory coin map — none in
+    # the (consumer's) ChainDB coin CF. SRC_PREBASE_H is advisory documentation;
+    # the actually-spent pre-base outpoint is derived from the spend below so the
+    # fidelity assertion checks the coin the wallet really selected.
+    jq -e '.result.coins_written >= 1' \
+        <<<"$(rpc "$SRC_RPC" "$SRC_DIR" dumptxoutset "[\"$SNAP\"]")" >/dev/null \
+        || fail "dumptxoutset failed"
+    [[ -s "$SNAP" ]] || fail "snapshot not written"
+
+    # Consistent headers-at-base copy requires the source STOPPED.
+    stop_node "$SRC_DIR"
+    cp -R "$SRC_DIR/headers" "$HEADERS_AT_BASE"
+    start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/daemon2.log" \
+        --utreexo-bridge=1
+
+    # POST-EXPORT: spend via the proven wallet.sendtoaddress path. Because every
+    # spendable source coin is a pre-base coinbase, the wallet necessarily selects
+    # a pre-base coinbase input — faithful to 90391 (its post-base block spends a
+    # pre-base output). Send to mempool FIRST, inspect the selected input while it
+    # is still unconfirmed (coin still unspent -> source gettxout resolves it),
+    # then confirm in base+1.
+    DEST="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.getnewaddress '[]' \
+        | jq -r '.result.address // .result // empty')"
+    [[ -n "$DEST" ]] || fail "source wallet.getnewaddress (dest) failed"
+    SEND_RES="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.sendtoaddress "[\"$DEST\",50.0]")"
+    SPEND_TXID="$(jq -r '.result.txid // .result // empty' <<<"$SEND_RES")"
+    [[ "$SPEND_TXID" =~ ^[0-9a-fA-F]{64}$ ]] \
+        || fail "wallet.sendtoaddress could not spend a pre-base coinbase: $SEND_RES"
+
+    # Identify the pre-base coinbase the wallet spent (height + coinbase flag),
+    # inspecting each input against the source's authoritative UTXO state.
+    SPEND_VIN="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.getrawtransaction "[\"$SPEND_TXID\",true]" \
+        | jq -c '.result.vin // []')"
+    jq -e 'length > 0' <<<"$SPEND_VIN" >/dev/null || fail "spend tx has no decoded inputs: $SPEND_VIN"
+    SPB_TXID=""; SPB_VOUT=""; SPB_HEIGHT=""; SPB_CB=""
+    while IFS=$'\t' read -r in_txid in_vout; do
+        [[ -n "$in_txid" && -n "$in_vout" ]] || continue
+        COIN="$(rpc "$SRC_RPC" "$SRC_DIR" gettxout "[\"$in_txid\",$in_vout,false]")"
+        H="$(jq -r '.result.height // -1' <<<"$COIN")"
+        CB="$(jq -r 'if (.result.coinbase // false) then 1 else 0 end' <<<"$COIN")"
+        if [[ "$H" -ge 1 && "$H" -le "$BASE" ]]; then
+            SPB_TXID="$in_txid"; SPB_VOUT="$in_vout"; SPB_HEIGHT="$H"; SPB_CB="$CB"
+            break
+        fi
+    done < <(jq -r '.[] | [.txid, (.vout|tostring)] | @tsv' <<<"$SPEND_VIN")
+    [[ -n "$SPB_TXID" ]] || fail "spend selected no pre-base input (all inputs post-base?): $SPEND_VIN"
+    [[ "$SPB_CB" == "1" ]] || fail "expected the spent pre-base input to be a coinbase; got coinbase=$SPB_CB (h=$SPB_HEIGHT)"
+    info "wallet spent pre-base coinbase ${SPB_TXID:0:16}...:$SPB_VOUT (height $SPB_HEIGHT, coinbase=$SPB_CB)"
+
+    rpc "$SRC_RPC" "$SRC_DIR" generate '[1]' \
+        | jq -e '.result.blocks | length == 1' >/dev/null \
+        || fail "source failed to mine the spend block (base+1)"
+    SB1_HASH="$(rpc "$SRC_RPC" "$SRC_DIR" getblockhash "[$((BASE + 1))]" | jq -r '.result')"
+    jq -e --arg t "$SPEND_TXID" \
+        '.result.tx | map(if type=="string" then . else .txid end) | index($t) != null' \
+        <<<"$(rpc "$SRC_RPC" "$SRC_DIR" getblock "[\"$SB1_HASH\",1]")" >/dev/null \
+        || fail "spend tx $SPEND_TXID not included in base+1"
+    info "pre-base coinbase spent in base+1 (${SB1_HASH:0:16}...), spend tx ${SPEND_TXID:0:16}..."
+    if [[ "$POST_BASE_K" -gt 1 ]]; then
+        rpc "$SRC_RPC" "$SRC_DIR" generate "[$((POST_BASE_K - 1))]" \
+            | jq -e ".result.blocks | length == $((POST_BASE_K - 1))" >/dev/null \
+            || fail "source failed to extend past base+1"
+    fi
+    NET_TIP=$((BASE + POST_BASE_K))
+    SRC_TIP="$(rpc "$SRC_RPC" "$SRC_DIR" getblockcount | jq -re '.result')"
+    [[ "$SRC_TIP" -eq "$NET_TIP" ]] || fail "source tip $SRC_TIP != base+K $NET_TIP"
+    info "source at $SRC_TIP (base $BASE + K $POST_BASE_K), bridge running + connectable"
+
+    # --- consumer: STATELESS (ios_utreexo — the phone's mode), forward-connect ---
+    mkdir -p "$CON_DIR/headers"
+    cp -R "$HEADERS_AT_BASE/." "$CON_DIR/headers/"
+    export DINERO_DEBUG_BG_VALIDATION_DELAY_MS="$BG_DELAY_MS"
+    start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon.log" \
+        --utreexo-stateless=1 --assumeutxo_bg_stall_timeout=3600 \
+        --assumeutxo_forward_connect=1 --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+    # Confirm the consumer really resolved to the STATELESS profile — otherwise
+    # ConnectBlock populates the spent list, ReconstructSpentCoins is a no-op, and
+    # this whole test greens vacuously (the reconstruction path never runs). The
+    # daemon prints an authoritative "mode=STATELESS|STATEFUL" line at startup.
+    # (utreexo-bridge defaults on even for a stateless node, so "bridge mode
+    # ENABLED" is NOT evidence either way — mode= is the determinant.)
+    STATELESS_OK=0
+    for i in $(seq 1 20); do
+        if grep -qsE "Sync profile:.*mode=STATELESS" "$CON_DIR/daemon.log" 2>/dev/null; then
+            STATELESS_OK=1; break
+        fi
+        grep -qsE "Sync profile:.*mode=STATEFUL" "$CON_DIR/daemon.log" 2>/dev/null \
+            && fail "consumer resolved to STATEFUL mode despite --utreexo-stateless=1 — reconstruction path would not run"
+        sleep 1
+    done
+    [[ "$STATELESS_OK" == "1" ]] \
+        || fail "could not confirm consumer resolved to stateless mode (no 'mode=STATELESS' line) — test would be vacuous"
+
+    LOAD_RES="$(rpc "$CON_RPC" "$CON_DIR" loadtxoutset "[\"$SNAP\"]")"
+    jq -e '.result.coins_loaded >= 1' <<<"$LOAD_RES" >/dev/null \
+        || fail "loadtxoutset failed: $LOAD_RES"
+    info "snapshot loaded on stateless consumer: $(jq -c '.result | {base_height, coins_loaded}' <<<"$LOAD_RES")"
+
+    # Rehydrate the snapshot lifecycle via restart (same reason as the main flow:
+    # a live RPC-loaded session that never restarts livelocks the backfill worker).
+    stop_node "$CON_DIR"
+    start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon2.log" \
+        --utreexo-stateless=1 --assumeutxo_bg_stall_timeout=3600 \
+        --assumeutxo_snapshot="$SNAP" --assumeutxo_forward_connect=1 \
+        --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+    wait_status "$CON_RPC" "$CON_DIR" '.assumeutxo_active == true' 60 "stateless snapshot rehydrated" \
+        || fail "stateless consumer did not rehydrate the snapshot lifecycle"
+
+    rpc "$CON_RPC" "$CON_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"add\"]" >/dev/null || true
+    rpc "$CON_RPC" "$CON_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"onetry\"]" >/dev/null || true
+    CONN_OK=0
+    for i in $(seq 1 30); do
+        c="$(rpc "$CON_RPC" "$CON_DIR" getconnectioncount | jq -r '.result // 0')"
+        [[ "$c" -ge 1 ]] && { CONN_OK=1; break; }
+        sleep 1
+    done
+    [[ "$CONN_OK" == "1" ]] || fail "stateless consumer could not connect to the source bridge"
+    info "stateless consumer connected to source bridge — forward-connect window open"
+
+    # ── Observe: cross the spend block, or stall on the exact reconstruction error ──
+    RECON_LINE="pre-base spent coin ${SPB_TXID:0:16}:0 reconstructed from AssumeUTXO set"
+    FAIL_LINE="undo-spent-reconstruction-failed"
+    CROSSED=0; STALL_SEEN=0; RECON_SEEN=0
+    RACE_START=$SECONDS; LAST_LOG=$SECONDS
+    while (( SECONDS - RACE_START < PROMO_TIMEOUT )); do
+        grep -qsF "$RECON_LINE" "$CON_DIR"/daemon*.log 2>/dev/null && RECON_SEEN=1
+        grep -qsF "$FAIL_LINE"  "$CON_DIR"/daemon*.log 2>/dev/null && STALL_SEEN=1
+        TIP="$(rpc "$CON_RPC" "$CON_DIR" getblockcount 2>/dev/null | jq -r '.result // 0')"
+        [[ "$TIP" -ge "$NET_TIP" ]] && { CROSSED=1; }
+        # Fixed run resolves on cross; neuter run resolves on the stall line.
+        [[ "$EXPECT_PREBASE_STALL" == "1" && "$STALL_SEEN" == "1" ]] && break
+        [[ "$EXPECT_PREBASE_STALL" != "1" && "$CROSSED" == "1" && "$RECON_SEEN" == "1" ]] && break
+        if (( SECONDS - LAST_LOG >= 15 )); then
+            LAST_LOG=$SECONDS
+            info "  [t+$((SECONDS-RACE_START))s] tip=$TIP net=$NET_TIP recon=$RECON_SEEN stall=$STALL_SEEN"
+        fi
+        sleep 2
+    done
+    grep -qsF "$RECON_LINE" "$CON_DIR"/daemon*.log 2>/dev/null && RECON_SEEN=1
+    grep -qsF "$FAIL_LINE"  "$CON_DIR"/daemon*.log 2>/dev/null && STALL_SEEN=1
+    TIP="$(rpc "$CON_RPC" "$CON_DIR" getblockcount 2>/dev/null | jq -r '.result // 0')"
+    [[ "$TIP" -ge "$NET_TIP" ]] && CROSSED=1
+    info "observation: tip=$TIP net_tip=$NET_TIP crossed=$CROSSED recon_seen=$RECON_SEEN stall_seen=$STALL_SEEN"
+
+    if [[ "$EXPECT_PREBASE_STALL" == "1" ]]; then
+        # ── NEUTER expectation (un-fixed binary) ──────────────────────────────
+        # Must fail on the EXACT outpoint, not merely "didn't reach the tip" — a
+        # plumbing stall (source not serving utreexo blocks) would masquerade
+        # otherwise. Require the reconstruction-failed line AND the outpoint hex.
+        if grep -qsF "$FAIL_LINE" "$CON_DIR"/daemon*.log 2>/dev/null \
+           && grep -qsF "$SPB_TXID" "$CON_DIR"/daemon*.log 2>/dev/null; then
+            ck_pass "N1 (neuter): un-fixed binary stalled with $FAIL_LINE on outpoint ${SPB_TXID:0:16}...:0"
+        else
+            ck_fail "N1 (neuter): expected $FAIL_LINE on outpoint $SPB_TXID; log did not show it (tip=$TIP)"
+        fi
+        if [[ "$CROSSED" != "1" ]]; then
+            ck_pass "N2 (neuter): stateless consumer did NOT cross the spend block (stalled at/near base, tip=$TIP < $NET_TIP)"
+        else
+            ck_fail "N2 (neuter): consumer crossed to tip=$TIP despite un-fixed binary — reconstruction path not exercised?"
+        fi
+    else
+        # ── FIXED expectation ────────────────────────────────────────────────
+        # P1: the reconstruction path RAN and recovered the coin from the
+        # AssumeUTXO set (fidelity line present). Its mere presence proves
+        # ChainDB.getCoin MISSED (the fix's branch only runs after that miss), so
+        # the coin was still pre-base-only — the exact 90391 condition.
+        FID="$(grep -hoE "pre-base spent coin ${SPB_TXID:0:16}:0 reconstructed from AssumeUTXO set \(height=[0-9]+ coinbase=[01]\)" \
+                "$CON_DIR"/daemon*.log 2>/dev/null | head -1)"
+        if [[ -n "$FID" ]]; then
+            ck_pass "P1 (CORE): CSN undo reconstructed the pre-base spent coin from the AssumeUTXO set: $FID"
+        else
+            ck_fail "P1 (CORE): no AssumeUTXO reconstruction fidelity line for ${SPB_TXID:0:16}:0 — path did not run (fix ineffective or coin read from ChainDB)"
+        fi
+        # P2: fidelity — height and coinbase flag faithful (peer's must-assert).
+        FID_H="$(sed -nE 's/.*height=([0-9]+) coinbase=[01].*/\1/p' <<<"$FID" | head -1)"
+        FID_CB="$(sed -nE 's/.*coinbase=([01]).*/\1/p' <<<"$FID" | head -1)"
+        if [[ "$FID_H" == "$SPB_HEIGHT" && "$FID_CB" == "1" ]]; then
+            ck_pass "P2 (FIDELITY): reconstructed coin height=$FID_H (== spent-input height $SPB_HEIGHT) coinbase=$FID_CB (== 1)"
+        else
+            ck_fail "P2 (FIDELITY): expected height=$SPB_HEIGHT coinbase=1; got height=${FID_H:-?} coinbase=${FID_CB:-?}"
+        fi
+        # P3: the consumer actually crossed the spend block (not held at base).
+        if [[ "$CROSSED" == "1" ]]; then
+            ck_pass "P3: stateless consumer crossed the pre-base-spend block to tip=$TIP (>= net tip $NET_TIP)"
+        else
+            ck_fail "P3: stateless consumer did not reach net tip $NET_TIP (tip=$TIP) — connection aborted?"
+        fi
+        # P4: the un-fixed failure never occurred on the fixed binary.
+        if ! grep -qsF "$FAIL_LINE" "$CON_DIR"/daemon*.log 2>/dev/null; then
+            ck_pass "P4: no $FAIL_LINE on the fixed binary"
+        else
+            ck_fail "P4: $FAIL_LINE appeared despite the fix — reconstruction still failing"
+        fi
+        # P5 (timing corroboration): the reconstruction happened BEFORE promotion
+        # materialized pre-base coins into ChainDB (if a promotion line exists).
+        RECON_LN="$(grep -nF "$RECON_LINE" "$CON_DIR"/daemon*.log 2>/dev/null | head -1 | sed -E 's/^[^:]*:([0-9]+):.*/\1/')"
+        PROMO_LN="$(grep -nE "\[Promotion\] complete" "$CON_DIR"/daemon*.log 2>/dev/null | head -1 | sed -E 's/^[^:]*:([0-9]+):.*/\1/')"
+        if [[ -n "$RECON_LN" && -n "$PROMO_LN" ]]; then
+            if [[ "$RECON_LN" -lt "$PROMO_LN" ]]; then
+                ck_pass "P5: reconstruction (log line $RECON_LN) preceded promotion (line $PROMO_LN) — coin was pre-base-only when spent"
+            else
+                ck_fail "P5: reconstruction (line $RECON_LN) did not precede promotion (line $PROMO_LN)"
+            fi
+        else
+            info "P5: promotion line not present in the same log window — P1's ChainDB-miss proof stands on its own"
+        fi
+    fi
+
+    stop_node "$CON_DIR"
+    stop_node "$SRC_DIR"
+    if [[ "$FAILED" == "0" ]]; then
+        echo "PREBASE_SPEND_MODE ASSERTIONS PASSED"
+    else
+        echo "PREBASE_SPEND_MODE TEST FAILED (see [FAIL] lines above)" >&2
+    fi
+    exit "$FAILED"
+fi
+
 info "=== Setup: source mines to base=$BASE_HEIGHT, exports snapshot, mines +$POST_BASE_K past base ==="
 
 # Create the consumer wallet FIRST and mine the entire snapshot-base chain to
