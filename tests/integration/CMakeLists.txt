@@ -711,6 +711,32 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
         RUN_SERIAL TRUE
     )
     message(STATUS "  ✓ AssumeUtxoIncompleteReorgRecovery registered")
+
+    # Block-90391 regression (STATELESS CSN undo path): a stateless consumer
+    # forward-connects a post-base block that spends a PRE-BASE coin. That coin
+    # lives only in the in-memory AssumeUTXO set (absent from the consumer's
+    # ChainDB), so the CSN undo reconstruction must recover it from that set —
+    # without the fix, ReconstructSpentCoinsFromChainDb aborts the connect and
+    # the node stalls at base (the phone's 90391 brick). Asserts the fidelity
+    # log (recovered height == known pre-base height AND coinbase == 1).
+    add_test(
+        NAME AssumeUtxoPrebaseSpendStatelessUndo
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            "PREBASE_SPEND_MODE=1"
+            "BASE_HEIGHT=120"
+            "POST_BASE_K=5"
+            "SRC_PREBASE_H=3"
+            "BG_DELAY_MS=2000"
+            "CHECKPOINT_INTERVAL=5"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh
+    )
+    set_tests_properties(AssumeUtxoPrebaseSpendStatelessUndo PROPERTIES
+        LABELS "assumeutxo;replay;e2e;forward-connect;stateless-undo"
+        TIMEOUT 900
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ AssumeUtxoPrebaseSpendStatelessUndo registered")
 endif()
 
 # #353 late-import continuation: the snapshot is active before the funded

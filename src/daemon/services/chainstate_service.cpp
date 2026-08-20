@@ -11684,11 +11684,74 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
             }
             if (found_intra_block) continue;
 
-            // Neither source has it: a short undo would make this tip
+            // AssumeUTXO fallback: a stateless snapshot node spends coins that
+            // were created BEFORE the snapshot base. Those pre-base coins live
+            // only in the in-memory AssumeUTXO set (BulkLoad'd from the
+            // snapshot) — they are NEVER written to the ChainDB utxo CF (which
+            // forward-connect only fills for post-base blocks), so getCoin above
+            // misses them. Without this the first legitimate pre-base spend
+            // (field: DineroDPI stateless node at block 90391, spending a
+            // pre-base coin) makes the tip undisconnectable and bricks the node.
+            // Consult the authoritative in-memory set — the same source the
+            // #594 balance reads use — before declaring the coin unreconstructable.
+            // Use GetActiveUTXO DIRECTLY (not getAuthoritativeCoin, which returns
+            // only script+value): the undo needs the FULL fidelity — value,
+            // scriptPubKey, height, isCoinbase, is_confidential, commitment — that
+            // ReconstructSpentCoins exists to recover (utreexo proofs don't commit
+            // height/coinbase). GetActiveUTXO is deadlock-safe inline here:
+            // activation_mutex_ is recursive and ConnectTip already holds it.
+            //
+            // Fidelity: the snapshot format carries value/script/height/coinbase
+            // (LoadSnapshot populates entry.height + entry.isCoinbase), so those
+            // are faithful. It does NOT carry the legacy per-coin
+            // is_confidential/commitment (only a separate shielded-pool commitment
+            // root — a DISTINCT mechanism, see below), so GetActiveUTXO returns
+            // is_confidential=false/empty commitment. This is safe on ALL networks
+            // because a legacy confidential (ring/CT) coin can never be a spent
+            // input post-v7: spending one requires the excised v3/v4 CT-format tx
+            // (to balance the hidden-value commitment), and CheckStructure rejects
+            // any tx with version > 2 network-agnostically (transaction_validator
+            // .cpp, no testnet/regtest branch). So a confidential coin is never a
+            // reconstructed spent input anywhere; the missing CT fields are on an
+            // unreachable path. (is_confidential/commitment are LEGACY ring/CT,
+            // frozen + version-excised; the current privacy mechanism is the
+            // separate shielded pool via TX_VERSION_SHIELDED / shielded_bundle,
+            // which the snapshot's shielded_section carries — not per-coin CT.)
+            if (IsAssumeUTXOActive()) {
+                if (auto active = GetActiveUTXO(dinero::OutPoint{input.prevout.txid, prev_vout})) {
+                    // Observability: this rare path fires only for a pre-base
+                    // spend on a snapshot-active node. Log the recovered fidelity
+                    // fields (height/coinbase) that the ChainDB path would have
+                    // missed — both a production breadcrumb and the fidelity hook
+                    // the regression test asserts (a wrong height/coinbase here is
+                    // a corrupt undo that a bare connect-succeeds test would miss).
+                    if (logger_) {
+                        logger_->info(
+                            "[ReconstructSpentCoins] pre-base spent coin " +
+                            prev_txid.GetHex().substr(0, 16) + ":" +
+                            std::to_string(prev_vout) +
+                            " reconstructed from AssumeUTXO set (height=" +
+                            std::to_string(active->height) + " coinbase=" +
+                            (active->isCoinbase ? "1" : "0") + ")");
+                    }
+                    out_spent.emplace_back(
+                        prev_txid,
+                        prev_vout,
+                        active->value.GetUna(),
+                        active->scriptPubKey,
+                        active->isCoinbase,
+                        active->height,
+                        active->is_confidential,
+                        active->commitment);
+                    continue;
+                }
+            }
+
+            // No source has it: a short undo would make this tip
             // undisconnectable, so the connect must abort.
             out_error = "ReconstructSpentCoinsFromChainDb: outpoint " +
                         prev_txid.GetHex() + ":" + std::to_string(prev_vout) +
-                        " absent from ChainDB and not created intra-block";
+                        " absent from ChainDB, AssumeUTXO set, and not created intra-block";
             out_spent.clear();
             return Status::NotFound;
         }
