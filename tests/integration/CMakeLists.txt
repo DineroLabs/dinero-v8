@@ -762,6 +762,26 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
         RUN_SERIAL TRUE
     )
     message(STATUS "  ✓ AssumeUtxoSnapshotRotationSelfHeal registered")
+
+    # Floor-retry: the newest configured candidate passes integrity but its base
+    # does NOT bind to the node's header chain, so LoadSnapshot fails at binding;
+    # the self-heal must fall back to the bindable FLOOR (deepest candidate) and
+    # reconverge. Locks the bundled-floor-real-for-LOAD property + exactly one wipe.
+    add_test(
+        NAME AssumeUtxoSnapshotRotationSelfHealFloor
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            "SNAPSHOT_ROTATION_SELFHEAL_MODE=1"
+            "SELFHEAL_FLOOR_CASE=1"
+            "CHECKPOINT_INTERVAL=5"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh
+    )
+    set_tests_properties(AssumeUtxoSnapshotRotationSelfHealFloor PROPERTIES
+        LABELS "assumeutxo;replay;e2e;self-heal;snapshot-rotation;floor-retry"
+        TIMEOUT 900
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ AssumeUtxoSnapshotRotationSelfHealFloor registered")
 endif()
 
 # #353 late-import continuation: the snapshot is active before the funded

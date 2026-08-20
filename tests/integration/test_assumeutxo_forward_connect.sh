@@ -77,6 +77,7 @@ SNAPSHOT_ROTATION_SELFHEAL_MODE="${SNAPSHOT_ROTATION_SELFHEAL_MODE:-0}"
 SELFHEAL_H_GONE="${SELFHEAL_H_GONE:-40}"   # base of the rotated-away snapshot (persisted lifecycle pin)
 SELFHEAL_H_NEW="${SELFHEAL_H_NEW:-80}"     # base of the still-available (newer) snapshot
 EXPECT_SELFHEAL_FATAL="${EXPECT_SELFHEAL_FATAL:-0}"  # neuter: assert the un-fixed hard-fail instead
+SELFHEAL_FLOOR_CASE="${SELFHEAL_FLOOR_CASE:-0}"  # floor-retry: newest candidate un-bindable → floor loads
 MUTATOR="${MUTATOR:-}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-500}"
 
@@ -688,6 +689,94 @@ fi
 # self-heals (clean re-bootstrap from the still-available snapshot, shielded
 # marker re-established, no SAFE MODE, no wipe loop).
 # ═════════════════════════════════════════════════════════════════════════════
+if [[ "$SNAPSHOT_ROTATION_SELFHEAL_MODE" == "1" && "$SELFHEAL_FLOOR_CASE" == "1" ]]; then
+    # ── FLOOR-RETRY case ──────────────────────────────────────────────────────
+    # The newest configured candidate passes integrity (SnapshotPreflightOk) but
+    # its base does NOT bind to the consumer's header chain (headers seeded only
+    # to H_HDR < H_HI), so LoadSnapshot fails at binding. The floor-retry must then
+    # fall back to the bindable FLOOR and reconverge — proving the bundled floor is
+    # real for LOAD, not just SELECT, and that there is exactly one wipe (no loop).
+    H_GONE=40; H_FLOOR=50; H_HDR=60; H_HI=90
+    info "=== SELFHEAL_FLOOR_CASE: newest candidate un-bindable → floor-retry loads the floor ==="
+    SNAP_GONE="$WORK/snap-gone-$H_GONE.dat"
+    SNAP_FLOOR="$WORK/snap-floor-$H_FLOOR.dat"
+    SNAP_HI="$WORK/snap-hi-$H_HI.dat"
+
+    start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/daemon.log"
+    rpc "$SRC_RPC" "$SRC_DIR" generate "[$H_GONE]" | jq -e ".result.blocks|length==$H_GONE" >/dev/null || fail "mine H_GONE"
+    jq -e '.result.coins_written>=1' <<<"$(rpc "$SRC_RPC" "$SRC_DIR" dumptxoutset "[\"$SNAP_GONE\"]")" >/dev/null || fail "dump SNAP_GONE"
+    rpc "$SRC_RPC" "$SRC_DIR" generate "[$((H_FLOOR-H_GONE))]" >/dev/null || fail "mine H_FLOOR"
+    jq -e '.result.coins_written>=1' <<<"$(rpc "$SRC_RPC" "$SRC_DIR" dumptxoutset "[\"$SNAP_FLOOR\"]")" >/dev/null || fail "dump SNAP_FLOOR"
+    rpc "$SRC_RPC" "$SRC_DIR" generate "[$((H_HDR-H_FLOOR))]" >/dev/null || fail "mine H_HDR"
+    # Snapshot the consumer's header horizon at H_HDR (source stopped for a
+    # consistent copy), so H_FLOOR (<=H_HDR) binds but H_HI (>H_HDR) does not.
+    stop_node "$SRC_DIR"
+    cp -R "$SRC_DIR/headers" "$HEADERS_AT_BASE"
+    start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/daemon2.log"
+    rpc "$SRC_RPC" "$SRC_DIR" generate "[$((H_HI-H_HDR))]" >/dev/null || fail "mine H_HI"
+    jq -e '.result.coins_written>=1' <<<"$(rpc "$SRC_RPC" "$SRC_DIR" dumptxoutset "[\"$SNAP_HI\"]")" >/dev/null || fail "dump SNAP_HI"
+    stop_node "$SRC_DIR"
+    info "exported SNAP_GONE@$H_GONE, SNAP_FLOOR@$H_FLOOR, SNAP_HI@$H_HI; headers horizon @$H_HDR"
+
+    # Consumer: seed headers@H_HDR, load SNAP_GONE → active lifecycle at H_GONE.
+    mkdir -p "$CON_DIR/headers"; cp -R "$HEADERS_AT_BASE/." "$CON_DIR/headers/"
+    start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon-load.log" \
+        --utreexo-stateless=1 --p2p.offline=1 --listen=0 --assumeutxo_bg_stall_timeout=3600 \
+        --assumeutxo_snapshot="$SNAP_GONE" --assumeutxo_forward_connect=1 \
+        --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+    jq -e '.result.coins_loaded>=1' <<<"$(rpc "$CON_RPC" "$CON_DIR" loadtxoutset "[\"$SNAP_GONE\"]")" >/dev/null || fail "load SNAP_GONE"
+    wait_status "$CON_RPC" "$CON_DIR" '.assumeutxo_active == true' 60 "active lifecycle at H_GONE" || fail "no active lifecycle"
+    stop_node "$CON_DIR"
+
+    # Restart: newest=SNAP_HI (un-bindable), fallback=SNAP_FLOOR (bindable). SNAP_GONE gone.
+    start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon-heal.log" \
+        --utreexo-stateless=1 --p2p.offline=1 --listen=0 --assumeutxo_bg_stall_timeout=3600 \
+        --assumeutxo_snapshot="$SNAP_HI" --assumeutxo_snapshot_fallbacks="$SNAP_FLOOR" \
+        --assumeutxo_forward_connect=1 --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+    if grep -qsE "SELF-HEALING via clean re-bootstrap" "$CON_DIR/daemon-heal.log"; then
+        ck_pass "F1: self-heal fired"
+    else
+        ck_fail "F1: self-heal did not fire"
+    fi
+    if grep -qsE "falling back to bundled floor" "$CON_DIR/daemon-heal.log"; then
+        ck_pass "F2 (floor-retry): newest target failed to bind → fell back to the floor"
+    else
+        ck_fail "F2 (floor-retry): floor-retry did not engage (log lacks the fallback marker)"
+    fi
+    HB="$(snap_status "$CON_RPC" "$CON_DIR" | jq -r '.snapshot_base_height // empty')"
+    if [[ "$HB" == "$H_FLOOR" ]]; then
+        ck_pass "F3: re-bootstrapped to the FLOOR base $H_FLOOR (not the un-bindable $H_HI)"
+    else
+        ck_fail "F3: snapshot base is '$HB', expected floor $H_FLOOR"
+    fi
+    FST="$(snap_status "$CON_RPC" "$CON_DIR")"
+    if jq -e '(.fatal // false) == false' <<<"$FST" >/dev/null 2>&1 \
+       && ! grep -qsE "SAFE MODE|EnterSafeMode|marker NotFound" "$CON_DIR/daemon-heal.log" 2>/dev/null; then
+        ck_pass "F4 (#585): not fatal, not in safe mode after floor-retry (shielded marker OK)"
+    else
+        ck_fail "F4 (#585): fatal or safe mode after floor-retry: $FST"
+    fi
+    WIPES="$(grep -csE "SELF-HEALING via clean re-bootstrap" "$CON_DIR/daemon-heal.log")"
+    if [[ "$WIPES" == "1" ]]; then
+        ck_pass "F5: exactly ONE wipe during the floor-retry heal"
+    else
+        ck_fail "F5: expected exactly one wipe, saw $WIPES"
+    fi
+    stop_node "$CON_DIR"
+    start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon-heal2.log" \
+        --utreexo-stateless=1 --p2p.offline=1 --listen=0 --assumeutxo_bg_stall_timeout=3600 \
+        --assumeutxo_snapshot="$SNAP_HI" --assumeutxo_snapshot_fallbacks="$SNAP_FLOOR" \
+        --assumeutxo_forward_connect=1 --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+    if ! grep -qsE "SELF-HEALING via clean re-bootstrap" "$CON_DIR/daemon-heal2.log" 2>/dev/null; then
+        ck_pass "F6 (no-loop): restart did NOT re-trigger self-heal (no second wipe)"
+    else
+        ck_fail "F6 (no-loop): self-heal fired again on restart — wipe loop"
+    fi
+    stop_node "$CON_DIR"
+    if [[ "$FAILED" == "0" ]]; then echo "SNAPSHOT_ROTATION_SELFHEAL_MODE (floor case) ASSERTIONS PASSED"; else echo "SNAPSHOT_ROTATION_SELFHEAL_MODE (floor case) TEST FAILED" >&2; fi
+    exit "$FAILED"
+fi
+
 if [[ "$SNAPSHOT_ROTATION_SELFHEAL_MODE" == "1" ]]; then
     info "=== SNAPSHOT_ROTATION_SELFHEAL_MODE: stale lifecycle base rotated away → self-heal ==="
     [[ "$SELFHEAL_H_NEW" -gt "$SELFHEAL_H_GONE" ]] || fail "SELFHEAL_H_NEW must exceed SELFHEAL_H_GONE"
