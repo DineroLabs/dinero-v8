@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.17)  # bumped for find_package(CUDAToolkit)
 # In a monorepo release the root owns the shared version. Keep a standalone
 # fallback for legacy direct builds of miner/.
 if(NOT DEFINED DINERO_MONOREPO_VERSION)
-  set(DINERO_MONOREPO_VERSION 8.1.5)
+  set(DINERO_MONOREPO_VERSION 8.1.6)
 endif()
 project(dinero-solo-miner VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 

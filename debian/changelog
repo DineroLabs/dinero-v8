@@ -1,3 +1,25 @@
+dinero-core (8.1.6-1) unstable; urgency=medium
+
+  * v8.1.6 -- make DineroDPI shared-RPC address discovery correct on
+    AssumeUTXO nodes: balance and mempool reads use the authoritative active
+    UTXO set, snapshot reads are serialized against tip activation, and
+    incomplete pre-base history is reported explicitly.
+  * Replace the process-global address-batch single-flight with bounded
+    per-request-key coalescing. Identical requests still share work while up
+    to two distinct wallet scans may progress concurrently; cache and request
+    limits remain bounded. The batch history cap is explicitly 50 rows per
+    address (the legacy single-address history RPC permits 200).
+  * Auto-recover snapshot-configured nodes interrupted mid-reorg by safely
+    clearing inconsistent checkpoints and coin rows, then re-arming from the
+    configured snapshot. Recovery is fail-safe when the tip is unreadable,
+    the snapshot is missing, or a same-tip recovery loop is detected;
+    non-snapshot archival nodes retain the manual abort path.
+  * No consensus-rule, peer-protocol, chain-database-format, wallet-format,
+    or height-84,131 AssumeUTXO anchor changes.
+  * Fleet redeploy REQUIRED: the daemon and snapshot recovery paths changed.
+
+ -- Dinero Labs <team@dinerolabs.org>  Thu, 20 Aug 2026 02:17:31 -0400
+
 dinero-core (8.1.5-3) unstable; urgency=medium
 
   * Make legacy address balance and mempool RPCs read the authoritative

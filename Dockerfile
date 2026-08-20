@@ -18,16 +18,16 @@
 #
 #   docker run -d --name dinero --stop-timeout 60 \
 #     --log-opt max-size=50m --log-opt max-file=3 \
-#     -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.5
+#     -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.1.6
 
-ARG DINERO_VERSION=8.1.5
+ARG DINERO_VERSION=8.1.6
 # The snapshot release is explicit rather than inferred from the daemon version.
 # Bump it only when that release actually publishes the named snapshot artifacts.
 # v8.1.3 retains backward-compatible snapshot upgrades: fresh volumes choose 84131,
 # while a persisted lifecycle created by v8.1.1 can select the exact 73035 artifact.
 # Never remove a fallback until no supported image can have an active lifecycle at
 # that base. A newer primary alone would recreate the interrupted-first-sync brick.
-ARG SNAPSHOT_RELEASE=v8.1.5
+ARG SNAPSHOT_RELEASE=v8.1.6
 ARG SNAPSHOT_NAME=dinero-assumeutxo-84131-v4
 ARG SNAPSHOT_FALLBACK_NAME=dinero-assumeutxo-73035-v4
 # Filename the snapshot is installed under inside the image. It MUST equal the
