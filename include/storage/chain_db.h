@@ -436,6 +436,20 @@ public:
         const ChainWriteToken& token,
         rocksdb::WriteBatch* wb = nullptr);
 
+    // Delete EVERY coin row in the utxo column family. Used by the
+    // incomplete-reorg clean re-bootstrap (ChainstateService Init) to return
+    // the utxo CF to its post-snapshot-bootstrap empty state: the snapshot's
+    // base coins live only in the in-memory consensus set (BulkLoad never
+    // writes the CF), so the CF holds exactly the forward-connect'd coins —
+    // including orphan rows from a crashed divergent tip that would otherwise
+    // linger as phantom balances. Clearing it whole reproduces the clean
+    // fresh-bootstrap state (empty CF), which forward-connect then rebuilds.
+    // Range scan + per-key Delete because DeleteRange is not enabled on this
+    // CF. Returns the count of rows deleted.
+    StatusOr<uint64_t> clearAllCoins(
+        const ChainWriteToken& token,
+        rocksdb::WriteBatch* wb = nullptr);
+
     // Iterate every nullifier row in ascending (height, nullifier)
     // order. Used at startup to populate NullifierSet's in-memory
     // map and by SerializeContent to produce the DSRH preimage.

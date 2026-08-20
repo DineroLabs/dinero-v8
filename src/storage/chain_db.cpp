@@ -2135,6 +2135,46 @@ StatusOr<uint64_t> ChainDB::deleteAllShieldedNullifiers(
     return deleted;
 }
 
+StatusOr<uint64_t> ChainDB::clearAllCoins(
+    const ChainWriteToken& token,
+    rocksdb::WriteBatch* wb) {
+    if (!db_) return Status::Internal;
+    (void)token;
+
+    // The utxo CF is dedicated to coin rows keyed by makeUtxoKey(txid, vout)
+    // with no shared prefix, so clearing it whole is SeekToFirst → delete
+    // every key. Range scan + per-key Delete because DeleteRange is not
+    // enabled on this CF (mirrors deleteAllShieldedNullifiers).
+    rocksdb::ReadOptions read_opts;
+    std::unique_ptr<rocksdb::Iterator> it(
+        db_->NewIterator(read_opts, cf_[idx_utxo_].get()));
+
+    uint64_t deleted = 0;
+
+    if (wb != nullptr) {
+        for (it->SeekToFirst(); it->Valid(); it->Next()) {
+            wb->Delete(cf_[idx_utxo_].get(), it->key());
+            ++deleted;
+        }
+        if (!it->status().ok()) return convertRocksDBStatus(it->status());
+        return deleted;
+    }
+
+    rocksdb::WriteBatch local_batch;
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        local_batch.Delete(cf_[idx_utxo_].get(), it->key());
+        ++deleted;
+    }
+    if (!it->status().ok()) return convertRocksDBStatus(it->status());
+    if (deleted == 0) return uint64_t{0};
+
+    rocksdb::WriteOptions opts;
+    opts.sync = true;
+    const auto status = db_->Write(opts, &local_batch);
+    if (!status.ok()) return convertRocksDBStatus(status);
+    return deleted;
+}
+
 Status ChainDB::forEachShieldedNullifier(
     const ShieldedNullifierVisitor& visit) const {
     if (!db_) return Status::Internal;

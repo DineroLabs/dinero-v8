@@ -687,6 +687,30 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
         RUN_SERIAL TRUE
     )
     message(STATUS "  ✓ AssumeUtxoCorruptCheckpointRecovery registered")
+
+    # Incomplete-reorg startup recovery (assertion b): a snapshot node crashed
+    # mid-reorg (reorg_in_progress marker + staled checkpoint) must AUTO-RECOVER
+    # via clean re-bootstrap and RECONVERGE to the exact clean consensus state,
+    # not abort. Reuses the corruption-recovery topology + adds the marker.
+    add_test(
+        NAME AssumeUtxoIncompleteReorgRecovery
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            "MUTATOR=$<TARGET_FILE:utreexo_checkpoint_mutator>"
+            "CORRUPTION_RECOVERY_MODE=1"
+            "INCOMPLETE_REORG_MODE=1"
+            "BASE_HEIGHT=120"
+            "POST_BASE_K=5"
+            "BG_DELAY_MS=2000"
+            "CHECKPOINT_INTERVAL=5"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh
+    )
+    set_tests_properties(AssumeUtxoIncompleteReorgRecovery PROPERTIES
+        LABELS "assumeutxo;replay;e2e;checkpoint-recovery;incomplete-reorg"
+        TIMEOUT 900
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ AssumeUtxoIncompleteReorgRecovery registered")
 endif()
 
 # #353 late-import continuation: the snapshot is active before the funded

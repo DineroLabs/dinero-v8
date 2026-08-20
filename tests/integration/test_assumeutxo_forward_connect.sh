@@ -37,6 +37,17 @@ BG_DELAY_MS="${BG_DELAY_MS:-200}"    # per-block genesis->base replay delay on t
 PREBASE_H="${PREBASE_H:-5}"          # height of the pre-base coinbase used for the core assertion
 PROMO_TIMEOUT="${PROMO_TIMEOUT:-540}" # seconds to wait for promotion / mode exit
 CORRUPTION_RECOVERY_MODE="${CORRUPTION_RECOVERY_MODE:-0}"
+# Sub-mode of CORRUPTION_RECOVERY_MODE: additionally inject a reorg_in_progress
+# marker so the restart hits the ChainstateService Init incomplete-reorg branch
+# (a crash mid-reorg), which for a snapshot node must AUTO-RECOVER via clean
+# re-bootstrap (wipe forest + clear utxo CF + re-arm) instead of aborting.
+# Assertion (b) of the recovery pair: the node RECONVERGES to the exact clean
+# consensus state (assert_same_consensus_state below) — proving the re-arm
+# LANDED and rebuilt, not merely emptied. NOTE: this is the injected-marker
+# path (real stale-checkpoint + real reorg marker), not a live divergent-tip
+# reorg constructed in-harness; the divergent-tip orphan-row removal is covered
+# by the ChainDB::clearAllCoins unit test (assertion a).
+INCOMPLETE_REORG_MODE="${INCOMPLETE_REORG_MODE:-0}"
 MUTATOR="${MUTATOR:-}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-500}"
 
@@ -203,6 +214,24 @@ prepare_checkpoint_mismatch() {
     printf '%s\n' "$mutation"
     cp -R "$CON_DIR" "$CTL_DIR"
     ck_pass "stopped datadir forked into byte-identical recovery and control legs"
+
+    if [[ "$INCOMPLETE_REORG_MODE" == "1" ]]; then
+        # Inject the crash-mid-reorg marker into the SQLite UTXOIndex of the
+        # RECOVERY leg ONLY (after the fork, so the control leg stays a clean
+        # #369 topology). The restart then enters the incomplete-reorg branch
+        # (marker present + forest not restorable at the staled-checkpoint tip).
+        # Both stores are now dirty on the recovery leg: RocksDB utreexo CF
+        # (staled checkpoint, via the mutator above) + SQLite UTXOIndex (this
+        # marker). Recovery must reconcile both.
+        command -v sqlite3 >/dev/null || fail "sqlite3 required for INCOMPLETE_REORG_MODE"
+        local utxo_db="$CON_DIR/blockchain/utxo"
+        [[ -f "$utxo_db" ]] || fail "UTXOIndex sqlite db missing at $utxo_db"
+        sqlite3 "$utxo_db" \
+            "INSERT OR REPLACE INTO utxo_metadata(key, value) VALUES ('reorg_in_progress', '${NET_TIP}:${NET_TIP}:${NET_TIP}');"
+        [[ "$(sqlite3 "$utxo_db" "SELECT value FROM utxo_metadata WHERE key='reorg_in_progress' LIMIT 1;")" == "${NET_TIP}:${NET_TIP}:${NET_TIP}" ]] \
+            || fail "failed to inject reorg_in_progress marker"
+        ck_pass "injected reorg_in_progress marker into recovery leg (both stores dirty)"
+    fi
 }
 
 recover_with_snapshot_file() {
@@ -221,17 +250,70 @@ recover_with_snapshot_file() {
     [[ "$(rpc_result "$CON_RPC" "$CON_DIR" getconnectioncount)" == "0" ]] \
         || fail "snapshot-path recovery was not offline"
     recovered="$(capture_consensus_state "$CON_RPC" "$CON_DIR" recovered)"
-    assert_same_consensus_state "$CLEAN_STATE" "$recovered" "R1 first offline restart"
-    if grep -qs "FOREST ROOT MISMATCH" "$CON_DIR/daemon-recovery.log"; then
-        ck_pass "R1 detected the valid-payload/wrong-root checkpoint"
+    # Assertion (b): the recovered node RECONVERGES to the clean consensus state
+    # — proving the re-arm LANDED and forward-connect rebuilt, not merely emptied
+    # the CF. An over-clear-no-rebuild regression fails this.
+    if [[ "$INCOMPLETE_REORG_MODE" == "1" ]]; then
+        # The incomplete-reorg recovery clears the whole utxo CF, which also
+        # resets background validation's genesis->base re-materialization. That
+        # leaves the bg-validation-dependent txoutset stats transiently behind
+        # until bg-validation redoes the pre-base range — an accepted cost of the
+        # clean re-bootstrap. All CONSENSUS-CRITICAL state (tip, best hash,
+        # Utreexo commitment, Utreexo roots, AND the full forest dump) must still
+        # reconverge exactly; only txoutset is excluded from the compare.
+        local clean_core recovered_core
+        clean_core="$(jq -S -c 'del(.txoutset)' <<<"$CLEAN_STATE")"
+        recovered_core="$(jq -S -c 'del(.txoutset)' <<<"$recovered")"
+        if [[ "$clean_core" == "$recovered_core" ]]; then
+            ck_pass "R1 reconverged consensus-critical state (tip, commitment, roots, forest dump)"
+        else
+            printf '[INFO] clean core:     %s\n[INFO] recovered core: %s\n' "$clean_core" "$recovered_core" >&2
+            ck_fail "R1 consensus-critical state differs after incomplete-reorg recovery"
+        fi
     else
-        ck_fail "R1 did not log the injected root mismatch"
+        assert_same_consensus_state "$CLEAN_STATE" "$recovered" "R1 first offline restart"
     fi
-    if grep -qs "AUTO-RECOVERING: wiping corrupt forest checkpoints" "$CON_DIR/daemon-recovery.log"; then
-        ck_pass "R1 reset the mismatched checkpoint set"
+
+    if [[ "$INCOMPLETE_REORG_MODE" == "1" ]]; then
+        # Incomplete-reorg branch: the marker + staled checkpoint make Init
+        # enter the crash-mid-reorg recovery (it fires early and wipes the
+        # checkpoints, so the #369 forest-root path is bypassed).
+        if grep -qs "Incomplete reorg detected from previous shutdown — AUTO-RECOVERING" "$CON_DIR/daemon-recovery.log"; then
+            ck_pass "R1 auto-recovered from the incomplete-reorg marker (no abort)"
+        else
+            ck_fail "R1 did not enter the incomplete-reorg auto-recovery"
+        fi
+        # Proves Init actually invoked ChainDB::clearAllCoins (the utxo-CF reset
+        # that removes orphan divergent-tip rows) — ties assertion (a) to Init.
+        if grep -qs "Cleared .* utxo CF coin rows" "$CON_DIR/daemon-recovery.log"; then
+            ck_pass "R1 cleared the utxo CF during recovery (clearAllCoins invoked)"
+        else
+            ck_fail "R1 did not clear the utxo CF (clearAllCoins not invoked)"
+        fi
+        # The SQLite store is reconciled: the reorg marker is cleared (only
+        # after the wipe), so a subsequent clean start does not re-enter.
+        if [[ -z "$(sqlite3 "$CON_DIR/blockchain/utxo" "SELECT value FROM utxo_metadata WHERE key='reorg_in_progress' LIMIT 1;")" ]]; then
+            ck_pass "R1 cleared the reorg_in_progress marker (SQLite store reconciled)"
+        else
+            ck_fail "R1 left the reorg_in_progress marker set"
+        fi
+        grep -qs "Startup is aborted" "$CON_DIR/daemon-recovery.log" \
+            && ck_fail "R1 aborted instead of auto-recovering"
+        grep -qs "refusing to wipe again (recovery loop)" "$CON_DIR/daemon-recovery.log" \
+            && ck_fail "R1 entered an incomplete-reorg recovery loop"
     else
-        ck_fail "R1 did not log checkpoint reset"
+        if grep -qs "FOREST ROOT MISMATCH" "$CON_DIR/daemon-recovery.log"; then
+            ck_pass "R1 detected the valid-payload/wrong-root checkpoint"
+        else
+            ck_fail "R1 did not log the injected root mismatch"
+        fi
+        if grep -qs "AUTO-RECOVERING: wiping corrupt forest checkpoints" "$CON_DIR/daemon-recovery.log"; then
+            ck_pass "R1 reset the mismatched checkpoint set"
+        else
+            ck_fail "R1 did not log checkpoint reset"
+        fi
     fi
+
     if grep -qs "Snapshot rehydrated from file" "$CON_DIR/daemon-recovery.log"; then
         ck_pass "R1 rehydrated the trusted V4 snapshot"
     else

@@ -6192,6 +6192,31 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_chain_db_write_failure_recovery
   )
 endif()
 
+# Incomplete-reorg recovery: ChainDB::clearAllCoins must remove every utxo CF
+# coin row (incl. orphan divergent-tip rows) so no phantom balance survives the
+# clean re-bootstrap. Assertion (a) of the recovery pair; (b) reconvergence is
+# covered by the snapshot-node recovery integration test.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_chain_db_clear_all_coins.cpp)
+  add_executable(test_chain_db_clear_all_coins
+    tests/storage/test_chain_db_clear_all_coins.cpp
+    src/common/logger.cpp
+  )
+  target_link_libraries(test_chain_db_clear_all_coins PRIVATE
+    dinero_chainstate
+    dinero_crypto
+    RocksDB::rocksdb
+    OpenSSL::Crypto
+  )
+  target_include_directories(test_chain_db_clear_all_coins PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME ChainDBClearAllCoins COMMAND test_chain_db_clear_all_coins)
+  set_tests_properties(ChainDBClearAllCoins PROPERTIES
+    LABELS "storage;smoke"
+  )
+endif()
+
 # #384: CSN cursor-to-tip reconcile — pure predicate that breaks the
 # restart-mid-backfill "too far ahead of cursor 1" deadlock (phone 2026-07-07).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_csn_accept_window.cpp)
