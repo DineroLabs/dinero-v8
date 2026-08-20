@@ -742,10 +742,13 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
     # AssumeUTXO lifecycle pinned to a base whose snapshot has been ROTATED AWAY
     # (only a newer snapshot remains). Without the fix the node hard-fails to
     # start Chainstate ("no matching configured snapshot candidate") — a
-    # reinstall-only brick; with the fix it self-heals (clean re-bootstrap from
-    # the available snapshot, shielded marker re-established, no SAFE MODE, no
-    # wipe loop). Asserts self-heal fired + re-based + not-fatal/no-safe-mode +
-    # exactly one wipe.
+    # reinstall-only brick. With the fix a node already bootstrapped past its
+    # base CONTINUES on its own state: the missing snapshot file is moot, the
+    # lifecycle/metadata/forest/shielded-marker are kept fully intact, the
+    # different-base rehydrate is skipped, and it never adopts the newer base —
+    # NO wipe, NO base swap. Asserts continue fired + own base kept (not the
+    # newer one) + not-fatal/no-safe-mode + idempotent (no wipe across a double
+    # restart).
     add_test(
         NAME AssumeUtxoSnapshotRotationSelfHeal
         COMMAND ${CMAKE_COMMAND} -E env

@@ -3740,11 +3740,23 @@ bool ChainstateService::Start() {
                 // checkpoint is the node's true restored height. For an ARCHIVAL node
                 // the coin-map height is valid; take whichever is higher so neither
                 // node type regresses.
-                uint32_t restored_state_height =
+                // Bootstrapped signal. NOTE on why this keys off the persisted
+                // checkpoint HEIGHT and not an in-memory forest-population check:
+                // at THIS restore point the Utreexo forest has NOT yet been
+                // rehydrated into consensus_utxo_set_ (that happens later in
+                // startup), so SnapshotForestLeafCount() reads 0 here even on a
+                // fully-bootstrapped stateless node — it cannot be the signal.
+                // The coin-map GetHeight() is likewise ephemeral 0 on a stateless
+                // restart until forward-replay repopulates it. The ONLY genuine
+                // restored-height signal available now is the persisted Utreexo
+                // forest CHECKPOINT height, which loadtxoutset writes ATOMICALLY
+                // with the forest data (a checkpoint at height H exists iff the
+                // forest was persisted at H). For an ARCHIVAL node the coin-map
+                // GetHeight() persists and is authoritative; take whichever is
+                // higher so neither node type regresses.
+                const uint32_t coinmap_height =
                     consensus_utxo_set_ ? consensus_utxo_set_->GetHeight() : 0;
-                const bool forest_nonempty =
-                    consensus_utxo_set_ &&
-                    consensus_utxo_set_->SnapshotForestLeafCount() > 0;
+                uint32_t restored_state_height = coinmap_height;
                 if (chain_db_) {
                     auto cp = chain_db_->getLatestUtreexoCheckpoint();
                     if (cp.ok() && cp.value().first >= 0) {
@@ -3753,8 +3765,17 @@ bool ChainstateService::Start() {
                             static_cast<uint32_t>(cp.value().first));
                     }
                 }
+                // Continue only when the restored height reaches the base. (A
+                // residual, low-severity edge the peer flagged: a torn CF where
+                // the checkpoint record survives but the forest leaf data is gone
+                // would read >= base here and continue on empty state. It cannot
+                // be closed at THIS point — the forest is not yet loaded, so there
+                // is nothing to inspect — and it fails loud downstream: a stateless
+                // node with an empty forest cannot verify any Utreexo proof and
+                // stalls rather than advancing on wrong state. Closing it would
+                // require deferring this decision past forest load, which is not
+                // warranted for a corruption-only, fail-loud edge.)
                 const bool selfheal_bootstrapped =
-                    (forest_nonempty || restored_state_height > 0) &&
                     restored_state_height >= assumeutxo_base_height_;
                 const uint32_t selfheal_cur_h = restored_state_height;
 
@@ -3771,9 +3792,12 @@ bool ChainstateService::Start() {
                     // establishes it via LoadSnapshot, which the continue path never
                     // runs, so deleting it here would re-introduce the #585
                     // NotFound/SAFE-MODE risk on a node that never needed a wipe.
-                    // Only retire the now-moot lifecycle pin so a later restart
-                    // background validation (genesis->base), if pending, resumes and
-                    // the lifecycle retires normally when it completes.
+                    // KEEP the lifecycle pin (do NOT retire it here): it is the
+                    // node's real trust state. A later restart's background
+                    // validation (genesis->base), if pending, resumes and the
+                    // lifecycle retires normally when it completes. (Retiring the
+                    // pin here — the earlier ClearMetadata behavior — broke C3 and
+                    // the ConnectTip-at-height-1 audit; do not reintroduce it.)
                     logger_->warning(
                         "[AssumeUTXO restore] base snapshot file for the persisted "
                         "lifecycle (height " +
