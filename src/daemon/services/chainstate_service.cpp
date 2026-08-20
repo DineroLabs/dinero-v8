@@ -921,9 +921,12 @@ bool VerifySnapshotTrailerChecksum(const std::filesystem::path& path) {
 // the in-file trailer checksum. A pass here means LoadSnapshot's integrity/format
 // preflight will also pass, so the self-heal never wipes toward a target
 // LoadSnapshot would then reject (check-then-wipe). (LoadSnapshot additionally
-// binds the base hash to the header chain; the bundled floor always satisfies
-// that, and a non-bundled miss is re-attemptable via the idempotent restart path,
-// so the gate is intentionally integrity+format here.)
+// binds the base hash to the header chain, which the gate does not replicate —
+// it needs header state mid-restore. The bundled floor always binds; a mis-staged
+// higher snapshot that passes integrity but fails binding is caught at LOAD and
+// falls back to the floor via the floor-retry in the rehydrate path — no wipe
+// loop, and the always-bindable floor loads. So the gate is intentionally
+// integrity+format, with binding enforced at LOAD plus a guaranteed floor fallback.)
 bool SnapshotPreflightOk(const std::shared_ptr<ConfigService>& config,
                          const std::shared_ptr<LoggerService>& logger,
                          const std::string& path,
@@ -1002,6 +1005,25 @@ SelfHealRecoveryTarget SelectSelfHealRecoveryTarget(
         }
     }
     return best;
+}
+
+// The self-heal FLOOR: the LOWEST-height loadable candidate. The bundled snapshot
+// is the deepest/oldest checkpoint, so it is the candidate most likely to bind to
+// this node's header chain (its base is far below any live tip). Used as the
+// LOAD-time fallback when the newest selected target loads-but-fails-to-bind, so
+// the floor is real for LOAD, not just SELECT.
+SelfHealRecoveryTarget SelectSelfHealFloor(
+    const std::shared_ptr<ConfigService>& config,
+    const std::shared_ptr<LoggerService>& logger) {
+    SelfHealRecoveryTarget floor;
+    for (const auto& path : ConfiguredSnapshotPaths(config)) {
+        consensus::SnapshotMetadata header;
+        if (!SnapshotPreflightOk(config, logger, path, header)) continue;
+        if (!floor.found || header.block_height < floor.height) {
+            floor = {true, path, header.block_height, header.block_hash};
+        }
+    }
+    return floor;
 }
 
 void ApplyPersistedMetadataToBlockIndex(CBlockIndex* block_index,
@@ -4059,9 +4081,50 @@ bool ChainstateService::Start() {
 
                 auto import_result = LoadSnapshot(std::filesystem::path(snapshot_path));
                 if (!import_result.success) {
-                    logger_->error("[AssumeUTXO restore] Snapshot rehydrate failed: " +
-                                   import_result.error_message);
-                    return false;
+                    // Self-heal FLOOR-RETRY: if a heal is mid-flight (completed=="0")
+                    // and the selected target (the newest valid candidate) failed to
+                    // LOAD — e.g. its base passed integrity but does not bind to this
+                    // node's header chain — fall back to the bundled FLOOR (the
+                    // deepest valid candidate, which binds) and retry ONCE. This makes
+                    // the floor real for LOAD, not just SELECT: a mis-staged higher
+                    // snapshot cannot leave the node wiped-and-stuck. Bounded (one
+                    // extra attempt) and gated to an in-progress heal so it never runs
+                    // on a normal rehydrate. LoadSnapshot is all-or-nothing, so the
+                    // failed attempt left no partial state; Clear()+delete-marker here
+                    // is belt-and-suspenders before the floor load.
+                    const bool healing = utxo_index_ &&
+                        utxo_index_->GetMetadata(kSelfHealCompletedKey).value_or("") == "0";
+                    if (healing) {
+                        const auto floor = SelectSelfHealFloor(config_, logger_);
+                        if (floor.found && floor.path != snapshot_path) {
+                            logger_->warning(
+                                "[AssumeUTXO self-heal] target load failed (" +
+                                import_result.error_message +
+                                "); falling back to bundled floor at height " +
+                                std::to_string(floor.height));
+                            if (consensus_utxo_set_) consensus_utxo_set_->Clear();
+                            (void)chain_db_->deleteShieldedTipMarker(
+                                ChainWriteToken::CreateForTesting());
+                            assumeutxo_base_height_ = floor.height;
+                            assumeutxo_base_block_ = floor.block_hash;
+                            if (utxo_index_) {
+                                utxo_index_->SetMetadata(assumeutxo::kBaseHeightKey,
+                                                         std::to_string(floor.height));
+                                utxo_index_->SetMetadata(assumeutxo::kBaseBlockKey,
+                                                         floor.block_hash.GetHex());
+                            }
+                            if (config_) {
+                                config_->Set("assumeutxo_snapshot", floor.path);
+                                config_->Set("assumeutxo_manifest", "");
+                            }
+                            import_result = LoadSnapshot(std::filesystem::path(floor.path));
+                        }
+                    }
+                    if (!import_result.success) {
+                        logger_->error("[AssumeUTXO restore] Snapshot rehydrate failed: " +
+                                       import_result.error_message);
+                        return false;
+                    }
                 }
 
                 snapshot_rehydrated_from_file = true;
