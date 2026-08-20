@@ -14178,29 +14178,32 @@ void MainWindow::onConsolidateUTXOs() {
     return;
   }
 
-  // Estimate consolidation parameters
+  // How many inputs a single consolidation transaction sweeps (matches the
+  // RPC's max_inputs below). One run = ONE transaction over ONE address family
+  // (Taproot OR Quantum-Safe) producing ONE output — NOT a full wallet sweep.
   int utxoCount = cachedUtxoCount_;
   int maxInputs = 200;
-  int targetUtxos = 20;
-  int estimatedTxs = (utxoCount + maxInputs - 1) / maxInputs;  // Ceiling division
-  double estimatedFee = estimatedTxs * 0.003;  // Rough fee estimate per consolidation tx
 
-  // Confirmation dialog
+  // Confirmation dialog — describe what one run actually does. The real number
+  // of coins and the exact fee are shown on the preview/confirm step that
+  // follows (the daemon dry-runs first), so we do NOT invent estimates here.
   QMessageBox msgBox(this);
   msgBox.setWindowTitle("Consolidate UTXOs");
   msgBox.setIcon(QMessageBox::Question);
-  msgBox.setText(QString("<b>Your wallet has %1 UTXOs.</b>").arg(utxoCount));
+  msgBox.setText(QString("<b>Consolidate small coins</b>"));
   msgBox.setInformativeText(
-    QString("Consolidating will combine them into ~%1 larger UTXOs, "
-            "reducing fees and improving wallet performance.\n\n"
-            "Estimated transactions: ~%2\n"
-            "Estimated fees: ~%3 DIN\n\n"
-            "Proceed with consolidation?")
-      .arg(targetUtxos)
-      .arg(estimatedTxs)
-      .arg(estimatedFee, 0, 'f', 5));
+    QString("Your wallet holds %1 coins. This combines up to %2 of your "
+            "smallest coins from a single address type (Taproot or "
+            "Quantum-Safe) into one new coin, reducing fees and improving "
+            "performance.\n\n"
+            "The next step previews the exact number of coins and the fee "
+            "before anything is sent. To fully flatten a large wallet you may "
+            "need to run this more than once, and once per address type.\n\n"
+            "Continue?")
+      .arg(utxoCount)
+      .arg(maxInputs));
 
-  QPushButton *consolidateBtn = msgBox.addButton("Consolidate", QMessageBox::AcceptRole);
+  QPushButton *consolidateBtn = msgBox.addButton("Preview\xE2\x80\xA6", QMessageBox::AcceptRole);
   msgBox.addButton("Cancel", QMessageBox::RejectRole);
   msgBox.setDefaultButton(consolidateBtn);
 
