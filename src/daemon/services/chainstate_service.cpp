@@ -2261,18 +2261,35 @@ bool ChainstateService::Init(DaemonContext& ctx) {
                 // Loop-guard keyed on the crashed tip identity (see the key's
                 // declaration). Only a genuine same-tip repeat — the wipe+rebuild
                 // did not let the node advance past the crashed tip — is a loop.
+                // If the tip is UNREADABLE we cannot bound the loop-guard, so we
+                // must NOT wipe blind: without a tip identity a re-kill can't be
+                // told apart from a loop, and the destructive recovery would
+                // re-fire unbounded. Unknown tip therefore falls to the manual
+                // abort (fail-safe), never the wipe.
                 std::string crashed_tip_hex;
                 if (chain_db_) {
                     auto tip_now = chain_db_->getTip();
                     if (tip_now.ok()) crashed_tip_hex = tip_now.value().hash.GetHex();
                 }
+                const bool tip_readable = !crashed_tip_hex.empty();
                 const auto prev_recovery_tip =
                     utxo_index_->GetMetadata(kIncompleteReorgRecoveryTipKey);
                 const bool recovery_looping =
-                    prev_recovery_tip.has_value() && !crashed_tip_hex.empty() &&
+                    tip_readable && prev_recovery_tip.has_value() &&
                     prev_recovery_tip.value() == crashed_tip_hex;
 
-                if (snapshot_configured && !recovery_looping && chain_db_ && consensus_utxo_set_) {
+                // Check-then-wipe: verify the snapshot the re-arm will need is
+                // actually present before the irreversible wipe, so a
+                // missing/removed snapshot file cannot convert a
+                // reinstall-recoverable brick into a wiped-empty one.
+                const std::string snapshot_path_cfg =
+                    config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
+                const bool snapshot_present =
+                    !snapshot_path_cfg.empty() &&
+                    std::filesystem::exists(snapshot_path_cfg);
+
+                if (snapshot_configured && tip_readable && snapshot_present &&
+                    !recovery_looping && chain_db_ && consensus_utxo_set_) {
                     logger_->warning("═══════════════════════════════════════════════════════════════════════════");
                     logger_->warning("🔧 Incomplete reorg detected from previous shutdown — AUTO-RECOVERING");
                     logger_->warning("Marker: " + reorg_marker.value());
@@ -2335,6 +2352,13 @@ bool ChainstateService::Init(DaemonContext& ctx) {
                     if (recovery_looping) {
                         logger_->error("A clean re-bootstrap already recovered this exact tip and the node");
                         logger_->error("crashed mid-reorg at it again — refusing to wipe again (recovery loop).");
+                    } else if (snapshot_configured && !tip_readable) {
+                        logger_->error("The ChainDB tip is unreadable, so the recovery loop-guard cannot be");
+                        logger_->error("bounded — refusing a blind wipe. Manual resync/restore required.");
+                    } else if (snapshot_configured && !snapshot_present) {
+                        logger_->error("The configured AssumeUTXO snapshot is missing, so a clean re-bootstrap");
+                        logger_->error("cannot re-establish the base — refusing to wipe. Restore the snapshot");
+                        logger_->error("(or reinstall) and restart.");
                     }
                     logger_->error("");
                     logger_->error("Recovery options:");
