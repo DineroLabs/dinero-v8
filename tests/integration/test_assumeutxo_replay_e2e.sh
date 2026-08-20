@@ -23,14 +23,15 @@
 #                  the never-cleared promoted base height). The fork node is a
 #                  full source-datadir copy taken at height 50, which then
 #                  mines its own longer chain.
-#   Scenario C   = re-entry and release upgrade: loading a DIFFERENT snapshot mid-lifecycle is
-#                  refused. C1: the live RPC path refuses (the consensus set is
+#   Scenario C   = re-entry and release upgrade: a DIFFERENT snapshot mid-lifecycle is
+#                  never silently adopted. C1: the live RPC path refuses (the consensus set is
 #                  populated by the active snapshot, so the empty-set
 #                  precondition fires first — the belt is unreachable over RPC
-#                  by construction). C2: the belt itself ("another snapshot
-#                  lifecycle is active") fires on the startup-rehydrate path
-#                  when a DIFFERENT-base assumeutxo_snapshot is configured
-#                  mid-lifecycle, and the daemon refuses to start. C3: the same
+#                  by construction). C2: on the startup path, a node already
+#                  bootstrapped PAST its base whose configured base rotated to a
+#                  DIFFERENT one CONTINUES on its own bootstrapped state (the
+#                  moot different-base snapshot is retired; lifecycle kept, no
+#                  wipe, no base swap) — it never adopts SNAP2's base. C3: the same
 #                  newer primary is safe when the release also retains the old
 #                  artifact as assumeutxo_snapshot_fallbacks; startup selects the
 #                  exact persisted base and never falls forward.
