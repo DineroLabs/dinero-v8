@@ -230,6 +230,21 @@ BATCH_BALANCE="$(rpc_result "getaddressbatch" "{\"addresses\":[\"$MINER_ADDR\",\
 [ "$(echo "$BATCH_BALANCE" | jq -r --arg address "$RECIPIENT_ADDR" '.addresses[$address].unconfirmed')" = "125000000" ] || fail "batch recipient address must include the pending receive credit"
 pass "batch and single-address mempool overlays agree for pending spends and receives"
 
+info "Running two distinct address batches concurrently"
+rpc_raw "getaddressbatch" "{\"addresses\":[\"$MINER_ADDR\",\"$RECIPIENT_ADDR\"],\"history_count\":2}" \
+    > "$DATADIR/batch-a.json" &
+BATCH_A_PID=$!
+rpc_raw "getaddressbatch" "{\"addresses\":[\"$MINER_ADDR\",\"$RECIPIENT_ADDR\"],\"history_count\":3}" \
+    > "$DATADIR/batch-b.json" &
+BATCH_B_PID=$!
+wait "$BATCH_A_PID" || fail "first concurrent address batch failed"
+wait "$BATCH_B_PID" || fail "second concurrent address batch failed"
+jq -e '.error == null and .result.error == null' "$DATADIR/batch-a.json" >/dev/null || fail "first concurrent address batch returned an error"
+jq -e '.error == null and .result.error == null' "$DATADIR/batch-b.json" >/dev/null || fail "second concurrent address batch returned an error"
+jq -e '.result.history_limit == 50 and .result.batch_meta.max_concurrent_scans == 2' "$DATADIR/batch-a.json" >/dev/null || fail "batch response must publish history and concurrency limits"
+jq -e '.result.history_limit == 50 and .result.batch_meta.max_concurrent_scans == 2' "$DATADIR/batch-b.json" >/dev/null || fail "batch response must publish history and concurrency limits"
+pass "distinct address batches are admitted without global single-flight blocking"
+
 info "Mining a confirmation block"
 rpc_result "generatetoaddress" "[1,\"$MINER_ADDR\"]" >/dev/null
 

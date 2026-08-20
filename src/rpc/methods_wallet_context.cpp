@@ -919,6 +919,8 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
  *     "history_count": 20,
  *     "funded_address_limit": 20
  *   }
+ * history_count is capped at 50 because address-scoped snapshots delegate to
+ * blockchain.getaddressbatch; the legacy single-address history RPC permits 200.
  */
 din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;

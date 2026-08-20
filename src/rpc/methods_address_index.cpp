@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,16 +47,26 @@ constexpr auto BATCH_SCAN_TIMEOUT = std::chrono::seconds(40);
 constexpr auto BATCH_WAIT_TIMEOUT = std::chrono::seconds(45);
 constexpr auto BATCH_SCAN_COOLDOWN = std::chrono::seconds(2);
 constexpr auto BATCH_CACHE_TTL = std::chrono::seconds(2);
+constexpr size_t MAX_CONCURRENT_BATCH_SCANS = 2;
+constexpr size_t MAX_BATCH_CACHE_ENTRIES = 64;
+
+struct BatchCacheEntry {
+    Json result;
+    BatchClock::time_point stored_at{};
+};
+
+struct BatchFlight {
+    std::condition_variable changed;
+    bool running = true;
+    Json result;
+};
 
 struct BatchDiscoveryState {
     std::mutex mutex;
-    std::condition_variable changed;
-    bool running = false;
-    std::string running_key;
-    std::string cached_key;
-    Json cached_result;
-    BatchClock::time_point cached_at{};
-    BatchClock::time_point last_scan_started{};
+    std::unordered_map<std::string, std::shared_ptr<BatchFlight>> flights;
+    std::unordered_map<std::string, BatchCacheEntry> cache;
+    std::unordered_map<std::string, BatchClock::time_point> last_scan_started;
+    size_t active_scans = 0;
     uint64_t requests = 0;
     uint64_t cache_hits = 0;
     uint64_t waiters = 0;
@@ -83,7 +94,22 @@ void addBatchMetadata(Json& result,
     meta["rejected"] = static_cast<::Json::Value::UInt64>(state.rejected);
     meta["failures"] = static_cast<::Json::Value::UInt64>(state.failures);
     meta["total_scan_ms"] = static_cast<::Json::Value::UInt64>(state.total_scan_ms);
+    meta["active_scans"] = static_cast<::Json::Value::UInt64>(state.active_scans);
+    meta["max_concurrent_scans"] =
+        static_cast<::Json::Value::UInt64>(MAX_CONCURRENT_BATCH_SCANS);
     result["batch_meta"] = meta;
+}
+
+void pruneBatchState(BatchDiscoveryState& state, BatchClock::time_point now) {
+    for (auto it = state.cache.begin(); it != state.cache.end();) {
+        if (now - it->second.stored_at > BATCH_CACHE_TTL) it = state.cache.erase(it);
+        else ++it;
+    }
+    for (auto it = state.last_scan_started.begin(); it != state.last_scan_started.end();) {
+        if (now - it->second >= BATCH_SCAN_COOLDOWN) it = state.last_scan_started.erase(it);
+        else ++it;
+    }
+    while (state.cache.size() > MAX_BATCH_CACHE_ENTRIES) state.cache.erase(state.cache.begin());
 }
 } // namespace
 
@@ -622,7 +648,9 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
 
 // Internal batch primitive used by wallet.snapshot. It performs one UTXO pass and
 // one chain pass for the complete address gap window instead of repeating both
-// scans once per address.
+// scans once per address. Batch history is intentionally capped at 50 rows per
+// address (versus 200 for getaddresshistory) to bound shared-bridge CPU and JSON
+// response size across a 100-address discovery window.
 static Json computeAddressBatch(const ExecutionContext& ctx,
                                 const Json& params,
                                 BatchClock::time_point deadline) {
@@ -855,6 +883,8 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         }
         result["tip_height"] = tip_height;
         result["history_complete"] = !assumed_utxo;
+        result["history_count"] = count;
+        result["history_limit"] = MAX_BATCH_HISTORY;
         result["addresses"] = address_results;
         Json proof_context;
         proof_context["tip_height"] = tip_height;
@@ -913,52 +943,64 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
     const std::string key = key_builder.str();
     const auto now = BatchClock::now();
 
+    std::shared_ptr<BatchFlight> flight;
     {
         std::unique_lock<std::mutex> lock(g_batch_discovery.mutex);
         ++g_batch_discovery.requests;
-        if (g_batch_discovery.cached_key == key &&
-            g_batch_discovery.cached_at != BatchClock::time_point{} &&
-            now - g_batch_discovery.cached_at <= BATCH_CACHE_TTL) {
+        pruneBatchState(g_batch_discovery, now);
+
+        if (auto cached = g_batch_discovery.cache.find(key);
+            cached != g_batch_discovery.cache.end()) {
             ++g_batch_discovery.cache_hits;
-            result = g_batch_discovery.cached_result;
+            result = cached->second.result;
             addBatchMetadata(result, true, 0, addresses.size(), g_batch_discovery);
             return result;
         }
-        if (g_batch_discovery.running) {
-            if (g_batch_discovery.running_key != key) {
-                ++g_batch_discovery.rejected;
-                result["error"]["code"] = -32005;
-                result["error"]["message"] = "batch discovery busy";
-                addBatchMetadata(result, false, 0, addresses.size(), g_batch_discovery);
-                return result;
-            }
+
+        if (auto running = g_batch_discovery.flights.find(key);
+            running != g_batch_discovery.flights.end()) {
+            flight = running->second;
             ++g_batch_discovery.waiters;
-            const bool completed = g_batch_discovery.changed.wait_for(
-                lock, BATCH_WAIT_TIMEOUT, [&] { return !g_batch_discovery.running; });
-            if (completed && g_batch_discovery.cached_key == key) {
+            const bool completed = flight->changed.wait_for(
+                lock, BATCH_WAIT_TIMEOUT, [&] { return !flight->running; });
+            if (completed && !flight->result.isMember("error")) {
                 ++g_batch_discovery.cache_hits;
-                result = g_batch_discovery.cached_result;
+                result = flight->result;
                 addBatchMetadata(result, true, 0, addresses.size(), g_batch_discovery);
                 return result;
             }
             ++g_batch_discovery.rejected;
-            result["error"]["code"] = -32006;
-            result["error"]["message"] = completed
-                ? "batch discovery failed" : "batch discovery wait timed out";
+            if (completed) result = flight->result;
+            else {
+                result["error"]["code"] = -32006;
+                result["error"]["message"] = "batch discovery wait timed out";
+            }
             addBatchMetadata(result, false, 0, addresses.size(), g_batch_discovery);
             return result;
         }
-        if (g_batch_discovery.last_scan_started != BatchClock::time_point{} &&
-            now - g_batch_discovery.last_scan_started < BATCH_SCAN_COOLDOWN) {
+
+        if (g_batch_discovery.active_scans >= MAX_CONCURRENT_BATCH_SCANS) {
+            ++g_batch_discovery.rejected;
+            result["error"]["code"] = -32005;
+            result["error"]["message"] = "batch discovery busy";
+            addBatchMetadata(result, false, 0, addresses.size(), g_batch_discovery);
+            return result;
+        }
+
+        if (auto previous = g_batch_discovery.last_scan_started.find(key);
+            previous != g_batch_discovery.last_scan_started.end() &&
+            now - previous->second < BATCH_SCAN_COOLDOWN) {
             ++g_batch_discovery.rejected;
             result["error"]["code"] = -32005;
             result["error"]["message"] = "batch discovery rate limited; retry shortly";
             addBatchMetadata(result, false, 0, addresses.size(), g_batch_discovery);
             return result;
         }
-        g_batch_discovery.running = true;
-        g_batch_discovery.running_key = key;
-        g_batch_discovery.last_scan_started = now;
+
+        flight = std::make_shared<BatchFlight>();
+        g_batch_discovery.flights.emplace(key, flight);
+        g_batch_discovery.last_scan_started[key] = now;
+        ++g_batch_discovery.active_scans;
         ++g_batch_discovery.scans;
     }
 
@@ -973,15 +1015,16 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
             dinero::g_logger.warning("[getaddressbatch] scan failed after " +
                 std::to_string(scan_ms) + " ms: " + result["error"]["message"].asString());
         } else {
-            g_batch_discovery.cached_key = key;
-            g_batch_discovery.cached_result = result;
-            g_batch_discovery.cached_at = BatchClock::now();
+            g_batch_discovery.cache[key] = BatchCacheEntry{result, BatchClock::now()};
         }
-        g_batch_discovery.running = false;
-        g_batch_discovery.running_key.clear();
+        flight->result = result;
+        flight->running = false;
+        g_batch_discovery.flights.erase(key);
+        if (g_batch_discovery.active_scans > 0) --g_batch_discovery.active_scans;
+        pruneBatchState(g_batch_discovery, BatchClock::now());
         addBatchMetadata(result, false, scan_ms, addresses.size(), g_batch_discovery);
     }
-    g_batch_discovery.changed.notify_all();
+    flight->changed.notify_all();
     return result;
 }
 
