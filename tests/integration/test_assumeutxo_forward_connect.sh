@@ -775,7 +775,7 @@ if [[ "$SNAPSHOT_ROTATION_SELFHEAL_MODE" == "1" ]]; then
             --assumeutxo_snapshot="$SNAP_NEW" --assumeutxo_forward_connect=1 \
             --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
         # S1: continue-on-valid-state fired (node recognized its bootstrapped state)
-        if grep -qsE "the snapshot is moot; retiring the lifecycle pin and continuing" "$CON_DIR/daemon-heal.log"; then
+        if grep -qsE "the snapshot file is moot; continuing on the existing" "$CON_DIR/daemon-heal.log"; then
             ck_pass "S1: continue-on-valid-state fired (bootstrapped node, moot base snapshot — NO wipe)"
         else
             ck_fail "S1: continue path did not fire; log lacks the moot-snapshot continue marker"
@@ -786,23 +786,31 @@ if [[ "$SNAPSHOT_ROTATION_SELFHEAL_MODE" == "1" ]]; then
         else
             ck_fail "S2: the node wiped/re-bootstrapped — a bootstrapped node must continue, not swap base"
         fi
-        # S3 (came-up + #585): node is RPC-ready (start_node succeeded), not fatal, no SAFE MODE.
+        # S3 (correct continue end-state): the lifecycle is KEPT (not retired) — the
+        # node is assumeutxo-active at its OWN base (not the different SNAP_NEW base),
+        # not fatal, not safe-mode, and bg-validation of genesis->own-base resumes.
+        # It retires normally when bg-validation completes.
         FST="$(snap_status "$CON_RPC" "$CON_DIR")"
-        if jq -e '(.fatal // false) == false' <<<"$FST" >/dev/null 2>&1 \
-           && ! grep -qsE "SAFE MODE|EnterSafeMode|marker NotFound|shielded.*NotFound" "$CON_DIR/daemon-heal.log" 2>/dev/null; then
-            ck_pass "S3 (#585): node came up, not fatal, not in safe mode (shielded marker left untouched)"
+        AAB="$(jq -r '.snapshot_base_height // empty' <<<"$FST")"
+        if jq -e '(.fatal // false) == false and (.assumeutxo_active // false) == true' <<<"$FST" >/dev/null 2>&1 \
+           && [[ "$AAB" == "$SELFHEAL_H_GONE" ]] \
+           && ! grep -qsE "EnterSafeMode|assumeutxo fatal" "$CON_DIR/daemon-heal.log" 2>/dev/null; then
+            ck_pass "S3: continue end-state correct — assumeutxo active at OWN base $SELFHEAL_H_GONE (not $SELFHEAL_H_NEW), not fatal, not safe-mode (lifecycle kept, bg-validation resumes)"
         else
-            ck_fail "S3 (#585): node fatal or in safe mode after continue: $FST"
+            ck_fail "S3: unexpected end-state (want active @own base $SELFHEAL_H_GONE, not-fatal, not-safe-mode): base=$AAB $FST"
         fi
         stop_node "$CON_DIR"
 
-        # S4 (idempotent): restart again → still comes up cleanly, no fatal, no wipe.
+        # S4 (idempotent): restart again → continues again on the SAME own base, never
+        # wipes, never adopts SNAP_NEW — every restart until bg-validation retires it.
         start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon-heal2.log" \
             --utreexo-stateless=1 --p2p.offline=1 --listen=0 --assumeutxo_bg_stall_timeout=3600 \
             --assumeutxo_snapshot="$SNAP_NEW" --assumeutxo_forward_connect=1 \
             --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
-        if ! grep -qsE "SELF-HEALING via clean re-bootstrap" "$CON_DIR/daemon-heal2.log" 2>/dev/null; then
-            ck_pass "S4 (idempotent): second restart came up cleanly, no wipe"
+        AAB2="$(snap_status "$CON_RPC" "$CON_DIR" | jq -r '.snapshot_base_height // empty')"
+        if ! grep -qsE "SELF-HEALING via clean re-bootstrap|re-bootstrapping from height" "$CON_DIR/daemon-heal2.log" 2>/dev/null \
+           && [[ "$AAB2" != "$SELFHEAL_H_NEW" ]]; then
+            ck_pass "S4 (idempotent): second restart continued on own base ($AAB2), no wipe, never adopted $SELFHEAL_H_NEW"
         else
             ck_fail "S4 (idempotent): a wipe fired on restart"
         fi

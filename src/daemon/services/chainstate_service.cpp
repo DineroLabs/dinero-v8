@@ -3720,10 +3720,11 @@ bool ChainstateService::Start() {
         // configured candidate set against the persisted base BEFORE any
         // different-base belt or file rehydrate. This is fail-closed: when
         // candidates exist but none matches, never fall forward to the newest.
-        // Set when the continue branch retires a moot lifecycle (bootstrapped node,
-        // base snapshot gone) so the belt + rehydrate below are skipped and the node
-        // runs on its OWN state — never adopting a different configured snapshot.
-        bool assumeutxo_lifecycle_retired = false;
+        // Set when a bootstrapped node's base snapshot is gone (moot) and it must
+        // CONTINUE on its own state: skips ONLY the different-base rehydrate below so
+        // the node never adopts a different configured snapshot. The lifecycle,
+        // metadata, and forest are kept fully intact (see the continue branch).
+        bool assumeutxo_skip_wrong_base_rehydrate = false;
         if (!lifecycle_fatal_at_restore) {
             const auto snapshot_resolution = ResolveConfiguredSnapshotPath(
                 config_, logger_, true, assumeutxo_base_height_, assumeutxo_base_block_);
@@ -3771,22 +3772,27 @@ bool ChainstateService::Start() {
                     // runs, so deleting it here would re-introduce the #585
                     // NotFound/SAFE-MODE risk on a node that never needed a wipe.
                     // Only retire the now-moot lifecycle pin so a later restart
-                    // resolves cleanly and the different-base belt below is skipped;
-                    // background validation (genesis->base), if pending, resumes.
+                    // background validation (genesis->base), if pending, resumes and
+                    // the lifecycle retires normally when it completes.
                     logger_->warning(
-                        "[AssumeUTXO restore] base snapshot for the persisted "
+                        "[AssumeUTXO restore] base snapshot file for the persisted "
                         "lifecycle (height " +
                         std::to_string(assumeutxo_base_height_) +
                         ") is no longer configured, but the node is validly "
                         "bootstrapped at height " + std::to_string(selfheal_cur_h) +
-                        " — the snapshot is moot; retiring the lifecycle pin and "
-                        "continuing on the existing validated state (NO wipe).");
-                    if (assumeutxo_lifecycle_) assumeutxo_lifecycle_->Disable();
-                    assumeutxo::ClearMetadata(utxo_index_.get());
-                    assumeutxo_lifecycle_retired = true;
-                    // fall through — the UTXO set/forest and shielded marker are
-                    // left untouched; the retired flag skips the belt + rehydrate
-                    // below, so the node runs on its own state (never a base swap).
+                        " — the snapshot file is moot; continuing on the existing "
+                        "bootstrapped state (lifecycle kept, NO wipe, NO base swap).");
+                    // KEEP the lifecycle, metadata, and forest fully INTACT: the
+                    // lifecycle ("bootstrapped at base, genesis->base bg-validation
+                    // pending") is the node's real trust state and must persist —
+                    // only the missing snapshot FILE is moot (the file only ever
+                    // seeds an unbootstrapped set; bg-validation replays from block
+                    // bodies, not the file). The lifecycle retires NORMALLY when
+                    // bg-validation completes. We ONLY skip the different-base
+                    // rehydrate so the node never adopts a different configured
+                    // snapshot; the belt is already skipped for a coin-map-empty
+                    // restored set. bg-validation resumes as usual.
+                    assumeutxo_skip_wrong_base_rehydrate = true;
                 } else {
                     // No recoverable bootstrapped state — the forest checkpoint is
                     // absent or below base — AND the base snapshot is gone. This is
@@ -3868,7 +3874,7 @@ bool ChainstateService::Start() {
         }
 
         if (!lifecycle_fatal_at_restore && utxo_set_not_bootstrapped &&
-            !assumeutxo_lifecycle_retired) {
+            !assumeutxo_skip_wrong_base_rehydrate) {
             const std::string snapshot_path =
                 config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
 

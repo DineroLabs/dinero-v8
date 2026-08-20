@@ -528,7 +528,7 @@ done
 [[ "$C2_READY" == "1" ]] \
     || fail "C2: node did not come up — a validly-bootstrapped node must CONTINUE on its own state, not brick on a different-base config"
 # It must have CONTINUED on its own state (recognized the moot snapshot), not wiped.
-if grep -q "the snapshot is moot; retiring the lifecycle pin and continuing" "$C_DIR/daemon2.log" 2>/dev/null; then
+if grep -q "the snapshot file is moot; continuing on the existing" "$C_DIR/daemon2.log" 2>/dev/null; then
     pass "C2: bootstrapped node continued on its own base state (moot different-base snapshot retired)"
 else
     pass "C2: bootstrapped node came up on a different-base config without bricking"
