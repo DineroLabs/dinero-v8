@@ -2288,8 +2288,13 @@ bool ChainstateService::Init(DaemonContext& ctx) {
                     !snapshot_path_cfg.empty() &&
                     std::filesystem::exists(snapshot_path_cfg);
 
+                // NB: consensus_utxo_set_ is not constructed until later in Init
+                // (make_unique below), so it is intentionally NOT part of this
+                // gate. The recovery only touches ChainDB state here; the empty
+                // consensus set built later is exactly what the re-arm rehydrates
+                // from the snapshot base — no explicit in-memory reset is needed.
                 if (snapshot_configured && tip_readable && snapshot_present &&
-                    !recovery_looping && chain_db_ && consensus_utxo_set_) {
+                    !recovery_looping && chain_db_) {
                     logger_->warning("═══════════════════════════════════════════════════════════════════════════");
                     logger_->warning("🔧 Incomplete reorg detected from previous shutdown — AUTO-RECOVERING");
                     logger_->warning("Marker: " + reorg_marker.value());
@@ -2331,10 +2336,10 @@ bool ChainstateService::Init(DaemonContext& ctx) {
                     logger_->warning("[ChainstateService] Cleared " + std::to_string(cleared.value()) +
                                      " utxo CF coin rows (clean-slate re-bootstrap; bg-validation will redo genesis->base)");
 
-                    // (3) In-memory forest + best-block → empty, so the AssumeUTXO
-                    // re-arm below sees utxo_set below base and rehydrates.
-                    consensus_utxo_set_->ReplaceForestGuarded(consensus::UtreexoForest());
-                    consensus_utxo_set_->SetBestBlock(uint256{}, 0);
+                    // (3) No explicit in-memory reset: consensus_utxo_set_ is
+                    // constructed empty later in Init, and with the checkpoints
+                    // wiped the checkpoint-restore is skipped, so it stays empty
+                    // and the AssumeUTXO re-arm sees it below base and rehydrates.
 
                     // (4) Clear the marker ONLY after the inconsistent state is
                     // wiped — never before, or a re-kill would continue on it.
