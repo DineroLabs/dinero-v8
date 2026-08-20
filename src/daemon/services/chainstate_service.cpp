@@ -130,15 +130,6 @@ constexpr char kCsnReplayDataMagic[] = {'C', 'S', 'N', '2'};
 // post-promotion restart passes the audit without a recovery marker.
 constexpr uint32_t kStartupUndoAuditWindow = 1024;
 
-// Loop-guard metadata for the snapshot-rotation self-heal (restore path).
-// kSelfHealFromBaseKey records the stale base we healed FROM ("<height>:<hash>");
-// kSelfHealCompletedKey flips to "1" only after the replacement snapshot is
-// actually loaded. Together they distinguish "heal interrupted by a re-kill →
-// continue idempotently" from "heal completed but the SAME stuck base recurred →
-// fail loud" so a wipe can never loop.
-constexpr const char* kSelfHealFromBaseKey = "assumeutxo_selfheal_from_base";
-constexpr const char* kSelfHealCompletedKey = "assumeutxo_selfheal_completed";
-
 // Convert a consensus::UTXOEntry to the storage Coin format used by ChainDB.
 // MUST stay byte-identical to PersistentUTXOAdapter::ToDbCoin
 // (include/storage/persistent_utxo_adapter.h, private static) —
@@ -880,176 +871,6 @@ bool ValidateSnapshotManifestPreflight(
     }
 
     return true;
-}
-
-// Non-mutating verification of a snapshot's in-file trailer checksum. The dump
-// writes SHA256(content) as the FINAL 32 bytes; LoadSnapshot verifies
-// SHA256(everything-before) == those 32 bytes BEFORE touching the UTXO index.
-// Replicating exactly that here lets the self-heal check-then-wipe gate predict
-// LoadSnapshot's integrity result without loading — a truncated/corrupt file
-// (e.g. a cancelled download that is header-present but short) fails here just as
-// it would in LoadSnapshot.
-bool VerifySnapshotTrailerChecksum(const std::filesystem::path& path) {
-    std::error_code ec;
-    const auto size = std::filesystem::file_size(path, ec);
-    if (ec || size < 32) return false;
-    std::ifstream f(path, std::ios::binary);
-    if (!f.is_open()) return false;
-    crypto::CSHA256 hasher;
-    uint64_t remaining = static_cast<uint64_t>(size) - 32;  // content precedes the 32-byte trailer
-    std::vector<char> buf(1u << 16);
-    while (remaining > 0) {
-        const std::size_t want =
-            static_cast<std::size_t>(std::min<uint64_t>(remaining, buf.size()));
-        f.read(buf.data(), static_cast<std::streamsize>(want));
-        if (static_cast<std::size_t>(f.gcount()) != want) return false;  // truncated
-        hasher.Write(reinterpret_cast<const uint8_t*>(buf.data()), want);
-        remaining -= want;
-    }
-    uint8_t stored[32];
-    f.read(reinterpret_cast<char*>(stored), 32);
-    if (f.gcount() != 32) return false;
-    uint8_t computed[32];
-    hasher.Finalize(computed);
-    return std::memcmp(computed, stored, 32) == 0;
-}
-
-// Shared non-mutating snapshot preflight: the subset of LoadSnapshot's checks
-// that run BEFORE the mutating BulkLoad — transport (size/regular-file), the
-// conditional manifest trust gate (SAME conditionality as LoadSnapshot, calling
-// the same helpers so it cannot drift), header magic + supported version, and
-// the in-file trailer checksum. A pass here means LoadSnapshot's integrity/format
-// preflight will also pass, so the self-heal never wipes toward a target
-// LoadSnapshot would then reject (check-then-wipe). (LoadSnapshot additionally
-// binds the base hash to the header chain, which the gate does not replicate —
-// it needs header state mid-restore. The bundled floor always binds; a mis-staged
-// higher snapshot that passes integrity but fails binding is caught at LOAD and
-// falls back to the floor via the floor-retry in the rehydrate path — no wipe
-// loop, and the always-bindable floor loads. So the gate is intentionally
-// integrity+format, with binding enforced at LOAD plus a guaranteed floor fallback.)
-bool SnapshotPreflightOk(const std::shared_ptr<ConfigService>& config,
-                         const std::shared_ptr<LoggerService>& logger,
-                         const std::string& path,
-                         consensus::SnapshotMetadata& out_header) {
-    std::string error;
-    if (!ReadSnapshotHeaderPreview(path, out_header, error) ||
-        out_header.magic != consensus::SNAPSHOT_MAGIC) {
-        return false;
-    }
-    if (out_header.version != consensus::SNAPSHOT_VERSION_V2 &&
-        out_header.version != consensus::SNAPSHOT_VERSION_V3 &&
-        out_header.version != consensus::SNAPSHOT_VERSION_V4) {
-        return false;
-    }
-    const uint64_t default_max_snapshot_mb = 64ULL * 1024ULL;
-    const uint64_t configured_max_snapshot_mb =
-        config ? static_cast<uint64_t>(std::max(
-                     config->GetInt("assumeutxo_snapshot_max_mb",
-                                    static_cast<int>(default_max_snapshot_mb)), 0))
-               : default_max_snapshot_mb;
-    if (!ValidateSnapshotTransportPreflight(
-            path, configured_max_snapshot_mb * 1024ULL * 1024ULL, error)) {
-        return false;
-    }
-    // Manifest trust gate — mirror LoadSnapshot's conditionality exactly.
-    const bool require_manifest =
-        config ? config->GetBool("assumeutxo_require_manifest", false) : false;
-    const std::string manifest_path_cfg =
-        config ? config->GetString("assumeutxo_manifest", "") : "";
-    std::filesystem::path manifest_path;
-    if (!manifest_path_cfg.empty()) {
-        manifest_path = manifest_path_cfg;
-    } else {
-        std::filesystem::path sibling = path;
-        sibling += ".manifest.json";
-        if (std::filesystem::exists(sibling)) manifest_path = sibling;
-    }
-    if (!manifest_path.empty()) {
-        if (!ValidateSnapshotManifestPreflight(path, manifest_path, error)) return false;
-    } else if (require_manifest) {
-        return false;
-    }
-    // In-file integrity trailer (always present; the primary corruption gate).
-    if (!VerifySnapshotTrailerChecksum(path)) {
-        if (logger) {
-            logger->warning("[self-heal] candidate at height " +
-                            std::to_string(out_header.block_height) +
-                            " failed in-file checksum — not a wipe target: " + path);
-        }
-        return false;
-    }
-    return true;
-}
-
-// Recovery-target selection for the snapshot-rotation self-heal: the newest
-// configured candidate that is LoadSnapshot-loadable right now (SnapshotPreflightOk),
-// with the always-present bundled snapshot as the guaranteed floor. `found` is
-// false when nothing validates → the caller keeps the fail-safe fatal (never wipe
-// toward an unloadable target).
-struct SelfHealRecoveryTarget {
-    bool found = false;
-    std::string path;
-    uint32_t height = 0;
-    uint256 block_hash;
-};
-
-// A snapshot is SELF-HEAL-eligible if it is LoadSnapshot-loadable (SnapshotPreflightOk)
-// AND carries a v4 shielded section. The self-heal DELETES the shielded tip marker
-// before reloading, and ONLY LoadSnapshot's v4 path re-persists it
-// (PersistShieldedTipMarker sits inside `if (has_v4_shielded_section)`). Reloading a
-// pre-v4 target would leave the marker NotFound → VerifyOrBootstrapShieldedTipMarker
-// → EnterSafeMode (the #585 brick). SnapshotPreflightOk accepts V2/V3/V4 (it mirrors
-// LoadSnapshot's general acceptance), so BOTH self-heal selectors must additionally
-// require v4 — we only ever delete-then-reload toward a snapshot that WILL re-persist
-// the marker. Post-shielded-activation the chain requires v4 state anyway.
-bool SnapshotSelfHealEligible(const std::shared_ptr<ConfigService>& config,
-                              const std::shared_ptr<LoggerService>& logger,
-                              const std::string& path,
-                              consensus::SnapshotMetadata& out_header) {
-    if (!SnapshotPreflightOk(config, logger, path, out_header)) return false;
-    if (out_header.version < consensus::SNAPSHOT_VERSION_V4) {
-        if (logger) {
-            logger->warning("[self-heal] candidate at height " +
-                            std::to_string(out_header.block_height) +
-                            " is pre-v4 (no shielded section) — not self-heal-eligible "
-                            "(a reload would strand the shielded tip marker): " + path);
-        }
-        return false;
-    }
-    return true;
-}
-
-SelfHealRecoveryTarget SelectSelfHealRecoveryTarget(
-    const std::shared_ptr<ConfigService>& config,
-    const std::shared_ptr<LoggerService>& logger) {
-    SelfHealRecoveryTarget best;
-    for (const auto& path : ConfiguredSnapshotPaths(config)) {
-        consensus::SnapshotMetadata header;
-        if (!SnapshotSelfHealEligible(config, logger, path, header)) continue;
-        if (!best.found || header.block_height > best.height) {
-            best = {true, path, header.block_height, header.block_hash};
-        }
-    }
-    return best;
-}
-
-// The self-heal FLOOR: the LOWEST-height loadable candidate. The bundled snapshot
-// is the deepest/oldest checkpoint, so it is the candidate most likely to bind to
-// this node's header chain (its base is far below any live tip). Used as the
-// LOAD-time fallback when the newest selected target loads-but-fails-to-bind, so
-// the floor is real for LOAD, not just SELECT.
-SelfHealRecoveryTarget SelectSelfHealFloor(
-    const std::shared_ptr<ConfigService>& config,
-    const std::shared_ptr<LoggerService>& logger) {
-    SelfHealRecoveryTarget floor;
-    for (const auto& path : ConfiguredSnapshotPaths(config)) {
-        consensus::SnapshotMetadata header;
-        if (!SnapshotSelfHealEligible(config, logger, path, header)) continue;
-        if (!floor.found || header.block_height < floor.height) {
-            floor = {true, path, header.block_height, header.block_hash};
-        }
-    }
-    return floor;
 }
 
 void ApplyPersistedMetadataToBlockIndex(CBlockIndex* block_index,
@@ -3899,125 +3720,88 @@ bool ChainstateService::Start() {
         // configured candidate set against the persisted base BEFORE any
         // different-base belt or file rehydrate. This is fail-closed: when
         // candidates exist but none matches, never fall forward to the newest.
+        // Set when the continue branch retires a moot lifecycle (bootstrapped node,
+        // base snapshot gone) so the belt + rehydrate below are skipped and the node
+        // runs on its OWN state — never adopting a different configured snapshot.
+        bool assumeutxo_lifecycle_retired = false;
         if (!lifecycle_fatal_at_restore) {
             const auto snapshot_resolution = ResolveConfiguredSnapshotPath(
                 config_, logger_, true, assumeutxo_base_height_, assumeutxo_base_block_);
-            if (snapshot_resolution.ok) {
-                // Forward progress: a base resolved cleanly. A prior self-heal (if
-                // any) has landed — clear the loop-guard so a genuinely different
-                // future rotation can self-heal again.
-                if (utxo_index_ &&
-                    utxo_index_->GetMetadata(kSelfHealFromBaseKey).has_value()) {
-                    utxo_index_->DeleteMetadata(kSelfHealFromBaseKey);
-                    utxo_index_->DeleteMetadata(kSelfHealCompletedKey);
+            if (!snapshot_resolution.ok) {
+                // The persisted lifecycle base has no matching configured snapshot.
+                // The response depends ONLY on whether the node already holds valid
+                // bootstrapped state — NEVER on the fact that a different snapshot is
+                // configured (inferring a destructive action from a config change is
+                // a silent-base-swap footgun). The right "bootstrapped height" signal
+                // for a STATELESS node is the persisted Utreexo forest CHECKPOINT
+                // height: the coin-map GetHeight() is ephemeral (0 on a stateless
+                // restart until forward-replay repopulates it), whereas the forest
+                // checkpoint is the node's true restored height. For an ARCHIVAL node
+                // the coin-map height is valid; take whichever is higher so neither
+                // node type regresses.
+                uint32_t restored_state_height =
+                    consensus_utxo_set_ ? consensus_utxo_set_->GetHeight() : 0;
+                const bool forest_nonempty =
+                    consensus_utxo_set_ &&
+                    consensus_utxo_set_->SnapshotForestLeafCount() > 0;
+                if (chain_db_) {
+                    auto cp = chain_db_->getLatestUtreexoCheckpoint();
+                    if (cp.ok() && cp.value().first >= 0) {
+                        restored_state_height = std::max(
+                            restored_state_height,
+                            static_cast<uint32_t>(cp.value().first));
+                    }
                 }
-            } else {
-                // ── SNAPSHOT-ROTATION SELF-HEAL ──────────────────────────────
-                // The persisted ACTIVE lifecycle's base snapshot is no longer
-                // among the configured candidates (rotated away / removed), so
-                // ResolveConfiguredSnapshotPath returned NoMatchingActiveLifecycle.
-                // Rather than the reinstall-only fatal, attempt a clean
-                // re-bootstrap from a locally-available snapshot (base SWITCH).
-                const std::string stuck_base =
-                    std::to_string(assumeutxo_base_height_) + ":" +
-                    assumeutxo_base_block_.GetHex();
+                const bool selfheal_bootstrapped =
+                    (forest_nonempty || restored_state_height > 0) &&
+                    restored_state_height >= assumeutxo_base_height_;
+                const uint32_t selfheal_cur_h = restored_state_height;
 
-                // Loop-guard: fail loud ONLY if we already COMPLETED a heal away
-                // from this exact base and it recurred (completed=="1"). A re-kill
-                // mid-heal leaves completed=="0" → we re-attempt idempotently
-                // rather than false-trip.
-                const auto healed_from = utxo_index_
-                    ? utxo_index_->GetMetadata(kSelfHealFromBaseKey) : std::nullopt;
-                const auto healed_done = utxo_index_
-                    ? utxo_index_->GetMetadata(kSelfHealCompletedKey) : std::nullopt;
-                if (healed_from.has_value() && healed_from.value() == stuck_base &&
-                    healed_done.has_value() && healed_done.value() == "1") {
-                    logger_->error(
-                        "[AssumeUTXO self-heal] " + snapshot_resolution.error +
-                        "; already self-healed away from base " + stuck_base +
-                        " once and the same mismatch recurred — failing safe to "
-                        "avoid a wipe loop (reinstall to recover)");
-                    EnterSafeMode(
-                        "assumeutxo self-heal loop: stuck base recurred post-heal");
+                if (selfheal_bootstrapped) {
+                    // ── CONTINUE (the field case) ────────────────────────────
+                    // The node is validly bootstrapped at/above the base. A snapshot
+                    // is a COLD-START scaffold; once the set is bootstrapped (and,
+                    // in the field case, advanced past base by validating real
+                    // blocks on top of it), the base snapshot is MOOT. Do NOT wipe
+                    // (destroys validated state — the ~7000-block field re-sync),
+                    // do NOT refuse (bricks a healthy node), and do NOT touch the
+                    // shielded tip marker — ConnectTip has kept it correct at the
+                    // live tip; the wipe path deletes it only because it re-
+                    // establishes it via LoadSnapshot, which the continue path never
+                    // runs, so deleting it here would re-introduce the #585
+                    // NotFound/SAFE-MODE risk on a node that never needed a wipe.
+                    // Only retire the now-moot lifecycle pin so a later restart
+                    // resolves cleanly and the different-base belt below is skipped;
+                    // background validation (genesis->base), if pending, resumes.
+                    logger_->warning(
+                        "[AssumeUTXO restore] base snapshot for the persisted "
+                        "lifecycle (height " +
+                        std::to_string(assumeutxo_base_height_) +
+                        ") is no longer configured, but the node is validly "
+                        "bootstrapped at height " + std::to_string(selfheal_cur_h) +
+                        " — the snapshot is moot; retiring the lifecycle pin and "
+                        "continuing on the existing validated state (NO wipe).");
+                    if (assumeutxo_lifecycle_) assumeutxo_lifecycle_->Disable();
+                    assumeutxo::ClearMetadata(utxo_index_.get());
+                    assumeutxo_lifecycle_retired = true;
+                    // fall through — the UTXO set/forest and shielded marker are
+                    // left untouched; the retired flag skips the belt + rehydrate
+                    // below, so the node runs on its own state (never a base swap).
+                } else {
+                    // No recoverable bootstrapped state — the forest checkpoint is
+                    // absent or below base — AND the base snapshot is gone. This is
+                    // genuinely unrecoverable, and it is NOT routine: a stateless
+                    // node's forest checkpoint is persisted by loadtxoutset and the
+                    // genesis checkpoint is backfilled, so reaching here means
+                    // corruption / a missing checkpoint, not a normal rotation. Keep
+                    // the original fail-safe fatal (reinstall to recover). We do NOT
+                    // auto-wipe and re-bootstrap from a DIFFERENT configured base
+                    // here — that would be the silent-base-swap the different-base
+                    // belt exists to prevent (spec Scenario C).
+                    logger_->error("[AssumeUTXO restore] " + snapshot_resolution.error);
                     return false;
                 }
-
-                // check-then-wipe (M1, non-negotiable): only proceed if a
-                // replacement snapshot is present AND fully validates locally.
-                // Otherwise keep the fail-safe fatal — never convert a
-                // reinstall-recoverable brick into a wiped-empty one.
-                const auto target = SelectSelfHealRecoveryTarget(config_, logger_);
-                if (!target.found) {
-                    logger_->error(
-                        "[AssumeUTXO restore] " + snapshot_resolution.error +
-                        "; no locally-valid snapshot to self-heal from — keeping "
-                        "fail-safe (reinstall to recover)");
-                    return false;
-                }
-
-                logger_->warning("═══════════════════════════════════════════════════════════════════════════");
-                logger_->warning("🔧 AssumeUTXO base snapshot unavailable — SELF-HEALING via clean re-bootstrap");
-                logger_->warning("Stale lifecycle base: height " +
-                                 std::to_string(assumeutxo_base_height_) + " (" +
-                                 assumeutxo_base_block_.GetHex().substr(0, 16) + "...)");
-                logger_->warning("Recovery base: height " +
-                                 std::to_string(target.height) + " (" +
-                                 target.block_hash.GetHex().substr(0, 16) +
-                                 "...) — " + target.path);
-                logger_->warning("═══════════════════════════════════════════════════════════════════════════");
-
-                // (0) Record the stuck base BEFORE mutating, completed="0" — a
-                //     re-kill mid-heal is then detectable AND re-attemptable.
-                if (utxo_index_) {
-                    utxo_index_->SetMetadata(kSelfHealFromBaseKey, stuck_base);
-                    utxo_index_->SetMetadata(kSelfHealCompletedKey, "0");
-                }
-
-                // (1) Wipe the old-lineage state (idempotent; #596 machinery):
-                //     forest checkpoints + utxo CF coins + in-memory set.
-                if (chain_db_->wipeAllUtreexoCheckpoints() != Status::Ok) {
-                    logger_->error("[AssumeUTXO self-heal] failed to wipe utreexo checkpoints");
-                    return false;
-                }
-                auto cleared = chain_db_->clearAllCoins(ChainWriteToken::CreateForTesting());
-                if (!cleared.ok()) {
-                    logger_->error("[AssumeUTXO self-heal] failed to clear utxo CF");
-                    return false;
-                }
-                if (consensus_utxo_set_) consensus_utxo_set_->Clear();
-
-                // (2) Clear the OLD shielded tip marker. This is a base SWITCH, so
-                //     the marker must NOT be rewound from the stale lineage (that
-                //     would reconstruct wrong-lineage shielded state). Deleting it
-                //     lets LoadSnapshot(new base) ADOPT the new snapshot's shielded
-                //     section via the fresh-bootstrap path.
-                (void)chain_db_->deleteShieldedTipMarker(ChainWriteToken::CreateForTesting());
-
-                // (3) Reset the persisted base pin to the recovery base, reset the
-                //     lifecycle to Disabled (so the rehydrate's OnSnapshotLoaded
-                //     accepts the new base), and re-point the configured snapshot.
-                assumeutxo_base_height_ = target.height;
-                assumeutxo_base_block_ = target.block_hash;
-                if (utxo_index_) {
-                    utxo_index_->SetMetadata(assumeutxo::kBaseHeightKey,
-                                             std::to_string(target.height));
-                    utxo_index_->SetMetadata(assumeutxo::kBaseBlockKey,
-                                             target.block_hash.GetHex());
-                }
-                if (assumeutxo_lifecycle_) assumeutxo_lifecycle_->Disable();
-                if (config_) {
-                    config_->Set("assumeutxo_snapshot", target.path);
-                    config_->Set("assumeutxo_manifest", "");
-                }
-
-                logger_->warning("[AssumeUTXO self-heal] cleared " +
-                                 std::to_string(cleared.value()) +
-                                 " coin rows + stale lifecycle pin; re-bootstrapping "
-                                 "from height " + std::to_string(target.height));
-                // Fall through: consensus set is now empty (below the new base), so
-                // the rehydrate block below runs LoadSnapshot(new base), adopting
-                // its shielded section. completed is flipped to "1" there on success.
-            }
+            }  // end NoMatchingActiveLifecycle
         }
 
         logger_->info("⚠️  AssumeUTXO mode ACTIVE (restored from metadata)");
@@ -4083,7 +3867,8 @@ bool ChainstateService::Start() {
             }
         }
 
-        if (!lifecycle_fatal_at_restore && utxo_set_not_bootstrapped) {
+        if (!lifecycle_fatal_at_restore && utxo_set_not_bootstrapped &&
+            !assumeutxo_lifecycle_retired) {
             const std::string snapshot_path =
                 config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
 
@@ -4107,50 +3892,9 @@ bool ChainstateService::Start() {
 
                 auto import_result = LoadSnapshot(std::filesystem::path(snapshot_path));
                 if (!import_result.success) {
-                    // Self-heal FLOOR-RETRY: if a heal is mid-flight (completed=="0")
-                    // and the selected target (the newest valid candidate) failed to
-                    // LOAD — e.g. its base passed integrity but does not bind to this
-                    // node's header chain — fall back to the bundled FLOOR (the
-                    // deepest valid candidate, which binds) and retry ONCE. This makes
-                    // the floor real for LOAD, not just SELECT: a mis-staged higher
-                    // snapshot cannot leave the node wiped-and-stuck. Bounded (one
-                    // extra attempt) and gated to an in-progress heal so it never runs
-                    // on a normal rehydrate. LoadSnapshot is all-or-nothing, so the
-                    // failed attempt left no partial state; Clear()+delete-marker here
-                    // is belt-and-suspenders before the floor load.
-                    const bool healing = utxo_index_ &&
-                        utxo_index_->GetMetadata(kSelfHealCompletedKey).value_or("") == "0";
-                    if (healing) {
-                        const auto floor = SelectSelfHealFloor(config_, logger_);
-                        if (floor.found && floor.path != snapshot_path) {
-                            logger_->warning(
-                                "[AssumeUTXO self-heal] target load failed (" +
-                                import_result.error_message +
-                                "); falling back to bundled floor at height " +
-                                std::to_string(floor.height));
-                            if (consensus_utxo_set_) consensus_utxo_set_->Clear();
-                            (void)chain_db_->deleteShieldedTipMarker(
-                                ChainWriteToken::CreateForTesting());
-                            assumeutxo_base_height_ = floor.height;
-                            assumeutxo_base_block_ = floor.block_hash;
-                            if (utxo_index_) {
-                                utxo_index_->SetMetadata(assumeutxo::kBaseHeightKey,
-                                                         std::to_string(floor.height));
-                                utxo_index_->SetMetadata(assumeutxo::kBaseBlockKey,
-                                                         floor.block_hash.GetHex());
-                            }
-                            if (config_) {
-                                config_->Set("assumeutxo_snapshot", floor.path);
-                                config_->Set("assumeutxo_manifest", "");
-                            }
-                            import_result = LoadSnapshot(std::filesystem::path(floor.path));
-                        }
-                    }
-                    if (!import_result.success) {
-                        logger_->error("[AssumeUTXO restore] Snapshot rehydrate failed: " +
-                                       import_result.error_message);
-                        return false;
-                    }
+                    logger_->error("[AssumeUTXO restore] Snapshot rehydrate failed: " +
+                                   import_result.error_message);
+                    return false;
                 }
 
                 snapshot_rehydrated_from_file = true;
@@ -4158,17 +3902,6 @@ bool ChainstateService::Start() {
                               std::to_string(import_result.utxos_imported) +
                               " UTXOs at height " +
                               std::to_string(import_result.block_height));
-                // Self-heal loop-guard: the replacement snapshot is now loaded, so
-                // mark the in-progress heal COMPLETED. A re-kill before this point
-                // left completed=="0" and re-attempts; reaching here means the base
-                // switch stuck, so a later recurrence of the SAME stuck base is a
-                // genuine loop (caught above).
-                if (utxo_index_) {
-                    const auto healing = utxo_index_->GetMetadata(kSelfHealCompletedKey);
-                    if (healing.has_value() && healing.value() == "0") {
-                        utxo_index_->SetMetadata(kSelfHealCompletedKey, "1");
-                    }
-                }
             } else {
                 logger_->error("[AssumeUTXO restore] Persisted AssumeUTXO metadata exists, but "
                                "consensus UTXO state is not at the snapshot base and no "

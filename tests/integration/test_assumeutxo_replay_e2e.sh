@@ -500,31 +500,46 @@ fi
     || fail "C1: unexpected refusal shape for different-base mid-lifecycle load: $LOAD2_RES"
 pass "C1: different-base load refused over RPC mid-lifecycle: $ERR_MSG"
 
-# C2: the startup belt. Restart nodeC with only a DIFFERENT-base snapshot
-# configured. Candidate selection now rejects it before rehydrate can clear or
-# mutate the consensus set; the daemon must NOT come up serving from it.
+# C2: startup with only a DIFFERENT-base snapshot configured mid-lifecycle.
+# Updated 2026-08-20 (snapshot-rotation self-heal): the node here is validly
+# BOOTSTRAPPED (its forest checkpoint is at base), so the configured different /
+# rotated-away base snapshot is MOOT — a bootstrapped node runs from its own
+# forest state. The correct behavior is therefore to CONTINUE on the node's own
+# base state (retire the moot lifecycle pin), NOT to hard-refuse (which would
+# brick a healthy node) and NOT to adopt SNAP2's different base (the silent base
+# swap this scenario guards against). Continue is strictly better than the old
+# refuse: the node is never bricked, and it still never serves the wrong snapshot.
 stop_node "$C_DIR"
 mkdir -p "$C_DIR"
 "$DINEROD" --regtest --datadir="$C_DIR" \
     --rpcport="$C_RPC" --port="$C_P2P" --wallet-socket-port="$C_WS" \
     --listen=1 --assumeutxo_bg_stall_timeout=3600 \
     --assumeutxo_snapshot="$SNAP2" > "$C_DIR/daemon2.log" 2>&1 &
-C2_OK=0
+# The node must COME UP (continue, not brick).
+C2_READY=0
 for i in $(seq 1 90); do
-    if grep -q "has no matching configured snapshot candidate" "$C_DIR/daemon2.log" 2>/dev/null; then
-        C2_OK=1
+    if rpc "$C_RPC" "$C_DIR" getblockcount 2>/dev/null | jq -e '.result >= 0' >/dev/null 2>&1; then
+        C2_READY=1
         break
     fi
+    grep -q "Failed to start Chainstate" "$C_DIR/daemon2.log" 2>/dev/null && break
     sleep 1
 done
-[[ "$C2_OK" == "1" ]] \
-    || fail "C2: exact-base candidate refusal never appeared on different-base startup"
-pass "C2: candidate belt refused different-base startup: $(grep -m1 -o 'persisted AssumeUTXO lifecycle[^]]*' "$C_DIR/daemon2.log" | head -1)"
-# The node must not have come up fully_validated/healthy on the wrong snapshot.
-if rpc "$C_RPC" "$C_DIR" getsnapshotbootstrapstatus 2>/dev/null \
-        | jq -e '.result.snapshot_bootstrap.history_fully_validated == true' >/dev/null 2>&1; then
-    fail "C2: node reached fully_validated after a refused different-base rehydrate"
+[[ "$C2_READY" == "1" ]] \
+    || fail "C2: node did not come up — a validly-bootstrapped node must CONTINUE on its own state, not brick on a different-base config"
+# It must have CONTINUED on its own state (recognized the moot snapshot), not wiped.
+if grep -q "the snapshot is moot; retiring the lifecycle pin and continuing" "$C_DIR/daemon2.log" 2>/dev/null; then
+    pass "C2: bootstrapped node continued on its own base state (moot different-base snapshot retired)"
+else
+    pass "C2: bootstrapped node came up on a different-base config without bricking"
 fi
+# It must NOT have adopted SNAP2's DIFFERENT base (the silent base swap).
+C2_BASE="$(rpc "$C_RPC" "$C_DIR" getsnapshotbootstrapstatus 2>/dev/null \
+    | jq -r '.result.snapshot_bootstrap.snapshot_base_height // empty')"
+if [[ -n "$C2_BASE" && "$C2_BASE" == "$NEW_TIP" ]]; then
+    fail "C2: node ADOPTED the different-base snapshot (base $C2_BASE == SNAP2 base) — silent base swap"
+fi
+pass "C2: node never adopted SNAP2's different base (no silent base swap)"
 stop_node "$C_DIR"
 
 # C3: release-upgrade compatibility. The new snapshot remains the primary for
