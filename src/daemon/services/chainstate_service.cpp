@@ -130,6 +130,15 @@ constexpr char kCsnReplayDataMagic[] = {'C', 'S', 'N', '2'};
 // post-promotion restart passes the audit without a recovery marker.
 constexpr uint32_t kStartupUndoAuditWindow = 1024;
 
+// Loop-guard metadata for the snapshot-rotation self-heal (restore path).
+// kSelfHealFromBaseKey records the stale base we healed FROM ("<height>:<hash>");
+// kSelfHealCompletedKey flips to "1" only after the replacement snapshot is
+// actually loaded. Together they distinguish "heal interrupted by a re-kill →
+// continue idempotently" from "heal completed but the SAME stuck base recurred →
+// fail loud" so a wipe can never loop.
+constexpr const char* kSelfHealFromBaseKey = "assumeutxo_selfheal_from_base";
+constexpr const char* kSelfHealCompletedKey = "assumeutxo_selfheal_completed";
+
 // Convert a consensus::UTXOEntry to the storage Coin format used by ChainDB.
 // MUST stay byte-identical to PersistentUTXOAdapter::ToDbCoin
 // (include/storage/persistent_utxo_adapter.h, private static) —
@@ -3778,9 +3787,121 @@ bool ChainstateService::Start() {
         if (!lifecycle_fatal_at_restore) {
             const auto snapshot_resolution = ResolveConfiguredSnapshotPath(
                 config_, logger_, true, assumeutxo_base_height_, assumeutxo_base_block_);
-            if (!snapshot_resolution.ok) {
-                logger_->error("[AssumeUTXO restore] " + snapshot_resolution.error);
-                return false;
+            if (snapshot_resolution.ok) {
+                // Forward progress: a base resolved cleanly. A prior self-heal (if
+                // any) has landed — clear the loop-guard so a genuinely different
+                // future rotation can self-heal again.
+                if (utxo_index_ &&
+                    utxo_index_->GetMetadata(kSelfHealFromBaseKey).has_value()) {
+                    utxo_index_->DeleteMetadata(kSelfHealFromBaseKey);
+                    utxo_index_->DeleteMetadata(kSelfHealCompletedKey);
+                }
+            } else {
+                // ── SNAPSHOT-ROTATION SELF-HEAL ──────────────────────────────
+                // The persisted ACTIVE lifecycle's base snapshot is no longer
+                // among the configured candidates (rotated away / removed), so
+                // ResolveConfiguredSnapshotPath returned NoMatchingActiveLifecycle.
+                // Rather than the reinstall-only fatal, attempt a clean
+                // re-bootstrap from a locally-available snapshot (base SWITCH).
+                const std::string stuck_base =
+                    std::to_string(assumeutxo_base_height_) + ":" +
+                    assumeutxo_base_block_.GetHex();
+
+                // Loop-guard: fail loud ONLY if we already COMPLETED a heal away
+                // from this exact base and it recurred (completed=="1"). A re-kill
+                // mid-heal leaves completed=="0" → we re-attempt idempotently
+                // rather than false-trip.
+                const auto healed_from = utxo_index_
+                    ? utxo_index_->GetMetadata(kSelfHealFromBaseKey) : std::nullopt;
+                const auto healed_done = utxo_index_
+                    ? utxo_index_->GetMetadata(kSelfHealCompletedKey) : std::nullopt;
+                if (healed_from.has_value() && healed_from.value() == stuck_base &&
+                    healed_done.has_value() && healed_done.value() == "1") {
+                    logger_->error(
+                        "[AssumeUTXO self-heal] " + snapshot_resolution.error +
+                        "; already self-healed away from base " + stuck_base +
+                        " once and the same mismatch recurred — failing safe to "
+                        "avoid a wipe loop (reinstall to recover)");
+                    EnterSafeMode(
+                        "assumeutxo self-heal loop: stuck base recurred post-heal");
+                    return false;
+                }
+
+                // check-then-wipe (M1, non-negotiable): only proceed if a
+                // replacement snapshot is present AND fully validates locally.
+                // Otherwise keep the fail-safe fatal — never convert a
+                // reinstall-recoverable brick into a wiped-empty one.
+                const auto target = SelectSelfHealRecoveryTarget(config_, logger_);
+                if (!target.found) {
+                    logger_->error(
+                        "[AssumeUTXO restore] " + snapshot_resolution.error +
+                        "; no locally-valid snapshot to self-heal from — keeping "
+                        "fail-safe (reinstall to recover)");
+                    return false;
+                }
+
+                logger_->warning("═══════════════════════════════════════════════════════════════════════════");
+                logger_->warning("🔧 AssumeUTXO base snapshot unavailable — SELF-HEALING via clean re-bootstrap");
+                logger_->warning("Stale lifecycle base: height " +
+                                 std::to_string(assumeutxo_base_height_) + " (" +
+                                 assumeutxo_base_block_.GetHex().substr(0, 16) + "...)");
+                logger_->warning("Recovery base: height " +
+                                 std::to_string(target.height) + " (" +
+                                 target.block_hash.GetHex().substr(0, 16) +
+                                 "...) — " + target.path);
+                logger_->warning("═══════════════════════════════════════════════════════════════════════════");
+
+                // (0) Record the stuck base BEFORE mutating, completed="0" — a
+                //     re-kill mid-heal is then detectable AND re-attemptable.
+                if (utxo_index_) {
+                    utxo_index_->SetMetadata(kSelfHealFromBaseKey, stuck_base);
+                    utxo_index_->SetMetadata(kSelfHealCompletedKey, "0");
+                }
+
+                // (1) Wipe the old-lineage state (idempotent; #596 machinery):
+                //     forest checkpoints + utxo CF coins + in-memory set.
+                if (chain_db_->wipeAllUtreexoCheckpoints() != Status::Ok) {
+                    logger_->error("[AssumeUTXO self-heal] failed to wipe utreexo checkpoints");
+                    return false;
+                }
+                auto cleared = chain_db_->clearAllCoins(ChainWriteToken::CreateForTesting());
+                if (!cleared.ok()) {
+                    logger_->error("[AssumeUTXO self-heal] failed to clear utxo CF");
+                    return false;
+                }
+                if (consensus_utxo_set_) consensus_utxo_set_->Clear();
+
+                // (2) Clear the OLD shielded tip marker. This is a base SWITCH, so
+                //     the marker must NOT be rewound from the stale lineage (that
+                //     would reconstruct wrong-lineage shielded state). Deleting it
+                //     lets LoadSnapshot(new base) ADOPT the new snapshot's shielded
+                //     section via the fresh-bootstrap path.
+                (void)chain_db_->deleteShieldedTipMarker(ChainWriteToken::CreateForTesting());
+
+                // (3) Reset the persisted base pin to the recovery base, reset the
+                //     lifecycle to Disabled (so the rehydrate's OnSnapshotLoaded
+                //     accepts the new base), and re-point the configured snapshot.
+                assumeutxo_base_height_ = target.height;
+                assumeutxo_base_block_ = target.block_hash;
+                if (utxo_index_) {
+                    utxo_index_->SetMetadata(assumeutxo::kBaseHeightKey,
+                                             std::to_string(target.height));
+                    utxo_index_->SetMetadata(assumeutxo::kBaseBlockKey,
+                                             target.block_hash.GetHex());
+                }
+                if (assumeutxo_lifecycle_) assumeutxo_lifecycle_->Disable();
+                if (config_) {
+                    config_->Set("assumeutxo_snapshot", target.path);
+                    config_->Set("assumeutxo_manifest", "");
+                }
+
+                logger_->warning("[AssumeUTXO self-heal] cleared " +
+                                 std::to_string(cleared.value()) +
+                                 " coin rows + stale lifecycle pin; re-bootstrapping "
+                                 "from height " + std::to_string(target.height));
+                // Fall through: consensus set is now empty (below the new base), so
+                // the rehydrate block below runs LoadSnapshot(new base), adopting
+                // its shielded section. completed is flipped to "1" there on success.
             }
         }
 
@@ -3881,6 +4002,17 @@ bool ChainstateService::Start() {
                               std::to_string(import_result.utxos_imported) +
                               " UTXOs at height " +
                               std::to_string(import_result.block_height));
+                // Self-heal loop-guard: the replacement snapshot is now loaded, so
+                // mark the in-progress heal COMPLETED. A re-kill before this point
+                // left completed=="0" and re-attempts; reaching here means the base
+                // switch stuck, so a later recurrence of the SAME stuck base is a
+                // genuine loop (caught above).
+                if (utxo_index_) {
+                    const auto healing = utxo_index_->GetMetadata(kSelfHealCompletedKey);
+                    if (healing.has_value() && healing.value() == "0") {
+                        utxo_index_->SetMetadata(kSelfHealCompletedKey, "1");
+                    }
+                }
             } else {
                 logger_->error("[AssumeUTXO restore] Persisted AssumeUTXO metadata exists, but "
                                "consensus UTXO state is not at the snapshot base and no "
