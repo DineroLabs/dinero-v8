@@ -752,6 +752,61 @@ SnapshotPathResolution ResolveConfiguredSnapshotPath(
     return {true, selection.candidate.path, {}};
 }
 
+// Recovery-target selection for the snapshot-rotation self-heal.
+//
+// When a persisted ACTIVE AssumeUTXO lifecycle's base snapshot is no longer
+// among the configured candidates (the seed rotated it away, or the file was
+// removed), ResolveConfiguredSnapshotPath returns NoMatchingActiveLifecycle and
+// the node hard-fails — a reinstall-only brick. This picks a target for a clean
+// re-bootstrap instead: the NEWEST configured candidate whose FULL file passes
+// integrity validation right now.
+//
+// The validation is deliberately full-file (AssumeUTXORegistry::VerifySnapshotHash
+// reads the whole file and SHA256s it against the registered hash), NOT a header
+// peek — a header-present but truncated download (e.g. a cancelled fetch) must be
+// rejected so we never wipe toward an unloadable target. This is the
+// check-then-wipe gate: if NO candidate validates, `found` is false and the
+// caller keeps the fail-safe fatal (a reinstall-recoverable brick must never be
+// converted into a wiped-empty one). The bundled snapshot always ships and always
+// validates, so it is the guaranteed floor.
+struct SelfHealRecoveryTarget {
+    bool found = false;
+    std::string path;
+    uint32_t height = 0;
+    uint256 block_hash;
+};
+
+SelfHealRecoveryTarget SelectSelfHealRecoveryTarget(
+    const std::shared_ptr<ConfigService>& config,
+    const std::shared_ptr<LoggerService>& logger) {
+    SelfHealRecoveryTarget best;
+    for (const auto& path : ConfiguredSnapshotPaths(config)) {
+        consensus::SnapshotMetadata header;
+        std::string error;
+        if (!ReadSnapshotHeaderPreview(path, header, error) ||
+            header.magic != consensus::SNAPSHOT_MAGIC) {
+            continue;
+        }
+        // Full-file integrity gate (check-then-wipe). Rejects a header-present
+        // but truncated/corrupt file, and any candidate not in the registry.
+        if (!dinero::consensus::AssumeUTXORegistry::VerifySnapshotHash(
+                path, header.block_height)) {
+            if (logger) {
+                logger->warning(
+                    "[self-heal] candidate at height " +
+                    std::to_string(header.block_height) +
+                    " failed full-file integrity — not a wipe target: " + path);
+            }
+            continue;
+        }
+        // Newest validating candidate wins; the bundled snapshot is the floor.
+        if (!best.found || header.block_height > best.height) {
+            best = {true, path, header.block_height, header.block_hash};
+        }
+    }
+    return best;
+}
+
 bool ValidateSnapshotTransportPreflight(
     const std::filesystem::path& snapshot_path,
     uint64_t max_snapshot_bytes,
