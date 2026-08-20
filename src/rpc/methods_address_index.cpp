@@ -254,7 +254,8 @@ Json rpc_getaddressbalance(const ExecutionContext& ctx, const Json& params) {
         // Sum confirmed UTXOs
         uint64_t confirmed = 0;
         bool scan_ok = true;
-        if (chainstate->IsAssumeUTXOActive()) {
+        const bool assumed_utxo = chainstate->IsAssumeUTXOActive();
+        if (assumed_utxo) {
             scan_ok = chainstate->ForEachActiveUTXO(
                 [&](const dinero::OutPoint&, const dinero::consensus::UTXOEntry& coin) {
                     if (bytesToHex(coin.scriptPubKey) == target_script) confirmed += coin.value.GetUna();
@@ -676,7 +677,8 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
             return result;
         }
 
-        if (chainstate->IsAssumeUTXOActive()) {
+        const bool assumed_utxo = chainstate->IsAssumeUTXOActive();
+        if (assumed_utxo) {
             // An assumed UTXO set is active before its background replay has
             // populated ChainDB. Read that authoritative in-memory set so a
             // snapshot-bootstrapped bridge cannot report false zero balances.
@@ -721,11 +723,21 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                             state.unconfirmed += static_cast<int64_t>(output.value.GetUna());
                     }
                     for (const auto& input : tx.vin) {
-                        auto previous = chain_db->getTransaction(input.prevout.txid.AsUint256());
-                        if (previous.ok() && input.prevout.vout < previous.value().vout.size()) {
-                            const auto& output = previous.value().vout[input.prevout.vout];
-                            if (bytesToHex(output.scriptPubKey) == state.script)
+                        bool matched_input = false;
+                        if (auto parent_tx = ctx.daemon->mempool->mempool().getTransaction(
+                                input.prevout.txid.AsUint256());
+                            parent_tx && input.prevout.vout < parent_tx->vout.size()) {
+                            const auto& output = parent_tx->vout[input.prevout.vout];
+                            if (bytesToHex(output.scriptPubKey) == state.script) {
                                 state.unconfirmed -= static_cast<int64_t>(output.value.GetUna());
+                                matched_input = true;
+                            }
+                        }
+                        if (!matched_input) {
+                            auto coin = getAuthoritativeCoin(chainstate, chain_db, input.prevout);
+                            if (coin && coin->first == state.script) {
+                                state.unconfirmed -= static_cast<int64_t>(coin->second);
+                            }
                         }
                     }
                 }
@@ -738,9 +750,8 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
             result["error"]["message"] = "Failed to get chain tip";
             return result;
         }
-        const bool assumed_utxo = chainstate->IsAssumeUTXOActive();
         const int tip_height = assumed_utxo
-            ? static_cast<int>(chainstate->GetConsensusUTXOSet()->GetHeight())
+            ? static_cast<int>(chainstate->getBlockHeight())
             : tip_result.value().height;
         size_t saturated = 0;
         // Snapshot bootstrap guarantees the current UTXO set, not historical

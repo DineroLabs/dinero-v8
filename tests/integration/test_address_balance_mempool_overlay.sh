@@ -224,6 +224,12 @@ SOURCE_PENDING_DELTA="$(rpc_result "getaddressbalance" "[\"$MINER_ADDR\"]" | jq 
 [ "$(echo "$SOURCE_MEMPOOL_TXS" | jq -r '.transactions[0].amount')" = "$SOURCE_PENDING_DELTA" ] || fail "source mempool entry should match the source-address mempool delta"
 pass "pending spend keeps source confirmed balance separate from the mempool overlay"
 
+BATCH_BALANCE="$(rpc_result "getaddressbatch" "{\"addresses\":[\"$MINER_ADDR\",\"$RECIPIENT_ADDR\"],\"history_count\":1}")"
+[ "$(echo "$BATCH_BALANCE" | jq -r --arg address "$MINER_ADDR" '.addresses[$address].unconfirmed < 0')" = "true" ] || fail "batch source address must include the pending spend debit"
+[ "$(echo "$BATCH_BALANCE" | jq -r --arg address "$MINER_ADDR" '.addresses[$address].unconfirmed')" = "-$SOURCE_PENDING_DELTA" ] || fail "batch source delta must match the single-address authoritative overlay"
+[ "$(echo "$BATCH_BALANCE" | jq -r --arg address "$RECIPIENT_ADDR" '.addresses[$address].unconfirmed')" = "125000000" ] || fail "batch recipient address must include the pending receive credit"
+pass "batch and single-address mempool overlays agree for pending spends and receives"
+
 info "Mining a confirmation block"
 rpc_result "generatetoaddress" "[1,\"$MINER_ADDR\"]" >/dev/null
 
