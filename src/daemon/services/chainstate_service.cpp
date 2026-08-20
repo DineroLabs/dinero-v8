@@ -993,13 +993,39 @@ struct SelfHealRecoveryTarget {
     uint256 block_hash;
 };
 
+// A snapshot is SELF-HEAL-eligible if it is LoadSnapshot-loadable (SnapshotPreflightOk)
+// AND carries a v4 shielded section. The self-heal DELETES the shielded tip marker
+// before reloading, and ONLY LoadSnapshot's v4 path re-persists it
+// (PersistShieldedTipMarker sits inside `if (has_v4_shielded_section)`). Reloading a
+// pre-v4 target would leave the marker NotFound → VerifyOrBootstrapShieldedTipMarker
+// → EnterSafeMode (the #585 brick). SnapshotPreflightOk accepts V2/V3/V4 (it mirrors
+// LoadSnapshot's general acceptance), so BOTH self-heal selectors must additionally
+// require v4 — we only ever delete-then-reload toward a snapshot that WILL re-persist
+// the marker. Post-shielded-activation the chain requires v4 state anyway.
+bool SnapshotSelfHealEligible(const std::shared_ptr<ConfigService>& config,
+                              const std::shared_ptr<LoggerService>& logger,
+                              const std::string& path,
+                              consensus::SnapshotMetadata& out_header) {
+    if (!SnapshotPreflightOk(config, logger, path, out_header)) return false;
+    if (out_header.version < consensus::SNAPSHOT_VERSION_V4) {
+        if (logger) {
+            logger->warning("[self-heal] candidate at height " +
+                            std::to_string(out_header.block_height) +
+                            " is pre-v4 (no shielded section) — not self-heal-eligible "
+                            "(a reload would strand the shielded tip marker): " + path);
+        }
+        return false;
+    }
+    return true;
+}
+
 SelfHealRecoveryTarget SelectSelfHealRecoveryTarget(
     const std::shared_ptr<ConfigService>& config,
     const std::shared_ptr<LoggerService>& logger) {
     SelfHealRecoveryTarget best;
     for (const auto& path : ConfiguredSnapshotPaths(config)) {
         consensus::SnapshotMetadata header;
-        if (!SnapshotPreflightOk(config, logger, path, header)) continue;
+        if (!SnapshotSelfHealEligible(config, logger, path, header)) continue;
         if (!best.found || header.block_height > best.height) {
             best = {true, path, header.block_height, header.block_hash};
         }
@@ -1018,7 +1044,7 @@ SelfHealRecoveryTarget SelectSelfHealFloor(
     SelfHealRecoveryTarget floor;
     for (const auto& path : ConfiguredSnapshotPaths(config)) {
         consensus::SnapshotMetadata header;
-        if (!SnapshotPreflightOk(config, logger, path, header)) continue;
+        if (!SnapshotSelfHealEligible(config, logger, path, header)) continue;
         if (!floor.found || header.block_height < floor.height) {
             floor = {true, path, header.block_height, header.block_hash};
         }
