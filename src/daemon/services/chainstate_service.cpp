@@ -761,61 +761,6 @@ SnapshotPathResolution ResolveConfiguredSnapshotPath(
     return {true, selection.candidate.path, {}};
 }
 
-// Recovery-target selection for the snapshot-rotation self-heal.
-//
-// When a persisted ACTIVE AssumeUTXO lifecycle's base snapshot is no longer
-// among the configured candidates (the seed rotated it away, or the file was
-// removed), ResolveConfiguredSnapshotPath returns NoMatchingActiveLifecycle and
-// the node hard-fails — a reinstall-only brick. This picks a target for a clean
-// re-bootstrap instead: the NEWEST configured candidate whose FULL file passes
-// integrity validation right now.
-//
-// The validation is deliberately full-file (AssumeUTXORegistry::VerifySnapshotHash
-// reads the whole file and SHA256s it against the registered hash), NOT a header
-// peek — a header-present but truncated download (e.g. a cancelled fetch) must be
-// rejected so we never wipe toward an unloadable target. This is the
-// check-then-wipe gate: if NO candidate validates, `found` is false and the
-// caller keeps the fail-safe fatal (a reinstall-recoverable brick must never be
-// converted into a wiped-empty one). The bundled snapshot always ships and always
-// validates, so it is the guaranteed floor.
-struct SelfHealRecoveryTarget {
-    bool found = false;
-    std::string path;
-    uint32_t height = 0;
-    uint256 block_hash;
-};
-
-SelfHealRecoveryTarget SelectSelfHealRecoveryTarget(
-    const std::shared_ptr<ConfigService>& config,
-    const std::shared_ptr<LoggerService>& logger) {
-    SelfHealRecoveryTarget best;
-    for (const auto& path : ConfiguredSnapshotPaths(config)) {
-        consensus::SnapshotMetadata header;
-        std::string error;
-        if (!ReadSnapshotHeaderPreview(path, header, error) ||
-            header.magic != consensus::SNAPSHOT_MAGIC) {
-            continue;
-        }
-        // Full-file integrity gate (check-then-wipe). Rejects a header-present
-        // but truncated/corrupt file, and any candidate not in the registry.
-        if (!dinero::consensus::AssumeUTXORegistry::VerifySnapshotHash(
-                path, header.block_height)) {
-            if (logger) {
-                logger->warning(
-                    "[self-heal] candidate at height " +
-                    std::to_string(header.block_height) +
-                    " failed full-file integrity — not a wipe target: " + path);
-            }
-            continue;
-        }
-        // Newest validating candidate wins; the bundled snapshot is the floor.
-        if (!best.found || header.block_height > best.height) {
-            best = {true, path, header.block_height, header.block_hash};
-        }
-    }
-    return best;
-}
-
 bool ValidateSnapshotTransportPreflight(
     const std::filesystem::path& snapshot_path,
     uint64_t max_snapshot_bytes,
@@ -935,6 +880,128 @@ bool ValidateSnapshotManifestPreflight(
     }
 
     return true;
+}
+
+// Non-mutating verification of a snapshot's in-file trailer checksum. The dump
+// writes SHA256(content) as the FINAL 32 bytes; LoadSnapshot verifies
+// SHA256(everything-before) == those 32 bytes BEFORE touching the UTXO index.
+// Replicating exactly that here lets the self-heal check-then-wipe gate predict
+// LoadSnapshot's integrity result without loading — a truncated/corrupt file
+// (e.g. a cancelled download that is header-present but short) fails here just as
+// it would in LoadSnapshot.
+bool VerifySnapshotTrailerChecksum(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec || size < 32) return false;
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) return false;
+    crypto::CSHA256 hasher;
+    uint64_t remaining = static_cast<uint64_t>(size) - 32;  // content precedes the 32-byte trailer
+    std::vector<char> buf(1u << 16);
+    while (remaining > 0) {
+        const std::size_t want =
+            static_cast<std::size_t>(std::min<uint64_t>(remaining, buf.size()));
+        f.read(buf.data(), static_cast<std::streamsize>(want));
+        if (static_cast<std::size_t>(f.gcount()) != want) return false;  // truncated
+        hasher.Write(reinterpret_cast<const uint8_t*>(buf.data()), want);
+        remaining -= want;
+    }
+    uint8_t stored[32];
+    f.read(reinterpret_cast<char*>(stored), 32);
+    if (f.gcount() != 32) return false;
+    uint8_t computed[32];
+    hasher.Finalize(computed);
+    return std::memcmp(computed, stored, 32) == 0;
+}
+
+// Shared non-mutating snapshot preflight: the subset of LoadSnapshot's checks
+// that run BEFORE the mutating BulkLoad — transport (size/regular-file), the
+// conditional manifest trust gate (SAME conditionality as LoadSnapshot, calling
+// the same helpers so it cannot drift), header magic + supported version, and
+// the in-file trailer checksum. A pass here means LoadSnapshot's integrity/format
+// preflight will also pass, so the self-heal never wipes toward a target
+// LoadSnapshot would then reject (check-then-wipe). (LoadSnapshot additionally
+// binds the base hash to the header chain; the bundled floor always satisfies
+// that, and a non-bundled miss is re-attemptable via the idempotent restart path,
+// so the gate is intentionally integrity+format here.)
+bool SnapshotPreflightOk(const std::shared_ptr<ConfigService>& config,
+                         const std::shared_ptr<LoggerService>& logger,
+                         const std::string& path,
+                         consensus::SnapshotMetadata& out_header) {
+    std::string error;
+    if (!ReadSnapshotHeaderPreview(path, out_header, error) ||
+        out_header.magic != consensus::SNAPSHOT_MAGIC) {
+        return false;
+    }
+    if (out_header.version != consensus::SNAPSHOT_VERSION_V2 &&
+        out_header.version != consensus::SNAPSHOT_VERSION_V3 &&
+        out_header.version != consensus::SNAPSHOT_VERSION_V4) {
+        return false;
+    }
+    const uint64_t default_max_snapshot_mb = 64ULL * 1024ULL;
+    const uint64_t configured_max_snapshot_mb =
+        config ? static_cast<uint64_t>(std::max(
+                     config->GetInt("assumeutxo_snapshot_max_mb",
+                                    static_cast<int>(default_max_snapshot_mb)), 0))
+               : default_max_snapshot_mb;
+    if (!ValidateSnapshotTransportPreflight(
+            path, configured_max_snapshot_mb * 1024ULL * 1024ULL, error)) {
+        return false;
+    }
+    // Manifest trust gate — mirror LoadSnapshot's conditionality exactly.
+    const bool require_manifest =
+        config ? config->GetBool("assumeutxo_require_manifest", false) : false;
+    const std::string manifest_path_cfg =
+        config ? config->GetString("assumeutxo_manifest", "") : "";
+    std::filesystem::path manifest_path;
+    if (!manifest_path_cfg.empty()) {
+        manifest_path = manifest_path_cfg;
+    } else {
+        std::filesystem::path sibling = path;
+        sibling += ".manifest.json";
+        if (std::filesystem::exists(sibling)) manifest_path = sibling;
+    }
+    if (!manifest_path.empty()) {
+        if (!ValidateSnapshotManifestPreflight(path, manifest_path, error)) return false;
+    } else if (require_manifest) {
+        return false;
+    }
+    // In-file integrity trailer (always present; the primary corruption gate).
+    if (!VerifySnapshotTrailerChecksum(path)) {
+        if (logger) {
+            logger->warning("[self-heal] candidate at height " +
+                            std::to_string(out_header.block_height) +
+                            " failed in-file checksum — not a wipe target: " + path);
+        }
+        return false;
+    }
+    return true;
+}
+
+// Recovery-target selection for the snapshot-rotation self-heal: the newest
+// configured candidate that is LoadSnapshot-loadable right now (SnapshotPreflightOk),
+// with the always-present bundled snapshot as the guaranteed floor. `found` is
+// false when nothing validates → the caller keeps the fail-safe fatal (never wipe
+// toward an unloadable target).
+struct SelfHealRecoveryTarget {
+    bool found = false;
+    std::string path;
+    uint32_t height = 0;
+    uint256 block_hash;
+};
+
+SelfHealRecoveryTarget SelectSelfHealRecoveryTarget(
+    const std::shared_ptr<ConfigService>& config,
+    const std::shared_ptr<LoggerService>& logger) {
+    SelfHealRecoveryTarget best;
+    for (const auto& path : ConfiguredSnapshotPaths(config)) {
+        consensus::SnapshotMetadata header;
+        if (!SnapshotPreflightOk(config, logger, path, header)) continue;
+        if (!best.found || header.block_height > best.height) {
+            best = {true, path, header.block_height, header.block_hash};
+        }
+    }
+    return best;
 }
 
 void ApplyPersistedMetadataToBlockIndex(CBlockIndex* block_index,
