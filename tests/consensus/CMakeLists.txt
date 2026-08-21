@@ -955,6 +955,34 @@ set_tests_properties(UtreexoBatchRemove PROPERTIES
     TIMEOUT 60
 )
 
+# Connect-path proof-generation performance regressions (block-92742
+# incident: per-target prove/remove made a 1600-input block take minutes
+# to connect). Registered UNLABELLED so it runs in the required
+# full-ctest lane. TIMEOUT is generous so a regression fails on the
+# test's own in-band wall-clock assertion (clear message) rather than an
+# ambiguous ctest timeout.
+add_executable(test_utreexo_connect_perf
+    test_utreexo_connect_perf.cpp
+)
+add_dependencies(test_utreexo_connect_perf gtest)
+target_link_libraries(test_utreexo_connect_perf PRIVATE
+    dinero_consensus
+    dinero_tx_primitives
+    dinero_crypto
+    gtest
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+)
+target_include_directories(test_utreexo_connect_perf PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME UtreexoConnectPerf COMMAND test_utreexo_connect_perf)
+set_tests_properties(UtreexoConnectPerf PROPERTIES
+    TIMEOUT 900
+)
+
 # Fail-closed AssumeUTXO container-format policy: V2 deprecated outright, V3
 # rejected at/above shielded activation, V4 supported. Pure predicate, so the
 # boundary is swept exhaustively without a chainstate.

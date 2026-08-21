@@ -405,8 +405,13 @@ consensus::BlockUtreexoData BridgeNode::GenerateProofForBlock(
     proof_data.spend_proof.numLeaves = proof_forest->getNumLeaves();
     proof_data.spend_proof.format_version = consensus::GetUtreexoProofFormatVersion(block_height);
 
+    // Batched proving with one shared subtree-hash cache: per-position
+    // prove() rehashes the entire containing subtree per call, which is
+    // O(inputs × forest) for a block — the dominant cost of proving the
+    // 1600-input mainnet block 92742 (2026-08-21 incident).
+    const auto batched_proofs = proof_forest->proveMany(spend_positions);
     for (size_t i = 0; i < spend_positions.size(); ++i) {
-        auto proof_opt = proof_forest->prove(spend_positions[i]);
+        const auto& proof_opt = batched_proofs[i];
         if (!proof_opt.has_value()) {
             std::ostringstream oss;
             oss << "BridgeNode::GenerateProofForBlock - Proof generation failed for position "

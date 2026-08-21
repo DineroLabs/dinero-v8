@@ -359,6 +359,20 @@ public:
     std::optional<UtreexoProof> prove(uint64_t position) const;
 
     /**
+     * @brief Prove many positions at once, sharing one subtree-hash cache.
+     *
+     * Element i is exactly what prove(positions[i]) returns (byte-identical
+     * siblings; std::nullopt for deleted/out-of-range positions), but sibling
+     * subtree hashes are memoized across the whole batch, so total cost is
+     * O(forest) hashing instead of O(positions × forest). Use this for any
+     * per-block proving loop — the per-target prove() loop in the block
+     * connect path is what made 1600-input mainnet block 92742 take minutes
+     * to connect (2026-08-21 incident).
+     */
+    std::vector<std::optional<UtreexoProof>> proveMany(
+        const std::vector<uint64_t>& positions) const;
+
+    /**
      * @brief Verify a batched Utreexo proof (STATEFUL - legacy)
      *
      * This is the legacy STATEFUL verification function that requires
