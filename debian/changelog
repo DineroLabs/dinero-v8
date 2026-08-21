@@ -1,3 +1,28 @@
+dinero-core (8.1.7-1) unstable; urgency=high
+
+  * v8.1.7 -- repair stateless AssumeUTXO wallet spends and consolidation.
+    Persist the frozen pre-base coin set in its own chain database column
+    family, use it for disconnect/undo and mempool input resolution, and
+    migrate upgraded snapshot nodes from the configured snapshot records.
+  * Keep pre-base resolution valid after snapshot promotion while requiring
+    the stored base marker to match the canonical promoted base and requiring
+    every live spend to remain present in the active Utreexo forest. Spent
+    leaves continue to fail closed.
+  * Self-heal snapshot lifecycles whose configured base artifact was rotated
+    away, without wiping an already bootstrapped forest, and bound Utreexo
+    block-template construction so mining RPC calls cannot stall indefinitely.
+  * Require E=0 in the Spartan standalone R1CS verifier, closing the
+    total-forgery acceptance case. Remove the retired ring-signature and
+    ring-covenant proving stack and make the Qt consolidation dialog describe
+    its actual per-run behavior.
+  * Network magic, peer protocol, wallet format, and the height-73,035 and
+    height-84,131 V4 AssumeUTXO trust anchors are unchanged. The new pre-base
+    column family is created and backfilled automatically on upgrade.
+  * Fleet and stateless-client upgrade REQUIRED: daemon, validation,
+    snapshot lifecycle, and embedded NodeCore paths changed.
+
+ -- Dinero Labs <team@dinerolabs.org>  Fri, 21 Aug 2026 12:55:06 -0400
+
 dinero-core (8.1.6-1) unstable; urgency=medium
 
   * v8.1.6 -- make DineroDPI shared-RPC address discovery correct on
