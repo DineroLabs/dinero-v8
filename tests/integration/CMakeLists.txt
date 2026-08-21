@@ -714,8 +714,8 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
 
     # Block-90391 regression (STATELESS CSN undo path): a stateless consumer
     # forward-connects a post-base block that spends a PRE-BASE coin. That coin
-    # lives only in the in-memory AssumeUTXO set (absent from the consumer's
-    # ChainDB), so the CSN undo reconstruction must recover it from that set —
+    # is absent from the ordinary consumer ChainDB UTXO CF, so the CSN undo
+    # reconstruction must recover it from the frozen pre-base store —
     # without the fix, ReconstructSpentCoinsFromChainDb aborts the connect and
     # the node stalls at base (the phone's 90391 brick). Asserts the fidelity
     # log (recovered height == known pre-base height AND coinbase == 1).
@@ -737,6 +737,26 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
         RUN_SERIAL TRUE
     )
     message(STATUS "  ✓ AssumeUtxoPrebaseSpendStatelessUndo registered")
+
+    # Broadcast twin of the stateless undo regression. A live pre-base input
+    # must resolve from the durable frozen store and pass the live-forest gate;
+    # an input spent after the snapshot base must fail that same gate.
+    add_test(
+        NAME AssumeUtxoPrebaseMempoolResolution
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            "PREBASE_MEMPOOL_MODE=1"
+            "BASE_HEIGHT=120"
+            "SRC_PREBASE_H=3"
+            "CHECKPOINT_INTERVAL=5"
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh
+    )
+    set_tests_properties(AssumeUtxoPrebaseMempoolResolution PROPERTIES
+        LABELS "assumeutxo;replay;e2e;forward-connect;stateless-mempool"
+        TIMEOUT 900
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ AssumeUtxoPrebaseMempoolResolution registered")
 
     # Snapshot-rotation self-heal: a stateless node with a persisted ACTIVE
     # AssumeUTXO lifecycle pinned to a base whose snapshot has been ROTATED AWAY

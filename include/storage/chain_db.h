@@ -302,6 +302,21 @@ public:
     Status putCoin(const ChainWriteToken& token, const uint256& txid, uint32_t vout, const Coin& coin, rocksdb::WriteBatch* wb = nullptr);
     Status deleteCoin(const ChainWriteToken& token, const uint256& txid, uint32_t vout, rocksdb::WriteBatch* wb = nullptr);
 
+    // Frozen AssumeUTXO snapshot coin records. These rows preserve the full
+    // pre-base coin data needed by stateless undo and mempool resolution after
+    // the mutable active UTXO map has spent/removed a coin. Ordinary block
+    // connect/disconnect MUST NOT mutate this column family. A verified
+    // snapshot import replaces it atomically through replacePreBaseCoins().
+    struct PreBaseCoinRecord {
+        uint256 txid;
+        uint32_t vout{0};
+        Coin coin;
+    };
+    Status replacePreBaseCoins(const ChainWriteToken& token,
+                               const uint256& base_hash,
+                               uint32_t base_height,
+                               const std::vector<PreBaseCoinRecord>& coins);
+
     // Transaction index (optional but affects reorg safety)
     Status putTxIndex(const ChainWriteToken& token, const uint256& txid, const uint256& block_hash, uint32_t offset, rocksdb::WriteBatch* wb = nullptr);
     Status deleteTxIndex(const ChainWriteToken& token, const uint256& txid, rocksdb::WriteBatch* wb = nullptr);
@@ -514,6 +529,8 @@ public:
 
     StatusOr<Coin> getCoin(const uint256& txid, uint32_t vout) const;
     StatusOr<Coin> getCoinWithConfidentialFallback(const uint256& txid, uint32_t vout) const;
+    StatusOr<Coin> getPreBaseCoin(const uint256& txid, uint32_t vout) const;
+    StatusOr<std::pair<uint256, uint32_t>> getPreBaseCoinSetBase() const;
 
     StatusOr<std::pair<uint256, uint32_t>> getTxLocation(const uint256& txid) const;
 
@@ -634,6 +651,7 @@ private:
         idx_txindex_ = other.idx_txindex_;
         idx_utxo_ = other.idx_utxo_;
         idx_utreexo_ = other.idx_utreexo_;
+        idx_prebase_coins_ = other.idx_prebase_coins_;
     }
 
     // ⚠️ ORDER MATTERS: declare DB FIRST so it is destroyed LAST
@@ -656,6 +674,7 @@ private:
     int idx_txindex_ = 5;
     int idx_utxo_ = 6;
     int idx_utreexo_ = 7;  // Phase 2.1: Utreexo accumulator checkpoints
+    int idx_prebase_coins_ = 8;  // Frozen AssumeUTXO snapshot coin records
 
     // Key prefixes (1-byte tags)
     static constexpr uint8_t PREFIX_BLOCK = 'b';

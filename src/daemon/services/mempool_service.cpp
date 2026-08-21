@@ -53,6 +53,21 @@ bool MempoolService::Init(DaemonContext& ctx) {
             chainstate_->GetConsensusUTXOSet(),
             GetConfig().utreexo_stateless);
         mempool_->setLogger(logger_interface_);  // Inject logger for dependency injection
+        std::weak_ptr<ChainstateService> weak_chainstate = chainstate_;
+        mempool_->setPreBaseCoinResolver(
+            [weak_chainstate](const OutPoint& outpoint)
+                -> std::optional<consensus::UTXOEntry> {
+                const auto chainstate = weak_chainstate.lock();
+                return chainstate
+                    ? chainstate->ResolveLivePreBaseCoin(outpoint)
+                    : std::nullopt;
+            });
+        mempool_->setPreBaseCoinPredicate(
+            [weak_chainstate](const OutPoint& outpoint) {
+                const auto chainstate = weak_chainstate.lock();
+                return chainstate &&
+                       chainstate->ResolvePreBaseCoinForUndo(outpoint).has_value();
+            });
         logger_interface_->info(
             std::string("[MempoolService] Mempool instance created with active consensus UTXO view") +
             (GetConfig().utreexo_stateless ? " and stateless ChainDB fallback" : ""));

@@ -3897,6 +3897,55 @@ bool ChainstateService::Start() {
             }
         }
 
+        // One-time upgrade backfill for datadirs created before the durable
+        // frozen pre-base CF existed. A node that is already advanced beyond
+        // its snapshot base must not replay LoadSnapshot (that would rewind its
+        // live forest), but its current consensus map still contains every
+        // pre-base coin that can be spent in a future block. Persist those live
+        // records and bind them to the exact active base. Coins already spent
+        // before this upgrade have durable block undo; they are not needed for
+        // future mempool admission or future block-undo construction.
+        if (!lifecycle_fatal_at_restore && !utxo_set_not_bootstrapped &&
+            chain_db_ && consensus_utxo_set_) {
+            const auto frozen_base = chain_db_->getPreBaseCoinSetBase();
+            if (frozen_base.status() == Status::NotFound) {
+                std::vector<ChainDB::PreBaseCoinRecord> records;
+                for (const auto& [outpoint, entry] : consensus_utxo_set_->GetUTXOs()) {
+                    if (entry.height > assumeutxo_base_height_) continue;
+                    ChainDB::PreBaseCoinRecord record;
+                    record.txid = outpoint.txid.AsUint256();
+                    record.vout = outpoint.vout;
+                    record.coin.amount = entry.value.GetUna();
+                    record.coin.script_pubkey = util::hex(entry.scriptPubKey);
+                    record.coin.height = static_cast<int>(entry.height);
+                    record.coin.coinbase = entry.isCoinbase;
+                    record.coin.is_confidential = entry.is_confidential;
+                    record.coin.commitment = entry.commitment;
+                    records.push_back(std::move(record));
+                }
+                ChainWriteToken token;
+                const auto backfill = chain_db_->replacePreBaseCoins(
+                    token, assumeutxo_base_block_, assumeutxo_base_height_, records);
+                if (backfill != Status::Ok) {
+                    logger_->error("[AssumeUTXO restore] Failed to backfill durable frozen "
+                                   "pre-base coin records for the active snapshot lifecycle");
+                    return false;
+                }
+                logger_->info("[AssumeUTXO restore] Backfilled " +
+                              std::to_string(records.size()) +
+                              " durable frozen pre-base coin records for the active base");
+            } else if (frozen_base.status() != Status::Ok) {
+                logger_->error("[AssumeUTXO restore] Could not read the frozen pre-base "
+                               "coin-set marker");
+                return false;
+            } else if (frozen_base.value().first != assumeutxo_base_block_ ||
+                       frozen_base.value().second != assumeutxo_base_height_) {
+                logger_->error("[AssumeUTXO restore] Frozen pre-base coin-set marker does "
+                               "not match the active snapshot lifecycle");
+                return false;
+            }
+        }
+
         if (!lifecycle_fatal_at_restore && utxo_set_not_bootstrapped &&
             !assumeutxo_skip_wrong_base_rehydrate) {
             const std::string snapshot_path =
@@ -9135,6 +9184,87 @@ std::optional<consensus::UTXOEntry> ChainstateService::GetActiveUTXO(
     return coin ? std::optional<consensus::UTXOEntry>(*coin) : std::nullopt;
 }
 
+std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
+    const OutPoint& outpoint) const {
+    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    if (!assumeutxo_active_ || assumeutxo_base_block_.IsNull() ||
+        !chain_db_ || !consensus_utxo_set_) {
+        return std::nullopt;
+    }
+
+    const auto marker = chain_db_->getPreBaseCoinSetBase();
+    if (!marker.ok() || marker.value().first != assumeutxo_base_block_ ||
+        marker.value().second != assumeutxo_base_height_) {
+        return std::nullopt;
+    }
+
+    const auto stored = chain_db_->getPreBaseCoin(
+        outpoint.txid.AsUint256(), outpoint.vout);
+    if (!stored.ok() || stored.value().height < 0 ||
+        static_cast<uint32_t>(stored.value().height) > assumeutxo_base_height_) {
+        return std::nullopt;
+    }
+
+    std::vector<unsigned char> script;
+    if (!util::unhex(stored.value().script_pubkey, script)) {
+        return std::nullopt;
+    }
+    const auto leaf = consensus::HashUTXOForCreationHeight(
+        outpoint.txid.AsUint256(), outpoint.vout, stored.value().amount,
+        std::vector<uint8_t>(script.begin(), script.end()),
+        static_cast<uint32_t>(stored.value().height), stored.value().coinbase);
+    {
+        auto forest_lock = consensus_utxo_set_->LockForestShared();
+        if (!consensus_utxo_set_->GetForest().findLeafPosition(leaf).has_value()) {
+            return std::nullopt;
+        }
+    }
+
+    consensus::UTXOEntry entry;
+    entry.value = AmountUna::Una(stored.value().amount);
+    entry.scriptPubKey.assign(script.begin(), script.end());
+    entry.height = static_cast<uint32_t>(stored.value().height);
+    entry.isCoinbase = stored.value().coinbase;
+    entry.is_confidential = stored.value().is_confidential;
+    entry.commitment = stored.value().commitment;
+    return entry;
+}
+
+std::optional<consensus::UTXOEntry> ChainstateService::ResolvePreBaseCoinForUndo(
+    const OutPoint& outpoint) const {
+    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    if (!assumeutxo_active_ || assumeutxo_base_block_.IsNull() || !chain_db_) {
+        return std::nullopt;
+    }
+
+    const auto marker = chain_db_->getPreBaseCoinSetBase();
+    if (!marker.ok() || marker.value().first != assumeutxo_base_block_ ||
+        marker.value().second != assumeutxo_base_height_) {
+        return std::nullopt;
+    }
+
+    const auto stored = chain_db_->getPreBaseCoin(
+        outpoint.txid.AsUint256(), outpoint.vout);
+    if (!stored.ok() || stored.value().height < 0 ||
+        static_cast<uint32_t>(stored.value().height) > assumeutxo_base_height_) {
+        return std::nullopt;
+    }
+
+    std::vector<unsigned char> script;
+    if (!util::unhex(stored.value().script_pubkey, script)) {
+        return std::nullopt;
+    }
+
+    consensus::UTXOEntry entry;
+    entry.value = AmountUna::Una(stored.value().amount);
+    entry.scriptPubKey.assign(script.begin(), script.end());
+    entry.height = static_cast<uint32_t>(stored.value().height);
+    entry.isCoinbase = stored.value().coinbase;
+    entry.is_confidential = stored.value().is_confidential;
+    entry.commitment = stored.value().commitment;
+    return entry;
+}
+
 std::string ChainstateService::getBestBlockHash() const {
     // In AssumeUTXO mode, active_tip_ is the authoritative tip (snapshot base).
     if (active_tip_) return active_tip_->hash.GetHex();
@@ -10380,6 +10510,41 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
 
         result.utxos_imported = utxo_map.size();
         logger_->info("[LoadSnapshot] Pass 2 complete: Loaded " + std::to_string(result.utxos_imported) + " UTXOs into consensus set");
+
+        // Preserve the verified snapshot's full pre-base coin records in a
+        // dedicated frozen CF. Ordinary block processing never removes these
+        // rows; liveness is decided separately by the current forest. This is
+        // required after restart/reorg because the active UTXO map legitimately
+        // drops spent pre-base coins while undo reconstruction still needs their
+        // original height/coinbase/script/value fidelity.
+        std::vector<ChainDB::PreBaseCoinRecord> prebase_records;
+        prebase_records.reserve(utxo_map.size());
+        for (const auto& [outpoint, entry] : utxo_map) {
+            ChainDB::PreBaseCoinRecord record;
+            record.txid = outpoint.txid.AsUint256();
+            record.vout = outpoint.vout;
+            record.coin.amount = entry.value.GetUna();
+            record.coin.script_pubkey = util::hex(entry.scriptPubKey);
+            record.coin.height = static_cast<int>(entry.height);
+            record.coin.coinbase = entry.isCoinbase;
+            record.coin.is_confidential = entry.is_confidential;
+            record.coin.commitment = entry.commitment;
+            prebase_records.push_back(std::move(record));
+        }
+        {
+            ChainWriteToken token;
+            const auto persist_status = chain_db_->replacePreBaseCoins(
+                token, header.block_hash, header.block_height, prebase_records);
+            if (persist_status != Status::Ok) {
+                result.error_message =
+                    "Failed to persist frozen snapshot coin records";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+        }
+        logger_->info("[LoadSnapshot] Persisted " +
+                      std::to_string(prebase_records.size()) +
+                      " frozen pre-base coin records");
 
         SetAssumeUTXOState(header.block_hash, header.block_height, /*persist_metadata=*/true);
 
@@ -11790,22 +11955,13 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
             }
             if (found_intra_block) continue;
 
-            // AssumeUTXO fallback: a stateless snapshot node spends coins that
-            // were created BEFORE the snapshot base. Those pre-base coins live
-            // only in the in-memory AssumeUTXO set (BulkLoad'd from the
-            // snapshot) — they are NEVER written to the ChainDB utxo CF (which
-            // forward-connect only fills for post-base blocks), so getCoin above
-            // misses them. Without this the first legitimate pre-base spend
-            // (field: DineroDPI stateless node at block 90391, spending a
-            // pre-base coin) makes the tip undisconnectable and bricks the node.
-            // Consult the authoritative in-memory set — the same source the
-            // #594 balance reads use — before declaring the coin unreconstructable.
-            // Use GetActiveUTXO DIRECTLY (not getAuthoritativeCoin, which returns
-            // only script+value): the undo needs the FULL fidelity — value,
-            // scriptPubKey, height, isCoinbase, is_confidential, commitment — that
-            // ReconstructSpentCoins exists to recover (utreexo proofs don't commit
-            // height/coinbase). GetActiveUTXO is deadlock-safe inline here:
-            // activation_mutex_ is recursive and ConnectTip already holds it.
+            // AssumeUTXO fallback: pre-base coins are never written to the
+            // ordinary ChainDB utxo CF, so resolve their immutable full-fidelity
+            // record from the frozen snapshot store. Resolution is authorized
+            // only when the record belongs to this exact active snapshot base and
+            // its computed leaf is present in the current forest. Retaining the
+            // row while gating on the forest lets undo recover height/coinbase
+            // without ever making an already-spent record spendable again.
             //
             // Fidelity: the snapshot format carries value/script/height/coinbase
             // (LoadSnapshot populates entry.height + entry.isCoinbase), so those
@@ -11824,7 +11980,8 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
             // separate shielded pool via TX_VERSION_SHIELDED / shielded_bundle,
             // which the snapshot's shielded_section carries — not per-coin CT.)
             if (IsAssumeUTXOActive()) {
-                if (auto active = GetActiveUTXO(dinero::OutPoint{input.prevout.txid, prev_vout})) {
+                if (auto active = ResolvePreBaseCoinForUndo(
+                        dinero::OutPoint{input.prevout.txid, prev_vout})) {
                     // Observability: this rare path fires only for a pre-base
                     // spend on a snapshot-active node. Log the recovered fidelity
                     // fields (height/coinbase) that the ChainDB path would have
@@ -11836,7 +11993,7 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
                             "[ReconstructSpentCoins] pre-base spent coin " +
                             prev_txid.GetHex().substr(0, 16) + ":" +
                             std::to_string(prev_vout) +
-                            " reconstructed from AssumeUTXO set (height=" +
+                            " reconstructed from frozen pre-base store (height=" +
                             std::to_string(active->height) + " coinbase=" +
                             (active->isCoinbase ? "1" : "0") + ")");
                     }
@@ -11857,7 +12014,7 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
             // undisconnectable, so the connect must abort.
             out_error = "ReconstructSpentCoinsFromChainDb: outpoint " +
                         prev_txid.GetHex() + ":" + std::to_string(prev_vout) +
-                        " absent from ChainDB, AssumeUTXO set, and not created intra-block";
+                        " absent from ChainDB, live frozen pre-base store, and not created intra-block";
             out_spent.clear();
             return Status::NotFound;
         }

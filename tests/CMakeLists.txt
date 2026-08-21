@@ -297,6 +297,29 @@ if(NOT MSVC)
   )
 endif()
 
+# Frozen pre-base coin store: append-only CF migration, full-fidelity
+# persistence, atomic snapshot replacement, and ordinary-spend isolation.
+add_executable(test_chain_db_prebase_coins
+  tests/storage/test_chain_db_prebase_coins.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_chain_db_prebase_coins PRIVATE
+  dinero_chainstate
+  dinero_crypto
+  RocksDB::rocksdb
+  OpenSSL::Crypto
+)
+link_zstd_if_needed(test_chain_db_prebase_coins)
+target_include_directories(test_chain_db_prebase_coins PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME ChainDBPreBaseCoins COMMAND test_chain_db_prebase_coins)
+set_tests_properties(ChainDBPreBaseCoins PROPERTIES
+  LABELS "storage;persistence;assumeutxo;regression"
+  TIMEOUT 30
+)
+
 # Regression (DineroDPI): wallet.getproofbundle must never emit a bundle whose
 # proof num_leaves diverge from the stump num_leaves ("proof leaf count mismatch"
 # — a block connecting between proof gen and stump snapshot). Header-only invariant

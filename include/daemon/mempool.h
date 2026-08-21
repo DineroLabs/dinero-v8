@@ -458,6 +458,16 @@ public:
         shielded_nullifiers_ = nullifiers;
     }
 
+    using PreBaseCoinResolver =
+        std::function<std::optional<consensus::UTXOEntry>(const OutPoint&)>;
+    using PreBaseCoinPredicate = std::function<bool(const OutPoint&)>;
+    void setPreBaseCoinResolver(PreBaseCoinResolver resolver) {
+        prebase_coin_resolver_ = std::move(resolver);
+    }
+    void setPreBaseCoinPredicate(PreBaseCoinPredicate predicate) {
+        prebase_coin_predicate_ = std::move(predicate);
+    }
+
 private:
     // ========================================================================
     // LEGACY ADAPTER (Step 3 - Phase G.3)
@@ -482,6 +492,8 @@ private:
     bool checkDependencies(const Transaction& tx) const;
     uint64_t calculateFee(const Transaction& tx) const;
     std::optional<consensus::UTXOEntry> recoverConflictedInputUTXO(const OutPoint& outpoint) const;
+    PreBaseCoinResolver prebase_coin_resolver_;
+    PreBaseCoinPredicate prebase_coin_predicate_;
     void updateDependencies(const uint256& txid);
     void recalcAncestorMetrics(MempoolEntry& entry);
     void evictTransactions();
