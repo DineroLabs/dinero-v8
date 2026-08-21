@@ -2158,6 +2158,20 @@ std::optional<UtreexoProof> UtreexoForest::prove(uint64_t position) const {
     return proveWithCache(position, nullptr);
 }
 
+std::vector<std::optional<UtreexoProof>> UtreexoForest::proveMany(
+    const std::vector<uint64_t>& positions) const {
+    // One shared subtree-hash cache across the whole batch: sibling subtrees
+    // overlap heavily between proofs, so memoization collapses the cost from
+    // O(positions × forest) to O(forest) hashing (block-92742 incident).
+    SubtreeHashCache subtree_cache(MAX_TREE_HEIGHT + 1);
+    std::vector<std::optional<UtreexoProof>> proofs;
+    proofs.reserve(positions.size());
+    for (uint64_t position : positions) {
+        proofs.push_back(proveWithCache(position, &subtree_cache));
+    }
+    return proofs;
+}
+
 UtreexoHash UtreexoForest::getCommitment() const {
     // Canonical commitment v2: SHA256(numLeaves_LE64 || slot[0] || slot[1] || ... || slot[63])
     // Each slot is 32 bytes: the root hash if present, or 32 zero bytes if absent.
@@ -3515,14 +3529,39 @@ UtreexoTransitionProof UtreexoTransitionProof::generate(
     // Clone forest for non-destructive simulation
     UtreexoForest snapshot = forest_before.clone();
 
-    // PASS 1: REMOVE ALL spent UTXOs via spend_proof targets (leaf hashes)
-    for (const auto& target : spend_proof.targets) {
-        auto position_opt = snapshot.findLeafPosition(target);
-        if (position_opt.has_value()) {
-            auto proof_opt = snapshot.prove(position_opt.value());
-            if (proof_opt.has_value()) {
-                snapshot.remove(target, proof_opt.value());
+    // PASS 1 (batched): resolve each spend target to its live position via
+    // the clone's leaf index, then remove them all in ONE call so the roots
+    // are rebuilt once. The old per-target prove()+remove() pair rehashed the
+    // entire containing subtree for every target — O(targets × forest)
+    // hashing — which made 1600-input mainnet block 92742 take ~7 minutes to
+    // connect on every node (2026-08-21 incident; regression test
+    // UtreexoConnectPerf.GenerateFastForManyTargets). Behavior parity with
+    // the old loop: an unresolvable target is skipped (old find/prove
+    // failure), and a duplicate target's later occurrence is skipped (its
+    // leaf is already scheduled — the old second remove() failed the same
+    // way). Proof re-verification is unnecessary here: we hold the full
+    // forest, and positions come from its own leaf index (same trust
+    // argument as ConnectBlockInternal's removeAtKnownPosition use).
+    {
+        std::vector<std::pair<uint64_t, UtreexoHash>> removals;
+        removals.reserve(spend_proof.targets.size());
+        std::unordered_set<uint64_t> scheduled_positions;
+        scheduled_positions.reserve(spend_proof.targets.size());
+        for (const auto& target : spend_proof.targets) {
+            auto position_opt = snapshot.findLeafPosition(target);
+            if (!position_opt.has_value()) {
+                continue;
             }
+            if (!scheduled_positions.insert(position_opt.value()).second) {
+                continue;
+            }
+            removals.emplace_back(position_opt.value(), target);
+        }
+        if (!removals.empty() && !snapshot.removeAtKnownPositions(removals)) {
+            // Structurally unreachable after the liveness checks above, but
+            // fail closed the same way the add() failure path below does.
+            std::cerr << "[TP-GEN] batched removal failed while building transition proof" << std::endl;
+            return UtreexoTransitionProof();
         }
     }
 

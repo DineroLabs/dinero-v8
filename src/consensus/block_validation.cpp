@@ -2158,6 +2158,18 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
         // PASS 1: REMOVE ALL spent UTXOs (entire block)
         // Skip intra-block spends — those UTXOs were never in the forest
+        //
+        // Removals are COLLECTED here and executed as ONE
+        // removeAtKnownPositions() batch after the loop: per-input
+        // removeAtKnownPosition() rehashes the entire containing subtree
+        // per call (recomputePath), which is O(inputs × forest) hashing for
+        // the block and made the 1600-input mainnet block 92742 take ~7
+        // minutes to connect (2026-08-21 incident). Positions come from
+        // findLeafPosition on this same untouched snapshot, so batch
+        // validation cannot fail; end state is proven identical to the
+        // sequential removals (UtreexoBatchRemove ctest).
+        std::vector<std::pair<uint64_t, UtreexoHash>> pass1_removals;
+        std::unordered_set<uint64_t> pass1_positions;
         for (size_t i = 0; i < block.vtx.size(); i++) {
             const Transaction& tx = block.vtx[i];
             bool is_coinbase = (i == 0);
@@ -2241,21 +2253,37 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     delta.recordDelete(position_opt.value(), leafHash);
                 }
 
-                // Remove the UTXO from accumulator. The snapshot is our own
-                // forest clone — we trust the position returned by
+                // Schedule the removal for the post-loop batch. The snapshot
+                // is our own forest clone — we trust the position returned by
                 // findLeafPosition above, so there is no adversarial proof
                 // to re-verify. The proof-based variant hit a stale cached
                 // root for every covenant spend on Apr 13 2026 (the
-                // release blocker for the privacy stack).
-                bool removed = snapshot.removeAtKnownPosition(position_opt.value(), leafHash);
-                if (!removed) {
+                // release blocker for the privacy stack). A repeated
+                // position (the same leaf spent twice — double-spends are
+                // rejected earlier; this is defense in depth) fails here
+                // exactly where the old sequential code's second
+                // findLeafPosition came back empty.
+                if (!pass1_positions.insert(position_opt.value()).second) {
                     if (IsUtreexoActive(height)) {
-                        error = "utreexo-remove-failed: " + outpoint.ToString();
+                        error = "utreexo-leaf-missing: " + outpoint.ToString();
                         return false;
                     }
                     std::cerr << "⚠️  [Utreexo] Failed to remove UTXO from accumulator" << std::endl;
+                    continue;
                 }
+                pass1_removals.emplace_back(position_opt.value(), leafHash);
             }
+        }
+
+        if (!pass1_removals.empty() &&
+            !snapshot.removeAtKnownPositions(pass1_removals)) {
+            // Unreachable by construction (positions verified live and
+            // unique against this snapshot above) — fail closed.
+            if (IsUtreexoActive(height)) {
+                error = "utreexo-remove-failed: batched block removal";
+                return false;
+            }
+            std::cerr << "⚠️  [Utreexo] Batched removal failed" << std::endl;
         }
 
         // PASS 2: ADD ALL new outputs (entire block, including coinbase)
