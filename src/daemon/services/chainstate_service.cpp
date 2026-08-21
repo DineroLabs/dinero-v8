@@ -3720,13 +3720,118 @@ bool ChainstateService::Start() {
         // configured candidate set against the persisted base BEFORE any
         // different-base belt or file rehydrate. This is fail-closed: when
         // candidates exist but none matches, never fall forward to the newest.
+        // Set when a bootstrapped node's base snapshot is gone (moot) and it must
+        // CONTINUE on its own state: skips ONLY the different-base rehydrate below so
+        // the node never adopts a different configured snapshot. The lifecycle,
+        // metadata, and forest are kept fully intact (see the continue branch).
+        bool assumeutxo_skip_wrong_base_rehydrate = false;
         if (!lifecycle_fatal_at_restore) {
             const auto snapshot_resolution = ResolveConfiguredSnapshotPath(
                 config_, logger_, true, assumeutxo_base_height_, assumeutxo_base_block_);
             if (!snapshot_resolution.ok) {
-                logger_->error("[AssumeUTXO restore] " + snapshot_resolution.error);
-                return false;
-            }
+                // The persisted lifecycle base has no matching configured snapshot.
+                // The response depends ONLY on whether the node already holds valid
+                // bootstrapped state — NEVER on the fact that a different snapshot is
+                // configured (inferring a destructive action from a config change is
+                // a silent-base-swap footgun). The right "bootstrapped height" signal
+                // for a STATELESS node is the persisted Utreexo forest CHECKPOINT
+                // height: the coin-map GetHeight() is ephemeral (0 on a stateless
+                // restart until forward-replay repopulates it), whereas the forest
+                // checkpoint is the node's true restored height. For an ARCHIVAL node
+                // the coin-map height is valid; take whichever is higher so neither
+                // node type regresses.
+                // Bootstrapped signal. NOTE on why this keys off the persisted
+                // checkpoint HEIGHT and not an in-memory forest-population check:
+                // at THIS restore point the Utreexo forest has NOT yet been
+                // rehydrated into consensus_utxo_set_ (that happens later in
+                // startup), so SnapshotForestLeafCount() reads 0 here even on a
+                // fully-bootstrapped stateless node — it cannot be the signal.
+                // The coin-map GetHeight() is likewise ephemeral 0 on a stateless
+                // restart until forward-replay repopulates it. The ONLY genuine
+                // restored-height signal available now is the persisted Utreexo
+                // forest CHECKPOINT height, which loadtxoutset writes ATOMICALLY
+                // with the forest data (a checkpoint at height H exists iff the
+                // forest was persisted at H). For an ARCHIVAL node the coin-map
+                // GetHeight() persists and is authoritative; take whichever is
+                // higher so neither node type regresses.
+                const uint32_t coinmap_height =
+                    consensus_utxo_set_ ? consensus_utxo_set_->GetHeight() : 0;
+                uint32_t restored_state_height = coinmap_height;
+                if (chain_db_) {
+                    auto cp = chain_db_->getLatestUtreexoCheckpoint();
+                    if (cp.ok() && cp.value().first >= 0) {
+                        restored_state_height = std::max(
+                            restored_state_height,
+                            static_cast<uint32_t>(cp.value().first));
+                    }
+                }
+                // Continue only when the restored height reaches the base. (A
+                // residual, low-severity edge the peer flagged: a torn CF where
+                // the checkpoint record survives but the forest leaf data is gone
+                // would read >= base here and continue on empty state. It cannot
+                // be closed at THIS point — the forest is not yet loaded, so there
+                // is nothing to inspect — and it fails loud downstream: a stateless
+                // node with an empty forest cannot verify any Utreexo proof and
+                // stalls rather than advancing on wrong state. Closing it would
+                // require deferring this decision past forest load, which is not
+                // warranted for a corruption-only, fail-loud edge.)
+                const bool selfheal_bootstrapped =
+                    restored_state_height >= assumeutxo_base_height_;
+                const uint32_t selfheal_cur_h = restored_state_height;
+
+                if (selfheal_bootstrapped) {
+                    // ── CONTINUE (the field case) ────────────────────────────
+                    // The node is validly bootstrapped at/above the base. A snapshot
+                    // is a COLD-START scaffold; once the set is bootstrapped (and,
+                    // in the field case, advanced past base by validating real
+                    // blocks on top of it), the base snapshot is MOOT. Do NOT wipe
+                    // (destroys validated state — the ~7000-block field re-sync),
+                    // do NOT refuse (bricks a healthy node), and do NOT touch the
+                    // shielded tip marker — ConnectTip has kept it correct at the
+                    // live tip; the wipe path deletes it only because it re-
+                    // establishes it via LoadSnapshot, which the continue path never
+                    // runs, so deleting it here would re-introduce the #585
+                    // NotFound/SAFE-MODE risk on a node that never needed a wipe.
+                    // KEEP the lifecycle pin (do NOT retire it here): it is the
+                    // node's real trust state. A later restart's background
+                    // validation (genesis->base), if pending, resumes and the
+                    // lifecycle retires normally when it completes. (Retiring the
+                    // pin here — the earlier ClearMetadata behavior — broke C3 and
+                    // the ConnectTip-at-height-1 audit; do not reintroduce it.)
+                    logger_->warning(
+                        "[AssumeUTXO restore] base snapshot file for the persisted "
+                        "lifecycle (height " +
+                        std::to_string(assumeutxo_base_height_) +
+                        ") is no longer configured, but the node is validly "
+                        "bootstrapped at height " + std::to_string(selfheal_cur_h) +
+                        " — the snapshot file is moot; continuing on the existing "
+                        "bootstrapped state (lifecycle kept, NO wipe, NO base swap).");
+                    // KEEP the lifecycle, metadata, and forest fully INTACT: the
+                    // lifecycle ("bootstrapped at base, genesis->base bg-validation
+                    // pending") is the node's real trust state and must persist —
+                    // only the missing snapshot FILE is moot (the file only ever
+                    // seeds an unbootstrapped set; bg-validation replays from block
+                    // bodies, not the file). The lifecycle retires NORMALLY when
+                    // bg-validation completes. We ONLY skip the different-base
+                    // rehydrate so the node never adopts a different configured
+                    // snapshot; the belt is already skipped for a coin-map-empty
+                    // restored set. bg-validation resumes as usual.
+                    assumeutxo_skip_wrong_base_rehydrate = true;
+                } else {
+                    // No recoverable bootstrapped state — the forest checkpoint is
+                    // absent or below base — AND the base snapshot is gone. This is
+                    // genuinely unrecoverable, and it is NOT routine: a stateless
+                    // node's forest checkpoint is persisted by loadtxoutset and the
+                    // genesis checkpoint is backfilled, so reaching here means
+                    // corruption / a missing checkpoint, not a normal rotation. Keep
+                    // the original fail-safe fatal (reinstall to recover). We do NOT
+                    // auto-wipe and re-bootstrap from a DIFFERENT configured base
+                    // here — that would be the silent-base-swap the different-base
+                    // belt exists to prevent (spec Scenario C).
+                    logger_->error("[AssumeUTXO restore] " + snapshot_resolution.error);
+                    return false;
+                }
+            }  // end NoMatchingActiveLifecycle
         }
 
         logger_->info("⚠️  AssumeUTXO mode ACTIVE (restored from metadata)");
@@ -3792,7 +3897,8 @@ bool ChainstateService::Start() {
             }
         }
 
-        if (!lifecycle_fatal_at_restore && utxo_set_not_bootstrapped) {
+        if (!lifecycle_fatal_at_restore && utxo_set_not_bootstrapped &&
+            !assumeutxo_skip_wrong_base_rehydrate) {
             const std::string snapshot_path =
                 config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
 

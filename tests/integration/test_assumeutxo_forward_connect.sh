@@ -67,6 +67,16 @@ INCOMPLETE_REORG_MODE="${INCOMPLETE_REORG_MODE:-0}"
 PREBASE_SPEND_MODE="${PREBASE_SPEND_MODE:-0}"
 SRC_PREBASE_H="${SRC_PREBASE_H:-3}"   # height of the SOURCE-owned pre-base COINBASE spent post-export
 EXPECT_PREBASE_STALL="${EXPECT_PREBASE_STALL:-0}"  # neuter expectation: assert the un-fixed stall instead
+# SNAPSHOT_ROTATION_SELFHEAL_MODE=1: a stateless node has a persisted ACTIVE
+# AssumeUTXO lifecycle pinned to a base whose snapshot has been ROTATED AWAY
+# (only a newer snapshot remains configured). Without the fix the node hard-fails
+# to start Chainstate ("no matching configured snapshot candidate"); with the fix
+# it self-heals — clean re-bootstrap from the available snapshot, shielded marker
+# re-established, no SAFE MODE. EXPECT_SELFHEAL_FATAL=1 is the neuter expectation.
+SNAPSHOT_ROTATION_SELFHEAL_MODE="${SNAPSHOT_ROTATION_SELFHEAL_MODE:-0}"
+SELFHEAL_H_GONE="${SELFHEAL_H_GONE:-40}"   # base of the rotated-away snapshot (persisted lifecycle pin)
+SELFHEAL_H_NEW="${SELFHEAL_H_NEW:-80}"     # base of the still-available (newer) snapshot
+EXPECT_SELFHEAL_FATAL="${EXPECT_SELFHEAL_FATAL:-0}"  # neuter: assert the un-fixed hard-fail instead
 MUTATOR="${MUTATOR:-}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-500}"
 
@@ -667,6 +677,150 @@ if [[ "$PREBASE_SPEND_MODE" == "1" ]]; then
         echo "PREBASE_SPEND_MODE ASSERTIONS PASSED"
     else
         echo "PREBASE_SPEND_MODE TEST FAILED (see [FAIL] lines above)" >&2
+    fi
+    exit "$FAILED"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SNAPSHOT_ROTATION_SELFHEAL_MODE — a persisted ACTIVE AssumeUTXO lifecycle whose
+# base snapshot was ROTATED AWAY. Without the fix the node hard-fails to start
+# Chainstate ("no matching configured snapshot candidate"); with the fix it
+# self-heals (clean re-bootstrap from the still-available snapshot, shielded
+# marker re-established, no SAFE MODE, no wipe loop).
+# ═════════════════════════════════════════════════════════════════════════════
+
+if [[ "$SNAPSHOT_ROTATION_SELFHEAL_MODE" == "1" ]]; then
+    info "=== SNAPSHOT_ROTATION_SELFHEAL_MODE: stale lifecycle base rotated away → self-heal ==="
+    [[ "$SELFHEAL_H_NEW" -gt "$SELFHEAL_H_GONE" ]] || fail "SELFHEAL_H_NEW must exceed SELFHEAL_H_GONE"
+    SNAP_GONE="$WORK/snap-gone-${SELFHEAL_H_GONE}.dat"
+    SNAP_NEW="$WORK/snap-new-${SELFHEAL_H_NEW}.dat"
+
+    # ── Source: export a v4 snapshot at H_GONE and a newer v4 one at H_NEW. ──
+    start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/daemon.log"
+    rpc "$SRC_RPC" "$SRC_DIR" generate "[$SELFHEAL_H_GONE]" \
+        | jq -e ".result.blocks | length == $SELFHEAL_H_GONE" >/dev/null \
+        || fail "source failed to mine to H_GONE=$SELFHEAL_H_GONE"
+    jq -e '.result.coins_written >= 1' \
+        <<<"$(rpc "$SRC_RPC" "$SRC_DIR" dumptxoutset "[\"$SNAP_GONE\"]")" >/dev/null \
+        || fail "dumptxoutset SNAP_GONE failed"
+    rpc "$SRC_RPC" "$SRC_DIR" generate "[$((SELFHEAL_H_NEW - SELFHEAL_H_GONE))]" \
+        | jq -e ".result.blocks | length == $((SELFHEAL_H_NEW - SELFHEAL_H_GONE))" >/dev/null \
+        || fail "source failed to mine to H_NEW=$SELFHEAL_H_NEW"
+    jq -e '.result.coins_written >= 1' \
+        <<<"$(rpc "$SRC_RPC" "$SRC_DIR" dumptxoutset "[\"$SNAP_NEW\"]")" >/dev/null \
+        || fail "dumptxoutset SNAP_NEW failed"
+    [[ -s "$SNAP_GONE" && -s "$SNAP_NEW" ]] || fail "snapshots not written"
+    # Consistent headers-at-H_NEW copy requires the source STOPPED. Both snapshot
+    # bases (H_GONE, H_NEW) must be in the consumer's header chain to load (binding).
+    stop_node "$SRC_DIR"
+    cp -R "$SRC_DIR/headers" "$HEADERS_AT_BASE"
+    info "exported SNAP_GONE@$SELFHEAL_H_GONE and SNAP_NEW@$SELFHEAL_H_NEW"
+
+    # ── Consumer: stateless + OFFLINE, load SNAP_GONE → persisted ACTIVE lifecycle
+    #    at H_GONE (offline so background validation can't promote it away). Seed
+    #    headers so the snapshot bases bind. ──
+    mkdir -p "$CON_DIR/headers"
+    cp -R "$HEADERS_AT_BASE/." "$CON_DIR/headers/"
+    start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon-load.log" \
+        --utreexo-stateless=1 --p2p.offline=1 --listen=0 --assumeutxo_bg_stall_timeout=3600 \
+        --assumeutxo_snapshot="$SNAP_GONE" --assumeutxo_forward_connect=1 \
+        --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+    jq -e '.result.coins_loaded >= 1' \
+        <<<"$(rpc "$CON_RPC" "$CON_DIR" loadtxoutset "[\"$SNAP_GONE\"]")" >/dev/null \
+        || fail "consumer loadtxoutset SNAP_GONE failed"
+    wait_status "$CON_RPC" "$CON_DIR" '.assumeutxo_active == true' 60 "active lifecycle at H_GONE" \
+        || fail "consumer did not enter an active AssumeUTXO lifecycle at H_GONE"
+    GB="$(snap_status "$CON_RPC" "$CON_DIR" | jq -r '.snapshot_base_height // empty')"
+    info "consumer active lifecycle base=$GB (expected $SELFHEAL_H_GONE)"
+    stop_node "$CON_DIR"
+
+    # ── ROTATE: SNAP_GONE is gone; restart configured with ONLY SNAP_NEW. The
+    #    persisted lifecycle is still pinned to H_GONE → NoMatchingActiveLifecycle. ──
+    if [[ "$EXPECT_SELFHEAL_FATAL" == "1" ]]; then
+        # NEUTER: an un-fixed binary hard-fails to start Chainstate and never
+        # becomes RPC-ready, so start it directly (start_node's readiness wait
+        # would hard-fail the harness) and assert the exact fatal.
+        "$DINEROD" --regtest --datadir="$CON_DIR" --rpcport="$CON_RPC" --port="$CON_P2P" \
+            --wallet-socket-port="$CON_WS" --listen=0 --p2p.offline=1 \
+            --utreexo-stateless=1 --assumeutxo_bg_stall_timeout=3600 \
+            --assumeutxo_snapshot="$SNAP_NEW" --assumeutxo_forward_connect=1 \
+            --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL" \
+            > "$CON_DIR/daemon-heal.log" 2>&1 &
+        NEUTER_READY=0
+        for _ in $(seq 1 45); do
+            if rpc "$CON_RPC" "$CON_DIR" getblockcount 2>/dev/null | jq -e '.result >= 0' >/dev/null 2>&1; then
+                NEUTER_READY=1; break
+            fi
+            grep -qsE "no matching configured snapshot candidate|Failed to start Chainstate" \
+                "$CON_DIR/daemon-heal.log" 2>/dev/null && break
+            sleep 1
+        done
+        if grep -qsE "no matching configured snapshot candidate" "$CON_DIR/daemon-heal.log" 2>/dev/null; then
+            ck_pass "N1 (neuter): un-fixed binary hard-failed with 'no matching configured snapshot candidate'"
+        else
+            ck_fail "N1 (neuter): expected 'no matching configured snapshot candidate' fatal; not in log"
+        fi
+        if [[ "$NEUTER_READY" != "1" ]]; then
+            ck_pass "N2 (neuter): Chainstate did not start; node never became RPC-ready (the reinstall-only brick)"
+        else
+            ck_fail "N2 (neuter): node became ready despite the un-fixed binary — self-heal unexpectedly present"
+        fi
+        stop_node "$CON_DIR"
+    else
+        # FIXED: the node is validly bootstrapped (forest checkpoint at/above base),
+        # so the missing base snapshot is MOOT — it CONTINUES on its own state,
+        # never wipes, and never adopts the different-base SNAP_NEW.
+        start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon-heal.log" \
+            --utreexo-stateless=1 --p2p.offline=1 --listen=0 --assumeutxo_bg_stall_timeout=3600 \
+            --assumeutxo_snapshot="$SNAP_NEW" --assumeutxo_forward_connect=1 \
+            --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+        # S1: continue-on-valid-state fired (node recognized its bootstrapped state)
+        if grep -qsE "the snapshot file is moot; continuing on the existing" "$CON_DIR/daemon-heal.log"; then
+            ck_pass "S1: continue-on-valid-state fired (bootstrapped node, moot base snapshot — NO wipe)"
+        else
+            ck_fail "S1: continue path did not fire; log lacks the moot-snapshot continue marker"
+        fi
+        # S2: NEVER wiped / NEVER adopted the different base (the silent-base-swap the belt guards)
+        if ! grep -qsE "SELF-HEALING via clean re-bootstrap|re-bootstrapping from height|falling back to bundled floor" "$CON_DIR/daemon-heal.log" 2>/dev/null; then
+            ck_pass "S2: no wipe / no re-bootstrap — the node kept its OWN state, never adopted the different base $SELFHEAL_H_NEW"
+        else
+            ck_fail "S2: the node wiped/re-bootstrapped — a bootstrapped node must continue, not swap base"
+        fi
+        # S3 (correct continue end-state): the lifecycle is KEPT (not retired) — the
+        # node is assumeutxo-active at its OWN base (not the different SNAP_NEW base),
+        # not fatal, not safe-mode, and bg-validation of genesis->own-base resumes.
+        # It retires normally when bg-validation completes.
+        FST="$(snap_status "$CON_RPC" "$CON_DIR")"
+        AAB="$(jq -r '.snapshot_base_height // empty' <<<"$FST")"
+        if jq -e '(.fatal // false) == false and (.assumeutxo_active // false) == true' <<<"$FST" >/dev/null 2>&1 \
+           && [[ "$AAB" == "$SELFHEAL_H_GONE" ]] \
+           && ! grep -qsE "EnterSafeMode|assumeutxo fatal" "$CON_DIR/daemon-heal.log" 2>/dev/null; then
+            ck_pass "S3: continue end-state correct — assumeutxo active at OWN base $SELFHEAL_H_GONE (not $SELFHEAL_H_NEW), not fatal, not safe-mode (lifecycle kept, bg-validation resumes)"
+        else
+            ck_fail "S3: unexpected end-state (want active @own base $SELFHEAL_H_GONE, not-fatal, not-safe-mode): base=$AAB $FST"
+        fi
+        stop_node "$CON_DIR"
+
+        # S4 (idempotent): restart again → continues again on the SAME own base, never
+        # wipes, never adopts SNAP_NEW — every restart until bg-validation retires it.
+        start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon-heal2.log" \
+            --utreexo-stateless=1 --p2p.offline=1 --listen=0 --assumeutxo_bg_stall_timeout=3600 \
+            --assumeutxo_snapshot="$SNAP_NEW" --assumeutxo_forward_connect=1 \
+            --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+        AAB2="$(snap_status "$CON_RPC" "$CON_DIR" | jq -r '.snapshot_base_height // empty')"
+        if ! grep -qsE "SELF-HEALING via clean re-bootstrap|re-bootstrapping from height" "$CON_DIR/daemon-heal2.log" 2>/dev/null \
+           && [[ "$AAB2" != "$SELFHEAL_H_NEW" ]]; then
+            ck_pass "S4 (idempotent): second restart continued on own base ($AAB2), no wipe, never adopted $SELFHEAL_H_NEW"
+        else
+            ck_fail "S4 (idempotent): a wipe fired on restart"
+        fi
+        stop_node "$CON_DIR"
+    fi
+
+    if [[ "$FAILED" == "0" ]]; then
+        echo "SNAPSHOT_ROTATION_SELFHEAL_MODE ASSERTIONS PASSED"
+    else
+        echo "SNAPSHOT_ROTATION_SELFHEAL_MODE TEST FAILED (see [FAIL] lines above)" >&2
     fi
     exit "$FAILED"
 fi
