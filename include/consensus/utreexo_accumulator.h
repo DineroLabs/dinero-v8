@@ -337,6 +337,18 @@ public:
     bool removeAtKnownPosition(uint64_t position, const UtreexoHash& leafHash);
 
     /**
+     * @brief Remove several trusted leaves and rebuild roots once.
+     *
+     * This is the block-transition equivalent of removeAtKnownPosition().
+     * Every entry is validated before any mutation, so failure leaves the
+     * forest unchanged. The resulting state is identical to performing the
+     * same removals sequentially, but avoids recomputing an entire perfect
+     * tree after every input in a mining template.
+     */
+    bool removeAtKnownPositions(
+        const std::vector<std::pair<uint64_t, UtreexoHash>>& removals);
+
+    /**
      * @brief Generate proof for a UTXO
      *
      * Complexity: O(log n)
@@ -789,6 +801,13 @@ private:
      * @return Hash of subtree, or std::nullopt if subtree is entirely empty/deleted
      */
     std::optional<UtreexoHash> computeSubtreeHash(uint64_t start, uint64_t size) const;
+
+    using SubtreeHashCache =
+        std::vector<std::unordered_map<uint64_t, std::optional<UtreexoHash>>>;
+    std::optional<UtreexoHash> computeSubtreeHashCached(
+        uint64_t start, uint64_t size, SubtreeHashCache& cache) const;
+    std::optional<UtreexoProof> proveWithCache(
+        uint64_t position, SubtreeHashCache* cache) const;
 
     /**
      * @brief Recompute parent hashes along path from position to root

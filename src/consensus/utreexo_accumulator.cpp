@@ -1789,6 +1789,43 @@ bool UtreexoForest::removeAtKnownPosition(uint64_t position, const UtreexoHash& 
     return true;
 }
 
+bool UtreexoForest::removeAtKnownPositions(
+    const std::vector<std::pair<uint64_t, UtreexoHash>>& removals) {
+    std::unordered_set<uint64_t> unique_positions;
+    unique_positions.reserve(removals.size());
+
+    // Validate the complete request first so callers never observe a partial
+    // block transition when one input is stale or malformed.
+    for (const auto& [position, leaf_hash] : removals) {
+        if (position >= numLeaves_ || position >= nodes_.size() ||
+            isDeleted(position) || !nodes_[position].has_value() ||
+            nodes_[position].value() != leaf_hash ||
+            !unique_positions.insert(position).second) {
+            return false;
+        }
+    }
+
+    for (const auto& [position, leaf_hash] : removals) {
+        deleted_positions_.insert(position);
+        nodes_[position] = std::nullopt;
+        leaf_positions_.erase(leaf_hash);
+    }
+
+    if (!removals.empty()) {
+        rebuildRoots();
+    }
+
+#ifdef ENABLE_UTREEXO_INVARIANT_CHECKS
+    if (!validateLeafIndexConsistency()) {
+        std::cerr << "❌ [Utreexo removeAtKnownPositions] leaf_positions_ invariant failed"
+                  << std::endl;
+        return false;
+    }
+#endif
+
+    return true;
+}
+
 // Recompute parent hashes along path from position to root after a removal
 void UtreexoForest::recomputePath(uint64_t position) {
     // ═══════════════════════════════════════════════════════════════════════
@@ -1940,7 +1977,53 @@ std::optional<UtreexoHash> UtreexoForest::computeSubtreeHash(uint64_t start, uin
     }
 }
 
-std::optional<UtreexoProof> UtreexoForest::prove(uint64_t position) const {
+std::optional<UtreexoHash> UtreexoForest::computeSubtreeHashCached(
+    uint64_t start, uint64_t size, SubtreeHashCache& cache) const {
+    if (size == 0 || (size & (size - 1)) != 0) {
+        return std::nullopt;
+    }
+
+    uint8_t level = 0;
+    for (uint64_t remaining = size; remaining > 1; remaining >>= 1) {
+        ++level;
+    }
+    if (level >= cache.size()) {
+        return std::nullopt;
+    }
+
+    auto& level_cache = cache[level];
+    auto cached = level_cache.find(start);
+    if (cached != level_cache.end()) {
+        return cached->second;
+    }
+
+    std::optional<UtreexoHash> result;
+    if (size == 1) {
+        result = computeSubtreeHash(start, size);
+    } else {
+        static const UtreexoHash ZERO_HASH(32, 0);
+        const uint64_t half_size = size / 2;
+        uint64_t right_start = 0;
+        if (!checked_add(start, half_size, right_start)) {
+            return std::nullopt;
+        }
+        auto left = computeSubtreeHashCached(start, half_size, cache);
+        auto right = computeSubtreeHashCached(right_start, half_size, cache);
+        if (left.has_value() && right.has_value()) {
+            result = parentHash(left.value(), right.value());
+        } else if (left.has_value()) {
+            result = parentHash(left.value(), ZERO_HASH);
+        } else if (right.has_value()) {
+            result = parentHash(ZERO_HASH, right.value());
+        }
+    }
+
+    level_cache.emplace(start, result);
+    return result;
+}
+
+std::optional<UtreexoProof> UtreexoForest::proveWithCache(
+    uint64_t position, SubtreeHashCache* cache) const {
     // ═══════════════════════════════════════════════════════════════════════
     // Medium Priority Fix: Bounded position arithmetic
     // ═══════════════════════════════════════════════════════════════════════
@@ -2047,7 +2130,9 @@ std::optional<UtreexoProof> UtreexoForest::prove(uint64_t position) const {
         }
 
         // Compute sibling hash
-        auto siblingHashOpt = computeSubtreeHash(siblingStart, subtreeSize);
+        auto siblingHashOpt = cache
+            ? computeSubtreeHashCached(siblingStart, subtreeSize, *cache)
+            : computeSubtreeHash(siblingStart, subtreeSize);
         // If sibling is empty/deleted, use zero hash as placeholder
         // This maintains proof compatibility
         static const UtreexoHash ZERO_HASH(32, 0);
@@ -2067,6 +2152,10 @@ std::optional<UtreexoProof> UtreexoForest::prove(uint64_t position) const {
     }
 
     return proof;
+}
+
+std::optional<UtreexoProof> UtreexoForest::prove(uint64_t position) const {
+    return proveWithCache(position, nullptr);
 }
 
 UtreexoHash UtreexoForest::getCommitment() const {
@@ -2240,6 +2329,7 @@ BlockUtreexoProof UtreexoForest::generateBlockProof(const std::vector<UtreexoHas
 
     size_t found_count = 0;
     size_t missing_count = 0;
+    SubtreeHashCache subtree_cache(MAX_TREE_HEIGHT + 1);
 
     // For each target, find position and generate proof
     // Proof hashes are stored in per-target sequential order:
@@ -2271,7 +2361,7 @@ BlockUtreexoProof UtreexoForest::generateBlockProof(const std::vector<UtreexoHas
         block_proof.positions.push_back(position);
 
         // Generate individual proof for this position
-        auto proof_opt = prove(position);
+        auto proof_opt = proveWithCache(position, &subtree_cache);
         if (!proof_opt.has_value()) {
             std::cout << "⚠️  [Block Proof Gen] Failed to generate proof for position " << position << std::endl;
             continue;

@@ -931,6 +931,30 @@ set_tests_properties(UtxoSetCanonicalActivation PROPERTIES
     TIMEOUT 120
 )
 
+add_executable(test_utreexo_batch_remove
+    test_utreexo_batch_remove.cpp
+)
+add_dependencies(test_utreexo_batch_remove gtest gtest_main)
+target_link_libraries(test_utreexo_batch_remove PRIVATE
+    dinero_consensus
+    dinero_tx_primitives
+    dinero_crypto
+    gtest
+    gtest_main
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+)
+target_include_directories(test_utreexo_batch_remove PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME UtreexoBatchRemove COMMAND test_utreexo_batch_remove)
+set_tests_properties(UtreexoBatchRemove PROPERTIES
+    LABELS "consensus;utreexo;mining;performance"
+    TIMEOUT 60
+)
+
 # Fail-closed AssumeUTXO container-format policy: V2 deprecated outright, V3
 # rejected at/above shielded activation, V4 supported. Pure predicate, so the
 # boundary is swept exhaustively without a chainstate.

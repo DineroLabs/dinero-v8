@@ -387,6 +387,8 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
     }
 
     // PASS 1: REMOVE ALL spent UTXOs (entire block)
+    std::vector<std::pair<uint64_t, UtreexoHash>> removals;
+
     // Skip intra-block spends — those UTXOs were never in the forest
     for (const auto& tx : block.vtx) {
         bool is_coinbase = tx.IsCoinbase();
@@ -439,11 +441,13 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
             // staleness caused every covenant spend to fail with
             // "utreexo-remove-failed-in-pure" on Apr 13 2026 and was a
             // release blocker for the privacy stack.
-            if (!snapshot.removeAtKnownPosition(position_opt.value(), leafHash)) {
-                error = "utreexo-remove-failed-in-pure: " + outpoint.ToString();
-                return false;
-            }
+            removals.emplace_back(position_opt.value(), std::move(leafHash));
         }
+    }
+
+    if (!snapshot.removeAtKnownPositions(removals)) {
+        error = "utreexo-remove-failed-in-pure";
+        return false;
     }
 
     // PASS 2: ADD ALL new outputs (entire block, including coinbase)
@@ -580,7 +584,9 @@ bool BlockValidator::ComputeUtreexoRootPureFromForest(
         }
     }
 
-    // PASS 1: remove all spent UTXOs from the snapshot.
+    std::vector<std::pair<uint64_t, UtreexoHash>> removals;
+
+    // PASS 1: locate all spent UTXOs in the snapshot.
     for (const auto& tx : block.vtx) {
         if (tx.IsCoinbase()) continue;
         for (const auto& input : tx.vin) {
@@ -605,11 +611,13 @@ bool BlockValidator::ComputeUtreexoRootPureFromForest(
                 error = "utreexo-leaf-missing-in-fork-view: " + op.ToString();
                 return false;
             }
-            if (!snapshot.removeAtKnownPosition(pos_opt.value(), leafHash)) {
-                error = "utreexo-remove-failed-in-fork-view: " + op.ToString();
-                return false;
-            }
+            removals.emplace_back(pos_opt.value(), std::move(leafHash));
         }
+    }
+
+    if (!snapshot.removeAtKnownPositions(removals)) {
+        error = "utreexo-remove-failed-in-fork-view";
+        return false;
     }
 
     // PASS 2: add all new outputs (including coinbase).
