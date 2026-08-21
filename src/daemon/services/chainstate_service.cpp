@@ -3898,50 +3898,158 @@ bool ChainstateService::Start() {
         }
 
         // One-time upgrade backfill for datadirs created before the durable
-        // frozen pre-base CF existed. A node that is already advanced beyond
-        // its snapshot base must not replay LoadSnapshot (that would rewind its
-        // live forest), but its current consensus map still contains every
-        // pre-base coin that can be spent in a future block. Persist those live
-        // records and bind them to the exact active base. Coins already spent
-        // before this upgrade have durable block undo; they are not needed for
-        // future mempool admission or future block-undo construction.
+        // frozen pre-base CF existed. A stateless Utreexo node deliberately
+        // does NOT retain snapshot coins in its in-memory UTXO map after
+        // bootstrap; the configured snapshot file plus the live forest are the
+        // only safe migration source. Replaying LoadSnapshot would rewind the
+        // node, so scan the file, retain only records whose exact leaf is still
+        // authorized by the live forest, and atomically replace the frozen set.
+        // Full-set nodes fall back to their enumerable consensus map.
         if (!lifecycle_fatal_at_restore && !utxo_set_not_bootstrapped &&
             chain_db_ && consensus_utxo_set_) {
             const auto frozen_base = chain_db_->getPreBaseCoinSetBase();
-            if (frozen_base.status() == Status::NotFound) {
+            const std::string migration_key = "prebase_coins_snapshot_backfill_v2";
+            const auto migration_done = utxo_index_->GetMetadata(migration_key);
+            const bool needs_migration =
+                !migration_done || migration_done.value() != "1";
+            if (needs_migration) {
                 std::vector<ChainDB::PreBaseCoinRecord> records;
-                for (const auto& [outpoint, entry] : consensus_utxo_set_->GetUTXOs()) {
-                    if (entry.height > assumeutxo_base_height_) continue;
-                    ChainDB::PreBaseCoinRecord record;
-                    record.txid = outpoint.txid.AsUint256();
-                    record.vout = outpoint.vout;
-                    record.coin.amount = entry.value.GetUna();
-                    record.coin.script_pubkey = util::hex(entry.scriptPubKey);
-                    record.coin.height = static_cast<int>(entry.height);
-                    record.coin.coinbase = entry.isCoinbase;
-                    record.coin.is_confidential = entry.is_confidential;
-                    record.coin.commitment = entry.commitment;
-                    records.push_back(std::move(record));
+                uint256 migration_base_block;
+                uint32_t migration_base_height = 0;
+                bool snapshot_scanned = false;
+
+                const std::string snapshot_path =
+                    config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
+                if (!snapshot_path.empty()) {
+                    consensus::SnapshotMetadata header;
+                    std::string header_error;
+                    if (ReadSnapshotHeaderPreview(snapshot_path, header, header_error) &&
+                        header.magic == consensus::SNAPSHOT_MAGIC) {
+                        const bool active_header_matches =
+                            assumeutxo_active_ &&
+                            header.block_hash == assumeutxo_base_block_ &&
+                            header.block_height == assumeutxo_base_height_;
+                        bool promoted_header_matches = false;
+                        if (!active_header_matches && promoted_base_height_ > 0 &&
+                            header.block_height == promoted_base_height_) {
+                            const auto canonical = chain_db_->getBlockHashByHeight(
+                                promoted_base_height_);
+                            promoted_header_matches =
+                                canonical.ok() && canonical.value() == header.block_hash;
+                        }
+                        if (active_header_matches || promoted_header_matches) {
+                            std::ifstream snapshot(snapshot_path, std::ios::binary);
+                            constexpr std::streamoff kSnapshotHeaderBytes =
+                                sizeof(header.magic) + sizeof(header.version) + 32 +
+                                sizeof(header.block_height) + sizeof(header.utxo_count) +
+                                sizeof(header.timestamp) + sizeof(header.reserved);
+                            snapshot.seekg(kSnapshotHeaderBytes, std::ios::beg);
+                            constexpr uint32_t kMaxSnapshotScriptLen = 10 * 1024;
+                            bool parse_ok = snapshot.good();
+                            records.reserve(static_cast<size_t>(std::min<uint64_t>(
+                                header.utxo_count, 1000000)));
+                            for (uint64_t i = 0; parse_ok && i < header.utxo_count; ++i) {
+                                uint256 txid;
+                                uint32_t vout = 0;
+                                uint64_t amount = 0;
+                                uint32_t script_len = 0;
+                                uint32_t height = 0;
+                                uint8_t coinbase = 0;
+                                snapshot.read(reinterpret_cast<char*>(txid.data), 32);
+                                snapshot.read(reinterpret_cast<char*>(&vout), sizeof(vout));
+                                snapshot.read(reinterpret_cast<char*>(&amount), sizeof(amount));
+                                snapshot.read(reinterpret_cast<char*>(&script_len), sizeof(script_len));
+                                if (!snapshot || script_len > kMaxSnapshotScriptLen) {
+                                    parse_ok = false;
+                                    break;
+                                }
+                                std::vector<uint8_t> script(script_len);
+                                snapshot.read(reinterpret_cast<char*>(script.data()), script_len);
+                                snapshot.read(reinterpret_cast<char*>(&height), sizeof(height));
+                                snapshot.read(reinterpret_cast<char*>(&coinbase), 1);
+                                if (!snapshot || height > header.block_height || coinbase > 1) {
+                                    parse_ok = false;
+                                    break;
+                                }
+
+                                const auto leaf = consensus::HashUTXOForCreationHeight(
+                                    txid, vout, amount, script, height, coinbase != 0);
+                                bool live = false;
+                                {
+                                    auto forest_lock =
+                                        consensus_utxo_set_->LockForestShared();
+                                    live = consensus_utxo_set_->GetForest()
+                                               .findLeafPosition(leaf)
+                                               .has_value();
+                                }
+                                if (!live) continue;
+
+                                ChainDB::PreBaseCoinRecord record;
+                                record.txid = txid;
+                                record.vout = vout;
+                                record.coin.amount = amount;
+                                record.coin.script_pubkey = util::hex(script);
+                                record.coin.height = static_cast<int>(height);
+                                record.coin.coinbase = coinbase != 0;
+                                records.push_back(std::move(record));
+                            }
+                            if (parse_ok) {
+                                migration_base_block = header.block_hash;
+                                migration_base_height = header.block_height;
+                                snapshot_scanned = true;
+                            } else {
+                                records.clear();
+                                logger_->warning(
+                                    "[AssumeUTXO restore] Could not parse configured snapshot "
+                                    "while rebuilding frozen pre-base records");
+                            }
+                        }
+                    }
                 }
-                ChainWriteToken token;
-                const auto backfill = chain_db_->replacePreBaseCoins(
-                    token, assumeutxo_base_block_, assumeutxo_base_height_, records);
-                if (backfill != Status::Ok) {
-                    logger_->error("[AssumeUTXO restore] Failed to backfill durable frozen "
-                                   "pre-base coin records for the active snapshot lifecycle");
-                    return false;
+
+                if (!snapshot_scanned && assumeutxo_active_ &&
+                    !assumeutxo_base_block_.IsNull()) {
+                    migration_base_block = assumeutxo_base_block_;
+                    migration_base_height = assumeutxo_base_height_;
+                    for (const auto& [outpoint, entry] :
+                         consensus_utxo_set_->GetUTXOs()) {
+                        if (entry.height > migration_base_height) continue;
+                        ChainDB::PreBaseCoinRecord record;
+                        record.txid = outpoint.txid.AsUint256();
+                        record.vout = outpoint.vout;
+                        record.coin.amount = entry.value.GetUna();
+                        record.coin.script_pubkey = util::hex(entry.scriptPubKey);
+                        record.coin.height = static_cast<int>(entry.height);
+                        record.coin.coinbase = entry.isCoinbase;
+                        record.coin.is_confidential = entry.is_confidential;
+                        record.coin.commitment = entry.commitment;
+                        records.push_back(std::move(record));
+                    }
                 }
-                logger_->info("[AssumeUTXO restore] Backfilled " +
-                              std::to_string(records.size()) +
-                              " durable frozen pre-base coin records for the active base");
-            } else if (frozen_base.status() != Status::Ok) {
+
+                if (!migration_base_block.IsNull() && migration_base_height > 0) {
+                    ChainWriteToken token;
+                    const auto backfill = chain_db_->replacePreBaseCoins(
+                        token, migration_base_block, migration_base_height, records);
+                    if (backfill != Status::Ok ||
+                        !utxo_index_->SetMetadata(migration_key, "1")) {
+                        logger_->error("[AssumeUTXO restore] Failed to rebuild durable "
+                                       "frozen pre-base coin records");
+                        return false;
+                    }
+                    logger_->info("[AssumeUTXO restore] Rebuilt " +
+                                  std::to_string(records.size()) +
+                                  " live frozen pre-base coin records from " +
+                                  (snapshot_scanned ? "the configured snapshot" :
+                                                      "the consensus UTXO map"));
+                } else if (frozen_base.status() == Status::NotFound) {
+                    logger_->warning("[AssumeUTXO restore] Frozen pre-base records are "
+                                     "unavailable and no matching snapshot could rebuild them");
+                }
+            } else if (frozen_base.status() != Status::Ok &&
+                       frozen_base.status() != Status::NotFound) {
                 logger_->error("[AssumeUTXO restore] Could not read the frozen pre-base "
                                "coin-set marker");
-                return false;
-            } else if (frozen_base.value().first != assumeutxo_base_block_ ||
-                       frozen_base.value().second != assumeutxo_base_height_) {
-                logger_->error("[AssumeUTXO restore] Frozen pre-base coin-set marker does "
-                               "not match the active snapshot lifecycle");
                 return false;
             }
         }
@@ -9187,14 +9295,34 @@ std::optional<consensus::UTXOEntry> ChainstateService::GetActiveUTXO(
 std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
     const OutPoint& outpoint) const {
     std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
-    if (!assumeutxo_active_ || assumeutxo_base_block_.IsNull() ||
-        !chain_db_ || !consensus_utxo_set_) {
+    if (!chain_db_ || !consensus_utxo_set_) {
         return std::nullopt;
     }
 
     const auto marker = chain_db_->getPreBaseCoinSetBase();
-    if (!marker.ok() || marker.value().first != assumeutxo_base_block_ ||
-        marker.value().second != assumeutxo_base_height_) {
+    if (!marker.ok()) {
+        return std::nullopt;
+    }
+
+    // The frozen store remains necessary after background validation promotes
+    // the snapshot lifecycle and ClearAssumeUTXOState retires the active-base
+    // fields.  Scope it to either the exact active base, or to the exact
+    // canonical block at the never-cleared promoted base height.  Height alone
+    // is insufficient because a stale snapshot from another branch could use
+    // the same height.
+    const bool active_base_matches =
+        assumeutxo_active_ && !assumeutxo_base_block_.IsNull() &&
+        marker.value().first == assumeutxo_base_block_ &&
+        marker.value().second == assumeutxo_base_height_;
+    bool promoted_base_matches = false;
+    if (!active_base_matches && promoted_base_height_ > 0 &&
+        marker.value().second == promoted_base_height_) {
+        const auto canonical =
+            chain_db_->getBlockHashByHeight(promoted_base_height_);
+        promoted_base_matches =
+            canonical.ok() && canonical.value() == marker.value().first;
+    }
+    if (!active_base_matches && !promoted_base_matches) {
         return std::nullopt;
     }
 
@@ -9233,13 +9361,28 @@ std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
 std::optional<consensus::UTXOEntry> ChainstateService::ResolvePreBaseCoinForUndo(
     const OutPoint& outpoint) const {
     std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
-    if (!assumeutxo_active_ || assumeutxo_base_block_.IsNull() || !chain_db_) {
+    if (!chain_db_) {
         return std::nullopt;
     }
 
     const auto marker = chain_db_->getPreBaseCoinSetBase();
-    if (!marker.ok() || marker.value().first != assumeutxo_base_block_ ||
-        marker.value().second != assumeutxo_base_height_) {
+    if (!marker.ok()) {
+        return std::nullopt;
+    }
+
+    const bool active_base_matches =
+        assumeutxo_active_ && !assumeutxo_base_block_.IsNull() &&
+        marker.value().first == assumeutxo_base_block_ &&
+        marker.value().second == assumeutxo_base_height_;
+    bool promoted_base_matches = false;
+    if (!active_base_matches && promoted_base_height_ > 0 &&
+        marker.value().second == promoted_base_height_) {
+        const auto canonical =
+            chain_db_->getBlockHashByHeight(promoted_base_height_);
+        promoted_base_matches =
+            canonical.ok() && canonical.value() == marker.value().first;
+    }
+    if (!active_base_matches && !promoted_base_matches) {
         return std::nullopt;
     }
 
