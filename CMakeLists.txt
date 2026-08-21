@@ -344,9 +344,7 @@ if(ENABLE_ZK)
         src/zk/zkvm/r1cs.cpp
         src/zk/zkvm/ipa.cpp
         src/zk/zkvm/hyrax.cpp
-        src/zk/zkvm/nova.cpp
         src/zk/zkvm/gadgets.cpp
-        src/zk/zkvm/tapscript_step.cpp
         src/zk/zkvm/r1cs_ipa.cpp
         src/zk/zkvm/r1cs_spartan.cpp
         src/zk/zkvm/poseidon_gadget.cpp
@@ -354,7 +352,6 @@ if(ENABLE_ZK)
         src/zk/zkvm/secp256k1_fe_gadget.cpp
         src/zk/zkvm/ec_gadget.cpp
         src/zk/zkvm/schnorr_gadget.cpp
-        src/zk/zkvm/taproot_path_circuit.cpp
     )
 
     target_include_directories(dinero_zk PUBLIC

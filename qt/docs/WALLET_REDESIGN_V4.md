@@ -1,3 +1,11 @@
+> ⚠️ **SUPERSEDED / HISTORICAL — DO NOT IMPLEMENT.**
+> This document describes the **retired v5 privacy model** (Monero-style ring
+> signatures / ring-16, v3 RingCT, v4 ring-covenant, CT outputs). All of it was
+> dropped at the **v7 restart**. v7 is a fresh transparent-genesis chain with
+> **no ring signatures and no CT**; the current private lane is the
+> **note/nullifier shielded pool** (`TX_VERSION_SHIELDED`, `consensus/shielded/`,
+> Spartan ZK). See `docs/consensus/V7_GENESIS_SPEC.md`. Kept for history only.
+
 # Dinero-Qt Wallet Redesign — Contracts x Privacy Matrix
 
 ## Core Principle
