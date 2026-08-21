@@ -23,6 +23,8 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <filesystem>
+#include <fstream>
 
 namespace dinero::p2p::integration::test {
 
@@ -49,6 +51,53 @@ TEST(P2PManager_TS1_Integration, BasicStartStop) {
     // TS1 EXPECTATION: No crash, no use-after-free
     // If we reach here, basic lifecycle is TS1-compliant
     SUCCEED();
+}
+
+TEST(P2PManager_TS1_Integration, AnchorsRemainDistinctFromDynamicSeeds) {
+    P2PManager manager(30002);
+
+    manager.add_anchor_node("173.249.200.59", 20999);
+    manager.add_anchor_node("172.93.167.32", 20999);
+    manager.add_anchor_node("92.118.190.62", 20999);
+    manager.add_anchor_node("173.249.200.59", 20999);  // duplicate
+    manager.add_seed_node("64.44.157.100", 20999);     // dynamic candidate
+
+    const auto anchors = manager.get_anchor_nodes();
+    const auto seeds = manager.get_seed_nodes();
+    EXPECT_EQ(anchors.size(), 3U);
+    EXPECT_EQ(seeds.size(), 4U);
+    EXPECT_TRUE(std::find(anchors.begin(), anchors.end(),
+                          std::make_pair(std::string("173.249.200.59"),
+                                         uint16_t{20999})) != anchors.end());
+    EXPECT_TRUE(std::find(anchors.begin(), anchors.end(),
+                          std::make_pair(std::string("64.44.157.100"),
+                                         uint16_t{20999})) == anchors.end());
+}
+
+TEST(P2PManager_TS1_Integration, PeersDatDoesNotPromoteLearnedPeersToSeeds) {
+    P2PManager manager(20999);
+    manager.add_anchor_node("173.249.200.59", 20999);
+    manager.add_anchor_node("172.93.167.32", 20999);
+    manager.add_anchor_node("92.118.190.62", 20999);
+
+    const auto path = std::filesystem::temp_directory_path() /
+        ("dinero-peers-" +
+         std::to_string(reinterpret_cast<std::uintptr_t>(&manager)) + ".dat");
+    {
+        std::ofstream out(path);
+        out << "# DINERO_PEERS_V1\n";
+        out << "64.44.157.100 20999 1\n";
+    }
+
+    manager.load_peers(path.string());
+    EXPECT_EQ(manager.get_seed_nodes().size(), 3U);
+
+    manager.save_peers_with_seeds(path.string());
+    std::ifstream saved(path);
+    const std::string contents((std::istreambuf_iterator<char>(saved)),
+                               std::istreambuf_iterator<char>());
+    EXPECT_NE(contents.find("64.44.157.100 20999"), std::string::npos);
+    std::filesystem::remove(path);
 }
 
 /// TS1.2: Start/stop with outbound connection attempt
