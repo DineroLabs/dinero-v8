@@ -152,14 +152,16 @@ public:
     // Snapshot-safe point lookup used when resolving mempool spends while
     // ChainDB is still behind an active AssumeUTXO base.
     std::optional<consensus::UTXOEntry> GetActiveUTXO(const OutPoint& outpoint) const;
-    // Resolve a frozen snapshot-base coin only when it belongs to the active
-    // AssumeUTXO lifecycle and its leaf is still present in the live forest.
-    // Fail-closed: stale records and already-spent leaves are never returned.
+    // Resolve a frozen snapshot-base coin only when it belongs to the exact
+    // active or canonically promoted AssumeUTXO lifecycle and its leaf is still
+    // present in the live forest. Fail-closed: stale records and already-spent
+    // leaves are never returned.
     std::optional<consensus::UTXOEntry> ResolveLivePreBaseCoin(
         const OutPoint& outpoint) const;
     // Block undo already has consensus authorization from the block being
     // connected and may run after that block removed the leaf. It therefore
-    // requires exact-base scoping, but deliberately not live-leaf presence.
+    // requires exact active/promoted-base scoping, but deliberately not
+    // live-leaf presence.
     std::optional<consensus::UTXOEntry> ResolvePreBaseCoinForUndo(
         const OutPoint& outpoint) const;
 
