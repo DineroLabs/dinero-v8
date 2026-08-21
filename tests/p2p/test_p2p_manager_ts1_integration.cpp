@@ -20,6 +20,8 @@
 
 #include "p2p_manager.h"
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <cstdint>
 #include <thread>
 #include <chrono>
 #include <atomic>
