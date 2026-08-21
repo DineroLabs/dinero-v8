@@ -245,8 +245,29 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         std::cerr << "  CF[" << i << "]: " << (cf_[i] ? "valid" : "null") << std::endl;
     }
 
-    if (cf_.size() < 8) {
-        std::cerr << "ChainDB::init: ERROR - Expected at least 8 CFs, got " << cf_.size() << std::endl;
+    if (cf_.size() < cf_descriptors.size()) {
+        // Append-only schema migration. The fallback open above intentionally
+        // opens every existing CF first; create only descriptors absent from
+        // that database, in canonical append order. Existing handles remain at
+        // their immutable indices and newly-created handles are appended.
+        for (size_t i = cf_.size(); i < cf_descriptors.size(); ++i) {
+            rocksdb::ColumnFamilyHandle* handle = nullptr;
+            const auto create_status = db_->CreateColumnFamily(
+                cf_descriptors[i].options, cf_descriptors[i].name, &handle);
+            if (!create_status.ok()) {
+                std::cerr << "ChainDB::init: Failed to append CF "
+                          << cf_descriptors[i].name << ": "
+                          << create_status.ToString() << std::endl;
+                return convertRocksDBStatus(create_status);
+            }
+            cf_.emplace_back(CfUPtr(handle));
+            std::cerr << "ChainDB::init: Appended missing CF "
+                      << cf_descriptors[i].name << std::endl;
+        }
+    }
+
+    if (cf_.size() < 9) {
+        std::cerr << "ChainDB::init: ERROR - Expected at least 9 CFs, got " << cf_.size() << std::endl;
         return Status::Internal;
     }
     
@@ -1388,6 +1409,115 @@ StatusOr<Coin> ChainDB::getCoin(const uint256& txid, uint32_t vout) const {
     }
 }
 
+namespace {
+
+std::string SerializeCoinValue(const Coin& coin) {
+    VectorWriter w;
+    w.write(coin.amount);
+    w.writeString(coin.script_pubkey);
+    w.write(static_cast<uint32_t>(coin.height));
+    w.write(static_cast<uint8_t>(coin.coinbase ? 1 : 0));
+    w.write(static_cast<uint8_t>(coin.is_confidential ? 1 : 0));
+    w.writeBytes(coin.commitment);
+    return w.release_string();
+}
+
+StatusOr<Coin> DeserializeCoinValue(const std::string& value) {
+    try {
+        Reader r(value);
+        Coin coin;
+        coin.amount = r.read<uint64_t>();
+        coin.script_pubkey = r.readString();
+        coin.height = static_cast<int>(r.read<uint32_t>());
+        coin.coinbase = (r.read<uint8_t>() != 0);
+        if (!r.eof()) {
+            coin.is_confidential = (r.read<uint8_t>() != 0);
+            if (!r.eof()) coin.commitment = r.readBytes();
+        }
+        return coin;
+    } catch (const std::exception&) {
+        return Status::Serialization;
+    }
+}
+
+constexpr const char* kPreBaseMarkerKey = "M:base";
+
+} // namespace
+
+Status ChainDB::replacePreBaseCoins(
+    const ChainWriteToken& token,
+    const uint256& base_hash,
+    uint32_t base_height,
+    const std::vector<PreBaseCoinRecord>& coins) {
+    if (!db_ || cf_.size() <= static_cast<size_t>(idx_prebase_coins_)) {
+        return Status::Internal;
+    }
+    (void)token;
+
+    rocksdb::WriteBatch batch;
+    std::unique_ptr<rocksdb::Iterator> it(
+        db_->NewIterator(rocksdb::ReadOptions(), cf_[idx_prebase_coins_].get()));
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        batch.Delete(cf_[idx_prebase_coins_].get(), it->key());
+    }
+    if (!it->status().ok()) return convertRocksDBStatus(it->status());
+
+    for (const auto& record : coins) {
+        if (record.coin.height < 0 ||
+            static_cast<uint32_t>(record.coin.height) > base_height) {
+            return Status::Invalid;
+        }
+        batch.Put(cf_[idx_prebase_coins_].get(),
+                  makeUtxoKey(record.txid, record.vout),
+                  SerializeCoinValue(record.coin));
+    }
+
+    VectorWriter marker;
+    marker.writeString(base_hash.GetHex());
+    marker.write(base_height);
+    batch.Put(cf_[idx_prebase_coins_].get(), kPreBaseMarkerKey,
+              marker.release_string());
+
+    rocksdb::WriteOptions options;
+    options.sync = true;
+    return convertRocksDBStatus(db_->Write(options, &batch));
+}
+
+StatusOr<Coin> ChainDB::getPreBaseCoin(const uint256& txid,
+                                       uint32_t vout) const {
+    if (!db_ || cf_.size() <= static_cast<size_t>(idx_prebase_coins_)) {
+        return Status::Internal;
+    }
+    std::string value;
+    const auto status = db_->Get(rocksdb::ReadOptions(),
+                                 cf_[idx_prebase_coins_].get(),
+                                 makeUtxoKey(txid, vout), &value);
+    if (status.IsNotFound()) return Status::NotFound;
+    if (!status.ok()) return convertRocksDBStatus(status);
+    return DeserializeCoinValue(value);
+}
+
+StatusOr<std::pair<uint256, uint32_t>> ChainDB::getPreBaseCoinSetBase() const {
+    if (!db_ || cf_.size() <= static_cast<size_t>(idx_prebase_coins_)) {
+        return Status::Internal;
+    }
+    std::string value;
+    const auto status = db_->Get(rocksdb::ReadOptions(),
+                                 cf_[idx_prebase_coins_].get(),
+                                 kPreBaseMarkerKey, &value);
+    if (status.IsNotFound()) return Status::NotFound;
+    if (!status.ok()) return convertRocksDBStatus(status);
+    try {
+        Reader reader(value);
+        const uint256 hash = uint256::FromHexUnsafe(reader.readString());
+        const uint32_t height = reader.read<uint32_t>();
+        if (!reader.eof()) return Status::Serialization;
+        return std::make_pair(hash, height);
+    } catch (const std::exception&) {
+        return Status::Serialization;
+    }
+}
+
 StatusOr<Coin> ChainDB::getCoinWithConfidentialFallback(const uint256& txid, uint32_t vout) const {
     auto coin_result = getCoin(txid, vout);
     if (coin_result.status() != Status::Ok) {
@@ -2489,7 +2619,8 @@ rocksdb::ReadOptions ChainDB::getReadOptions() const {
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSENSUS-CRITICAL INVARIANT: 8-CF ROCKSDB SCHEMA (APPEND-ONLY, FROZEN)
 // ═══════════════════════════════════════════════════════════════════════════════
-// Dinero's blockchain database uses exactly 8 RocksDB column families.
+// Dinero's blockchain database uses 9 RocksDB column families. The first 8
+// retain their historical immutable indices; prebase_coins is append-only.
 // This schema is IMMUTABLE and crash-tested for production reliability:
 //
 //   1. default  - RocksDB required CF (metadata)
@@ -2526,7 +2657,8 @@ std::vector<rocksdb::ColumnFamilyDescriptor> ChainDB::getColumnFamilyDescriptors
         rocksdb::ColumnFamilyDescriptor("height", options),
         rocksdb::ColumnFamilyDescriptor("txindex", options),
         rocksdb::ColumnFamilyDescriptor("utxo", options),
-        rocksdb::ColumnFamilyDescriptor("utreexo", options)  // Phase 2.1: Utreexo accumulator checkpoints
+        rocksdb::ColumnFamilyDescriptor("utreexo", options),  // Phase 2.1: Utreexo accumulator checkpoints
+        rocksdb::ColumnFamilyDescriptor("prebase_coins", options)  // Frozen AssumeUTXO snapshot records
     };
 }
 

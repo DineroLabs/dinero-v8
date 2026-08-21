@@ -131,7 +131,7 @@ Unlike traditional timing-based tests, these chaos tests use **invariant asserti
      FATAL: Utreexo CF missing
    fi
    ```
-   - All 8 column families must open
+   - All 9 column families must open
    - Accumulator state must restore
 
 5. **Mining Resumes**
@@ -237,7 +237,7 @@ These chaos tests validate the critical fixes in v2.2.9:
 
 **Action:**
 1. Check for "Reindexing blocks" in daemon log
-2. Verify all 8 CFs are present
+2. Verify all 9 CFs are present
 3. Check for disk I/O errors
 4. Report as persistence regression
 

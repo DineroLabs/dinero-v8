@@ -30,8 +30,8 @@
 #
 # PREBASE_SPEND_MODE=1 is the block-90391 regression (STATELESS undo path). A
 # CSN consumer forward-connects a post-base block that spends a pre-base coin;
-# the CSN undo reconstruction must recover that coin from the in-memory
-# AssumeUTXO set (it is absent from the consumer's ChainDB). Self-contained
+# the CSN undo reconstruction must recover that coin from the durable frozen
+# pre-base store (it is absent from the ordinary UTXO CF). Self-contained
 # branch: source-signed pre-base spend + stateless consumer; asserts the
 # fidelity log (height + coinbase flag). EXPECT_PREBASE_STALL=1 flips it to the
 # neuter expectation (un-fixed binary must stall with undo-spent-reconstruction-
@@ -59,14 +59,27 @@ CORRUPTION_RECOVERY_MODE="${CORRUPTION_RECOVERY_MODE:-0}"
 INCOMPLETE_REORG_MODE="${INCOMPLETE_REORG_MODE:-0}"
 # PREBASE_SPEND_MODE=1 is the regression for the block-90391 stall: a STATELESS
 # (ios_utreexo / CSN) consumer forward-connects a post-base block that SPENDS a
-# pre-base coin. That coin lives only in the in-memory AssumeUTXO set (never in
-# the consumer's ChainDB coin CF), so the CSN undo path's
+# pre-base coin. That coin is absent from the ordinary consumer ChainDB coin CF,
+# so the CSN undo path's frozen pre-base resolver must recover it; otherwise
 # ReconstructSpentCoinsFromChainDb misses it and, without the fix, aborts the
 # connection with undo-spent-reconstruction-failed. With the fix, the spent coin
-# is reconstructed from the AssumeUTXO set and the node crosses the block.
+# is reconstructed from the frozen pre-base store and the node crosses the block.
 PREBASE_SPEND_MODE="${PREBASE_SPEND_MODE:-0}"
 SRC_PREBASE_H="${SRC_PREBASE_H:-3}"   # height of the SOURCE-owned pre-base COINBASE spent post-export
 EXPECT_PREBASE_STALL="${EXPECT_PREBASE_STALL:-0}"  # neuter expectation: assert the un-fixed stall instead
+# PREBASE_MEMPOOL_MODE=1 is the mempool/BROADCAST twin of the 90391 fix: a
+# STATELESS (ios_utreexo / CSN) node cannot BROADCAST a spend of a genuinely-live
+# PRE-BASE coin — the mempool's coin-map/ChainDB views never hold pre-base coins,
+# so Mempool::validateTransaction rejects the input with "Input UTXO not found"
+# even though the coin is live in the frozen pre-base store and Utreexo forest. The fix
+# (ChainstateService::ResolveLivePreBaseCoin, wired into the mempool)
+# admits it ONLY on a frozen-store RESOLVE AND a POSITIVE live-forest leaf-present
+# AUTHORIZE. Asserts: (A) live pre-base coin -> input resolves (not "Input UTXO
+# not found"); (B) pre-base coin SPENT post-base (forest leaf gone) -> REJECTED
+# (the double-spend gate). EXPECT_PREBASE_MEMPOOL_NEUTER=1 is the neuter
+# expectation (fix reverted -> A itself rejects with "Input UTXO not found").
+PREBASE_MEMPOOL_MODE="${PREBASE_MEMPOOL_MODE:-0}"
+EXPECT_PREBASE_MEMPOOL_NEUTER="${EXPECT_PREBASE_MEMPOOL_NEUTER:-0}"
 # SNAPSHOT_ROTATION_SELFHEAL_MODE=1: a stateless node has a persisted ACTIVE
 # AssumeUTXO lifecycle pinned to a base whose snapshot has been ROTATED AWAY
 # (only a newer snapshot remains configured). Without the fix the node hard-fails
@@ -435,7 +448,7 @@ run_checkpoint_recovery() {
 # absent from the consumer's ChainDB coin CF. Without the fix, reconstruction
 # fails -> undo-spent-reconstruction-failed -> the node stalls at base (exactly
 # the phone's 90391 brick). With the fix, GetActiveUTXO recovers it from the
-# AssumeUTXO set and the node crosses the block.
+# frozen pre-base store and the node crosses the block.
 #
 # Self-contained: the SOURCE owns and signs the spend (a stateless consumer runs
 # gen=0 and cannot wallet-sign). Separate SRC_PREBASE_H leaves the other modes'
@@ -583,7 +596,7 @@ if [[ "$PREBASE_SPEND_MODE" == "1" ]]; then
     info "stateless consumer connected to source bridge — forward-connect window open"
 
     # ── Observe: cross the spend block, or stall on the exact reconstruction error ──
-    RECON_LINE="pre-base spent coin ${SPB_TXID:0:16}:0 reconstructed from AssumeUTXO set"
+    RECON_LINE="pre-base spent coin ${SPB_TXID:0:16}:0 reconstructed from frozen pre-base store"
     FAIL_LINE="undo-spent-reconstruction-failed"
     CROSSED=0; STALL_SEEN=0; RECON_SEEN=0
     RACE_START=$SECONDS; LAST_LOG=$SECONDS
@@ -626,13 +639,13 @@ if [[ "$PREBASE_SPEND_MODE" == "1" ]]; then
     else
         # ── FIXED expectation ────────────────────────────────────────────────
         # P1: the reconstruction path RAN and recovered the coin from the
-        # AssumeUTXO set (fidelity line present). Its mere presence proves
+        # frozen pre-base store (fidelity line present). Its mere presence proves
         # ChainDB.getCoin MISSED (the fix's branch only runs after that miss), so
         # the coin was still pre-base-only — the exact 90391 condition.
-        FID="$(grep -hoE "pre-base spent coin ${SPB_TXID:0:16}:0 reconstructed from AssumeUTXO set \(height=[0-9]+ coinbase=[01]\)" \
+        FID="$(grep -hoE "pre-base spent coin ${SPB_TXID:0:16}:0 reconstructed from frozen pre-base store \(height=[0-9]+ coinbase=[01]\)" \
                 "$CON_DIR"/daemon*.log 2>/dev/null | head -1)"
         if [[ -n "$FID" ]]; then
-            ck_pass "P1 (CORE): CSN undo reconstructed the pre-base spent coin from the AssumeUTXO set: $FID"
+            ck_pass "P1 (CORE): CSN undo reconstructed the pre-base spent coin from the frozen pre-base store: $FID"
         else
             ck_fail "P1 (CORE): no AssumeUTXO reconstruction fidelity line for ${SPB_TXID:0:16}:0 — path did not run (fix ineffective or coin read from ChainDB)"
         fi
@@ -677,6 +690,174 @@ if [[ "$PREBASE_SPEND_MODE" == "1" ]]; then
         echo "PREBASE_SPEND_MODE ASSERTIONS PASSED"
     else
         echo "PREBASE_SPEND_MODE TEST FAILED (see [FAIL] lines above)" >&2
+    fi
+    exit "$FAILED"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PREBASE_MEMPOOL_MODE — mempool/BROADCAST twin of the 90391 fix. A stateless CSN
+# node must be able to BROADCAST a spend of a live PRE-BASE coin, and must REJECT
+# a spend of a pre-base coin already spent post-base (double-spend gate).
+# ═════════════════════════════════════════════════════════════════════════════
+if [[ "$PREBASE_MEMPOOL_MODE" == "1" ]]; then
+    info "=== PREBASE_MEMPOOL_MODE: stateless CSN admits a live pre-base spend, rejects a spent one ==="
+
+    # --- source: full/bridge node; owns every coin; serves utreexo proofs ---
+    start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/daemon.log" \
+        --utreexo-bridge=1
+    SRC_ADDR="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.getnewaddress '[]' \
+        | jq -r '.result.address // .result // empty')"
+    [[ -n "$SRC_ADDR" ]] || fail "source wallet.getnewaddress returned no address"
+    rpc "$SRC_RPC" "$SRC_DIR" generatetoaddress "[$BASE_HEIGHT,\"$SRC_ADDR\"]" \
+        | jq -e ".result.blocks | length == $BASE_HEIGHT" >/dev/null \
+        || fail "source failed to mine $BASE_HEIGHT base blocks"
+    BASE="$(rpc "$SRC_RPC" "$SRC_DIR" getblockcount | jq -re '.result')"
+    [[ "$BASE" -eq "$BASE_HEIGHT" ]] || fail "source height $BASE != base $BASE_HEIGHT"
+
+    # A LIVE pre-base coinbase we will NOT spend: block SRC_PREBASE_H's coinbase.
+    # It stays unspent -> present in the frozen pre-base store AND the forest.
+    LIVE_BH="$(rpc "$SRC_RPC" "$SRC_DIR" getblockhash "[$SRC_PREBASE_H]" | jq -r '.result')"
+    LIVE_TXID="$(rpc "$SRC_RPC" "$SRC_DIR" getblock "[\"$LIVE_BH\",1]" \
+        | jq -r '.result.tx[0] | if type=="string" then . else .txid end')"
+    [[ "$LIVE_TXID" =~ ^[0-9a-fA-F]{64}$ ]] || fail "could not resolve live pre-base coinbase txid"
+    info "live pre-base coinbase (kept unspent): ${LIVE_TXID:0:16}...:0 (height $SRC_PREBASE_H)"
+
+    # Export snapshot at base (every source coin is an unspent pre-base coinbase).
+    jq -e '.result.coins_written >= 1' \
+        <<<"$(rpc "$SRC_RPC" "$SRC_DIR" dumptxoutset "[\"$SNAP\"]")" >/dev/null \
+        || fail "dumptxoutset failed"
+    [[ -s "$SNAP" ]] || fail "snapshot not written"
+    stop_node "$SRC_DIR"
+    cp -R "$SRC_DIR/headers" "$HEADERS_AT_BASE"
+    start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/daemon2.log" \
+        --utreexo-bridge=1
+
+    # POST-EXPORT: spend a DIFFERENT pre-base coinbase in base+1. That outpoint
+    # (SPB) is unspent-at-base (resolvable from the frozen store) but SPENT post-base
+    # (its forest leaf is removed once the consumer crosses base+1) — the exact
+    # double-spend the authorize gate must reject.
+    DEST="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.getnewaddress '[]' \
+        | jq -r '.result.address // .result // empty')"
+    SEND_RES="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.sendtoaddress "[\"$DEST\",50.0]")"
+    SPEND_TXID="$(jq -r '.result.txid // .result // empty' <<<"$SEND_RES")"
+    [[ "$SPEND_TXID" =~ ^[0-9a-fA-F]{64}$ ]] \
+        || fail "wallet.sendtoaddress could not spend a pre-base coinbase: $SEND_RES"
+    SPEND_VIN="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.getrawtransaction "[\"$SPEND_TXID\",true]" \
+        | jq -c '.result.vin // []')"
+    SPB_TXID=""; SPB_VOUT=""
+    while IFS=$'\t' read -r in_txid in_vout; do
+        [[ -n "$in_txid" && -n "$in_vout" ]] || continue
+        COIN="$(rpc "$SRC_RPC" "$SRC_DIR" gettxout "[\"$in_txid\",$in_vout,false]")"
+        H="$(jq -r '.result.height // -1' <<<"$COIN")"
+        if [[ "$H" -ge 1 && "$H" -le "$BASE" && "$in_txid" != "$LIVE_TXID" ]]; then
+            SPB_TXID="$in_txid"; SPB_VOUT="$in_vout"; break
+        fi
+    done < <(jq -r '.[] | [.txid, (.vout|tostring)] | @tsv' <<<"$SPEND_VIN")
+    [[ -n "$SPB_TXID" ]] || fail "spend selected no pre-base input distinct from the live coin"
+    info "pre-base coin spent post-base (double-spend target): ${SPB_TXID:0:16}...:$SPB_VOUT"
+    rpc "$SRC_RPC" "$SRC_DIR" generate '[1]' \
+        | jq -e '.result.blocks | length == 1' >/dev/null \
+        || fail "source failed to mine the spend block (base+1)"
+    # Extend a couple blocks so the consumer has a clear tip to reach.
+    rpc "$SRC_RPC" "$SRC_DIR" generate '[2]' >/dev/null || true
+    NET_TIP="$(rpc "$SRC_RPC" "$SRC_DIR" getblockcount | jq -re '.result')"
+    info "source at $NET_TIP (base $BASE + post-base spend + extension)"
+    # Guard: coin selection must not have spent our LIVE coin (else A is invalid).
+    LIVE_CHK="$(rpc "$SRC_RPC" "$SRC_DIR" gettxout "[\"$LIVE_TXID\",0,false]" | jq -r '.result.height // empty')"
+    [[ -n "$LIVE_CHK" ]] \
+        || fail "the chosen LIVE pre-base coin ${LIVE_TXID:0:16}:0 was spent by setup coin-selection — adjust SRC_PREBASE_H"
+
+    # --- consumer: STATELESS (ios_utreexo), load snapshot, forward-connect ---
+    mkdir -p "$CON_DIR/headers"; cp -R "$HEADERS_AT_BASE/." "$CON_DIR/headers/"
+    start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon.log" \
+        --utreexo-stateless=1 --assumeutxo_bg_stall_timeout=3600 \
+        --assumeutxo_forward_connect=1 --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+    STATELESS_OK=0
+    for i in $(seq 1 20); do
+        grep -qsE "Sync profile:.*mode=STATELESS" "$CON_DIR/daemon.log" 2>/dev/null && { STATELESS_OK=1; break; }
+        grep -qsE "Sync profile:.*mode=STATEFUL" "$CON_DIR/daemon.log" 2>/dev/null \
+            && fail "consumer resolved to STATEFUL despite --utreexo-stateless=1 — gate would not run"
+        sleep 1
+    done
+    [[ "$STATELESS_OK" == "1" ]] || fail "could not confirm consumer resolved to stateless mode"
+    LOAD_RES="$(rpc "$CON_RPC" "$CON_DIR" loadtxoutset "[\"$SNAP\"]")"
+    jq -e '.result.coins_loaded >= 1' <<<"$LOAD_RES" >/dev/null || fail "loadtxoutset failed: $LOAD_RES"
+    info "snapshot loaded on stateless consumer: $(jq -c '.result | {base_height, coins_loaded}' <<<"$LOAD_RES")"
+    stop_node "$CON_DIR"
+    start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon2.log" \
+        --utreexo-stateless=1 --assumeutxo_bg_stall_timeout=3600 \
+        --assumeutxo_snapshot="$SNAP" --assumeutxo_forward_connect=1 \
+        --utreexo.checkpoint_interval="$CHECKPOINT_INTERVAL"
+    wait_status "$CON_RPC" "$CON_DIR" '.assumeutxo_active == true' 60 "stateless snapshot rehydrated" \
+        || fail "stateless consumer did not rehydrate the snapshot lifecycle"
+
+    # Forward-connect to the source so the consumer crosses base+1 and its forest
+    # DROPS the SPB leaf (SPB is now spent) while keeping the LIVE leaf.
+    rpc "$CON_RPC" "$CON_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"add\"]" >/dev/null || true
+    rpc "$CON_RPC" "$CON_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"onetry\"]" >/dev/null || true
+    CROSSED=0
+    for i in $(seq 1 90); do
+        TIP="$(rpc "$CON_RPC" "$CON_DIR" getblockcount 2>/dev/null | jq -r '.result // 0')"
+        [[ "$TIP" -ge "$NET_TIP" ]] && { CROSSED=1; break; }
+        sleep 2
+    done
+    [[ "$CROSSED" == "1" ]] || fail "stateless consumer did not cross to net tip $NET_TIP (forest would not reflect the spend)"
+    info "consumer crossed to tip $NET_TIP — forest now reflects the post-base spend"
+
+    # Helper: build an unsigned raw tx spending <txid>:<vout> and submit it. The
+    # mempool input lookup (the fix's site) runs BEFORE signature validation, so
+    # the error string alone tells us whether the input RESOLVED+AUTHORIZED:
+    #   - resolved+authorized -> fails later (unsigned) with a NON-"not found" error
+    #   - missed/rejected      -> "Input UTXO not found: <txid>:<vout>"
+    DST="$(rpc "$CON_RPC" "$CON_DIR" wallet.getnewaddress '[]' | jq -r '.result.address // .result // empty')"
+    [[ -n "$DST" ]] || fail "consumer wallet.getnewaddress failed"
+    submit_spend_err() {  # <txid> <vout> -> prints the mempool error text
+        local txid="$1" vout="$2"
+        local raw
+        raw="$(rpc "$CON_RPC" "$CON_DIR" wallet.createrawtransaction \
+              "[[{\"txid\":\"$txid\",\"vout\":$vout}],{\"$DST\":1.0}]" \
+              | jq -r '.result.hex // .result // empty')"
+        [[ -n "$raw" ]] || { echo "CREATE_FAILED"; return; }
+        rpc "$CON_RPC" "$CON_DIR" wallet.sendrawtransaction "[\"$raw\"]" 2>/dev/null \
+            | jq -r '(.error.message // .result.error // .result // "") | tostring'
+    }
+
+    NF='Input UTXO not found'
+    A_ERR="$(submit_spend_err "$LIVE_TXID" 0)"
+    B_ERR="$(submit_spend_err "$SPB_TXID" "$SPB_VOUT")"
+    info "A (live pre-base) sendrawtransaction -> ${A_ERR:0:120}"
+    info "B (spent post-base) sendrawtransaction -> ${B_ERR:0:120}"
+
+    if [[ "$EXPECT_PREBASE_MEMPOOL_NEUTER" == "1" ]]; then
+        # NEUTER expectation (fix reverted): the LIVE coin itself is rejected with
+        # the exact field error — reproduces the phone bug.
+        if [[ "$A_ERR" == *"$NF"* ]]; then
+            ck_pass "N1 (neuter): un-fixed binary rejects the LIVE pre-base spend with '$NF'"
+        else
+            ck_fail "N1 (neuter): expected '$NF' for the live coin on the un-fixed binary; got: $A_ERR"
+        fi
+    else
+        # FIXED expectation.
+        # A: the live pre-base input RESOLVES+AUTHORIZES (not the not-found reject).
+        if [[ "$A_ERR" != *"$NF"* ]]; then
+            ck_pass "A (RESOLVE): live pre-base coin admitted past input lookup (no '$NF'): ${A_ERR:0:80}"
+        else
+            ck_fail "A (RESOLVE): live pre-base coin still rejected with '$NF' — fix ineffective"
+        fi
+        # B (THE double-spend gate): the spent-post-base coin MUST be rejected. It
+        # resolves from the frozen pre-base store but its forest leaf is gone -> authorize fails.
+        if [[ "$B_ERR" == *"$NF"* ]]; then
+            ck_pass "B (AUTHORIZE): spent-post-base coin correctly REJECTED with '$NF' (forest-leaf-absent gate held)"
+        else
+            ck_fail "B (AUTHORIZE): spent-post-base coin was ADMITTED (double-spend!) — forest gate failed: ${B_ERR:0:80}"
+        fi
+    fi
+
+    stop_node "$CON_DIR"; stop_node "$SRC_DIR"
+    if [[ "$FAILED" == "0" ]]; then
+        echo "PREBASE_MEMPOOL_MODE ASSERTIONS PASSED"
+    else
+        echo "PREBASE_MEMPOOL_MODE TEST FAILED (see [FAIL] lines above)" >&2
     fi
     exit "$FAILED"
 fi

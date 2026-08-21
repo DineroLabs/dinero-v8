@@ -2898,15 +2898,44 @@ bool Mempool::validateTransaction(
         utxo.txid = input.prevout.txid.AsUint256();
         utxo.vout = input.prevout.vout;
 
-        // Try to get UTXO from view (returns string scriptPubKey)
+        // Frozen pre-base records require a live-forest authorization before
+        // consulting the auxiliary UTXO map. Stateless forward-connect can
+        // leave already-spent pre-base rows in that map; accepting one here
+        // would bypass the forest gate and admit a double spend.
         std::string spk_str;
-        if (!utxo_view.GetUTXO(utxo.txid, utxo.vout, utxo.value, spk_str)) {
-            OutPoint outpoint{input.prevout.txid, input.prevout.vout};
+        OutPoint outpoint{input.prevout.txid, input.prevout.vout};
+        const bool is_frozen_prebase =
+            prebase_coin_predicate_ && prebase_coin_predicate_(outpoint);
+        if (is_frozen_prebase) {
+            const auto prebase = prebase_coin_resolver_
+                ? prebase_coin_resolver_(outpoint)
+                : std::nullopt;
+            if (!prebase.has_value()) {
+                error = "Input UTXO not found: " +
+                        input.prevout.txid.AsUint256().GetHex() + ":" +
+                        std::to_string(input.prevout.vout);
+                return false;
+            }
+            utxo.value = prebase->value.GetUna();
+            spk_str.assign(prebase->scriptPubKey.begin(), prebase->scriptPubKey.end());
+            utxo.is_confidential = prebase->is_confidential;
+            utxo.commitment = prebase->commitment;
+        } else if (!utxo_view.GetUTXO(utxo.txid, utxo.vout, utxo.value, spk_str)) {
             if (auto recovered = recoverConflictedInputUTXO(outpoint)) {
                 utxo.value = recovered->value.GetUna();
                 spk_str.assign(recovered->scriptPubKey.begin(), recovered->scriptPubKey.end());
                 utxo.is_confidential = recovered->is_confidential;
                 utxo.commitment = recovered->commitment;
+            } else if (prebase_coin_resolver_) {
+                const auto prebase = prebase_coin_resolver_(outpoint);
+                if (!prebase.has_value()) {
+                    error = "Input UTXO not found: " + input.prevout.txid.AsUint256().GetHex() + ":" + std::to_string(input.prevout.vout);
+                    return false;
+                }
+                utxo.value = prebase->value.GetUna();
+                spk_str.assign(prebase->scriptPubKey.begin(), prebase->scriptPubKey.end());
+                utxo.is_confidential = prebase->is_confidential;
+                utxo.commitment = prebase->commitment;
             } else {
                 error = "Input UTXO not found: " + input.prevout.txid.AsUint256().GetHex() + ":" + std::to_string(input.prevout.vout);
                 return false;
