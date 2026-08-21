@@ -541,7 +541,8 @@ bool r1cs_spartan_verify(
     const GeneratorSet& gens,
     Transcript& transcript,
     secp256k1_context* ctx,
-    bool bind_public_inputs
+    bool bind_public_inputs,
+    bool require_zero_error
 ) {
     // --- Basic sanity checks ---
     if (proof.circuit_hash.size() != 32) return false;
@@ -568,6 +569,24 @@ bool r1cs_spartan_verify(
         proof.comm_W.params.n_cols != H_z.n_cols) return false;
     if (proof.comm_E.params.n_rows != H_E.n_rows ||
         proof.comm_E.params.n_cols != H_E.n_cols) return false;
+
+    // SOUNDNESS (standalone / non-folded use): the relaxed-R1CS relation is
+    //   A·z ∘ B·z = u·(C·z) + E.
+    // A fresh proof of ordinary R1CS satisfaction requires u==1 (pinned by the
+    // caller) AND E==0. comm_E is prover-supplied; without this check a malicious
+    // prover commits E := A·z∘B·z − u·C·z (the pointwise residual of an INVALID
+    // witness), runs the honest sum-check on the now-identically-zero polynomial,
+    // and EVERY downstream check passes — forging a proof of a false statement
+    // (arbitrary shielded mint). hyrax_commit is unblinded (C_row = <row,G>), so
+    // E==0 ⇔ every comm_E row is the identity (point at infinity). Checking only
+    // Ez_claim==0 is NOT sufficient — a nonzero MLE can vanish at the single
+    // random point rx. Genuine Nova folding callers (u!=1, E!=0) pass
+    // require_zero_error=false.
+    if (require_zero_error) {
+        for (const Point& p : proof.comm_E.C) {
+            if (!p.is_identity()) return false;
+        }
+    }
 
     // --- Replay transcript: relaxation scalar, commitments, circuit hash ---
     transcript.append_scalar("spartan_u", u);

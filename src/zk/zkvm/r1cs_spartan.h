@@ -143,7 +143,14 @@ bool r1cs_spartan_verify(
     // CONFIRMED-CRIT-05: must match the prover. true (default) reconstructs the public-input
     // contribution to z̃(ry) and binds it; false is the pre-fix unbound rule, retained only
     // for validating pre-activation-height history.
-    bool bind_public_inputs = true
+    bool bind_public_inputs = true,
+    // SOUNDNESS (standalone use): a fresh proof of ordinary R1CS satisfaction is the
+    // relaxed relation A·z∘B·z = u·(C·z) + E with u==1 (pinned by the caller) AND E==0.
+    // When true (default), require comm_E to commit to the zero vector; without it a
+    // malicious prover commits the residual E:=A·z∘B·z − u·C·z of an INVALID witness and
+    // forges a proof of a false statement. Only genuine Nova folding callers (u!=1, E!=0)
+    // may pass false.
+    bool require_zero_error = true
 );
 
 /**
