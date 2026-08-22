@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 RUN_ID=$$
 BASE_DATA_DIR="/tmp/dinero_connecttip_restart_equiv_${RUN_ID}"
 DATA_DIR=""

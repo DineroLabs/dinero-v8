@@ -275,6 +275,11 @@ CBlockIndex* GetBestCandidate() {
     return *g_candidates.begin(); // First element has most work
 }
 
+std::vector<CBlockIndex*> GetCandidateTipsSnapshot() {
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);
+    return {g_candidates.begin(), g_candidates.end()};
+}
+
 // === Header-First Sync Implementation ===
 
 bool MaybeQueueOrphan(CBlockIndex* block_index) {

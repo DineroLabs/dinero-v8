@@ -34,6 +34,10 @@
 #ifdef _WIN32
     #include <winsock2.h>
     #include <ws2tcpip.h>
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <windows.h>
     #pragma comment(lib, "ws2_32.lib")
     // POSIX compatibility
     #ifndef _SSIZE_T_DEFINED
@@ -4464,6 +4468,12 @@ bool P2PManager::remember_peer_address(const std::string& address,
 
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
+        const std::string candidate_key = AddressKey(address, port);
+        for (const auto& advertised : advertised_addresses_) {
+            if (AddressKey(advertised.first, advertised.second) == candidate_key) {
+                return false;
+            }
+        }
         const auto endpoint = std::make_pair(address, port);
         if (std::find(discovered_nodes_.begin(), discovered_nodes_.end(), endpoint) ==
             discovered_nodes_.end()) {
@@ -4646,6 +4656,18 @@ bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
                       << address << ":" << port << std::endl;
             release_feeler();
             return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            const std::string endpoint = AddressKey(address, port);
+            for (const auto& advertised : advertised_addresses_) {
+                if (AddressKey(advertised.first, advertised.second) == endpoint) {
+                    std::cout << "[P2P] Rejected self-connection to advertised address: "
+                              << endpoint << std::endl;
+                    release_feeler();
+                    return false;
+                }
+            }
         }
     }
 
@@ -4871,6 +4893,18 @@ void P2PManager::connection_manager_loop() {
                     }
                 }
                 const std::string resolved_endpoint = AddressKey(resolved_ip, port);
+                if (port == listen_port_) {
+                    if ((!external_ip_.empty() && resolved_ip == external_ip_) ||
+                        dinero::network::IsLocalInterfaceIp(resolved_ip)) {
+                        return;
+                    }
+                    for (const auto& advertised : advertised_addresses_) {
+                        if (AddressKey(advertised.first, advertised.second) ==
+                            resolved_endpoint) {
+                            return;
+                        }
+                    }
+                }
                 if (scheduled_endpoints.count(resolved_endpoint) > 0) {
                     return;  // Same endpoint already connected or scheduled via an alias
                 }
@@ -5386,6 +5420,7 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
     // means "auto-gen", so re-roll defensively.
     peer->our_nonce = SecureRandom::GetUInt64();
     if (peer->our_nonce == 0) peer->our_nonce = 1;
+    version_nonces_.Remember(peer->our_nonce);
 
     std::cout << "[Handshake DEBUG] Starting handshake with " << peer->to_string()
               << " (outbound=" << peer->is_outbound << ")" << std::endl;
@@ -5407,6 +5442,11 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
 
         // P2P sync fix: Parse peer's version info (including their chain height)
         parse_version_payload(response->payload, peer);
+        if (version_nonces_.Contains(peer->their_nonce)) {
+            std::cout << "[Handshake] Rejected self-connection by version nonce from "
+                      << peer->to_string() << std::endl;
+            return false;
+        }
         // Gap 1: feed the address this peer reported as ours into vote scoring.
         record_self_address_report(peer->reported_local_addr, peer->address);
         seed_peer_sync_telemetry(peer, our_height);
@@ -5471,6 +5511,11 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
 
         // P2P sync fix: Parse peer's version info (including their chain height)
         parse_version_payload(version_msg->payload, peer);
+        if (version_nonces_.Contains(peer->their_nonce)) {
+            std::cout << "[Handshake] Rejected self-connection by version nonce from "
+                      << peer->to_string() << std::endl;
+            return false;
+        }
         // Gap 1: feed the address this peer reported as ours into vote scoring.
         record_self_address_report(peer->reported_local_addr, peer->address);
         seed_peer_sync_telemetry(peer, our_height);
@@ -7070,6 +7115,10 @@ constexpr size_t PEERS_FILE_MAX_ENTRIES = 5000;  // Bitcoin Core uses ~5000 (new
 
 void P2PManager::write_peers_file_atomic(const std::string& peers_file_path,
                                           const std::string& content) {
+    // Multiple save triggers exist (periodic maintenance, peer events and
+    // shutdown). They all use the same .tmp name, so serialize the complete
+    // write/flush/replace transaction rather than merely individual streams.
+    std::lock_guard<std::mutex> save_lock(peers_file_mutex_);
     // Atomic-write pattern: write to peers.dat.tmp, then rename in place.
     // Rename is atomic at the filesystem layer on POSIX (rename(2)) and
     // semi-atomic on Windows (MoveFileEx with MOVEFILE_REPLACE_EXISTING).
@@ -7118,7 +7167,48 @@ void P2PManager::write_peers_file_atomic(const std::string& peers_file_path,
 #endif
 
     std::error_code ec;
+#ifdef _WIN32
+    // std::filesystem::rename does not portably replace an existing file on
+    // Windows. peers.dat normally exists after the first save, so subsequent
+    // shutdowns could silently retain stale peers forever. MoveFileEx supplies
+    // the replace-existing and write-through semantics required here.
+    const std::wstring tmp_path_w = std::filesystem::path(tmp_path).wstring();
+    const std::wstring peers_file_path_w =
+        std::filesystem::path(peers_file_path).wstring();
+    DWORD move_error = ERROR_SUCCESS;
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        if (::MoveFileExW(tmp_path_w.c_str(), peers_file_path_w.c_str(),
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            move_error = ERROR_SUCCESS;
+            break;
+        }
+        move_error = ::GetLastError();
+        if ((move_error != ERROR_SHARING_VIOLATION &&
+             move_error != ERROR_LOCK_VIOLATION) || attempt == 2) {
+            break;
+        }
+        ::Sleep(25U * (attempt + 1));
+    }
+    if (move_error != ERROR_SUCCESS) {
+        ec = std::error_code(static_cast<int>(move_error), std::system_category());
+    }
+#else
     std::filesystem::rename(tmp_path, peers_file_path, ec);
+    if (!ec) {
+        // Make the directory entry durable too. fsync(temp) protects contents;
+        // fsync(parent) protects the rename across sudden power loss.
+        const auto parent = std::filesystem::path(peers_file_path).parent_path();
+        const std::string parent_path = parent.empty() ? "." : parent.string();
+        const int dir_fd = ::open(parent_path.c_str(), O_RDONLY);
+        if (dir_fd >= 0) {
+            if (::fsync(dir_fd) < 0) {
+                std::cerr << "[P2P] directory fsync() warning for "
+                          << parent_path << ": " << strerror(errno) << std::endl;
+            }
+            ::close(dir_fd);
+        }
+    }
+#endif
     if (ec) {
         std::cerr << "[P2P] rename() failed: " << tmp_path << " -> "
                   << peers_file_path << ": " << ec.message() << std::endl;

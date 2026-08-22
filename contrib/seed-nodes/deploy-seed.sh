@@ -42,7 +42,7 @@ apt-get install -y fail2ban ufw htop iotop curl wget git build-essential
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow ssh
-ufw allow 8333/tcp  # Dinero P2P
+ufw allow 20999/tcp  # Dinero P2P
 ufw --force enable
 
 # Configure fail2ban

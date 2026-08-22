@@ -186,14 +186,14 @@ std::vector<std::pair<std::string, uint16_t>> ConfigManager::getSeedNodes() cons
             }
         } else {
             // Default port if not specified
-            nodes.push_back({node, 8333});
+            nodes.push_back({node, 20999});
         }
     }
     
     // Add business and home IPs if configured
     std::string business_ip = get("p2p_business_ip");
     std::string home_ip = get("p2p_home_ip");
-    uint16_t external_port = static_cast<uint16_t>(getInt("p2p_external_port", 8333));
+    uint16_t external_port = static_cast<uint16_t>(getInt("p2p_external_port", 20999));
     
     if (!business_ip.empty()) {
         nodes.push_back({business_ip, external_port});

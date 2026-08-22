@@ -180,7 +180,7 @@ private:
     std::function<void(const std::string&, const std::vector<uint8_t>&)> block_callback;
     
 public:
-    P2PNetwork(uint16_t port = 8333);
+    P2PNetwork(uint16_t port = 20999);
     ~P2PNetwork();
     
     // Network management
@@ -256,4 +256,4 @@ public:
     static P2PMessage createGetAddrMessage();
 };
 
-} // namespace dinero 
+} // namespace dinero

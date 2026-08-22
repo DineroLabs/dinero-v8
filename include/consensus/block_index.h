@@ -195,6 +195,10 @@ void UpdateChainwork(CBlockIndex* block_index);
 void AddCandidate(CBlockIndex* block_index);
 void RemoveCandidate(CBlockIndex* block_index);
 CBlockIndex* GetBestCandidate();
+// Lock-safe value snapshot for read-only RPC/diagnostic consumers. The block
+// index owns the pointed-to entries for process lifetime; callers must not
+// mutate them.
+std::vector<CBlockIndex*> GetCandidateTipsSnapshot();
 
 /**
  * Header-first sync functions

@@ -1,5 +1,7 @@
 #pragma once
 
+class RpcRegistry;
+
 /**
  * @file consensus_rpc_handlers.h
  * @brief RPC handlers for consensus and chain introspection
@@ -13,13 +15,13 @@
 namespace dinero {
 
 /**
- * Register all consensus RPC handlers with the global RPC registry
+ * Register all consensus RPC handlers with the supplied registry.
  * 
  * This function registers the following RPC methods:
  * - getchaintips: Returns all known chain tips with status
  * - getchainwork: Returns total chainwork for active tip
  * - getreorgstatus: Returns last reorg stats and safe mode status
  */
-void RegisterConsensusRPCHandlers();
+void RegisterConsensusRPCHandlers(RpcRegistry& registry);
 
 } // namespace dinero

@@ -247,7 +247,9 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_connecttip_restart_equivalence.sh)
     add_test(
         NAME ConnectTipRestartEquivalence
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_connecttip_restart_equivalence.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_connecttip_restart_equivalence.sh
     )
     set_tests_properties(ConnectTipRestartEquivalence PROPERTIES
         LABELS "integration;restart;chainstate;canonicality;phase1-canonical-recovery"
@@ -458,7 +460,9 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_recovery_marker_restart_equivalence.sh)
     add_test(
         NAME RecoveryMarkerRestartEquivalence
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_recovery_marker_restart_equivalence.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_recovery_marker_restart_equivalence.sh
     )
     set_tests_properties(RecoveryMarkerRestartEquivalence PROPERTIES
         LABELS "integration;restart;recovery-marker;canonicality;phase1-canonical-recovery"
@@ -1063,13 +1067,30 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_restart_churn_boringness.sh)
     add_test(
         NAME RestartChurnBoringnessGate
-        COMMAND ${CMAKE_COMMAND} -E env PROFILE=gate ${CMAKE_CURRENT_SOURCE_DIR}/test_restart_churn_boringness.sh
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            PROFILE=gate
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_restart_churn_boringness.sh
     )
     set_tests_properties(RestartChurnBoringnessGate PROPERTIES
         LABELS "integration;soak;restart;churn"
         TIMEOUT 900
     )
     message(STATUS "  ✓ RestartChurnBoringnessGate registered")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_introspection_rpc.sh)
+    add_test(
+        NAME ConsensusIntrospectionRpc
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_introspection_rpc.sh
+    )
+    set_tests_properties(ConsensusIntrospectionRpc PROPERTIES
+        LABELS "integration;rpc;consensus;observability"
+        TIMEOUT 180
+    )
+    message(STATUS "  ✓ ConsensusIntrospectionRpc registered")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_bridge_csn_historical_spend_relay.sh)
@@ -2010,6 +2031,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         ParallelBlockDownloadTargeted LaggingPeerCatchupNoOrphans
         CrossSeedRestartReorgParity CrossSeedTeardownLifecycle
         ConnectTipRestartEquivalence
+        ConsensusIntrospectionRpc
         D3FullUserTxMissingUndo UndoMetadataRestamp
         ReindexChainstateUtreexoEquivalence ReindexPromotionRestartEquivalence
         InvalidityRestartSticky InvalidityCrashRestartEquivalence

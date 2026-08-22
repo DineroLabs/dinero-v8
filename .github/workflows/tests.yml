@@ -175,7 +175,7 @@ jobs:
       #                          is a failure (the GTEST_SKIPs are gone)
       - name: Run serial e2e tests (daemon-spawning)
         run: |
-          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery; do
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \

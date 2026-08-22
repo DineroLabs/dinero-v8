@@ -320,6 +320,26 @@ pass "A: real genesis->base replay via P2P backfill retires the trust marker (hi
     || fail "A: backfill exceeded the shared 16-slot in-flight cap: $BF_CAP_VIOLATION"
 pass "A: backfill surface healthy (enabled seen, completed=$BF_MAX_COMPLETED/total=$BF_TOTAL_SEEN, in_flight <= 16 across all samples)"
 
+# #301: missing-body waits retain the replay engine. The reported high-water
+# mark must never move backward within this worker run; old behavior emitted no
+# marker and replayed genesis..gap every pass.
+HWM_COUNT="$(grep -c 'retaining replay high-water mark at height' "$AD_DIR/daemon2.log" || true)"
+[[ "$HWM_COUNT" -gt 0 ]] \
+    || fail "A: background validation never reported a retained replay high-water mark (#301)"
+awk '
+    /retaining replay high-water mark at height/ {
+        for (i = 1; i <= NF; ++i) {
+            if ($i == "height") { h = $(i + 1) + 0; break }
+        }
+        if (seen && h < previous) exit 1
+        previous = h
+        seen = 1
+    }
+    END { if (!seen) exit 1 }
+' "$AD_DIR/daemon2.log" \
+    || fail "A: replay high-water mark moved backward across a body wait (#301)"
+pass "A: replay resumes from a monotonic retained high-water mark across body waits (#301)"
+
 # A: the 5s tick loop must DISARM backfill once the lifecycle stops
 # validating (retirement) — backfill_enabled flips to false.
 wait_status "$AD_RPC" "$AD_DIR" '.backfill_enabled == false' 30 \

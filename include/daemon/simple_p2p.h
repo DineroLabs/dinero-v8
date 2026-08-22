@@ -26,7 +26,7 @@ public:
             : address(addr), port(p), connected(false), last_seen(0) {}
     };
 
-    SimpleP2P(uint16_t listen_port = 8333);
+    SimpleP2P(uint16_t listen_port = 20999);
     ~SimpleP2P();
 
     // Basic network operations

@@ -6,6 +6,7 @@
 #include "rpc/methods_utreexo.h"  // Phase 11a.1: Utreexo RPC methods
 #include "rpc/methods_vault.h"  // Track C: Liquidity Vault RPC
 #include "rpc/ct_fee_rpc.h"  // Phase 3: CT fee configuration RPC
+#include "rpc/consensus_rpc_handlers.h"
 
 // Phase 26.3: Mining template RPC registration
 extern void registerMiningTemplateRPC();
@@ -43,6 +44,11 @@ void RegisterAllRPCMethods(DaemonContext& ctx) {
 
 void RegisterBlockchainRPC(DaemonContext& ctx) {
     dinero::g_logger.info("  Registering blockchain RPC methods...");
+
+    // Operator-facing chain selection and reorg introspection. Register the
+    // namespaced methods as canonical; RpcRegistry provides the legacy flat
+    // aliases (getchaintips/getchainwork/getreorgstatus).
+    dinero::RegisterConsensusRPCHandlers(g_rpcRegistry);
 
     // Phase 11a.1: Utreexo RPC methods (core + batch)
     RegisterUtreexoRPC();

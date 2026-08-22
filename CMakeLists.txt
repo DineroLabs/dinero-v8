@@ -586,6 +586,7 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/methods_descriptor.cpp  # Phase 3C: Descriptor RPC methods
   src/rpc/methods_telemetry.cpp
   src/rpc/methods_daemon_status.cpp  # Daemon readiness contract (getdaemonstatus)
+  src/rpc/consensus_rpc_handlers.cpp  # Chain tips, chainwork and reorg introspection
   src/rpc/cpu_stats_rpc.cpp  # Phase E.3.1: CPU stats & resource monitoring
   src/rpc/rpc_init.cpp        # Phase E.3.1: RPC registration (RegisterAllRPCMethods)
   src/rpc/mining_control_rpc.cpp  # Phase Y: CPU miner control (start/stop/getstatus)

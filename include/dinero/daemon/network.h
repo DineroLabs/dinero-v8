@@ -61,7 +61,7 @@ struct PeerInfo {
     uint32_t services;
     uint64_t starting_height;
     
-    PeerInfo() : port(8333), last_seen(0), last_ping(0), connected(false), socket_fd(-1), services(0), starting_height(0) {}
+    PeerInfo() : port(20999), last_seen(0), last_ping(0), connected(false), socket_fd(-1), services(0), starting_height(0) {}
     PeerInfo(const std::string& addr, int p) : address(addr), port(p), last_seen(0), last_ping(0), connected(false), socket_fd(-1), services(0), starting_height(0) {}
 };
 
@@ -84,15 +84,15 @@ public:
     ~Network();
     
     // Core network functionality
-    bool initialize(int port = 8333, int max_peers = 8);
+    bool initialize(int port = 20999, int max_peers = 8);
     void shutdown();
     bool start();
     void stop();
     
     // Peer management
-    bool addPeer(const std::string& address, int port = 8333);
+    bool addPeer(const std::string& address, int port = 20999);
     bool removePeer(const std::string& address);
-    bool connectToPeer(const std::string& address, int port = 8333);
+    bool connectToPeer(const std::string& address, int port = 20999);
     void disconnectPeer(const std::string& address);
     std::vector<PeerInfo> getConnectedPeers() const;
     std::vector<PeerInfo> getKnownPeers() const;
@@ -204,4 +204,4 @@ private:
     std::vector<std::string> m_seed_nodes;
 };
 
-} // namespace dinero 
+} // namespace dinero
