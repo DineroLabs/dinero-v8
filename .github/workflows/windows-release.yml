@@ -127,6 +127,19 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install OpenCL import library for the SV2 GPU miner
+        shell: powershell
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install opencl:x64-windows --no-print-usage
+          $openclRoot = Join-Path $env:RUNNER_TEMP 'opencl-sdk'
+          New-Item (Join-Path $openclRoot 'lib\x64') -ItemType Directory -Force | Out-Null
+          Copy-Item `
+            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\lib\OpenCL.lib" `
+            (Join-Path $openclRoot 'lib\x64\OpenCL.lib')
+          # cl-sys 0.4.3 only recognizes vendor SDK root variables and appends
+          # lib\x64 itself; it does not honor a generic OPENCL_LIB_DIR.
+          "INTELOCLSDKROOT=$openclRoot" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+
       - name: Build pinned SV2 miners
         working-directory: dinero-sv2
         # Git Bash resolves `link.exe` to its Unix /usr/bin/link shim even
