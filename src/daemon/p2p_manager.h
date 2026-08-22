@@ -17,6 +17,7 @@
 
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
+#include "p2p/outbound_policy.h"
 #include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
 #include "network/rolling_24h_counter.h"  // Phase 2b: rolling 24h byte counter for relay-virtual traffic
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
@@ -825,7 +826,8 @@ private:
     static constexpr size_t MAX_OUTBOX_SIZE = 10000;
     static constexpr int MAX_SEND_TRIES = 10;
     static constexpr int SEND_TIMEOUT_SEC = 5;
-    static constexpr size_t MAX_OUTBOUND_CONNECTIONS = 8;
+    static constexpr size_t MAX_OUTBOUND_CONNECTIONS =
+        dinero::p2p::kTargetDurableOutbound;
     static constexpr std::chrono::minutes FEELER_INTERVAL{2};
     static constexpr size_t MAX_INBOUND_CONNECTIONS = 125;
     static constexpr size_t MAX_INBOUND_PER_IP = 6;

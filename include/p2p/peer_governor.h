@@ -1,5 +1,6 @@
 #pragma once
 
+#include "p2p/outbound_policy.h"
 #include "p2p/peer_quality.h"
 
 #include <cstdint>
@@ -10,7 +11,7 @@ namespace dinero {
 namespace p2p {
 
 struct PeerGovernorConfig {
-    size_t target_hot_outbound{8};
+    size_t target_hot_outbound{kTargetDurableOutbound};
     size_t target_warm_standby{16};
     size_t target_relay_registrations{3};
     size_t max_configured_seed_hot{2};
@@ -50,4 +51,3 @@ private:
 
 } // namespace p2p
 } // namespace dinero
-

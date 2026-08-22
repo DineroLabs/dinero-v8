@@ -56,6 +56,12 @@ static bool has(const std::vector<std::string>& values, const char* needle) {
 
 int main() {
     {
+        const dinero::p2p::PeerGovernorConfig defaults;
+        check(defaults.target_hot_outbound == 5,
+              "default hot outbound target matches daemon capacity");
+    }
+
+    {
         PeerGovernorConfig config;
         config.target_hot_outbound = 4;
         config.max_configured_seed_hot = 1;
@@ -139,4 +145,3 @@ int main() {
     std::printf("\nALL PEER GOVERNOR CHECKS PASSED\n");
     return 0;
 }
-

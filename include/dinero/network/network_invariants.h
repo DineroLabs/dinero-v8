@@ -7,6 +7,7 @@
 #pragma once
 
 #include "p2p/connection_manager.h"
+#include "p2p/outbound_policy.h"
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -126,7 +127,8 @@ private:
 
     // Thresholds for warnings
     static constexpr uint32_t MAX_PEERS_PER_SUBNET = 32;  // Max peers from same /16
-    static constexpr uint32_t MIN_OUTBOUND_PROTECTED = 8;  // Min outbound peers to protect
+    static constexpr uint32_t MIN_OUTBOUND_PROTECTED =
+        static_cast<uint32_t>(dinero::p2p::kTargetDurableOutbound);
 
     /**
      * Helper: Extract /16 subnet from IP address
