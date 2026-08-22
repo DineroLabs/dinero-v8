@@ -20,7 +20,7 @@ on:
       release_tag:
         description: 'Immutable Dinero release tag to package'
         required: true
-        default: 'v8.1.7'
+        default: 'v8.1.8'
         type: string
 
 permissions:

@@ -1,3 +1,29 @@
+dinero-core (8.1.8-1) unstable; urgency=high
+
+  * v8.1.8 -- make heavy Utreexo block connection practical by batching proof
+    generation and known-position removals across all validation hot paths.
+    A 65,536-leaf, 1,600-target regression falls from roughly 82 seconds to
+    0.12 seconds while retaining byte-identical proofs, roots, and commitments.
+  * Enable dynamic AddrMan-selected outbound peers alongside the three
+    mandatory fleet anchors. Maintain five durable outbound connections so a
+    growing population of independently reachable nodes contributes useful
+    topology without weakening anchor availability.
+  * Add short-lived Bitcoin-style feeler connections to validate new addresses
+    and promote successful candidates into the tried table. Enforce network-
+    group diversity in dynamic selection and preserve static anchors as
+    mandatory recovery and operational connections.
+  * Keep active peer churn disabled while the independently reachable node
+    population is young; discovery, feelers, durable replacement, backoff, and
+    address persistence remain active without dropping healthy peers merely to
+    rotate them.
+  * Network magic, peer protocol, consensus rules, wallet format, and the
+    height-73,035 and height-84,131 V4 AssumeUTXO trust anchors are unchanged.
+    No database migration or chain fork is required.
+  * Node-operator upgrade strongly recommended: validation latency and outbound
+    network resilience changed; wallets and stateless clients remain compatible.
+
+ -- Dinero Labs <team@dinerolabs.org>  Sat, 22 Aug 2026 04:18:59 -0400
+
 dinero-core (8.1.7-1) unstable; urgency=high
 
   * v8.1.7 -- repair stateless AssumeUTXO wallet spends and consolidation.
