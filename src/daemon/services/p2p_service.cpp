@@ -1583,7 +1583,7 @@ bool P2PService::Start() {
                     continue;
                 }
                 uint16_t port = (anchor.port != 0) ? anchor.port : p2p_port;
-                p2p_mgr_->add_seed_node(anchor.hostname, port);
+                p2p_mgr_->add_anchor_node(anchor.hostname, port);
                 AddReconnectTarget(reconnect_targets_, reconnect_seen, anchor.hostname, port);
                 logger_interface_->info("[P2PService] Added anchor peer: " + anchor.hostname + ":" +
                                         std::to_string(port) + " (" + anchor.region + ")");

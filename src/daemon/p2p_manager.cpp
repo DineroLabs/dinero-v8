@@ -4408,6 +4408,16 @@ void P2PManager::add_seed_node(const std::string& address, uint16_t port) {
     std::cout << "Added seed node: " << address << ":" << port << std::endl;
 }
 
+void P2PManager::add_anchor_node(const std::string& address, uint16_t port) {
+    add_seed_node(address, port);
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    const auto endpoint = std::make_pair(address, port);
+    if (std::find(anchor_nodes_.begin(), anchor_nodes_.end(), endpoint) ==
+        anchor_nodes_.end()) {
+        anchor_nodes_.push_back(endpoint);
+    }
+}
+
 bool P2PManager::remove_seed_node(const std::string& address, uint16_t port) {
     std::lock_guard<std::mutex> lock(peers_mutex_);
     const auto before = seed_nodes_.size();
@@ -4421,6 +4431,11 @@ bool P2PManager::remove_seed_node(const std::string& address, uint16_t port) {
 std::vector<std::pair<std::string, uint16_t>> P2PManager::get_seed_nodes() const {
     std::lock_guard<std::mutex> lock(peers_mutex_);
     return seed_nodes_;
+}
+
+std::vector<std::pair<std::string, uint16_t>> P2PManager::get_anchor_nodes() const {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    return anchor_nodes_;
 }
 
 bool P2PManager::remember_peer_address(const std::string& address,
@@ -4447,7 +4462,14 @@ bool P2PManager::remember_peer_address(const std::string& address,
         return false;
     }
 
-    add_seed_node(address, port);
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        const auto endpoint = std::make_pair(address, port);
+        if (std::find(discovered_nodes_.begin(), discovered_nodes_.end(), endpoint) ==
+            discovered_nodes_.end()) {
+            discovered_nodes_.push_back(endpoint);
+        }
+    }
 
     if (address_manager_ && !IsOnionAddress(address)) {
         auto network_addr = NetworkAddressForPeer(address, port, services);
@@ -4761,14 +4783,22 @@ void P2PManager::connection_manager_loop() {
             std::lock_guard<std::mutex> lock(peers_mutex_);
 
             size_t active_peer_count = 0;
-            // Collect resolved IPs of already-connected peers for dedup
-            std::unordered_set<std::string> connected_ips;
+            // Deduplicate by resolved endpoint, not IP alone. Multiple valid
+            // nodes can share an address while listening on different ports
+            // (common in regtest and behind port-forwarding gateways).
+            std::unordered_set<std::string> connected_endpoints;
             for (const auto& pair : connected_peers_) {
-                if (pair.second->is_connected) {
+                if (pair.second->is_connected && pair.second->is_outbound) {
                     active_peer_count++;
-                    connected_ips.insert(pair.second->address);
+                    connected_endpoints.insert(
+                        AddressKey(pair.second->address, pair.second->port));
                 }
             }
+
+            // Include candidates selected in this pass. Without this set a
+            // hardcoded IP and a DNS name resolving to that IP can consume two
+            // outbound slots before either socket finishes connecting.
+            std::unordered_set<std::string> scheduled_endpoints = connected_endpoints;
 
             auto consider_candidate = [&](const std::string& address, uint16_t port) {
                 if (active_peer_count + seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS) {
@@ -4813,18 +4843,28 @@ void P2PManager::connection_manager_loop() {
                         freeaddrinfo(res);
                     }
                 }
-                if (connected_ips.count(resolved_ip) > 0) {
-                    return;  // Already connected to this IP via another seed entry
+                const std::string resolved_endpoint = AddressKey(resolved_ip, port);
+                if (scheduled_endpoints.count(resolved_endpoint) > 0) {
+                    return;  // Same endpoint already connected or scheduled via an alias
                 }
 
                 seeds_to_connect.emplace_back(address, port);
+                scheduled_endpoints.insert(resolved_endpoint);
             };
 
-            for (const auto& seed : seed_nodes_) {
-                consider_candidate(seed.first, seed.second);
+            // Mandatory anchors retain first claim on outbound capacity.
+            for (const auto& anchor : anchor_nodes_) {
+                consider_candidate(anchor.first, anchor.second);
             }
+
+            // Fill remaining slots from AddrMan before generic bootstrap
+            // seeds. This is what lets learned community nodes become durable
+            // outbound peers while the three recovery anchors remain present.
             for (const auto& candidate : addrman_candidates) {
                 consider_candidate(candidate.ip, candidate.port);
+            }
+            for (const auto& seed : seed_nodes_) {
+                consider_candidate(seed.first, seed.second);
             }
         }
 
@@ -7056,8 +7096,11 @@ void P2PManager::load_peers(const std::string& peers_file_path) {
                 skipped++;
                 continue;
             }
-            add_seed_node(addr, port);
-            loaded++;
+            if (remember_peer_address(addr, port, "peers.dat")) {
+                loaded++;
+            } else {
+                skipped++;
+            }
         } else {
             skipped++;
         }
@@ -7112,9 +7155,11 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
             ++total;
         }
 
-        // Save seed_nodes_ that aren't already written (includes addr-discovered peers)
-        // Resolve DNS names to IPs for dedup against already-written resolved-IP entries.
-        for (const auto& seed : seed_nodes_) {
+        // Persist learned peers separately from configured bootstrap seeds.
+        // Keeping these populations distinct is required by the dynamic peer
+        // governor: a gossiped community node must not become a protected
+        // configured seed merely because it survived a restart.
+        for (const auto& seed : discovered_nodes_) {
             if (total >= PEERS_FILE_MAX_ENTRIES) break;
             std::string ip = seed.first;
             struct sockaddr_in sa;

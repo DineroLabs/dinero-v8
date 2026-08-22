@@ -140,6 +140,8 @@ jq -e --argjson port "${NODE_B_P2P}" \
 pass "getnetworkinfo exposes listen and port-mapping status"
 
 rpc_call "${NODE_B_RPC}" "${DATA_B}" "addnode" "[\"127.0.0.1:${NODE_A_P2P}\",\"add\"]" >/dev/null
+# Both daemons share 127.0.0.1 but listen on different P2P ports. This pins
+# candidate deduplication to resolved IP:port rather than IP alone.
 ADDED_JSON="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "getaddednodeinfo" '[]')"
 jq -e --arg endpoint "127.0.0.1:${NODE_A_P2P}" '.result[] | select(.addednode == $endpoint)' <<<"${ADDED_JSON}" >/dev/null \
     || fail "Runtime addnode entry missing from getaddednodeinfo: ${ADDED_JSON}"

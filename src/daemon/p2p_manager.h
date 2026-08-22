@@ -396,8 +396,10 @@ public:
 
     // Peer management
     void add_seed_node(const std::string& address, uint16_t port);
+    void add_anchor_node(const std::string& address, uint16_t port);
     bool remove_seed_node(const std::string& address, uint16_t port);
     std::vector<std::pair<std::string, uint16_t>> get_seed_nodes() const;
+    std::vector<std::pair<std::string, uint16_t>> get_anchor_nodes() const;
     bool connect_to_peer(const std::string& address, uint16_t port);
     void disconnect_peer(const std::string& peer_address);
     bool ban_peer(const std::string& target, std::chrono::seconds duration);
@@ -860,6 +862,10 @@ private:
     std::unordered_map<std::string, std::shared_ptr<PeerInfo>> connected_peers_;
     std::unordered_set<std::string> connecting_peers_;  // Guards against duplicate connection attempts
     std::vector<std::pair<std::string, uint16_t>> seed_nodes_;
+    std::vector<std::pair<std::string, uint16_t>> discovered_nodes_;
+    // Mandatory recovery peers use the normal transport, but are tracked
+    // separately so dynamic discovery can never crowd them out.
+    std::vector<std::pair<std::string, uint16_t>> anchor_nodes_;
     std::vector<std::pair<std::string, uint16_t>> advertised_addresses_;
     // True once an EXPLICIT/trusted reachable address (operator externalip or
     // port-mapping) has been advertised — distinct from Gap-1-learned addresses.
