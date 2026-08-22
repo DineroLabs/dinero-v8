@@ -129,7 +129,9 @@ jobs:
 
       - name: Build pinned SV2 miners
         working-directory: dinero-sv2
-        shell: bash
+        # Git Bash resolves `link.exe` to its Unix /usr/bin/link shim even
+        # after msvc-dev-cmd. PowerShell preserves MSVC's linker precedence.
+        shell: powershell
         run: cargo build --release --locked
 
       - name: Cache vendored OpenSSL
