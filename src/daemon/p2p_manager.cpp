@@ -4783,19 +4783,22 @@ void P2PManager::connection_manager_loop() {
             std::lock_guard<std::mutex> lock(peers_mutex_);
 
             size_t active_peer_count = 0;
-            // Collect resolved IPs of already-connected peers for dedup
-            std::unordered_set<std::string> connected_ips;
+            // Deduplicate by resolved endpoint, not IP alone. Multiple valid
+            // nodes can share an address while listening on different ports
+            // (common in regtest and behind port-forwarding gateways).
+            std::unordered_set<std::string> connected_endpoints;
             for (const auto& pair : connected_peers_) {
                 if (pair.second->is_connected && pair.second->is_outbound) {
                     active_peer_count++;
-                    connected_ips.insert(pair.second->address);
+                    connected_endpoints.insert(
+                        AddressKey(pair.second->address, pair.second->port));
                 }
             }
 
             // Include candidates selected in this pass. Without this set a
             // hardcoded IP and a DNS name resolving to that IP can consume two
             // outbound slots before either socket finishes connecting.
-            std::unordered_set<std::string> scheduled_ips = connected_ips;
+            std::unordered_set<std::string> scheduled_endpoints = connected_endpoints;
 
             auto consider_candidate = [&](const std::string& address, uint16_t port) {
                 if (active_peer_count + seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS) {
@@ -4840,12 +4843,13 @@ void P2PManager::connection_manager_loop() {
                         freeaddrinfo(res);
                     }
                 }
-                if (scheduled_ips.count(resolved_ip) > 0) {
-                    return;  // Already connected to this IP via another seed entry
+                const std::string resolved_endpoint = AddressKey(resolved_ip, port);
+                if (scheduled_endpoints.count(resolved_endpoint) > 0) {
+                    return;  // Same endpoint already connected or scheduled via an alias
                 }
 
                 seeds_to_connect.emplace_back(address, port);
-                scheduled_ips.insert(resolved_ip);
+                scheduled_endpoints.insert(resolved_endpoint);
             };
 
             // Mandatory anchors retain first claim on outbound capacity.
