@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.17)
 # In a monorepo release the root owns the shared version. Keep a standalone
 # fallback for legacy direct builds of seeder/.
 if(NOT DEFINED DINERO_MONOREPO_VERSION)
-  set(DINERO_MONOREPO_VERSION 8.1.7)
+  set(DINERO_MONOREPO_VERSION 8.1.8)
 endif()
 project(dinero-seeder VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 
