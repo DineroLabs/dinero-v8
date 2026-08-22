@@ -418,6 +418,43 @@ void test_g5_10_advertisable_addresses() {
 }
 
 // ============================================================================
+// Test G.5.11: Feelers select NEW entries and promote only after success
+// ============================================================================
+
+void test_g5_11_feeler_new_only_promotion() {
+    AddressManager addrman;
+    NetworkAddress fresh_a{"8.8.8.8", 20999, 1,
+                           std::chrono::system_clock::now()};
+    NetworkAddress fresh_b{"9.9.9.9", 20999, 1,
+                           std::chrono::system_clock::now()};
+    NetworkAddress tried{"1.1.1.1", 20999, 1,
+                         std::chrono::system_clock::now()};
+
+    addrman.addAddresses({fresh_a, fresh_b, tried});
+    addrman.markGood(tried);
+
+    auto feelers = addrman.getNewAddressesForFeeler(2);
+    assert(feelers.size() == 2);
+    for (const auto& candidate : feelers) {
+        assert(!(candidate == tried));
+    }
+
+    const auto promoted = feelers.front();
+    addrman.markGood(promoted);
+    const auto stats = addrman.getStats();
+    assert(stats.tried_addresses == 2);
+    assert(stats.new_addresses == 1);
+
+    auto remaining = addrman.getNewAddressesForFeeler(2);
+    assert(remaining.size() == 1);
+    assert(!(remaining.front() == tried));
+    assert(!(remaining.front() == promoted));
+
+    std::cout << "✅ Test G.5.11 PASSED: feelers validate NEW entries only\n"
+              << std::endl;
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 
@@ -437,6 +474,7 @@ int main() {
         test_g5_8_terrible_marking();
         test_g5_9_manual_ban_unban();
         test_g5_10_advertisable_addresses();
+        test_g5_11_feeler_new_only_promotion();
 
         std::cout << "\n╔════════════════════════════════════════╗" << std::endl;
         std::cout << "║  ✅ ALL TESTS PASSED                  ║" << std::endl;

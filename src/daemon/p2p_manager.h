@@ -67,6 +67,10 @@ struct PeerInfo {
     std::chrono::system_clock::time_point last_seen;
     std::chrono::steady_clock::time_point last_ping_sent{std::chrono::steady_clock::now()};
     bool is_outbound;
+    // Short-lived outbound probe used to validate a NEW AddrMan entry.
+    // A feeler completes the normal handshake, marks the address good, and
+    // disconnects before entering the durable peer/message lifecycle.
+    bool is_feeler{false};
     bool is_connected;
     int socket_fd;
 
@@ -170,6 +174,7 @@ struct PeerInfo {
           last_seen(other.last_seen),
           last_ping_sent(other.last_ping_sent),
           is_outbound(other.is_outbound),
+          is_feeler(other.is_feeler),
           is_connected(other.is_connected),
           socket_fd(other.socket_fd),
           consecutive_send_failures(other.consecutive_send_failures.load()),
@@ -821,6 +826,7 @@ private:
     static constexpr int MAX_SEND_TRIES = 10;
     static constexpr int SEND_TIMEOUT_SEC = 5;
     static constexpr size_t MAX_OUTBOUND_CONNECTIONS = 8;
+    static constexpr std::chrono::minutes FEELER_INTERVAL{2};
     static constexpr size_t MAX_INBOUND_CONNECTIONS = 125;
     static constexpr size_t MAX_INBOUND_PER_IP = 6;
     // Serialize writes per-socket (not globally) to avoid interleaved frames
@@ -861,6 +867,9 @@ private:
     // Allows worker threads to hold weak_ptr, preventing use-after-free
     std::unordered_map<std::string, std::shared_ptr<PeerInfo>> connected_peers_;
     std::unordered_set<std::string> connecting_peers_;  // Guards against duplicate connection attempts
+    std::atomic<bool> feeler_in_progress_{false};
+    std::chrono::steady_clock::time_point last_feeler_attempt_{
+        std::chrono::steady_clock::now()};
     std::vector<std::pair<std::string, uint16_t>> seed_nodes_;
     std::vector<std::pair<std::string, uint16_t>> discovered_nodes_;
     // Mandatory recovery peers use the normal transport, but are tracked
@@ -1126,6 +1135,8 @@ private:
     // Network threads
     void listen_loop();
     void connection_manager_loop();
+    bool connect_to_peer_impl(const std::string& address, uint16_t port,
+                              bool is_feeler);
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
     void start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);

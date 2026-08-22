@@ -4494,9 +4494,10 @@ void P2PManager::mark_peer_address_attempt(const std::string& address,
 
     auto network_addr = NetworkAddressForPeer(address, port);
     address_manager_->addAddress(network_addr, success ? "connect-success" : "connect-failure");
-    address_manager_->markAttempt(network_addr, success);
     if (success) {
         address_manager_->markGood(network_addr);
+    } else {
+        address_manager_->markAttempt(network_addr, false);
     }
 }
 
@@ -4600,9 +4601,24 @@ bool P2PManager::send_addr_list_to_peer(
 }
 
 bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
+    return connect_to_peer_impl(address, port, false);
+}
+
+bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
+                                      bool is_feeler) {
     if (!network_active_.load(std::memory_order_acquire)) {
         return false;
     }
+
+    if (is_feeler) {
+        bool expected = false;
+        if (!feeler_in_progress_.compare_exchange_strong(expected, true)) {
+            return false;
+        }
+    }
+    const auto release_feeler = [this, is_feeler]() {
+        if (is_feeler) feeler_in_progress_.store(false);
+    };
 
     // 🚫 SELF-LOOP PREVENTION: Reject connections to self
     // NOTE: Localhost check relaxed to allow SSH tunnel testing (regtest)
@@ -4616,6 +4632,7 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
         // Check configured external IP (still reject - this is a true self-connection)
         if (!external_ip_.empty() && address == external_ip_) {
             std::cout << "[P2P] ⚠️  Rejected self-connection to external IP: " << address << ":" << port << std::endl;
+            release_feeler();
             return false;
         }
         // Check every IP bound to a local interface. This catches the case where
@@ -4627,6 +4644,7 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
         if (dinero::network::IsLocalInterfaceIp(address)) {
             std::cout << "[P2P] ⚠️  Rejected self-connection to local interface IP: "
                       << address << ":" << port << std::endl;
+            release_feeler();
             return false;
         }
     }
@@ -4654,6 +4672,7 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
     if (is_peer_banned(address, port) || is_peer_banned(resolved_ip, port)) {
         std::cout << "[P2P] Skipping banned peer: " << address << ":" << port
                   << " (resolved " << resolved_ip << ")" << std::endl;
+        release_feeler();
         return false;
     }
 
@@ -4663,10 +4682,12 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(peer_key);
         if (it != connected_peers_.end() && it->second->is_connected) {
+            release_feeler();
             return true; // Already connected
         }
         // Prevent duplicate connection attempts (race between loop iterations)
         if (connecting_peers_.count(peer_key) > 0) {
+            release_feeler();
             return true; // Connection already in progress
         }
         // Check if already connected to the same resolved IP (different seed entry)
@@ -4674,6 +4695,7 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
             if (peer->is_connected && peer->address == resolved_ip && peer->port == port) {
                 std::cout << "[P2P] Skipping " << peer_key << " — already connected to "
                           << resolved_ip << ":" << port << std::endl;
+                release_feeler();
                 return true;
             }
         }
@@ -4688,6 +4710,7 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
         // Remove from connecting set on failure
         std::lock_guard<std::mutex> lock(peers_mutex_);
         connecting_peers_.erase(peer_key);
+        release_feeler();
         return false;
     }
 
@@ -4697,6 +4720,7 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
     peer->address = resolved_ip;  // Store resolved IP for dedup (not DNS name)
     peer->port = port;
     peer->is_outbound = true;
+    peer->is_feeler = is_feeler;
     peer->is_connected = false;
     peer->socket_fd = socket_fd;
     peer->connected_since = std::chrono::system_clock::now();
@@ -4706,7 +4730,8 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
     // Set send timeout as safety measure
     set_socket_send_timeout(socket_fd, SEND_TIMEOUT_SEC);
 
-    std::cout << "Connected to peer: " << peer_key << " (send timeout: " << SEND_TIMEOUT_SEC << "s)" << std::endl;
+    std::cout << (is_feeler ? "Connected feeler to peer: " : "Connected to peer: ")
+              << peer_key << " (send timeout: " << SEND_TIMEOUT_SEC << "s)" << std::endl;
 
     // Start peer handler thread
     // Ring 3 Phase 4c: Pass shared_ptr (copied, not moved) for TS1 compliance
@@ -4776,6 +4801,7 @@ void P2PManager::connection_manager_loop() {
         // TS2 COMPLIANT: Collect connection targets inside lock, connect outside lock
         std::vector<std::pair<std::string, uint16_t>> seeds_to_connect;
         std::vector<dinero::p2p::NetworkAddress> addrman_candidates;
+        bool durable_outbound_full = false;
         if (address_manager_) {
             addrman_candidates = address_manager_->getAddresses(MAX_OUTBOUND_CONNECTIONS);
         }
@@ -4788,7 +4814,8 @@ void P2PManager::connection_manager_loop() {
             // (common in regtest and behind port-forwarding gateways).
             std::unordered_set<std::string> connected_endpoints;
             for (const auto& pair : connected_peers_) {
-                if (pair.second->is_connected && pair.second->is_outbound) {
+                if (pair.second->is_connected && pair.second->is_outbound &&
+                    !pair.second->is_feeler) {
                     active_peer_count++;
                     connected_endpoints.insert(
                         AddressKey(pair.second->address, pair.second->port));
@@ -4866,11 +4893,29 @@ void P2PManager::connection_manager_loop() {
             for (const auto& seed : seed_nodes_) {
                 consider_candidate(seed.first, seed.second);
             }
+            durable_outbound_full =
+                active_peer_count + seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS;
         }
 
         // TS2 COMPLIANT: Perform blocking connect operations outside lock
         for (const auto& seed : seeds_to_connect) {
             connect_to_peer(seed.first, seed.second);
+        }
+
+        // Bitcoin-style feeler: once durable outbound capacity is full, use
+        // one extra short-lived connection every two minutes to test a NEW
+        // AddrMan entry. A successful handshake promotes the address to TRIED;
+        // the connection is then closed without displacing any durable peer.
+        const auto feeler_now = std::chrono::steady_clock::now();
+        if (durable_outbound_full && address_manager_ &&
+            !feeler_in_progress_.load(std::memory_order_acquire) &&
+            feeler_now - last_feeler_attempt_ >= FEELER_INTERVAL) {
+            last_feeler_attempt_ = feeler_now;
+            const auto candidates = address_manager_->getNewAddressesForFeeler(1);
+            if (!candidates.empty()) {
+                connect_to_peer_impl(candidates.front().ip,
+                                     candidates.front().port, true);
+            }
         }
 
         // NAT traversal Phase D-2: after the direct-dial pass, look at
@@ -5164,6 +5209,14 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
         connecting_peers_.erase(peer_key);
     }
 
+    if (peer_locked->is_feeler) {
+        std::cout << "[P2P] Feeler handshake succeeded for " << peer_key
+                  << "; address promoted and transient connection closed"
+                  << std::endl;
+        cleanup_peer(peer_key);
+        return;
+    }
+
     // TS1 ASSERTION A1: Peer accessed only in valid states (RUNNING or STOPPING)
     auto state = peer_locked->lifetime_state.load();
     assert(state == PeerLifetimeState::RUNNING || state == PeerLifetimeState::STOPPING);
@@ -5392,18 +5445,15 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // us. Sending here (rather than inside dineroid) keeps the handshake
         // ordering BIP155-clean and avoids any chance of the relay holding
         // up verack while it validates the registration.
-        SendRelayRegisterIfConfigured(peer);
-        // NAT traversal Phase C3 slice 4b: also tell non-relay peers about
-        // our existing relay registrations so they can dial us via relay
-        // when they want to. Safe to call even before SendRelayRegisterIfConfigured
-        // completes — that helper sets is_our_relay on the FRESHLY-registered
-        // peer, but this helper walks ALL is_our_relay peers (prior connections)
-        // and tells THIS peer (the not-our-relay one) about them.
-        SendRelayHintsIfApplicable(peer, our_services);
-        // On-connect catch-up: tell this peer about every target currently
-        // registered with us, so it can dial them even though it joined
-        // after they registered (dedup means refreshes won't re-broadcast).
-        SendRelayRegistryToNewPeer(peer);
+        if (!peer->is_feeler) {
+            SendRelayRegisterIfConfigured(peer);
+            // NAT traversal Phase C3 slice 4b: also tell non-relay peers about
+            // our existing relay registrations so they can dial us via relay.
+            SendRelayHintsIfApplicable(peer, our_services);
+            // On-connect catch-up: tell this peer about every target currently
+            // registered with us.
+            SendRelayRegistryToNewPeer(peer);
+        }
 
     } else {
         // Wait for version message
@@ -5484,6 +5534,10 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
 
     if (peer->is_outbound) {
         mark_peer_address_attempt(peer->address, peer->port, true);
+    }
+
+    if (peer->is_feeler) {
+        return true;
     }
 
     // Request peer's known addresses for network discovery
@@ -5646,6 +5700,7 @@ void P2PManager::set_network_active(bool active) {
 // The actual erase-from-map happens in stop() AFTER all threads are joined.
 void P2PManager::cleanup_peer(const std::string& peer_address) {
     int fd_to_clean = -1;
+    bool cleaned_feeler = false;
     const size_t grace_marked = relay_registry_.MarkGracePendingByPeerAddress(
         peer_address,
         std::chrono::steady_clock::now() + kRelayDirectoryGracePeriod);
@@ -5660,6 +5715,7 @@ void P2PManager::cleanup_peer(const std::string& peer_address) {
         connecting_peers_.erase(peer_address);  // Clear connecting guard
         auto it = connected_peers_.find(peer_address);
         if (it != connected_peers_.end()) {
+            cleaned_feeler = it->second->is_feeler;
             // #373: take the fd and invalidate the stored copy BEFORE closing.
             // The peer object stays in the map until stop() joins its thread,
             // so a stale socket_fd here means any later closer (a second
@@ -5683,6 +5739,9 @@ void P2PManager::cleanup_peer(const std::string& peer_address) {
             // TS1 Note: We do NOT erase here because the peer thread may still
             // be running. The erase will happen in stop() after join.
         }
+    }
+    if (cleaned_feeler) {
+        feeler_in_progress_.store(false, std::memory_order_release);
     }
     // Clean up per-socket send mutex (outside peers_mutex_ to avoid nesting)
     if (fd_to_clean >= 0) {
@@ -5720,6 +5779,7 @@ std::vector<PeerInfo> P2PManager::get_connected_peers() const {
             info.connected_since = pair.second->connected_since;
             info.last_message_at = pair.second->last_message_at;
             info.last_seen = pair.second->last_seen;
+            info.is_feeler = pair.second->is_feeler;
             info.last_ping_sent = pair.second->last_ping_sent;
             info.is_outbound = pair.second->is_outbound;
             info.is_connected = pair.second->is_connected;

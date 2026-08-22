@@ -90,6 +90,13 @@ public:
     std::vector<NetworkAddress> getAddresses(size_t count = 1);
 
     /**
+     * Select untried addresses for short-lived feeler connections.
+     * Tried entries are deliberately excluded: feelers exist to validate
+     * fresh AddrMan entries without replacing durable outbound peers.
+     */
+    std::vector<NetworkAddress> getNewAddressesForFeeler(size_t count = 1);
+
+    /**
      * Get addresses advertising a given service bit (e.g. NODE_RELAY),
      * spread across distinct /16 subnets so no single network dominates.
      * The caller passes the bit; addrman stays service-agnostic.
