@@ -24,7 +24,11 @@ on:
         type: string
 
 permissions:
-  contents: read
+  # Draft releases are intentionally used as the staging area for verified
+  # snapshot inputs. GitHub returns 404 for draft releases to tokens without
+  # push access, so the packaging jobs need write-level contents permission
+  # even though this workflow only downloads those assets.
+  contents: write
 
 concurrency:
   group: desktop-release-${{ inputs.release_tag }}
