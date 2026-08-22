@@ -5,6 +5,7 @@
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Wallet event notifications
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
 #include "consensus/header_convergence.h"  // #439: HeaderConvergence + pure rule
+#include "consensus/activation_retry.h"  // preserve operationally-failed best-chain candidates
 #include "consensus/block_index.h"  // Phase 41: BlockIndex graph for reorg logic
 #include "consensus/utxo_snapshot.h"  // Phase 42: AssumeUTXO snapshot structures
 #include "daemon/services/assumeutxo_lifecycle.h"  // AssumeUTXO fatal state machine
@@ -1188,6 +1189,7 @@ private:
     // Phase 41: BlockIndex graph for fork tracking and reorg logic
     std::unordered_map<uint256, std::unique_ptr<class CBlockIndex>> block_index_;
     std::set<class CBlockIndex*, struct ByWorkThenHash> candidates_;
+    consensus::ActivationRetryTracker activation_retries_;
     std::unordered_map<uint256, std::vector<class CBlockIndex*>> orphan_pool_;
     class CBlockIndex* active_tip_ = nullptr;  // Current active chain tip
 

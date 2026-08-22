@@ -19,6 +19,7 @@
 
 #include "consensus/block_index.h"
 #include "consensus/block_lifecycle.h"
+#include "consensus/activation_retry.h"
 
 using dinero::CBlockIndex;
 using dinero::BlockHeader;
@@ -139,6 +140,23 @@ int main() {
         CBlockIndex* base = mk(10, CONNECTED, nullptr, "base9");
         CBlockIndex* tip  = mk(11, 0, base, "c9tip");
         check(!reorg_eligible(tip), "tip without body → not eligible");
+    }
+
+    std::cout << "=== operational activation retry preservation ===\n";
+    {
+        using namespace std::chrono_literals;
+        dinero::consensus::ActivationRetryTracker retries(10ms, 40ms);
+        const auto candidate = mk(12, DATA, nullptr, "retry")->hash;
+        const auto start = dinero::consensus::ActivationRetryTracker::TimePoint{};
+        check(retries.IsReady(candidate, start), "new candidate is immediately eligible");
+        check(retries.RecordFailure(candidate, start) == 10ms, "first retry uses millisecond cooldown");
+        check(!retries.IsReady(candidate, start + 9ms), "candidate stays preserved but cooled down");
+        check(retries.IsReady(candidate, start + 10ms), "candidate automatically becomes retryable");
+        check(retries.RecordFailure(candidate, start + 10ms) == 20ms, "retry delay backs off");
+        check(retries.RecordFailure(candidate, start + 30ms) == 40ms, "retry delay reaches cap");
+        check(retries.RecordFailure(candidate, start + 70ms) == 40ms, "retry delay remains capped");
+        retries.Clear(candidate);
+        check(retries.IsReady(candidate, start), "success clears retry state");
     }
 
     std::cout << (g_failures == 0

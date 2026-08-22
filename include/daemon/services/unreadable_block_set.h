@@ -38,6 +38,16 @@ public:
         return set_.count(hash) != 0;
     }
 
+    // A persisted flat-file position is not a usable body while a failed read
+    // has quarantined that hash.  Keeping this decision inside the synchronized
+    // type prevents callers from accidentally treating metadata presence as
+    // successful storage and suppressing the repair download.
+    bool is_usable(const uint256& hash, bool physically_present) const {
+        if (!physically_present) return false;
+        std::lock_guard<std::mutex> lock(mutex_);
+        return set_.count(hash) == 0;
+    }
+
     size_t size() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return set_.size();
