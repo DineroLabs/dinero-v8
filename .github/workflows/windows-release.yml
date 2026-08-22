@@ -195,6 +195,14 @@ jobs:
             dinerod dinero-cli dinero-qt dinero-miner dinero-stratum-worker `
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
           if ($LASTEXITCODE -ne 0) { throw 'desktop build failed' }
+          @(
+            'build-msvc-native\Release\dinerod.exe',
+            'build-msvc-native\bin\Release\dinero-qt.exe'
+          ) | ForEach-Object {
+            if (-not (Test-Path $_ -PathType Leaf)) {
+              throw "expected desktop build output is missing: $_"
+            }
+          }
 
       - name: Build Windows server release and installer
         shell: powershell
@@ -211,7 +219,7 @@ jobs:
           .\packaging\windows\build-installer.ps1 `
             -Version '${{ steps.ver.outputs.version }}' `
             -DaemonBuildDir 'build-msvc-native\Release' `
-            -QtBuildDir 'build-msvc-native\qt\Release' `
+            -QtBuildDir 'build-msvc-native\bin\Release' `
             -QtBin "$env:QT_ROOT_DIR\bin" `
             -Sv2BuildDir 'dinero-sv2\target\release' `
             -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-84131-v4.dat' `
