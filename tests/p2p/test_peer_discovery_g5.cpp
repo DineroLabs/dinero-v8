@@ -15,6 +15,7 @@
 #include "p2p/peer_scoring.h"
 #include <iostream>
 #include <cassert>
+#include <stdexcept>
 #include <thread>
 #include <chrono>
 
@@ -418,6 +419,49 @@ void test_g5_10_advertisable_addresses() {
 }
 
 // ============================================================================
+// Test G.5.11: Feelers select NEW entries and promote only after success
+// ============================================================================
+
+void test_g5_11_feeler_new_only_promotion() {
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    AddressManager addrman;
+    NetworkAddress fresh_a{"8.8.8.8", 20999, 1,
+                           std::chrono::system_clock::now()};
+    NetworkAddress fresh_b{"9.9.9.9", 20999, 1,
+                           std::chrono::system_clock::now()};
+    NetworkAddress tried{"1.1.1.1", 20999, 1,
+                         std::chrono::system_clock::now()};
+
+    addrman.addAddresses({fresh_a, fresh_b, tried});
+    addrman.markGood(tried);
+
+    auto feelers = addrman.getNewAddressesForFeeler(2);
+    require(feelers.size() == 2, "feeler selection did not return both NEW entries");
+    for (const auto& candidate : feelers) {
+        require(!(candidate == tried), "feeler selected a TRIED entry");
+    }
+
+    const auto promoted = feelers.front();
+    addrman.markGood(promoted);
+    const auto stats = addrman.getStats();
+    require(stats.tried_addresses == 2, "successful feeler was not promoted to TRIED");
+    require(stats.new_addresses == 1, "promoted feeler remained in NEW");
+
+    auto remaining = addrman.getNewAddressesForFeeler(2);
+    require(remaining.size() == 1, "unexpected number of NEW feeler candidates");
+    require(!(remaining.front() == tried), "TRIED entry returned after promotion");
+    require(!(remaining.front() == promoted), "promoted feeler returned as NEW");
+
+    std::cout << "✅ Test G.5.11 PASSED: feelers validate NEW entries only\n"
+              << std::endl;
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 
@@ -437,6 +481,7 @@ int main() {
         test_g5_8_terrible_marking();
         test_g5_9_manual_ban_unban();
         test_g5_10_advertisable_addresses();
+        test_g5_11_feeler_new_only_promotion();
 
         std::cout << "\n╔════════════════════════════════════════╗" << std::endl;
         std::cout << "║  ✅ ALL TESTS PASSED                  ║" << std::endl;

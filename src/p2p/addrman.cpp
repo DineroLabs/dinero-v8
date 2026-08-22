@@ -209,6 +209,34 @@ std::vector<NetworkAddress> AddressManager::getAddresses(size_t count) {
     return result;
 }
 
+std::vector<NetworkAddress> AddressManager::getNewAddressesForFeeler(size_t count) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<NetworkAddress> result;
+    std::unordered_set<std::string> used_subnets;
+
+    // Draw only from NEW. Bound retries so a pool containing only banned,
+    // terrible, or backoff-limited entries cannot spin indefinitely.
+    for (size_t attempts = 0;
+         attempts < count * 8 && result.size() < count && !new_addresses_.empty();
+         ++attempts) {
+        NetworkAddress addr;
+        try {
+            addr = selectFromNew();
+        } catch (...) {
+            break;
+        }
+        const AddressEntry* entry = findAddress(addr);
+        if (!entry || !entry->shouldRetry() || !addr.isRoutable()) {
+            continue;
+        }
+        const std::string subnet = extractSubnet16(addr.ip);
+        if (used_subnets.insert(subnet).second) {
+            result.push_back(addr);
+        }
+    }
+    return result;
+}
+
 std::vector<NetworkAddress> AddressManager::getAddressesByService(
     uint64_t service_bit, size_t count) {
     std::lock_guard<std::mutex> lock(mutex_);
