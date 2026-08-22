@@ -29,6 +29,9 @@ on:
 permissions:
   contents: write        # required to attach artifacts to the release
 
+env:
+  SV2_REF: 391d93df3450df6a58f119dec2b3fe35a1066e44
+
 jobs:
   windows-release:
     name: Windows MSVC x86_64 — release installer
@@ -70,6 +73,15 @@ jobs:
           echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Building Windows release for version: $V"
 
+      - name: Require Authenticode signing for a release cut
+        if: steps.ver.outputs.release_tag != ''
+        shell: bash
+        run: |
+          test "${{ vars.WINDOWS_SIGNING_READY }}" = true || {
+            echo 'WINDOWS_SIGNING_READY must be true for release artifacts' >&2
+            exit 1
+          }
+
       # Draft-release assets are intentionally unavailable through the public
       # /releases/download/<tag>/ URL. Fetch them through authenticated GitHub
       # access so the Windows installer can be built and tested before the
@@ -89,6 +101,36 @@ jobs:
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt 6.9.1 (MSVC 2022 x86_64)
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: '6.9.1'
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Checkout pinned SV2 miners
+        uses: actions/checkout@v4
+        with:
+          repository: DineroLabs/dinero-sv2
+          ref: ${{ env.SV2_REF }}
+          path: dinero-sv2
+
+      - name: Verify exact source provenance
+        shell: bash
+        run: |
+          if [ -n '${{ steps.ver.outputs.release_tag }}' ]; then
+            test "$(git rev-parse HEAD)" = "$(git rev-list -n1 '${{ steps.ver.outputs.release_tag }}')"
+          fi
+          test "$(git -C dinero-sv2 rev-parse HEAD)" = "$SV2_REF"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build pinned SV2 miners
+        working-directory: dinero-sv2
+        shell: bash
+        run: cargo build --release --locked
 
       - name: Cache vendored OpenSSL
         uses: actions/cache@v4
@@ -120,6 +162,25 @@ jobs:
         run: |
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
 
+      - name: Build complete Windows desktop stack
+        shell: powershell
+        run: |
+          cmake -S . -B build-msvc-native -G 'Visual Studio 17 2022' -A x64 `
+            -DDINERO_BUILD_QT=ON `
+            -DDINERO_BUILD_MINER=ON `
+            -DDINERO_BUILD_SEEDER=ON `
+            -DENABLE_GPU_MINING=ON `
+            -DENABLE_GRPC=OFF `
+            -DDINERO_ENABLE_QUIC=ON `
+            -DDINERO_RELEASE_TAG='${{ steps.ver.outputs.version }}' `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+          if ($LASTEXITCODE -ne 0) { throw 'desktop configure failed' }
+          cmake --build build-msvc-native --config Release --parallel 2 --target `
+            dinerod dinero-cli dinero-qt dinero-miner dinero-stratum-worker `
+            dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
+          if ($LASTEXITCODE -ne 0) { throw 'desktop build failed' }
+
       - name: Build Windows server release and installer
         shell: powershell
         run: |
@@ -129,11 +190,26 @@ jobs:
             -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
             -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
 
+      - name: Stage GUI installer and portable operator archive
+        shell: powershell
+        run: |
+          .\packaging\windows\build-installer.ps1 `
+            -Version '${{ steps.ver.outputs.version }}' `
+            -DaemonBuildDir 'build-msvc-native\Release' `
+            -QtBuildDir 'build-msvc-native\qt\Release' `
+            -QtBin "$env:QT_ROOT_DIR\bin" `
+            -Sv2BuildDir 'dinero-sv2\target\release' `
+            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-84131-v4.dat' `
+            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-84131-v4.manifest.json'
+
       # Policy pin. A release that silently linked a different OpenSSL than the
       # one the Linux/macOS lanes assert would be a supply-chain divergence.
       - name: Assert the linked OpenSSL version
         shell: powershell
         run: |
+          .\scripts\ci\check_openssl_version.ps1 `
+            -BuildDir 'build-msvc-native' `
+            -ExpectedVersion '3.5.7'
           .\scripts\ci\check_openssl_version.ps1 `
             -BuildDir 'build-msvc-server' `
             -ExpectedVersion '3.5.7'
@@ -144,51 +220,6 @@ jobs:
           .\scripts\native-msvc-regtest-smoke.ps1 `
             -BuildDir 'build-msvc-server\Release' `
             -TimeoutSeconds 90
-
-      # Prove the shipped installer actually installs, runs, and uninstalls.
-      # An installer that builds but does not install is not a release.
-      - name: Silent installer and uninstall smoke
-        shell: powershell
-        run: |
-          $version = '${{ steps.ver.outputs.version }}'
-          $installer = Resolve-Path "packaging\windows\dist\Dinero-Server-$version-windows-x86_64-Setup.exe"
-          $installDir = Join-Path $env:ProgramFiles 'Dinero-Server'
-
-          $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($installer)
-          $numericVersion = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart).$($info.FilePrivatePart)"
-          $expectedNumericVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') {
-            "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
-          } else {
-            '0.0.0.0'
-          }
-          if ($numericVersion -ne $expectedNumericVersion) {
-            throw "installer numeric file version is $numericVersion, expected $expectedNumericVersion"
-          }
-
-          $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
-          if ($install.ExitCode -ne 0) {
-            throw "silent installer exited with code $($install.ExitCode)"
-          }
-          foreach ($name in @('dinerod.exe', 'dinero-cli.exe', 'Uninstall.exe')) {
-            $path = Join-Path $installDir $name
-            if (-not (Test-Path $path)) { throw "installer did not produce $path" }
-          }
-
-          $installedVersion = & (Join-Path $installDir 'dinerod.exe') --version 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            throw "installed dinerod --version failed: $installedVersion"
-          }
-          Write-Host $installedVersion
-
-          $uninstall = Start-Process `
-            -FilePath (Join-Path $installDir 'Uninstall.exe') `
-            -ArgumentList '/S' -Wait -PassThru
-          if ($uninstall.ExitCode -ne 0) {
-            throw "silent uninstall exited with code $($uninstall.ExitCode)"
-          }
-          if (Test-Path (Join-Path $installDir 'dinerod.exe')) {
-            throw "silent uninstall left dinerod.exe installed"
-          }
 
       # Authenticode signing via Azure Artifact Signing (publisher:
       # Microsoft-ID-verified). Gated on the WINDOWS_SIGNING_READY repo
@@ -203,7 +234,84 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Sign installer
+      # Sign the actual staged payloads before NSIS and ZIP creation. Signing
+      # only the outer installer leaves every installed executable and Qt DLL
+      # unsigned, which is not an acceptable Windows release.
+      - name: Temporarily remove Microsoft redistributable from signing stages
+        if: ${{ vars.WINDOWS_SIGNING_READY == 'true' }}
+        shell: powershell
+        run: |
+          Move-Item packaging\windows\dist\installer-stage\vc_redist.x64.exe packaging\windows\dist\vc_redist.gui.exe
+          Move-Item packaging\windows\dist\server-installer-stage\vc_redist.x64.exe packaging\windows\dist\vc_redist.server.exe
+
+      - name: Sign GUI payload executables and DLLs
+        if: ${{ vars.WINDOWS_SIGNING_READY == 'true' }}
+        uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293 # v0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\packaging\windows\dist\installer-stage
+          files-folder-filter: exe,dll
+          files-folder-recurse: true
+
+      - name: Sign server payload executables and DLLs
+        if: ${{ vars.WINDOWS_SIGNING_READY == 'true' }}
+        uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293 # v0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\packaging\windows\dist\server-installer-stage
+          files-folder-filter: exe,dll
+          files-folder-recurse: true
+
+      - name: Restore redistributables and build packages from signed payloads
+        shell: powershell
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          if (Test-Path packaging\windows\dist\vc_redist.gui.exe) {
+            Move-Item packaging\windows\dist\vc_redist.gui.exe packaging\windows\dist\installer-stage\vc_redist.x64.exe -Force
+          }
+          if (Test-Path packaging\windows\dist\vc_redist.server.exe) {
+            Move-Item packaging\windows\dist\vc_redist.server.exe packaging\windows\dist\server-installer-stage\vc_redist.x64.exe -Force
+          }
+          $numericVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') { "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" } else { '0.0.0.0' }
+          Push-Location packaging\windows
+          try {
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" dinero-installer.nsi
+            if ($LASTEXITCODE -ne 0) { throw 'GUI NSIS rebuild failed' }
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" "/DSNAPSHOT_FILE=dinero-assumeutxo-84131-v4.dat" dinero-server-installer.nsi
+            if ($LASTEXITCODE -ne 0) { throw 'server NSIS rebuild failed' }
+          } finally { Pop-Location }
+
+          $zipStage = "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc"
+          if (Test-Path $zipStage) { Remove-Item $zipStage -Recurse -Force }
+          New-Item "$zipStage\bin" -ItemType Directory -Force | Out-Null
+          $operatorBinaries = @(
+            'dinerod.exe', 'dinero-cli.exe', 'dinero-miner.exe',
+            'dinero-stratum-worker.exe', 'dinero-gpu-miner.exe',
+            'dinero-wallet-cli.exe', 'dinero-seeder.exe',
+            'dinero-sv2-miner.exe', 'dinero-sv2-gpu-miner.exe'
+          )
+          foreach ($name in $operatorBinaries) {
+            $source = Join-Path 'packaging\windows\dist\installer-stage' $name
+            if (-not (Test-Path $source)) { throw "signed operator payload is missing $name" }
+            Copy-Item $source "$zipStage\bin"
+          }
+          Copy-Item LICENSE $zipStage
+          'Dinero signed Windows operator archive' | Out-File "$zipStage\README.txt" -Encoding ascii
+          Push-Location $zipStage
+          try {
+            Get-ChildItem -Recurse -File | Where-Object Name -ne 'SHA256SUMS.txt' | Sort-Object FullName | ForEach-Object {
+              $relative = Resolve-Path -Relative $_.FullName
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $($relative.TrimStart('.\\') -replace '\\','/')"
+            } | Out-File SHA256SUMS.txt -Encoding ascii
+          } finally { Pop-Location }
+          Compress-Archive -Path "$zipStage\*" -DestinationPath "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc.zip" -Force
+
+      - name: Sign final installers
         if: ${{ vars.WINDOWS_SIGNING_READY == 'true' }}
         uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293 # v0
         with:
@@ -213,17 +321,53 @@ jobs:
           files-folder: ${{ github.workspace }}\packaging\windows\dist
           files-folder-filter: exe
 
-      - name: Checksum installer
+      - name: Verify Authenticode signatures on every shipped PE file
+        if: ${{ vars.WINDOWS_SIGNING_READY == 'true' }}
+        shell: powershell
+        run: |
+          $targets = @(
+            Get-ChildItem packaging\windows\dist\installer-stage -Recurse -Include *.exe,*.dll -File
+            Get-ChildItem packaging\windows\dist\server-installer-stage -Recurse -Include *.exe,*.dll -File | Where-Object Name -ne 'vc_redist.x64.exe'
+            Get-Item packaging\windows\dist\Dinero-*-Setup.exe
+          )
+          $bad = $targets | Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid' }
+          if ($bad) { $bad.FullName | Write-Error; throw 'unsigned or invalid Windows release payload' }
+          Write-Host "Verified $($targets.Count) Authenticode-signed PE files"
+
+      # Prove both final installers install their signed payloads and uninstall.
+      - name: Silent GUI and server installer smoke
+        shell: powershell
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          foreach ($case in @(
+            @{ Installer = "packaging\windows\dist\Dinero-$version-windows-x86_64-Setup.exe"; Dir = (Join-Path $env:ProgramFiles 'Dinero'); Required = @('dinero-qt.exe','dinerod.exe','Uninstall.exe') },
+            @{ Installer = "packaging\windows\dist\Dinero-Server-$version-windows-x86_64-Setup.exe"; Dir = (Join-Path $env:ProgramFiles 'Dinero-Server'); Required = @('dinerod.exe','dinero-cli.exe','Uninstall.exe') }
+          )) {
+            $install = Start-Process -FilePath (Resolve-Path $case.Installer) -ArgumentList '/S' -Wait -PassThru
+            if ($install.ExitCode -ne 0) { throw "installer failed: $($case.Installer)" }
+            foreach ($name in $case.Required) { if (-not (Test-Path (Join-Path $case.Dir $name))) { throw "missing installed $name" } }
+            $uninstall = Start-Process -FilePath (Join-Path $case.Dir 'Uninstall.exe') -ArgumentList '/S' -Wait -PassThru
+            if ($uninstall.ExitCode -ne 0) { throw "uninstall failed: $($case.Installer)" }
+          }
+
+      - name: Checksum final Windows matrix
         id: sums
         shell: powershell
         run: |
           $version = '${{ steps.ver.outputs.version }}'
-          $installer = "packaging\windows\dist\Dinero-Server-$version-windows-x86_64-Setup.exe"
+          $artifacts = @(
+            "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc.zip",
+            "packaging\windows\dist\Dinero-$version-windows-x86_64-Setup.exe",
+            "packaging\windows\dist\Dinero-Server-$version-windows-x86_64-Setup.exe"
+          )
           $sumfile = "SHA256SUMS-windows-x86_64-$version"
-          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLower()
-          "$hash  $(Split-Path -Leaf $installer)" | Out-File -Encoding ascii $sumfile
+          $artifacts | ForEach-Object {
+            "$(Get-FileHash -Algorithm SHA256 $_ | Select-Object -ExpandProperty Hash)  $(Split-Path -Leaf $_)".ToLowerInvariant()
+          } | Out-File -Encoding ascii $sumfile
           Get-Content $sumfile
-          "installer=$installer" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+          "artifacts<<EOF" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+          $artifacts | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+          "EOF" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
           "sumfile=$sumfile"     | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
 
       - name: Upload workflow artifact
@@ -231,7 +375,7 @@ jobs:
         with:
           name: dinero-server-windows-x86_64-${{ steps.ver.outputs.version }}
           path: |
-            ${{ steps.sums.outputs.installer }}
+            ${{ steps.sums.outputs.artifacts }}
             ${{ steps.sums.outputs.sumfile }}
           if-no-files-found: error
 
@@ -241,7 +385,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          VERSION='${{ steps.ver.outputs.version }}'
           gh release upload "${{ steps.ver.outputs.release_tag }}" \
-            "${{ steps.sums.outputs.installer }}" \
+            "packaging/windows/dist/dinero-v${VERSION}-windows-x86_64-msvc.zip" \
+            "packaging/windows/dist/Dinero-${VERSION}-windows-x86_64-Setup.exe" \
+            "packaging/windows/dist/Dinero-Server-${VERSION}-windows-x86_64-Setup.exe" \
             "${{ steps.sums.outputs.sumfile }}" \
             --clobber
