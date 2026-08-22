@@ -52,6 +52,18 @@ TEST(UnreadableBlockSet, SingleThreadSemantics)
     EXPECT_EQ(s.size(), 0u);
 }
 
+TEST(UnreadableBlockSet, QuarantinedMetadataDoesNotSuppressRepair)
+{
+    dinero::UnreadableBlockSet s;
+    const auto hash = HashFromU64(42);
+    EXPECT_FALSE(s.is_usable(hash, false));
+    EXPECT_TRUE(s.is_usable(hash, true));
+    s.mark(hash);
+    EXPECT_FALSE(s.is_usable(hash, true));
+    s.clear(hash);
+    EXPECT_TRUE(s.is_usable(hash, true));
+}
+
 // The production interleaving: one thread clears (scheduler-drain), several
 // mark + read (activation-mutex holders). Pre-fix this raced a raw
 // unordered_set; the assertion here is that it neither corrupts nor crashes,

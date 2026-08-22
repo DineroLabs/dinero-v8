@@ -4984,7 +4984,7 @@ std::string ChainstateService::getBlock(uint32_t height) const {
 }
 
 bool ChainstateService::hasBlockByHash(const uint256& hash) const {
-    return HasStoredBlockBody(hash);
+    return unreadable_blocks_.is_usable(hash, HasStoredBlockBody(hash));
 }
 
 bool ChainstateService::hasReadableBlockByHash(const uint256& hash) const {
@@ -8890,15 +8890,14 @@ void ChainstateService::ActivateBestChain() {
             }
 
             // Disconnect failures are operational/runtime faults, not consensus
-            // invalidity. Keep the candidate valid and only remove it from the
-            // current candidate set to avoid an immediate retry loop.
+            // invalidity. Preserve the best-work candidate and cool it down so a
+            // later activation tick retries it without a hot loop.
             if (best_candidate) {
-                if (logger_) logger_->warning("[ActivateBestChain] REORG ABORT: Temporarily removing candidate after disconnect failure");
-                std::cout << "⚠️  [ActivateBestChain] REORG ABORT: Removing candidate at height "
-                          << best_candidate->height << " from candidate set (disconnect failed)" << std::endl;
-
-                // Remove from candidates set to prevent retry
-                RemoveCandidate(best_candidate);
+                const auto delay = activation_retries_.RecordFailure(
+                    best_candidate->hash, std::chrono::steady_clock::now());
+                if (logger_) logger_->warning(
+                    "[ActivateBestChain] REORG ABORT: preserving candidate after disconnect failure; retry in " +
+                    std::to_string(delay.count()) + "ms");
 
                 // Also clear the reorg marker since we're aborting
                 if (utxo_index_) {
@@ -9073,14 +9072,21 @@ void ChainstateService::ActivateBestChain() {
                 }
             }
 
-            // Connect failures are operational/runtime faults, not consensus
-            // invalidity. Remove only from candidate set to avoid immediate
-            // retry loops without poisoning block validity flags.
+            // Consensus-invalid candidates are permanently excluded. Every
+            // operational/runtime failure instead preserves the candidate and
+            // applies a bounded cooldown; erasing it here used to lose the
+            // network's best-work branch until the body was announced again.
             if (best_candidate) {
-                if (logger_) logger_->warning("[ActivateBestChain] REORG ABORT: Temporarily removing candidate after connect failure");
-                std::cout << "⚠️  [ActivateBestChain] REORG ABORT: Removing candidate at height "
-                          << best_candidate->height << " from candidate set (connect failed)" << std::endl;
-                RemoveCandidate(best_candidate);
+                if (consensus_invalid && !missing_utxo) {
+                    RemoveCandidate(best_candidate);
+                    activation_retries_.Clear(best_candidate->hash);
+                } else {
+                    const auto delay = activation_retries_.RecordFailure(
+                        best_candidate->hash, std::chrono::steady_clock::now());
+                    if (logger_) logger_->warning(
+                        "[ActivateBestChain] REORG ABORT: preserving candidate after operational connect failure; retry in " +
+                        std::to_string(delay.count()) + "ms");
+                }
 
                 if (utxo_index_) {
                     utxo_index_->SetMetadata("reorg_in_progress", "");
@@ -9141,6 +9147,7 @@ void ChainstateService::ActivateBestChain() {
 
     // Update active tip (already done by ConnectTip, but ensure consistency)
     PublishActiveTip(best_candidate, TipPublishReason::kSelfHealRealign);
+    activation_retries_.Clear(best_candidate->hash);
 
     // Read-only observability, recorded only once the reorg has actually
     // COMPLETED.
@@ -11326,6 +11333,7 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
 
     std::vector<CBlockIndex*> incompatible;
     std::vector<CBlockIndex*> invalid;
+    const auto now = std::chrono::steady_clock::now();
     for (CBlockIndex* candidate : candidates_) {
         if (!candidate || !IsReorgCandidateEligible(candidate) ||
             HasInvalidAncestor(candidate)) {
@@ -11333,7 +11341,13 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
             continue;
         }
         if (shares_active_ancestor(candidate)) {
-            return candidate; // First compatible element has most work
+            if (activation_retries_.IsReady(candidate->hash, now)) {
+                return candidate; // First retry-ready compatible element has most work
+            }
+            // Operationally failed candidates remain in the set while their
+            // bounded retry cooldown runs; they are neither invalid nor an
+            // incompatible branch.
+            continue;
         }
         incompatible.push_back(candidate);
     }

@@ -18,6 +18,7 @@ enum class ReadinessReason {
     Ready,
     SafeMode,
     InitialBlockDownload,
+    HeaderChainMismatch,
     NoChainstate,
     NoP2PService,
     P2PNotRunning,
@@ -31,6 +32,7 @@ struct MiningReadinessPolicy {
     bool allow_isolated = false;
     bool skip_ibd_check = false;
     bool require_fresh_tip = true;
+    bool require_header_convergence = true;
     bool require_recent_peer_activity = true;
     bool pause_if_ahead_of_network_view = false;
     int min_peers = 0;
@@ -97,6 +99,7 @@ inline MiningReadinessPolicy LoadMiningReadinessPolicy(const ConfigService* conf
     policy.allow_isolated = is_regtest;
     policy.skip_ibd_check = config ? config->GetBool("mine-during-ibd", false) : false;
     policy.require_fresh_tip = !is_regtest;
+    policy.require_header_convergence = !is_regtest;
     policy.require_recent_peer_activity = !is_regtest;
     policy.pause_if_ahead_of_network_view = false;
     policy.min_peers = is_mainnet ? 1 : (is_regtest ? 0 : 1);
@@ -109,6 +112,8 @@ inline MiningReadinessPolicy LoadMiningReadinessPolicy(const ConfigService* conf
             config, "mining.readiness.allow_isolated", "mining.gbt.allow_isolated", policy.allow_isolated);
         policy.require_fresh_tip = GetBoolWithFallback(
             config, "mining.readiness.require_fresh_tip", "mining.gbt.require_fresh_tip", policy.require_fresh_tip);
+        policy.require_header_convergence = config->GetBool(
+            "mining.readiness.require_header_convergence", policy.require_header_convergence);
         policy.require_recent_peer_activity = config->GetBool(
             "mining.readiness.require_recent_peer_activity", policy.require_recent_peer_activity);
         policy.pause_if_ahead_of_network_view = config->GetBool(
@@ -184,6 +189,15 @@ inline MiningReadiness EvaluateMiningReadiness(const ChainstateService* chainsta
         readiness.reason_code = "bootstrap_genesis";
         readiness.message = "Bootstrap mining allowed: fresh chain is still at genesis";
         readiness.p2p_running = p2p ? p2p->get().is_running() : false;
+        return readiness;
+    }
+
+    if (policy.require_header_convergence &&
+        !chainstate->GetSyncSnapshot().IsConverged()) {
+        readiness.ready = false;
+        readiness.reason = ReadinessReason::HeaderChainMismatch;
+        readiness.reason_code = "header_chain_mismatch";
+        readiness.message = "Mining backend unavailable: active tip does not match the best known header";
         return readiness;
     }
 

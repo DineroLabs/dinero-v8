@@ -2575,13 +2575,12 @@ bool DaemonApp::Init(int argc, char** argv) {
     });
 
     // AssumeUTXO body backfill: EnableBackfill consults this predicate to
-    // skip bodies already on disk. hasBlockByHash is a pure metadata probe
-    // (ChainDB flatfile-position lookup + file-size stat via
-    // storage::HasArchivalBlockBody) — it never reads the body. Lock-order
-    // contract (see SetHasBlockBodyCallback doc): invoked under the
-    // scheduler mutex_; this accessor takes NO application lock (RocksDB
-    // point Get + filesystem stat only), so it cannot re-enter the scheduler
-    // nor acquire a lock that is ever held around scheduler calls.
+    // skip usable bodies already on disk. hasBlockByHash combines the ChainDB
+    // flatfile-position/file-size metadata probe with the independently
+    // synchronized unreadable-body quarantine, so a stale position cannot
+    // suppress repair download. Lock-order contract (see
+    // SetHasBlockBodyCallback doc): invoked under the scheduler mutex_; the
+    // quarantine lock has no path back into the scheduler or chainstate.
     block_download->SetHasBlockBodyCallback(
         [this](const uint256& hash, uint32_t /*height*/) -> bool {
             return ctx_.chainstate && ctx_.chainstate->hasBlockByHash(hash);

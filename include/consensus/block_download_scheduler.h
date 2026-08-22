@@ -60,6 +60,7 @@ enum class FetchStatus {
     MISSING,     // Header exists, body not downloaded
     REQUESTED,   // getdata sent, waiting for response
     RECEIVED,    // Block downloaded and verified (stored to flat file)
+    CONNECTING,  // Stored body is currently being offered to chainstate
     CONNECTED,   // Block connected to chainstate (chain tip advanced)
     INVALID      // Block failed connection validation (permanent stop)
 };

@@ -962,6 +962,7 @@ bool BlockDownloadScheduler::IsFullySynchronized() const {
     if (!missing_blocks_.empty()) {
         for (const auto& fetch_state : missing_blocks_) {
             if (fetch_state.status != FetchStatus::RECEIVED &&
+                fetch_state.status != FetchStatus::CONNECTING &&
                 fetch_state.status != FetchStatus::CONNECTED) {
                 return false;
             }
@@ -1358,7 +1359,8 @@ void BlockDownloadScheduler::SetBackfillValidationFrontier(
         // completed and fetch a duplicate. Complete-window #298 reconciliation
         // remains the deliberate repair path for a body that is still strictly
         // unreadable after persistence has settled.
-        if (fs.status == FetchStatus::RECEIVED) {
+        if (fs.status == FetchStatus::RECEIVED ||
+            fs.status == FetchStatus::CONNECTING) {
             return;
         } else if (fs.status != FetchStatus::REQUESTED &&
                    fs.status != FetchStatus::MISSING) {
@@ -1884,6 +1886,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
         if (!missing_blocks_.empty()) {
             for (auto& fs : missing_blocks_) {
                 if (fs.status != FetchStatus::CONNECTED &&
+                    fs.status != FetchStatus::CONNECTING &&
                     fs.status != FetchStatus::INVALID &&
                     fs.height <= actual_tip) {
                     // Check if chainstate already has this block at this height.
@@ -1967,7 +1970,8 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
             break;
         }
 
-        bool have_stored = (fetch_state.status == FetchStatus::RECEIVED);
+        bool have_stored = (fetch_state.status == FetchStatus::RECEIVED ||
+                            fetch_state.status == FetchStatus::CONNECTING);
         g_logger.info("[BlockDownloadScheduler] Drain want_height=" +
                      std::to_string(want) +
                      " status=" + std::to_string(static_cast<int>(fetch_state.status)) +
@@ -2010,6 +2014,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
         Block block = std::move(read_result.value());
 
         // Try to connect to chainstate
+        fetch_state.status = FetchStatus::CONNECTING;
         ConnectBlockResult connect_result = connect_block_callback_(block, "scheduler-drain");
         switch (connect_result) {
             case ConnectBlockResult::CONNECTED:
@@ -2038,6 +2043,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                              fetch_state.block_hash.GetHex().substr(0, 16) + "...");
                 return connected;
             case ConnectBlockResult::MISSING_PARENT: {
+                fetch_state.status = FetchStatus::RECEIVED;
                 uint256 parent_hash = block.header.prev_block_hash;
                 uint256 expected_parent;
                 if (want > 0 && GetExpectedHashAtHeight(want - 1, expected_parent)) {
@@ -2080,10 +2086,12 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 return connected;
             }
             case ConnectBlockResult::WAITING_PARENT:
+                fetch_state.status = FetchStatus::RECEIVED;
                 g_logger.debug("[BlockDownloadScheduler] Drain waiting on parent for height " +
                               std::to_string(want));
                 return connected;
             case ConnectBlockResult::TEMPORARY_FAIL:
+                fetch_state.status = FetchStatus::RECEIVED;
                 // #371: a "temporary" failure that never clears is how a
                 // latched storage error zombies the node (EU1 2026-07-04:
                 // 17,979+ silent retries). Escalate once per stuck height.
@@ -2138,6 +2146,7 @@ void BlockDownloadScheduler::RescanFromActualTip(uint32_t actual_tip) {
     std::unordered_map<uint256, std::pair<FetchStatus, FilePosition>> preserved;
     for (const auto& fs : missing_blocks_) {
         if (fs.status == FetchStatus::RECEIVED ||
+            fs.status == FetchStatus::CONNECTING ||
             fs.status == FetchStatus::CONNECTED ||
             fs.status == FetchStatus::INVALID) {
             preserved[fs.block_hash] = {fs.status, fs.stored_pos};
