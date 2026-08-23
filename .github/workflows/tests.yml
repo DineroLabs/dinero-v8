@@ -103,6 +103,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Full default build
+        id: build
         run: cmake --build build-tests -j
 
       # CI integrity gate: every test registered with CTest in THIS build
@@ -172,7 +173,17 @@ jobs:
       #                          EXISTS/find_program disappearance path
       #   this step            — CI actually EXECUTES them, and a launch failure
       #                          is a failure (the GTEST_SKIPs are gone)
+      # Runs whenever the BUILD succeeded, independent of whether an earlier
+      # TEST step failed. Steps default to skipping once any prior step fails,
+      # which meant a single unrelated failure in the main ctest step silently
+      # skipped this entire lane — including CsnEpochResetCrashAtomicity and
+      # CSNShieldedReorgInvertibility, the two highest-value shielded
+      # lifecycle tests. Observed on dinero-main @06d723cc9: a FLAKY
+      # AssumeUtxoPrebaseMempoolResolution turned the whole lane into a no-op,
+      # and the only surface signal was a red X naming an unrelated test.
+      # Coverage must not depend on every other test passing first.
       - name: Run serial e2e tests (daemon-spawning)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate; do
             echo "=== $t ==="
@@ -216,6 +227,7 @@ jobs:
       # requires exit 0 from each. To enable ConsensusFuzzer here, give its
       # add_test an explicit seed and iteration count first.
       - name: Run fuzz-labelled consensus invariant tests (excluded by label above)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           for t in ConsensusUTXOSetFuzz; do
             echo "=== $t ==="
@@ -239,6 +251,7 @@ jobs:
       #
       # Costs a few seconds and makes the claim checkable rather than asserted.
       - name: "Verify issue-490 seed pin verbosely (log-visible forbidden-signature counts)"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           ctest --test-dir build-tests \
             --no-tests=error \
@@ -273,6 +286,7 @@ jobs:
       # NOTE: quoted — an unquoted '#' after whitespace starts a YAML comment,
       # which silently truncates this step's name to "Run".
       - name: "Run #453/#458 durability tests (daemon-spawning)"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           echo "=== ScriptValidityDurability ==="
           ctest --test-dir build-tests \
