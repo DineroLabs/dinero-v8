@@ -249,7 +249,7 @@ ValidationContext BuildShieldedValidationContext(
     return ctx;
 }
 
-void ApplyShieldedBundle(const ShieldedBundle& bundle,
+bool ApplyShieldedBundle(const ShieldedBundle& bundle,
                          CommitmentTree*       tree,
                          NullifierSet*         nullifiers,
                          uint32_t              block_height) {
@@ -263,11 +263,21 @@ void ApplyShieldedBundle(const ShieldedBundle& bundle,
     }
 
     // Insert nullifiers. Already validated unique by ValidateShieldedBundle.
+    //
+    // Insert()'s return value is load-bearing and used to be discarded while
+    // this function returned void — there was no channel to report a failure
+    // even if it had been read. A failed insert means the spend is committed
+    // on-chain but ABSENT from the in-memory set every Contains() consults,
+    // so the same note could be spent again until a restart rehydrates the
+    // set from ChainDB. Propagate instead: the caller aborts the block.
     if (nullifiers) {
         for (const auto& spend : bundle.spends) {
-            nullifiers->Insert(spend.nullifier, block_height);
+            if (!nullifiers->Insert(spend.nullifier, block_height)) {
+                return false;
+            }
         }
     }
+    return true;
 }
 
 } // namespace dinero::consensus::shielded

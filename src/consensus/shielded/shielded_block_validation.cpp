@@ -76,7 +76,7 @@ BlockValidationError ValidateBlockShielded(
     return BlockValidationError::Ok;
 }
 
-void ApplyBlockShielded(const std::vector<ShieldedBundle>& bundles,
+bool ApplyBlockShielded(const std::vector<ShieldedBundle>& bundles,
                         CommitmentTree* tree,
                         NullifierSet* nullifiers,
                         uint32_t block_height) {
@@ -91,8 +91,11 @@ void ApplyBlockShielded(const std::vector<ShieldedBundle>& bundles,
     // single-bundle callers cannot drift apart by maintaining two copies
     // of the same Append/Insert sequence.
     for (const auto& bundle : bundles) {
-        ApplyShieldedBundle(bundle, tree, nullifiers, block_height);
+        if (!ApplyShieldedBundle(bundle, tree, nullifiers, block_height)) {
+            return false;
+        }
     }
+    return true;
 }
 
 } // namespace dinero::consensus::shielded

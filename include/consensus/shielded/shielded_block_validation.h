@@ -70,7 +70,8 @@ BlockValidationError ValidateBlockShielded(
  *
  * @param bundles  In block tx order.
  */
-void ApplyBlockShielded(const std::vector<ShieldedBundle>& bundles,
+// Returns false if any per-bundle apply failed (see ApplyShieldedBundle).
+bool ApplyBlockShielded(const std::vector<ShieldedBundle>& bundles,
                         CommitmentTree* tree,
                         NullifierSet* nullifiers,
                         uint32_t block_height);

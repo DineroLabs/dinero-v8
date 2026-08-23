@@ -1106,12 +1106,32 @@ TEST_F(ShieldedValidationFixture, ApplyAppendsCommitmentsAndNullifiers) {
     const auto root_before = tree.Root();
     EXPECT_EQ(nullifier_set.Size(), 0u);
 
-    ApplyShieldedBundle(bundle, &tree, &nullifier_set, 200);
+    EXPECT_TRUE(ApplyShieldedBundle(bundle, &tree, &nullifier_set, 200));
 
     EXPECT_EQ(tree.Size(), size_before + 2);
     EXPECT_NE(tree.Root(), root_before);
     EXPECT_TRUE(nullifier_set.Contains(MakeHash(0xC1)));
     EXPECT_EQ(nullifier_set.Size(), 1u);
+}
+
+// A failed nullifier insert MUST be reported. It used to be discarded while
+// this function returned void — there was no channel to report it even if the
+// bool had been read. The consequence: the block connects, the spend is
+// committed on-chain, but its nullifier is absent from the in-memory set that
+// every Contains() consults, so the same note is spendable again until a
+// restart rehydrates the set from ChainDB.
+TEST_F(ShieldedValidationFixture, ApplyShieldedBundleReportsNullifierInsertFailure) {
+    ShieldedBundle bundle;
+    bundle.outputs.push_back(MakeOutputStub(0xD1));
+    bundle.spends.push_back(MakeSpendStub(0xD2, tree.Root()));
+
+    // Closed store: Insert() cannot succeed.
+    nullifier_set.Close();
+
+    EXPECT_FALSE(ApplyShieldedBundle(bundle, &tree, &nullifier_set, 300))
+        << "a nullifier insert that did not land must be reported so the "
+           "caller aborts the block instead of connecting it with a spend "
+           "missing from the double-spend set";
 }
 
 // ── Shield-to-recipient (transparent → external dins1) ───────────────

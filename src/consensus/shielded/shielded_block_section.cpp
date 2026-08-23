@@ -71,7 +71,13 @@ bool ConnectBlockShieldedSection(
         }
 
         // Deterministic apply: commitments + nullifiers in block tx order.
-        ApplyBlockShielded(bundles, &tree, &nullifiers, height);
+        // A failed nullifier insert must abort the block: connecting it
+        // would leave the spend committed on-chain but absent from the set
+        // every double-spend check consults.
+        if (!ApplyBlockShielded(bundles, &tree, &nullifiers, height)) {
+            error = "shielded-apply-failed";
+            return false;
+        }
     }
 
     // Record the post-block tree root in the AnchorHistory window once per

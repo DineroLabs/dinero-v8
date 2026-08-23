@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 
 namespace dinero::wallet::shielded_ops {
 
@@ -74,9 +75,16 @@ struct ShieldedRuntime {
 std::mutex                       g_runtime_mutex;
 std::unique_ptr<ShieldedRuntime> g_runtime;
 
+// Fails CLOSED — see the twin in shielded_wallet_ops.cpp. An ignored
+// RAND_bytes failure leaves the buffer all-zero, and this feeds cv blinding
+// factors and range-proof nonces; zero rcv makes cv = value*V, brute-forceable,
+// on a bundle that still verifies.
 sh::Hash RandomHash() {
     sh::Hash h{};
-    RAND_bytes(h.data(), sh::HASH_BYTES);
+    if (RAND_bytes(h.data(), sh::HASH_BYTES) != 1) {
+        throw std::runtime_error("shielded: RAND_bytes failed (refusing to "
+                                 "build a bundle with zero blinding)");
+    }
     return h;
 }
 

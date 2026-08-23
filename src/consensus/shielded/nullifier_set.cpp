@@ -47,15 +47,31 @@ void NullifierSet::Close() noexcept {
     }
 }
 
+// FAILS CLOSED. Both consensus callers use this as the double-spend gate
+// (`if (Contains(nullifier)) reject`), so the only safe answer when we cannot
+// prove a nullifier is absent is "present" — reject the spend.
+//
+// Previously every failure path returned false, i.e. "not spent, go ahead":
+// a null handle, a failed prepare, or any sqlite error (lock contention, disk
+// pressure, corruption) silently ADMITTED a double-spend with nothing logged
+// and nothing propagated to the caller. Only SQLITE_DONE — the database
+// positively answering "no such row" — may return false.
 bool NullifierSet::Contains(const Hash& nullifier) const {
-    if (!db_) return false;
+    if (!db_) return true;  // cannot prove unspent
+
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT 1 FROM nullifiers WHERE nullifier = ? LIMIT 1";
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return true;  // cannot prove unspent
+    }
     sqlite3_bind_blob(stmt, 1, nullifier.data(), HASH_BYTES, SQLITE_STATIC);
-    const bool found = (sqlite3_step(stmt) == SQLITE_ROW);
+
+    const int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    return found;
+
+    if (rc == SQLITE_ROW)  return true;   // present: reject the spend
+    if (rc == SQLITE_DONE) return false;  // positively absent: the ONLY false
+    return true;                          // any error: cannot prove unspent
 }
 
 bool NullifierSet::Insert(const Hash& nullifier, uint32_t block_height) {
