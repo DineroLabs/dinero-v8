@@ -47,6 +47,8 @@ sha256sum build-repro/dinerod
 `SOURCE_DATE_EPOCH`. Its CMake policy:
 
 - maps source and build roots out of file names, macros, and debug metadata;
+- propagates the same canonical source/build mappings into the isolated
+  vendored RocksDB build;
 - warns if first-party code uses time-dependent compiler macros;
 - requests deterministic archive metadata;
 - removes non-semantic ELF build IDs or Mach-O UUIDs; and
