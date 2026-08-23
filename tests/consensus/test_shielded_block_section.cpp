@@ -350,5 +350,90 @@ TEST(ShieldedBlockSection, DisconnectAcrossCutoverRejectsNullAnchors) {
     EXPECT_EQ(error, "shielded epoch reset restore: missing state containers");
 }
 
+// ── Cross-tx nullifier uniqueness ─────────────────────────────────────
+//
+// Per-tx validation catches a nullifier repeated INSIDE one bundle, and
+// catches one already in the persisted set. Neither sees the same nullifier
+// appearing in two DIFFERENT transactions of the same block — that is a
+// block-scope rule, and ValidateBlockShielded is the only thing enforcing it.
+//
+// It is the most important invariant at this layer (two txs double-spending
+// one note in a single block) and had no gtest: the only assertion lived in
+// the tools/pq_bench binaries. These drive it through
+// ConnectBlockShieldedSection, the same funnel BlockValidator and the
+// reindexer both call.
+
+TEST(ShieldedBlockSection, CrossTxDuplicateNullifierRejected) {
+    Fixture f;
+    std::optional<ShieldedEpochSnapshot> snap;
+    std::string error;
+
+    // Two DISTINCT transactions spending the SAME nullifier. Each bundle is
+    // individually well-formed — the duplicate only exists across them.
+    std::vector<ShieldedBundle> bundles{
+        MakeTransferBundle(/*nullifier_seed=*/0x77, /*commitment_seed=*/0x11),
+        MakeTransferBundle(/*nullifier_seed=*/0x77, /*commitment_seed=*/0x22),
+    };
+    const std::vector<int64_t> deltas{0, 0};
+
+    const bool ok = ConnectBlockShieldedSection(
+        bundles, deltas, /*height=*/kActivation + 1, kReset, kActivation,
+        f.tree, f.nullifiers, &f.anchors, snap, error);
+
+    EXPECT_FALSE(ok)
+        << "two transactions in one block spending the same nullifier is a "
+           "double-spend and must be rejected at block scope";
+    EXPECT_NE(error.find("shielded-block-validation-failed"), std::string::npos)
+        << error;
+
+    // And nothing may have been applied.
+    EXPECT_EQ(f.tree.Size(), 0u);
+    EXPECT_EQ(f.nullifiers.Size(), 0u);
+}
+
+TEST(ShieldedBlockSection, NullifierAlreadyInPreBlockSetRejected) {
+    Fixture f;
+    std::optional<ShieldedEpochSnapshot> snap;
+    std::string error;
+
+    // Already spent in an earlier block.
+    ASSERT_TRUE(f.nullifiers.Insert(MakeHash(0x88), kActivation));
+
+    std::vector<ShieldedBundle> bundles{
+        MakeTransferBundle(/*nullifier_seed=*/0x88, /*commitment_seed=*/0x33)};
+    const std::vector<int64_t> deltas{0};
+
+    const bool ok = ConnectBlockShieldedSection(
+        bundles, deltas, /*height=*/kActivation + 1, kReset, kActivation,
+        f.tree, f.nullifiers, &f.anchors, snap, error);
+
+    EXPECT_FALSE(ok) << "re-spending a nullifier already in the set is a "
+                        "double-spend and must be rejected";
+    EXPECT_EQ(f.tree.Size(), 0u);
+}
+
+// Control: the same shape WITHOUT the collision must connect, so the two
+// tests above cannot pass for an unrelated reason (a malformed fixture, the
+// activation gate, or the conservation check firing instead).
+TEST(ShieldedBlockSection, DistinctNullifiersInSeparateTxsConnect) {
+    Fixture f;
+    std::optional<ShieldedEpochSnapshot> snap;
+    std::string error;
+
+    std::vector<ShieldedBundle> bundles{
+        MakeTransferBundle(/*nullifier_seed=*/0x77, /*commitment_seed=*/0x11),
+        MakeTransferBundle(/*nullifier_seed=*/0x78, /*commitment_seed=*/0x22),
+    };
+    const std::vector<int64_t> deltas{0, 0};
+
+    const bool ok = ConnectBlockShieldedSection(
+        bundles, deltas, /*height=*/kActivation + 1, kReset, kActivation,
+        f.tree, f.nullifiers, &f.anchors, snap, error);
+
+    EXPECT_TRUE(ok) << error;
+    EXPECT_EQ(f.tree.Size(), 2u);
+    EXPECT_EQ(f.nullifiers.Size(), 2u);
+}
+
 }  // namespace
 }  // namespace dinero::consensus::shielded::testing
