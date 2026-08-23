@@ -12,8 +12,8 @@ struct NodeConfig {
     // Network settings
     std::string datadir = "";
     std::string network = "main";
-    int port = 8333;
-    int p2p_port = 8333;
+    int port = 20999;
+    int p2p_port = 20999;
     int rpcport = 8332;
     int rpc_port = 8332;
     std::string rpcbind = "127.0.0.1";

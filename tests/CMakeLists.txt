@@ -66,6 +66,19 @@ set_tests_properties(AddrmanRelaySelect PROPERTIES
   TIMEOUT 10
 )
 
+add_executable(test_version_nonce_tracker
+  tests/network/test_version_nonce_tracker.cpp
+)
+target_link_libraries(test_version_nonce_tracker PRIVATE GTest::gtest_main)
+target_include_directories(test_version_nonce_tracker PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME VersionNonceTracker COMMAND test_version_nonce_tracker)
+set_tests_properties(VersionNonceTracker PROPERTIES
+  LABELS "network;p2p;self-connection;smoke"
+  TIMEOUT 10
+)
+
 add_executable(test_peer_quality
   tests/network/test_peer_quality.cpp
   src/p2p/peer_quality.cpp

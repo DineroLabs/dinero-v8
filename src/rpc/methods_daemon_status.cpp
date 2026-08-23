@@ -13,6 +13,7 @@
 #include "daemon/services/logger_service.h"
 #include "daemon/services/p2p_service.h"
 #include "consensus/validation_queue.h"
+#include "consensus/block_index.h"
 #include "common/logger.h"
 #include <ctime>
 #include <memory>
@@ -77,6 +78,47 @@ static din::Json rpc_getdaemonstatus(const ExecutionContext& ctx, const din::Jso
                 services["chainstate"] = "error";
                 all_ready = false;
             }
+
+            // One authoritative, lock-safe view of header/active-chain
+            // convergence. Height alone is insufficient: equal-height forks
+            // must remain visibly divergent until their hashes agree.
+            const auto sync = daemon_ctx->chainstate->GetSyncSnapshot();
+            din::Json sync_json(Json::objectValue);
+            din::Json active(Json::objectValue);
+            active["available"] = sync.has_active_tip;
+            active["height"] = static_cast<Json::UInt>(sync.active_tip_height);
+            active["hash"] = sync.has_active_tip
+                ? sync.active_tip_hash.GetHex() : "";
+            din::Json header(Json::objectValue);
+            header["available"] = sync.has_best_header;
+            header["height"] = static_cast<Json::UInt>(sync.best_header_height);
+            header["hash"] = sync.has_best_header
+                ? sync.best_header_hash.GetHex() : "";
+
+            const char* convergence = "unknown";
+            switch (sync.convergence) {
+            case dinero::consensus::HeaderConvergence::Converged:
+                convergence = "converged";
+                break;
+            case dinero::consensus::HeaderConvergence::Mismatch:
+                convergence = "mismatch";
+                break;
+            case dinero::consensus::HeaderConvergence::Unknown:
+                break;
+            }
+            sync_json["active_tip"] = active;
+            sync_json["best_header"] = header;
+            sync_json["convergence"] = convergence;
+            sync_json["converged"] = sync.IsConverged();
+
+            if (sync.has_active_tip) {
+                result["height"] = static_cast<Json::UInt>(sync.active_tip_height);
+                if (const auto* index = dinero::FindBlockIndex(sync.active_tip_hash)) {
+                    sync_json["chainwork"] = index->chainwork;
+                    result["chainwork"] = index->chainwork;
+                }
+            }
+            result["sync"] = sync_json;
         } catch (...) {
             services["chainstate"] = "error";
             all_ready = false;

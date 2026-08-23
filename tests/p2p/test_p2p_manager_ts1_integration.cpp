@@ -27,6 +27,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 namespace dinero::p2p::integration::test {
 
@@ -99,6 +100,39 @@ TEST(P2PManager_TS1_Integration, PeersDatDoesNotPromoteLearnedPeersToSeeds) {
     const std::string contents((std::istreambuf_iterator<char>(saved)),
                                std::istreambuf_iterator<char>());
     EXPECT_NE(contents.find("64.44.157.100 20999"), std::string::npos);
+    std::filesystem::remove(path);
+}
+
+TEST(P2PManager_TS1_Integration, PeersDatAtomicSaveReplacesExistingFile) {
+    P2PManager manager(20999);
+    const auto path = std::filesystem::temp_directory_path() /
+        ("dinero-peers-replace-" +
+         std::to_string(reinterpret_cast<std::uintptr_t>(&manager)) + ".dat");
+    const auto tmp_path = std::filesystem::path(path.string() + ".tmp");
+
+    manager.save_peers(path.string());
+    ASSERT_TRUE(std::filesystem::exists(path));
+    {
+        std::ofstream stale(path, std::ios::trunc);
+        stale << "stale-content-that-must-be-replaced\n";
+    }
+    manager.save_peers(path.string());
+
+    std::vector<std::thread> writers;
+    for (int i = 0; i < 8; ++i) {
+        writers.emplace_back([&manager, &path] {
+            for (int pass = 0; pass < 4; ++pass) {
+                manager.save_peers(path.string());
+            }
+        });
+    }
+    for (auto& writer : writers) writer.join();
+
+    std::ifstream saved(path);
+    const std::string contents((std::istreambuf_iterator<char>(saved)),
+                               std::istreambuf_iterator<char>());
+    EXPECT_EQ(contents, "# DINERO_PEERS_V1\n");
+    EXPECT_FALSE(std::filesystem::exists(tmp_path));
     std::filesystem::remove(path);
 }
 

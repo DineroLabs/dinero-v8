@@ -23,6 +23,7 @@
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
 #include "network/token_bucket.h"     // NAT traversal: relay circuit bandwidth caps
+#include "network/version_nonce_tracker.h"
 
 namespace dinero { namespace daemon { class NodeIdentity; } }
 
@@ -830,7 +831,10 @@ private:
         dinero::p2p::kTargetDurableOutbound;
     static constexpr std::chrono::minutes FEELER_INTERVAL{2};
     static constexpr size_t MAX_INBOUND_CONNECTIONS = 125;
-    static constexpr size_t MAX_INBOUND_PER_IP = 6;
+    // Two full nodes behind one household/office NAT can each maintain several
+    // direct and relay connections. Keep the cap bounded, but high enough that
+    // one healthy node does not starve the second (#279).
+    static constexpr size_t MAX_INBOUND_PER_IP = 12;
     // Serialize writes per-socket (not globally) to avoid interleaved frames
     // while preventing one stalled peer from blocking all other peers.
     mutable std::mutex socket_send_mutexes_guard_;
@@ -841,10 +845,15 @@ private:
     std::condition_variable keepalive_cv_;
     std::mutex connection_manager_mutex_;
     std::condition_variable connection_manager_cv_;
+    // Serializes the full peers.dat.tmp -> peers.dat transaction. Without it,
+    // concurrent save triggers race on the shared temporary path (especially
+    // visible as ERROR_SHARING_VIOLATION on Windows).
+    std::mutex peers_file_mutex_;
 
     uint16_t listen_port_;
     std::string user_agent_;
     std::string external_ip_;  // Node's external IP (for self-loop detection)
+    dinero::network::VersionNonceTracker version_nonces_;
     uint32_t protocol_version_;
     
     std::atomic<bool> running_{false};

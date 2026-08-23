@@ -4,7 +4,7 @@
  * This is the FIRST integration test for the P2P layer.
  *
  * Test Scope:
- * - 2 nodes: Alice (port 21000), Bob (port 21001)
+ * - 2 nodes on distinct randomized loopback ports
  * - Alice connects to Bob
  * - Verify version handshake completes (version ↔ verack)
  * - Verify both nodes see each other as connected
@@ -42,9 +42,14 @@ void test_basic_handshake() {
     // Create test network
     TestNetwork network;
 
-    // Add two nodes
-    TestNode* alice = network.add_node("Alice", 21000);
-    TestNode* bob = network.add_node("Bob", 21001);
+    // Use randomized ports instead of the regtest defaults. A developer may
+    // already have dinero-qt/DineroDPI listening on 21000/21001, and a test
+    // must never handshake with that unrelated process.
+    const uint16_t alice_port = get_random_test_port();
+    uint16_t bob_port = get_random_test_port();
+    while (bob_port == alice_port) bob_port = get_random_test_port();
+    TestNode* alice = network.add_node("Alice", alice_port);
+    TestNode* bob = network.add_node("Bob", bob_port);
 
     require(alice != nullptr, "Alice node should be created");
     require(bob != nullptr, "Bob node should be created");
@@ -77,7 +82,7 @@ void test_basic_handshake() {
     // Verify Alice sees Bob
     auto alice_peers = alice->get_connected_peers();
     require(alice_peers.size() == 1, "Alice should have 1 peer");
-    require(alice_peers[0].port == 21001, "Alice should be connected to Bob's port");
+    require(alice_peers[0].port == bob_port, "Alice should be connected to Bob's port");
     require((alice_peers[0].service_flags & dinero::ServiceFlags::NODE_UTREEXO) != 0,
             "Alice should observe Bob as NODE_UTREEXO capable");
 

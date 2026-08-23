@@ -15490,12 +15490,16 @@ void ChainstateService::BackgroundValidationWorker() {
         // restarts, so every run replays from genesis. The height_validated
         // pre-mark vector above governs ONLY lifecycle progress signals
         // (OnBlockValidated / blocks_validated counter): ConnectAndAdvance
-        // runs for EVERY height >= 1 each pass regardless of the durable
-        // resume marker, but only genuinely new heights feed the stall clock.
+        // runs for EVERY height >= 1 during this worker run regardless of the
+        // durable resume marker, but only genuinely new heights feed the stall
+        // clock. Missing-body waits retain the isolated replay engine and its
+        // high-water mark so a newly arrived body resumes at the first gap
+        // instead of replaying genesis..gap on every pass (#301).
         //
         // (std::optional because the engine is intentionally non-movable;
-        // emplace() re-creates it fresh for each rescan pass.)
+        // emplace() creates it once, except for confirm-before-fatal retries.)
         std::optional<assumeutxo::AssumeUtxoReplayEngine> replay;
+        uint32_t next_replay_height = 0;
         bool replay_poisoned = false;        // set when ConnectBlock refuses
         std::string replay_poison_reason;
         // Confirm-before-fatal: a validation failure must reproduce on a
@@ -15515,8 +15519,8 @@ void ChainstateService::BackgroundValidationWorker() {
         // to stop; Tick() drives the loud-stall transition while we wait.
         //
         // canonical_hashes_fallback is declared OUTSIDE the rescan loop
-        // (rebuilt fresh each pass) so the COMPLETING pass's hash-anchored
-        // table survives to the promotion call after the loop —
+        // (built once and retained across missing-body waits) so the
+        // COMPLETING pass's hash-anchored table survives to promotion —
         // PromoteValidatedHistory requires it as the height-index source.
         std::vector<uint256> canonical_hashes_fallback;
         uint32_t blocks_skipped = 0;
@@ -15537,19 +15541,19 @@ void ChainstateService::BackgroundValidationWorker() {
         while (true) {
             blocks_skipped = 0;
             std::vector<MissingEntry> missing;  // #298: per-pass missing heights
-            // Engine heights must ascend strictly from 1 within one engine
-            // lifetime, so each rescan pass restarts the replay from genesis
-            // with a fresh engine. Replaying from 0 each pass is acceptable:
-            // passes beyond the first only happen while bodies are missing,
-            // and the final (complete) pass is the one whose digest counts.
+            // The engine requires strictly ascending heights. Retain it across
+            // body waits and resume at next_replay_height; only a suspected
+            // transient validation failure deliberately resets to genesis.
             try {
-                replay.emplace();
+                if (!replay) replay.emplace();
                 // Capture exactly the undo tail the startup audit
                 // (VerifyActiveChainUndoCoverage, window=1024) will check
                 // after promotion. Must follow EVERY emplace(): the window
                 // is per-engine state and the engine is re-created per pass.
-                replay->SetUndoTailWindow(
-                    std::min<uint32_t>(kStartupUndoAuditWindow, target_height));
+                if (next_replay_height == 0) {
+                    replay->SetUndoTailWindow(
+                        std::min<uint32_t>(kStartupUndoAuditWindow, target_height));
+                }
             } catch (const std::exception& e) {
                 // Engine construction failure (e.g. the :memory: nullifier
                 // sqlite open under fd exhaustion) is a transient LOCAL
@@ -15571,7 +15575,7 @@ void ChainstateService::BackgroundValidationWorker() {
             replay_poisoned = false;
             replay_poison_reason.clear();
 
-            // ── Header-chain fallback table (hoisted, O(target_height) per pass) ──
+            // ── Header-chain fallback table (hoisted, O(target_height) once) ──
             // Backfilled block bodies arrive via the scheduler WITHOUT
             // height-index writes (only ConnectTip writes the canonical index,
             // by design — so canonical-write invariants are untouched). When
@@ -15597,11 +15601,11 @@ void ChainstateService::BackgroundValidationWorker() {
             // O(target_height) total — per-height GetHeaderAtHeight calls
             // would be the same O(n²) trap as the pre-#241 scanner
             // (≈ 33k × 40k = 1.3B pointer steps per pass). Each per-height
-            // lookup is then O(1) from the vector. The table is rebuilt once
-            // per rescan pass (the while(true) loop only retries when bodies
-            // are missing, so passes beyond the first are rare and bounded).
-            canonical_hashes_fallback.clear();
-            if (header_chain_selector_ && !assumeutxo_base_block_.IsNull()) {
+            // lookup is then O(1) from the vector. A failed construction leaves
+            // the vector empty so the next pass retries; a complete table is
+            // immutable because it is anchored on the snapshot base hash.
+            if (canonical_hashes_fallback.empty() && header_chain_selector_ &&
+                !assumeutxo_base_block_.IsNull()) {
                 // Resolve + walk + copy under the header chain's OWN mutex
                 // (CollectAncestorsByHash): the snapshot base may be a
                 // childless side-branch tip, which EvictBranch (running under
@@ -15639,7 +15643,7 @@ void ChainstateService::BackgroundValidationWorker() {
                 }
             }
 
-            for (uint32_t height = 0; height <= target_height; ++height) {
+            for (uint32_t height = next_replay_height; height <= target_height; ++height) {
                 if (bg_validation_should_stop_) {
                     logger_->warning("[BackgroundValidation] Validation stopped by request");
                     OnBackgroundValidationComplete(false, "Validation stopped by user");
@@ -15678,14 +15682,14 @@ void ChainstateService::BackgroundValidationWorker() {
                     blocks_skipped++;
                     missing.push_back({height, uint256(),
                                        MissReason::NoCanonicalHash});  // #298
-                    continue;
+                    break;
                 }
                 auto block_result = getBlockByHash(canonical_hash);
                 if (!block_result.ok()) {
                     blocks_skipped++;
                     missing.push_back({height, canonical_hash,
                                        MissReason::NoBodyForHash});  // #298
-                    continue;
+                    break;
                 }
                 const Block& blk = block_result.value();
                 // The stored body must actually be the canonical block:
@@ -15704,7 +15708,7 @@ void ChainstateService::BackgroundValidationWorker() {
                                      canonical_hash.GetHex() +
                                      " — local block-store corruption; treating as a "
                                      "missing body pending re-download");
-                    continue;
+                    break;
                 }
                 // The block hash covers only the header; the tx section is
                 // bound via the header's merkle root, and ConnectBlock never
@@ -15723,7 +15727,7 @@ void ChainstateService::BackgroundValidationWorker() {
                                      " does not match its header merkle root — torn/"
                                      "corrupt local body; treating as a missing body "
                                      "pending re-download");
-                    continue;
+                    break;
                 }
                 // #298: this height is readable now. If a prior pass reported it
                 // missing and re-requested it, log the arrival exactly once.
@@ -15744,13 +15748,8 @@ void ChainstateService::BackgroundValidationWorker() {
                 // commitment (caught by the Task 8 e2e). Height 0 also counts
                 // for availability/progress below.
                 //
-                // blocks_skipped == 0 gate: the engine requires strictly
-                // ascending heights, so once any body this pass is missing
-                // the pass can no longer produce a valid digest — feeding a
-                // post-gap block would trip the ascending check and be
-                // MISCLASSIFIED as poison (missing bodies are never fatal).
-                // The rest of the pass continues as an availability scan;
-                // the rescan loop restarts the engine for the next pass.
+                // The loop stops at the first gap, so every block fed to the
+                // retained engine is contiguous and strictly ascending.
                 if (height == 0 && blocks_skipped == 0) {
                     std::string seed_err;
                     if (!replay->SeedGenesis(blk, seed_err)) {
@@ -15800,6 +15799,7 @@ void ChainstateService::BackgroundValidationWorker() {
                     }
                     replay_failure_policy.OnValidationSuccess(height);
                 }
+                next_replay_height = height + 1;
                 if (!height_validated[height]) {
                     height_validated[height] = true;
                     {
@@ -15826,14 +15826,15 @@ void ChainstateService::BackgroundValidationWorker() {
                 // tight-loop; ReplayFailurePolicy bounds total retries.
                 replay_retry_pass = false;
                 replay.reset();
+                next_replay_height = 0;
                 continue;
             }
             if (blocks_skipped == 0) break;
 
             assumeutxo_lifecycle_->OnMissingBodies(blocks_skipped);
-            // Release the partially-fed replay set (up to ~30MB at mainnet
-            // scale) during the backfill wait; the next pass re-creates it.
-            replay.reset();
+            logger_->info("[BackgroundValidation] retaining replay high-water mark at height " +
+                          std::to_string(next_replay_height) +
+                          " while waiting for the first missing body (#301)");
 
             // ── #298 deterministic reconciliation: targeted re-request ──
             // Background validation used to discover missing pre-base bodies

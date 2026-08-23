@@ -1,4 +1,6 @@
+#include "rpc/consensus_rpc_handlers.h"
 #include "rpc/rpc_registry.h"
+#include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"  // Phase 39: Use ChainstateService instead of ChainManager
 #include "consensus/block_index.h"
 #include "consensus/chainwork.h"
@@ -7,9 +9,7 @@
 #include <vector>
 #include <algorithm>
 
-using namespace dinero;
-
-extern RpcRegistry g_rpcRegistry;
+namespace dinero {
 
 /**
  * getchaintips - Returns information about all known tips in the block tree
@@ -36,12 +36,15 @@ din::Json rpc_getchaintips(const ExecutionContext& ctx, const din::Json& params)
             throw std::runtime_error("Chainstate service not available");
         }
 
-        CBlockIndex* active_tip = chainstate->chainManager().GetTip();
+        const auto sync = chainstate->GetSyncSnapshot();
+        CBlockIndex* active_tip = sync.has_active_tip
+            ? FindBlockIndex(sync.active_tip_hash)
+            : nullptr;
         
         // Get all candidate tips
-        std::vector<CBlockIndex*> tips;
-        for (CBlockIndex* candidate : g_candidates) {
-            tips.push_back(candidate);
+        std::vector<CBlockIndex*> tips = GetCandidateTipsSnapshot();
+        if (active_tip && std::find(tips.begin(), tips.end(), active_tip) == tips.end()) {
+            tips.push_back(active_tip);
         }
         
         // Sort by chainwork (descending) for consistent ordering
@@ -52,7 +55,7 @@ din::Json rpc_getchaintips(const ExecutionContext& ctx, const din::Json& params)
         for (CBlockIndex* tip : tips) {
             din::Json tip_info(Json::objectValue);
             tip_info["height"] = static_cast<int>(tip->height);
-            tip_info["hash"] = tip->hash;
+            tip_info["hash"] = tip->hash.GetHex();
             tip_info["chainwork"] = tip->chainwork;
             
             // Determine status and branch length
@@ -65,7 +68,7 @@ din::Json rpc_getchaintips(const ExecutionContext& ctx, const din::Json& params)
                 // Calculate branch length (distance from common ancestor)
                 int branch_len = 0;
                 if (active_tip) {
-                    CBlockIndex* fork = chainstate->chainManager().FindFork(active_tip, tip);
+                    CBlockIndex* fork = chainstate->FindFork(active_tip, tip);
                     branch_len = tip->height - (fork ? fork->height : 0);
                 }
                 tip_info["branchlen"] = branch_len;
@@ -100,7 +103,10 @@ din::Json rpc_getchainwork(const ExecutionContext& ctx, const din::Json& params)
             throw std::runtime_error("Chainstate service not available");
         }
 
-        CBlockIndex* active_tip = chainstate->chainManager().GetTip();
+        const auto sync = chainstate->GetSyncSnapshot();
+        CBlockIndex* active_tip = sync.has_active_tip
+            ? FindBlockIndex(sync.active_tip_hash)
+            : nullptr;
         if (!active_tip) {
             return "0000000000000000000000000000000000000000000000000000000000000000";
         }
@@ -123,15 +129,13 @@ din::Json rpc_getchainwork(const ExecutionContext& ctx, const din::Json& params)
  * 
  * Result:
  * {
+ *   "boot_id": "hex",          // process-lifetime reorg-log identity
+ *   "total": n,                // reorgs observed during this process lifetime
  *   "last_reorg": {
- *     "fork_hash": "hex",        // hash of the fork point
- *     "old_tip": "hex",          // hash of the previous active tip
- *     "new_tip": "hex",          // hash of the new active tip
+ *     "seq": n,                   // monotonically increasing event sequence
+ *     "timestamp": "str",        // event timestamp
  *     "disconnect_depth": n,      // number of blocks disconnected
- *     "connect_depth": n,         // number of blocks connected
- *     "duration_ms": n,          // reorganization duration in milliseconds
- *     "mempool_resurrected": n,  // number of transactions resurrected
- *     "mempool_evicted": n       // number of transactions evicted
+ *     "connect_depth": n          // number of blocks connected
  *   },
  *   "safe_mode": {
  *     "active": bool,            // whether safe mode is active
@@ -149,19 +153,23 @@ din::Json rpc_getreorgstatus(const ExecutionContext& ctx, const din::Json& param
             throw std::runtime_error("Chainstate service not available");
         }
 
-        // Last reorg stats
-        const auto& stats = chainstate->chainManager().GetLastReorgStats();
-        din::Json reorg_info(Json::objectValue);
-        reorg_info["fork_hash"] = stats.fork_point;
-        reorg_info["old_tip"] = stats.old_tip;
-        reorg_info["new_tip"] = stats.new_tip;
-        reorg_info["disconnect_depth"] = static_cast<int>(stats.depth_disconnected);
-        reorg_info["connect_depth"] = static_cast<int>(stats.depth_connected);
-        reorg_info["duration_ms"] = static_cast<int>(stats.duration.count());
-        reorg_info["mempool_resurrected"] = static_cast<int>(stats.mempool_resurrected);
-        reorg_info["mempool_evicted"] = static_cast<int>(stats.mempool_evicted);
-
-        result["last_reorg"] = reorg_info;
+        // The bounded process-lifetime reorg log is the authoritative source.
+        // It is copied atomically so total and events cannot describe different
+        // instants.
+        const auto snapshot = chainstate->GetReorgLog().Take();
+        result["boot_id"] = snapshot.boot_id;
+        result["total"] = static_cast<Json::UInt64>(snapshot.total);
+        if (snapshot.events.empty()) {
+            result["last_reorg"] = Json::nullValue;
+        } else {
+            const auto& event = snapshot.events.back();
+            din::Json reorg_info(Json::objectValue);
+            reorg_info["seq"] = static_cast<Json::UInt64>(event.seq);
+            reorg_info["timestamp"] = event.timestamp;
+            reorg_info["disconnect_depth"] = static_cast<Json::UInt>(event.disconnected);
+            reorg_info["connect_depth"] = static_cast<Json::UInt>(event.connected);
+            result["last_reorg"] = reorg_info;
+        }
 
         // Safe mode status
         din::Json safe_mode(Json::objectValue);
@@ -187,9 +195,9 @@ din::Json rpc_getreorgstatus(const ExecutionContext& ctx, const din::Json& param
 /**
  * Register all consensus RPC handlers
  */
-void RegisterConsensusRPCHandlers() {
+void RegisterConsensusRPCHandlers(RpcRegistry& registry) {
     // getchaintips
-    g_rpcRegistry.registerHandler("getchaintips", rpc_getchaintips,
+    registry.registerHandler("blockchain.getchaintips", rpc_getchaintips,
         RpcMethodMeta{
             .name = "getchaintips",
             .ns = "blockchain",
@@ -197,10 +205,10 @@ void RegisterConsensusRPCHandlers() {
             .params = {},
             .result = {"array", "Array of chain tip objects"},
             .help = "getchaintips\n\nReturn information about all known tips in the block tree, including the main chain and any valid forks."
-        });
+        }, "Consensus introspection");
     
     // getchainwork  
-    g_rpcRegistry.registerHandler("getchainwork", rpc_getchainwork,
+    registry.registerHandler("blockchain.getchainwork", rpc_getchainwork,
         RpcMethodMeta{
             .name = "getchainwork",
             .ns = "blockchain", 
@@ -208,10 +216,10 @@ void RegisterConsensusRPCHandlers() {
             .params = {},
             .result = {"string", "Chainwork as hex string"},
             .help = "getchainwork\n\nReturns the total accumulated proof-of-work for the active chain tip."
-        });
+        }, "Consensus introspection");
     
     // getreorgstatus
-    g_rpcRegistry.registerHandler("getreorgstatus", rpc_getreorgstatus,
+    registry.registerHandler("blockchain.getreorgstatus", rpc_getreorgstatus,
         RpcMethodMeta{
             .name = "getreorgstatus", 
             .ns = "blockchain",
@@ -219,7 +227,9 @@ void RegisterConsensusRPCHandlers() {
             .params = {},
             .result = {"object", "Reorganization status information"},
             .help = "getreorgstatus\n\nReturns detailed information about the last blockchain reorganization and current safe mode status."
-        });
+        }, "Consensus introspection");
     
     dinero::g_logger.info("Registered consensus RPC handlers: getchaintips, getchainwork, getreorgstatus");
 }
+
+} // namespace dinero
