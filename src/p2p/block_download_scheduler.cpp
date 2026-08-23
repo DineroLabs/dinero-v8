@@ -178,8 +178,12 @@ void BlockDownloadScheduler::notifyPeerDisconnected(peer_id_t peer_id) {
         }
     }
 
-    if (rescheduled_count > 0) {
+    {
         std::lock_guard<std::mutex> peer_lock(peer_mutex_);
+        // A disconnected peer must stop being selectable immediately. Merely
+        // requeuing its requests lets processQueue() assign them straight back
+        // to the dead connection before the service's next peer refresh.
+        available_peers_.erase(peer_id);
         auto& stats = peer_stats_[peer_id];
         if (stats.in_flight_count > rescheduled_count) {
             stats.in_flight_count -= rescheduled_count;

@@ -246,7 +246,7 @@ void test_replay_rejects_immature_v2_coinbase_spend() {
     Block spend_block = makeSpendBlock(
         spend_height, coinbase_txid, 0, 49'99900000ULL, script, coinbase_block.GetHash());
 
-    UtreexoForest expected_after = initial_forest;
+    UtreexoForest expected_after = initial_forest.cloneForHeight(spend_height);
     auto position = expected_after.findLeafPosition(coinbase_leaf);
     TEST_ASSERT(position.has_value(), "Expected after-forest must locate coinbase leaf");
     auto proof = expected_after.prove(*position);
@@ -387,7 +387,9 @@ void test_replay_accepts_post_activation_cpfp_and_binds_child_metadata() {
     Block cpfp_block = makeCpfpBlock(
         spend_height, funding_txid, 0, parent_value, child_value, script, funding_block.GetHash());
 
-    UtreexoForest expected_after = initial_forest;
+    // ReplayBlock applies the height-specific canonical-roots transition before
+    // mutating the forest; the independent expected model must do the same.
+    UtreexoForest expected_after = initial_forest.cloneForHeight(spend_height);
     auto position = expected_after.findLeafPosition(funding_leaf);
     TEST_ASSERT(position.has_value(), "Expected after-forest must locate funding leaf");
     auto proof = expected_after.prove(*position);

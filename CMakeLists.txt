@@ -99,6 +99,19 @@ else()
   set(HERMETIC_BUILD ON)
 endif()
 
+option(DINERO_REPRODUCIBLE_BUILD
+  "Normalize build paths, timestamps, archives, and linker metadata"
+  ${HERMETIC_BUILD})
+if(DINERO_REPRODUCIBLE_BUILD)
+  if(NOT DEFINED ENV{SOURCE_DATE_EPOCH} OR "$ENV{SOURCE_DATE_EPOCH}" STREQUAL "")
+    message(FATAL_ERROR
+      "DINERO_REPRODUCIBLE_BUILD=ON requires SOURCE_DATE_EPOCH. "
+      "Use the timestamp of the commit being built.")
+  endif()
+  include(${CMAKE_SOURCE_DIR}/cmake/ReproducibleBuild.cmake)
+  dinero_enable_reproducible_build()
+endif()
+
 # Add cmake modules directory to module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 

@@ -72,15 +72,16 @@ private:
 TEST(CovenantActivation, ProductionNetworksPinReviewedActivationPolicy) {
     SelectParams(Chain::MAINNET);
     EXPECT_EQ(Params().taproot_scriptpath_activation_height, 1U);
-    EXPECT_EQ(Params().ctv_activation_height, 100000U);
+    EXPECT_EQ(Params().ctv_activation_height, UINT32_MAX);
     EXPECT_EQ(Params().csfs_activation_height, UINT32_MAX);
     EXPECT_EQ(Params().txhash_activation_height, UINT32_MAX);
-    EXPECT_EQ(Params().ccv_activation_height, 100000U);
+    EXPECT_EQ(Params().ccv_activation_height, UINT32_MAX);
     EXPECT_EQ(CovenantActivationParams::CovenantFlags(99999, Params()),
               dinero::consensus::SCRIPT_VERIFY_NONE);
     EXPECT_EQ(CovenantActivationParams::CovenantFlags(100000, Params()),
-              dinero::consensus::SCRIPT_VERIFY_CHECKTEMPLATEVERIFY |
-                  dinero::consensus::SCRIPT_VERIFY_CHECKCONTRACT);
+              dinero::consensus::SCRIPT_VERIFY_NONE);
+    EXPECT_EQ(CovenantActivationParams::CovenantFlags(UINT32_MAX, Params()),
+              dinero::consensus::SCRIPT_VERIFY_NONE);
 
     SelectParams(Chain::TESTNET);
     EXPECT_EQ(Params().taproot_scriptpath_activation_height, 200U);
@@ -198,25 +199,26 @@ TEST(CovenantActivation, RelayPolicyRejectsDormantRevealedOpcodes) {
         ctv, {}, 19, params, &reason));
     EXPECT_NE(reason.find("missing spent output scripts"), std::string::npos);
 
-    // Pin the production boundary through the actual mainnet parameters, not
-    // only through a synthetic ChainParams fixture. Mempool and block-template
-    // policy validate the next candidate block height.
+    // Pin the production deferral through the actual mainnet parameters, not
+    // only through a synthetic ChainParams fixture. No height, including the
+    // old 100,000 boundary, may make either reviewed opcode relay-standard
+    // until a new activation is explicitly authorized.
     SelectParams(Chain::MAINNET);
     EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
         ctv, p2trScripts, 99999, Params(), &reason));
-    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
-        ctv, p2trScripts, 100000, Params()));
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        ctv, p2trScripts, 100000, Params(), &reason));
     EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
         ccv, p2trScripts, 99999, Params(), &reason));
-    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
-        ccv, p2trScripts, 100000, Params()));
+    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+        ccv, p2trScripts, 100000, Params(), &reason));
 }
 
 TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
     SelectParams(Chain::MAINNET);
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "68e0a99766e8ab1224ee040ec715bbbd0a544a59d4b3a96025dd35f77f4e960a");
+        "48bb4b27879a492dd8a83fd1e4826ec422f6b9ac3b1ae6797c9469783036c76e");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);
@@ -297,7 +299,7 @@ TEST(CovenantActivation, HighLevelValidationUsesSpendHeightNotCoinHeight) {
     EXPECT_EQ(result.total_fee, dinero::AmountUna::Una(1'000));
 }
 
-TEST(CovenantActivation, MainnetValidationChangesExactlyAtHeight100000) {
+TEST(CovenantActivation, MainnetDeferralKeepsHistoricalNOP4AtFormerBoundary) {
     SelectParams(Chain::MAINNET);
 
     Transaction tx;
@@ -346,14 +348,18 @@ TEST(CovenantActivation, MainnetValidationChangesExactlyAtHeight100000) {
             dinero::AmountUna::Una(10'000), spent_script,
             1 /* coin creation height */, false));
 
-    // The deliberately wrong template is accepted while 0xb3 is still NOP4,
-    // then rejected by the very first block enforcing CTV.
+    // The deliberately wrong template remains accepted because 0xb3 is still
+    // historical NOP4. Neither the former boundary nor the UINT32_MAX sentinel
+    // may activate CTV.
     const auto before =
         TransactionValidator::ValidateTransaction(tx, &provider, 99999);
     EXPECT_TRUE(before.valid) << before.error;
-    const auto active =
+    const auto former_boundary =
         TransactionValidator::ValidateTransaction(tx, &provider, 100000);
-    EXPECT_FALSE(active.valid);
+    EXPECT_TRUE(former_boundary.valid) << former_boundary.error;
+    const auto sentinel =
+        TransactionValidator::ValidateTransaction(tx, &provider, UINT32_MAX);
+    EXPECT_TRUE(sentinel.valid) << sentinel.error;
 }
 
 TEST(CovenantActivation, CtvPrecomputationMatchesCanonicalHashing) {

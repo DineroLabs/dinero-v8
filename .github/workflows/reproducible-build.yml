@@ -1,0 +1,129 @@
+name: Reproducible Linux daemon
+
+on:
+  pull_request:
+    branches: [dinero-main]
+    paths:
+      - '.github/workflows/reproducible-build.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/ReproducibleBuild.cmake'
+      - 'scripts/ci/compare_reproducible_builds.py'
+      - 'docs/REPRODUCIBLE_BUILDS.md'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reproducible-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Independent builder ${{ matrix.builder }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: [alpha, beta]
+
+    steps:
+      - name: Checkout into builder-specific source path
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+          path: source-${{ matrix.builder }}
+
+      - name: Install declared build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config python3 perl \
+            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.75.0
+
+      # Deliberately no compiler/dependency cache: the two builders must not
+      # prove equality by consuming the same cached object files.
+      - name: Build vendored prerequisites
+        working-directory: source-${{ matrix.builder }}
+        run: |
+          OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j2
+
+      - name: Build deterministic dinerod
+        working-directory: source-${{ matrix.builder }}
+        run: |
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export TZ=UTC
+          export LC_ALL=C
+          cmake -S . -B build-repro -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_REPRODUCIBLE_BUILD=ON \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF
+          cmake --build build-repro --target dinerod -j2
+          sha256sum build-repro/dinerod > dinerod.sha256
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "source_date_epoch=${SOURCE_DATE_EPOCH}"
+            cc --version | head -1
+            c++ --version | head -1
+            cmake --version | head -1
+            rustc --version
+            sha256sum build-repro/dinerod
+          } > reproducible-build-manifest.txt
+
+      - name: Upload independent result
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducible-${{ matrix.builder }}
+          path: |
+            source-${{ matrix.builder }}/build-repro/dinerod
+            source-${{ matrix.builder }}/dinerod.sha256
+            source-${{ matrix.builder }}/reproducible-build-manifest.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  compare:
+    name: Compare independent artifacts
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout comparison tool
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download both builders
+        uses: actions/download-artifact@v4
+        with:
+          pattern: reproducible-*
+          path: reproducible-results
+
+      - name: Require byte-identical dinerod
+        run: |
+          python3 scripts/ci/compare_reproducible_builds.py \
+            reproducible-results/reproducible-alpha/build-repro/dinerod \
+            reproducible-results/reproducible-beta/build-repro/dinerod
+          cp reproducible-results/reproducible-alpha/reproducible-build-manifest.txt alpha-manifest.txt
+          cp reproducible-results/reproducible-beta/reproducible-build-manifest.txt beta-manifest.txt
+          sha256sum reproducible-results/reproducible-alpha/build-repro/dinerod > VERIFIED-DINEROD-SHA256.txt
+
+      - name: Publish reproducibility evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducibility-evidence
+          path: |
+            VERIFIED-DINEROD-SHA256.txt
+            alpha-manifest.txt
+            beta-manifest.txt
+          if-no-files-found: error
+          retention-days: 30

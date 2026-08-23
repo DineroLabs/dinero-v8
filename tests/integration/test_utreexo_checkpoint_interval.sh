@@ -13,6 +13,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=helpers/daemon_process_cleanup.sh
+source "${ROOT_DIR}/tests/integration/helpers/daemon_process_cleanup.sh"
 DINEROD="${ROOT_DIR}/build/dinerod"
 
 DATA_DIR="$(mktemp -d /tmp/dinero_ckpt_interval.XXXXXX)"
@@ -33,11 +35,12 @@ fail() {
     exit 1
 }
 cleanup() {
-    [[ -n "${PID}" ]] && kill "${PID}" 2>/dev/null || true
-    pkill -f "dinerod.*${DATA_DIR}" 2>/dev/null || true
-    if [[ "${KEEP_ON_FAIL}" != "1" ]]; then
-        rm -rf "${DATA_DIR}"
-    fi
+    local test_rc=$?
+    trap - EXIT
+    set +e
+    dinero_cleanup_single_daemon "${test_rc}" "${PID}" "${DATA_DIR}" \
+        "${KEEP_ON_FAIL}" "checkpoint-interval daemon" "${DATA_DIR}"
+    exit $?
 }
 trap cleanup EXIT
 
@@ -45,9 +48,7 @@ command -v curl >/dev/null || fail "curl is required"
 command -v jq >/dev/null || fail "jq is required"
 [[ -x "${DINEROD}" ]] || fail "dinerod not built at ${DINEROD}"
 
-RPC_PORT=$((41000 + RANDOM % 1000))
-P2P_PORT=$((RPC_PORT + 1))
-WALLET_PORT=$((RPC_PORT + 2))
+read -r RPC_PORT P2P_PORT WALLET_PORT < <(dinero_allocate_port_triplet)
 
 NODE_DATADIR=""
 

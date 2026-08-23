@@ -198,22 +198,21 @@ static void test_ban_count_cap() {
 }
 
 // ============================================================================
-// TEST 8: Seed nodes include all 4 mainnet servers
+// TEST 8: Seed nodes match the active three-region bootstrap fleet
 // ============================================================================
 static void test_seed_nodes_complete() {
     auto seeds = config::getSeedNodes("mainnet");
-    assert(seeds.size() >= 4);
-
-    bool found_la = false, found_va = false, found_sj = false, found_cn = false;
+    bool found_sj = false, found_na = false, found_eu = false;
     for (const auto& seed : seeds) {
-        if (seed.hostname == "172.93.160.131") found_la = true;
-        if (seed.hostname == "173.249.195.59") found_va = true;
-        if (seed.hostname == "173.249.200.59") found_sj = true;  // SJ replaced retired MO
-        if (seed.hostname == "96.9.226.98") found_cn = true;
+        if (seed.hostname == "173.249.200.59") found_sj = true;
+        if (seed.hostname == "172.93.167.32") found_na = true;
+        if (seed.hostname == "92.118.190.62") found_eu = true;
     }
-    assert(found_la && found_va && found_sj && found_cn);
+    const auto dns_seeds = config::getDnsSeeds("mainnet");
+    assert(seeds.size() == 3 && found_sj && found_na && found_eu &&
+           dns_seeds.size() == 3);
 
-    std::cout << "  PASS: All 4 mainnet seed nodes present" << std::endl;
+    std::cout << "  PASS: Active bootstrap fleet and DNS seeds present" << std::endl;
 }
 
 // ============================================================================
@@ -241,12 +240,15 @@ static void test_anchor_peers_list() {
 // TEST 10: isAnchorPeer config function
 // ============================================================================
 static void test_config_is_anchor_peer() {
-    assert(config::isAnchorPeer("173.249.195.59", "mainnet"));
-    assert(config::isAnchorPeer("172.93.160.131", "mainnet"));
-    assert(config::isAnchorPeer("96.9.226.98", "mainnet"));   // CN replaced retired MO as 3rd anchor
+    assert(config::isAnchorPeer("173.249.200.59", "mainnet") &&
+           config::isAnchorPeer("172.93.167.32", "mainnet") &&
+           config::isAnchorPeer("92.118.190.62", "mainnet"));
     assert(!config::isAnchorPeer("1.2.3.4", "mainnet"));
-    assert(!config::isAnchorPeer("72.18.214.120", "mainnet"));  // retired MO is no longer an anchor
-    assert(!config::isAnchorPeer("173.249.195.59", "testnet"));
+    assert(!config::isAnchorPeer("173.249.195.59", "mainnet") &&
+           !config::isAnchorPeer("172.93.160.131", "mainnet") &&
+           !config::isAnchorPeer("96.9.226.98", "mainnet") &&
+           !config::isAnchorPeer("72.18.214.120", "mainnet"));
+    assert(!config::isAnchorPeer("173.249.200.59", "testnet"));
 
     std::cout << "  PASS: config::isAnchorPeer works correctly" << std::endl;
 }

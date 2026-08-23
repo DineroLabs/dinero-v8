@@ -39,7 +39,14 @@ static constexpr const char* EXPECTED_MERKLE_ROOT =
 
 // CTV and CCV are one reviewed mainnet profile. A single constant prevents a
 // partial-activation window from being introduced by changing only one field.
-static constexpr uint32_t MAINNET_COVENANT_PROFILE_V1_HEIGHT = 100000;
+//
+// DEFERRED 2026-08-22: importing the complete upstream BIP119 interpreter
+// corpus (#483) exposed and fixed P2WSH/Taproot script-path CLEANSTACK
+// handling after the original review freeze. The activation policy requires a
+// material semantic finding to restart review and forbids preserving height
+// 100,000 by shortening that window. Keep both opcodes dormant until a new
+// activation height is explicitly reviewed and authorized.
+static constexpr uint32_t MAINNET_COVENANT_PROFILE_V1_HEIGHT = UINT32_MAX;
 
 // ============================================================================
 // MAINNET PARAMETERS - Dinero Official Mainnet
@@ -79,9 +86,9 @@ static ChainParams g_mainnet = {
     .confidential_activation_height = 1,
 
     // BIP341 script paths retain their deployed height-1 behavior. The
-    // transparent CTV/CCV profile activates together at block 100,000. CSFS and
-    // TXHASH remain deliberately dormant pending separate specifications,
-    // resource analysis, vectors, and an open-source assurance record.
+    // transparent CTV/CCV profile remains coupled but is currently deferred.
+    // CSFS and TXHASH remain deliberately dormant pending separate
+    // specifications, resource analysis, vectors, and assurance records.
     .taproot_scriptpath_activation_height = 1,
     .ctv_activation_height = MAINNET_COVENANT_PROFILE_V1_HEIGHT,
     .csfs_activation_height = UINT32_MAX,

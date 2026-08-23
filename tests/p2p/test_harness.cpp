@@ -219,6 +219,16 @@ bool TestNode::start() {
         return false;
     }
 
+    // Port 0 asks the kernel for an exclusive ephemeral listener. P2PManager
+    // records the actual bound port after bind(), so publish that value before
+    // any test attempts to connect. This removes collisions with real Dinero
+    // services and with other concurrently running tests.
+    listen_port_ = p2p_manager_->get_listen_port();
+    if (listen_port_ == 0) {
+        std::cerr << "[" << node_name_ << "] ERROR: listener did not publish its bound port" << std::endl;
+        return false;
+    }
+
     return true;
 }
 
@@ -412,10 +422,6 @@ TestNetwork::~TestNetwork() {
 }
 
 TestNode* TestNetwork::add_node(const std::string& name, uint16_t listen_port) {
-    if (listen_port == 0) {
-        listen_port = next_port_++;
-    }
-
     auto node = std::make_unique<TestNode>(name, listen_port);
     auto* node_ptr = node.get();
     nodes_[name] = std::move(node);
@@ -601,13 +607,6 @@ void TestNetwork::print_message_stats() const {
 //=============================================================================
 // Utilities
 //=============================================================================
-
-uint16_t get_random_test_port() {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<uint16_t> dist(21000, 30000);
-    return dist(gen);
-}
 
 void cleanup_test_ports() {
     // Platform-specific cleanup if needed

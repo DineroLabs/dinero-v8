@@ -3,10 +3,14 @@
 
 WHY
 ---
-CI builds Release, and CMAKE_CXX_FLAGS_RELEASE is "-O3 -DNDEBUG". Under NDEBUG,
-assert(x) expands to ((void)0) and the expression is never compiled. A test
-whose only checks are assert() therefore runs in CI, prints PASSED, and verifies
-nothing.
+CI builds Release, whose stock flags contain -DNDEBUG. tests/CMakeLists.txt now
+appends -UNDEBUG (or /UNDEBUG) to every test target and AssertionsEnabled proves
+that policy at compile time and runtime. Raw assert() is therefore live in the
+registered CI test graph.
+
+This ratchet remains as defense in depth: ad-hoc or unregistered test sources
+can still be compiled outside that graph, and a future build-system regression
+must not create new checks whose correctness depends on NDEBUG ordering.
 
 That is not hypothetical. tests/consensus/test_consensus_core_standalone.cpp
 asserted a 2,627,900 DIN premine that Dinero does not have -- referencing a
@@ -16,9 +20,8 @@ See issue #497.
 
 WHAT THIS GATE DOES
 -------------------
-Roughly 1,900 raw assertions exist across ~89 files. Converting them all at once
-is not realistic, and blocking every PR until that finishes would be worse than
-the problem. So this is a RATCHET, not a cliff:
+The existing raw-assert backlog is a migration, not a reason to accept more.
+So this is a RATCHET, not a cliff:
 
   * a file may never GAIN raw assertions beyond its recorded baseline;
   * a test file not in the baseline may not introduce any at all;

@@ -254,7 +254,8 @@ public:
      * @brief Build a block locator from the best header, entirely under the lock.
      *
      * Bitcoin-style exponential back-off: tip, then walk back with gaps of
-     * 1, 2, 4, 8, ... up to `max_entries` hashes.
+     * 1, 2, 4, 8, ... up to `max_entries` ordinary hashes, followed by the
+     * genesis hash when it was not reached within that budget.
      *
      * Exists because the former raw-accessor composition — best tip followed
      * by repeated per-height lookups — was unsafe twice over (issue #441):
@@ -269,7 +270,7 @@ public:
      *
      * Building the whole locator under a single lock removes both.
      *
-     * @param max_entries Maximum hashes to emit (Bitcoin uses ~10)
+     * @param max_entries Maximum non-genesis hashes to emit (Bitcoin uses ~10)
      * @return Locator hashes, tip first. Empty if no headers are known.
      */
     std::vector<uint256> BuildLocatorCopy(size_t max_entries = 10) const;

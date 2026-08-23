@@ -195,7 +195,6 @@ public:
 
 private:
     std::unordered_map<std::string, std::unique_ptr<TestNode>> nodes_;
-    uint16_t next_port_ = 21000;  // Auto-assign ports starting from 21000
 };
 
 //=============================================================================
@@ -218,9 +217,6 @@ bool wait_until(Predicate pred, std::chrono::milliseconds timeout) {
     }
     return true;
 }
-
-// Port conflict avoidance
-uint16_t get_random_test_port();
 
 // Cleanup helpers
 void cleanup_test_ports();

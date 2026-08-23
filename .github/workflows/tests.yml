@@ -60,7 +60,7 @@ jobs:
             libusb-1.0-0-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.75.0
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -116,12 +116,11 @@ jobs:
       - name: CTest integrity gate (registered => built)
         run: python3 scripts/ci/check_ctest_integrity.py build-tests
 
-      # Assertion-integrity ratchet (issue #497). This build is Release, so
-      # NDEBUG is defined and assert(x) becomes ((void)0) -- its expression is
-      # never compiled. A test gated only on assert() runs here, prints PASSED,
-      # and checks nothing. That is how test_consensus_core_standalone.cpp kept
-      # asserting a premine Dinero does not have, against a constant that had
-      # already been deleted.
+      # Assertion-integrity ratchet (issue #497). tests/CMakeLists.txt appends
+      # -UNDEBUG (/UNDEBUG on MSVC) to the Release test graph, and the
+      # AssertionsEnabled test fails at compile time and runtime if assertions
+      # are ever disabled again. The source ratchet remains defense in depth
+      # for ad-hoc/unregistered test builds and prevents new raw-assert debt.
       #
       # Existing assertions are grandfathered by a baseline file; this step
       # fails only when a PR ADDS raw assert() to a test, so the ~2,300-item

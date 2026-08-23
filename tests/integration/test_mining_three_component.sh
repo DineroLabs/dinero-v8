@@ -39,6 +39,8 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DINERO_ROOT="${SCRIPT_DIR}/../.."
+# shellcheck source=helpers/daemon_process_cleanup.sh
+source "${DINERO_ROOT}/tests/integration/helpers/daemon_process_cleanup.sh"
 STRATUM_ROOT="${DINERO_ROOT}/../stratum"
 # Binaries
 DINEROD="${DINERO_ROOT}/build/dinerod"
@@ -100,34 +102,16 @@ log_section() {
 
 cleanup() {
     local exit_code=$?
+    local cleanup_rc=0
+    local final_rc=0
+    trap - EXIT
+    set +e
     log_info "Cleaning up processes..."
 
-    # Kill miner first (least critical)
-    if [ -n "$MINER_PID" ] && kill -0 "$MINER_PID" 2>/dev/null; then
-        kill "$MINER_PID" 2>/dev/null || true
-        log_info "Stopped miner (PID $MINER_PID)"
-    fi
-
-    # Kill stratum
-    if [ -n "$STRATUM_PID" ] && kill -0 "$STRATUM_PID" 2>/dev/null; then
-        kill "$STRATUM_PID" 2>/dev/null || true
-        log_info "Stopped stratum (PID $STRATUM_PID)"
-    fi
-
-    # Kill daemon last (most critical)
-    if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        sleep 1
-        kill -9 "$DAEMON_PID" 2>/dev/null || true
-        log_info "Stopped daemon (PID $DAEMON_PID)"
-    fi
-
-    # Also kill by port in case PIDs got lost
-    pkill -f "dinerod.*${RPC_PORT}" 2>/dev/null || true
-    pkill -f "dinero-stratum.*${STRATUM_PORT}" 2>/dev/null || true
-    pkill -f "dinero-miner.*${STRATUM_PORT}" 2>/dev/null || true
-
-    sleep 1
+    dinero_stop_process "${MINER_PID}" "integration miner" || cleanup_rc=1
+    dinero_stop_process "${STRATUM_PID}" "integration stratum" || cleanup_rc=1
+    dinero_stop_process "${DAEMON_PID}" "integration daemon" || cleanup_rc=1
+    dinero_stop_datadir_processes "${DATADIR}" || cleanup_rc=1
 
     # Clean up data directory unless we failed (keep logs for debugging).
     # You can force cleanup by setting KEEP_DATADIR=0.
@@ -147,12 +131,14 @@ cleanup() {
         log_info "    $DATADIR/daemon.log"
         log_info "    $DATADIR/stratum.log"
         log_info "    $DATADIR/miner.log"
-    else
-        rm -rf "$DATADIR"
+    elif (( cleanup_rc == 0 )); then
+        rm -rf "$DATADIR" || cleanup_rc=1
         log_info "Removed datadir: $DATADIR"
     fi
 
     log_info "Cleanup complete (exit_code=$exit_code)"
+    dinero_cleanup_result "${exit_code}" "${cleanup_rc}" || final_rc=$?
+    exit "${final_rc}"
 }
 
 trap cleanup EXIT

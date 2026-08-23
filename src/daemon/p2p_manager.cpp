@@ -6656,12 +6656,10 @@ int P2PManager::create_listen_socket() {
         std::cerr << "setsockopt(SO_REUSEADDR) failed: " << strerror(errno) << std::endl;
     }
 
-#ifdef SO_REUSEPORT
-    // Enable port reuse on systems that support it
-    if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEPORT, (char*)&opt, sizeof(opt)) < 0) {
-        // Not critical - some systems don't support SO_REUSEPORT
-    }
-#endif
+    // Do not set SO_REUSEPORT on a TCP listener. It permits two independent
+    // Dinero processes to bind the same address/port and lets the kernel send
+    // a connection to either one, which can make a test (or operator) perform
+    // a valid TCP connect followed by a handshake with the wrong node.
 
     // ✅ TCP KEEPALIVE: Keep sockets alive through NAT/firewalls
     int keepalive = 1;

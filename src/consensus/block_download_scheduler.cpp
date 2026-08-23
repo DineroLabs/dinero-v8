@@ -539,6 +539,14 @@ void BlockDownloadScheduler::TickLocked() {
     const auto now = std::chrono::steady_clock::now();
     for (auto& fetch_state : missing_blocks_) {
         if (fetch_state.status == FetchStatus::REQUESTED) {
+            // A relay or acceptance worker may have persisted this exact body
+            // without routing the receipt through OnBlockReceived(). Adopt its
+            // position before considering the network request stale. This is
+            // the stored-and-connecting variant of #216: validation latency is
+            // not evidence that the body is missing.
+            if (AdoptStoredTipBodyLocked(fetch_state)) {
+                continue;
+            }
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 now - fetch_state.request_time).count();
             if (elapsed >= stale_request_timeout_seconds_) {
@@ -884,9 +892,11 @@ void BlockDownloadScheduler::ServiceBackfillLocked() {
         : max_window;
     const auto now = std::chrono::steady_clock::now();
     const size_t n = backfill_blocks_.size();
-    // Cursor fairness: resume where the last service pass stopped instead of
-    // rescanning from index 0 (snapshot the cursor — it advances inside the
-    // loop, so indexing off the live value would skip/revisit entries).
+    // The initial cursor starts at the lowest height, so a fresh window is
+    // ascending (#300). After a timeout it advances, allowing later bodies and
+    // late replies to make progress instead of immediately re-clogging every
+    // slot with the same slow-peer batch. The dedicated validation-frontier
+    // lane below independently keeps the earliest contiguous replay gap first.
     const size_t start = next_backfill_idx_;
     size_t staged = 0;
     auto stage_one = [&](BlockFetchState& fs) {
@@ -1099,6 +1109,34 @@ void BlockDownloadScheduler::SetHasBlockBodyCallback(
         std::function<bool(const uint256&, uint32_t)> cb) {
     std::lock_guard<std::mutex> lock(mutex_);
     has_block_body_ = std::move(cb);
+}
+
+void BlockDownloadScheduler::SetGetBlockBodyPositionCallback(
+        std::function<std::optional<FilePosition>(const uint256&, uint32_t)> cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    get_block_body_position_callback_ = std::move(cb);
+}
+
+bool BlockDownloadScheduler::AdoptStoredTipBodyLocked(
+        BlockFetchState& fetch_state) {
+    if (!get_block_body_position_callback_) {
+        return false;
+    }
+    const auto stored = get_block_body_position_callback_(
+        fetch_state.block_hash, fetch_state.height);
+    if (!stored || stored->isNull()) {
+        return false;
+    }
+
+    fetch_state.status = FetchStatus::RECEIVED;
+    fetch_state.stored_pos = *stored;
+    in_flight_blocks_.erase(fetch_state.block_hash);
+    received_blocks_.insert(fetch_state.block_hash);
+    g_logger.info("[BlockDownloadScheduler] Adopted durably stored body at height " +
+                  std::to_string(fetch_state.height) + ": " +
+                  fetch_state.block_hash.GetHex().substr(0, 16) +
+                  "... (parallel ingress; suppressing duplicate getdata)");
+    return true;
 }
 
 void BlockDownloadScheduler::EnableBackfill(uint32_t start_height,
@@ -1552,6 +1590,7 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
             preserved_count++;
         } else {
             missing_blocks_.emplace_back(hash, height);
+            AdoptStoredTipBodyLocked(missing_blocks_.back());
         }
         expected_blocks_.insert(hash);
     }

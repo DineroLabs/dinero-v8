@@ -536,6 +536,17 @@ public:
     void SetHasBlockBodyCallback(std::function<bool(const uint256&, uint32_t)> cb);
 
     /**
+     * Register a hash-precise lookup for a durably stored tip body. Blocks may
+     * arrive through the relay/acceptance path while this scheduler still owns
+     * a REQUESTED entry. Adopting the persisted FilePosition lets the drainer
+     * consume that body instead of timing out and downloading it again.
+     * Invoked under mutex_; the callback must obey the same lock-order contract
+     * as SetHasBlockBodyCallback.
+     */
+    void SetGetBlockBodyPositionCallback(
+        std::function<std::optional<FilePosition>(const uint256&, uint32_t)> cb);
+
+    /**
      * #309: persist body-position metadata for a stored-but-not-yet-connected
      * block (e.g. a competing side-branch above the active tip) so
      * HasArchivalBlockBody / the import loop recognize the stored body and the
@@ -691,6 +702,8 @@ private:
     GetTipHeightCallback get_tip_height_callback_;
     GetBlockHashAtHeightCallback get_block_hash_at_height_callback_;
     ExternalBackpressureCallback external_backpressure_callback_;
+    std::function<std::optional<FilePosition>(const uint256&, uint32_t)>
+        get_block_body_position_callback_;
 
     // #579: the last stale INVALID stateless frontier we re-seated to a new-branch
     // hash / halted on. Used only to log each distinct event once — the pre-fix
@@ -857,6 +870,9 @@ private:
     // connect bookkeeping.
     bool StoreVerifiedBlockLocked(const Block& block, FilePosition& out_pos,
                                   bool track_received);
+
+    // Adopt a body stored by a parallel ingress path. Caller holds mutex_.
+    bool AdoptStoredTipBodyLocked(BlockFetchState& fetch_state);
 
     /**
      * Scan header chain for missing blocks.

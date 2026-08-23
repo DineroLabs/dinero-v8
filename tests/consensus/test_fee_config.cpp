@@ -7,7 +7,7 @@
  * Economics Layer Tests (Pure, Deterministic):
  * - E.2.1: Minimum relay fee parameter (1000 una/kb = 1.0 sat/vB)
  * - E.2.2: CPFP parameters (25 ancestors, 101 KB limit)
- * - E.2.3: RBF enabled by default
+ * - E.2.3: RBF is conservative opt-in by default
  *
  * Mempool BEHAVIOR tests (F.9.6-F.9.8) are in Phase F.9, not duplicated here.
  */
@@ -84,10 +84,12 @@ void testRBFConfig() {
 
     std::cout << "  RBF enabled: " << (config.enable_rbf ? "true" : "false") << std::endl;
 
-    // RBF should be enabled by default (BIP 125)
-    assert(config.enable_rbf == true && "RBF must be enabled by default (BIP 125)");
+    // Dinero deliberately keeps transaction replacement opt-in. Wallets may
+    // still signal BIP125, and operators can enable it explicitly, but the
+    // node policy default must match the production configuration.
+    assert(config.enable_rbf == false && "RBF must be disabled by default");
 
-    std::cout << "  [✓] RBF enabled by default" << std::endl;
+    std::cout << "  [✓] RBF disabled by default (operator opt-in)" << std::endl;
 }
 
 //=============================================================================
@@ -169,7 +171,7 @@ int main() {
         std::cout << "\nSummary (Configuration Verification):" << std::endl;
         std::cout << "  [✓] E.2.1: Min relay fee = 1.0 sat/vB (all networks)" << std::endl;
         std::cout << "  [✓] E.2.2: CPFP limits = 25/25/101KB (Bitcoin Core standard)" << std::endl;
-        std::cout << "  [✓] E.2.3: RBF enabled by default (BIP 125)" << std::endl;
+        std::cout << "  [✓] E.2.3: RBF disabled by default (operator opt-in)" << std::endl;
         std::cout << "  [✓] E.2.4: Mempool size = 300 MB, 14 day expiry" << std::endl;
         std::cout << "  [✓] E.2.5: All parameters consistent and rational" << std::endl;
         std::cout << "\nNote: Mempool BEHAVIOR was verified in F.9.6-F.9.8" << std::endl;

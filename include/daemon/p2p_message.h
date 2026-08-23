@@ -5,6 +5,7 @@
 #include <memory>
 #include <cstring>
 #include "network/types.h"
+#include "p2p/p2p_limits.h"
 #include "primitives/uint256.h"  // Phase M.0: For uint256 type
 
 // Windows wingdi.h defines ERROR as a macro
@@ -27,7 +28,7 @@ const size_t MESSAGE_HEADER_SIZE = 24;
 const size_t MAX_MESSAGE_SIZE = 4 * 1024 * 1024; // 4MB max message size (Bitcoin Core limit)
 const size_t MAX_BLOCK_SIZE = 4 * 1024 * 1024; // 4MB max block size
 const size_t MAX_P2P_TX_PAYLOAD = 1024 * 1024; // 1MB P2P wire buffer (consensus tx limit is 100KB)
-const size_t MAX_INV_SIZE = 50000; // Max inventory items per message
+const size_t MAX_INV_SIZE = p2p::P2P_MAX_INV_HASHES_PER_MSG;
 const size_t MAX_ADDR_SIZE = 1000; // Max addresses per addr message
 const size_t MAX_HEADERS_SIZE = 2000; // Max headers per headers message
 const size_t COMMAND_SIZE = 12;

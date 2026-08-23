@@ -5,9 +5,11 @@
  */
 
 #include "../../include/p2p/inventory.h"
+#include "p2p/p2p_limits.h"
 #include <sstream>
 #include <iomanip>
 #include <cstring>
+#include <stdexcept>
 
 namespace dinero {
 namespace p2p {
@@ -65,6 +67,9 @@ static void write_uint32(std::vector<uint8_t>& buf, uint32_t value) {
 }
 
 static uint32_t read_uint32(const std::vector<uint8_t>& buf, size_t& offset) {
+    if (offset > buf.size() || buf.size() - offset < sizeof(uint32_t)) {
+        throw std::invalid_argument("inventory: truncated uint32");
+    }
     uint32_t value = 0;
     value |= static_cast<uint32_t>(buf[offset++]);
     value |= static_cast<uint32_t>(buf[offset++]) << 8;
@@ -92,17 +97,26 @@ static void write_varint(std::vector<uint8_t>& buf, uint64_t value) {
 }
 
 static uint64_t read_varint(const std::vector<uint8_t>& buf, size_t& offset) {
+    if (offset >= buf.size()) {
+        throw std::invalid_argument("inventory: missing CompactSize");
+    }
     uint8_t first = buf[offset++];
 
     if (first < 0xFD) {
         return first;
     } else if (first == 0xFD) {
+        if (buf.size() - offset < 2) {
+            throw std::invalid_argument("inventory: truncated CompactSize16");
+        }
         uint64_t value = buf[offset++];
         value |= static_cast<uint64_t>(buf[offset++]) << 8;
         return value;
     } else if (first == 0xFE) {
         return read_uint32(buf, offset);
     } else { // 0xFF
+        if (buf.size() - offset < 8) {
+            throw std::invalid_argument("inventory: truncated CompactSize64");
+        }
         uint64_t value = 0;
         for (int i = 0; i < 8; i++) {
             value |= static_cast<uint64_t>(buf[offset++]) << (i * 8);
@@ -119,6 +133,9 @@ static void write_hash(std::vector<uint8_t>& buf, const Hash256& hash) {
 }
 
 static Hash256 read_hash(const std::vector<uint8_t>& buf, size_t& offset) {
+    if (offset > buf.size() || buf.size() - offset < 32) {
+        throw std::invalid_argument("inventory: truncated hash");
+    }
     Hash256 hash;
     for (size_t i = 0; i < 32; i++) {
         hash.data[i] = buf[offset++];
@@ -147,6 +164,30 @@ InventoryVector InventoryVector::deserialize(const std::vector<uint8_t>& data, s
     inv.hash = read_hash(data, offset);
 
     return inv;
+}
+
+static std::vector<InventoryVector> deserialize_inventory(
+    const std::vector<uint8_t>& data) {
+    size_t offset = 0;
+    const uint64_t count = read_varint(data, offset);
+    constexpr size_t kInventoryVectorBytes = sizeof(uint32_t) + 32;
+
+    if (count > P2P_MAX_INV_HASHES_PER_MSG) {
+        throw std::invalid_argument("inventory: item count exceeds protocol limit");
+    }
+    if (count > (data.size() - offset) / kInventoryVectorBytes) {
+        throw std::invalid_argument("inventory: item count exceeds payload bytes");
+    }
+
+    std::vector<InventoryVector> inventory;
+    inventory.reserve(static_cast<size_t>(count));
+    for (uint64_t i = 0; i < count; ++i) {
+        inventory.push_back(InventoryVector::deserialize(data, offset));
+    }
+    if (offset != data.size()) {
+        throw std::invalid_argument("inventory: trailing payload bytes");
+    }
+    return inventory;
 }
 
 std::string InventoryVector::toString() const {
@@ -181,17 +222,7 @@ std::vector<uint8_t> InvMessage::serialize() const {
 
 InvMessage InvMessage::deserialize(const std::vector<uint8_t>& data) {
     InvMessage msg;
-    size_t offset = 0;
-
-    // Read count
-    uint64_t count = read_varint(data, offset);
-
-    // Read each inventory vector
-    msg.inventory.reserve(count);
-    for (uint64_t i = 0; i < count; i++) {
-        msg.inventory.push_back(InventoryVector::deserialize(data, offset));
-    }
-
+    msg.inventory = deserialize_inventory(data);
     return msg;
 }
 
@@ -216,17 +247,7 @@ std::vector<uint8_t> GetDataMessage::serialize() const {
 
 GetDataMessage GetDataMessage::deserialize(const std::vector<uint8_t>& data) {
     GetDataMessage msg;
-    size_t offset = 0;
-
-    // Read count
-    uint64_t count = read_varint(data, offset);
-
-    // Read each inventory vector
-    msg.inventory.reserve(count);
-    for (uint64_t i = 0; i < count; i++) {
-        msg.inventory.push_back(InventoryVector::deserialize(data, offset));
-    }
-
+    msg.inventory = deserialize_inventory(data);
     return msg;
 }
 
@@ -251,17 +272,7 @@ std::vector<uint8_t> NotFoundMessage::serialize() const {
 
 NotFoundMessage NotFoundMessage::deserialize(const std::vector<uint8_t>& data) {
     NotFoundMessage msg;
-    size_t offset = 0;
-
-    // Read count
-    uint64_t count = read_varint(data, offset);
-
-    // Read each inventory vector
-    msg.inventory.reserve(count);
-    for (uint64_t i = 0; i < count; i++) {
-        msg.inventory.push_back(InventoryVector::deserialize(data, offset));
-    }
-
+    msg.inventory = deserialize_inventory(data);
     return msg;
 }
 

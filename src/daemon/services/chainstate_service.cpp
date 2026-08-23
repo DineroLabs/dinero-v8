@@ -4991,6 +4991,27 @@ bool ChainstateService::hasReadableBlockByHash(const uint256& hash) const {
     return HasFlatfileBlockBody(hash);
 }
 
+std::optional<FilePosition> ChainstateService::getStoredBlockPosition(
+        const uint256& hash) const {
+    if (!chain_db_ || !block_storage_ || unreadable_blocks_.contains(hash)) {
+        return std::nullopt;
+    }
+    const auto metadata_result = chain_db_->getHeaderMetadata(hash);
+    if (metadata_result.status() != Status::Ok) {
+        return std::nullopt;
+    }
+    const auto& metadata = metadata_result.value();
+    if (metadata.data_size == 0) {
+        return std::nullopt;
+    }
+    const FilePosition pos(metadata.file_number, metadata.data_pos,
+                           metadata.data_size);
+    if (block_storage_->hasBlock(pos) != Status::Ok) {
+        return std::nullopt;
+    }
+    return pos;
+}
+
 bool ChainstateService::hasFlatfileBlockByHash(const uint256& hash) const {
     return HasFlatfileBlockBody(hash);
 }

@@ -130,3 +130,53 @@ dinero_cleanup_result() {
     fi
     return 0
 }
+
+dinero_cleanup_single_daemon() {
+    local test_rc="$1"
+    local pid="$2"
+    local datadir="$3"
+    local keep_on_fail="$4"
+    local label="$5"
+    shift 5
+    local cleanup_rc=0
+    local final_rc=0
+
+    dinero_stop_process "${pid}" "${label}" || cleanup_rc=1
+    dinero_stop_datadir_processes "${datadir}" || cleanup_rc=1
+
+    if [[ "${keep_on_fail}" != "1" ]]; then
+        if (( cleanup_rc == 0 )); then
+            rm -rf "$@" || cleanup_rc=1
+        else
+            printf '[CLEANUP] retaining %s because a writer survived shutdown\n' \
+                "${datadir}" >&2
+        fi
+    fi
+
+    dinero_cleanup_result "${test_rc}" "${cleanup_rc}" || final_rc=$?
+    return "${final_rc}"
+}
+
+# Print three distinct loopback ports selected by the kernel while all three
+# sockets are held simultaneously. The sockets close only after the complete
+# triplet is chosen, preventing duplicates within a harness. Test cleanup then
+# guarantees a previous daemon cannot still own one of the selected ports.
+dinero_allocate_port_triplet() {
+    python3 - <<'PY'
+import socket
+
+sockets = []
+ports = []
+try:
+    for _ in range(3):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        sockets.append(sock)
+        ports.append(sock.getsockname()[1])
+    print(*ports)
+finally:
+    for sock in sockets:
+        sock.close()
+PY
+}

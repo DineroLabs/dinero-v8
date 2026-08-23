@@ -74,7 +74,7 @@ fn get_bp_gens() -> &'static BulletproofGens {
 }
 
 fn get_pc_gens() -> &'static PedersenGens {
-    PC_GENS.get_or_init(|| PedersenGens::default())
+    PC_GENS.get_or_init(PedersenGens::default)
 }
 
 // ============================================================================
@@ -99,13 +99,13 @@ fn validate_mut_ptr<T>(ptr: *mut T) -> bool {
 /// Validate proof size is within acceptable bounds
 #[inline]
 fn validate_proof_size(size: usize) -> bool {
-    size >= MIN_PROOF_SIZE && size <= MAX_PROOF_SIZE
+    (MIN_PROOF_SIZE..=MAX_PROOF_SIZE).contains(&size)
 }
 
 /// Validate rewindable proof size
 #[inline]
 fn validate_rewindable_proof_size(size: usize) -> bool {
-    size >= MIN_REWINDABLE_PROOF_SIZE && size <= MAX_PROOF_SIZE
+    (MIN_REWINDABLE_PROOF_SIZE..=MAX_PROOF_SIZE).contains(&size)
 }
 
 /// Validate batch count
@@ -961,9 +961,11 @@ fn bp_rewind_inner(
 ///
 /// # Returns
 /// Pointer to static version string
+static VERSION_STRING: &[u8] = b"DineroCoin Bulletproofs FFI 1.0.1 (Dalek 4.0 + Rewind)\0";
+
 #[no_mangle]
 pub extern "C" fn bp_version() -> *const u8 {
-    b"DineroCoin Bulletproofs FFI 1.0.1 (Dalek 4.0 + Rewind)\0".as_ptr()
+    VERSION_STRING.as_ptr()
 }
 
 // ============================================================================
@@ -1364,7 +1366,7 @@ fn sha256_hash(data: &[u8]) -> Vec<u8> {
 /// # Safety
 /// The output buffer must be at least 32 bytes.
 #[no_mangle]
-pub extern "C" fn generate_random_blinding(blind_out: *mut u8) -> i32 {
+pub unsafe extern "C" fn generate_random_blinding(blind_out: *mut u8) -> i32 {
     // Validate pointer
     if blind_out.is_null() {
         return -1;

@@ -76,6 +76,16 @@ set -e
     exit 1
 }
 
+read -r PORT_A PORT_B PORT_C < <(dinero_allocate_port_triplet)
+[[ "${PORT_A}" =~ ^[0-9]+$ && "${PORT_B}" =~ ^[0-9]+$ && "${PORT_C}" =~ ^[0-9]+$ ]] || {
+    printf '[FAIL] port allocator returned malformed values\n' >&2
+    exit 1
+}
+[[ "${PORT_A}" != "${PORT_B}" && "${PORT_A}" != "${PORT_C}" && "${PORT_B}" != "${PORT_C}" ]] || {
+    printf '[FAIL] port allocator returned duplicate values\n' >&2
+    exit 1
+}
+
 start_delayed_writer "${TRACKED_DIR}" "writer-tracked"
 TRACKED_PID="${LAST_WRITER_PID}"
 wait_for_ready "${TRACKED_DIR}"

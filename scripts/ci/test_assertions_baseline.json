@@ -78,7 +78,7 @@
   "tests/p2p/test_csn_proof_refresh.cpp": 1,
   "tests/p2p/test_dns_resolver_g8.cpp": 33,
   "tests/p2p/test_download_coordination.cpp": 18,
-  "tests/p2p/test_hardening.cpp": 31,
+  "tests/p2p/test_hardening.cpp": 28,
   "tests/p2p/test_inflight_manager.cpp": 16,
   "tests/p2p/test_inv_getdata_handlers.cpp": 17,
   "tests/p2p/test_inventory_serialization.cpp": 16,

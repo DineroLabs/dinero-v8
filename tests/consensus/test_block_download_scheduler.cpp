@@ -775,6 +775,63 @@ int main() {
     }
 
     {
+        std::cout << "\n6b. stored-but-not-yet-active body is adopted instead of re-requested..." << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 2, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+        std::unordered_map<uint256, int> sends;
+        scheduler.SetSendGetDataCallback(
+            [&sends](const uint256& h, uint32_t) { sends[h]++; });
+
+        bool body_persisted = false;
+        scheduler.SetGetBlockBodyPositionCallback(
+            [&hashes, &body_persisted](const uint256& hash, uint32_t height)
+                -> std::optional<dinero::FilePosition> {
+                if (body_persisted && height == 1 && hash == hashes[1]) {
+                    return dinero::FilePosition(1, 128, 256);
+                }
+                return std::nullopt;
+            });
+
+        scheduler.OnHeadersProcessed();
+        for (int t = 0; t < 8; ++t) scheduler.Tick();
+        const int first_before = sends[hashes[1]];
+        const int second_before = sends[hashes[2]];
+        if (!Require(first_before >= 1 && second_before >= 1,
+                     "setup: both bodies should be requested")) return 1;
+
+        // A parallel relay/acceptance path durably stores block 1 while its
+        // expensive ConnectTip is still running. The active tip remains at 0,
+        // so the older active-chain-only #216 guard cannot see it yet.
+        body_persisted = true;
+        scheduler.SetStaleRequestTimeoutSeconds(0);
+        scheduler.Tick();
+
+        if (!Require(sends[hashes[1]] == first_before,
+                     "stored body must not be re-requested while validation is pending")) {
+            return 1;
+        }
+        if (!Require(sends[hashes[2]] > second_before,
+                     "genuinely absent body must still be retried")) {
+            return 1;
+        }
+        if (!Require(scheduler.HasReceivedBlock(hashes[1]),
+                     "adopted body must enter received bookkeeping")) {
+            return 1;
+        }
+        std::cout << "   ✅ durable body adopted; absent sibling retried" << std::endl;
+    }
+
+    {
         std::cout << "\n7. issue #216 reorg-safety: a stale block whose hash differs from the active chain at its height IS re-requested..." << std::endl;
 
         dcs::HeaderChainSelector selector;
@@ -1124,9 +1181,12 @@ int main() {
         // exactly the 6 missing pre-base heights via the staged-dispatch path.
         scheduler.EnableBackfill(1, 8, hashes[8]);
         scheduler.Tick();
-        std::vector<uint32_t> got = requested_heights;
-        std::sort(got.begin(), got.end());
         const std::vector<uint32_t> want{1, 2, 4, 6, 7, 8};
+        if (!Require(requested_heights == want,
+                     "#300: backfill requests must be staged in ascending height order")) {
+            return 1;
+        }
+        std::vector<uint32_t> got = requested_heights;
         if (!Require(got == want,
                      "Tick must service the backfill queue (Task 2): expected exactly "
                      "the 6 missing heights {1,2,4,6,7,8}, got " +
