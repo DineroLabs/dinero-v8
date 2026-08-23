@@ -2236,7 +2236,14 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
             undo.created.emplace_back(txid.AsUint256(), vout);
         }
 
-        if (UsesShieldedValueSemantics(tx)) {
+        // tx_idx > 0: the coinbase is excluded, matching the live path. Both
+        // ConnectBlockInternal's per-tx loop (block_validation.cpp) and
+        // ApplyBlockShieldedSection start at index 1, so a bundle attached to
+        // vtx[0] is never validated and never enters shielded state on a live
+        // node. Walking it here instead would give a reindexed node a different
+        // commitment tree, anchor history and shieldedStateHash than the chain
+        // it is replaying — a silent fork between reindexed and live nodes.
+        if (tx_idx > 0 && UsesShieldedValueSemantics(tx)) {
             if (!Transaction::IsShieldedVersion(tx.version)) {
                 g_logger.error("[reindex] Non-shielded transaction carries shielded bundle at height " +
                                std::to_string(height));

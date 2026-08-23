@@ -90,11 +90,34 @@ Transaction MakeTransparentTx() {
     return tx;
 }
 
+// Coinbase stand-in. Real blocks always carry one at vtx[0], and the feed
+// walk deliberately starts at index 1 to match the consensus apply loop, so
+// fixtures must include it or every block would appear to have no shielded
+// transactions at all.
+// Shape does not matter beyond "not shielded" — the feed only inspects
+// tx.version and tx.shielded_bundle_bytes, never the coinbase's inputs.
+Transaction MakeCoinbaseTx() {
+    return MakeTransparentTx();
+}
+
+// Prepends the coinbase, so `txs` are placed at vtx[1..N] exactly as they
+// would sit in a real block. Callers index their transactions from 1.
 Block MakeBlockWith(std::vector<Transaction> txs) {
     Block block{};
     // Trivial fixed header bytes — the extractor only calls GetHash, and
     // GetHash is deterministic from header content, which is enough for
     // these tests.
+    block.vtx.push_back(MakeCoinbaseTx());
+    for (auto& tx : txs) {
+        block.vtx.push_back(std::move(tx));
+    }
+    return block;
+}
+
+// Places `txs` verbatim, so the caller owns vtx[0]. Only needed to build the
+// malicious shape a miner could craft: a shielded bundle on the coinbase.
+Block MakeBlockWithRawVtx(std::vector<Transaction> txs) {
+    Block block{};
     block.vtx = std::move(txs);
     return block;
 }
@@ -163,7 +186,7 @@ TEST(ShieldedOutputFeed, OneShieldedTxWithOneOutputReturnsExactBytes) {
     EXPECT_EQ(out.outputs[0].encrypted_note[610], 0xC1);
     EXPECT_EQ(out.outputs[0].leaf_index, 910u);
     EXPECT_EQ(out.outputs[0].height, 12847u);
-    EXPECT_EQ(out.outputs[0].tx_index, 0u);
+    EXPECT_EQ(out.outputs[0].tx_index, 1u);  // vtx[0] is the coinbase
     EXPECT_EQ(out.outputs[0].output_index, 0u);
     EXPECT_TRUE(out.spent_nullifiers.empty());
     EXPECT_EQ(out.next_leaf_index, 911u);
@@ -172,14 +195,15 @@ TEST(ShieldedOutputFeed, OneShieldedTxWithOneOutputReturnsExactBytes) {
 // ── Multi-tx, multi-output ordering + leaf indexing ─────────────────
 
 TEST(ShieldedOutputFeed, MultipleShieldedTxsPreserveBlockTxOrder_AndLeafIndexes) {
-    // Tx 0: two outputs (commit 0xAA + 0xBB — daemon sorts by commitment
+    // vtx[0] is the coinbase (added by MakeBlockWith).
+    // vtx[1]: two outputs (commit 0xAA + 0xBB — daemon sorts by commitment
     // so AA emits first within-bundle).
     ShieldedBundle bundle0{};
     bundle0.outputs.push_back(MakeOutput(0xBB, 0x10));
     bundle0.outputs.push_back(MakeOutput(0xAA, 0x20));
 
-    // Tx 1 (transparent): does not contribute.
-    // Tx 2: one output (commit 0xCC).
+    // vtx[2] (transparent): does not contribute.
+    // vtx[3]: one output (commit 0xCC).
     ShieldedBundle bundle2{};
     bundle2.outputs.push_back(MakeOutput(0xCC, 0x30));
 
@@ -196,20 +220,20 @@ TEST(ShieldedOutputFeed, MultipleShieldedTxsPreserveBlockTxOrder_AndLeafIndexes)
 
     ASSERT_EQ(out.outputs.size(), 3u);
 
-    // Tx 0 emits 0xAA then 0xBB (canonical sort by commitment).
+    // vtx[1] emits 0xAA then 0xBB (canonical sort by commitment).
     EXPECT_EQ(out.outputs[0].commitment, MakeHash(0xAA));
-    EXPECT_EQ(out.outputs[0].tx_index,     0u);
+    EXPECT_EQ(out.outputs[0].tx_index,     1u);
     EXPECT_EQ(out.outputs[0].output_index, 0u);
     EXPECT_EQ(out.outputs[0].leaf_index,   900u);
 
     EXPECT_EQ(out.outputs[1].commitment, MakeHash(0xBB));
-    EXPECT_EQ(out.outputs[1].tx_index,     0u);
+    EXPECT_EQ(out.outputs[1].tx_index,     1u);
     EXPECT_EQ(out.outputs[1].output_index, 1u);
     EXPECT_EQ(out.outputs[1].leaf_index,   901u);
 
-    // Tx 1 is transparent (skipped). Tx 2 emits 0xCC.
+    // vtx[2] is transparent (skipped). vtx[3] emits 0xCC.
     EXPECT_EQ(out.outputs[2].commitment, MakeHash(0xCC));
-    EXPECT_EQ(out.outputs[2].tx_index,     2u);
+    EXPECT_EQ(out.outputs[2].tx_index,     3u);
     EXPECT_EQ(out.outputs[2].output_index, 0u);
     EXPECT_EQ(out.outputs[2].leaf_index,   902u);
 
@@ -219,16 +243,17 @@ TEST(ShieldedOutputFeed, MultipleShieldedTxsPreserveBlockTxOrder_AndLeafIndexes)
 // ── Spend nullifiers ────────────────────────────────────────────────
 
 TEST(ShieldedOutputFeed, ShieldedSpendsEmitNullifiersWithoutAdvancingLeafIndex) {
-    // Tx 0: spend-only (1 spend, no outputs)
+    // vtx[0] is the coinbase (added by MakeBlockWith).
+    // vtx[1]: spend-only (1 spend, no outputs)
     ShieldedBundle bundle0{};
     bundle0.spends.push_back(MakeSpend(0xE0));
 
-    // Tx 1: 2 outputs
+    // vtx[2]: 2 outputs
     ShieldedBundle bundle1{};
     bundle1.outputs.push_back(MakeOutput(0x11, 0x40));
     bundle1.outputs.push_back(MakeOutput(0x22, 0x41));
 
-    // Tx 2: 1 spend + 1 output
+    // vtx[3]: 1 spend + 1 output
     ShieldedBundle bundle2{};
     bundle2.spends.push_back(MakeSpend(0xE2));
     bundle2.outputs.push_back(MakeOutput(0x33, 0x42));
@@ -246,14 +271,14 @@ TEST(ShieldedOutputFeed, ShieldedSpendsEmitNullifiersWithoutAdvancingLeafIndex) 
 
     ASSERT_EQ(out.spent_nullifiers.size(), 2u);
     EXPECT_EQ(out.spent_nullifiers[0].nullifier, MakeHash(0xE0));
-    EXPECT_EQ(out.spent_nullifiers[0].tx_index,    0u);
+    EXPECT_EQ(out.spent_nullifiers[0].tx_index,    1u);
     EXPECT_EQ(out.spent_nullifiers[0].spend_index, 0u);
     EXPECT_EQ(out.spent_nullifiers[1].nullifier, MakeHash(0xE2));
-    EXPECT_EQ(out.spent_nullifiers[1].tx_index,    2u);
+    EXPECT_EQ(out.spent_nullifiers[1].tx_index,    3u);
     EXPECT_EQ(out.spent_nullifiers[1].spend_index, 0u);
 
-    // Outputs: tx 1 contributes 2 (sorted commitment 0x11, 0x22),
-    // tx 2 contributes 1 (0x33). Spends do NOT advance leaf_index.
+    // Outputs: vtx[2] contributes 2 (sorted commitment 0x11, 0x22),
+    // vtx[3] contributes 1 (0x33). Spends do NOT advance leaf_index.
     ASSERT_EQ(out.outputs.size(), 3u);
     EXPECT_EQ(out.outputs[0].commitment, MakeHash(0x11));
     EXPECT_EQ(out.outputs[0].leaf_index, 5000u);
@@ -301,6 +326,50 @@ TEST(ShieldedOutputFeed, NullOutPointerReturnsDecodeFailed) {
     Block block = MakeBlockWith({});
     EXPECT_EQ(ExtractShieldedOutputFeed(block, 0, 0, /*out=*/nullptr),
               ShieldedOutputFeedError::BundleDecodeFailed);
+}
+
+// ── Coinbase-attached bundles are not shielded state ───────────────
+//
+// A miner can attach a shielded bundle to vtx[0]: nothing in block
+// acceptance inspects the coinbase's version or bundle. Consensus ignores
+// it — ConnectBlockInternal's per-tx loop and ApplyBlockShieldedSection
+// both start at index 1 — so the feed must ignore it too. If the feed
+// counted those outputs as leaves, every subsequent leaf_index would shift
+// relative to the consensus commitment tree and BuildWitnessByIndex would
+// derive a root that matches no anchor, breaking every later shielded spend.
+
+TEST(ShieldedOutputFeed, CoinbaseAttachedBundleIsIgnored) {
+    // vtx[0] = COINBASE carrying a shielded bundle (the malicious shape).
+    ShieldedBundle cb_bundle{};
+    cb_bundle.outputs.push_back(MakeOutput(0xF0, 0x01));
+    cb_bundle.outputs.push_back(MakeOutput(0xF1, 0x02));
+    cb_bundle.spends.push_back(MakeSpend(0xFE));
+
+    // vtx[1] = an ordinary shielded tx that SHOULD contribute.
+    ShieldedBundle real_bundle{};
+    real_bundle.outputs.push_back(MakeOutput(0x0A, 0x03));
+
+    std::vector<Transaction> txs;
+    txs.push_back(MakeShieldedTx(Transaction::TX_VERSION_SHIELDED, cb_bundle));
+    txs.push_back(MakeShieldedTx(Transaction::TX_VERSION_SHIELDED, real_bundle));
+    Block block = MakeBlockWithRawVtx(std::move(txs));
+
+    ShieldedOutputFeedResult out{};
+    ASSERT_EQ(ExtractShieldedOutputFeed(block, /*height=*/400,
+                                         /*first_leaf_index=*/700, &out),
+              ShieldedOutputFeedError::Ok);
+
+    // Only vtx[1]'s single output is emitted; the coinbase's two are not.
+    ASSERT_EQ(out.outputs.size(), 1u);
+    EXPECT_EQ(out.outputs[0].commitment, MakeHash(0x0A));
+    EXPECT_EQ(out.outputs[0].tx_index, 1u);
+    // The leaf basis is unshifted — this is the assertion that fails if the
+    // coinbase's outputs are counted.
+    EXPECT_EQ(out.outputs[0].leaf_index, 700u);
+    EXPECT_EQ(out.next_leaf_index, 701u);
+
+    // The coinbase's nullifier is not reported as spent either.
+    EXPECT_TRUE(out.spent_nullifiers.empty());
 }
 
 // ── T2: CountShieldedOutputsBeforeHeight ───────────────────────────
@@ -409,4 +478,42 @@ TEST(ShieldedOutputFeed, CountReturnsSerializationOnMalformedHistoricalBundle) {
                                                     chain.lookup());
     EXPECT_FALSE(result.ok());
     EXPECT_EQ(result.status(), Status::Serialization);
+}
+
+TEST(ShieldedOutputFeed, CoinbaseAttachedBundleDoesNotCorruptLeafBasis) {
+    // The joint invariant CountShieldedOutputsBeforeHeight and
+    // ExtractShieldedOutputFeed must satisfy: the count attributed to
+    // heights [activation, from_height) equals the number of leaves the feed
+    // would emit over those same heights. A coinbase bundle must be excluded
+    // by BOTH or light-client leaf indices desync at the from_height boundary.
+    ShieldedBundle cb_bundle{};
+    cb_bundle.outputs.push_back(MakeOutput(0xF0, 0x01));
+    cb_bundle.outputs.push_back(MakeOutput(0xF1, 0x02));
+
+    ShieldedBundle real_bundle{};
+    real_bundle.outputs.push_back(MakeOutput(0x0A, 0x03));
+
+    std::vector<Transaction> txs;
+    txs.push_back(MakeShieldedTx(Transaction::TX_VERSION_SHIELDED, cb_bundle));
+    txs.push_back(MakeShieldedTx(Transaction::TX_VERSION_SHIELDED, real_bundle));
+
+    StaticChain chain;
+    chain.blocks[100] = MakeBlockWithRawVtx(std::move(txs));
+
+    // What the feed actually emits for height 100.
+    ShieldedOutputFeedResult out{};
+    ASSERT_EQ(ExtractShieldedOutputFeed(chain.blocks[100], /*height=*/100,
+                                         /*first_leaf_index=*/0, &out),
+              ShieldedOutputFeedError::Ok);
+
+    // What the leaf-basis counter attributes to the same height range.
+    auto counted = CountShieldedOutputsBeforeHeight(/*from=*/101,
+                                                     /*activation=*/100,
+                                                     chain.lookup());
+    ASSERT_TRUE(counted.ok());
+
+    EXPECT_EQ(counted.value(), out.outputs.size())
+        << "leaf basis and emitted feed disagree — light-client leaf indices "
+           "would desync across the from_height boundary";
+    EXPECT_EQ(counted.value(), 1u) << "coinbase outputs must not be counted";
 }

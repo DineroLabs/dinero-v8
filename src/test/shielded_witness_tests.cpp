@@ -83,9 +83,23 @@ Transaction MakeTransparentTx() {
     return tx;
 }
 
+// Coinbase stand-in. Real blocks always carry one at vtx[0], and the output
+// feed that BuildWitnessByIndex replays starts at index 1 to match the
+// consensus apply loop — so fixtures must include it or the witness tree
+// would be built from an empty feed.
+// Shape does not matter beyond "not shielded" — the feed only inspects
+// tx.version and tx.shielded_bundle_bytes, never the coinbase's inputs.
+Transaction MakeCoinbaseTx() {
+    return MakeTransparentTx();
+}
+
+// Prepends the coinbase so `txs` sit at vtx[1..N], as in a real block.
 Block MakeBlockWith(std::vector<Transaction> txs) {
     Block block{};
-    block.vtx = std::move(txs);
+    block.vtx.push_back(MakeCoinbaseTx());
+    for (auto& tx : txs) {
+        block.vtx.push_back(std::move(tx));
+    }
     return block;
 }
 
