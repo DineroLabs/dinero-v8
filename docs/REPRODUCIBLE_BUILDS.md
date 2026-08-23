@@ -47,11 +47,14 @@ sha256sum build-repro/dinerod
 `SOURCE_DATE_EPOCH`. Its CMake policy:
 
 - maps source and build roots out of file names, macros, and debug metadata;
+- replaces the compiled development-only schema fallback with a stable
+  repository-relative path;
 - propagates the same canonical source/build mappings into the isolated
   vendored RocksDB build;
 - warns if first-party code uses time-dependent compiler macros;
 - requests deterministic archive metadata;
-- removes non-semantic ELF build IDs or Mach-O UUIDs; and
+- removes non-semantic ELF build IDs (Mach-O keeps the UUID required by
+  current Apple loaders and is outside the verified reproducibility scope); and
 - enables MSVC reproducibility/path mapping when that lane is eventually
   promoted to a verified contract.
 

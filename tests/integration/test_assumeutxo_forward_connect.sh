@@ -736,6 +736,13 @@ if [[ "$PREBASE_MEMPOOL_MODE" == "1" ]]; then
     # (SPB) is unspent-at-base (resolvable from the frozen store) but SPENT post-base
     # (its forest leaf is removed once the consumer crosses base+1) — the exact
     # double-spend the authorize gate must reject.
+    # Reserve the LIVE fixture explicitly. Wallet coin selection is otherwise
+    # free to choose it, which makes the test topology invalid before any
+    # AssumeUTXO behavior is exercised.
+    rpc "$SRC_RPC" "$SRC_DIR" wallet.lockunspent \
+        "[false,[{\"txid\":\"$LIVE_TXID\",\"vout\":0}]]" \
+        | jq -e '.error == null and (.result == true or .result.success == true)' >/dev/null \
+        || fail "could not lock reserved LIVE pre-base coin ${LIVE_TXID:0:16}:0"
     DEST="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.getnewaddress '[]' \
         | jq -r '.result.address // .result // empty')"
     SEND_RES="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.sendtoaddress "[\"$DEST\",50.0]")"

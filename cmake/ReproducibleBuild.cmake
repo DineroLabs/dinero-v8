@@ -24,10 +24,7 @@ function(dinero_enable_reproducible_build)
       -Wdate-time
     )
 
-    if(APPLE)
-      # Mach-O UUIDs are otherwise generated from link output metadata.
-      add_link_options(-Wl,-no_uuid)
-    elseif(UNIX)
+    if(UNIX AND NOT APPLE)
       # GNU ld build IDs are not runtime semantics and may vary by toolchain.
       add_link_options(-Wl,--build-id=none)
     endif()

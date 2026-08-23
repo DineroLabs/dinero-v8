@@ -112,6 +112,16 @@ if(DINERO_REPRODUCIBLE_BUILD)
   dinero_enable_reproducible_build()
 endif()
 
+# SQLite's last-resort development schema lookup is compiled into dinero_core.
+# An absolute checkout root is useful in ordinary developer builds, but it is
+# runtime data rather than compiler-generated path metadata and therefore is
+# not rewritten by -ffile-prefix-map. Use the stable repository-relative
+# fallback for independently reproducible builds.
+set(DINERO_RUNTIME_SOURCE_DIR "${CMAKE_SOURCE_DIR}")
+if(DINERO_REPRODUCIBLE_BUILD)
+  set(DINERO_RUNTIME_SOURCE_DIR ".")
+endif()
+
 # Add cmake modules directory to module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
@@ -1103,7 +1113,7 @@ message(STATUS "   lightningd = optional L2 daemon (channels, HTLCs, routing)")
 
 # Add compile definitions needed by core logic
 target_compile_definitions(dinero_core PRIVATE
-  CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"  # SQL-first schema path
+  CMAKE_SOURCE_DIR="${DINERO_RUNTIME_SOURCE_DIR}"  # SQL-first schema path
   # Version metadata: without these, the user-agent string baked into
   # p2p_manager.cpp's USER_AGENT (and a handful of other defaults in
   # http_rpc_server.cpp and ws/*) hits the "unknown" fallback because the
