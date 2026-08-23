@@ -32,6 +32,7 @@
 #include "p2p/block_download_scheduler.h"  // For SyncPhase enum (Phase W.2.6 Enhancement #3)
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -39,6 +40,7 @@
 #include <unordered_set>
 #include <vector>
 #include <string>
+#include <thread>
 #include <cstdint>
 
 namespace dinero {
@@ -71,6 +73,8 @@ struct BlockFetchState {
     FetchStatus status;
     FilePosition stored_pos;  // Set when status becomes RECEIVED
     std::chrono::steady_clock::time_point request_time;  // When REQUESTED was set
+    uint32_t retry_count = 0;
+    std::string chosen_peer;
 
     BlockFetchState(const uint256& hash, uint32_t h)
         : block_hash(hash), height(h), status(FetchStatus::MISSING) {}
@@ -151,6 +155,10 @@ public:
         return current_request_skip_peers_;
     }
 
+    const std::string& CurrentRequestPreferredPeer() const {
+        return current_request_preferred_peer_;
+    }
+
     /**
      * True iff the getdata currently being dispatched to the send callback is an
      * AssumeUTXO history-backfill request. Set by DispatchDeferredSends just
@@ -191,6 +199,12 @@ public:
      */
     void Tick();
 
+    void StartConvergenceDriver();
+    void StopConvergenceDriver();
+    bool IsConvergenceDriverRunning() const { return driver_running_.load(); }
+    void NotifyBestHeaderAccepted(const uint256& hash, uint32_t height,
+                                  const std::string& announcing_peer);
+
     /**
      * FIX 2 (issue #186): central block-download deferral. If set, Tick() calls
      * this predicate and requests NO new blocks while it returns true —
@@ -212,6 +226,9 @@ public:
      * Check if all blocks for current header chain are downloaded.
      */
     bool IsFullySynchronized() const;
+
+    /** True while canonical tip work still needs download or activation service. */
+    bool HasPendingTipWork() const;
 
     /**
      * Check if a block hash is in the scheduler queue (missing/requested/received).
@@ -277,7 +294,8 @@ public:
      * per-peer inflight=0). On 0 recipients this reverts the block to MISSING so
      * the slot frees and the next Tick() retries it. No-op when recipient_count>0.
      */
-    void NotifyGetDataDispatched(const uint256& block_hash, size_t recipient_count);
+    void NotifyGetDataDispatched(const uint256& block_hash, size_t recipient_count,
+                                 const std::string& chosen_peer = {});
 
     /**
      * Re-request a block that failed validation.
@@ -464,7 +482,8 @@ public:
      * @param height The current local tip height
      */
     void SetLocalTipHeight(uint32_t height) {
-        local_tip_height_ = height;
+        local_tip_height_.store(height);
+        driver_cv_.notify_all();
     }
 
     // issue #216: override the stale-request timeout. Primarily a test seam (the
@@ -473,6 +492,12 @@ public:
     void SetStaleRequestTimeoutSeconds(uint32_t secs) {
         std::lock_guard<std::mutex> lock(mutex_);
         stale_request_timeout_seconds_ = secs;
+        if (secs == 0) tip_retry_timeout_ = std::chrono::milliseconds(0);
+    }
+
+    void SetTipRetryTimeout(std::chrono::milliseconds timeout) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        tip_retry_timeout_ = timeout;
     }
 
     // Stall watchdog (defense-in-depth net): if the tip makes no progress for
@@ -627,8 +652,7 @@ public:
      * Get the local chainstate tip height.
      */
     uint32_t GetLocalTipHeight() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return local_tip_height_;
+        return local_tip_height_.load();
     }
 
 private:
@@ -668,7 +692,7 @@ private:
 
     // Local chainstate tip height (blocks at or below are already synced).
     // Mutable: IsFullySynchronized() refreshes from callback to prevent stale-tip stalls.
-    mutable uint32_t local_tip_height_ = 0;
+    mutable std::atomic<uint32_t> local_tip_height_{0};
 
     // True after OnHeadersProcessed() has been called at least once.
     // Before this, the scheduler hasn't populated missing_blocks_ yet,
@@ -730,6 +754,7 @@ private:
     uint32_t watchdog_last_progress_height_ = 0;
     std::chrono::steady_clock::time_point watchdog_last_progress_time_{};
     std::chrono::steady_clock::time_point watchdog_last_fire_{};
+    std::chrono::steady_clock::time_point last_convergence_diag_{};
 
     // NOTFOUND rescan rate-limit: at most one RescanFromActualTip per this
     // many seconds when NOTFOUND responses arrive in bursts.
@@ -757,6 +782,7 @@ private:
     // thread_local because sends are dispatched OUTSIDE mutex_ (issue
     // #241/#214) and concurrent Tick() callers must not race on it.
     static thread_local std::unordered_set<std::string> current_request_skip_peers_;
+    static thread_local std::string current_request_preferred_peer_;
 
     // Companion to current_request_skip_peers_: true iff the getdata being
     // dispatched to the callback right now is an AssumeUTXO backfill request.
@@ -775,9 +801,18 @@ private:
         uint256 block_hash;
         uint32_t height = 0;
         std::unordered_set<std::string> skip_peers;
+        std::string preferred_peer;
         bool for_backfill = false;
     };
     std::vector<DeferredGetdata> deferred_sends_;  // guarded by mutex_
+
+    std::unordered_map<uint256, std::string> announcing_peers_;
+    std::chrono::milliseconds tip_retry_timeout_{750};
+    std::atomic<bool> driver_running_{false};
+    std::atomic<bool> driver_stop_{false};
+    std::thread driver_thread_;
+    mutable std::mutex driver_mutex_;
+    std::condition_variable driver_cv_;
 
     // ── AssumeUTXO backfill private state ────────────────────────────────────
     // Backfill queue entries reuse BlockFetchState (hash, height, status,

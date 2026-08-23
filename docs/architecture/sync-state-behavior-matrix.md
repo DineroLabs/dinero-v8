@@ -60,6 +60,21 @@ Two concrete reasons not to merge them:
 
 So this change introduces convergence as a *new, separate* fact. It does not redefine states 2–4.
 
+### Mining continuity during a transient mismatch
+
+Header convergence is not itself a block-validity signal. Once IBD, safe mode,
+and chainstate availability have passed their independent fail-closed gates, a
+`Mismatch` means mining may continue only from the last fully validated active
+tip. Templates never use the unvalidated header. The block-body scheduler runs
+an adaptive 150 ms convergence loop, retries the activation frontier after a
+750 ms deadline with peer rotation, and replaces the continuity job as soon as
+ordered activation advances the active tip. `Unknown` remains a hard stop.
+
+This rule remains in force for a prolonged mismatch: recovery/watchdog logs
+escalate, while mining stays rooted at the same validated active tip. Consensus
+serialization, validation, chain selection, and the single active chain are
+unchanged.
+
 ## Inputs available
 
 - Header selector facts are read through copy/value accessors and purpose-built

@@ -77,5 +77,15 @@ struct SyncSnapshot {
     }
 };
 
+/**
+ * A hash mismatch with both inputs present is a recoverable header/body gap:
+ * callers may continue using the validated active tip. Unknown/missing inputs
+ * fail closed and must never enable continuity.
+ */
+inline bool CanServeValidatedTipContinuity(const SyncSnapshot& snapshot) {
+    return snapshot.has_active_tip && snapshot.has_best_header &&
+           snapshot.convergence == HeaderConvergence::Mismatch;
+}
+
 }  // namespace consensus
 }  // namespace dinero

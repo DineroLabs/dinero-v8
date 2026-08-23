@@ -69,6 +69,10 @@ void PopulateMiningReadinessJson(din::Json& out, const dinero::mining::MiningRea
     out["ready"] = readiness.ready;
     out["reason"] = readiness.reason_code;
     out["message"] = readiness.message;
+    out["serving_active_tip_continuity"] = readiness.serving_active_tip_continuity;
+    out["active_tip_hash"] = readiness.active_tip_hash;
+    out["best_header_height"] = readiness.best_header_height;
+    out["best_header_hash"] = readiness.best_header_hash;
     out["p2p_running"] = readiness.p2p_running;
     out["is_initial_block_download"] = readiness.is_ibd;
     out["pause_if_ahead_of_network_view"] = readiness.pause_if_ahead_of_network_view;

@@ -262,6 +262,13 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
                                    readiness.reason_code + ", detail=" + readiness.message);
         return result;
     }
+    if (readiness.serving_active_tip_continuity) {
+        result["mining_continuity"] = true;
+        result["active_tip_hash"] = readiness.active_tip_hash;
+        result["best_header_hash"] = readiness.best_header_hash;
+        result["best_header_height"] = readiness.best_header_height;
+        ::dinero::g_logger.warning("[v14 GBT] Header/body convergence pending; serving validated active-tip continuity job");
+    }
 
     // ========================================================================
     // v0.14.0.4: Delegate to BlockAssembler::CreateNewBlock()
@@ -808,6 +815,12 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
         ::dinero::g_logger.warning("[mining.getjob] Job rejected by safety gate: reason=" +
                                    readiness.reason_code + ", detail=" + readiness.message);
         return result;
+    }
+    if (readiness.serving_active_tip_continuity) {
+        result["mining_continuity"] = true;
+        result["active_tip_hash"] = readiness.active_tip_hash;
+        result["best_header_hash"] = readiness.best_header_hash;
+        result["best_header_height"] = readiness.best_header_height;
     }
 
     // --- Build block via CreateNewBlock (single authoritative source) ---
