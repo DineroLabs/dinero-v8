@@ -4,8 +4,14 @@
 
 namespace dinero::p2p {
 
-// Five durable peers preserve the three recovery anchors plus room for two
-// independent nodes. A feeler may temporarily connect above this target.
-inline constexpr std::size_t kTargetDurableOutbound = 5;
+// Transitional 3+3 topology: three operator-controlled recovery anchors stay
+// connected while three independently selected AddrMan peers provide the
+// decentralised edge. A feeler may temporarily connect above this target.
+inline constexpr std::size_t kMandatoryAnchorOutbound = 3;
+inline constexpr std::size_t kDynamicCommunityOutbound = 3;
+inline constexpr std::size_t kTargetDurableOutbound =
+    kMandatoryAnchorOutbound + kDynamicCommunityOutbound;
+
+static_assert(kTargetDurableOutbound == 6);
 
 } // namespace dinero::p2p

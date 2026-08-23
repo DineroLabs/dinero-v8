@@ -40,7 +40,8 @@ PeerGovernorDecision PeerGovernor::Evaluate(
         if (candidate.connected && candidate.outbound) {
             ++decision.connected_outbound;
             connected_outbound.push_back(&candidate);
-            if (candidate.quality.score <= config_.demote_score_threshold) {
+            if (!candidate.protected_anchor &&
+                candidate.quality.score <= config_.demote_score_threshold) {
                 decision.demote_candidates.push_back(candidate.endpoint);
             }
         } else if (!candidate.connected && candidate.quality.hot_peer_candidate) {
@@ -93,4 +94,3 @@ PeerGovernorDecision PeerGovernor::Evaluate(
 
 } // namespace p2p
 } // namespace dinero
-

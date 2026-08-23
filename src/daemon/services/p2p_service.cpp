@@ -317,11 +317,18 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     }
 
     const auto configured_seeds = p2p_mgr_->get_seed_nodes();
+    const auto mandatory_anchors = p2p_mgr_->get_anchor_nodes();
     status.configured_seed_peers = configured_seeds.size();
     auto is_configured_seed = [&](const PeerInfo& peer) {
         return std::any_of(configured_seeds.begin(), configured_seeds.end(),
                            [&](const auto& seed) {
                                return seed.first == peer.address && seed.second == peer.port;
+                           });
+    };
+    auto is_mandatory_anchor = [&](const PeerInfo& peer) {
+        return std::any_of(mandatory_anchors.begin(), mandatory_anchors.end(),
+                           [&](const auto& anchor) {
+                               return anchor.first == peer.address && anchor.second == peer.port;
                            });
     };
 
@@ -356,6 +363,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         candidate.connected = true;
         candidate.outbound = peer.is_outbound;
         candidate.configured_seed = configured_seed;
+        candidate.protected_anchor = is_mandatory_anchor(peer);
         candidate.relay_capable = relay_capable;
         governor_candidates.push_back(std::move(candidate));
     }
@@ -412,15 +420,16 @@ bool P2PService::IsRelayRoleEnabled() const {
 
 std::string P2PService::DynamicP2PMode() const {
     if (!config_) {
-        return "observe";
+        return "active_slow_churn";
     }
-    const std::string mode = LowerAscii(config_->GetString("p2p.dynamic_p2p", "observe"));
+    const std::string mode =
+        LowerAscii(config_->GetString("p2p.dynamic_p2p", "active_slow_churn"));
     return IsDynamicP2PActiveMode(mode) ? "active_slow_churn" : "observe";
 }
 
 bool P2PService::IsDynamicP2PActive() const {
     if (!config_) {
-        return false;
+        return true;
     }
     if (config_->GetBool("p2p.dynamic_p2p.enabled", false)) {
         return true;
@@ -454,8 +463,11 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
         read_seconds("p2p.dynamic_p2p.startup_grace_seconds", 300, 60);
     const auto churn_interval =
         read_seconds("p2p.dynamic_p2p.churn_interval_seconds", 600, 60);
-    const size_t min_peers = static_cast<size_t>(
-        config_ ? std::max(config_->GetInt("p2p.dynamic_p2p.min_peers", 4), 1) : 4);
+    // The legacy key name is retained for configuration compatibility, but the
+    // floor is deliberately applied to outbound peers. With a six-peer target,
+    // one community slot may rotate while five durable outbound peers remain.
+    const size_t min_outbound = static_cast<size_t>(
+        config_ ? std::max(config_->GetInt("p2p.dynamic_p2p.min_peers", 5), 1) : 5);
 
     if (dynamic_p2p_started_at_ == std::chrono::steady_clock::time_point{}) {
         dynamic_p2p_started_at_ = now;
@@ -470,30 +482,28 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
     }
     last_dynamic_p2p_churn_ = now;
 
-    const auto configured_seeds = p2p_mgr_->get_seed_nodes();
-    const auto is_configured_seed = [&](const PeerInfo& peer) {
-        return std::any_of(configured_seeds.begin(), configured_seeds.end(),
-                           [&](const auto& seed) {
-                               return seed.first == peer.address && seed.second == peer.port;
+    const auto mandatory_anchors = p2p_mgr_->get_anchor_nodes();
+    const auto is_mandatory_anchor = [&](const PeerInfo& peer) {
+        return std::any_of(mandatory_anchors.begin(), mandatory_anchors.end(),
+                           [&](const auto& anchor) {
+                               return anchor.first == peer.address && anchor.second == peer.port;
                            });
     };
 
     const auto peers = p2p_mgr_->get_connected_peers();
-    size_t connected = 0;
     std::vector<dinero::p2p::PeerGovernorCandidate> candidates;
     candidates.reserve(peers.size());
-    std::unordered_set<std::string> protected_configured_seeds;
+    std::unordered_set<std::string> protected_anchors;
     for (const auto& peer : peers) {
         if (!peer.is_connected) {
             continue;
         }
-        ++connected;
-        const bool configured_seed = is_configured_seed(peer);
+        const bool mandatory_anchor = is_mandatory_anchor(peer);
         const bool relay_capable =
             (peer.service_flags & dinero::ServiceFlags::NODE_RELAY) != 0;
         const std::string endpoint = peer.address + ":" + std::to_string(peer.port);
-        if (configured_seed) {
-            protected_configured_seeds.insert(endpoint);
+        if (mandatory_anchor) {
+            protected_anchors.insert(endpoint);
         }
 
         dinero::p2p::PeerGovernorCandidate candidate;
@@ -501,24 +511,28 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
         candidate.quality = dinero::p2p::BuildDynamicP2PQualitySnapshot(peer);
         candidate.connected = true;
         candidate.outbound = peer.is_outbound;
-        candidate.configured_seed = configured_seed;
+        candidate.configured_seed = mandatory_anchor;
+        candidate.protected_anchor = mandatory_anchor;
         candidate.relay_capable = relay_capable;
         candidates.push_back(std::move(candidate));
     }
 
-    if (connected <= min_peers) {
+    const dinero::p2p::PeerGovernor governor;
+    const auto decision = governor.Evaluate(candidates);
+    if (decision.connected_outbound <= min_outbound) {
         if (logger_interface_) {
-            logger_interface_->info("[DynamicP2P] active slow-churn skipped: peer floor " +
-                                    std::to_string(connected) + "/" +
-                                    std::to_string(min_peers));
+            logger_interface_->info("[DynamicP2P] active slow-churn skipped: outbound floor " +
+                                    std::to_string(decision.connected_outbound) + "/" +
+                                    std::to_string(min_outbound));
         }
         return;
     }
 
-    const dinero::p2p::PeerGovernor governor;
-    const auto decision = governor.Evaluate(candidates);
     for (const auto& endpoint : decision.demote_candidates) {
-        if (protected_configured_seeds.count(endpoint) > 0) {
+        // Defense in depth: PeerGovernor already excludes protected anchors,
+        // but retain the execution-side guard so a future governor change
+        // cannot disconnect the mandatory recovery topology.
+        if (protected_anchors.count(endpoint) > 0) {
             continue;
         }
         auto it = std::find_if(peers.begin(), peers.end(), [&](const PeerInfo& peer) {
@@ -528,7 +542,7 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
         if (it == peers.end()) {
             continue;
         }
-        if (connected - 1 < min_peers) {
+        if (decision.connected_outbound - 1 < min_outbound) {
             break;
         }
         if (logger_interface_) {
@@ -1570,29 +1584,32 @@ bool P2PService::Start() {
 
         // Register anchor peers for eclipse attack recovery
         // Anchor peers are added FIRST as priority connections and tracked for auto-reconnect
-        // Self-loop guard: a node's own external IP appears in MAINNET_ANCHOR_PEERS for fleet
-        // members. Skip those entries — see LocalInterfaceIps() comment for the IBD stall this
-        // prevents.
+        // A fleet node's own external IP may appear in MAINNET_ANCHOR_PEERS.
+        // Register every compiled anchor so peers.dat retains the complete
+        // recovery set, but omit the local endpoint from reconnect targets.
+        // P2PManager's candidate filter independently rejects local dials.
         if (!connect_only) {
             auto anchor_peers = dinero::config::getAnchorPeers(network);
-            size_t anchors_added = 0;
+            size_t remote_anchors = 0;
             for (const auto& anchor : anchor_peers) {
-                if (IsLocalInterfaceIp(anchor.hostname)) {
-                    logger_interface_->info("[P2PService] Skipping anchor peer (matches local interface): " +
-                                            anchor.hostname);
-                    continue;
-                }
                 uint16_t port = (anchor.port != 0) ? anchor.port : p2p_port;
                 p2p_mgr_->add_anchor_node(anchor.hostname, port);
+                if (IsLocalInterfaceIp(anchor.hostname)) {
+                    logger_interface_->info(
+                        "[P2PService] Registered local anchor for peers.dat; "
+                        "dial suppressed: " + anchor.hostname + ":" +
+                        std::to_string(port));
+                    continue;
+                }
                 AddReconnectTarget(reconnect_targets_, reconnect_seen, anchor.hostname, port);
                 logger_interface_->info("[P2PService] Added anchor peer: " + anchor.hostname + ":" +
                                         std::to_string(port) + " (" + anchor.region + ")");
-                ++anchors_added;
+                ++remote_anchors;
             }
-            logger_interface_->info("[P2PService] Registered " + std::to_string(anchors_added) +
-                                    " anchor peers for eclipse protection (" +
-                                    std::to_string(anchor_peers.size() - anchors_added) +
-                                    " skipped as self)");
+            logger_interface_->info(
+                "[P2PService] Registered " + std::to_string(anchor_peers.size()) +
+                " mandatory anchors for recovery (" +
+                std::to_string(remote_anchors) + " remote dial targets)");
         }
 
         if (!connect_only) {

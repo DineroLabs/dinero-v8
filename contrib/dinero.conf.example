@@ -59,6 +59,13 @@ listen=true
 # Default: 125 (recommended: 125-200 for public nodes)
 #maxconnections=125
 
+# Dynamic outbound peer rotation. The three compiled recovery anchors remain
+# protected; slots 4-6 are selected from AddrMan. Slow churn evaluates at most
+# one weak community peer every 10 minutes after a 5-minute startup grace.
+# Set p2p.dynamic_p2p=observe to disable rotation while retaining diagnostics.
+p2p.dynamic_p2p=active_slow_churn
+p2p.dynamic_p2p.min_peers=5
+
 # Manual bootstrap nodes. These are optional because v8 also ships
 # compiled-in fixed seeds and DNS seeds, but keeping them here makes
 # the node resilient if DNS is unavailable.

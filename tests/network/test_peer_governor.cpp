@@ -36,13 +36,15 @@ static PeerGovernorCandidate candidate(const char* endpoint,
                                        bool relay_capable,
                                        bool hot = false,
                                        bool relay = false,
-                                       uint32_t latency = 100) {
+                                       uint32_t latency = 100,
+                                       bool protected_anchor = false) {
     PeerGovernorCandidate c;
     c.endpoint = endpoint;
     c.quality = q(score, hot, relay, latency);
     c.connected = connected;
     c.outbound = outbound;
     c.configured_seed = configured_seed;
+    c.protected_anchor = protected_anchor;
     c.relay_capable = relay_capable;
     return c;
 }
@@ -57,8 +59,28 @@ static bool has(const std::vector<std::string>& values, const char* needle) {
 int main() {
     {
         const dinero::p2p::PeerGovernorConfig defaults;
-        check(defaults.target_hot_outbound == 5,
+        check(defaults.target_hot_outbound == 6,
               "default hot outbound target matches daemon capacity");
+        check(defaults.max_configured_seed_hot == 3,
+              "default governor retains all three mandatory anchors");
+    }
+
+    {
+        const PeerGovernor governor;
+        std::vector<PeerGovernorCandidate> peers = {
+            candidate("sj:20999", 90, true, true, true, true, false, false, 40, true),
+            candidate("na:20999", 85, true, true, true, true, false, false, 50, true),
+            candidate("eu:20999", 80, true, true, true, true, false, false, 60, true),
+            candidate("community-a:20999", 75, true, true, false, false),
+            candidate("community-b:20999", 70, true, true, false, false),
+            candidate("community-c:20999", 65, true, true, false, false),
+        };
+
+        const auto decision = governor.Evaluate(peers);
+        check(decision.hot_peers.size() == 6,
+              "default topology keeps three anchors plus three community peers");
+        check(decision.configured_seed_hot == 3,
+              "3+3 topology accounts for all mandatory anchors");
     }
 
     {
@@ -136,6 +158,23 @@ int main() {
         check(has(decision.demote_candidates, "weak-a:20999"), "demotes low score peer");
         check(has(decision.demote_candidates, "weak-b:20999"), "demotes threshold score peer");
         check(!has(decision.demote_candidates, "ok-a:20999"), "keeps peer above threshold");
+    }
+
+    {
+        PeerGovernorConfig config;
+        config.demote_score_threshold = 35;
+        PeerGovernor governor(config);
+
+        std::vector<PeerGovernorCandidate> peers = {
+            candidate("sj:20999", 5, true, true, true, true, false, false, 100, true),
+            candidate("community-weak:20999", 5, true, true, false, false),
+        };
+
+        const auto decision = governor.Evaluate(peers);
+        check(!has(decision.demote_candidates, "sj:20999"),
+              "never nominates a mandatory anchor for churn");
+        check(has(decision.demote_candidates, "community-weak:20999"),
+              "still nominates a weak community peer");
     }
 
     if (g_fails) {

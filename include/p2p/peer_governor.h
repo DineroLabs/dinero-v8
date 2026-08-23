@@ -14,7 +14,7 @@ struct PeerGovernorConfig {
     size_t target_hot_outbound{kTargetDurableOutbound};
     size_t target_warm_standby{16};
     size_t target_relay_registrations{3};
-    size_t max_configured_seed_hot{2};
+    size_t max_configured_seed_hot{kMandatoryAnchorOutbound};
     int demote_score_threshold{35};
 };
 
@@ -24,6 +24,9 @@ struct PeerGovernorCandidate {
     bool connected{false};
     bool outbound{false};
     bool configured_seed{false};
+    // Mandatory recovery anchors may be scored and reported, but active
+    // slow-churn must never nominate them for disconnection.
+    bool protected_anchor{false};
     bool relay_capable{false};
 };
 

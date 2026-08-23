@@ -134,10 +134,10 @@ pass "Both regtest nodes are up"
 
 NETINFO_BOOT="$(rpc_call "${NODE_B_RPC}" "${DATA_B}" "getnetworkinfo" '[]')"
 jq -e --argjson port "${NODE_B_P2P}" \
-    '.result.networkactive == true and .result.listen == true and .result.listen_port == $port and (.result.port_mapping | type == "object")' \
+    '.result.networkactive == true and .result.listen == true and .result.listen_port == $port and (.result.port_mapping | type == "object") and .result.dynamic_p2p.enabled == true and .result.dynamic_p2p.mode == "active_slow_churn"' \
     <<<"${NETINFO_BOOT}" >/dev/null \
-    || fail "getnetworkinfo did not expose listen/port-mapping status: ${NETINFO_BOOT}"
-pass "getnetworkinfo exposes listen and port-mapping status"
+    || fail "getnetworkinfo did not expose listen/port-mapping/dynamic-P2P defaults: ${NETINFO_BOOT}"
+pass "getnetworkinfo exposes listen/port-mapping status and active dynamic-P2P default"
 
 rpc_call "${NODE_B_RPC}" "${DATA_B}" "addnode" "[\"127.0.0.1:${NODE_A_P2P}\",\"add\"]" >/dev/null
 # Both daemons share 127.0.0.1 but listen on different P2P ports. This pins

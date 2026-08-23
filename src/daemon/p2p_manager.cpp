@@ -4825,7 +4825,11 @@ void P2PManager::connection_manager_loop() {
         std::vector<dinero::p2p::NetworkAddress> addrman_candidates;
         bool durable_outbound_full = false;
         if (address_manager_) {
-            addrman_candidates = address_manager_->getAddresses(MAX_OUTBOUND_CONNECTIONS);
+            // AddrMan can also contain the compiled anchors. Draw an extra
+            // anchor-sized margin so those duplicate entries cannot consume
+            // the sample and leave the three community slots unfilled.
+            addrman_candidates = address_manager_->getAddresses(
+                MAX_OUTBOUND_CONNECTIONS + dinero::p2p::kMandatoryAnchorOutbound);
         }
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -7290,6 +7294,22 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
 
+        // Mandatory anchors are written first and unconditionally. They are
+        // authoritative because they came from the compiled anchor set, not
+        // because they appear in peers.dat; load_peers() still imports every
+        // record as an ordinary learned address. This guarantees that even a
+        // node whose anchors are temporarily offline retains all recovery
+        // endpoints on disk without granting protection to arbitrary records.
+        for (const auto& anchor : anchor_nodes_) {
+            if (total >= PEERS_FILE_MAX_ENTRIES) break;
+            const std::string key =
+                anchor.first + ":" + std::to_string(anchor.second);
+            if (written.insert(key).second) {
+                buf << anchor.first << " " << anchor.second << " " << now << "\n";
+                ++total;
+            }
+        }
+
         // Save only outbound peers (we know their real listening port).
         // Inbound peers have ephemeral source ports that can't be connected to.
         for (const auto& pair : connected_peers_) {
@@ -7297,10 +7317,11 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
             const auto& peer = pair.second;
             if (!peer->is_outbound) continue;
             std::string key = peer->address + ":" + std::to_string(peer->port);
-            buf << peer->address << " " << peer->port << " "
-                << (peer->last_seen_unix > 0 ? peer->last_seen_unix : now) << "\n";
-            written.insert(key);
-            ++total;
+            if (written.insert(key).second) {
+                buf << peer->address << " " << peer->port << " "
+                    << (peer->last_seen_unix > 0 ? peer->last_seen_unix : now) << "\n";
+                ++total;
+            }
         }
 
         // Persist learned peers separately from configured bootstrap seeds.
@@ -7334,7 +7355,8 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
     }
 
     write_peers_file_atomic(peers_file_path, buf.str());
-    std::cout << "[P2P] Saved " << total << " peers (connected + discovered) to "
+    std::cout << "[P2P] Saved " << total
+              << " peers (mandatory anchors + connected + discovered) to "
               << peers_file_path << std::endl;
 }
 

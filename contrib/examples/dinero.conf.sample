@@ -94,6 +94,11 @@ rpcbind=127.0.0.1
 # Maximum memory pool size in MB (default: 300)
 # maxmempool=300
 
+# Keep the three recovery anchors and rotate only the three community slots.
+# Set p2p.dynamic_p2p=observe to disable rotation while retaining diagnostics.
+p2p.dynamic_p2p=active_slow_churn
+p2p.dynamic_p2p.min_peers=5
+
 ##
 ## Security
 ##
