@@ -465,6 +465,20 @@ private:
     uint256 final_tip_hash_;
     int32_t final_tip_height_{-1};
 
+    // Set by applyBlockToForest ONLY when it rejects a block because the
+    // canonical-replay forest root disagrees with the header commitment, and
+    // cleared at the start of every processBlock. That mismatch is the single
+    // failure the Step 5 loop can recover from (truncate here, mark the suffix
+    // permanently invalid); every other failure must abort the reindex.
+    //
+    // This exists because the recovery branch used to INFER the distinction
+    // from `stats_.error.empty()`, which processBlock never sets — so on
+    // mainnet, where IsUtreexoActive() is true at every height
+    // (UTREEXO_ACTIVATION_HEIGHT_MAINNET == 0), EVERY Status::Invalid looked
+    // like a forest mismatch and triggered permanent invalidation of the block
+    // and all its descendants. Classify explicitly, never by side effect.
+    bool last_failure_was_forest_root_mismatch_{false};
+
     // Helper functions
     StatusOr<std::vector<std::filesystem::path>> scanBlockFiles();
     Status seedGenesis(arith_uint256& genesis_work_out, const FilePosition* genesis_pos = nullptr);

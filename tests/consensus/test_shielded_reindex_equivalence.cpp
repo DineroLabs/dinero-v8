@@ -828,6 +828,80 @@ int main(int argc, char** argv) {
                        prefix);
         }
 
+        // ── Reindex failure classification ──────────────────────────────
+        //
+        // processBlock returns Status::Invalid for many reasons, but only a
+        // canonical-replay forest ROOT MISMATCH is recoverable by truncating
+        // and marking the block plus every canonical descendant permanently
+        // invalid. Everything else must ABORT the reindex.
+        //
+        // The classifier used to infer "forest mismatch" from
+        // `stats_.error.empty()`, which processBlock never sets. Since
+        // UTREEXO_ACTIVATION_HEIGHT_MAINNET is 0, IsUtreexoActive() is true at
+        // every mainnet height, so the condition collapsed to "any Invalid
+        // after the first block" and a malformed bundle bricked the suffix
+        // instead of aborting.
+        //
+        // Trigger: corrupt the bundle bytes of the height-2 shielded tx. It is
+        // v5, whose bundle is witness-only and excluded from the txid, so the
+        // merkle root stays valid and the block still reaches processBlock's
+        // shielded decode — which runs BEFORE the forest apply, making this a
+        // genuinely non-forest failure.
+        {
+            const fs::path fail_dir = base_dir / "failclass";
+            fs::create_directories(fail_dir);
+
+            std::vector<dinero::Block> bad_blocks = {blocks[0], blocks[1]};
+            Require(bad_blocks[1].vtx.size() > 1, "height-2 block needs a shielded tx");
+            Require(bad_blocks[1].vtx[1].version == dinero::Transaction::TX_VERSION_SHIELDED,
+                    "expected a v5 shielded tx so the txid is unaffected");
+            const auto txid_before = bad_blocks[1].vtx[1].GetTxid();
+            bad_blocks[1].vtx[1].shielded_bundle_bytes = {0xDE, 0xAD, 0xBE, 0xEF};
+            Require(bad_blocks[1].vtx[1].GetTxid() == txid_before,
+                    "v5 bundle must not affect txid — merkle root would change");
+
+            dinero::BlockStorage bad_storage;
+            Require(bad_storage.init(fail_dir) == dinero::Status::Ok,
+                    "failed to init BlockStorage for failure-classification case");
+            Require(bad_storage.writeBlock(genesis_hash, genesis_block).ok(),
+                    "failed to write genesis");
+            for (const auto& b : bad_blocks) {
+                Require(bad_storage.writeBlock(b.GetHash(), b).ok(),
+                        "failed to write block");
+            }
+            Require(bad_storage.flush() == dinero::Status::Ok, "failed to flush");
+
+            dinero::ChainDB bad_db;
+            Require(bad_db.init(fail_dir / "chainstate.fail") == dinero::Status::Ok,
+                    "failed to init ChainDB");
+
+            dinero::consensus::BlockReindexer::Config bad_config;
+            bad_config.mode = dinero::consensus::BlockReindexer::Mode::FULL;
+            bad_config.use_assumevalid = true;
+            bad_config.progress_interval = 1000;
+            bad_config.shielded_frontier_output_path =
+                fail_dir / "shielded_frontier.fail.bin";
+            bad_config.shielded_nullifier_db_path =
+                fail_dir / "shielded_nullifiers.fail.db";
+
+            dinero::consensus::BlockReindexer bad_reindexer(
+                fail_dir, &bad_db, &bad_storage, bad_config);
+            auto bad_result = bad_reindexer.execute();
+
+            Require(bad_result.ok(), "reindex call itself should return stats");
+            const auto& bad_stats = bad_result.value();
+
+            // The property under test: a non-forest failure ABORTS. If it were
+            // misclassified as a forest mismatch the reindex would instead
+            // report success, having silently truncated the chain and marked
+            // the offending block and its descendants permanently invalid.
+            Require(!bad_stats.success,
+                    "non-forest Status::Invalid must ABORT the reindex, not "
+                    "truncate-and-mark-invalid (failure misclassification)");
+            Require(!bad_stats.error.empty(),
+                    "aborting reindex must report an error");
+        }
+
         fs::remove_all(base_dir, ec);
 
         std::printf("ShieldedReindexEquivalence: PASS\n");
