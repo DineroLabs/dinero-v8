@@ -19,12 +19,22 @@ KEEP_TMP_ON_FAIL=${KEEP_TMP_ON_FAIL:-1}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-if [[ -x "${PROJECT_ROOT}/build/dinerod" ]]; then
+if [[ -n "${DINEROD:-}" ]]; then
+    # CTest supplies this (ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"), so the
+    # test follows the build directory wherever it is. Honour it and require it
+    # to be real — never silently fall through to a guessed path.
+    [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}" >&2; exit 1; }
+elif [[ -x "${PROJECT_ROOT}/build/dinerod" ]]; then
+    # Manual/local convenience only.
     DINEROD="${PROJECT_ROOT}/build/dinerod"
 elif [[ -x "${PROJECT_ROOT}/dinerod" ]]; then
     DINEROD="${PROJECT_ROOT}/dinerod"
 else
-    echo "dinerod not found"
+    # Fail HERE, naming the paths tried. Launching a non-existent binary and
+    # then waiting on its RPC turns a missing file into a 30s timeout reported
+    # as "RPC never came up", which reads like a consensus failure.
+    echo "dinerod not found (tried: \$DINEROD unset, ${PROJECT_ROOT}/build/dinerod, ${PROJECT_ROOT}/dinerod)" >&2
+    echo "set DINEROD=/path/to/dinerod to override" >&2
     exit 1
 fi
 

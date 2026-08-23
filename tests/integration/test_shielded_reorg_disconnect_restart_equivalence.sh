@@ -2,7 +2,24 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+if [[ -n "${DINEROD:-}" ]]; then
+    # CTest supplies this (ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"), so the
+    # test follows the build directory wherever it is. Honour it and require it
+    # to be real — never silently fall through to a guessed path.
+    [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}" >&2; exit 1; }
+elif [[ -x "${ROOT_DIR}/build/dinerod" ]]; then
+    # Manual/local convenience only.
+    DINEROD="${ROOT_DIR}/build/dinerod"
+elif [[ -x "${ROOT_DIR}/dinerod" ]]; then
+    DINEROD="${ROOT_DIR}/dinerod"
+else
+    # Fail HERE, naming the paths tried. Launching a non-existent binary and
+    # then waiting on its RPC turns a missing file into a 30s timeout reported
+    # as "RPC never came up", which reads like a consensus failure.
+    echo "dinerod not found (tried: \$DINEROD unset, ${ROOT_DIR}/build/dinerod, ${ROOT_DIR}/dinerod)" >&2
+    echo "set DINEROD=/path/to/dinerod to override" >&2
+    exit 1
+fi
 if [[ -x "${ROOT_DIR}/build/tests/integration/shielded_tx_builder" ]]; then
     SHIELDED_TX_BUILDER="${ROOT_DIR}/build/tests/integration/shielded_tx_builder"
 elif [[ -x "${ROOT_DIR}/build/shielded_tx_builder" ]]; then
