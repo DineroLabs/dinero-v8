@@ -966,6 +966,10 @@ Status BlockReindexer::applyBlockToForest(const Block& block, uint32_t height,
                           forest_pre_commitment, snapshot_pre_commitment,
                           computed, delta_out, snapshot.getNumLeaves(),
                           "mismatch", error);
+        // THE recoverable failure: canonical replay disagrees with the header
+        // commitment. Step 5 truncates here rather than aborting. No other
+        // failure in this function may set this.
+        last_failure_was_forest_root_mismatch_ = true;
         return Status::Invalid;
     }
 
@@ -1735,16 +1739,21 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
         // tx data, missing UTXOs) abort the reindex as before because
         // they don't have a clean "stop here, mark bad, continue safe"
         // semantic.
+        // Keyed on an explicit flag that applyBlockToForest sets ONLY on its
+        // root-mismatch path, never inferred from side effects.
+        //
+        // This previously read `stats_.error.empty() && status == Invalid &&
+        // IsUtreexoActive(height) && i > 0`. processBlock never sets
+        // stats_.error, and UTREEXO_ACTIVATION_HEIGHT_MAINNET is 0 so
+        // IsUtreexoActive() is true at every mainnet height — which made the
+        // condition collapse to "any Invalid after the first block". Malformed
+        // tx data, a missing UTXO or an I/O error therefore took the recovery
+        // path and permanently marked the block and every canonical descendant
+        // invalid, holding the tip a block back, instead of aborting as the
+        // comment above promises.
         const bool is_forest_mismatch =
-            stats_.error.empty() &&
+            last_failure_was_forest_root_mismatch_ &&
             status == Status::Invalid &&
-            // processBlock logs the specific error; use the last
-            // applyBlockToForest error string set on the reindexer's
-            // log path. The simplest invariant is "Invalid status from
-            // processBlock at a forest-active height with an existing
-            // earlier successful block" — exactly the runtime
-            // signature of the 9291 case.
-            IsUtreexoActive(static_cast<uint32_t>(height)) &&
             i > 0;
 
         if (!is_forest_mismatch) {
@@ -2106,6 +2115,9 @@ Status BlockReindexer::processBlockFile(const std::filesystem::path& file_path, 
 }
 
 Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos, uint64_t height) {
+    // Cleared per block: only applyBlockToForest's root-mismatch path may set
+    // it, and the Step 5 recovery branch reads it for THIS block only.
+    last_failure_was_forest_root_mismatch_ = false;
     // Create write token for ChainDB mutations
     ChainWriteToken token;
 
