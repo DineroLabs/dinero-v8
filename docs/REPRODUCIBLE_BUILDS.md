@@ -25,6 +25,11 @@ It does not claim that different compilers, distributions, architectures, or
 dependency versions produce the same bytes. Such environments can still
 produce consensus-compatible binaries, but that is a different claim.
 
+The Linux contract matches the Linux release posture by disabling optional
+UPnP/NAT-PMP router port mapping. Those libraries do not affect consensus and
+are intentionally excluded so independent verification does not depend on an
+unrelated external download host.
+
 ## Canonical configuration
 
 Use the timestamp of the commit being built, not the current time:
@@ -38,6 +43,7 @@ cmake -S . -B build-repro -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DDINERO_REPRODUCIBLE_BUILD=ON \
   -DDINERO_USE_VENDORED_DEPS=ON \
+  -DDINERO_ENABLE_PORTMAPPING=OFF \
   -DENABLE_GRPC=OFF
 cmake --build build-repro --target dinerod -j2
 sha256sum build-repro/dinerod

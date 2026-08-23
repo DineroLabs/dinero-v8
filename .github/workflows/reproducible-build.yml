@@ -50,12 +50,13 @@ jobs:
 
       # Deliberately no compiler/dependency cache: the two builders must not
       # prove equality by consuming the same cached object files.
-      - name: Build vendored prerequisites
+      # Linux release artifacts disable optional router port-mapping. Keep the
+      # reproducibility contract identical and independent of the external
+      # miniupnpc/libnatpmp download host.
+      - name: Build vendored OpenSSL
         working-directory: source-${{ matrix.builder }}
         run: |
           OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
-          cmake -S depends -B depends/build
-          cmake --build depends/build -j2
 
       - name: Build deterministic dinerod
         working-directory: source-${{ matrix.builder }}
@@ -67,6 +68,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DDINERO_REPRODUCIBLE_BUILD=ON \
             -DDINERO_USE_VENDORED_DEPS=ON \
+            -DDINERO_ENABLE_PORTMAPPING=OFF \
             -DENABLE_GRPC=OFF
           cmake --build build-repro --target dinerod -j2
           sha256sum build-repro/dinerod > dinerod.sha256
