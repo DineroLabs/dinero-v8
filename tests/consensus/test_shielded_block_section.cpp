@@ -267,6 +267,153 @@ TEST(ShieldedBlockSection, DisconnectOrdinaryBlockRestoresPreBlockStateExactly) 
     EXPECT_TRUE(f.anchors.Contains(h0_root));
 }
 
+// ── Byte-identical round trip (content, not counts) ───────────────────
+//
+// The test above pins root + sizes + a couple of Contains() probes. That is
+// weaker than it looks: two anchor windows of equal SIZE but different
+// MEMBERS satisfy every one of those assertions, as do two nullifier sets of
+// equal count holding different nullifiers.
+//
+// ComputeShieldedReorgStateHash (DSR2) already defines the strong property —
+// it hashes the shielded tree, the nullifier set's serialized CONTENT, and
+// the anchor history's serialized bytes, precisely so equal-count-different-
+// member drift cannot hide. But nothing asserted that hash is INVARIANT
+// across connect-then-disconnect; the per-height journal row exists and is
+// simply never compared.
+//
+// This fingerprint mirrors DSR2's composition over the three shielded
+// containers reachable at this layer (the utreexo forest is the validator's,
+// not the section's) and asserts byte-identity, which is what "reverse-apply
+// is the exact inverse of apply" actually means.
+std::vector<uint8_t> ShieldedStateFingerprint(const CommitmentTree& tree,
+                                              const NullifierSet& nullifiers,
+                                              const AnchorHistory& anchors) {
+    std::vector<uint8_t> out;
+    const auto frontier = tree.SerializeFrontier();
+    const auto nulls    = nullifiers.SerializeContent();
+    const auto anchor_b = anchors.SerializeBytes();
+    out.insert(out.end(), frontier.begin(), frontier.end());
+    out.insert(out.end(), nulls.begin(), nulls.end());
+    out.insert(out.end(), anchor_b.begin(), anchor_b.end());
+    return out;
+}
+
+TEST(ShieldedBlockSection, DisconnectRestoresByteIdenticalShieldedState) {
+    Fixture f;
+    const uint32_t height_prev = kActivation + 4;
+    const uint32_t height = height_prev + 1;
+
+    // Non-trivial pre-block state: a note, an anchor, and a spent nullifier,
+    // so the fingerprint covers all three containers with real content.
+    f.tree.Append(MakeHash(0x11));
+    f.anchors.RecordRoot(height_prev, f.tree.Root());
+    ASSERT_TRUE(f.nullifiers.Insert(MakeHash(0xF1), height_prev));
+
+    const std::vector<uint8_t> before =
+        ShieldedStateFingerprint(f.tree, f.nullifiers, f.anchors);
+    ASSERT_FALSE(before.empty());
+
+    const std::vector<uint8_t> frontier_snapshot = f.tree.SerializeFrontier();
+
+    std::vector<ShieldedBundle> bundles{
+        MakeShieldBundle(0x01, 5),
+        MakeTransferBundle(0x99, 0x42),
+    };
+    std::vector<int64_t> deltas{5, 0};
+
+    std::optional<ShieldedEpochSnapshot> connect_snap;
+    std::string error;
+    ASSERT_TRUE(ConnectBlockShieldedSection(
+        bundles, deltas, height, kReset, kActivation,
+        f.tree, f.nullifiers, &f.anchors, connect_snap, error)) << error;
+
+    // The block must actually have moved state, or the round trip is vacuous.
+    const std::vector<uint8_t> after_connect =
+        ShieldedStateFingerprint(f.tree, f.nullifiers, f.anchors);
+    ASSERT_NE(after_connect, before)
+        << "connect did not change shielded state — round trip proves nothing";
+
+    ASSERT_TRUE(DisconnectBlockShieldedSection(
+        height, /*pre_reset_snapshot=*/std::nullopt, frontier_snapshot,
+        f.tree, f.nullifiers, &f.anchors, error)) << error;
+
+    EXPECT_EQ(ShieldedStateFingerprint(f.tree, f.nullifiers, f.anchors), before)
+        << "disconnect must restore shielded state BYTE-IDENTICALLY: equal "
+           "counts are not enough, since equal-size/different-member anchor "
+           "windows and nullifier sets would pass a counts-only check while "
+           "diverging from every peer's DSR2 state hash";
+}
+
+TEST(ShieldedBlockSection, DisconnectAcrossEpochCutoverRestoresByteIdenticalState) {
+    Fixture f;
+    f.tree.Append(MakeHash(0x11));
+    f.tree.Append(MakeHash(0x12));
+    f.anchors.RecordRoot(kReset - 2, f.tree.Root());
+    f.anchors.RecordRoot(kReset - 1, f.tree.Root());
+    ASSERT_TRUE(f.nullifiers.Insert(MakeHash(0xAA), kReset - 1));
+    ASSERT_TRUE(f.nullifiers.Insert(MakeHash(0xAB), kReset - 1));
+
+    const std::vector<uint8_t> before =
+        ShieldedStateFingerprint(f.tree, f.nullifiers, f.anchors);
+    const std::vector<uint8_t> frontier_snapshot = f.tree.SerializeFrontier();
+
+    std::optional<ShieldedEpochSnapshot> connect_snap;
+    std::string error;
+    ASSERT_TRUE(ConnectBlockShieldedSection(
+        {}, {}, kReset, kReset, kActivation,
+        f.tree, f.nullifiers, &f.anchors, connect_snap, error)) << error;
+    ASSERT_TRUE(connect_snap.has_value());
+
+    // The reset wiped the pool.
+    ASSERT_NE(ShieldedStateFingerprint(f.tree, f.nullifiers, f.anchors), before);
+
+    ASSERT_TRUE(DisconnectBlockShieldedSection(
+        kReset, connect_snap, frontier_snapshot,
+        f.tree, f.nullifiers, &f.anchors, error)) << error;
+
+    EXPECT_EQ(ShieldedStateFingerprint(f.tree, f.nullifiers, f.anchors), before)
+        << "restoring across the epoch cutover must reproduce the pre-cutover "
+           "pool byte-identically — RollbackAbove cannot undo a reset, so this "
+           "is entirely the snapshot restore path";
+}
+
+// Demonstrates WHY the fingerprint is stronger, rather than asserting it.
+//
+// Two anchor windows of equal SIZE holding different MEMBERS, and two
+// nullifier sets of equal COUNT holding different nullifiers, satisfy every
+// assertion the counts-only round-trip test makes — same Size(), and its
+// Contains() probes only spot-check the handful of values it happens to name.
+// The fingerprint separates them, because DSR2 hashes serialized CONTENT.
+//
+// This is the drift class that matters in practice: it produces a different
+// daemon.shieldedstatehash than every peer at the same tip while looking
+// perfectly healthy to a size comparison.
+TEST(ShieldedBlockSection, CountsAgreeButContentDiffersIsCaughtOnlyByFingerprint) {
+    Fixture a;
+    Fixture b;
+
+    // Identical shapes, different contents.
+    a.tree.Append(MakeHash(0x11));
+    b.tree.Append(MakeHash(0x11));  // same note so the trees match
+    a.anchors.RecordRoot(kActivation, MakeHash(0xA1));
+    b.anchors.RecordRoot(kActivation, MakeHash(0xB1));  // different root
+    ASSERT_TRUE(a.nullifiers.Insert(MakeHash(0xC1), kActivation));
+    ASSERT_TRUE(b.nullifiers.Insert(MakeHash(0xC2), kActivation));  // different
+
+    // What a counts-only comparison sees: no difference at all.
+    EXPECT_EQ(a.tree.Size(), b.tree.Size());
+    EXPECT_EQ(a.tree.Root(), b.tree.Root());
+    EXPECT_EQ(a.anchors.Size(), b.anchors.Size());
+    EXPECT_EQ(a.nullifiers.Size(), b.nullifiers.Size());
+
+    // What the content fingerprint sees: two different states.
+    EXPECT_NE(ShieldedStateFingerprint(a.tree, a.nullifiers, a.anchors),
+              ShieldedStateFingerprint(b.tree, b.nullifiers, b.anchors))
+        << "equal-count/different-member drift MUST be distinguishable — this "
+           "is exactly the divergence a counts-only round-trip check cannot "
+           "see, and it is what DSR2 hashes content to catch";
+}
+
 // (h) Epoch-cutover round trip: connect the reset at height H (capturing
 // the pre-reset snapshot), then disconnect with that snapshot. The full
 // pre-cutover pool (tree, nullifiers, anchors) must be restored, not just
