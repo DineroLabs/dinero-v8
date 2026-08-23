@@ -2,21 +2,49 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-FIXTURE_BUILDER="${ROOT_DIR}/build/test_shielded_reindex_equivalence"
-if [[ -x "${ROOT_DIR}/build/tests/integration/shielded_tip_marker_mutator" ]]; then
-    MARKER_MUTATOR="${ROOT_DIR}/build/tests/integration/shielded_tip_marker_mutator"
-elif [[ -x "${ROOT_DIR}/build/shielded_tip_marker_mutator" ]]; then
-    MARKER_MUTATOR="${ROOT_DIR}/build/shielded_tip_marker_mutator"
-else
-    MARKER_MUTATOR="${ROOT_DIR}/shielded_tip_marker_mutator"
-fi
-if [[ -x "${ROOT_DIR}/build/tests/integration/shielded_tip_marker_probe" ]]; then
-    MARKER_PROBE="${ROOT_DIR}/build/tests/integration/shielded_tip_marker_probe"
-elif [[ -x "${ROOT_DIR}/build/shielded_tip_marker_probe" ]]; then
-    MARKER_PROBE="${ROOT_DIR}/build/shielded_tip_marker_probe"
-else
-    MARKER_PROBE="${ROOT_DIR}/shielded_tip_marker_probe"
-fi
+# Resolve a helper binary: honour the environment variable CTest supplies
+# (ENVIRONMENT "<VAR>=$<TARGET_FILE:...>"), else fall back to the usual local
+# build layouts, else FAIL HERE naming every path tried.
+#
+# Previously these were hardcoded to ${ROOT_DIR}/build/... with no existence
+# check on the final fallback, so a build directory not literally named
+# "build" left the script invoking paths that do not exist — the same class of
+# misleading failure the daemon-path fix addressed for the other scripts.
+resolve_bin() {
+    local var_name="$1"; shift
+    local pretty="$1"; shift
+    local from_env="${!var_name:-}"
+    if [[ -n "${from_env}" ]]; then
+        [[ -x "${from_env}" ]] || {
+            echo "${pretty} not executable at ${from_env}" >&2; exit 1; }
+        printf '%s' "${from_env}"
+        return 0
+    fi
+    local candidate
+    for candidate in "$@"; do
+        if [[ -x "${candidate}" ]]; then
+            printf '%s' "${candidate}"
+            return 0
+        fi
+    done
+    {
+        echo "${pretty} not found (tried: \$${var_name} unset, $*)"
+        echo "set ${var_name}=/path/to/${pretty} to override"
+    } >&2
+    exit 1
+}
+
+FIXTURE_BUILDER="$(resolve_bin FIXTURE_BUILDER test_shielded_reindex_equivalence \
+    "${ROOT_DIR}/build/test_shielded_reindex_equivalence" \
+    "${ROOT_DIR}/build/tests/test_shielded_reindex_equivalence")"
+MARKER_MUTATOR="$(resolve_bin MARKER_MUTATOR shielded_tip_marker_mutator \
+    "${ROOT_DIR}/build/tests/integration/shielded_tip_marker_mutator" \
+    "${ROOT_DIR}/build/shielded_tip_marker_mutator" \
+    "${ROOT_DIR}/shielded_tip_marker_mutator")"
+MARKER_PROBE="$(resolve_bin MARKER_PROBE shielded_tip_marker_probe \
+    "${ROOT_DIR}/build/tests/integration/shielded_tip_marker_probe" \
+    "${ROOT_DIR}/build/shielded_tip_marker_probe" \
+    "${ROOT_DIR}/shielded_tip_marker_probe")"
 
 TMP_ROOT="$(mktemp -d /tmp/dinero_shielded_tip_marker_equivalence.XXXXXX)"
 DATA_DIR="${TMP_ROOT}/datadir"
