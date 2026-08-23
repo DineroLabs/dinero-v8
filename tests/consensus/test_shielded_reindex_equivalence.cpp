@@ -409,7 +409,14 @@ PrefixExpectation FinalizeAndApplyReferenceBlock(dinero::Block& block,
             }
         }
 
-        if (UsesShieldedValueSemantics(tx)) {
+        // tx_idx > 0 mirrors the LIVE path (ConnectBlockInternal and
+        // ApplyBlockShieldedSection both start at index 1), not the reindexer.
+        // This reference model must always be derived from live/consensus
+        // behaviour — never from the code under test. Before this guard existed
+        // the model walked from index 0 exactly like the reindexer did, so the
+        // two agreed on a coinbase-attached bundle and this suite was
+        // structurally incapable of catching that divergence.
+        if (tx_idx > 0 && UsesShieldedValueSemantics(tx)) {
             sh::ShieldedBundle bundle;
             const auto decode = sh::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &bundle);
             Require(decode == sh::BundleDecodeError::Ok, "reference decode failed");
