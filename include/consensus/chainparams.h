@@ -246,6 +246,29 @@ struct ChainParams {
     // height MUST be chosen by a human + fleet-coordinated before it ships.
     uint32_t shielded_epoch_reset_height = UINT32_MAX;
 
+    // ===========================================================================
+    // CONSENSUS: reject a coinbase carrying a shielded bundle, at or above this
+    // height. Nothing in block acceptance inspects vtx[0]'s version or bundle, so
+    // a miner can attach one; consensus then ignores it (every shielded walk
+    // starts at tx index 1). That made the bundle a free, unvalidated data
+    // channel on the coinbase and left other code asserting an invariant nothing
+    // enforced. This rule makes the intent explicit and rejects the block.
+    //
+    // This is a TIGHTENING: an upgraded node rejects a block un-upgraded nodes
+    // accept, so it is gated rather than unconditional.
+    //
+    // NOTE this field is deliberately NOT the usual "leave testnet dormant"
+    // shape. The other shielded gates may stay inert on testnet because shielded
+    // itself is dormant there (shielded_activation_height = UINT32_MAX). This
+    // rule constrains COINBASE SHAPE and is independent of whether shielded is
+    // active, so testnet sets 0 alongside regtest and exercises it from genesis.
+    //
+    // The struct default is UINT32_MAX (never activate). MAINNET is dormant until
+    // a height is chosen: it MUST be picked by a human and coordinated across the
+    // fleet before it ships — a wrong boundary splits the chain.
+    // ===========================================================================
+    uint32_t shielded_coinbase_reject_activation_height = UINT32_MAX;
+
     // Genesis block parameters
     GenesisParams genesis;
 

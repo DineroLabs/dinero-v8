@@ -14864,8 +14864,14 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // — consensus rejects mixed shapes (version without bundle or vice
     // versa) — so block_has_shielded here agrees with the delta path on every
     // block that reaches bookkeeping. The pre-scan starts at tx_idx=1 (not 0
-    // like ConnectTip's created-outputs loop) because consensus rejects a
-    // shielded coinbase, so tx 0 can never set block_has_shielded.
+    // like ConnectTip's created-outputs loop) because a coinbase-attached
+    // bundle is never part of shielded state: every shielded walk starts at
+    // index 1, so tx 0 can never set block_has_shielded regardless of height.
+    // (Such a block is additionally REJECTED outright at or above
+    // shielded_coinbase_reject_activation_height — but note that rule is gated,
+    // so below that height the block is merely valid-and-ignored, not absent.
+    // This pre-scan is correct either way, which is why it keys on the walk
+    // base rather than on the rejection rule.)
     bool block_has_shielded = false;
     uint64_t expected_spent_count = 0;
     for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {

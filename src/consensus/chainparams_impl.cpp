@@ -122,6 +122,15 @@ static ChainParams g_mainnet = {
     .shielded_cv_binding_activation_height = 61000,
     .shielded_epoch_reset_height = 61000,
 
+    // Reject a coinbase carrying a shielded bundle, MAINNET. DORMANT — the
+    // activation height has not been chosen yet. It must be set to a height
+    // safely ahead of the tip and every fleet node upgraded before it passes,
+    // because this rule makes an upgraded node reject a block un-upgraded nodes
+    // accept. Leaving it at UINT32_MAX is the safe state: the walk-convergence
+    // fix already makes a coinbase-attached bundle inert on every path, so
+    // there is no urgency in activating.
+    .shielded_coinbase_reject_activation_height = UINT32_MAX,
+
     .genesis = {
         .nVersion = 1,
         .nTime = 1776384000,  // 2026-04-17 00:00:00 UTC — v7 Genesis Restart
@@ -312,6 +321,13 @@ static ChainParams g_testnet = {
     // here. See docs/specs/shielded_activation_plan.md.
     .shielded_activation_height = UINT32_MAX,
 
+    // Reject a coinbase carrying a shielded bundle, TESTNET: active from
+    // genesis. Deliberately NOT left dormant like the gates above. Those may
+    // stay inert here because shielded itself is parked on testnet; this rule
+    // constrains coinbase SHAPE and is independent of shielded activation, so
+    // leaving it at UINT32_MAX would mean testnet never exercises it at all.
+    .shielded_coinbase_reject_activation_height = 0,
+
     .genesis = {
         .nVersion = 1,
         .nTime = 1296688602,
@@ -409,6 +425,10 @@ static ChainParams g_regtest = {
     // keeps validating. The cv-binding boundary is exercised directly by
     // test_shielded_cv_binding via a hand-built ValidationContext.
     .shielded_cv_binding_activation_height = UINT32_MAX,
+
+    // Reject a coinbase carrying a shielded bundle, REGTEST: active from
+    // genesis so the rule is exercised end-to-end by tests.
+    .shielded_coinbase_reject_activation_height = 0,
 
     .genesis = CreateRegtestGenesis()
 };

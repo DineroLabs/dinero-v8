@@ -1385,6 +1385,120 @@ TEST(BlockValidationInvariants, WitnessCommitmentProductionPathUsesSelectedParam
         << error;
 }
 
+// ── Coinbase may not carry a shielded bundle ─────────────────────────
+//
+// Nothing in block acceptance inspects vtx[0]'s version or bundle, so a miner
+// can attach one. Every shielded walk starts at tx index 1, so consensus never
+// validates it — it was a free unvalidated field on the coinbase. This rule
+// rejects the block outright, at or above the activation height.
+
+namespace {
+
+// Restores the height on scope exit so a mutated regtest cannot leak into
+// other tests in this binary.
+class ScopedCoinbaseRejectHeight {
+public:
+    ScopedCoinbaseRejectHeight(ChainParams* params, uint32_t height)
+        : params_(params),
+          saved_(params->shielded_coinbase_reject_activation_height) {
+        params_->shielded_coinbase_reject_activation_height = height;
+    }
+    ~ScopedCoinbaseRejectHeight() {
+        params_->shielded_coinbase_reject_activation_height = saved_;
+    }
+    ScopedCoinbaseRejectHeight(const ScopedCoinbaseRejectHeight&) = delete;
+    ScopedCoinbaseRejectHeight& operator=(const ScopedCoinbaseRejectHeight&) = delete;
+
+private:
+    ChainParams* params_;
+    uint32_t saved_;
+};
+
+// The rule keys on SHAPE, not on bundle validity: UsesShieldedValueSemantics
+// tests the version byte and a non-empty bundle field. Arbitrary bytes are
+// therefore sufficient, and this test needs no prover.
+void AttachCoinbaseBundle(Block& block, int32_t version) {
+    block.vtx[0].version = version;
+    block.vtx[0].shielded_bundle_bytes = {0x01, 0x02, 0x03};
+}
+
+// 10669 is below the witness-commitment boundary (10670), where a bare
+// single-coinbase block connects cleanly.
+constexpr uint32_t kCoinbaseBundleHeight = 10669;
+
+void RunCoinbaseShieldedBundleCase(int32_t version, const char* label) {
+    SCOPED_TRACE(label);
+
+    // At the activation height: rejected.
+    {
+        ScopedCoinbaseRejectHeight gate(&MutableParams(), kCoinbaseBundleHeight);
+        ConsensusUTXOSet utxo_set;
+        Block block = MakeCoinbaseBlock(kCoinbaseBundleHeight, MakeTestHash(11001));
+        AttachCoinbaseBundle(block, version);
+        RefreshSingleTransactionBlockCommitments(
+            block, utxo_set.GetForest(), kCoinbaseBundleHeight);
+
+        BlockValidator validator(&utxo_set);
+        BlockUndo undo;
+        std::string error;
+        EXPECT_FALSE(validator.ConnectBlock(
+            block, kCoinbaseBundleHeight, MakeTestHash(21001), undo, error, nullptr));
+        EXPECT_NE(error.find("coinbase-carries-shielded-bundle"), std::string::npos)
+            << error;
+    }
+
+    // One block below it: still accepted. The rule is gated, so pre-activation
+    // history keeps validating — that is the whole point of not making it
+    // unconditional.
+    {
+        ScopedCoinbaseRejectHeight gate(&MutableParams(),
+                                        kCoinbaseBundleHeight + 1);
+        ConsensusUTXOSet utxo_set;
+        Block block = MakeCoinbaseBlock(kCoinbaseBundleHeight, MakeTestHash(11002));
+        AttachCoinbaseBundle(block, version);
+        RefreshSingleTransactionBlockCommitments(
+            block, utxo_set.GetForest(), kCoinbaseBundleHeight);
+
+        BlockValidator validator(&utxo_set);
+        BlockUndo undo;
+        std::string error;
+        EXPECT_TRUE(validator.ConnectBlock(
+            block, kCoinbaseBundleHeight, MakeTestHash(21002), undo, error, nullptr))
+            << error;
+    }
+}
+
+}  // namespace
+
+TEST(BlockValidationInvariants, CoinbaseShieldedBundleRejectedAtActivation_V5) {
+    SelectParams(Chain::REGTEST);
+    RunCoinbaseShieldedBundleCase(Transaction::TX_VERSION_SHIELDED, "v5 coinbase bundle");
+}
+
+TEST(BlockValidationInvariants, CoinbaseShieldedBundleRejectedAtActivation_V6) {
+    SelectParams(Chain::REGTEST);
+    RunCoinbaseShieldedBundleCase(Transaction::TX_VERSION_SHIELDED_V2, "v6 coinbase bundle");
+}
+
+TEST(BlockValidationInvariants, PlainCoinbaseStillConnectsAtActivationHeight) {
+    // Guards against the rule over-firing: an ordinary coinbase must still
+    // connect at the activation height.
+    SelectParams(Chain::REGTEST);
+    ScopedCoinbaseRejectHeight gate(&MutableParams(), kCoinbaseBundleHeight);
+
+    ConsensusUTXOSet utxo_set;
+    Block block = MakeCoinbaseBlock(kCoinbaseBundleHeight, MakeTestHash(11003));
+    RefreshSingleTransactionBlockCommitments(
+        block, utxo_set.GetForest(), kCoinbaseBundleHeight);
+
+    BlockValidator validator(&utxo_set);
+    BlockUndo undo;
+    std::string error;
+    EXPECT_TRUE(validator.ConnectBlock(
+        block, kCoinbaseBundleHeight, MakeTestHash(21003), undo, error, nullptr))
+        << error;
+}
+
 int main(int argc, char** argv) {
     dinero::SelectParams(dinero::Chain::REGTEST);
     testing::InitGoogleTest(&argc, argv);
