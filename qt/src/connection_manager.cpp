@@ -98,8 +98,16 @@ void ConnectionManager::disconnectFromDaemon() {
     reconnectTimer_->stop();
     
     if (activeHealthCheck_) {
-        activeHealthCheck_->abort();
-        activeHealthCheck_->deleteLater();
+        // abort() synchronously re-enters the reply's finished handler,
+        // which clears activeHealthCheck_ — re-reading the member after
+        // abort() dereferences null (SIGSEGV at 0x8 on every app close,
+        // 2026-08-22 crash reports). Detach to a local and clear the
+        // member BEFORE aborting; a second deleteLater() on the same
+        // live object is safe (Qt coalesces deferred deletes).
+        QNetworkReply* reply = activeHealthCheck_;
+        activeHealthCheck_ = nullptr;
+        reply->abort();
+        reply->deleteLater();
     }
     
     setState(Disconnected);
