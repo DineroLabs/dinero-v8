@@ -2187,6 +2187,18 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     std::vector<shielded::ShieldedBundle> shielded_bundles;
     std::vector<int64_t> shielded_deltas;
 
+    // CONSENSUS: mirrors ConnectBlockInternal's coinbase rule, at the same
+    // heights, so replayed history is judged exactly as the live chain judged
+    // it. A reindexed node that applied a different rule here would diverge
+    // from the chain it is rebuilding.
+    if (!block.vtx.empty() &&
+        height >= Params().shielded_coinbase_reject_activation_height &&
+        UsesShieldedValueSemantics(block.vtx[0])) {
+        g_logger.error("[reindex] Coinbase carries a shielded bundle at height " +
+                       std::to_string(height));
+        return Status::Invalid;
+    }
+
     for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
         const auto& tx = block.vtx[tx_idx];
         TxId txid = tx.GetTxid();

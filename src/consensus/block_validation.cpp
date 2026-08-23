@@ -1289,6 +1289,22 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // Use coinbase transaction directly (block.vtx contains Transaction objects)
     const Transaction& coinbase_tx = block.vtx[0];
 
+    // CONSENSUS: a coinbase may not carry a shielded bundle.
+    //
+    // Every shielded walk starts at tx index 1, so a bundle on vtx[0] is not
+    // part of shielded state and is never validated. Without this rule it is a
+    // free unvalidated field on the coinbase, and other code already assumes it
+    // cannot happen. Rejecting the block makes that assumption real.
+    //
+    // Gated: this is a tightening, so an upgraded node would otherwise reject a
+    // block un-upgraded nodes accept. Below the activation height such a block
+    // stays valid — harmless, because every walk ignores the bundle.
+    if (height >= Params().shielded_coinbase_reject_activation_height &&
+        UsesShieldedValueSemantics(coinbase_tx)) {
+        error = "coinbase-carries-shielded-bundle";
+        return false;
+    }
+
     uint64_t total_fees = 0;
 
     // Phase 8: Build spent_outputs index for stateless validation
@@ -2845,11 +2861,17 @@ bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,
     total_input_value = 0;
     const bool has_shielded_bundle = UsesShieldedValueSemantics(tx);
     
+    // NOTE: this branch is currently UNREACHABLE — both call sites (the per-tx
+    // loops in ConnectBlockInternal) pass is_coinbase=false, and they start at
+    // index 1 so the coinbase never reaches here at all. Do not add consensus
+    // rules to it expecting them to bite; they will not.
+    //
+    // The "coinbase cannot carry a shielded bundle" rule that used to live here
+    // was exactly that trap: it read as protection while enforcing nothing. It
+    // now lives on the live path in ConnectBlockInternal, gated by
+    // shielded_coinbase_reject_activation_height, and is mirrored in
+    // BlockReindexer::processBlock.
     if (is_coinbase) {
-        if (has_shielded_bundle) {
-            error = "Coinbase transaction cannot carry a shielded bundle";
-            return false;
-        }
         // Coinbase validation
         if (tx.vin.empty()) {
             error = "Coinbase transaction has no inputs";
