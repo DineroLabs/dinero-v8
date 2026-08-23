@@ -463,6 +463,114 @@ TEST(BindingSigTest, UnbalancedBundleRejected) {
               shielded::BindingSigResult::SignatureInvalid);
 }
 
+// The Pedersen tally is NOT the balance check.
+//
+// `bvk_commitment` is attacker-supplied wire data, and the tally merely
+// DEFINES what it has to equal:
+//
+//     bvk = sum(cv_spend) - sum(cv_output) + value_balance*V
+//
+// so an adaptive attacker satisfies it for ANY claimed value_balance simply
+// by choosing bvk to match. As a constraint on value it is vacuous.
+//
+// What actually provides soundness is the BIP340 Schnorr verify. Producing a
+// signature requires knowing dlog_G(bvk), and expanding cv = r*G + v*V gives
+//
+//     bvk = (dr)*G + (sum(v_spend) - sum(v_out) + value_balance)*V
+//
+// Because V is NUMS-derived with unknown dlog_G(V), a signature can only
+// exist when the V-coefficient is zero — i.e. when value_balance is truthful.
+// That single line is the entire cross-bundle inflation barrier.
+//
+// It had no adversarial coverage. UnbalancedBundleRejected above publishes
+// the HONEST bvk, so the V-residue makes the tally fail and it returns before
+// the Schnorr ever runs — its own comment says so. Both failures return the
+// same BindingSigResult::SignatureInvalid, so the return value alone cannot
+// distinguish which gate fired. This test therefore verifies the tally
+// INDEPENDENTLY, proving the forgery gets past it, and only then asserts
+// VerifyBinding still rejects — pinning the rejection on the Schnorr.
+TEST(BindingSigTest, AdaptiveBvkPassesTallyButSchnorrStillRejects) {
+    ASSERT_TRUE(PedersenGeneratorsReady());
+    auto* ctx = ::dinero::crypto::GetSecp256k1ContextSignVerify();
+    ASSERT_NE(ctx, nullptr);
+
+    // Spend 200, create 100: the honest value_balance is 100 - 200 = -100
+    // (unshield 100 to transparent). The attacker instead claims 0 — "pure
+    // shielded transfer" — while still moving 100 out, i.e. minting 100.
+    constexpr uint64_t kSpendValue  = 200;
+    constexpr uint64_t kOutputValue = 100;
+    constexpr uint64_t kResidue     = kSpendValue - kOutputValue;  // 100
+
+    Hash blind_spend  = MakeBlind(0xAA);
+    Hash blind_output = MakeBlind(0xBB);
+
+    shielded::ValueCommitment cv_spend{};
+    shielded::ValueCommitment cv_output{};
+    ASSERT_EQ(PedersenCommit(blind_spend, kSpendValue, cv_spend), PedersenResult::Ok);
+    ASSERT_EQ(PedersenCommit(blind_output, kOutputValue, cv_output), PedersenResult::Ok);
+
+    // bsk = blind_spend - blind_output (the honest blind difference, which the
+    // attacker legitimately knows — they chose both blinds).
+    Hash bsk{};
+    const unsigned char* blinds[2] = {blind_spend.data(), blind_output.data()};
+    ASSERT_TRUE(secp256k1_pedersen_blind_sum(ctx, bsk.data(), blinds, 2,
+                                             /*npositive=*/1));
+
+    // THE FORGERY. With the lie value_balance' = 0 the tally demands
+    //   bvk' = sum(cv_spend) - sum(cv_output) + 0*V
+    //        = (blind_spend - blind_output)*G + (200 - 100)*V
+    //        = PedersenCommit(bsk, 100)
+    // Note the 100*V term: bvk' is NOT bsk*G, so its discrete log base G is
+    // unknown to the attacker. That is precisely what the Schnorr will catch.
+    shielded::ValueCommitment bvk_forged{};
+    ASSERT_EQ(PedersenCommit(bsk, kResidue, bvk_forged), PedersenResult::Ok);
+
+    shielded::ShieldedBundle bundle;
+    bundle.value_balance = 0;  // the lie (honest value would be -100)
+    shielded::ShieldedSpend s{};
+    s.nullifier = MakeBlind(0x01);
+    s.anchor    = MakeBlind(0x02);
+    s.cv        = cv_spend;
+    s.zk_proof.push_back(0x01);
+    bundle.spends.push_back(s);
+    shielded::ShieldedOutput o{};
+    o.commitment = MakeBlind(0x03);
+    o.cv         = cv_output;
+    o.zk_proof.push_back(0x01);
+    bundle.outputs.push_back(o);
+    bundle.bvk_commitment = bvk_forged;
+
+    // Attacker signs with the best key they actually hold.
+    Hash tx_sighash{};
+    Hash sighash = shielded::ComputeBindingSighash(bundle, tx_sighash);
+    ASSERT_EQ(shielded::SignBinding(bsk, sighash, bundle.binding_sig),
+              shielded::BindingSigResult::Ok);
+
+    // ── Step 1: the tally ACCEPTS the forgery ──────────────────────────
+    // Replicated exactly as VerifyBinding builds it: pos = {cv_spend},
+    // neg = {cv_output, bvk_commitment}, and no C_vb because vb == 0.
+    {
+        secp256k1_pedersen_commitment c_spend{}, c_output{}, c_bvk{};
+        ASSERT_TRUE(secp256k1_pedersen_commitment_parse(ctx, &c_spend, cv_spend.data()));
+        ASSERT_TRUE(secp256k1_pedersen_commitment_parse(ctx, &c_output, cv_output.data()));
+        ASSERT_TRUE(secp256k1_pedersen_commitment_parse(ctx, &c_bvk, bvk_forged.data()));
+        const secp256k1_pedersen_commitment* pos[1] = {&c_spend};
+        const secp256k1_pedersen_commitment* neg[2] = {&c_output, &c_bvk};
+        EXPECT_EQ(secp256k1_pedersen_verify_tally(ctx, pos, 1, neg, 2), 1)
+            << "the tally must ACCEPT an adaptively-chosen bvk — if this fails "
+               "the test is not reaching the Schnorr and proves nothing";
+    }
+
+    // ── Step 2: VerifyBinding rejects anyway ───────────────────────────
+    // The tally passed, so this rejection can only have come from the
+    // Schnorr: no signature exists for a bvk carrying a 100*V component.
+    EXPECT_EQ(shielded::VerifyBinding(bundle, tx_sighash),
+              shielded::BindingSigResult::SignatureInvalid)
+        << "SOUNDNESS: an adaptive bvk that satisfies the Pedersen tally must "
+           "still be rejected by the binding signature — this is the only "
+           "barrier against cross-bundle inflation";
+}
+
 // ─── BundleBuilder round-trip tests ─────────────────────────────────────
 // BuildShieldedBundle is the wallet-side helper that orchestrates
 // every Wave 1B/Wave 2 primitive (cv, range proof, bsk, bvk, binding
