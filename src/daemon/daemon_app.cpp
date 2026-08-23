@@ -5828,6 +5828,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // This keeps block queueing live across long truncated header batches.
                         if (can_download_blocks && block_download_ptr && added > 0) {
                             block_download_ptr->OnHeadersProcessed();
+                            consensus::HeaderIndexEntry accepted_best{};
+                            if (header_chain_ptr->GetBestHeaderCopy(accepted_best)) {
+                                block_download_ptr->NotifyBestHeaderAccepted(
+                                    accepted_best.hash, accepted_best.height, peer_addr);
+                            }
                             block_download_ptr->Tick();
                             g_logger.info("[Phase N.3] Block download scheduler refreshed after header batch");
                         }
@@ -6705,6 +6710,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 auto peers = p2p_service->get().get_connected_peers();
                 int sent = 0;
                 int eligible = 0;
+                std::string selected_peer;
 
                 // A scheduler entry is one logical in-flight request.  Sending
                 // it to every peer made each reply arrive two or three times,
@@ -6749,6 +6755,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                     }
 
                     size_t start = std::hash<uint256>{}(block_hash) % ordered.size();
+                    const std::string preferred_peer = sched
+                        ? sched->CurrentRequestPreferredPeer() : std::string();
+                    if (!preferred_peer.empty()) {
+                        auto preferred_it = std::find(ordered.begin(), ordered.end(), preferred_peer);
+                        if (preferred_it != ordered.end()) {
+                            start = static_cast<size_t>(std::distance(ordered.begin(), preferred_it));
+                        }
+                    }
                     if (!last_peer.empty()) {
                         auto last_it = std::find(ordered.begin(), ordered.end(), last_peer);
                         if (last_it != ordered.end()) {
@@ -6772,6 +6786,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 block_request_last_peer->clear();
                             }
                             (*block_request_last_peer)[block_hash] = peer_key;
+                            selected_peer = peer_key;
                             sent = 1;
                             return;
                         }
@@ -6930,7 +6945,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                 // RequestNextBlock() — otherwise max_in_flight such zero-recipient
                 // sends pin the whole download window and freeze the tip.
                 if (sched) {
-                    sched->NotifyGetDataDispatched(block_hash, static_cast<size_t>(sent));
+                    sched->NotifyGetDataDispatched(block_hash, static_cast<size_t>(sent),
+                                                   selected_peer);
                 }
             });
 
@@ -7022,6 +7038,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                     block_download->Tick();
                 }
             }
+
+            // The scheduler's retry/drain machinery must not depend on another
+            // network event arriving. It idles at a low cadence when converged
+            // and services tip gaps every 150ms while work is pending.
+            block_download->StartConvergenceDriver();
 
             // ═══════════════════════════════════════════════════════════════════════════
             // Phase G: Wire Parallel Block Download Scheduler (10-20× IBD speedup)
@@ -7593,6 +7614,11 @@ void DaemonApp::Stop() {
 
     const auto shutdown_start = ShutdownClock::now();
     LogShutdownPhase("interrupting", shutdown_start, "DaemonApp::Stop entered");
+
+    // Join before P2P/chainstate callbacks can be torn down.
+    if (ctx_.block_download) {
+        ctx_.block_download->StopConvergenceDriver();
+    }
 
     // Stop wallet notifications first so no additional wallet jobs are queued
     // while services are being torn down.

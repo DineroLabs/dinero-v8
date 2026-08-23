@@ -2662,6 +2662,53 @@ int main() {
                   << fork_hashes[0].GetHex().substr(0, 16) << "..." << std::endl;
     }
 
+    {
+        std::cout << "\ncontinuity: announcing peer first, dropped body rotates on short deadline..." << std::endl;
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        BuildLinearHeaders(selector, 1, &hashes);
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+        scheduler.SetTipRetryTimeout(std::chrono::milliseconds(1));
+
+        std::vector<std::string> preferred;
+        scheduler.SetSendGetDataCallback([&](const uint256& hash, uint32_t) {
+            preferred.push_back(scheduler.CurrentRequestPreferredPeer());
+            scheduler.NotifyGetDataDispatched(
+                hash, 1, preferred.size() == 1 ? "announcer" : "alternate");
+        });
+        scheduler.OnHeadersProcessed();
+        scheduler.NotifyBestHeaderAccepted(hashes[1], 1, "announcer");
+        scheduler.Tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        scheduler.Tick();
+
+        if (!Require(preferred.size() == 2,
+                     "one dropped request should produce exactly one bounded retry")) return 1;
+        if (!Require(preferred.front() == "announcer",
+                     "first canonical body request should prefer announcing peer")) return 1;
+        std::cout << "   ✅ first=announcer retries=1 requests=2" << std::endl;
+    }
+
+    {
+        std::cout << "\ncontinuity: recurring driver starts, services work, and joins cleanly..." << std::endl;
+        dcs::HeaderChainSelector selector;
+        BuildLinearHeaders(selector, 1);
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+        std::atomic<int> sends{0};
+        scheduler.SetSendGetDataCallback([&](const uint256&, uint32_t) { ++sends; });
+        scheduler.OnHeadersProcessed();
+        scheduler.StartConvergenceDriver();
+        for (int i = 0; i < 50 && sends.load() == 0; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        scheduler.StopConvergenceDriver();
+        if (!Require(sends.load() == 1, "driver should service pending tip work without amplification")) return 1;
+        if (!Require(!scheduler.IsConvergenceDriverRunning(), "driver must be joined after stop")) return 1;
+        std::cout << "   ✅ requests=1 joined=true" << std::endl;
+    }
+
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
     return 0;
 }

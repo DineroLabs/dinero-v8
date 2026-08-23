@@ -22,6 +22,7 @@
 
 using Convergence = dinero::consensus::HeaderConvergence;
 using dinero::consensus::ComputeHeaderConvergence;
+using dinero::consensus::CanServeValidatedTipContinuity;
 using SyncSnapshot = dinero::consensus::SyncSnapshot;
 using dinero::uint256;
 
@@ -81,6 +82,24 @@ void MustNotBeSynced(const char* row,
     ++g_failures;
 }
 
+void Continuity(const char* row, bool has_best, const uint256& best,
+                bool has_tip, const uint256& tip, bool expected) {
+    SyncSnapshot snap;
+    snap.has_best_header = has_best;
+    snap.best_header_hash = best;
+    snap.has_active_tip = has_tip;
+    snap.active_tip_hash = tip;
+    snap.RecomputeConvergence();
+    const bool got = CanServeValidatedTipContinuity(snap);
+    if (got == expected) {
+        std::printf("  ok   %-46s -> continuity=%s\n", row, got ? "true" : "false");
+        return;
+    }
+    std::fprintf(stderr, "  FAIL %-46s -> continuity=%s expected=%s\n",
+                 row, got ? "true" : "false", expected ? "true" : "false");
+    ++g_failures;
+}
+
 }  // namespace
 
 int main() {
@@ -137,6 +156,13 @@ int main() {
     // because they are equal — the has_* flags, not the hash values, decide
     // whether an input exists.
     MustNotBeSynced("   both inputs absent, hashes equal", false, kEmpty, false, kEmpty);
+
+    std::printf("Mining continuity: only a fully-described mismatch is recoverable\n");
+    Continuity("transient header/body mismatch", true, kA, true, kB, true);
+    Continuity("equal-height competing-header mismatch", true, kA, true, kB, true);
+    Continuity("converged tip does not need continuity", true, kA, true, kA, false);
+    Continuity("unknown best header fails closed", false, kEmpty, true, kA, false);
+    Continuity("unknown active tip fails closed", true, kA, false, kEmpty, false);
 
     if (g_failures != 0) {
         std::fprintf(stderr, "\n%d matrix row(s) failed\n", g_failures);

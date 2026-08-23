@@ -46,6 +46,10 @@ struct MiningReadiness {
     ReadinessReason reason = ReadinessReason::Ready;
     std::string reason_code = "ready";
     std::string message;
+    bool serving_active_tip_continuity = false;
+    std::string active_tip_hash;
+    std::string best_header_hash;
+    int64_t best_header_height = 0;
 
     bool p2p_running = false;
     bool is_ibd = false;
@@ -192,12 +196,30 @@ inline MiningReadiness EvaluateMiningReadiness(const ChainstateService* chainsta
         return readiness;
     }
 
+    const auto sync_snapshot = chainstate->GetSyncSnapshot();
+    if (sync_snapshot.has_active_tip) {
+        readiness.active_tip_hash = sync_snapshot.active_tip_hash.GetHex();
+    }
+    if (sync_snapshot.has_best_header) {
+        readiness.best_header_hash = sync_snapshot.best_header_hash.GetHex();
+        readiness.best_header_height = sync_snapshot.best_header_height;
+    }
+
     if (policy.require_header_convergence &&
-        !chainstate->GetSyncSnapshot().IsConverged()) {
+        consensus::CanServeValidatedTipContinuity(sync_snapshot)) {
+        // Header knowledge is not chainstate. Keep serving work rooted at the
+        // last fully validated active tip while the body is fetched and
+        // activation runs. Unsafe states (IBD/safe mode/no chainstate) have
+        // already failed closed above.
+        readiness.serving_active_tip_continuity = true;
+        readiness.reason = ReadinessReason::HeaderChainMismatch;
+        readiness.reason_code = "active_tip_continuity";
+        readiness.message = "Mining continuity: serving the fully validated active tip while header/body convergence recovers";
+    } else if (policy.require_header_convergence && !sync_snapshot.IsConverged()) {
         readiness.ready = false;
         readiness.reason = ReadinessReason::HeaderChainMismatch;
-        readiness.reason_code = "header_chain_mismatch";
-        readiness.message = "Mining backend unavailable: active tip does not match the best known header";
+        readiness.reason_code = "header_chain_unknown";
+        readiness.message = "Mining paused: header/active-tip state is unavailable";
         return readiness;
     }
 
@@ -286,7 +308,8 @@ inline MiningReadiness EvaluateMiningReadiness(const ChainstateService* chainsta
     const int64_t best_known_network_height =
         std::max(readiness.network_height_estimate, readiness.peer_best_height);
 
-    if (policy.require_fresh_tip && best_known_network_height > 0) {
+    if (policy.require_fresh_tip && best_known_network_height > 0 &&
+        !readiness.serving_active_tip_continuity) {
         if (best_known_network_height > readiness.local_height + readiness.max_tip_lag) {
             readiness.ready = false;
             readiness.reason = ReadinessReason::BehindPeerTip;

@@ -34,7 +34,62 @@ BlockDownloadScheduler::BlockDownloadScheduler(HeaderChainSelector* header_chain
 }
 
 BlockDownloadScheduler::~BlockDownloadScheduler() {
+    StopConvergenceDriver();
     g_logger.info("[BlockDownloadScheduler] Shutdown");
+}
+
+void BlockDownloadScheduler::StartConvergenceDriver() {
+    bool expected = false;
+    if (!driver_running_.compare_exchange_strong(expected, true)) return;
+    driver_stop_.store(false);
+    driver_thread_ = std::thread([this] {
+        g_logger.info("[BlockDownloadScheduler] convergence driver started");
+        while (!driver_stop_.load()) {
+            Tick();
+            const bool pending = HasPendingTipWork() || !IsFullySynchronized();
+            std::unique_lock<std::mutex> lock(driver_mutex_);
+            driver_cv_.wait_for(lock, pending ? std::chrono::milliseconds(150)
+                                              : std::chrono::seconds(2));
+        }
+        driver_running_.store(false);
+        g_logger.info("[BlockDownloadScheduler] convergence driver stopped");
+    });
+}
+
+void BlockDownloadScheduler::StopConvergenceDriver() {
+    driver_stop_.store(true);
+    driver_cv_.notify_all();
+    if (driver_thread_.joinable() &&
+        driver_thread_.get_id() != std::this_thread::get_id()) {
+        driver_thread_.join();
+    }
+    driver_running_.store(false);
+}
+
+void BlockDownloadScheduler::NotifyBestHeaderAccepted(
+    const uint256& hash, uint32_t height, const std::string& announcing_peer) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        (void)hash;
+        (void)height;
+        // A newly-best header is the activation frontier. Keep the cursor on it
+        // even if a bulk header window was queued previously.
+        for (size_t i = 0; i < missing_blocks_.size(); ++i) {
+            if (missing_blocks_[i].height == local_tip_height_ + 1) {
+                next_missing_idx_ = i;
+                if (!announcing_peer.empty()) {
+                    constexpr size_t kMaxAnnouncingPeers = 131072;
+                    if (announcing_peers_.size() >= kMaxAnnouncingPeers &&
+                        announcing_peers_.count(missing_blocks_[i].block_hash) == 0) {
+                        announcing_peers_.clear();
+                    }
+                    announcing_peers_[missing_blocks_[i].block_hash] = announcing_peer;
+                }
+                break;
+            }
+        }
+    }
+    driver_cv_.notify_all();
 }
 
 // ============================================================================
@@ -158,6 +213,7 @@ void BlockDownloadScheduler::OnBlockNotFound(const uint256& hash,
 // thread). thread_local because sends are dispatched outside mutex_.
 thread_local std::unordered_set<std::string>
     BlockDownloadScheduler::current_request_skip_peers_;
+thread_local std::string BlockDownloadScheduler::current_request_preferred_peer_;
 
 // Companion handoff slot: whether the getdata being dispatched right now is a
 // backfill request (lets the send callback pick MSG_BLOCK vs MSG_UTREEXO_BLOCK).
@@ -176,6 +232,10 @@ void BlockDownloadScheduler::StageGetdataLocked(const uint256& block_hash,
     deferred.block_hash = block_hash;
     deferred.height = block_height;
     deferred.for_backfill = for_backfill;
+    auto announcing = announcing_peers_.find(block_hash);
+    if (!for_backfill && announcing != announcing_peers_.end()) {
+        deferred.preferred_peer = announcing->second;
+    }
     if (block_height > 0) {
         // bug #4: consult ONLY the skip-set for this request's queue. A backfill
         // request ignores tip-queue demotions (and vice versa), so a peer that
@@ -209,17 +269,27 @@ void BlockDownloadScheduler::DispatchDeferredSends() {
     for (auto& deferred : sends) {
         // Same-thread handoff to the callback (see CurrentRequestSkipPeers).
         current_request_skip_peers_ = std::move(deferred.skip_peers);
+        current_request_preferred_peer_ = std::move(deferred.preferred_peer);
         current_request_is_backfill_ = deferred.for_backfill;
         callback(deferred.block_hash, deferred.height);
     }
     current_request_skip_peers_.clear();
+    current_request_preferred_peer_.clear();
     current_request_is_backfill_ = false;
 }
 
 void BlockDownloadScheduler::NotifyGetDataDispatched(const uint256& block_hash,
-                                                     size_t recipient_count) {
+                                                     size_t recipient_count,
+                                                     const std::string& chosen_peer) {
     if (recipient_count > 0) {
-        return;  // getdata reached at least one peer — normal path
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& fs : missing_blocks_) {
+            if (fs.block_hash == block_hash) {
+                fs.chosen_peer = chosen_peer;
+                break;
+            }
+        }
+        return;
     }
     // Zero-recipient send: the staged getdata was dispatched but the daemon's
     // per-block peer selection filtered out EVERY peer (CSN bridge filter +
@@ -384,6 +454,7 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block, FilePosition* s
     // Remove from in-flight and expected sets
     in_flight_blocks_.erase(block_hash);
     expected_blocks_.erase(block_hash);
+    announcing_peers_.erase(block_hash);
 
     // #309: persist the stored body's position metadata so a not-yet-connected
     // block (a competing side-branch above the active tip) is recognized by
@@ -537,6 +608,36 @@ void BlockDownloadScheduler::TickLocked() {
     // than the timeout, reset it to MISSING so it gets re-requested (potentially
     // to different peers that actually have the block).
     const auto now = std::chrono::steady_clock::now();
+
+    // One bounded operational snapshot while a canonical gap exists. This is
+    // deliberately rate-limited: the 150ms driver must not become a log storm.
+    if (!missing_blocks_.empty() &&
+        (last_convergence_diag_.time_since_epoch().count() == 0 ||
+         now - last_convergence_diag_ >= std::chrono::seconds(10))) {
+        const auto first = std::find_if(missing_blocks_.begin(), missing_blocks_.end(),
+            [](const BlockFetchState& fs) {
+                return fs.status != FetchStatus::CONNECTED;
+            });
+        HeaderIndexEntry best{};
+        const bool have_best = header_chain_ && header_chain_->GetBestHeaderCopy(best);
+        if (first != missing_blocks_.end()) {
+            const auto age_ms = first->status == FetchStatus::REQUESTED
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(now - first->request_time).count()
+                : 0;
+            g_logger.warning("[BlockDownloadScheduler] convergence: active_height=" +
+                std::to_string(local_tip_height_) + " best_header_height=" +
+                std::to_string(have_best ? best.height : 0) + " best_header_hash=" +
+                (have_best ? best.hash.GetHex().substr(0, 16) : std::string("unknown")) +
+                " first_missing_height=" + std::to_string(first->height) +
+                " first_missing_hash=" + first->block_hash.GetHex().substr(0, 16) +
+                " state=" + std::to_string(static_cast<int>(first->status)) +
+                " age_ms=" + std::to_string(age_ms) + " peer=" + first->chosen_peer +
+                " retries=" + std::to_string(first->retry_count) +
+                " last_progress_height=" + std::to_string(watchdog_last_progress_height_) +
+                " continuity_candidate=true");
+        }
+        last_convergence_diag_ = now;
+    }
     for (auto& fetch_state : missing_blocks_) {
         if (fetch_state.status == FetchStatus::REQUESTED) {
             // A relay or acceptance worker may have persisted this exact body
@@ -547,9 +648,14 @@ void BlockDownloadScheduler::TickLocked() {
             if (AdoptStoredTipBodyLocked(fetch_state)) {
                 continue;
             }
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                now - fetch_state.request_time).count();
-            if (elapsed >= stale_request_timeout_seconds_) {
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - fetch_state.request_time);
+            const bool activation_frontier = fetch_state.height == local_tip_height_ + 1;
+            const auto retry_deadline = activation_frontier
+                ? tip_retry_timeout_
+                : std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::seconds(stale_request_timeout_seconds_));
+            if (elapsed_ms >= retry_deadline) {
                 // issue #216: before re-requesting, check we don't ALREADY have
                 // the block. A block we requested can be received AND connected
                 // via a parallel path (BlockRelayManager -> chainstate) without
@@ -588,11 +694,15 @@ void BlockDownloadScheduler::TickLocked() {
                     received_blocks_.insert(fetch_state.block_hash);
                     continue;
                 }
-                g_logger.info("[BlockDownloadScheduler] Stale request expired: " +
+                ++fetch_state.retry_count;
+                g_logger.warning("[BlockDownloadScheduler] Request deadline expired: " +
                              fetch_state.block_hash.GetHex().substr(0, 16) +
                              "... (height " + std::to_string(fetch_state.height) +
-                             ", waited " + std::to_string(elapsed) + "s)");
+                             ", waited_ms " + std::to_string(elapsed_ms.count()) +
+                             ", peer=" + fetch_state.chosen_peer +
+                             ", retry=" + std::to_string(fetch_state.retry_count) + ")");
                 fetch_state.status = FetchStatus::MISSING;
+                fetch_state.chosen_peer.clear();
                 in_flight_blocks_.erase(fetch_state.block_hash);
             }
         }
@@ -1000,6 +1110,15 @@ bool BlockDownloadScheduler::IsFullySynchronized() const {
         }
     }
     return true;
+}
+
+bool BlockDownloadScheduler::HasPendingTipWork() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return std::any_of(missing_blocks_.begin(), missing_blocks_.end(),
+        [](const BlockFetchState& fs) {
+            return fs.status != FetchStatus::CONNECTED &&
+                   fs.status != FetchStatus::INVALID;
+        });
 }
 
 bool BlockDownloadScheduler::IsBlockExpected(const uint256& hash) const {
@@ -1907,7 +2026,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
         // that are on a better fork — connect them first to trigger the reorg.
         uint32_t actual_tip = get_tip_height_callback_
                                   ? get_tip_height_callback_()
-                                  : local_tip_height_;
+                                  : local_tip_height_.load();
         if (actual_tip < local_tip_height_) {
             actual_tip = local_tip_height_;
         }
