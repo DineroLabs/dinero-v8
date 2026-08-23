@@ -1,7 +1,21 @@
 # Mainnet CTV/CCV activation at block 100,000
 
-Status: scheduled consensus activation; release gated on reproducible
-open-source assurance and fleet readiness.
+Status: **SUPERSEDED AND DEFERRED** on 2026-08-22. Block 100,000 no longer
+activates CTV or CCV. Both mainnet heights are `UINT32_MAX`; this document is
+retained as the historical decision and must not be used as an active rollout
+plan. No replacement activation height is authorized.
+
+The complete upstream BIP119 transaction corpus exposed a material
+P2WSH/Taproot CLEANSTACK semantic defect after the original freeze. Project
+policy therefore requires a new review window rather than shortening the old
+one. The current deferred-parameter consensus checksum is:
+
+```text
+48bb4b27879a492dd8a83fd1e4826ec422f6b9ac3b1ae6797c9469783036c76e
+```
+
+See `../audits/COVENANT_DEFERRAL_2026-08-22.md`. Everything below this notice
+is historical and describes the superseded proposal.
 
 Decision date: 2026-08-01.
 

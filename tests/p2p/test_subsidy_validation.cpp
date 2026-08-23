@@ -8,8 +8,8 @@
  * - Genesis block coinbase
  * - First halving boundary
  * - Exact halving boundary (off-by-one detection)
- * - Last subsidy block (before fees-only era)
- * - Post-subsidy blocks (fees only)
+ * - Tail-emission transition and perpetual subsidy floor
+ * - Tail-emission blocks with transaction fees
  * - Overflow protection
  * - Invalid coinbase overpay detection
  * - Fee accumulation correctness
@@ -28,6 +28,7 @@
  */
 
 #include "../../include/p2p/consensus_validator.h"
+#include "../../include/consensus/subsidy.h"
 #include "../../include/primitives/hash_domains.h"  // Phase M.4.3-B: TxId type
 #include <chrono>
 #include <iostream>
@@ -249,11 +250,12 @@ void test_first_halving_boundary() {
     MockUTXOSnapshot utxo_view;
     ConsensusParams params;
 
-    // Dinero halving interval: 1,314,000 blocks
-    uint32_t halving_interval = 1314000;
-    uint32_t height_before = halving_interval - 1 + 2;  // +2 because PoW blocks start at height 2
-    uint32_t height_at = halving_interval + 2;           // First halving at height 1,314,002
-    uint32_t height_after = halving_interval + 1 + 2;    // Height 1,314,003
+    // PoW emission starts at height 1, so the first epoch covers heights
+    // 1..HALVING_INTERVAL and the first halved subsidy is the next height.
+    const uint32_t halving_interval = dinero::ConsensusSubsidy::HALVING_INTERVAL;
+    const uint32_t height_before = halving_interval;
+    const uint32_t height_at = halving_interval + 1;
+    const uint32_t height_after = halving_interval + 2;
 
     uint64_t subsidy_before = GetBlockSubsidy(height_before, params); // 100 DIN
     uint64_t subsidy_at = GetBlockSubsidy(height_at, params);         // 50 DIN
@@ -301,65 +303,59 @@ void test_first_halving_boundary() {
 }
 
 //=============================================================================
-// Test 4: Last Subsidy Block (Before Fees-Only Era)
+// Test 4: Tail Emission Transition
 //=============================================================================
 
-void test_last_subsidy_block() {
-    std::cout << "\n[Test 4] Last subsidy block (before fees-only era)" << std::endl;
+void test_tail_emission_transition() {
+    std::cout << "\n[Test 4] Perpetual tail-emission transition" << std::endl;
 
     ConsensusValidator validator;
     MockUTXOSnapshot utxo_view;
     ConsensusParams params;
 
-    // Dinero: 33 halvings until subsidy = 0
-    // Last subsidy block is at height: 2 + (1,314,000 * 33) - 1 = 43,364,001
-    uint32_t halving_interval = 1314000;
-    uint32_t last_subsidy_height = 2 + (halving_interval * 33) - 1;  // Last block before subsidy = 0
-    uint32_t first_fees_only_height = 2 + (halving_interval * 33);    // First block with subsidy = 0
+    // Epoch 6 still pays 1.5625 DIN; epoch 7 is floored to 1 DIN and every
+    // later epoch remains at that floor.
+    constexpr uint32_t tail_epoch = 7;
+    const uint32_t height_before = tail_epoch * dinero::ConsensusSubsidy::HALVING_INTERVAL;
+    const uint32_t height_at = height_before + 1;
+    const uint32_t far_future_height = 100 * dinero::ConsensusSubsidy::HALVING_INTERVAL + 1;
+    const uint64_t subsidy_before = GetBlockSubsidy(height_before, params);
+    const uint64_t subsidy_at = GetBlockSubsidy(height_at, params);
+    const uint64_t subsidy_future = GetBlockSubsidy(far_future_height, params);
 
-    uint64_t last_subsidy = GetBlockSubsidy(last_subsidy_height, params);
-    uint64_t first_fees_only_subsidy = GetBlockSubsidy(first_fees_only_height, params);
+    assert(subsidy_before > dinero::ConsensusSubsidy::TAIL_EMISSION_UNA);
+    assert(subsidy_at == dinero::ConsensusSubsidy::TAIL_EMISSION_UNA);
+    assert(subsidy_future == dinero::ConsensusSubsidy::TAIL_EMISSION_UNA);
 
-    assert(last_subsidy > 0 && "Last subsidy block should have non-zero subsidy");
-    assert(first_fees_only_subsidy == 0 && "First fees-only block should have zero subsidy");
+    auto coinbase = createCoinbase(subsidy_at, height_at);
+    auto block = createBlock(coinbase, {});
+    auto result = validator.validateBlock(block, height_at, utxo_view, params);
+    assert(result.ok && "First tail-emission block should pass");
+    assert(result.subsidy == dinero::ConsensusSubsidy::TAIL_EMISSION_UNA);
 
-    // Test last subsidy block
-    auto coinbase_last = createCoinbase(last_subsidy, last_subsidy_height);
-    auto block_last = createBlock(coinbase_last, {});
-    auto result_last = validator.validateBlock(block_last, last_subsidy_height, utxo_view, params);
+    auto zero_coinbase = createCoinbase(0, far_future_height);
+    auto future_block = createBlock(zero_coinbase, {});
+    auto future_result = validator.validateBlock(future_block, far_future_height, utxo_view, params);
+    assert(future_result.ok && "Claiming less than the maximum subsidy remains valid");
+    assert(future_result.subsidy == dinero::ConsensusSubsidy::TAIL_EMISSION_UNA);
 
-    assert(result_last.ok && "Last subsidy block should pass");
-    assert(result_last.subsidy == last_subsidy && "Last subsidy should be non-zero");
-
-    std::cout << "  [✓] Last subsidy block validated (subsidy=" << last_subsidy << ")" << std::endl;
-
-    // Test first fees-only block (no fees)
-    auto coinbase_fees_only = createCoinbase(0, first_fees_only_height); // Zero subsidy
-    auto block_fees_only = createBlock(coinbase_fees_only, {});
-    auto result_fees_only = validator.validateBlock(block_fees_only, first_fees_only_height, utxo_view, params);
-
-    assert(result_fees_only.ok && "Fees-only block with zero coinbase should pass");
-    assert(result_fees_only.subsidy == 0 && "Subsidy should be zero");
-    assert(result_fees_only.coinbase_value == 0 && "Coinbase should be zero");
-
-    std::cout << "  [✓] First fees-only block validated (subsidy=0)" << std::endl;
+    std::cout << "  [✓] Tail floor remains 1 DIN in the far future" << std::endl;
 }
 
 //=============================================================================
-// Test 5: Post-Subsidy Block with Fees Only
+// Test 5: Tail-Emission Block with Fees
 //=============================================================================
 
-void test_post_subsidy_with_fees() {
-    std::cout << "\n[Test 5] Post-subsidy block with fees only" << std::endl;
+void test_tail_emission_with_fees() {
+    std::cout << "\n[Test 5] Tail-emission block with fees" << std::endl;
 
     ConsensusValidator validator;
     MockUTXOSnapshot utxo_view;
     ConsensusParams params;
 
-    // After all halvings, subsidy = 0
-    uint32_t height = 2 + (1314000 * 33) + 1000; // Well past last subsidy
+    const uint32_t height = 100 * dinero::ConsensusSubsidy::HALVING_INTERVAL + 1;
     uint64_t subsidy = GetBlockSubsidy(height, params);
-    assert(subsidy == 0 && "Subsidy should be zero post-halving");
+    assert(subsidy == dinero::ConsensusSubsidy::TAIL_EMISSION_UNA);
 
     // Create transaction with fee
     uint256 prev_hash = uint256::FromHexUnsafe("0000000000000000000000000000000000000000000000000000000000000001");
@@ -374,18 +370,18 @@ void test_post_subsidy_with_fees() {
     prev_output.scriptPubKey = {0x51};
     utxo_view.addUTXO(regular_tx.inputs[0].prevout, prev_output);
 
-    // Coinbase claims only fees (no subsidy)
-    auto coinbase = createCoinbase(fee, height);
+    // Coinbase claims the perpetual tail subsidy plus fees.
+    auto coinbase = createCoinbase(subsidy + fee, height);
     auto block = createBlock(coinbase, {regular_tx});
 
     auto result = validator.validateBlock(block, height, utxo_view, params);
 
-    assert(result.ok && "Post-subsidy block with fees should pass");
-    assert(result.subsidy == 0 && "Subsidy should be zero");
+    assert(result.ok && "Tail-emission block with fees should pass");
+    assert(result.subsidy == dinero::ConsensusSubsidy::TAIL_EMISSION_UNA);
     assert(result.total_fees == fee && "Fees should be accumulated");
-    assert(result.coinbase_value == fee && "Coinbase should claim only fees");
+    assert(result.coinbase_value == subsidy + fee && "Coinbase should claim subsidy plus fees");
 
-    std::cout << "  [✓] Post-subsidy block with fees validated (fees=" << fee << ")" << std::endl;
+    std::cout << "  [✓] Tail subsidy plus fees validated (fees=" << fee << ")" << std::endl;
 }
 
 //=============================================================================
@@ -539,11 +535,11 @@ int main() {
         // Test 3: First halving boundary
         test_first_halving_boundary();
 
-        // Test 4: Last subsidy block
-        test_last_subsidy_block();
+        // Test 4: Tail-emission transition
+        test_tail_emission_transition();
 
-        // Test 5: Post-subsidy with fees
-        test_post_subsidy_with_fees();
+        // Test 5: Tail emission with fees
+        test_tail_emission_with_fees();
 
         // Test 6: Overflow protection
         test_overflow_protection();
@@ -572,8 +568,8 @@ int main() {
         std::cout << "  [✓] Genesis coinbase validated" << std::endl;
         std::cout << "  [✓] Regular block with fees" << std::endl;
         std::cout << "  [✓] First halving boundary" << std::endl;
-        std::cout << "  [✓] Last subsidy block" << std::endl;
-        std::cout << "  [✓] Post-subsidy with fees" << std::endl;
+        std::cout << "  [✓] Perpetual tail-emission transition" << std::endl;
+        std::cout << "  [✓] Tail subsidy with fees" << std::endl;
         std::cout << "  [✓] Overflow protection" << std::endl;
         std::cout << "  [✓] Multi-tx fee accumulation" << std::endl;
         std::cout << "  [✓] Deterministic validation" << std::endl;

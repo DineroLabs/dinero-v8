@@ -52,9 +52,13 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
 
 ## Activation policy
 
-- Mainnet CTV and CCV activate together at block **100,000**. Block 99,999
-  retains the historical NOP4/`OP_SUCCESS` meanings; block 100,000 is the first
-  block that enforces the profile-v1 CTV/CCV rules.
+- Mainnet CTV and CCV are deferred and dormant (`UINT32_MAX`). The previously
+  proposed block-100,000 activation was superseded after complete upstream
+  BIP119 transaction vectors exposed a material interpreter-semantic defect.
+  No replacement height is authorized by this change. The associated
+  consensus-loosening P2WSH/Taproot outer-stack correction is staged behind
+  the same CTV verification flag, so deferral preserves deployed mainnet
+  acceptance behavior during mixed-version operation.
 - Testnet CTV and CCV remain dormant (`UINT32_MAX`).
 - CSFS and TXHASH do not yet have an approved normative specification or
   external review. They remain dormant on every production network, and their
@@ -63,9 +67,8 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
   unaudited commitment extension.
 
 Regtest activates CTV and CCV at height 20 so boundary, wallet, recovery, and
-multi-node work can exercise the reviewed semantics. Mainnet height 100,000 is
-the separately scheduled production boundary; the regtest height is not its
-source.
+multi-node work can exercise the candidate semantics. Mainnet remains dormant;
+the regtest height is not a production activation signal.
 
 The regtest wallet refuses to construct spends before the candidate height has
 the relevant rule active. Mempool admission and block-template selection also
@@ -74,7 +77,7 @@ opcode's activation height while preserving historical consensus NOP/
 `OP_SUCCESS` behavior. `CovenantSystemLifecycle` separates Taproot script-path
 activation from the CTV boundary and proves admission, mining selection,
 rollback, revalidation, and restart behavior across it. Production release
-candidates must repeat this evidence with the height-100,000 parameters.
+candidates must repeat this evidence at any newly proposed production boundary.
 
 ## Interpreter conformance evidence
 
@@ -112,7 +115,7 @@ that no unspent output contains a dormant covenant leaf. The activation is a
 coordinated soft fork and must not treat absence of revealed historical use as
 a substitute for deployment discipline.
 
-## Release gates before block 100,000
+## Release gates before any future mainnet activation
 
 1. Complete the reproducible open-source assurance record: frozen
    specification and release commit, an implementation-independent CCV
@@ -121,15 +124,17 @@ a substitute for deployment discipline.
    resolution of every reported critical/high finding, and explicit owner
    acceptance of residual unaudited risk.
 2. Repeat the activation-boundary, wallet-recovery, and multi-node deployment
-   tests against the exact release candidate carrying height 100,000.
-3. Deploy that identical release to every validating node by height 99,000 and
-   verify the expected consensus checksum, tip, peer set, and block-template
-   behavior on each node.
-4. If either assurance completion or fleet deployment misses the height-99,000
-   checkpoint, do not compress the rollout window. Schedule a later activation
-   height in a new coordinated release.
+   tests against the exact release candidate carrying the newly reviewed
+   height.
+3. Define a conservative go/no-go checkpoint, deploy the identical release to
+   every validating node before it, and verify the expected consensus checksum,
+   tip, peer set, and block-template behavior on each node.
+4. If either assurance completion or fleet deployment misses that checkpoint,
+   do not compress the rollout window. Schedule a later activation height in a
+   new coordinated release.
 
-The final height decision was recorded at mainnet tip 76,663, leaving 23,337
-blocks. External review remains invited, but the achievable release gate is
-the objective open-source assurance record plus release-candidate evidence.
-The detailed operator plan is `COVENANT_MAINNET_ACTIVATION_100000.md`.
+The old height decision and its supersession are retained for audit in
+`COVENANT_MAINNET_ACTIVATION_100000.md`. External review remains invited, but
+the release gate is the objective open-source assurance record plus
+release-candidate evidence. The deferral record is
+`../audits/COVENANT_DEFERRAL_2026-08-22.md`.

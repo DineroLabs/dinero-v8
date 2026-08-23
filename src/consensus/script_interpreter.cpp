@@ -1797,6 +1797,18 @@ bool VerifyScript(
                         return false;
                     }
 
+                    // The deployed interpreter leaves the witness version and
+                    // program on the outer stack, rejecting otherwise-valid
+                    // P2WSH under the final CLEANSTACK check. Correcting that is
+                    // consensus-loosening, so stage it behind the same deferred
+                    // CTV flag that authorized the imported BIP119 corpus. This
+                    // preserves mainnet acceptance behavior until a coordinated
+                    // covenant-profile activation.
+                    if (ctx.flags & SCRIPT_VERIFY_CHECKTEMPLATEVERIFY) {
+                        stack.clear();
+                        stack.push_back({0x01});
+                    }
+
                 } else {
                     error = ScriptError::WITNESS_PROGRAM_WRONG_LENGTH;
                     return false;
@@ -1922,6 +1934,24 @@ bool VerifyScript(
                             error = ScriptError::EVAL_FALSE;
                             return false;
                         }
+
+                        // BIP342 requires a single true stack element after
+                        // tapscript execution. Check the executed stack here,
+                        // before replacing the witness-program placeholder on
+                        // the outer scriptPubKey stack.
+                        if (tap_stack.size() != 1) {
+                            error = ScriptError::CLEANSTACK;
+                            return false;
+                        }
+                    }
+
+                    // As with P2WSH above, correcting the outer-stack result is
+                    // consensus-loosening relative to deployed nodes. Couple it
+                    // to the deferred CTV flag so mixed-version mainnet fleets
+                    // cannot disagree before a coordinated activation.
+                    if (ctx.flags & SCRIPT_VERIFY_CHECKTEMPLATEVERIFY) {
+                        stack.clear();
+                        stack.push_back({0x01});
                     }
                 }
             }

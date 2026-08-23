@@ -421,7 +421,10 @@ std::vector<uint256> HeaderChainSelector::BuildLocatorCopy(size_t max_entries) c
     // Mirrors the previous GetHeaderLocator() walk exactly, but every step
     // resolves under THIS lock, so no pointer escapes and the whole locator
     // reflects one consistent chain state (#441).
-    locator.reserve(max_entries);
+    // Keep one extra slot for genesis. Bitcoin-style locators always terminate
+    // at the common root even when exponential backoff exhausts the caller's
+    // ordinary entry budget.
+    locator.reserve(max_entries + 1);
 
     const HeaderIndexEntry* current = best_header_;
     uint32_t height = best_header_->height;
@@ -440,6 +443,14 @@ std::vector<uint256> HeaderChainSelector::BuildLocatorCopy(size_t max_entries) c
 
         if (locator.size() > 1) {
             step *= 2;
+        }
+    }
+
+    if (best_header_->height > 0) {
+        const HeaderIndexEntry* genesis = best_header_->GetAncestor(0);
+        if (genesis != nullptr &&
+            (locator.empty() || locator.back() != genesis->hash)) {
+            locator.push_back(genesis->hash);
         }
     }
 

@@ -9,6 +9,15 @@
 
 namespace dinero {
 
+namespace {
+bool HasCompleteCompactSize(const std::vector<uint8_t>& data, size_t pos) {
+    if (pos >= data.size()) return false;
+    const uint8_t first = data[pos];
+    const size_t encoded_size = first < 0xfd ? 1 : first == 0xfd ? 3 : first == 0xfe ? 5 : 9;
+    return encoded_size <= data.size() - pos;
+}
+} // namespace
+
 // P2PMessage base class implementation
 
 std::shared_ptr<P2PMessage> P2PMessage::createFromData(const std::string& command, const std::vector<uint8_t>& payload) {
@@ -360,9 +369,12 @@ std::vector<uint8_t> InvMessage::serialize() const {
 
 bool InvMessage::deserialize(const std::vector<uint8_t>& data) {
     size_t pos = 0;
+    if (!HasCompleteCompactSize(data, pos)) return false;
     uint64_t count = readVarInt(data, pos);
 
-    if (count > 50000) return false; // Sanity check
+    constexpr size_t kInventoryVectorBytes = sizeof(uint32_t) + 32;
+    if (count > MAX_INV_SIZE || pos > data.size() ||
+        count > (data.size() - pos) / kInventoryVectorBytes) return false;
 
     inventory.clear();
     inventory.reserve(count);
@@ -379,7 +391,7 @@ bool InvMessage::deserialize(const std::vector<uint8_t>& data) {
         inventory.push_back(inv);
     }
     
-    return true;
+    return pos == data.size();
 }
 
 // GetdataMessage implementation
@@ -400,9 +412,12 @@ std::vector<uint8_t> GetdataMessage::serialize() const {
 
 bool GetdataMessage::deserialize(const std::vector<uint8_t>& data) {
     size_t pos = 0;
+    if (!HasCompleteCompactSize(data, pos)) return false;
     uint64_t count = readVarInt(data, pos);
 
-    if (count > 50000) return false; // Sanity check
+    constexpr size_t kInventoryVectorBytes = sizeof(uint32_t) + 32;
+    if (count > MAX_INV_SIZE || pos > data.size() ||
+        count > (data.size() - pos) / kInventoryVectorBytes) return false;
 
     inventory.clear();
     inventory.reserve(count);
@@ -419,7 +434,7 @@ bool GetdataMessage::deserialize(const std::vector<uint8_t>& data) {
         inventory.push_back(inv);
     }
 
-    return true;
+    return pos == data.size();
 }
 
 // BlockMessage implementation

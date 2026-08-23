@@ -68,6 +68,22 @@ if(DINERO_USE_VENDORED_DEPS)
     -DWITH_SYNC_POINT=OFF
   )
 
+  # ExternalProject has an isolated CMake directory and therefore does not
+  # inherit the top-level add_compile_options() reproducibility policy. Without
+  # explicit prefix maps, RocksDB embeds the checkout path in DWARF and in its
+  # file-name logging strings; two otherwise identical builders then produce
+  # different final dinerod bytes. Map the parent source/build roots to the same
+  # canonical names used by ReproducibleBuild.cmake.
+  if(DINERO_REPRODUCIBLE_BUILD AND
+     CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    set(_rocksdb_repro_flags
+      "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -fdebug-prefix-map=${CMAKE_SOURCE_DIR}=. -fmacro-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=./build -fdebug-prefix-map=${CMAKE_BINARY_DIR}=./build -fmacro-prefix-map=${CMAKE_BINARY_DIR}=./build -fno-record-gcc-switches -Wdate-time")
+    list(APPEND _rocksdb_cmake_args
+      "-DCMAKE_C_FLAGS=${_rocksdb_repro_flags}"
+      "-DCMAKE_CXX_FLAGS=${_rocksdb_repro_flags}"
+    )
+  endif()
+
   if(APPLE)
     list(APPEND _rocksdb_cmake_args -DFORCE_NO_LIBATOMIC=ON)
     if(CMAKE_OSX_SYSROOT)

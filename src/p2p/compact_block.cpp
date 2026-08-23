@@ -366,10 +366,6 @@ bool CompactBlockCodec::ReconstructPartialBlock(
     Block& out_partial_block,
     std::vector<uint32_t>& out_missing_indexes
 ) {
-    if (!mempool) {
-        return false;
-    }
-
     // Calculate total transaction count
     size_t tx_count = compact.short_txids.size() + compact.prefilled.size();
     out_partial_block = Block{};
@@ -395,18 +391,23 @@ bool CompactBlockCodec::ReconstructPartialBlock(
     std::unordered_map<uint64_t, Transaction> short_to_tx;
     std::unordered_set<uint64_t> collisions;
 
-    mempool->forEachEntry([&](const MempoolEntry& entry) {
-        const Transaction& tx = entry.tx;
-        TxId txid = tx.GetTxid();
-        uint64_t short_txid = ComputeShortTxId(block_hash, compact.nonce, txid.AsUint256());
+    // A missing mempool is equivalent to an empty mempool for reconstruction:
+    // the compact structure can still be validated and every non-prefilled
+    // transaction requested via getblocktxn. It is not a malformed block.
+    if (mempool != nullptr) {
+        mempool->forEachEntry([&](const MempoolEntry& entry) {
+            const Transaction& tx = entry.tx;
+            TxId txid = tx.GetTxid();
+            uint64_t short_txid = ComputeShortTxId(block_hash, compact.nonce, txid.AsUint256());
 
-        auto [it, inserted] = short_to_tx.emplace(short_txid, tx);
-        if (!inserted) {
-            // Collision: mark and remove ambiguous entry
-            collisions.insert(short_txid);
-            short_to_tx.erase(it);
-        }
-    });
+            auto [it, inserted] = short_to_tx.emplace(short_txid, tx);
+            if (!inserted) {
+                // Collision: mark and remove ambiguous entry
+                collisions.insert(short_txid);
+                short_to_tx.erase(it);
+            }
+        });
+    }
 
     // Match short txids to transactions
     uint32_t next_unfilled_index = 0;

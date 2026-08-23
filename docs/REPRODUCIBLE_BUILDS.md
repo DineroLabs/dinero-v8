@@ -1,362 +1,116 @@
-# Reproducible Builds - DineroCoin v1.0
+# Reproducible Dinero Builds
 
-**Status:** Phase Z.1 - Build Reproducibility Foundation
-**Date:** 2025-12-31
-**Objective:** Bit-for-bit identical binaries from the same git tag
+Status: Linux `dinerod` is guarded by an independent two-builder CI comparison.
+macOS and Windows release artifacts are not yet claimed to be reproducible.
 
----
+Reproducibility is a supply-chain property: a fixed source commit, toolchain,
+dependency set, and build configuration must produce a byte-identical binary.
+It is separate from consensus compatibility, canary deployment, code signing,
+and notarization.
 
-## Executive Summary
+## Verified scope
 
-**"Trust, but verify."**
+The live `Reproducible Linux daemon` workflow builds the same commit twice on
+separately provisioned Ubuntu 24.04 runners. The checkouts deliberately use
+different absolute source paths (`source-alpha` and `source-beta`), neither
+builder consumes an object cache, and a third job compares both `dinerod`
+files byte-for-byte and by SHA-256.
 
-Reproducible builds allow independent operators to verify that published binaries match the source code, eliminating supply-chain attacks and build tampering.
+The workflow records the commit, `SOURCE_DATE_EPOCH`, compiler, CMake, Rust,
+and resulting SHA-256 in downloadable evidence. It runs when the reproducible
+build policy changes, weekly, and on manual dispatch.
 
-Two operators, on different machines, building from the same git tag, **must** produce identical SHA256 hashes.
+This proves reproducibility only inside the declared Linux builder contract.
+It does not claim that different compilers, distributions, architectures, or
+dependency versions produce the same bytes. Such environments can still
+produce consensus-compatible binaries, but that is a different claim.
 
----
+The Linux contract matches the Linux release posture by disabling optional
+UPnP/NAT-PMP router port mapping. Those libraries do not affect consensus and
+are intentionally excluded so independent verification does not depend on an
+unrelated external download host.
 
-## Guarantees (Phase Z.1)
+## Canonical configuration
 
-Phase Z.1 provides:
-- ✅ **Deterministic binaries** - Same input → same output
-- ✅ **Auditable artifacts** - Published hashes for verification
-- ✅ **Supply-chain transparency** - No hidden modifications
-- ✅ **Operator trust** - Verify before running
-
-Phase Z.1 does NOT provide:
-- ❌ No code refactors
-- ❌ No performance tuning
-- ❌ No dependency upgrades (unless strictly required)
-- ❌ No consensus changes
-- ❌ No runtime behavior changes
-
----
-
-## Supported Build Matrix (v1.0)
-
-### Conservative Platform Support
-
-We support reproducible builds on platforms commonly used by node operators:
-
-| Platform            | Architecture | Toolchain     | Status |
-|---------------------|--------------|---------------|--------|
-| Ubuntu 22.04 LTS    | x86_64       | GCC 11        | ✅ Primary |
-| Ubuntu 22.04 LTS    | x86_64       | Clang 15      | ✅ Tested |
-| macOS 13 (Ventura)  | arm64        | AppleClang 14 | ✅ Tested |
-| macOS 13 (Ventura)  | x86_64       | AppleClang 14 | ✅ Tested |
-
-### Deferred Platforms
-
-- **Windows (MSVC)**: Deferred to v1.1 (MSVC reproducibility requires additional tooling)
-- **FreeBSD**: Community-supported (not officially tested)
-- **Alpine Linux**: Community-supported (musl libc differences)
-
-**Rationale:** Start conservative. Focus on platforms where reproducibility is well-understood.
-
----
-
-## Build Environment Requirements
-
-### Compiler Versions (Strict)
-
-**GCC:**
-- Version: 11.4.0
-- Source: `apt install gcc-11 g++-11` (Ubuntu 22.04)
-- Verification: `gcc-11 --version`
-
-**Clang:**
-- Version: 15.0.7
-- Source: `apt install clang-15` (Ubuntu 22.04)
-- Verification: `clang-15 --version`
-
-**AppleClang (macOS):**
-- Version: 14.0.x (Xcode 14.x)
-- Source: Xcode Command Line Tools
-- Verification: `clang --version`
-
-**CMake:**
-- Version: 3.26.x or higher
-- Source: `apt install cmake` or Homebrew
-- Verification: `cmake --version`
-
-**Version Mismatches:**
-- Minor version differences may produce different binaries
-- Always use the exact versions listed above for release builds
-- CI enforces version checks (soft warning, not hard failure)
-
-### Dependency Pinning
-
-See [DEPENDENCIES.md](DEPENDENCIES.md) for complete dependency list with:
-- Exact versions
-- Source URLs
-- SHA256 hashes
-- Git commit hashes (for git dependencies)
-
-**Critical Rule:** No `latest` versions. All dependencies pinned.
-
----
-
-## Deterministic Build Flags
-
-### Environment Variables (Mandatory)
+Use the timestamp of the commit being built, not the current time:
 
 ```bash
-# Eliminate timestamp drift
-export SOURCE_DATE_EPOCH=1700000000  # 2023-11-15 00:00:00 UTC
-
-# Eliminate locale drift
+export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
 export TZ=UTC
 export LC_ALL=C
 
-# Eliminate path leaks
-export HOME=/reproducible
-export USER=builder
+cmake -S . -B build-repro -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DDINERO_REPRODUCIBLE_BUILD=ON \
+  -DDINERO_USE_VENDORED_DEPS=ON \
+  -DDINERO_ENABLE_PORTMAPPING=OFF \
+  -DENABLE_GRPC=OFF
+cmake --build build-repro --target dinerod -j2
+sha256sum build-repro/dinerod
 ```
 
-### Compiler Flags
+`DINERO_REPRODUCIBLE_BUILD=ON` refuses to configure without
+`SOURCE_DATE_EPOCH`. Its CMake policy:
 
-**GCC/Clang:**
-```cmake
--fno-record-gcc-switches  # Don't embed compiler command line
--Wdate-time               # Warn on __DATE__, __TIME__ usage
--fdebug-prefix-map=$PWD=. # Normalize debug paths
-```
+- maps source and build roots out of file names, macros, and debug metadata;
+- replaces the compiled development-only schema fallback with a stable
+  repository-relative path;
+- propagates the same canonical source/build mappings into the isolated
+  vendored RocksDB build;
+- warns if first-party code uses time-dependent compiler macros;
+- requests deterministic archive metadata;
+- removes non-semantic ELF build IDs (Mach-O keeps the UUID required by
+  current Apple loaders and is outside the verified reproducibility scope); and
+- enables MSVC reproducibility/path mapping when that lane is eventually
+  promoted to a verified contract.
 
-**CMake Configuration:**
-```cmake
-set(CMAKE_SKIP_RPATH TRUE)
-set(CMAKE_BUILD_RPATH "")
-set(CMAKE_INSTALL_RPATH "")
-set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
-```
+Release scripts that export `SOURCE_DATE_EPOCH` enable this policy by default.
+Ordinary developer builds remain unchanged unless the option is explicitly
+enabled.
 
-**Rationale:**
-- Eliminates build timestamps
-- Eliminates absolute paths in binaries
-- Eliminates locale-dependent behavior
-- Enables bit-for-bit reproducibility
+## Independent verification
 
----
+1. Verify the signed release tag and check out that exact commit.
+2. Use the same OS image, compiler, Rust version, dependency pins, and CMake
+   options recorded by the release's reproducibility evidence.
+3. Build with the canonical environment above.
+4. Compare the unmodified `dinerod` SHA-256 with the published verified hash.
+5. If it differs, do not describe the release as reproduced. Preserve both
+   binaries and manifests and inspect them with `diffoscope`.
 
-## Canonical Build Script
-
-**Location:** `contrib/build-deterministic.sh`
-
-**Usage:**
-```bash
-git checkout v1.0.0-rc1
-./contrib/build-deterministic.sh
-```
-
-**Responsibilities:**
-1. Verify compiler versions
-2. Verify dependency hashes
-3. Set deterministic environment
-4. Build in clean directory
-5. Produce binaries: `dinerod`, `dinero-cli`
-6. Output SHA256 hashes
-
-**Critical:** This is the **only** supported build path for release verification.
-
----
-
-## Verification Procedure
-
-### Step 1: Checkout Release Tag
+The repository comparison helper can be used directly:
 
 ```bash
-git clone https://github.com/Trucker2827/Dinero-Coin.git
-cd Dinero-Coin
-git checkout v1.0.0-rc1
-git verify-tag v1.0.0-rc1  # Verify GPG signature (if available)
+python3 scripts/ci/compare_reproducible_builds.py \
+  /path/to/independent-a/dinerod \
+  /path/to/independent-b/dinerod
 ```
 
-### Step 2: Build Deterministically
+## Release claims
 
-```bash
-./contrib/build-deterministic.sh
-```
+Release notes must distinguish these statements:
 
-**Expected Output:**
-```
-[Build Log...]
-✅ Build complete
-SHA256(dinerod)     = a1b2c3d4e5f6...
-SHA256(dinero-cli)  = f6e5d4c3b2a1...
-```
+- `dinerod` matched the two-builder Linux reproducibility gate;
+- published checksums were signed by the release key;
+- macOS artifacts were Developer ID signed and Apple notarized; and
+- a canary remained consensus-compatible with the deployed network.
 
-### Step 3: Compare Hashes
+One statement does not imply the others. In particular, Apple signing and
+notarization add identity and timestamped service metadata, so the final DMG,
+ZIP, and signed app bundle are not currently promised to be byte-identical.
+The unsigned embedded daemon can be compared separately.
 
-```bash
-cat docs/RELEASE_HASHES_v1.0.0-rc1.txt
-```
+## Failure classification
 
-**Expected Result:**
-```
-a1b2c3d4e5f6... dinerod
-f6e5d4c3b2a1... dinero-cli
-```
+When two builds differ, classify the difference before changing code:
 
-**Verification:**
-```bash
-sha256sum -c docs/RELEASE_HASHES_v1.0.0-rc1.txt
-```
+- absolute source/build path leakage;
+- timestamps or `__DATE__`/`__TIME__` use;
+- archive member metadata;
+- linker build ID, UUID, or link ordering;
+- compiler, SDK, libc, Rust, or dependency drift; or
+- genuine code-generation nondeterminism.
 
-✅ **Success:** `dinerod: OK`
-✅ **Success:** `dinero-cli: OK`
-
-❌ **Failure:** Hashes do not match → **DO NOT RUN BINARY**
-
----
-
-## What Breaks Reproducibility (Failure Modes)
-
-### Known Failure Modes
-
-1. **Compiler Version Mismatch**
-   - GCC 11.3 vs 11.4 may produce different codegen
-   - Solution: Use exact versions from build matrix
-
-2. **Different libc**
-   - glibc 2.35 vs 2.36 may embed different symbols
-   - Solution: Build on Ubuntu 22.04 LTS
-
-3. **Different CPU Target Flags**
-   - `-march=native` embeds host CPU features
-   - Solution: Use generic target (`-march=x86-64`)
-
-4. **Filesystem Ordering**
-   - Different filesystems may iterate files differently
-   - Solution: Sort inputs (CMake does this by default)
-
-5. **Non-UTC Locale**
-   - Date formatting may differ
-   - Solution: `export TZ=UTC LC_ALL=C`
-
-6. **Debug vs Release Builds**
-   - `-DCMAKE_BUILD_TYPE=Debug` embeds debug symbols
-   - Solution: Always use `Release` for verification
-
-7. **LTO (Link-Time Optimization) Differences**
-   - Different LTO implementations may reorder code
-   - Solution: Disable LTO for release builds (for now)
-
-### Debugging Reproducibility Failures
-
-If hashes don't match:
-
-1. **Compare build environments:**
-   ```bash
-   gcc --version
-   clang --version
-   cmake --version
-   ldd --version
-   ```
-
-2. **Check environment variables:**
-   ```bash
-   echo $SOURCE_DATE_EPOCH
-   echo $TZ
-   echo $LC_ALL
-   ```
-
-3. **Binary diff (advanced):**
-   ```bash
-   diffoscope dinerod-build1 dinerod-build2
-   ```
-
-4. **Report to developers:**
-   - Open GitHub issue
-   - Attach build log
-   - Attach environment details
-
----
-
-## CI Validation (Optional)
-
-**If CI is available:**
-- Run deterministic build twice
-- Compare SHA256 hashes
-- Fail CI if mismatch
-
-**If not available:**
-- Manual verification by release manager
-- Documented in release notes
-- Community verification encouraged
-
-**Status:** Manual verification for v1.0 (CI automation deferred to v1.1)
-
----
-
-## Reproducible Build Freeze
-
-**Contract:**
-
-Any change that breaks reproducibility requires:
-1. Explicit justification (security fix, critical bug)
-2. Updated reference hashes
-3. New release tag (e.g., v1.0.1)
-4. Public disclosure in release notes
-
-**Rationale:**
-
-Breaking reproducibility without disclosure is a **supply-chain vulnerability**.
-
----
-
-## Release Process Integration
-
-### Pre-Release Checklist
-
-Before tagging a release:
-- [ ] All dependencies pinned in `DEPENDENCIES.md`
-- [ ] Deterministic build script tested
-- [ ] Reference hashes generated
-- [ ] At least 2 independent operators verify hashes
-- [ ] GPG-signed tag created
-- [ ] Release notes include hash verification instructions
-
-### Post-Release Verification
-
-After publishing binaries:
-- Community members verify hashes
-- Results published (GitHub Discussions, Reddit, Discord)
-- Mismatches trigger immediate investigation
-
----
-
-## Audit Trail
-
-Phase Z.1 establishes **reproducible build foundation**:
-
-1. **Phase D** - Consensus frozen ✅
-2. **Phase E.1** - Crash safety ✅
-3. **Phase E.2** - Resource exhaustion protection ✅
-4. **Phase E.3** - CPU timeout enforcement ✅
-5. **Phase E.3.1** - Operational observability ✅
-6. **Phase H** - Headers-first sync ✅
-7. **Phase Z.1** - Reproducible builds ← **YOU ARE HERE** 🔨
-
-**Next:** Phase Z.2 (Configuration Guarantees)
-
----
-
-## References
-
-- [Reproducible Builds Project](https://reproducible-builds.org/)
-- [Bitcoin Core Deterministic Builds](https://github.com/bitcoin/bitcoin/blob/master/doc/gitian-building.md)
-- [Debian Reproducible Builds](https://wiki.debian.org/ReproducibleBuilds)
-- [SOURCE_DATE_EPOCH Specification](https://reproducible-builds.org/specs/source-date-epoch/)
-
----
-
-**Phase Z.1: Reproducible Builds - Foundation Complete**
-
-**Trust guarantee:**
-- ✅ Deterministic binaries
-- ✅ Auditable artifacts
-- ✅ Supply-chain transparency
-- ✅ Operator verification
-
-**Node operators can verify before trusting.**
+Record irreducible differences honestly. A signed artifact with a published
+hash still has verifiable provenance, but it is not independently reproducible
+until another declared builder produces the same bytes.

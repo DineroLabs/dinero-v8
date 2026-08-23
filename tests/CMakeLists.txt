@@ -2,6 +2,16 @@
 # instead of added as a subdirectory. The legacy test definitions below use
 # root-relative source paths and root-scope CTest properties.
 
+# Release builds define NDEBUG globally, but a test build must never compile
+# its assertions out. Keep this after the Release flags so -U wins over
+# CMake's earlier -DNDEBUG. A dedicated compile/runtime tripwire below proves
+# the policy is active in the exact configuration CI uses.
+if(MSVC)
+  add_compile_options(/UNDEBUG)
+else()
+  add_compile_options(-UNDEBUG)
+endif()
+
 # Add GoogleTest for unit testing
 #
 # Strategy:
@@ -11,6 +21,15 @@
 
 # Tests (only if we have working test files)
 enable_testing()
+
+add_executable(test_assertions_enabled
+  tests/test_assertions_enabled.cpp
+)
+add_test(NAME AssertionsEnabled COMMAND test_assertions_enabled)
+set_tests_properties(AssertionsEnabled PROPERTIES
+  LABELS "ci;test-integrity;smoke"
+  TIMEOUT 5
+)
 
 # This policy is intentionally pure C++ and registered in the default test
 # build, not qt/CMakeLists.txt. CI builds with DINERO_BUILD_QT=OFF, so keeping
@@ -3626,6 +3645,20 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_stale_tip_recovery.cpp)
   message(STATUS "✅ StaleTipRecovery (#214) deterministic test enabled")
 endif()
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_request_peer_order.cpp)
+  add_executable(test_block_request_peer_order
+    tests/daemon/test_block_request_peer_order.cpp
+  )
+  target_include_directories(test_block_request_peer_order PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME BlockRequestPeerOrder COMMAND test_block_request_peer_order)
+  set_tests_properties(BlockRequestPeerOrder PROPERTIES
+    LABELS "daemon;p2p;assumeutxo;backfill"
+    TIMEOUT 30
+  )
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_header_refresh_coalescer.cpp)
   add_executable(test_header_refresh_coalescer
     tests/services/test_header_refresh_coalescer.cpp
@@ -4507,6 +4540,8 @@ target_include_directories(test_bip119_ctv_vectors PRIVATE
 # when ctest runs it from a different cwd.
 target_compile_definitions(test_bip119_ctv_vectors PRIVATE
   DINERO_BIP119_CTVHASH_JSON="${CMAKE_SOURCE_DIR}/tests/vectors/bip119_ctvhash.json"
+  DINERO_BIP119_TX_VALID_JSON="${CMAKE_SOURCE_DIR}/tests/vectors/bip119_tx_valid.json"
+  DINERO_BIP119_TX_INVALID_JSON="${CMAKE_SOURCE_DIR}/tests/vectors/bip119_tx_invalid.json"
 )
 add_test(NAME BIP119CTVVectors COMMAND test_bip119_ctv_vectors)
 set_tests_properties(BIP119CTVVectors PROPERTIES
@@ -11372,6 +11407,7 @@ if(NOT WIN32 AND EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_restore_res
     set_tests_properties(WalletRestoreRescan PROPERTIES
       LABELS "phase-w1;wallet;restore;rescan;critical;e2e"
       TIMEOUT 180
+      RESOURCE_LOCK dinero_daemon_process
     )
     message(STATUS "  ✓ Phase W.1 test registered: test_wallet_restore_rescan (dinerod available)")
   else()

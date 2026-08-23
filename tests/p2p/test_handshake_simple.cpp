@@ -42,14 +42,11 @@ void test_basic_handshake() {
     // Create test network
     TestNetwork network;
 
-    // Use randomized ports instead of the regtest defaults. A developer may
-    // already have dinero-qt/DineroDPI listening on 21000/21001, and a test
-    // must never handshake with that unrelated process.
-    const uint16_t alice_port = get_random_test_port();
-    uint16_t bob_port = get_random_test_port();
-    while (bob_port == alice_port) bob_port = get_random_test_port();
-    TestNode* alice = network.add_node("Alice", alice_port);
-    TestNode* bob = network.add_node("Bob", bob_port);
+    // Port 0 delegates allocation to the kernel and the harness publishes the
+    // actual bound ports after start. A test can never share 21000/21001 with
+    // a real dinero-qt/DineroDPI process again.
+    TestNode* alice = network.add_node("Alice", 0);
+    TestNode* bob = network.add_node("Bob", 0);
 
     require(alice != nullptr, "Alice node should be created");
     require(bob != nullptr, "Bob node should be created");
@@ -57,6 +54,10 @@ void test_basic_handshake() {
     // Start both nodes
     std::cout << "  Starting nodes..." << std::endl;
     require(network.start_all(), "Both nodes should start successfully");
+    const uint16_t alice_port = alice->get_port();
+    const uint16_t bob_port = bob->get_port();
+    require(alice_port != 0 && bob_port != 0 && alice_port != bob_port,
+            "kernel must assign distinct nonzero listener ports");
 
     // Wait for nodes to be fully running
     std::this_thread::sleep_for(std::chrono::milliseconds(200));

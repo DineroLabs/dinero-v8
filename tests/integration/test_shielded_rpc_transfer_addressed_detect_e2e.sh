@@ -16,6 +16,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=helpers/daemon_process_cleanup.sh
+source "${ROOT_DIR}/tests/integration/helpers/daemon_process_cleanup.sh"
 DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 
 DATA_DIR="/tmp/dinero_xfer_addr_detect_$$"
@@ -32,11 +34,12 @@ fail() {
     exit 1
 }
 cleanup() {
-    [[ -n "${PID}" ]] && kill "${PID}" 2>/dev/null || true
-    pkill -f "dinerod.*${DATA_DIR}" 2>/dev/null || true
-    if [[ "${KEEP_ON_FAIL}" != "1" ]]; then
-        rm -rf "${DATA_DIR}" "${LOG_FILE}"
-    fi
+    local test_rc=$?
+    trap - EXIT
+    set +e
+    dinero_cleanup_single_daemon "${test_rc}" "${PID}" "${DATA_DIR}" \
+        "${KEEP_ON_FAIL}" "address-detection daemon" "${DATA_DIR}" "${LOG_FILE}"
+    exit $?
 }
 trap cleanup EXIT
 
@@ -94,9 +97,7 @@ start_node() {
 }
 
 require_tools
-RPC_PORT=$((40000 + RANDOM % 1000))
-P2P_PORT=$((RPC_PORT + 1))
-WALLET_PORT=$((RPC_PORT + 2))
+read -r RPC_PORT P2P_PORT WALLET_PORT < <(dinero_allocate_port_triplet)
 
 start_node
 wait_rpc || fail "daemon did not reach RPC readiness"

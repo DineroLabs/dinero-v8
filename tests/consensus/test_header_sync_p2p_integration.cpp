@@ -19,6 +19,7 @@
 
 #include "consensus/header_sync_p2p.h"
 #include "consensus/header_chain.h"
+#include "consensus/chainparams.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include <iostream>
@@ -332,6 +333,7 @@ void Test5_CallbackIntegration() {
 // ============================================================================
 
 int main() {
+    SelectParams(Chain::REGTEST);
     std::cout << "=== Phase N.2 Step 2C: Header Sync P2P Integration Test ===" << std::endl;
 
     Test1_PeerConnectTriggersRequest();

@@ -14,6 +14,7 @@
 
 #include "consensus/header_sync.h"
 #include "consensus/header_chain.h"
+#include "consensus/chainparams.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include <iostream>
@@ -40,6 +41,7 @@ BlockHeader CreateTestHeader(
 }
 
 int main() {
+    SelectParams(Chain::REGTEST);
     std::cout << "=== Phase N.2: Header Sync State Machine Test ===" << std::endl;
 
     // ========================================================================
@@ -290,8 +292,10 @@ int main() {
         bool accepted = sync_manager.ProcessHeaders(1, empty_headers);
         assert(accepted == true);
 
-        // Should transition to CAUGHT_UP (no more headers from peer)
-        assert(sync_manager.GetState() == HeaderSyncState::CAUGHT_UP);
+        // The peer still advertises height 100. An empty response does not
+        // erase that telemetry or falsely declare us caught up; another peer
+        // can now be selected to resolve the local gap.
+        assert(sync_manager.GetState() == HeaderSyncState::IDLE);
 
         std::cout << "   ✅ State transitions work correctly" << std::endl;
     }

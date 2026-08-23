@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=helpers/daemon_process_cleanup.sh
+source "${ROOT_DIR}/tests/integration/helpers/daemon_process_cleanup.sh"
 DINEROD="${ROOT_DIR}/build/dinerod"
 CHECKER="${ROOT_DIR}/tools/check_seed_consistency.py"
 BASE_PORT="${BASE_PORT:-35600}"
@@ -31,13 +33,20 @@ fail() {
 }
 
 cleanup() {
-    [[ -n "${PID_A}" ]] && kill "${PID_A}" 2>/dev/null || true
-    [[ -n "${PID_B}" ]] && kill "${PID_B}" 2>/dev/null || true
-    pkill -f "dinerod.*${DATA_A}" 2>/dev/null || true
-    pkill -f "dinerod.*${DATA_B}" 2>/dev/null || true
-    if [[ "${KEEP_ON_FAIL}" != "1" ]]; then
-        rm -rf "${DATA_A}" "${DATA_B}" "${LOG_A}" "${LOG_B}" "${REPORT_JSON}"
+    local test_rc=$?
+    local cleanup_rc=0
+    local final_rc=0
+    trap - EXIT
+    set +e
+    dinero_stop_process "${PID_A}" "catchup node A" || cleanup_rc=1
+    dinero_stop_process "${PID_B}" "catchup node B" || cleanup_rc=1
+    dinero_stop_datadir_processes "${DATA_A}" || cleanup_rc=1
+    dinero_stop_datadir_processes "${DATA_B}" || cleanup_rc=1
+    if [[ "${KEEP_ON_FAIL}" != "1" && "${cleanup_rc}" -eq 0 ]]; then
+        rm -rf "${DATA_A}" "${DATA_B}" "${LOG_A}" "${LOG_B}" "${REPORT_JSON}" || cleanup_rc=1
     fi
+    dinero_cleanup_result "${test_rc}" "${cleanup_rc}" || final_rc=$?
+    exit "${final_rc}"
 }
 trap cleanup EXIT
 

@@ -147,7 +147,8 @@ public:
      * 4. If missing → return nullopt (caller must request via getblocktxn)
      *
      * @param compact Compact block to reconstruct
-     * @param mempool Mempool to search for transactions
+     * @param mempool Mempool to search for transactions; null is treated as
+     *                an empty mempool
      * @param out_missing_indexes Output: indexes of missing transactions (if any)
      * @return Full block if successful, nullopt if missing transactions
      */

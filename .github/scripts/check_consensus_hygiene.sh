@@ -32,6 +32,7 @@ BITS_ASSIGNMENTS=$(rg -n -e '\.bits\s*=\s*0x1[dDfF][0-9a-fA-F]{6}' -e '=\s*0x1[d
     rg -v 'sha256' | \
     rg -v 'dinero_crypto' | \
     rg -v 'consensus/consensus.hpp' | \
+    rg -v 'src/consensus/chainparams_impl.cpp:.*g\.nBits' | \
     rg -v 'consensus\.easyPhaseBits' | \
     rg -v 'c\.easyPhaseBits\s*=' | \
     rg -v 'state\[' | \
@@ -68,6 +69,8 @@ LEGACY_CONSTANT=$(rg -n '0x1d00ffff' src 2>/dev/null | \
     rg -v 'headers_first_sync' | \
     rg -v 'chainparams' | \
     rg -v 'genesis' | \
+    rg -v 'src/consensus/pow.cpp:.*\* Example: bits = 0x1d00ffff' | \
+    rg -v 'src/mining/mining_coordinator.cpp:.*\* difficulty=1 means.*0x1d00ffff' | \
     rg -v 'test' | \
     rg -v '//' | \
     rg -v '/\*' || true)
@@ -108,10 +111,11 @@ echo ""
 
 # Check 4: Verify GetNextWorkRequired is called in GBT handler
 echo "[Check 4] Verifying GetNextWorkRequired is used in getblocktemplate..."
-GBT_USES_SELECTOR=$(rg -n 'GetNextWorkRequired' src/daemon/main.cpp || true)
+GBT_USES_SELECTOR=$(rg -n 'GetNextWorkRequiredWithChainDB' \
+    src/daemon/rpc_server.cpp || true)
 
 if [ -z "$GBT_USES_SELECTOR" ]; then
-    echo "❌ FAIL: GetNextWorkRequired not found in main.cpp"
+    echo "❌ FAIL: GetNextWorkRequiredWithChainDB not found in rpc_server.cpp"
     echo "The GBT handler must use the canonical difficulty selector."
     FAILED=1
 else
@@ -121,11 +125,12 @@ echo ""
 
 # Check 5: Verify BIP22 formatting (8-char hex, no 0x prefix)
 echo "[Check 5] Verifying BIP22 bits formatting..."
-BIP22_FORMAT=$(rg -n 'snprintf.*%08x.*bits' src/daemon/main.cpp || true)
+BIP22_FORMAT=$(rg -n 'snprintf.*%08x.*next_bits' \
+    src/daemon/rpc_server.cpp || true)
 
 if [ -z "$BIP22_FORMAT" ]; then
-    echo "⚠️  WARNING: Could not verify BIP22 bits formatting in main.cpp"
-    echo "Expected: snprintf(bits_hex, sizeof(bits_hex), \"%08x\", bits);"
+    echo "⚠️  WARNING: Could not verify BIP22 bits formatting in rpc_server.cpp"
+    echo "Expected: snprintf(bits_hex, sizeof(bits_hex), \"%08x\", next_bits);"
 else
     echo "✅ PASS: BIP22 formatting pattern found"
 fi

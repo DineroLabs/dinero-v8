@@ -16,6 +16,8 @@
 #include <iostream>
 #include <cassert>
 #include <cstring>
+#include <functional>
+#include <stdexcept>
 
 using namespace dinero;
 using namespace dinero::p2p;
@@ -199,6 +201,43 @@ void test_empty_messages() {
     std::cout << "  [✓] Empty notfound message works" << std::endl;
 }
 
+void expect_malformed_rejected(
+    const std::vector<uint8_t>& payload,
+    const std::function<void(const std::vector<uint8_t>&)>& decode,
+    const char* label) {
+    try {
+        decode(payload);
+    } catch (const std::invalid_argument&) {
+        return;
+    }
+    throw std::runtime_error(std::string(label) + " was not rejected");
+}
+
+void test_malformed_inventory_is_bounded() {
+    const std::vector<std::function<void(const std::vector<uint8_t>&)>> decoders = {
+        [](const auto& bytes) { (void)InvMessage::deserialize(bytes); },
+        [](const auto& bytes) { (void)GetDataMessage::deserialize(bytes); },
+        [](const auto& bytes) { (void)NotFoundMessage::deserialize(bytes); },
+    };
+
+    // UINT64_MAX used to reach reserve(count) before any payload-size check.
+    const std::vector<uint8_t> huge_count = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    };
+    // CompactSize(2001), one above the shared P2P inventory limit.
+    const std::vector<uint8_t> over_protocol_limit = {0xfd, 0xd1, 0x07};
+    // Two claimed entries, but only one 36-byte inventory vector follows.
+    std::vector<uint8_t> truncated_count(1 + 36, 0);
+    truncated_count[0] = 2;
+
+    for (const auto& decode : decoders) {
+        expect_malformed_rejected({}, decode, "missing count");
+        expect_malformed_rejected(huge_count, decode, "huge count");
+        expect_malformed_rejected(over_protocol_limit, decode, "over-limit count");
+        expect_malformed_rejected(truncated_count, decode, "truncated inventory");
+    }
+}
+
 //=============================================================================
 // Main Test Runner
 //=============================================================================
@@ -224,6 +263,9 @@ int main() {
 
         // Test 5: Empty messages
         test_empty_messages();
+
+        // Test 6: adversarial counts are rejected before allocation.
+        test_malformed_inventory_is_bounded();
 
         std::cout << "\n========================================" << std::endl;
         std::cout << "✅ All Serialization Tests Passed!" << std::endl;

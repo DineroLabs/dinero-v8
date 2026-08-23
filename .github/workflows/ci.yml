@@ -70,13 +70,22 @@ jobs:
             pkg-config \
             python3 \
             perl \
+            ripgrep \
             libcurl4-openssl-dev \
             libudev-dev \
             libusb-1.0-0-dev
 
+      - name: Consensus difficulty and GBT hygiene gate
+        run: bash .github/scripts/check_consensus_hygiene.sh
+
       # ─── Rust toolchain (bulletproofs-ffi is Rust) ─────────────────────
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.75.0
+        with:
+          components: clippy
+
+      - name: Bulletproofs FFI MSRV + clippy gate
+        run: cargo clippy --manifest-path third_party/bulletproofs_ffi/Cargo.toml --locked --all-targets -- -D warnings
 
       # ─── ccache: caches compiled object files between runs ─────────────
       # Free, transparent, cuts a from-scratch 30-min build down to a
@@ -125,9 +134,11 @@ jobs:
         # If you ever need to verify gRPC paths specifically, add a
         # separate CI job that builds with ENABLE_GRPC=ON.
         run: |
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           cmake -S . -B build \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_REPRODUCIBLE_BUILD=ON \
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DENABLE_GRPC=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \

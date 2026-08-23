@@ -29,6 +29,10 @@
 set -e  # Exit on error
 set -u  # Exit on undefined variable
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=helpers/daemon_process_cleanup.sh
+source "${ROOT_DIR}/tests/integration/helpers/daemon_process_cleanup.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -48,10 +52,18 @@ STRATUM_PORT=$((20000 + RANDOM % 20000))
 
 # Cleanup function
 cleanup() {
+    local test_rc=$?
+    local cleanup_rc=0
+    local final_rc=0
+    trap - EXIT
+    set +e
     echo -e "${YELLOW}Cleaning up...${NC}"
-    pkill -f "dinerod.*$DATA_DIR" 2>/dev/null || true
-    sleep 2
-    rm -rf "$DATA_DIR"
+    dinero_stop_datadir_processes "${DATA_DIR}" || cleanup_rc=1
+    if (( cleanup_rc == 0 )); then
+        rm -rf "${DATA_DIR}" || cleanup_rc=1
+    fi
+    dinero_cleanup_result "${test_rc}" "${cleanup_rc}" || final_rc=$?
+    exit "${final_rc}"
 }
 
 # Trap exit to cleanup

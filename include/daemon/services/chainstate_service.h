@@ -641,6 +641,7 @@ public:
     std::string getBlock(uint32_t height) const;
     bool hasBlockByHash(const uint256& hash) const;
     bool hasReadableBlockByHash(const uint256& hash) const;
+    std::optional<FilePosition> getStoredBlockPosition(const uint256& hash) const;
     // #309: record a stored body's flatfile position (file/pos/size) + BLOCK_HAVE_DATA
     // in the block's existing ChainDB header metadata, so a stored-but-not-yet-
     // connected block (competing side-branch above the active tip) is recognized

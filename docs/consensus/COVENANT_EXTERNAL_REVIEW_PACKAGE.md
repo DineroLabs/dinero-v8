@@ -1,20 +1,21 @@
 # Covenant profile v1 external-review package
 
-Status: ready for public and independent review. Mainnet CTV/CCV activation is
-scheduled for block 100,000, but the activation release must not ship until the
-open-source assurance record and deployment gates are satisfied. External
-review is invited and valuable; a paid audit is not a release prerequisite.
+Status: superseded as an activation package on 2026-08-22. Mainnet CTV/CCV are
+dormant (`UINT32_MAX`) after the complete upstream BIP119 transaction corpus
+exposed a material interpreter-semantic defect. This package remains useful
+review material, but a new freeze, review window, and activation proposal are
+required before production activation.
 
 Date: 2026-08-01
 
 Implementation base: `ed3fb9cb8f58485b578dc63708ea8237a57c26c9`
 (`origin/dinero-main` after PR #476)
 
-Activation review target: the exact head of
+Historical activation review target: the exact head of
 `codex/covenant-mainnet-80000`, including
 `COVENANT_MAINNET_ACTIVATION_100000.md`. Record its full hash before review.
-The branch name is historical; the normative file and consensus parameters pin
-height 100,000.
+The branch name and height are historical. They no longer describe current
+mainnet consensus parameters.
 
 Historical review stack branches (the short hashes below are implementation
 anchors, not a substitute for reviewing the merged implementation and the
@@ -45,10 +46,10 @@ Determine whether the dormant CTV/CCV implementation:
 - can be constructed, recovered, wallet-signed, relayed, revalidated after a
   reorg, and reconfirmed without a non-consensus bypass;
 - has deterministic and sufficient denial-of-service bounds; and
-- is suitable for the scheduled block-100,000 mainnet activation.
+- is suitable for a future, separately reviewed mainnet activation.
 
-This review explicitly includes the height-100,000 boundary and the deployment
-and abort conditions in the activation plan.
+Any new review must explicitly include its newly proposed boundary and the
+deployment and abort conditions in its activation plan.
 
 ## 2. Normative material
 
@@ -273,8 +274,8 @@ reinterpret hidden trees without explicit deployment planning.
 
 ## 8. Known limitations and blockers
 
-- Mainnet CTV/CCV activation is scheduled at block 100,000; testnet remains
-  dormant.
+- Mainnet and testnet CTV/CCV remain dormant. The former block-100,000 proposal
+  is superseded and no replacement height is authorized.
 - Activation has no miner-signalling or versionbits phase. Because testnet also
   remains dormant, mainnet would be the profile's first public-network
   enforcement. The controlled four-node fleet permits coordinated deployment
@@ -296,19 +297,20 @@ reinterpret hidden trees without explicit deployment planning.
   suite separates Taproot script-path activation from CTV and exercises
   admission, mining, rollback, revalidation, and restart across that boundary;
   the same tests must be repeated at any proposed production boundaries.
-- Release-candidate tests must be repeated at the block-100,000 boundary and on
-  every supported platform before production use.
-- Importing the upstream `tx_valid.json` and `tx_invalid.json` interpreter
-  corpus requires an explicit Bitcoin-to-Dinero verification-flag mapping and
-  prevout plumbing. This recommended pre-activation work is tracked in #483;
-  it must be complete by the height-99,000 checkpoint or activation must be
-  rescheduled.
+- Release-candidate tests must be repeated at any newly proposed boundary and
+  on every supported platform before production use.
+- Issue #483's complete upstream `tx_valid.json` and `tx_invalid.json` corpus
+  is now imported with explicit Bitcoin-to-Dinero flag mapping, exact prevout
+  plumbing, pinned hashes and case counts, and zero tolerated skips. It exposed
+  the material CLEANSTACK defect that caused the activation deferral. Its
+  consensus-loosening correction is staged behind the deferred CTV flag; it is
+  not a live mainnet behavior change before a coordinated activation.
 - CSFS and TXHASH remain incomplete, uncosted, and deliberately dormant.
 - Confidential CTV/CCV is undefined and rejected.
 - A mainnet history scan cannot inspect hidden Taproot leaves.
 
-These are blockers, not deferred release notes. They must remain visible in
-any PR and activation proposal.
+The remaining items are blockers, not deferred release notes. They must remain
+visible in any future activation proposal.
 
 ## 9. Open-source assurance deliverable
 
@@ -325,10 +327,12 @@ commit and provide reproducible evidence for:
 - mutation tests proving every normative CCV clause is load-bearing;
 - bounded exhaustive/model analysis of the transition rules;
 - resource, lifecycle, restart, reorg, and multi-node results; and
-- a public comment period running from the recorded freeze height to height
-  99,000, with every reported critical/high finding resolved.
+- a public comment period running from a newly recorded freeze height to a
+  conservative go/no-go checkpoint, with every reported critical/high finding
+  resolved.
 
-The comment period is bounded by block height, not by a number of days.
+The historical comment period was bounded by block height, not by a number of
+days.
 Observed block spacing has ranged from roughly 36 s to 147 s against a 120 s
 target, so a fixed calendar window corresponds to an unknowable and varying
 number of blocks, while height is what consensus enforces and is identical on

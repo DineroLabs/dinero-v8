@@ -488,10 +488,10 @@ void testVerifyHappyPath(const std::filesystem::path& tmp) {
 
 void testVerifyCorruptedBytes(const std::filesystem::path& tmp) {
     auto f = BuildHappyPathFixture(/*output_count=*/2);
-    // Flip one byte in the serialized blob — Deserialize may still succeed
-    // but the re-Serialize will not reproduce the corrupted input.
+    // Add a trailing byte that the decoder does not consume. Deserialize still
+    // succeeds, but re-Serialize cannot reproduce the non-canonical input.
     assert(!f.candidate_undo_bytes.empty());
-    f.candidate_undo_bytes[1] ^= 0xFFu;
+    f.candidate_undo_bytes.push_back(0);
     RunVerifyCase(tmp, "corrupted undo bytes (roundtrip-not-byte-stable)", f,
                   /*expect_ok=*/false,
                   "serialize-roundtrip-not-byte-stable");

@@ -2,6 +2,7 @@
 name = "bulletproofs-ffi"
 version = "1.0.0"
 edition = "2021"
+rust-version = "1.75"
 authors = ["DineroCoin Core Team"]
 description = "C FFI bindings for Dalek Bulletproofs"
 license = "MIT"

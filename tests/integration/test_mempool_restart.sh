@@ -40,6 +40,8 @@ NC='\033[0m' # No Color
 # Test configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# shellcheck source=helpers/daemon_process_cleanup.sh
+source "${PROJECT_ROOT}/tests/integration/helpers/daemon_process_cleanup.sh"
 
 if [[ -n "${DINEROD:-}" && -x "${DINEROD}" ]]; then
     DINEROD="${DINEROD}"
@@ -56,7 +58,6 @@ DATADIR_A="${DATADIR_A:-$(mktemp -d -t mempool_restart_test_XXXXXX)}"
 RPC_PORT_A="${RPC_PORT_A:-$((19500 + RANDOM % 1000))}"
 P2P_PORT_A="${P2P_PORT_A:-$((RPC_PORT_A + 1))}"
 KEEP_TMP_ON_FAIL="${KEEP_TMP_ON_FAIL:-1}"
-EXIT_CODE=0
 
 echo -e "${BLUE}============================================================================${NC}"
 echo -e "${BLUE}v0.13.0.2 Step D: Mempool Persistence Restart Integration Test${NC}"
@@ -68,20 +69,25 @@ echo ""
 # ============================================================================
 
 cleanup() {
+    local test_rc=$?
+    local keep=0
+    local final_rc=0
+    trap - EXIT
+    set +e
     echo ""
     echo -e "${YELLOW}[Cleanup] Stopping test dinerod for ${DATADIR_A}...${NC}"
-    pkill -f "dinerod.*${DATADIR_A}" 2>/dev/null || true
-    sleep 2
-    if [[ "$EXIT_CODE" -ne 0 && "$KEEP_TMP_ON_FAIL" == "1" ]]; then
+    if [[ "${test_rc}" -ne 0 && "${KEEP_TMP_ON_FAIL}" == "1" ]]; then
+        keep=1
         echo -e "${YELLOW}[Cleanup] Keeping datadir for inspection: ${DATADIR_A}${NC}"
-    else
-        rm -rf "$DATADIR_A"
-        echo -e "${GREEN}[Cleanup] Removed datadir: ${DATADIR_A}${NC}"
     fi
+    dinero_cleanup_single_daemon "${test_rc}" "" "${DATADIR_A}" \
+        "${keep}" "mempool restart daemon" "${DATADIR_A}"
+    final_rc=$?
     echo -e "${GREEN}[Cleanup] Complete${NC}"
+    exit "${final_rc}"
 }
 
-trap 'EXIT_CODE=$?; cleanup' EXIT
+trap cleanup EXIT
 
 node_pattern() {
     echo "dinerod.*${DATADIR_A}"

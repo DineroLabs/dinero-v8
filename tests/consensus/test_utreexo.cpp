@@ -20,6 +20,7 @@
 #include <iostream>
 #include <cassert>
 #include <cstdlib>
+#include <stdexcept>
 #include <vector>
 #include <string>
 #include <iomanip>
@@ -450,9 +451,14 @@ void testCanonicalEmptyRootsRoundtrip() {
     auto pos1 = forest.findLeafPosition(leaves[1]);
     assert(pos0.has_value() && pos1.has_value());
     auto proof0 = forest.prove(*pos0);
-    auto proof1 = forest.prove(*pos1);
-    assert(proof0.has_value() && proof1.has_value());
+    assert(proof0.has_value());
     assert(forest.remove(leaves[0], *proof0));
+    // Removing leaf 0 changes the committed root, so leaf 1 needs a fresh
+    // proof. Accepting the pre-mutation proof would violate proof freshness.
+    auto proof1 = forest.prove(*pos1);
+    if (!proof1.has_value()) {
+        throw std::runtime_error("failed to regenerate proof after forest mutation");
+    }
     assert(forest.remove(leaves[1], *proof1));
 
     assert(forest.isCanonicalEmptyRoots());

@@ -1,7 +1,6 @@
 # CHECKTEMPLATEVERIFY BIP119 profile
 
-Status: mainnet activation scheduled at block 100,000. Testnet remains dormant
-(`UINT32_MAX`).
+Status: candidate profile. Mainnet and testnet remain dormant (`UINT32_MAX`).
 
 Opcode: `OP_CHECKTEMPLATEVERIFY` / `OP_NOP4` (`0xb3`).
 
@@ -29,8 +28,15 @@ Counts and the input index are fixed-width little-endian values as specified
 by BIP119. Script lengths use canonical CompactSize. Witness data, prevouts,
 and input amounts are not part of this template hash.
 
-The implementation is checked against selected upstream
-`bip-0119/vectors/tx_valid.json` congestion-control vectors.
+The implementation is checked against the complete upstream BIP119
+`tx_valid.json` and `tx_invalid.json` transaction-vector corpora. The files are
+vendored and hash-pinned by the test runner; unknown flags or script tokens
+fail the test instead of being skipped. The corpus runs under the candidate
+covenant profile: upstream verification flags are mapped exactly, then the CTV
+profile flag is enabled so the staged outer-witness correction is exercised.
+Four baseline P2WSH/Taproot cases also pin both sides of that gate: deployed
+flags retain the legacy rejection and candidate flags accept the upstream
+valid spend.
 
 ## Opcode behavior
 
@@ -56,7 +62,7 @@ public review opportunity.
 
 | Chain | CTV |
 |---|---:|
-| Mainnet | 100,000 |
+| Mainnet | dormant |
 | Testnet | dormant |
 | Regtest | 20 |
 
@@ -67,7 +73,7 @@ checksum.
 
 Boundary, reorg, mempool, mining, and adversarial-cost component coverage is
 recorded in `COVENANT_PROTOCOL_STATUS.md` and
-`COVENANT_RESOURCE_LIMITS.md`. The scheduled activation remains gated on
-release-candidate wallet/recovery and live multi-node coverage, coordinated
-validator deployment, and the reproducible open-source assurance record in
-`COVENANT_MAINNET_ACTIVATION_100000.md`.
+`COVENANT_RESOURCE_LIMITS.md`. Any future activation remains gated on a new
+review window, release-candidate wallet/recovery and live multi-node coverage,
+coordinated validator deployment, and a reproducible open-source assurance
+record.

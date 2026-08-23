@@ -20,6 +20,7 @@
 
 #include "consensus/header_sync.h"
 #include "consensus/header_chain.h"
+#include "consensus/chainparams.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include <iostream>
@@ -499,6 +500,7 @@ void Test6_OutboundPreference() {
 // ============================================================================
 
 int main() {
+    SelectParams(Chain::REGTEST);
     std::cout << "=== Phase N.2 Step 2B: Header Sync Stall Simulation Tests ===" << std::endl;
 
     Test1_MidSyncStall();

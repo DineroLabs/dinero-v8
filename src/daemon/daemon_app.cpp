@@ -5,6 +5,7 @@
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/header_seed_resolver.h"
 #include "daemon/header_metadata_recovery.h"
+#include "daemon/block_request_peer_order.h"
 #include "daemon/undo_rebuild_orchestrator.h"  // Commit #5: --rebuild-undo-range
 #include "daemon/config.h"  // Phase 8: For GetConfig()
 #include "daemon/services/logger_service.h"
@@ -2584,6 +2585,14 @@ bool DaemonApp::Init(int argc, char** argv) {
     block_download->SetHasBlockBodyCallback(
         [this](const uint256& hash, uint32_t /*height*/) -> bool {
             return ctx_.chainstate && ctx_.chainstate->hasBlockByHash(hash);
+        });
+    block_download->SetGetBlockBodyPositionCallback(
+        [this](const uint256& hash, uint32_t /*height*/)
+            -> std::optional<FilePosition> {
+            if (!ctx_.chainstate) {
+                return std::nullopt;
+            }
+            return ctx_.chainstate->getStoredBlockPosition(hash);
         });
 
     // #309: persist a stored body's flatfile position to ChainDB metadata so a
@@ -6705,9 +6714,21 @@ bool DaemonApp::Init(int argc, char** argv) {
                 // advances the same hash to another peer; if the first socket
                 // fails synchronously, try the remaining candidates immediately.
                 auto send_one_rotating = [&](const std::vector<std::string>& candidates) {
-                    std::vector<std::string> ordered = candidates;
-                    std::sort(ordered.begin(), ordered.end());
-                    ordered.erase(std::unique(ordered.begin(), ordered.end()), ordered.end());
+                    std::unordered_set<std::string> wanted(candidates.begin(),
+                                                           candidates.end());
+                    std::vector<dinero::daemon::BlockRequestPeerCandidate>
+                        peer_candidates;
+                    peer_candidates.reserve(wanted.size());
+                    for (const auto& peer : peers) {
+                        const auto key = peer.to_string();
+                        if (wanted.count(key) != 0) {
+                            peer_candidates.push_back({key, peer.avg_latency_ms});
+                        }
+                    }
+                    // #299: for backfill, prefer measured low-latency peers;
+                    // retries still rotate past the last identity for this hash.
+                    auto ordered = dinero::daemon::OrderBlockRequestPeers(
+                        peer_candidates, for_backfill);
                     eligible = static_cast<int>(ordered.size());
                     if (ordered.empty()) {
                         return;

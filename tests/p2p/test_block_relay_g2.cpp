@@ -279,8 +279,8 @@ void test_g2_1_single_block_propagation() {
     // STEP 1: Alice announces block (inv)
     std::cout << "\n[Step 1] Alice announces block..." << std::endl;
     relay_alice.AnnounceBlock(block_hash);
-    assert(p2p_alice.has_command("inv"));
-    assert(p2p_alice.count_command("inv") == 1);
+    assert(p2p_alice.has_command("inv_all"));
+    assert(p2p_alice.count_command("inv_all") == 1);
     std::cout << "✅ INV broadcasted" << std::endl;
 
     // STEP 2: Bob receives INV and requests block (getdata)
@@ -389,7 +389,7 @@ void test_g2_2_multi_peer_relay() {
     // STEP 1: Alice → Bob (inv)
     std::cout << "\n[Step 1] Alice announces to Bob..." << std::endl;
     relay_alice.AnnounceBlock(block_hash);
-    assert(p2p_alice.has_command("inv"));
+    assert(p2p_alice.has_command("inv_all"));
     std::cout << "✅ Alice broadcasted INV" << std::endl;
 
     // STEP 2: Bob → Alice (getdata)
@@ -413,7 +413,7 @@ void test_g2_2_multi_peer_relay() {
 
     // Bob announces to Charlie
     relay_bob.AnnounceBlock(block_hash);
-    assert(p2p_bob.has_command("inv"));
+    assert(p2p_bob.has_command("inv_all"));
     std::cout << "✅ Bob announced to Charlie" << std::endl;
 
     // STEP 5: Charlie → Bob (getdata)
@@ -483,7 +483,8 @@ void test_g2_3_invalid_block_rejection() {
     std::cout << "✅ Block NOT marked as seen (rejection prevents propagation)" << std::endl;
 
     // Verify no announcements were made
-    assert(!p2p_sink.has_command("inv"));
+    assert(!p2p_sink.has_command("inv") &&
+           !p2p_sink.has_command("inv_all"));
     std::cout << "✅ No INV broadcasted (invalid blocks don't relay)" << std::endl;
 
     std::cout << "\n✅ TEST G.2.3 PASSED (Invalid block rejected, no relay)" << std::endl;
@@ -567,7 +568,7 @@ void test_g2_4_reorg_over_p2p() {
     std::cout << "\n[Step 1] Node A announces competing blocks..." << std::endl;
     relay_a.AnnounceBlock(hash1b);
     relay_a.AnnounceBlock(hash2b);
-    assert(p2p_a.count_command("inv") == 2);
+    assert(p2p_a.count_command("inv_all") == 2);
     std::cout << "✅ Node A announced 2 blocks" << std::endl;
 
     // STEP 2: Node B requests first competing block

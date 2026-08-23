@@ -41,5 +41,23 @@ TEST(HeadersWireV1, BlockRelayManagerSerializeHeaders_Uses128ByteHeader) {
     ASSERT_EQ(payload, expected_payload);
 }
 
-} // namespace dinero
+TEST(P2PInventoryWire, RejectsCountsBeforeAllocation) {
+    const std::vector<uint8_t> missing_count{};
+    const std::vector<uint8_t> truncated_compact_size{0xff};
+    const std::vector<uint8_t> huge_count{
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    };
+    const std::vector<uint8_t> over_limit{0xfd, 0xd1, 0x07};
+    std::vector<uint8_t> truncated_inventory(1 + 36, 0);
+    truncated_inventory[0] = 2;
 
+    for (const auto& payload : {missing_count, truncated_compact_size,
+                                huge_count, over_limit, truncated_inventory}) {
+        InvMessage inv;
+        GetdataMessage getdata;
+        EXPECT_FALSE(inv.deserialize(payload));
+        EXPECT_FALSE(getdata.deserialize(payload));
+    }
+}
+
+} // namespace dinero

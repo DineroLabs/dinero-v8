@@ -2089,3 +2089,15 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
     endforeach()
     message(STATUS "  ⊘ Disabled ${_dinero_disabled_count} POSIX-only .sh integration tests on native Windows")
 endif()
+
+# Integration tests share host-level resources beyond their nominal RPC/P2P
+# ports (daemon process limits, wallet sockets, and legacy fixed-path fixtures).
+# Running two daemon topologies concurrently produces false failures and can
+# make one test kill or connect to another test's node. RESOURCE_LOCK preserves
+# parallelism for unit tests while admitting one integration topology at a time.
+get_property(_dinero_integration_tests DIRECTORY PROPERTY TESTS)
+if(_dinero_integration_tests)
+    set_tests_properties(${_dinero_integration_tests} PROPERTIES
+        RESOURCE_LOCK dinero_daemon_process
+    )
+endif()

@@ -6,6 +6,7 @@
 
 #include "network/types.h"
 #include "primitives/uint256.h"
+#include <algorithm>
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
@@ -248,13 +249,23 @@ private:
 
         // Calculate success rate (0.0 to 1.0)
         double getSuccessRate() const {
-            if (total_downloads == 0) return 1.0;  // No data = assume good
-            return 1.0 - (static_cast<double>(failed_downloads) / total_downloads);
+            const uint32_t completed =
+                total_downloads > in_flight_count
+                    ? total_downloads - in_flight_count
+                    : 0;
+            if (completed == 0) return 1.0;  // No completed data = assume good
+            const uint32_t failures = std::min(failed_downloads, completed);
+            return 1.0 - (static_cast<double>(failures) / completed);
         }
 
         // Calculate average download time (seconds)
         double getAvgDownloadTime() const {
-            uint32_t successful = total_downloads - failed_downloads;
+            const uint32_t completed =
+                total_downloads > in_flight_count
+                    ? total_downloads - in_flight_count
+                    : 0;
+            const uint32_t failures = std::min(failed_downloads, completed);
+            const uint32_t successful = completed - failures;
             if (successful == 0) return 999999.0;  // No successful downloads
             return static_cast<double>(total_download_time) / successful;
         }

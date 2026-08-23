@@ -13,6 +13,10 @@
 set -e  # Exit on error
 set -o pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=helpers/daemon_process_cleanup.sh
+source "${ROOT_DIR}/tests/integration/helpers/daemon_process_cleanup.sh"
+
 # Colors for output
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -29,12 +33,21 @@ echo ""
 
 # Cleanup function
 cleanup() {
+    local test_rc=$?
+    local cleanup_rc=0
+    local final_rc=0
+    trap - EXIT
+    set +e
     echo ""
     echo -e "${YELLOW}Cleaning up test environment...${NC}"
-    pkill -f "dinerod.*--regtest" || true
-    sleep 2
-    rm -rf /tmp/node_a /tmp/node_b
+    dinero_stop_datadir_processes /tmp/node_a || cleanup_rc=1
+    dinero_stop_datadir_processes /tmp/node_b || cleanup_rc=1
+    if (( cleanup_rc == 0 )); then
+        rm -rf /tmp/node_a /tmp/node_b || cleanup_rc=1
+    fi
     echo -e "${GREEN}✅ Cleanup complete${NC}"
+    dinero_cleanup_result "${test_rc}" "${cleanup_rc}" || final_rc=$?
+    exit "${final_rc}"
 }
 
 # Trap to ensure cleanup on exit
