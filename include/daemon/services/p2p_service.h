@@ -93,8 +93,8 @@ public:
         // by the relay-fallback gate so NAT'd nodes stay eligible.
         bool has_explicit_advertised{false};
         AddrmanSnapshot addrman;
-        bool dynamic_p2p_enabled{false};
-        std::string dynamic_p2p_mode{"observe"};
+        bool dynamic_p2p_enabled{true};
+        std::string dynamic_p2p_mode{"active_slow_churn"};
         DynamicP2PGovernorSnapshot dynamic_p2p_governor;
         bool port_mapping_requested{false};
         bool port_mapping_active{false};

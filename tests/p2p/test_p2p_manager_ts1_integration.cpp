@@ -99,7 +99,16 @@ TEST(P2PManager_TS1_Integration, PeersDatDoesNotPromoteLearnedPeersToSeeds) {
     std::ifstream saved(path);
     const std::string contents((std::istreambuf_iterator<char>(saved)),
                                std::istreambuf_iterator<char>());
+    EXPECT_NE(contents.find("173.249.200.59 20999"), std::string::npos);
+    EXPECT_NE(contents.find("172.93.167.32 20999"), std::string::npos);
+    EXPECT_NE(contents.find("92.118.190.62 20999"), std::string::npos);
     EXPECT_NE(contents.find("64.44.157.100 20999"), std::string::npos);
+    EXPECT_EQ(std::count(contents.begin(), contents.end(), '\n'), 5);
+
+    P2PManager untrusted_reload(20999);
+    untrusted_reload.load_peers(path.string());
+    EXPECT_TRUE(untrusted_reload.get_anchor_nodes().empty());
+    EXPECT_TRUE(untrusted_reload.get_seed_nodes().empty());
     std::filesystem::remove(path);
 }
 
