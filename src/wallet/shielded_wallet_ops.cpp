@@ -18,6 +18,7 @@
 #include <openssl/crypto.h>
 #include <cmath>
 #include <cstring>
+#include <stdexcept>
 
 namespace dinero::wallet::shielded_ops {
 
@@ -25,9 +26,20 @@ namespace sh = consensus::shielded;
 
 namespace {
 
+// Fails CLOSED. RAND_bytes returns 0 on failure and leaves the buffer
+// untouched, so ignoring it yields an ALL-ZERO hash — and this feeds the cv
+// blinding factor (rcv) and the range-proof nonce of every bundle the wallet
+// builds. With rcv = 0 the commitment degenerates to cv = value*V, a
+// deterministic function of the amount that is trivially brute-forced over
+// the plausible value range: total loss of shielded confidentiality, silently,
+// on a bundle that still verifies. Throwing matches the same module's
+// treatment of an RNG failure at shielded_derivation.cpp (esk generation).
 sh::Hash RandomHash() {
     sh::Hash h{};
-    RAND_bytes(h.data(), sh::HASH_BYTES);
+    if (RAND_bytes(h.data(), sh::HASH_BYTES) != 1) {
+        throw std::runtime_error("shielded: RAND_bytes failed (refusing to "
+                                 "build a bundle with zero blinding)");
+    }
     return h;
 }
 

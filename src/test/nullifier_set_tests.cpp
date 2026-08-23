@@ -79,6 +79,26 @@ TEST_F(NullifierSetFixture, EmptySetContainsNothing) {
     EXPECT_EQ(set.Size(), 0u);
 }
 
+// Contains() is the double-spend gate: both consensus callers reject a spend
+// when it returns true. So when the set cannot answer, the only safe reply is
+// "present" — refuse the spend. Returning false on an unusable database means
+// "not spent, go ahead", i.e. silently admitting a double-spend.
+//
+// Only SQLITE_DONE — the database positively answering "no such row" — may
+// produce false, which is what EmptySetContainsNothing above pins.
+TEST_F(NullifierSetFixture, ContainsFailsClosedOnUnusableDatabase) {
+    ASSERT_TRUE(set.Insert(N(0x30), 300));
+    ASSERT_TRUE(set.Contains(N(0x30)));
+    ASSERT_FALSE(set.Contains(N(0x31)));
+
+    set.Close();  // db_ == nullptr: every query now unanswerable
+
+    EXPECT_TRUE(set.Contains(N(0x31)))
+        << "a nullifier the set cannot vouch for must read as PRESENT so the "
+           "spend is rejected; returning false admits a double-spend";
+    EXPECT_TRUE(set.Contains(N(0x30)));
+}
+
 TEST_F(NullifierSetFixture, InsertAndContains) {
     EXPECT_TRUE(set.Insert(N(0x05), 100));
     EXPECT_TRUE(set.Contains(N(0x05)));

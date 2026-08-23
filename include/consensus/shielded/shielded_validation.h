@@ -231,7 +231,9 @@ ValidationContext BuildShieldedValidationContext(
  * Does NOT touch Utreexo. The transparent side of the same tx is
  * handled by the existing block-connect path (Utreexo add/remove).
  */
-void ApplyShieldedBundle(const ShieldedBundle& bundle,
+// Returns false if a nullifier insert failed — the caller MUST abort the
+// block rather than connect it with shielded state that is missing a spend.
+bool ApplyShieldedBundle(const ShieldedBundle& bundle,
                          CommitmentTree*       tree,
                          NullifierSet*         nullifiers,
                          uint32_t              block_height);
