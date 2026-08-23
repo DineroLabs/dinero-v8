@@ -1474,6 +1474,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_tip_marker_restart_equivalen
         LABELS "integration;restart;shielded;canonicality;shielded-canonical-recovery"
         TIMEOUT 300
     )
+    # Supply the helper binaries the same way the daemon-spawning tests get
+    # DINEROD. Without this the script can only guess at ${ROOT_DIR}/build/...,
+    # which breaks for any build directory not literally named "build".
+    if(TARGET shielded_tip_marker_mutator AND TARGET shielded_tip_marker_probe
+       AND TARGET test_shielded_reindex_equivalence)
+        set_tests_properties(ShieldedTipMarkerRestartEquivalence PROPERTIES
+            ENVIRONMENT
+              "MARKER_MUTATOR=$<TARGET_FILE:shielded_tip_marker_mutator>;MARKER_PROBE=$<TARGET_FILE:shielded_tip_marker_probe>;FIXTURE_BUILDER=$<TARGET_FILE:test_shielded_reindex_equivalence>"
+        )
+    endif()
     message(STATUS "  ✓ ShieldedTipMarkerRestartEquivalence registered")
 endif()
 
