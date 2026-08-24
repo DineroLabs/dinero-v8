@@ -74,6 +74,9 @@ private Q_SLOTS:
     void old_daemon_keeps_tor_control_noninteractive() {
         NetworkSection s;
         auto* control = s.findChild<QCheckBox*>(QStringLiteral("torReachabilityControl"));
+        QCOMPARE(control->text(), QStringLiteral("Enable Tor reachability (Admin only)"));
+        QVERIFY(control->toolTip().contains(QStringLiteral("local node cookie")));
+        QVERIFY(control->toolTip().contains(QStringLiteral("no additional credentials")));
         dinero::qt::dashboard::OnionServiceStatus unavailable;
         s.setOnionServiceStatus(unavailable);
         QVERIFY(!control->isEnabled());

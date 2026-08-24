@@ -55,11 +55,11 @@ NetworkSection::NetworkSection(QWidget* parent) : QWidget(parent) {
     grid->addWidget(medianFeeLabel_,                2, 1);
     root->addLayout(grid);
 
-    torControl_ = new QCheckBox(tr("Improve reachability with Tor"), this);
+    torControl_ = new QCheckBox(tr("Enable Tor reachability (Admin only)"), this);
     torControl_->setObjectName(QStringLiteral("torReachabilityControl"));
     torControl_->setEnabled(false);
     torControl_->setToolTip(tr(
-        "Tor is configured when the Dinero service starts. This control shows status only; it never installs or starts Tor."));
+        "Uses this node's existing authenticated RPC session. Dinero-Qt normally authenticates automatically with the local node cookie; no additional credentials are required. Dinero never installs or starts Tor."));
     root->addWidget(torControl_);
     connect(torControl_, &QCheckBox::toggled, this, [this](bool enabled) {
         torControl_->setEnabled(false);
