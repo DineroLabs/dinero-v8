@@ -416,6 +416,17 @@ public:
     bool is_peer_banned(const std::string& address, uint16_t port = 0) const;
     void set_network_active(bool active);
     bool is_network_active() const { return network_active_.load(std::memory_order_acquire); }
+    struct RelayServiceLimits {
+        size_t max_circuits{12};
+        uint64_t bandwidth_bytes_per_second{2ULL * 1024 * 1024};
+        size_t max_circuits_per_peer{2};
+        uint32_t circuit_lifetime_seconds{1800};
+        uint32_t requests_per_peer_per_minute{6};
+    };
+    void set_relay_service_enabled(bool enabled) {
+        relay_service_enabled_.store(enabled, std::memory_order_release);
+    }
+    void set_relay_service_limits(const RelayServiceLimits& limits);
     void set_address_manager(dinero::p2p::AddressManager* address_manager);
 
     // NAT traversal Phase 1A: caller wires in the daemon-wide NodeIdentity
@@ -1010,6 +1021,13 @@ private:
     static constexpr uint32_t kRelayMaxBlocksBehind = 100;
     dinero::network::TokenBucket relay_global_bucket_{kRelayGlobalRateBps,
                                                       kRelayGlobalBurstBytes};
+    std::atomic<bool> relay_service_enabled_{true};
+    RelayServiceLimits relay_service_limits_{};
+    struct RelayRequestWindow {
+        std::chrono::steady_clock::time_point started{};
+        uint32_t requests{0};
+    };
+    std::unordered_map<std::string, RelayRequestWindow> relay_request_windows_;
     uint64_t relay_quota_bytes_ = 0;
     std::chrono::steady_clock::time_point relay_quota_window_start_{};
     std::atomic<bool> relay_behind_throttle_{false};

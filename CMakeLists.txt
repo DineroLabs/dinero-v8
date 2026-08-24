@@ -983,6 +983,7 @@ add_library(dinero_core STATIC
   # Network relay
   src/network/tor_control.cpp
   src/network/tor_runtime_controller.cpp
+  src/network/embedded_tor_process.cpp
 
   # Common utilities
   src/common/logger.cpp

@@ -5,10 +5,16 @@
 #include "networksection.h"
 
 #include <QGridLayout>
-#include <QCheckBox>
+#include <QComboBox>
+#include <QFormLayout>
+#include <QJsonArray>
 #include <QLabel>
+#include <QMessageBox>
 #include <QProgressBar>
+#include <QPushButton>
+#include <QSettings>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -55,21 +61,78 @@ NetworkSection::NetworkSection(QWidget* parent) : QWidget(parent) {
     grid->addWidget(medianFeeLabel_,                2, 1);
     root->addLayout(grid);
 
-    torControl_ = new QCheckBox(tr("Enable Tor reachability (Admin only)"), this);
+    root->addWidget(new QLabel(tr("Tor connectivity (Admin only)"), this));
+    torControl_ = new QComboBox(this);
     torControl_->setObjectName(QStringLiteral("torReachabilityControl"));
+    torControl_->addItem(tr("Off"), QStringLiteral("off"));
+    torControl_->addItem(tr("Automatic — recommended"), QStringLiteral("automatic"));
+    torControl_->addItem(tr("External Tor — advanced"), QStringLiteral("external"));
     torControl_->setEnabled(false);
     torControl_->setToolTip(tr(
-        "Uses this node's existing authenticated RPC session. Dinero-Qt normally authenticates automatically with the local node cookie; no additional credentials are required. Dinero never installs or starts Tor."));
+        "Uses this node's existing authenticated RPC session and local node cookie; no additional credentials are required. Automatic uses only Dinero's included Tor component."));
     root->addWidget(torControl_);
-    connect(torControl_, &QCheckBox::toggled, this, [this](bool enabled) {
+    connect(torControl_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        const QString mode = torControl_->itemData(index).toString();
+        if (mode == QStringLiteral("automatic") &&
+            !QSettings().value(QStringLiteral("network/tor_consent_v1"), false).toBool()) {
+            const auto answer = QMessageBox::question(this, tr("Tor connectivity"), tr(
+                "Allow Dinero to use its included Tor component for private and resilient network connectivity."));
+            if (answer != QMessageBox::Yes) {
+                QSignalBlocker blocker(torControl_);
+                torControl_->setCurrentIndex(0);
+                return;
+            }
+            QSettings().setValue(QStringLiteral("network/tor_consent_v1"), true);
+        }
         torControl_->setEnabled(false);
-        torStatusLabel_->setText(tr("Applying Tor reachability preference…"));
-        Q_EMIT torEnabledRequested(enabled);
+        torStatusLabel_->setText(tr("Applying Tor connectivity preference…"));
+        Q_EMIT torModeRequested(mode);
     });
     torStatusLabel_ = new QLabel(this);
     torStatusLabel_->setObjectName(QStringLiteral("torStatus"));
     torStatusLabel_->setWordWrap(true);
     root->addWidget(torStatusLabel_);
+
+    root->addWidget(new QLabel(tr("Enable relay service (Admin only)"), this));
+    relayControl_ = new QComboBox(this);
+    relayControl_->setObjectName(QStringLiteral("relayServiceControl"));
+    relayControl_->addItem(tr("Off"), QStringLiteral("off"));
+    relayControl_->addItem(tr("Automatic — recommended"), QStringLiteral("automatic"));
+    relayControl_->addItem(tr("Custom limits"), QStringLiteral("custom"));
+    relayControl_->setToolTip(tr("Serves encrypted Dinero P2P relay circuits only. It is not a web proxy and cannot relay other software."));
+    root->addWidget(relayControl_);
+    relayCustom_ = new QWidget(this);
+    auto* form = new QFormLayout(relayCustom_);
+    const QList<QPair<QString, QPair<int, int>>> specs = {
+        {tr("Concurrent circuits"), {1, 25}}, {tr("Bandwidth (KiB/s)"), {64, 20480}},
+        {tr("Circuits per peer"), {1, 25}}, {tr("Circuit lifetime (seconds)"), {60, 86400}},
+        {tr("Requests per peer/minute"), {1, 60}}};
+    const QList<int> defaults = {12, 2048, 2, 1800, 6};
+    for (int i = 0; i < specs.size(); ++i) {
+        auto* spin = new QSpinBox(relayCustom_);
+        spin->setRange(specs[i].second.first, specs[i].second.second);
+        spin->setValue(defaults[i]);
+        form->addRow(specs[i].first, spin);
+        relayLimits_.append(spin);
+    }
+    relayCustom_->setVisible(false);
+    root->addWidget(relayCustom_);
+    auto* applyRelay = new QPushButton(tr("Apply relay service"), this);
+    root->addWidget(applyRelay);
+    relayStatusLabel_ = new QLabel(tr("Relay service status unavailable."), this);
+    relayStatusLabel_->setWordWrap(true);
+    root->addWidget(relayStatusLabel_);
+    connect(relayControl_, &QComboBox::currentIndexChanged, this, [this](int) {
+        relayCustom_->setVisible(relayControl_->currentData().toString() == QStringLiteral("custom"));
+    });
+    connect(applyRelay, &QPushButton::clicked, this, [this] {
+        QJsonObject limits{{"max_circuits", relayLimits_[0]->value()},
+            {"bandwidth_bytes_per_second", relayLimits_[1]->value() * 1024},
+            {"max_circuits_per_peer", relayLimits_[2]->value()},
+            {"circuit_lifetime_seconds", relayLimits_[3]->value()},
+            {"requests_per_peer_per_minute", relayLimits_[4]->value()}};
+        Q_EMIT relayServiceRequested(QJsonObject{{"mode", relayControl_->currentData().toString()}, {"limits", limits}});
+    });
     root->addStretch(1);
 
     onChainInfoUpdated({});
@@ -112,7 +175,7 @@ QString NetworkSection::tipDeltaAnnotation(qint64 our, qint64 net) {
 
 void NetworkSection::setTorStatus(TorState state, const QString& onionAddress) {
     const QSignalBlocker blocker(torControl_);
-    torControl_->setChecked(state == TorState::Active || state == TorState::Error);
+    torControl_->setCurrentIndex(state == TorState::Off || state == TorState::Unsupported ? 0 : 1);
     torStatusLabel_->setText(torStatusText(state, onionAddress));
 }
 
@@ -130,7 +193,25 @@ void NetworkSection::setOnionServiceStatus(const OnionServiceStatus& status) {
         // messages can contain local paths or authentication configuration.
         torStatusLabel_->setToolTip(tr("Check the local daemon log for details."));
     }
-    if (status.available) torControl_->setEnabled(true);
+    if (status.available) {
+        const QSignalBlocker blocker(torControl_);
+        const QString mode = status.requested && status.mode == QStringLiteral("off")
+            ? QStringLiteral("automatic") : status.mode;
+        const int index = torControl_->findData(mode);
+        torControl_->setCurrentIndex(index >= 0 ? index : (status.requested ? 1 : 0));
+        torControl_->setEnabled(true);
+    }
+}
+
+void NetworkSection::setRelayServiceStatus(const QJsonObject& status) {
+    const QString mode = status.value(QStringLiteral("mode")).toString(QStringLiteral("automatic"));
+    const QSignalBlocker blocker(relayControl_);
+    const int index = relayControl_->findData(mode);
+    relayControl_->setCurrentIndex(index >= 0 ? index : 1);
+    relayCustom_->setVisible(mode == QStringLiteral("custom"));
+    relayStatusLabel_->setText(status.value(QStringLiteral("enabled")).toBool()
+        ? tr("Dinero relay service is active within the configured limits.")
+        : tr("Dinero relay service is not accepting new circuits."));
 }
 
 void NetworkSection::setTorActionError(bool unsupported) {
@@ -147,19 +228,19 @@ void NetworkSection::setTorActionError(bool unsupported) {
 QString NetworkSection::torStatusText(TorState state, const QString& onionAddress) {
     switch (state) {
     case TorState::Off:
-        return tr("Off. To opt in, enable listenonion in the daemon configuration and restart. Tor will not be installed or started automatically.");
+        return tr("Off. Ordinary direct and Dinero relay connections remain available.");
     case TorState::Active: {
         const QString safeAddress = onionAddress.trimmed().endsWith(
             QStringLiteral(".onion"), Qt::CaseInsensitive) ? onionAddress.trimmed() : QString();
         return safeAddress.isEmpty()
-            ? tr("Active. Connections are using Tor where configured.")
+            ? tr("Tor active. Direct and relay paths remain available.")
             : tr("Active · onion address: %1").arg(safeAddress);
     }
     case TorState::Error:
         return tr("Configured, but the onion service is not active. Check the daemon log; credentials are hidden here.");
     case TorState::Unsupported:
     default:
-        return tr("Not available as a live switch in this version. Configure Tor in the daemon, then restart. No software will be installed or started automatically.");
+        return tr("This daemon is older and does not support live Tor controls. Ordinary P2P continues normally.");
     }
 }
 

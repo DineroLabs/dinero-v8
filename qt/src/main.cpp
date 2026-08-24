@@ -74,6 +74,18 @@ bool p2pPortMappingAllowed() {
     return QSettings().value(p2pPortMapAllowedKey(), true).toBool();
 }
 
+QString bundledTorPath() {
+#ifdef Q_OS_MAC
+    const QFileInfo candidate(QDir(QCoreApplication::applicationDirPath())
+        .absoluteFilePath("../Resources/tor/tor/tor"));
+    if (candidate.exists() && candidate.isFile() && candidate.isExecutable() &&
+        !candidate.isSymLink()) {
+        return candidate.absoluteFilePath();
+    }
+#endif
+    return {};
+}
+
 void appendDaemonNetworkArgs(QStringList& args) {
     args << "--listen" << "--p2pport" << QString::number(kDineroMainnetP2PPort)
          << "--rpc" << "--rpcport" << "20998";
@@ -792,6 +804,11 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
     // Enable inbound P2P + RPC so Qt wallet can connect and the node can
     // request UPnP/NAT-PMP mapping from the same early launcher used at app boot.
     appendDaemonNetworkArgs(args);
+    const QString tor = bundledTorPath();
+    if (!tor.isEmpty()) {
+        args << "--onion=auto" << "--tormode=automatic"
+             << QStringLiteral("--embeddedtorpath=%1").arg(tor);
+    }
 
     // CRITICAL: Add current fleet bootstrap nodes so daemon can connect to network.
     args << currentBootstrapAddnodes();

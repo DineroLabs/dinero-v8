@@ -26,6 +26,9 @@
 #include "network/types.h"   // For dinero::ServiceFlags
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <stdexcept>
 #include <sstream>
 #include <thread>
@@ -34,7 +37,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
+#include <fcntl.h>
 #include <netdb.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace dinero {
@@ -55,6 +61,80 @@ bool IsRelayModeOn(const std::string& mode) {
 bool IsRelayModeOff(const std::string& mode) {
     const std::string value = LowerAscii(mode);
     return value == "0" || value == "false" || value == "no" || value == "off";
+}
+
+bool ValidRelayServiceLimits(const P2PService::RelayServiceLimits& limits) {
+    return limits.max_circuits >= 1 && limits.max_circuits <= 25 &&
+           limits.max_circuits_per_peer >= 1 &&
+           limits.max_circuits_per_peer <= limits.max_circuits &&
+           limits.bandwidth_bytes_per_second >= 64 * 1024 &&
+           limits.bandwidth_bytes_per_second <= 20ULL * 1024 * 1024 &&
+           limits.circuit_lifetime_seconds >= 60 &&
+           limits.circuit_lifetime_seconds <= 24 * 60 * 60 &&
+           limits.requests_per_peer_per_minute >= 1 &&
+           limits.requests_per_peer_per_minute <= 60;
+}
+
+bool WriteRelayPolicy(const std::string& path,
+                      const P2PService::RelayServiceStatus& status) {
+    if (path.empty()) return false;
+    const std::string temp = path + ".tmp";
+    std::ostringstream serialized;
+    serialized << status.mode << ' ' << status.limits.max_circuits << ' '
+               << status.limits.bandwidth_bytes_per_second << ' '
+               << status.limits.max_circuits_per_peer << ' '
+               << status.limits.circuit_lifetime_seconds << ' '
+               << status.limits.requests_per_peer_per_minute << '\n';
+#ifndef _WIN32
+    std::error_code cleanup;
+    std::filesystem::remove(temp, cleanup);
+    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+                          S_IRUSR | S_IWUSR);
+    if (fd < 0) return false;
+    const std::string bytes = serialized.str();
+    const bool ok = ::write(fd, bytes.data(), bytes.size()) ==
+                        static_cast<ssize_t>(bytes.size()) && ::fsync(fd) == 0;
+    ::close(fd);
+    if (!ok) {
+        std::filesystem::remove(temp, cleanup);
+        return false;
+    }
+#else
+    std::ofstream out(temp, std::ios::trunc);
+    out << serialized.str();
+    out.flush();
+    if (!out) return false;
+#endif
+    std::error_code ec;
+    std::filesystem::rename(temp, path, ec);
+#ifdef _WIN32
+    if (ec) {
+        std::filesystem::remove(path, ec);
+        ec.clear();
+        std::filesystem::rename(temp, path, ec);
+    }
+#endif
+    return !ec;
+}
+
+std::optional<P2PService::RelayServiceStatus> ReadRelayPolicy(
+    const std::string& path) {
+#ifndef _WIN32
+    struct stat st{};
+    if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) ||
+        ::chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0) return std::nullopt;
+#endif
+    std::ifstream in(path);
+    P2PService::RelayServiceStatus status;
+    if (!(in >> status.mode >> status.limits.max_circuits >>
+          status.limits.bandwidth_bytes_per_second >>
+          status.limits.max_circuits_per_peer >>
+          status.limits.circuit_lifetime_seconds >>
+          status.limits.requests_per_peer_per_minute) ||
+        !ValidRelayServiceLimits(status.limits)) return std::nullopt;
+    if (status.mode != "off" && status.mode != "automatic" &&
+        status.mode != "custom") return std::nullopt;
+    return status;
 }
 
 bool IsDynamicP2PActiveMode(const std::string& mode) {
@@ -308,6 +388,8 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         status.onion_service_address = onion_status.onion_address;
         status.onion_service_authentication.clear();
         status.onion_service_message = onion_status.message;
+        status.onion_service_mode = onion_status.requested ? tor_mode_ : "off";
+        status.onion_service_embedded = embedded_tor_ && embedded_tor_->status().running;
     }
     status.relay_hints_received_self = p2p_mgr_->relay_hints_received_self_count();
     status.relay_hints_received_relay = p2p_mgr_->relay_hints_received_relay_count();
@@ -438,7 +520,26 @@ network::TorRuntimeStatus P2PService::SetOnionServiceEnabled(bool enabled) {
         status.message = "Tor onion runtime is unavailable";
         return status;
     }
+    if (enabled && tor_mode_ == "automatic" && embedded_tor_ &&
+        !embedded_tor_->status().running) {
+        const auto embedded = embedded_tor_->Start();
+        if (embedded.running) {
+            tor_onion_config_.control_host = "127.0.0.1";
+            tor_onion_config_.control_port = embedded.control_port;
+            if (p2p_mgr_) {
+                p2p_mgr_->set_onion_proxy("127.0.0.1", embedded.socks_port, false);
+                onion_proxy_reachable_ = true;
+                onion_proxy_message_ = "embedded Tor active";
+            }
+        }
+    }
     auto status = onion_runtime_->SetEnabled(enabled);
+    if (!status.requested && embedded_tor_) {
+        embedded_tor_->Stop();
+        if (p2p_mgr_) p2p_mgr_->set_onion_proxy("", 0, false);
+        onion_proxy_reachable_ = false;
+        onion_proxy_message_ = "embedded Tor off";
+    }
     onion_service_requested_ = status.requested;
     if (logger_interface_) {
         if (status.active || !status.requested) {
@@ -450,11 +551,34 @@ network::TorRuntimeStatus P2PService::SetOnionServiceEnabled(bool enabled) {
     return status;
 }
 
+network::TorRuntimeStatus P2PService::SetOnionServiceMode(const std::string& requested) {
+    const std::string mode = LowerAscii(requested);
+    if (mode == "off") return SetOnionServiceEnabled(false);
+    if (mode != "automatic" && mode != "external") {
+        network::TorRuntimeStatus status;
+        status.message = "invalid Tor connectivity mode";
+        return status;
+    }
+    if (mode == "external") {
+        if (embedded_tor_) embedded_tor_->Stop();
+        tor_onion_config_ = external_tor_onion_config_;
+    }
+    tor_mode_ = mode;
+    return SetOnionServiceEnabled(true);
+}
+
 std::string P2PService::RelayMode() const {
     return config_ ? LowerAscii(config_->GetString("p2p.relay", "auto")) : "auto";
 }
 
 bool P2PService::IsRelayRoleEnabled() const {
+    std::string operator_mode;
+    {
+        std::lock_guard<std::mutex> lock(relay_service_mutex_);
+        operator_mode = relay_service_status_.mode;
+    }
+    if (operator_mode == "off") return false;
+    if (operator_mode == "custom") return true;
     const std::string mode = RelayMode();
     if (IsRelayModeOn(mode)) {
         return true;
@@ -463,6 +587,53 @@ bool P2PService::IsRelayRoleEnabled() const {
         return false;
     }
     return relay_active_.load(std::memory_order_acquire);
+}
+
+P2PService::RelayServiceStatus P2PService::GetRelayServiceStatus() const {
+    std::lock_guard<std::mutex> lock(relay_service_mutex_);
+    auto status = relay_service_status_;
+    const std::string configured = RelayMode();
+    status.enabled = status.mode == "custom" ||
+        (status.mode == "automatic" &&
+         (IsRelayModeOn(configured) ||
+          (!IsRelayModeOff(configured) && relay_active_.load())));
+    return status;
+}
+
+P2PService::RelayServiceStatus P2PService::SetRelayService(
+    const std::string& requested, const RelayServiceLimits& limits) {
+    const std::string mode = LowerAscii(requested);
+    std::lock_guard<std::mutex> lock(relay_service_mutex_);
+    if ((mode != "off" && mode != "automatic" && mode != "custom") ||
+        !ValidRelayServiceLimits(limits)) {
+        auto status = relay_service_status_;
+        status.message = "invalid relay-service mode or limits";
+        return status;
+    }
+    RelayServiceStatus candidate{mode, false, limits, {}};
+    if (!WriteRelayPolicy(relay_service_policy_path_, candidate)) {
+        auto status = relay_service_status_;
+        status.message = "relay-service preference could not be saved";
+        return status;
+    }
+    const std::string configured = RelayMode();
+    candidate.enabled = mode == "custom" ||
+        (mode == "automatic" &&
+         (IsRelayModeOn(configured) ||
+          (!IsRelayModeOff(configured) && relay_active_.load())));
+    candidate.message = "relay-service preference applied";
+    relay_service_status_ = candidate;
+    if (p2p_mgr_) {
+        ::P2PManager::RelayServiceLimits applied;
+        applied.max_circuits = limits.max_circuits;
+        applied.bandwidth_bytes_per_second = limits.bandwidth_bytes_per_second;
+        applied.max_circuits_per_peer = limits.max_circuits_per_peer;
+        applied.circuit_lifetime_seconds = limits.circuit_lifetime_seconds;
+        applied.requests_per_peer_per_minute = limits.requests_per_peer_per_minute;
+        p2p_mgr_->set_relay_service_limits(applied);
+        p2p_mgr_->set_relay_service_enabled(candidate.enabled);
+    }
+    return relay_service_status_;
 }
 
 std::string P2PService::DynamicP2PMode() const {
@@ -489,6 +660,7 @@ void P2PService::SetRelayActive(bool active) {
     if (previous == active) {
         return;
     }
+    if (p2p_mgr_) p2p_mgr_->set_relay_service_enabled(IsRelayRoleEnabled());
     if (logger_interface_) {
         logger_interface_->info(std::string("[P2PService] Relay role auto-mode ") +
                                 (active ? "engaged" : "disengaged") +
@@ -1388,6 +1560,10 @@ bool P2PService::Init(DaemonContext& ctx) {
     std::string datadir = config_->DataDir();
     peers_file_path_ = datadir + "/peers.dat";
     relay_hints_file_path_ = datadir + "/relay_hints.dat";
+    relay_service_policy_path_ = datadir + "/relay_service_policy";
+    if (const auto persisted = ReadRelayPolicy(relay_service_policy_path_)) {
+        relay_service_status_ = *persisted;
+    }
 
     // Parse seed nodes from config (support both addnode and connect)
     std::string addnode = config_->GetString("addnode", "");
@@ -1427,8 +1603,39 @@ bool P2PService::Init(DaemonContext& ctx) {
     logger_interface_->info("[P2PService]   Offline mode: " + std::string(offline_mode_ ? "true" : "false"));
 
     try {
+        tor_mode_ = LowerAscii(config_->GetString("p2p.tor_mode", "automatic"));
+        embedded_tor_path_ = config_->GetString("p2p.embedded_tor_path", "");
+        if (tor_mode_ == "automatic" && !embedded_tor_path_.empty()) {
+            embedded_tor_ = std::make_unique<network::EmbeddedTorProcess>(
+                embedded_tor_path_, datadir + "/tor");
+            const bool requested = network::TorOptInStore(
+                datadir + "/onion_service_enabled").Read().value_or(
+                    config_->GetBool("p2p.listen_onion", false));
+            if (requested) {
+                const auto embedded = embedded_tor_->Start();
+                if (embedded.running) {
+                    onion_proxy_ = "127.0.0.1:" + std::to_string(embedded.socks_port);
+                } else {
+                    logger_interface_->warning("[P2PService] " + embedded.message);
+                }
+            }
+        }
         // Create P2PManager instance
         p2p_mgr_ = std::make_unique<::P2PManager>(listen_port_, external_ip_);
+        {
+            ::P2PManager::RelayServiceLimits limits;
+            limits.max_circuits = relay_service_status_.limits.max_circuits;
+            limits.bandwidth_bytes_per_second =
+                relay_service_status_.limits.bandwidth_bytes_per_second;
+            limits.max_circuits_per_peer =
+                relay_service_status_.limits.max_circuits_per_peer;
+            limits.circuit_lifetime_seconds =
+                relay_service_status_.limits.circuit_lifetime_seconds;
+            limits.requests_per_peer_per_minute =
+                relay_service_status_.limits.requests_per_peer_per_minute;
+            p2p_mgr_->set_relay_service_limits(limits);
+            p2p_mgr_->set_relay_service_enabled(IsRelayRoleEnabled());
+        }
         p2p_mgr_->set_peer_height_updated_handler(
             [this](const std::string& peer_addr, uint32_t height) {
                 MaybeRequestHeadersForPeerTip(peer_addr, height, "peer-height-update");
@@ -1494,7 +1701,6 @@ bool P2PService::Init(DaemonContext& ctx) {
         {
             onion_service_requested_ =
                 config_ && config_->GetBool("p2p.listen_onion", false);
-            network::TorOnionServiceConfig tor_config;
             std::string control_host;
             uint16_t control_port = 0;
             const std::string control = config_->GetString(
@@ -1505,17 +1711,22 @@ bool P2PService::Init(DaemonContext& ctx) {
                 logger_interface_->warning(
                     "[P2PService] Invalid torcontrol endpoint");
             }
-            tor_config.control_host = control_host;
-            tor_config.control_port = valid_control ? control_port : 0;
-            tor_config.virtual_port = listen_port_;
-            tor_config.target_port = listen_port_;
-            tor_config.private_key_path = datadir + "/onion_service_key";
-            tor_config.control_password = config_->GetString(
+            tor_onion_config_.control_host = control_host;
+            tor_onion_config_.control_port = valid_control ? control_port : 0;
+            tor_onion_config_.virtual_port = listen_port_;
+            tor_onion_config_.target_port = listen_port_;
+            tor_onion_config_.private_key_path = datadir + "/onion_service_key";
+            tor_onion_config_.control_password = config_->GetString(
                 "p2p.tor_control_password", "");
+            external_tor_onion_config_ = tor_onion_config_;
+            if (embedded_tor_ && embedded_tor_->status().running) {
+                tor_onion_config_.control_host = "127.0.0.1";
+                tor_onion_config_.control_port = embedded_tor_->status().control_port;
+            }
             onion_runtime_ = std::make_unique<network::TorRuntimeController>(
                 network::TorOptInStore(datadir + "/onion_service_enabled"),
-                [tor_config]() mutable {
-                    return std::make_unique<network::TorOnionService>(tor_config);
+                [this]() {
+                    return std::make_unique<network::TorOnionService>(tor_onion_config_);
                 },
                 [this](const std::string& address) {
                     if (p2p_mgr_) p2p_mgr_->add_advertised_address(
@@ -2044,6 +2255,7 @@ void P2PService::Stop() {
         }
 
         if (onion_runtime_) onion_runtime_->Shutdown();
+        if (embedded_tor_) embedded_tor_->Stop();
 
         StopPortMapping();
 

@@ -205,8 +205,14 @@ Important invariants:
 - Preserve the hidden service private key if you want a stable onion address
   across restarts.
 
-Tor or another compatible SOCKS5 service must already be running locally.
-Dinero never installs or launches Tor.
+Official Dinero Qt packages may include a pinned, release-verified Tor Expert
+Bundle. In **Automatic** mode the embedded daemon starts that private Tor child
+only for Dinero network traffic, binds its SOCKS and control ports to localhost,
+uses cookie authentication, and stops the child during clean shutdown. It does
+not install Homebrew, alter system Tor settings, provide a general web proxy, or
+route wallet RPC through the Tor control interface. Ordinary P2P remains active
+if embedded Tor is missing or fails. **External Tor** remains available as an
+advanced mode for operators who manage their own compatible Tor instance.
 
 For an inbound v3 onion service, explicitly opt in to Tor control integration:
 
@@ -222,7 +228,9 @@ The `ED25519-V3` private key returned by Tor is stored as
 `onion_service_key` in the data directory with owner-only permissions and is
 reused to keep the address stable. Dinero removes the mapping during clean
 shutdown. `getnetworkinfo.onion_service` reports requested/active state,
-address, authentication method, and any failure.
+mode, whether Tor is embedded, address, authentication method, and any failure.
+Only the boolean opt-in is persisted; neither control credentials nor the Tor
+runtime ports are written to the preference file.
 
 Onion addresses are exchanged through BIP155 `addrv2` and are never submitted
 to clearnet DNS. Encrypted Dinero relay fallback remains eligible because an

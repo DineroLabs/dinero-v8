@@ -64,6 +64,17 @@ The `p2p.relay` config flag controls Tier 3 only:
 | `0` / `off` / `no` | Tier 3 off, always. Hard opt-out. |
 | `auto` (default, unset) | Tier 3 on while the daemon's auto-mode flag is engaged. |
 
+The owner-facing `network.setrelayservice` RPC and Command-K panel add a durable
+operator policy above that runtime trigger: **Off**, **Automatic — recommended**,
+or **Custom**. Automatic uses conservative caps (12 concurrent circuits,
+2 MiB/s aggregate relay bandwidth, two circuits per peer, a 30-minute circuit
+lifetime, and six requests per peer per minute). Custom values are validated
+against hard ceilings before being persisted. Disabling this Dinero-only relay
+service rejects new relay registrations and circuits without disabling ordinary
+P2P or existing outbound recovery paths. Both mutation RPCs are admin-only;
+cookie-authenticated local Dinero Qt is an admin session, while `--rpc-readonly`
+sessions cannot change them.
+
 The auto-mode flag (`P2PService::relay_active_`, exposed as
 `getnetworkinfo.relay.active`) is currently engaged by exactly one
 trigger: `mining.start` / `mining.stop` (a mining node moves more value,

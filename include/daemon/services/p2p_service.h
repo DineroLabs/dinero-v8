@@ -7,6 +7,7 @@
 #include "network/port_mapper.h"
 #include "network/stun_client.h"      // NAT traversal Phase C1 (unique_ptr<StunClient> member)
 #include "network/tor_control.h"
+#include "network/embedded_tor_process.h"
 #include "network/tor_runtime_controller.h"
 #include "version.h"
 
@@ -53,6 +54,19 @@ public:
     struct NetworkTotals {
         uint64_t bytes_recv{0};
         uint64_t bytes_sent{0};
+    };
+    struct RelayServiceLimits {
+        size_t max_circuits{12};
+        uint64_t bandwidth_bytes_per_second{2ULL * 1024 * 1024};
+        size_t max_circuits_per_peer{2};
+        uint32_t circuit_lifetime_seconds{1800};
+        uint32_t requests_per_peer_per_minute{6};
+    };
+    struct RelayServiceStatus {
+        std::string mode{"automatic"};
+        bool enabled{false};
+        RelayServiceLimits limits{};
+        std::string message;
     };
     struct NetworkStatus {
         struct AddrmanSnapshot {
@@ -120,6 +134,8 @@ public:
         std::string onion_service_address;
         std::string onion_service_authentication;
         std::string onion_service_message;
+        std::string onion_service_mode{"off"};
+        bool onion_service_embedded{false};
 
         // NAT traversal Phase C1: STUN-discovered public IP+port. Empty
         // when discovery hasn't completed or failed. Independent of
@@ -254,6 +270,7 @@ public:
     NetworkTotals GetNetworkTotals() const;
     NetworkStatus GetNetworkStatus() const;
     network::TorRuntimeStatus SetOnionServiceEnabled(bool enabled);
+    network::TorRuntimeStatus SetOnionServiceMode(const std::string& mode);
     // Setter for the auto-mode relay-active toggle. Today mining.start /
     // mining.stop are the canonical callers (mining → carry more value →
     // worth running as a public relay), but any subsystem with a reason
@@ -262,6 +279,9 @@ public:
     void SetRelayActive(bool active);
     bool IsRelayRoleEnabled() const;
     std::string RelayMode() const;
+    RelayServiceStatus GetRelayServiceStatus() const;
+    RelayServiceStatus SetRelayService(const std::string& mode,
+                                       const RelayServiceLimits& limits);
     void BroadcastMessage(const ::P2PMessage& msg) {
         if (p2p_mgr_) p2p_mgr_->broadcast_message(msg);
     }
@@ -296,6 +316,11 @@ private:
     std::string peers_file_path_;
     std::string relay_hints_file_path_;
     std::unique_ptr<network::TorRuntimeController> onion_runtime_;
+    std::unique_ptr<network::EmbeddedTorProcess> embedded_tor_;
+    network::TorOnionServiceConfig tor_onion_config_{};
+    network::TorOnionServiceConfig external_tor_onion_config_{};
+    std::string tor_mode_{"automatic"};
+    std::string embedded_tor_path_;
     std::atomic<bool> onion_service_requested_{false};
     std::vector<std::string> seed_nodes_;
     std::vector<std::pair<std::string, uint16_t>> reconnect_targets_;
@@ -357,6 +382,9 @@ private:
     //                          etc. — can flip the same lever via
     //                          SetRelayActive() without protocol change.
     std::atomic<bool> relay_active_{false};
+    mutable std::mutex relay_service_mutex_;
+    RelayServiceStatus relay_service_status_{};
+    std::string relay_service_policy_path_;
 
     // Periodic sync loop for headers-first + block scheduler in P2PService mode.
     std::atomic<bool> scheduler_tick_running_{false};

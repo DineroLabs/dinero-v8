@@ -207,6 +207,8 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         onion_service["address"] = "";
         onion_service["authentication"] = "";
         onion_service["message"] = "P2P service not available";
+        onion_service["mode"] = "off";
+        onion_service["embedded"] = false;
         result["onion_service"] = onion_service;
         din::Json dynamic_p2p;
         dynamic_p2p["enabled"] = false;
@@ -238,6 +240,8 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     onion_service["address"] = status.onion_service_address;
     onion_service["authentication"] = status.onion_service_authentication;
     onion_service["message"] = status.onion_service_message;
+    onion_service["mode"] = status.onion_service_mode;
+    onion_service["embedded"] = status.onion_service_embedded;
     result["onion_service"] = onion_service;
 
     result["networkactive"] = status.network_active;
@@ -711,11 +715,14 @@ din::Json rpc_context_setnetworkactive(const ExecutionContext& ctx, const din::J
 
 din::Json rpc_context_setonionservice(const ExecutionContext& ctx,
                                       const din::Json& params) {
-    if (!params.isObject() || !params.isMember("enabled") ||
-        !params["enabled"].isBool()) {
+    const bool has_enabled = params.isObject() && params.isMember("enabled") &&
+                             params["enabled"].isBool();
+    const bool has_mode = params.isObject() && params.isMember("mode") &&
+                          params["mode"].isString();
+    if (!has_enabled && !has_mode) {
         din::Json result;
         result["error"]["code"] = -8;
-        result["error"]["message"] = "enabled (boolean) required";
+        result["error"]["message"] = "enabled (boolean) or mode (string) required";
         return result;
     }
     auto p2p = GetP2PService(ctx);
@@ -725,13 +732,64 @@ din::Json rpc_context_setonionservice(const ExecutionContext& ctx,
         result["error"]["message"] = "P2P service not available";
         return result;
     }
-    const auto status = p2p->SetOnionServiceEnabled(params["enabled"].asBool());
+    const auto status = has_mode
+        ? p2p->SetOnionServiceMode(params["mode"].asString())
+        : p2p->SetOnionServiceEnabled(params["enabled"].asBool());
     din::Json result;
     result["requested"] = status.requested;
     result["active"] = status.active;
     result["address"] = status.active ? status.onion_address : "";
     result["message"] = status.message;
+    result["mode"] = status.requested
+        ? (has_mode ? params["mode"].asString() : "automatic") : "off";
     return result;
+}
+
+din::Json RelayServiceJson(const dinero::P2PService::RelayServiceStatus& status) {
+    din::Json result;
+    result["mode"] = status.mode;
+    result["enabled"] = status.enabled;
+    result["message"] = status.message;
+    result["limits"]["max_circuits"] = static_cast<uint64_t>(status.limits.max_circuits);
+    result["limits"]["bandwidth_bytes_per_second"] = status.limits.bandwidth_bytes_per_second;
+    result["limits"]["max_circuits_per_peer"] = static_cast<uint64_t>(status.limits.max_circuits_per_peer);
+    result["limits"]["circuit_lifetime_seconds"] = status.limits.circuit_lifetime_seconds;
+    result["limits"]["requests_per_peer_per_minute"] = status.limits.requests_per_peer_per_minute;
+    return result;
+}
+
+din::Json rpc_context_getrelayservice(const ExecutionContext& ctx, const din::Json&) {
+    auto p2p = GetP2PService(ctx);
+    if (!p2p) {
+        din::Json error;
+        error["error"]["code"] = -32000;
+        error["error"]["message"] = "P2P service not available";
+        return error;
+    }
+    return RelayServiceJson(p2p->GetRelayServiceStatus());
+}
+
+din::Json rpc_context_setrelayservice(const ExecutionContext& ctx,
+                                      const din::Json& params) {
+    if (!params.isObject() || !params.isMember("mode") ||
+        !params["mode"].isString()) {
+        din::Json error;
+        error["error"]["code"] = -8;
+        error["error"]["message"] = "mode is required";
+        return error;
+    }
+    auto p2p = GetP2PService(ctx);
+    if (!p2p) return rpc_context_getrelayservice(ctx, params);
+    auto limits = p2p->GetRelayServiceStatus().limits;
+    if (params.isMember("limits") && params["limits"].isObject()) {
+        const auto& v = params["limits"];
+        if (v.isMember("max_circuits")) limits.max_circuits = v["max_circuits"].asUInt64();
+        if (v.isMember("bandwidth_bytes_per_second")) limits.bandwidth_bytes_per_second = v["bandwidth_bytes_per_second"].asUInt64();
+        if (v.isMember("max_circuits_per_peer")) limits.max_circuits_per_peer = v["max_circuits_per_peer"].asUInt64();
+        if (v.isMember("circuit_lifetime_seconds")) limits.circuit_lifetime_seconds = v["circuit_lifetime_seconds"].asUInt();
+        if (v.isMember("requests_per_peer_per_minute")) limits.requests_per_peer_per_minute = v["requests_per_peer_per_minute"].asUInt();
+    }
+    return RelayServiceJson(p2p->SetRelayService(params["mode"].asString(), limits));
 }
 
 // node.status — one operator-facing health summary answering the questions an
@@ -899,6 +957,14 @@ void registerNetworkMethodsContext() {
 
     g_rpcRegistry.registerHandler("network.setonionservice",
                                  rpc_context_setonionservice,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+    g_rpcRegistry.registerHandler("network.getrelayservice",
+                                 rpc_context_getrelayservice,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+    g_rpcRegistry.registerHandler("network.setrelayservice",
+                                 rpc_context_setrelayservice,
                                  RegisterMode::Overwrite,
                                  "context-aware");
 

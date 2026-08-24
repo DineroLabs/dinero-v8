@@ -52,6 +52,8 @@ project(dinero-qt VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 set_property(DIRECTORY PROPERTY INCLUDE_DIRECTORIES "")
 
 if(APPLE)
+  set(DINERO_TOR_BUNDLE_DIR "" CACHE PATH
+      "Verified Tor Expert Bundle directory produced by scripts/fetch-tor-expert-bundle.sh")
   enable_language(OBJCXX)
 endif()
 
@@ -826,6 +828,24 @@ if(APPLE)
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/dinero-sv2-gpu-miner"
     COMMENT "Clearing stale embedded binaries..."
   )
+
+  if(DINERO_TOR_BUNDLE_DIR)
+    if(NOT EXISTS "${DINERO_TOR_BUNDLE_DIR}/tor/tor" OR
+       NOT EXISTS "${DINERO_TOR_BUNDLE_DIR}/DINERO_TOR_VERSION")
+      message(FATAL_ERROR "DINERO_TOR_BUNDLE_DIR is not a verified extracted bundle")
+    endif()
+    add_custom_command(TARGET dinero-qt POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E rm -rf
+        "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/tor"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${DINERO_TOR_BUNDLE_DIR}"
+        "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/tor"
+      COMMAND chmod +x
+        "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/tor/tor/tor"
+      COMMENT "Bundling verified Tor Expert Bundle..."
+    )
+    message(STATUS "Will bundle verified Tor Expert Bundle from ${DINERO_TOR_BUNDLE_DIR}")
+  endif()
 
   add_custom_command(TARGET dinero-qt POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy

@@ -786,6 +786,25 @@ TEST(RelayBehindThrottle, RefusesNewCircuitsWhenBehind) {
     EXPECT_EQ(manager.test_relay_drops_behind_count(), 0u);
 }
 
+TEST(RelayServicePolicy, OffRejectsNewCircuitWithoutStoppingDirectP2P) {
+    P2PManager manager(0);
+    auto requester = LoopbackSocketPair::Create();
+    const std::string requester_key =
+        "127.0.0.1:" + std::to_string(requester.port());
+    manager.test_install_connected_direct_peer(requester_key,
+                                               requester.client_fd(),
+                                               true, false, {});
+    manager.set_relay_service_enabled(false);
+    constexpr uint64_t request_id = 0x8877665544332211ULL;
+    manager.handle_relay_connect(requester_key,
+        P2PMessage::create_relay_connect(MakeNodeId(0x20), request_id));
+    auto ack = requester.ReceiveMessage();
+    ASSERT_NE(ack, nullptr);
+    EXPECT_EQ(RelayAckStatus(*ack),
+              static_cast<uint8_t>(P2PMessage::RelayConnectStatus::RateLimited));
+    EXPECT_NE(manager.get_peer_info(requester_key), nullptr);
+}
+
 TEST(RelayBehindThrottle, EstablishedCircuitStillForwardsWhenBehind) {
     P2PManager manager(0);
     auto target = LoopbackSocketPair::Create();

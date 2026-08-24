@@ -386,6 +386,9 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
         onion_status.active = onion.value(QStringLiteral("active")).toBool(false);
         onion_status.address = onion.value(QStringLiteral("address")).toString();
         onion_status.message = onion.value(QStringLiteral("message")).toString();
+        onion_status.mode = onion.value(QStringLiteral("mode")).toString(
+            onion_status.requested ? QStringLiteral("automatic") : QStringLiteral("off"));
+        onion_status.embedded = onion.value(QStringLiteral("embedded")).toBool();
         // Deliberately do not parse `authentication`: it may describe local
         // credential material and has no place in the dashboard.
     }

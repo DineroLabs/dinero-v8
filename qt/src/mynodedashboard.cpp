@@ -132,14 +132,24 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
             identitySection_, &IdentitySection::onDynamicP2POverviewUpdated);
     connect(poller_, &NodePoller::onionServiceUpdated,
             networkSection_, &NetworkSection::setOnionServiceStatus);
-    connect(networkSection_, &NetworkSection::torEnabledRequested,
-            this, [rpc](bool enabled) {
+    connect(networkSection_, &NetworkSection::torModeRequested,
+            this, [rpc](const QString& mode) {
         if (rpc) rpc->callNamed(QStringLiteral("network.setonionservice"),
-                                QJsonObject{{QStringLiteral("enabled"), enabled}});
+                                QJsonObject{{QStringLiteral("mode"), mode}});
     });
+    connect(networkSection_, &NetworkSection::relayServiceRequested,
+            this, [rpc](const QJsonObject& request) {
+        if (rpc) rpc->callNamed(QStringLiteral("network.setrelayservice"), request);
+    });
+    if (rpc) rpc->callNamed(QStringLiteral("network.getrelayservice"), QJsonObject{});
     if (rpc) {
         connect(rpc, &RpcClient::rpcResult, this,
                 [this](const QString& method, const QJsonValue& result) {
+            if (method == QStringLiteral("network.getrelayservice") ||
+                method == QStringLiteral("network.setrelayservice")) {
+                networkSection_->setRelayServiceStatus(result.toObject());
+                return;
+            }
             if (method != QStringLiteral("network.setonionservice")) return;
             const auto obj = result.toObject();
             OnionServiceStatus status;
@@ -147,6 +157,7 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
             status.requested = obj.value(QStringLiteral("requested")).toBool();
             status.active = obj.value(QStringLiteral("active")).toBool();
             status.address = obj.value(QStringLiteral("address")).toString();
+            status.mode = obj.value(QStringLiteral("mode")).toString();
             networkSection_->setOnionServiceStatus(status);
         });
         connect(rpc, &RpcClient::rpcError, this,

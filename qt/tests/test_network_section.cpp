@@ -3,7 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "networksection.h"
-#include <QCheckBox>
+#include <QComboBox>
 #include <QLabel>
 #include <QtTest/QtTest>
 
@@ -28,8 +28,8 @@ private Q_SLOTS:
         QCOMPARE(NetworkSection::tipDeltaAnnotation(0, 0), QString("—"));
     }
     void tor_state_mapping_is_honest_and_hides_untrusted_details() {
-        QCOMPARE(NetworkSection::torStatusText(NetworkSection::TorState::Off),
-                 QString("Off. To opt in, enable listenonion in the daemon configuration and restart. Tor will not be installed or started automatically."));
+        QVERIFY(NetworkSection::torStatusText(NetworkSection::TorState::Off)
+                    .contains(QStringLiteral("Ordinary direct")));
         QVERIFY(NetworkSection::torStatusText(NetworkSection::TorState::Active,
                                                 QStringLiteral("abc.onion"))
                     .contains(QStringLiteral("abc.onion")));
@@ -39,12 +39,12 @@ private Q_SLOTS:
         QVERIFY(NetworkSection::torStatusText(NetworkSection::TorState::Error)
                     .contains(QStringLiteral("credentials are hidden")));
         QVERIFY(NetworkSection::torStatusText(NetworkSection::TorState::Unsupported)
-                    .contains(QStringLiteral("Not available as a live switch")));
+                    .contains(QStringLiteral("older")));
     }
     void maps_real_onion_service_state_defensively() {
         NetworkSection s;
         auto* status = s.findChild<QLabel*>(QStringLiteral("torStatus"));
-        auto* control = s.findChild<QCheckBox*>(QStringLiteral("torReachabilityControl"));
+        auto* control = s.findChild<QComboBox*>(QStringLiteral("torReachabilityControl"));
         QVERIFY(status != nullptr);
         QVERIFY(control != nullptr);
         QVERIFY(!control->isEnabled());
@@ -53,7 +53,7 @@ private Q_SLOTS:
         onion.available = true;
         s.setOnionServiceStatus(onion);
         QVERIFY(status->text().startsWith(QStringLiteral("Off.")));
-        QVERIFY(!control->isChecked());
+        QCOMPARE(control->currentData().toString(), QStringLiteral("off"));
         QVERIFY(control->isEnabled());
 
         onion.requested = true;
@@ -61,7 +61,7 @@ private Q_SLOTS:
         onion.address = QStringLiteral("examplehiddenservice.onion");
         s.setOnionServiceStatus(onion);
         QVERIFY(status->text().contains(onion.address));
-        QVERIFY(control->isChecked());
+        QCOMPARE(control->currentData().toString(), QStringLiteral("automatic"));
 
         onion.active = false;
         onion.message = QStringLiteral("cookie=/secret/path credential=hunter2");
@@ -73,15 +73,23 @@ private Q_SLOTS:
 
     void old_daemon_keeps_tor_control_noninteractive() {
         NetworkSection s;
-        auto* control = s.findChild<QCheckBox*>(QStringLiteral("torReachabilityControl"));
-        QCOMPARE(control->text(), QStringLiteral("Enable Tor reachability (Admin only)"));
+        auto* control = s.findChild<QComboBox*>(QStringLiteral("torReachabilityControl"));
         QVERIFY(control->toolTip().contains(QStringLiteral("local node cookie")));
         QVERIFY(control->toolTip().contains(QStringLiteral("no additional credentials")));
         dinero::qt::dashboard::OnionServiceStatus unavailable;
         s.setOnionServiceStatus(unavailable);
         QVERIFY(!control->isEnabled());
         QVERIFY(NetworkSection::torStatusText(NetworkSection::TorState::Unsupported)
-                    .contains(QStringLiteral("Configure Tor in the daemon")));
+                    .contains(QStringLiteral("older")));
+    }
+
+    void relay_service_controls_are_dinero_only_and_bounded() {
+        NetworkSection s;
+        auto* control = s.findChild<QComboBox*>(QStringLiteral("relayServiceControl"));
+        QVERIFY(control != nullptr);
+        QCOMPARE(control->count(), 3);
+        QVERIFY(control->toolTip().contains(QStringLiteral("Dinero P2P")));
+        QVERIFY(control->toolTip().contains(QStringLiteral("not a web proxy")));
     }
 };
 

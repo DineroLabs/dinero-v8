@@ -1,5 +1,6 @@
 #include "network/tor_control.h"
 #include "network/tor_runtime_controller.h"
+#include "network/embedded_tor_process.h"
 #include "p2p/addr_v2.h"
 
 #include <gtest/gtest.h>
@@ -9,9 +10,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <cstdlib>
+#include <thread>
 
 #ifndef _WIN32
 #include <sys/stat.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #endif
 
@@ -42,6 +47,112 @@ std::string TempPath(const std::string& leaf) {
             ("dinero-tor-runtime-" + leaf + "-" + std::to_string(++counter))).string();
 }
 }  // namespace
+
+#ifndef _WIN32
+TEST(EmbeddedTorProcess, RejectsMissingOrSymlinkedExecutable) {
+    dinero::network::EmbeddedTorProcess missing(
+        TempPath("missing-binary"), TempPath("missing-data"));
+    EXPECT_FALSE(missing.Start().available);
+    const std::string target = TempPath("target");
+    const std::string link = TempPath("link");
+    { std::ofstream out(target); out << "#!/bin/sh\nexit 0\n"; }
+    ASSERT_EQ(::chmod(target.c_str(), S_IRWXU), 0);
+    ASSERT_EQ(::symlink(target.c_str(), link.c_str()), 0);
+    dinero::network::EmbeddedTorProcess symlinked(link, TempPath("link-data"));
+    EXPECT_FALSE(symlinked.Start().available);
+    std::filesystem::remove(link);
+    std::filesystem::remove(target);
+}
+
+TEST(EmbeddedTorProcess, StartsOnLoopbackAndStopsOwnedChild) {
+    const std::string executable = TempPath("fake-tor");
+    const std::string data = TempPath("fake-data");
+    {
+        std::ofstream out(executable);
+        out << "#!/bin/sh\nport=\nwhile [ $# -gt 0 ]; do "
+               "if [ \"$1\" = \"--ControlPort\" ]; then shift; port=${1##*:}; fi; shift; done\n"
+               "exec python3 -c 'import socket,sys; s=socket.socket(); "
+               "s.bind((\"127.0.0.1\",int(sys.argv[1]))); s.listen(); "
+               "\nwhile True:\n c,a=s.accept(); c.close()' \"$port\"\n";
+    }
+    ASSERT_EQ(::chmod(executable.c_str(), S_IRWXU), 0);
+    dinero::network::EmbeddedTorProcess process(executable, data);
+    const auto running = process.Start();
+    ASSERT_TRUE(running.running) << running.message;
+    EXPECT_NE(running.control_port, running.socks_port);
+    process.Stop();
+    struct stat st{};
+    ASSERT_EQ(::stat(data.c_str(), &st), 0);
+    EXPECT_EQ(st.st_mode & 0777, 0700);
+    std::filesystem::remove_all(data);
+    std::filesystem::remove(executable);
+}
+
+TEST(EmbeddedTorProcess, VerifiedTorBundleLifecycleWhenProvided) {
+    const char* binary = std::getenv("DINERO_TEST_TOR_BINARY");
+    if (!binary || !*binary) GTEST_SKIP() << "verified Tor binary not supplied";
+    const std::string data = TempPath("real-tor-data");
+    dinero::network::EmbeddedTorProcess process(binary, data);
+    const auto running = process.Start();
+    ASSERT_TRUE(running.running) << running.message;
+    dinero::network::TorOnionServiceConfig config;
+    config.control_port = running.control_port;
+    config.virtual_port = 20999;
+    config.target_port = 20999;
+    config.private_key_path = data + "/dinero_onion_key";
+    dinero::network::TorOnionService onion(config);
+    ASSERT_TRUE(onion.Start()) << onion.status().message;
+    const std::string address = onion.status().onion_address;
+    ASSERT_TRUE(onion.Stop());
+    process.Stop();
+    ASSERT_TRUE(process.Start().running);
+    config.control_port = process.status().control_port;
+    dinero::network::TorOnionService restored(config);
+    ASSERT_TRUE(restored.Start()) << restored.status().message;
+    EXPECT_EQ(restored.status().onion_address, address);
+    ASSERT_TRUE(restored.Stop());
+    process.Stop();
+    std::filesystem::remove_all(data);
+}
+
+TEST(TorOnionService, AuthenticationRequirementFailsClosed) {
+    const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(listener, 0);
+    int reuse = 1;
+    ASSERT_EQ(::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse,
+                           sizeof(reuse)), 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ASSERT_EQ(::bind(listener, reinterpret_cast<sockaddr*>(&address),
+                     sizeof(address)), 0);
+    ASSERT_EQ(::listen(listener, 1), 0);
+    socklen_t length = sizeof(address);
+    ASSERT_EQ(::getsockname(listener, reinterpret_cast<sockaddr*>(&address),
+                            &length), 0);
+    std::thread server([listener] {
+        const int client = ::accept(listener, nullptr, nullptr);
+        if (client >= 0) {
+            char command[128]{};
+            (void)::recv(client, command, sizeof(command), 0);
+            constexpr char response[] =
+                "250-PROTOCOLINFO 1\r\n250-AUTH METHODS=HASHEDPASSWORD\r\n250 OK\r\n";
+            (void)::send(client, response, sizeof(response) - 1, 0);
+            ::close(client);
+        }
+        ::close(listener);
+    });
+    dinero::network::TorOnionServiceConfig config;
+    config.control_port = ntohs(address.sin_port);
+    config.virtual_port = config.target_port = 20999;
+    config.private_key_path = TempPath("auth-key");
+    dinero::network::TorOnionService onion(config);
+    EXPECT_FALSE(onion.Start());
+    EXPECT_NE(onion.status().message.find("no supported credential"),
+              std::string::npos);
+    server.join();
+}
+#endif
 
 TEST(TorControlReply, ParsesMultilineSuccess) {
     const std::string wire =
