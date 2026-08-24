@@ -20,14 +20,26 @@ else
     echo "set DINEROD=/path/to/dinerod to override" >&2
     exit 1
 fi
-if [[ -x "${ROOT_DIR}/build/tests/integration/shielded_tx_builder" ]]; then
+# Honour $SHIELDED_TX_BUILDER when set (and require it executable); the chain
+# below never consulted it, so ctest could not point at a build
+# directory and the final fallback resolved to a path that does
+# not exist.
+if [[ -n "${SHIELDED_TX_BUILDER:-}" ]]; then
+    [[ -x "${SHIELDED_TX_BUILDER}" ]] || { echo "shielded_tx_builder not executable at ${SHIELDED_TX_BUILDER}" >&2; exit 1; }
+elif [[ -x "${ROOT_DIR}/build/tests/integration/shielded_tx_builder" ]]; then
     SHIELDED_TX_BUILDER="${ROOT_DIR}/build/tests/integration/shielded_tx_builder"
 elif [[ -x "${ROOT_DIR}/build/shielded_tx_builder" ]]; then
     SHIELDED_TX_BUILDER="${ROOT_DIR}/build/shielded_tx_builder"
 else
     SHIELDED_TX_BUILDER="${ROOT_DIR}/shielded_tx_builder"
 fi
-if [[ -x "${ROOT_DIR}/build/tests/integration/shielded_tip_marker_probe" ]]; then
+# Honour $SHIELDED_PROBE when set (and require it executable); the chain
+# below never consulted it, so ctest could not point at a build
+# directory and the final fallback resolved to a path that does
+# not exist.
+if [[ -n "${SHIELDED_PROBE:-}" ]]; then
+    [[ -x "${SHIELDED_PROBE}" ]] || { echo "shielded_tip_marker_probe not executable at ${SHIELDED_PROBE}" >&2; exit 1; }
+elif [[ -x "${ROOT_DIR}/build/tests/integration/shielded_tip_marker_probe" ]]; then
     SHIELDED_PROBE="${ROOT_DIR}/build/tests/integration/shielded_tip_marker_probe"
 elif [[ -x "${ROOT_DIR}/build/shielded_tip_marker_probe" ]]; then
     SHIELDED_PROBE="${ROOT_DIR}/build/shielded_tip_marker_probe"

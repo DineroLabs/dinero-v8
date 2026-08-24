@@ -2110,4 +2110,59 @@ if(_dinero_integration_tests)
     set_tests_properties(${_dinero_integration_tests} PROPERTIES
         RESOURCE_LOCK dinero_daemon_process
     )
+
+    # Tell every integration script where THIS build put its binaries.
+    #
+    # Every script had to GUESS, and every guess list was rooted at
+    # ${PROJECT_ROOT}/build. Running ctest against any other build directory
+    # therefore failed on a path the caller never chose — 34 of 81 tests in the
+    # integration/canonicality label set, purely from path resolution.
+    #
+    # This is the root fix: the build system knows these paths exactly, so it
+    # supplies them instead of leaving scripts to search. The scripts' own
+    # fallbacks stay in place for manual invocation outside ctest.
+    #
+    # APPEND, never plain set: a number of tests above already set ENVIRONMENT
+    # (e.g. "DINEROD=$<TARGET_FILE:dinerod>"). Assigning the property here
+    # would REPLACE theirs and silently break them — which is exactly what an
+    # earlier revision of this block did, taking out HeaderBacklogRestart-
+    # Equivalence and ShieldedTipMarkerRestartEquivalence.
+    foreach(_t IN LISTS _dinero_integration_tests)
+        set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+            "DINEROD=$<TARGET_FILE:dinerod>")
+        foreach(_helper
+                utreexo_checkpoint_mutator
+                shielded_tx_builder
+                shielded_tip_marker_probe
+                shielded_tip_marker_mutator
+                header_store_backlog_injector)
+            if(TARGET ${_helper})
+                string(TOUPPER "${_helper}" _helper_upper)
+                set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                    "${_helper_upper}=$<TARGET_FILE:${_helper}>")
+            endif()
+        endforeach()
+        # Aliases for the shorter names the scripts actually read.
+        if(TARGET shielded_tx_builder)
+            set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                "BUILDER=$<TARGET_FILE:shielded_tx_builder>")
+        endif()
+        if(TARGET shielded_tip_marker_probe)
+            set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                "SHIELDED_PROBE=$<TARGET_FILE:shielded_tip_marker_probe>")
+        endif()
+        if(TARGET utreexo_checkpoint_mutator)
+            set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                "MUTATOR=$<TARGET_FILE:utreexo_checkpoint_mutator>")
+        endif()
+        if(TARGET header_store_backlog_injector)
+            set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                "INJECTOR=$<TARGET_FILE:header_store_backlog_injector>")
+        endif()
+        if(TARGET test_shielded_reindex_equivalence)
+            set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                "FIXTURE_BUILDER=$<TARGET_FILE:test_shielded_reindex_equivalence>")
+        endif()
+    endforeach()
+    message(STATUS "  ✓ Integration tests receive binary paths via ENVIRONMENT")
 endif()
