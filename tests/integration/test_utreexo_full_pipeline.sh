@@ -36,7 +36,16 @@ DINERO_ROOT="${SCRIPT_DIR}/../.."
 STRATUM_ROOT="${DINERO_ROOT}/../stratum"
 RUST_ROOT="${DINERO_ROOT}/../dinero-rust"
 
-DINEROD="${DINERO_ROOT}/build/dinerod"
+# Resolve dinerod: honour $DINEROD when set (and require it to be
+# executable), else fall back to the in-tree build for manual runs.
+# Without this the assignment below CLOBBERED $DINEROD, so an arbitrary
+# build directory could not be used and ctest failed with a path the
+# caller never chose.
+if [[ -n "${DINEROD:-}" ]]; then
+    [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
+else
+    DINEROD="${DINERO_ROOT}/build/dinerod"
+fi
 STRATUM_SERVER="${STRATUM_ROOT}/build/bin/dinero-stratum"
 MINER="${DINERO_ROOT}/build/dinero-stratum-worker"
 UTREEXO_VERIFY="${RUST_ROOT}/tools/utreexo-verify/target/release/utreexo-verify"

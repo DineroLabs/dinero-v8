@@ -21,7 +21,12 @@ if [[ "$FLOOD_COUNT" -lt "$MIN_REQUIRED_FLOOD_COUNT" ]]; then
     FLOOD_COUNT=$MIN_REQUIRED_FLOOD_COUNT
 fi
 
-if [[ -x "${PROJECT_ROOT}/build/dinerod" ]]; then
+# Honour $DINEROD first (and require it to be executable); the chain
+# below never consulted it, so it CLOBBERED the caller's choice and an
+# arbitrary build directory could not be used.
+if [[ -n "${DINEROD:-}" ]]; then
+    [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
+elif [[ -x "${PROJECT_ROOT}/build/dinerod" ]]; then
     DINEROD="${PROJECT_ROOT}/build/dinerod"
 elif [[ -x "${PROJECT_ROOT}/dinerod" ]]; then
     DINEROD="${PROJECT_ROOT}/dinerod"
