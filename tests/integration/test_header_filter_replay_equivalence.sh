@@ -11,6 +11,14 @@ if [[ -n "${DINEROD:-}" ]]; then
     [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
 else
     DINEROD="${ROOT_DIR}/build/dinerod"
+    # Say WHAT WAS TRIED. Naming only the resolved path reads as
+    # "the build is missing" when the real cause is that $DINEROD
+    # was never set and this fallback does not exist.
+    [[ -x "${DINEROD}" ]] || {
+        echo "dinerod not found (tried: \$DINEROD unset, ${DINEROD})" >&2
+        echo "set DINEROD=/path/to/dinerod to override" >&2
+        exit 1
+    }
 fi
 BASE_DIR="/tmp/dinero_header_filter_live_$$"
 REPLAY_DIR="/tmp/dinero_header_filter_replay_$$"
@@ -288,11 +296,34 @@ capture_state_bundle() {
         }'
 }
 
+# The utreexo CHECKPOINT fields are deliberately excluded from the equivalence
+# comparison. They are an accelerator, not consensus state, and live and
+# replayed nodes are DESIGNED to differ on them:
+#
+#   live    — a full forest checkpoint is written only when
+#             tip % utreexo.checkpoint_interval == 0 (default 500). At this
+#             test's height of 113 none is written, so the height stays 0 and
+#             CHECKSUM_VERSION is unset.
+#   replay  — BlockReindexer deliberately emits a final checkpoint at the
+#             reindex tip even when the every-N gating skipped it, "so the
+#             reindexed datadir restarts instantly (no replay window)"
+#             (reindexer.cpp, campaign phase 3). Height becomes the tip and
+#             CHECKSUM_VERSION becomes "1".
+#
+# Everything that must match still does — including all 114 headers with their
+# chainwork and utreexo roots, all 113 filter hashes, both tip pointers and the
+# forest tip marker. Comparing the checkpoint fields asserted an equality the
+# design never promised. The divergence is asserted POSITIVELY below instead of
+# merely ignored.
+readonly REPLAY_DIVERGENT_FIELDS='["latest_utreexo_checkpoint_height", "utreexo_checksum_version"]'
+
 assert_same_bundle() {
     local lhs_file="$1"
     local rhs_file="$2"
     local label="$3"
-    if ! jq -s -e '.[0] == .[1]' "${lhs_file}" "${rhs_file}" >/dev/null; then
+    if ! jq -s -e --argjson drop "${REPLAY_DIVERGENT_FIELDS}" \
+        '(.[0] | delpaths($drop | map([.]))) == (.[1] | delpaths($drop | map([.])))' \
+        "${lhs_file}" "${rhs_file}" >/dev/null; then
         printf '%s\n' "${label} mismatch:" >&2
         printf 'lhs=%s\n' "$(jq -c '.' "${lhs_file}")" >&2
         printf 'rhs=%s\n' "$(jq -c '.' "${rhs_file}")" >&2
@@ -384,6 +415,19 @@ jq -e \
 
 assert_same_bundle "${STATE_LIVE_FILE}" "${STATE_REPLAY_FILE}" "header/filter replay equivalence"
 pass "Replay rebuilt identical headers, chainwork, and served filter hashes"
+
+# Pin the designed divergence rather than merely excluding it. If the reindexer
+# ever stops emitting its final tip checkpoint, a reindexed datadir silently
+# regains a replay window on next start — a performance regression nothing else
+# here would catch.
+LIVE_CKPT="$(jq -r '.latest_utreexo_checkpoint_height' "${STATE_LIVE_FILE}")"
+REPLAY_CKPT="$(jq -r '.latest_utreexo_checkpoint_height' "${STATE_REPLAY_FILE}")"
+REPLAY_ACTIVE="$(jq -r '.active_height' "${STATE_REPLAY_FILE}")"
+[[ "${REPLAY_CKPT}" == "${REPLAY_ACTIVE}" ]] \
+    || fail "reindex did not emit its final tip checkpoint: ${REPLAY_CKPT} != ${REPLAY_ACTIVE}"
+[[ "${LIVE_CKPT}" != "${REPLAY_CKPT}" ]] \
+    || info "live and replay checkpoints coincide (tip landed on an interval boundary)"
+pass "Reindexed datadir carries a tip checkpoint (live=${LIVE_CKPT}, replay=${REPLAY_CKPT})"
 
 REPLAY_ADDR_RESULT="$(rpc_call "wallet.getnewaddress" '[]')"
 rpc_has_error "${REPLAY_ADDR_RESULT}" && fail "wallet.getnewaddress failed after replay: ${REPLAY_ADDR_RESULT}"

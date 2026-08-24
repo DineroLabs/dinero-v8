@@ -29,7 +29,8 @@ elif [[ -x "${PROJECT_ROOT}/build/dinerod" ]]; then
 elif [[ -x "${PROJECT_ROOT}/dinerod" ]]; then
     DINEROD="${PROJECT_ROOT}/dinerod"
 else
-    echo "FAILED: dinerod not found"
+    echo "dinerod not found (tried: \$DINEROD unset, ${PROJECT_ROOT}/build/dinerod, ${PROJECT_ROOT}/dinerod)" >&2
+    echo "set DINEROD=/path/to/dinerod to override" >&2
     exit 1
 fi
 
