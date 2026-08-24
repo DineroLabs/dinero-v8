@@ -709,6 +709,31 @@ din::Json rpc_context_setnetworkactive(const ExecutionContext& ctx, const din::J
     return result;
 }
 
+din::Json rpc_context_setonionservice(const ExecutionContext& ctx,
+                                      const din::Json& params) {
+    if (!params.isObject() || !params.isMember("enabled") ||
+        !params["enabled"].isBool()) {
+        din::Json result;
+        result["error"]["code"] = -8;
+        result["error"]["message"] = "enabled (boolean) required";
+        return result;
+    }
+    auto p2p = GetP2PService(ctx);
+    if (!p2p) {
+        din::Json result;
+        result["error"]["code"] = -32000;
+        result["error"]["message"] = "P2P service not available";
+        return result;
+    }
+    const auto status = p2p->SetOnionServiceEnabled(params["enabled"].asBool());
+    din::Json result;
+    result["requested"] = status.requested;
+    result["active"] = status.active;
+    result["address"] = status.active ? status.onion_address : "";
+    result["message"] = status.message;
+    return result;
+}
+
 // node.status — one operator-facing health summary answering the questions an
 // operator actually asks right after install: am I synced? do I have peers? am
 // I directly reachable or behind NAT? am I registered with relays? can someone
@@ -869,6 +894,11 @@ void registerNetworkMethodsContext() {
 
     g_rpcRegistry.registerHandler("setnetworkactive",
                                  rpc_context_setnetworkactive,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+
+    g_rpcRegistry.registerHandler("network.setonionservice",
+                                 rpc_context_setonionservice,
                                  RegisterMode::Overwrite,
                                  "context-aware");
 

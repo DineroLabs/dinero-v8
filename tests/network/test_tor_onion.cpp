@@ -1,10 +1,47 @@
 #include "network/tor_control.h"
+#include "network/tor_runtime_controller.h"
 #include "p2p/addr_v2.h"
 
 #include <gtest/gtest.h>
 
 #include <string>
 #include <vector>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+namespace {
+class FakeOnionService final : public dinero::network::ITorOnionService {
+public:
+    bool start_result{true};
+    bool stop_result{true};
+    dinero::network::TorOnionServiceStatus state;
+    bool Start() override {
+        state.requested = true;
+        state.active = start_result;
+        if (start_result) state.onion_address = "runtimecontroltest.onion";
+        return start_result;
+    }
+    bool Stop() override {
+        if (stop_result) state.active = false;
+        return stop_result;
+    }
+    const dinero::network::TorOnionServiceStatus& status() const override {
+        return state;
+    }
+};
+
+std::string TempPath(const std::string& leaf) {
+    static unsigned counter = 0;
+    return (std::filesystem::temp_directory_path() /
+            ("dinero-tor-runtime-" + leaf + "-" + std::to_string(++counter))).string();
+}
+}  // namespace
 
 TEST(TorControlReply, ParsesMultilineSuccess) {
     const std::string wire =
@@ -68,4 +105,101 @@ TEST(TorV3Address, Addrv2CarriesOnlyPublicKey) {
     EXPECT_EQ(decoded.front().net, dinero::p2p::NetworkType::TORV3);
     EXPECT_EQ(decoded.front().addr, public_key);
     EXPECT_EQ(decoded.front().port, 20999);
+}
+
+TEST(TorRuntimeController, TorAbsentPersistsOptInWithoutLeakingError) {
+    const std::string pref = TempPath("absent");
+    std::filesystem::remove(pref);
+    dinero::network::TorRuntimeController controller(
+        dinero::network::TorOptInStore(pref),
+        [] { auto fake = std::make_unique<FakeOnionService>();
+             fake->start_result = false; return fake; }, {}, {});
+    const auto status = controller.SetEnabled(true);
+    EXPECT_TRUE(status.requested);
+    EXPECT_FALSE(status.active);
+    EXPECT_EQ(dinero::network::TorOptInStore(pref).Read(), true);
+    EXPECT_EQ(status.message,
+              "Tor onion reachability is unavailable; check the local daemon log");
+    std::ifstream stored(pref, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(stored), {}), "1\n");
+    std::filesystem::remove(pref);
+}
+
+TEST(TorRuntimeController, DisablePreservesStableOnionIdentity) {
+    const std::string pref = TempPath("identity-pref");
+    const std::string key_path = TempPath("identity-key");
+    std::filesystem::remove(pref);
+    std::filesystem::remove(key_path);
+    const std::string key = "ED25519-V3:stable-private-identity";
+    std::string error;
+    ASSERT_TRUE(dinero::network::WriteTorPrivateKey(key_path, key, &error));
+    dinero::network::TorRuntimeController controller(
+        dinero::network::TorOptInStore(pref),
+        [] { return std::make_unique<FakeOnionService>(); }, {}, {});
+    ASSERT_TRUE(controller.SetEnabled(true).active);
+    ASSERT_FALSE(controller.SetEnabled(false).active);
+    EXPECT_EQ(dinero::network::ReadTorPrivateKey(key_path), key);
+    std::filesystem::remove(pref);
+    std::filesystem::remove(key_path);
+}
+
+TEST(TorRuntimeController, ActivationDisableAndRestartPersistence) {
+    const std::string pref = TempPath("restart");
+    std::filesystem::remove(pref);
+    std::vector<std::string> advertised;
+    auto factory = [] { return std::make_unique<FakeOnionService>(); };
+    {
+        dinero::network::TorRuntimeController controller(
+            dinero::network::TorOptInStore(pref), factory,
+            [&](const std::string& a) { advertised.push_back(a); }, {});
+        EXPECT_TRUE(controller.SetEnabled(true).active);
+        ASSERT_EQ(advertised.size(), 1u);
+    }
+    {
+        dinero::network::TorRuntimeController restarted(
+            dinero::network::TorOptInStore(pref), factory, {}, {});
+        EXPECT_TRUE(restarted.Initialize(false).active);
+        const auto off = restarted.SetEnabled(false);
+        EXPECT_FALSE(off.requested);
+        EXPECT_FALSE(off.active);
+        EXPECT_EQ(dinero::network::TorOptInStore(pref).Read(), false);
+    }
+#ifndef _WIN32
+    struct stat st {};
+    ASSERT_EQ(::stat(pref.c_str(), &st), 0);
+    EXPECT_EQ(st.st_mode & 0777, 0600);
+#endif
+    std::filesystem::remove(pref);
+}
+
+TEST(TorRuntimeController, FailedDisableStaysActiveAndDoesNotPersistOff) {
+    const std::string pref = TempPath("disable-fail");
+    std::filesystem::remove(pref);
+    FakeOnionService* raw = nullptr;
+    dinero::network::TorRuntimeController controller(
+        dinero::network::TorOptInStore(pref),
+        [&] { auto fake = std::make_unique<FakeOnionService>();
+              raw = fake.get(); return fake; }, {}, {});
+    ASSERT_TRUE(controller.SetEnabled(true).active);
+    raw->stop_result = false;
+    const auto status = controller.SetEnabled(false);
+    EXPECT_TRUE(status.requested);
+    EXPECT_TRUE(status.active);
+    EXPECT_EQ(dinero::network::TorOptInStore(pref).Read(), true);
+    std::filesystem::remove(pref);
+}
+
+TEST(TorPrivateKey, AtomicStorageIsOwnerOnlyAndRoundTrips) {
+    const std::string path = TempPath("private-key");
+    std::filesystem::remove(path);
+    const std::string key = "ED25519-V3:deterministic-private-key-material";
+    std::string error;
+    ASSERT_TRUE(dinero::network::WriteTorPrivateKey(path, key, &error)) << error;
+    EXPECT_EQ(dinero::network::ReadTorPrivateKey(path), key);
+#ifndef _WIN32
+    struct stat st {};
+    ASSERT_EQ(::stat(path.c_str(), &st), 0);
+    EXPECT_EQ(st.st_mode & 0777, 0600);
+#endif
+    std::filesystem::remove(path);
 }
