@@ -260,10 +260,14 @@ extern "C" int32_t dinero_shielded_derive_address(
         HashCleanser ivk_guard{&ivk};
 
         const deriv::Diversifier d = deriv::ChaCha20Diversifier(dk, j);
+        // Discovery key (ivk·P_d) plus the spend-authority key (s·G). The
+        // address carries both; see AddressPayload in shielded_derivation.h.
         const sh::Hash p_d = deriv::HashToPoint(d, deriv::kDstDiv);
         const sh::Hash pk_d = deriv::DerivePkD(ivk, p_d);
+        const sh::Hash pk_d_spend =
+            deriv::DeriveDiversifiedSpendKey(ivk, d).pk_d;
         const deriv::AddressPayload payload =
-            deriv::BuildAddressPayload(d, pk_d);
+            deriv::BuildAddressPayload(d, pk_d, pk_d_spend);
         const std::string address =
             deriv::EncodeShieldedAddress(payload, hrp_str);
 

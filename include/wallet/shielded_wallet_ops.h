@@ -241,6 +241,12 @@ struct UnshieldNoteInput {
     uint64_t                  value_una = 0;
     std::array<consensus::shielded::Hash,
                consensus::shielded::TREE_DEPTH> merkle_path{};
+    /// Which circuit can spend this note. Travels WITH the note rather than
+    /// being passed alongside, because it is fixed at the note's creation: the
+    /// spend proof must match the convention the commitment was built under,
+    /// and `secret_key` above means different things under each (a
+    /// sender-derived note key vs. the recipient-only scalar `s`).
+    NoteKeyScheme key_scheme = NoteKeyScheme::LegacySenderKey;
 };
 
 struct AttachUnshieldResult {
@@ -446,7 +452,11 @@ std::optional<std::vector<ShieldedNote>> SelectTransferNotesForValue(
 /// re-derive the spend secret from the encrypted-note plaintext.
 struct AddressedRecipient {
     std::array<uint8_t, 11>     d{};
+    /// ivk·P_d — used to ENCRYPT the note so the recipient can find it.
     consensus::shielded::Hash   pk_d{};
+    /// s·G — what the note COMMITS to under spend_auth, i.e. who can spend it.
+    /// Required when spend_auth is set; the legacy path ignores it.
+    consensus::shielded::Hash   pk_d_spend{};
     uint64_t                    value_una = 0;
 };
 
@@ -533,10 +543,23 @@ struct AddressedRecipientOutput {
  * Build ONE addressed recipient output (the shared construction extracted
  * from BuildAddressedTransferBundleForTx):
  *   rcm      = fresh CSPRNG (or `rcm_override` for deterministic tests)
- *   pk_note  = Poseidon(DeriveNoteSpendKey(rcm), 0)
+ *   pk_note  = see `spend_auth` below
  *   commitment = NoteCommitment(d_packed, pk_note, value, rcm)
  *   encrypted_note = EncryptNoteForRecipient(d, pk_d, {d,value,rcm,memo})
  *   Spartan output proof + fresh Pedersen rcv + rangeproof nonce.
+ *
+ * `spend_auth` selects which key the note is committed to, and therefore WHO
+ * CAN SPEND IT:
+ *   - false (legacy): pk_note = Poseidon(DeriveNoteSpendKey(rcm), 0). `rcm` is
+ *     chosen here by the SENDER, so the sender also knows the note's spend key
+ *     and can spend the note they sent, at any time, forever.
+ *   - true (auth): pk_note = recipient.pk_d, taken from their address. Spending
+ *     requires `s` with s·G = pk_d, derivable only from the recipient's ivk.
+ *
+ * Defaults to false — the legacy behaviour — because
+ * `shielded_spend_auth_activation_height` is UINT32_MAX on every network. The
+ * caller must pass the height-derived flag; a note built under the wrong one is
+ * rejected at consensus (version-byte mismatch), not silently mis-accepted.
  *
  * `rcm_override` / `esk_override` are ONLY for deterministic test vectors
  * (golden byte-pins on the construction convention). Production callers
@@ -546,6 +569,7 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     const AddressedRecipient& recipient,
     const std::array<uint8_t, 512>* recipient_memo = nullptr,
     bool cv_bound = false,
+    bool spend_auth = false,
     const consensus::shielded::Hash* rcm_override = nullptr,
     const consensus::shielded::Hash* esk_override = nullptr);
 

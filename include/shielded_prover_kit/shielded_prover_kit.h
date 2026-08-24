@@ -93,6 +93,12 @@ dinero_shielded_free_result(dinero_shielded_unshield_result* out);
  * On success writes the bech32m address (NUL-terminated) into out_addr and
  * sets *out_addr_len to the length written, excluding the NUL terminator.
  *
+ * SIZE NOTE: the spend-authority address payload is 75 bytes (d || pk_d_enc ||
+ * pk_d_spend), up from 43, so encoded addresses are ~132 chars rather than ~85.
+ * A 128-byte buffer that sufficed before now returns BUFFER_TOO_SMALL. Callers
+ * that honour the two-call capacity protocol below need no change; callers with
+ * a fixed buffer must grow it (192 is comfortable).
+ *
  * *out_addr_len must be set by the caller on entry to the capacity of
  * out_addr (including room for the NUL terminator). If the buffer is too
  * small, returns DINERO_SHIELDED_ERR_BUFFER_TOO_SMALL and sets

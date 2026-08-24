@@ -226,20 +226,31 @@ TEST_F(ShieldedDerivationVectorFixture, AddressHrpsMatch) {
     EXPECT_TRUE(a_reg.address.rfind("rdins1",  0) == 0);
 }
 
+// SPEND-AUTHORITY REVECTOR. The address payload grew 43 -> 75 bytes (it now
+// carries pk_d_spend = s·G alongside the discovery key), so every pinned
+// address string changed. The `d` and `pk_d` vectors below are UNCHANGED, and
+// each new address still begins with the exact prefix the old one had — the
+// discovery half is byte-identical and the spend key is appended. That shared
+// prefix is the evidence this was an append, not a re-derivation.
 TEST_F(ShieldedDerivationVectorFixture, PinnedHexVector1Account0Wave2J0) {
     auto v = DeriveDiversifiedAddress(keys, /*j=*/0, kHrpMainnet);
     EXPECT_EQ(DiversifierHex(v.d),
               "6b92d6a2de35177cada44c");
+    // Discovery key ivk·P_d — unchanged by the spend-authority work.
     EXPECT_EQ(Hex(v.pk_d),
               "981db4b85ce150d7e74768cd6d9147148cba846857289d5c585b0681f9a469f9");
+    // Spend key s·G — new, and distinct from the discovery key above.
+    EXPECT_NE(v.pk_d_spend, v.pk_d);
+    EXPECT_EQ(v.pk_d_spend, DeriveDiversifiedSpendKey(keys.ivk, v.d).pk_d);
+    EXPECT_EQ(v.payload.size(), 75u);
     EXPECT_EQ(v.address,
-              "dins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535ljkd4ggr");
+              "dins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535lnf0vshleyf9x9s70zxffdq4d53d8msd2enwgjcy3tn2v50us4z87uz2l00");
     auto t = DeriveDiversifiedAddress(keys, /*j=*/0, kHrpTestnet);
     EXPECT_EQ(t.address,
-              "tdins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535lj5qhwc6");
+              "tdins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535lnf0vshleyf9x9s70zxffdq4d53d8msd2enwgjcy3tn2v50us4z87dj5gy6");
     auto r = DeriveDiversifiedAddress(keys, /*j=*/0, kHrpRegtest);
     EXPECT_EQ(r.address,
-              "rdins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535lj0pxq49");
+              "rdins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535lnf0vshleyf9x9s70zxffdq4d53d8msd2enwgjcy3tn2v50us4z872cpyl9");
 }
 
 // ── Phase 5 Wave 3: address decoding + ECDH/AEAD ─────────────────────

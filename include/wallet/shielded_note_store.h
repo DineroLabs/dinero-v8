@@ -27,6 +27,24 @@ struct sqlite3;
 
 namespace dinero::wallet {
 
+/// Which convention binds a note's committed key — fixed when the note is
+/// CREATED, not when it is spent, so it must be persisted per note.
+///
+/// A note can only be spent under the circuit matching its scheme, so the
+/// spend path MUST refuse a mismatch loudly rather than build a proof that
+/// consensus will reject. Post-activation there is no mixed state in practice:
+/// the paired epoch reset makes every pre-activation note unspendable, so every
+/// live note is Auth. The field exists so that invariant is checked rather than
+/// assumed.
+enum class NoteKeyScheme : uint8_t {
+    /// pk = Poseidon(sk, 0), where the SENDER invented `sk`. The sender retains
+    /// the ability to spend the note they sent.
+    LegacySenderKey = 0,
+    /// pk_d = s·G, where `s` derives from the RECIPIENT's ivk. Only the
+    /// recipient can spend.
+    Auth = 1,
+};
+
 struct ShieldedNote {
     int64_t  id = 0;
     uint64_t value_una = 0;
@@ -41,6 +59,9 @@ struct ShieldedNote {
     uint32_t created_height = 0;
     uint32_t confirmed_height = 0;
     uint32_t spent_height = 0;
+    /// Defaults to LegacySenderKey so rows written by older daemons (and the
+    /// ADD COLUMN default) read back as legacy, which is what they are.
+    NoteKeyScheme key_scheme = NoteKeyScheme::LegacySenderKey;
 };
 
 class ShieldedNoteStore {
@@ -70,7 +91,9 @@ public:
                         const consensus::shielded::Hash& public_key,
                         const consensus::shielded::Hash& randomness,
                         const consensus::shielded::Hash& commitment,
-                        uint32_t created_height);
+                        uint32_t created_height,
+                        NoteKeyScheme key_scheme =
+                            NoteKeyScheme::LegacySenderKey);
 
     /** Mark a note as spent (nullifier published). */
     bool MarkSpent(uint64_t leaf_index);

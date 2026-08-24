@@ -321,7 +321,31 @@ bool ProcessConfirmedBlock(dinero::WalletManager& wallet,
                     if (expected == output.commitment) {
                         (void)g_runtime->store.AddPendingNote(
                             plaintext->value_una, sk_note, pk_note,
-                            plaintext->rcm, output.commitment, height);
+                            plaintext->rcm, output.commitment, height,
+                            NoteKeyScheme::LegacySenderKey);
+                    } else {
+                        // Spend-authority note: committed to pk_d = s·G rather
+                        // than to the sender-derived Poseidon(rcm-key, 0), so
+                        // the legacy recomputation above cannot match. `s` is
+                        // NOT in the plaintext — the recipient derives it from
+                        // their OWN ivk plus the note's diversifier, which is
+                        // exactly why the sender cannot spend it.
+                        //
+                        // Distinguished by which commitment formula reproduces
+                        // the on-chain value, not by height: the note carries
+                        // its own convention, and a note is only detectable at
+                        // all if one of the two formulas matches.
+                        auto dk = shdrv::DeriveDiversifiedSpendKey(ivk,
+                                                                   plaintext->d);
+                        sh::Hash expected_auth = sh::NoteCommitment(
+                            d_packed, dk.pk_d, value_h, plaintext->rcm);
+                        if (expected_auth == output.commitment) {
+                            (void)g_runtime->store.AddPendingNote(
+                                plaintext->value_una, dk.s, dk.pk_d,
+                                plaintext->rcm, output.commitment, height,
+                                NoteKeyScheme::Auth);
+                        }
+                        OPENSSL_cleanse(dk.s.data(), dk.s.size());
                     }
                     OPENSSL_cleanse(sk_note.data(), sk_note.size());
                     break;
@@ -641,6 +665,10 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
     input.leaf_index  = note.leaf_index;
     input.value_una   = note.value_una;
     input.merkle_path = auth_path->siblings;
+    // Carry the note's key convention into the spend so the proof variant
+    // matches the commitment. Omitting it would default to legacy and make
+    // every auth note silently unspendable.
+    input.key_scheme  = note.key_scheme;
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
     auto built = BuildUnshieldBundleForTx(tx, input, fee_una, cv_bound);
@@ -759,6 +787,7 @@ AttachShieldResult AttachAddressedShieldOutputBundle(
     AddressedRecipient recipient;
     recipient.d         = decoded.d;
     recipient.pk_d      = decoded.pk_d;
+    recipient.pk_d_spend = decoded.pk_d_spend;
     recipient.value_una = value_una;
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
@@ -834,6 +863,10 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
     input.leaf_index  = note.leaf_index;
     input.value_una   = note.value_una;
     input.merkle_path = auth_path->siblings;
+    // Carry the note's key convention into the spend so the proof variant
+    // matches the commitment. Omitting it would default to legacy and make
+    // every auth note silently unspendable.
+    input.key_scheme  = note.key_scheme;
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
     auto built = BuildTransferBundleForTx(tx, input, fee_una, cv_bound);
@@ -977,6 +1010,7 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
         input.leaf_index  = note.leaf_index;
         input.value_una   = note.value_una;
         input.merkle_path = auth_path->siblings;
+        input.key_scheme  = note.key_scheme;
         spends.push_back(std::move(input));
     }
 
@@ -1126,6 +1160,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
         input.leaf_index  = note.leaf_index;
         input.value_una   = note.value_una;
         input.merkle_path = auth_path->siblings;
+        input.key_scheme  = note.key_scheme;
         spend_sum += note.value_una;
         spends.push_back(std::move(input));
     }
@@ -1140,6 +1175,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     AddressedRecipient recipient;
     recipient.d         = recipient_decoded.d;
     recipient.pk_d      = recipient_decoded.pk_d;
+    recipient.pk_d_spend = recipient_decoded.pk_d_spend;
     recipient.value_una = recipient_value_una;
 
     std::array<uint8_t, 512> memo_buf{};

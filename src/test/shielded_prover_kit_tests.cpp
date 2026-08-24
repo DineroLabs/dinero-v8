@@ -442,7 +442,7 @@ TEST(ShieldedProverKit, DeriveAddressMatchesInternalPathAllHrpsAndIndices) {
             const deriv::DiversifiedAddress expected =
                 deriv::DeriveDiversifiedAddress(keys, j, hrp);
 
-            char buf[128]{};
+            char buf[192]{};
             size_t buf_len = sizeof(buf);
             const int32_t rc = dinero_shielded_derive_address(
                 keys.dk.data(), keys.ivk.data(), j, hrp.c_str(), buf, &buf_len);
@@ -469,14 +469,14 @@ TEST(ShieldedProverKit, DeriveAddressIsDeterministic) {
     const deriv::ShieldedAccountKeys keys =
         deriv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
 
-    char buf1[128]{};
+    char buf1[192]{};
     size_t len1 = sizeof(buf1);
     ASSERT_EQ(dinero_shielded_derive_address(keys.dk.data(), keys.ivk.data(),
                                              /*j=*/0, deriv::kHrpMainnet, buf1,
                                              &len1),
               DINERO_SHIELDED_OK);
 
-    char buf2[128]{};
+    char buf2[192]{};
     size_t len2 = sizeof(buf2);
     ASSERT_EQ(dinero_shielded_derive_address(keys.dk.data(), keys.ivk.data(),
                                              /*j=*/0, deriv::kHrpMainnet, buf2,
@@ -517,7 +517,7 @@ TEST(ShieldedProverKit, DeriveAddressRejectsNullArguments) {
     const deriv::ShieldedAccountKeys keys =
         deriv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
 
-    char buf[128]{};
+    char buf[192]{};
     size_t buf_len = sizeof(buf);
 
     EXPECT_EQ(dinero_shielded_derive_address(nullptr, keys.ivk.data(), 0,
@@ -543,7 +543,7 @@ TEST(ShieldedProverKit, DeriveAddressRejectsBadHrp) {
     const deriv::ShieldedAccountKeys keys =
         deriv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
 
-    char buf[128]{};
+    char buf[192]{};
     for (const char* bad_hrp : {"btc", "dins1", "tdinss", "", "DINS", "rdin"}) {
         size_t buf_len = sizeof(buf);
         EXPECT_EQ(dinero_shielded_derive_address(keys.dk.data(),

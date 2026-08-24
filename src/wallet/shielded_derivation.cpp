@@ -302,10 +302,13 @@ Hash DerivePkD(const Hash& ivk, const Hash& p_d_xonly) {
     return out;
 }
 
-AddressPayload BuildAddressPayload(const Diversifier& d, const Hash& pk_d) {
+AddressPayload BuildAddressPayload(const Diversifier& d,
+                                   const Hash& pk_d_enc,
+                                   const Hash& pk_d_spend) {
     AddressPayload payload{};
     std::memcpy(payload.data(), d.data(), 11);
-    std::memcpy(payload.data() + 11, pk_d.data(), 32);
+    std::memcpy(payload.data() + 11, pk_d_enc.data(), 32);
+    std::memcpy(payload.data() + 43, pk_d_spend.data(), 32);
     return payload;
 }
 
@@ -324,9 +327,15 @@ DiversifiedAddress DeriveDiversifiedAddress(const ShieldedAccountKeys& keys,
                                             const std::string& hrp) {
     DiversifiedAddress out;
     out.d = ChaCha20Diversifier(keys.dk, j);
+    // Discovery key (unchanged): ivk·P_d. The receiver recovers the ECDH
+    // secret with ivk alone, so scanning stays one trial decrypt per account
+    // and a note to a never-generated diversifier is still detectable.
     Hash p_d = HashToPoint(out.d, kDstDiv);
     out.pk_d = DerivePkD(keys.ivk, p_d);
-    out.payload = BuildAddressPayload(out.d, out.pk_d);
+    // Spend-authority key: s·G with s = Poseidon(ivk, d). This is what the
+    // note commits to, and `s` never leaves the receiver's wallet.
+    out.pk_d_spend = DeriveDiversifiedSpendKey(keys.ivk, out.d).pk_d;
+    out.payload = BuildAddressPayload(out.d, out.pk_d, out.pk_d_spend);
     out.address = EncodeShieldedAddress(out.payload, hrp);
     return out;
 }
@@ -411,24 +420,37 @@ DecodedShieldedAddress DecodeShieldedAddress(const std::string& addr) {
     if (!bech32::convertbits(bytes, raw->data, 5, 8, /*pad=*/false)) {
         throw std::runtime_error("shielded address: 5→8 convertbits failed");
     }
-    if (bytes.size() != 43) {
-        throw std::runtime_error("shielded address: payload must be 43 bytes, got " +
-                                 std::to_string(bytes.size()));
+    // A legacy 43-byte payload is REJECTED, not half-parsed: it carries no
+    // pk_d_spend, so a note built for it would be committed to a key nobody can
+    // spend. Failing loudly is the only safe reading.
+    if (bytes.size() != 75) {
+        throw std::runtime_error("shielded address: payload must be 75 bytes, got " +
+                                 std::to_string(bytes.size()) +
+                                 (bytes.size() == 43
+                                      ? " (legacy pre-spend-authority address)"
+                                      : ""));
     }
     DecodedShieldedAddress out;
     out.hrp = raw->hrp;
     std::memcpy(out.d.data(), bytes.data(), 11);
     std::memcpy(out.pk_d.data(), bytes.data() + 11, 32);
-    std::memcpy(out.payload.data(), bytes.data(), 43);
+    std::memcpy(out.pk_d_spend.data(), bytes.data() + 43, 32);
+    std::memcpy(out.payload.data(), bytes.data(), 75);
 
-    // Validate pk_d is on the curve (force even-y parse).
+    // BOTH keys must be on the curve (force even-y parse). pk_d_spend is what
+    // the note commits to, so an off-curve value there is unspendable value.
     secp256k1_context* ctx = GetCtx();
-    std::array<uint8_t, 33> sec1{};
-    sec1[0] = 0x02;
-    std::memcpy(sec1.data() + 1, out.pk_d.data(), 32);
-    secp256k1_pubkey pubkey{};
-    if (secp256k1_ec_pubkey_parse(ctx, &pubkey, sec1.data(), sec1.size()) != 1) {
-        throw std::runtime_error("shielded address: pk_d x-coord not on curve");
+    for (const auto* key : {&out.pk_d, &out.pk_d_spend}) {
+        std::array<uint8_t, 33> sec1{};
+        sec1[0] = 0x02;
+        std::memcpy(sec1.data() + 1, key->data(), 32);
+        secp256k1_pubkey pubkey{};
+        if (secp256k1_ec_pubkey_parse(ctx, &pubkey, sec1.data(), sec1.size()) != 1) {
+            throw std::runtime_error(
+                key == &out.pk_d
+                    ? "shielded address: pk_d x-coord not on curve"
+                    : "shielded address: pk_d_spend x-coord not on curve");
+        }
     }
     return out;
 }
