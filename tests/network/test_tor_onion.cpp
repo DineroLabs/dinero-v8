@@ -200,6 +200,10 @@ TEST(TorPrivateKey, AtomicStorageIsOwnerOnlyAndRoundTrips) {
     struct stat st {};
     ASSERT_EQ(::stat(path.c_str(), &st), 0);
     EXPECT_EQ(st.st_mode & 0777, 0600);
+    ASSERT_EQ(::chmod(path.c_str(), 0644), 0);
+    EXPECT_EQ(dinero::network::ReadTorPrivateKey(path), key);
+    ASSERT_EQ(::stat(path.c_str(), &st), 0);
+    EXPECT_EQ(st.st_mode & 0777, 0600);
 #endif
     std::filesystem::remove(path);
 }

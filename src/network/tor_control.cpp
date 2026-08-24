@@ -119,6 +119,13 @@ bool WriteTorPrivateKey(const std::string& path, const std::string& key,
 }
 
 std::string ReadTorPrivateKey(const std::string& path) {
+#ifndef _WIN32
+    struct stat st {};
+    if (lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) ||
+        chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0) {
+        return {};
+    }
+#endif
     std::ifstream input(path, std::ios::binary);
     std::string key;
     std::getline(input, key);
