@@ -349,7 +349,9 @@ prepare_replay_datadir() {
 
 require_tools
 
-BASE_RPC_PORT=$((40000 + RANDOM % 1000))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+BASE_RPC_PORT=$(alloc_port_base)
 BASE_P2P_PORT=$((BASE_RPC_PORT + 1))
 BASE_WALLET_PORT=$((BASE_RPC_PORT + 2))
 REPLAY_RPC_PORT=$((BASE_RPC_PORT + 10))

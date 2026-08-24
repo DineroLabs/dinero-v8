@@ -148,7 +148,9 @@ block_count() {
 
 require_tools
 
-RPC_PORT=$((42000 + RANDOM % 500))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT=$(alloc_port_base)
 P2P_PORT=$((RPC_PORT + 1))
 WALLET_PORT=$((RPC_PORT + 2))
 

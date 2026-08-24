@@ -130,7 +130,9 @@ mine_to() {
     wait_height "$port" "$datadir" "$target" 60
 }
 
-RPC_BRIDGE=$((27000 + RANDOM % 900)); P2P_BRIDGE=$((RPC_BRIDGE + 1))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_BRIDGE=$(alloc_port_base); P2P_BRIDGE=$((RPC_BRIDGE + 1))
 RPC_CSN=$((RPC_BRIDGE + 2));          P2P_CSN=$((RPC_BRIDGE + 3))
 DATADIR_BRIDGE=$(mktemp -d -t dinero_er_bridge_XXXXXX)
 DATADIR_CSN=$(mktemp -d -t dinero_er_csn_XXXXXX)

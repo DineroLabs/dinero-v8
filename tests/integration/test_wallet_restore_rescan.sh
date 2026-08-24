@@ -74,7 +74,9 @@ echo ""
 # ===================================================================
 echo -e "${CYAN}[1/7] Starting node...${NC}"
 DATADIR=$(mktemp -d -t dinero_wallet_restore_XXXXXX)
-RPC_PORT=$((27000 + RANDOM % 1000))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT=$(alloc_port_base)
 P2P_PORT=$((RPC_PORT + 1))
 
 "$DINEROD" --regtest --datadir="$DATADIR" --rpcport="$RPC_PORT" --port="$P2P_PORT" > "$DATADIR/daemon.log" 2>&1 &

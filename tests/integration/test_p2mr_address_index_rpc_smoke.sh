@@ -17,7 +17,9 @@ NC='\033[0m'
 
 RUN_ID=$$
 DATADIR="/tmp/p2mr_address_index_rpc_smoke_${RUN_ID}"
-PORT_RPC="${RPC_PORT:-$((28400 + RANDOM % 500))}"
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+PORT_RPC="${RPC_PORT:-$(alloc_port_base)}"
 PORT_P2P="${P2P_PORT:-$((PORT_RPC + 1))}"
 DAEMON_PID=""
 KEEP_DATADIR="${KEEP_DATADIR:-0}"

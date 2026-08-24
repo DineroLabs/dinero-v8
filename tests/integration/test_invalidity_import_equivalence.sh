@@ -295,7 +295,9 @@ assert_same_bundle() {
 
 require_tools
 
-LIVE_RPC_PORT=$((39000 + RANDOM % 500))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+LIVE_RPC_PORT=$(alloc_port_base)
 LIVE_P2P_PORT=$((LIVE_RPC_PORT + 1))
 LIVE_WALLET_PORT=$((LIVE_RPC_PORT + 2))
 IMPORT_RPC_PORT=$((LIVE_RPC_PORT + 10))

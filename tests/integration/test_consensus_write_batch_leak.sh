@@ -44,7 +44,9 @@ LOG="${DATADIR}/daemon.log"
 PID=""
 KEEP_ON_FAIL=0
 CHAIN_HEIGHT="${CHAIN_HEIGHT:-12}"
-RPC_PORT="${RPC_PORT:-$((26000 + RANDOM % 500))}"
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT="${RPC_PORT:-$(alloc_port_base)}"
 P2P_PORT="${P2P_PORT:-$((RPC_PORT + 1))}"
 RPC_TIMEOUT=20
 

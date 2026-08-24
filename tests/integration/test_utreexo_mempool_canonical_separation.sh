@@ -27,7 +27,9 @@ else
 fi
 
 DATADIR="${DATADIR:-$(mktemp -d -t utreexo_mempool_canonical_XXXXXX)}"
-RPC_PORT="${RPC_PORT:-$((23250 + RANDOM % 500))}"
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT="${RPC_PORT:-$(alloc_port_base)}"
 P2P_PORT="${P2P_PORT:-$((RPC_PORT + 1))}"
 KEEP_DATADIR="${KEEP_DATADIR:-0}"
 DAEMON_PID=""

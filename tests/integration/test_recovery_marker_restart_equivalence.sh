@@ -177,7 +177,9 @@ wait_for_sync_state() {
 
 require_tools
 
-RPC_PORT=$((38000 + RANDOM % 1000))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT=$(alloc_port_base)
 P2P_PORT=$((RPC_PORT + 1))
 WALLET_PORT=$((RPC_PORT + 2))
 

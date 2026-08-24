@@ -73,7 +73,9 @@ UNSHIELD_CONFIRM_H=$((MATURITY_H + 6))   # unshield (nullifier) mined + confirme
 RESET_HEIGHT="${RESET_HEIGHT:-115}"      # cutover (must be > UNSHIELD_CONFIRM_H)
 FINAL_HEIGHT="${FINAL_HEIGHT:-$((RESET_HEIGHT + 5))}"
 REORG_FROM="${REORG_FROM:-$((RESET_HEIGHT - 2))}"   # invalidate here → disconnect across H (after the pre-cutover shielded setup)
-RPC_PORT="${RPC_PORT:-$((25000 + RANDOM % 500))}"
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT="${RPC_PORT:-$(alloc_port_base)}"
 P2P_PORT="${P2P_PORT:-$((RPC_PORT + 1))}"
 RPC_TIMEOUT=25
 

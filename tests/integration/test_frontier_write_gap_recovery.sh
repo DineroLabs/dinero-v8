@@ -56,7 +56,9 @@ LOG_CRASH="${DATA_DIR}.crash.log"
 LOG_RESTART="${DATA_DIR}.restart.log"
 PID=""
 KEEP_ON_FAIL=0
-RPC_PORT=$((35700 + RANDOM % 200))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT=$(alloc_port_base)
 P2P_PORT=$((RPC_PORT + 1))
 
 info() { printf '[INFO] %s\n' "$*"; }
