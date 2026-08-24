@@ -115,6 +115,8 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
             identitySection_, &IdentitySection::onDaemonStateChanged);
     connect(poller_, &NodePoller::dynamicP2POverviewUpdated,
             identitySection_, &IdentitySection::onDynamicP2POverviewUpdated);
+    connect(poller_, &NodePoller::onionServiceUpdated,
+            networkSection_, &NetworkSection::setOnionServiceStatus);
     connect(poller_, &NodePoller::contributionStatsUpdated,
             this, [this](const ContributionStats& stats) {
         contributionSection_->setContributionStats(stats);

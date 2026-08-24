@@ -85,6 +85,7 @@ Q_SIGNALS:
     void peersUpdated(const QVector<PeerRow>& peers);
     void daemonStateChanged(bool reachable);
     void dynamicP2POverviewUpdated(const DynamicP2POverview& overview);
+    void onionServiceUpdated(const OnionServiceStatus& status);
     void contributionStatsUpdated(const ContributionStats& stats);
     void decentralizationScoreUpdated(const DecentralizationScore& score);
     void hintsUpdated(const QVector<HintRow>& hints);

@@ -17,12 +17,13 @@ namespace dinero::qt::dashboard {
 class NetworkSection : public QWidget {
     Q_OBJECT
 public:
-    enum class TorState { Unsupported, Off, Detected, Active, Error };
+    enum class TorState { Unsupported, Off, Active, Error };
     explicit NetworkSection(QWidget* parent = nullptr);
 
 public Q_SLOTS:
     void onChainInfoUpdated(const ChainInfo& info);
     void setTorStatus(TorState state, const QString& onionAddress = {});
+    void setOnionServiceStatus(const OnionServiceStatus& status);
 
     // Tip-race annotation helper, public for unit testing.
     static QString tipDeltaAnnotation(qint64 our, qint64 net);

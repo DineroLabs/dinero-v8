@@ -377,6 +377,20 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
     // string on daemons predating that PR — Identity section renders "—".
     pending_identity_.node_id_hex = obj.value("node_id_hex").toString();
 
+    OnionServiceStatus onion_status;
+    const auto onion_value = obj.value(QStringLiteral("onion_service"));
+    if (onion_value.isObject()) {
+        const auto onion = onion_value.toObject();
+        onion_status.available = true;
+        onion_status.requested = onion.value(QStringLiteral("requested")).toBool(false);
+        onion_status.active = onion.value(QStringLiteral("active")).toBool(false);
+        onion_status.address = onion.value(QStringLiteral("address")).toString();
+        onion_status.message = onion.value(QStringLiteral("message")).toString();
+        // Deliberately do not parse `authentication`: it may describe local
+        // credential material and has no place in the dashboard.
+    }
+    Q_EMIT onionServiceUpdated(onion_status);
+
     // localaddresses is empty for NAT'd home nodes — fall back to listen_port.
     const auto local_addrs = obj.value("localaddresses").toArray();
     if (!local_addrs.isEmpty()) {

@@ -58,7 +58,7 @@ NetworkSection::NetworkSection(QWidget* parent) : QWidget(parent) {
     torControl_->setObjectName(QStringLiteral("torReachabilityControl"));
     torControl_->setEnabled(false);
     torControl_->setToolTip(tr(
-        "This version cannot change Tor while running. Tor is never installed or started without your action."));
+        "Tor is configured when the Dinero service starts. This control shows status only; it never installs or starts Tor."));
     root->addWidget(torControl_);
     torStatusLabel_ = new QLabel(this);
     torStatusLabel_->setObjectName(QStringLiteral("torStatus"));
@@ -105,16 +105,29 @@ QString NetworkSection::tipDeltaAnnotation(qint64 our, qint64 net) {
 }
 
 void NetworkSection::setTorStatus(TorState state, const QString& onionAddress) {
-    torControl_->setChecked(state == TorState::Detected || state == TorState::Active);
+    torControl_->setChecked(state == TorState::Active || state == TorState::Error);
     torStatusLabel_->setText(torStatusText(state, onionAddress));
+}
+
+void NetworkSection::setOnionServiceStatus(const OnionServiceStatus& status) {
+    if (!status.available) {
+        setTorStatus(TorState::Unsupported);
+    } else if (!status.requested) {
+        setTorStatus(TorState::Off);
+    } else if (status.active) {
+        setTorStatus(TorState::Active, status.address);
+    } else {
+        setTorStatus(TorState::Error);
+        // Keep daemon-provided error details out of this surface: Tor control
+        // messages can contain local paths or authentication configuration.
+        torStatusLabel_->setToolTip(tr("Check the local daemon log for details."));
+    }
 }
 
 QString NetworkSection::torStatusText(TorState state, const QString& onionAddress) {
     switch (state) {
     case TorState::Off:
-        return tr("Off. Tor will not be installed or started automatically.");
-    case TorState::Detected:
-        return tr("Configured; restart the Dinero service to apply Tor connectivity.");
+        return tr("Off. To opt in, enable listenonion in the daemon configuration and restart. Tor will not be installed or started automatically.");
     case TorState::Active: {
         const QString safeAddress = onionAddress.trimmed().endsWith(
             QStringLiteral(".onion"), Qt::CaseInsensitive) ? onionAddress.trimmed() : QString();
@@ -123,7 +136,7 @@ QString NetworkSection::torStatusText(TorState state, const QString& onionAddres
             : tr("Active · onion address: %1").arg(safeAddress);
     }
     case TorState::Error:
-        return tr("Tor reported an error. Check the daemon log; credentials are hidden here.");
+        return tr("Configured, but the onion service is not active. Check the daemon log; credentials are hidden here.");
     case TorState::Unsupported:
     default:
         return tr("Not available as a live switch in this version. Configure Tor in the daemon, then restart. No software will be installed or started automatically.");

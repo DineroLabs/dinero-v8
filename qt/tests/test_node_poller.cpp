@@ -16,6 +16,7 @@ using dinero::qt::dashboard::NodePoller;
 using dinero::qt::dashboard::NodeIdentity;
 using dinero::qt::dashboard::ChainInfo;
 using dinero::qt::dashboard::PeerRow;
+using dinero::qt::dashboard::OnionServiceStatus;
 
 class TestablePoller : public NodePoller {
 public:
@@ -61,6 +62,36 @@ private Q_SLOTS:
         QCOMPARE(id.local_addr, QString("162.200.227.214"));
         QCOMPARE(id.local_port, quint16(20999));
         QCOMPARE(int(id.reachability), int(NodeIdentity::DIRECT));
+    }
+
+    void parses_onion_service_without_exposing_authentication() {
+        TestablePoller p;
+        QSignalSpy spy(&p, &NodePoller::onionServiceUpdated);
+        QJsonObject onion;
+        onion["requested"] = true;
+        onion["active"] = true;
+        onion["address"] = "examplehiddenservice.onion";
+        onion["authentication"] = "SAFECOOKIE /secret/cookie";
+        onion["message"] = "restored persistent Tor v3 onion service";
+        QJsonObject ni;
+        ni["onion_service"] = onion;
+        p.feed("getnetworkinfo", ni);
+
+        QCOMPARE(spy.count(), 1);
+        const auto status = spy.at(0).at(0).value<OnionServiceStatus>();
+        QVERIFY(status.available);
+        QVERIFY(status.requested);
+        QVERIFY(status.active);
+        QCOMPARE(status.address, QString("examplehiddenservice.onion"));
+        QVERIFY(!status.message.contains(QStringLiteral("SAFECOOKIE")));
+    }
+
+    void missing_onion_service_is_reported_unavailable() {
+        TestablePoller p;
+        QSignalSpy spy(&p, &NodePoller::onionServiceUpdated);
+        p.feed("getnetworkinfo", QJsonObject{});
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(!spy.at(0).at(0).value<OnionServiceStatus>().available);
     }
 
     void parses_peers_height_consensus_via_mode() {
