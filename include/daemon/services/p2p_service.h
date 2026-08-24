@@ -286,6 +286,7 @@ private:
     uint16_t listen_port_ = 20999;
     std::string external_ip_;
     std::string peers_file_path_;
+    std::string relay_hints_file_path_;
     std::vector<std::string> seed_nodes_;
     std::vector<std::pair<std::string, uint16_t>> reconnect_targets_;
     bool offline_mode_{false};

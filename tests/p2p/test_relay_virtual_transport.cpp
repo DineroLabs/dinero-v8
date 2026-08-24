@@ -685,6 +685,47 @@ TEST(RelayAutoRegister, KeepsBootstrapRelayWhenDynamicCandidatesFillBudget) {
     EXPECT_TRUE(ContainsEndpoint(endpoints, "173.249.200.59:20999"));
 }
 
+TEST(RelayHintPersistence, FreshHintsSurviveRestartButExpiredHintsDoNot) {
+    const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path() /
+        ("dinero-relay-hints-" + std::to_string(suffix) + ".dat");
+    const auto target = MakeNodeId(0x42);
+
+    {
+        auto clock = std::make_unique<dinero::network::FakeClockSource>();
+        P2PManager manager(0, "", std::move(clock));
+        AddRelayHint(manager, target, 20999);
+        manager.save_relay_hints(path.string());
+    }
+
+    {
+        auto clock = std::make_unique<dinero::network::FakeClockSource>();
+        clock->AdvanceSteady(std::chrono::minutes(5));
+        clock->AdvanceSystem(std::chrono::minutes(5));
+        P2PManager restarted(0, "", std::move(clock));
+        restarted.load_relay_hints(path.string());
+        const auto snapshot = restarted.SnapshotRelayHintsForRpc();
+        ASSERT_EQ(snapshot.entries.size(), 1u);
+        ASSERT_EQ(snapshot.entries.front().endpoints.size(), 1u);
+        EXPECT_EQ(snapshot.entries.front().target_hex, HexNodeId(target));
+        EXPECT_EQ(snapshot.entries.front().endpoints.front().port, 20999);
+        EXPECT_GE(snapshot.entries.front().endpoints.front().age_seconds, 300u);
+    }
+
+    {
+        auto clock = std::make_unique<dinero::network::FakeClockSource>();
+        clock->AdvanceSteady(std::chrono::minutes(16));
+        clock->AdvanceSystem(std::chrono::minutes(16));
+        P2PManager expired(0, "", std::move(clock));
+        expired.load_relay_hints(path.string());
+        EXPECT_TRUE(expired.SnapshotRelayHintsForRpc().entries.empty());
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(path.string() + ".tmp", ec);
+}
+
 TEST(RelayOrchestrator, RelayConnectAckLeavesVirtualPeerCreationToCallback) {
     P2PManager manager(0);
     manager.set_plaintext_relay_dev_override_for_tests(true);

@@ -1360,6 +1360,7 @@ bool P2PService::Init(DaemonContext& ctx) {
     // Get datadir for peers.dat persistence
     std::string datadir = config_->DataDir();
     peers_file_path_ = datadir + "/peers.dat";
+    relay_hints_file_path_ = datadir + "/relay_hints.dat";
 
     // Parse seed nodes from config (support both addnode and connect)
     std::string addnode = config_->GetString("addnode", "");
@@ -1552,6 +1553,15 @@ bool P2PService::Start() {
             }
         } else if (connect_only) {
             logger_interface_->info("[P2PService] Connect-only mode: skipping peers.dat bootstrap");
+        }
+        if (!connect_only && !relay_hints_file_path_.empty()) {
+            try {
+                p2p_mgr_->load_relay_hints(relay_hints_file_path_);
+            } catch (const std::exception& e) {
+                logger_interface_->warning(
+                    "[P2PService] Could not load durable relay hints: " +
+                    std::string(e.what()));
+            }
         }
 
         if (auto* ctx = DaemonContext::instance(); ctx && ctx->peer_scoring) {
@@ -1954,6 +1964,15 @@ void P2PService::Stop() {
             } catch (const std::exception& e) {
                 logger_interface_->warning("[P2PService] Could not save peers database: " +
                                std::string(e.what()));
+            }
+        }
+        if (!offline_mode_ && !relay_hints_file_path_.empty()) {
+            try {
+                p2p_mgr_->save_relay_hints(relay_hints_file_path_);
+            } catch (const std::exception& e) {
+                logger_interface_->warning(
+                    "[P2PService] Could not save durable relay hints: " +
+                    std::string(e.what()));
             }
         }
 
