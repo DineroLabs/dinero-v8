@@ -97,6 +97,22 @@ private Q_SLOTS:
         s.setSeederState(true, true, QStringLiteral("Running"));
         QCOMPARE(button->text(), QStringLiteral("Stop Seeder"));
     }
+
+    void long_seeder_error_is_wrapped_selectable_and_available_as_tooltip() {
+        DiscoverySection s;
+        const QString error = QStringLiteral(
+            "Error transferring http://127.0.0.1:20999: connection refused");
+        s.setSeederState(true, false, error);
+        bool found = false;
+        for (auto* label : s.findChildren<QLabel*>()) {
+            if (label->text() != error) continue;
+            QVERIFY(label->wordWrap());
+            QVERIFY(label->textInteractionFlags() & Qt::TextSelectableByMouse);
+            QCOMPARE(label->toolTip(), error);
+            found = true;
+        }
+        QVERIFY(found);
+    }
 };
 
 QTEST_MAIN(TestDiscoverySection)

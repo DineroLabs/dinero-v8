@@ -17,6 +17,8 @@ namespace dinero::qt::dashboard {
 
 namespace {
 
+constexpr qint64 kStaleHeightThreshold = 12;
+
 bool isBannableEndpoint(const QString& endpoint) {
     if (endpoint.trimmed().startsWith(QStringLiteral("relay:"))) {
         return false;
@@ -73,6 +75,7 @@ QString PeersSection::stoplightGlyph(int q, bool handshake_complete) {
 }
 
 void PeersSection::onPeersUpdated(const QVector<PeerRow>& peers) {
+    lastPeers_ = peers;
     headerLabel_->setText(QString("🛰 PEERS (%1 connected)")
         .arg(peers.size()));
 
@@ -91,6 +94,12 @@ void PeersSection::onPeersUpdated(const QVector<PeerRow>& peers) {
     tree_->setSortingEnabled(true);
 }
 
+void PeersSection::setReferenceHeight(qint64 height) {
+    if (referenceHeight_ == height) return;
+    referenceHeight_ = height;
+    if (!lastPeers_.isEmpty()) onPeersUpdated(lastPeers_);
+}
+
 void PeersSection::populateRow(QTreeWidgetItem* item, const PeerRow& r) {
     const QString glyph = stoplightGlyph(r.quality_score, r.handshake_complete);
     item->setText(0, QString("%1 %2").arg(glyph)
@@ -106,8 +115,16 @@ void PeersSection::populateRow(QTreeWidgetItem* item, const PeerRow& r) {
     }
     item->setText(2, who);
 
+    const bool stale = r.height >= 0 && referenceHeight_ > 0 &&
+                       referenceHeight_ - r.height > kStaleHeightThreshold;
     item->setText(3, r.height < 0 ? QString("—")
-                                  : QString::number(r.height));
+                                  : stale ? tr("%1 · stale").arg(r.height)
+                                          : QString::number(r.height));
+    if (stale) {
+        item->setToolTip(3, tr("This peer is %1 blocks behind your current network estimate.")
+            .arg(referenceHeight_ - r.height));
+        item->setForeground(3, QColor(QStringLiteral("#d99a3e")));
+    }
     item->setText(4, r.ping_ms < 0 ? QString("—")
                                    : QString("%1 ms").arg(r.ping_ms));
 

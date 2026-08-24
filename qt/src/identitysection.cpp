@@ -18,10 +18,20 @@ IdentitySection::IdentitySection(QWidget* parent) : QWidget(parent) {
     root->setContentsMargins(12, 12, 12, 12);
     root->setSpacing(6);
 
-    auto* header = new QLabel("⚡ YOU", this);
+    auto* header = new QLabel(tr("Connection"), this);
     header->setStyleSheet("font-weight: bold; font-size: 14px;");
     root->addWidget(header);
 
+    reachabilityLabel_ = new QLabel(this);
+    reachabilityLabel_->setObjectName(QStringLiteral("connectivitySummary"));
+    reachabilityLabel_->setWordWrap(true);
+    root->addWidget(reachabilityLabel_);
+
+    advancedDetails_ = new QWidget(this);
+    advancedDetails_->setObjectName(QStringLiteral("advancedIdentityDetails"));
+    auto* details = new QVBoxLayout(advancedDetails_);
+    details->setContentsMargins(0, 0, 0, 0);
+    details->setSpacing(6);
     auto* idRow = new QHBoxLayout();
     nodeIdLabel_ = new QLabel(this);
     nodeIdLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -35,24 +45,28 @@ IdentitySection::IdentitySection(QWidget* parent) : QWidget(parent) {
     });
     idRow->addWidget(nodeIdLabel_, 1);
     idRow->addWidget(nodeIdCopyBtn_, 0);
-    root->addLayout(idRow);
+    details->addLayout(idRow);
 
-    reachabilityLabel_ = new QLabel(this);
     relayingLabel_     = new QLabel(this);
     miningLabel_       = new QLabel(this);
     dpLabel_           = new QLabel(this);
     footerLabel_       = new QLabel(this);
     footerLabel_->setStyleSheet("color: #888; font-size: 11px;");
 
-    root->addWidget(reachabilityLabel_);
-    root->addWidget(relayingLabel_);
-    root->addWidget(miningLabel_);
-    root->addWidget(dpLabel_);
-    root->addWidget(footerLabel_);
+    details->addWidget(relayingLabel_);
+    details->addWidget(miningLabel_);
+    details->addWidget(dpLabel_);
+    details->addWidget(footerLabel_);
+    root->addWidget(advancedDetails_);
+    advancedDetails_->setVisible(false);
     root->addStretch(1);
 
     onIdentityUpdated({});  // initial placeholder state
     onDynamicP2POverviewUpdated({});  // initial placeholder DPP state
+}
+
+void IdentitySection::setAdvancedVisible(bool visible) {
+    advancedDetails_->setVisible(visible);
 }
 
 void IdentitySection::onIdentityUpdated(const NodeIdentity& id) {
@@ -69,7 +83,7 @@ void IdentitySection::onDynamicP2POverviewUpdated(const DynamicP2POverview& over
 
 void IdentitySection::onDaemonStateChanged(bool reachable) {
     if (!reachable) {
-        reachabilityLabel_->setText("● UNREACHABLE · daemon not responding");
+        reachabilityLabel_->setText(tr("○ Offline — the Dinero service is not responding."));
         reachabilityLabel_->setStyleSheet("color: #c33;");
     } else {
         reachabilityLabel_->setStyleSheet("");
@@ -90,24 +104,25 @@ QString IdentitySection::reachabilityLine(const NodeIdentity& id) {
     switch (id.reachability) {
     case NodeIdentity::DIRECT:
         if (id.local_addr.isEmpty() && id.local_port == 0) {
-            return "●  DIRECT · reachable";
+            return tr("● Connected directly and securely.");
         }
         if (id.local_addr.isEmpty()) {
-            return QString("●  DIRECT · listening on port %1").arg(id.local_port);
+            return tr("● Connected directly and securely (port %1).")
+                .arg(id.local_port);
         }
-        return QString("●  DIRECT · reachable on %1:%2")
+        return tr("● Connected directly and securely on %1:%2.")
             .arg(id.local_addr).arg(id.local_port);
     case NodeIdentity::BEHIND_RELAY:
         if (id.local_port != 0) {
-            return QString("●  BEHIND-RELAY · listening on port %1 · NAT'd")
+            return tr("● Connected securely through a Dinero relay. Direct inbound access is unavailable; recovery is automatic. Listening locally on port %1.")
                 .arg(id.local_port);
         }
-        return "●  BEHIND-RELAY · reachable via relay-virtual peers";
+        return tr("● Connected securely through a Dinero relay. Direct inbound access is unavailable; recovery is automatic.");
     case NodeIdentity::UNREACHABLE:
-        return "○  UNREACHABLE · not listening";
+        return tr("○ Offline — the node is not accepting connections.");
     case NodeIdentity::UNKNOWN:
     default:
-        return "○  …";
+        return tr("○ Checking secure connectivity…");
     }
 }
 

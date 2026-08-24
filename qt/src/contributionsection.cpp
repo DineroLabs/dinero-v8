@@ -114,6 +114,12 @@ ContributionSection::ContributionSection(QWidget* parent)
     score_row->addWidget(score_total_label_);
     score_row->addWidget(score_phrase_label_, 1);
     root->addLayout(score_row);
+    auto* score_explanation = new QLabel(tr(
+        "Optional contribution indicator—not a security rating. Nodes behind NAT remain secure."), this);
+    score_explanation->setObjectName(QStringLiteral("scoreExplanation"));
+    score_explanation->setWordWrap(true);
+    score_explanation->setStyleSheet(QStringLiteral("color: #888; font-size: 11px;"));
+    root->addWidget(score_explanation);
 }
 
 void ContributionSection::setContributionStats(const ContributionStats& stats) {

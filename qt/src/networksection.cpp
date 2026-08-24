@@ -5,6 +5,7 @@
 #include "networksection.h"
 
 #include <QGridLayout>
+#include <QCheckBox>
 #include <QLabel>
 #include <QProgressBar>
 #include <QVBoxLayout>
@@ -17,7 +18,7 @@ NetworkSection::NetworkSection(QWidget* parent) : QWidget(parent) {
     root->setContentsMargins(12, 12, 12, 12);
     root->setSpacing(8);
 
-    auto* header = new QLabel("📡 NETWORK · as you see it", this);
+    auto* header = new QLabel(tr("Network diagnostics (your node's view)"), this);
     header->setStyleSheet("font-weight: bold; font-size: 14px;");
     root->addWidget(header);
 
@@ -30,7 +31,7 @@ NetworkSection::NetworkSection(QWidget* parent) : QWidget(parent) {
     root->addWidget(youBar_);
 
     netBar_ = new QProgressBar(this);
-    netBar_->setFormat("net  %v");
+    netBar_->setFormat("peer estimate  %v");
     netBar_->setTextVisible(true);
     netBar_->setStyleSheet(
         "QProgressBar { min-height: 12px; border: 1px solid #2f3a4d; border-radius: 3px; text-align: center; }"
@@ -52,9 +53,21 @@ NetworkSection::NetworkSection(QWidget* parent) : QWidget(parent) {
     grid->addWidget(new QLabel("median fee", this), 2, 0);
     grid->addWidget(medianFeeLabel_,                2, 1);
     root->addLayout(grid);
+
+    torControl_ = new QCheckBox(tr("Improve reachability with Tor"), this);
+    torControl_->setObjectName(QStringLiteral("torReachabilityControl"));
+    torControl_->setEnabled(false);
+    torControl_->setToolTip(tr(
+        "This version cannot change Tor while running. Tor is never installed or started without your action."));
+    root->addWidget(torControl_);
+    torStatusLabel_ = new QLabel(this);
+    torStatusLabel_->setObjectName(QStringLiteral("torStatus"));
+    torStatusLabel_->setWordWrap(true);
+    root->addWidget(torStatusLabel_);
     root->addStretch(1);
 
     onChainInfoUpdated({});
+    setTorStatus(TorState::Unsupported);
 }
 
 void NetworkSection::onChainInfoUpdated(const ChainInfo& info) {
@@ -65,7 +78,7 @@ void NetworkSection::onChainInfoUpdated(const ChainInfo& info) {
         youBar_->setFormat(QStringLiteral("you  %1").arg(info.our_height));
         netBar_->setRange(0, static_cast<int>(maxH));
         netBar_->setValue(static_cast<int>(info.net_consensus_height));
-        netBar_->setFormat(QStringLiteral("net  %1").arg(info.net_consensus_height));
+        netBar_->setFormat(tr("peer estimate  %1").arg(info.net_consensus_height));
     }
 
     deltaLabel_->setText(
@@ -85,9 +98,36 @@ void NetworkSection::onChainInfoUpdated(const ChainInfo& info) {
 QString NetworkSection::tipDeltaAnnotation(qint64 our, qint64 net) {
     if (net <= 0 && our <= 0) return "—";
     const qint64 delta = net - our;
-    if (delta == 0) return "● in sync";
-    if (delta > 0)  return QString("● +%1 behind net").arg(delta);
-    return QString("● %1 ahead of net").arg(-delta);
+    if (delta == 0) return tr("● In sync with the peer estimate");
+    if (delta > 0)  return tr("● %1 block(s) behind the peer estimate").arg(delta);
+    return tr("● %1 block(s) ahead of the peer estimate; peers may still be catching up")
+        .arg(-delta);
+}
+
+void NetworkSection::setTorStatus(TorState state, const QString& onionAddress) {
+    torControl_->setChecked(state == TorState::Detected || state == TorState::Active);
+    torStatusLabel_->setText(torStatusText(state, onionAddress));
+}
+
+QString NetworkSection::torStatusText(TorState state, const QString& onionAddress) {
+    switch (state) {
+    case TorState::Off:
+        return tr("Off. Tor will not be installed or started automatically.");
+    case TorState::Detected:
+        return tr("Configured; restart the Dinero service to apply Tor connectivity.");
+    case TorState::Active: {
+        const QString safeAddress = onionAddress.trimmed().endsWith(
+            QStringLiteral(".onion"), Qt::CaseInsensitive) ? onionAddress.trimmed() : QString();
+        return safeAddress.isEmpty()
+            ? tr("Active. Connections are using Tor where configured.")
+            : tr("Active · onion address: %1").arg(safeAddress);
+    }
+    case TorState::Error:
+        return tr("Tor reported an error. Check the daemon log; credentials are hidden here.");
+    case TorState::Unsupported:
+    default:
+        return tr("Not available as a live switch in this version. Configure Tor in the daemon, then restart. No software will be installed or started automatically.");
+    }
 }
 
 }  // namespace dinero::qt::dashboard
