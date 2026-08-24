@@ -2652,6 +2652,7 @@ void P2PManager::handle_relay_hints(const std::string& peer_address,
     }
 
     if (ingested > 0) {
+        relay_hints_dirty_.store(true, std::memory_order_release);
         std::cout << "[P2P] relay-hints: ingested " << ingested << " hint(s) from "
                   << peer_address << " (side-table now covers "
                   << relay_hints_by_target_.size() << " target(s))"
@@ -3704,12 +3705,9 @@ void P2PManager::ExchangeSendAddrV2(PeerInfo* peer) {
 }
 
 // BIP155 addrv2 ingestion path. Decodes via dinero::p2p::DecodeAddrV2,
-// then funnels IPV4 / IPV6 entries into the same remember_peer_address()
-// pipe that legacy handle_addr uses. TORV3 / I2P entries are parsed but
-// dropped: ingesting them requires (a) onion-string codec (TORv3 checksum
-// needs SHA3) and (b) addrman storage that remembers the network type.
-// Both land in a follow-up commit; until then we explicitly count and log
-// the dropped entries so operators can see we're seeing them.
+// then funnels IPV4 and TORV3 entries into the same remember_peer_address()
+// pipe that legacy handle_addr uses. Onion peers remain outside the IP-shaped
+// AddrMan but are persisted in peers.dat and dialed only through SOCKS5.
 void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage& message) {
     std::vector<dinero::p2p::AddrV2Entry> entries;
     std::string err;
@@ -3720,6 +3718,7 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
     }
 
     int ipv4_added = 0;
+    int torv3_added = 0;
     int ipv6_seen = 0;
     int torv3_skipped = 0;
     int i2p_skipped = 0;
@@ -3754,11 +3753,16 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
                 // string-keyed so the format must be canonical.
                 break;
             case dinero::p2p::NetworkType::TORV3:
-                torv3_skipped++;
-                // TODO Phase A2 follow-up: encode raw 32-byte pubkey
-                // back to "xxx.onion" using the TORv3 base32 + SHA3
-                // checksum scheme. Once that lands the existing
-                // SOCKS5 dial path can reach these peers.
+                {
+                    std::string onion;
+                    if (dinero::p2p::EncodeTorV3Address(e.addr, &onion) &&
+                        remember_peer_address(onion, e.port, peer_address, e.services)) {
+                        ++torv3_added;
+                        new_for_relay.emplace_back(std::move(onion), e.port);
+                    } else {
+                        ++torv3_skipped;
+                    }
+                }
                 break;
             case dinero::p2p::NetworkType::I2P:
                 i2p_skipped++;
@@ -3768,15 +3772,17 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
         }
     }
 
-    if (ipv4_added > 0 || ipv6_seen > 0 || torv3_skipped > 0 || i2p_skipped > 0) {
+    if (ipv4_added > 0 || torv3_added > 0 || ipv6_seen > 0 ||
+        torv3_skipped > 0 || i2p_skipped > 0) {
         std::cout << "[P2P] addrv2 from " << peer_address
                   << ": ipv4_added=" << ipv4_added
+                  << " torv3_added=" << torv3_added
                   << " ipv6_seen=" << ipv6_seen
                   << " torv3_skipped=" << torv3_skipped
                   << " i2p_skipped=" << i2p_skipped
-                  << " (TORv3/I2P/IPv6 ingestion is a Phase A2 follow-up)"
+                  << " (I2P/IPv6 ingestion is a Phase A2 follow-up)"
                   << std::endl;
-        if (ipv4_added > 0 && !peers_file_path_.empty()) {
+        if ((ipv4_added > 0 || torv3_added > 0) && !peers_file_path_.empty()) {
             save_peers_with_seeds(peers_file_path_);
         }
         if (!new_for_relay.empty()) {
@@ -4599,8 +4605,13 @@ bool P2PManager::send_addr_list_to_peer(
         for (const auto& [address, port] : addresses) {
             dinero::p2p::AddrV2Entry e;
             std::vector<uint8_t> addr_bytes;
-            if (!ClassifyHostLiteral(address, &e.net, &addr_bytes)) {
-                continue;  // not an IPv4/IPv6 literal — skip
+            if (IsOnionAddress(address)) {
+                if (!dinero::p2p::DecodeTorV3Address(address, &addr_bytes)) {
+                    continue;
+                }
+                e.net = dinero::p2p::NetworkType::TORV3;
+            } else if (!ClassifyHostLiteral(address, &e.net, &addr_bytes)) {
+                continue;  // not an IPv4/IPv6/Tor v3 literal — skip
             }
             e.addr = std::move(addr_bytes);
             e.port = port;
@@ -6393,13 +6404,13 @@ void P2PManager::handle_getaddr(const std::string& peer_address, const P2PMessag
     // servers: one node learns it, addrman stores it, getaddr shares it.
     const auto relayable = collect_advertisable_addresses(1000);
     if (!relayable.empty()) {
-        std::vector<PeerInfo> peer_infos;
-        peer_infos.reserve(relayable.size());
-        for (const auto& [address, port] : relayable) {
-            peer_infos.push_back(PeerInfoForAddress(address, port));
+        std::shared_ptr<PeerInfo> peer;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            auto it = connected_peers_.find(peer_address);
+            if (it != connected_peers_.end()) peer = it->second;
         }
-        auto addr_msg = P2PMessage::create_addr(peer_infos);
-        send_to_peer(peer_address, addr_msg);
+        send_addr_list_to_peer(peer.get(), relayable);
     }
 }
 
@@ -6471,7 +6482,7 @@ void P2PManager::relay_addresses_to_peers(
     if (addresses.empty()) return;
 
     // Collect candidate outbound peers (excluding the sender).
-    std::vector<std::string> candidates;
+    std::vector<std::shared_ptr<PeerInfo>> candidates;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& pair : connected_peers_) {
@@ -6479,7 +6490,7 @@ void P2PManager::relay_addresses_to_peers(
             if (!peer->is_connected) continue;
             if (!peer->is_outbound) continue;          // only outbound (known listening port)
             if (pair.first == source_peer) continue;   // don't echo back to sender
-            candidates.push_back(pair.first);
+            candidates.push_back(peer);
         }
     }
     if (candidates.empty()) return;
@@ -6492,17 +6503,8 @@ void P2PManager::relay_addresses_to_peers(
     std::shuffle(candidates.begin(), candidates.end(), rng);
     const size_t fanout = std::min<size_t>(2, candidates.size());
 
-    // Build a minimal PeerInfo vector for create_addr. We only need
-    // address + port — create_addr extracts those two fields.
-    std::vector<PeerInfo> as_peer_infos;
-    as_peer_infos.reserve(addresses.size());
-    for (const auto& [addr, port] : addresses) {
-        as_peer_infos.push_back(PeerInfoForAddress(addr, port));
-    }
-    auto addr_msg = P2PMessage::create_addr(as_peer_infos);
-
     for (size_t i = 0; i < fanout; ++i) {
-        send_to_peer(candidates[i], addr_msg);
+        send_addr_list_to_peer(candidates[i].get(), addresses);
     }
     std::cout << "[P2P] Relayed " << addresses.size()
               << " address(es) to " << fanout << " peer(s)" << std::endl;
@@ -7171,6 +7173,38 @@ void P2PManager::outbox_loop() {
 namespace {
 constexpr const char* PEERS_FILE_HEADER = "# DINERO_PEERS_V1";
 constexpr size_t PEERS_FILE_MAX_ENTRIES = 5000;  // Bitcoin Core uses ~5000 (new+tried buckets)
+constexpr const char* RELAY_HINTS_FILE_HEADER = "# DINERO_RELAY_HINTS_V1";
+
+std::string BytesToHex(const std::vector<uint8_t>& bytes) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes.size() * 2);
+    for (uint8_t byte : bytes) {
+        out.push_back(kHex[byte >> 4]);
+        out.push_back(kHex[byte & 0x0f]);
+    }
+    return out;
+}
+
+bool HexToBytes(const std::string& hex, std::vector<uint8_t>* out) {
+    if (!out || hex.empty() || (hex.size() & 1U) != 0) return false;
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    std::vector<uint8_t> decoded;
+    decoded.reserve(hex.size() / 2);
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        const int hi = nibble(hex[i]);
+        const int lo = nibble(hex[i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        decoded.push_back(static_cast<uint8_t>((hi << 4) | lo));
+    }
+    *out = std::move(decoded);
+    return true;
+}
 }  // namespace
 
 void P2PManager::write_peers_file_atomic(const std::string& peers_file_path,
@@ -7390,7 +7424,10 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
             if (total >= PEERS_FILE_MAX_ENTRIES) break;
             std::string ip = seed.first;
             struct sockaddr_in sa;
-            if (inet_pton(AF_INET, seed.first.c_str(), &sa.sin_addr) <= 0) {
+            // Onion names must never reach clearnet DNS. Preserve their
+            // canonical hostname verbatim for the SOCKS5 dial path.
+            if (!IsOnionAddress(seed.first) &&
+                inet_pton(AF_INET, seed.first.c_str(), &sa.sin_addr) <= 0) {
                 struct addrinfo hints{}, *res = nullptr;
                 hints.ai_family = AF_INET;
                 hints.ai_socktype = SOCK_STREAM;
@@ -7416,6 +7453,122 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
     std::cout << "[P2P] Saved " << total
               << " peers (bootstrap + connected + discovered) to "
               << peers_file_path << std::endl;
+}
+
+void P2PManager::load_relay_hints(const std::string& relay_hints_file_path) {
+    relay_hints_file_path_ = relay_hints_file_path;
+    std::ifstream file(relay_hints_file_path);
+    if (!file.is_open()) {
+        std::cout << "[P2P] No relay_hints.dat found - starting fresh" << std::endl;
+        return;
+    }
+
+    const auto now_system = clock_->SystemNow();
+    const auto now_steady = clock_->SteadyNow();
+    const auto ttl_seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(kHintTtl).count();
+    size_t loaded = 0;
+    size_t skipped = 0;
+    std::unordered_map<std::string, std::vector<RelayHintRecord>> restored;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream input(line);
+        std::string target_hex;
+        unsigned int net_value = 0;
+        std::string address_hex;
+        unsigned int port_value = 0;
+        int64_t learned_unix = 0;
+        int failures = 0;
+        if (!(input >> target_hex >> net_value >> address_hex >> port_value >>
+              learned_unix >> failures) ||
+            target_hex.size() != 40 || port_value == 0 || port_value > 65535 ||
+            failures < 0 || failures >= kHintMaxFailures) {
+            ++skipped;
+            continue;
+        }
+
+        const auto learned_system = std::chrono::system_clock::time_point{
+            std::chrono::seconds{learned_unix}};
+        auto age = now_system - learned_system;
+        if (age < std::chrono::system_clock::duration::zero()) {
+            age = std::chrono::system_clock::duration::zero();
+        }
+        if (std::chrono::duration_cast<std::chrono::seconds>(age).count() >=
+            ttl_seconds) {
+            ++skipped;
+            continue;
+        }
+
+        RelayHintRecord record;
+        record.net = static_cast<dinero::p2p::NetworkType>(net_value);
+        size_t expected_length = 0;
+        if (!HexToBytes(address_hex, &record.relay_addr) ||
+            !dinero::p2p::NetworkTypeExpectedLength(record.net, &expected_length) ||
+            record.relay_addr.size() != expected_length) {
+            ++skipped;
+            continue;
+        }
+        record.relay_port = static_cast<uint16_t>(port_value);
+        record.learned_at = now_steady -
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(age);
+        record.consecutive_dial_failures = failures;
+        auto& bucket = restored[target_hex];
+        if (bucket.size() >= kMaxHintsPerTarget) {
+            ++skipped;
+            continue;
+        }
+        bucket.push_back(std::move(record));
+        ++loaded;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(relay_hints_mutex_);
+        relay_hints_by_target_ = std::move(restored);
+    }
+    relay_hints_dirty_.store(false, std::memory_order_release);
+    std::cout << "[P2P] Loaded " << loaded << " durable relay hint(s) from "
+              << relay_hints_file_path
+              << (skipped ? " (" + std::to_string(skipped) + " stale/invalid skipped)" : "")
+              << std::endl;
+}
+
+void P2PManager::save_relay_hints(const std::string& relay_hints_file_path) {
+    // Clear before taking the snapshot. A concurrent ingest after this point
+    // sets dirty=true again and will trigger another save; clearing at the end
+    // would lose that notification.
+    relay_hints_dirty_.store(false, std::memory_order_release);
+    const auto now_system = clock_->SystemNow();
+    const auto now_steady = clock_->SteadyNow();
+    std::ostringstream output;
+    output << RELAY_HINTS_FILE_HEADER << "\n";
+    size_t saved = 0;
+    {
+        std::lock_guard<std::mutex> lock(relay_hints_mutex_);
+        for (const auto& [target_hex, records] : relay_hints_by_target_) {
+            for (const auto& record : records) {
+                if (now_steady - record.learned_at >= kHintTtl ||
+                    record.consecutive_dial_failures >= kHintMaxFailures) {
+                    continue;
+                }
+                const auto learned_system = now_system -
+                    std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                        now_steady - record.learned_at);
+                const auto learned_unix =
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        learned_system.time_since_epoch()).count();
+                output << target_hex << ' '
+                       << static_cast<unsigned int>(record.net) << ' '
+                       << BytesToHex(record.relay_addr) << ' '
+                       << record.relay_port << ' ' << learned_unix << ' '
+                       << record.consecutive_dial_failures << '\n';
+                ++saved;
+            }
+        }
+    }
+    write_peers_file_atomic(relay_hints_file_path, output.str());
+    std::cout << "[P2P] Saved " << saved << " durable relay hint(s) to "
+              << relay_hints_file_path << std::endl;
 }
 
 void P2PManager::mark_peer_seen(const std::string& peer_address) {
@@ -7488,6 +7641,10 @@ void P2PManager::keepalive_loop() {
         relay_registry_.Sweep();
         SweepRelayHintsCache();
         MaybeReSendRelayHints();
+        if (relay_hints_dirty_.load(std::memory_order_acquire) &&
+            !relay_hints_file_path_.empty()) {
+            save_relay_hints(relay_hints_file_path_);
+        }
         // NAT Phase C3 slice 4a: refresh outbound RELAY_REGISTER on
         // peers we've designated as our relays. No-op most ticks (1h
         // refresh cadence vs 30s wake-up); only fires for is_our_relay

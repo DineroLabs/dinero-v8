@@ -435,11 +435,12 @@ if tcp_probe "${NS_ORIGIN}" "${TARGET_NAT_WAN_IP}" "${TARGET_P2P}"; then
 fi
 pass "Hostile NAT blocks unsolicited origin-to-target TCP"
 
-PIDS+=("$(start_node "${NS_RELAY}" "${DATA_RELAY}" "${RELAY_RPC}" "${RELAY_P2P}" "${LOG_RELAY}" \
-    "--externalip=${RELAY_IP}:${RELAY_P2P}")")
-PIDS+=("$(start_node "${NS_ORIGIN}" "${DATA_ORIGIN}" "${ORIGIN_RPC}" "${ORIGIN_P2P}" "${LOG_ORIGIN}")")
-PIDS+=("$(start_node "${NS_TARGET}" "${DATA_TARGET}" "${TARGET_RPC}" "${TARGET_P2P}" "${LOG_TARGET}" \
-    "--relayregister=${RELAY_IP}:${RELAY_P2P}")")
+RELAY_PID="$(start_node "${NS_RELAY}" "${DATA_RELAY}" "${RELAY_RPC}" "${RELAY_P2P}" "${LOG_RELAY}" \
+    "--externalip=${RELAY_IP}:${RELAY_P2P}")"
+ORIGIN_PID="$(start_node "${NS_ORIGIN}" "${DATA_ORIGIN}" "${ORIGIN_RPC}" "${ORIGIN_P2P}" "${LOG_ORIGIN}")"
+TARGET_PID="$(start_node "${NS_TARGET}" "${DATA_TARGET}" "${TARGET_RPC}" "${TARGET_P2P}" "${LOG_TARGET}" \
+    "--relayregister=${RELAY_IP}:${RELAY_P2P}")"
+PIDS+=("${RELAY_PID}" "${ORIGIN_PID}" "${TARGET_PID}")
 
 wait_rpc "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" || fail "relay RPC did not come up"
 wait_rpc "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" || fail "origin RPC did not come up"
@@ -533,6 +534,38 @@ assert_log_absent "${LOG_TARGET}" "ERR_IDLE_CLOSE" \
     "target: relay QUIC session did NOT hit ERR_IDLE_CLOSE"
 assert_log_absent "${LOG_RELAY}" "ERR_IDLE_CLOSE" \
     "relay: no ERR_IDLE_CLOSE on the relay node"
+
+# ── durable relay discovery restart ────────────────────────────────
+# The origin learned the target exclusively through RELAY_HINTS. After a
+# graceful restart it must restore that still-fresh hint, reconnect to the
+# public relay from peers.dat, and reopen the encrypted virtual circuit without
+# requiring the relay to gossip the target again first.
+kill -TERM "${ORIGIN_PID}"
+for _ in $(seq 1 30); do
+    if ! kill -0 "${ORIGIN_PID}" 2>/dev/null; then break; fi
+    sleep 1
+done
+if kill -0 "${ORIGIN_PID}" 2>/dev/null; then
+    fail "origin did not stop cleanly for relay-hint restart test"
+fi
+# Do not retain the exited PID in cleanup: the kernel may reuse it before the
+# test ends, and killing a recycled PID would target an unrelated process.
+PIDS=("${RELAY_PID}" "${TARGET_PID}")
+RELAY_HINTS_FILE="$(find "${DATA_ORIGIN}" -name relay_hints.dat -type f -print -quit)"
+[[ -n "${RELAY_HINTS_FILE}" ]] || fail "origin did not persist relay_hints.dat"
+grep -q '^# DINERO_RELAY_HINTS_V1' "${RELAY_HINTS_FILE}" || \
+    fail "origin relay_hints.dat has no recognized version header"
+mv "${LOG_ORIGIN}" "${LOG_ORIGIN}.before-restart"
+ORIGIN_PID="$(start_node "${NS_ORIGIN}" "${DATA_ORIGIN}" "${ORIGIN_RPC}" "${ORIGIN_P2P}" "${LOG_ORIGIN}")"
+PIDS+=("${ORIGIN_PID}")
+wait_rpc "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" || \
+    fail "origin RPC did not return after restart"
+wait_log "${LOG_ORIGIN}" "Loaded 1 durable relay hint(s)" \
+    "origin restored fresh relay reachability metadata after restart"
+wait_log "${LOG_ORIGIN}" "[P2P] relay-orchestrator: opened circuit" \
+    "origin reopened target circuit from durable relay metadata"
+wait_log "${LOG_ORIGIN}" "relay-handshake: QUIC handshake ready for relay:" \
+    "restarted origin restored encrypted relay data plane"
 
 # ── on-connect registry catch-up ────────────────────────────────────
 # A peer that connects to the relay AFTER a target registered must be

@@ -136,7 +136,11 @@ addnode=96.9.226.98:20999     # Canada / ca-east
 # Onion proxy for Tor connections (for privacy)
 # proxy=127.0.0.1:9050
 # listen=1
+# Create a persistent Tor v3 onion service through Tor's control port.
+# Explicit opt-in: Dinero never starts Tor and never enables this silently.
 # listenonion=1
+# torcontrol=127.0.0.1:9051
+# torcontrolpassword=
 
 # Ban misbehaving peers automatically (default: 1)
 # banscore=100       # Threshold for banning (default: 100)

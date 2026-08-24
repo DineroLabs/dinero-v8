@@ -385,6 +385,9 @@ void print_usage(const char* program_name) {
     std::cout << "  --portmap=<0|auto|upnp|natpmp> Try router port mapping for inbound P2P\n";
     std::cout << "  --upnp=1 / --natpmp=1     Compatibility aliases for --portmap\n";
     std::cout << "  --onion=<auto|host[:port]> SOCKS5 proxy for .onion P2P peers (auto checks 9050/9150)\n";
+    std::cout << "  --listenonion=1            Create and advertise a persistent Tor v3 onion service\n";
+    std::cout << "  --torcontrol=<host:port>   Tor control endpoint for --listenonion (default 127.0.0.1:9051)\n";
+    std::cout << "  --torcontrolpassword=<pw>  Tor control password fallback when COOKIE auth is unavailable\n";
     std::cout << "  --externalip=<host[:port]> Advertise a reachable clearnet or onion endpoint\n";
     std::cout << "  --wallet-socket-port=<port> Wallet socket server port (default: 50051)\n";
     std::cout << "  --regtest                  Use regression test network\n";

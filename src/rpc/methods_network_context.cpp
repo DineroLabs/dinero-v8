@@ -201,6 +201,13 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         onion_transport["proxy"] = "";
         onion_transport["note"] = "P2P service not available";
         result["onion_transport"] = onion_transport;
+        din::Json onion_service;
+        onion_service["requested"] = false;
+        onion_service["active"] = false;
+        onion_service["address"] = "";
+        onion_service["authentication"] = "";
+        onion_service["message"] = "P2P service not available";
+        result["onion_service"] = onion_service;
         din::Json dynamic_p2p;
         dynamic_p2p["enabled"] = false;
         dynamic_p2p["mode"] = "unavailable";
@@ -213,8 +220,10 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     networks.clear();
     ipv4["reachable"] = status.network_active;
     networks.append(ipv4);
-    onion["limited"] = !status.onion_transport_reachable;
-    onion["reachable"] = status.onion_transport_reachable;
+    const bool onion_reachable = status.onion_transport_reachable ||
+                                 status.onion_service_active;
+    onion["limited"] = !onion_reachable;
+    onion["reachable"] = onion_reachable;
     onion["proxy"] = status.onion_proxy;
     networks.append(onion);
     i2p["limited"] = true;
@@ -222,6 +231,14 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     i2p["proxy"] = "";
     networks.append(i2p);
     result["networks"] = networks;
+
+    din::Json onion_service;
+    onion_service["requested"] = status.onion_service_requested;
+    onion_service["active"] = status.onion_service_active;
+    onion_service["address"] = status.onion_service_address;
+    onion_service["authentication"] = status.onion_service_authentication;
+    onion_service["message"] = status.onion_service_message;
+    result["onion_service"] = onion_service;
 
     result["networkactive"] = status.network_active;
     result["localrelay"] = status.local_relay;

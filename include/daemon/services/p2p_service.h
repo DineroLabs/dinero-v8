@@ -6,6 +6,7 @@
 #include "daemon/services/stale_tip_recovery.h"  // issue #214: StaleTipState + decision
 #include "network/port_mapper.h"
 #include "network/stun_client.h"      // NAT traversal Phase C1 (unique_ptr<StunClient> member)
+#include "network/tor_control.h"
 #include "version.h"
 
 #include <atomic>
@@ -113,6 +114,11 @@ public:
         bool onion_transport_auto_detected{false};
         std::string onion_proxy;
         std::string onion_transport_message;
+        bool onion_service_requested{false};
+        bool onion_service_active{false};
+        std::string onion_service_address;
+        std::string onion_service_authentication;
+        std::string onion_service_message;
 
         // NAT traversal Phase C1: STUN-discovered public IP+port. Empty
         // when discovery hasn't completed or failed. Independent of
@@ -286,6 +292,9 @@ private:
     uint16_t listen_port_ = 20999;
     std::string external_ip_;
     std::string peers_file_path_;
+    std::string relay_hints_file_path_;
+    std::unique_ptr<network::TorOnionService> onion_service_;
+    bool onion_service_requested_{false};
     std::vector<std::string> seed_nodes_;
     std::vector<std::pair<std::string, uint16_t>> reconnect_targets_;
     bool offline_mode_{false};

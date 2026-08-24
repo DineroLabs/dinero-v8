@@ -554,6 +554,12 @@ public:
     void load_peers(const std::string& peers_file_path);
     void save_peers(const std::string& peers_file_path);
     void save_peers_with_seeds(const std::string& peers_file_path);
+    // Durable relay reachability cache. Fresh relay hints survive an ordinary
+    // restart, but are still bounded by the same 15-minute TTL and failure
+    // policy as live gossip. The file contains discovery metadata only; relay
+    // registrations and circuits are always re-authenticated after reconnect.
+    void load_relay_hints(const std::string& relay_hints_file_path);
+    void save_relay_hints(const std::string& relay_hints_file_path);
 
     // Phase C (v8 peer discovery): atomic write helper. Writes `content`
     // to `peers_file_path + ".tmp"`, fsync()s the fd, then renames in
@@ -908,6 +914,8 @@ private:
     uint16_t onion_proxy_port_{0};
     dinero::p2p::AddressManager* address_manager_{nullptr};  // Owned by AddressManagerService
     std::string peers_file_path_;  // Phase C: Persistent peer database path
+    std::string relay_hints_file_path_;
+    std::atomic<bool> relay_hints_dirty_{false};
     mutable std::mutex bans_mutex_;
     std::unordered_map<std::string, BanEntry> banned_peers_;
     

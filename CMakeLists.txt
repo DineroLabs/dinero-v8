@@ -981,6 +981,7 @@ add_library(dinero_core STATIC
   ${DINERO_CORE_MEMPOOL_SUPPORT_SOURCES}
 
   # Network relay
+  src/network/tor_control.cpp
 
   # Common utilities
   src/common/logger.cpp
