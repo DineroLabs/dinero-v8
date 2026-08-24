@@ -149,6 +149,7 @@ jobs:
             -DENABLE_GPU_MINING=OFF \
             -DENABLE_GRPC=OFF \
             -DDINERO_ENABLE_PORTMAPPING=ON \
+            -DDINERO_ENABLE_QUIC=ON \
             -DDINERO_RELEASE_TAG=${{ steps.ver.outputs.version }} \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \

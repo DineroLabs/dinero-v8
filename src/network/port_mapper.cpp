@@ -75,6 +75,28 @@ bool AbortRequested(const PortMappingConfig& config) {
 
 }  // namespace
 
+PortMappingCompileInfo GetPortMappingCompileInfo() {
+    PortMappingCompileInfo info;
+#if defined(DINERO_HAVE_MINIUPNPC)
+    info.upnp = true;
+#endif
+#if defined(DINERO_HAVE_NATPMP)
+    info.natpmp = true;
+#endif
+    return info;
+}
+
+std::chrono::seconds PortMappingNextActionDelay(bool success,
+                                                int lifetime_seconds,
+                                                int retry_seconds) {
+    if (!success) {
+        return std::chrono::seconds(std::max(30, retry_seconds));
+    }
+    // Renew at half-life, but never busy-loop and never wait so long that a
+    // short router lease expires before refresh.
+    return std::chrono::seconds(std::max(30, lifetime_seconds / 2));
+}
+
 PortMappingMode ParsePortMappingMode(const std::string& value,
                                      bool upnp_enabled,
                                      bool natpmp_enabled) {

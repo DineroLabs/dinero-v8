@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <functional>
 #include <string>
 
@@ -38,6 +39,18 @@ struct PortMappingResult {
     std::string external_address;
     std::string message;
 };
+
+struct PortMappingCompileInfo {
+    bool upnp{false};
+    bool natpmp{false};
+    bool available() const { return upnp || natpmp; }
+};
+
+PortMappingCompileInfo GetPortMappingCompileInfo();
+
+std::chrono::seconds PortMappingNextActionDelay(bool success,
+                                                int lifetime_seconds,
+                                                int retry_seconds);
 
 PortMappingMode ParsePortMappingMode(const std::string& value,
                                      bool upnp_enabled,

@@ -4156,12 +4156,12 @@ void P2PManager::add_advertised_address(const std::string& address, uint16_t por
     // addresses must NOT mark us "directly reachable" (else they'd suppress the
     // relay fallback). Direct reachability is instead proven by an observed
     // inbound connection, port-mapping, or explicit operator config.
-    if (!learned) {
-        has_explicit_advertised_.store(true, std::memory_order_release);
-    }
-
     std::lock_guard<std::mutex> lock(peers_mutex_);
     const std::string key = AddressKey(address, port);
+    if (!learned) {
+        explicit_advertised_addresses_.insert(key);
+        has_explicit_advertised_.store(true, std::memory_order_release);
+    }
     for (const auto& existing : advertised_addresses_) {
         if (AddressKey(existing.first, existing.second) == key) {
             return;
@@ -4170,6 +4170,22 @@ void P2PManager::add_advertised_address(const std::string& address, uint16_t por
     advertised_addresses_.emplace_back(address, port);
     std::cout << "[P2P] Advertising " << (learned ? "learned" : "reachable")
               << " address: " << key << std::endl;
+}
+
+void P2PManager::remove_explicit_advertised_address(const std::string& address,
+                                                    uint16_t port) {
+    const std::string key = AddressKey(address, port);
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    if (explicit_advertised_addresses_.erase(key) == 0) return;
+    advertised_addresses_.erase(
+        std::remove_if(advertised_addresses_.begin(), advertised_addresses_.end(),
+                       [&](const auto& endpoint) {
+                           return AddressKey(endpoint.first, endpoint.second) == key;
+                       }),
+        advertised_addresses_.end());
+    has_explicit_advertised_.store(!explicit_advertised_addresses_.empty(),
+                                   std::memory_order_release);
+    std::cout << "[P2P] Withdrew expired/unavailable mapped address: " << key << std::endl;
 }
 
 std::vector<std::pair<std::string, uint16_t>> P2PManager::get_advertised_addresses() const {
@@ -4825,11 +4841,11 @@ void P2PManager::connection_manager_loop() {
         std::vector<dinero::p2p::NetworkAddress> addrman_candidates;
         bool durable_outbound_full = false;
         if (address_manager_) {
-            // AddrMan can also contain the compiled anchors. Draw an extra
-            // anchor-sized margin so those duplicate entries cannot consume
-            // the sample and leave the three community slots unfilled.
+            // AddrMan also contains bootstrap endpoints. Draw an extra margin
+            // so those duplicates cannot crowd learned community candidates
+            // out of the randomized sample.
             addrman_candidates = address_manager_->getAddresses(
-                MAX_OUTBOUND_CONNECTIONS + dinero::p2p::kMandatoryAnchorOutbound);
+                MAX_OUTBOUND_CONNECTIONS + dinero::p2p::kBootstrapRecoveryOutbound);
         }
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -4917,19 +4933,61 @@ void P2PManager::connection_manager_loop() {
                 scheduled_endpoints.insert(resolved_endpoint);
             };
 
-            // Mandatory anchors retain first claim on outbound capacity.
+            // Bootstrap nodes introduce us to the network; they do not own
+            // permanent slots. Split the AddrMan draw by source, prefer
+            // learned peers, and use at most a small bootstrap recovery set
+            // until enough community candidates exist.
+            std::unordered_set<std::string> bootstrap_endpoints;
             for (const auto& anchor : anchor_nodes_) {
-                consider_candidate(anchor.first, anchor.second);
-            }
-
-            // Fill remaining slots from AddrMan before generic bootstrap
-            // seeds. This is what lets learned community nodes become durable
-            // outbound peers while the three recovery anchors remain present.
-            for (const auto& candidate : addrman_candidates) {
-                consider_candidate(candidate.ip, candidate.port);
+                bootstrap_endpoints.insert(AddressKey(anchor.first, anchor.second));
             }
             for (const auto& seed : seed_nodes_) {
-                consider_candidate(seed.first, seed.second);
+                bootstrap_endpoints.insert(AddressKey(seed.first, seed.second));
+            }
+            const auto is_bootstrap = [&](const std::string& address, uint16_t port) {
+                return bootstrap_endpoints.count(AddressKey(address, port)) > 0;
+            };
+
+            size_t connected_community = 0;
+            size_t connected_bootstrap = 0;
+            for (const auto& pair : connected_peers_) {
+                const auto& peer = pair.second;
+                if (!peer->is_connected || !peer->is_outbound || peer->is_feeler) continue;
+                if (is_bootstrap(peer->address, peer->port)) {
+                    ++connected_bootstrap;
+                } else {
+                    ++connected_community;
+                }
+            }
+
+            std::vector<dinero::p2p::NetworkAddress> community_candidates;
+            community_candidates.reserve(addrman_candidates.size());
+            for (const auto& candidate : addrman_candidates) {
+                if (!is_bootstrap(candidate.ip, candidate.port)) {
+                    community_candidates.push_back(candidate);
+                }
+            }
+            const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
+                connected_community, community_candidates.size());
+
+            for (const auto& candidate : community_candidates) {
+                consider_candidate(candidate.ip, candidate.port);
+            }
+
+            size_t bootstrap_budget = autonomy.max_bootstrap_hot > connected_bootstrap
+                ? autonomy.max_bootstrap_hot - connected_bootstrap
+                : 0;
+            const auto consider_bootstrap = [&](const std::string& address, uint16_t port) {
+                if (bootstrap_budget == 0) return;
+                const size_t before = seeds_to_connect.size();
+                consider_candidate(address, port);
+                if (seeds_to_connect.size() != before) --bootstrap_budget;
+            };
+            for (const auto& anchor : anchor_nodes_) {
+                consider_bootstrap(anchor.first, anchor.second);
+            }
+            for (const auto& seed : seed_nodes_) {
+                consider_bootstrap(seed.first, seed.second);
             }
             durable_outbound_full =
                 active_peer_count + seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS;
@@ -7356,7 +7414,7 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
 
     write_peers_file_atomic(peers_file_path, buf.str());
     std::cout << "[P2P] Saved " << total
-              << " peers (mandatory anchors + connected + discovered) to "
+              << " peers (bootstrap + connected + discovered) to "
               << peers_file_path << std::endl;
 }
 

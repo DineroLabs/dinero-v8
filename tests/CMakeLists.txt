@@ -119,7 +119,17 @@ target_include_directories(test_peer_governor PRIVATE
   ${CMAKE_SOURCE_DIR}/include
 )
 add_test(NAME PeerGovernor COMMAND test_peer_governor)
-set_tests_properties(PeerGovernor PROPERTIES
+
+add_executable(test_port_mapping_policy
+  tests/network/test_port_mapping_policy.cpp
+  ${CMAKE_SOURCE_DIR}/src/network/port_mapper.cpp
+)
+target_include_directories(test_port_mapping_policy PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_port_mapping_policy PRIVATE dinero_portmap_deps)
+add_test(NAME PortMappingPolicy COMMAND test_port_mapping_policy)
+set_tests_properties(PeerGovernor PortMappingPolicy PROPERTIES
   LABELS "network;p2p;dynamic-p2p;smoke"
   TIMEOUT 10
 )

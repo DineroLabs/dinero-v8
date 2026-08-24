@@ -90,6 +90,20 @@ if [[ -n "$BUILD_DIR" ]]; then
     [[ "$cmake_project" == "dinero" ]] \
         || fail "build dir project is '$cmake_project', expected monorepo project 'dinero'"
 
+    [[ "$(cache_value DINERO_ENABLE_PORTMAPPING || true)" == "ON" ]] \
+        || fail "official Qt bundle requires DINERO_ENABLE_PORTMAPPING=ON"
+    [[ "$(cache_value DINERO_ENABLE_QUIC || true)" == "ON" ]] \
+        || fail "official Qt bundle requires DINERO_ENABLE_QUIC=ON for encrypted NAT relay"
+    require_file "$BUILD_DIR/build.ninja"
+    grep -q 'DINERO_HAVE_MINIUPNPC' "$BUILD_DIR/build.ninja" \
+        || fail "miniupnpc was requested but not compiled into the release"
+    grep -q 'DINERO_HAVE_NATPMP' "$BUILD_DIR/build.ninja" \
+        || fail "libnatpmp was requested but not compiled into the release"
+    grep -q 'DINERO_HAVE_NGTCP2' "$BUILD_DIR/build.ninja" \
+        || fail "ngtcp2 was requested but not compiled into the release"
+    grep -q 'DINERO_HAVE_NGTCP2_CRYPTO_' "$BUILD_DIR/build.ninja" \
+        || fail "ngtcp2 crypto bridge was not compiled into the release"
+
     if [[ -n "$VERSION" ]]; then
         release_tag="$(cache_value DINERO_RELEASE_TAG || true)"
         [[ "$release_tag" == "$VERSION" ]] \

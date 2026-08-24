@@ -59,10 +59,10 @@ static bool has(const std::vector<std::string>& values, const char* needle) {
 int main() {
     {
         const dinero::p2p::PeerGovernorConfig defaults;
-        check(defaults.target_hot_outbound == 6,
+        check(defaults.target_hot_outbound == 8,
               "default hot outbound target matches daemon capacity");
-        check(defaults.max_configured_seed_hot == 3,
-              "default governor retains all three mandatory anchors");
+        check(defaults.max_configured_seed_hot == 2,
+              "default governor bounds bootstrap recovery peers");
     }
 
     {
@@ -77,10 +77,40 @@ int main() {
         };
 
         const auto decision = governor.Evaluate(peers);
-        check(decision.hot_peers.size() == 6,
-              "default topology keeps three anchors plus three community peers");
-        check(decision.configured_seed_hot == 3,
-              "3+3 topology accounts for all mandatory anchors");
+        check(decision.hot_peers.size() == 5,
+              "default topology caps bootstrap peers and keeps community peers");
+        check(decision.configured_seed_hot == 2,
+              "default topology keeps only the bootstrap recovery allowance");
+    }
+
+    {
+        PeerGovernorConfig config;
+        config.max_configured_seed_hot = 0;
+        PeerGovernor governor(config);
+        std::vector<PeerGovernorCandidate> peers = {
+            candidate("seed-a:20999", 95, true, true, true, true),
+            candidate("seed-b:20999", 90, true, true, true, true),
+            candidate("community-a:20999", 80, true, true, false, false),
+            candidate("community-b:20999", 75, true, true, false, false),
+            candidate("community-c:20999", 70, true, true, false, false),
+            candidate("community-d:20999", 65, true, true, false, false),
+        };
+        const auto decision = governor.Evaluate(peers);
+        check(decision.configured_seed_hot == 0,
+              "autonomous mode retains no configured bootstrap peer");
+        check(has(decision.demote_candidates, "seed-a:20999") &&
+              has(decision.demote_candidates, "seed-b:20999"),
+              "autonomous mode nominates connected bootstrap peers for slow churn");
+    }
+
+    {
+        using dinero::p2p::EvaluateBootstrapAutonomy;
+        check(!EvaluateBootstrapAutonomy(1, 1).autonomous,
+              "bootstrap recovery remains active with too few community peers");
+        check(EvaluateBootstrapAutonomy(2, 2).autonomous,
+              "known community candidates permit autonomous transition");
+        check(EvaluateBootstrapAutonomy(4, 0).max_bootstrap_hot == 0,
+              "healthy connected community removes permanent bootstrap slots");
     }
 
     {
@@ -172,7 +202,7 @@ int main() {
 
         const auto decision = governor.Evaluate(peers);
         check(!has(decision.demote_candidates, "sj:20999"),
-              "never nominates a mandatory anchor for churn");
+              "never nominates a protected bootstrap peer for churn");
         check(has(decision.demote_candidates, "community-weak:20999"),
               "still nominates a weak community peer");
     }

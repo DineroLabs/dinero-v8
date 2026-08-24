@@ -466,6 +466,7 @@ public:
     // explicit/trusted source (operator externalip, UPnP/NAT-PMP) and sets the
     // has_explicit_advertised_ flag used by the relay-fallback gate.
     void add_advertised_address(const std::string& address, uint16_t port, bool learned = false);
+    void remove_explicit_advertised_address(const std::string& address, uint16_t port);
     std::vector<std::pair<std::string, uint16_t>> get_advertised_addresses() const;
     // True iff we have an EXPLICIT/confirmed reachable advertised address
     // (operator externalip or port-mapping) — not merely a Gap-1-learned one.
@@ -887,6 +888,7 @@ private:
     // separately so dynamic discovery can never crowd them out.
     std::vector<std::pair<std::string, uint16_t>> anchor_nodes_;
     std::vector<std::pair<std::string, uint16_t>> advertised_addresses_;
+    std::unordered_set<std::string> explicit_advertised_addresses_;
     // True once an EXPLICIT/trusted reachable address (operator externalip or
     // port-mapping) has been advertised — distinct from Gap-1-learned addresses.
     // Drives the relay-fallback gate so NAT'd nodes (learned-only) stay eligible.
