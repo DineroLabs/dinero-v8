@@ -141,6 +141,40 @@ WalletManager* AcquireWallet(const ExecutionContext& ctx, Json& err, bool requir
     return &wm;
 }
 
+// Mainnet lockout for the FUND-MOVING shielded RPCs, pending the
+// spend-authority activation height.
+//
+// The shielded pool is live on mainnet (shielded_activation_height = 8650), so
+// these calls work today. But a note sent to ANOTHER party's address is
+// committed to a key the SENDER derives, leaving the sender able to spend it
+// back. The circuit that closes this shipped dormant
+// (shielded_spend_auth_activation_height = UINT32_MAX on every network) and
+// activation additionally needs a paired epoch reset.
+//
+// MAINNET ONLY, deliberately. regtest and testnet are untouched: the shielded
+// integration suite drives these exact RPCs on regtest, and gating them
+// everywhere would disable the tests that protect this subsystem.
+//
+// READ-ONLY methods are NOT gated. wallet.shieldedbalance, wallet.listshielded
+// and wallet.getshieldedaddress neither move value nor create a spendable
+// note; blocking them would hide a user's existing balance and look like data
+// loss. Only shield / unshield / transfer are refused.
+//
+// The mainnet pool is empty (shielded_tree_size = 0), so nothing is stranded.
+// Remove this once an activation height is set and the wallet side is
+// complete — the Qt lockout (kShieldedUiLockedOut) should be lifted with it.
+bool RejectIfShieldedSpendLocked(Json& err) {
+    if (GetActiveChain() == Chain::MAINNET) {
+        err["error"]         = "shielded_spend_locked";
+        err["error_message"] =
+            "shielded shield/unshield/transfer are temporarily unavailable on "
+            "mainnet: the spend-authority fix is not yet activated. Balance "
+            "and address queries still work.";
+        return true;
+    }
+    return false;
+}
+
 // Phase 1 activation gate. Returns true and writes a JSON-RPC error
 // into `err` when the shielded pool is not yet active on this network
 // (chainparams.shielded_activation_height == UINT32_MAX). Once Phase
@@ -226,6 +260,7 @@ void StoreCachedShieldedAddress(WalletManager& wm,
 Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
     Json result;
     if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
+    if (RejectIfShieldedSpendLocked(result)) return result;
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
@@ -639,6 +674,7 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
 Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     Json result;
     if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
+    if (RejectIfShieldedSpendLocked(result)) return result;
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
@@ -831,6 +867,7 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
 Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
     Json result;
     if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
+    if (RejectIfShieldedSpendLocked(result)) return result;
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
