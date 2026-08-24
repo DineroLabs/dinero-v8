@@ -325,6 +325,11 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
     // here would silently build a weaker circuit than the caller asked for.
     // ProveSpend/VerifySpend reject the invalid pair outright; this is the
     // in-circuit backstop, and ValidateChainParams pins the height ordering.
+    //
+    // ⚠️ CALLERS OF THIS FUNCTION DIRECTLY (tests, benches, the prover kit) get
+    // a SILENTLY DIFFERENT circuit than they asked for if they pass
+    // (spend_auth=true, cv_bound=false) — unreachable via ProveSpend/
+    // VerifySpend, which reject that pair first. Pass a valid pair.
     if (spend_auth) {
         cv_bound = true;
     }
