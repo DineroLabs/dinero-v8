@@ -189,6 +189,47 @@ TEST(TorRuntimeController, FailedDisableStaysActiveAndDoesNotPersistOff) {
     std::filesystem::remove(pref);
 }
 
+TEST(TorRuntimeController, DisablePreferenceFailureRestoresActiveRequestedState) {
+    const std::string pref = TempPath("disable-write-fail");
+    std::filesystem::remove(pref);
+    std::filesystem::remove_all(pref + ".tmp");
+    dinero::network::TorRuntimeController controller(
+        dinero::network::TorOptInStore(pref),
+        [] { return std::make_unique<FakeOnionService>(); }, {}, {});
+    ASSERT_TRUE(controller.SetEnabled(true).active);
+    ASSERT_EQ(dinero::network::TorOptInStore(pref).Read(), true);
+    ASSERT_TRUE(std::filesystem::create_directory(pref + ".tmp"));
+
+    const auto status = controller.SetEnabled(false);
+    EXPECT_TRUE(status.requested);
+    EXPECT_TRUE(status.active);
+    EXPECT_EQ(status.onion_address, "runtimecontroltest.onion");
+    EXPECT_EQ(dinero::network::TorOptInStore(pref).Read(), true);
+
+    std::filesystem::remove_all(pref + ".tmp");
+    std::filesystem::remove(pref);
+}
+
+TEST(TorOptInStore, RejectsSymlinkAndNonRegularPreferencePaths) {
+#ifndef _WIN32
+    const std::string target = TempPath("preference-target");
+    const std::string link = TempPath("preference-link");
+    std::filesystem::remove(target);
+    std::filesystem::remove(link);
+    std::string error;
+    ASSERT_TRUE(dinero::network::TorOptInStore(target).Write(true, &error));
+    ASSERT_EQ(::symlink(target.c_str(), link.c_str()), 0);
+    EXPECT_EQ(dinero::network::TorOptInStore(link).Read(), std::nullopt);
+    std::filesystem::remove(link);
+    std::filesystem::remove(target);
+#endif
+    const std::string directory = TempPath("preference-directory");
+    std::filesystem::remove_all(directory);
+    ASSERT_TRUE(std::filesystem::create_directory(directory));
+    EXPECT_EQ(dinero::network::TorOptInStore(directory).Read(), std::nullopt);
+    std::filesystem::remove(directory);
+}
+
 TEST(TorPrivateKey, AtomicStorageIsOwnerOnlyAndRoundTrips) {
     const std::string path = TempPath("private-key");
     std::filesystem::remove(path);
