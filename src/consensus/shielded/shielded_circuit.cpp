@@ -55,6 +55,14 @@ constexpr uint8_t kOutputProofVersion = 0x02;
 constexpr uint8_t kSpendProofVersionCv = 0x03;
 constexpr uint8_t kOutputProofVersionCv = 0x04;
 
+// Spend-authority proof version byte. Distinct again, for the same reason the
+// cv bytes are distinct: the version check must reject a weaker proof presented
+// where a spend-auth proof is required, before any circuit work happens.
+//
+// DORMANT: no chainparams set `shielded_spend_auth_activation_height` below
+// UINT32_MAX, so nothing on any network produces or accepts this version yet.
+constexpr uint8_t kSpendProofVersionAuth = 0x05;
+
 // ── cv-binding helpers (Audit Critical #1) ──────────────────────────────
 //
 // cv = rcv·G + val·V, where (out of circuit, libsecp's secp256k1_pedersen_commit):
@@ -211,7 +219,7 @@ std::vector<Scalar> ZeroErrorVector(const R1CS& cs) {
 }
 
 void BindSpendTranscript(Transcript& transcript, const SpendPublicInputs& pub,
-                         bool cv_bound) {
+                         bool cv_bound, bool spend_auth = false) {
     transcript.append_scalar("nf", HashToScalar(pub.nullifier));
     transcript.append_scalar("an", HashToScalar(pub.anchor));
     if (cv_bound) {
@@ -219,6 +227,13 @@ void BindSpendTranscript(Transcript& transcript, const SpendPublicInputs& pub,
         // (Critical #1). cv is also a bound public input; this is supplementary.
         transcript.append_u64("cv0", static_cast<uint64_t>(pub.cv[0]));
         transcript.append_scalar("cvx", Scalar(pub.cv.data() + 1));
+    }
+    if (spend_auth) {
+        // Domain-separate the spend-authority variant in Fiat-Shamir. The
+        // version byte and the R1CS structure hash already distinguish it;
+        // this is defence in depth. Appended ONLY when spend_auth is set, so
+        // legacy and cv-bound transcripts stay byte-identical to today's.
+        transcript.append_u64("auth", 1);
     }
 }
 
@@ -301,8 +316,18 @@ Variable merkle_path_gadget(R1CS& cs,
 
 R1CS BuildSpendCircuit(const SpendWitness& witness,
                        const SpendPublicInputs& pub,
-                       bool cv_bound) {
+                       bool cv_bound,
+                       bool spend_auth) {
     R1CS cs;
+    // spend_auth is a strict superset of cv_bound: an auth-without-cv variant
+    // would reopen the mint-from-nothing hole cv-binding closed. Resolve the
+    // combination UPWARD (to the stronger circuit), never downward — a downgrade
+    // here would silently build a weaker circuit than the caller asked for.
+    // ProveSpend/VerifySpend reject the invalid pair outright; this is the
+    // in-circuit backstop, and ValidateChainParams pins the height ordering.
+    if (spend_auth) {
+        cv_bound = true;
+    }
 
     // Public inputs
     Variable nullifier_pub = cs.alloc_input(HashToScalar(pub.nullifier));
@@ -336,9 +361,61 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
     // a future phase — see shielded_validation.h header note.
     zk::zkvm::range_check_limb(cs, val, 64, "spend_value_range");
 
-    // 1. Derive public key: pk = Poseidon(sk, 0)
-    Variable zero_var = cs.alloc(Scalar::zero());
-    Variable pk = poseidon2_gadget(cs, sk, zero_var, "derive_pk");
+    // 1. Derive the public key bound into the note commitment.
+    Variable pk;
+    if (spend_auth) {
+        // ── Spend authority ──────────────────────────────────────────────
+        // LEGACY (below activation): pk = Poseidon(sk, 0), where the SENDER
+        // invents `sk` when building the recipient's note. The sender therefore
+        // retains the ability to spend the note they sent, forever.
+        //
+        // AUTH: pk_d = s·G, where s = Poseidon(ivk, d) is derived from the
+        // RECIPIENT's incoming viewing key (see DeriveDiversifiedSpendKey).
+        // The sender never learns s, so only the recipient can satisfy this.
+        //
+        // The circuit proves knowledge of dlog(pk_d) — it does NOT prove
+        // s == Poseidon(ivk, d). `ivk` never enters the circuit; that hash
+        // relation is wallet-side derivation, not a consensus statement. This
+        // is what keeps the cost to one fixed-base mult.
+        //
+        // SOUNDNESS: `s` is PROVER-CHOSEN, so this must use the identity-safe
+        // ec_scalar_mul_fixed, NOT ec_scalar_mul_gen — see the same reasoning
+        // recorded in EnforceCvBinding above. ec_scalar_mul_gen's guarded
+        // ec_add_unsafe accumulation is unsound when a window drives the
+        // accumulator through the identity, which a chosen `s` can arrange.
+        std::vector<Variable> s_bits =
+            gadgets::to_bits(cs, sk, 256, "auth_sbits");
+        ECPoint pk_d = zk::zkvm::ec_scalar_mul_fixed(
+            cs, s_bits, zk::zkvm::secp256k1_Gx(), zk::zkvm::secp256k1_Gy(),
+            "auth_sG");
+
+        // s == 0 yields the identity, whose (x, y) = (0, 0) would pass the
+        // even-y check below and pack to pk == 0. Reject it explicitly.
+        cs.enforce_equal(LinearCombination(pk_d.is_identity),
+                         LinearCombination(Scalar::zero(), zk::zkvm::VAR_ONE),
+                         "auth_not_identity");
+
+        // CRITICAL — even-y normalisation. pk_d is committed x-only, so
+        // constraining x alone admits BOTH s and (q - s): (q-s)·G = -(s·G) has
+        // the SAME x, hence the same commitment, Merkle path and anchor. But
+        // nf = Poseidon(s, idx) != Poseidon(q-s, idx), so one note would yield
+        // TWO valid nullifiers — a double-spend. Pinning y even matches what
+        // NormalizeScalarToEvenY already guarantees wallet-side, making the
+        // representative unique.
+        std::vector<Variable> y_lo_bits =
+            gadgets::to_bits(cs, pk_d.y.limbs[0], 64, "auth_ybits");
+        cs.enforce_equal(LinearCombination(y_lo_bits[0]),
+                         LinearCombination(Scalar::zero(), zk::zkvm::VAR_ONE),
+                         "auth_even_y");
+
+        // Bridge the base-field x-coordinate into the scalar field for
+        // Poseidon. fe_pack reduces mod n, matching the wallet's own
+        // HashToScalar(pk_d_xonly) reduction, so both sides agree.
+        pk = zk::zkvm::fe_pack(cs, pk_d.x, "auth_pkd");
+    } else {
+        Variable zero_var = cs.alloc(Scalar::zero());
+        pk = poseidon2_gadget(cs, sk, zero_var, "derive_pk");
+    }
 
     // 2. Phase 2 wave 5: address-binding tag.
     //    addr_bind = Poseidon(ADDR_TAG, Poseidon(d, pk))
@@ -380,27 +457,35 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
                                  const SpendPublicInputs& pub,
                                  secp256k1_context_struct* ctx,
                                  bool bind_public_inputs,
-                                 bool cv_bound) {
+                                 bool cv_bound,
+                                 bool spend_auth) {
     auto* sctx = ResolveCtx(ctx);
+    // spend_auth requires cv_bound (strict superset). Reject the invalid pair
+    // rather than silently resolving it, so a miswired caller fails loudly.
+    if (spend_auth && !cv_bound) {
+        return {};
+    }
     // cv-bound proving needs the Pedersen value generator V; fail closed if
     // the generator derivation hasn't succeeded.
     if (cv_bound && !PedersenGeneratorsReady()) {
         return {};
     }
-    auto cs = BuildSpendCircuit(witness, pub, cv_bound);
+    auto cs = BuildSpendCircuit(witness, pub, cv_bound, spend_auth);
     if (!cs.is_satisfied()) {
         return {};
     }
 
     Transcript transcript("dinero.shielded.spend.v1");
-    BindSpendTranscript(transcript, pub, cv_bound);
+    BindSpendTranscript(transcript, pub, cv_bound, spend_auth);
 
     const auto& gens = ShieldedGenerators(cs, sctx);
     SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
         cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx, bind_public_inputs);
 
     std::vector<uint8_t> proof_bytes;
-    proof_bytes.push_back(cv_bound ? kSpendProofVersionCv : kSpendProofVersion);
+    proof_bytes.push_back(spend_auth ? kSpendProofVersionAuth
+                                     : (cv_bound ? kSpendProofVersionCv
+                                                 : kSpendProofVersion));
     auto serialized = proof.serialize(sctx);
     proof_bytes.insert(proof_bytes.end(), serialized.begin(), serialized.end());
     return proof_bytes;
@@ -440,23 +525,30 @@ bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
                  const SpendPublicInputs& pub,
                  secp256k1_context_struct* ctx,
                  bool bind_public_inputs,
-                 bool cv_bound) {
+                 bool cv_bound,
+                 bool spend_auth) {
     auto* sctx = ResolveCtx(ctx);
+    // spend_auth requires cv_bound (strict superset). Reject the invalid pair.
+    if (spend_auth && !cv_bound) {
+        return false;
+    }
     // cv-bound verification needs V; without it the verifier circuit can't be
     // reconstructed, so reject (fail closed) — never silently fall back.
     if (cv_bound && !PedersenGeneratorsReady()) {
         return false;
     }
     SpartanProof proof;
-    const uint8_t expected_version = cv_bound ? kSpendProofVersionCv : kSpendProofVersion;
+    const uint8_t expected_version =
+        spend_auth ? kSpendProofVersionAuth
+                   : (cv_bound ? kSpendProofVersionCv : kSpendProofVersion);
     if (!DeserializeShieldedProof(proof_bytes, expected_version, proof, sctx)) {
         return false;
     }
 
     const SpendWitness dummy = DummySpendWitness();
-    const auto verifier_cs = BuildSpendCircuit(dummy, pub, cv_bound);
+    const auto verifier_cs = BuildSpendCircuit(dummy, pub, cv_bound, spend_auth);
     Transcript transcript("dinero.shielded.spend.v1");
-    BindSpendTranscript(transcript, pub, cv_bound);
+    BindSpendTranscript(transcript, pub, cv_bound, spend_auth);
 
     const auto& gens = ShieldedGenerators(verifier_cs, sctx);
     const auto circuit_hash = zk::zkvm::spartan_hash_r1cs_structure(verifier_cs);

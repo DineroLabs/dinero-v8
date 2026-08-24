@@ -91,10 +91,25 @@ struct SpendPublicInputs {
  *     as a public-input EC point and `rcv` (its blinding) as a witness, and
  *     constrains cv == val·V + rcv·G with the SAME `val` that feeds the note
  *     commitment and 64-bit range check. Closes the mint-from-nothing hole.
+ *
+ * `spend_auth` selects the spend-authority circuit (a strict superset of
+ * cv-bound — passing spend_auth without cv_bound is rejected by ProveSpend and
+ * VerifySpend, and resolved upward here):
+ *   - false: `pk = Poseidon(sk, 0)`. The SENDER invents `sk` when building the
+ *     recipient's note, so the sender retains the ability to spend it forever.
+ *   - true:  `pk_d = s·G`, where `s` is derived from the RECIPIENT's incoming
+ *     viewing key (DeriveDiversifiedSpendKey). The sender never learns `s`.
+ *     The circuit proves knowledge of dlog(pk_d); it does NOT prove
+ *     `s == Poseidon(ivk, d)` — `ivk` never enters the circuit, so the cost is
+ *     one fixed-base scalar multiplication rather than a variable-base one.
+ *
+ * DORMANT: no network sets `shielded_spend_auth_activation_height` below
+ * UINT32_MAX, so no consensus path passes `spend_auth = true` today.
  */
 zk::zkvm::R1CS BuildSpendCircuit(const SpendWitness& witness,
                                   const SpendPublicInputs& pub,
-                                  bool cv_bound = false);
+                                  bool cv_bound = false,
+                                  bool spend_auth = false);
 
 /**
  * Generate a Spartan proof for a spend.
@@ -106,7 +121,8 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
                                  const SpendPublicInputs& pub,
                                  secp256k1_context_struct* ctx,
                                  bool bind_public_inputs = true,
-                                 bool cv_bound = false);
+                                 bool cv_bound = false,
+                                 bool spend_auth = false);
 
 /**
  * Verify a spend proof against public inputs.
@@ -120,7 +136,8 @@ bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
                  const SpendPublicInputs& pub,
                  secp256k1_context_struct* ctx,
                  bool bind_public_inputs = true,
-                 bool cv_bound = false);
+                 bool cv_bound = false,
+                 bool spend_auth = false);
 
 // NOTE: audit-only transcript-desync provers (ProveSpend_AuditDesync /
 // ProveOutput_AuditDesync) used by the public-input-binding regression tests are

@@ -590,6 +590,18 @@ static void ValidateChainParams(const ChainParams& params) {
             "invalid chainparams: shielded_epoch_reset_height must equal "
             "shielded_cv_binding_activation_height");
     }
+
+    // The spend-authority circuit is a STRICT SUPERSET of the cv-bound one: it
+    // adds the pk_d = s·G ownership proof on top of every cv-bound constraint.
+    // An auth-without-cv variant would prove ownership while leaving value
+    // unbound, reopening the mint-from-nothing hole cv-binding closed. Enforce
+    // the ordering here so no chain can be configured into that combination.
+    if (params.shielded_spend_auth_activation_height <
+        params.shielded_cv_binding_activation_height) {
+        throw std::runtime_error(
+            "invalid chainparams: shielded_spend_auth_activation_height must be "
+            ">= shielded_cv_binding_activation_height");
+    }
 }
 
 void SelectParams(Chain chain) {
