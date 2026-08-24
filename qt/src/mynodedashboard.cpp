@@ -16,6 +16,7 @@
 
 #include <QScrollArea>
 #include <QJsonObject>
+#include <QSettings>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -53,7 +54,14 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
     advancedToggle_->setToolTip(tr(
         "Show technical node, peer, relay, and discovery diagnostics."));
     advancedToggle_->setCheckable(true);
-    advancedToggle_->setChecked(false);
+    // Keep the operator dashboard discoverable.  A previous collapsed-by-
+    // default version combined with a stretch in IdentitySection could push
+    // this control below the viewport, making every diagnostic appear lost.
+    // Existing users get the complete dashboard; their explicit choice is
+    // remembered after the first toggle.
+    const bool advanced_visible =
+        QSettings().value(QStringLiteral("dashboard/advanced_visible"), true).toBool();
+    advancedToggle_->setChecked(advanced_visible);
     advancedToggle_->setArrowType(Qt::RightArrow);
     advancedToggle_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     layout->addWidget(advancedToggle_);
@@ -68,7 +76,11 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
     advancedLayout->addWidget(contributionSection_);
     advancedLayout->addWidget(discoverySection_);
     advancedLayout->addWidget(topologySection_);
-    advancedContainer_->setVisible(false);
+    advancedContainer_->setVisible(advanced_visible);
+    identitySection_->setAdvancedVisible(advanced_visible);
+    advancedToggle_->setArrowType(advanced_visible ? Qt::DownArrow : Qt::RightArrow);
+    advancedToggle_->setText(advanced_visible ? tr("Hide advanced details")
+                                               : tr("Advanced details"));
     layout->addWidget(advancedContainer_);
     connect(advancedToggle_, &QToolButton::toggled, this, [this](bool expanded) {
         advancedToggle_->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
@@ -76,6 +88,7 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
                                           : tr("Advanced details"));
         advancedContainer_->setVisible(expanded);
         identitySection_->setAdvancedVisible(expanded);
+        QSettings().setValue(QStringLiteral("dashboard/advanced_visible"), expanded);
     });
 
     scroll->setWidget(content);

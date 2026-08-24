@@ -59,8 +59,6 @@ IdentitySection::IdentitySection(QWidget* parent) : QWidget(parent) {
     details->addWidget(footerLabel_);
     root->addWidget(advancedDetails_);
     advancedDetails_->setVisible(false);
-    root->addStretch(1);
-
     onIdentityUpdated({});  // initial placeholder state
     onDynamicP2POverviewUpdated({});  // initial placeholder DPP state
 }
