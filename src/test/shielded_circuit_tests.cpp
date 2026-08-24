@@ -544,6 +544,47 @@ TEST(ShieldedSpendAuthTest, LegacySenderKeyCannotSpendAuthNote) {
     EXPECT_TRUE(proof.empty());
 }
 
+// s == 0 maps to the identity, whose (x, y) = (0, 0) packs to pk == 0 and would
+// pass an even-y check. A note committed to pk == 0 is not something an honest
+// wallet can produce (0 is not a valid x-only key), but it IS constructible
+// here, so pin the property directly rather than trusting the gadget's
+// is_identity flag to be set. Asserts the SECURITY property, not the mechanism.
+TEST(ShieldedSpendAuthTest, ZeroScalarCannotSpendZeroKeyNote) {
+    const Hash zero{};
+    const Hash value = ValueAsHash(123'456'789);
+    const Hash randomness = MakeHash(0xD1, 0x55);
+    const Hash d = MakeHash(0xB0, 0x0B);
+
+    CommitmentTree tree;
+    tree.Append(MakeHash(0x10));
+    tree.Append(MakeHash(0x11));
+    // A note whose committed key is literally zero — what s = 0 would derive.
+    const Hash cm = NoteCommitment(d, zero, value, randomness);
+    const uint64_t idx = tree.Append(cm);
+    const auto path = tree.GetAuthPath(idx);
+    ASSERT_TRUE(path.has_value());
+
+    SpendWitness w{};
+    w.secret_key  = zero;
+    w.leaf_index  = idx;
+    w.value       = value;
+    w.randomness  = randomness;
+    w.d           = d;
+    w.rcv         = MakeHash(0x09, 0x11);
+    w.merkle_path = path->siblings;
+
+    SpendPublicInputs pub{};
+    pub.nullifier = ComputeNullifier(zero, idx);
+    pub.anchor    = tree.Root();
+    ASSERT_EQ(PedersenCommit(w.rcv, 123'456'789ULL, pub.cv), PedersenResult::Ok);
+
+    auto proof = ProveSpend(w, pub, nullptr, true, true, /*spend_auth=*/true);
+    EXPECT_TRUE(proof.empty()) << "s = 0 produced a spendable proof";
+    if (!proof.empty()) {
+        EXPECT_FALSE(VerifySpend(proof, pub, nullptr, true, true, true));
+    }
+}
+
 // Version bytes must keep the variants from being presented for one another.
 TEST(ShieldedSpendAuthTest, AuthProofRejectedUnderCvOnlyRuleAndViceVersa) {
     AuthFixture fx;
