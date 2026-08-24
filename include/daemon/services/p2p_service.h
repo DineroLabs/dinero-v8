@@ -326,6 +326,9 @@ private:
     std::vector<std::pair<std::string, uint16_t>> reconnect_targets_;
     bool offline_mode_{false};
     std::string onion_proxy_;
+    // Preserve the operator's configured endpoint while automatic mode
+    // temporarily points P2PManager at the embedded Tor child.
+    std::string external_onion_proxy_;
     bool onion_proxy_configured_{false};
     bool onion_proxy_auto_detected_{false};
     bool onion_proxy_reachable_{false};

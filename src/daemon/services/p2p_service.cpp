@@ -562,6 +562,43 @@ network::TorRuntimeStatus P2PService::SetOnionServiceMode(const std::string& req
     if (mode == "external") {
         if (embedded_tor_) embedded_tor_->Stop();
         tor_onion_config_ = external_tor_onion_config_;
+        onion_proxy_reachable_ = false;
+        onion_proxy_auto_detected_ = false;
+        onion_proxy_ = external_onion_proxy_;
+        if (p2p_mgr_) {
+            std::string proxy_host;
+            uint16_t proxy_port = 0;
+            if (IsOnionAutoValue(onion_proxy_)) {
+                for (const uint16_t candidate_port : {uint16_t{9050}, uint16_t{9150}}) {
+                    p2p_mgr_->set_onion_proxy("127.0.0.1", candidate_port, false);
+                    std::string probe_message;
+                    if (p2p_mgr_->probe_onion_proxy(&probe_message)) {
+                        onion_proxy_ = "127.0.0.1:" + std::to_string(candidate_port);
+                        onion_proxy_auto_detected_ = true;
+                        onion_proxy_reachable_ = true;
+                        onion_proxy_message_ = "auto-detected " + probe_message;
+                        break;
+                    }
+                    onion_proxy_message_ = probe_message;
+                }
+                if (!onion_proxy_reachable_) {
+                    p2p_mgr_->set_onion_proxy("", 0, false);
+                    onion_proxy_message_ =
+                        "external Tor was not found on localhost ports 9050 or 9150";
+                }
+            } else if (ParseEndpoint(onion_proxy_, 9050, &proxy_host, &proxy_port)) {
+                p2p_mgr_->set_onion_proxy(proxy_host, proxy_port,
+                                          false);
+                std::string probe_message;
+                onion_proxy_reachable_ = p2p_mgr_->probe_onion_proxy(&probe_message);
+                onion_proxy_message_ = probe_message;
+            } else {
+                p2p_mgr_->set_onion_proxy("", 0, false);
+                onion_proxy_message_ = onion_proxy_.empty()
+                    ? "external Tor endpoint is not configured"
+                    : "invalid onion proxy endpoint: " + onion_proxy_;
+            }
+        }
     }
     tor_mode_ = mode;
     return SetOnionServiceEnabled(true);
@@ -1512,6 +1549,7 @@ bool P2PService::Init(DaemonContext& ctx) {
     listen_port_ = static_cast<uint16_t>(config_->P2PPort());
     external_ip_ = config_->GetString("externalip", "");
     onion_proxy_ = config_->GetString("p2p.onion", "");
+    external_onion_proxy_ = onion_proxy_;
     onion_proxy_configured_ = !onion_proxy_.empty();
     onion_proxy_auto_detected_ = false;
     onion_proxy_reachable_ = false;
