@@ -18,8 +18,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=helpers/daemon_process_cleanup.sh
 source "${ROOT_DIR}/tests/integration/helpers/daemon_process_cleanup.sh"
-DINEROD="${ROOT_DIR}/build/dinerod"
-
+# Resolve dinerod: honour $DINEROD when set (and require it to be
+# executable), else fall back to the in-tree build for manual runs.
+# Without this the assignment below CLOBBERED $DINEROD, so an arbitrary
+# build directory could not be used and ctest failed with a path the
+# caller never chose.
+if [[ -n "${DINEROD:-}" ]]; then
+    [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
+else
+    DINEROD="${ROOT_DIR}/build/dinerod"
+fi
 DATA_DIR="$(mktemp -d /tmp/dinero_delta_replay_restart.XXXXXX)"
 LOG_A="${DATA_DIR}/node_initial.log"
 LOG_B="${DATA_DIR}/node_restart.log"

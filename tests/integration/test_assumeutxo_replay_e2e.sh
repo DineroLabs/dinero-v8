@@ -56,7 +56,16 @@
 #
 set -euo pipefail
 
-DINEROD="${DINEROD:?set DINEROD to the dinerod binary path}"
+# Resolve dinerod: honour $DINEROD when set (and require it to be
+# executable), else fall back to the in-tree build for manual runs.
+# Without this the assignment below CLOBBERED $DINEROD, so an arbitrary
+# build directory could not be used and ctest failed with a path the
+# caller never chose.
+if [[ -n "${DINEROD:-}" ]]; then
+    [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
+else
+    DINEROD="${DINEROD:?set DINEROD to the dinerod binary path}"
+fi
 BASE_PORT="${BASE_PORT:-36500}"
 RUN_SCENARIOS="${RUN_SCENARIOS:-AD B C F}"
 

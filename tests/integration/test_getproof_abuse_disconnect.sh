@@ -18,7 +18,12 @@ FLOOD_COUNT=${FLOOD_COUNT:-48}
 DISCONNECT_TIMEOUT=${DISCONNECT_TIMEOUT:-12}
 KEEP_TMP_ON_FAIL=${KEEP_TMP_ON_FAIL:-1}
 
-if [[ -x "${PROJECT_ROOT}/build/dinerod" ]]; then
+# Honour $DINEROD first (and require it to be executable); the chain
+# below never consulted it, so it CLOBBERED the caller's choice and an
+# arbitrary build directory could not be used.
+if [[ -n "${DINEROD:-}" ]]; then
+    [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
+elif [[ -x "${PROJECT_ROOT}/build/dinerod" ]]; then
     DINEROD="${PROJECT_ROOT}/build/dinerod"
 elif [[ -x "${PROJECT_ROOT}/dinerod" ]]; then
     DINEROD="${PROJECT_ROOT}/dinerod"

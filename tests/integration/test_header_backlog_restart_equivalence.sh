@@ -3,7 +3,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="${DINERO_BUILD_DIR:-${ROOT_DIR}/build}"
-DINEROD="${BUILD_DIR}/dinerod"
+# Resolve dinerod: honour $DINEROD when set (and require it to be
+# executable), else fall back to the in-tree build for manual runs.
+# Without this the assignment below CLOBBERED $DINEROD, so an arbitrary
+# build directory could not be used and ctest failed with a path the
+# caller never chose.
+if [[ -n "${DINEROD:-}" ]]; then
+    [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
+else
+    DINEROD="${BUILD_DIR}/dinerod"
+fi
 BACKLOG_INJECTOR="${BUILD_DIR}/tests/integration/header_store_backlog_injector"
 if [[ ! -x "${BACKLOG_INJECTOR}" ]]; then
     BACKLOG_INJECTOR="${BUILD_DIR}/header_store_backlog_injector"

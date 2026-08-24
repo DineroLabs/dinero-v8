@@ -31,7 +31,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DINEROD="${ROOT_DIR}/build/dinerod"
+# Resolve dinerod: honour $DINEROD when set (and require it to be
+# executable), else fall back to the in-tree build for manual runs.
+# Without this the assignment below CLOBBERED $DINEROD, so an arbitrary
+# build directory could not be used and ctest failed with a path the
+# caller never chose.
+if [[ -n "${DINEROD:-}" ]]; then
+    [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
+else
+    DINEROD="${ROOT_DIR}/build/dinerod"
+fi
 DATA_DIR="/tmp/dinero_rebuild_crash_$$"
 LOG_LIVE="${DATA_DIR}.live.log"
 LOG_CRASH1="${DATA_DIR}.crash1.log"
