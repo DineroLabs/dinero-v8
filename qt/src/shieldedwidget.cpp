@@ -41,6 +41,11 @@ void appendLog(QTextEdit* log, const QString& line) {
 ShieldedWidget::ShieldedWidget(RpcClient* rpc, QWidget* parent)
     : QWidget(parent), rpc_(rpc) {
     setupUI();
+    // Apply the lockout immediately. setActiveBanner is otherwise only reached
+    // after a wallet.shieldedbalance reply, which would leave the action
+    // buttons live during startup — and permanently so if the daemon never
+    // answers.
+    setActiveBanner(false);
     loadAddressBook();
     if (rpc_) {
         connect(rpc_, &RpcClient::rpcResult, this, &ShieldedWidget::onRpcResult);
@@ -272,7 +277,23 @@ void ShieldedWidget::setupUI() {
     root->addStretch();
 }
 
+// Lockout constant lives in shieldedwidget.h — shared with mainwindow.cpp.
 void ShieldedWidget::setActiveBanner(bool active, const QString& reason) {
+    if (kShieldedUiLockedOut) {
+        shieldedActive_ = false;
+        statusBanner_->setText(
+            "🔒 Shielded transfers are temporarily unavailable  —  "
+            "this feature is being finished and is held closed until its "
+            "activation height is set. Receive addresses still derive locally; "
+            "shield, unshield and private send are disabled.");
+        statusBanner_->setStyleSheet(
+            "QLabel { padding: 8px 12px; border-radius: 6px; background: #3a3f4a; "
+            "color: #d5d9e0; font-weight: 600; }");
+        if (shieldBtn_)   shieldBtn_->setEnabled(false);
+        if (transferBtn_) transferBtn_->setEnabled(false);
+        if (unshieldBtn_) unshieldBtn_->setEnabled(false);
+        return;
+    }
     shieldedActive_ = active;
     if (active) {
         statusBanner_->setText("✅ Shielded pool ACTIVE on this network");
@@ -536,6 +557,10 @@ void ShieldedWidget::onCopyAddressClicked() {
 }
 
 void ShieldedWidget::onShieldClicked() {
+    // Defence in depth for the lockout above. Disabling the buttons is what a
+    // user hits; this is what a future refactor hits if it wires another
+    // trigger to this slot.
+    if (kShieldedUiLockedOut) return;
     if (!rpc_ || !shieldedActive_) return;
     bool ok = false;
     double amount = shieldAmountEdit_->text().toDouble(&ok);
@@ -550,6 +575,10 @@ void ShieldedWidget::onShieldClicked() {
 }
 
 void ShieldedWidget::onTransferClicked() {
+    // Defence in depth for the lockout above. Disabling the buttons is what a
+    // user hits; this is what a future refactor hits if it wires another
+    // trigger to this slot.
+    if (kShieldedUiLockedOut) return;
     if (!rpc_ || !shieldedActive_) return;
     const QString addr = transferAddressEdit_->text().trimmed();
     if (addr.isEmpty()) {
@@ -576,6 +605,10 @@ void ShieldedWidget::onTransferClicked() {
 }
 
 void ShieldedWidget::onUnshieldClicked() {
+    // Defence in depth for the lockout above. Disabling the buttons is what a
+    // user hits; this is what a future refactor hits if it wires another
+    // trigger to this slot.
+    if (kShieldedUiLockedOut) return;
     if (!rpc_ || !shieldedActive_) return;
     bool ok = false;
     double amount = unshieldAmountEdit_->text().toDouble(&ok);
