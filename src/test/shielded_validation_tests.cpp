@@ -25,6 +25,7 @@
 #include "consensus/shielded/shielded_validation.h"
 #include "primitives/transaction.h"
 #include "wallet/shielded_derivation.h"
+#include "external/bech32/bech32.hpp"
 #include "wallet/shielded_wallet_ops.h"
 
 #include <algorithm>
@@ -1371,64 +1372,110 @@ TEST_F(ShieldedValidationFixture, AddressedRecipientOutputMatchesConventionBytes
     EXPECT_EQ(out2.planned.encrypted_note, out.planned.encrypted_note);
 }
 
-// ── Spend authority: the address format blocks it, and that must not be
-//    discovered by burning funds ─────────────────────────────────────────
+// ── Spend authority: who can spend the note the sender just built ────────
 //
-// The merged spend-auth circuit proves pk_d = s·G with s = Poseidon(ivk, d)
-// (hash-to-SCALAR). DeriveDiversifiedAddress still publishes pk_d = ivk·P_d
-// with P_d = HashToPoint(d) (hash-to-POINT). Different points.
-//
-// Committing a note to the address's pk_d under the auth rule would demand
-// dlog_G(ivk·P_d) from the spender, which nobody can produce — the note would
-// be unspendable by everyone. This test pins BOTH halves: that the two
-// derivations genuinely disagree, and that the builder refuses rather than
-// producing such a note.
-TEST_F(ShieldedValidationFixture, SpendAuthRefusedWhileAddressFormatIncompatible) {
+// Under the legacy rule the sender derives the note's spend key from an `rcm`
+// THEY chose, so the sender can spend the note they sent. Under auth the note
+// commits to pk_d_spend = s·G from the recipient's address, and spending needs
+// `s` = Poseidon(ivk, d), which only the recipient can derive.
+TEST_F(ShieldedValidationFixture, SpendAuthCommitsToRecipientSpendKey) {
     constexpr uint64_t kValue = 42'000'000;
 
     auto seed = RoundtripSeed();
     auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
     auto addr = shdrv::DeriveDiversifiedAddress(keys, /*j=*/0, shdrv::kHrpRegtest);
 
-    // The incompatibility itself. If these ever become equal, the address
-    // format has been migrated to s·G and the refusal below can be lifted.
+    // The two address keys are DISTINCT and not interchangeable: pk_d encrypts,
+    // pk_d_spend authorises. Committing to the wrong one is unspendable value.
+    ASSERT_NE(addr.pk_d, addr.pk_d_spend);
+    // pk_d_spend really is the s·G the spend circuit will prove.
     const auto dk = shdrv::DeriveDiversifiedSpendKey(keys.ivk, addr.d);
-    EXPECT_NE(dk.pk_d, addr.pk_d)
-        << "address pk_d now matches s·G — migrate the send path and drop the "
-           "spend_auth refusal in BuildAddressedRecipientOutput";
+    EXPECT_EQ(dk.pk_d, addr.pk_d_spend);
 
     sops::AddressedRecipient recipient;
-    recipient.d         = addr.d;
-    recipient.pk_d      = addr.pk_d;
-    recipient.value_una = kValue;
+    recipient.d          = addr.d;
+    recipient.pk_d       = addr.pk_d;
+    recipient.pk_d_spend = addr.pk_d_spend;
+    recipient.value_una  = kValue;
 
     Hash rcm{};
     rcm[0] = 0xC0; rcm[31] = 0xDE;
     Hash esk{};
     esk[0] = 0xE5; esk[31] = 0xC0;
 
-    // Legacy still builds (that is today's behaviour, bug and all).
-    auto legacy = sops::BuildAddressedRecipientOutput(
-        recipient, nullptr, /*cv_bound=*/false, /*spend_auth=*/false, &rcm, &esk);
-    ASSERT_EQ(legacy.status, sops::OpStatus::Ok) << legacy.error;
-
     Hash d_packed{};
     std::memcpy(d_packed.data(), addr.d.data(), addr.d.size());
     const Hash sender_known_pk =
         PoseidonHash2(shdrv::DeriveNoteSpendKey(rcm), Hash{});
-    // Pin the legacy convention: the note commits to a key the SENDER derived
-    // from an rcm the sender chose. This is the sender-retained-authority bug,
-    // recorded so the eventual fix is demonstrably a change.
+
+    auto legacy = sops::BuildAddressedRecipientOutput(
+        recipient, nullptr, /*cv_bound=*/false, /*spend_auth=*/false, &rcm, &esk);
+    ASSERT_EQ(legacy.status, sops::OpStatus::Ok) << legacy.error;
+    auto auth = sops::BuildAddressedRecipientOutput(
+        recipient, nullptr, /*cv_bound=*/false, /*spend_auth=*/true, &rcm, &esk);
+    ASSERT_EQ(auth.status, sops::OpStatus::Ok) << auth.error;
+
+    // Legacy commits to a key the SENDER derived — the bug, pinned so the two
+    // rules are demonstrably different rather than assumed to be.
     EXPECT_EQ(legacy.commitment,
               NoteCommitment(d_packed, sender_known_pk, ValueAsHash(kValue), rcm));
 
-    // Auth must REFUSE, not build an unspendable note.
-    auto auth = sops::BuildAddressedRecipientOutput(
-        recipient, nullptr, /*cv_bound=*/false, /*spend_auth=*/true, &rcm, &esk);
-    EXPECT_NE(auth.status, sops::OpStatus::Ok)
-        << "auth built a note committed to an incompatible pk_d — those funds "
-           "would be unspendable by everyone";
-    EXPECT_EQ(auth.error, "spend_auth_requires_scalar_diversified_address_format");
+    // Auth commits to the recipient's SPEND key.
+    EXPECT_EQ(auth.commitment,
+              NoteCommitment(d_packed, addr.pk_d_spend, ValueAsHash(kValue), rcm));
+    EXPECT_NE(auth.commitment, legacy.commitment)
+        << "auth output still commits to a sender-derived key";
+
+    // ★ The fund-burning mistake, pinned: committing to the DISCOVERY key would
+    // demand dlog_G(ivk·P_d), which nobody knows. Auth must not produce it.
+    EXPECT_NE(auth.commitment,
+              NoteCommitment(d_packed, addr.pk_d, ValueAsHash(kValue), rcm))
+        << "auth committed to the discovery key — unspendable by everyone";
+
+    // Discovery is untouched: same encrypted note under both rules, so the
+    // recipient still finds it with one trial decryption per account.
+    EXPECT_EQ(auth.planned.encrypted_note, legacy.planned.encrypted_note);
+}
+
+// An address without a spend key cannot receive an auth note. Fail closed
+// rather than commit to zero.
+TEST_F(ShieldedValidationFixture, SpendAuthRefusesMissingSpendKey) {
+    auto seed = RoundtripSeed();
+    auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
+    auto addr = shdrv::DeriveDiversifiedAddress(keys, /*j=*/0, shdrv::kHrpRegtest);
+
+    sops::AddressedRecipient recipient;
+    recipient.d         = addr.d;
+    recipient.pk_d      = addr.pk_d;
+    recipient.value_una = 1'000'000;
+    // pk_d_spend deliberately left zero (e.g. decoded from a legacy address).
+
+    auto out = sops::BuildAddressedRecipientOutput(
+        recipient, nullptr, /*cv_bound=*/false, /*spend_auth=*/true);
+    EXPECT_NE(out.status, sops::OpStatus::Ok);
+    EXPECT_EQ(out.error, "spend_auth_requires_pk_d_spend");
+}
+
+// Round-trip the new 75-byte payload, and confirm a legacy 43-byte address is
+// REJECTED rather than half-parsed into a zero spend key.
+TEST_F(ShieldedValidationFixture, AddressRoundTripsBothKeysAndRejectsLegacy) {
+    auto seed = RoundtripSeed();
+    auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
+    auto addr = shdrv::DeriveDiversifiedAddress(keys, /*j=*/7, shdrv::kHrpRegtest);
+    ASSERT_EQ(addr.payload.size(), 75u);
+
+    auto decoded = shdrv::DecodeShieldedAddress(addr.address);
+    EXPECT_EQ(decoded.d, addr.d);
+    EXPECT_EQ(decoded.pk_d, addr.pk_d);
+    EXPECT_EQ(decoded.pk_d_spend, addr.pk_d_spend);
+
+    // A legacy 43-byte payload must not decode.
+    std::vector<uint8_t> legacy(addr.payload.begin(), addr.payload.begin() + 43);
+    std::vector<uint8_t> data5;
+    ASSERT_TRUE(bech32::convertbits(data5, legacy, 8, 5, /*pad=*/true));
+    const std::string legacy_addr =
+        bech32::EncodeRaw(shdrv::kHrpRegtest, data5, bech32::Encoding::BECH32M);
+    EXPECT_THROW(shdrv::DecodeShieldedAddress(legacy_addr), std::runtime_error);
 }
 
 }  // namespace

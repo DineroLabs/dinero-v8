@@ -452,7 +452,11 @@ std::optional<std::vector<ShieldedNote>> SelectTransferNotesForValue(
 /// re-derive the spend secret from the encrypted-note plaintext.
 struct AddressedRecipient {
     std::array<uint8_t, 11>     d{};
+    /// ivk·P_d — used to ENCRYPT the note so the recipient can find it.
     consensus::shielded::Hash   pk_d{};
+    /// s·G — what the note COMMITS to under spend_auth, i.e. who can spend it.
+    /// Required when spend_auth is set; the legacy path ignores it.
+    consensus::shielded::Hash   pk_d_spend{};
     uint64_t                    value_una = 0;
 };
 

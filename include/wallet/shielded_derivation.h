@@ -103,8 +103,29 @@ Hash ShieldedPRF(const Hash& key, const char* dst);
 /// 11-byte raw diversifier (§5.1).
 using Diversifier = std::array<uint8_t, 11>;
 
-/// 43-byte address payload: d (11) || pk_d (32) (§5.4).
-using AddressPayload = std::array<uint8_t, 43>;
+/// 75-byte address payload: d (11) || pk_d_enc (32) || pk_d_spend (32).
+///
+/// SPEND-AUTHORITY FORMAT CHANGE (was 43 bytes: d || pk_d). The address now
+/// carries TWO diversified keys because one key cannot serve both jobs:
+///
+///   pk_d_enc   = ivk · P_d,  P_d = HashToPoint(d)   — NOTE DISCOVERY
+///     Unchanged. The receiver recovers the ECDH secret as `ivk · epk`, using
+///     ivk ALONE, so one trial decryption per account detects a note sent to
+///     ANY diversifier — including diversifiers the wallet has never generated,
+///     which is what makes recovery from seed alone possible.
+///
+///   pk_d_spend = s · G,      s = Poseidon(ivk, d)   — SPEND AUTHORITY
+///     What the note commits to. Spending requires `s`, derivable only from the
+///     receiver's ivk, so the sender cannot spend the note they sent.
+///
+/// `s` cannot drive discovery: the shared secret would require `s`, `s`
+/// requires `d`, and `d` is inside the ciphertext. Deriving it per-diversifier
+/// instead would make scanning O(addresses) per output AND break seed-only
+/// recovery, since a note to an ungenerated diversifier would be undetectable.
+/// Publishing both keys is what preserves cheap discovery. Neither reveals ivk,
+/// and different diversifiers still yield unrelated pairs, so address
+/// unlinkability is unchanged.
+using AddressPayload = std::array<uint8_t, 75>;
 
 /// Domain-separation tag for hash-to-point in §5.2.
 constexpr const char* kDstDiv = "DIN/v7/shielded/div";
@@ -132,8 +153,10 @@ Hash HashToPoint(const Diversifier& d, const char* dst);
 /// the 32-byte even-y x-coordinate of `P_d`. Output is 32-byte even-y.
 Hash DerivePkD(const Hash& ivk, const Hash& p_d_xonly);
 
-/// Build the 43-byte address payload `d || pk_d`.
-AddressPayload BuildAddressPayload(const Diversifier& d, const Hash& pk_d);
+/// Build the 75-byte address payload `d || pk_d_enc || pk_d_spend`.
+AddressPayload BuildAddressPayload(const Diversifier& d,
+                                   const Hash& pk_d_enc,
+                                   const Hash& pk_d_spend);
 
 // ── Scalar-diversified spend keys (spend-authority fix) ──────────────
 //
@@ -203,7 +226,10 @@ std::string EncodeShieldedAddress(const AddressPayload& payload,
 /// One diversified address.
 struct DiversifiedAddress {
     Diversifier d{};
+    /// ivk·P_d — note discovery (ECDH). Historically just "pk_d".
     Hash        pk_d{};
+    /// s·G — spend authority; what the note commits to.
+    Hash        pk_d_spend{};
     AddressPayload payload{};
     std::string address;  // bech32m string for the chosen HRP
 };
@@ -221,14 +247,19 @@ DiversifiedAddress DeriveDiversifiedAddress(const ShieldedAccountKeys& keys,
 struct DecodedShieldedAddress {
     std::string    hrp;
     Diversifier    d{};
+    /// ivk·P_d — note discovery (ECDH).
     Hash           pk_d{};
+    /// s·G — spend authority; what the note commits to.
+    Hash           pk_d_spend{};
     AddressPayload payload{};
 };
 
 /// Decode a `dins` / `tdins` / `rdins` bech32m string back to its
-/// `(d, pk_d)` components. Validates: bech32m checksum (rejects
-/// bech32 v1), 43-byte payload length, and `pk_d` x-coordinate is on
-/// the secp256k1 curve. Throws `std::runtime_error` on any failure.
+/// `(d, pk_d_enc, pk_d_spend)` components. Validates: bech32m checksum
+/// (rejects bech32 v1), 75-byte payload length, and that BOTH key
+/// x-coordinates are on the secp256k1 curve. Throws `std::runtime_error` on
+/// any failure — including a legacy 43-byte payload, which is rejected rather
+/// than half-parsed.
 DecodedShieldedAddress DecodeShieldedAddress(const std::string& addr);
 
 /// Spec §6.1 plaintext note: 11 + 8 + 32 + 512 = 563 bytes.

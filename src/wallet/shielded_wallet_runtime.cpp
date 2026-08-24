@@ -787,6 +787,7 @@ AttachShieldResult AttachAddressedShieldOutputBundle(
     AddressedRecipient recipient;
     recipient.d         = decoded.d;
     recipient.pk_d      = decoded.pk_d;
+    recipient.pk_d_spend = decoded.pk_d_spend;
     recipient.value_una = value_una;
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
@@ -1174,6 +1175,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     AddressedRecipient recipient;
     recipient.d         = recipient_decoded.d;
     recipient.pk_d      = recipient_decoded.pk_d;
+    recipient.pk_d_spend = recipient_decoded.pk_d_spend;
     recipient.value_una = recipient_value_una;
 
     std::array<uint8_t, 512> memo_buf{};

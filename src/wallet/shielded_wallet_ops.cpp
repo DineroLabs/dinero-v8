@@ -913,26 +913,21 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     sh::Hash recipient_rcm = rcm_override ? *rcm_override : RandomHash();
     sh::Hash recipient_pk;
     if (spend_auth) {
-        // ⛔ BLOCKED — the address format is incompatible, and committing here
-        // would BURN THE FUNDS.
+        // Commit to the recipient's SPEND key, s·G, taken from their address.
+        // Spending requires `s` = Poseidon(ivk, d), which only the recipient
+        // can derive, so the sender cannot spend the note they just sent.
         //
-        // DeriveDiversifiedAddress (shielded_derivation.cpp) publishes
-        //     pk_d = ivk·P_d,  P_d = HashToPoint(d)      [hash-to-POINT]
-        // while the merged spend-authority circuit proves
-        //     pk_d = s·G,      s = Poseidon(ivk, d)      [hash-to-SCALAR]
-        //
-        // These are different points. Committing a note to the address's pk_d
-        // would require a spender to know dlog_G(ivk·P_d) — and NOBODY knows
-        // that: dlog_G(P_d) is unknown by hash-to-point construction. The note
-        // would be unspendable by the recipient, the sender, and everyone else.
-        //
-        // Closing spend authority therefore REQUIRES changing the published
-        // address derivation to s·G, which changes every dins1 address and
-        // breaks DineroDPI compatibility. That is an owner decision, not one to
-        // make implicitly here, so this path fails closed until it is taken.
-        out.status = OpStatus::InvalidParams;
-        out.error = "spend_auth_requires_scalar_diversified_address_format";
-        return out;
+        // NOT recipient.pk_d — that is ivk·P_d, the DISCOVERY key. Committing
+        // to it would demand dlog_G(ivk·P_d) from the spender, which nobody
+        // knows (dlog_G(P_d) is unknown by hash-to-point construction), making
+        // the note unspendable by everyone. The two keys are 32 bytes apart in
+        // the address payload and are NOT interchangeable.
+        if (recipient.pk_d_spend == sh::Hash{}) {
+            out.status = OpStatus::InvalidParams;
+            out.error = "spend_auth_requires_pk_d_spend";
+            return out;
+        }
+        recipient_pk = recipient.pk_d_spend;
     } else {
         sh::Hash recipient_sk = shdrv::DeriveNoteSpendKey(recipient_rcm);
         recipient_pk = sh::PoseidonHash2(recipient_sk, zero);
