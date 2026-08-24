@@ -95,6 +95,8 @@ struct NodeIdentity {
     quint16 local_port{0};
     enum Reachability { UNKNOWN, DIRECT, BEHIND_RELAY, UNREACHABLE };
     Reachability reachability{UNKNOWN};
+    int     outbound_connections{0};
+    bool    relay_fallback_eligible{false};
     bool    is_relay_active{false};
     int     registrants_count{0};
     int     grace_count{0};

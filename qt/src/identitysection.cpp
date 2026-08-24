@@ -9,6 +9,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QStringList>
 #include <QVBoxLayout>
 
 namespace dinero::qt::dashboard {
@@ -68,11 +69,27 @@ void IdentitySection::setAdvancedVisible(bool visible) {
 }
 
 void IdentitySection::onIdentityUpdated(const NodeIdentity& id) {
+    currentIdentity_ = id;
     nodeIdLabel_->setText(formatNodeIdHex(id.node_id_hex));
-    reachabilityLabel_->setText(reachabilityLine(id));
-    relayingLabel_->setText(relayingLine(id));
+    refreshConnectivityLabels();
     miningLabel_->setText(miningLine(id));
     footerLabel_->setText(footerLine(id));
+}
+
+void IdentitySection::onOnionServiceUpdated(const OnionServiceStatus& status) {
+    torActive_ = status.active;
+    refreshConnectivityLabels();
+}
+
+void IdentitySection::onRelayServiceStatusUpdated(bool enabled) {
+    relayServiceReady_ = enabled;
+    refreshConnectivityLabels();
+}
+
+void IdentitySection::refreshConnectivityLabels() {
+    reachabilityLabel_->setText(connectivitySummaryLine(
+        currentIdentity_, torActive_));
+    relayingLabel_->setText(relayingLine(currentIdentity_, relayServiceReady_));
 }
 
 void IdentitySection::onDynamicP2POverviewUpdated(const DynamicP2POverview& overview) {
@@ -124,14 +141,36 @@ QString IdentitySection::reachabilityLine(const NodeIdentity& id) {
     }
 }
 
-QString IdentitySection::relayingLine(const NodeIdentity& id) {
-    if (!id.is_relay_active) {
-        return "⤴  RELAYING · OFF";
+QString IdentitySection::connectivitySummaryLine(const NodeIdentity& id,
+                                                 bool torActive) {
+    QStringList paths;
+    if (id.reachability == NodeIdentity::DIRECT) {
+        paths << tr("Direct active");
+    } else if (id.outbound_connections > 0) {
+        paths << tr("Direct outbound active");
+    } else {
+        paths << tr("Direct connection unavailable");
     }
-    return QString("⤴  RELAYING for %1 peer%2 · %3 in grace")
+
+    if (id.relay_fallback_eligible || id.is_relay_active) {
+        paths << tr("Relay fallback ready");
+    }
+    if (torActive) paths << tr("Tor active");
+    return QStringLiteral("● %1").arg(paths.join(QStringLiteral(" · ")));
+}
+
+QString IdentitySection::relayingLine(const NodeIdentity& id,
+                                      bool relayServiceReady) {
+    if (id.registrants_count > 0 || id.is_relay_active) {
+        return QString("⤴  RELAY SERVICE · ACTIVE · %1 active circuit%2 · %3 in grace")
         .arg(id.registrants_count)
         .arg(id.registrants_count == 1 ? "" : "s")
         .arg(id.grace_count);
+    }
+    if (relayServiceReady) {
+        return QStringLiteral("⤴  RELAY SERVICE · READY · 0 active circuits");
+    }
+    return QStringLiteral("⤴  RELAY SERVICE · OFF");
 }
 
 QString IdentitySection::miningLine(const NodeIdentity& id) {

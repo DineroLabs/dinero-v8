@@ -53,7 +53,7 @@ private Q_SLOTS:
         QVERIFY(found);
     }
 
-    void reachability_direct_includes_addr_and_port() {
+    void unified_summary_reports_direct_reachability() {
         IdentitySection s;
         NodeIdentity id;
         id.reachability = NodeIdentity::DIRECT;
@@ -61,18 +61,13 @@ private Q_SLOTS:
         id.local_port   = 20999;
         s.onIdentityUpdated(id);
 
-        const auto labels = s.findChildren<QLabel*>();
-        bool found = false;
-        for (auto* l : labels) {
-            if (l->text().contains("Connected directly")) {
-                QVERIFY(l->text().contains("162.200.227.214:20999"));
-                found = true;
-            }
-        }
-        QVERIFY(found);
+        auto* summary = s.findChild<QLabel*>(
+            QStringLiteral("connectivitySummary"));
+        QVERIFY(summary != nullptr);
+        QCOMPARE(summary->text(), QStringLiteral("● Direct active"));
     }
 
-    void relaying_off_when_not_active() {
+    void relay_service_off_when_disabled() {
         IdentitySection s;
         NodeIdentity id;
         id.is_relay_active = false;
@@ -81,12 +76,29 @@ private Q_SLOTS:
         const auto labels = s.findChildren<QLabel*>();
         bool found = false;
         for (auto* l : labels) {
-            if (l->text().contains("RELAYING · OFF")) found = true;
+            if (l->text().contains("RELAY SERVICE · OFF")) found = true;
         }
         QVERIFY(found);
     }
 
-    void relaying_on_includes_count_and_grace() {
+    void relay_service_ready_with_zero_active_circuits() {
+        IdentitySection s;
+        NodeIdentity id;
+        s.onIdentityUpdated(id);
+        s.onRelayServiceStatusUpdated(true);
+
+        const auto labels = s.findChildren<QLabel*>();
+        bool found = false;
+        for (auto* l : labels) {
+            if (l->text().contains(
+                    "RELAY SERVICE · READY · 0 active circuits")) {
+                found = true;
+            }
+        }
+        QVERIFY(found);
+    }
+
+    void active_relay_circuits_include_count_and_grace() {
         IdentitySection s;
         NodeIdentity id;
         id.is_relay_active   = true;
@@ -97,7 +109,8 @@ private Q_SLOTS:
         const auto labels = s.findChildren<QLabel*>();
         bool found = false;
         for (auto* l : labels) {
-            if (l->text().contains("RELAYING for 2 peers · 1 in grace"))
+            if (l->text().contains(
+                    "RELAY SERVICE · ACTIVE · 2 active circuits · 1 in grace"))
                 found = true;
         }
         QVERIFY(found);
@@ -139,6 +152,17 @@ private Q_SLOTS:
         QVERIFY(text.contains(QStringLiteral("recovery is automatic")));
         QVERIFY(!text.contains(QStringLiteral("BEHIND-RELAY")));
         QVERIFY(!text.contains(QStringLiteral("NAT'd")));
+    }
+
+    void unified_connectivity_summary_names_available_paths() {
+        NodeIdentity id;
+        id.reachability = NodeIdentity::BEHIND_RELAY;
+        id.outbound_connections = 4;
+        id.relay_fallback_eligible = true;
+        const QString text = IdentitySection::connectivitySummaryLine(
+            id, true);
+        QCOMPARE(text, QStringLiteral(
+            "● Direct outbound active · Relay fallback ready · Tor active"));
     }
 };
 

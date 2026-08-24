@@ -46,6 +46,8 @@ private Q_SLOTS:
         ni["localnodeid"]   = "fd4fc04df38bacbf72d4ecae451d1589570bcaba";
         ni["localrelay"]    = true;
         ni["direct_reachable"] = true;
+        ni["connections_out"] = 4;
+        ni["relay_fallback_eligible"] = true;
         ni["listen"]        = true;
         QJsonArray la;
         QJsonObject one;
@@ -62,6 +64,8 @@ private Q_SLOTS:
         QCOMPARE(id.local_addr, QString("162.200.227.214"));
         QCOMPARE(id.local_port, quint16(20999));
         QCOMPARE(int(id.reachability), int(NodeIdentity::DIRECT));
+        QCOMPARE(id.outbound_connections, 4);
+        QVERIFY(id.relay_fallback_eligible);
     }
 
     void parses_onion_service_without_exposing_authentication() {
