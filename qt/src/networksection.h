@@ -5,11 +5,15 @@
 #pragma once
 
 #include "dashboardtypes.h"
+#include <QJsonObject>
+#include <QVector>
 #include <QWidget>
 
 class QLabel;
 class QProgressBar;
 class QCheckBox;
+class QComboBox;
+class QSpinBox;
 
 namespace dinero::qt::dashboard {
 
@@ -25,9 +29,11 @@ public Q_SLOTS:
     void setTorStatus(TorState state, const QString& onionAddress = {});
     void setOnionServiceStatus(const OnionServiceStatus& status);
     void setTorActionError(bool unsupported);
+    void setRelayServiceStatus(const QJsonObject& status);
 
 Q_SIGNALS:
-    void torEnabledRequested(bool enabled);
+    void torModeRequested(const QString& mode);
+    void relayServiceRequested(const QJsonObject& request);
 
 public:
     // Tip-race annotation helper, public for unit testing.
@@ -41,8 +47,12 @@ private:
     QLabel*       difficultyLabel_{nullptr};
     QLabel*       mempoolLabel_{nullptr};
     QLabel*       medianFeeLabel_{nullptr};
-    QCheckBox*    torControl_{nullptr};
+    QComboBox*    torControl_{nullptr};
     QLabel*       torStatusLabel_{nullptr};
+    QComboBox*    relayControl_{nullptr};
+    QWidget*      relayCustom_{nullptr};
+    QVector<QSpinBox*> relayLimits_;
+    QLabel*       relayStatusLabel_{nullptr};
 };
 
 }  // namespace dinero::qt::dashboard

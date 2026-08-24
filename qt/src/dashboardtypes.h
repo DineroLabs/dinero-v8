@@ -49,6 +49,8 @@ struct OnionServiceStatus {
     bool    active{false};
     QString address;
     QString message;
+    QString mode{"off"};
+    bool embedded{false};
 };
 
 // Per-tick contribution snapshot. Sparkline buffers (rolling 5-min) live

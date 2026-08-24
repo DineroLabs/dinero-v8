@@ -50,6 +50,8 @@ static std::string NormalizeKey(const std::string& key) {
         {"listenonion",    "p2p.listen_onion"},
         {"torcontrol",     "p2p.tor_control"},
         {"torcontrolpassword", "p2p.tor_control_password"},
+        {"tormode",        "p2p.tor_mode"},
+        {"embeddedtorpath", "p2p.embedded_tor_path"},
 
         // Network selection
         {"testnet",        "network.testnet"},

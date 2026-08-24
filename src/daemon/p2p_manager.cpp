@@ -835,6 +835,7 @@ std::string P2PManager::RelayVirtualPeerAddress(
 //      always lets existing registrants refresh).
 void P2PManager::handle_relay_register(const std::string& peer_address,
                                        const P2PMessage& message) {
+    if (!relay_service_enabled_.load(std::memory_order_acquire)) return;
     // (2) Wire-format length check.
     constexpr size_t kFixedPrefix = 20 + 4 + 8 + 1;
     if (message.payload.size() < kFixedPrefix) {
@@ -976,6 +977,12 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
     std::array<uint8_t, 20> target_node_id{};
     std::copy_n(message.payload.begin(), 20, target_node_id.begin());
     const uint64_t request_id = ReadLE64(message.payload, 20);
+    if (!relay_service_enabled_.load(std::memory_order_acquire)) {
+        send_to_peer(peer_address, P2PMessage::create_relay_connect_ack(
+            request_id, 0, P2PMessage::RelayConnectStatus::RateLimited,
+            "relay service is disabled"));
+        return;
+    }
 
     // Shed load before opening new circuits while this relay is far behind.
     // Established circuits are still honored in handle_relay_data; refusing
@@ -1019,7 +1026,19 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
     uint64_t circuit_id = 0;
     {
         std::lock_guard<std::mutex> lock(circuits_mutex_);
-        if (circuits_.size() >= kMaxConcurrentCircuits) {
+        const auto now = std::chrono::steady_clock::now();
+        auto& window = relay_request_windows_[peer_address];
+        if (window.started.time_since_epoch().count() == 0 ||
+            now - window.started >= std::chrono::minutes(1)) {
+            window = {now, 0};
+        }
+        const size_t peer_circuits = std::count_if(
+            circuits_.begin(), circuits_.end(), [&](const auto& entry) {
+                return entry.second.requester_addr == peer_address;
+            });
+        if (++window.requests > relay_service_limits_.requests_per_peer_per_minute ||
+            peer_circuits >= relay_service_limits_.max_circuits_per_peer ||
+            circuits_.size() >= relay_service_limits_.max_circuits) {
             // Drop the lock before sending to avoid holding it across IO.
         } else {
             // Generate a non-zero circuit_id; retry once on the
@@ -1031,7 +1050,6 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
                 circuit_id = 0;
             }
             if (circuit_id != 0) {
-                const auto now = std::chrono::steady_clock::now();
                 circuits_[circuit_id] = CircuitInfo{
                     peer_address, reg->peer_address, now, now};
             }
@@ -1040,7 +1058,8 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
     if (circuit_id == 0) {
         auto ack = P2PMessage::create_relay_connect_ack(
             request_id, 0, P2PMessage::RelayConnectStatus::RelayFull,
-            "relay is at " + std::to_string(kMaxConcurrentCircuits) +
+            "relay is at its configured circuit or request limit (" +
+                std::to_string(relay_service_limits_.max_circuits) +
                 " concurrent circuits");
         send_to_peer(peer_address, ack);
         return;
@@ -1518,7 +1537,9 @@ void P2PManager::SweepIdleCircuits() {
     {
         std::lock_guard<std::mutex> lock(circuits_mutex_);
         for (auto it = circuits_.begin(); it != circuits_.end();) {
-            if (now - it->second.last_data_at >= kCircuitIdleTimeout) {
+            if (now - it->second.last_data_at >= kCircuitIdleTimeout ||
+                now - it->second.created_at >= std::chrono::seconds(
+                    relay_service_limits_.circuit_lifetime_seconds)) {
                 dropped.push_back(it->first);
                 it = circuits_.erase(it);
             } else {
@@ -1531,6 +1552,14 @@ void P2PManager::SweepIdleCircuits() {
                   << " idle-timed-out after " << kCircuitIdleTimeout.count()
                   << "s" << std::endl;
     }
+}
+
+void P2PManager::set_relay_service_limits(const RelayServiceLimits& limits) {
+    std::lock_guard<std::mutex> lock(circuits_mutex_);
+    relay_service_limits_ = limits;
+    relay_global_bucket_ = dinero::network::TokenBucket(
+        static_cast<double>(limits.bandwidth_bytes_per_second),
+        static_cast<double>(limits.bandwidth_bytes_per_second));
 }
 
 // NAT traversal Phase D-1: kick off a RELAY_CONNECT request through an

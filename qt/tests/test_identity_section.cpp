@@ -6,6 +6,7 @@
 #include "dashboardtypes.h"
 
 #include <QLabel>
+#include <QLayout>
 #include <QWidget>
 #include <QtTest/QtTest>
 
@@ -16,6 +17,15 @@ class TestIdentitySection : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void does_not_push_dashboard_controls_below_the_viewport() {
+        IdentitySection s;
+        QVERIFY(s.layout() != nullptr);
+        // Header, connectivity summary, and the optional identity details.
+        // An expanding spacer here previously consumed the Command-K panel
+        // and hid the Advanced details control below this section.
+        QCOMPARE(s.layout()->count(), 3);
+    }
+
     void technical_identity_details_are_hidden_by_default() {
         IdentitySection s;
         auto* details = s.findChild<QWidget*>(QStringLiteral("advancedIdentityDetails"));

@@ -418,6 +418,7 @@ add_executable(test_tor_onion
   tests/network/test_tor_onion.cpp
   src/network/tor_control.cpp
   src/network/tor_runtime_controller.cpp
+  src/network/embedded_tor_process.cpp
   src/p2p/addr_v2.cpp
 )
 add_dependencies(test_tor_onion gtest gtest_main)

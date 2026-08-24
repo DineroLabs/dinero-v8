@@ -75,6 +75,7 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     // Changes externally reachable service state and persists an operator
     // preference. Read-only RPC credentials must never invoke it.
     "network.setonionservice",
+    "network.setrelayservice",
 };
 
 bool HttpRpcServer::isAdminMethod(const std::string& method) {
