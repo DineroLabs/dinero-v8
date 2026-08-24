@@ -24,7 +24,12 @@ public Q_SLOTS:
     void onChainInfoUpdated(const ChainInfo& info);
     void setTorStatus(TorState state, const QString& onionAddress = {});
     void setOnionServiceStatus(const OnionServiceStatus& status);
+    void setTorActionError(bool unsupported);
 
+Q_SIGNALS:
+    void torEnabledRequested(bool enabled);
+
+public:
     // Tip-race annotation helper, public for unit testing.
     static QString tipDeltaAnnotation(qint64 our, qint64 net);
     static QString torStatusText(TorState state, const QString& onionAddress = {});
