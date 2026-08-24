@@ -235,6 +235,38 @@ struct ChainParams {
     // ===========================================================================
     uint32_t shielded_cv_binding_activation_height = UINT32_MAX;
 
+    // ===========================================================================
+    // CONSENSUS: shielded SPEND AUTHORITY, enforced at or above this height.
+    //
+    // Below it, a note's committed key is pk = Poseidon(sk, 0) where the SENDER
+    // invents `sk` while building the recipient's note. The recipient's own key
+    // material (`pk_d` from their address) governs addressing and discovery but
+    // never control, so THE SENDER CAN SPEND THE NOTE THEY SENT, at any time,
+    // forever — first-spender wins and the nullifier set rejects the loser.
+    //
+    // At and above it, the note is committed to pk_d = s·G where `s` derives
+    // from the RECIPIENT's incoming viewing key, and the spend circuit proves
+    // knowledge of dlog(pk_d). The sender never learns `s`. Because nf is also
+    // derived from `s`, this closes the matching linkability leak (the sender
+    // could otherwise recognise when the note was spent) in the same change.
+    // Such proofs carry a distinct version byte (0x05 spend).
+    //
+    // MUST be >= shielded_cv_binding_activation_height: the auth circuit is a
+    // strict superset of the cv-bound one, and an auth-without-cv variant would
+    // reopen the mint-from-nothing hole. ValidateChainParams enforces this.
+    //
+    // Notes committed under the old formula are UNSPENDABLE under the new rule,
+    // so activation requires a paired epoch reset. That costs nothing while the
+    // pool is empty and strands real value once it is not.
+    //
+    // DORMANT ON EVERY NETWORK (UINT32_MAX), deliberately — including regtest,
+    // which would otherwise reject every note the current wallet can build,
+    // since the wallet still commits to Poseidon(sk, 0). regtest flips only when
+    // the wallet side lands. Any activation height MUST be chosen by a human and
+    // fleet-coordinated before it ships — a wrong boundary splits the chain.
+    // ===========================================================================
+    uint32_t shielded_spend_auth_activation_height = UINT32_MAX;
+
     // Shielded epoch reset (hard-fork cutover). At this height the shielded pool
     // is reset to a fresh empty epoch (tree/anchor-history/nullifiers discarded),
     // making all pre-cutover notes unspendable. MUST equal

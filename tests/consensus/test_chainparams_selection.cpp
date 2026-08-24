@@ -59,12 +59,14 @@ public:
         : params_(params),
           reset_(params->shielded_epoch_reset_height),
           cv_(params->shielded_cv_binding_activation_height),
-          input_(params->shielded_input_binding_activation_height) {}
+          input_(params->shielded_input_binding_activation_height),
+          auth_(params->shielded_spend_auth_activation_height) {}
 
     ~ScopedShieldedHeights() {
         params_->shielded_epoch_reset_height = reset_;
         params_->shielded_cv_binding_activation_height = cv_;
         params_->shielded_input_binding_activation_height = input_;
+        params_->shielded_spend_auth_activation_height = auth_;
     }
 
     ScopedShieldedHeights(const ScopedShieldedHeights&) = delete;
@@ -75,6 +77,7 @@ private:
     uint32_t reset_;
     uint32_t cv_;
     uint32_t input_;
+    uint32_t auth_;
 };
 
 TEST(ChainParamsSelection, EpochResetMustEqualCvBindingActivation) {
@@ -102,6 +105,42 @@ TEST(ChainParamsSelection, CvBindingMustNotPrecedeInputBinding) {
     regtest->shielded_cv_binding_activation_height = 400;
     regtest->shielded_epoch_reset_height = 400;  // keep the other check happy
     EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
+}
+
+// Spend authority is a STRICT SUPERSET of cv-binding: it adds the pk_d = s·G
+// ownership proof on top of every cv-bound constraint. An auth-without-cv
+// combination would prove ownership while leaving value unbound, reopening the
+// mint-from-nothing hole cv-binding closed. The ordering must be unreachable
+// by configuration.
+TEST(ChainParamsSelection, SpendAuthMustNotPrecedeCvBinding) {
+    SelectParams(Chain::REGTEST);
+    ChainParams* regtest = &dinero::MutableParams();
+    const ScopedShieldedHeights restore(regtest);
+
+    // Shipped regtest satisfies the invariant (both dormant at UINT32_MAX).
+    EXPECT_NO_THROW(SelectParams(Chain::REGTEST));
+
+    regtest->shielded_input_binding_activation_height = 300;
+    regtest->shielded_cv_binding_activation_height = 400;
+    regtest->shielded_epoch_reset_height = 400;   // keep the equality check happy
+    regtest->shielded_spend_auth_activation_height = 399;  // one block too early
+    EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
+
+    // Equal is legal — both rules may activate at the same height.
+    regtest->shielded_spend_auth_activation_height = 400;
+    EXPECT_NO_THROW(SelectParams(Chain::REGTEST));
+}
+
+// Spend authority ships DORMANT on every network. regtest is deliberately NOT
+// set to 0 the way the coinbase rule is: the wallet still commits notes to
+// Poseidon(sk, 0), so an active regtest gate would reject every note the wallet
+// can build. regtest flips only when the wallet side lands.
+TEST(ChainParamsSelection, SpendAuthDormantOnAllNetworks) {
+    for (const Chain chain : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
+        SelectParams(chain);
+        EXPECT_EQ(Params().shielded_spend_auth_activation_height, UINT32_MAX)
+            << "spend authority must stay dormant until the wallet side lands";
+    }
 }
 
 // The assertion this file exists for. A plain EXPECT_THROW passes against the

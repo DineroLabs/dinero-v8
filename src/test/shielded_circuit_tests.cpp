@@ -14,7 +14,12 @@
 
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/shielded_circuit.h"
+#include "consensus/shielded/pedersen_commit.h"
+#include "consensus/shielded/pedersen_generators.h"
 #include "shielded_audit_desync.h"  // test-only transcript-desync provers
+
+#include <secp256k1.h>
+#include <secp256k1_extrakeys.h>
 
 #include <array>
 #include <cstdint>
@@ -29,6 +34,8 @@ using shielded::Hash;
 using shielded::NoteCommitment;
 using shielded::ComputeNullifier;
 using shielded::PoseidonHash2;
+using shielded::PedersenCommit;
+using shielded::PedersenResult;
 using shielded::OutputPublicInputs;
 using shielded::OutputWitness;
 using shielded::ProveOutput;
@@ -361,6 +368,213 @@ TEST(ShieldedSpendCircuitTest, ActivationGate_OldRuleAcceptsForgery_NewRuleRejec
     auto honest_new = ProveSpend(fx.witness, fx.pub, nullptr, /*bind_public_inputs=*/true);
     EXPECT_TRUE(VerifySpend(honest_old, fx.pub, nullptr, /*bind_public_inputs=*/false));
     EXPECT_TRUE(VerifySpend(honest_new, fx.pub, nullptr, /*bind_public_inputs=*/true));
+}
+
+// ── Spend authority (shielded_spend_auth_activation_height) ─────────────
+//
+// Below the gate, the note's committed key is pk = Poseidon(sk, 0) with `sk`
+// invented by the SENDER, so the sender can spend the note they sent, forever.
+// At and above it, the note commits to pk_d = s·G and the circuit proves
+// knowledge of dlog(pk_d) — a value the sender never learns.
+//
+// pk_d is derived here with raw libsecp256k1 rather than the wallet's
+// DeriveDiversifiedSpendKey, so the circuit is checked against an INDEPENDENT
+// oracle rather than against our own derivation helper.
+
+// s -> (even-y normalised s, x-only pk_d). Mirrors NormalizeScalarToEvenY.
+struct AuthKey {
+    Hash s{};
+    Hash pk_d{};
+};
+
+static bool MakeAuthKey(const Hash& candidate, AuthKey& out) {
+    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    if (ctx == nullptr) return false;
+    bool ok = false;
+    secp256k1_keypair kp{};
+    if (secp256k1_ec_seckey_verify(ctx, candidate.data()) == 1 &&
+        secp256k1_keypair_create(ctx, &kp, candidate.data()) == 1) {
+        secp256k1_xonly_pubkey xonly{};
+        int parity = 0;
+        if (secp256k1_keypair_sec(ctx, out.s.data(), &kp) == 1 &&
+            secp256k1_keypair_xonly_pub(ctx, &xonly, &parity, &kp) == 1 &&
+            secp256k1_xonly_pubkey_serialize(ctx, out.pk_d.data(), &xonly) == 1) {
+            // Even-y normalisation: if the x-only path negated to even y,
+            // negate the scalar too so s·G == pk_d with even y.
+            ok = (parity != 1) ||
+                 (secp256k1_ec_seckey_negate(ctx, out.s.data()) == 1);
+        }
+    }
+    secp256k1_context_destroy(ctx);
+    return ok;
+}
+
+// A note committed to pk_d = s·G, spendable only by the holder of s.
+struct AuthFixture {
+    AuthKey key{};
+    Hash value      = ValueAsHash(123'456'789);
+    Hash randomness = MakeHash(0xC7, 0x31);
+    Hash d          = MakeHash(0xB0, 0x0B);
+
+    CommitmentTree tree;
+    SpendWitness witness{};
+    SpendPublicInputs pub{};
+
+    void Build() {
+        ASSERT_TRUE(MakeAuthKey(MakeHash(0x5A, 0x9E), key));
+
+        tree.Append(MakeHash(0x10));
+        tree.Append(MakeHash(0x11));
+        // Commit to pk_d — NOT to a sender-invented Poseidon(sk, 0).
+        const Hash cm = NoteCommitment(d, key.pk_d, value, randomness);
+        const uint64_t idx = tree.Append(cm);
+        ASSERT_GT(idx, 0u);
+        const auto path = tree.GetAuthPath(idx);
+        ASSERT_TRUE(path.has_value());
+
+        witness.secret_key  = key.s;   // `s` occupies the secret_key slot
+        witness.leaf_index  = idx;
+        witness.value       = value;
+        witness.randomness  = randomness;
+        witness.d           = d;
+        witness.rcv         = MakeHash(0x09, 0x11);
+        witness.merkle_path = path->siblings;
+
+        pub.nullifier = ComputeNullifier(key.s, idx);  // nf from s
+        pub.anchor    = tree.Root();
+        ASSERT_EQ(PedersenCommit(witness.rcv, 123'456'789ULL, pub.cv), PedersenResult::Ok);
+    }
+};
+
+TEST(ShieldedSpendAuthTest, ValidAuthProofVerifies) {
+    AuthFixture fx;
+    fx.Build();
+    auto proof = ProveSpend(fx.witness, fx.pub, nullptr, true,
+                            /*cv_bound=*/true, /*spend_auth=*/true);
+    ASSERT_FALSE(proof.empty());
+    EXPECT_TRUE(VerifySpend(proof, fx.pub, nullptr, true, true, /*spend_auth=*/true));
+}
+
+// ★ THE DOUBLE-SPEND HOLE THIS GUARDS.
+//
+// pk_d is committed X-ONLY, so a circuit constraining only x(s·G) == pk_d_x
+// admits BOTH s and (q - s): (q-s)·G = -(s·G) shares the same x, hence the
+// same commitment, the same Merkle path and the same anchor. But
+// nf = Poseidon(s, idx) != Poseidon(q-s, idx), so ONE note would yield TWO
+// valid nullifiers — the owner spends it twice.
+//
+// The circuit's even-y constraint makes the representative unique, matching
+// what NormalizeScalarToEvenY guarantees wallet-side. Neuter that constraint
+// and this test fails: the negated proof is produced and accepted.
+TEST(ShieldedSpendAuthTest, NegatedScalarCannotProduceSecondNullifier) {
+    AuthFixture fx;
+    fx.Build();
+
+    // q - s. Same public key x, so the same note commitment.
+    Hash neg_s = fx.key.s;
+    {
+        secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+        ASSERT_NE(ctx, nullptr);
+        const int rc = secp256k1_ec_seckey_negate(ctx, neg_s.data());
+        secp256k1_context_destroy(ctx);
+        ASSERT_EQ(rc, 1);
+    }
+    ASSERT_NE(neg_s, fx.key.s);
+
+    // The negated scalar yields a DIFFERENT nullifier for the SAME note —
+    // that is exactly what makes it a double-spend if the proof succeeds.
+    SpendPublicInputs second = fx.pub;
+    second.nullifier = ComputeNullifier(neg_s, fx.witness.leaf_index);
+    ASSERT_NE(second.nullifier, fx.pub.nullifier);
+
+    SpendWitness w = fx.witness;
+    w.secret_key = neg_s;
+
+    auto proof = ProveSpend(w, second, nullptr, true,
+                            /*cv_bound=*/true, /*spend_auth=*/true);
+    // Odd-y ⇒ the circuit is unsatisfiable ⇒ no proof. Belt and braces: even
+    // if one were produced, it must not verify.
+    EXPECT_TRUE(proof.empty()) << "negated scalar produced a proof — the note "
+                                  "has two spendable nullifiers";
+    if (!proof.empty()) {
+        EXPECT_FALSE(VerifySpend(proof, second, nullptr, true, true, true));
+    }
+}
+
+// The whole point: knowing the recipient's ADDRESS (d, pk_d) is not enough to
+// spend. Only the holder of `s` can satisfy the circuit.
+TEST(ShieldedSpendAuthTest, WrongScalarCannotSpend) {
+    AuthFixture fx;
+    fx.Build();
+
+    AuthKey other{};
+    ASSERT_TRUE(MakeAuthKey(MakeHash(0x77, 0x42), other));
+    ASSERT_NE(other.s, fx.key.s);
+
+    SpendWitness w = fx.witness;
+    w.secret_key = other.s;
+
+    SpendPublicInputs pub = fx.pub;
+    pub.nullifier = ComputeNullifier(other.s, fx.witness.leaf_index);
+
+    auto proof = ProveSpend(w, pub, nullptr, true, true, /*spend_auth=*/true);
+    EXPECT_TRUE(proof.empty());
+    if (!proof.empty()) {
+        EXPECT_FALSE(VerifySpend(proof, pub, nullptr, true, true, true));
+    }
+}
+
+// The sender-retained-authority bug itself: under the LEGACY rule the note's
+// key is Poseidon(sk, 0), which the sender chose. Against an auth-committed
+// note that key is worthless — proving the gate actually changes who can spend.
+TEST(ShieldedSpendAuthTest, LegacySenderKeyCannotSpendAuthNote) {
+    AuthFixture fx;
+    fx.Build();
+
+    // A sender-invented sk whose legacy pk = Poseidon(sk, 0) is NOT pk_d.
+    const Hash sender_sk = MakeHash(0xA1, 0xF0);
+    ASSERT_NE(PoseidonHash2(sender_sk, Hash{}), fx.key.pk_d);
+
+    SpendWitness w = fx.witness;
+    w.secret_key = sender_sk;
+    SpendPublicInputs pub = fx.pub;
+    pub.nullifier = ComputeNullifier(sender_sk, fx.witness.leaf_index);
+
+    auto proof = ProveSpend(w, pub, nullptr, true, true, /*spend_auth=*/true);
+    EXPECT_TRUE(proof.empty());
+}
+
+// Version bytes must keep the variants from being presented for one another.
+TEST(ShieldedSpendAuthTest, AuthProofRejectedUnderCvOnlyRuleAndViceVersa) {
+    AuthFixture fx;
+    fx.Build();
+
+    auto auth_proof = ProveSpend(fx.witness, fx.pub, nullptr, true, true,
+                                 /*spend_auth=*/true);
+    ASSERT_FALSE(auth_proof.empty());
+    // Presented where only cv-binding is required: version mismatch ⇒ reject.
+    EXPECT_FALSE(VerifySpend(auth_proof, fx.pub, nullptr, true, /*cv_bound=*/true,
+                             /*spend_auth=*/false));
+
+    // And a cv-only proof presented where auth is required must also fail.
+    SpendFixture cv;
+    cv.Build();
+    ASSERT_EQ(PedersenCommit(cv.witness.rcv, 123'456'789ULL, cv.pub.cv), PedersenResult::Ok);
+    auto cv_proof = ProveSpend(cv.witness, cv.pub, nullptr, true, /*cv_bound=*/true);
+    ASSERT_FALSE(cv_proof.empty());
+    EXPECT_FALSE(VerifySpend(cv_proof, cv.pub, nullptr, true, true, /*spend_auth=*/true));
+}
+
+// spend_auth is a strict superset of cv_bound. The invalid pair must be
+// rejected outright, not silently resolved — an auth-without-cv circuit would
+// prove ownership while leaving value unbound (mint-from-nothing).
+TEST(ShieldedSpendAuthTest, AuthWithoutCvBoundRejected) {
+    AuthFixture fx;
+    fx.Build();
+    EXPECT_TRUE(ProveSpend(fx.witness, fx.pub, nullptr, true,
+                           /*cv_bound=*/false, /*spend_auth=*/true).empty());
+    EXPECT_FALSE(VerifySpend(std::vector<uint8_t>(256, 0xCC), fx.pub, nullptr, true,
+                             /*cv_bound=*/false, /*spend_auth=*/true));
 }
 
 TEST(ShieldedSpendCircuitTest, EmptyProofRejected) {

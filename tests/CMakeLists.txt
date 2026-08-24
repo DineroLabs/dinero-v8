@@ -1859,6 +1859,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_circuit_tests.cpp)
     ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
+    # Pedersen commit + libsecp extrakeys: the spend-authority tests build a
+    # real cv and derive pk_d = s·G with raw libsecp as an independent oracle.
+    ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include
   )
   add_test(NAME ShieldedCircuit COMMAND test_shielded_circuit)
   set_tests_properties(ShieldedCircuit PROPERTIES
