@@ -47,7 +47,15 @@ void AnchorHistory::RecordRoot(uint32_t height, const Hash& root) {
     }
     roots_.emplace_back(height, root);
     while (roots_.size() > kDepth) {
+        // Retain what we evict so the matching disconnect can put it back.
+        // Eviction used to be lossy while RollbackAbove only deleted, so a
+        // disconnect left this node with a strictly smaller window than a
+        // never-reorged peer at the same tip (audit finding #4).
+        evicted_.push_back(roots_.front());
         roots_.pop_front();
+        while (evicted_.size() > kEvictionRetention) {
+            evicted_.pop_front();  // bounded: only the newest evictions matter
+        }
     }
 }
 
@@ -61,6 +69,21 @@ bool AnchorHistory::Contains(const Hash& candidate) const {
 void AnchorHistory::RollbackAbove(uint32_t height) {
     while (!roots_.empty() && roots_.back().first > height) {
         roots_.pop_back();
+    }
+    // Put back what the disconnected blocks displaced when they connected, so
+    // this node ends up with the same window a never-reorged peer at this tip
+    // holds. Never grows past kDepth, and only accepts entries strictly older
+    // than the current front so the deque stays ascending by height.
+    while (roots_.size() < kDepth && !evicted_.empty()) {
+        const auto& candidate = evicted_.back();
+        if (!roots_.empty() && candidate.first >= roots_.front().first) {
+            // Already represented (or out of order) — drop it rather than
+            // corrupt the ordering RollbackAbove itself depends on.
+            evicted_.pop_back();
+            continue;
+        }
+        roots_.push_front(candidate);
+        evicted_.pop_back();
     }
 }
 

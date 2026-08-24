@@ -43,6 +43,82 @@ Hash R(uint8_t seed) {
     return h;
 }
 
+// Distinct root for a height beyond the 256 that R(uint8_t) can express.
+Hash RH(uint32_t seed) {
+    Hash h{};
+    h[0] = static_cast<uint8_t>(seed & 0xFF);
+    h[1] = static_cast<uint8_t>((seed >> 8) & 0xFF);
+    h[31] = 0x42;
+    return h;
+}
+
+// ── Eviction / rollback asymmetry (audit finding #4) ────────────────
+//
+// RecordRoot's eviction is LOSSY (pop_front past kDepth) while
+// RollbackAbove only DELETES (pop_back). So connecting a block at a full
+// window permanently discards the oldest anchor, and the matching disconnect
+// removes the new entry without restoring what that entry displaced.
+//
+// Consequence, and why it is a consensus concern rather than tidiness: a node
+// that disconnected D blocks runs with kDepth-D anchors while a never-reorged
+// peer at the same tip has kDepth. The reorged node then REJECTS as
+// AnchorInvalid a block the peer accepts. Mainnet has been past kDepth since
+// long before the current tip, so the window is permanently full and this is
+// reachable today. The sets re-converge as the window refills, so the exposure
+// is the interval after a reorg, not a permanent split.
+TEST(AnchorHistoryTest, DisconnectRestoresTheAnchorItsConnectEvicted) {
+    AnchorHistory h;
+    // Fill well past kDepth so eviction is definitely in play.
+    for (uint32_t height = 1; height <= AnchorHistory::kDepth + 50; ++height) {
+        h.RecordRoot(height, RH(height));
+    }
+    ASSERT_EQ(h.Size(), AnchorHistory::kDepth);
+
+    const uint32_t tip = AnchorHistory::kDepth + 50;          // 150
+    const uint32_t oldest_in_window = tip - AnchorHistory::kDepth + 1;  // 51
+    const uint32_t evicted_by_tip = oldest_in_window - 1;     // 50
+    ASSERT_TRUE(h.Contains(RH(oldest_in_window)));
+    ASSERT_FALSE(h.Contains(RH(evicted_by_tip)))
+        << "precondition: recording the tip evicted this entry";
+
+    // Disconnect exactly one block.
+    h.RollbackAbove(tip - 1);
+
+    EXPECT_FALSE(h.Contains(RH(tip))) << "the disconnected block's root must go";
+    // The window must be whole again: rolling back the connect that evicted an
+    // entry has to put that entry back, or this node now validates against a
+    // strictly smaller window than a peer at the same tip.
+    EXPECT_EQ(h.Size(), AnchorHistory::kDepth)
+        << "window shrank after a 1-block disconnect — node/peer validity split";
+    EXPECT_TRUE(h.Contains(RH(evicted_by_tip)))
+        << "the anchor displaced by the disconnected block was not restored";
+}
+
+// Rolling back several blocks must restore the same number of evicted entries,
+// not just one.
+TEST(AnchorHistoryTest, MultiBlockDisconnectRestoresEachEvictedAnchor) {
+    AnchorHistory h;
+    for (uint32_t height = 1; height <= AnchorHistory::kDepth + 50; ++height) {
+        h.RecordRoot(height, RH(height));
+    }
+    const uint32_t tip = AnchorHistory::kDepth + 50;
+    constexpr uint32_t kDisconnect = 5;
+
+    h.RollbackAbove(tip - kDisconnect);
+
+    EXPECT_EQ(h.Size(), AnchorHistory::kDepth)
+        << "window must stay full across a multi-block disconnect";
+    for (uint32_t i = 1; i <= kDisconnect; ++i) {
+        const uint32_t restored = tip - AnchorHistory::kDepth + 1 - i;
+        EXPECT_TRUE(h.Contains(RH(restored)))
+            << "anchor at height " << restored << " was not restored";
+    }
+    // And the disconnected blocks' own roots are gone.
+    for (uint32_t i = 0; i < kDisconnect; ++i) {
+        EXPECT_FALSE(h.Contains(RH(tip - i)));
+    }
+}
+
 TEST(AnchorHistoryTest, EmptyContainsNothing) {
     AnchorHistory h;
     EXPECT_EQ(h.Size(), 0u);
