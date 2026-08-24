@@ -11,9 +11,11 @@
 #include "networksection.h"
 #include "nodepoller.h"
 #include "peerssection.h"
+#include "rpcclient.h"
 #include "topologysection.h"
 
 #include <QScrollArea>
+#include <QJsonObject>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -117,6 +119,30 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
             identitySection_, &IdentitySection::onDynamicP2POverviewUpdated);
     connect(poller_, &NodePoller::onionServiceUpdated,
             networkSection_, &NetworkSection::setOnionServiceStatus);
+    connect(networkSection_, &NetworkSection::torEnabledRequested,
+            this, [rpc](bool enabled) {
+        if (rpc) rpc->callNamed(QStringLiteral("network.setonionservice"),
+                                QJsonObject{{QStringLiteral("enabled"), enabled}});
+    });
+    if (rpc) {
+        connect(rpc, &RpcClient::rpcResult, this,
+                [this](const QString& method, const QJsonValue& result) {
+            if (method != QStringLiteral("network.setonionservice")) return;
+            const auto obj = result.toObject();
+            OnionServiceStatus status;
+            status.available = true;
+            status.requested = obj.value(QStringLiteral("requested")).toBool();
+            status.active = obj.value(QStringLiteral("active")).toBool();
+            status.address = obj.value(QStringLiteral("address")).toString();
+            networkSection_->setOnionServiceStatus(status);
+        });
+        connect(rpc, &RpcClient::rpcError, this,
+                [this](const QString& method, int code, const QString&) {
+            if (method == QStringLiteral("network.setonionservice")) {
+                networkSection_->setTorActionError(code == -32601);
+            }
+        });
+    }
     connect(poller_, &NodePoller::contributionStatsUpdated,
             this, [this](const ContributionStats& stats) {
         contributionSection_->setContributionStats(stats);

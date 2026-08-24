@@ -7,6 +7,7 @@
 #include "network/port_mapper.h"
 #include "network/stun_client.h"      // NAT traversal Phase C1 (unique_ptr<StunClient> member)
 #include "network/tor_control.h"
+#include "network/tor_runtime_controller.h"
 #include "version.h"
 
 #include <atomic>
@@ -252,6 +253,7 @@ public:
     size_t SendPingToAll();
     NetworkTotals GetNetworkTotals() const;
     NetworkStatus GetNetworkStatus() const;
+    network::TorRuntimeStatus SetOnionServiceEnabled(bool enabled);
     // Setter for the auto-mode relay-active toggle. Today mining.start /
     // mining.stop are the canonical callers (mining → carry more value →
     // worth running as a public relay), but any subsystem with a reason
@@ -293,8 +295,8 @@ private:
     std::string external_ip_;
     std::string peers_file_path_;
     std::string relay_hints_file_path_;
-    std::unique_ptr<network::TorOnionService> onion_service_;
-    bool onion_service_requested_{false};
+    std::unique_ptr<network::TorRuntimeController> onion_runtime_;
+    std::atomic<bool> onion_service_requested_{false};
     std::vector<std::string> seed_nodes_;
     std::vector<std::pair<std::string, uint16_t>> reconnect_targets_;
     bool offline_mode_{false};

@@ -72,6 +72,9 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     // by read-only RPC clients (security fix: seeder.start RCE vector).
     "seeder.start",
     "seeder.stop",
+    // Changes externally reachable service state and persists an operator
+    // preference. Read-only RPC credentials must never invoke it.
+    "network.setonionservice",
 };
 
 bool HttpRpcServer::isAdminMethod(const std::string& method) {

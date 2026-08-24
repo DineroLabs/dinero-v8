@@ -75,8 +75,10 @@ bool ReadFileBinary(const std::string& path, std::vector<uint8_t>* bytes) {
     return !bytes->empty();
 }
 
-bool WritePrivateKey(const std::string& path, const std::string& key,
-                     std::string* error) {
+}  // namespace
+
+bool WriteTorPrivateKey(const std::string& path, const std::string& key,
+                        std::string* error) {
     if (path.empty() || key.empty()) {
         if (error) *error = "onion private-key path or key is empty";
         return false;
@@ -116,13 +118,22 @@ bool WritePrivateKey(const std::string& path, const std::string& key,
     return true;
 }
 
-std::string ReadPrivateKey(const std::string& path) {
+std::string ReadTorPrivateKey(const std::string& path) {
+#ifndef _WIN32
+    struct stat st {};
+    if (lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) ||
+        chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0) {
+        return {};
+    }
+#endif
     std::ifstream input(path, std::ios::binary);
     std::string key;
     std::getline(input, key);
     key = Trim(key);
     return key.rfind("ED25519-V3:", 0) == 0 ? key : std::string{};
 }
+
+namespace {
 
 class ControlConnection {
 public:
@@ -333,7 +344,7 @@ TorOnionService::TorOnionService(TorOnionServiceConfig config)
     status_.requested = true;
 }
 
-TorOnionService::~TorOnionService() { Stop(); }
+TorOnionService::~TorOnionService() { (void)Stop(); }
 
 bool TorOnionService::SetError(const std::string& message) {
     status_.active = false;
@@ -354,7 +365,7 @@ bool TorOnionService::Start() {
         return SetError(error);
     }
 
-    std::string key = ReadPrivateKey(config_.private_key_path);
+    std::string key = ReadTorPrivateKey(config_.private_key_path);
     const bool generated = key.empty();
     if (generated) key = "NEW:ED25519-V3";
     std::ostringstream command;
@@ -372,7 +383,7 @@ bool TorOnionService::Start() {
     if (generated) {
         const std::string private_key = ExtractValue(reply, "PrivateKey=");
         if (private_key.rfind("ED25519-V3:", 0) != 0 ||
-            !WritePrivateKey(config_.private_key_path, private_key, &error)) {
+            !WriteTorPrivateKey(config_.private_key_path, private_key, &error)) {
             TorControlReply ignored;
             connection.Command("DEL_ONION " + service_id, &ignored, nullptr);
             return SetError(error.empty() ? "Tor did not return a persistent private key" : error);
@@ -386,8 +397,8 @@ bool TorOnionService::Start() {
     return true;
 }
 
-void TorOnionService::Stop() {
-    if (!status_.active || status_.service_id.empty()) return;
+bool TorOnionService::Stop() {
+    if (!status_.active || status_.service_id.empty()) return true;
     ControlConnection connection;
     std::string error;
     std::string method;
@@ -397,10 +408,14 @@ void TorOnionService::Stop() {
         connection.Command("DEL_ONION " + status_.service_id, &reply, &error) &&
         reply.ok()) {
         status_.message = "Tor v3 onion service removed";
+        status_.active = false;
+        return true;
     } else {
         status_.message = "Tor onion-service removal failed: " + error;
+        // A detached onion mapping may still be live. Keep reporting active
+        // until Tor confirms DEL_ONION; callers must not persist an off state.
+        return false;
     }
-    status_.active = false;
 }
 
 }  // namespace dinero::network

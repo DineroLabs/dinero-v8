@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QProgressBar>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -54,12 +55,17 @@ NetworkSection::NetworkSection(QWidget* parent) : QWidget(parent) {
     grid->addWidget(medianFeeLabel_,                2, 1);
     root->addLayout(grid);
 
-    torControl_ = new QCheckBox(tr("Improve reachability with Tor"), this);
+    torControl_ = new QCheckBox(tr("Enable Tor reachability (Admin only)"), this);
     torControl_->setObjectName(QStringLiteral("torReachabilityControl"));
     torControl_->setEnabled(false);
     torControl_->setToolTip(tr(
-        "Tor is configured when the Dinero service starts. This control shows status only; it never installs or starts Tor."));
+        "Uses this node's existing authenticated RPC session. Dinero-Qt normally authenticates automatically with the local node cookie; no additional credentials are required. Dinero never installs or starts Tor."));
     root->addWidget(torControl_);
+    connect(torControl_, &QCheckBox::toggled, this, [this](bool enabled) {
+        torControl_->setEnabled(false);
+        torStatusLabel_->setText(tr("Applying Tor reachability preference…"));
+        Q_EMIT torEnabledRequested(enabled);
+    });
     torStatusLabel_ = new QLabel(this);
     torStatusLabel_->setObjectName(QStringLiteral("torStatus"));
     torStatusLabel_->setWordWrap(true);
@@ -105,12 +111,14 @@ QString NetworkSection::tipDeltaAnnotation(qint64 our, qint64 net) {
 }
 
 void NetworkSection::setTorStatus(TorState state, const QString& onionAddress) {
+    const QSignalBlocker blocker(torControl_);
     torControl_->setChecked(state == TorState::Active || state == TorState::Error);
     torStatusLabel_->setText(torStatusText(state, onionAddress));
 }
 
 void NetworkSection::setOnionServiceStatus(const OnionServiceStatus& status) {
     if (!status.available) {
+        torControl_->setEnabled(false);
         setTorStatus(TorState::Unsupported);
     } else if (!status.requested) {
         setTorStatus(TorState::Off);
@@ -122,6 +130,18 @@ void NetworkSection::setOnionServiceStatus(const OnionServiceStatus& status) {
         // messages can contain local paths or authentication configuration.
         torStatusLabel_->setToolTip(tr("Check the local daemon log for details."));
     }
+    if (status.available) torControl_->setEnabled(true);
+}
+
+void NetworkSection::setTorActionError(bool unsupported) {
+    if (unsupported) {
+        OnionServiceStatus status;
+        setOnionServiceStatus(status);
+        return;
+    }
+    torControl_->setEnabled(true);
+    torStatusLabel_->setText(tr(
+        "Could not change Tor reachability. Check RPC authorization and the local daemon log."));
 }
 
 QString NetworkSection::torStatusText(TorState state, const QString& onionAddress) {

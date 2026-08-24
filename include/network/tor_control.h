@@ -22,6 +22,12 @@ bool ParseTorControlReply(const std::string& wire,
                           TorControlReply* reply,
                           std::string* error);
 
+// Atomic protected storage for the persistent ED25519-V3 onion identity.
+// Exposed for deterministic permission and restart tests.
+bool WriteTorPrivateKey(const std::string& path, const std::string& key,
+                        std::string* error);
+std::string ReadTorPrivateKey(const std::string& path);
+
 struct TorOnionServiceConfig {
     std::string control_host{"127.0.0.1"};
     uint16_t control_port{9051};
@@ -48,7 +54,15 @@ struct TorOnionServiceStatus {
 // user-supplied/local Tor control port, restores or creates an ED25519-V3 key,
 // and installs a detached ADD_ONION mapping. Stop removes that mapping. Dinero
 // never starts Tor itself and never enables this class without listenonion=1.
-class TorOnionService {
+class ITorOnionService {
+public:
+    virtual ~ITorOnionService() = default;
+    virtual bool Start() = 0;
+    virtual bool Stop() = 0;
+    virtual const TorOnionServiceStatus& status() const = 0;
+};
+
+class TorOnionService final : public ITorOnionService {
 public:
     explicit TorOnionService(TorOnionServiceConfig config);
     ~TorOnionService();
@@ -56,9 +70,9 @@ public:
     TorOnionService(const TorOnionService&) = delete;
     TorOnionService& operator=(const TorOnionService&) = delete;
 
-    bool Start();
-    void Stop();
-    const TorOnionServiceStatus& status() const { return status_; }
+    bool Start() override;
+    bool Stop() override;
+    const TorOnionServiceStatus& status() const override { return status_; }
 
 private:
     bool SetError(const std::string& message);

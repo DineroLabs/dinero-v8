@@ -54,6 +54,7 @@ private Q_SLOTS:
         s.setOnionServiceStatus(onion);
         QVERIFY(status->text().startsWith(QStringLiteral("Off.")));
         QVERIFY(!control->isChecked());
+        QVERIFY(control->isEnabled());
 
         onion.requested = true;
         onion.active = true;
@@ -68,6 +69,19 @@ private Q_SLOTS:
         QVERIFY(status->text().contains(QStringLiteral("not active")));
         QVERIFY(!status->text().contains(QStringLiteral("hunter2")));
         QVERIFY(!status->toolTip().contains(QStringLiteral("/secret/path")));
+    }
+
+    void old_daemon_keeps_tor_control_noninteractive() {
+        NetworkSection s;
+        auto* control = s.findChild<QCheckBox*>(QStringLiteral("torReachabilityControl"));
+        QCOMPARE(control->text(), QStringLiteral("Enable Tor reachability (Admin only)"));
+        QVERIFY(control->toolTip().contains(QStringLiteral("local node cookie")));
+        QVERIFY(control->toolTip().contains(QStringLiteral("no additional credentials")));
+        dinero::qt::dashboard::OnionServiceStatus unavailable;
+        s.setOnionServiceStatus(unavailable);
+        QVERIFY(!control->isEnabled());
+        QVERIFY(NetworkSection::torStatusText(NetworkSection::TorState::Unsupported)
+                    .contains(QStringLiteral("Configure Tor in the daemon")));
     }
 };
 
