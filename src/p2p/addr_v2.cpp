@@ -4,9 +4,77 @@
 
 #include "p2p/addr_v2.h"
 
+#include <openssl/evp.h>
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+
 namespace dinero::p2p {
 
 namespace {
+
+constexpr char kBase32Alphabet[] = "abcdefghijklmnopqrstuvwxyz234567";
+constexpr uint8_t kTorV3Version = 3;
+
+std::string Base32Encode(const std::vector<uint8_t>& input) {
+    std::string out;
+    uint32_t accumulator = 0;
+    int bits = 0;
+    for (uint8_t byte : input) {
+        accumulator = (accumulator << 8) | byte;
+        bits += 8;
+        while (bits >= 5) {
+            bits -= 5;
+            out.push_back(kBase32Alphabet[(accumulator >> bits) & 31]);
+        }
+    }
+    if (bits > 0) out.push_back(kBase32Alphabet[(accumulator << (5 - bits)) & 31]);
+    return out;
+}
+
+bool Base32Decode(const std::string& input, std::vector<uint8_t>* out) {
+    if (!out) return false;
+    std::vector<uint8_t> decoded;
+    uint32_t accumulator = 0;
+    int bits = 0;
+    for (unsigned char raw : input) {
+        const char c = static_cast<char>(std::tolower(raw));
+        const char* found = std::find(std::begin(kBase32Alphabet),
+                                      std::end(kBase32Alphabet) - 1, c);
+        if (found == std::end(kBase32Alphabet) - 1) return false;
+        accumulator = (accumulator << 5) |
+            static_cast<uint32_t>(found - std::begin(kBase32Alphabet));
+        bits += 5;
+        if (bits >= 8) {
+            bits -= 8;
+            decoded.push_back(static_cast<uint8_t>((accumulator >> bits) & 0xff));
+        }
+    }
+    *out = std::move(decoded);
+    return true;
+}
+
+bool OnionChecksum(const std::vector<uint8_t>& public_key,
+                   std::array<uint8_t, 2>* checksum) {
+    if (!checksum || public_key.size() != 32) return false;
+    static constexpr char kPrefix[] = ".onion checksum";
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) return false;
+    std::array<uint8_t, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digest_size = 0;
+    const bool ok = EVP_DigestInit_ex(ctx, EVP_sha3_256(), nullptr) == 1 &&
+        EVP_DigestUpdate(ctx, kPrefix, sizeof(kPrefix) - 1) == 1 &&
+        EVP_DigestUpdate(ctx, public_key.data(), public_key.size()) == 1 &&
+        EVP_DigestUpdate(ctx, &kTorV3Version, 1) == 1 &&
+        EVP_DigestFinal_ex(ctx, digest.data(), &digest_size) == 1 &&
+        digest_size >= 2;
+    EVP_MD_CTX_free(ctx);
+    if (!ok) return false;
+    (*checksum)[0] = digest[0];
+    (*checksum)[1] = digest[1];
+    return true;
+}
 
 // Bitcoin-style CompactSize varint.
 void WriteCompactSize(std::vector<uint8_t>* out, uint64_t v) {
@@ -219,6 +287,60 @@ bool DecodeAddrV2(const std::vector<uint8_t>& payload,
         out->push_back(std::move(e));
     }
 
+    return true;
+}
+
+bool DecodeTorV3Address(const std::string& onion,
+                        std::vector<uint8_t>* public_key,
+                        std::string* err) {
+    if (!public_key) {
+        if (err) *err = "null Tor v3 public-key output";
+        return false;
+    }
+    std::string host = onion;
+    std::transform(host.begin(), host.end(), host.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    static constexpr char kSuffix[] = ".onion";
+    if (host.size() != 56 + sizeof(kSuffix) - 1 ||
+        host.compare(host.size() - (sizeof(kSuffix) - 1), sizeof(kSuffix) - 1,
+                     kSuffix) != 0) {
+        if (err) *err = "Tor v3 hostname must be 56 base32 characters plus .onion";
+        return false;
+    }
+    std::vector<uint8_t> decoded;
+    if (!Base32Decode(host.substr(0, 56), &decoded) || decoded.size() != 35 ||
+        decoded[34] != kTorV3Version) {
+        if (err) *err = "invalid Tor v3 base32 body or version";
+        return false;
+    }
+    std::vector<uint8_t> key(decoded.begin(), decoded.begin() + 32);
+    std::array<uint8_t, 2> checksum{};
+    if (!OnionChecksum(key, &checksum) || decoded[32] != checksum[0] ||
+        decoded[33] != checksum[1]) {
+        if (err) *err = "Tor v3 checksum mismatch";
+        return false;
+    }
+    *public_key = std::move(key);
+    return true;
+}
+
+bool EncodeTorV3Address(const std::vector<uint8_t>& public_key,
+                        std::string* onion,
+                        std::string* err) {
+    if (!onion || public_key.size() != 32) {
+        if (err) *err = "Tor v3 public key must contain 32 bytes";
+        return false;
+    }
+    std::array<uint8_t, 2> checksum{};
+    if (!OnionChecksum(public_key, &checksum)) {
+        if (err) *err = "Tor v3 checksum generation failed";
+        return false;
+    }
+    std::vector<uint8_t> body = public_key;
+    body.push_back(checksum[0]);
+    body.push_back(checksum[1]);
+    body.push_back(kTorV3Version);
+    *onion = Base32Encode(body) + ".onion";
     return true;
 }
 

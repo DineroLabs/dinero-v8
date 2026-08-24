@@ -300,6 +300,14 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.onion_transport_auto_detected = onion_proxy_auto_detected_;
     status.onion_proxy = p2p_mgr_->onion_proxy_endpoint();
     status.onion_transport_message = onion_proxy_message_;
+    status.onion_service_requested = onion_service_requested_;
+    if (onion_service_) {
+        const auto& onion_status = onion_service_->status();
+        status.onion_service_active = onion_status.active;
+        status.onion_service_address = onion_status.onion_address;
+        status.onion_service_authentication = onion_status.authentication;
+        status.onion_service_message = onion_status.message;
+    }
     status.relay_hints_received_self = p2p_mgr_->relay_hints_received_self_count();
     status.relay_hints_received_relay = p2p_mgr_->relay_hints_received_relay_count();
     status.relay_hints_evicted_expired = p2p_mgr_->relay_hints_evicted_expired_count();
@@ -1465,6 +1473,45 @@ bool P2PService::Init(DaemonContext& ctx) {
         // relay subsystem in later phases is gated on identity_proven so it
         // simply won't engage on this node.
         {
+            onion_service_requested_ =
+                config_ && config_->GetBool("p2p.listen_onion", false);
+            if (onion_service_requested_) {
+                network::TorOnionServiceConfig tor_config;
+                std::string control_host;
+                uint16_t control_port = 0;
+                const std::string control = config_->GetString(
+                    "p2p.tor_control", "127.0.0.1:9051");
+                if (!ParseEndpoint(control, 9051, &control_host, &control_port)) {
+                    logger_interface_->warning(
+                        "[P2PService] Invalid torcontrol endpoint: " + control);
+                } else {
+                    tor_config.control_host = control_host;
+                    tor_config.control_port = control_port;
+                    tor_config.virtual_port = listen_port_;
+                    tor_config.target_port = listen_port_;
+                    tor_config.private_key_path = datadir + "/onion_service_key";
+                    tor_config.control_password = config_->GetString(
+                        "p2p.tor_control_password", "");
+                    onion_service_ =
+                        std::make_unique<network::TorOnionService>(std::move(tor_config));
+                    if (onion_service_->Start()) {
+                        const auto& onion_status = onion_service_->status();
+                        // Onion reachability is an overlay path, not proof that
+                        // clearnet inbound works. Keep relay fallback eligible
+                        // by adding it as non-direct metadata.
+                        p2p_mgr_->add_advertised_address(
+                            onion_status.onion_address, listen_port_, /*learned=*/true);
+                        logger_interface_->info(
+                            "[P2PService] " + onion_status.message + ": " +
+                            onion_status.onion_address);
+                    } else {
+                        logger_interface_->warning(
+                            "[P2PService] Automatic onion service unavailable: " +
+                            onion_service_->status().message);
+                    }
+                }
+            }
+
             auto node_identity = std::make_shared<dinero::daemon::NodeIdentity>();
             const std::string datadir = config_ ? config_->DataDir() : std::string{};
             if (datadir.empty() || !node_identity->initialize(datadir)) {
@@ -1973,6 +2020,15 @@ void P2PService::Stop() {
                 logger_interface_->warning(
                     "[P2PService] Could not save durable relay hints: " +
                     std::string(e.what()));
+            }
+        }
+
+        if (onion_service_) {
+            const std::string onion_address = onion_service_->status().onion_address;
+            onion_service_->Stop();
+            if (!onion_address.empty()) {
+                p2p_mgr_->remove_explicit_advertised_address(
+                    onion_address, listen_port_);
             }
         }
 

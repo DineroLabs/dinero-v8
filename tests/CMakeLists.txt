@@ -414,6 +414,29 @@ set_tests_properties(RelayRegistryGrace PROPERTIES
   TIMEOUT 5
 )
 
+add_executable(test_tor_onion
+  tests/network/test_tor_onion.cpp
+  src/network/tor_control.cpp
+  src/p2p/addr_v2.cpp
+)
+add_dependencies(test_tor_onion gtest gtest_main)
+target_include_directories(test_tor_onion BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_tor_onion PRIVATE
+  GTest::gtest_main
+  OpenSSL::Crypto
+)
+if(WIN32)
+  target_link_libraries(test_tor_onion PRIVATE ws2_32)
+endif()
+add_test(NAME TorOnionService COMMAND test_tor_onion)
+set_tests_properties(TorOnionService PROPERTIES
+  LABELS "network;tor;onion;smoke"
+  TIMEOUT 10
+)
+
 add_executable(test_rolling_24h_counter
   tests/network/test_rolling_24h_counter.cpp
 )

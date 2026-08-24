@@ -73,4 +73,14 @@ bool DecodeAddrV2(const std::vector<uint8_t>& payload,
                   std::vector<AddrV2Entry>* out,
                   std::string* err);
 
+// Canonical Tor v3 hostname conversion used by addrv2 gossip. The BIP155 body
+// carries only the 32-byte Ed25519 public key; these helpers validate/regenerate
+// the onion checksum and version byte without clearnet DNS.
+bool DecodeTorV3Address(const std::string& onion,
+                        std::vector<uint8_t>* public_key,
+                        std::string* err = nullptr);
+bool EncodeTorV3Address(const std::vector<uint8_t>& public_key,
+                        std::string* onion,
+                        std::string* err = nullptr);
+
 }  // namespace dinero::p2p

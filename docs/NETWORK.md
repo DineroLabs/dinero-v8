@@ -205,9 +205,28 @@ Important invariants:
 - Preserve the hidden service private key if you want a stable onion address
   across restarts.
 
-This first overlay layer expects Tor or another compatible SOCKS5 service to
-already be running locally. Automatic hidden-service creation is a separate
-operator feature.
+Tor or another compatible SOCKS5 service must already be running locally.
+Dinero never installs or launches Tor.
+
+For an inbound v3 onion service, explicitly opt in to Tor control integration:
+
+```ini
+onion=auto
+listenonion=1
+torcontrol=127.0.0.1:9051
+```
+
+Dinero discovers and uses Tor's 32-byte control cookie when `COOKIE`
+authentication is available. `torcontrolpassword` is an optional fallback.
+The `ED25519-V3` private key returned by Tor is stored as
+`onion_service_key` in the data directory with owner-only permissions and is
+reused to keep the address stable. Dinero removes the mapping during clean
+shutdown. `getnetworkinfo.onion_service` reports requested/active state,
+address, authentication method, and any failure.
+
+Onion addresses are exchanged through BIP155 `addrv2` and are never submitted
+to clearnet DNS. Encrypted Dinero relay fallback remains eligible because an
+onion path is not evidence of clearnet inbound reachability.
 
 I2P is the next natural overlay candidate, but it is not enabled in the v8
 transport layer yet. `getnetworkinfo` reports `i2p` as unavailable so tools can

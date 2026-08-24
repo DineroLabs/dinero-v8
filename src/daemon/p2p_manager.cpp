@@ -3705,12 +3705,9 @@ void P2PManager::ExchangeSendAddrV2(PeerInfo* peer) {
 }
 
 // BIP155 addrv2 ingestion path. Decodes via dinero::p2p::DecodeAddrV2,
-// then funnels IPV4 / IPV6 entries into the same remember_peer_address()
-// pipe that legacy handle_addr uses. TORV3 / I2P entries are parsed but
-// dropped: ingesting them requires (a) onion-string codec (TORv3 checksum
-// needs SHA3) and (b) addrman storage that remembers the network type.
-// Both land in a follow-up commit; until then we explicitly count and log
-// the dropped entries so operators can see we're seeing them.
+// then funnels IPV4 and TORV3 entries into the same remember_peer_address()
+// pipe that legacy handle_addr uses. Onion peers remain outside the IP-shaped
+// AddrMan but are persisted in peers.dat and dialed only through SOCKS5.
 void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage& message) {
     std::vector<dinero::p2p::AddrV2Entry> entries;
     std::string err;
@@ -3721,6 +3718,7 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
     }
 
     int ipv4_added = 0;
+    int torv3_added = 0;
     int ipv6_seen = 0;
     int torv3_skipped = 0;
     int i2p_skipped = 0;
@@ -3755,11 +3753,16 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
                 // string-keyed so the format must be canonical.
                 break;
             case dinero::p2p::NetworkType::TORV3:
-                torv3_skipped++;
-                // TODO Phase A2 follow-up: encode raw 32-byte pubkey
-                // back to "xxx.onion" using the TORv3 base32 + SHA3
-                // checksum scheme. Once that lands the existing
-                // SOCKS5 dial path can reach these peers.
+                {
+                    std::string onion;
+                    if (dinero::p2p::EncodeTorV3Address(e.addr, &onion) &&
+                        remember_peer_address(onion, e.port, peer_address, e.services)) {
+                        ++torv3_added;
+                        new_for_relay.emplace_back(std::move(onion), e.port);
+                    } else {
+                        ++torv3_skipped;
+                    }
+                }
                 break;
             case dinero::p2p::NetworkType::I2P:
                 i2p_skipped++;
@@ -3769,15 +3772,17 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
         }
     }
 
-    if (ipv4_added > 0 || ipv6_seen > 0 || torv3_skipped > 0 || i2p_skipped > 0) {
+    if (ipv4_added > 0 || torv3_added > 0 || ipv6_seen > 0 ||
+        torv3_skipped > 0 || i2p_skipped > 0) {
         std::cout << "[P2P] addrv2 from " << peer_address
                   << ": ipv4_added=" << ipv4_added
+                  << " torv3_added=" << torv3_added
                   << " ipv6_seen=" << ipv6_seen
                   << " torv3_skipped=" << torv3_skipped
                   << " i2p_skipped=" << i2p_skipped
-                  << " (TORv3/I2P/IPv6 ingestion is a Phase A2 follow-up)"
+                  << " (I2P/IPv6 ingestion is a Phase A2 follow-up)"
                   << std::endl;
-        if (ipv4_added > 0 && !peers_file_path_.empty()) {
+        if ((ipv4_added > 0 || torv3_added > 0) && !peers_file_path_.empty()) {
             save_peers_with_seeds(peers_file_path_);
         }
         if (!new_for_relay.empty()) {
@@ -4600,8 +4605,13 @@ bool P2PManager::send_addr_list_to_peer(
         for (const auto& [address, port] : addresses) {
             dinero::p2p::AddrV2Entry e;
             std::vector<uint8_t> addr_bytes;
-            if (!ClassifyHostLiteral(address, &e.net, &addr_bytes)) {
-                continue;  // not an IPv4/IPv6 literal — skip
+            if (IsOnionAddress(address)) {
+                if (!dinero::p2p::DecodeTorV3Address(address, &addr_bytes)) {
+                    continue;
+                }
+                e.net = dinero::p2p::NetworkType::TORV3;
+            } else if (!ClassifyHostLiteral(address, &e.net, &addr_bytes)) {
+                continue;  // not an IPv4/IPv6/Tor v3 literal — skip
             }
             e.addr = std::move(addr_bytes);
             e.port = port;
@@ -6394,13 +6404,13 @@ void P2PManager::handle_getaddr(const std::string& peer_address, const P2PMessag
     // servers: one node learns it, addrman stores it, getaddr shares it.
     const auto relayable = collect_advertisable_addresses(1000);
     if (!relayable.empty()) {
-        std::vector<PeerInfo> peer_infos;
-        peer_infos.reserve(relayable.size());
-        for (const auto& [address, port] : relayable) {
-            peer_infos.push_back(PeerInfoForAddress(address, port));
+        std::shared_ptr<PeerInfo> peer;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            auto it = connected_peers_.find(peer_address);
+            if (it != connected_peers_.end()) peer = it->second;
         }
-        auto addr_msg = P2PMessage::create_addr(peer_infos);
-        send_to_peer(peer_address, addr_msg);
+        send_addr_list_to_peer(peer.get(), relayable);
     }
 }
 
@@ -6472,7 +6482,7 @@ void P2PManager::relay_addresses_to_peers(
     if (addresses.empty()) return;
 
     // Collect candidate outbound peers (excluding the sender).
-    std::vector<std::string> candidates;
+    std::vector<std::shared_ptr<PeerInfo>> candidates;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& pair : connected_peers_) {
@@ -6480,7 +6490,7 @@ void P2PManager::relay_addresses_to_peers(
             if (!peer->is_connected) continue;
             if (!peer->is_outbound) continue;          // only outbound (known listening port)
             if (pair.first == source_peer) continue;   // don't echo back to sender
-            candidates.push_back(pair.first);
+            candidates.push_back(peer);
         }
     }
     if (candidates.empty()) return;
@@ -6493,17 +6503,8 @@ void P2PManager::relay_addresses_to_peers(
     std::shuffle(candidates.begin(), candidates.end(), rng);
     const size_t fanout = std::min<size_t>(2, candidates.size());
 
-    // Build a minimal PeerInfo vector for create_addr. We only need
-    // address + port — create_addr extracts those two fields.
-    std::vector<PeerInfo> as_peer_infos;
-    as_peer_infos.reserve(addresses.size());
-    for (const auto& [addr, port] : addresses) {
-        as_peer_infos.push_back(PeerInfoForAddress(addr, port));
-    }
-    auto addr_msg = P2PMessage::create_addr(as_peer_infos);
-
     for (size_t i = 0; i < fanout; ++i) {
-        send_to_peer(candidates[i], addr_msg);
+        send_addr_list_to_peer(candidates[i].get(), addresses);
     }
     std::cout << "[P2P] Relayed " << addresses.size()
               << " address(es) to " << fanout << " peer(s)" << std::endl;
@@ -7423,7 +7424,10 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
             if (total >= PEERS_FILE_MAX_ENTRIES) break;
             std::string ip = seed.first;
             struct sockaddr_in sa;
-            if (inet_pton(AF_INET, seed.first.c_str(), &sa.sin_addr) <= 0) {
+            // Onion names must never reach clearnet DNS. Preserve their
+            // canonical hostname verbatim for the SOCKS5 dial path.
+            if (!IsOnionAddress(seed.first) &&
+                inet_pton(AF_INET, seed.first.c_str(), &sa.sin_addr) <= 0) {
                 struct addrinfo hints{}, *res = nullptr;
                 hints.ai_family = AF_INET;
                 hints.ai_socktype = SOCK_STREAM;
