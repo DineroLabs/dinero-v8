@@ -41,6 +41,14 @@ if [[ -n "${DINEROD:-}" ]]; then
     [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
 else
     DINEROD="${ROOT_DIR}/build/dinerod"
+    # Say WHAT WAS TRIED. Naming only the resolved path reads as
+    # "the build is missing" when the real cause is that $DINEROD
+    # was never set and this fallback does not exist.
+    [[ -x "${DINEROD}" ]] || {
+        echo "dinerod not found (tried: \$DINEROD unset, ${DINEROD})" >&2
+        echo "set DINEROD=/path/to/dinerod to override" >&2
+        exit 1
+    }
 fi
 DATA_DIR="/tmp/dinero_frontier_gap_recovery_$$"
 LOG_BASE="${DATA_DIR}.base.log"
@@ -129,6 +137,17 @@ start_node() {
         -rpcport="${RPC_PORT}" \
         -port="${P2P_PORT}" \
         -listen=0 \
+        `# Per-block full forest checkpoints. The composite probe below` \
+        `# asserts that EVERY container the unified batch touched — including` \
+        `# the utreexo checkpoint — lands on the recovered tip. Under the` \
+        `# shipped default (500) the batch writes a full checkpoint only when` \
+        `# tip % 500 == 0, so at the 6-block height this test uses none is` \
+        `# written and latest_utreexo_checkpoint_height correctly stays 0.` \
+        `# The test predates the forest-checkpoint-delta campaign that made` \
+        `# 500 the default; interval=1 restores the per-block regime it was` \
+        `# written against. Do not remove without also relaxing the` \
+        `# checkpoint assertion.` \
+        --utreexo.checkpoint_interval=1 \
         ${atomic_flag[@]+"${atomic_flag[@]}"} \
         > "${log_file}" 2>&1 &
     PID=$!

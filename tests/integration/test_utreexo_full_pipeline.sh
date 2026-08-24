@@ -45,6 +45,14 @@ if [[ -n "${DINEROD:-}" ]]; then
     [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
 else
     DINEROD="${DINERO_ROOT}/build/dinerod"
+    # Say WHAT WAS TRIED. Naming only the resolved path reads as
+    # "the build is missing" when the real cause is that $DINEROD
+    # was never set and this fallback does not exist.
+    [[ -x "${DINEROD}" ]] || {
+        echo "dinerod not found (tried: \$DINEROD unset, ${DINEROD})" >&2
+        echo "set DINEROD=/path/to/dinerod to override" >&2
+        exit 1
+    }
 fi
 STRATUM_SERVER="${STRATUM_ROOT}/build/bin/dinero-stratum"
 MINER="${DINERO_ROOT}/build/dinero-stratum-worker"

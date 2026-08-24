@@ -24,6 +24,14 @@ if [[ -n "${DINEROD:-}" ]]; then
     [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
 else
     DINEROD="${ROOT_DIR}/build/dinerod"
+    # Say WHAT WAS TRIED. Naming only the resolved path reads as
+    # "the build is missing" when the real cause is that $DINEROD
+    # was never set and this fallback does not exist.
+    [[ -x "${DINEROD}" ]] || {
+        echo "dinerod not found (tried: \$DINEROD unset, ${DINEROD})" >&2
+        echo "set DINEROD=/path/to/dinerod to override" >&2
+        exit 1
+    }
 fi
 RUN_ID=$$
 DATA_DIR="/tmp/dinero_undo_metadata_restamp_${RUN_ID}"

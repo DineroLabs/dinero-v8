@@ -12,6 +12,14 @@ if [[ -n "${DINEROD:-}" ]]; then
     [[ -x "${DINEROD}" ]] || { echo "dinerod not executable at ${DINEROD}"; exit 1; }
 else
     DINEROD="${BUILD_DIR}/dinerod"
+    # Say WHAT WAS TRIED. Naming only the resolved path reads as
+    # "the build is missing" when the real cause is that $DINEROD
+    # was never set and this fallback does not exist.
+    [[ -x "${DINEROD}" ]] || {
+        echo "dinerod not found (tried: \$DINEROD unset, ${DINEROD})" >&2
+        echo "set DINEROD=/path/to/dinerod to override" >&2
+        exit 1
+    }
 fi
 BACKLOG_INJECTOR="${BUILD_DIR}/tests/integration/header_store_backlog_injector"
 if [[ ! -x "${BACKLOG_INJECTOR}" ]]; then
