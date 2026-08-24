@@ -12,7 +12,13 @@ if [[ -n "${DINEROD:-}" ]]; then
 else
     DINEROD="${ROOT_DIR}/build/dinerod"
 fi
-if [[ -x "${ROOT_DIR}/build/tests/integration/utreexo_checkpoint_mutator" ]]; then
+# Honour $MUTATOR when set (and require it executable); the chain
+# below never consulted it, so ctest could not point at a build
+# directory and the final fallback resolved to a path that does
+# not exist.
+if [[ -n "${MUTATOR:-}" ]]; then
+    [[ -x "${MUTATOR}" ]] || { echo "utreexo_checkpoint_mutator not executable at ${MUTATOR}" >&2; exit 1; }
+elif [[ -x "${ROOT_DIR}/build/tests/integration/utreexo_checkpoint_mutator" ]]; then
     MUTATOR="${ROOT_DIR}/build/tests/integration/utreexo_checkpoint_mutator"
 elif [[ -x "${ROOT_DIR}/build/utreexo_checkpoint_mutator" ]]; then
     MUTATOR="${ROOT_DIR}/build/utreexo_checkpoint_mutator"
