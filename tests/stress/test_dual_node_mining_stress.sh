@@ -74,6 +74,12 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_step() { echo -e "${CYAN}[$1]${NC} $2"; }
 
 cleanup() {
+    # MUST be the first statement: in an EXIT trap $? is the script's exit
+    # status only before any other command runs. Capturing it further down
+    # (after the kills and sleeps below) yields the status of that sleep --
+    # effectively always 0 -- and the failure-log preservation would silently
+    # never fire.
+    local exit_code=$?
     echo ""
     log_warn "Cleaning up test environment..."
 
@@ -114,6 +120,35 @@ cleanup() {
     pkill -9 -f "dinerod.*$DATA_B" 2>/dev/null || true
 
     sleep 1
+
+    # PRESERVE THE EVIDENCE ON FAILURE.
+    #
+    # This cleanup previously ran `rm -rf` on both datadirs unconditionally, so
+    # every failure destroyed the daemon logs that would explain it. That is a
+    # large part of why the convergence failure in this test has survived as a
+    # "just re-run it" flake: each occurrence erased its own diagnosis.
+    #
+    # The failure mode worth capturing: node B's height OSCILLATES DOWNWARD
+    # (e.g. 30 -> 29 -> 50 -> 49 -> 73 -> 68 -> 51) while node A sits stable at
+    # the target, so B never converges. A node should not move to a lower-work
+    # chain; the reason is in B's log, which no longer exists by the time anyone
+    # looks.
+    #
+    # On a non-zero exit, copy each datadir's logs to STRESS_LOG_PRESERVE_DIR
+    # (defaults to a stable path under the artifact root when the caller sets
+    # one). Only *.log is copied -- the chainstate can be gigabytes.
+    if [ "$exit_code" -ne 0 ]; then
+        local preserve="${STRESS_LOG_PRESERVE_DIR:-${ARTIFACT_ROOT:-/tmp}/stress-failure-logs-$$}"
+        mkdir -p "$preserve" 2>/dev/null || true
+        for tag in a:"$DATA_A" b:"$DATA_B"; do
+            local node="${tag%%:*}" dir="${tag#*:}"
+            [ -n "$dir" ] && [ -d "$dir" ] || continue
+            find "$dir" -maxdepth 2 -name '*.log' -exec sh -c \
+                'cp "$1" "$2/node-$3-$(basename "$1")" 2>/dev/null' _ {} "$preserve" "$node" \; 2>/dev/null || true
+        done
+        log_warn "Failure logs preserved in: $preserve"
+        ls -1 "$preserve" 2>/dev/null | sed 's/^/  preserved: /' || true
+    fi
 
     # Remove data directories with retries; background shutdown may flush peers.dat/banlist.dat
     # briefly after the first TERM.
