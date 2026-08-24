@@ -2894,16 +2894,33 @@ void MainWindow::setupUI() {
     sendLayout->addWidget(new QLabel("Mode:"), 0, 0);
     cmbSendAction_ = new QComboBox;
     cmbSendAction_->addItem("Send publicly", "public_transfer");
-    cmbSendAction_->addItem("Spend privately", "private_transfer");
-    cmbSendAction_->addItem("Send to shielded", "shield_to");
-    cmbSendAction_->addItem("Convert to public", "unshield");
+    // Shielded send modes are withheld while kShieldedUiLockedOut is set (see
+    // shieldedwidget.h). The Send tab is a SECOND entry point into the shielded
+    // RPCs, independent of the shielded tab's own buttons: "Spend privately"
+    // (private_transfer) is the addressed transfer that carries the
+    // sender-retained spend-authority bug, and shield_to / unshield move value
+    // in and out of the pool. Locking only the shielded tab would leave all
+    // three reachable from here.
+    //
+    // Withheld rather than shown-disabled because a QComboBox entry cannot
+    // carry its own explanation; the shielded tab states the reason.
+    if (!kShieldedUiLockedOut) {
+        cmbSendAction_->addItem("Spend privately", "private_transfer");
+        cmbSendAction_->addItem("Send to shielded", "shield_to");
+        cmbSendAction_->addItem("Convert to public", "unshield");
+    }
     cmbSendAction_->addItem("Contracts", "public_contract");
     cmbSendAction_->setToolTip(
-        "Send publicly: transparent Taproot or P2MR transfer\n"
-        "Spend privately: shielded note transfer to a private address\n"
-        "Send to shielded: fund a shielded dins1 address from your transparent balance\n"
-        "Convert to public: unshield to a fresh wallet Taproot address\n"
-        "Contracts: create an on-chain lock or batch spending rule");
+        kShieldedUiLockedOut
+        ? "Send publicly: transparent Taproot or P2MR transfer\n"
+          "Contracts: create an on-chain lock or batch spending rule\n"
+          "\n"
+          "Shielded modes are temporarily unavailable — see the Shielded tab."
+        : "Send publicly: transparent Taproot or P2MR transfer\n"
+          "Spend privately: shielded note transfer to a private address\n"
+          "Send to shielded: fund a shielded dins1 address from your transparent balance\n"
+          "Convert to public: unshield to a fresh wallet Taproot address\n"
+          "Contracts: create an on-chain lock or batch spending rule");
     sendLayout->addWidget(cmbSendAction_, 0, 1);
 
     // Hidden cmbSendMode_ kept so legacy code paths that read it stay valid;
@@ -13967,6 +13984,24 @@ void MainWindow::onSendTransaction() {
   }
 
   // v7: ring/CT modes removed.
+
+  // Defence in depth for the shielded lockout (shieldedwidget.h). The mode
+  // list above withholds these entries, so this is unreachable through the UI
+  // — it catches a stale cmbSendMode_ value, a restored preference, or a future
+  // code path that sets the mode directly. Refusing here means no shielded RPC
+  // can be issued from the Send tab while the lockout stands.
+  if (kShieldedUiLockedOut &&
+      (mode == "private_transfer" || mode == "shield_to" ||
+       mode == "unshield" || mode == "shield")) {
+    lblSendStatus_->setText(QString::fromUtf8(
+        "\xF0\x9F\x94\x92 Shielded transfers are temporarily unavailable.\n"
+        "This feature is being finished and is held closed until its "
+        "activation height is set."));
+    lblSendStatus_->setStyleSheet(
+        "QLabel { color: #d5d9e0; padding: 10px; background: #3a3f4a; "
+        "border: 1px solid #4a5060; border-radius: 6px; }");
+    return;
+  }
 
   if (mode == "private_transfer") {
     const qint64 amountUna = static_cast<qint64>(std::llround(amount * 100000000.0));
