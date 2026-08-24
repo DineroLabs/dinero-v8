@@ -185,6 +185,25 @@ jobs:
       - name: Run serial e2e tests (daemon-spawning)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
+          # Run EVERY test, then fail once at the end.
+          #
+          # This loop previously relied on the step's implicit `bash -e`, so the
+          # FIRST failing test aborted every test after it. Observed on PR #644:
+          # CSNShieldedReorgInvertibility failed 9th, and the remaining SIX --
+          # AssumeUtxoCorruptCheckpointRecovery, ConsensusIntrospectionRpc,
+          # ConnectTipRestartEquivalence, RecoveryMarkerRestartEquivalence and
+          # RestartChurnBoringnessGate -- silently never ran. The only surface
+          # signal was a red X naming one unrelated-looking test.
+          #
+          # That is the SAME failure class this step's own header describes
+          # fixing at the step level ("a single unrelated failure ... silently
+          # skipped this entire lane"), reproduced INSIDE the lane between
+          # tests. Coverage must not depend on every earlier test passing.
+          #
+          # `|| true` is scoped to recording the result; the aggregated exit
+          # below still fails the step, so this does not weaken the gate.
+          set +e
+          failed=""
           for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
@@ -192,7 +211,17 @@ jobs:
               --no-tests=error \
               -j1 \
               -R "^${t}$"
+            if [ $? -ne 0 ]; then
+              failed="${failed} ${t}"
+            fi
           done
+          set -e
+          if [ -n "${failed}" ]; then
+            echo "::error::serial e2e lane failures:${failed}"
+            echo "serial e2e lane failures:${failed}" >&2
+            exit 1
+          fi
+          echo "serial e2e lane: all 15 tests passed"
 
       # Fuzz-labelled consensus invariant tests (issue #486).
       #

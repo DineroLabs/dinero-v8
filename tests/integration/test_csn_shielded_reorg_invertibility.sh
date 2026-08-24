@@ -73,6 +73,7 @@ elif [[ -x "${PROJECT_ROOT}/build/shielded_tx_builder" ]]; then
     BUILDER="${PROJECT_ROOT}/build/shielded_tx_builder"
 else echo "shielded_tx_builder not found (build the target)"; exit 1; fi
 
+command -v lsof >/dev/null || { echo "lsof is required for port preflight" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "jq required"; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 1; }
 
@@ -222,10 +223,45 @@ echo "================================================================="
 echo "  CSN SHIELDED REORG INVERTIBILITY  (Legs A/B/C/D)"
 echo "================================================================="
 
+# Pick 4 consecutive FREE ports, verifying availability instead of hoping.
+#
+# This previously used a bare `RB=$((44000 + RANDOM % 400))` with no check that
+# anything was listening. Two problems compounded:
+#   * a 400-wide window is small, and other integration scripts draw from
+#     ranges that OVERLAP it (e.g. 36000 + RANDOM % 12000 spans 36000-48000),
+#     so an unrelated test's daemon can already hold the port;
+#   * a daemon that has not fully exited from an earlier test still holds its
+#     listener, and nothing here noticed.
+# Either way the node failed to bind, the test hung, then timed out far past
+# its normal runtime -- the observed flake was 449s against a ~104s norm.
+#
+# Same preflight already used by the sibling test_csn_epoch_reset_crash_
+# atomicity.sh; this brings the two in line.
+choose_ports() {
+    local base
+    for _ in $(seq 1 100); do
+        base=$((30000 + RANDOM % 20000))
+        local busy=0 port
+        for port in "${base}" "$((base + 1))" "$((base + 2))" "$((base + 3))"; do
+            if lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+                busy=1
+                break
+            fi
+        done
+        if [[ "${busy}" == "0" ]]; then
+            echo "${base}"
+            return 0
+        fi
+    done
+    echo "could not find 4 consecutive free ports after 100 attempts" >&2
+    return 1
+}
+
 # =============================================================================
 #  PAIR 1  (no epoch reset):  Leg A (reorg) → Leg B (double-spend) → Leg D (2nd reorg)
 # =============================================================================
-RB=$((44000 + RANDOM % 400)); PB=$((RB+1)); RC=$((RB+2)); PC=$((RB+3))
+_BASE1=$(choose_ports) || exit 1
+RB=$_BASE1; PB=$((RB+1)); RC=$((RB+2)); PC=$((RB+3))
 DB1=$(mktemp -d -t dinero_csnreorg_bridge_XXXXXX); DC1=$(mktemp -d -t dinero_csnreorg_csn_XXXXXX)
 DIRS+=("$DB1" "$DC1")
 CLOG="$DC1/daemon.log"
@@ -334,7 +370,8 @@ sleep 1
 # =============================================================================
 #  PAIR 2  (epoch reset at H):  Leg C — reorg across the cutover
 # =============================================================================
-RB2=$((45000 + RANDOM % 400)); PB2=$((RB2+1)); RC2=$((RB2+2)); PC2=$((RB2+3))
+_BASE2=$(choose_ports) || exit 1
+RB2=$_BASE2; PB2=$((RB2+1)); RC2=$((RB2+2)); PC2=$((RB2+3))
 DB2=$(mktemp -d -t dinero_csnreorgC_bridge_XXXXXX); DC2=$(mktemp -d -t dinero_csnreorgC_csn_XXXXXX)
 DIRS+=("$DB2" "$DC2")
 CLOG2="$DC2/daemon.log"
