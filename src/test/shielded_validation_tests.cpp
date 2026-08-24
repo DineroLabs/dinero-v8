@@ -1337,7 +1337,8 @@ TEST_F(ShieldedValidationFixture, AddressedRecipientOutputMatchesConventionBytes
     esk[0] = 0xE5; esk[31] = 0xC0;
 
     auto out = sops::BuildAddressedRecipientOutput(recipient, /*memo=*/nullptr,
-                                                   /*cv_bound=*/false, &rcm, &esk);
+                                                   /*cv_bound=*/false,
+                                                   /*spend_auth=*/false, &rcm, &esk);
     ASSERT_EQ(out.status, sops::OpStatus::Ok) << out.error;
 
     // (1) commitment == the documented on-chain formula.
@@ -1363,10 +1364,71 @@ TEST_F(ShieldedValidationFixture, AddressedRecipientOutputMatchesConventionBytes
 
     // (3) Same overrides → identical bytes (deterministic construction).
     auto out2 = sops::BuildAddressedRecipientOutput(recipient, nullptr, false,
+                                                    /*spend_auth=*/false,
                                                     &rcm, &esk);
     ASSERT_EQ(out2.status, sops::OpStatus::Ok) << out2.error;
     EXPECT_EQ(out2.commitment, out.commitment);
     EXPECT_EQ(out2.planned.encrypted_note, out.planned.encrypted_note);
+}
+
+// ── Spend authority: the address format blocks it, and that must not be
+//    discovered by burning funds ─────────────────────────────────────────
+//
+// The merged spend-auth circuit proves pk_d = s·G with s = Poseidon(ivk, d)
+// (hash-to-SCALAR). DeriveDiversifiedAddress still publishes pk_d = ivk·P_d
+// with P_d = HashToPoint(d) (hash-to-POINT). Different points.
+//
+// Committing a note to the address's pk_d under the auth rule would demand
+// dlog_G(ivk·P_d) from the spender, which nobody can produce — the note would
+// be unspendable by everyone. This test pins BOTH halves: that the two
+// derivations genuinely disagree, and that the builder refuses rather than
+// producing such a note.
+TEST_F(ShieldedValidationFixture, SpendAuthRefusedWhileAddressFormatIncompatible) {
+    constexpr uint64_t kValue = 42'000'000;
+
+    auto seed = RoundtripSeed();
+    auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
+    auto addr = shdrv::DeriveDiversifiedAddress(keys, /*j=*/0, shdrv::kHrpRegtest);
+
+    // The incompatibility itself. If these ever become equal, the address
+    // format has been migrated to s·G and the refusal below can be lifted.
+    const auto dk = shdrv::DeriveDiversifiedSpendKey(keys.ivk, addr.d);
+    EXPECT_NE(dk.pk_d, addr.pk_d)
+        << "address pk_d now matches s·G — migrate the send path and drop the "
+           "spend_auth refusal in BuildAddressedRecipientOutput";
+
+    sops::AddressedRecipient recipient;
+    recipient.d         = addr.d;
+    recipient.pk_d      = addr.pk_d;
+    recipient.value_una = kValue;
+
+    Hash rcm{};
+    rcm[0] = 0xC0; rcm[31] = 0xDE;
+    Hash esk{};
+    esk[0] = 0xE5; esk[31] = 0xC0;
+
+    // Legacy still builds (that is today's behaviour, bug and all).
+    auto legacy = sops::BuildAddressedRecipientOutput(
+        recipient, nullptr, /*cv_bound=*/false, /*spend_auth=*/false, &rcm, &esk);
+    ASSERT_EQ(legacy.status, sops::OpStatus::Ok) << legacy.error;
+
+    Hash d_packed{};
+    std::memcpy(d_packed.data(), addr.d.data(), addr.d.size());
+    const Hash sender_known_pk =
+        PoseidonHash2(shdrv::DeriveNoteSpendKey(rcm), Hash{});
+    // Pin the legacy convention: the note commits to a key the SENDER derived
+    // from an rcm the sender chose. This is the sender-retained-authority bug,
+    // recorded so the eventual fix is demonstrably a change.
+    EXPECT_EQ(legacy.commitment,
+              NoteCommitment(d_packed, sender_known_pk, ValueAsHash(kValue), rcm));
+
+    // Auth must REFUSE, not build an unspendable note.
+    auto auth = sops::BuildAddressedRecipientOutput(
+        recipient, nullptr, /*cv_bound=*/false, /*spend_auth=*/true, &rcm, &esk);
+    EXPECT_NE(auth.status, sops::OpStatus::Ok)
+        << "auth built a note committed to an incompatible pk_d — those funds "
+           "would be unspendable by everyone";
+    EXPECT_EQ(auth.error, "spend_auth_requires_scalar_diversified_address_format");
 }
 
 }  // namespace

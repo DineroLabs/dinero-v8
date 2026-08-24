@@ -349,8 +349,14 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
         return out;
     }
 
+    // The proof variant must match the NOTE's convention, not a separately
+    // passed flag: an auth note is unspendable by the legacy circuit and
+    // vice-versa. Derived from the note so the two cannot drift apart.
+    const bool note_spend_auth =
+        (note.key_scheme == NoteKeyScheme::Auth);
     auto spend_proof = sh::ProveSpend(sw, spi, nullptr,
-                                      /*bind_public_inputs=*/true, cv_bound);
+                                      /*bind_public_inputs=*/true, cv_bound,
+                                      note_spend_auth);
     if (spend_proof.empty()) {
         out.status = OpStatus::ProofError;
         out.error = "spend proof generation failed";
@@ -530,8 +536,14 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
         return out;
     }
 
+    // The proof variant must match the NOTE's convention, not a separately
+    // passed flag: an auth note is unspendable by the legacy circuit and
+    // vice-versa. Derived from the note so the two cannot drift apart.
+    const bool note_spend_auth =
+        (note.key_scheme == NoteKeyScheme::Auth);
     auto spend_proof = sh::ProveSpend(sw, spi, nullptr,
-                                      /*bind_public_inputs=*/true, cv_bound);
+                                      /*bind_public_inputs=*/true, cv_bound,
+                                      note_spend_auth);
     if (spend_proof.empty()) {
         out.status = OpStatus::ProofError;
         out.error = "spend proof generation failed";
@@ -736,8 +748,10 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
             return out;
         }
 
+        const bool s_spend_auth = (s.key_scheme == NoteKeyScheme::Auth);
         auto proof = sh::ProveSpend(sw, spi, nullptr,
-                                    /*bind_public_inputs=*/true, cv_bound);
+                                    /*bind_public_inputs=*/true, cv_bound,
+                                    s_spend_auth);
         if (proof.empty()) {
             out.status = OpStatus::ProofError;
             out.error = "spend proof generation failed";
@@ -865,6 +879,7 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     const AddressedRecipient& recipient,
     const std::array<uint8_t, 512>* recipient_memo,
     bool cv_bound,
+    bool spend_auth,
     const sh::Hash* rcm_override,
     const sh::Hash* esk_override) {
     AddressedRecipientOutput out;
@@ -878,12 +893,51 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     sh::Hash zero{};
     //   d = recipient.d (packed into 32-byte hash for the on-chain
     //                    commitment formula)
-    //   pk_note = Poseidon(DeriveNoteSpendKey(rcm), 0)
     //   commitment = NoteCommitment(d_packed, pk_note, value, rcm)
     //   encrypted_note = EncryptNoteForRecipient(d, pk_d, plaintext)
+    //
+    // pk_note depends on the spend-authority rule:
+    //
+    //   LEGACY (spend_auth = false): pk_note = Poseidon(DeriveNoteSpendKey(rcm), 0).
+    //     `rcm` is chosen HERE, by the sender, so the sender knows the spend key
+    //     of the note they just sent and can spend it out from under the
+    //     recipient at any time. The recipient's pk_d is used only to encrypt.
+    //
+    //   AUTH (spend_auth = true): pk_note = recipient.pk_d, straight from their
+    //     address. Spending it requires `s` with s·G = pk_d, which only the
+    //     recipient can derive (s = Poseidon(ivk, d)). The sender never learns
+    //     it, so the note stops being sender-spendable.
+    //
+    // `rcm` stays random and stays in the plaintext either way — under AUTH it
+    // is only the commitment's blinding factor, no longer a spend key.
     sh::Hash recipient_rcm = rcm_override ? *rcm_override : RandomHash();
-    sh::Hash recipient_sk  = shdrv::DeriveNoteSpendKey(recipient_rcm);
-    sh::Hash recipient_pk  = sh::PoseidonHash2(recipient_sk, zero);
+    sh::Hash recipient_pk;
+    if (spend_auth) {
+        // ⛔ BLOCKED — the address format is incompatible, and committing here
+        // would BURN THE FUNDS.
+        //
+        // DeriveDiversifiedAddress (shielded_derivation.cpp) publishes
+        //     pk_d = ivk·P_d,  P_d = HashToPoint(d)      [hash-to-POINT]
+        // while the merged spend-authority circuit proves
+        //     pk_d = s·G,      s = Poseidon(ivk, d)      [hash-to-SCALAR]
+        //
+        // These are different points. Committing a note to the address's pk_d
+        // would require a spender to know dlog_G(ivk·P_d) — and NOBODY knows
+        // that: dlog_G(P_d) is unknown by hash-to-point construction. The note
+        // would be unspendable by the recipient, the sender, and everyone else.
+        //
+        // Closing spend authority therefore REQUIRES changing the published
+        // address derivation to s·G, which changes every dins1 address and
+        // breaks DineroDPI compatibility. That is an owner decision, not one to
+        // make implicitly here, so this path fails closed until it is taken.
+        out.status = OpStatus::InvalidParams;
+        out.error = "spend_auth_requires_scalar_diversified_address_format";
+        return out;
+    } else {
+        sh::Hash recipient_sk = shdrv::DeriveNoteSpendKey(recipient_rcm);
+        recipient_pk = sh::PoseidonHash2(recipient_sk, zero);
+        OPENSSL_cleanse(recipient_sk.data(), recipient_sk.size());
+    }
     sh::Hash recipient_value_hash = ValueToHash(recipient.value_una);
     sh::Hash recipient_d_packed{};
     std::memcpy(recipient_d_packed.data(), recipient.d.data(), recipient.d.size());
@@ -1020,8 +1074,10 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
             out.error = "cv_commit_failed";
             return out;
         }
+        const bool s_spend_auth = (s.key_scheme == NoteKeyScheme::Auth);
         auto proof = sh::ProveSpend(sw, spi, nullptr,
-                                    /*bind_public_inputs=*/true, cv_bound);
+                                    /*bind_public_inputs=*/true, cv_bound,
+                                    s_spend_auth);
         if (proof.empty()) {
             out.status = OpStatus::ProofError;
             out.error = "spend proof generation failed";
