@@ -18,6 +18,9 @@
 
 #include "../external/bech32/bech32.hpp"
 
+#include <secp256k1.h>
+#include <secp256k1_extrakeys.h>
+
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -580,6 +583,126 @@ TEST(ShieldedDerivationAddressedTransfer, AccountAtoAccountBRoundTrip) {
 
     // The wrong account's ivk must NOT decrypt.
     EXPECT_FALSE(TryDecryptNoteForViewer(keys_a.ivk, encrypted).has_value());
+}
+
+// ── Scalar-diversified spend keys (spend-authority fix) ──────────────
+//
+// These pin the properties the fix depends on. The design replaces
+// `pk_d = ivk·P_d` (hash-to-POINT ⇒ variable-base ownership proof) with
+// `s = Poseidon2(ivk, d)`, `pk_d = s·G` (hash-to-SCALAR ⇒ fixed-base).
+//
+// Additive: nothing existing changes yet, so the design can be reviewed
+// against these properties before anything depends on it.
+
+TEST(ShieldedScalarDiversified, DeterministicAndDiversifierDependent) {
+    const auto keys = DeriveShieldedAccount(CanonicalSeed().data(), 64, 0);
+
+    Diversifier d1{}; d1[0] = 0x01;
+    Diversifier d2{}; d2[0] = 0x02;
+
+    const auto a = DeriveDiversifiedSpendKey(keys.ivk, d1);
+    const auto b = DeriveDiversifiedSpendKey(keys.ivk, d1);
+    const auto c = DeriveDiversifiedSpendKey(keys.ivk, d2);
+
+    EXPECT_EQ(a.s, b.s) << "same (ivk, d) must be deterministic";
+    EXPECT_EQ(a.pk_d, b.pk_d);
+
+    // ADDRESS UNLINKABILITY: a different diversifier must give an unrelated
+    // key. Without this, all of a wallet's addresses are trivially linkable.
+    EXPECT_NE(a.s, c.s);
+    EXPECT_NE(a.pk_d, c.pk_d);
+}
+
+TEST(ShieldedScalarDiversified, DistinctAccountsDoNotCollide) {
+    const auto k0 = DeriveShieldedAccount(CanonicalSeed().data(), 64, 0);
+    const auto k1 = DeriveShieldedAccount(CanonicalSeed().data(), 64, 1);
+    ASSERT_NE(k0.ivk, k1.ivk);
+
+    Diversifier d{}; d[0] = 0x07;
+    EXPECT_NE(DeriveDiversifiedSpendKey(k0.ivk, d).pk_d,
+              DeriveDiversifiedSpendKey(k1.ivk, d).pk_d)
+        << "the same diversifier under different accounts must not collide";
+}
+
+TEST(ShieldedScalarDiversified, PkdIsSTimesG) {
+    // THE OWNERSHIP PROPERTY. The spend circuit will prove exactly this
+    // relation, so if it does not hold out-of-circuit the whole design fails.
+    const auto keys = DeriveShieldedAccount(CanonicalSeed().data(), 64, 0);
+    Diversifier d{}; d[0] = 0x42;
+    const auto k = DeriveDiversifiedSpendKey(keys.ivk, d);
+
+    secp256k1_context* ctx = secp256k1_context_create(
+        SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    ASSERT_NE(ctx, nullptr);
+
+    // Recompute s·G independently and compare x-only bytes.
+    secp256k1_pubkey pub{};
+    ASSERT_EQ(secp256k1_ec_pubkey_create(ctx, &pub, k.s.data()), 1)
+        << "s must be a valid secp256k1 scalar";
+    secp256k1_xonly_pubkey xonly{};
+    ASSERT_EQ(secp256k1_xonly_pubkey_from_pubkey(ctx, &xonly, nullptr, &pub), 1);
+    std::array<uint8_t, 32> recomputed{};
+    ASSERT_EQ(secp256k1_xonly_pubkey_serialize(ctx, recomputed.data(), &xonly), 1);
+
+    EXPECT_EQ(std::memcmp(recomputed.data(), k.pk_d.data(), 32), 0)
+        << "pk_d must equal s*G — this is what the circuit proves";
+
+    secp256k1_context_destroy(ctx);
+}
+
+TEST(ShieldedScalarDiversified, EcdhAgreesUnderStandardBaseG) {
+    // NOTE DISCOVERY must still work. With pk_d = s*G the ECDH is the
+    // standard one: sender computes esk*pk_d, receiver computes s*epk where
+    // epk = esk*G. Both must land on the same shared secret, otherwise the
+    // recipient cannot decrypt and find their notes.
+    const auto keys = DeriveShieldedAccount(CanonicalSeed().data(), 64, 0);
+    Diversifier d{}; d[0] = 0x55;
+    const auto k = DeriveDiversifiedSpendKey(keys.ivk, d);
+
+    secp256k1_context* ctx = secp256k1_context_create(
+        SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    ASSERT_NE(ctx, nullptr);
+
+    // Ephemeral sender key, and epk = esk*G (x-only).
+    Hash esk{};
+    esk[31] = 0x9A;
+    esk[0]  = 0x01;
+    ASSERT_EQ(secp256k1_ec_seckey_verify(ctx, esk.data()), 1);
+    secp256k1_pubkey epk_pub{};
+    ASSERT_EQ(secp256k1_ec_pubkey_create(ctx, &epk_pub, esk.data()), 1);
+    secp256k1_xonly_pubkey epk_xonly{};
+    ASSERT_EQ(secp256k1_xonly_pubkey_from_pubkey(ctx, &epk_xonly, nullptr, &epk_pub), 1);
+    Hash epk{};
+    ASSERT_EQ(secp256k1_xonly_pubkey_serialize(ctx, epk.data(), &epk_xonly), 1);
+
+    // sender: esk * pk_d      receiver: s * epk
+    const Hash sender_side   = EcdhShared(esk, k.pk_d);
+    const Hash receiver_side = EcdhShared(k.s, epk);
+
+    EXPECT_EQ(sender_side, receiver_side)
+        << "ECDH must agree, or the recipient cannot discover their own notes";
+
+    secp256k1_context_destroy(ctx);
+}
+
+TEST(ShieldedScalarDiversified, SenderCannotDeriveSFromTheAddress) {
+    // THE WHOLE POINT. A sender holds (d, pk_d) from the address. `s` is a
+    // Poseidon image of ivk, which the sender does not have, so nothing the
+    // sender knows reproduces it.
+    //
+    // This cannot prove hardness — it pins the structural claim that `s` is
+    // NOT a function of public address material alone: the same `d` under a
+    // different `ivk` yields a different `s`.
+    const auto k0 = DeriveShieldedAccount(CanonicalSeed().data(), 64, 0);
+    const auto k1 = DeriveShieldedAccount(CanonicalSeed().data(), 64, 1);
+    Diversifier d{}; d[0] = 0xC3;
+
+    const auto a = DeriveDiversifiedSpendKey(k0.ivk, d);
+    const auto b = DeriveDiversifiedSpendKey(k1.ivk, d);
+
+    EXPECT_NE(a.s, b.s)
+        << "s must depend on ivk, not on the publicly-visible diversifier alone";
+    EXPECT_NE(a.s, a.pk_d) << "the secret must not equal its own public key";
 }
 
 }  // namespace

@@ -365,6 +365,8 @@ std::array<uint8_t, 32> HkdfExtractAndExpand(const uint8_t* salt,
     return okm;
 }
 
+}  // namespace
+
 /// shared = (scalar · pk_xonly).x — even-y normalised on output.
 Hash EcdhShared(const Hash& scalar_be, const Hash& pk_xonly) {
     secp256k1_context* ctx = GetCtx();
@@ -392,7 +394,6 @@ Hash EcdhShared(const Hash& scalar_be, const Hash& pk_xonly) {
     return out;
 }
 
-}  // namespace
 
 DecodedShieldedAddress DecodeShieldedAddress(const std::string& addr) {
     auto raw = bech32::DecodeRaw(addr);
@@ -606,6 +607,29 @@ EncryptedNote EncryptNoteForRecipient(const Diversifier& recipient_d,
 
 Hash DeriveNoteSpendKey(const Hash& rcm) {
     return PoseidonHash2(rcm, DstToHash(kDstNoteSpendKey));
+}
+
+DiversifiedSpendKey DeriveDiversifiedSpendKey(const Hash& ivk,
+                                              const Diversifier& d) {
+    // Pack the 11-byte diversifier into a 32-byte field element the same way
+    // the note commitment already does (`d_packed`), so `d` means the same
+    // thing in both places.
+    Hash d_packed{};
+    std::memcpy(d_packed.data(), d.data(), d.size());
+
+    // Hash to a SCALAR (not to a point): this is what makes ownership a
+    // fixed-base multiplication instead of a variable-base one.
+    const Hash s_raw = PoseidonHash2(ivk, d_packed);
+
+    // Reuse the account-key normalisation so `pk_d` is the BIP340 even-y
+    // representative and `s` is the matching (possibly negated) scalar —
+    // identical treatment to ak = ask·G and nk = nsk·G.
+    const auto norm = NormalizeScalarToEvenY(s_raw);
+
+    DiversifiedSpendKey out;
+    out.s    = norm.scalar;
+    out.pk_d = norm.x_only;
+    return out;
 }
 
 std::optional<NotePlaintext> TryDecryptNoteForViewer(

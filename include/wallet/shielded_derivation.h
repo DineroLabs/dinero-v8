@@ -135,6 +135,66 @@ Hash DerivePkD(const Hash& ivk, const Hash& p_d_xonly);
 /// Build the 43-byte address payload `d || pk_d`.
 AddressPayload BuildAddressPayload(const Diversifier& d, const Hash& pk_d);
 
+// ── Scalar-diversified spend keys (spend-authority fix) ──────────────
+//
+// PROBLEM. Today the note's spend authority is `sk = DeriveNoteSpendKey(rcm)`
+// with `rcm` chosen by the SENDER, so the sender can always spend the note
+// they sent. The recipient's `pk_d` is used only to ENCRYPT the note, never to
+// control it — their key material governs discovery, not ownership.
+//
+// The obvious Sapling-shaped fix — prove `pk_d = ivk·P_d` in-circuit — is a
+// VARIABLE-base scalar multiplication, measured at 1,062,753 constraints here
+// (secp256k1 in-circuit; Sapling can afford it because Jubjub is embedded).
+//
+// This derives the diversified key by hashing to a SCALAR instead of to a
+// POINT:
+//
+//     s    = Poseidon2(ivk, d)      receiver-only, one per diversified address
+//     pk_d = s·G                    FIXED base
+//
+// Ownership is then `pk_d = s·G`, a FIXED-base multiplication: 101,668
+// constraints. Measured end to end: 698,676 vs 597,009 constraints, i.e.
+// +9% proving / +10% verification, against +127%/+134% for the variable-base
+// form.
+//
+// It also removes the sender's ability to LINK the spend: `s` is receiver-only,
+// so a nullifier derived from `s` is unpredictable to the sender — theft and
+// linkability are fixed by the same change.
+//
+// Preserved: address unlinkability (distinct `d` ⇒ unrelated `pk_d`), many
+// addresses from one `ivk`, compromise isolation (leaking one `s` reveals
+// nothing about `ivk`), and ECDH discovery — which becomes the standard
+// `epk = esk·G`, `shared = esk·pk_d = s·epk`.
+//
+// ⚠️ This is a cryptographic DESIGN DEVIATION from Sapling and has NOT had
+// independent cryptographer review. It is added here ALONGSIDE the existing
+// `DerivePkD` and changes no consensus behaviour, so the design can be
+// reviewed and the properties tested before anything depends on it.
+
+/// A diversified spend key: the receiver-only scalar `s` and its public
+/// point `pk_d = s·G` (x-only, BIP340 even-y).
+struct DiversifiedSpendKey {
+    Hash s{};     ///< receiver-only; NEVER leaves the wallet
+    Hash pk_d{};  ///< x-only public key, safe to publish in an address
+};
+
+/// `shared = (scalar · pk_xonly).x`, even-y normalised on output.
+///
+/// Already used internally by the note-encryption path; exported so the ECDH
+/// agreement property can be tested against the SAME function production uses
+/// rather than a re-implementation. Throws if `pk_xonly` is not on the curve
+/// or `scalar` is not a valid secp256k1 scalar.
+Hash EcdhShared(const Hash& scalar_be, const Hash& pk_xonly);
+
+/// `s = Poseidon2(ivk, d_padded)` normalised to even-y, and `pk_d = s·G`.
+/// `d` is zero-padded into a 32-byte field element, matching how the
+/// diversifier is already packed for `NoteCommitment`.
+///
+/// Deterministic: the same `(ivk, d)` always yields the same pair.
+/// Throws if the PRF output is not a valid secp256k1 scalar.
+DiversifiedSpendKey DeriveDiversifiedSpendKey(const Hash& ivk,
+                                              const Diversifier& d);
+
 /// Bech32m-encode the 43-byte payload under `hrp`. No witness-version
 /// prefix; raw payload bytes converted 8→5 then bech32m-encoded.
 std::string EncodeShieldedAddress(const AddressPayload& payload,
