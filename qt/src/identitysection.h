@@ -20,6 +20,7 @@ public:
     explicit IdentitySection(QWidget* parent = nullptr);
 
 public Q_SLOTS:
+    void setAdvancedVisible(bool visible);
     void onIdentityUpdated(const NodeIdentity& id);
     void onDaemonStateChanged(bool reachable);
     void onDynamicP2POverviewUpdated(const DynamicP2POverview& overview);
@@ -34,6 +35,7 @@ public:
     static QString dynamicP2PLine(const DynamicP2POverview& overview);
 
 private:
+    QWidget*     advancedDetails_{nullptr};
     QLabel*      nodeIdLabel_{nullptr};
     QPushButton* nodeIdCopyBtn_{nullptr};
     QLabel*      reachabilityLabel_{nullptr};

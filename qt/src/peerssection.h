@@ -27,6 +27,7 @@ public:
 
 public Q_SLOTS:
     void onPeersUpdated(const QVector<PeerRow>& peers);
+    void setReferenceHeight(qint64 height);
 
 Q_SIGNALS:
     void copyEndpointRequested(const QString& endpoint);
@@ -43,6 +44,8 @@ private:
     QLabel*      headerLabel_{nullptr};
     QTreeWidget* tree_{nullptr};
     QSet<QString> expandedAddrs_;  // persisted across polls
+    qint64 referenceHeight_{0};
+    QVector<PeerRow> lastPeers_;
 
     void populateRow(QTreeWidgetItem* item, const PeerRow& r);
     void populateDetailChild(QTreeWidgetItem* parent, const PeerRow& r);

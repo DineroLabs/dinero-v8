@@ -14,6 +14,7 @@
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QVariant>
 #include <QVBoxLayout>
 
@@ -142,13 +143,16 @@ DiscoverySection::DiscoverySection(QWidget* parent) : QFrame(parent) {
 
     auto* seeder_row = new QHBoxLayout();
     seeder_row->setSpacing(8);
-    auto* seeder_label = new QLabel(tr("Seed peer discovery"), this);
+    auto* seeder_label = new QLabel(tr("Seeder operator service"), this);
     seeder_opt_in_ = new QComboBox(this);
     seeder_opt_in_->addItem(tr("No"), false);
     seeder_opt_in_->addItem(tr("Yes"), true);
     seeder_button_ = new QPushButton(tr("Start Seeder"), this);
     seeder_button_->setEnabled(false);
     seeder_status_ = new QLabel(tr("Off"), this);
+    seeder_status_->setWordWrap(true);
+    seeder_status_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    seeder_status_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     seeder_row->addWidget(seeder_label);
     seeder_row->addWidget(seeder_opt_in_);
     seeder_row->addWidget(seeder_button_);
@@ -219,9 +223,11 @@ void DiscoverySection::setSeederState(bool opted_in, bool running,
         seeder_button_->setEnabled(opted_in);
     }
     if (seeder_status_) {
-        seeder_status_->setText(status.isEmpty()
+        const QString display = status.isEmpty()
             ? (running ? tr("Running") : tr("Off"))
-            : status);
+            : status;
+        seeder_status_->setText(display);
+        seeder_status_->setToolTip(display);
     }
 }
 

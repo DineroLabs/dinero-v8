@@ -41,6 +41,16 @@ struct DynamicP2POverview {
     int     connected_outbound{0};
 };
 
+// Read-only Tor onion-service state from getnetworkinfo.onion_service.
+// Authentication details are deliberately not carried into the GUI model.
+struct OnionServiceStatus {
+    bool    available{false};
+    bool    requested{false};
+    bool    active{false};
+    QString address;
+    QString message;
+};
+
 // Per-tick contribution snapshot. Sparkline buffers (rolling 5-min) live
 // in NodePoller — this struct carries only the spot values that are
 // rendered as plain labels.
@@ -177,6 +187,7 @@ Q_DECLARE_METATYPE(QVector<dinero::qt::dashboard::PeerRow>)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::HintRow)
 Q_DECLARE_METATYPE(QVector<dinero::qt::dashboard::HintRow>)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::DynamicP2POverview)
+Q_DECLARE_METATYPE(dinero::qt::dashboard::OnionServiceStatus)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::ContributionStats)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::DecentralizationScore)
 Q_DECLARE_METATYPE(dinero::qt::dashboard::TopologyNode)

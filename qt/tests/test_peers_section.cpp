@@ -78,6 +78,18 @@ private Q_SLOTS:
         QCOMPARE(item->text(1), QString("⇄"));
         QVERIFY(item->text(2).contains("(via 172.93.160.131:20999)"));
     }
+
+    void far_behind_peer_is_clearly_marked_stale() {
+        PeersSection s;
+        s.setReferenceHeight(93945);
+        PeerRow r;
+        r.addr = "173.249.208.101:20999";
+        r.height = 48365;
+        s.onPeersUpdated({r});
+        auto* item = s.findChild<QTreeWidget*>()->topLevelItem(0);
+        QCOMPARE(item->text(3), QStringLiteral("48365 · stale"));
+        QVERIFY(item->toolTip(3).contains(QStringLiteral("45580 blocks behind")));
+    }
 };
 
 QTEST_MAIN(TestPeersSection)

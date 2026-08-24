@@ -14,7 +14,10 @@
 #include "topologysection.h"
 
 #include <QScrollArea>
+#include <QToolButton>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace dinero::qt::dashboard {
 
@@ -41,11 +44,37 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
     actionController_    = new DashboardActionController(rpc, this, this);
 
     layout->addWidget(identitySection_);
-    layout->addWidget(networkSection_);
-    layout->addWidget(peersSection_, 1);
-    layout->addWidget(contributionSection_);
-    layout->addWidget(discoverySection_);
-    layout->addWidget(topologySection_);
+
+    advancedToggle_ = new QToolButton(content);
+    advancedToggle_->setObjectName(QStringLiteral("advancedToggle"));
+    advancedToggle_->setText(tr("Advanced details"));
+    advancedToggle_->setToolTip(tr(
+        "Show technical node, peer, relay, and discovery diagnostics."));
+    advancedToggle_->setCheckable(true);
+    advancedToggle_->setChecked(false);
+    advancedToggle_->setArrowType(Qt::RightArrow);
+    advancedToggle_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    layout->addWidget(advancedToggle_);
+
+    advancedContainer_ = new QWidget(content);
+    advancedContainer_->setObjectName(QStringLiteral("advancedContainer"));
+    auto* advancedLayout = new QVBoxLayout(advancedContainer_);
+    advancedLayout->setContentsMargins(0, 0, 0, 0);
+    advancedLayout->setSpacing(0);
+    advancedLayout->addWidget(networkSection_);
+    advancedLayout->addWidget(peersSection_, 1);
+    advancedLayout->addWidget(contributionSection_);
+    advancedLayout->addWidget(discoverySection_);
+    advancedLayout->addWidget(topologySection_);
+    advancedContainer_->setVisible(false);
+    layout->addWidget(advancedContainer_);
+    connect(advancedToggle_, &QToolButton::toggled, this, [this](bool expanded) {
+        advancedToggle_->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        advancedToggle_->setText(expanded ? tr("Hide advanced details")
+                                          : tr("Advanced details"));
+        advancedContainer_->setVisible(expanded);
+        identitySection_->setAdvancedVisible(expanded);
+    });
 
     scroll->setWidget(content);
     outer->addWidget(scroll);
@@ -74,14 +103,20 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
                 }
                 identitySection_->onIdentityUpdated(merged);
             });
-    connect(poller_, &NodePoller::chainInfoUpdated,
-            networkSection_, &NetworkSection::onChainInfoUpdated);
+    connect(poller_, &NodePoller::chainInfoUpdated, this,
+            [this](const ChainInfo& info) {
+        networkSection_->onChainInfoUpdated(info);
+        peersSection_->setReferenceHeight(
+            std::max(info.our_height, info.net_consensus_height));
+    });
     connect(poller_, &NodePoller::peersUpdated,
             peersSection_, &PeersSection::onPeersUpdated);
     connect(poller_, &NodePoller::daemonStateChanged,
             identitySection_, &IdentitySection::onDaemonStateChanged);
     connect(poller_, &NodePoller::dynamicP2POverviewUpdated,
             identitySection_, &IdentitySection::onDynamicP2POverviewUpdated);
+    connect(poller_, &NodePoller::onionServiceUpdated,
+            networkSection_, &NetworkSection::setOnionServiceStatus);
     connect(poller_, &NodePoller::contributionStatsUpdated,
             this, [this](const ContributionStats& stats) {
         contributionSection_->setContributionStats(stats);

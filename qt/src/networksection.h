@@ -9,6 +9,7 @@
 
 class QLabel;
 class QProgressBar;
+class QCheckBox;
 
 namespace dinero::qt::dashboard {
 
@@ -16,13 +17,17 @@ namespace dinero::qt::dashboard {
 class NetworkSection : public QWidget {
     Q_OBJECT
 public:
+    enum class TorState { Unsupported, Off, Active, Error };
     explicit NetworkSection(QWidget* parent = nullptr);
 
 public Q_SLOTS:
     void onChainInfoUpdated(const ChainInfo& info);
+    void setTorStatus(TorState state, const QString& onionAddress = {});
+    void setOnionServiceStatus(const OnionServiceStatus& status);
 
     // Tip-race annotation helper, public for unit testing.
     static QString tipDeltaAnnotation(qint64 our, qint64 net);
+    static QString torStatusText(TorState state, const QString& onionAddress = {});
 
 private:
     QProgressBar* youBar_{nullptr};
@@ -31,6 +36,8 @@ private:
     QLabel*       difficultyLabel_{nullptr};
     QLabel*       mempoolLabel_{nullptr};
     QLabel*       medianFeeLabel_{nullptr};
+    QCheckBox*    torControl_{nullptr};
+    QLabel*       torStatusLabel_{nullptr};
 };
 
 }  // namespace dinero::qt::dashboard

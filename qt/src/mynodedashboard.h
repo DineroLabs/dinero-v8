@@ -8,6 +8,7 @@
 #include <QWidget>
 
 class RpcClient;
+class QToolButton;
 
 namespace dinero::qt::dashboard {
 
@@ -42,6 +43,8 @@ private:
     ContributionSection* contributionSection_{nullptr};
     DiscoverySection*    discoverySection_{nullptr};
     TopologySection*     topologySection_{nullptr};
+    QWidget*             advancedContainer_{nullptr};
+    QToolButton*         advancedToggle_{nullptr};
     DashboardActionController* actionController_{nullptr};
 
     LocalMiningProvider local_mining_provider_;

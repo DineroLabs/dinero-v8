@@ -6,6 +6,7 @@
 #include "dashboardtypes.h"
 
 #include <QLabel>
+#include <QWidget>
 #include <QtTest/QtTest>
 
 using dinero::qt::dashboard::IdentitySection;
@@ -15,6 +16,15 @@ class TestIdentitySection : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void technical_identity_details_are_hidden_by_default() {
+        IdentitySection s;
+        auto* details = s.findChild<QWidget*>(QStringLiteral("advancedIdentityDetails"));
+        QVERIFY(details != nullptr);
+        QVERIFY(details->isHidden());
+        s.setAdvancedVisible(true);
+        QVERIFY(!details->isHidden());
+    }
+
     void formats_node_id_in_4char_groups() {
         IdentitySection s;
         NodeIdentity id;
@@ -44,7 +54,7 @@ private Q_SLOTS:
         const auto labels = s.findChildren<QLabel*>();
         bool found = false;
         for (auto* l : labels) {
-            if (l->text().contains("DIRECT")) {
+            if (l->text().contains("Connected directly")) {
                 QVERIFY(l->text().contains("162.200.227.214:20999"));
                 found = true;
             }
@@ -103,12 +113,22 @@ private Q_SLOTS:
         const auto labels = s.findChildren<QLabel*>();
         bool found = false;
         for (auto* l : labels) {
-            if (l->text().contains("UNREACHABLE") &&
+            if (l->text().contains("Offline") &&
                 l->styleSheet().contains("color: #c33")) {
                 found = true;
             }
         }
         QVERIFY(found);
+    }
+
+    void relay_status_is_plain_language_and_reassuring() {
+        NodeIdentity id;
+        id.reachability = NodeIdentity::BEHIND_RELAY;
+        const QString text = IdentitySection::reachabilityLine(id);
+        QVERIFY(text.contains(QStringLiteral("Connected securely through a Dinero relay")));
+        QVERIFY(text.contains(QStringLiteral("recovery is automatic")));
+        QVERIFY(!text.contains(QStringLiteral("BEHIND-RELAY")));
+        QVERIFY(!text.contains(QStringLiteral("NAT'd")));
     }
 };
 
