@@ -18,6 +18,8 @@ Every Dinero node:
 - Validates the chain — headers, blocks, transactions — under consensus.
 - Relays valid blocks and transactions to its peers.
 - Gossips peer addresses (BIP155 `addr_v2`).
+- Persists learned addresses and selects diverse community peers from AddrMan;
+  fixed IPs and DNS seeds are bootstrap/recovery sources, not permanent slots.
 - Attempts UPnP / NAT-PMP port mapping when enabled.
 - Runs STUN to discover its public reachable address.
 - Carries the `NODE_NETWORK` + `NODE_DINERO_V2` (`1 << 27`) service bits.
@@ -36,10 +38,16 @@ A non-mining wallet behind NAT therefore stays reachable for inbound
 peer connections via relay tunnels, just like a public-IP node. From the
 rest-of-network perspective, the only difference is one extra hop.
 
-The behavior turns off automatically if direct inbound is observed
-(`advertised_addresses_` non-empty), or when an operator pins the
+The behavior turns off automatically if direct inbound is observed or a
+live router mapping is advertised, or when an operator pins the
 relay list explicitly via `relayregister=`. It does NOT depend on mining
 state.
+
+Automatic router mappings are lifecycle-managed: failed discovery retries,
+successful leases renew before expiry, stale advertisements are withdrawn,
+and shutdown removes the mapping cleanly. Official desktop builds must include
+both mapping backends where supported and the encrypted QUIC relay transport,
+so a compile-time omission cannot silently remove both inbound paths.
 
 ## Tier 3 — Public relay operator (opt-in)
 

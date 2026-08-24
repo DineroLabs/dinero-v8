@@ -64,6 +64,9 @@ PeerGovernorDecision PeerGovernor::Evaluate(
         }
         if (candidate->configured_seed &&
             configured_seed_hot >= config_.max_configured_seed_hot) {
+            if (!candidate->protected_anchor) {
+                decision.demote_candidates.push_back(candidate->endpoint);
+            }
             continue;
         }
         decision.hot_peers.push_back(candidate->endpoint);
@@ -89,6 +92,9 @@ PeerGovernorDecision PeerGovernor::Evaluate(
     }
 
     std::sort(decision.demote_candidates.begin(), decision.demote_candidates.end());
+    decision.demote_candidates.erase(
+        std::unique(decision.demote_candidates.begin(), decision.demote_candidates.end()),
+        decision.demote_candidates.end());
     return decision;
 }
 

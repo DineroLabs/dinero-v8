@@ -61,6 +61,23 @@
               "score": {"type": "integer"}
             }
           }
+        },
+        "port_mapping": {
+          "type": "object",
+          "description": "Automatic inbound port-mapping lifecycle status",
+          "properties": {
+            "requested": {"type": "boolean"},
+            "active": {"type": "boolean"},
+            "mode": {"type": "string"},
+            "protocol": {"type": "string"},
+            "external_address": {"type": "string"},
+            "external_port": {"type": "integer"},
+            "upnp_compiled": {"type": "boolean"},
+            "natpmp_compiled": {"type": "boolean"},
+            "attempts": {"type": "integer", "minimum": 0},
+            "renewals": {"type": "integer", "minimum": 0},
+            "message": {"type": "string"}
+          }
         }
       },
       "required": ["version", "connections"]

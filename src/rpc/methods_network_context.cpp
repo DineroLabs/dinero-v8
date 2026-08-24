@@ -395,6 +395,10 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     din::Json portmap;
     portmap["requested"] = status.port_mapping_requested;
     portmap["active"] = status.port_mapping_active;
+    portmap["upnp_compiled"] = status.port_mapping_upnp_compiled;
+    portmap["natpmp_compiled"] = status.port_mapping_natpmp_compiled;
+    portmap["attempts"] = static_cast<Json::UInt64>(status.port_mapping_attempts);
+    portmap["renewals"] = static_cast<Json::UInt64>(status.port_mapping_renewals);
     portmap["mode"] = status.port_mapping_mode;
     portmap["protocol"] = status.port_mapping_protocol;
     portmap["external_address"] = status.port_mapping_external_address;

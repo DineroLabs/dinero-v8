@@ -276,6 +276,11 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
         status.port_mapping_requested = port_mapping_requested_;
         status.port_mapping_active = port_mapping_active_;
+        const auto compile_info = network::GetPortMappingCompileInfo();
+        status.port_mapping_upnp_compiled = compile_info.upnp;
+        status.port_mapping_natpmp_compiled = compile_info.natpmp;
+        status.port_mapping_attempts = port_mapping_attempts_;
+        status.port_mapping_renewals = port_mapping_renewals_;
         status.port_mapping_mode = port_mapping_mode_;
         status.port_mapping_protocol = port_mapping_protocol_;
         status.port_mapping_external_address = port_mapping_external_address_;
@@ -335,11 +340,12 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     std::vector<dinero::p2p::PeerGovernorCandidate> governor_candidates;
     const auto peers = p2p_mgr_->get_connected_peers();
     governor_candidates.reserve(peers.size());
+    size_t connected_community_outbound = 0;
     for (const auto& peer : peers) {
         if (!peer.is_connected) {
             continue;
         }
-        const bool configured_seed = is_configured_seed(peer);
+        const bool configured_seed = is_configured_seed(peer) || is_mandatory_anchor(peer);
         const bool relay_capable =
             (peer.service_flags & dinero::ServiceFlags::NODE_RELAY) != 0;
         ++status.connections;
@@ -352,6 +358,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
             ++status.configured_seed_connections;
         } else {
             ++status.discovered_connections;
+            if (peer.is_outbound) ++connected_community_outbound;
         }
         if (relay_capable) {
             ++status.relay_peer_connections;
@@ -363,16 +370,24 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         candidate.connected = true;
         candidate.outbound = peer.is_outbound;
         candidate.configured_seed = configured_seed;
-        candidate.protected_anchor = is_mandatory_anchor(peer);
+        candidate.protected_anchor = false; // assigned after autonomy is known
         candidate.relay_capable = relay_capable;
         governor_candidates.push_back(std::move(candidate));
     }
     {
-        const dinero::p2p::PeerGovernor governor;
+        const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
+            connected_community_outbound, 0);
+        dinero::p2p::PeerGovernorConfig governor_config;
+        governor_config.max_configured_seed_hot = autonomy.max_bootstrap_hot;
+        for (auto& candidate : governor_candidates) {
+            candidate.protected_anchor = candidate.configured_seed && !autonomy.autonomous;
+        }
+        const dinero::p2p::PeerGovernor governor(governor_config);
         const auto decision = governor.Evaluate(governor_candidates);
         status.dynamic_p2p_governor.available = true;
-        status.dynamic_p2p_governor.mode =
-            status.dynamic_p2p_enabled ? "active_slow_churn" : "dry_run";
+        status.dynamic_p2p_governor.mode = autonomy.autonomous
+            ? (status.dynamic_p2p_enabled ? "autonomous_slow_churn" : "autonomous_dry_run")
+            : "bootstrap_recovery";
         status.dynamic_p2p_governor.connected_outbound = decision.connected_outbound;
         status.dynamic_p2p_governor.configured_seed_hot = decision.configured_seed_hot;
         status.dynamic_p2p_governor.relay_capable_seen = decision.relay_capable_seen;
@@ -387,6 +402,11 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
         status.port_mapping_requested = port_mapping_requested_;
         status.port_mapping_active = port_mapping_active_;
+        const auto compile_info = network::GetPortMappingCompileInfo();
+        status.port_mapping_upnp_compiled = compile_info.upnp;
+        status.port_mapping_natpmp_compiled = compile_info.natpmp;
+        status.port_mapping_attempts = port_mapping_attempts_;
+        status.port_mapping_renewals = port_mapping_renewals_;
         status.port_mapping_mode = port_mapping_mode_;
         status.port_mapping_protocol = port_mapping_protocol_;
         status.port_mapping_external_address = port_mapping_external_address_;
@@ -464,8 +484,8 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
     const auto churn_interval =
         read_seconds("p2p.dynamic_p2p.churn_interval_seconds", 600, 60);
     // The legacy key name is retained for configuration compatibility, but the
-    // floor is deliberately applied to outbound peers. With a six-peer target,
-    // one community slot may rotate while five durable outbound peers remain.
+    // floor is deliberately applied to outbound peers. With an eight-peer
+    // target, one community slot may rotate while the configured floor remains.
     const size_t min_outbound = static_cast<size_t>(
         config_ ? std::max(config_->GetInt("p2p.dynamic_p2p.min_peers", 5), 1) : 5);
 
@@ -483,41 +503,56 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
     last_dynamic_p2p_churn_ = now;
 
     const auto mandatory_anchors = p2p_mgr_->get_anchor_nodes();
+    const auto configured_seeds = p2p_mgr_->get_seed_nodes();
     const auto is_mandatory_anchor = [&](const PeerInfo& peer) {
         return std::any_of(mandatory_anchors.begin(), mandatory_anchors.end(),
                            [&](const auto& anchor) {
                                return anchor.first == peer.address && anchor.second == peer.port;
                            });
     };
+    const auto is_bootstrap_peer = [&](const PeerInfo& peer) {
+        if (is_mandatory_anchor(peer)) return true;
+        return std::any_of(configured_seeds.begin(), configured_seeds.end(),
+                           [&](const auto& seed) {
+                               return seed.first == peer.address && seed.second == peer.port;
+                           });
+    };
 
     const auto peers = p2p_mgr_->get_connected_peers();
     std::vector<dinero::p2p::PeerGovernorCandidate> candidates;
     candidates.reserve(peers.size());
-    std::unordered_set<std::string> protected_anchors;
+    size_t connected_community_outbound = 0;
     for (const auto& peer : peers) {
         if (!peer.is_connected) {
             continue;
         }
-        const bool mandatory_anchor = is_mandatory_anchor(peer);
+        const bool bootstrap_peer = is_bootstrap_peer(peer);
         const bool relay_capable =
             (peer.service_flags & dinero::ServiceFlags::NODE_RELAY) != 0;
         const std::string endpoint = peer.address + ":" + std::to_string(peer.port);
-        if (mandatory_anchor) {
-            protected_anchors.insert(endpoint);
-        }
+        if (peer.is_outbound && !bootstrap_peer) ++connected_community_outbound;
 
         dinero::p2p::PeerGovernorCandidate candidate;
         candidate.endpoint = endpoint;
         candidate.quality = dinero::p2p::BuildDynamicP2PQualitySnapshot(peer);
         candidate.connected = true;
         candidate.outbound = peer.is_outbound;
-        candidate.configured_seed = mandatory_anchor;
-        candidate.protected_anchor = mandatory_anchor;
+        candidate.configured_seed = bootstrap_peer;
+        candidate.protected_anchor = false; // assigned after autonomy is known
         candidate.relay_capable = relay_capable;
         candidates.push_back(std::move(candidate));
     }
 
-    const dinero::p2p::PeerGovernor governor;
+    const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
+        connected_community_outbound, 0);
+    dinero::p2p::PeerGovernorConfig governor_config;
+    governor_config.max_configured_seed_hot = autonomy.max_bootstrap_hot;
+    std::unordered_set<std::string> protected_anchors;
+    for (auto& candidate : candidates) {
+        candidate.protected_anchor = candidate.configured_seed && !autonomy.autonomous;
+        if (candidate.protected_anchor) protected_anchors.insert(candidate.endpoint);
+    }
+    const dinero::p2p::PeerGovernor governor(governor_config);
     const auto decision = governor.Evaluate(candidates);
     if (decision.connected_outbound <= min_outbound) {
         if (logger_interface_) {
@@ -529,9 +564,9 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
     }
 
     for (const auto& endpoint : decision.demote_candidates) {
-        // Defense in depth: PeerGovernor already excludes protected anchors,
+        // Defense in depth: PeerGovernor already excludes protected bootstrap peers,
         // but retain the execution-side guard so a future governor change
-        // cannot disconnect the mandatory recovery topology.
+        // cannot disconnect the recovery topology while it is still needed.
         if (protected_anchors.count(endpoint) > 0) {
             continue;
         }
@@ -1117,6 +1152,7 @@ void P2PService::StartPortMappingIfEnabled() {
     // re-entered), join it before launching another.
     if (port_mapping_worker_.joinable()) {
         port_mapping_cancel_.store(true);
+        port_mapping_wait_cv_.notify_all();
         port_mapping_worker_.join();
     }
     port_mapping_cancel_.store(false);
@@ -1127,100 +1163,102 @@ void P2PService::StartPortMappingIfEnabled() {
                                 std::to_string(discovery_timeout_seconds) + "s)");
     }
 
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::seconds(discovery_timeout_seconds);
-    portmap_config.should_abort = [this, deadline]() {
-        return port_mapping_cancel_.load() ||
-               std::chrono::steady_clock::now() >= deadline;
-    };
+    const int retry_seconds = std::max(
+        30, config_->GetInt("p2p.portmap_retry_seconds", 300));
 
-    port_mapping_worker_ = std::thread([this, portmap_config, mode, deadline,
-                                        discovery_timeout_seconds]() {
-        // Run the slow miniupnpc / libnatpmp discovery off the daemon
-        // init thread. The session is local to this thread until either
-        // it's handed off (success) or torn down (failure / cancel).
-        auto session = std::make_unique<network::PortMappingSession>();
-        const auto result = session->Start(portmap_config);
+    port_mapping_worker_ = std::thread([this, portmap_config, mode,
+                                        discovery_timeout_seconds,
+                                        retry_seconds]() mutable {
+        network::PortMappingSession session;
+        std::string advertised_host;
+        uint16_t advertised_port = 0;
+        bool mapped_once = false;
 
-        if (port_mapping_cancel_.load()) {
-            // Shutdown raced ahead; release any mapping the router accepted
-            // and exit without publishing.
-            session->Stop();
-            return;
-        }
+        while (!port_mapping_cancel_.load()) {
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(discovery_timeout_seconds);
+            portmap_config.should_abort = [this, deadline]() {
+                return port_mapping_cancel_.load() ||
+                       std::chrono::steady_clock::now() >= deadline;
+            };
 
-        // Deadline hit while session->Start was inside a blocking syscall.
-        // Don't publish a router mapping the user already gave up on — drop
-        // it and surface the timeout in the status.
-        if (std::chrono::steady_clock::now() >= deadline) {
-            session->Stop();
-            {
-                std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
-                port_mapping_active_ = false;
-                if (p2p_mgr_) p2p_mgr_->set_port_mapping_active(false);  // Gap 2 A.1 mirror
-                port_mapping_protocol_.clear();
-                port_mapping_external_address_.clear();
-                port_mapping_message_ = "discovery timed out after " +
-                                        std::to_string(discovery_timeout_seconds) + "s";
-            }
-            if (logger_interface_) {
-                logger_interface_->warning("[P2PService] P2P port mapping discovery timed out after " +
-                                           std::to_string(discovery_timeout_seconds) +
-                                           "s (" + network::PortMappingModeName(mode) +
-                                           "); outbound P2P still works");
-            }
-            return;
-        }
+            const auto result = session.Start(portmap_config);
+            if (port_mapping_cancel_.load()) break;
 
-        if (result.success) {
-            std::string advertise_host;
-            uint16_t advertise_port = 0;
-            const bool have_advertise =
+            const bool timed_out = std::chrono::steady_clock::now() >= deadline;
+            if (timed_out) session.Stop();
+            std::string next_host;
+            uint16_t next_port = 0;
+            const bool have_advertise = result.success &&
                 !result.external_address.empty() &&
-                ParseEndpoint(result.external_address,
-                              portmap_config.external_port,
-                              &advertise_host,
-                              &advertise_port);
+                ParseEndpoint(result.external_address, portmap_config.external_port,
+                              &next_host, &next_port);
+
             {
                 std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
-                port_mapping_ = std::move(session);
-                port_mapping_active_ = true;
-                if (p2p_mgr_) p2p_mgr_->set_port_mapping_active(true);  // Gap 2 A.1 mirror
-                port_mapping_protocol_ = result.protocol;
-                port_mapping_external_address_ = result.external_address;
-                port_mapping_message_ = result.message;
-            }
-            if (have_advertise && p2p_mgr_) {
-                p2p_mgr_->add_advertised_address(advertise_host, advertise_port);
-                if (logger_interface_) {
-                    logger_interface_->info("[P2PService] Advertising port-mapped address: " +
-                                            advertise_host + ":" + std::to_string(advertise_port));
+                ++port_mapping_attempts_;
+                port_mapping_active_ = result.success && !timed_out;
+                if (port_mapping_active_ && mapped_once) ++port_mapping_renewals_;
+                if (p2p_mgr_) p2p_mgr_->set_port_mapping_active(port_mapping_active_);
+                port_mapping_protocol_ = port_mapping_active_ ? result.protocol : "";
+                port_mapping_external_address_ = port_mapping_active_
+                    ? result.external_address : "";
+                if (timed_out) {
+                    port_mapping_message_ = "discovery timed out after " +
+                        std::to_string(discovery_timeout_seconds) + "s; retry scheduled";
+                } else if (port_mapping_active_) {
+                    port_mapping_message_ = result.message + "; automatic renewal armed";
+                } else {
+                    port_mapping_message_ =
+                        (result.message.empty() ? "unavailable" : result.message) +
+                        "; retry scheduled";
                 }
-            } else if (!result.external_address.empty() && logger_interface_) {
-                logger_interface_->warning("[P2PService] Port mapping succeeded but no public address was available for addr relay: " +
-                                           result.external_address);
             }
+
+            if (!advertised_host.empty() &&
+                (!have_advertise || advertised_host != next_host || advertised_port != next_port) &&
+                p2p_mgr_) {
+                p2p_mgr_->remove_explicit_advertised_address(advertised_host,
+                                                             advertised_port);
+                advertised_host.clear();
+                advertised_port = 0;
+            }
+            if (have_advertise && !timed_out && p2p_mgr_) {
+                p2p_mgr_->add_advertised_address(next_host, next_port);
+                advertised_host = next_host;
+                advertised_port = next_port;
+            }
+
             if (logger_interface_) {
-                logger_interface_->info("[P2PService] P2P port mapped via " + result.protocol +
-                                        ": " + result.message +
-                                        (result.external_address.empty() ? "" : " (" + result.external_address + ")"));
+                if (result.success && !timed_out) {
+                    logger_interface_->info(
+                        "[P2PService] P2P port mapping " +
+                        std::string(mapped_once ? "renewed" : "established") + " via " +
+                        result.protocol + ": " + result.message);
+                } else {
+                    logger_interface_->warning(
+                        "[P2PService] P2P port mapping unavailable (" +
+                        network::PortMappingModeName(mode) + "): " +
+                        (timed_out ? "discovery timeout" : result.message) +
+                        "; retrying in " + std::to_string(retry_seconds) + "s");
+                }
             }
-        } else {
-            {
-                std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
-                port_mapping_active_ = false;
-                if (p2p_mgr_) p2p_mgr_->set_port_mapping_active(false);  // Gap 2 A.1 mirror
-                port_mapping_protocol_.clear();
-                port_mapping_external_address_.clear();
-                port_mapping_message_ = result.message.empty() ? "unavailable" : result.message;
-            }
-            if (logger_interface_) {
-                logger_interface_->warning("[P2PService] P2P port mapping unavailable (" +
-                                           network::PortMappingModeName(mode) + "): " + result.message +
-                                           "; outbound P2P still works");
-            }
-            // session destructs here; PortMappingSession::~Stop releases any
-            // partial state.
+            mapped_once = mapped_once || (result.success && !timed_out);
+
+            const auto delay = network::PortMappingNextActionDelay(
+                result.success && !timed_out,
+                portmap_config.lifetime_seconds,
+                retry_seconds);
+            std::unique_lock<std::mutex> wait_lock(port_mapping_wait_mutex_);
+            port_mapping_wait_cv_.wait_for(wait_lock, delay, [this] {
+                return port_mapping_cancel_.load();
+            });
+        }
+
+        session.Stop();
+        if (!advertised_host.empty() && p2p_mgr_) {
+            p2p_mgr_->remove_explicit_advertised_address(advertised_host,
+                                                         advertised_port);
         }
     });
 }
@@ -1232,24 +1270,12 @@ void P2PService::StopPortMapping() {
     // (a few seconds in the worst case). We intentionally block shutdown
     // here rather than detach so the captured `this` stays valid.
     port_mapping_cancel_.store(true);
+    port_mapping_wait_cv_.notify_all();
     if (port_mapping_worker_.joinable()) {
         port_mapping_worker_.join();
     }
     port_mapping_cancel_.store(false);
 
-    std::unique_ptr<network::PortMappingSession> to_stop;
-    {
-        std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
-        to_stop = std::move(port_mapping_);
-    }
-    if (to_stop) {
-        if (logger_interface_ && to_stop->active()) {
-            logger_interface_->info("[P2PService] Removing P2P port mapping via " +
-                                    to_stop->protocol());
-        }
-        to_stop->Stop();
-        to_stop.reset();
-    }
     {
         std::lock_guard<std::mutex> lock(port_mapping_status_mutex_);
         port_mapping_active_ = false;
@@ -1608,7 +1634,7 @@ bool P2PService::Start() {
             }
             logger_interface_->info(
                 "[P2PService] Registered " + std::to_string(anchor_peers.size()) +
-                " mandatory anchors for recovery (" +
+                " bootstrap peers for recovery (" +
                 std::to_string(remote_anchors) + " remote dial targets)");
         }
 

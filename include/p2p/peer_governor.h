@@ -14,7 +14,7 @@ struct PeerGovernorConfig {
     size_t target_hot_outbound{kTargetDurableOutbound};
     size_t target_warm_standby{16};
     size_t target_relay_registrations{3};
-    size_t max_configured_seed_hot{kMandatoryAnchorOutbound};
+    size_t max_configured_seed_hot{kBootstrapRecoveryOutbound};
     int demote_score_threshold{35};
 };
 

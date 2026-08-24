@@ -181,6 +181,7 @@ jobs:
             -DENABLE_GPU_MINING=ON \
             -DENABLE_GRPC=OFF \
             -DDINERO_ENABLE_PORTMAPPING=OFF \
+            -DDINERO_ENABLE_QUIC=ON \
             -DDINERO_RELEASE_TAG=${{ steps.provenance.outputs.version }} \
             -DDINERO_SV2_SOURCE_ROOT="$DINERO_SV2_SOURCE_ROOT"
 
@@ -455,6 +456,7 @@ jobs:
             -DMINER_ENABLE_OPENCL=ON \
             -DENABLE_GRPC=OFF \
             -DDINERO_ENABLE_PORTMAPPING=ON \
+            -DDINERO_ENABLE_QUIC=ON \
             -DDINERO_RELEASE_TAG=${{ steps.provenance.outputs.version }} \
             -DDINERO_SV2_SOURCE_ROOT="$DINERO_SV2_SOURCE_ROOT" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \

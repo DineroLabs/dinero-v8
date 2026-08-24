@@ -154,10 +154,21 @@ natpmp=1
 
 `portmap=auto` tries UPnP first, then NAT-PMP. When the router returns a
 public address, Dinero advertises that reachable `ip:port` through P2P
-address relay so other nodes can discover it. This is best-effort: outbound
+address relay so other nodes can discover it. The mapping is renewed at
+half of the router lease and failed discovery is retried every five minutes
+by default (`p2p.portmap_retry_seconds`). `getnetworkinfo.port_mapping`
+reports compiled protocol support, attempts, renewals, and the latest result.
+This is best-effort: outbound
 P2P still works if the router does not support port mapping, UPnP/NAT-PMP
 is disabled, the OS firewall blocks the app, or the ISP uses CGNAT. Release
 builders should package `miniupnpc` and `libnatpmp` from `depends/`.
+
+Bootstrap IPs and DNS seeds are introductions, not permanent authorities.
+After AddrMan has learned enough reachable community peers, the node releases
+its bootstrap connections and fills all eight durable outbound slots from the
+network. It temporarily keeps at most two bootstrap peers only while recovering
+from an empty or degraded peer set. `peers.dat` preserves learned addresses
+across restart, and feeler connections continuously test replacements.
 
 ### Onion Transport
 
