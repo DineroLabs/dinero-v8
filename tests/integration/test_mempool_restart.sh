@@ -55,7 +55,9 @@ else
 fi
 
 DATADIR_A="${DATADIR_A:-$(mktemp -d -t mempool_restart_test_XXXXXX)}"
-RPC_PORT_A="${RPC_PORT_A:-$((19500 + RANDOM % 1000))}"
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT_A="${RPC_PORT_A:-$(alloc_port_base)}"
 P2P_PORT_A="${P2P_PORT_A:-$((RPC_PORT_A + 1))}"
 KEEP_TMP_ON_FAIL="${KEEP_TMP_ON_FAIL:-1}"
 

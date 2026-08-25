@@ -188,7 +188,9 @@ echo "================================================================="
 echo ""
 
 # Random ports to avoid conflicts
-RPC_PORT_BRIDGE=$((27000 + RANDOM % 1000))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT_BRIDGE=$(alloc_port_base)
 P2P_PORT_BRIDGE=$((RPC_PORT_BRIDGE + 1))
 RPC_PORT_CSN=$((RPC_PORT_BRIDGE + 2))
 P2P_PORT_CSN=$((RPC_PORT_BRIDGE + 3))

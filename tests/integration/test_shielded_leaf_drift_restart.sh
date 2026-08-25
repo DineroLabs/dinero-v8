@@ -6,7 +6,9 @@ DINEROD="${DINEROD:-$ROOT_DIR/build-release-804/dinerod}"
 DATA_DIR="/tmp/dinero_repro_$$"
 LOG_FILE="${DATA_DIR}.log"
 PID=""
-RPC_PORT=$((41000 + RANDOM % 1000)); P2P_PORT=$((RPC_PORT+1)); WALLET_PORT=$((RPC_PORT+2))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT=$(alloc_port_base); P2P_PORT=$((RPC_PORT+1)); WALLET_PORT=$((RPC_PORT+2))
 
 cleanup(){ [[ -n "$PID" ]] && kill "$PID" 2>/dev/null; pkill -f "dinerod.*${DATA_DIR}" 2>/dev/null; rm -rf "$DATA_DIR" "$LOG_FILE"; }
 trap cleanup EXIT

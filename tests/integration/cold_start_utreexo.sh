@@ -156,7 +156,9 @@ echo "════════════════════════�
 echo ""
 
 # Ports
-RPC_PORT_A=$((26000 + RANDOM % 1000))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT_A=$(alloc_port_base)
 P2P_PORT_A=$((RPC_PORT_A + 1))
 RPC_PORT_B=$((RPC_PORT_A + 2))
 P2P_PORT_B=$((RPC_PORT_A + 3))

@@ -68,7 +68,9 @@ LOG_COPY="${COPY_DIR}/daemon.log"
 PID=""
 KEEP_ON_FAIL=0
 CHAIN_HEIGHT="${CHAIN_HEIGHT:-15}"
-RPC_PORT_ORIG="${RPC_PORT_ORIG:-$((27000 + RANDOM % 500))}"
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT_ORIG="${RPC_PORT_ORIG:-$(alloc_port_base)}"
 P2P_PORT_ORIG="${P2P_PORT_ORIG:-$((RPC_PORT_ORIG + 1))}"
 RPC_PORT_COPY="${RPC_PORT_COPY:-$((RPC_PORT_ORIG + 100))}"
 P2P_PORT_COPY="${P2P_PORT_COPY:-$((RPC_PORT_COPY + 1))}"

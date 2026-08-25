@@ -175,7 +175,9 @@ echo "  flood_count:         $FLOOD_COUNT"
 echo "  disconnect_timeout:  ${DISCONNECT_TIMEOUT}s"
 echo ""
 
-RPC_PORT=$((27300 + RANDOM % 500))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT=$(alloc_port_base)
 P2P_PORT=$((RPC_PORT + 1))
 DATADIR=$(mktemp -d -t dinero_proofdata_abuse_XXXXXX)
 

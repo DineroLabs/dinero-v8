@@ -65,7 +65,9 @@ DATA_DIR="/tmp/dinero-e2e-test-$$"
 RPC_PORT="${RPC_PORT:-20996}"
 P2P_PORT="${P2P_PORT:-21001}"
 # Randomize Stratum port to avoid conflicts (since --no-stratum isn't working)
-STRATUM_PORT=$((20000 + RANDOM % 20000))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+STRATUM_PORT=$(alloc_port_base)
 
 # Cleanup function
 cleanup() {

@@ -81,7 +81,9 @@ cleanup() {
 }
 trap 'EXIT_CODE=$?; cleanup' EXIT
 
-LOCAL_RPC_PORT=$((37000 + RANDOM % 1000))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+LOCAL_RPC_PORT=$(alloc_port_base)
 LOCAL_P2P_PORT=$((LOCAL_RPC_PORT + 1))
 LOCAL_WALLET_PORT=$((LOCAL_RPC_PORT + 2))
 

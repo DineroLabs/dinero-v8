@@ -85,7 +85,9 @@ cleanup() {
 }
 trap 'EXIT_CODE=$?; cleanup' EXIT
 
-RPC_PORT_BRIDGE=$((36000 + RANDOM % 1000))
+# shellcheck source=lib/port_alloc.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/port_alloc.sh"
+RPC_PORT_BRIDGE=$(alloc_port_base)
 P2P_PORT_BRIDGE=$((RPC_PORT_BRIDGE + 1))
 RPC_PORT_CSN=$((RPC_PORT_BRIDGE + 2))
 P2P_PORT_CSN=$((RPC_PORT_BRIDGE + 3))
