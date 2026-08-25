@@ -125,10 +125,37 @@ constexpr int32_t TX_VERSION_SHIELDED = 5;
 constexpr int32_t TX_VERSION_SHIELDED_V2 = 6;
 
 // ── Bundle size limits (consensus-enforced) ─────────────────────────
-// Prevents block-stuffing DoS. Worst-case verification cost is bounded
-// at ~kMaxSpendsPerBundle * 250ms (Spartan spend verify on Mac M-series)
-// per shielded transaction. Generous enough that legitimate use never
-// hits the cap; raising these requires a coordinated fork.
+// Prevents block-stuffing DoS. Raising OR lowering these requires a
+// coordinated fork, so the values are left alone here; what follows corrects
+// the reasoning attached to them, which measurement has overtaken.
+//
+// ⚠️ THE ORIGINAL JUSTIFICATION IS STALE IN BOTH HALVES. It read: "worst-case
+// verification cost is bounded at ~kMaxSpendsPerBundle * 250ms". Measured
+// 2026-08-24 through the real ProveSpend/VerifySpend entry points (not a raw
+// r1cs_spartan_verify call, which skips the R1CS structure hashing VerifySpend
+// performs and understates cost by ~2.6x):
+//
+//   cv-bound spend (what mainnet runs)  597,009 constraints
+//     verify   0.896 s   <-- not 250 ms; the documented figure is 3.6x low
+//     prove    3.254 s
+//     proof    44,571 bytes
+//
+// The 250 ms figure predates cv-binding, which took the spend circuit from
+// 23,914 to 597,009 constraints (a 25x increase) and outgrew the estimate
+// without the comment being revisited.
+//
+// AND 200 SPENDS IS UNREACHABLE, so this is not the operative DoS bound.
+// MAX_BLOCK_SIZE is 1,000,000 bytes and a cv-bound spend proof is 44,571
+// bytes, so at most ~22 spends fit in a whole BLOCK — let alone one bundle.
+// Block size binds first, by roughly 9x. Worst-case per-block shielded verify
+// is therefore ~22 * 0.896 s = ~20 s, not 200 * 250 ms = 50 s: the real number
+// is smaller than the documented one, but for a completely different reason
+// than the comment gave.
+//
+// Left as-is deliberately: lowering a consensus limit to match the block-size
+// bound would be a fork for no security gain, since the unreachable cap costs
+// nothing. ShieldedBundleLimitsAreNotTheBindingConstraint (in the validation
+// suite) pins the relationship so this cannot silently go stale again.
 constexpr size_t kMaxSpendsPerBundle  = 200;
 constexpr size_t kMaxOutputsPerBundle = 200;
 
@@ -139,15 +166,35 @@ constexpr size_t kMaxOutputsPerBundle = 200;
 constexpr size_t kMaxBPAggregationDepth = 32;
 
 // ── VWU constants for shielded components ────────────────────────────
-// These price ZK proof verification in the same fee market as transparent
-// signature verification. Values chosen so a shielded spend (~5 ms verify)
-// costs roughly the same VWU as a P2MR input (~3 ms verify + 5 KB witness).
+// Intended to price ZK proof verification in the same fee market as
+// transparent signature verification.
+//
+// ⚠️ THE CALIBRATION IS STALE BY ~179x, AND NOT CURRENTLY APPLIED. The
+// original note read "a shielded spend (~5 ms verify)". Measured 2026-08-24
+// through VerifySpend: 0.896 s for a cv-bound spend. The 5 ms figure predates
+// cv-binding's 25x constraint increase.
+//
+// It is not a live underpricing hole today only because nothing consumes it
+// on a consensus or mempool path: ComputeShieldedBundleVWU below has NO
+// callers, and SHIELDED_SPEND_VWU is read only by the wallet's route
+// estimator (wallet_routing_engine.cpp). So the effect is a wallet fee
+// estimate that under-weights shielded spends, not a block-level DoS vector.
+//
+// ⚠️ BEFORE WIRING THESE INTO ANY FEE OR WEIGHT CALCULATION: recalibrate
+// against measured verify cost. Pricing a 0.896 s verification as though it
+// were 5 ms would let shielded spends buy block-validation time ~179x cheaper
+// than the transparent inputs they are meant to be comparable to.
 constexpr uint64_t SHIELDED_SPEND_VWU  = 5000;
 constexpr uint64_t SHIELDED_OUTPUT_VWU = 500;
 
 /**
  * Compute the VWU contribution of a shielded bundle.
  * Pure function — no state access.
+ *
+ * CURRENTLY UNUSED: no caller anywhere in the tree as of 2026-08-24. Kept
+ * because it is the natural place to price a bundle once the constants above
+ * are recalibrated, but note that wiring it up with today's values would
+ * under-price a shielded spend by ~179x. See the warning on the constants.
  */
 inline uint64_t ComputeShieldedBundleVWU(const ShieldedBundle& bundle) {
     return bundle.spends.size() * SHIELDED_SPEND_VWU

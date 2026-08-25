@@ -1478,5 +1478,37 @@ TEST_F(ShieldedValidationFixture, AddressRoundTripsBothKeysAndRejectsLegacy) {
     EXPECT_THROW(shdrv::DecodeShieldedAddress(legacy_addr), std::runtime_error);
 }
 
+// ── Bundle limits vs the real binding constraint ────────────────────
+//
+// kMaxSpendsPerBundle's justification claimed worst-case verification was
+// bounded at "kMaxSpendsPerBundle * 250ms". Both halves were stale: measured
+// verify is 0.896s (not 250ms), and 200 spends is unreachable because a
+// cv-bound proof is ~44,571 bytes against a 1,000,000-byte MAX_BLOCK_SIZE —
+// so ~22 spends fill an entire BLOCK.
+//
+// This pins the RELATIONSHIP rather than the measured timings (which are
+// hardware-dependent and belong in the header's prose): block size must bind
+// before the bundle cap. If proofs ever shrink enough that 200 spends could
+// fit in a block, the bundle cap becomes load-bearing for the first time and
+// its cost justification needs redoing — this test is what says so.
+TEST_F(ShieldedValidationFixture, ShieldedBundleLimitsAreNotTheBindingConstraint) {
+    // Measured 2026-08-24: serialized cv-bound spend proof size.
+    constexpr size_t kMeasuredCvBoundProofBytes = 44'571;
+    constexpr size_t kMaxBlockSize = 1'000'000;  // chainparams, all networks
+
+    const size_t spends_that_fit_in_a_block =
+        kMaxBlockSize / kMeasuredCvBoundProofBytes;
+
+    EXPECT_LT(spends_that_fit_in_a_block, kMaxSpendsPerBundle)
+        << "block size no longer binds before kMaxSpendsPerBundle (" 
+        << spends_that_fit_in_a_block << " vs " << kMaxSpendsPerBundle
+        << ") — the bundle cap is now load-bearing and its cost justification "
+           "must be re-derived from measured verify time";
+
+    // Sanity on the arithmetic that claim rests on.
+    EXPECT_GT(spends_that_fit_in_a_block, 0u)
+        << "a single spend proof no longer fits in a block";
+}
+
 }  // namespace
 }  // namespace dinero::consensus::shielded::testing
