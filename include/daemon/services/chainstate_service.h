@@ -31,6 +31,7 @@
 #include <filesystem>  // Phase 42: For snapshot file paths
 #include <thread>  // Phase 44: For background validation worker
 #include <atomic>  // Phase 44: For thread-safe stop signal
+#include <functional>
 #include <mutex>   // Phase 44: For background validation state protection
 #include <condition_variable>  // #298: wake-on-store for background validation
 #include <algorithm>
@@ -104,6 +105,11 @@ namespace pool {
  */
 class ChainstateService : public IService {
 public:
+    /// Wire the scheduler re-request hook (see rerequest_unreadable_block_).
+    void SetRerequestUnreadableBlockCallback(std::function<void(const uint256&)> cb) {
+        rerequest_unreadable_block_ = std::move(cb);
+    }
+
     ChainstateService();  // v2.2.4: Out-of-line (WalletUTXOAdapter incomplete type)
     ~ChainstateService() override;  // v2.2.4: Out-of-line (WalletUTXOAdapter incomplete type)
 
@@ -1236,6 +1242,17 @@ private:
     // (clear) AND from activation_mutex_ holders (mark/contains) — see
     // UnreadableBlockSet for the corruption history that motivated the type.
     UnreadableBlockSet unreadable_blocks_;
+
+    /// Ask BlockDownloadScheduler to re-request a block whose stored body could
+    /// not be read. Set by DaemonApp, which owns both objects; ChainstateService
+    /// has no other route to the scheduler.
+    ///
+    /// Without it, ConnectTip cleared BLOCK_HAVE_DATA and logged "will be
+    /// re-downloaded from peers" while nothing issued a getdata: the scheduler
+    /// only requests MISSING entries, a delivered block sits CONNECTED, and
+    /// RescanFromActualTip explicitly preserves CONNECTED. Recovery happened
+    /// only when unrelated gap detection happened to fire.
+    std::function<void(const uint256&)> rerequest_unreadable_block_;
 
     // Forest checkpoint delta campaign phase 0 instrumentation.
     // pending_forest_checkpoint_bytes_ carries the size of the forest blob

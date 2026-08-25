@@ -2710,5 +2710,101 @@ int main() {
     }
 
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
+
+    {
+        std::cout << "\nN. unreadable stored body: CONNECTED -> explicit re-request..." << std::endl;
+
+        // ConnectTip clears BLOCK_HAVE_DATA when a stored body cannot be read
+        // and logs that it "will be re-downloaded from peers". Nothing made
+        // that true: the scheduler only issues getdata for MISSING entries, a
+        // block delivered once sits CONNECTED, and RescanFromActualTip
+        // explicitly PRESERVES CONNECTED. Measured on a real failure: 105
+        // clears, and the two requests that eventually appeared came from
+        // unrelated gap detection long afterwards (log lines 549k/1025k vs the
+        // first failure at 156k) — recovery by coincidence, not by design.
+        //
+        // This pins the contract ConnectTip now relies on: a CONNECTED entry
+        // can be driven back to an explicit request, and doing so repeatedly
+        // does not amplify into multiple in-flight requests.
+        dcs::HeaderChainSelector selector;
+        try {
+            BuildLinearHeaders(selector, 8);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build linear header chain: " << e.what() << std::endl;
+            return 1;
+        }
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+
+        std::vector<uint256> requested_hashes;
+        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash, uint32_t /*height*/) {
+            requested_hashes.push_back(block_hash);
+        });
+
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();
+        if (!Require(!requested_hashes.empty(), "expected an initial request to seed the test")) {
+            return 1;
+        }
+        const uint256 target = requested_hashes.front();
+
+        // Drive it to CONNECTED — the state a delivered, connected block sits
+        // in, and the state from which nothing previously recovered.
+        if (!Require(scheduler.MarkBlockConnected(target),
+                     "expected to mark the target block CONNECTED")) {
+            return 1;
+        }
+
+        const size_t before_rerequest = requested_hashes.size();
+        scheduler.Tick();
+        if (!Require(requested_hashes.size() == before_rerequest ||
+                     requested_hashes.back() != target,
+                     "a CONNECTED block must not be re-requested on its own")) {
+            return 1;
+        }
+
+        // What ConnectTip now does when the body turns out to be unreadable.
+        if (!Require(scheduler.ReRequestBlock(target),
+                     "ReRequestBlock must find and reset a CONNECTED entry")) {
+            return 1;
+        }
+
+        const size_t before_tick = requested_hashes.size();
+        scheduler.Tick();
+        size_t target_requests = 0;
+        for (size_t i = before_tick; i < requested_hashes.size(); ++i) {
+            if (requested_hashes[i] == target) ++target_requests;
+        }
+        if (!Require(target_requests == 1,
+                     "expected EXACTLY ONE re-request for the unreadable body")) {
+            return 1;
+        }
+
+        // No amplification: ConnectTip can clear repeatedly (it did 105 times
+        // in the observed failure). Repeated calls must not stack in-flight
+        // requests for the same hash.
+        const size_t in_flight_after_one = scheduler.GetInFlightCount();
+        for (int i = 0; i < 5; ++i) {
+            scheduler.ReRequestBlock(target);
+        }
+        const size_t before_repeat_tick = requested_hashes.size();
+        scheduler.Tick();
+        size_t repeat_requests = 0;
+        for (size_t i = before_repeat_tick; i < requested_hashes.size(); ++i) {
+            if (requested_hashes[i] == target) ++repeat_requests;
+        }
+        if (!Require(repeat_requests <= 1,
+                     "repeated ReRequestBlock must not amplify into multiple requests per Tick")) {
+            return 1;
+        }
+        if (!Require(scheduler.GetInFlightCount() <= in_flight_after_one + 1,
+                     "repeated re-requests must not stack in-flight accounting")) {
+            return 1;
+        }
+
+        std::cout << "   ✅ connected_block_rerequested=1 repeat_calls=5 extra_requests="
+                  << repeat_requests << std::endl;
+    }
     return 0;
 }

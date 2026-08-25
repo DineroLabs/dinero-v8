@@ -13144,9 +13144,19 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         // from peers instead of infinite retry from corrupt/missing chaindb entry
         tip_to_connect->status &= ~BLOCK_HAVE_DATA;
         unreadable_blocks_.mark(tip_to_connect->hash);
+        // Issue the request rather than only describing one. Clearing the flag
+        // does not reach the scheduler: it requests MISSING entries only, a
+        // delivered block sits CONNECTED, and RescanFromActualTip preserves
+        // CONNECTED. ReRequestBlock is idempotent (resets to MISSING and drops
+        // in-flight accounting), so repeated failures on the same block still
+        // produce at most one request per Tick.
+        const bool requeued = rerequest_unreadable_block_
+                                  ? (rerequest_unreadable_block_(tip_to_connect->hash), true)
+                                  : false;
         if (logger_) logger_->warning("[ConnectTip] Cleared BLOCK_HAVE_DATA for height " +
                       std::to_string(tip_to_connect->height) +
-                      " — will be re-downloaded from peers");
+                      (requeued ? " — re-requested from peers"
+                                : " — NO re-request issued (scheduler hook unset)"));
         return fail("read-block-failed-status-" + std::to_string(static_cast<int>(block_result.status())));
     }
     Block block = block_result.value();

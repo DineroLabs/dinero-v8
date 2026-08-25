@@ -1828,6 +1828,14 @@ bool BlockDownloadScheduler::RequestNextBlock() {
 }
 
 bool BlockDownloadScheduler::ReRequestBlock(const uint256& block_hash) {
+    // Lock, matching MarkBlockInvalid/MarkBlockConnected. This was the only
+    // one of the three mutators that iterated missing_blocks_ unlocked — an
+    // oversight rather than a contract (nothing documents a lock-held
+    // precondition, and there are no internal callers, so no self-deadlock).
+    // It mattered less while the sole caller was the CSN path; ConnectTip now
+    // calls it from the activation thread while p2p threads mutate the same
+    // vector.
+    std::lock_guard<std::mutex> lock(mutex_);
     for (auto& fetch_state : missing_blocks_) {
         if (fetch_state.block_hash == block_hash) {
             fetch_state.status = FetchStatus::MISSING;

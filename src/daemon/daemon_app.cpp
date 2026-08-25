@@ -2565,6 +2565,22 @@ bool DaemonApp::Init(int argc, char** argv) {
     );
     ctx_.block_download = block_download;
 
+    // Let ChainstateService issue a re-request when a stored block body turns
+    // out to be unreadable. It has no other route to the scheduler, so without
+    // this the ConnectTip path could only log an intention it never carried out.
+    // Weak-captured so firing during shutdown cannot resurrect a freed scheduler.
+    if (auto chainstate_for_rerequest =
+            std::dynamic_pointer_cast<dinero::ChainstateService>(ctx_.chainstate)) {
+        std::weak_ptr<dinero::consensus::BlockDownloadScheduler> weak_dl = block_download;
+        chainstate_for_rerequest->SetRerequestUnreadableBlockCallback(
+            [weak_dl](const uint256& hash) {
+                if (auto dl = weak_dl.lock()) {
+                    dl->ReRequestBlock(hash);
+                    dl->Tick();
+                }
+            });
+    }
+
     // FIX 2 (issue #186): central block-download deferral for a pending
     // AssumeUTXO snapshot bootstrap. Tick() consults this predicate on EVERY
     // call site, so blocks never download from genesis while a snapshot is
