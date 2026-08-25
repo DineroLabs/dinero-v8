@@ -57,7 +57,19 @@ public:
     bool Contains(const Hash& candidate) const;
 
     /**
-     * Reorg support: drop every entry recorded at height > `height`.
+     * Reorg support: drop every entry recorded at height > `height`, and
+     * RESTORE the entries those blocks displaced when they were connected.
+     *
+     * Restoration matters because RecordRoot's eviction is lossy. Without it,
+     * a node that disconnected D blocks runs with `kDepth - D` anchors while a
+     * never-reorged peer at the same tip has `kDepth`, so the reorged node
+     * REJECTS as AnchorInvalid a block the peer accepts (audit finding #4).
+     * Mainnet has been past kDepth since long before the current tip, so the
+     * window is permanently full and this is reachable today.
+     *
+     * Restoration only ever returns the window to what a never-reorged peer at
+     * the same tip holds — it never widens it beyond kDepth.
+     *
      * Idempotent and safe on an empty history.
      */
     void RollbackAbove(uint32_t height);
@@ -66,7 +78,10 @@ public:
     size_t Size() const { return roots_.size(); }
 
     /** Test/debug: clear all entries. */
-    void Clear() { roots_.clear(); }
+    void Clear() { roots_.clear(); evicted_.clear(); }
+
+    /** Entries currently retained for rollback restoration (diagnostics). */
+    size_t EvictedRetained() const { return evicted_.size(); }
 
     // ── Persistence ─────────────────────────────────────────────────
     // Phase 3 wave 2: write the window to disk on shutdown / read on
@@ -118,7 +133,26 @@ public:
 private:
     // (height, root) pairs in insertion order. New entries appended at
     // the back; oldest evicted from the front when size > kDepth.
+    /// The validity window: the most recent kDepth roots, ascending by
+    /// height. This is what Contains() checks and what Save()/SerializeBytes()
+    /// persist — the on-disk format and the DSR2 state hash are unchanged by
+    /// the retention below.
     std::deque<std::pair<uint32_t, Hash>> roots_;
+
+    /// Entries evicted from the front of `roots_` by RecordRoot, kept so
+    /// RollbackAbove can put them back. Ascending by height; the back is the
+    /// most recently evicted (i.e. the one immediately below roots_.front()).
+    ///
+    /// DELIBERATELY NOT PERSISTED. Serializing it would change
+    /// AnchorHistory::SerializeBytes(), which feeds ComputeShieldedReorgStateHash
+    /// (DSR2) — so a format change here would invalidate stored journal digests
+    /// and demand a migration, for a benefit limited to reorgs that straddle a
+    /// restart. The residual gap is documented rather than papered over: a
+    /// disconnect immediately after restart still cannot restore, because the
+    /// evicted entries were never on disk. That is strictly smaller than the
+    /// current hole, which loses them on EVERY disconnect.
+    static constexpr size_t kEvictionRetention = kDepth;
+    std::deque<std::pair<uint32_t, Hash>> evicted_;
 };
 
 }  // namespace dinero::consensus::shielded
