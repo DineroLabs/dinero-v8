@@ -20,6 +20,7 @@ class AdvisoryBannerQueue;
 class AiPanel;
 class AiStatusStrip;
 namespace dinero::qt::dashboard { class CmdKPanel; }
+namespace dinero::qt { class OverviewConnectivityCard; }
 class DpiWidget;
 class HardwareWalletWidget;
 class QShortcut;
@@ -276,6 +277,8 @@ private:
   QLabel* lblReward_;
 
   // Monitoring Dashboard widgets (Overview bottom half)
+  dinero::qt::OverviewConnectivityCard* overviewConnectivityCard_ = nullptr;
+  bool overviewRelayRpcSupported_ = true;
   QProgressBar* cpuProgressBar_;
   QLabel* lblCpuUsage_;
   QLabel* lblCpuTemp_;

@@ -13,6 +13,7 @@
 #include "dpiwidget.h"             // DPI Pay/Collect
 #include "aipanel.h"
 #include "cmdkpanel.h"
+#include "overviewconnectivitycard.h"
 #include "scrollsupport.h"
 // AI panel uses ClaudeProcess (no more AiTools)
 #include "aistatusstrip.h"
@@ -2379,27 +2380,46 @@ void MainWindow::setupUI() {
     // 📊 MONITORING DASHBOARD (bottom half of Overview)
     // ═══════════════════════════════════════════════════════════════════
     
-    auto *monitoringGroup = new QGroupBox("📊 System Monitoring");
+    auto *monitoringGroup = new QGroupBox("Node operation");
     auto *monitoringLayout = new QVBoxLayout(monitoringGroup);
     monitoringLayout->setContentsMargins(10, 12, 10, 10);
     monitoringLayout->setSpacing(10);
     monitoringGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-    monitoringGroup->setMaximumHeight(620);
+    monitoringGroup->setMaximumHeight(650);
     
-    // Row 1: CPU Usage + Hashrate
+    // Row 1: resilient network controls + compact resource telemetry.
     auto *row1 = new QHBoxLayout;
     row1->setSpacing(12);
-    
-    // CPU Usage (Progress Bar)
-    auto *cpuBox = new QGroupBox("💻 CPU Usage");
+
+    auto* connectivityBox = new QGroupBox("Connectivity & contribution");
+    auto* connectivityLayout = new QVBoxLayout(connectivityBox);
+    connectivityLayout->setContentsMargins(4, 6, 4, 4);
+    overviewConnectivityCard_ = new dinero::qt::OverviewConnectivityCard(connectivityBox);
+    connectivityLayout->addWidget(overviewConnectivityCard_);
+    connectivityBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
+    connectivityBox->setMaximumHeight(235);
+    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::torModeRequested,
+            this, [this](const QString& mode) {
+      rpc_->callNamed("network.setonionservice", QJsonObject{{"mode", mode}});
+    });
+    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::relayModeRequested,
+            this, [this](const QString& mode) {
+      rpc_->callNamed("network.setrelayservice", QJsonObject{{"mode", mode}});
+    });
+    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::advancedControlsRequested,
+            this, [this]() {
+      if (cmdKPanel_ && !cmdKPanel_->isPanelOpen()) cmdKPanel_->togglePanel();
+    });
+    row1->addWidget(connectivityBox, 2);
+
+    auto *cpuBox = new QGroupBox("Resources & mining");
     auto *cpuLayout = new QVBoxLayout(cpuBox);
-    cpuLayout->setContentsMargins(10, 12, 10, 10);
-    cpuLayout->setSpacing(5);
+    cpuLayout->setContentsMargins(10, 10, 10, 8);
+    cpuLayout->setSpacing(3);
     cpuBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-    cpuBox->setMaximumHeight(145);
+    cpuBox->setMaximumHeight(235);
     lblCpuUsage_ = new QLabel("0%");
-    lblCpuUsage_->setAlignment(Qt::AlignCenter);
-    lblCpuUsage_->setFixedHeight(24);
+    lblCpuUsage_->setAlignment(Qt::AlignLeft);
     lblCpuUsage_->setStyleSheet("QLabel { font-size: 14px; font-weight: bold; }");
     cpuProgressBar_ = new QProgressBar;
     cpuProgressBar_->setRange(0, 100);
@@ -2409,41 +2429,22 @@ void MainWindow::setupUI() {
     cpuProgressBar_->setStyleSheet(chromeProgressBarStyle());
     lblCpuTemp_ = new QLabel("Temp: --");
     lblPowerStatus_ = new QLabel("Power: --");
-    lblCpuTemp_->setFixedHeight(20);
-    lblPowerStatus_->setFixedHeight(20);
     lblCpuTemp_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
     lblPowerStatus_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
+    auto* cpuHeader = new QHBoxLayout;
+    cpuHeader->addWidget(new QLabel("CPU", cpuBox));
+    cpuHeader->addStretch();
+    cpuHeader->addWidget(lblCpuUsage_);
+    cpuLayout->addLayout(cpuHeader);
     cpuLayout->addWidget(cpuProgressBar_);
-    cpuLayout->addWidget(lblCpuUsage_);
     cpuLayout->addWidget(lblCpuTemp_);
     cpuLayout->addWidget(lblPowerStatus_);
-    row1->addWidget(cpuBox);
-    
-    // Hashrate (Local + Network)
-    auto *hashrateBox = new QGroupBox("⚡ Hashrate");
-    auto *hashrateLayout = new QVBoxLayout(hashrateBox);
-    hashrateLayout->setContentsMargins(10, 12, 10, 10);
-    hashrateLayout->setSpacing(4);
-    hashrateBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-    hashrateBox->setMaximumHeight(145);
     lblLocalHashrate_ = new QLabel("Local: 0 H/s");
     lblNetworkHashrate_ = new QLabel("Network: 0 H/s");
-    lblLocalHashrate_->setFixedHeight(22);
-    lblNetworkHashrate_->setFixedHeight(22);
     lblLocalHashrate_->setStyleSheet("QLabel { font-size: 12px; }");
     lblNetworkHashrate_->setStyleSheet("QLabel { font-size: 12px; color: #868e96; }");
-    hashrateLayout->addWidget(lblLocalHashrate_);
-    hashrateLayout->addWidget(lblNetworkHashrate_);
-    hashrateLayout->addStretch();
-    row1->addWidget(hashrateBox);
-
-    // Mining hardware (only real telemetry; no invented GPU temperature)
-    auto *hardwareBox = new QGroupBox("🖥️ Mining Hardware");
-    auto *hardwareLayout = new QVBoxLayout(hardwareBox);
-    hardwareLayout->setContentsMargins(10, 12, 10, 10);
-    hardwareLayout->setSpacing(3);
-    hardwareBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-    hardwareBox->setMaximumHeight(145);
+    cpuLayout->addWidget(lblLocalHashrate_);
+    cpuLayout->addWidget(lblNetworkHashrate_);
     lblMinerModeOverview_ = new QLabel("Miner: Idle");
     lblGpuBackendOverview_ = new QLabel("Mining: --");
     lblGpuDeviceOverview_ = new QLabel("GPU: --");
@@ -2456,13 +2457,13 @@ void MainWindow::setupUI() {
     lblGpuLoadOverview_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
     lblGpuMemoryOverview_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
     lblGpuThermalsOverview_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
-    hardwareLayout->addWidget(lblMinerModeOverview_);
-    hardwareLayout->addWidget(lblGpuBackendOverview_);
-    hardwareLayout->addWidget(lblGpuDeviceOverview_);
-    hardwareLayout->addWidget(lblGpuLoadOverview_);
-    hardwareLayout->addWidget(lblGpuMemoryOverview_);
-    hardwareLayout->addWidget(lblGpuThermalsOverview_);
-    row1->addWidget(hardwareBox);
+    cpuLayout->addWidget(lblMinerModeOverview_);
+    cpuLayout->addWidget(lblGpuBackendOverview_);
+    cpuLayout->addWidget(lblGpuDeviceOverview_);
+    cpuLayout->addWidget(lblGpuLoadOverview_);
+    cpuLayout->addWidget(lblGpuMemoryOverview_);
+    cpuLayout->addWidget(lblGpuThermalsOverview_);
+    row1->addWidget(cpuBox, 1);
     
     monitoringLayout->addLayout(row1);
     
@@ -2520,7 +2521,7 @@ void MainWindow::setupUI() {
     auto *alertsLayout = new QVBoxLayout(alertsBox);
     txtAlerts_ = new QTextEdit;
     txtAlerts_->setReadOnly(true);
-    txtAlerts_->setMaximumHeight(80);
+    txtAlerts_->setMaximumHeight(48);
     txtAlerts_->setStyleSheet(
       "QTextEdit { background: #1d2126; border: 1px solid #373d46; color: #cfd7df; font-family: monospace; font-size: 11px; }"
     );
@@ -2543,7 +2544,7 @@ void MainWindow::setupUI() {
     // END MONITORING DASHBOARD
     // ═══════════════════════════════════════════════════════════════════
     
-    overview->setMinimumHeight(1350); // Compact dashboard; scroll area still handles smaller screens.
+    overview->setMinimumHeight(1120); // Scroll area still handles smaller screens.
     overview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     tabs->addTab(makeScrollableTab(overview), "Overview");
   }
@@ -4917,6 +4918,9 @@ void MainWindow::refresh() {
   // Get comprehensive network info
   rpc_->getBlockCount();
   rpc_->call("getnetworkinfo", QJsonArray());     // Get P2P listen/port-map status
+  if (overviewRelayRpcSupported_) {
+    rpc_->callNamed("network.getrelayservice", QJsonObject{}); // Overview relay preference/state
+  }
   rpc_->call("getpeerinfo", QJsonArray());        // Get connection count
   rpc_->call("economics.getinfo", QJsonArray());       // Get phase & reward
   rpc_->call("economics.getsupply", QJsonArray());          // Get total supply
@@ -6441,7 +6445,17 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
   } else if (method == "getnetworkinfo" || method == "network.info") {
     if (result.isObject()) {
-      updateNetworkInfo(result.toObject());
+      const auto info = result.toObject();
+      updateNetworkInfo(info);
+      if (overviewConnectivityCard_) overviewConnectivityCard_->setNetworkInfo(info);
+    }
+  } else if (method == "network.getrelayservice" || method == "network.setrelayservice") {
+    if (overviewConnectivityCard_ && result.isObject()) {
+      overviewConnectivityCard_->setRelayServiceStatus(result.toObject());
+    }
+  } else if (method == "network.setonionservice") {
+    if (overviewConnectivityCard_ && result.isObject()) {
+      overviewConnectivityCard_->setOnionServiceStatus(result.toObject());
     }
   } else if (method == "getpeerinfo" || method == "getpeerinfo") {
     // Week 7: Backend returns { "peers": [...], "connected_peers": N }
@@ -7215,6 +7229,25 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
 
 void MainWindow::onRpcError(const QString& method, int code, const QString& message) {
   if (!rpc_) return;  // Guard: shutting down
+
+  if (method == "network.setonionservice" || method == "network.setrelayservice" ||
+      method == "network.getrelayservice") {
+    const QString lowerMessage = message.toLower();
+    const bool unsupported = code == -32601 || lowerMessage.contains("unknown method") ||
+                             (lowerMessage.contains("method") && lowerMessage.contains("not found"));
+    if (unsupported && method != "network.setonionservice") {
+      overviewRelayRpcSupported_ = false;
+    }
+    if (overviewConnectivityCard_) {
+      if (method == "network.setonionservice") {
+        overviewConnectivityCard_->setTorActionError(unsupported);
+      } else {
+        overviewConnectivityCard_->setRelayActionError(unsupported);
+      }
+    }
+    qWarning() << "Overview network control RPC failed:" << method << code;
+    return;
+  }
 
   // ALWAYS log errors to console so user can see them
   qDebug() << "🔴 RPC Error:" << method << "Code:" << code << "Message:" << message;

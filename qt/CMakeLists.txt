@@ -564,6 +564,8 @@ set(GUI_SOURCES
   src/identitysection.h
   src/networksection.cpp
   src/networksection.h
+  src/overviewconnectivitycard.cpp
+  src/overviewconnectivitycard.h
   src/peerssection.cpp
   src/peerssection.h
   src/mynodedashboard.cpp
@@ -1419,6 +1421,24 @@ if(BUILD_TESTING)
 
   target_compile_definitions(test_network_section PRIVATE QT_NO_KEYWORDS)
   add_test(NAME NetworkSection COMMAND test_network_section)
+
+  add_executable(test_overview_connectivity_card
+    tests/test_overview_connectivity_card.cpp
+    src/overviewconnectivitycard.cpp
+    src/overviewconnectivitycard.h
+  )
+
+  target_link_libraries(test_overview_connectivity_card PRIVATE
+    Qt6::Widgets
+    Qt6::Test
+  )
+
+  target_include_directories(test_overview_connectivity_card PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_compile_definitions(test_overview_connectivity_card PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME OverviewConnectivityCard COMMAND test_overview_connectivity_card)
 
   add_executable(test_peers_section
     tests/test_peers_section.cpp
