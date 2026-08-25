@@ -8371,6 +8371,18 @@ void ChainstateService::ActivateBestChain() {
     }
     std::reverse(connect_path.begin(), connect_path.end()); // Connect in forward order
 
+    // Never move the canonical tip until the complete replacement branch is
+    // locally available. BLOCK_VALID_CHAIN is not proof that a side-branch
+    // block was active (or even has a body), so the connected-base shortcut
+    // can miss a header-only gap and discover it only after disconnecting.
+    if (!disconnect_path.empty() &&
+        !dinero::BranchHasDataToFork(best_candidate, active_tip_)) {
+        if (logger_) {
+            logger_->warning("[ActivateBestChain] Reorg plan incomplete: replacement branch has a body gap — canonical state left untouched");
+        }
+        return;
+    }
+
     // Log reorg details
     if (!disconnect_path.empty() || !connect_path.empty()) {
         if (logger_) {

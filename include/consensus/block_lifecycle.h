@@ -357,6 +357,10 @@ bool HasInvalidAncestor(const CBlockIndex* pindex);
 // reorg connect-walks into the gap and aborts. Genesis-with-data counts as a base.
 bool BranchHasDataToConnectedBase(const CBlockIndex* pindex);
 
+// Reorg preflight against the actual active-chain fork. Every block on the
+// candidate side must have a local body before canonical state is disconnected.
+bool BranchHasDataToFork(const CBlockIndex* candidate, const CBlockIndex* active_tip);
+
 // In-flight tracking
 void MarkBlockInFlight(const uint256& block_hash, uint64_t peer_id);
 void MarkBlockReceived(const uint256& block_hash);
