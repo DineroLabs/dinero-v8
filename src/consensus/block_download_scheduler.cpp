@@ -1828,6 +1828,14 @@ bool BlockDownloadScheduler::RequestNextBlock() {
 }
 
 bool BlockDownloadScheduler::ReRequestBlock(const uint256& block_hash) {
+    // Lock, matching MarkBlockInvalid/MarkBlockConnected. This was the only
+    // one of the three mutators that iterated missing_blocks_ unlocked — an
+    // oversight rather than a contract (nothing documents a lock-held
+    // precondition, and there are no internal callers, so no self-deadlock).
+    // It mattered less while the sole caller was the CSN path; ConnectTip now
+    // calls it from the activation thread while p2p threads mutate the same
+    // vector.
+    std::lock_guard<std::mutex> lock(mutex_);
     for (auto& fetch_state : missing_blocks_) {
         if (fetch_state.block_hash == block_hash) {
             fetch_state.status = FetchStatus::MISSING;
@@ -2247,6 +2255,21 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 fetch_state.status = FetchStatus::RECEIVED;
                 g_logger.debug("[BlockDownloadScheduler] Drain waiting on parent for height " +
                               std::to_string(want));
+                return connected;
+            case ConnectBlockResult::UNREADABLE_BODY:
+                // Chainstate's second read failed after the scheduler's own
+                // read succeeded. Recover in this lock domain instead of
+                // re-entering ReRequestBlock from the connect callback (which
+                // runs while mutex_ is held and would self-deadlock).
+                fetch_state.status = FetchStatus::MISSING;
+                fetch_state.stored_pos = FilePosition();
+                received_blocks_.erase(fetch_state.block_hash);
+                in_flight_blocks_.erase(fetch_state.block_hash);
+                expected_blocks_.erase(fetch_state.block_hash);
+                g_logger.error("[BlockDownloadScheduler] Chainstate could not read stored body at height " +
+                               std::to_string(want) + ": " +
+                               fetch_state.block_hash.GetHex().substr(0, 16) +
+                               "... reset to MISSING for re-download");
                 return connected;
             case ConnectBlockResult::TEMPORARY_FAIL:
                 fetch_state.status = FetchStatus::RECEIVED;

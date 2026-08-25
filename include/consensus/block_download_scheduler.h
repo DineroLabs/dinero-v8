@@ -90,6 +90,7 @@ enum class ConnectBlockResult {
     MISSING_PARENT,      // Parent block/header not present yet
     WAITING_PARENT,      // Parent is known/queued but not connected yet
     DUPLICATE,           // Already connected/known
+    UNREADABLE_BODY,     // Stored body became unreadable; discard position and download again
     TEMPORARY_FAIL       // Retry same child later
 };
 

@@ -12,10 +12,12 @@
 #include "consensus/chainparams.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
+#include "storage/block_storage.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -2710,5 +2712,69 @@ int main() {
     }
 
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
+
+    {
+        std::cout << "\nN. unreadable stored body: drain demotes without lock re-entry..." << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 1, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build linear header chain: " << e.what() << std::endl;
+            return 1;
+        }
+
+        const auto storage_dir = std::filesystem::temp_directory_path() /
+            ("dinero_scheduler_unreadable_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::remove_all(storage_dir);
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(storage_dir) == dinero::Status::Ok,
+                     "temporary block storage must initialize")) return 1;
+
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        scheduler.SetLocalTipHeight(0);
+
+        std::vector<uint256> requested_hashes;
+        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash, uint32_t /*height*/) {
+            requested_hashes.push_back(block_hash);
+        });
+
+        int connect_attempts = 0;
+        scheduler.SetConnectBlockCallback(
+            [&connect_attempts](const Block&, const std::string&) {
+                ++connect_attempts;
+                return dcs::ConnectBlockResult::UNREADABLE_BODY;
+            });
+
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();
+        if (!Require(requested_hashes.size() == 1 && requested_hashes.front() == hashes[1],
+                     "expected one initial request for height 1")) return 1;
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[1])),
+                     "received body must be verified and stored")) return 1;
+
+        // The callback executes under the scheduler mutex. Returning an
+        // explicit result must complete without calling a locking scheduler
+        // API from inside that callback.
+        scheduler.Tick();
+        if (!Require(connect_attempts == 1, "drainer must report one unreadable activation")) return 1;
+        if (!Require(!scheduler.HasReceivedBlock(hashes[1]),
+                     "unreadable body must leave received bookkeeping")) return 1;
+
+        const size_t before_retry = requested_hashes.size();
+        scheduler.Tick();
+        if (!Require(requested_hashes.size() == before_retry + 1 &&
+                     requested_hashes.back() == hashes[1],
+                     "next tick must issue exactly one retry for the unreadable body")) return 1;
+        scheduler.Tick();
+        if (!Require(requested_hashes.size() == before_retry + 1,
+                     "requested body must not amplify while in flight")) return 1;
+
+        storage.close();
+        std::filesystem::remove_all(storage_dir);
+        std::cout << "   ✅ connect_attempts=1 retries=1 amplification=0" << std::endl;
+    }
     return 0;
 }
