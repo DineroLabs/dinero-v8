@@ -376,6 +376,10 @@ void NodePoller::parseNetworkInfo(const QJsonValue& result) {
     // node_id_hex was added to getnetworkinfo in dinero-v8 PR #140. Empty
     // string on daemons predating that PR — Identity section renders "—".
     pending_identity_.node_id_hex = obj.value("node_id_hex").toString();
+    pending_identity_.outbound_connections =
+        obj.value(QStringLiteral("connections_out")).toInt(0);
+    pending_identity_.relay_fallback_eligible =
+        obj.value(QStringLiteral("relay_fallback_eligible")).toBool(false);
 
     OnionServiceStatus onion_status;
     const auto onion_value = obj.value(QStringLiteral("onion_service"));

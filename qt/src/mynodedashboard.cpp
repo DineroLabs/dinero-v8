@@ -132,6 +132,8 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
             identitySection_, &IdentitySection::onDynamicP2POverviewUpdated);
     connect(poller_, &NodePoller::onionServiceUpdated,
             networkSection_, &NetworkSection::setOnionServiceStatus);
+    connect(poller_, &NodePoller::onionServiceUpdated,
+            identitySection_, &IdentitySection::onOnionServiceUpdated);
     connect(networkSection_, &NetworkSection::torModeRequested,
             this, [rpc](const QString& mode) {
         if (rpc) rpc->callNamed(QStringLiteral("network.setonionservice"),
@@ -147,7 +149,10 @@ MyNodeDashboard::MyNodeDashboard(RpcClient* rpc, QWidget* parent)
                 [this](const QString& method, const QJsonValue& result) {
             if (method == QStringLiteral("network.getrelayservice") ||
                 method == QStringLiteral("network.setrelayservice")) {
-                networkSection_->setRelayServiceStatus(result.toObject());
+                const auto status = result.toObject();
+                networkSection_->setRelayServiceStatus(status);
+                identitySection_->onRelayServiceStatusUpdated(
+                    status.value(QStringLiteral("enabled")).toBool());
                 return;
             }
             if (method != QStringLiteral("network.setonionservice")) return;

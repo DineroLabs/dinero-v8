@@ -24,17 +24,27 @@ public Q_SLOTS:
     void onIdentityUpdated(const NodeIdentity& id);
     void onDaemonStateChanged(bool reachable);
     void onDynamicP2POverviewUpdated(const DynamicP2POverview& overview);
+    void onOnionServiceUpdated(const OnionServiceStatus& status);
+    void onRelayServiceStatusUpdated(bool enabled);
 
 public:
     // Static formatting helpers exposed for unit testing.
     static QString formatNodeIdHex(const QString& raw_hex);
     static QString reachabilityLine(const NodeIdentity& id);
-    static QString relayingLine(const NodeIdentity& id);
+    static QString connectivitySummaryLine(const NodeIdentity& id,
+                                           bool torActive);
+    static QString relayingLine(const NodeIdentity& id,
+                                bool relayServiceReady = false);
     static QString miningLine(const NodeIdentity& id);
     static QString footerLine(const NodeIdentity& id);
     static QString dynamicP2PLine(const DynamicP2POverview& overview);
 
 private:
+    void refreshConnectivityLabels();
+
+    NodeIdentity currentIdentity_;
+    bool          relayServiceReady_{false};
+    bool          torActive_{false};
     QWidget*     advancedDetails_{nullptr};
     QLabel*      nodeIdLabel_{nullptr};
     QPushButton* nodeIdCopyBtn_{nullptr};
