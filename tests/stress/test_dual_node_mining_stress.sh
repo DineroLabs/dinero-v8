@@ -74,6 +74,12 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_step() { echo -e "${CYAN}[$1]${NC} $2"; }
 
 cleanup() {
+    # MUST be the first statement: in an EXIT trap $? is the script's exit
+    # status only before any other command runs. Capturing it further down
+    # (after the kills and sleeps below) yields the status of that sleep --
+    # effectively always 0 -- and the failure-log preservation would silently
+    # never fire.
+    local exit_code=$?
     echo ""
     log_warn "Cleaning up test environment..."
 
@@ -114,6 +120,39 @@ cleanup() {
     pkill -9 -f "dinerod.*$DATA_B" 2>/dev/null || true
 
     sleep 1
+
+    # PRESERVE THE EVIDENCE ON FAILURE.
+    #
+    # This cleanup previously ran `rm -rf` on both datadirs unconditionally, so
+    # every failure destroyed the daemon logs that would explain it. That is a
+    # large part of why the convergence failure in this test has survived as a
+    # "just re-run it" flake: each occurrence erased its own diagnosis.
+    #
+    # The failure mode worth capturing: node B's height OSCILLATES DOWNWARD
+    # (e.g. 30 -> 29 -> 50 -> 49 -> 73 -> 68 -> 51) while node A sits stable at
+    # the target, so B never converges. A node should not move to a lower-work
+    # chain; the reason is in B's log, which no longer exists by the time anyone
+    # looks.
+    #
+    # On a non-zero exit, copy each datadir's logs to STRESS_LOG_PRESERVE_DIR
+    # (defaults to a stable path under the artifact root when the caller sets
+    # one). Only *.log is copied -- the chainstate can be gigabytes.
+    if [ "$exit_code" -ne 0 ]; then
+        local preserve="${STRESS_LOG_PRESERVE_DIR:-${ARTIFACT_ROOT:-/tmp}/stress-failure-logs-$$}"
+        mkdir -p "$preserve" 2>/dev/null || true
+        for tag in a:"$DATA_A" b:"$DATA_B"; do
+            local node="${tag%%:*}" dir="${tag#*:}"
+            [ -n "$dir" ] && [ -d "$dir" ] || continue
+            # daemon.log ONLY. A bare *.log glob also matches RocksDB's
+            # WAL files (000004.log etc), which are binary database
+            # internals and useless for diagnosis -- the first version of
+            # this preserved exactly those and nothing readable.
+            [ -f "$dir/daemon.log" ] && cp "$dir/daemon.log" \
+                "$preserve/node-$node-daemon.log" 2>/dev/null || true
+        done
+        log_warn "Failure logs preserved in: $preserve"
+        ls -1 "$preserve" 2>/dev/null | sed 's/^/  preserved: /' || true
+    fi
 
     # Remove data directories with retries; background shutdown may flush peers.dat/banlist.dat
     # briefly after the first TERM.
@@ -230,13 +269,23 @@ start_nodes() {
 
     # Start Node A
     log_info "Starting Node A (RPC: $NODE_A_RPC, P2P: $NODE_A_P2P)..."
+    # Capture the daemon's output instead of discarding it.
+    #
+    # This was `--daemon ... >/dev/null 2>&1`, which threw away every line the
+    # node produced. Combined with cleanup's rm -rf, a convergence failure left
+    # literally no evidence: two heights and a timeout, nothing else. That is
+    # why this test has survived as a "just re-run it" flake.
+    #
+    # dinerod has no --logfile option and logs to stdout, so the redirect is
+    # the only capture point; and `--daemon` is dropped because a forked child
+    # detaches from this stdout. Backgrounding with & keeps the stream attached.
+    # PID discovery below already uses pgrep, so it works either way.
     "$DINEROD" \
         --regtest \
         --datadir="$DATA_A" \
         --rpcport="$NODE_A_RPC" \
         --p2pport="$NODE_A_P2P" \
-        --daemon \
-        >/dev/null 2>&1
+        > "$DATA_A/daemon.log" 2>&1 &
 
     # Start Node B
     log_info "Starting Node B (RPC: $NODE_B_RPC, P2P: $NODE_B_P2P)..."
@@ -245,8 +294,7 @@ start_nodes() {
         --datadir="$DATA_B" \
         --rpcport="$NODE_B_RPC" \
         --p2pport="$NODE_B_P2P" \
-        --daemon \
-        >/dev/null 2>&1
+        > "$DATA_B/daemon.log" 2>&1 &
 
     # Wait for daemons to fork and start
     sleep 2
