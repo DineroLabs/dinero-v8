@@ -64,6 +64,9 @@ public:
     int accepted() const { return accepted_; }
     int rejected() const { return rejected_; }
     int currentHeight() const { return currentHeight_; }
+    quint32 currentDifficultyBits() const { return currentDifficultyBits_; }
+    bool sampleCandidate(quint32& nonce, QString& hash, QString& headerFields,
+                         int& height, quint32& difficultyBits) const;
 
 Q_SIGNALS:
     void runningChanged();
@@ -71,6 +74,10 @@ Q_SIGNALS:
     void statsChanged();
     void logLine(const QString& line);
     void blockFound(const QString& hash, int height);
+    void blockFoundDetailed(const QString& hash, int height, quint32 nonce,
+                            const QString& merkleRoot,
+                            const QString& utreexoRoot, quint32 difficultyBits);
+    void templateChanged(int height, quint32 difficultyBits);
 
     // Fired when the embedded miner starts (true) or stops (false). Lets the
     // owning UI forward the state to the daemon via mining.setrelayactive so
@@ -94,4 +101,5 @@ private:
     int accepted_ = 0;
     int rejected_ = 0;
     int currentHeight_ = 0;
+    quint32 currentDifficultyBits_ = 0;
 };

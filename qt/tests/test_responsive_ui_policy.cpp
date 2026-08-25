@@ -42,6 +42,25 @@ private Q_SLOTS:
     QVERIFY(!dinero::qt::shouldRunMiningCinematic(false, true));
     QVERIFY(dinero::qt::shouldRunMiningCinematic(true, true));
   }
+
+  void hashEngineUsesBoundedTenHertzPolicy() {
+    QCOMPARE(dinero::qt::kHashEngineIntervalMs, 100);
+    QCOMPARE(dinero::qt::kBlockFoundHighlightMs, 1000);
+    QCOMPARE(dinero::qt::hashSampleCapacity(250, 20), 11);
+    QCOMPARE(dinero::qt::hashSampleCapacity(0, 0), 1);
+  }
+
+  void compactDifficultyMatchesMinerOutput() {
+    QCOMPARE(dinero::qt::compactDifficultyText(0x1d00cf7e),
+             QStringLiteral("0x1d00cf7e"));
+    QCOMPARE(dinero::qt::compactDifficultyText(0), QStringLiteral("-"));
+  }
+
+  void blockHighlightNeverPausesVisibleHashEngine() {
+    QVERIFY(dinero::qt::shouldRunHashEngine(true, true, false));
+    QVERIFY(dinero::qt::shouldRunHashEngine(true, true, true));
+    QVERIFY(!dinero::qt::shouldRunHashEngine(true, false, true));
+  }
 };
 
 QTEST_MAIN(ResponsiveUiPolicyTest)
