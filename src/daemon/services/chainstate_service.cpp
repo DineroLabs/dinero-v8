@@ -6353,6 +6353,16 @@ consensus::ConnectBlockResult ChainstateService::ProcessIncomingStoredBlock(cons
         // consideration — the 30s periodic check is too slow.
         ActivateBestChain();
 
+        // ActivateBestChain may discover that the exact body accepted above
+        // cannot be read back by ConnectTip. Report that condition to the
+        // scheduler as data; do not call back into it here. This function is
+        // itself invoked by the scheduler drainer while its mutex is held.
+        if (unreadable_blocks_.contains(result.block_hash)) {
+            logger_->warning("[ChainstateService] Accepted body became unreadable during activation: " +
+                             hash_hex.substr(0, 16) + "...");
+            return consensus::ConnectBlockResult::UNREADABLE_BODY;
+        }
+
         // Important distinction for the scheduler:
         // Accepting/indexing a block is not the same thing as activating it on
         // the current chain. Returning CONNECTED here for side-branch blocks
@@ -13144,19 +13154,9 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         // from peers instead of infinite retry from corrupt/missing chaindb entry
         tip_to_connect->status &= ~BLOCK_HAVE_DATA;
         unreadable_blocks_.mark(tip_to_connect->hash);
-        // Issue the request rather than only describing one. Clearing the flag
-        // does not reach the scheduler: it requests MISSING entries only, a
-        // delivered block sits CONNECTED, and RescanFromActualTip preserves
-        // CONNECTED. ReRequestBlock is idempotent (resets to MISSING and drops
-        // in-flight accounting), so repeated failures on the same block still
-        // produce at most one request per Tick.
-        const bool requeued = rerequest_unreadable_block_
-                                  ? (rerequest_unreadable_block_(tip_to_connect->hash), true)
-                                  : false;
         if (logger_) logger_->warning("[ConnectTip] Cleared BLOCK_HAVE_DATA for height " +
                       std::to_string(tip_to_connect->height) +
-                      (requeued ? " — re-requested from peers"
-                                : " — NO re-request issued (scheduler hook unset)"));
+                      " and marked its body unreadable for recovery");
         return fail("read-block-failed-status-" + std::to_string(static_cast<int>(block_result.status())));
     }
     Block block = block_result.value();

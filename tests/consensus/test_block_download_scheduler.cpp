@@ -12,10 +12,12 @@
 #include "consensus/chainparams.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
+#include "storage/block_storage.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -2712,29 +2714,26 @@ int main() {
     std::cout << "\n✅ All BlockDownloadScheduler regression tests passed" << std::endl;
 
     {
-        std::cout << "\nN. unreadable stored body: CONNECTED -> explicit re-request..." << std::endl;
+        std::cout << "\nN. unreadable stored body: drain demotes without lock re-entry..." << std::endl;
 
-        // ConnectTip clears BLOCK_HAVE_DATA when a stored body cannot be read
-        // and logs that it "will be re-downloaded from peers". Nothing made
-        // that true: the scheduler only issues getdata for MISSING entries, a
-        // block delivered once sits CONNECTED, and RescanFromActualTip
-        // explicitly PRESERVES CONNECTED. Measured on a real failure: 105
-        // clears, and the two requests that eventually appeared came from
-        // unrelated gap detection long afterwards (log lines 549k/1025k vs the
-        // first failure at 156k) — recovery by coincidence, not by design.
-        //
-        // This pins the contract ConnectTip now relies on: a CONNECTED entry
-        // can be driven back to an explicit request, and doing so repeatedly
-        // does not amplify into multiple in-flight requests.
         dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
         try {
-            BuildLinearHeaders(selector, 8);
+            BuildLinearHeaders(selector, 1, &hashes);
         } catch (const std::exception& e) {
             std::cerr << "   ❌ failed to build linear header chain: " << e.what() << std::endl;
             return 1;
         }
 
-        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        const auto storage_dir = std::filesystem::temp_directory_path() /
+            ("dinero_scheduler_unreadable_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::remove_all(storage_dir);
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(storage_dir) == dinero::Status::Ok,
+                     "temporary block storage must initialize")) return 1;
+
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
         scheduler.SetLocalTipHeight(0);
 
         std::vector<uint256> requested_hashes;
@@ -2742,69 +2741,40 @@ int main() {
             requested_hashes.push_back(block_hash);
         });
 
+        int connect_attempts = 0;
+        scheduler.SetConnectBlockCallback(
+            [&connect_attempts](const Block&, const std::string&) {
+                ++connect_attempts;
+                return dcs::ConnectBlockResult::UNREADABLE_BODY;
+            });
+
         scheduler.OnHeadersProcessed();
         scheduler.Tick();
-        if (!Require(!requested_hashes.empty(), "expected an initial request to seed the test")) {
-            return 1;
-        }
-        const uint256 target = requested_hashes.front();
+        if (!Require(requested_hashes.size() == 1 && requested_hashes.front() == hashes[1],
+                     "expected one initial request for height 1")) return 1;
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[1])),
+                     "received body must be verified and stored")) return 1;
 
-        // Drive it to CONNECTED — the state a delivered, connected block sits
-        // in, and the state from which nothing previously recovered.
-        if (!Require(scheduler.MarkBlockConnected(target),
-                     "expected to mark the target block CONNECTED")) {
-            return 1;
-        }
-
-        const size_t before_rerequest = requested_hashes.size();
+        // The callback executes under the scheduler mutex. Returning an
+        // explicit result must complete without calling a locking scheduler
+        // API from inside that callback.
         scheduler.Tick();
-        if (!Require(requested_hashes.size() == before_rerequest ||
-                     requested_hashes.back() != target,
-                     "a CONNECTED block must not be re-requested on its own")) {
-            return 1;
-        }
+        if (!Require(connect_attempts == 1, "drainer must report one unreadable activation")) return 1;
+        if (!Require(!scheduler.HasReceivedBlock(hashes[1]),
+                     "unreadable body must leave received bookkeeping")) return 1;
 
-        // What ConnectTip now does when the body turns out to be unreadable.
-        if (!Require(scheduler.ReRequestBlock(target),
-                     "ReRequestBlock must find and reset a CONNECTED entry")) {
-            return 1;
-        }
-
-        const size_t before_tick = requested_hashes.size();
+        const size_t before_retry = requested_hashes.size();
         scheduler.Tick();
-        size_t target_requests = 0;
-        for (size_t i = before_tick; i < requested_hashes.size(); ++i) {
-            if (requested_hashes[i] == target) ++target_requests;
-        }
-        if (!Require(target_requests == 1,
-                     "expected EXACTLY ONE re-request for the unreadable body")) {
-            return 1;
-        }
-
-        // No amplification: ConnectTip can clear repeatedly (it did 105 times
-        // in the observed failure). Repeated calls must not stack in-flight
-        // requests for the same hash.
-        const size_t in_flight_after_one = scheduler.GetInFlightCount();
-        for (int i = 0; i < 5; ++i) {
-            scheduler.ReRequestBlock(target);
-        }
-        const size_t before_repeat_tick = requested_hashes.size();
+        if (!Require(requested_hashes.size() == before_retry + 1 &&
+                     requested_hashes.back() == hashes[1],
+                     "next tick must issue exactly one retry for the unreadable body")) return 1;
         scheduler.Tick();
-        size_t repeat_requests = 0;
-        for (size_t i = before_repeat_tick; i < requested_hashes.size(); ++i) {
-            if (requested_hashes[i] == target) ++repeat_requests;
-        }
-        if (!Require(repeat_requests <= 1,
-                     "repeated ReRequestBlock must not amplify into multiple requests per Tick")) {
-            return 1;
-        }
-        if (!Require(scheduler.GetInFlightCount() <= in_flight_after_one + 1,
-                     "repeated re-requests must not stack in-flight accounting")) {
-            return 1;
-        }
+        if (!Require(requested_hashes.size() == before_retry + 1,
+                     "requested body must not amplify while in flight")) return 1;
 
-        std::cout << "   ✅ connected_block_rerequested=1 repeat_calls=5 extra_requests="
-                  << repeat_requests << std::endl;
+        storage.close();
+        std::filesystem::remove_all(storage_dir);
+        std::cout << "   ✅ connect_attempts=1 retries=1 amplification=0" << std::endl;
     }
     return 0;
 }

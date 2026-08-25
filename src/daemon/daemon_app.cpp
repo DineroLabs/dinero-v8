@@ -2565,38 +2565,6 @@ bool DaemonApp::Init(int argc, char** argv) {
     );
     ctx_.block_download = block_download;
 
-    // Let ChainstateService issue a re-request when a stored block body turns
-    // out to be unreadable. It has no other route to the scheduler, so without
-    // this the ConnectTip path could only log an intention it never carried out.
-    // Weak-captured so firing during shutdown cannot resurrect a freed scheduler.
-    if (auto chainstate_for_rerequest =
-            std::dynamic_pointer_cast<dinero::ChainstateService>(ctx_.chainstate)) {
-        std::weak_ptr<dinero::consensus::BlockDownloadScheduler> weak_dl = block_download;
-        chainstate_for_rerequest->SetRerequestUnreadableBlockCallback(
-            [weak_dl](const uint256& hash) {
-                if (auto dl = weak_dl.lock()) {
-                    // Mutate state only — do NOT drive Tick() from here.
-                    //
-                    // This runs inside ConnectTip, which holds
-                    // activation_mutex_. Calling Tick() would take the
-                    // scheduler mutex under the activation lock and drive the
-                    // whole request/dispatch loop from the activation thread,
-                    // establishing activation_mutex_ -> scheduler mutex_ on a
-                    // hot consensus path. I could not find the reverse order in
-                    // the tree, so a deadlock is unproven — but the CSN caller
-                    // that does Tick() here runs on a p2p thread, not under the
-                    // activation lock, so it is not precedent for this path.
-                    //
-                    // ReRequestBlock alone is sufficient: it resets the entry to
-                    // MISSING, and the scheduler's own 150ms driver issues the
-                    // getdata on its next pass. The guarantee this PR adds — that
-                    // a request IS issued — is preserved; only the thread that
-                    // issues it changes.
-                    dl->ReRequestBlock(hash);
-                }
-            });
-    }
-
     // FIX 2 (issue #186): central block-download deferral for a pending
     // AssumeUTXO snapshot bootstrap. Tick() consults this predicate on EVERY
     // call site, so blocks never download from genesis while a snapshot is

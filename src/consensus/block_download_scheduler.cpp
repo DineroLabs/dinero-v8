@@ -2256,6 +2256,21 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 g_logger.debug("[BlockDownloadScheduler] Drain waiting on parent for height " +
                               std::to_string(want));
                 return connected;
+            case ConnectBlockResult::UNREADABLE_BODY:
+                // Chainstate's second read failed after the scheduler's own
+                // read succeeded. Recover in this lock domain instead of
+                // re-entering ReRequestBlock from the connect callback (which
+                // runs while mutex_ is held and would self-deadlock).
+                fetch_state.status = FetchStatus::MISSING;
+                fetch_state.stored_pos = FilePosition();
+                received_blocks_.erase(fetch_state.block_hash);
+                in_flight_blocks_.erase(fetch_state.block_hash);
+                expected_blocks_.erase(fetch_state.block_hash);
+                g_logger.error("[BlockDownloadScheduler] Chainstate could not read stored body at height " +
+                               std::to_string(want) + ": " +
+                               fetch_state.block_hash.GetHex().substr(0, 16) +
+                               "... reset to MISSING for re-download");
+                return connected;
             case ConnectBlockResult::TEMPORARY_FAIL:
                 fetch_state.status = FetchStatus::RECEIVED;
                 // #371: a "temporary" failure that never clears is how a
