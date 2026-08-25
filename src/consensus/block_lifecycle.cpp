@@ -116,6 +116,26 @@ bool BranchHasDataToConnectedBase(const CBlockIndex* pindex) {
     return false; // ran off the top without a connected base
 }
 
+bool BranchHasDataToFork(const CBlockIndex* candidate, const CBlockIndex* active_tip) {
+    if (!candidate || !active_tip) return false;
+
+    const CBlockIndex* candidate_walk = candidate;
+    const CBlockIndex* active_walk = active_tip;
+    while (candidate_walk && active_walk && candidate_walk->height > active_walk->height) {
+        if (!(candidate_walk->status & BLOCK_HAVE_DATA)) return false;
+        candidate_walk = candidate_walk->pprev;
+    }
+    while (candidate_walk && active_walk && active_walk->height > candidate_walk->height) {
+        active_walk = active_walk->pprev;
+    }
+    while (candidate_walk && active_walk && candidate_walk->hash != active_walk->hash) {
+        if (!(candidate_walk->status & BLOCK_HAVE_DATA)) return false;
+        candidate_walk = candidate_walk->pprev;
+        active_walk = active_walk->pprev;
+    }
+    return candidate_walk && active_walk && candidate_walk->hash == active_walk->hash;
+}
+
 /**
  * Mark block as in-flight (requested from peer)
  */

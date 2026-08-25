@@ -126,6 +126,40 @@ int main() {
     // 7. nullptr → false.
     check(!dinero::BranchHasDataToConnectedBase(nullptr), "nullptr → false");
 
+    std::cout << "=== BranchHasDataToFork ===\n";
+
+    // The #650 shape: a side-branch VALID_CHAIN flag above a header-only gap
+    // must not be mistaken for the active-chain boundary.
+    {
+        CBlockIndex* fork = mk(2, CONNECTED, nullptr, "fork10");
+        CBlockIndex* active = mk(3, CONNECTED, fork, "active10");
+        CBlockIndex* gap = mk(3, BLOCK_VALID_CHAIN, fork, "gap10");
+        CBlockIndex* misleading = mk(4, CONNECTED, gap, "valid10");
+        CBlockIndex* tip = mk(5, DATA, misleading, "tip10");
+        check(dinero::BranchHasDataToConnectedBase(tip),
+              "connected-base shortcut is fooled by side-branch VALID_CHAIN");
+        check(!dinero::BranchHasDataToFork(tip, active),
+              "actual-fork preflight rejects the hidden body gap");
+    }
+
+    // A complete replacement branch is ready regardless of validation level.
+    {
+        CBlockIndex* fork = mk(2, CONNECTED, nullptr, "fork11");
+        CBlockIndex* active = mk(3, CONNECTED, fork, "active11");
+        CBlockIndex* side = mk(3, DATA, fork, "side11");
+        CBlockIndex* tip = mk(4, DATA, side, "tip11");
+        check(dinero::BranchHasDataToFork(tip, active),
+              "complete branch to the actual fork is ready");
+    }
+
+    // Unrelated graphs are never ready for activation.
+    {
+        CBlockIndex* active = mk(3, CONNECTED, nullptr, "active12");
+        CBlockIndex* candidate = mk(4, DATA, nullptr, "candidate12");
+        check(!dinero::BranchHasDataToFork(candidate, active),
+              "branches without a common ancestor are rejected");
+    }
+
     std::cout << "=== reorg-candidacy composition (failed / no-data gates) ===\n";
 
     // 8. A failed block (even with whole-branch data) is never eligible.
