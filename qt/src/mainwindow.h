@@ -5,6 +5,7 @@
 #include "daemonstartuppolicy.h"
 #include <QMap>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QJsonValue>
 #include <QVector>
 #include <cstdint>
@@ -627,7 +628,18 @@ private:
   void updateTransactionTable(const QJsonArray& transactions);
   
   // UTXOs tab
+  void requestUtxoRefresh(bool explicitRefresh = false);
+  bool isUtxoTabActive() const;
+  void renderUtxoPage();
   void updateUTXOTable(const QJsonArray& utxos);
+  QWidget* utxoTabWidget_ = nullptr;
+  QTableWidget* tblUTXOs_ = nullptr;
+  QLabel* lblUtxoPage_ = nullptr;
+  QPushButton* btnPrevUtxoPage_ = nullptr;
+  QPushButton* btnNextUtxoPage_ = nullptr;
+  QJsonArray cachedUtxos_;
+  int currentUtxoPage_ = 0;
+  bool utxoRequestPending_ = false;
 
   // Network verification
   QLabel* lblNetworkWarning_;  // Warning banner for wrong network

@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "responsiveuipolicy.h"
 #include "rpcclient.h"
 #include <QMenu>
 #include <QMenuBar>
@@ -2249,6 +2250,11 @@ void MainWindow::setupUI() {
   mainTabs_ = tabs;
   connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
     updateMiningFocusDimState();
+    setMiningOutputCinematicEnabled(isMining_);
+    if (isUtxoTabActive()) {
+      renderUtxoPage();
+      requestUtxoRefresh();
+    }
     // Auto-refresh contracts when the Contracts tab is selected
     if (mainTabs_ && mainTabs_->tabText(index).contains("Contracts")) {
         refreshContractsList();
@@ -3316,6 +3322,7 @@ void MainWindow::setupUI() {
   // === UTXOs Tab (Advanced) ===
   {
     auto *utxos = new QWidget;
+    utxoTabWidget_ = utxos;
     auto *layout = new QVBoxLayout(utxos);
     
     auto *headerLayout = new QHBoxLayout;
@@ -3326,24 +3333,43 @@ void MainWindow::setupUI() {
     
     auto *btnRefreshUTXOs = new QPushButton("🔄 Refresh");
     btnRefreshUTXOs->setStyleSheet(chromeButtonStyle());
-    connect(btnRefreshUTXOs, &QPushButton::clicked, [this]() {
-      rpc_->call("wallet.listunspent", QJsonArray());
-    });
+    connect(btnRefreshUTXOs, &QPushButton::clicked, this,
+            [this]() { requestUtxoRefresh(true); });
     headerLayout->addWidget(btnRefreshUTXOs);
     
     layout->addLayout(headerLayout);
     
     // UTXO table (added "Maturity" column for coinbase tracking)
-    auto *tblUTXOs = new QTableWidget(0, 7);
-    tblUTXOs->setHorizontalHeaderLabels({"TxID", "Vout", "Amount", "Confirmations", "Maturity", "Address", "Spendable"});
-    tblUTXOs->horizontalHeader()->setStretchLastSection(true);
-    tblUTXOs->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    tblUTXOs->setSelectionBehavior(QAbstractItemView::SelectRows);
-    tblUTXOs->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    tblUTXOs->setAlternatingRowColors(true);
-    tblUTXOs->setStyleSheet(chromeTableStyle());
-    tblUTXOs->setObjectName("tblUTXOs");
-    layout->addWidget(tblUTXOs);
+    tblUTXOs_ = new QTableWidget(0, 7);
+    tblUTXOs_->setHorizontalHeaderLabels({"TxID", "Vout", "Amount", "Confirmations", "Maturity", "Address", "Spendable"});
+    tblUTXOs_->horizontalHeader()->setStretchLastSection(true);
+    tblUTXOs_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    tblUTXOs_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tblUTXOs_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    tblUTXOs_->setAlternatingRowColors(true);
+    tblUTXOs_->setStyleSheet(chromeTableStyle());
+    tblUTXOs_->setObjectName("tblUTXOs");
+    layout->addWidget(tblUTXOs_);
+
+    auto* pageLayout = new QHBoxLayout;
+    lblUtxoPage_ = new QLabel("Open this tab to load unspent outputs.");
+    btnPrevUtxoPage_ = new QPushButton("Previous");
+    btnNextUtxoPage_ = new QPushButton("Next");
+    btnPrevUtxoPage_->setEnabled(false);
+    btnNextUtxoPage_->setEnabled(false);
+    connect(btnPrevUtxoPage_, &QPushButton::clicked, this, [this]() {
+      currentUtxoPage_ = std::max(0, currentUtxoPage_ - 1);
+      renderUtxoPage();
+    });
+    connect(btnNextUtxoPage_, &QPushButton::clicked, this, [this]() {
+      ++currentUtxoPage_;
+      renderUtxoPage();
+    });
+    pageLayout->addWidget(lblUtxoPage_);
+    pageLayout->addStretch();
+    pageLayout->addWidget(btnPrevUtxoPage_);
+    pageLayout->addWidget(btnNextUtxoPage_);
+    layout->addLayout(pageLayout);
     
     tabs->addTab(utxos, "🔗 UTXOs");
   }
@@ -4958,7 +4984,10 @@ void MainWindow::refresh() {
 
   // ✅ Load all addresses to populate Receive tab (regardless of balance)
   rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
-  rpc_->call("wallet.listunspent", QJsonArray());  // Load UTXOs
+  // Large mining wallets may contain thousands of UTXOs. Fetch them only
+  // while their panel is visible instead of rebuilding a hidden table every
+  // five seconds on Qt's UI thread.
+  requestUtxoRefresh();
   rpc_->getBestBlockHash();  // Load explorer data
 
   // Auto-refresh block template when mining is active
@@ -6994,12 +7023,18 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       updateContractsTable(result);
     }
   } else if (method == "wallet.listunspent") {
+    utxoRequestPending_ = false;
     if (result.isArray()) {
-      updateUTXOTable(result.toArray());
+      const QJsonArray incoming = result.toArray();
+      const bool changed = incoming != cachedUtxos_;
+      cachedUtxos_ = incoming;
+      if (isUtxoTabActive() && (changed || (tblUTXOs_ && tblUTXOs_->rowCount() == 0))) {
+        updateUTXOTable(cachedUtxos_);
+      }
     } else {
       qWarning() << "listunspent returned non-array result";
-      auto *tblUTXOs = findChild<QTableWidget*>("tblUTXOs");
-      if (tblUTXOs) {
+      auto *tblUTXOs = tblUTXOs_;
+      if (tblUTXOs && isUtxoTabActive()) {
         tblUTXOs->setRowCount(0);
         tblUTXOs->insertRow(0);
         auto *item = new QTableWidgetItem("No UTXOs found");
@@ -7229,6 +7264,10 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
 
 void MainWindow::onRpcError(const QString& method, int code, const QString& message) {
   if (!rpc_) return;  // Guard: shutting down
+
+  if (method == "wallet.listunspent") {
+    utxoRequestPending_ = false;
+  }
 
   if (method == "network.setonionservice" || method == "network.setrelayservice" ||
       method == "network.getrelayservice") {
@@ -9412,7 +9451,11 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
     return;
   }
 
-  if (enabled && miningCinematicTimer_) {
+  const bool miningTabActive =
+    mainTabs_ && miningTabWidget_ && mainTabs_->currentWidget() == miningTabWidget_;
+  const bool shouldRun = dinero::qt::shouldRunMiningCinematic(enabled, miningTabActive);
+
+  if (shouldRun && miningCinematicTimer_) {
     if (!miningCinematicTimer_->isActive()) {
       miningCinematicFrame_ = 0;
       miningCinematicLastLongCometFrame_ = -100000;
@@ -9421,6 +9464,12 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
       miningCinematicTimer_->start();
     }
     updateMiningOutputCinematicFrame();
+    return;
+  }
+
+  // Once a hidden cinematic has been stopped and restored to its idle
+  // palette, mining-status polls must not repaint that hidden viewport.
+  if (miningCinematicTimer_ && !miningCinematicTimer_->isActive()) {
     return;
   }
 
@@ -9446,7 +9495,10 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
 }
 
 void MainWindow::updateMiningOutputCinematicFrame() {
-  if (!txtMiningOutput_ || !isMining_) {
+  const bool miningTabActive =
+    mainTabs_ && miningTabWidget_ && mainTabs_->currentWidget() == miningTabWidget_;
+  if (!txtMiningOutput_ ||
+      !dinero::qt::shouldRunMiningCinematic(isMining_, miningTabActive)) {
     return;
   }
 
@@ -10202,8 +10254,32 @@ void MainWindow::updateTransactionTable(const QJsonArray& transactions) {
   qDebug() << "Transaction table updated with" << tblTransactions_->rowCount() << "rows";
 }
 
+bool MainWindow::isUtxoTabActive() const {
+  return mainTabs_ && utxoTabWidget_ && mainTabs_->currentWidget() == utxoTabWidget_;
+}
+
+void MainWindow::requestUtxoRefresh(bool explicitRefresh) {
+  if (!rpc_ || utxoRequestPending_ ||
+      !dinero::qt::shouldPollUtxos(isUtxoTabActive(), explicitRefresh)) {
+    return;
+  }
+  utxoRequestPending_ = true;
+  rpc_->call("wallet.listunspent", QJsonArray());
+}
+
+void MainWindow::renderUtxoPage() {
+  if (!tblUTXOs_ || !isUtxoTabActive()) return;
+  updateUTXOTable(cachedUtxos_);
+}
+
 void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
-  auto *tblUTXOs = findChild<QTableWidget*>("tblUTXOs");
+  if (!tblUTXOs_ || !isUtxoTabActive()) {
+    return;
+  }
+
+  const auto page = dinero::qt::paginateUtxos(utxos, currentUtxoPage_);
+  currentUtxoPage_ = page.page_index;
+  auto* tblUTXOs = tblUTXOs_;
   if (!tblUTXOs) {
     qWarning() << "tblUTXOs not found!";
     return;
@@ -10212,11 +10288,12 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
   tblUTXOs->setSortingEnabled(false); // Disable while updating
   tblUTXOs->setRowCount(0); // Clear existing rows
   
-  qDebug() << "Updating UTXO table with" << utxos.size() << "UTXOs";
+  qDebug() << "Updating UTXO page" << page.page_index + 1 << "of"
+           << page.page_count << "from" << page.total_rows << "UTXOs";
   
   double totalAmount = 0.0;
   
-  for (const QJsonValue& utxoVal : utxos) {
+  for (const QJsonValue& utxoVal : page.rows) {
     if (!utxoVal.isObject()) continue;
     
     QJsonObject utxo = utxoVal.toObject();
@@ -10329,7 +10406,7 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
   tblUTXOs->setSortingEnabled(true); // Re-enable sorting
   
   // If no UTXOs, show helpful message
-  if (utxos.isEmpty()) {
+  if (page.total_rows == 0) {
     tblUTXOs->setRowCount(1);
     auto *item = new QTableWidgetItem("No UTXOs found. Start mining or receive DIN to see unspent outputs!");
     item->setForeground(QBrush(QColor("#868e96")));
@@ -10341,7 +10418,16 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
   }
 
   // Track UTXO count and update Consolidate button visibility
-  cachedUtxoCount_ = utxos.size();
+  cachedUtxoCount_ = page.total_rows;
+  if (lblUtxoPage_) {
+    const int first = page.total_rows == 0 ? 0 : page.first_row + 1;
+    const int last = page.first_row + page.rows.size();
+    lblUtxoPage_->setText(QString("Showing %1–%2 of %3 · Page %4 of %5")
+      .arg(first).arg(last).arg(page.total_rows)
+      .arg(page.page_index + 1).arg(page.page_count));
+  }
+  if (btnPrevUtxoPage_) btnPrevUtxoPage_->setEnabled(page.page_index > 0);
+  if (btnNextUtxoPage_) btnNextUtxoPage_->setEnabled(page.page_index + 1 < page.page_count);
   if (btnConsolidate_) {
     if (cachedUtxoCount_ > 50) {
       btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
@@ -13106,9 +13192,10 @@ void MainWindow::clearWalletScopedUiState() {
   if (tblTransactions_) {
     tblTransactions_->setRowCount(0);
   }
-  if (auto* tblUTXOs = findChild<QTableWidget*>("tblUTXOs")) {
-    tblUTXOs->setRowCount(0);
-  }
+  if (tblUTXOs_) tblUTXOs_->setRowCount(0);
+  cachedUtxos_ = {};
+  currentUtxoPage_ = 0;
+  utxoRequestPending_ = false;
   cachedUtxoCount_ = 0;
   if (btnConsolidate_) {
     btnConsolidate_->setVisible(false);
