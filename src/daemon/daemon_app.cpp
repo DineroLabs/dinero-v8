@@ -2575,8 +2575,24 @@ bool DaemonApp::Init(int argc, char** argv) {
         chainstate_for_rerequest->SetRerequestUnreadableBlockCallback(
             [weak_dl](const uint256& hash) {
                 if (auto dl = weak_dl.lock()) {
+                    // Mutate state only — do NOT drive Tick() from here.
+                    //
+                    // This runs inside ConnectTip, which holds
+                    // activation_mutex_. Calling Tick() would take the
+                    // scheduler mutex under the activation lock and drive the
+                    // whole request/dispatch loop from the activation thread,
+                    // establishing activation_mutex_ -> scheduler mutex_ on a
+                    // hot consensus path. I could not find the reverse order in
+                    // the tree, so a deadlock is unproven — but the CSN caller
+                    // that does Tick() here runs on a p2p thread, not under the
+                    // activation lock, so it is not precedent for this path.
+                    //
+                    // ReRequestBlock alone is sufficient: it resets the entry to
+                    // MISSING, and the scheduler's own 150ms driver issues the
+                    // getdata on its next pass. The guarantee this PR adds — that
+                    // a request IS issued — is preserved; only the thread that
+                    // issues it changes.
                     dl->ReRequestBlock(hash);
-                    dl->Tick();
                 }
             });
     }
