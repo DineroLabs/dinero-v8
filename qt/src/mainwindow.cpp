@@ -70,6 +70,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QTextCursor>
+#include <QTextBlock>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QInputDialog>
@@ -1617,6 +1618,29 @@ void appendMiningOutputLine(QTextEdit* output, const QString& rawLine) {
   }
 
   appendMiningConsoleText(output, line);
+}
+
+void removeMiningOutputLine(QTextEdit* output, const QString& rawLine) {
+  if (!output) {
+    return;
+  }
+
+  const QString line = normalizeMiningOutputLine(rawLine);
+  QTextBlock block = output->document()->begin();
+  while (block.isValid()) {
+    const QTextBlock next = block.next();
+    if (block.text() == line) {
+      QTextCursor cursor(block);
+      cursor.select(QTextCursor::BlockUnderCursor);
+      cursor.removeSelectedText();
+      if (cursor.position() < output->document()->characterCount() - 1) {
+        cursor.deleteChar();
+      } else if (cursor.position() > 0) {
+        cursor.deletePreviousChar();
+      }
+    }
+    block = next;
+  }
 }
 
 QString compactSv2Value(const QString& value, int head = 18, int tail = 10) {
@@ -4208,6 +4232,19 @@ void MainWindow::setupUI() {
             QTextCursor c = txtMiningOutput_->textCursor();
             c.movePosition(QTextCursor::End);
             txtMiningOutput_->setTextCursor(c);
+        }
+        if (dinero::qt::isTransientMiningError(line)) {
+            const quint64 generation =
+              transientMiningErrorGenerations_.value(line, 0) + 1;
+            transientMiningErrorGenerations_.insert(line, generation);
+            QTimer::singleShot(dinero::qt::kTransientMiningErrorMs, this,
+              [this, line, generation]() {
+                if (transientMiningErrorGenerations_.value(line) != generation) {
+                  return;
+                }
+                transientMiningErrorGenerations_.remove(line);
+                removeMiningOutputLine(txtMiningOutput_, line);
+              });
         }
     });
 
