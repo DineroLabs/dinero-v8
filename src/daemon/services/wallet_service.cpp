@@ -79,46 +79,18 @@ bool WalletService::Start() {
         logger_interface_->info("[WalletService] Running wallet database health check...");
         wallet_mgr_->runHealthCheck();
 
-        // Load blockchain height for UTXO maturity calculations
-        // Get real blockchain height from chainstate, not wallet's scan progress
-        // Note: Rescan will happen AFTER wallet is opened (see below)
+        // Get the real blockchain height first. The wallet scan watermark must
+        // not be read until the active wallet has been opened below: before
+        // open(), WalletManager has no per-wallet database bound and reports
+        // the default height 0, which used to enqueue a genesis-to-tip replay
+        // on every daemon restart.
         uint32_t actual_blockchain_height = 0;
         uint32_t wallet_scan_height = 0;
         bool needs_catchup_scan = false;
-        
-        try {
-            if (chainstate_) {
-                actual_blockchain_height = chainstate_->getBlockHeight();
-                logger_interface_->info("[WalletService] Real blockchain height from chainstate: " + std::to_string(actual_blockchain_height));
-                
-                // Also load wallet's scan progress from its tip table
-                wallet_mgr_->loadBlockchainHeight();
-                wallet_scan_height = wallet_mgr_->getCurrentBlockchainHeight();
-                logger_interface_->info("[WalletService] Wallet scan progress: " + std::to_string(wallet_scan_height));
-                
-                if (wallet_scan_height < actual_blockchain_height) {
-                    logger_interface_->warning("[WalletService] Wallet is behind blockchain ("
-                        + std::to_string(wallet_scan_height) + " < " + std::to_string(actual_blockchain_height)
-                        + ") - will trigger catch-up scan after wallet is opened");
-                    needs_catchup_scan = true;
-                } else if (wallet_scan_height > actual_blockchain_height) {
-                    // Wallet is AHEAD of blockchain — chain data was wiped or reorged.
-                    // Reset wallet to blockchain height and rescan from genesis.
-                    logger_interface_->warning("[WalletService] Wallet is AHEAD of blockchain ("
-                        + std::to_string(wallet_scan_height) + " > " + std::to_string(actual_blockchain_height)
-                        + ") - chain was likely wiped/reorged. Rewinding wallet.");
-                    wallet_mgr_->setBlockchainHeight(actual_blockchain_height);
-                    wallet_scan_height = 0;  // rescan from genesis
-                    needs_catchup_scan = true;
-                }
-            } else {
-                wallet_mgr_->loadBlockchainHeight();
-                wallet_scan_height = wallet_mgr_->getCurrentBlockchainHeight();
-                logger_interface_->warning("[WalletService] Chainstate not available - using wallet height: " + std::to_string(wallet_scan_height));
-            }
-        } catch (const std::exception& e) {
-            logger_interface_->warning("[WalletService] Could not load blockchain height: " + std::string(e.what()));
-            logger_interface_->warning("[WalletService] UTXO maturity calculations may be inaccurate until chainstate syncs");
+        if (chainstate_) {
+            actual_blockchain_height = chainstate_->getBlockHeight();
+            logger_interface_->info("[WalletService] Real blockchain height from chainstate: "
+                + std::to_string(actual_blockchain_height));
         }
 
         // Initialize wallet worker thread for block notifications
@@ -229,6 +201,40 @@ bool WalletService::Start() {
 
         if (wallet_mgr_->hasActiveWallet()) {
             EnsureRuntimeWalletBindings();
+
+            // The active wallet database is bound now, so this reads the
+            // durable per-wallet watermark rather than WalletManager's
+            // pre-open default. Only genuinely missing heights are replayed.
+            try {
+                wallet_mgr_->loadBlockchainHeight();
+                wallet_scan_height = wallet_mgr_->getCurrentBlockchainHeight();
+                logger_interface_->info("[WalletService] Wallet scan progress: "
+                    + std::to_string(wallet_scan_height));
+
+                if (chainstate_ && wallet_scan_height < actual_blockchain_height) {
+                    logger_interface_->warning("[WalletService] Wallet is behind blockchain ("
+                        + std::to_string(wallet_scan_height) + " < "
+                        + std::to_string(actual_blockchain_height)
+                        + ") - will trigger catch-up scan");
+                    needs_catchup_scan = true;
+                } else if (chainstate_ && wallet_scan_height > actual_blockchain_height) {
+                    logger_interface_->warning("[WalletService] Wallet is AHEAD of blockchain ("
+                        + std::to_string(wallet_scan_height) + " > "
+                        + std::to_string(actual_blockchain_height)
+                        + ") - chain was likely wiped/reorged. Rewinding wallet.");
+                    wallet_mgr_->setBlockchainHeight(actual_blockchain_height);
+                    wallet_scan_height = 0;
+                    needs_catchup_scan = true;
+                } else if (!chainstate_) {
+                    logger_interface_->warning("[WalletService] Chainstate not available - using wallet height: "
+                        + std::to_string(wallet_scan_height));
+                }
+            } catch (const std::exception& e) {
+                logger_interface_->warning("[WalletService] Could not load wallet scan height: "
+                    + std::string(e.what()));
+                logger_interface_->warning(
+                    "[WalletService] UTXO maturity calculations may be inaccurate until chainstate syncs");
+            }
 
             if (!wallet_mgr_->hasAuthoritativeBip39Mnemonic()) {
                 logger_interface_->warning(

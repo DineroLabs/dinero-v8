@@ -466,13 +466,59 @@ static void assignDaemonToWinJobObject(QProcess* daemonProc) {
 static bool g_quittingCleanly = false;
 
 // Last N lines of dinerod's debug.log for fail-loud error dialogs.
-// dinerod writes its real diagnostics there (its stdout/stderr is
-// forwarded to the parent terminal, which doesn't exist for a
-// double-clicked .app bundle).
+// Keep a bounded copy of dinerod's stdout/stderr because a double-clicked
+// application bundle has no parent terminal to retain it.
+constexpr char kDaemonCapturedOutputProperty[] = "_dineroDaemonCapturedOutput";
+constexpr qsizetype kDaemonCapturedOutputLimit = 64 * 1024;
+
+static void appendDaemonCapturedOutput(QProcess* process, const QByteArray& bytes,
+                                       dinero::DebugConsole* debugConsole) {
+    if (!process || bytes.isEmpty()) return;
+    QByteArray captured = process->property(kDaemonCapturedOutputProperty).toByteArray();
+    captured.append(bytes);
+    if (captured.size() > kDaemonCapturedOutputLimit) {
+        captured = captured.right(kDaemonCapturedOutputLimit);
+    }
+    process->setProperty(kDaemonCapturedOutputProperty, captured);
+    if (debugConsole) {
+        for (const QString& line : QString::fromUtf8(bytes).split('\n', Qt::SkipEmptyParts)) {
+            debugConsole->logDaemonOutput(line);
+        }
+    }
+}
+
+static void captureDaemonOutput(QProcess* process, dinero::DebugConsole* debugConsole) {
+    QObject::connect(process, &QProcess::readyReadStandardOutput,
+                     [process, debugConsole]() {
+        appendDaemonCapturedOutput(process, process->readAllStandardOutput(), debugConsole);
+    });
+    QObject::connect(process, &QProcess::readyReadStandardError,
+                     [process, debugConsole]() {
+        appendDaemonCapturedOutput(process, process->readAllStandardError(), debugConsole);
+    });
+}
+
 static QString daemonLogTail(const QString& datadir, int maxLines = 20) {
-    QFile log(QDir(datadir).filePath("debug.log"));
+    const QStringList candidates = {
+        QDir(datadir).filePath("debug.log"),
+        QDir(datadir).filePath("dinero.log"),
+        QDir(datadir).filePath("wallet.log"),
+        QDir(datadir).filePath("p2p.log")};
+    QFile log;
+    QString selected;
+    for (const QString& path : candidates) {
+        QFileInfo info(path);
+        if (!info.isFile()) continue;
+        if (selected.isEmpty() || info.lastModified() > QFileInfo(selected).lastModified()) {
+            selected = path;
+        }
+    }
+    if (selected.isEmpty()) {
+        return QStringLiteral("(no daemon log found in %1)").arg(datadir);
+    }
+    log.setFileName(selected);
     if (!log.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return QStringLiteral("(no debug.log found in %1)").arg(datadir);
+        return QStringLiteral("(could not read %1)").arg(selected);
     }
     // debug.log can be large; read only the trailing 64 KiB.
     const qint64 kTailBytes = 64 * 1024;
@@ -482,7 +528,22 @@ static QString daemonLogTail(const QString& datadir, int maxLines = 20) {
     const QStringList lines = QString::fromUtf8(log.readAll())
                                   .split('\n', Qt::SkipEmptyParts);
     const int start = qMax(0, static_cast<int>(lines.size()) - maxLines);
-    return lines.mid(start).join('\n');
+    return QStringLiteral("Last lines of %1:\n%2")
+        .arg(selected, lines.mid(start).join('\n'));
+}
+
+static QString daemonFailureDetails(QProcess* process, const QString& datadir) {
+    if (process) {
+        const QString captured = QString::fromUtf8(
+            process->property(kDaemonCapturedOutputProperty).toByteArray()).trimmed();
+        if (!captured.isEmpty()) {
+            const QStringList lines = captured.split('\n', Qt::SkipEmptyParts);
+            const int start = qMax(0, static_cast<int>(lines.size()) - 40);
+            return QStringLiteral("Captured dinerod output:\n\n%1")
+                .arg(lines.mid(start).join('\n'));
+        }
+    }
+    return daemonLogTail(datadir, 40);
 }
 
 static void gracefulShutdownDaemon(QProcess* daemonProc) {
@@ -823,29 +884,10 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
     // auto-observer by passing `-vault.address=<din1p…>` and
     // optional `-vault.account=<id>` on the daemon command line.
 
-    // Handle output based on whether Debug Console exists
-    if (debugConsole) {
-        // Debug Console exists - capture output and send to it
-        QObject::connect(daemonProc, &QProcess::readyReadStandardOutput, [daemonProc, debugConsole]() {
-            QString output = QString::fromUtf8(daemonProc->readAllStandardOutput());
-            // Send each line to Debug Console
-            for (const QString& line : output.split('\n', Qt::SkipEmptyParts)) {
-                debugConsole->logDaemonOutput(line);
-            }
-        });
-
-        QObject::connect(daemonProc, &QProcess::readyReadStandardError, [daemonProc, debugConsole]() {
-            QString output = QString::fromUtf8(daemonProc->readAllStandardError());
-            // Send each line to Debug Console
-            for (const QString& line : output.split('\n', Qt::SkipEmptyParts)) {
-                debugConsole->logDaemonOutput(line);
-            }
-        });
-    } else {
-        // No Debug Console yet - forward output to parent Terminal
-        // This ensures "dinero-qt" launched from Terminal shows daemon output
-        daemonProc->setProcessChannelMode(QProcess::ForwardedChannels);
-    }
+    // Always retain a bounded tail so a double-clicked app can explain an
+    // early or runtime daemon failure. Forward the same stream to the optional
+    // debug console without relying on a debug.log that dinerod does not write.
+    captureDaemonOutput(daemonProc, debugConsole);
 
     // Start the daemon
     daemonProc->start(daemonPath, args);
@@ -1188,6 +1230,7 @@ int main(int argc, char** argv) {
       wipeArgs << currentBootstrapAddnodes();
 
       daemonProcess = new QProcess(QCoreApplication::instance());
+      captureDaemonOutput(daemonProcess, g_debugConsole.data());
       daemonProcess->start(daemonPath, wipeArgs);
 
       if (!daemonProcess->waitForStarted(5000)) {
@@ -1204,7 +1247,8 @@ int main(int argc, char** argv) {
         if (daemonProcess->state() == QProcess::NotRunning) {
           QMessageBox::critical(nullptr, "Error",
             "Daemon exited unexpectedly after chain wipe (exit code: "
-            + QString::number(daemonProcess->exitCode()) + ").");
+            + QString::number(daemonProcess->exitCode()) + ").\n\n"
+            + daemonFailureDetails(daemonProcess, datadir));
           delete daemonProcess;
           return 1;
         }
@@ -1239,8 +1283,7 @@ int main(int argc, char** argv) {
       "  • Port 20998 is already in use by another process\n"
       "  • Another Dinero instance is using the same data directory\n\n"
       "See the daemon log below for details (Show Details).");
-    box.setDetailedText(QString("Last lines of %1/debug.log:\n\n%2")
-                            .arg(datadir, daemonLogTail(datadir)));
+    box.setDetailedText(daemonFailureDetails(daemonProcess, datadir));
     QPushButton* continueBtn =
         box.addButton("Continue Anyway", QMessageBox::AcceptRole);
     box.addButton("Quit", QMessageBox::RejectRole);
@@ -1272,7 +1315,7 @@ int main(int argc, char** argv) {
   if (daemonProcess) {
     QObject::connect(daemonProcess,
                      qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
-                     [datadir](int exitCode, QProcess::ExitStatus status) {
+                     [datadir, daemonProcess](int exitCode, QProcess::ExitStatus status) {
       if (g_quittingCleanly) {
         return;
       }
@@ -1292,8 +1335,7 @@ int main(int argc, char** argv) {
         "The wallet is no longer connected to the network. You can restart "
         "the daemon from the toolbar (Start Daemon) or quit and relaunch.\n\n"
         "See the daemon log below for details (Show Details).");
-      box.setDetailedText(QString("Last lines of %1/debug.log:\n\n%2")
-                              .arg(datadir, daemonLogTail(datadir)));
+      box.setDetailedText(daemonFailureDetails(daemonProcess, datadir));
       box.exec();
     });
   }
