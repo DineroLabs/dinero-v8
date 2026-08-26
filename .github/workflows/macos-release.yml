@@ -27,11 +27,10 @@
 #     secrets — add as a follow-up if Gatekeeper friction warrants it.
 #   • No Qt GUI build here (DINERO_BUILD_QT=OFF) — headless operator only.
 #
-# Output: dinero-operator-v<version>-macOS-x86_64.tar.gz for Intel and an
-#   explicitly `-unsigned` archive for arm64 (+ SHA256SUMS). The ARM name must
-#   remain distinct from the manually Developer-ID-signed operator archive
-#   produced alongside the notarized GUI; otherwise this workflow can silently
-#   overwrite the signed asset on the release.
+# Output: explicitly `-unsigned` operator archives for both architectures
+#   (+ SHA256SUMS). These names must remain distinct from the manually
+#   Developer-ID-signed operator archives produced alongside the notarized GUI;
+#   otherwise this workflow can silently overwrite a signed release asset.
 # ─────────────────────────────────────────────────────────────────────────
 
 name: macOS Release Build
@@ -176,10 +175,7 @@ jobs:
           V="${{ steps.ver.outputs.version }}"
           A="${{ matrix.arch }}"
           ROOT="dinero-operator-v${V}-macOS-${A}"
-          SUFFIX=""
-          if [ "$A" = "arm64" ]; then
-            SUFFIX="-unsigned"
-          fi
+          SUFFIX="-unsigned"
           mkdir -p "$ROOT/bin"
           cp "$(find build -maxdepth 3 -type f -name dinerod -perm +111 | head -1)"    "$ROOT/bin/dinerod"
           cp "$(find build -maxdepth 3 -type f -name dinero-cli -perm +111 | head -1)" "$ROOT/bin/dinero-cli"

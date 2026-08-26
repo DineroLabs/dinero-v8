@@ -392,7 +392,7 @@ jobs:
 
       - name: Install Rust and build tools
         run: |
-          brew install ninja ccache qt
+          brew install ninja ccache gnupg qt
           echo "$(brew --prefix qt)/bin" >> "$GITHUB_PATH"
           echo "QT_PREFIX=$(brew --prefix qt)" >> "$GITHUB_ENV"
 
@@ -419,6 +419,11 @@ jobs:
           OPENSSL_REBUILD=1 bash scripts/build-openssl-vendored.sh
           cmake -S depends -B depends/build
           cmake --build depends/build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Fetch and verify pinned Intel Tor bundle
+        run: |
+          bash scripts/fetch-tor-expert-bundle.sh x86_64 "$RUNNER_TEMP/tor-expert-bundle"
+          echo "DINERO_TOR_BUNDLE_DIR=$RUNNER_TEMP/tor-expert-bundle" >> "$GITHUB_ENV"
 
       - name: Fetch and verify snapshot pair
         env:
@@ -459,6 +464,7 @@ jobs:
             -DDINERO_ENABLE_QUIC=ON \
             -DDINERO_RELEASE_TAG=${{ steps.provenance.outputs.version }} \
             -DDINERO_SV2_SOURCE_ROOT="$DINERO_SV2_SOURCE_ROOT" \
+            -DDINERO_TOR_BUNDLE_DIR="$DINERO_TOR_BUNDLE_DIR" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -482,6 +488,9 @@ jobs:
           set -euo pipefail
           APP="packaging/mac/dist/stage/dinero-qt.app"
           test -d "$APP"
+          test -x "$APP/Contents/Resources/tor/tor/tor"
+          test -f "$APP/Contents/Resources/tor/DINERO_TOR_VERSION"
+          "$APP/Contents/Resources/tor/tor/tor" --version | grep -F 'Tor version '
           MACHO_COUNT=0
           while IFS= read -r -d '' path; do
             if file "$path" | grep -q 'Mach-O'; then
