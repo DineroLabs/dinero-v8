@@ -63,7 +63,8 @@ bool TorOptInStore::Write(bool enabled, std::string* error) const {
         if (error) *error = "could not create Tor preference directory";
         return false;
     }
-    const std::string tmp = path_ + ".tmp";
+    std::filesystem::path tmp = path;
+    tmp += ".tmp";
     {
         std::ofstream output(tmp, std::ios::binary | std::ios::trunc);
         if (!output || !(output << (enabled ? "1\n" : "0\n"))) {
