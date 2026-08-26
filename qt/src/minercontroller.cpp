@@ -5,23 +5,6 @@
 
 using namespace dinero::solo;
 
-namespace {
-
-QString formatHashrate(double hr) {
-    if (hr >= 1e9) {
-        return QString::number(hr / 1e9, 'f', 2) + " GH/s";
-    }
-    if (hr >= 1e6) {
-        return QString::number(hr / 1e6, 'f', 2) + " MH/s";
-    }
-    if (hr >= 1e3) {
-        return QString::number(hr / 1e3, 'f', 2) + " KH/s";
-    }
-    return QString::number(hr, 'f', 2) + " H/s";
-}
-
-}  // namespace
-
 MinerController::MinerController(QObject* parent)
     : QObject(parent)
 {
@@ -273,15 +256,10 @@ void MinerController::onBlockFound(const BlockFoundInfo& info) {
     Q_EMIT blockFoundDetailed(hashStr, static_cast<int>(info.height), info.nonce,
                               QString::fromStdString(info.merkle_root),
                               QString::fromStdString(info.utreexo_root), info.nbits);
-    Q_EMIT logLine(QString("🎉 *** BLOCK FOUND ***  height=%1  nonce=%2")
-                   .arg(info.height)
-                   .arg(info.nonce));
-    Q_EMIT logLine(QString("  hashrate:     %1").arg(formatHashrate(info.hashrate > 0.0 ? info.hashrate : hashrate_)));
-    Q_EMIT logLine(QString("  hash:         %1").arg(hashStr));
-    Q_EMIT logLine(QString("  prev_hash:    %1").arg(QString::fromStdString(info.prev_hash)));
-    Q_EMIT logLine(QString("  merkle_root:  %1").arg(QString::fromStdString(info.merkle_root)));
-    Q_EMIT logLine(QString("  utreexo_root: %1").arg(QString::fromStdString(info.utreexo_root)));
-    Q_EMIT logLine(QString("  nBits:        0x%1").arg(info.nbits, 8, 16, QChar('0')));
+    // The Widgets UI consumes blockFoundDetailed() as the canonical find
+    // presentation: it adds the highlighted live-header row and the complete
+    // session-history record.  Emitting a second legacy multiline log card
+    // here writes beneath that overlay and leaves duplicate text visible.
     Q_EMIT statsChanged();
 }
 
