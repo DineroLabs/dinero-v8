@@ -22,6 +22,7 @@ APP="${1:-build/bin/dinero-qt.app}"
 # a caller asking for a different identity was silently overridden.
 IDENTITY="${2:-${DINERO_SIGN_IDENTITY:-Developer ID Application: Mirsad Hajdarevic (JXJS6ZA5FJ)}}"
 ENTITLEMENTS="$(dirname "$0")/../packaging/entitlements.plist"
+SIGN_HELPER="$(dirname "$0")/../cmake/sign_macos_bundle.py"
 TEAM_ID="JXJS6ZA5FJ"
 
 if [ ! -d "$APP" ]; then
@@ -34,61 +35,22 @@ echo "    Identity: $IDENTITY"
 echo "    Entitlements: $ENTITLEMENTS"
 echo ""
 
-# Step 1: Sign all nested executables, frameworks, dylibs, and bundles
-# (inside-out: deepest components first, then the outer bundle)
+# Sign all nested Mach-O files inside-out, then seal the outer bundle.
+#
+# Keep one recursive implementation for both build-time ad-hoc signing and
+# Developer-ID release signing. The former top-level Resources/* loop missed
+# embedded Tor's nested tor/tor/{tor,libevent,pluggable_transports/*} files.
+# codesign --deep made the outer bundle look locally valid, but did not replace
+# those vendor/ad-hoc signatures with timestamped hardened-runtime signatures;
+# Apple notarization correctly rejected the archive.
 echo "--- Signing nested components..."
+python3 "$SIGN_HELPER" \
+    "$APP" \
+    --identity "$IDENTITY" \
+    --entitlements "$ENTITLEMENTS" \
+    --runtime
 
-# Apple notary requires `--timestamp` (secure timestamp) AND
-# `--options runtime` (hardened runtime) on EVERY signed Mach-O,
-# including the bundled tool binaries in Resources/ and MacOS/.
-# Missing either flag fails notarization with cryptic errors like
-# "The signature does not include a secure timestamp" — observed on
-# the v2.1.28 first submission, fixed in this script.
-SIGN_FLAGS=(--force --sign "$IDENTITY" --options runtime --timestamp --entitlements "$ENTITLEMENTS")
-
-# Sign dylibs and frameworks inside Frameworks/
-find "$APP/Contents/Frameworks" \( -name "*.dylib" -o -name "*.framework" \) 2>/dev/null | sort -r | while read f; do
-    codesign "${SIGN_FLAGS[@]}" "$f"
-done
-
-# Sign PlugIns
-find "$APP/Contents/PlugIns" \( -name "*.dylib" -o -name "*.so" -o -name "*.bundle" \) 2>/dev/null | while read f; do
-    codesign "${SIGN_FLAGS[@]}" "$f"
-done
-
-# Sign every Mach-O executable in Resources/ and MacOS/. The dinero
-# bundle ships ~9 standalone tools (dinerod, dinero-cli, dinero-stratum,
-# dinero-stratum-worker, dinero-solo-miner, dinero-miner, dinero-gpu-miner,
-# dinero-sv2-miner, dinero-sv2-gpu-miner) — all need full notary flags.
-echo "--- Signing bundled tool binaries..."
-for dir in "$APP/Contents/Resources" "$APP/Contents/MacOS"; do
-    [ -d "$dir" ] || continue
-    for f in "$dir"/*; do
-        [ -f "$f" ] || continue
-        # Skip the main bundle executable here — it must be signed LAST (step 2),
-        # after every sibling helper. This loop iterates MacOS/* alphabetically,
-        # and "dinero-qt" sorts before "dinero-seeder"/"dinero-solo-miner", so
-        # signing it here seals the bundle while those helpers are still unsigned
-        # → "code object is not signed at all / In subcomponent: dinero-seeder".
-        if [ "$f" = "$APP/Contents/MacOS/dinero-qt" ]; then
-            continue
-        fi
-        if file "$f" 2>/dev/null | grep -q "Mach-O"; then
-            codesign "${SIGN_FLAGS[@]}" "$f"
-        fi
-    done
-done
-
-# Step 2: Sign the main executable last (after every nested binary).
-echo "--- Signing main executable..."
-codesign "${SIGN_FLAGS[@]}" "$APP/Contents/MacOS/dinero-qt"
-
-# Step 3: Sign the entire bundle (outer shell). `--deep` re-signs
-# anything we missed; flags must match what notary requires.
-echo "--- Signing app bundle..."
-codesign "${SIGN_FLAGS[@]}" --deep "$APP"
-
-# Step 4: Verify
+# Verify the sealed bundle after every nested Mach-O has its own signature.
 echo ""
 echo "--- Verifying signature..."
 codesign --verify --deep --strict --verbose=2 "$APP"

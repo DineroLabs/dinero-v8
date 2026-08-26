@@ -1119,6 +1119,17 @@ else()
   message(WARNING "⚠️  tests/test_release_suite.sh not found - ReleaseSuite gate not registered")
 endif()
 
+if(APPLE)
+  add_test(
+    NAME MacOSNestedBundleSigning
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/test_macos_nested_bundle_signing.sh
+  )
+  set_tests_properties(MacOSNestedBundleSigning PROPERTIES
+    LABELS "release;macos;signing"
+    TIMEOUT 120
+  )
+endif()
+
 # ════════════════════════════════════════════════════════════════════════════
 # CRITICAL: Genesis Invariant Tests - MUST RUN FIRST
 # ════════════════════════════════════════════════════════════════════════════
