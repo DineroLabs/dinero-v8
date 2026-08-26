@@ -20,7 +20,7 @@ on:
       release_tag:
         description: 'Immutable Dinero release tag to package'
         required: true
-        default: 'v8.1.8'
+        default: 'v8.1.9'
         type: string
 
 permissions:
@@ -35,7 +35,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SV2_REF: 391d93df3450df6a58f119dec2b3fe35a1066e44
+  SV2_REF: 8f9d7f688080483fbeb2f62b234031d5d5567ec5
   LINUXDEPLOY_TAG: 1-alpha-20251107-1
   LINUXDEPLOY_SHA256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
   LINUXDEPLOY_QT_TAG: 1-alpha-20250213-1

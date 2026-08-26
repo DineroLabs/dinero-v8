@@ -4227,23 +4227,31 @@ void MainWindow::setupUI() {
     });
 
     connect(minerCtrl_, &MinerController::logLine, this, [this](const QString& line) {
+        const bool transientError = dinero::qt::isTransientMiningError(line);
+        const QString displayLine = dinero::qt::miningOutputDisplayText(line);
         if (txtMiningOutput_) {
-            appendMiningOutputLine(txtMiningOutput_, line);
+            // Keep a recurring recoverable template failure to one compact
+            // status line. The miner continues retrying and the Hash Engine
+            // remains live; internal exception chains belong in daemon logs.
+            if (transientError) {
+                removeMiningOutputLine(txtMiningOutput_, displayLine);
+            }
+            appendMiningOutputLine(txtMiningOutput_, displayLine);
             QTextCursor c = txtMiningOutput_->textCursor();
             c.movePosition(QTextCursor::End);
             txtMiningOutput_->setTextCursor(c);
         }
-        if (dinero::qt::isTransientMiningError(line)) {
+        if (transientError) {
             const quint64 generation =
-              transientMiningErrorGenerations_.value(line, 0) + 1;
-            transientMiningErrorGenerations_.insert(line, generation);
+              transientMiningErrorGenerations_.value(displayLine, 0) + 1;
+            transientMiningErrorGenerations_.insert(displayLine, generation);
             QTimer::singleShot(dinero::qt::kTransientMiningErrorMs, this,
-              [this, line, generation]() {
-                if (transientMiningErrorGenerations_.value(line) != generation) {
+              [this, displayLine, generation]() {
+                if (transientMiningErrorGenerations_.value(displayLine) != generation) {
                   return;
                 }
-                transientMiningErrorGenerations_.remove(line);
-                removeMiningOutputLine(txtMiningOutput_, line);
+                transientMiningErrorGenerations_.remove(displayLine);
+                removeMiningOutputLine(txtMiningOutput_, displayLine);
               });
         }
     });

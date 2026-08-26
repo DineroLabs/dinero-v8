@@ -9,6 +9,26 @@
 #ifdef ENABLE_METAL
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
+
+static NSArray<id<MTLDevice>>* copyAllMetalDevicesIfAvailable() {
+    // MTLCopyAllDevices predates every supported macOS target, but was only
+    // introduced on iOS 18. NodeCore supports iOS 15, where the default Metal
+    // device remains the safe single-device fallback.
+    if (@available(macOS 10.11, iOS 18.0, *)) {
+        return MTLCopyAllDevices();
+    }
+    return nil;
+}
+
+static size_t metalWorkingSetMB(id<MTLDevice> device) {
+    // This property is unavailable on iOS 15. Memory size is informational;
+    // report zero rather than calling through an unavailable selector.
+    if (@available(macOS 10.12, iOS 16.0, *)) {
+        return static_cast<size_t>([device recommendedMaxWorkingSetSize] /
+                                   (1024 * 1024));
+    }
+    return 0;
+}
 #endif
 
 namespace dinero::gpu {
@@ -147,7 +167,7 @@ std::vector<GPUDevice> MetalBackend::enumerateDevices() {
 #ifdef ENABLE_METAL
     @autoreleasepool {
         // Get all Metal devices
-        NSArray<id<MTLDevice>>* mtl_devices = MTLCopyAllDevices();
+        NSArray<id<MTLDevice>>* mtl_devices = copyAllMetalDevicesIfAvailable();
         if (!mtl_devices || [mtl_devices count] == 0) {
             // Try the default device (always available on Apple Silicon)
             id<MTLDevice> default_device = MTLCreateSystemDefaultDevice();
@@ -158,7 +178,7 @@ std::vector<GPUDevice> MetalBackend::enumerateDevices() {
                 dev.name = [[default_device name] UTF8String];
                 dev.vendor = "Apple Inc.";
                 // recommendedMaxWorkingSetSize gives us usable GPU memory
-                dev.global_memory_mb = static_cast<size_t>([default_device recommendedMaxWorkingSetSize] / (1024 * 1024));
+                dev.global_memory_mb = metalWorkingSetMB(default_device);
                 // maxThreadsPerThreadgroup gives thread capacity
                 dev.compute_units = static_cast<uint32_t>([default_device maxThreadsPerThreadgroup].width);
                 dev.max_clock_mhz = 0; // Metal doesn't expose clock frequency
@@ -180,7 +200,7 @@ std::vector<GPUDevice> MetalBackend::enumerateDevices() {
             dev.device_id = idx;
             dev.name = [[mtl_dev name] UTF8String];
             dev.vendor = "Apple Inc.";
-            dev.global_memory_mb = static_cast<size_t>([mtl_dev recommendedMaxWorkingSetSize] / (1024 * 1024));
+            dev.global_memory_mb = metalWorkingSetMB(mtl_dev);
             dev.compute_units = static_cast<uint32_t>([mtl_dev maxThreadsPerThreadgroup].width);
             dev.max_clock_mhz = 0;
             dev.available = true; // All Metal devices are usable
@@ -209,7 +229,7 @@ bool MetalBackend::initDevice(uint32_t device_id) {
         id<MTLDevice> mtl_device = nil;
 
         // Try to get specific device by ID
-        NSArray<id<MTLDevice>>* mtl_devices = MTLCopyAllDevices();
+        NSArray<id<MTLDevice>>* mtl_devices = copyAllMetalDevicesIfAvailable();
         if (mtl_devices && [mtl_devices count] > device_id) {
             mtl_device = mtl_devices[device_id];
         } else if (device_id == 0) {

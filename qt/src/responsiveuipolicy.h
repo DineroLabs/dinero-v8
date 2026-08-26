@@ -66,4 +66,11 @@ inline bool isTransientMiningError(const QString& line) {
                        Qt::CaseInsensitive);
 }
 
+inline QString miningOutputDisplayText(const QString& line) {
+  if (isTransientMiningError(line)) {
+    return QStringLiteral("Template refresh delayed — retrying automatically");
+  }
+  return line;
+}
+
 } // namespace dinero::qt

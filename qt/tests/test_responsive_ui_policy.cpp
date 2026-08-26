@@ -66,6 +66,13 @@ private Q_SLOTS:
     QCOMPARE(dinero::qt::kTransientMiningErrorMs, 15000);
     QVERIFY(dinero::qt::isTransientMiningError(
       QStringLiteral("❌ Error: Failed to get block template: [GATE3] mismatch")));
+    QCOMPARE(dinero::qt::miningOutputDisplayText(
+               QStringLiteral("❌ Error: Failed to get block template: "
+                              "CreateNewBlock: [GATE3] mismatch")),
+             QStringLiteral("Template refresh delayed — retrying automatically"));
+    QCOMPARE(dinero::qt::miningOutputDisplayText(
+               QStringLiteral("Miner started successfully")),
+             QStringLiteral("Miner started successfully"));
     QVERIFY(!dinero::qt::isTransientMiningError(
       QStringLiteral("Daemon RPC is unavailable; stopping embedded miner")));
   }

@@ -7,9 +7,9 @@ set -e
 # Builds the full C++ node as a static library for:
 #   1. iOS device (arm64)
 #   2. iOS Simulator (arm64, Apple Silicon)
-#   3. macOS (arm64)
+#   3. macOS (universal arm64 + x86_64)
 #
-# Then packages both into NodeCore.xcframework.
+# Then packages all three platform slices into NodeCore.xcframework.
 #
 # Output: build-nodecore/NodeCore.xcframework/
 # ==============================================================================
@@ -34,7 +34,13 @@ echo ""
 OPENSSL_VERSION="${OPENSSL_VERSION:-3.5.7}"
 OPENSSL_SRC="${PROJECT_ROOT}/third_party/openssl-${OPENSSL_VERSION}"
 OPENSSL_SHA256_3_5_7="a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
-NCPU=$(sysctl -n hw.ncpu)
+NCPU="${NCPU:-$(sysctl -n hw.ncpu)}"
+case "${NCPU}" in
+    ''|*[!0-9]*|0)
+        echo "ERROR: NCPU must be a positive integer (got '${NCPU}')" >&2
+        exit 1
+        ;;
+esac
 
 # openssl-3.5.7 is a build input, not a committed vendor tree like 3.5.6, so
 # fetch it (pinned SHA-256) when absent — otherwise a fresh clone silently
@@ -209,21 +215,26 @@ echo "[1/6] Building vendored OpenSSL for iOS + macOS..."
 
 OPENSSL_DEVICE_DIR="${BUILD_ROOT}/openssl-device"
 OPENSSL_SIM_DIR="${BUILD_ROOT}/openssl-simulator"
-OPENSSL_MAC_DIR="${BUILD_ROOT}/openssl-macos"
+OPENSSL_MAC_ARM64_DIR="${BUILD_ROOT}/openssl-macos-arm64"
+OPENSSL_MAC_X86_64_DIR="${BUILD_ROOT}/openssl-macos-x86_64"
 OPENSSL_DEVICE_CACHE="${OPENSSL_SRC}/prebuilt/ios-arm64"
 OPENSSL_SIM_CACHE="${OPENSSL_SRC}/prebuilt/ios-simulator-arm64"
-OPENSSL_MAC_CACHE="${OPENSSL_SRC}/prebuilt/macos-arm64"
+OPENSSL_MAC_ARM64_CACHE="${OPENSSL_SRC}/prebuilt/macos-arm64"
+OPENSSL_MAC_X86_64_CACHE="${OPENSSL_SRC}/prebuilt/macos-x86_64"
 
 build_openssl_ios "ios64-xcrun" "${OPENSSL_DEVICE_DIR}" "${IOS_DEPLOY_TARGET}" ""
 build_openssl_ios "iossimulator-arm64-xcrun" "${OPENSSL_SIM_DIR}" "${IOS_DEPLOY_TARGET}" "sim"
-build_openssl_macos "darwin64-arm64-cc" "${OPENSSL_MAC_DIR}" "${MACOS_DEPLOY_TARGET}"
+build_openssl_macos "darwin64-arm64-cc" "${OPENSSL_MAC_ARM64_DIR}" "${MACOS_DEPLOY_TARGET}"
+build_openssl_macos "darwin64-x86_64-cc" "${OPENSSL_MAC_X86_64_DIR}" "${MACOS_DEPLOY_TARGET}"
 
 sync_artifact "${OPENSSL_DEVICE_DIR}/libcrypto.a" "${OPENSSL_DEVICE_CACHE}/libcrypto.a"
 sync_artifact "${OPENSSL_DEVICE_DIR}/libssl.a" "${OPENSSL_DEVICE_CACHE}/libssl.a"
 sync_artifact "${OPENSSL_SIM_DIR}/libcrypto.a" "${OPENSSL_SIM_CACHE}/libcrypto.a"
 sync_artifact "${OPENSSL_SIM_DIR}/libssl.a" "${OPENSSL_SIM_CACHE}/libssl.a"
-sync_artifact "${OPENSSL_MAC_DIR}/libcrypto.a" "${OPENSSL_MAC_CACHE}/libcrypto.a"
-sync_artifact "${OPENSSL_MAC_DIR}/libssl.a" "${OPENSSL_MAC_CACHE}/libssl.a"
+sync_artifact "${OPENSSL_MAC_ARM64_DIR}/libcrypto.a" "${OPENSSL_MAC_ARM64_CACHE}/libcrypto.a"
+sync_artifact "${OPENSSL_MAC_ARM64_DIR}/libssl.a" "${OPENSSL_MAC_ARM64_CACHE}/libssl.a"
+sync_artifact "${OPENSSL_MAC_X86_64_DIR}/libcrypto.a" "${OPENSSL_MAC_X86_64_CACHE}/libcrypto.a"
+sync_artifact "${OPENSSL_MAC_X86_64_DIR}/libssl.a" "${OPENSSL_MAC_X86_64_CACHE}/libssl.a"
 
 echo "[1/6] OpenSSL builds complete"
 
@@ -272,24 +283,37 @@ cmake --build "${SIM_BUILD}" --target nodecore_ffi --config Release -j${NCPU}
 echo "[3/6] Simulator build complete"
 
 # ==============================================================================
-# Step 4: Build for macOS (arm64)
+# Step 4: Build for macOS (arm64 + x86_64)
 # ==============================================================================
 echo ""
-echo "[4/6] Building for macOS (arm64)..."
-MAC_BUILD="${BUILD_ROOT}/macos-arm64"
-mkdir -p "${MAC_BUILD}"
+echo "[4/6] Building for macOS (arm64 + x86_64)..."
+MAC_ARM64_BUILD="${BUILD_ROOT}/macos-arm64"
+MAC_X86_64_BUILD="${BUILD_ROOT}/macos-x86_64"
+mkdir -p "${MAC_ARM64_BUILD}" "${MAC_X86_64_BUILD}"
 
-cmake -S "${PROJECT_ROOT}" -B "${MAC_BUILD}" \
+cmake -S "${PROJECT_ROOT}" -B "${MAC_ARM64_BUILD}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_NODECORE=ON \
     -DDINERO_ENABLE_PORTMAPPING=OFF \
     -DDINERO_RELEASE=ON \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOS_DEPLOY_TARGET} \
-    -DDINERO_VENDORED_OPENSSL_DIR="${OPENSSL_MAC_DIR}" \
+    -DDINERO_VENDORED_OPENSSL_DIR="${OPENSSL_MAC_ARM64_DIR}" \
     -G "Unix Makefiles"
 
-cmake --build "${MAC_BUILD}" --target nodecore_ffi --config Release -j${NCPU}
+cmake --build "${MAC_ARM64_BUILD}" --target nodecore_ffi --config Release -j${NCPU}
+
+cmake -S "${PROJECT_ROOT}" -B "${MAC_X86_64_BUILD}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_NODECORE=ON \
+    -DDINERO_ENABLE_PORTMAPPING=OFF \
+    -DDINERO_RELEASE=ON \
+    -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOS_DEPLOY_TARGET} \
+    -DDINERO_VENDORED_OPENSSL_DIR="${OPENSSL_MAC_X86_64_DIR}" \
+    -G "Unix Makefiles"
+
+cmake --build "${MAC_X86_64_BUILD}" --target nodecore_ffi --config Release -j${NCPU}
 
 echo "[4/6] macOS build complete"
 
@@ -374,11 +398,19 @@ create_fat_lib() {
 
 DEVICE_FAT="${BUILD_ROOT}/libnodecore-device.a"
 SIM_FAT="${BUILD_ROOT}/libnodecore-simulator.a"
-MAC_FAT="${BUILD_ROOT}/libnodecore-macos.a"
+MAC_ARM64_FAT="${BUILD_ROOT}/libnodecore-macos-arm64.a"
+MAC_X86_64_FAT="${BUILD_ROOT}/libnodecore-macos-x86_64.a"
+MAC_UNIVERSAL_FAT="${BUILD_ROOT}/libnodecore-macos-universal.a"
 
 create_fat_lib "device" "${DEVICE_BUILD}" "${DEVICE_FAT}" "${OPENSSL_DEVICE_DIR}"
 create_fat_lib "simulator" "${SIM_BUILD}" "${SIM_FAT}" "${OPENSSL_SIM_DIR}"
-create_fat_lib "macos" "${MAC_BUILD}" "${MAC_FAT}" "${OPENSSL_MAC_DIR}"
+create_fat_lib "macos-arm64" "${MAC_ARM64_BUILD}" "${MAC_ARM64_FAT}" "${OPENSSL_MAC_ARM64_DIR}"
+create_fat_lib "macos-x86_64" "${MAC_X86_64_BUILD}" "${MAC_X86_64_FAT}" "${OPENSSL_MAC_X86_64_DIR}"
+lipo -create "${MAC_ARM64_FAT}" "${MAC_X86_64_FAT}" -output "${MAC_UNIVERSAL_FAT}"
+lipo "${MAC_UNIVERSAL_FAT}" -verify_arch arm64 x86_64 || {
+    echo "ERROR: universal macOS NodeCore archive is missing an architecture" >&2
+    exit 1
+}
 
 # ==============================================================================
 # Step 4: Create xcframework
@@ -401,7 +433,7 @@ xcodebuild -create-xcframework \
     -headers "${HEADERS_DIR}" \
     -library "${SIM_FAT}" \
     -headers "${HEADERS_DIR}" \
-    -library "${MAC_FAT}" \
+    -library "${MAC_UNIVERSAL_FAT}" \
     -headers "${HEADERS_DIR}" \
     -output "${XCFRAMEWORK_OUTPUT}"
 

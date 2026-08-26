@@ -50,24 +50,37 @@ jobs:
           INPUT_VERSION: ${{ github.event.inputs.version }}
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           RELEASE_DRAFT: ${{ github.event.release.draft }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            # On a PR GITHUB_REF_NAME is "<n>/merge", which the 8.* guard below would
-            # reject. Take the version the Dockerfile itself defaults to, so the PR
-            # build tests exactly what a credential-less `docker build .` produces and
-            # the two cannot drift.
-            V="$(sed -n 's/^ARG DINERO_VERSION=//p' Dockerfile | head -1)"
-            test -n "$V" || { echo "::error::could not read ARG DINERO_VERSION from Dockerfile"; exit 1; }
+            # A release-preparation PR intentionally names an artifact version that
+            # does not exist yet. Building that default would always 404 before the
+            # release can be merged. Validate the complete image/runtime path against
+            # the latest published v8 artifact here; the release event below rebuilds
+            # and runs the exact newly published version before pushing it.
+            CANDIDATE="$(sed -n 's/^ARG DINERO_VERSION=//p' Dockerfile | head -1)"
+            case "$CANDIDATE" in
+              8.*) ;;
+              *) echo "::error::Dockerfile has invalid candidate version '$CANDIDATE'"; exit 1 ;;
+            esac
+            PUBLISHED_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("v8.")))][0].tag_name')"
+            test -n "$PUBLISHED_TAG" || { echo "::error::no published v8 release found for PR validation"; exit 1; }
+            V="${PUBLISHED_TAG#v}"
+            SNAPSHOT_RELEASE="$PUBLISHED_TAG"
           elif [ -n "$INPUT_VERSION" ]; then
             V="$INPUT_VERSION"
+            SNAPSHOT_RELEASE="v$V"
           else
             V="${GITHUB_REF_NAME#v}"
+            SNAPSHOT_RELEASE="$GITHUB_REF_NAME"
           fi
           case "$V" in
             8.*) ;;
             *) echo "::error::refusing to build '$V' — this image is built from v8.* release assets only"; exit 1 ;;
           esac
           echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "snapshot_release=$SNAPSHOT_RELEASE" >> "$GITHUB_OUTPUT"
 
           # `latest` must only ever move forward, and only for a real release. A
           # workflow_dispatch rebuild of an older version, a prerelease, or a draft
@@ -107,6 +120,7 @@ jobs:
           push: false
           build-args: |
             DINERO_VERSION=${{ steps.v.outputs.version }}
+            SNAPSHOT_RELEASE=${{ steps.v.outputs.snapshot_release }}
           tags: dinerod:ci
 
       - name: Run check — the image must actually start
@@ -194,6 +208,7 @@ jobs:
           push: true
           build-args: |
             DINERO_VERSION=${{ steps.v.outputs.version }}
+            SNAPSHOT_RELEASE=${{ steps.v.outputs.snapshot_release }}
           tags: |
             ghcr.io/dinerolabs/dinero-v8:${{ steps.v.outputs.version }}
             ${{ steps.v.outputs.latest == 'true' && 'ghcr.io/dinerolabs/dinero-v8:latest' || '' }}
