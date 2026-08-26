@@ -30,7 +30,7 @@ permissions:
   contents: write        # required to attach artifacts to the release
 
 env:
-  SV2_REF: 391d93df3450df6a58f119dec2b3fe35a1066e44
+  SV2_REF: 8f9d7f688080483fbeb2f62b234031d5d5567ec5
 
 jobs:
   windows-release:

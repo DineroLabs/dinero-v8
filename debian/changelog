@@ -1,3 +1,25 @@
+dinero-core (8.1.9-1) unstable; urgency=high
+
+  * v8.1.9 -- restore Bitcoin-style mining continuity: validated active-tip
+    work remains available while canonical header bodies converge, with a
+    recurring recovery driver, bounded peer rotation, ordered activation,
+    restart recovery, and detailed convergence observability.
+  * Expand decentralized connectivity with dynamic peer autonomy, CGNAT-safe
+    Dinero relay fallback, managed Tor onion connectivity, and simple Qt
+    controls that never disable ordinary P2P when an auxiliary path fails.
+  * Ship the redesigned CPU, GPU, and SV2 mining displays and standalone SV2
+    v0.2.8 miners while keeping all displayed candidates tied to real work.
+  * Harden chain activation, restart durability, wallet checkpoint recovery,
+    shielded fail-closed behavior, and integration-test evidence retention.
+  * Shielded spend-authority groundwork remains dormant at UINT32_MAX; this
+    release does not activate shielded transfers or change chain-selection,
+    serialization, network magic, or the single-active-chain consensus model.
+  * Full fleet upgrade recommended: daemon, desktop, miners, NodeCore, and
+    connectivity behavior changed. Existing chain and wallet data remain
+    compatible; no reindex or database migration is required.
+
+ -- Dinero Labs <team@dinerolabs.org>  Wed, 26 Aug 2026 02:15:00 -0400
+
 dinero-core (8.1.8-1) unstable; urgency=high
 
   * v8.1.8 -- make heavy Utreexo block connection practical by batching proof
