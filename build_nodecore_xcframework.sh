@@ -407,7 +407,7 @@ create_fat_lib "simulator" "${SIM_BUILD}" "${SIM_FAT}" "${OPENSSL_SIM_DIR}"
 create_fat_lib "macos-arm64" "${MAC_ARM64_BUILD}" "${MAC_ARM64_FAT}" "${OPENSSL_MAC_ARM64_DIR}"
 create_fat_lib "macos-x86_64" "${MAC_X86_64_BUILD}" "${MAC_X86_64_FAT}" "${OPENSSL_MAC_X86_64_DIR}"
 lipo -create "${MAC_ARM64_FAT}" "${MAC_X86_64_FAT}" -output "${MAC_UNIVERSAL_FAT}"
-lipo -verify_arch arm64 x86_64 "${MAC_UNIVERSAL_FAT}" || {
+lipo "${MAC_UNIVERSAL_FAT}" -verify_arch arm64 x86_64 || {
     echo "ERROR: universal macOS NodeCore archive is missing an architecture" >&2
     exit 1
 }
