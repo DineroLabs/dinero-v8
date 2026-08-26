@@ -3931,7 +3931,7 @@ void MainWindow::setupUI() {
     cmbMinerType_->addItem("Solo GPU (NVIDIA CUDA)", "internal_gpu");
 #endif
 #ifdef Q_OS_MAC
-    cmbMinerType_->addItem("Solo GPU (Metal)", "gpu");
+    cmbMinerType_->addItem("Solo GPU (Metal)", "internal_gpu");
 #endif
     // "External (RPC Solo Miner)" dropdown option removed 2026-04-20.
     // It launched `dinero-miner` as a subprocess, which is another CPU miner

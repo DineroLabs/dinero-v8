@@ -498,6 +498,11 @@ set(HAVE_SPARKLE OFF)
 # the miner sources live in a sibling directory and Qt adds them itself.
 # The TARGET check makes both modes work without double-adding.
 
+if(APPLE AND NOT DEFINED MINER_ENABLE_METAL)
+  set(MINER_ENABLE_METAL ON CACHE BOOL
+      "Enable the embedded Metal solo-mining backend for Dinero Qt")
+endif()
+
 if(NOT TARGET dinero-solo-miner)
   add_subdirectory(${DINERO_SOLO_MINER_SOURCE_ROOT} ${CMAKE_BINARY_DIR}/solo-miner)
 endif()

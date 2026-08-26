@@ -326,6 +326,20 @@ if(BUILD_TESTS)
     target_link_libraries(miner_smoke_test PRIVATE dinero-solo-miner)
     add_test(NAME miner_smoke_test COMMAND miner_smoke_test)
 
+    if(MINER_ENABLE_CUDA OR MINER_ENABLE_METAL OR MINER_ENABLE_OPENCL)
+        add_executable(gpu_self_test tests/gpu_self_test.cpp)
+        target_link_libraries(gpu_self_test PRIVATE dinero-solo-miner)
+        if(MINER_ENABLE_CUDA)
+            target_compile_definitions(gpu_self_test PRIVATE MINER_ENABLE_CUDA)
+        elseif(MINER_ENABLE_METAL)
+            target_compile_definitions(gpu_self_test PRIVATE MINER_ENABLE_METAL)
+        elseif(MINER_ENABLE_OPENCL)
+            target_compile_definitions(gpu_self_test PRIVATE MINER_ENABLE_OPENCL)
+        endif()
+        add_test(NAME gpu_self_test COMMAND gpu_self_test --bench 1)
+        set_tests_properties(gpu_self_test PROPERTIES LABELS "miner;gpu" TIMEOUT 30)
+    endif()
+
     # CI drift detection: confirm the committed miner chain identity
     # header matches what the consensus headers would generate. Only
     # registered in monorepo mode where the consensus headers and the
