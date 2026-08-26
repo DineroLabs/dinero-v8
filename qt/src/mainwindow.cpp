@@ -2414,10 +2414,6 @@ void MainWindow::setupUI() {
             this, [this](const QString& mode) {
       rpc_->callNamed("network.setrelayservice", QJsonObject{{"mode", mode}});
     });
-    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::advancedControlsRequested,
-            this, [this]() {
-      if (cmdKPanel_ && !cmdKPanel_->isPanelOpen()) cmdKPanel_->togglePanel();
-    });
     row1->addWidget(connectivityBox, 2);
 
     auto *cpuBox = new QGroupBox("Resources & mining");
