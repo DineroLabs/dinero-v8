@@ -87,6 +87,30 @@ if [[ ! -d "$APP_BUNDLE" ]]; then
     exit 1
 fi
 
+# Automatic Tor is a release promise, not an optional developer convenience.
+# Refuse to package a Qt release that was configured without the pinned,
+# signature-verified Tor Expert Bundle. This gate applies equally to Intel and
+# Apple Silicon and prevents a valid-looking app whose Automatic setting can
+# only fall back because the embedded child process is absent.
+TOR_ROOT="$APP_BUNDLE/Contents/Resources/tor"
+TOR_BIN="$TOR_ROOT/tor/tor"
+TOR_VERSION_FILE="$TOR_ROOT/DINERO_TOR_VERSION"
+if [[ ! -x "$TOR_BIN" || ! -f "$TOR_VERSION_FILE" ]]; then
+    echo "ERROR: verified embedded Tor bundle missing from dinero-qt.app" >&2
+    echo "Configure with -DDINERO_TOR_BUNDLE_DIR=<verified bundle> before packaging." >&2
+    exit 1
+fi
+TOR_ARCHS="$(lipo -archs "$TOR_BIN")"
+if [[ "$TOR_ARCHS" != "$ARCH" ]]; then
+    echo "ERROR: embedded Tor architecture mismatch: got $TOR_ARCHS, expected $ARCH" >&2
+    exit 1
+fi
+if ! "$TOR_BIN" --version | grep -F "Tor version " >/dev/null; then
+    echo "ERROR: embedded Tor failed its version smoke test" >&2
+    exit 1
+fi
+echo "Verified embedded Tor: $(cat "$TOR_VERSION_FILE") ($TOR_ARCHS)"
+
 "$PROJECT_ROOT/packaging/mac/assert-v8-release-lane.sh" \
     --version "$VERSION" \
     --build-dir "$BUILD_DIR" \
