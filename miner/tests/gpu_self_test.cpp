@@ -3,10 +3,10 @@
 // CPU-vs-GPU hash correctness on a tightened target, then a hashrate
 // bench against an unsatisfiable target.
 //
-// Built only when -DMINER_ENABLE_CUDA=ON or -DMINER_ENABLE_METAL=ON.
+// Built when a CUDA, Metal, or OpenCL backend is enabled.
 // Exits 0 on success and prints a "[self-test] PASS" line at the end.
 
-#if defined(MINER_ENABLE_CUDA) || defined(MINER_ENABLE_METAL)
+#if defined(MINER_ENABLE_CUDA) || defined(MINER_ENABLE_METAL) || defined(MINER_ENABLE_OPENCL)
 
 #include "solo_miner/gpu_backend.h"
 #include "solo_miner/hash_engine.h"
@@ -225,7 +225,8 @@ int main(int argc, char* argv[]) {
 int main() {
     std::cerr << "gpu_self_test was built without GPU backend support. "
               << "Configure with -DMINER_ENABLE_CUDA=ON or "
-              << "-DMINER_ENABLE_METAL=ON to enable." << std::endl;
+              << "-DMINER_ENABLE_METAL=ON or -DMINER_ENABLE_OPENCL=ON to enable."
+              << std::endl;
     return 2;
 }
 

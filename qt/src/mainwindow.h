@@ -579,6 +579,7 @@ private:
   };
   QVector<MiningHashSample> miningHashSamples_;
   QLabel* miningHashOverlay_ = nullptr;
+  QHash<QString, quint64> transientMiningErrorGenerations_;
   struct MiningSessionFind {
     int height = 0;
     QString hash;

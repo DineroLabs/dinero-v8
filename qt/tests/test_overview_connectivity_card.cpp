@@ -4,7 +4,9 @@
 
 #include "overviewconnectivitycard.h"
 
+#include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QLabel>
 #include <QPushButton>
 #include <QSettings>
@@ -83,13 +85,49 @@ private Q_SLOTS:
         QVERIFY(relayStatus->text().contains(QStringLiteral("Existing network paths")));
     }
 
+    void exposes_only_the_active_public_onion_address() {
+        OverviewConnectivityCard card;
+        const QString address = QString(56, QLatin1Char('a')) + QStringLiteral(".onion");
+        auto* row = card.findChild<QWidget*>(QStringLiteral("overviewOnionAddressRow"));
+        auto* label = card.findChild<QLabel*>(QStringLiteral("overviewOnionAddress"));
+        auto* copy = card.findChild<QPushButton*>(QStringLiteral("overviewCopyOnionAddress"));
+        QVERIFY(row);
+        QVERIFY(label);
+        QVERIFY(copy);
+        QVERIFY(row->isHidden());
+
+        card.setOnionServiceStatus(QJsonObject{
+            {QStringLiteral("requested"), true},
+            {QStringLiteral("active"), true},
+            {QStringLiteral("mode"), QStringLiteral("automatic")},
+            {QStringLiteral("address"), address},
+            {QStringLiteral("authentication"), QStringLiteral("must-never-render")},
+            {QStringLiteral("control_port"), 12345}});
+
+        QVERIFY(!row->isHidden());
+        QVERIFY(label->text().contains(QStringLiteral("Public Dinero P2P address")));
+        QVERIFY(label->text().contains(QChar(0x2026)));
+        QVERIFY(!label->text().contains(address));
+        QCOMPARE(label->toolTip(), address);
+        QVERIFY(!label->text().contains(QStringLiteral("must-never-render")));
+        QVERIFY(!label->text().contains(QStringLiteral("12345")));
+        copy->click();
+        QCOMPARE(QApplication::clipboard()->text(), address);
+
+        card.setOnionServiceStatus(QJsonObject{
+            {QStringLiteral("requested"), true},
+            {QStringLiteral("active"), false},
+            {QStringLiteral("address"), address}});
+        QVERIFY(row->isHidden());
+    }
+
     void older_daemon_disables_only_the_unsupported_controls() {
         OverviewConnectivityCard card;
         card.setNetworkInfo(QJsonObject{});
         card.setRelayActionError(true);
         QVERIFY(!card.findChild<QCheckBox*>(QStringLiteral("overviewTorToggle"))->isEnabled());
         QVERIFY(!card.findChild<QCheckBox*>(QStringLiteral("overviewRelayToggle"))->isEnabled());
-        QVERIFY(card.findChild<QPushButton*>(QStringLiteral("overviewAdvancedNetworkControls"))->isEnabled());
+        QVERIFY(!card.findChild<QWidget*>(QStringLiteral("overviewAdvancedNetworkControls")));
     }
 };
 

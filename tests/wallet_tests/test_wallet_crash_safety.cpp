@@ -513,9 +513,10 @@ bool test_scan_checkpoint_integrity() {
             uint32_t height = wallet.getCurrentBlockchainHeight();
             std::cout << "  After restart, loaded height: " << height << std::endl;
 
-            // Height should be preserved (or 0 if not persisted - that's also valid)
-            // The key is it shouldn't be garbage or negative
-            ASSERT_GE(height, 0u, "Loaded height must be >= 0");
+            // Restart continuity is exact: treating a missing/default height as
+            // acceptable makes the daemon replay from genesis on every boot.
+            ASSERT_EQ(height, 500u,
+                      "Restart must resume from the durable wallet checkpoint");
 
             // Balance check
             auto balance = wallet.getBalance();

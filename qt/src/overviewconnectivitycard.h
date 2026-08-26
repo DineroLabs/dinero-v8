@@ -13,9 +13,8 @@ class QPushButton;
 
 namespace dinero::qt {
 
-// Simple Overview controls backed by the same daemon RPCs as Command-K.
-// This surface intentionally exposes only safe automatic modes; expert Tor
-// endpoints and relay limits remain in the advanced dashboard.
+// Self-contained Overview controls for safe automatic Tor and relay modes.
+// Detailed diagnostics remain available independently through Command-K.
 class OverviewConnectivityCard : public QWidget {
     Q_OBJECT
 public:
@@ -30,10 +29,10 @@ public:
 Q_SIGNALS:
     void torModeRequested(const QString& mode);
     void relayModeRequested(const QString& mode);
-    void advancedControlsRequested();
 
 private:
     void updateSummary();
+    void updateOnionAddress(const QString& address);
     void setTorPending(bool pending);
     void setRelayPending(bool pending);
 
@@ -41,8 +40,11 @@ private:
     QCheckBox* relayToggle_{nullptr};
     QLabel* summaryLabel_{nullptr};
     QLabel* torStatusLabel_{nullptr};
+    QWidget* onionAddressRow_{nullptr};
+    QLabel* onionAddressLabel_{nullptr};
+    QPushButton* copyOnionAddressButton_{nullptr};
     QLabel* relayStatusLabel_{nullptr};
-    QPushButton* advancedButton_{nullptr};
+    QString onionAddress_;
     bool directActive_{false};
     bool relayFallbackReady_{false};
     bool torActive_{false};

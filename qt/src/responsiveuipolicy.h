@@ -10,6 +10,7 @@ namespace dinero::qt {
 inline constexpr int kUtxoPageSize = 200;
 inline constexpr int kHashEngineIntervalMs = 100;
 inline constexpr int kBlockFoundHighlightMs = 1000;
+inline constexpr int kTransientMiningErrorMs = 15000;
 
 struct UtxoPage {
   QJsonArray rows;
@@ -58,6 +59,11 @@ inline int hashSampleCapacity(int viewport_height, int row_height) {
 inline QString compactDifficultyText(quint32 bits) {
   return bits == 0 ? QStringLiteral("-")
                    : QString("0x%1").arg(bits, 8, 16, QChar('0'));
+}
+
+inline bool isTransientMiningError(const QString& line) {
+  return line.contains(QStringLiteral("Failed to get block template"),
+                       Qt::CaseInsensitive);
 }
 
 } // namespace dinero::qt

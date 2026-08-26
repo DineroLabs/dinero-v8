@@ -61,6 +61,14 @@ private Q_SLOTS:
     QVERIFY(dinero::qt::shouldRunHashEngine(true, true, true));
     QVERIFY(!dinero::qt::shouldRunHashEngine(true, false, true));
   }
+
+  void recoverableTemplateErrorsExpireFromTheLiveView() {
+    QCOMPARE(dinero::qt::kTransientMiningErrorMs, 15000);
+    QVERIFY(dinero::qt::isTransientMiningError(
+      QStringLiteral("❌ Error: Failed to get block template: [GATE3] mismatch")));
+    QVERIFY(!dinero::qt::isTransientMiningError(
+      QStringLiteral("Daemon RPC is unavailable; stopping embedded miner")));
+  }
 };
 
 QTEST_MAIN(ResponsiveUiPolicyTest)

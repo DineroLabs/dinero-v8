@@ -70,6 +70,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QTextCursor>
+#include <QTextBlock>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QInputDialog>
@@ -1619,6 +1620,29 @@ void appendMiningOutputLine(QTextEdit* output, const QString& rawLine) {
   appendMiningConsoleText(output, line);
 }
 
+void removeMiningOutputLine(QTextEdit* output, const QString& rawLine) {
+  if (!output) {
+    return;
+  }
+
+  const QString line = normalizeMiningOutputLine(rawLine);
+  QTextBlock block = output->document()->begin();
+  while (block.isValid()) {
+    const QTextBlock next = block.next();
+    if (block.text() == line) {
+      QTextCursor cursor(block);
+      cursor.select(QTextCursor::BlockUnderCursor);
+      cursor.removeSelectedText();
+      if (cursor.position() < output->document()->characterCount() - 1) {
+        cursor.deleteChar();
+      } else if (cursor.position() > 0) {
+        cursor.deletePreviousChar();
+      }
+    }
+    block = next;
+  }
+}
+
 QString compactSv2Value(const QString& value, int head = 18, int tail = 10) {
   const QString trimmed = value.trimmed();
   if (trimmed.size() <= head + tail + 1) {
@@ -2413,10 +2437,6 @@ void MainWindow::setupUI() {
     connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::relayModeRequested,
             this, [this](const QString& mode) {
       rpc_->callNamed("network.setrelayservice", QJsonObject{{"mode", mode}});
-    });
-    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::advancedControlsRequested,
-            this, [this]() {
-      if (cmdKPanel_ && !cmdKPanel_->isPanelOpen()) cmdKPanel_->togglePanel();
     });
     row1->addWidget(connectivityBox, 2);
 
@@ -3935,7 +3955,7 @@ void MainWindow::setupUI() {
     cmbMinerType_->addItem("Solo GPU (NVIDIA CUDA)", "internal_gpu");
 #endif
 #ifdef Q_OS_MAC
-    cmbMinerType_->addItem("Solo GPU (Metal)", "gpu");
+    cmbMinerType_->addItem("Solo GPU (Metal)", "internal_gpu");
 #endif
     // "External (RPC Solo Miner)" dropdown option removed 2026-04-20.
     // It launched `dinero-miner` as a subprocess, which is another CPU miner
@@ -4212,6 +4232,19 @@ void MainWindow::setupUI() {
             QTextCursor c = txtMiningOutput_->textCursor();
             c.movePosition(QTextCursor::End);
             txtMiningOutput_->setTextCursor(c);
+        }
+        if (dinero::qt::isTransientMiningError(line)) {
+            const quint64 generation =
+              transientMiningErrorGenerations_.value(line, 0) + 1;
+            transientMiningErrorGenerations_.insert(line, generation);
+            QTimer::singleShot(dinero::qt::kTransientMiningErrorMs, this,
+              [this, line, generation]() {
+                if (transientMiningErrorGenerations_.value(line) != generation) {
+                  return;
+                }
+                transientMiningErrorGenerations_.remove(line);
+                removeMiningOutputLine(txtMiningOutput_, line);
+              });
         }
     });
 
@@ -12458,11 +12491,32 @@ void MainWindow::onExportSeed() {
   rpc_->call("wallet.exportseed", QJsonArray{});
 }
 
-// Last ~20 lines of dinerod's debug.log for fail-loud error dialogs (#295).
+static QString daemonDiagnosticLogPath(const QString& datadir) {
+  const QStringList candidates = {
+    QDir(datadir).filePath("debug.log"),
+    QDir(datadir).filePath("dinero.log"),
+    QDir(datadir).filePath("wallet.log"),
+    QDir(datadir).filePath("p2p.log")};
+  QString newest;
+  for (const QString& path : candidates) {
+    const QFileInfo info(path);
+    if (!info.isFile()) continue;
+    if (newest.isEmpty() || info.lastModified() > QFileInfo(newest).lastModified()) {
+      newest = path;
+    }
+  }
+  return newest;
+}
+
+// Last ~20 lines of the newest real daemon log for watchdog diagnostics.
 static QString daemonDebugLogTail(const QString& datadir, int maxLines = 20) {
-  QFile log(QDir(datadir).filePath("debug.log"));
+  const QString logPath = daemonDiagnosticLogPath(datadir);
+  if (logPath.isEmpty()) {
+    return QStringLiteral("(no daemon log found in %1)").arg(datadir);
+  }
+  QFile log(logPath);
   if (!log.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    return QStringLiteral("(no debug.log found in %1)").arg(datadir);
+    return QStringLiteral("(could not read %1)").arg(logPath);
   }
   const qint64 kTailBytes = 64 * 1024;
   if (log.size() > kTailBytes) {
@@ -12471,7 +12525,8 @@ static QString daemonDebugLogTail(const QString& datadir, int maxLines = 20) {
   const QStringList lines = QString::fromUtf8(log.readAll())
                                 .split('\n', Qt::SkipEmptyParts);
   const int start = qMax(0, static_cast<int>(lines.size()) - maxLines);
-  return lines.mid(start).join('\n');
+  return QStringLiteral("Last lines of %1:\n%2")
+      .arg(logPath, lines.mid(start).join('\n'));
 }
 
 void MainWindow::onStartupWatchdogTimeout() {
@@ -12486,7 +12541,7 @@ void MainWindow::onStartupWatchdogTimeout() {
   if (datadir.trimmed().isEmpty()) {
     datadir = defaultDineroDataDir();
   }
-  const QString logPath = QDir(datadir).filePath("debug.log");
+  const QString logPath = daemonDiagnosticLogPath(datadir);
 
   qWarning() << "Startup watchdog: no daemon RPC connection after 180s";
 
@@ -12500,8 +12555,7 @@ void MainWindow::onStartupWatchdogTimeout() {
     "  • Port 20998 is held by another process (lsof -i :20998)\n"
     "  • Another Dinero instance is using the same data directory\n\n"
     "You can keep waiting, open the daemon log, or quit.");
-  box.setDetailedText(QString("Last lines of %1:\n\n%2")
-                          .arg(logPath, daemonDebugLogTail(datadir)));
+  box.setDetailedText(daemonDebugLogTail(datadir));
   QPushButton* showLogBtn = box.addButton("Show Log", QMessageBox::ActionRole);
   QPushButton* waitBtn = box.addButton("Keep Waiting", QMessageBox::AcceptRole);
   box.addButton("Quit", QMessageBox::DestructiveRole);
@@ -12509,7 +12563,9 @@ void MainWindow::onStartupWatchdogTimeout() {
   box.exec();
 
   if (box.clickedButton() == showLogBtn) {
-    QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
+    if (!logPath.isEmpty()) {
+      QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
+    }
     // Re-arm: the user is investigating, keep the watchdog alive.
     QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
   } else if (box.clickedButton() == waitBtn) {

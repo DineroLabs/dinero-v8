@@ -4,12 +4,15 @@
 
 #include "overviewconnectivitycard.h"
 
+#include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QHBoxLayout>
 #include <QJsonValue>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
@@ -53,6 +56,22 @@ OverviewConnectivityCard::OverviewConnectivityCard(QWidget* parent)
     torStatusLabel_->setStyleSheet(QStringLiteral("color: #aeb8c4; padding-left: 22px;"));
     root->addWidget(torStatusLabel_);
 
+    onionAddressRow_ = new QWidget(this);
+    onionAddressRow_->setObjectName(QStringLiteral("overviewOnionAddressRow"));
+    auto* onionAddressLayout = new QHBoxLayout(onionAddressRow_);
+    onionAddressLayout->setContentsMargins(22, 0, 0, 0);
+    onionAddressLayout->setSpacing(8);
+    onionAddressLabel_ = new QLabel(onionAddressRow_);
+    onionAddressLabel_->setObjectName(QStringLiteral("overviewOnionAddress"));
+    onionAddressLabel_->setStyleSheet(QStringLiteral("color: #aeb8c4;"));
+    onionAddressLayout->addWidget(onionAddressLabel_, 1);
+    copyOnionAddressButton_ = new QPushButton(tr("Copy"), onionAddressRow_);
+    copyOnionAddressButton_->setObjectName(QStringLiteral("overviewCopyOnionAddress"));
+    copyOnionAddressButton_->setToolTip(tr("Copy the full public Dinero P2P onion address"));
+    onionAddressLayout->addWidget(copyOnionAddressButton_);
+    onionAddressRow_->hide();
+    root->addWidget(onionAddressRow_);
+
     relayToggle_ = new QCheckBox(tr("Enable relay service"), this);
     relayToggle_->setObjectName(QStringLiteral("overviewRelayToggle"));
     relayToggle_->setEnabled(false);
@@ -66,13 +85,6 @@ OverviewConnectivityCard::OverviewConnectivityCard(QWidget* parent)
     relayStatusLabel_->setWordWrap(true);
     relayStatusLabel_->setStyleSheet(QStringLiteral("color: #aeb8c4; padding-left: 22px;"));
     root->addWidget(relayStatusLabel_);
-
-    auto* actions = new QHBoxLayout;
-    actions->addStretch();
-    advancedButton_ = new QPushButton(tr("Advanced network controls…"), this);
-    advancedButton_->setObjectName(QStringLiteral("overviewAdvancedNetworkControls"));
-    actions->addWidget(advancedButton_);
-    root->addLayout(actions);
 
     connect(torToggle_, &QCheckBox::toggled, this, [this](bool enabled) {
         if (!torSupported_ || torPending_) return;
@@ -97,8 +109,9 @@ OverviewConnectivityCard::OverviewConnectivityCard(QWidget* parent)
         Q_EMIT relayModeRequested(enabled ? QStringLiteral("automatic")
                                          : QStringLiteral("off"));
     });
-    connect(advancedButton_, &QPushButton::clicked,
-            this, &OverviewConnectivityCard::advancedControlsRequested);
+    connect(copyOnionAddressButton_, &QPushButton::clicked, this, [this]() {
+        if (!onionAddress_.isEmpty()) QApplication::clipboard()->setText(onionAddress_);
+    });
 }
 
 void OverviewConnectivityCard::setNetworkInfo(const QJsonObject& info) {
@@ -114,6 +127,7 @@ void OverviewConnectivityCard::setNetworkInfo(const QJsonObject& info) {
         setTorPending(false);
         torToggle_->setEnabled(false);
         torStatusLabel_->setText(tr("This daemon does not support live Tor controls."));
+        updateOnionAddress({});
     }
     updateSummary();
 }
@@ -134,7 +148,30 @@ void OverviewConnectivityCard::setOnionServiceStatus(const QJsonObject& onion) {
         : requested
             ? tr("Tor is starting or recovering; ordinary P2P continues normally.")
             : tr("Use Dinero's included privacy network when needed."));
+    updateOnionAddress(torActive_
+        ? onion.value(QStringLiteral("address")).toString()
+        : QString{});
     updateSummary();
+}
+
+void OverviewConnectivityCard::updateOnionAddress(const QString& address) {
+    static const QRegularExpression publicOnionPattern(
+        QStringLiteral("^[a-z2-7]{56}\\.onion$"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QString candidate = address.trimmed().toLower();
+    onionAddress_ = publicOnionPattern.match(candidate).hasMatch() ? candidate : QString{};
+    const bool available = !onionAddress_.isEmpty();
+    onionAddressRow_->setVisible(available);
+    if (!available) {
+        onionAddressLabel_->clear();
+        onionAddressLabel_->setToolTip({});
+        return;
+    }
+
+    const QString compact = QStringLiteral("%1…%2")
+        .arg(onionAddress_.left(12), onionAddress_.right(12));
+    onionAddressLabel_->setText(tr("Public Dinero P2P address: %1").arg(compact));
+    onionAddressLabel_->setToolTip(onionAddress_);
 }
 
 void OverviewConnectivityCard::setRelayServiceStatus(const QJsonObject& status) {
@@ -161,6 +198,7 @@ void OverviewConnectivityCard::setTorActionError(bool unsupported) {
         torSupported_ = false;
         torToggle_->setEnabled(false);
         torStatusLabel_->setText(tr("This daemon does not support live Tor controls."));
+        updateOnionAddress({});
     } else {
         torStatusLabel_->setText(tr(
             "Could not change Tor connectivity. Ordinary P2P continues normally."));
