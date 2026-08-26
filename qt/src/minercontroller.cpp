@@ -54,14 +54,14 @@ bool MinerController::sampleCandidate(quint32& nonce, QString& hash,
     height = static_cast<int>(sample.height);
     difficultyBits = sample.difficulty_bits;
     headerFields = QString(
-        "nonce=0x%1 hash=%2  version=0x%3 prev=%4 merkle=%5 utreexo=%6 "
+        "nonce=0x%1 hash=%2  prev=%3 merkle=%4 utreexo=%5 version=0x%6 "
         "time=%7 bits=0x%8 reserved=000000000000000000000000")
       .arg(sample.nonce, 8, 16, QChar('0'))
       .arg(hash)
-      .arg(sample.version, 8, 16, QChar('0'))
       .arg(QString::fromStdString(sample.prev_hash),
            QString::fromStdString(sample.merkle_root),
            QString::fromStdString(sample.utreexo_root))
+      .arg(sample.version, 8, 16, QChar('0'))
       .arg(sample.timestamp)
       .arg(sample.difficulty_bits, 8, 16, QChar('0'));
     return true;
