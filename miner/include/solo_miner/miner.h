@@ -93,6 +93,23 @@ struct BlockFoundInfo {
 };
 
 /**
+ * One genuine candidate from the miner's current template.  The nonce hint is
+ * published infrequently by the hot loop; sampleCandidate() performs the one
+ * display-only SHA256d away from that loop.
+ */
+struct CandidateSample {
+    uint32_t nonce = 0;
+    Hash256 hash{};
+    uint32_t version = 0;
+    std::string prev_hash;
+    std::string merkle_root;
+    std::string utreexo_root;
+    uint64_t timestamp = 0;
+    uint32_t height = 0;
+    uint32_t difficulty_bits = 0;
+};
+
+/**
  * Callback types
  */
 using HashrateCb = std::function<void(double hashrate)>;
@@ -152,6 +169,9 @@ public:
      * Get current statistics
      */
     MinerStats getStats() const;
+
+    /** Return a display sample for the active template, or false between jobs. */
+    bool sampleCandidate(CandidateSample& out) const;
 
     /**
      * Get last error message
@@ -242,6 +262,7 @@ private:
     std::atomic<uint32_t> blocks_accepted_{0};
     std::atomic<uint32_t> blocks_rejected_{0};
     std::atomic<bool> submit_in_flight_{false};
+    std::atomic<uint32_t> candidate_nonce_hint_{0};
     std::chrono::steady_clock::time_point start_time_;
     std::chrono::steady_clock::time_point last_hashrate_time_;
     uint64_t last_hashrate_hashes_ = 0;

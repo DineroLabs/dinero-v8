@@ -254,6 +254,29 @@ MinerStats SoloMiner::getStats() const {
     return stats;
 }
 
+bool SoloMiner::sampleCandidate(CandidateSample& out) const {
+    std::shared_ptr<WorkTemplate> work;
+    {
+        std::lock_guard<std::mutex> lock(work_mutex_);
+        work = current_work_;
+    }
+    if (!work || !work->isValid() || !running_.load(std::memory_order_relaxed)) {
+        return false;
+    }
+
+    out.nonce = candidate_nonce_hint_.load(std::memory_order_relaxed);
+    out.version = work->version;
+    out.prev_hash = work->prev_hash;
+    out.merkle_root = work->merkle_root;
+    out.utreexo_root = work->utreexo_root;
+    out.timestamp = work->timestamp;
+    out.height = work->height;
+    out.difficulty_bits = work->difficulty_bits;
+    const auto header = work->buildHeader(out.nonce);
+    out.hash = HashEngine::hashHeader(header.data());
+    return true;
+}
+
 std::string SoloMiner::getLastError() const {
     std::lock_guard<std::mutex> lock(error_mutex_);
     return last_error_;
@@ -372,14 +395,18 @@ void SoloMiner::templateThread() {
             if (work && work->isValid()) {
                 last_longpollid = work->longpollid;  // remember for next iteration
 
+                const uint32_t published_height = work->height;
+                const uint32_t published_difficulty = work->difficulty_bits;
+                auto published_work = std::make_shared<WorkTemplate>(std::move(*work));
+
                 {
                     std::lock_guard<std::mutex> lock(work_mutex_);
-                    current_work_ = std::make_shared<WorkTemplate>(std::move(*work));
+                    current_work_ = std::move(published_work);
                 }
 
                 // Notify via callback
                 if (on_template_) {
-                    on_template_(current_work_->height, current_work_->difficulty_bits);
+                    on_template_(published_height, published_difficulty);
                 }
                 fetch_ok = true;
             } else {
@@ -523,6 +550,12 @@ void SoloMiner::minerThread(int thread_id, uint32_t start_nonce, uint32_t stride
         // Update stats
         hashes_total_.fetch_add(1);
 
+        // Publish a low-frequency progress hint for displays.  Updating this
+        // on every hash would create cache-line contention between workers.
+        if ((nonce & 0xFFFFu) == (start_nonce & 0xFFFFu)) {
+            candidate_nonce_hint_.store(nonce, std::memory_order_relaxed);
+        }
+
         // Next nonce
         nonce += stride;
 
@@ -597,6 +630,7 @@ void SoloMiner::gpuMinerThread() {
         // one full SHA-256d. Count them all toward total hashes — the
         // dispatch is the unit of work, not the winners.
         hashes_total_.fetch_add(batch_size);
+        candidate_nonce_hint_.store(nonce_start, std::memory_order_relaxed);
 
         // Process winners. Each one is CPU-verified before submitting —
         // a bug in the kernel (target compare direction, byte order, etc.)

@@ -1,5 +1,6 @@
 #include "minercontroller.h"
 #include <solo_miner/miner.h>
+#include <QByteArray>
 #include <QDir>
 
 using namespace dinero::solo;
@@ -34,6 +35,36 @@ MinerController::~MinerController() {
 
 bool MinerController::running() const {
     return miner_ && miner_->isRunning();
+}
+
+bool MinerController::sampleCandidate(quint32& nonce, QString& hash,
+                                      QString& headerFields, int& height,
+                                      quint32& difficultyBits) const {
+    if (!miner_ || !miner_->isRunning()) {
+        return false;
+    }
+    CandidateSample sample;
+    if (!miner_->sampleCandidate(sample)) {
+        return false;
+    }
+    nonce = sample.nonce;
+    hash = QString::fromLatin1(
+        QByteArray(reinterpret_cast<const char*>(sample.hash.data()),
+                   static_cast<int>(sample.hash.size())).toHex());
+    height = static_cast<int>(sample.height);
+    difficultyBits = sample.difficulty_bits;
+    headerFields = QString(
+        "nonce=0x%1 hash=%2  version=0x%3 prev=%4 merkle=%5 utreexo=%6 "
+        "time=%7 bits=0x%8 reserved=000000000000000000000000")
+      .arg(sample.nonce, 8, 16, QChar('0'))
+      .arg(hash)
+      .arg(sample.version, 8, 16, QChar('0'))
+      .arg(QString::fromStdString(sample.prev_hash),
+           QString::fromStdString(sample.merkle_root),
+           QString::fromStdString(sample.utreexo_root))
+      .arg(sample.timestamp)
+      .arg(sample.difficulty_bits, 8, 16, QChar('0'));
+    return true;
 }
 
 void MinerController::start(const QString& rpcUrl,
@@ -101,11 +132,11 @@ void MinerController::start(const QString& rpcUrl,
     accepted_ = 0;
     rejected_ = 0;
     currentHeight_ = 0;
+    currentDifficultyBits_ = 0;
     Q_EMIT statsChanged();
 
     status_ = "Starting miner...";
     Q_EMIT statusChanged();
-    Q_EMIT logLine(status_);
 
     // Start mining
     if (miner_->start(config)) {
@@ -120,8 +151,6 @@ void MinerController::start(const QString& rpcUrl,
             Q_EMIT logLine(QStringLiteral("GPU miner started successfully (%1)").arg(activeBackend));
         } else if (useGpu) {
             Q_EMIT logLine(QStringLiteral("No GPU backend available; CPU miner started"));
-        } else {
-            Q_EMIT logLine(QStringLiteral("Miner started successfully"));
         }
 
         // Start stats timer
@@ -233,15 +262,17 @@ void MinerController::updateStats() {
 void MinerController::onHashrate(double hr) {
     hashrate_ = hr;
     Q_EMIT statsChanged();
-
-    Q_EMIT logLine("Hashrate: " + formatHashrate(hr));
 }
 
 void MinerController::onBlockFound(const BlockFoundInfo& info) {
     QString hashStr = QString::fromStdString(info.block_hash);
     currentHeight_ = static_cast<int>(info.height);
+    currentDifficultyBits_ = info.nbits;
 
     Q_EMIT blockFound(hashStr, static_cast<int>(info.height));
+    Q_EMIT blockFoundDetailed(hashStr, static_cast<int>(info.height), info.nonce,
+                              QString::fromStdString(info.merkle_root),
+                              QString::fromStdString(info.utreexo_root), info.nbits);
     Q_EMIT logLine(QString("🎉 *** BLOCK FOUND ***  height=%1  nonce=%2")
                    .arg(info.height)
                    .arg(info.nonce));
@@ -271,8 +302,7 @@ void MinerController::onError(const std::string& error) {
 
 void MinerController::onTemplate(uint32_t height, uint32_t difficulty) {
     currentHeight_ = static_cast<int>(height);
+    currentDifficultyBits_ = difficulty;
     Q_EMIT statsChanged();
-    Q_EMIT logLine(QString("📦 New template: height=%1 difficulty=0x%2")
-                   .arg(height)
-                   .arg(difficulty, 8, 16, QChar('0')));
+    Q_EMIT templateChanged(static_cast<int>(height), difficulty);
 }

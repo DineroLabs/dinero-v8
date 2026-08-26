@@ -2,6 +2,7 @@
 #include "solo_miner/chain_identity.h"
 #include "solo_miner/hash_engine.h"
 #include "solo_miner/miner.h"
+#include "solo_miner/work_template.h"
 #include <iostream>
 #include <cassert>
 #include <cstring>
@@ -103,6 +104,36 @@ void testHeaderSize() {
     std::cout << "PASS\n";
 }
 
+void testCandidateHeaderCommitsEveryDisplayedField() {
+    std::cout << "Testing candidate header field commitment... ";
+
+    WorkTemplate work;
+    work.version = 0x01020304;
+    work.prev_hash = std::string(64, '1');
+    work.merkle_root = std::string(64, '2');
+    work.utreexo_root = std::string(64, '3');
+    work.timestamp = 0x0102030405060708ULL;
+    work.difficulty_bits = 0x1d00cf7e;
+    const uint32_t nonce = 0xa1b2c3d4;
+
+    const auto header = work.buildHeader(nonce);
+    assert(header.size() == HEADER_SIZE);
+    assert(header[0] == 0x04 && header[3] == 0x01);       // version LE
+    assert(header[4] == 0x11 && header[35] == 0x11);      // previous hash
+    assert(header[36] == 0x22 && header[67] == 0x22);     // Merkle root
+    assert(header[68] == 0x33 && header[99] == 0x33);     // Utreexo root
+    assert(header[100] == 0x08 && header[107] == 0x01);   // timestamp LE
+    assert(header[108] == 0x7e && header[111] == 0x1d);   // nBits LE
+    assert(header[112] == 0xd4 && header[115] == 0xa1);   // nonce LE
+    for (size_t i = 116; i < HEADER_SIZE; ++i) assert(header[i] == 0);
+
+    auto other = work.buildHeader(nonce + 1);
+    assert(HashEngine::hashHeader(header.data()) !=
+           HashEngine::hashHeader(other.data()));
+
+    std::cout << "PASS\n";
+}
+
 void testChainIdentity() {
     std::cout << "Testing chain identity... ";
 
@@ -110,7 +141,7 @@ void testChainIdentity() {
     assert(std::string(kMainnetGenesisHash) ==
            "0000001c36abf27e2c233ff40ed0c08888926c24450f3bff82a047ae1528b76f");
     assert(std::string(kTestnetGenesisHash) ==
-           "4b2550cca66ef44cc63f690f8ccba331234d59693f0c0d79cd9c6a71caeb7c41");
+           "600c229a4335e865267624395c7fafd32453057dfbd5bbb6bc2987bf6c297d38");
     assert(std::string(kRegtestGenesisHash) ==
            "0000001c36abf27e2c233ff40ed0c08888926c24450f3bff82a047ae1528b76f");
 
@@ -150,6 +181,7 @@ int main() {
     testSha256d();
     testHashComparison();
     testHeaderSize();
+    testCandidateHeaderCommitsEveryDisplayedField();
     testChainIdentity();
     testBackendParsing();
 

@@ -552,6 +552,8 @@ private:
   QLabel* lblMiningUptimeCaption_ = nullptr;
   QLabel* lblMiningUptime_ = nullptr;
   QLabel* lblCurrentHash_ = nullptr;
+  QLabel* lblMiningHeight_ = nullptr;
+  QLabel* lblMiningDifficulty_ = nullptr;
   QLabel* lblTotalHashes_ = nullptr;
   
   QTimer* miningStatsTimer_; // Update stats every second
@@ -568,6 +570,25 @@ private:
     int streakLength = 1; // 1 = single spark glyph; >1 = short comet streak.
   };
   QVector<MiningCinematicSpark> miningCinematicSparks_;
+  struct MiningHashSample {
+    quint32 nonce = 0;
+    QString hash;
+    QString headerFields;
+    bool blockFound = false;
+    qint64 highlightUntilMs = 0;
+  };
+  QVector<MiningHashSample> miningHashSamples_;
+  QLabel* miningHashOverlay_ = nullptr;
+  struct MiningSessionFind {
+    int height = 0;
+    QString hash;
+    QString merkleRoot;
+    QString utreexoRoot;
+    quint32 nonce = 0;
+    quint32 difficultyBits = 0;
+  };
+  QVector<MiningSessionFind> miningSessionFinds_;
+  QPushButton* btnMiningSessionFinds_ = nullptr;
   QLabel* mottoTickerLabel_ = nullptr;
   void updateMiningStats();
   void updateMiningRuntimeLabel();

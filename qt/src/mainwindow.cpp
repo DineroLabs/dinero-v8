@@ -55,6 +55,7 @@
 #include <QGuiApplication>
 #include <QMessageBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QFont>
 #include <QJsonDocument>
 #include <QProcess>
@@ -1983,10 +1984,11 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
     }
   });
 
-  // Cinematic mining background refresh (~28 FPS)
+  // Live Hash Engine refresh. Ten real samples per second keeps the display
+  // visibly alive without competing with the mining hot path or the UI loop.
   connect(miningCinematicTimer_, &QTimer::timeout,
           this, &MainWindow::updateMiningOutputCinematicFrame);
-  miningCinematicTimer_->setInterval(36);
+  miningCinematicTimer_->setInterval(dinero::qt::kHashEngineIntervalMs);
   
   // Delayed initial refresh (after GUI is fully loaded)
   QTimer::singleShot(3000, this, [this]() {
@@ -3731,13 +3733,13 @@ void MainWindow::setupUI() {
         label->setTextFormat(Qt::RichText);
         layout->addWidget(label);
         layout->addStretch();
-        tabs->addTab(makeScrollableTab(mining), "⛏️ Mining");
-        miningTabWidget_ = mining;
+        auto* miningPage = makeScrollableTab(mining);
+        tabs->addTab(miningPage, "⛏️ Mining");
+        miningTabWidget_ = miningPage;
     }
 #else
     // Widgets-based mining tab
     auto *mining = new QWidget;
-    miningTabWidget_ = mining;
     auto *layout = new QVBoxLayout(mining);
     layout->setSpacing(6); // Compact spacing
 
@@ -4044,6 +4046,17 @@ void MainWindow::setupUI() {
     lblBlocksFound_->setStyleSheet("QLabel { font-weight: bold; color: #d6dde6; }");
     row2->addWidget(new QLabel("Blocks:"));
     row2->addWidget(lblBlocksFound_);
+
+    row2->addWidget(new QLabel("Height:"));
+    lblMiningHeight_ = new QLabel("-");
+    lblMiningHeight_->setStyleSheet("QLabel { font-weight: bold; color: #d6dde6; }");
+    row2->addWidget(lblMiningHeight_);
+
+    row2->addWidget(new QLabel("Difficulty:"));
+    lblMiningDifficulty_ = new QLabel("-");
+    lblMiningDifficulty_->setStyleSheet(
+      "QLabel { font-family: monospace; font-weight: bold; color: #d6dde6; }");
+    row2->addWidget(lblMiningDifficulty_);
     
     lblCurrentHash_ = new QLabel("0.00");
     lblCurrentHash_->setStyleSheet("QLabel { font-weight: bold; color: #339af0; font-size: 10px; }");
@@ -4055,6 +4068,51 @@ void MainWindow::setupUI() {
     lblMiningUptimeCaption_ = new QLabel("Run:");
     row2->addWidget(lblMiningUptimeCaption_);
     row2->addWidget(lblMiningUptime_);
+
+    btnMiningSessionFinds_ = new QPushButton("Session finds");
+    btnMiningSessionFinds_->setStyleSheet(headerButtonStyle());
+    btnMiningSessionFinds_->setFixedHeight(miningControlHeight);
+    btnMiningSessionFinds_->setEnabled(false);
+    connect(btnMiningSessionFinds_, &QPushButton::clicked, this, [this]() {
+      if (miningSessionFinds_.isEmpty()) return;
+
+      auto* dialog = new QDialog(this);
+      dialog->setAttribute(Qt::WA_DeleteOnClose);
+      dialog->setWindowTitle("Blocks found this session");
+      auto* dialogLayout = new QVBoxLayout(dialog);
+      auto* table = new QTableWidget(miningSessionFinds_.size(), 6, dialog);
+      table->setHorizontalHeaderLabels(
+        {"Height", "Hash", "Merkle root", "Utreexo root", "Nonce", "Difficulty"});
+      table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+      table->setSelectionBehavior(QAbstractItemView::SelectRows);
+      table->setWordWrap(false);
+      table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+      table->verticalHeader()->setVisible(false);
+      table->verticalHeader()->setDefaultSectionSize(28);
+      table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+      for (int row = 0; row < miningSessionFinds_.size(); ++row) {
+        const auto& found = miningSessionFinds_.at(row);
+        const QStringList values = {
+          QString::number(found.height), found.hash, found.merkleRoot,
+          found.utreexoRoot,
+          QString("0x%1").arg(found.nonce, 8, 16, QChar('0')),
+          QString("0x%1").arg(found.difficultyBits, 8, 16, QChar('0'))};
+        for (int column = 0; column < values.size(); ++column) {
+          auto* item = new QTableWidgetItem(values.at(column));
+          item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+          table->setItem(row, column, item);
+        }
+      }
+      dialogLayout->addWidget(table);
+      auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+      connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+      dialogLayout->addWidget(buttons);
+      const QRect available = screen() ? screen()->availableGeometry() : QRect(0, 0, 1440, 900);
+      dialog->resize(qMin(1500, available.width() - 80),
+                     qMin(300, 150 + 28 * qMin(5, miningSessionFinds_.size())));
+      dialog->show();
+    });
+    row2->addWidget(btnMiningSessionFinds_);
     
     lblTotalHashes_ = new QLabel("0");
     lblTotalHashes_->setStyleSheet("QLabel { font-size: 10px; }");
@@ -4070,11 +4128,9 @@ void MainWindow::setupUI() {
     row2->addWidget(lblSv2Shares_);
 
     quickMineLayout->addLayout(row2);
-    lblMiningReadiness_ = new QLabel("Readiness: waiting for daemon mining state");
-    lblMiningReadiness_->setStyleSheet(
-      "QLabel { color: #b8c2cc; font-size: 10px; padding: 0 2px 2px 2px; }");
-    lblMiningReadiness_->setWordWrap(true);
-    quickMineLayout->addWidget(lblMiningReadiness_);
+    // Mining readiness is surfaced only when it is actionable. The previous
+    // permanent placeholder contradicted a visibly running embedded miner.
+    lblMiningReadiness_ = nullptr;
     layout->addWidget(quickMineGroup);
     
     // Mining output (label intentionally removed for cleaner layout)
@@ -4103,10 +4159,19 @@ void MainWindow::setupUI() {
     txtMiningOutput_->viewport()->setBackgroundRole(QPalette::Base);
 #endif
     txtMiningOutput_->setPlaceholderText("Mining output will appear here when you start mining...");
+    // QTextEdit's styled document paints above its viewport palette on macOS.
+    // Keep a dedicated transparent paint layer for the live Hash Engine so
+    // candidate rows remain visible without replacing the preserved log.
+    miningHashOverlay_ = new QLabel(txtMiningOutput_->viewport());
+    miningHashOverlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    miningHashOverlay_->setStyleSheet("background: transparent;");
+    miningHashOverlay_->hide();
     layout->addWidget(txtMiningOutput_, 10); // HUGE stretch factor = takes all remaining space!
     setMiningOutputCinematicEnabled(false);
     
-    tabs->addTab(makeScrollableTab(mining), "⛏️ Mining");
+    auto* miningPage = makeScrollableTab(mining);
+    tabs->addTab(miningPage, "⛏️ Mining");
+    miningTabWidget_ = miningPage;
 
     // Create embedded miner controller (in-process via dinero-solo-miner library)
     minerCtrl_ = new MinerController(this);
@@ -4122,21 +4187,20 @@ void MainWindow::setupUI() {
         }
         if (lblCurrentHash_) {
             double hr = minerCtrl_->hashrate();
-            if (hr >= 1e9) {
-                lblCurrentHash_->setText(QString::number(hr / 1e9, 'f', 2) + " GH/s");
-            } else if (hr >= 1e6) {
-                lblCurrentHash_->setText(QString::number(hr / 1e6, 'f', 2) + " MH/s");
-            } else if (hr >= 1e3) {
-                lblCurrentHash_->setText(QString::number(hr / 1e3, 'f', 2) + " KH/s");
-            } else {
-                lblCurrentHash_->setText(QString::number(hr, 'f', 2) + " H/s");
-            }
+            lblCurrentHash_->setText(QString::number(hr / 1e6, 'f', 2));
         }
         if (lblBlocksFound_) {
             lblBlocksFound_->setText(QString::number(minerCtrl_->accepted()));
         }
         if (lblHashrate_ && minerCtrl_->currentHeight() > 0) {
             lblHashrate_->setText(QString("Height: %1").arg(minerCtrl_->currentHeight()));
+        }
+        if (lblMiningHeight_ && minerCtrl_->currentHeight() > 0) {
+            lblMiningHeight_->setText(QString::number(minerCtrl_->currentHeight()));
+        }
+        if (lblMiningDifficulty_ && minerCtrl_->currentDifficultyBits() != 0) {
+            lblMiningDifficulty_->setText(
+              dinero::qt::compactDifficultyText(minerCtrl_->currentDifficultyBits()));
         }
         setOverviewLocalHashrate(minerCtrl_->hashrate(), "Embedded CPU miner hashrate");
         updateMiningRuntimeLabel();
@@ -4160,6 +4224,36 @@ void MainWindow::setupUI() {
         QTimer::singleShot(1000, this, [this]() { rpc_->getBalance(); });
     });
 
+    connect(minerCtrl_, &MinerController::templateChanged, this,
+            [this](int height, quint32 difficultyBits) {
+      if (lblMiningHeight_) lblMiningHeight_->setText(QString::number(height));
+      if (lblMiningDifficulty_) {
+        lblMiningDifficulty_->setText(dinero::qt::compactDifficultyText(difficultyBits));
+      }
+    });
+
+    connect(minerCtrl_, &MinerController::blockFoundDetailed, this,
+            [this](const QString& hash, int height, quint32 nonce,
+                   const QString& merkleRoot, const QString& utreexoRoot,
+                   quint32 difficultyBits) {
+      miningSessionFinds_.append(
+        {height, hash, merkleRoot, utreexoRoot, nonce, difficultyBits});
+      if (btnMiningSessionFinds_) {
+        btnMiningSessionFinds_->setEnabled(true);
+        btnMiningSessionFinds_->setText(
+          QString("Session finds (%1)").arg(miningSessionFinds_.size()));
+      }
+      const QString liveRecord = QString(
+        "BLOCK_FOUND height=%1 hash=%2 merkle=%3 utreexo=%4 "
+        "bits=0x%5 nonce=0x%6")
+          .arg(height).arg(hash, merkleRoot, utreexoRoot)
+          .arg(difficultyBits, 8, 16, QChar('0'))
+          .arg(nonce, 8, 16, QChar('0'));
+      miningHashSamples_.append({nonce, hash, liveRecord, true,
+        QDateTime::currentMSecsSinceEpoch() +
+          dinero::qt::kBlockFoundHighlightMs});
+    });
+
     // Forward embedded miner state into the daemon's relay auto-mode so
     // p2p.relay=auto advertises NODE_RELAY while we're mining. The daemon
     // handler is idempotent and p2p.relay=0/1 overrides still win.
@@ -4172,6 +4266,12 @@ void MainWindow::setupUI() {
     connect(minerCtrl_, &MinerController::runningChanged, this, [this]() {
         isMining_ = minerCtrl_->running();
         if (isMining_) {
+            miningSessionFinds_.clear();
+            miningHashSamples_.clear();
+            if (btnMiningSessionFinds_) {
+                btnMiningSessionFinds_->setText("Session finds");
+                btnMiningSessionFinds_->setEnabled(false);
+            }
             if (mining_stats_.mining_started <= 0) {
                 mining_stats_.mining_started = QDateTime::currentMSecsSinceEpoch();
             }
@@ -4204,6 +4304,7 @@ void MainWindow::setupUI() {
             }
             setMiningModeControlsLocked(false);
             resetOverviewMiningTelemetry();
+            miningHashSamples_.clear();
         }
         setMiningOutputCinematicEnabled(isMining_);
     });
@@ -9453,7 +9554,7 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
 
   const bool miningTabActive =
     mainTabs_ && miningTabWidget_ && mainTabs_->currentWidget() == miningTabWidget_;
-  const bool shouldRun = dinero::qt::shouldRunMiningCinematic(enabled, miningTabActive);
+  const bool shouldRun = dinero::qt::shouldRunHashEngine(enabled, miningTabActive, false);
 
   if (shouldRun && miningCinematicTimer_) {
     if (!miningCinematicTimer_->isActive()) {
@@ -9479,6 +9580,10 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
   if (mottoTickerLabel_) {
     mottoTickerLabel_->hide();
   }
+  if (miningHashOverlay_) {
+    miningHashOverlay_->hide();
+    miningHashOverlay_->clear();
+  }
   miningCinematicFrame_ = 0;
   miningCinematicLastLongCometFrame_ = -100000;
   miningCinematicLastUltraCometFrame_ = 0;
@@ -9498,7 +9603,7 @@ void MainWindow::updateMiningOutputCinematicFrame() {
   const bool miningTabActive =
     mainTabs_ && miningTabWidget_ && mainTabs_->currentWidget() == miningTabWidget_;
   if (!txtMiningOutput_ ||
-      !dinero::qt::shouldRunMiningCinematic(isMining_, miningTabActive)) {
+      !dinero::qt::shouldRunHashEngine(isMining_, miningTabActive, false)) {
     return;
   }
 
@@ -9510,6 +9615,76 @@ void MainWindow::updateMiningOutputCinematicFrame() {
   const QSize frameSize = viewport->size();
   if (frameSize.width() <= 0 || frameSize.height() <= 0) {
     return;
+  }
+
+  // Embedded solo mining exposes an inexpensive, genuine sample from its
+  // active header. Build the living field from those candidates rather than
+  // decorative random glyphs. Other miner modes retain the legacy cinematic
+  // fallback below until their protocol supplies candidate samples.
+  if (minerCtrl_ && minerCtrl_->running()) {
+    quint32 nonce = 0;
+    quint32 difficultyBits = 0;
+    int height = 0;
+    QString hash;
+    QString headerFields;
+    if (minerCtrl_->sampleCandidate(nonce, hash, headerFields, height, difficultyBits) &&
+        !hash.isEmpty()) {
+      if (miningHashSamples_.isEmpty() ||
+          miningHashSamples_.constLast().nonce != nonce ||
+          miningHashSamples_.constLast().hash != hash) {
+        miningHashSamples_.append({nonce, hash, headerFields, false, 0});
+      }
+      if (lblMiningHeight_) lblMiningHeight_->setText(QString::number(height));
+      if (lblMiningDifficulty_) {
+        lblMiningDifficulty_->setText(dinero::qt::compactDifficultyText(difficultyBits));
+      }
+    }
+
+    const qreal dpr = viewport->devicePixelRatioF();
+    QPixmap frame(frameSize * dpr);
+    frame.setDevicePixelRatio(dpr);
+    frame.fill(Qt::transparent);
+    QPainter painter(&frame);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+    const QFont font = miningConsoleFont(10, QFont::Medium);
+    painter.setFont(font);
+    const QFontMetrics metrics(font);
+    const int rowHeight = qMax(12, metrics.height() + 2);
+    // Reserve one unobscured line for the startup/status record at the top.
+    const int rows = dinero::qt::hashSampleCapacity(frameSize.height() - 32, rowHeight);
+    const int capacity = rows;
+    if (miningHashSamples_.size() > capacity) {
+      miningHashSamples_.remove(0, miningHashSamples_.size() - capacity);
+    }
+
+    const int count = miningHashSamples_.size();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    for (int visual = 0; visual < count; ++visual) {
+      const int sampleIndex = count - 1 - visual;
+      const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
+      if (sample.blockFound && sample.highlightUntilMs > nowMs) {
+        painter.setPen(QColor(255, 212, 59, 255));
+      } else if (sample.blockFound) {
+        painter.setPen(QColor(105, 219, 124, 185));
+      } else {
+        painter.setPen(QColor(151, 163, 174, 150));
+      }
+      const QString line = sample.headerFields;
+      painter.drawText(8,
+                       frameSize.height() - 6 - visual * rowHeight - metrics.descent(),
+                       line);
+    }
+    if (miningHashOverlay_) {
+      miningHashOverlay_->setGeometry(viewport->rect());
+      miningHashOverlay_->setPixmap(frame);
+      miningHashOverlay_->show();
+      miningHashOverlay_->raise();
+    }
+    ++miningCinematicFrame_;
+    return;
+  }
+  if (miningHashOverlay_) {
+    miningHashOverlay_->hide();
   }
   const qreal dpr = viewport->devicePixelRatioF();
   QPixmap frame(frameSize * dpr);
@@ -10703,11 +10878,12 @@ void MainWindow::startInternalMiner(bool useGpu) {
   }
 
   if (txtMiningOutput_) {
-    txtMiningOutput_->append(useGpu
-      ? QString("\n=== Starting embedded GPU solo miner (CUDA) ===\n")
-      : QString("\n=== Starting embedded CPU solo miner with %1 threads ===\n").arg(threads));
-    txtMiningOutput_->append(QString("Mining address: %1\n").arg(addr));
-    txtMiningOutput_->append(QString("Cookie: %1\n").arg(cookiePath.isEmpty() ? "not found" : cookiePath));
+    const QString engine = useGpu ? QStringLiteral("Embedded GPU solo miner")
+                                  : QString("Embedded CPU solo miner · %1 threads").arg(threads);
+    const QString auth = cookiePath.isEmpty() ? QStringLiteral("cookie auth unavailable")
+                                              : QStringLiteral("cookie auth active");
+    txtMiningOutput_->setPlainText(
+      QString("%1 · payout %2 · %3").arg(engine, addr, auth));
   }
 
   mining_stats_.blocks_found = 0;

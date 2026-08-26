@@ -1,12 +1,15 @@
 #pragma once
 
 #include <QJsonArray>
+#include <QString>
 
 #include <algorithm>
 
 namespace dinero::qt {
 
 inline constexpr int kUtxoPageSize = 200;
+inline constexpr int kHashEngineIntervalMs = 100;
+inline constexpr int kBlockFoundHighlightMs = 1000;
 
 struct UtxoPage {
   QJsonArray rows;
@@ -38,6 +41,23 @@ inline bool shouldPollUtxos(bool utxo_tab_active, bool explicit_refresh) {
 
 inline bool shouldRunMiningCinematic(bool mining, bool mining_tab_active) {
   return mining && mining_tab_active;
+}
+
+inline bool shouldRunHashEngine(bool mining, bool mining_tab_active,
+                                bool /*block_highlight_active*/) {
+  // A found block changes row styling only. It must never pause hashing or
+  // the live visualization.
+  return mining && mining_tab_active;
+}
+
+inline int hashSampleCapacity(int viewport_height, int row_height) {
+  return std::max(1, (std::max(0, viewport_height) - 12) /
+                         std::max(1, row_height));
+}
+
+inline QString compactDifficultyText(quint32 bits) {
+  return bits == 0 ? QStringLiteral("-")
+                   : QString("0x%1").arg(bits, 8, 16, QChar('0'));
 }
 
 } // namespace dinero::qt
