@@ -12050,3 +12050,21 @@ add_test(
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools/fleet-watcher
 )
 set_tests_properties(FleetWatcherTests PROPERTIES TIMEOUT 120)
+# Embedded daemon lifetimes reuse the process-global RPC registry. Verify that
+# a new runtime wiring cycle drops handlers capturing the prior DaemonContext
+# while retaining static registrations.
+add_executable(test_rpc_registry_restart_cycle
+  tests/rpc/test_rpc_registry_restart_cycle.cpp
+  src/rpc/rpc_registry.cpp
+  src/common/logger.cpp
+)
+target_include_directories(test_rpc_registry_restart_cycle PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(test_rpc_registry_restart_cycle PRIVATE gtest_main jsoncpp_static)
+add_test(NAME RpcRegistryRestartCycle COMMAND test_rpc_registry_restart_cycle)
+set_tests_properties(RpcRegistryRestartCycle PROPERTIES
+  LABELS "rpc;nodecore;restart;regression"
+  TIMEOUT 30
+)
