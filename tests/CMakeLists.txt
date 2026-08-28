@@ -46,6 +46,20 @@ set_tests_properties(DaemonStartupPolicy PROPERTIES
   TIMEOUT 5
 )
 
+# Keep this source-level regression in the default non-Qt test build. The
+# Windows failure is caused by styling semantics, and CI's ordinary full-test
+# lane deliberately configures DINERO_BUILD_QT=OFF.
+add_test(
+  NAME QtMiningConsoleStyle
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_FILE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_mining_console_style.cmake
+)
+set_tests_properties(QtMiningConsoleStyle PROPERTIES
+  LABELS "qt;windows;regression"
+  TIMEOUT 5
+)
+
 add_executable(test_ripemd160_src_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/crypto/ripemd160.cpp

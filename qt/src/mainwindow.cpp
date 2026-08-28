@@ -4160,24 +4160,25 @@ void MainWindow::setupUI() {
     txtMiningOutput_->setMinimumHeight(250); // Ensure minimum decent size
     txtMiningOutput_->setLineWrapMode(QTextEdit::NoWrap);
     const QString miningFontFamily = miningConsoleFontFamily();
-#if defined(Q_OS_WIN)
     txtMiningOutput_->setStyleSheet(QString(
       "QTextEdit { color: %2; font-family: \"%1\", \"SF Mono\", Menlo, monospace; "
-      "font-size: 10px; background: palette(base); }")
-      .arg(miningFontFamily, QString::fromLatin1(kMiningOutputTextColor)));
-#else
-    txtMiningOutput_->setStyleSheet(QString(
-      "QTextEdit { color: %2; font-family: \"%1\", \"SF Mono\", Menlo, monospace; "
-      "font-size: 10px; background: transparent; }")
-      .arg(miningFontFamily, QString::fromLatin1(kMiningOutputTextColor)));
-#endif
+      "font-size: 10px; background-color: %3; }")
+      .arg(miningFontFamily,
+           QString::fromLatin1(kMiningOutputTextColor),
+           QString::fromLatin1(kMiningOutputIdleBackground)));
     txtMiningOutput_->setFont(miningConsoleFont(10, QFont::Medium));
     txtMiningOutput_->setTextColor(QColor(kMiningOutputTextColor));
+
+    QPalette miningOutputPalette = txtMiningOutput_->palette();
+    miningOutputPalette.setColor(QPalette::Base, QColor(kMiningOutputIdleBackground));
+    miningOutputPalette.setColor(QPalette::Window, QColor(kMiningOutputIdleBackground));
+    miningOutputPalette.setColor(QPalette::Text, QColor(kMiningOutputTextColor));
+    txtMiningOutput_->setPalette(miningOutputPalette);
+
+    QWidget* miningOutputViewport = txtMiningOutput_->viewport();
+    miningOutputViewport->setPalette(miningOutputPalette);
     txtMiningOutput_->viewport()->setAutoFillBackground(true);
-#if defined(Q_OS_WIN)
-    txtMiningOutput_->viewport()->setAttribute(Qt::WA_StyledBackground, false);
     txtMiningOutput_->viewport()->setBackgroundRole(QPalette::Base);
-#endif
     txtMiningOutput_->setPlaceholderText("Mining output will appear here when you start mining...");
     // QTextEdit's styled document paints above its viewport palette on macOS.
     // Keep a dedicated transparent paint layer for the live Hash Engine so
@@ -9632,9 +9633,8 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
 
   QPalette palette = viewport->palette();
   palette.setColor(QPalette::Base, QColor(kMiningOutputIdleBackground));
-#if defined(Q_OS_WIN)
   palette.setColor(QPalette::Window, QColor(kMiningOutputIdleBackground));
-#endif
+  palette.setColor(QPalette::Text, QColor(kMiningOutputTextColor));
   viewport->setAutoFillBackground(true);
   viewport->setPalette(palette);
   viewport->update();
