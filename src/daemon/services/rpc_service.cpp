@@ -131,6 +131,13 @@ bool RPCService::Start() {
         http_server_->set_rpc_registry(&::g_rpcRegistry);
         logger_->info("[RPCService] Connected to global RPC registry");
 
+        // Context-aware handlers capture DaemonContext pointers. A mobile
+        // embedded node can stop and start repeatedly inside one host process,
+        // unlike the ordinary daemon process lifetime. Restore the static RPC
+        // baseline before each wiring pass so no handler from the prior
+        // DaemonApp survives with a dangling context.
+        ::g_rpcRegistry.beginRuntimeRegistrationCycle();
+
         // Week 2: Wire DaemonContext to RPC system (CRITICAL STEP)
         // This enables context-aware handlers to access services
         if (!ctx_) {

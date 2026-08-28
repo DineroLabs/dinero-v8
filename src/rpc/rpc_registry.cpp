@@ -4,6 +4,26 @@
 // Global RPC registry instance (in global namespace to match class declaration)
 RpcRegistry g_rpcRegistry;
 
+void RpcRegistry::beginRuntimeRegistrationCycle() {
+  std::lock_guard<std::mutex> lk(mtx_);
+  if (!runtime_baseline_captured_) {
+    runtime_baseline_handlers_ = handlers_;
+    runtime_baseline_meta_ = meta_;
+    runtime_baseline_owners_ = owners_;
+    runtime_baseline_aliases_ = aliases_;
+    runtime_baseline_alias_info_ = alias_info_;
+    runtime_baseline_captured_ = true;
+    return;
+  }
+
+  handlers_ = runtime_baseline_handlers_;
+  meta_ = runtime_baseline_meta_;
+  owners_ = runtime_baseline_owners_;
+  aliases_ = runtime_baseline_aliases_;
+  alias_info_ = runtime_baseline_alias_info_;
+  last_error_.clear();
+}
+
 bool RpcRegistry::registerHandler(const std::string& m, RpcHandler h, const std::string& owner) {
   std::lock_guard<std::mutex> lk(mtx_);
   if (handlers_.count(m)) {
