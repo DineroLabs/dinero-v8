@@ -19,6 +19,10 @@ bool DefaultUtreexoStateless();
 std::string DefaultSyncProfile();
 bool IsValidSyncProfile(const std::string& profile);
 bool ProfileIsStateless(const std::string& profile);
+// Archival-only work (genesis-to-tip body audits and genesis-to-snapshot
+// replay) is impossible by design for the compact iOS profile, which stores
+// headers plus the Utreexo accumulator rather than every historical body.
+bool ProfileRetainsHistoricalBodies(const std::string& profile);
 uint64_t CapabilitiesForProfile(const std::string& profile);
 
 // Resolves the runtime profile with precedence:

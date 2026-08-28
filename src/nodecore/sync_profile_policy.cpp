@@ -41,6 +41,10 @@ bool ProfileIsStateless(const std::string& profile) {
     return profile == "ios_utreexo";
 }
 
+bool ProfileRetainsHistoricalBodies(const std::string& profile) {
+    return profile == "mac_fullblock";
+}
+
 uint64_t CapabilitiesForProfile(const std::string& profile) {
     if (profile == "ios_utreexo") {
         return NODECORE_CAP_SYNC_STATELESS;
