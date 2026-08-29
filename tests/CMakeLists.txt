@@ -60,6 +60,20 @@ set_tests_properties(QtMiningConsoleStyle PROPERTIES
   TIMEOUT 5
 )
 
+# Production Qt builds keep WebSocket-only features disabled, so the Overview
+# mempool must retain its canonical verbose polling feed, visible rows, and
+# wallet-history refresh behavior in the ordinary build.
+add_test(
+  NAME QtMempoolOverview
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_FILE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_mempool_overview.cmake
+)
+set_tests_properties(QtMempoolOverview PROPERTIES
+  LABELS "qt;mempool;regression"
+  TIMEOUT 5
+)
+
 add_executable(test_ripemd160_src_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/crypto/ripemd160.cpp
