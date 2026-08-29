@@ -1138,16 +1138,34 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
                        " value: " + std::to_string(coin_value));
         }
 
+        const OutPoint outpoint{input_txid, input.prevout.vout};
+
         // 2️⃣ Fallback to the active confirmed UTXO view.
         if (!found) {
-            auto coin_result = chain_state_view_->getCoin(
-                OutPoint{input_txid, input.prevout.vout});
+            auto coin_result = chain_state_view_->getCoin(outpoint);
             if (coin_result.status() == Status::Ok) {
                 coin_value = coin_result.value().value.GetUna();
                 found = true;
-                OutPoint outpoint{input_txid, input.prevout.vout};
                 MPLOG_DEBUG("TEST_ONLY: Input from active chainstate: " + outpoint.ToString() +
                            " value: " + std::to_string(coin_value));
+            }
+        }
+
+        // Snapshot-bootstrapped nodes intentionally omit frozen pre-base
+        // coins from the active view. Resolve them through the same
+        // live-forest-gated path used by canonical validation.
+        if (!found && prebase_coin_resolver_) {
+            const bool is_frozen_prebase =
+                !prebase_coin_predicate_ || prebase_coin_predicate_(outpoint);
+            if (is_frozen_prebase) {
+                const auto prebase = prebase_coin_resolver_(outpoint);
+                if (prebase.has_value()) {
+                    coin_value = prebase->value.GetUna();
+                    found = true;
+                    MPLOG_DEBUG("TEST_ONLY: Input from live pre-base store: " +
+                                outpoint.ToString() + " value: " +
+                                std::to_string(coin_value));
+                }
             }
         }
 
@@ -3243,11 +3261,6 @@ uint64_t Mempool::calculateFee(const Transaction& tx) const {
     // This allows calculating fees for transactions that spend mempool outputs
     uint64_t input_value = 0;
 
-    if (!chain_db_) {
-        MPLOG_WARN("Cannot calculate fee: ChainDB not available");
-        return 0;
-    }
-
     for (const auto& input : tx.vin) {
         // Phase M.1: OutPoint with uint256, getCoin returns StatusOr<UTXOEntry>
         OutPoint out{input.prevout.txid, input.prevout.vout};
@@ -3258,11 +3271,27 @@ uint64_t Mempool::calculateFee(const Transaction& tx) const {
                 input_value += recovered->value.GetUna();
                 MPLOG_DEBUG("Recovered conflicting input " + out.ToString() +
                             " for replacement fee calculation");
+            } else if (prebase_coin_resolver_) {
+                // Frozen pre-base coins are absent from the active UTXO view
+                // by design. The resolver is live-forest-gated by
+                // ChainstateService, so it rejects stale/spent auxiliary rows.
+                const bool is_frozen_prebase =
+                    !prebase_coin_predicate_ || prebase_coin_predicate_(out);
+                const auto prebase = is_frozen_prebase
+                    ? prebase_coin_resolver_(out)
+                    : std::nullopt;
+                if (!prebase.has_value()) {
+                    MPLOG_WARN("UTXO not found for input: " + out.ToString() +
+                               " - cannot calculate fee");
+                    return 0;
+                }
+                input_value += prebase->value.GetUna();
+                MPLOG_DEBUG("Resolved live pre-base input " + out.ToString() +
+                            " for fee calculation: " +
+                            std::to_string(prebase->value.GetUna()) + " una");
             } else {
                 MPLOG_WARN("UTXO not found for input: " + out.ToString() + " - cannot calculate fee");
-                // If we can't find the UTXO, we can't calculate the fee accurately
-                // This might be an invalid transaction or orphan
-                continue;
+                return 0;
             }
             continue;
         }

@@ -144,10 +144,42 @@ static void test_p2mr_buildscriptpubkey() {
     std::cout << "  PASSED" << std::endl;
 }
 
+static void test_prebase_input_fee_resolution() {
+    std::cout << "Test 4: frozen pre-base input contributes to mempool fee..." << std::endl;
+
+    const auto prev_txid = makeTxId(4);
+    const OutPoint expected{prev_txid, 0};
+    const auto output_script = scriptForAddress(
+        "rdin1pl300xwevn94hhr56l629fzkzxgdkp6u5msynwq3045yqsm0c5y5qyan2ec");
+
+    Mempool pool(nullptr);
+    pool.setPreBaseCoinPredicate([expected](const OutPoint& outpoint) {
+        return outpoint == expected;
+    });
+    pool.setPreBaseCoinResolver([expected, output_script](const OutPoint& outpoint)
+            -> std::optional<consensus::UTXOEntry> {
+        if (!(outpoint == expected)) return std::nullopt;
+        consensus::UTXOEntry coin;
+        coin.value = AmountUna::Una(10'000);
+        coin.scriptPubKey = output_script;
+        coin.height = 1;
+        coin.isCoinbase = false;
+        return coin;
+    });
+
+    Transaction spend = makeTx({{prev_txid, 0}}, {output_script}, 9'000);
+    const auto result = pool.submitTransactionTestOnly(spend, "prebase-fee-test");
+    TEST_ASSERT(result.accepted(),
+                "live frozen pre-base input must produce a non-zero accepted fee");
+
+    std::cout << "  PASSED" << std::endl;
+}
+
 int main() {
     test_parent_and_child_spend_are_visible();
     test_unrelated_address_is_ignored();
     test_p2mr_buildscriptpubkey();
+    test_prebase_input_fee_resolution();
 
     std::cout << "\nAll mempool address-query tests passed (" << tests_passed
               << "/" << tests_total << ")" << std::endl;
