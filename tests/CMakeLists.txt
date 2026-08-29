@@ -5469,6 +5469,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet_tests/test_wallet_determinism.cpp)
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
   )
+  target_compile_definitions(test_wallet_determinism PRIVATE
+    DINERO_WALLET_RECOVERY_VECTOR_PATH="${CMAKE_SOURCE_DIR}/test-cross-language-vectors/wallet_recovery_v1.json"
+  )
   add_test(NAME WalletDeterminism COMMAND test_wallet_determinism)
   message(STATUS "  ✓ Phase A3 test registered: test_wallet_determinism")
 endif()

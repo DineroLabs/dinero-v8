@@ -1,0 +1,78 @@
+{
+  "schema": "dinero.wallet-recovery.v1",
+  "network": "mainnet",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "lanes": {
+    "p2tr": {
+      "purpose": 86,
+      "coin_type": 1448,
+      "account": 0,
+      "vectors": [
+        {
+          "passphrase": "",
+          "receive": [
+            "din1pzuexyzg0kl8j3lv3gldgykjftzm57dx8rhcjev9ydn7r2l9asnfsagnk4x",
+            "din1pax4y0gsrgug5jx2ymuxpp4v0yq97ql7scuw9ll2v037f9w9mgf9sz2pjvr",
+            "din1pszl9m0g29pvqdltfgju5qw4jee8mnt9tst44t5tgsn9dzq5uwnrqcx9kkc"
+          ],
+          "change": [
+            "din1pctpq7ya6le4hxgdfpse0n6wsyu3g82l8wvqapamr0nzkqyh4je0sh0sxd4",
+            "din1pwls9c0txrv799tdyh09jypq47jetdwcq3lx2zlc9ye5lczlfm8zsf4kvqa",
+            "din1pchf9g4xjzzetarzkxke3gy9g97nndaxjmwzp3z6w8p3fcpycn3csjnxxj0"
+          ]
+        },
+        {
+          "passphrase": "DINERO-PARITY",
+          "receive": [
+            "din1pqauypmzs7qukpur56sl8x6wjd0l9ejrckudsp3dql0d2yq8hkegq6cm0gg",
+            "din1petutlpf6pzak4vchp2lnps46dv3vvlhp7z7s2lp62s24236l73mq5p5ku4",
+            "din1p453sxt2zz45s84pglvt62gu5j66pn6e4z6etknzxu3pgzawltq4srx8w8r"
+          ],
+          "change": [
+            "din1pjczcsqnagpyuu6acl5kx006dh5xvne9ep7vpzqst8u8udgvrwctqspglh8",
+            "din1plkkhaxz2em4pxceqcj9ck80mrym5r3q4unwr895mhvz4vm89m84s7t3nf9",
+            "din1p46zecg7cfe865u5awxe27prqs9xzr74kre4myq8lemk869c5fzaq50myg2"
+          ]
+        }
+      ]
+    },
+    "legacy_android_p2tr": {
+      "purpose": 86,
+      "coin_type": 1448,
+      "account": 0,
+      "note": "Recovery-only pre-canonical Android lane; untweaked internal x-only key",
+      "vectors": [{
+        "passphrase": "DINERO-PARITY",
+        "receive": [
+          "din1pcs6gfc5q3rksfhx054dt422u56t3lydeq7xj6kptc60cqjzlyncsrj42ml",
+          "din1p2k2yx9d3e0yqu3z0azkkxfl4ysd96vxm036nfse0dknav80d2qnqeya5vp",
+          "din1pnw7el697psyt5a4gse6svyq0pm02wgz6pgt953kqzgu5059cjkxsxm8dvn"
+        ]
+      }]
+    },
+    "p2mr": {
+      "purpose": 88,
+      "coin_type": 1448,
+      "account": 0,
+      "vectors": [{
+        "passphrase": "DINERO-PARITY",
+        "receive": [
+          "din1ru5s275dt8gd9wqfhe0dlnuq07hn4vsmp5xpe96erazx5kj9y08zsyzml5r",
+          "din1r323jd45jgnudqlpqcrxx4xy8q9g2ytdwl75mw3ea48ht55hcpeaqjlhzt0",
+          "din1rg05sclha70umfg9743fhchlw6rs6hu38yfp53eppw8ue54ngte9q2ume0z"
+        ]
+      }]
+    },
+    "shielded": {
+      "account": 0,
+      "vectors": [{
+        "passphrase": "DINERO-PARITY",
+        "receive": [
+          "dins19hut9rss4lgecacxdyw77hg872yc5slal2zykwajqf63sktu4tl7hqx66azcax028kputxv4mnmkz5x6vz9gkc7l0pd3j0s0sta28g8ulzjdr2dclud72m5qd8dcjd",
+          "dins1add53mpmw9dftkh9cfp9rcvnjzft57pm3z4vs6yjlywzcjajrhvx3qh5v43h9e5rvx0t89en9h6xzmr5nfhyvdsc58gu7lmy73qk06na924xm6e2kjp9unc4m7rska",
+          "dins17we3qm7uvm4a458yvm2dy34vtcpafew435nzphxjr8jv90zdmhzrk9z7r96hvdvhsjan3k8sw7206c50k4apezyeeem2ntzketrn6mx3t3t7ccnns3xqu4fxnjm7q2"
+        ]
+      }]
+    }
+  }
+}
