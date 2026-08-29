@@ -1,3 +1,13 @@
+dinero-core (8.1.9-2) unstable; urgency=high
+
+  * Bound blockchain.getaddressbalance batch history globally across the
+    monitored wallet instead of waiting for every unused gap-limit address to
+    fill its per-address quota. This prevents mature mobile-wallet refreshes
+    from timing out and leaving newly mined or received transactions hidden
+    behind a stale wallet snapshot.
+
+ -- Dinero Labs <team@dinerolabs.org>  Sat, 29 Aug 2026 12:35:00 -0400
+
 dinero-core (8.1.9-1) unstable; urgency=high
 
   * v8.1.9 -- restore Bitcoin-style mining continuity: validated active-tip
