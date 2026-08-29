@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QVector>
+#include <QSet>
 #include <cstdint>
 #include "debugconsole.h"
 #include "connection_manager.h"
@@ -294,6 +295,10 @@ private:
   QLabel* lblGpuThermalsOverview_;
   QLabel* lblMempoolSize_;
   QLabel* lblMempoolBytes_;
+  QTableWidget* tblMempoolOverview_ = nullptr;
+  QSet<QString> overviewMempoolTxids_;
+  bool overviewMempoolInitialized_ = false;
+  bool overviewNodeSynced_ = false;
   QLabel* lblPeersCount_;
   QLabel* lblPeersStatus_;
   QTableWidget* tblPeersOverview_;
