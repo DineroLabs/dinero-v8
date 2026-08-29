@@ -648,9 +648,10 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
 
 // Internal batch primitive used by wallet.snapshot. It performs one UTXO pass and
 // one chain pass for the complete address gap window instead of repeating both
-// scans once per address. Batch history is intentionally capped at 50 rows per
-// address (versus 200 for getaddresshistory) to bound shared-bridge CPU and JSON
-// response size across a 100-address discovery window.
+// scans once per address. Batch history is intentionally capped at the newest
+// 50 wallet transactions globally (versus 200 for getaddresshistory). A per-
+// address cap would require every unused gap address to "fill" before the scan
+// could stop, turning ordinary wallet refreshes into full-chain scans.
 static Json computeAddressBatch(const ExecutionContext& ctx,
                                 const Json& params,
                                 BatchClock::time_point deadline) {
@@ -781,12 +782,12 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         const int tip_height = assumed_utxo
             ? static_cast<int>(chainstate->getBlockHeight())
             : tip_result.value().height;
-        size_t saturated = 0;
+        size_t history_transactions = 0;
         // Snapshot bootstrap guarantees the current UTXO set, not historical
         // block bodies. Do not turn a balance query into a futile 90k-height
         // scan while background history validation is incomplete.
         for (int height = assumed_utxo ? -1 : tip_height;
-             height >= 0 && saturated < states.size(); --height) {
+             height >= 0 && history_transactions < static_cast<size_t>(count); --height) {
             if ((height & 0x3f) == 0 && BatchClock::now() > deadline) {
                 result.clear();
                 result["error"]["code"] = -32006;
@@ -842,9 +843,9 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                         else match.visible -= static_cast<int64_t>(output.value.GetUna());
                     }
                 }
+                if (matches.empty()) continue;
                 for (auto& [index, match] : matches) {
                     auto& state = states[index];
-                    if (state.transactions.size() >= static_cast<::Json::ArrayIndex>(count)) continue;
                     match.tx_conf_inputs = tx_has_conf_inputs;
                     match.tx_conf_outputs = tx_has_conf_outputs;
                     Json entry;
@@ -866,8 +867,12 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                         entry["nonce_bytes"] = static_cast<::Json::Value::UInt64>(match.nonce_bytes);
                     }
                     state.transactions.append(entry);
-                    if (state.transactions.size() == static_cast<::Json::ArrayIndex>(count)) ++saturated;
                 }
+                // Count the chain transaction once even when it touches both a
+                // receive and change address. Preserve all of its address-scoped
+                // rows so wallet.snapshot can classify the complete event.
+                ++history_transactions;
+                if (history_transactions >= static_cast<size_t>(count)) break;
             }
         }
 
@@ -885,6 +890,7 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         result["history_complete"] = !assumed_utxo;
         result["history_count"] = count;
         result["history_limit"] = MAX_BATCH_HISTORY;
+        result["history_scope"] = "wallet_global";
         result["addresses"] = address_results;
         Json proof_context;
         proof_context["tip_height"] = tip_height;
