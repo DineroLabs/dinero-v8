@@ -203,7 +203,8 @@ bool ValidateShieldedTransactionBundle(
         Params().shielded_activation_height,
         anchor_history,
         Params().shielded_input_binding_activation_height,
-        Params().shielded_cv_binding_activation_height);
+        Params().shielded_cv_binding_activation_height,
+        Params().shielded_spend_auth_activation_height);
     const auto validation = shielded::ValidateShieldedBundle(bundle, ctx);
     if (validation != shielded::ShieldedValidationError::Ok) {
         error = "Shielded validation failed: " +
@@ -714,6 +715,7 @@ bool BlockValidator::ApplyBlockShieldedSection(
     return shld::ConnectBlockShieldedSection(
         bundles, deltas, height,
         dinero::Params().shielded_epoch_reset_height,
+        dinero::Params().shielded_spend_auth_epoch_reset_height,
         dinero::Params().shielded_activation_height,
         *tree, *nullifiers, anchors,
         undo.pre_reset_shielded_epoch, error);

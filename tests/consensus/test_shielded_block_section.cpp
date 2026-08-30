@@ -126,6 +126,29 @@ TEST(ShieldedBlockSection, RejectsShieldedTxAtResetHeight) {
     EXPECT_FALSE(snap.has_value());
 }
 
+TEST(ShieldedBlockSection, SpendAuthResetUsesSameWallAndSnapshotPath) {
+    Fixture f;
+    std::optional<ShieldedEpochSnapshot> snap;
+    std::string error;
+    constexpr uint32_t auth_reset = kReset + 100;
+
+    ASSERT_TRUE(f.nullifiers.Insert(MakeHash(0x42), auth_reset - 1));
+    f.anchors.RecordRoot(auth_reset - 1, f.tree.Root());
+
+    ASSERT_TRUE(ConnectBlockShieldedSection(
+        {}, {}, auth_reset, kReset, auth_reset, kActivation,
+        f.tree, f.nullifiers, &f.anchors, snap, error)) << error;
+    ASSERT_TRUE(snap.has_value());
+    EXPECT_EQ(f.nullifiers.Size(), 0u);
+    EXPECT_EQ(f.tree.Size(), 0u);
+
+    ASSERT_TRUE(DisconnectBlockShieldedSection(
+        auth_reset, snap, std::nullopt, f.tree, f.nullifiers, &f.anchors,
+        error)) << error;
+    EXPECT_EQ(f.nullifiers.Size(), 1u);
+    EXPECT_TRUE(f.anchors.Contains(f.tree.Root()));
+}
+
 // (d) Reset height + empty bundles -> pool captured then reset; the caller's
 // snapshot out-param is populated with the pre-reset pool.
 TEST(ShieldedBlockSection, ResetHeightWithEmptyBlockCapturesAndResetsPool) {

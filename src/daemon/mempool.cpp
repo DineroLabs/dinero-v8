@@ -2216,7 +2216,8 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
     const uint32_t shielded_reset_height =
         dinero::Params().shielded_epoch_reset_height;
     if (consensus::shielded::IsShieldedEpochResetHeight(next_block_height,
-                                                        shielded_reset_height)) {
+            shielded_reset_height,
+            dinero::Params().shielded_spend_auth_epoch_reset_height)) {
         if (reason) {
             *reason = "shielded tx not allowed at the epoch reset height";
         }
@@ -2325,7 +2326,8 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
         dinero::Params().shielded_activation_height,
         /*anchor_history=*/nullptr,
         binding_activation,
-        dinero::Params().shielded_cv_binding_activation_height);
+        dinero::Params().shielded_cv_binding_activation_height,
+        dinero::Params().shielded_spend_auth_activation_height);
     const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
     if (validation != consensus::shielded::ShieldedValidationError::Ok) {
         set_reason("shielded validation failed: " +
@@ -3146,7 +3148,8 @@ bool Mempool::validateTransaction(
             dinero::Params().shielded_activation_height,
             /*anchor_history=*/nullptr,
             dinero::Params().shielded_input_binding_activation_height,
-            dinero::Params().shielded_cv_binding_activation_height);
+            dinero::Params().shielded_cv_binding_activation_height,
+            dinero::Params().shielded_spend_auth_activation_height);
         const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
         if (validation != consensus::shielded::ShieldedValidationError::Ok) {
             error = "Shielded validation failed: " +

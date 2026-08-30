@@ -37,9 +37,12 @@ bool VerifySpendProof(const ShieldedSpend& spend, const ValidationContext& ctx) 
     // proofs (circuit enforces cv == val·V + rcv·G). The spend's published cv is
     // bound as a public input.
     const bool cv_bound = ctx.block_height >= ctx.shielded_cv_binding_activation_height;
+    const bool spend_auth =
+        ctx.block_height >= ctx.shielded_spend_auth_activation_height;
     const SpendPublicInputs pub{spend.nullifier, spend.anchor, spend.cv};
     return VerifySpend(
-        spend.zk_proof, pub, dinero::crypto::GetSecp256k1ContextSignVerify(), bind, cv_bound);
+        spend.zk_proof, pub, dinero::crypto::GetSecp256k1ContextSignVerify(),
+        bind, cv_bound, spend_auth);
 }
 
 bool VerifyOutputProof(const ShieldedOutput& output, const ValidationContext& ctx) {
@@ -233,7 +236,8 @@ ValidationContext BuildShieldedValidationContext(
     uint32_t                     shielded_activation_height,
     const AnchorHistory*         anchor_history,
     uint32_t                     shielded_input_binding_activation_height,
-    uint32_t                     shielded_cv_binding_activation_height) {
+    uint32_t                     shielded_cv_binding_activation_height,
+    uint32_t                     shielded_spend_auth_activation_height) {
     ValidationContext ctx(
         nullifier_set,
         commitment_tree,
@@ -246,6 +250,8 @@ ValidationContext BuildShieldedValidationContext(
     ctx.shielded_input_binding_activation_height = shielded_input_binding_activation_height;
     // Audit Critical #1: cv-binding activation (defaulted member, set here).
     ctx.shielded_cv_binding_activation_height = shielded_cv_binding_activation_height;
+    ctx.shielded_spend_auth_activation_height =
+        shielded_spend_auth_activation_height;
     return ctx;
 }
 

@@ -129,6 +129,10 @@ struct ValidationContext {
     /// BuildShieldedValidationContext from chainparams.
     uint32_t                shielded_cv_binding_activation_height = UINT32_MAX;
 
+    /// Recipient-only spend-authority proof rule (version 0x05). At/above this
+    /// height spends must prove knowledge of the diversified recipient scalar.
+    uint32_t                shielded_spend_auth_activation_height = UINT32_MAX;
+
     constexpr ValidationContext(
         const NullifierSet*    nullifier_set,
         const CommitmentTree*  commitment_tree,
@@ -213,7 +217,8 @@ ValidationContext BuildShieldedValidationContext(
     // Audit Critical #1: from chainparams.shielded_cv_binding_activation_height.
     // Default UINT32_MAX (never cv-bind) keeps un-updated callers on the legacy
     // circuit; real consensus callers pass the chainparams value.
-    uint32_t                     shielded_cv_binding_activation_height = UINT32_MAX);
+    uint32_t                     shielded_cv_binding_activation_height = UINT32_MAX,
+    uint32_t                     shielded_spend_auth_activation_height = UINT32_MAX);
 
 // (Phase 2's ComputeBindingTag — SHA-256 structural tag — was replaced
 // by the Phase 3 wave 2 Schnorr binding signature. See binding_sig.h

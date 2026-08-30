@@ -82,6 +82,17 @@ TEST(ShieldedEpochReset, IsResetHeightMatchesOnlyTheCutover) {
     EXPECT_FALSE(IsShieldedEpochResetHeight(61001, 61000));
 }
 
+TEST(ShieldedEpochReset, MultipleResetBoundariesRemainDistinct) {
+    constexpr uint32_t cv_reset = 61000;
+    constexpr uint32_t auth_reset = 90000;
+    EXPECT_TRUE(IsShieldedEpochResetHeight(cv_reset, cv_reset, auth_reset));
+    EXPECT_TRUE(IsShieldedEpochResetHeight(auth_reset, cv_reset, auth_reset));
+    EXPECT_FALSE(IsShieldedEpochResetHeight(89999, cv_reset, auth_reset));
+    EXPECT_FALSE(IsShieldedEpochResetHeight(90001, cv_reset, auth_reset));
+    EXPECT_FALSE(ShieldedTxAllowedAtHeight(auth_reset, cv_reset, auth_reset));
+    EXPECT_TRUE(ShieldedTxAllowedAtHeight(auth_reset + 1, cv_reset, auth_reset));
+}
+
 TEST(ShieldedEpochReset, ParamsConsistentRequiresResetEqualsCvBinding) {
     EXPECT_TRUE(ShieldedEpochParamsConsistent(kShieldedEpochResetDormant,
                                               kShieldedEpochResetDormant));  // both dormant

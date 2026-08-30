@@ -993,6 +993,7 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
 
     out.status     = OpStatus::Ok;
     out.commitment = recipient_commitment;
+    out.randomness = recipient_rcm;
     out.planned    = std::move(planned);
     return out;
 }
@@ -1004,7 +1005,9 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     uint64_t change_value_una,
     uint64_t fee_una,
     const std::array<uint8_t, 512>* recipient_memo,
-    bool cv_bound) {
+    bool cv_bound,
+    bool spend_auth,
+    const AddressedRecipient* change_recipient) {
     AttachAddressedTransferResult out;
 
     if (spends.empty()) {
@@ -1092,7 +1095,8 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     // ── Recipient output (addressed): built by the shared helper so the
     //    commitment / encryption / proof convention has ONE definition
     //    (reused by the shield-to-recipient path).
-    auto rout = BuildAddressedRecipientOutput(recipient, recipient_memo, cv_bound);
+    auto rout = BuildAddressedRecipientOutput(recipient, recipient_memo,
+                                              cv_bound, spend_auth);
     if (rout.status != OpStatus::Ok) {
         out.status = rout.status;
         out.error  = rout.error;
@@ -1111,45 +1115,70 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     sh::Hash change_public_key{};
     sh::Hash change_randomness{};
     sh::Hash change_commitment{};
+    sh::Hash change_d{};
+    NoteKeyScheme change_key_scheme = NoteKeyScheme::LegacySenderKey;
     if (change_value_una > 0) {
-        change_secret_key = RandomHash();
-        change_public_key = sh::PoseidonHash2(change_secret_key, zero);
-        change_randomness = RandomHash();
-        sh::Hash change_value_hash = ValueToHash(change_value_una);
-        change_commitment = sh::NoteCommitment(
-            zero, change_public_key, change_value_hash, change_randomness);
+        if (spend_auth) {
+            if (change_recipient == nullptr ||
+                change_recipient->value_una != change_value_una) {
+                out.status = OpStatus::InvalidParams;
+                out.error = "spend_auth_requires_addressed_change";
+                return out;
+            }
+            auto change_out = BuildAddressedRecipientOutput(
+                *change_recipient, nullptr, cv_bound, true);
+            if (change_out.status != OpStatus::Ok) {
+                out.status = change_out.status;
+                out.error = "change_" + change_out.error;
+                return out;
+            }
+            change_commitment = change_out.commitment;
+            change_randomness = change_out.randomness;
+            change_public_key = change_recipient->pk_d_spend;
+            std::memcpy(change_d.data(), change_recipient->d.data(),
+                        change_recipient->d.size());
+            change_key_scheme = NoteKeyScheme::Auth;
+            planned_outputs.push_back(std::move(change_out.planned));
+        } else {
+            change_secret_key = RandomHash();
+            change_public_key = sh::PoseidonHash2(change_secret_key, zero);
+            change_randomness = RandomHash();
+            sh::Hash change_value_hash = ValueToHash(change_value_una);
+            change_commitment = sh::NoteCommitment(
+                zero, change_public_key, change_value_hash, change_randomness);
 
-        sh::Hash change_rcv = RandomHash();
-        sh::OutputWitness ow{};
-        ow.value      = change_value_hash;
-        ow.public_key = change_public_key;
-        ow.randomness = change_randomness;
-        ow.d          = zero;
-        ow.rcv        = change_rcv;
-        sh::OutputPublicInputs opi{};
-        opi.commitment = change_commitment;
-        if (cv_bound && !ComputeBundleCv(change_rcv, change_value_una, opi.cv)) {
-            OPENSSL_cleanse(change_secret_key.data(), change_secret_key.size());
-            out.status = OpStatus::InternalError;
-            out.error = "cv_commit_failed";
-            return out;
+            sh::Hash change_rcv = RandomHash();
+            sh::OutputWitness ow{};
+            ow.value      = change_value_hash;
+            ow.public_key = change_public_key;
+            ow.randomness = change_randomness;
+            ow.d          = zero;
+            ow.rcv        = change_rcv;
+            sh::OutputPublicInputs opi{};
+            opi.commitment = change_commitment;
+            if (cv_bound && !ComputeBundleCv(change_rcv, change_value_una, opi.cv)) {
+                OPENSSL_cleanse(change_secret_key.data(), change_secret_key.size());
+                out.status = OpStatus::InternalError;
+                out.error = "cv_commit_failed";
+                return out;
+            }
+            auto proof = sh::ProveOutput(ow, opi, nullptr,
+                                         /*bind_public_inputs=*/true, cv_bound);
+            if (proof.empty()) {
+                OPENSSL_cleanse(change_secret_key.data(), change_secret_key.size());
+                out.status = OpStatus::ProofError;
+                out.error = "change output proof generation failed";
+                return out;
+            }
+            sh::PlannedOutput cpo{};
+            cpo.commitment     = change_commitment;
+            cpo.value_una      = change_value_una;
+            cpo.rcv            = change_rcv;
+            cpo.encrypted_note = std::vector<uint8_t>(96, 0);
+            cpo.output_proof   = std::move(proof);
+            cpo.nonce          = RandomHash();
+            planned_outputs.push_back(std::move(cpo));
         }
-        auto proof = sh::ProveOutput(ow, opi, nullptr,
-                                     /*bind_public_inputs=*/true, cv_bound);
-        if (proof.empty()) {
-            OPENSSL_cleanse(change_secret_key.data(), change_secret_key.size());
-            out.status = OpStatus::ProofError;
-            out.error = "change output proof generation failed";
-            return out;
-        }
-        sh::PlannedOutput cpo{};
-        cpo.commitment     = change_commitment;
-        cpo.value_una      = change_value_una;
-        cpo.rcv            = change_rcv;
-        cpo.encrypted_note = std::vector<uint8_t>(96, 0);  // legacy placeholder
-        cpo.output_proof   = std::move(proof);
-        cpo.nonce          = RandomHash();
-        planned_outputs.push_back(std::move(cpo));
     }
 
     const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx);
@@ -1199,6 +1228,8 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     out.change_secret_key = change_secret_key;
     out.change_public_key = change_public_key;
     out.change_randomness = change_randomness;
+    out.change_d = change_d;
+    out.change_key_scheme = change_key_scheme;
     OPENSSL_cleanse(change_secret_key.data(), change_secret_key.size());
     return out;
 }
@@ -1209,7 +1240,8 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
     dinero::Transaction& tx,
     const AddressedRecipient& recipient,
     const std::array<uint8_t, 512>* recipient_memo,
-    bool cv_bound) {
+    bool cv_bound,
+    bool spend_auth) {
     AttachShieldResult out;
 
     if (recipient.value_una == 0) {
@@ -1234,7 +1266,8 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
 
     // ONE addressed recipient output (shared construction). No shielded
     // spends, no shielded change — transparent change is the RPC's job.
-    auto rout = BuildAddressedRecipientOutput(recipient, recipient_memo, cv_bound);
+    auto rout = BuildAddressedRecipientOutput(recipient, recipient_memo,
+                                              cv_bound, spend_auth);
     if (rout.status != OpStatus::Ok) {
         out.status = rout.status;
         out.error  = rout.error;
@@ -1272,9 +1305,10 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
 
     out.status       = OpStatus::Ok;
     out.commitment   = rout.commitment;  // recipient commitment (their note)
+    out.randomness   = rout.randomness;
     out.bundle_bytes = tx.shielded_bundle_bytes.size();
-    // No self note: nullifier_key/public_key/randomness stay zero — the
-    // note belongs to the recipient, we cannot (and must not) spend it.
+    // No spend authority is returned for an external recipient. The wallet
+    // self-shield wrapper supplies its independently derived recipient secret.
     return out;
 }
 

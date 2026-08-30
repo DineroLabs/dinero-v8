@@ -875,6 +875,63 @@ TEST_F(ShieldedValidationFixture, UnshieldHelperCvBoundProducesValidatorAccepted
     EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok);
 }
 
+TEST_F(ShieldedValidationFixture, SpendAuthorityBoundarySelectsRecipientProof) {
+    constexpr uint64_t kNoteValue = 2'000'000;
+    constexpr uint64_t kFee = 10'000;
+
+    std::array<uint8_t, 64> seed{};
+    seed[0] = 0x51;
+    seed[31] = 0xA7;
+    auto keys = wallet::shielded::DeriveShieldedAccount(seed.data(), seed.size(), 0);
+    auto addr = wallet::shielded::DeriveDiversifiedAddress(
+        keys, 7, wallet::shielded::kHrpRegtest);
+    const auto spend_key =
+        wallet::shielded::DeriveDiversifiedSpendKey(keys.ivk, addr.d);
+
+    Hash d{};
+    std::memcpy(d.data(), addr.d.data(), addr.d.size());
+    const Hash randomness = MakeHash(0xD1, 0xA5);
+    const Hash commitment =
+        NoteCommitment(d, addr.pk_d_spend, ValueAsHash(kNoteValue), randomness);
+    const uint64_t leaf = tree.Append(commitment);
+    auto path = tree.GetAuthPath(leaf);
+    ASSERT_TRUE(path.has_value());
+
+    wallet::shielded_ops::UnshieldNoteInput note;
+    note.secret_key = spend_key.s;
+    note.randomness = randomness;
+    note.d = d;
+    note.anchor = tree.Root();
+    note.leaf_index = leaf;
+    note.value_una = kNoteValue;
+    note.merkle_path = path->siblings;
+    note.key_scheme = wallet::NoteKeyScheme::Auth;
+
+    auto tx = MakeUnshieldEnvelope(kNoteValue - kFee, kFee, 0xD2);
+    auto built = wallet::shielded_ops::BuildUnshieldBundleForTx(
+        tx, note, kFee, /*cv_bound=*/true);
+    ASSERT_EQ(built.status, wallet::shielded_ops::OpStatus::Ok) << built.error;
+
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    ASSERT_EQ(decoded.spends.size(), 1u);
+    ASSERT_FALSE(decoded.spends[0].zk_proof.empty());
+    EXPECT_EQ(decoded.spends[0].zk_proof[0], 0x05);
+
+    ctx.block_height = 100;
+    ctx.shielded_input_binding_activation_height = 0;
+    ctx.shielded_cv_binding_activation_height = 0;
+    ctx.transparent_value_delta = -static_cast<int64_t>(kNoteValue);
+    ctx.tx_sighash = shielded::ComputeShieldedTxSighash(tx);
+
+    ctx.shielded_spend_auth_activation_height = 101;
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::ProofInvalid)
+        << "auth proof must be rejected one block before recipient authority";
+    ctx.block_height = 101;
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok);
+}
+
 // Issue #273 regression: the shielded RPC handlers used a fixed default
 // fee (1000 una) chosen before the bundle attaches. Since v6 bundles
 // count in BASE serialization, the final GetVirtualSize() — the
@@ -1435,6 +1492,81 @@ TEST_F(ShieldedValidationFixture, SpendAuthCommitsToRecipientSpendKey) {
     // Discovery is untouched: same encrypted note under both rules, so the
     // recipient still finds it with one trial decryption per account.
     EXPECT_EQ(auth.planned.encrypted_note, legacy.planned.encrypted_note);
+}
+
+TEST_F(ShieldedValidationFixture, SpendAuthTransferBuildsAddressedWalletChange) {
+    constexpr uint64_t kInput = 90'000'000;
+    constexpr uint64_t kRecipient = 50'000'000;
+    constexpr uint64_t kFee = 10'000;
+    constexpr uint64_t kChange = kInput - kRecipient - kFee;
+
+    auto seed = RoundtripSeed();
+    auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), 0);
+    auto input_addr = shdrv::DeriveDiversifiedAddress(keys, 10, shdrv::kHrpRegtest);
+    auto recipient_addr = shdrv::DeriveDiversifiedAddress(keys, 11, shdrv::kHrpRegtest);
+    auto change_addr = shdrv::DeriveDiversifiedAddress(keys, 12, shdrv::kHrpRegtest);
+    auto input_key = shdrv::DeriveDiversifiedSpendKey(keys.ivk, input_addr.d);
+
+    Hash input_d{};
+    std::memcpy(input_d.data(), input_addr.d.data(), input_addr.d.size());
+    const Hash input_rcm = MakeHash(0x91, 0x19);
+    const auto leaf = tree.Append(NoteCommitment(
+        input_d, input_addr.pk_d_spend, ValueAsHash(kInput), input_rcm));
+    const auto path = tree.GetAuthPath(leaf);
+    ASSERT_TRUE(path.has_value());
+
+    sops::UnshieldNoteInput input;
+    input.secret_key = input_key.s;
+    input.randomness = input_rcm;
+    input.d = input_d;
+    input.anchor = tree.Root();
+    input.leaf_index = leaf;
+    input.value_una = kInput;
+    input.merkle_path = path->siblings;
+    input.key_scheme = wallet::NoteKeyScheme::Auth;
+
+    sops::AddressedRecipient recipient;
+    recipient.d = recipient_addr.d;
+    recipient.pk_d = recipient_addr.pk_d;
+    recipient.pk_d_spend = recipient_addr.pk_d_spend;
+    recipient.value_una = kRecipient;
+    sops::AddressedRecipient change;
+    change.d = change_addr.d;
+    change.pk_d = change_addr.pk_d;
+    change.pk_d_spend = change_addr.pk_d_spend;
+    change.value_una = kChange;
+
+    dinero::Transaction tx;
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED;
+    tx.SetExplicitFee(kFee);
+    auto built = sops::BuildAddressedTransferBundleForTx(
+        tx, {input}, recipient, kChange, kFee, nullptr,
+        /*cv_bound=*/true, /*spend_auth=*/true, &change);
+    ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+    EXPECT_TRUE(built.had_change);
+    EXPECT_EQ(built.change_key_scheme, wallet::NoteKeyScheme::Auth);
+    EXPECT_EQ(built.change_public_key, change_addr.pk_d_spend);
+    Hash expected_change_d{};
+    std::memcpy(expected_change_d.data(), change_addr.d.data(), change_addr.d.size());
+    EXPECT_EQ(built.change_d, expected_change_d);
+
+    ShieldedBundle decoded;
+    ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &decoded),
+              shielded::BundleDecodeError::Ok);
+    ASSERT_EQ(decoded.spends.size(), 1u);
+    ASSERT_EQ(decoded.outputs.size(), 2u);
+    EXPECT_EQ(decoded.spends[0].zk_proof.front(), 0x05);
+    const auto change_it = std::find_if(decoded.outputs.begin(), decoded.outputs.end(),
+        [&](const auto& output) { return output.commitment == built.change_commitment; });
+    ASSERT_NE(change_it, decoded.outputs.end());
+    ASSERT_EQ(change_it->encrypted_note.size(), shdrv::kEncryptedNoteBytes);
+    shdrv::EncryptedNote encrypted{};
+    std::memcpy(encrypted.data(), change_it->encrypted_note.data(), encrypted.size());
+    const auto plaintext = shdrv::TryDecryptNoteForViewer(keys.ivk, encrypted);
+    ASSERT_TRUE(plaintext.has_value());
+    EXPECT_EQ(plaintext->d, change_addr.d);
+    EXPECT_EQ(plaintext->value_una, kChange);
+    EXPECT_EQ(plaintext->rcm, built.change_randomness);
 }
 
 // An address without a spend key cannot receive an auth note. Fail closed

@@ -2,9 +2,9 @@
 
 **Status:** Normative description of the deployed v1 consensus profile.
 
-**Implementation baseline:** Dinero v8.0.18 plus the shielded
-generator-fail-closed hardening in PR #414. Historical blocks remain governed
-by the activation table in §3.
+**Implementation baseline:** Dinero v8.1.9. Historical blocks remain governed
+by the activation table in §3. The spend-authority extension described below
+is implemented but dormant at `UINT32_MAX` on every shipped network.
 
 **Security status:** This document describes what the implementation does. It
 is not a claim that the custom composition has inherited the security proofs of
@@ -264,14 +264,16 @@ Serialize the generator using libsecp256k1-zkp's 33-byte generator encoding,
 discard its first byte, and interpret the x-coordinate as the even-y
 secp256k1 point.
 
-Then:
+Then derive independent discovery and spend-authority keys:
 
 ```text
-pk_d = xonly_even_y(ivk * P_d)
-payload = d[11] || pk_d[32]
+pk_d_enc   = xonly_even_y(ivk * P_d)
+s_raw      = Poseidon(ivk, zero_pad_32(d))
+(s, pk_d_spend) = even_y_normalize(s_raw, s_raw * G)
+payload = d[11] || pk_d_enc[32] || pk_d_spend[32]
 ```
 
-The 43-byte payload is converted from 8-bit to 5-bit groups with padding and
+The 75-byte payload is converted from 8-bit to 5-bit groups with padding and
 encoded using raw Bech32m:
 
 | Network | HRP |
@@ -280,8 +282,13 @@ encoded using raw Bech32m:
 | Testnet | `tdins` |
 | Regtest | `rdins` |
 
-Decoders MUST require Bech32m, one of these HRPs, exactly 43 decoded bytes, and
-an on-curve x-only `pk_d`.
+Decoders MUST require Bech32m, one of these HRPs, exactly 75 decoded bytes, and
+on-curve x-only encodings for both keys. Legacy 43-byte addresses MUST be
+rejected: they do not identify a recipient-controlled spend key.
+
+`pk_d_enc` is used only for ECDH note discovery. `pk_d_spend` is committed by
+post-spend-authority notes and spending proves knowledge of its unique even-y
+scalar `s`. A sender knows both public keys but does not learn `s`.
 
 ## 8. Note encryption and ownership
 

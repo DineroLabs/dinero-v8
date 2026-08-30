@@ -120,6 +120,7 @@ static ChainParams g_mainnet = {
     // it forward. The fork-aware binary MUST be deployed to every fleet node
     // BEFORE height 61000; a node still on an older binary at the cutover splits.
     .shielded_cv_binding_activation_height = 61000,
+    .shielded_spend_auth_epoch_reset_height = UINT32_MAX,
     .shielded_epoch_reset_height = 61000,
 
     // Reject a coinbase carrying a shielded bundle, MAINNET. DORMANT — the
@@ -601,6 +602,21 @@ static void ValidateChainParams(const ChainParams& params) {
         throw std::runtime_error(
             "invalid chainparams: shielded_spend_auth_activation_height must be "
             ">= shielded_cv_binding_activation_height");
+    }
+
+    if (params.shielded_spend_auth_epoch_reset_height !=
+        params.shielded_spend_auth_activation_height) {
+        throw std::runtime_error(
+            "invalid chainparams: shielded_spend_auth_epoch_reset_height must "
+            "equal shielded_spend_auth_activation_height");
+    }
+
+    if (params.shielded_spend_auth_epoch_reset_height != UINT32_MAX &&
+        params.shielded_spend_auth_epoch_reset_height ==
+            params.shielded_epoch_reset_height) {
+        throw std::runtime_error(
+            "invalid chainparams: spend-auth and cv-binding epoch resets must "
+            "be distinct");
     }
 }
 

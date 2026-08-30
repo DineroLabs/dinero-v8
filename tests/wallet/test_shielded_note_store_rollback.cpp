@@ -120,9 +120,10 @@ TEST_F(ShieldedNoteStoreRollbackTest, KeySchemeDefaultsToLegacy) {
 }
 
 TEST_F(ShieldedNoteStoreRollbackTest, KeySchemeRoundTripsAuth) {
+    const auto auth_d = HashWithByte(0x2d);
     ASSERT_TRUE(store_.AddPendingNote(2000, HashWithByte(0x21), HashWithByte(0x22),
                                       HashWithByte(0x23), HashWithByte(0x24), 6,
-                                      NoteKeyScheme::Auth));
+                                      NoteKeyScheme::Auth, auth_d));
     ASSERT_TRUE(store_.AddPendingNote(3000, HashWithByte(0x31), HashWithByte(0x32),
                                       HashWithByte(0x33), HashWithByte(0x34), 7,
                                       NoteKeyScheme::LegacySenderKey));
@@ -130,7 +131,9 @@ TEST_F(ShieldedNoteStoreRollbackTest, KeySchemeRoundTripsAuth) {
     ASSERT_EQ(notes.size(), 2u);
     // Both schemes coexist and are distinguished per row.
     EXPECT_EQ(notes[0].key_scheme, NoteKeyScheme::Auth);
+    EXPECT_EQ(notes[0].d, auth_d);
     EXPECT_EQ(notes[1].key_scheme, NoteKeyScheme::LegacySenderKey);
+    EXPECT_EQ(notes[1].d, sh::Hash{});
 }
 
 // A wallet written before key_scheme existed must open, gain the column, and
@@ -183,6 +186,7 @@ TEST_F(ShieldedNoteStoreRollbackTest, PreSpendAuthDatabaseGainsKeySchemeColumn) 
     ASSERT_EQ(notes.size(), 1u);
     EXPECT_EQ(notes[0].value_una, 4242u) << "pre-existing row must survive intact";
     EXPECT_EQ(notes[0].key_scheme, NoteKeyScheme::LegacySenderKey);
+    EXPECT_EQ(notes[0].d, sh::Hash{});
 
     // Idempotent: re-opening must not attempt ADD COLUMN twice.
     store_.Close();

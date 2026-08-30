@@ -1891,7 +1891,7 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
         // thus its DSR2 shieldedStateHash — from a live node's: a live-vs-reindex
         // consensus split. Written as the ChainDB blob (load priority #1) so it
         // supersedes any stale flat file.
-        const auto anchor_bytes = shielded_anchor_history_.SerializeBytes();
+        const auto anchor_bytes = shielded_anchor_history_.SerializePersistenceBytes();
         const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
         auto anchor_status =
             chain_db_->putUtreexoMeta(token, "shielded_anchor_history", anchor_blob);
@@ -2329,7 +2329,8 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
                 Params().shielded_activation_height,
                 &shielded_anchor_history_,
                 Params().shielded_input_binding_activation_height,
-                Params().shielded_cv_binding_activation_height);
+                Params().shielded_cv_binding_activation_height,
+                Params().shielded_spend_auth_activation_height);
             const auto validation = shielded::ValidateShieldedBundle(bundle, ctx);
             if (validation != shielded::ShieldedValidationError::Ok) {
                 g_logger.error("[reindex] Shielded validation failed at height " +
@@ -2374,6 +2375,7 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     if (!shielded::ConnectBlockShieldedSection(
             shielded_bundles, shielded_deltas, static_cast<uint32_t>(height),
             Params().shielded_epoch_reset_height,
+            Params().shielded_spend_auth_epoch_reset_height,
             Params().shielded_activation_height,
             shielded_tree_, shielded_nullifiers_, &shielded_anchor_history_,
             undo.pre_reset_shielded_epoch, shielded_section_err)) {

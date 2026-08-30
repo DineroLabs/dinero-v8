@@ -218,7 +218,7 @@ Hash EcdhShared(const Hash& scalar_be, const Hash& pk_xonly);
 DiversifiedSpendKey DeriveDiversifiedSpendKey(const Hash& ivk,
                                               const Diversifier& d);
 
-/// Bech32m-encode the 43-byte payload under `hrp`. No witness-version
+/// Bech32m-encode the 75-byte payload under `hrp`. No witness-version
 /// prefix; raw payload bytes converted 8→5 then bech32m-encoded.
 std::string EncodeShieldedAddress(const AddressPayload& payload,
                                   const std::string& hrp);

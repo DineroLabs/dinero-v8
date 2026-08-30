@@ -449,6 +449,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     long embedded_parent_pid = 0;
     uint16_t wallet_socket_port = 0;  // 0 = use default (will be set from env or default)
     long shielded_epoch_reset_override = -1;  // <0 = unset; REGTEST test-only fork activation
+    long shielded_spend_auth_override = -1;   // paired auth activation/reset; REGTEST only
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -477,6 +478,16 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
                 shielded_epoch_reset_override = std::stol(val);
             } catch (const std::exception&) {
                 std::cerr << "Error: invalid --consensus-shielded-epoch-reset-height value: "
+                          << val << "\n";
+                return 1;
+            }
+        } else if (arg.find("--consensus-shielded-spend-auth-height=") == 0) {
+            const std::string val = arg.substr(
+                std::string("--consensus-shielded-spend-auth-height=").size());
+            try {
+                shielded_spend_auth_override = std::stol(val);
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid --consensus-shielded-spend-auth-height value: "
                           << val << "\n";
                 return 1;
             }
@@ -759,6 +770,28 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         }
         std::cout << "[Network] REGTEST: shielded epoch reset + cv-binding forced at height "
                   << shielded_epoch_reset_override << " (test-only)\n";
+    }
+
+    // REGTEST-only paired spend-authority activation and epoch reset. Keeping
+    // these in one flag makes an activation-without-reset configuration
+    // unreachable from integration tests and operator command lines.
+    if (shielded_spend_auth_override >= 0) {
+        if (chain != dinero::Chain::REGTEST) {
+            std::cerr << "[FATAL] --consensus-shielded-spend-auth-height is REGTEST-only\n";
+            return 1;
+        }
+        auto& mp = dinero::MutableParams();
+        const auto h = static_cast<uint32_t>(shielded_spend_auth_override);
+        if (h <= mp.shielded_cv_binding_activation_height ||
+            h == mp.shielded_epoch_reset_height) {
+            std::cerr << "[FATAL] --consensus-shielded-spend-auth-height=" << h
+                      << " must be strictly after the cv-binding reset\n";
+            return 1;
+        }
+        mp.shielded_spend_auth_activation_height = h;
+        mp.shielded_spend_auth_epoch_reset_height = h;
+        std::cout << "[Network] REGTEST: spend authority + distinct epoch reset "
+                     "forced at height " << h << " (test-only)\n";
     }
 
     // Consensus crypto precondition. Shielded validation fails closed when the

@@ -60,13 +60,15 @@ public:
           reset_(params->shielded_epoch_reset_height),
           cv_(params->shielded_cv_binding_activation_height),
           input_(params->shielded_input_binding_activation_height),
-          auth_(params->shielded_spend_auth_activation_height) {}
+          auth_(params->shielded_spend_auth_activation_height),
+          auth_reset_(params->shielded_spend_auth_epoch_reset_height) {}
 
     ~ScopedShieldedHeights() {
         params_->shielded_epoch_reset_height = reset_;
         params_->shielded_cv_binding_activation_height = cv_;
         params_->shielded_input_binding_activation_height = input_;
         params_->shielded_spend_auth_activation_height = auth_;
+        params_->shielded_spend_auth_epoch_reset_height = auth_reset_;
     }
 
     ScopedShieldedHeights(const ScopedShieldedHeights&) = delete;
@@ -78,6 +80,7 @@ private:
     uint32_t cv_;
     uint32_t input_;
     uint32_t auth_;
+    uint32_t auth_reset_;
 };
 
 TEST(ChainParamsSelection, EpochResetMustEqualCvBindingActivation) {
@@ -124,22 +127,44 @@ TEST(ChainParamsSelection, SpendAuthMustNotPrecedeCvBinding) {
     regtest->shielded_cv_binding_activation_height = 400;
     regtest->shielded_epoch_reset_height = 400;   // keep the equality check happy
     regtest->shielded_spend_auth_activation_height = 399;  // one block too early
+    regtest->shielded_spend_auth_epoch_reset_height = 399;
     EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
 
     // Equal is legal — both rules may activate at the same height.
-    regtest->shielded_spend_auth_activation_height = 400;
+    regtest->shielded_spend_auth_activation_height = 401;
+    regtest->shielded_spend_auth_epoch_reset_height = 401;
     EXPECT_NO_THROW(SelectParams(Chain::REGTEST));
 }
 
+TEST(ChainParamsSelection, SpendAuthResetMustMatchActivationAndBeDistinct) {
+    SelectParams(Chain::REGTEST);
+    ChainParams* regtest = &dinero::MutableParams();
+    const ScopedShieldedHeights restore(regtest);
+
+    regtest->shielded_input_binding_activation_height = 300;
+    regtest->shielded_cv_binding_activation_height = 400;
+    regtest->shielded_epoch_reset_height = 400;
+    regtest->shielded_spend_auth_activation_height = 500;
+    regtest->shielded_spend_auth_epoch_reset_height = 499;
+    EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
+
+    regtest->shielded_spend_auth_epoch_reset_height = 500;
+    EXPECT_NO_THROW(SelectParams(Chain::REGTEST));
+
+    regtest->shielded_spend_auth_activation_height = 400;
+    regtest->shielded_spend_auth_epoch_reset_height = 400;
+    EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
+}
+
 // Spend authority ships DORMANT on every network. regtest is deliberately NOT
-// set to 0 the way the coinbase rule is: the wallet still commits notes to
-// Poseidon(sk, 0), so an active regtest gate would reject every note the wallet
-// can build. regtest flips only when the wallet side lands.
+// set to 0 the way the coinbase rule is. Wallet/circuit groundwork exists, but
+// activation still lacks a distinct, paired spend-auth epoch reset.
 TEST(ChainParamsSelection, SpendAuthDormantOnAllNetworks) {
     for (const Chain chain : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
         SelectParams(chain);
         EXPECT_EQ(Params().shielded_spend_auth_activation_height, UINT32_MAX)
             << "spend authority must stay dormant until the wallet side lands";
+        EXPECT_EQ(Params().shielded_spend_auth_epoch_reset_height, UINT32_MAX);
     }
 }
 

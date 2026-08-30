@@ -35,11 +35,26 @@ bool ConnectBlockShieldedSection(
     const std::vector<ShieldedBundle>& bundles,
     const std::vector<int64_t>& deltas,
     uint32_t height,
-    uint32_t reset_height,
+    uint32_t cv_reset_height,
+    uint32_t spend_auth_reset_height,
     uint32_t activation_height,
     CommitmentTree& tree,
     NullifierSet& nullifiers,
     AnchorHistory* anchors,  // nullable
+    std::optional<ShieldedEpochSnapshot>& pre_reset_snapshot_out,
+    std::string& error);
+
+// Compatibility overload for tests and callers modelling only one historical
+// reset boundary.
+bool ConnectBlockShieldedSection(
+    const std::vector<ShieldedBundle>& bundles,
+    const std::vector<int64_t>& deltas,
+    uint32_t height,
+    uint32_t reset_height,
+    uint32_t activation_height,
+    CommitmentTree& tree,
+    NullifierSet& nullifiers,
+    AnchorHistory* anchors,
     std::optional<ShieldedEpochSnapshot>& pre_reset_snapshot_out,
     std::string& error);
 

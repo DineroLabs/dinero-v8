@@ -1157,12 +1157,13 @@ bool ChainstateService::LoadShieldedState() {
             shielded_tip_height_for_reset = tip_for_reset.value().height;
         }
     }
-    const uint32_t shielded_reset_height_load =
-        dinero::Params().shielded_epoch_reset_height;
+    const auto reset_is_past = [shielded_tip_height_for_reset](uint32_t h) {
+        return h != consensus::shielded::kShieldedEpochResetDormant &&
+               shielded_tip_height_for_reset >= h;
+    };
     const bool past_shielded_epoch_reset =
-        shielded_reset_height_load !=
-            consensus::shielded::kShieldedEpochResetDormant &&
-        shielded_tip_height_for_reset >= shielded_reset_height_load;
+        reset_is_past(dinero::Params().shielded_epoch_reset_height) ||
+        reset_is_past(dinero::Params().shielded_spend_auth_epoch_reset_height);
 
     bool frontier_loaded_from_chaindb = false;
     if (chain_db_) {
@@ -1188,8 +1189,7 @@ bool ChainstateService::LoadShieldedState() {
             if (logger_) {
                 logger_->error(
                     "[ChainstateService] shielded frontier ChainDB blob missing/invalid "
-                    "at/past the epoch reset height " +
-                    std::to_string(shielded_reset_height_load) + " (tip=" +
+                    "at/past a configured epoch reset (tip=" +
                     std::to_string(shielded_tip_height_for_reset) +
                     "); refusing the stale pre-reset flat file (would resurrect the "
                     "discarded pool)");
@@ -1254,7 +1254,7 @@ bool ChainstateService::LoadShieldedState() {
         if (chaindb_blob.ok()) {
             const std::string& blob = chaindb_blob.value();
             std::vector<uint8_t> bytes(blob.begin(), blob.end());
-            const auto rc = shielded_anchor_history_.DeserializeBytes(bytes);
+            const auto rc = shielded_anchor_history_.DeserializePersistenceBytes(bytes);
             if (rc == consensus::shielded::AnchorHistory::IoResult::Ok) {
                 anchor_history_loaded_from_chaindb = true;
             } else if (logger_) {
@@ -1275,8 +1275,7 @@ bool ChainstateService::LoadShieldedState() {
         if (logger_) {
             logger_->error(
                 "[ChainstateService] shielded anchor history ChainDB blob "
-                "missing/invalid at/past the epoch reset height " +
-                std::to_string(shielded_reset_height_load) + " (tip=" +
+                "missing/invalid at/past a configured epoch reset (tip=" +
                 std::to_string(shielded_tip_height_for_reset) +
                 "); refusing the stale pre-reset flat file");
         }
@@ -1369,7 +1368,7 @@ bool ChainstateService::PersistShieldedState() const {
                     "); flat file remains");
             }
         }
-        const auto bytes = shielded_anchor_history_.SerializeBytes();
+        const auto bytes = shielded_anchor_history_.SerializePersistenceBytes();
         const std::string blob(bytes.begin(), bytes.end());
         ChainWriteToken token = ChainWriteToken::CreateForTesting();
         const auto put_status =
@@ -12337,7 +12336,8 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         // guard's rationale (~10877).
         if (consensus::shielded::IsShieldedEpochResetHeight(
                 static_cast<uint32_t>(tip_to_disconnect->height),
-                dinero::Params().shielded_epoch_reset_height) &&
+                dinero::Params().shielded_epoch_reset_height,
+                dinero::Params().shielded_spend_auth_epoch_reset_height) &&
             !undo.pre_reset_shielded_epoch.has_value()) {
             if (logger_) {
                 logger_->error("[DisconnectTip-CSN] refusing to disconnect the shielded "
@@ -12430,7 +12430,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
                     }
                     return false;
                 }
-                const auto ab = shielded_anchor_history_.SerializeBytes();
+                const auto ab = shielded_anchor_history_.SerializePersistenceBytes();
                 const std::string anchor_blob(ab.begin(), ab.end());
                 if (chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
                                               anchor_blob, &coin_batch) != Status::Ok) {
@@ -12545,7 +12545,8 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         const bool at_shielded_reset_height =
             consensus::shielded::IsShieldedEpochResetHeight(
                 static_cast<uint32_t>(tip_to_disconnect->height),
-                dinero::Params().shielded_epoch_reset_height);
+                dinero::Params().shielded_epoch_reset_height,
+                dinero::Params().shielded_spend_auth_epoch_reset_height);
         if (at_shielded_reset_height && logger_) {
             logger_->error("[DisconnectTip] refusing to regenerate undo at the shielded "
                            "epoch reset height " +
@@ -12905,7 +12906,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             return false;
         }
 
-        const auto anchor_bytes = shielded_anchor_history_.SerializeBytes();
+        const auto anchor_bytes = shielded_anchor_history_.SerializePersistenceBytes();
         const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
         const auto anchor_status =
             chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
@@ -13951,7 +13952,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             // for one release as a fallback (and stamps the v1
             // migration sentinel). Staging here ensures the journal
             // row's DSRH matches at restart.
-            const auto anchor_bytes = shielded_anchor_history_.SerializeBytes();
+            const auto anchor_bytes = shielded_anchor_history_.SerializePersistenceBytes();
             const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
             const auto anchor_status =
                 chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
@@ -14073,7 +14074,8 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         // so the staging loop above added nothing.
         if (consensus::shielded::IsShieldedEpochResetHeight(
                 static_cast<uint32_t>(tip_to_connect->height),
-                dinero::Params().shielded_epoch_reset_height)) {
+                dinero::Params().shielded_epoch_reset_height,
+                dinero::Params().shielded_spend_auth_epoch_reset_height)) {
             const auto purged =
                 chain_db_->deleteAllShieldedNullifiers(token, &utxo_batch);
             if (!purged.ok()) {
@@ -14937,7 +14939,8 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // be persisted.
     const bool at_reset = consensus::shielded::IsShieldedEpochResetHeight(
         static_cast<uint32_t>(block_index->height),
-        dinero::Params().shielded_epoch_reset_height);
+        dinero::Params().shielded_epoch_reset_height,
+        dinero::Params().shielded_spend_auth_epoch_reset_height);
     if (at_reset) {
         for (size_t i = 1; i < block.vtx.size(); ++i) {
             if (block.vtx[i].IsShielded()) {
@@ -15181,7 +15184,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
                 }
                 return fail("commit-bookkeeping-shielded-frontier-stage-failed");
             }
-            const auto anchor_bytes = shielded_anchor_history_.SerializeBytes();
+            const auto anchor_bytes = shielded_anchor_history_.SerializePersistenceBytes();
             const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
             if (chain_db_->putUtreexoMeta(token, "shielded_anchor_history", anchor_blob, &utxo_batch) != Status::Ok) {
                 if (logger_) {
@@ -16724,7 +16727,7 @@ bool ChainstateService::PromoteValidatedHistory(
                 error = "promotion: shielded frontier blob stage failed";
                 return false;
             }
-            const auto anchor_bytes = engine.ShieldedAnchors()->SerializeBytes();
+            const auto anchor_bytes = engine.ShieldedAnchors()->SerializePersistenceBytes();
             const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
             st = chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
                                            anchor_blob, &batch);

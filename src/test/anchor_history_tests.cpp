@@ -119,6 +119,63 @@ TEST(AnchorHistoryTest, MultiBlockDisconnectRestoresEachEvictedAnchor) {
     }
 }
 
+TEST(AnchorHistoryPersistenceTest, RestartThenDisconnectRestoresFullWindow) {
+    AnchorHistory before_restart;
+    for (uint32_t height = 1; height <= AnchorHistory::kDepth + 50; ++height) {
+        before_restart.RecordRoot(height, RH(height));
+    }
+    ASSERT_EQ(before_restart.Size(), AnchorHistory::kDepth);
+    ASSERT_EQ(before_restart.EvictedRetained(), 50u);
+
+    const auto durable = before_restart.SerializePersistenceBytes();
+    // The consensus fingerprint deliberately remains the historical v1 format.
+    const auto fingerprint_before = before_restart.SerializeBytes();
+
+    AnchorHistory after_restart;
+    ASSERT_EQ(after_restart.DeserializePersistenceBytes(durable),
+              AnchorHistory::IoResult::Ok);
+    EXPECT_EQ(after_restart.SerializeBytes(), fingerprint_before);
+    EXPECT_EQ(after_restart.EvictedRetained(), 50u);
+
+    after_restart.RollbackAbove(AnchorHistory::kDepth + 45);
+    EXPECT_EQ(after_restart.Size(), AnchorHistory::kDepth);
+    for (uint32_t height = 46; height <= 50; ++height) {
+        EXPECT_TRUE(after_restart.Contains(RH(height))) << height;
+    }
+    for (uint32_t height = 146; height <= 150; ++height) {
+        EXPECT_FALSE(after_restart.Contains(RH(height))) << height;
+    }
+}
+
+TEST(AnchorHistoryPersistenceTest, LegacyV1MigratesWithoutChangingFingerprint) {
+    AnchorHistory legacy;
+    for (uint32_t height = 1; height <= AnchorHistory::kDepth + 5; ++height) {
+        legacy.RecordRoot(height, RH(height));
+    }
+    const auto v1 = legacy.SerializeBytes();
+
+    AnchorHistory migrated;
+    ASSERT_EQ(migrated.DeserializePersistenceBytes(v1), AnchorHistory::IoResult::Ok);
+    EXPECT_EQ(migrated.SerializeBytes(), v1);
+    EXPECT_EQ(migrated.EvictedRetained(), 0u);
+
+    const auto v2 = migrated.SerializePersistenceBytes();
+    EXPECT_NE(v2, v1);
+    AnchorHistory reloaded;
+    ASSERT_EQ(reloaded.DeserializePersistenceBytes(v2), AnchorHistory::IoResult::Ok);
+    EXPECT_EQ(reloaded.SerializeBytes(), v1);
+}
+
+TEST(AnchorHistoryPersistenceTest, RejectsMalformedV2Atomically) {
+    AnchorHistory h;
+    h.RecordRoot(1, RH(1));
+    auto bytes = h.SerializePersistenceBytes();
+    bytes.push_back(0x42);
+    EXPECT_EQ(h.DeserializePersistenceBytes(bytes), AnchorHistory::IoResult::FormatError);
+    EXPECT_EQ(h.Size(), 0u);
+    EXPECT_EQ(h.EvictedRetained(), 0u);
+}
+
 TEST(AnchorHistoryTest, EmptyContainsNothing) {
     AnchorHistory h;
     EXPECT_EQ(h.Size(), 0u);

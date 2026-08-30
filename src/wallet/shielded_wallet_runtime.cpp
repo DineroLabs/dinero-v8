@@ -53,6 +53,13 @@ bool CvBoundForMiningAtTip(uint32_t tip_height) {
            static_cast<uint64_t>(dinero::Params().shielded_cv_binding_activation_height);
 }
 
+bool SpendAuthForMiningAtTip(uint32_t tip_height) {
+    const uint64_t target_height = static_cast<uint64_t>(tip_height) + 1;
+    const uint32_t activation =
+        dinero::Params().shielded_spend_auth_activation_height;
+    return activation != UINT32_MAX && target_height >= activation;
+}
+
 // Expected shielded-address HRP for the active chain (spec §7.1 network
 // match). A recipient address whose HRP differs must be rejected before
 // any tx work.
@@ -64,6 +71,49 @@ const char* ExpectedShieldedHrp() {
         case dinero::Chain::REGTEST: return shdrv::kHrpRegtest;
     }
     return shdrv::kHrpMainnet;
+}
+
+struct OwnedAddressedRecipient {
+    AddressedRecipient recipient;
+    sh::Hash spend_secret{};
+    sh::Hash d_packed{};
+};
+
+std::optional<OwnedAddressedRecipient> DeriveFreshOwnedRecipient(
+    dinero::WalletManager& wallet, uint64_t value_una, std::string& error) {
+    auto seed = wallet.GetMasterSeed();
+    if (!seed || seed->size() != 64) {
+        error = "unlocked 64-byte master seed required for addressed self output";
+        return std::nullopt;
+    }
+    uint64_t j = 0;
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(&j), sizeof(j)) != 1) {
+        OPENSSL_cleanse(seed->data(), seed->size());
+        error = "failed to generate shielded diversifier index";
+        return std::nullopt;
+    }
+    try {
+        namespace shdrv = ::dinero::wallet::shielded;
+        auto keys = shdrv::DeriveShieldedAccount(seed->data(), seed->size(), 0);
+        OPENSSL_cleanse(seed->data(), seed->size());
+        auto address = shdrv::DeriveDiversifiedAddress(
+            keys, j, ExpectedShieldedHrp());
+        auto spend = shdrv::DeriveDiversifiedSpendKey(keys.ivk, address.d);
+        OwnedAddressedRecipient out;
+        out.recipient.d = address.d;
+        out.recipient.pk_d = address.pk_d;
+        out.recipient.pk_d_spend = address.pk_d_spend;
+        out.recipient.value_una = value_una;
+        out.spend_secret = spend.s;
+        std::memcpy(out.d_packed.data(), address.d.data(), address.d.size());
+        OPENSSL_cleanse(&keys, sizeof(keys));
+        OPENSSL_cleanse(spend.s.data(), spend.s.size());
+        return out;
+    } catch (const std::exception& e) {
+        OPENSSL_cleanse(seed->data(), seed->size());
+        error = std::string("failed to derive addressed self output: ") + e.what();
+        return std::nullopt;
+    }
 }
 
 struct ShieldedRuntime {
@@ -322,7 +372,7 @@ bool ProcessConfirmedBlock(dinero::WalletManager& wallet,
                         (void)g_runtime->store.AddPendingNote(
                             plaintext->value_una, sk_note, pk_note,
                             plaintext->rcm, output.commitment, height,
-                            NoteKeyScheme::LegacySenderKey);
+                            NoteKeyScheme::LegacySenderKey, d_packed);
                     } else {
                         // Spend-authority note: committed to pk_d = s·G rather
                         // than to the sender-derived Poseidon(rcm-key, 0), so
@@ -343,7 +393,7 @@ bool ProcessConfirmedBlock(dinero::WalletManager& wallet,
                             (void)g_runtime->store.AddPendingNote(
                                 plaintext->value_una, dk.s, dk.pk_d,
                                 plaintext->rcm, output.commitment, height,
-                                NoteKeyScheme::Auth);
+                                NoteKeyScheme::Auth, d_packed);
                         }
                         OPENSSL_cleanse(dk.s.data(), dk.s.size());
                     }
@@ -661,6 +711,7 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
     UnshieldNoteInput input;
     input.secret_key  = note.secret_key;
     input.randomness  = note.randomness;
+    input.d           = note.d;
     input.anchor      = g_runtime->tree.Root();
     input.leaf_index  = note.leaf_index;
     input.value_una   = note.value_una;
@@ -708,7 +759,26 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
 
     // Pure builder does all the cryptographic work + bundle attachment.
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
-    auto built = BuildShieldBundleForTx(tx, value_una, cv_bound);
+    const bool spend_auth = SpendAuthForMiningAtTip(wallet.getBlockchainHeight());
+    std::optional<OwnedAddressedRecipient> owned;
+    AttachShieldResult built;
+    if (spend_auth) {
+        std::string derive_error;
+        owned = DeriveFreshOwnedRecipient(wallet, value_una, derive_error);
+        if (!owned) {
+            built.status = OpStatus::InvalidParams;
+            built.error = derive_error;
+            return built;
+        }
+        built = BuildAddressedShieldBundleForTx(
+            tx, owned->recipient, nullptr, cv_bound, true);
+        if (built.status == OpStatus::Ok) {
+            built.nullifier_key = owned->spend_secret;
+            built.public_key = owned->recipient.pk_d_spend;
+        }
+    } else {
+        built = BuildShieldBundleForTx(tx, value_una, cv_bound);
+    }
     if (built.status != OpStatus::Ok) {
         return built;
     }
@@ -727,7 +797,10 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
                                          built.public_key,
                                          built.randomness,
                                          built.commitment,
-                                         current_height)) {
+                                         current_height,
+                                         spend_auth ? NoteKeyScheme::Auth
+                                                    : NoteKeyScheme::LegacySenderKey,
+                                         owned ? owned->d_packed : sh::Hash{})) {
         AttachShieldResult err{};
         err.status = OpStatus::StoreError;
         err.error  = "failed to persist pending shielded note";
@@ -791,8 +864,9 @@ AttachShieldResult AttachAddressedShieldOutputBundle(
     recipient.value_una = value_una;
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
+    const bool spend_auth = SpendAuthForMiningAtTip(wallet.getBlockchainHeight());
     auto built = BuildAddressedShieldBundleForTx(tx, recipient, recipient_memo,
-                                                 cv_bound);
+                                                 cv_bound, spend_auth);
     // No self note to persist — the note belongs to the recipient. `persist`
     // exists only for API symmetry with AttachShieldOutputBundle (dry-run
     // fee measurement); there is no wallet state to mutate here.
@@ -859,6 +933,7 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
     UnshieldNoteInput input;
     input.secret_key  = note.secret_key;
     input.randomness  = note.randomness;
+    input.d           = note.d;
     input.anchor      = g_runtime->tree.Root();
     input.leaf_index  = note.leaf_index;
     input.value_una   = note.value_una;
@@ -1006,6 +1081,7 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
         UnshieldNoteInput input;
         input.secret_key  = note.secret_key;
         input.randomness  = note.randomness;
+        input.d           = note.d;
         input.anchor      = root;
         input.leaf_index  = note.leaf_index;
         input.value_una   = note.value_una;
@@ -1156,6 +1232,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
         UnshieldNoteInput input;
         input.secret_key  = note.secret_key;
         input.randomness  = note.randomness;
+        input.d           = note.d;
         input.anchor      = root;
         input.leaf_index  = note.leaf_index;
         input.value_una   = note.value_una;
@@ -1187,11 +1264,27 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
         have_memo = true;
     }
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
+    const bool spend_auth = SpendAuthForMiningAtTip(wallet.getBlockchainHeight());
+    std::optional<OwnedAddressedRecipient> owned_change;
+    if (spend_auth && change_value > 0) {
+        std::string derive_error;
+        owned_change = DeriveFreshOwnedRecipient(wallet, change_value, derive_error);
+        if (!owned_change) {
+            AttachAddressedTransferResult err{};
+            err.status = OpStatus::InvalidParams;
+            err.error = derive_error;
+            return err;
+        }
+    }
     auto built = BuildAddressedTransferBundleForTx(
         tx, spends, recipient, change_value, fee_una,
-        have_memo ? &memo_buf : nullptr, cv_bound);
+        have_memo ? &memo_buf : nullptr, cv_bound, spend_auth,
+        owned_change ? &owned_change->recipient : nullptr);
     if (built.status != OpStatus::Ok) {
         return built;
+    }
+    if (owned_change) {
+        built.change_secret_key = owned_change->spend_secret;
     }
 
     // Dry-run mode (issue #273 fee measurement): build/attach only, the
@@ -1227,7 +1320,9 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
                                              built.change_public_key,
                                              built.change_randomness,
                                              built.change_commitment,
-                                             created_height)) {
+                                             created_height,
+                                             built.change_key_scheme,
+                                             built.change_d)) {
             (void)g_runtime->store.RollbackPendingTransaction(
                 built.spend_nullifiers, {built.change_commitment});
             AttachAddressedTransferResult err{};
