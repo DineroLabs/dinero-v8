@@ -303,17 +303,11 @@ void EscrowWidget::onReleaseSelected()
     );
 
     if (reply == QMessageBox::Yes) {
-        // In production, this would open a signature dialog
-        // For now, we'll call with dummy signatures
-        QJsonObject params{
-            {"contract_id", selectedContractId_},
-            {"to_address", sellerLabel_->text()},
-            {"sig_buyer", "dummy_sig_buyer"},
-            {"sig_seller", "dummy_sig_seller"}
-        };
-
-        callRpc("contract.broadcastrelease", QJsonArray{params});
-        appendLog(QString("Requesting release for contract %1...").arg(selectedContractId_));
+        QJsonObject params{{"contract_id", selectedContractId_}, {"tx_type", "release"}};
+        callRpc("contract.getsighash", QJsonArray{params});
+        appendLog(QString("Requesting release signing package for contract %1. "
+                          "No transaction will be broadcast without real imported signatures.")
+                      .arg(selectedContractId_));
     }
 }
 
@@ -348,14 +342,11 @@ void EscrowWidget::onRefundSelected()
     );
 
     if (reply == QMessageBox::Yes) {
-        QJsonObject params{
-            {"contract_id", selectedContractId_},
-            {"refund_address", buyerLabel_->text()},
-            {"sig_buyer", "dummy_sig_buyer"}
-        };
-
-        callRpc("contract.broadcastrefund", QJsonArray{params});
-        appendLog(QString("Requesting refund for contract %1...").arg(selectedContractId_));
+        QJsonObject params{{"contract_id", selectedContractId_}, {"tx_type", "refund"}};
+        callRpc("contract.getsighash", QJsonArray{params});
+        appendLog(QString("Requesting refund signing package for contract %1. "
+                          "No transaction will be broadcast without a real imported signature.")
+                      .arg(selectedContractId_));
     }
 }
 
