@@ -281,6 +281,28 @@ TEST(WalletRestoreRescan, RestoreFindsFunds_W11) {
             << "Mnemonic import did not report success: " << import_response.dump();
         ASSERT_GT(import_response["result"].value("watch_scripts", 0), 0)
             << "Mnemonic import registered no watch scripts: " << import_response.dump();
+        const int initial_watch_scripts =
+            import_response["result"].value("watch_scripts", 0);
+
+        // Embedded/mobile clients bind the same mnemonic after every process
+        // restart. Once bound they request skip_address_derivation=true; that
+        // retry must preserve the existing address/watch state rather than
+        // clearing it and then failing with an empty watch set.
+        import_params["skip_address_derivation"] = true;
+        json repeated_import = rpcCall(
+            NODE_RPC_PORT, "wallet.importmnemonic", import_params);
+        ASSERT_TRUE(repeated_import.contains("result") &&
+                    repeated_import["result"].is_object())
+            << "Repeated mnemonic bind returned no result: "
+            << repeated_import.dump();
+        ASSERT_TRUE(repeated_import["result"].value("success", false))
+            << "Repeated mnemonic bind failed: " << repeated_import.dump();
+        EXPECT_EQ(repeated_import["result"].value("watch_scripts", 0),
+                  initial_watch_scripts)
+            << "Same-seed bind changed the persisted watch set";
+        EXPECT_FALSE(repeated_import["result"].value(
+            "watch_scripts_repaired", false))
+            << "Healthy same-seed bind should not require recovery derivation";
         std::cout << "✅ Mnemonic imported into wallet" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "❌ Mnemonic import exception: " << e.what() << std::endl;

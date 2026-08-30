@@ -534,7 +534,35 @@ din::Json RpcImportMnemonic(const din::Json& params,
             }
 
             if (watch_script_count == 0) {
-                throw std::runtime_error("No watch scripts registered after mnemonic import");
+                // Heal states produced by older embedded clients that combined
+                // skip_address_derivation=true with a same-seed import that had
+                // already cleared the address tables. Skipping is safe only
+                // when a persisted watch set actually exists.
+                dinero::g_logger.warning(
+                    "Mnemonic import found no watch scripts; deriving minimum recovery lookahead");
+                const std::string receive = wallet_manager->getNewAddress("", "taproot");
+                const std::string change = wallet_manager->getNewChangeAddress("", "taproot");
+                if (receive.empty() || change.empty()) {
+                    throw std::runtime_error(
+                        "No watch scripts registered after mnemonic import and recovery derivation failed");
+                }
+
+                if (sqlite3* wdb = wallet_manager->getCurrentDatabase()) {
+                    sqlite3_stmt* watch_stmt = nullptr;
+                    if (sqlite3_prepare_v2(wdb, "SELECT COUNT(*) FROM watch_scripts", -1,
+                                           &watch_stmt, nullptr) == SQLITE_OK) {
+                        if (sqlite3_step(watch_stmt) == SQLITE_ROW) {
+                            watch_script_count = sqlite3_column_int(watch_stmt, 0);
+                        }
+                    }
+                    if (watch_stmt) sqlite3_finalize(watch_stmt);
+                }
+                if (watch_script_count == 0) {
+                    throw std::runtime_error(
+                        "No watch scripts registered after mnemonic import recovery");
+                }
+                wallet_manager->LoadAddressesIntoUTXOIndex();
+                result["watch_scripts_repaired"] = true;
             }
             result["watch_scripts"] = watch_script_count;
 

@@ -7132,6 +7132,20 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
         return false;
     }
 
+    // Re-importing the active recovery phrase is an idempotent wallet bind,
+    // not a wallet replacement. In particular, embedded/mobile clients bind
+    // on every process start and may explicitly skip address derivation after
+    // the first successful bind. Clearing address state here would therefore
+    // erase watch_scripts and make the otherwise valid retry unusable.
+    if (master_seed_.empty() && !wallet_locked_) {
+        auto existing_seed = loadMasterSeed("");
+        if (existing_seed.has_value()) {
+            master_seed_ = std::move(existing_seed.value());
+        }
+    }
+    const bool replaces_wallet_identity =
+        reset_address_state && !ConstantTimeEqual(seed, master_seed_);
+
     // ═══════════════════════════════════════════════════════════════════════
     // Optional address-state reset
     // ═══════════════════════════════════════════════════════════════════════
@@ -7140,7 +7154,7 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
     // the same seed.
     // ═══════════════════════════════════════════════════════════════════════
 
-    if (reset_address_state) {
+    if (replaces_wallet_identity) {
         WLOG_INFO("Clearing address tables for new HD seed import...");
 
         // Clear addresses table (resets derivation index to 0)
@@ -7328,7 +7342,7 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
         // Any operation that replaces the seed invalidates the old mnemonic
         // binding. Clear it after the seed write succeeds; encryption passes
         // reset_address_state=false because they preserve the same identity.
-        if (reset_address_state) {
+        if (replaces_wallet_identity) {
             try {
                 setSetting(kBip39RecoverySetting, "");
                 setSetting(kBip39BackupAcknowledgedSetting, "0");
