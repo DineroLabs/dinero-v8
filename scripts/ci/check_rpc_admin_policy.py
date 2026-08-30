@@ -31,10 +31,21 @@ missing_aliases = sorted(required_aliases - flat)
 if missing_aliases:
     raise SystemExit("flat aliases lack inherited admin classification: " + ", ".join(missing_aliases))
 
+dev_match = re.search(r"DEV_ONLY_METHODS\s*=\s*\{(.*?)\};", SOURCE, re.S)
+if not dev_match:
+    raise SystemExit("DEV_ONLY_METHODS not found")
+dev_only = set(re.findall(r'"([a-zA-Z0-9_.]+)"', dev_match.group(1)))
+required_dev = {"debug.computesighash", "debug.attachwitness", "blockchain.debugclearundoflag"}
+if not required_dev.issubset(dev_only):
+    raise SystemExit("missing development-only RPC classifications")
+if "!dev_mode_ && MatchesCanonicalOrFlatAlias(DEV_ONLY_METHODS, method)" not in SOURCE:
+    raise SystemExit("development-only RPC boundary enforcement missing")
+
 manifest = {
     "schema": "dinero.rpc.release-policy.v1",
     "admin_canonical": sorted(admin),
     "admin_flat_aliases": sorted(flat),
+    "development_only": sorted(dev_only),
     "contract_fund_movement": "disabled_pending_bound_signing_package",
     "shared_rpc_mobile_fund_movement": "disabled_for_vault_contract_shielded",
 }

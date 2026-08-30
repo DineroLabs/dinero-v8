@@ -111,21 +111,28 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "network.setrelayservice",
 };
 
-bool HttpRpcServer::isAdminMethod(const std::string& method) {
-    if (ADMIN_METHODS.count(method) > 0) {
-        return true;
+static const std::unordered_set<std::string> DEV_ONLY_METHODS = {
+    "debug.computesighash",
+    "debug.attachwitness",
+    "blockchain.debugclearundoflag",
+};
+
+static bool MatchesCanonicalOrFlatAlias(
+    const std::unordered_set<std::string>& methods, const std::string& method) {
+    if (methods.count(method) > 0) return true;
+    for (const auto& canonical : methods) {
+        const auto dot = canonical.find('.');
+        if (dot != std::string::npos && canonical.substr(dot + 1) == method) return true;
     }
+    return false;
+}
+
+bool HttpRpcServer::isAdminMethod(const std::string& method) {
     // RpcRegistry creates flat aliases directly in handlers_ rather than in its
     // explicit aliases_ table. Therefore getAliasInfo() cannot canonicalize
     // aliases such as `withdraw`, `sendtoaddress`, or `transfer`. Derive every
     // generated flat spelling here so aliases inherit the canonical policy.
-    for (const auto& canonical : ADMIN_METHODS) {
-        const auto dot = canonical.find('.');
-        if (dot != std::string::npos && canonical.substr(dot + 1) == method) {
-            return true;
-        }
-    }
-    return false;
+    return MatchesCanonicalOrFlatAlias(ADMIN_METHODS, method);
 }
 
 namespace {
@@ -665,6 +672,10 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
     };
 
     try {
+        if (!dev_mode_ && MatchesCanonicalOrFlatAlias(DEV_ONLY_METHODS, method)) {
+            return dinero::rpc::RpcError(dinero::rpc::RPC_FORBIDDEN,
+                "Method '" + method + "' is available only in explicit development mode");
+        }
         // RPC access control: reject admin methods in read-only mode.
         //
         // SECURITY (readonly-bypass fix): the admin check must run on the CANONICAL
