@@ -63,11 +63,14 @@ inline QString compactDifficultyText(quint32 bits) {
 
 inline bool isTransientMiningError(const QString& line) {
   return line.contains(QStringLiteral("Failed to get block template"),
+                       Qt::CaseInsensitive) ||
+         line.contains(QStringLiteral("Block rejected:"),
                        Qt::CaseInsensitive);
 }
 
 inline QString miningOutputDisplayText(const QString& line) {
-  if (isTransientMiningError(line)) {
+  if (line.contains(QStringLiteral("Failed to get block template"),
+                    Qt::CaseInsensitive)) {
     return QStringLiteral("Template refresh delayed — retrying automatically");
   }
   return line;

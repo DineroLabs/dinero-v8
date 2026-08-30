@@ -4267,6 +4267,14 @@ void MainWindow::setupUI() {
 
     connect(minerCtrl_, &MinerController::templateChanged, this,
             [this](int height, quint32 difficultyBits) {
+      // A fresh template is authoritative evidence that the miner recovered.
+      // Remove prior recoverable rejection/template errors from the live view;
+      // their full diagnostics remain available in the daemon log.
+      const auto recoveredErrors = transientMiningErrorGenerations_.keys();
+      transientMiningErrorGenerations_.clear();
+      for (const QString& displayLine : recoveredErrors) {
+        removeMiningOutputLine(txtMiningOutput_, displayLine);
+      }
       if (lblMiningHeight_) lblMiningHeight_->setText(QString::number(height));
       if (lblMiningDifficulty_) {
         lblMiningDifficulty_->setText(dinero::qt::compactDifficultyText(difficultyBits));

@@ -73,6 +73,10 @@ private Q_SLOTS:
     QCOMPARE(dinero::qt::miningOutputDisplayText(
                QStringLiteral("Miner started successfully")),
              QStringLiteral("Miner started successfully"));
+    const QString rejected = QStringLiteral(
+      "❌ Error: Block rejected: bad-utreexo-root: computed=abc header=def");
+    QVERIFY(dinero::qt::isTransientMiningError(rejected));
+    QCOMPARE(dinero::qt::miningOutputDisplayText(rejected), rejected);
     QVERIFY(!dinero::qt::isTransientMiningError(
       QStringLiteral("Daemon RPC is unavailable; stopping embedded miner")));
   }
