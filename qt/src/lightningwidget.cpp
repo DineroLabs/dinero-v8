@@ -1,6 +1,6 @@
 #include "lightningwidget.h"
 #include "rpcclient.h"
-#include "qrcodegen.h"
+#include "QrUtil.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -1042,18 +1042,7 @@ QString LightningWidget::formatPaymentStatus(const QString& status) const {
 }
 
 QPixmap LightningWidget::generateQRCode(const QString& data, int size) {
-    // Use the existing QR code generator
-    QPixmap qr(size, size);
-    qr.fill(Qt::white);
-
-    QPainter painter(&qr);
-    painter.fillRect(0, 0, size, size, Qt::white);
-
-    // Simple placeholder - in real implementation, use qrcodegen library
-    painter.setPen(Qt::black);
-    painter.drawText(qr.rect(), Qt::AlignCenter | Qt::TextWordWrap, "QR Code:\n" + data.left(30) + "...");
-
-    return qr;
+    return QPixmap::fromImage(QrUtil::makeQr(data, size, 4, /*ecLevel=*/3));
 }
 
 } // namespace dinero

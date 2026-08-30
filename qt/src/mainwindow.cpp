@@ -10,6 +10,7 @@
 #include "advisorybanner.h"
 #include "walletwizard.h"
 #include "qrcodegen.h"
+#include "QrUtil.h"
 #include "hardwarewalletwidget.h"  // Hardware wallet support (production-ready)
 #include "dpiwidget.h"             // DPI Pay/Collect
 #include "aipanel.h"
@@ -14924,14 +14925,16 @@ void MainWindow::onGenerateQR() {
   }
 
   // Validate address format
-  if (!address.startsWith("din1q") && !address.startsWith("tdin1q") && !address.startsWith("rdin1q")) {
+  if (!address.startsWith("din1") && !address.startsWith("tdin1") &&
+      !address.startsWith("rdin1") && !address.startsWith("dins1") &&
+      !address.startsWith("tdins1") && !address.startsWith("rdins1")) {
     QMessageBox::warning(this, "Invalid Address",
-      "Invalid Dinero address format.\n\nAddress must start with din1q (mainnet), tdin1q (testnet), or rdin1q (regtest).");
+      "Invalid Dinero address format.\n\nEnter a Dinero transparent or shielded address.");
     return;
   }
 
-  // Generate QR code using our custom generator
-  QPixmap qrCode = dinero::QRCodeGenerator::generate(address, 300, 4);
+  // All Dinero QRs are generated with the centered brand mark and high error correction.
+  QPixmap qrCode = QPixmap::fromImage(QrUtil::makeQr(address, 300, 4, /*ecLevel=*/3));
 
   if (qrCode.isNull()) {
     QMessageBox::critical(this, "QR Generation Failed", "Failed to generate QR code.");
