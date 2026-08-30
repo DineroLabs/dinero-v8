@@ -54,6 +54,12 @@ run_mobile() {
   fi
 }
 
+run_production_integrity() {
+  python3 "${repo_dir}/scripts/ci/check_rpc_admin_policy.py" &&
+  python3 "${repo_dir}/scripts/ci/check_production_placeholders.py"
+}
+
+run_phase production-integrity run_production_integrity
 run_phase readiness env SHIELDED_EVIDENCE_DIR="${evidence_dir}/readiness" \
   SHIELDED_JOBS="${jobs}" "${repo_dir}/scripts/shielded-readiness.sh" "${build_dir}"
 run_phase live-core run_live_core
