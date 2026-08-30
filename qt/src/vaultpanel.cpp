@@ -12,7 +12,9 @@
 #include <QJsonValue>
 #include <QLocale>
 #include <QPushButton>
+#include <QMessageBox>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QVBoxLayout>
 
 namespace {
@@ -165,6 +167,10 @@ void VaultPanel::setWalletScope(const QString& walletName) {
     if (account_id_input_) account_id_input_->setText(account);
     if (withdraw_account_input_) withdraw_account_input_->setText(account);
     appendLog(QString("Wallet switched — vault scope is now %1").arg(wallet_scope_));
+    withdrawal_submitting_ = false;
+    withdrawal_waiting_wallet_status_ = false;
+    withdrawal_journal_stage_.clear();
+    loadWithdrawalJournal();
     refresh();
 }
 
@@ -364,6 +370,7 @@ void VaultPanel::onAccountFieldChanged() {
 }
 
 void VaultPanel::onWithdrawClicked() {
+    if (withdrawal_submitting_ || withdrawal_journal_stage_ == "submitting") return;
     const QString account = withdraw_account_input_->text().trimmed();
     const QString destination = withdraw_destination_input_->text().trimmed();
     const qint64 amount = withdraw_amount_input_->value();
@@ -371,13 +378,22 @@ void VaultPanel::onWithdrawClicked() {
         appendLog("Withdrawal: account and destination are required.");
         return;
     }
-    callRpc("vault.withdraw", QJsonArray{QJsonObject{
-        {"account_id", account},
-        {"amount_una", static_cast<qint64>(amount)},
-        {"destination_address", destination},
-    }});
-    appendLog(QString("→ vault.withdraw account=%1 amount=%2")
-                  .arg(account, formatAmountPlain(amount)));
+    const auto answer = QMessageBox::question(
+        this, "Review Vault Withdrawal",
+        QString("Vault account:\n%1\n\nDestination:\n%2\n\nAmount: %3\n\n"
+                "The active wallet must be unlocked. Enqueuing reserves vault funds.")
+            .arg(account, destination, formatAmountPlain(amount)),
+        QMessageBox::Cancel | QMessageBox::Yes, QMessageBox::Cancel);
+    if (answer != QMessageBox::Yes) return;
+    if (!saveWithdrawalJournal("authorized", account, amount, destination)) {
+        appendLog("Authorization could not be persisted; nothing submitted.");
+        return;
+    }
+    pending_withdrawal_account_ = account;
+    pending_withdrawal_destination_ = destination;
+    pending_withdrawal_amount_ = amount;
+    withdrawal_waiting_wallet_status_ = true;
+    callRpc("wallet.getinfo", QJsonObject{});
 }
 
 void VaultPanel::onCheckStatusClicked() {
@@ -453,6 +469,31 @@ void VaultPanel::onRpcResult(const QString& method, const QJsonValue& result) {
         return;
     }
     if (method == "wallet.getinfo") {
+        if (withdrawal_waiting_wallet_status_) {
+            withdrawal_waiting_wallet_status_ = false;
+            const QJsonObject info = result.toObject();
+            const bool encrypted = info.value("encrypted").toBool(false);
+            if (!info.value("unlocked").toBool(!encrypted)) {
+                saveWithdrawalJournal("rejected", pending_withdrawal_account_,
+                                      pending_withdrawal_amount_,
+                                      pending_withdrawal_destination_);
+                appendLog("Withdrawal rejected locally: unlock the active wallet first.");
+                return;
+            }
+            const QString account = pending_withdrawal_account_;
+            const QString destination = pending_withdrawal_destination_;
+            const qint64 amount = pending_withdrawal_amount_;
+            if (!saveWithdrawalJournal("submitting", account, amount, destination)) {
+                appendLog("Submission state could not be persisted; nothing submitted.");
+                return;
+            }
+            setWithdrawalSubmitting(true);
+            callRpc("vault.withdraw", QJsonArray{QJsonObject{
+                {"account_id", account}, {"amount_una", amount},
+                {"destination_address", destination},
+            }});
+            return;
+        }
         if (!waiting_for_wallet_primary_ || operator_bind_inflight_) {
             return;
         }
@@ -500,6 +541,7 @@ void VaultPanel::onRpcResult(const QString& method, const QJsonValue& result) {
         return;
     }
     if (method == "vault.withdraw") {
+        setWithdrawalSubmitting(false);
         const QString id = result.isObject()
                                ? safeString(result.toObject().value("request_id"))
                                : safeString(result);
@@ -507,6 +549,9 @@ void VaultPanel::onRpcResult(const QString& method, const QJsonValue& result) {
             lbl_last_request_id_->setText("Last request: " + id);
             status_request_id_input_->setText(id);
             appendLog("← vault.withdraw enqueued: " + id);
+            saveWithdrawalJournal("accepted", withdraw_account_input_->text().trimmed(),
+                                  withdraw_amount_input_->value(),
+                                  withdraw_destination_input_->text().trimmed(), id);
         }
         return;
     }
@@ -521,6 +566,11 @@ void VaultPanel::onRpcResult(const QString& method, const QJsonValue& result) {
 }
 
 void VaultPanel::onRpcError(const QString& method, int code, const QString& message) {
+    if (method == "wallet.getinfo" && withdrawal_waiting_wallet_status_) {
+        withdrawal_waiting_wallet_status_ = false;
+        appendLog("Could not verify wallet authorization; nothing submitted.");
+        return;
+    }
     if (!method.startsWith("vault.")) {
         return;
     }
@@ -534,6 +584,49 @@ void VaultPanel::onRpcError(const QString& method, int code, const QString& mess
         return;
     }
     appendLog(QString("✗ %1 [%2]: %3").arg(method).arg(code).arg(message));
+    if (method == "vault.withdraw") {
+        setWithdrawalSubmitting(true);
+        appendLog("Outcome uncertain; automatic retry is disabled. Check status and history first.");
+    }
+}
+
+void VaultPanel::setWithdrawalSubmitting(bool submitting) {
+    withdrawal_submitting_ = submitting;
+    if (btn_withdraw_) btn_withdraw_->setEnabled(!submitting);
+}
+
+bool VaultPanel::saveWithdrawalJournal(const QString& stage, const QString& account,
+                                       qint64 amount, const QString& destination,
+                                       const QString& requestId) {
+    QSettings s;
+    const QString base = "vault/withdrawalJournal/" + accountKeyForWalletScope(wallet_scope_);
+    s.setValue(base + "/stage", stage);
+    s.setValue(base + "/account", account);
+    s.setValue(base + "/amount", amount);
+    s.setValue(base + "/destination", destination);
+    s.setValue(base + "/requestId", requestId);
+    s.setValue(base + "/updatedAt", QDateTime::currentDateTimeUtc());
+    s.sync();
+    withdrawal_journal_stage_ = stage;
+    return s.status() == QSettings::NoError && s.value(base + "/stage").toString() == stage;
+}
+
+void VaultPanel::loadWithdrawalJournal() {
+    QSettings s;
+    const QString base = "vault/withdrawalJournal/" + accountKeyForWalletScope(wallet_scope_);
+    withdrawal_journal_stage_ = s.value(base + "/stage").toString();
+    if (withdrawal_journal_stage_.isEmpty()) return;
+    withdraw_account_input_->setText(s.value(base + "/account").toString());
+    withdraw_amount_input_->setValue(s.value(base + "/amount").toInt());
+    withdraw_destination_input_->setText(s.value(base + "/destination").toString());
+    const QString requestId = s.value(base + "/requestId").toString();
+    if (withdrawal_journal_stage_ == "submitting") {
+        setWithdrawalSubmitting(true);
+        appendLog("Previous withdrawal outcome is uncertain; automatic retry is disabled.");
+    } else if (withdrawal_journal_stage_ == "accepted" && !requestId.isEmpty()) {
+        status_request_id_input_->setText(requestId);
+        lbl_last_request_id_->setText("Last request: " + requestId);
+    }
 }
 
 void VaultPanel::appendLog(const QString& message) {

@@ -71,6 +71,9 @@ private:
     void clearWalletScopedFields(const QString& operatorText);
     void requestWalletPrimaryBinding();
     void updateDeveloperSummary();
+    void loadWithdrawalJournal();
+    bool saveWithdrawalJournal(const QString&, const QString&, qint64, const QString&, const QString& = {});
+    void setWithdrawalSubmitting(bool submitting);
 
     RpcClient* rpc_;
     QTimer refresh_timer_;
@@ -78,6 +81,12 @@ private:
     bool operator_bind_attempted_ = false;
     bool waiting_for_wallet_primary_ = false;
     bool operator_bind_inflight_ = false;
+    bool withdrawal_submitting_ = false;
+    bool withdrawal_waiting_wallet_status_ = false;
+    QString withdrawal_journal_stage_;
+    QString pending_withdrawal_account_;
+    QString pending_withdrawal_destination_;
+    qint64 pending_withdrawal_amount_ = 0;
     QString developer_summary_ = QStringLiteral("Vault raw metrics: waiting for first refresh...");
 
     // Service-level metrics panel.
