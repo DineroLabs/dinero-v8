@@ -62,6 +62,12 @@ private Q_SLOTS:
     QVERIFY(!dinero::qt::shouldRunHashEngine(true, false, true));
   }
 
+  void consolidationIsSingleFlight() {
+    QVERIFY(dinero::qt::shouldEnableConsolidation(51, false));
+    QVERIFY(!dinero::qt::shouldEnableConsolidation(50, false));
+    QVERIFY(!dinero::qt::shouldEnableConsolidation(200, true));
+  }
+
   void recoverableTemplateErrorsExpireFromTheLiveView() {
     QCOMPARE(dinero::qt::kTransientMiningErrorMs, 15000);
     QVERIFY(dinero::qt::isTransientMiningError(

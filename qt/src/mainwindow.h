@@ -332,6 +332,7 @@ private:
   QPushButton* btnConsolidate_ = nullptr;
   int cachedUtxoCount_ = 0;
   QJsonObject pendingConsolidateParams_;
+  bool consolidationInFlight_ = false;
   QTextEdit* txtValidation_;
   
   // Send tab — two-axis: Action (transfer/contract/convert) x Visibility (public/confidential/private)

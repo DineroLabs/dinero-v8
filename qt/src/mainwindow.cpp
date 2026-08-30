@@ -7100,17 +7100,15 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       }
     }
   } else if (method == "wallet.consolidate") {
-    // Re-enable consolidate button
-    if (btnConsolidate_) {
-      btnConsolidate_->setEnabled(true);
-    }
-
     QJsonObject obj = result.toObject();
     const bool isPreview = obj.value("dry_run").toBool(false) && obj.value("ok").toBool(false);
     const int sel = obj.value("selected_inputs").toInt(0);
 
     if (isPreview && sel == 0) {
+      consolidationInFlight_ = false;
       pendingConsolidateParams_ = {};
+      if (btnConsolidate_) btnConsolidate_->setEnabled(
+        dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
       // Daemon found nothing eligible to consolidate.
       QMessageBox::information(this, "Consolidation",
         "Nothing to consolidate — no eligible UTXOs.");
@@ -7134,17 +7132,24 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         if (btnConsolidate_) btnConsolidate_->setEnabled(false);
         rpc_->callNamed("wallet.consolidate", p);
       } else {
+        consolidationInFlight_ = false;
         pendingConsolidateParams_ = {};
+        if (btnConsolidate_) btnConsolidate_->setEnabled(
+          dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
         if (btnConsolidate_ && cachedUtxoCount_ > 50) {
           btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
         }
       }
     } else if (!obj.value("ok").toBool(true)) {
+      consolidationInFlight_ = false;
       pendingConsolidateParams_ = {};
+      if (btnConsolidate_) btnConsolidate_->setEnabled(
+        dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
       // Fee gate or execution error — surface the daemon's reason.
       QMessageBox::warning(this, "Consolidation Failed",
         obj.value("reason").toString(obj.value("error").toString("Consolidation could not be completed.")));
     } else {
+      consolidationInFlight_ = false;
       pendingConsolidateParams_ = {};
       // Executed + broadcast.
       const QString txid = obj.value("txid").toString();
@@ -7492,6 +7497,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   }
 
   if (method == "wallet.consolidate") {
+    consolidationInFlight_ = false;
     pendingConsolidateParams_ = {};
     // Re-enable the consolidate button on error
     if (btnConsolidate_) {
@@ -10656,6 +10662,8 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
     if (cachedUtxoCount_ > 50) {
       btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
       btnConsolidate_->setVisible(true);
+      btnConsolidate_->setEnabled(
+        dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
     } else {
       btnConsolidate_->setVisible(false);
     }
@@ -14566,6 +14574,9 @@ void MainWindow::onCreatePSBT() {
 }
 
 void MainWindow::onConsolidateUTXOs() {
+  if (consolidationInFlight_) {
+    return;
+  }
   // Check wallet unlock state
   if (!walletUnlocked_) {
     QMessageBox::StandardButton reply = QMessageBox::warning(this,
@@ -14621,6 +14632,7 @@ void MainWindow::onConsolidateUTXOs() {
     btnConsolidate_->setEnabled(false);
     btnConsolidate_->setText("Consolidating...");
   }
+  consolidationInFlight_ = true;
 
   // Preview first: dry-run plan drives the confirmation dialog, then broadcast.
   QJsonObject params;

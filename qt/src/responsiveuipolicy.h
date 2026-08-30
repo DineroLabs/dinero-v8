@@ -44,6 +44,10 @@ inline bool shouldRunMiningCinematic(bool mining, bool mining_tab_active) {
   return mining && mining_tab_active;
 }
 
+inline bool shouldEnableConsolidation(int utxo_count, bool in_flight) {
+  return utxo_count > 50 && !in_flight;
+}
+
 inline bool shouldRunHashEngine(bool mining, bool mining_tab_active,
                                 bool /*block_highlight_active*/) {
   // A found block changes row styling only. It must never pause hashing or
