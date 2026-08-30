@@ -59,7 +59,16 @@ cross-platform gates, and complete post-cutover wallet construction are done.
      plus 200-output proof-verification measurements.
 7. **CI-ready local gate**
    - Added a workflow that invokes the same readiness/security scripts and
-     uploads evidence. It is wiring only until GitHub Actions access returns.
+   uploads evidence. It is wiring only until GitHub Actions access returns.
+8. **Three-client parity campaign**
+   - `scripts/shielded-full-local-campaign.sh` now runs the readiness, live
+     addressed/multi-note/restart/reorg, determinism, platform, performance,
+     sanitizer/fuzzer, and native mobile phases through one command.
+   - Every phase writes an explicit PASS/FAIL status. The final package includes
+     provenance and SHA-256 hashes and exits nonzero if any phase failed.
+   - Optional `ANDROID_SERIAL` and `IOS_DEVICE_ID` values add install/restart or
+     install/launch checks on attached production devices without enabling a
+     hidden regtest mode or bypassing the mainnet spend lock.
 
 ## Evidence collected
 
@@ -90,6 +99,18 @@ cross-platform gates, and complete post-cutover wallet construction are done.
   verification of a maximum 200+200 bundle therefore projects to about 10.36 s
   before transaction/state overhead; policy needs an explicit verification-cost
   budget or measured parallel strategy.
+- The 2026-08-30 parity rerun completed a live two-note transfer on regtest:
+  two 0.5-DIN notes funded a 0.7-DIN payment, the wallet selected both notes,
+  auto-sized a 44,372-una fee, and rejected a concurrent double spend.
+- Addressed receive detection, forced-ingress rollback, clean restart, and a
+  crash during shielded disconnect/reorg all converged to the expected
+  canonical note/tree state.
+- The rerun's bounded libFuzzer campaign completed 15,297,105 executions in
+  61 seconds with no crash or timeout and 40 MiB peak RSS. This is a smoke/soak
+  checkpoint, not a substitute for the recommended 24–48 hour campaign.
+- Pixel 7 install/restart passed on API 36/arm64-v8a. The running full-node app
+  baseline measured approximately 371 MiB PSS / 512 MiB RSS after the local
+  build cycle; this is not peak proving memory.
 
 A dense shielded-chain fixture and on-device mobile RSS run still require
 approved datasets/devices. The performance campaign records these as `NOT RUN`
