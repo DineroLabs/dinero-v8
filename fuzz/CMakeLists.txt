@@ -11,10 +11,30 @@ if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     return()
 endif()
 
-# Fuzzing flags
-set(FUZZ_FLAGS "-fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer")
+# Fuzzing flags. Allow the runtime set to be selected because Homebrew LLVM's
+# ASan runtime deadlocks during dyld initialization on some newer macOS hosts;
+# those hosts run ASan separately with Apple Clang and fuzz with UBSan.
+set(DINERO_FUZZ_SANITIZERS "fuzzer,address,undefined" CACHE STRING
+    "Comma-separated Clang sanitizers used by fuzz targets")
+set(FUZZ_FLAGS "-fsanitize=${DINERO_FUZZ_SANITIZERS} -fno-omit-frame-pointer")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${FUZZ_FLAGS}")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${FUZZ_FLAGS}")
+
+# Shielded parser/decryption surfaces required by the external-review package.
+add_executable(fuzz_shielded_surfaces fuzz_shielded_surfaces.cpp)
+target_include_directories(fuzz_shielded_surfaces PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(fuzz_shielded_surfaces PRIVATE
+    dinero_shielded dinero_wallet sqlite3 OpenSSL::Crypto)
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz_corpus/shielded)
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz_crashes/shielded)
+file(WRITE ${CMAKE_BINARY_DIR}/fuzz_corpus/shielded/address_seed "dins1invalid")
+add_custom_target(fuzz_shielded_quick
+    COMMAND $<TARGET_FILE:fuzz_shielded_surfaces>
+        ${CMAKE_BINARY_DIR}/fuzz_corpus/shielded
+        -artifact_prefix=${CMAKE_BINARY_DIR}/fuzz_crashes/shielded/
+        -max_len=200000 -timeout=5 -max_total_time=60 -print_final_stats=1
+    DEPENDS fuzz_shielded_surfaces)
 
 # HTTP Parser Fuzzer
 add_executable(http_parser_fuzz http_parser_fuzz.cpp)
