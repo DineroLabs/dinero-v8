@@ -1385,6 +1385,17 @@ if(BUILD_TESTING)
   target_compile_definitions(test_wallet_scoped_state PRIVATE QT_NO_KEYWORDS)
   add_test(NAME WalletScopedState COMMAND test_wallet_scoped_state)
 
+  add_executable(test_shielded_transfer_policy
+    tests/test_shielded_transfer_policy.cpp
+    src/shieldedtransferpolicy.h
+  )
+  target_link_libraries(test_shielded_transfer_policy PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  target_compile_definitions(test_shielded_transfer_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME ShieldedTransferPolicy COMMAND test_shielded_transfer_policy)
+
   add_executable(test_node_poller
     tests/test_node_poller.cpp
     src/nodepoller.cpp

@@ -82,6 +82,12 @@ private:
     // network's prefix (dins on mainnet, tdins testnet, rdins regtest),
     // derived from the loaded receive address, instead of listing all three.
     void applyActiveHrp();
+    void loadTransferJournal();
+    bool saveTransferJournal(const QString& stage, const QString& address,
+                             qint64 amountUna, const QString& memo = {},
+                             const QString& txid = {}, qint64 feeUna = 0);
+    void clearTransferJournal();
+    void setTransferSubmitting(bool submitting);
 
     RpcClient* rpc_;
 
@@ -126,6 +132,8 @@ private:
     QPushButton* transferBtn_ = nullptr;
     QLabel* transferResultLabel_ = nullptr;
     bool amountUpdating_ = false;  // re-entrancy guard for DIN↔una mirroring
+    bool transferSubmitting_ = false;
+    QString transferJournalStage_;
 
     // Unshield form
     QLineEdit* unshieldAmountEdit_ = nullptr;
