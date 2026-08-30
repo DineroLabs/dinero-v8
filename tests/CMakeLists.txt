@@ -12036,3 +12036,8 @@ add_test(
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools/fleet-watcher
 )
 set_tests_properties(FleetWatcherTests PROPERTIES TIMEOUT 120)
+add_executable(test_contract_signing_package tests/security/test_contract_signing_package.cpp)
+target_link_libraries(test_contract_signing_package PRIVATE dinero_core)
+target_include_directories(test_contract_signing_package PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME ContractSigningPackageSecurity COMMAND test_contract_signing_package)
+set_tests_properties(ContractSigningPackageSecurity PROPERTIES LABELS "contract;security;mandatory")

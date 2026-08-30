@@ -907,6 +907,7 @@ set(DINERO_CORE_DAEMON_EDGE_SERVICE_SOURCES
 # Excludes: main(), RPC server, gRPC server, WebSocket server
 # Includes: consensus, mining, mempool, services, metrics, daemon context
 add_library(dinero_core STATIC
+  src/contracts/contract_signing_package.cpp
   # Daemon context (dependency injection container access)
   src/daemon/daemon_context.cpp
   ${DINERO_CORE_WEBSOCKET_SOURCES}

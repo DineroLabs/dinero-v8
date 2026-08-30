@@ -420,6 +420,13 @@ void EscrowWidget::onExportCsv()
 
 void EscrowWidget::onExportSighash()
 {
+    QMessageBox::warning(
+        this, "Contract Signing Unavailable",
+        "Contract fund movement is disabled in v8.1.9. The daemon does not yet "
+        "produce a canonical signing package bound to the funding outpoint, action, "
+        "destination, amount, chain, and expiry.");
+    return;
+
     if (selectedContractId_.isEmpty()) {
         QMessageBox::warning(this, "No Selection", "Please select a contract first.");
         return;
@@ -532,6 +539,12 @@ void EscrowWidget::onExportSighash()
 
 void EscrowWidget::onImportSignatures()
 {
+    QMessageBox::warning(
+        this, "Contract Broadcast Unavailable",
+        "Imported contract signatures cannot be broadcast in v8.1.9 because the "
+        "daemon cannot validate a bound signing package. No RPC was called.");
+    return;
+
     if (selectedContractId_.isEmpty()) {
         QMessageBox::warning(this, "No Selection", "Please select a contract first.");
         return;
@@ -614,23 +627,9 @@ void EscrowWidget::onImportSignatures()
         return;
     }
 
-    // Call appropriate RPC method
-    QJsonObject params{
-        {"contract_id", sigData["contract_id"].toString()},
-        {"to_address", sigData["to_address"].toString()}
-    };
-
-    if (isRefund) {
-        params["refund_address"] = sigData["to_address"].toString();
-        params["sig_buyer"] = sigData["sig_buyer"].toString();
-        callRpc("contract.broadcastrefund", QJsonArray{params});
-        appendLog(QString("Broadcasting refund transaction..."));
-    } else {
-        params["sig_buyer"] = sigData["sig_buyer"].toString();
-        params["sig_seller"] = sigData["sig_seller"].toString();
-        callRpc("contract.broadcastrelease", QJsonArray{params});
-        appendLog(QString("Broadcasting release transaction..."));
-    }
+    QMessageBox::critical(this, "Contract Broadcast Disabled",
+                          "The signature package was parsed but not submitted. "
+                          "Bound contract signing is not available in v8.1.9.");
 }
 
 void EscrowWidget::onContractSelected(const QModelIndex& index)
@@ -1565,23 +1564,9 @@ void EscrowWidget::showImportQRDialog()
         auto reply = QMessageBox::question(&dialog, "Confirm Broadcast", confirmMsg);
 
         if (reply == QMessageBox::Yes) {
-            // Call the appropriate RPC method
-            bool isRefund = sigData["is_refund"].toBool();
-            QString method = isRefund ? "contract.broadcastrefund" : "contract.broadcastrelease";
-
-            QJsonObject params{
-                {"contract_id", sigData["contract_id"].toString()},
-                {"to_address", sigData["to_address"].toString()},
-                {"sig_buyer", sigData["sig_buyer"].toString()},
-                {"sig_seller", sigData["sig_seller"].toString()}
-            };
-
-            callRpc(method, QJsonArray{params});
-            appendLog(QString("Broadcasting %1 transaction for contract %2...")
-                .arg(isRefund ? "refund" : "release")
-                .arg(sigData["contract_id"].toString()));
-
-            dialog.accept();
+            QMessageBox::critical(&dialog, "Contract Broadcast Disabled",
+                                  "The package was not submitted. Bound contract signing "
+                                  "is not available in v8.1.9.");
         }
     });
     buttonLayout->addWidget(importButton);
