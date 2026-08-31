@@ -210,12 +210,18 @@ din::Json CcvJson(const CCVPlan& plan) {
     return result;
 }
 
-void RequireRegtest() {
-    if (!dinero::IsChainSelected() ||
-        dinero::Params().network_id != "regtest") {
+void RequireScheduledProfileNetwork() {
+    if (!dinero::IsChainSelected()) {
+        throw std::runtime_error("covenant wallet RPC requires a selected network");
+    }
+    const auto& params = dinero::Params();
+    const bool ctvScheduled = params.ctv_activation_height != UINT32_MAX;
+    const bool ccvScheduled = params.ccv_activation_height != UINT32_MAX;
+    if (!ctvScheduled || !ccvScheduled ||
+        params.ctv_activation_height != params.ccv_activation_height) {
         throw std::runtime_error(
-            "covenant wallet RPC is regtest-only while profile v1 "
-            "remains dormant on mainnet and testnet");
+            "covenant wallet RPC is unavailable because profile v1 is not "
+            "atomically scheduled on this network");
     }
 }
 
@@ -304,7 +310,7 @@ bool Track(
 template <typename Function>
 din::Json RpcResult(Function&& function) {
     try {
-        RequireRegtest();
+        RequireScheduledProfileNetwork();
         din::Json result = function();
         result["success"] = true;
         result["rpc_schema"] = "din.wallet.covenant.profile.v1";

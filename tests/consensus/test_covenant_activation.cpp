@@ -72,16 +72,18 @@ private:
 TEST(CovenantActivation, ProductionNetworksPinReviewedActivationPolicy) {
     SelectParams(Chain::MAINNET);
     EXPECT_EQ(Params().taproot_scriptpath_activation_height, 1U);
-    EXPECT_EQ(Params().ctv_activation_height, UINT32_MAX);
+    EXPECT_EQ(Params().ctv_activation_height, 100000U);
     EXPECT_EQ(Params().csfs_activation_height, UINT32_MAX);
     EXPECT_EQ(Params().txhash_activation_height, UINT32_MAX);
-    EXPECT_EQ(Params().ccv_activation_height, UINT32_MAX);
+    EXPECT_EQ(Params().ccv_activation_height, 100000U);
     EXPECT_EQ(CovenantActivationParams::CovenantFlags(99999, Params()),
               dinero::consensus::SCRIPT_VERIFY_NONE);
     EXPECT_EQ(CovenantActivationParams::CovenantFlags(100000, Params()),
-              dinero::consensus::SCRIPT_VERIFY_NONE);
+              dinero::consensus::SCRIPT_VERIFY_CHECKTEMPLATEVERIFY |
+                  dinero::consensus::SCRIPT_VERIFY_CHECKCONTRACT);
     EXPECT_EQ(CovenantActivationParams::CovenantFlags(UINT32_MAX, Params()),
-              dinero::consensus::SCRIPT_VERIFY_NONE);
+              dinero::consensus::SCRIPT_VERIFY_CHECKTEMPLATEVERIFY |
+                  dinero::consensus::SCRIPT_VERIFY_CHECKCONTRACT);
 
     SelectParams(Chain::TESTNET);
     EXPECT_EQ(Params().taproot_scriptpath_activation_height, 200U);
@@ -199,18 +201,15 @@ TEST(CovenantActivation, RelayPolicyRejectsDormantRevealedOpcodes) {
         ctv, {}, 19, params, &reason));
     EXPECT_NE(reason.find("missing spent output scripts"), std::string::npos);
 
-    // Pin the production deferral through the actual mainnet parameters, not
-    // only through a synthetic ChainParams fixture. No height, including the
-    // old 100,000 boundary, may make either reviewed opcode relay-standard
-    // until a new activation is explicitly authorized.
+    // Pin production relay policy on both sides of the authorized boundary.
     SelectParams(Chain::MAINNET);
     EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
         ctv, p2trScripts, 99999, Params(), &reason));
-    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
         ctv, p2trScripts, 100000, Params(), &reason));
     EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
         ccv, p2trScripts, 99999, Params(), &reason));
-    EXPECT_FALSE(dinero::policy::IsCovenantRelayStandard(
+    EXPECT_TRUE(dinero::policy::IsCovenantRelayStandard(
         ccv, p2trScripts, 100000, Params(), &reason));
 }
 
@@ -218,7 +217,7 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
     SelectParams(Chain::MAINNET);
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "48bb4b27879a492dd8a83fd1e4826ec422f6b9ac3b1ae6797c9469783036c76e");
+        "68e0a99766e8ab1224ee040ec715bbbd0a544a59d4b3a96025dd35f77f4e960a");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);
@@ -299,7 +298,7 @@ TEST(CovenantActivation, HighLevelValidationUsesSpendHeightNotCoinHeight) {
     EXPECT_EQ(result.total_fee, dinero::AmountUna::Una(1'000));
 }
 
-TEST(CovenantActivation, MainnetDeferralKeepsHistoricalNOP4AtFormerBoundary) {
+TEST(CovenantActivation, MainnetBoundaryEnforcesCtvAtBlock100000) {
     SelectParams(Chain::MAINNET);
 
     Transaction tx;
@@ -348,18 +347,33 @@ TEST(CovenantActivation, MainnetDeferralKeepsHistoricalNOP4AtFormerBoundary) {
             dinero::AmountUna::Una(10'000), spent_script,
             1 /* coin creation height */, false));
 
-    // The deliberately wrong template remains accepted because 0xb3 is still
-    // historical NOP4. Neither the former boundary nor the UINT32_MAX sentinel
-    // may activate CTV.
+    // The deliberately wrong template remains historical NOP4 through block
+    // 99,999 and is rejected from the activation block onward.
     const auto before =
         TransactionValidator::ValidateTransaction(tx, &provider, 99999);
     EXPECT_TRUE(before.valid) << before.error;
     const auto former_boundary =
         TransactionValidator::ValidateTransaction(tx, &provider, 100000);
-    EXPECT_TRUE(former_boundary.valid) << former_boundary.error;
+    EXPECT_FALSE(former_boundary.valid);
     const auto sentinel =
         TransactionValidator::ValidateTransaction(tx, &provider, UINT32_MAX);
-    EXPECT_TRUE(sentinel.valid) << sentinel.error;
+    EXPECT_FALSE(sentinel.valid);
+
+    // Mixed-version compatibility: a legacy node with the former dormant
+    // parameters accepts the activation-valid transaction set, but also fails
+    // to reject this deliberately invalid CTV spend. This pins the deployment
+    // requirement: old nodes do not fork on valid upgraded blocks, yet they
+    // cannot remain validators at or after block 100,000.
+    auto& legacy = dinero::MutableParams();
+    const uint32_t saved_ctv = legacy.ctv_activation_height;
+    const uint32_t saved_ccv = legacy.ccv_activation_height;
+    legacy.ctv_activation_height = UINT32_MAX;
+    legacy.ccv_activation_height = UINT32_MAX;
+    const auto legacy_result =
+        TransactionValidator::ValidateTransaction(tx, &provider, 100000);
+    legacy.ctv_activation_height = saved_ctv;
+    legacy.ccv_activation_height = saved_ccv;
+    EXPECT_TRUE(legacy_result.valid) << legacy_result.error;
 }
 
 TEST(CovenantActivation, CtvPrecomputationMatchesCanonicalHashing) {
