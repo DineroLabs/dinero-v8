@@ -222,11 +222,30 @@ bool DatadirGuard::Acquire(const std::filesystem::path& datadir, std::string& er
         return false;
     }
 #else
+    // Never leak the datadir lock into exec'd children (for example the
+    // embedded Tor process).  Without close-on-exec, a surviving child keeps
+    // flock() alive after dinerod exits and every subsequent daemon launch is
+    // rejected as "datadir already in use".
+#ifdef O_CLOEXEC
+    lock_fd_ = ::open(lock_path_.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+#else
     lock_fd_ = ::open(lock_path_.c_str(), O_RDWR | O_CREAT, 0644);
+#endif
     if (lock_fd_ < 0) {
         error = "Failed to open datadir lock file " + PathString(lock_path_) + ": " + std::strerror(errno);
         return false;
     }
+
+#ifndef O_CLOEXEC
+    const int fd_flags = ::fcntl(lock_fd_, F_GETFD);
+    if (fd_flags < 0 || ::fcntl(lock_fd_, F_SETFD, fd_flags | FD_CLOEXEC) != 0) {
+        error = "Failed to mark datadir lock close-on-exec " + PathString(lock_path_) +
+                ": " + std::strerror(errno);
+        ::close(lock_fd_);
+        lock_fd_ = -1;
+        return false;
+    }
+#endif
 
     if (::flock(lock_fd_, LOCK_EX | LOCK_NB) != 0) {
         std::ostringstream oss;

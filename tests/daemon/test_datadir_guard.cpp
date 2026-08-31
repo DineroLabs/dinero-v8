@@ -8,6 +8,8 @@
 #include <string>
 
 #ifndef _WIN32
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #else
@@ -109,5 +111,40 @@ TEST(DatadirGuard, BlocksSecondProcessWhileHeld) {
     ASSERT_EQ(waitpid(child, &status, 0), child);
     ASSERT_TRUE(WIFEXITED(status));
     EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST(DatadirGuard, ExecChildDoesNotInheritLock) {
+    TempDir tmp("datadir-guard-cloexec");
+    dinero::daemon::DatadirGuard guard;
+    std::string error;
+    ASSERT_TRUE(guard.Acquire(tmp.path, error)) << error;
+
+    int exec_sync[2] = {-1, -1};
+    ASSERT_EQ(pipe(exec_sync), 0);
+    ASSERT_NE(fcntl(exec_sync[1], F_SETFD, FD_CLOEXEC), -1);
+
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+        close(exec_sync[0]);
+        execl("/bin/sleep", "sleep", "2", static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    close(exec_sync[1]);
+    char byte = 0;
+    // EOF proves exec() closed the synchronization descriptor, so the child
+    // is now alive in the new image while we test whether it retained flock.
+    ASSERT_EQ(read(exec_sync[0], &byte, 1), 0);
+    close(exec_sync[0]);
+
+    guard.Release();
+    dinero::daemon::DatadirGuard replacement;
+    std::string replacement_error;
+    EXPECT_TRUE(replacement.Acquire(tmp.path, replacement_error)) << replacement_error;
+
+    kill(child, SIGTERM);
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
 }
 #endif
