@@ -363,12 +363,35 @@ jobs:
         run: |
           $version = '${{ steps.ver.outputs.version }}'
           foreach ($case in @(
-            @{ Installer = "packaging\windows\dist\Dinero-$version-windows-x86_64-Setup.exe"; Dir = (Join-Path $env:ProgramFiles 'Dinero'); Required = @('dinero-qt.exe','dinerod.exe','Uninstall.exe') },
+            @{ Installer = "packaging\windows\dist\Dinero-$version-windows-x86_64-Setup.exe"; Dir = (Join-Path $env:ProgramFiles 'Dinero'); Required = @('dinero-qt.exe','dinerod.exe','Uninstall.exe'); Gui = $true },
             @{ Installer = "packaging\windows\dist\Dinero-Server-$version-windows-x86_64-Setup.exe"; Dir = (Join-Path $env:ProgramFiles 'Dinero-Server'); Required = @('dinerod.exe','dinero-cli.exe','Uninstall.exe') }
           )) {
             $install = Start-Process -FilePath (Resolve-Path $case.Installer) -ArgumentList '/S' -Wait -PassThru
             if ($install.ExitCode -ne 0) { throw "installer failed: $($case.Installer)" }
             foreach ($name in $case.Required) { if (-not (Test-Path (Join-Path $case.Dir $name))) { throw "missing installed $name" } }
+            if ($case.Gui) {
+              # Regression gate for #673: the first tab change used to dereference the
+              # mining output widget before construction, shortly after the embedded
+              # daemon connected. Keep the installed GUI alive through that path and
+              # require its bundled daemon to have started.
+              $dataDir = Join-Path $env:RUNNER_TEMP 'dinero-qt-startup-smoke'
+              New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+              $qt = Start-Process -FilePath (Join-Path $case.Dir 'dinero-qt.exe') -ArgumentList "-datadir=$dataDir" -PassThru
+              try {
+                $deadline = (Get-Date).AddSeconds(90)
+                $daemonSeen = $false
+                do {
+                  Start-Sleep -Seconds 2
+                  $qt.Refresh()
+                  if ($qt.HasExited) { throw "dinero-qt exited during embedded-daemon startup with code $($qt.ExitCode)" }
+                  $daemonSeen = $daemonSeen -or ($null -ne (Get-Process dinerod -ErrorAction SilentlyContinue))
+                } while ((Get-Date) -lt $deadline)
+                if (-not $daemonSeen) { throw 'dinero-qt stayed open but its embedded dinerod never started' }
+              } finally {
+                Get-Process dinerod -ErrorAction SilentlyContinue | Stop-Process -Force
+                if (-not $qt.HasExited) { Stop-Process -Id $qt.Id -Force }
+              }
+            }
             $uninstall = Start-Process -FilePath (Join-Path $case.Dir 'Uninstall.exe') -ArgumentList '/S' -Wait -PassThru
             if ($uninstall.ExitCode -ne 0) { throw "uninstall failed: $($case.Installer)" }
           }
