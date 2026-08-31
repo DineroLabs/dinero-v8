@@ -235,8 +235,11 @@ uint64_t BenchmarkCcv(const CcvCase& test_case, size_t rounds) {
 
 int main() {
     std::cout << "{\n  \"ctv\": [\n";
-    const std::array<size_t, 5> ctv_counts{1, 64, 256, 512, 1'024};
-    const std::array<size_t, 5> ctv_rounds{2'000, 300, 60, 20, 5};
+    // 1,800 inputs produces a ~95 KiB transaction, close to the 100,000-byte
+    // consensus ceiling while leaving room for encoding-size variation.
+    const std::array<size_t, 6> ctv_counts{
+        1, 64, 256, 512, 1'024, 1'800};
+    const std::array<size_t, 6> ctv_rounds{2'000, 300, 60, 20, 5, 2};
     for (size_t index = 0; index < ctv_counts.size(); ++index) {
         const Transaction tx =
             BuildTransparentTransaction(ctv_counts[index]);
@@ -257,8 +260,9 @@ int main() {
     }
 
     std::cout << "  ],\n  \"taproot_sighash\": [\n";
-    const std::array<size_t, 5> sighash_counts{1, 64, 256, 512, 1'024};
-    const std::array<size_t, 5> sighash_rounds{2'000, 200, 30, 10, 3};
+    const std::array<size_t, 6> sighash_counts{
+        1, 64, 256, 512, 1'024, 1'800};
+    const std::array<size_t, 6> sighash_rounds{2'000, 200, 30, 10, 3, 1};
     for (size_t index = 0; index < sighash_counts.size(); ++index) {
         const Transaction tx =
             BuildTransparentTransaction(sighash_counts[index]);
