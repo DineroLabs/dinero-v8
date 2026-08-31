@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.21)
 # In a monorepo release the root owns the shared version. Keep a standalone
 # fallback for legacy direct builds of qt/.
 if(NOT DEFINED DINERO_MONOREPO_VERSION)
-  set(DINERO_MONOREPO_VERSION 8.1.9)
+  set(DINERO_MONOREPO_VERSION 8.1.10)
 endif()
 project(dinero-qt VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 
