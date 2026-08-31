@@ -70,6 +70,17 @@ set_tests_properties(QtMiningOutputLifetime PROPERTIES
   LABELS "qt;windows;regression"
   TIMEOUT 5
 )
+
+add_test(
+  NAME QtVaultConsumerParity
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_FILE=${CMAKE_SOURCE_DIR}/qt/src/vaultpanel.cpp
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_vault_consumer_parity.cmake
+)
+set_tests_properties(QtVaultConsumerParity PROPERTIES
+  LABELS "qt;vault;regression;mandatory"
+  TIMEOUT 5
+)
 add_executable(test_ripemd160_src_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/crypto/ripemd160.cpp
