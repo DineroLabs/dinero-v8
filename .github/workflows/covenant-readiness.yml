@@ -1,0 +1,83 @@
+name: Covenant readiness
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'include/consensus/covenants.h'
+      - 'src/consensus/covenants.cpp'
+      - 'src/consensus/chainparams_impl.cpp'
+      - 'src/wallet/covenant_profile.cpp'
+      - 'src/rpc/methods_wallet_covenant_profile.cpp'
+      - 'tests/consensus/test_covenant_*'
+      - 'tests/integration/test_covenant_*'
+      - 'scripts/covenant-*.sh'
+      - 'tools/covenant_*'
+      - 'docs/consensus/COVENANT_*'
+      - '.github/workflows/covenant-readiness.yml'
+  schedule:
+    - cron: '41 4 * * 2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: covenant-readiness-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache pkg-config python3 perl \
+            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.75.0
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: covenant-readiness-linux
+          max-size: 1G
+
+      - name: Build vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+
+      - name: Build depends
+        run: |
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j
+
+      - name: Configure release candidate
+        run: |
+          cmake -S . -B build-covenant \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Run canonical covenant release gate
+        run: ./scripts/covenant-readiness.sh --build-dir build-covenant --mutation
+
+      - name: Upload machine-readable evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: covenant-readiness-${{ github.sha }}
+          path: |
+            build-covenant/covenant-resource-report.json
+            build-covenant/covenant-mutation-report.json
+          if-no-files-found: warn

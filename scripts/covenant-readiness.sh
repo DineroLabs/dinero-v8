@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproducible local assurance gate for the dormant covenant implementation.
+# Reproducible local assurance gate for the covenant activation candidate.
 
 set -euo pipefail
 
