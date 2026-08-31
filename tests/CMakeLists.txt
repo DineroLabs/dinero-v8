@@ -60,6 +60,17 @@ set_tests_properties(QtMiningConsoleStyle PROPERTIES
   TIMEOUT 5
 )
 
+add_test(
+  NAME QtMiningOutputLifetime
+  COMMAND ${CMAKE_COMMAND}
+    -DHEADER_FILE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.h
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_mining_output_lifetime.cmake
+)
+set_tests_properties(QtMiningOutputLifetime PROPERTIES
+  LABELS "qt;windows;regression"
+  TIMEOUT 5
+)
+
 # Production Qt builds keep WebSocket-only features disabled, so the Overview
 # mempool must retain its canonical verbose polling feed, visible rows, and
 # wallet-history refresh behavior in the ordinary build.
