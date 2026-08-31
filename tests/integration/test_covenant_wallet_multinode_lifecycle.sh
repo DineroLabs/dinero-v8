@@ -362,6 +362,12 @@ GUARD_CTV="$(covenant_result "${GUARD_RPC}" "${DATA_GUARD}" \
     "wallet.covenant.ctvcreate" \
     '{"outputs":[{"value_una":1,"script_pubkey":"51"}]}')"
 GUARD_DESCRIPTOR="$(jq -r '.recovery_descriptor' <<<"${GUARD_CTV}")"
+GUARD_FUND="$(rpc_failure_result "${GUARD_RPC}" "${DATA_GUARD}" \
+    "wallet.covenant.ctvfund" \
+    '{"outputs":[{"value_una":1,"script_pubkey":"51"}],"spend_fee_una":1}')"
+jq -e '.success == false and (.error | contains("before activation"))' \
+    <<<"${GUARD_FUND}" >/dev/null \
+    || fail "mainnet covenant funding did not fail closed: ${GUARD_FUND}"
 ZERO_TXID="0000000000000000000000000000000000000000000000000000000000000000"
 GUARD_SPEND="$(rpc_failure_result "${GUARD_RPC}" "${DATA_GUARD}" \
     "wallet.covenant.ctvspend" \

@@ -81,6 +81,17 @@ set_tests_properties(QtVaultConsumerParity PROPERTIES
   LABELS "qt;vault;regression;mandatory"
   TIMEOUT 5
 )
+add_test(
+  NAME QtContractProductionWiring
+  COMMAND ${CMAKE_COMMAND}
+    -DMAINWINDOW_SOURCE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp
+    -DRPC_SOURCE=${CMAKE_SOURCE_DIR}/src/rpc/methods_wallet_covenant_profile.cpp
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_contract_production_wiring.cmake
+)
+set_tests_properties(QtContractProductionWiring PROPERTIES
+  LABELS "qt;covenant;regression;mandatory"
+  TIMEOUT 5
+)
 add_executable(test_ripemd160_src_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/crypto/ripemd160.cpp

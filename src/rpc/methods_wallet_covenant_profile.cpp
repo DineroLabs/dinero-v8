@@ -3,18 +3,24 @@
 
 #include "consensus/chainparams.h"
 #include "consensus/covenant_activation.h"
+#include "address/addr_codec.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/wallet_service.h"
 #include "primitives/transaction.h"
 #include "wallet/covenant_profile.h"
 #include "wallet/transaction_builder.h"
+#include "external/bech32/bech32.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+din::Json rpc_context_wallet_sendtoaddress(
+    const ExecutionContext& context,
+    const din::Json& params);
 
 namespace {
 
@@ -173,6 +179,18 @@ din::Json TaprootJson(const TaprootArtifact& artifact) {
     result["tapscript"] = Hex(artifact.tapscript);
     result["control_block"] = Hex(artifact.controlBlock);
     result["script_pubkey"] = Hex(artifact.scriptPubKey);
+    if (artifact.scriptPubKey.size() == 34 &&
+        artifact.scriptPubKey[0] == 0x51 &&
+        artifact.scriptPubKey[1] == 0x20) {
+        const std::vector<uint8_t> program(
+            artifact.scriptPubKey.begin() + 2,
+            artifact.scriptPubKey.end());
+        result["address"] = bech32::Encode(
+            dinero::HrpForActiveNetworkRef(),
+            1,
+            program,
+            bech32::Encoding::BECH32M);
+    }
     return result;
 }
 
@@ -373,6 +391,83 @@ din::Json RpcCtvCreate(
         }
         din::Json result = CtvJson(plan);
         result["tracked"] = track;
+        return result;
+    });
+}
+
+din::Json RpcCtvFund(
+    const ExecutionContext& context,
+    const din::Json& params) {
+    return RpcResult([&] {
+        if (!params.isObject() || !params.isMember("outputs")) {
+            throw std::invalid_argument(
+                "wallet.covenant.ctvfund requires an object with outputs");
+        }
+        // A pre-activation CTV leaf executes as an unenforced script. Never
+        // let a consumer wallet fund it before the next-block spend rules are
+        // active, even though offline descriptor construction remains useful.
+        RequireSpendActivation(context, ProfileType::CTV);
+        const auto outputs = ParseOutputs(params["outputs"]);
+        uint64_t outputTotal = 0;
+        for (const auto& output : outputs) {
+            const uint64_t value = output.value.GetUna();
+            if (UINT64_MAX - outputTotal < value) {
+                throw std::invalid_argument("CTV output total overflows uint64");
+            }
+            outputTotal += value;
+        }
+        const uint64_t spendFee = params.isMember("spend_fee_una")
+            ? UInt64(params, "spend_fee_una")
+            : 1000;
+        if (spendFee == 0 || UINT64_MAX - outputTotal < spendFee) {
+            throw std::invalid_argument(
+                "spend_fee_una must be positive and not overflow");
+        }
+
+        const std::vector<uint32_t> sequences{
+            UInt32(params, "sequence", 0xfffffffeU)};
+        const auto plan = dinero::wallet::covenant::BuildCTVPlan(
+            sequences,
+            0,
+            outputs,
+            UInt32(params, "locktime", 0),
+            2);
+        if (!Track(
+                ActiveWallet(context),
+                plan,
+                params.get("label", "Personal contract").asString())) {
+            throw std::runtime_error(
+                "failed to persist CTV recovery descriptor");
+        }
+
+        const auto planJson = CtvJson(plan);
+        const std::string address =
+            planJson["taproot"]["address"].asString();
+        if (address.empty()) {
+            throw std::runtime_error(
+                "failed to encode covenant funding address");
+        }
+        din::Json sendParams(Json::objectValue);
+        sendParams["address"] = address;
+        sendParams["amount"] = static_cast<double>(outputTotal + spendFee) /
+            100000000.0;
+        if (params.isMember("fee_rate")) {
+            sendParams["fee_rate"] = params["fee_rate"];
+        }
+        const din::Json funding =
+            rpc_context_wallet_sendtoaddress(context, sendParams);
+        if (funding.isMember("error") &&
+            !funding["error"].asString().empty()) {
+            throw std::runtime_error(
+                "covenant funding failed: " + funding["error"].asString());
+        }
+
+        din::Json result = planJson;
+        result["tracked"] = true;
+        result["funding"] = funding;
+        result["funding_value_una"] =
+            static_cast<Json::UInt64>(outputTotal + spendFee);
+        result["spend_fee_una"] = static_cast<Json::UInt64>(spendFee);
         return result;
     });
 }
@@ -713,6 +808,11 @@ void register_context_wallet_covenant_profile_methods() {
     g_rpcRegistry.registerHandler(
         "wallet.covenant.ctvcreate",
         RpcCtvCreate,
+        RegisterMode::Overwrite,
+        "covenant-profile-v1");
+    g_rpcRegistry.registerHandler(
+        "wallet.covenant.ctvfund",
+        RpcCtvFund,
         RegisterMode::Overwrite,
         "covenant-profile-v1");
     g_rpcRegistry.registerHandler(
