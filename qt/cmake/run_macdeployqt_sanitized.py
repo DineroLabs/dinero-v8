@@ -54,7 +54,11 @@ def main() -> int:
         for candidate in candidates:
             hide_path(candidate, hidden)
         completed = subprocess.run(
-            [str(macdeployqt), str(app_bundle), "-always-overwrite"],
+            # Signing is deliberately owned by sign_macos_bundle.py after all
+            # dependency rewriting/removal is complete. Letting macdeployqt
+            # ad-hoc sign here produces a transient (and alarming) nested
+            # Brotli verification failure before the final inside-out pass.
+            [str(macdeployqt), str(app_bundle), "-always-overwrite", "-no-codesign"],
             check=False,
         )
         return completed.returncode

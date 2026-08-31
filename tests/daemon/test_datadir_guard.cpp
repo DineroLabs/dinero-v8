@@ -147,4 +147,55 @@ TEST(DatadirGuard, ExecChildDoesNotInheritLock) {
     int status = 0;
     ASSERT_EQ(waitpid(child, &status, 0), child);
 }
+
+TEST(DatadirGuard, EmbeddedHelperSurvivesDaemonExitWithoutBlockingRelaunch) {
+    TempDir tmp("datadir-guard-embedded-helper");
+    int helper_pid_pipe[2] = {-1, -1};
+    ASSERT_EQ(pipe(helper_pid_pipe), 0);
+
+    const pid_t daemon = fork();
+    ASSERT_GE(daemon, 0);
+    if (daemon == 0) {
+        close(helper_pid_pipe[0]);
+        dinero::daemon::DatadirGuard guard;
+        std::string error;
+        if (!guard.Acquire(tmp.path, error)) _exit(120);
+
+        int exec_sync[2] = {-1, -1};
+        if (pipe(exec_sync) != 0) _exit(121);
+        if (fcntl(exec_sync[1], F_SETFD, FD_CLOEXEC) == -1) _exit(122);
+        const pid_t helper = fork();
+        if (helper < 0) _exit(123);
+        if (helper == 0) {
+            close(helper_pid_pipe[1]);
+            close(exec_sync[0]);
+            execl("/bin/sleep", "sleep", "5", static_cast<char*>(nullptr));
+            _exit(127);
+        }
+        close(exec_sync[1]);
+        char byte = 0;
+        if (read(exec_sync[0], &byte, 1) != 0) _exit(124);
+        close(exec_sync[0]);
+        if (write(helper_pid_pipe[1], &helper, sizeof(helper)) != sizeof(helper)) _exit(125);
+        close(helper_pid_pipe[1]);
+        _exit(0); // models dinerod exiting while its Tor/helper remains alive
+    }
+
+    close(helper_pid_pipe[1]);
+    pid_t helper = -1;
+    ASSERT_EQ(read(helper_pid_pipe[0], &helper, sizeof(helper)), sizeof(helper));
+    close(helper_pid_pipe[0]);
+    ASSERT_GT(helper, 0);
+
+    int daemon_status = 0;
+    ASSERT_EQ(waitpid(daemon, &daemon_status, 0), daemon);
+    ASSERT_TRUE(WIFEXITED(daemon_status));
+    ASSERT_EQ(WEXITSTATUS(daemon_status), 0);
+
+    dinero::daemon::DatadirGuard relaunched_daemon;
+    std::string relaunch_error;
+    EXPECT_TRUE(relaunched_daemon.Acquire(tmp.path, relaunch_error)) << relaunch_error;
+
+    kill(helper, SIGTERM);
+}
 #endif
