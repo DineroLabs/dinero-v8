@@ -69,3 +69,28 @@ Evidence is under `artifacts/shielded-native-mobile/`. Peak proof RSS/time and
 full QR camera/display confirmation during a real funded-note transfer remain
 device gates; an idle baseline is not a substitute for proof measurement.
 Tauri has no status in this decision.
+
+## 2026-08-30 lock-hardening rerun
+
+- Core `ce1439708` prevents exec'd Tor/helper processes from retaining the
+  daemon datadir lock. The process-topology regression keeps the helper alive,
+  exits the daemon, and proves an immediate replacement daemon acquires the
+  same datadir.
+- iOS NodeCore was rebuilt for device, simulator, and universal macOS and
+  embedded in DineroDPI commit `285ddf3`. The physical iPhone application was
+  killed and immediately relaunched (PID 1772 to 1773). The updated simulator
+  binary passed 594 tests across 89 suites.
+- Android NodeCore commit `bc453703` was built for arm64-v8a and x86_64 and
+  pinned by DineroDPI Android commit `4dc4fab`. The Pixel application was
+  force-stopped and immediately relaunched (PID 15649 to 15948) with its
+  wallet databases preserved.
+- Mobile NodeCore is in-process on both platforms; neither application launches
+  an external Tor/helper process, so there is no mobile datadir-lock descriptor
+  owner to leak across process death.
+- The Pixel post-relaunch baseline was 479,336 KiB PSS / 618,472 KiB RSS. This
+  remains a synchronized-node baseline, not a funded proof peak.
+- A funded shielded proof/spend, activation-boundary transaction, and full
+  camera transfer were not manufactured during this rerun. Those gates still
+  require an actually confirmed shielded note and an explicit destination and
+  amount; build, restart, or idle-memory evidence must not be relabeled as a
+  successful funded transfer.
