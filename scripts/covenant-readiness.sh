@@ -44,6 +44,7 @@ fi
 
 targets=(
     test_bip119_ctv_vectors
+    test_taproot_scriptpath_consensus
     test_covenant_activation
     test_covenant_system_lifecycle
     test_ccv_successor_binding
@@ -54,6 +55,8 @@ targets=(
     test_covenant_profile_wallet
     test_covenant_wallet_recovery
     test_covenant_scriptpath
+    test_escape_hatches
+    test_covenant_semantic_oracles
     benchmark_covenant_validation
 )
 
