@@ -28,6 +28,7 @@ void registerMiningRPCv14();  // v0.14.0.3: BlockAssembler-based mining RPC
 void registerMempoolMethodsContext();
 void registerNetworkMethodsContext();
 void registerContractMethodsContext();
+void registerContractReadOnlyMethodsContext();
 void registerEconomicsMethodsContext();
 void registerPaymentMethodsContext();
 void registerSyncMethodsContext();
@@ -192,10 +193,11 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
         registerShieldedWalletMethods();
         dinero::g_logger.info("[RPC Context] ✅ V7 shielded pool handlers registered (wallet.shield, wallet.unshield)");
 
-        // Covenant profile v1. Handlers are compiled on every platform but
-        // fail closed outside regtest while production activation is dormant.
+        // Covenant profile v1. Construction and recovery are available on
+        // atomically scheduled networks; spend construction remains gated by
+        // the next candidate block's activation flags.
         register_context_wallet_covenant_profile_methods();
-        dinero::g_logger.info("[RPC Context] ✅ Regtest covenant profile-v1 handlers registered (CTV/CCV construction + recovery)");
+        dinero::g_logger.info("[RPC Context] ✅ Covenant profile-v1 handlers registered (CTV/CCV construction + recovery)");
 
         // Phase F.5: Mining methods now use MiningManager v2 and jsoncpp API
         // Mining extras (getblocktemplate, generatetoaddress) - REGISTER FIRST so real implementation wins
@@ -256,12 +258,10 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
         register_lightning_methods();
         dinero::g_logger.info("[RPC Context] ✅ Lightning Network handlers registered (ln.*)");
 
-        // Contract namespace (Week 2 - Day 2)
-        // INTENTIONALLY DISABLED: Contract handlers exist in methods_contract_context.cpp
-        // but are disabled pending full integration testing.
-        // To enable: uncomment registerContractMethodsContext() below.
-        // registerContractMethodsContext();
-        dinero::g_logger.info("[RPC Context] ⚠️  Contract handlers DISABLED (intentional)");
+        // Contract inspection is safe on every client. Fund-moving methods stay
+        // disabled until the wallet signing package is complete and reviewed.
+        registerContractReadOnlyMethodsContext();
+        dinero::g_logger.info("[RPC Context] ✅ Contract inspection enabled; mutations disabled");
 
         // Economics namespace (Week 2 - Day 2)
         registerEconomicsMethodsContext();
