@@ -483,7 +483,10 @@ public:
   qint64  appUptimeSeconds()  const;
 private:
   qint64  app_started_at_ms_ = 0;  // set in ctor
-  QTextEdit* txtMiningOutput_;
+  // setupUI() connects QTabWidget::currentChanged before it constructs the
+  // Mining tab. Adding the first tab emits that signal synchronously, so this
+  // must be null until the mining output widget exists.
+  QTextEdit* txtMiningOutput_ = nullptr;
   QTabWidget* mainTabs_ = nullptr;
   QWidget* miningTabWidget_ = nullptr;
   QWidget* miningInfoGroup_ = nullptr;
