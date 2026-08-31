@@ -1,5 +1,21 @@
 # Covenant protocol status
 
+## Local assurance command
+
+Run the complete covenant-labelled implementation, wallet, recovery,
+restart/reorg, boundary, and policy lane with:
+
+```sh
+./scripts/covenant-readiness.sh --build-dir build
+```
+
+Add `--mutation` to require the complete consensus mutation score and write a
+machine-readable report into the build directory. The runner deliberately uses
+CTest's `--no-tests=error`; a renamed or de-registered covenant test must fail
+closed instead of producing an empty green run. Passing this command does not
+arm mainnet activation: the production activation heights remain governed by
+the chain parameters and the release gates below.
+
 This file is the operator-facing status summary. It does not replace the
 normative opcode specifications or activation parameters.
 

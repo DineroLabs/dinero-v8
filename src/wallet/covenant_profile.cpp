@@ -389,6 +389,8 @@ CTVPlan CompleteCTVPlan(
     CTVPlan result;
     result.templateTx = std::move(templateTx);
     result.covenantInputIndex = covenantInputIndex;
+    // Phase C.3: CONSTRUCTION ONLY - commit the template being built. This
+    // does not decide whether an externally supplied transaction is valid.
     result.templateHash = consensus::ComputeCTVHash(
         result.templateTx, covenantInputIndex);
     result.taproot.tapscript = {32};
@@ -595,6 +597,9 @@ Transaction BuildCTVSpend(
         recovered.taproot.tapscript,
         recovered.taproot.controlBlock};
 
+    // Phase C.3: CONSTRUCTION ONLY - enforce the builder's postcondition
+    // before returning its own transaction. Consensus remains the sole
+    // authority for validating transactions received from any source.
     std::array<uint8_t, 32> spendHash{};
     if (!consensus::TryComputeCTVHash(
             tx, recovered.covenantInputIndex, spendHash) ||
