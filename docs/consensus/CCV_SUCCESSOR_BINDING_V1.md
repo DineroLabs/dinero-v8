@@ -1,6 +1,7 @@
 # CCV successor binding v1
 
-Status: candidate profile. Mainnet and testnet remain dormant (`UINT32_MAX`).
+Status: active specification. Mainnet activates at block 100,000; testnet
+remains dormant (`UINT32_MAX`).
 
 Opcode: `OP_CHECKCONTRACTVERIFY` (`0xbe`).
 
@@ -90,7 +91,7 @@ confidential CCV requires a separately specified proof and activation.
 
 | Chain | Script path | CTV | CCV | CSFS / TXHASH |
 |---|---:|---:|---:|---:|
-| Mainnet | 1 | dormant | dormant | dormant |
+| Mainnet | 1 | 100,000 | 100,000 | dormant |
 | Testnet | 200 | dormant | dormant | dormant |
 | Regtest | 20 | 20 | 20 | dormant |
 
@@ -100,10 +101,10 @@ chain-parameter consensus checksum and height-derived flags are included in
 script-cache keys.
 
 Activation-boundary, reorg, mempool, mining, and restart component coverage is
-recorded in `COVENANT_PROTOCOL_STATUS.md`. Any future activation release still
-requires approved wallet recovery and live multi-node tests, coordinated
-deployment, the reproducible cryptographic/consensus assurance record, and a
-new public review opportunity.
+recorded in `COVENANT_PROTOCOL_STATUS.md`. Production use requires approved
+wallet recovery and live multi-node tests, coordinated deployment, the
+reproducible cryptographic/consensus assurance record, and continued public
+review.
 
 ## Golden vector
 

@@ -1,6 +1,7 @@
 # CHECKTEMPLATEVERIFY BIP119 profile
 
-Status: candidate profile. Mainnet and testnet remain dormant (`UINT32_MAX`).
+Status: active specification. Mainnet activates at block 100,000; testnet
+remains dormant (`UINT32_MAX`).
 
 Opcode: `OP_CHECKTEMPLATEVERIFY` / `OP_NOP4` (`0xb3`).
 
@@ -62,7 +63,7 @@ public review opportunity.
 
 | Chain | CTV |
 |---|---:|
-| Mainnet | dormant |
+| Mainnet | 100,000 |
 | Testnet | dormant |
 | Regtest | 20 |
 
@@ -73,7 +74,6 @@ checksum.
 
 Boundary, reorg, mempool, mining, and adversarial-cost component coverage is
 recorded in `COVENANT_PROTOCOL_STATUS.md` and
-`COVENANT_RESOURCE_LIMITS.md`. Any future activation remains gated on a new
-review window, release-candidate wallet/recovery and live multi-node coverage,
-coordinated validator deployment, and a reproducible open-source assurance
-record.
+`COVENANT_RESOURCE_LIMITS.md`. Production use remains gated on
+release-candidate wallet/recovery and live multi-node coverage, coordinated
+validator deployment, and a reproducible open-source assurance record.

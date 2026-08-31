@@ -1,12 +1,14 @@
 # Covenant validation resource limits
 
-Status: implemented and bounded as a candidate profile. Mainnet activation is
-deferred; open-source assurance and release-candidate gates remain mandatory
-before any future activation proposal.
+Status: implemented and bounded for mainnet activation at block 100,000.
+Open-source assurance and release-candidate gates remain mandatory before
+fleet deployment.
 
 This note records the deterministic validation limits and the benchmark
 evidence for the CTV/CCV covenant profile. Timing measurements are diagnostic,
-not consensus rules.
+not consensus rules. The local readiness runner nevertheless applies generous
+release-policy ceilings so a major performance regression cannot ship merely
+because consensus results remain correct.
 
 ## Consensus limits
 
@@ -111,6 +113,17 @@ CTV and 377× faster for BIP341 than recomputing transaction-wide hashes for
 every input. The complete benchmark used approximately 13.5 MB maximum RSS.
 CCV measured 57.3 microseconds with 8,192 outputs. This closes the previous gap
 where the largest measured CTV/BIP341 transaction was only 54,288 bytes.
+
+The activation candidate was rerun on 2026-08-30 at commit `7199ebe79` on an
+Apple M4 Max Release build. The 95,416-byte case measured 737.5 microseconds
+for precomputed CTV and 2,392 microseconds for precomputed Taproot sighash;
+8,192-output CCV measured 56.5 microseconds. The complete process used
+12,812,288 bytes maximum RSS. `covenant-readiness.sh` now fails if the largest
+case is below 90,000 bytes, either precomputed near-limit transaction exceeds
+10 milliseconds, or the 8,192-output CCV transition exceeds 5 milliseconds.
+Those thresholds are release policy, deliberately well above current results;
+the 100,000-byte transaction ceiling and one-execution-per-script rules remain
+the consensus bounds.
 
 The benchmark was rerun after rebasing onto `dinero-main` at
 `cb21a91d4226a8a0b8b798f065d1b867f7de88bb` on 2026-07-31. At 1,024 inputs,

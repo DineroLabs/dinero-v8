@@ -43,6 +43,7 @@ if [[ ! -f "${build_dir}/CMakeCache.txt" ]]; then
 fi
 
 targets=(
+    dinerod
     test_bip119_ctv_vectors
     test_taproot_scriptpath_consensus
     test_covenant_activation
@@ -77,6 +78,40 @@ ctest --test-dir "${build_dir}" \
     --output-on-failure \
     --no-tests=error
 
+echo "== Covenant near-limit resource gate =="
+benchmark_report="${build_dir}/covenant-resource-report.json"
+"${build_dir}/benchmark_covenant_validation" >"${benchmark_report}"
+python3 - "${benchmark_report}" <<'PY'
+import json
+import sys
+
+report_path = sys.argv[1]
+with open(report_path, "r", encoding="utf-8") as handle:
+    report = json.load(handle)
+
+ctv = max(report["ctv"], key=lambda row: row["tx_bytes"])
+sighash = max(report["taproot_sighash"], key=lambda row: row["tx_bytes"])
+ccv = max(report["ccv"], key=lambda row: row["outputs"])
+
+checks = {
+    "CTV benchmark reaches >=90 KiB": ctv["tx_bytes"] >= 90_000,
+    "CTV precomputed near-limit <=10 ms": ctv["precomputed_us_per_tx"] <= 10_000,
+    "Taproot precomputed near-limit <=10 ms": sighash["precomputed_us_per_tx"] <= 10_000,
+    "CCV 8192-output transition <=5 ms":
+        ccv["outputs"] >= 8_192 and ccv["us_per_transition"] <= 5_000,
+}
+failed = [name for name, passed in checks.items() if not passed]
+if failed:
+    raise SystemExit("resource gate failed: " + "; ".join(failed))
+print(
+    "PASS: resource gate: "
+    f"CTV={ctv['precomputed_us_per_tx']}us, "
+    f"Taproot={sighash['precomputed_us_per_tx']}us, "
+    f"CCV={ccv['us_per_transition']}us"
+)
+PY
+echo "Resource report: ${benchmark_report}"
+
 if [[ ${run_mutations} -eq 1 ]]; then
     echo "== Covenant mutation score =="
     mutation_report="${build_dir}/covenant-mutation-report.json"
@@ -90,4 +125,4 @@ if [[ ${run_mutations} -eq 1 ]]; then
 fi
 
 echo "PASS: local covenant assurance gate"
-echo "NOTE: this tests the implementation; it does not arm mainnet activation."
+echo "NOTE: this tests the activation candidate; it does not deploy fleet binaries."

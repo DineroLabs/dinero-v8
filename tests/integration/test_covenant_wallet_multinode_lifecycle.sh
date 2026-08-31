@@ -346,7 +346,7 @@ fund_script() {
 command -v curl >/dev/null || fail "curl is required"
 command -v jq >/dev/null || fail "jq is required"
 
-info "Proving the wallet/RPC construction surface fails closed on mainnet"
+info "Proving mainnet construction is available while spending stays activation-gated"
 mkdir -p "${DATA_GUARD}"
 "${DINEROD}" \
     --datadir="${DATA_GUARD}" \
@@ -358,24 +358,21 @@ mkdir -p "${DATA_GUARD}"
 PID_GUARD=$!
 wait_rpc "${GUARD_RPC}" "${DATA_GUARD}" \
     || fail "mainnet guard daemon RPC did not start"
-GUARD_RESPONSE="$(rpc_call "${GUARD_RPC}" "${DATA_GUARD}" \
-    "wallet.covenant.inspect" \
-    '[{"descriptor":"dncov1:00"}]')" \
-    || fail "mainnet covenant RPC transport failed"
-jq -e \
-    'if .error != null then
-         (.error.code == -32603) and
-         (.error.message | contains("regtest-only")) and
-         ((has("result") | not) or .result == null)
-     else
-         (.result.success == false) and
-         (.result.error | contains("regtest-only")) and
-         (.result.rpc_schema == "din.wallet.covenant.profile.v1")
-     end' \
-    <<<"${GUARD_RESPONSE}" >/dev/null \
-    || fail "mainnet covenant RPC did not fail closed: ${GUARD_RESPONSE}"
+GUARD_CTV="$(covenant_result "${GUARD_RPC}" "${DATA_GUARD}" \
+    "wallet.covenant.ctvcreate" \
+    '{"outputs":[{"value_una":1,"script_pubkey":"51"}]}')"
+GUARD_DESCRIPTOR="$(jq -r '.recovery_descriptor' <<<"${GUARD_CTV}")"
+ZERO_TXID="0000000000000000000000000000000000000000000000000000000000000000"
+GUARD_SPEND="$(rpc_failure_result "${GUARD_RPC}" "${DATA_GUARD}" \
+    "wallet.covenant.ctvspend" \
+    "$(jq -nc --arg descriptor "${GUARD_DESCRIPTOR}" \
+        --arg txid "${ZERO_TXID}" \
+        '{descriptor:$descriptor,prevouts:[{txid:$txid,vout:0}]}')")"
+jq -e '.success == false and (.error | contains("before activation"))' \
+    <<<"${GUARD_SPEND}" >/dev/null \
+    || fail "mainnet covenant spending did not fail closed: ${GUARD_SPEND}"
 stop_guard
-pass "mainnet covenant wallet/RPC construction is unavailable"
+pass "mainnet covenant construction works and spend creation stays locked"
 
 info "Starting isolated regtest nodes"
 start_a
@@ -386,7 +383,6 @@ rpc_result "${NODE_B_RPC}" "${DATA_B}" "wallet.createhd" \
     '["covenant-lifecycle-b"]' >/dev/null 2>&1 || true
 
 info "Proving covenant spend construction fails before activation height 20"
-ZERO_TXID="0000000000000000000000000000000000000000000000000000000000000000"
 PRE_CTV="$(covenant_result "${NODE_A_RPC}" "${DATA_A}" \
     "wallet.covenant.ctvcreate" \
     '{"outputs":[{"value_una":1,"script_pubkey":"51"}]}')"

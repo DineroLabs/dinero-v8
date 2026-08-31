@@ -1,5 +1,10 @@
 # Covenant activation deferral — 2026-08-22
 
+Historical status: this stop decision was superseded by the 2026-08-30
+re-authorization after the defect was corrected and the complete assurance
+gate was rerun. The text below records the state and rationale on 2026-08-22;
+it is not the current activation policy.
+
 ## Decision
 
 Mainnet CTV and CCV remain coupled and are deferred to `UINT32_MAX`. Block
