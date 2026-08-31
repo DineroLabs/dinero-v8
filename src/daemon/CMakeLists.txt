@@ -134,6 +134,12 @@ else()
     # HTTP RPC server & auth (server-only, not in dinero_core)
     ${CMAKE_SOURCE_DIR}/src/daemon/http_rpc_server.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/rpc_auth.cpp
+    # Contract inspection handlers are compiled into dinero_rpc_handlers on
+    # every platform. Keep their concrete registry/model dependencies linked
+    # into Linux and Windows just as they are in the Apple daemon above.
+    ${CMAKE_SOURCE_DIR}/src/contracts/escrow_contract.cpp
+    ${CMAKE_SOURCE_DIR}/src/contracts/contract_registry.cpp
+    ${CMAKE_SOURCE_DIR}/src/contracts/daemon_mediator.cpp
     # ─── All other sources come from dinero_core static library ───
     # hd_wallet_manager.cpp excluded (depends on wallet_crypto)
     # wallet_crypto.cpp excluded (needs OpenSSL 3.2+)
