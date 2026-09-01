@@ -1064,6 +1064,34 @@ set_tests_properties(AssumeUtxoAnchor84131 PROPERTIES
     TIMEOUT 60
 )
 
+# Preferred snapshot anchor as of height 99677. Kept a separate target from
+# 84131 for the same reason 84131 is separate from 73035: deleting a
+# compatibility fallback must not be hideable inside the newer test.
+add_executable(test_assumeutxo_anchor_99677
+    test_assumeutxo_anchor_99677.cpp
+    ${CMAKE_SOURCE_DIR}/src/consensus/assume_utxo.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/logger.cpp
+)
+add_dependencies(test_assumeutxo_anchor_99677 gtest gtest_main)
+target_link_libraries(test_assumeutxo_anchor_99677 PRIVATE
+    dinero_consensus
+    dinero_crypto
+    gtest
+    gtest_main
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+)
+target_include_directories(test_assumeutxo_anchor_99677 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME AssumeUtxoAnchor99677 COMMAND test_assumeutxo_anchor_99677)
+set_tests_properties(AssumeUtxoAnchor99677 PROPERTIES
+    LABELS "consensus;assumeutxo;registry"
+    TIMEOUT 60
+)
+
 # #490 regression pin: the undo delta must never claim a deletion that did not
 # happen. Runs the FULL deterministic 1..40 seed sweep (the corruption was
 # originally found on 5 of those 40) and REQUIRES exit 0 from every seed --
