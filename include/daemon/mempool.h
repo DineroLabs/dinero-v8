@@ -481,7 +481,11 @@ private:
     bool addTransaction(const Transaction& tx, bool relay = true);
 
     // Internal implementation that returns structured result
-    TxAcceptResult submitTransactionInternal(const Transaction& tx, const std::string& source, bool relay);
+    TxAcceptResult submitTransactionInternal(
+        const Transaction& tx,
+        const std::string& source,
+        bool relay,
+        bool test_only = false);
 
     // Internal validation and management (Phase M.0: Changed to uint256)
     bool validateTransaction(
