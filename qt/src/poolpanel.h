@@ -49,6 +49,7 @@ public Q_SLOTS:
 
 private Q_SLOTS:
     void onFetchStatusClicked();
+    void onChangePayoutClicked();
     void onCheckEarningsClicked();
     void onOpsReplyFinished(QNetworkReply* reply);
     void onRpcResult(const QString& method, const QJsonValue& result);
@@ -58,6 +59,8 @@ private:
     void setupUi();
     void setupConnections();
     void applyStatus(const QJsonObject& status);
+    void handlePayoutReply(QNetworkReply* reply, int http);
+    void setPayoutMessage(const QString& html);
     void setStatusMessage(const QString& html);
     static QString formatDin(qint64 una);
 
@@ -84,6 +87,19 @@ private:
     QLabel* lbl_shares_;
     QLabel* lbl_blocks_;
     QTableWidget* miners_table_;
+
+    // Fee address, as reported and as changed.
+    //
+    // Changing it is opt-in ON THE POOL (--ops-allow-payout-change); a pool
+    // that has not enabled it answers 403 and we say so plainly rather than
+    // hiding the control, so an operator learns the setting exists.
+    QLabel* lbl_payout_current_;
+    QLineEdit* payout_input_;
+    QPushButton* btn_change_payout_;
+    QLabel* lbl_payout_message_;
+    /// Last address /status reported. Used to avoid clobbering what the
+    /// operator is mid-way through typing on a background refresh.
+    QString live_payout_address_;
 
     // Chain-verified earnings.
     QLineEdit* fee_address_input_;

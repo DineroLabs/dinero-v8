@@ -12,6 +12,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocale>
+#include <QMessageBox>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -176,6 +177,30 @@ void PoolPanel::setupUi() {
     grid->addWidget(new QLabel("Blocks found (this run):"), 2, 2);
     grid->addWidget(lbl_blocks_, 2, 3);
 
+    // The address the pool is ACTUALLY paying, straight from /status. An
+    // operator should never have to trust the unit file to know this.
+    lbl_payout_current_ = new QLabel("\xE2\x80\x93");
+    lbl_payout_current_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    lbl_payout_current_->setStyleSheet("font-family: monospace;");
+    grid->addWidget(new QLabel("Fee paid to:"), 3, 0);
+    grid->addWidget(lbl_payout_current_, 3, 1, 1, 3);
+
+    auto* change_row = new QHBoxLayout();
+    payout_input_ = new QLineEdit();
+    payout_input_->setPlaceholderText("din1p\xE2\x80\xA6 new fee address");
+    change_row->addWidget(payout_input_, 1);
+    btn_change_payout_ = new QPushButton("Change");
+    change_row->addWidget(btn_change_payout_, 0);
+    grid->addWidget(new QLabel("Change to:"), 4, 0);
+    grid->addLayout(change_row, 4, 1, 1, 3);
+
+    lbl_payout_message_ = new QLabel();
+    lbl_payout_message_->setTextFormat(Qt::RichText);
+    lbl_payout_message_->setWordWrap(true);
+    lbl_payout_message_->setStyleSheet("color: #9fb3c8; font-size: 11px;");
+    lbl_payout_message_->setVisible(false);
+    grid->addWidget(lbl_payout_message_, 5, 0, 1, 4);
+
     miners_table_ = new QTableWidget(0, 3);
     miners_table_->setHorizontalHeaderLabels({"Contributor payout script", "Next-block share", "Window weight"});
     miners_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -188,7 +213,7 @@ void PoolPanel::setupUi() {
     miners_table_->setColumnWidth(2, 150);
     miners_table_->verticalHeader()->setDefaultSectionSize(24);
     miners_table_->setMaximumHeight(24 * 5 + 28);
-    grid->addWidget(miners_table_, 3, 0, 1, 4);
+    grid->addWidget(miners_table_, 6, 0, 1, 4);
     // Hidden, not merely disabled. Most people looking at this tab do not
     // run a pool; showing them an empty status grid and an empty table is
     // noise that buries the one thing meant for them (the explainer above).
@@ -232,6 +257,8 @@ void PoolPanel::setupUi() {
 void PoolPanel::setupConnections() {
     connect(btn_fetch_status_, &QPushButton::clicked, this, &PoolPanel::onFetchStatusClicked);
     connect(btn_check_earnings_, &QPushButton::clicked, this, &PoolPanel::onCheckEarningsClicked);
+    connect(btn_change_payout_, &QPushButton::clicked, this, &PoolPanel::onChangePayoutClicked);
+    connect(payout_input_, &QLineEdit::returnPressed, this, &PoolPanel::onChangePayoutClicked);
     connect(net_, &QNetworkAccessManager::finished, this, &PoolPanel::onOpsReplyFinished);
     connect(&refresh_timer_, &QTimer::timeout, this, &PoolPanel::refresh);
     connect(rpc_, &RpcClient::rpcResult, this, &PoolPanel::onRpcResult);
@@ -274,9 +301,108 @@ void PoolPanel::onFetchStatusClicked() {
     net_->get(req);
 }
 
+namespace {
+/// Marks which request a reply belongs to. One QNetworkAccessManager serves
+/// both the status GET and the payout POST, and `finished` fires for both.
+constexpr QNetworkRequest::Attribute kKindAttr = QNetworkRequest::User;
+constexpr int kKindStatus = 0;
+constexpr int kKindPayout = 1;
+}  // namespace
+
+void PoolPanel::setPayoutMessage(const QString& html) {
+    lbl_payout_message_->setText(html);
+    lbl_payout_message_->setVisible(!html.isEmpty());
+}
+
+void PoolPanel::onChangePayoutClicked() {
+    const QString addr = payout_input_->text().trimmed();
+    if (addr.isEmpty()) {
+        setPayoutMessage("<span style='color:#d8a37b;'>Enter the address you want fees paid to.</span>");
+        return;
+    }
+    if (addr == live_payout_address_) {
+        setPayoutMessage("<span style='color:#9fb3c8;'>That is already the live address.</span>");
+        return;
+    }
+    // Money-routing change: confirm explicitly, and name both addresses, so a
+    // mis-paste is visible before it is sent rather than after.
+    const auto choice = QMessageBox::question(
+        this, "Change fee address",
+        QString("Pay your operator fee to a different address?\n\n"
+                "From:  %1\nTo:      %2\n\n"
+                "Takes effect on the pool's next block template. Your miners' "
+                "payouts are unaffected.")
+            .arg(live_payout_address_.isEmpty() ? QString("(unknown)") : live_payout_address_, addr),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (choice != QMessageBox::Yes) {
+        return;
+    }
+
+    const QString base = ops_url_input_->text().trimmed();
+    const QString token = ops_token_input_->text().trimmed();
+    if (base.isEmpty() || token.isEmpty()) {
+        setPayoutMessage("<span style='color:#d8a37b;'>Connect to the pool first.</span>");
+        return;
+    }
+    QUrl url(base + (base.endsWith('/') ? "payout-address" : "/payout-address"));
+    QNetworkRequest req(url);
+    req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    req.setAttribute(kKindAttr, kKindPayout);
+    QJsonObject body;
+    body["address"] = addr;
+    setPayoutMessage("<span style='color:#9fb3c8;'>Asking the pool to verify that address\xE2\x80\xA6</span>");
+    net_->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+}
+
+void PoolPanel::handlePayoutReply(QNetworkReply* reply, int http) {
+    const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+    const QJsonObject obj = doc.isObject() ? doc.object() : QJsonObject{};
+
+    if (http == 403) {
+        // Not a failure the operator can fix from here — tell them the exact
+        // switch, since the whole point is that it is off unless asked for.
+        setPayoutMessage(
+            "<span style='color:#d8a37b;'>This pool does not accept address changes.</span><br/>"
+            "<span style='color:#9fb3c8;'>Re-run the installer with "
+            "<code>--allow-payout-change</code>, or edit <code>--payout-address</code> in "
+            "<code>/etc/systemd/system/dinero-sv2-pool.service</code> and restart. It is off by "
+            "default because it lets whoever holds your ops token retarget your fee.</span>");
+        return;
+    }
+    if (http == 401) {
+        setPayoutMessage("<span style='color:#e06c75;'>Rejected: wrong ops token.</span>");
+        return;
+    }
+    if (http != 200) {
+        const QString why = obj.value("error").toString();
+        setPayoutMessage(QString("<span style='color:#e06c75;'>Not changed: %1</span>")
+                             .arg(why.isEmpty() ? QString("pool returned HTTP %1").arg(http)
+                                                : why.toHtmlEscaped()));
+        return;
+    }
+    const QString applied = obj.value("payout_address").toString();
+    live_payout_address_ = applied;
+    lbl_payout_current_->setText(applied.toHtmlEscaped());
+    payout_input_->clear();
+    setPayoutMessage("<span style='color:#8fbf7f;'>Fee address changed. It applies from the pool's "
+                     "next block template, and survives a restart.</span>");
+    refresh();
+}
+
 void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
     reply->deleteLater();
     const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const int kind = reply->request().attribute(kKindAttr, kKindStatus).toInt();
+    if (kind == kKindPayout) {
+        if (reply->error() != QNetworkReply::NoError && http == 0) {
+            setPayoutMessage(QString("<span style='color:#e06c75;'>Could not reach the pool: %1</span>")
+                                 .arg(reply->errorString().toHtmlEscaped()));
+            return;
+        }
+        handlePayoutReply(reply, http);
+        return;
+    }
     if (reply->error() != QNetworkReply::NoError && http == 0) {
         status_group_->setVisible(false);
         setStatusMessage(QString("<span style='color:#e06c75;'>Could not reach the pool: %1</span>"
@@ -311,6 +437,14 @@ void PoolPanel::applyStatus(const QJsonObject& s) {
     const QString phase = s.value("template_phase").toString();
 
     lbl_connected_miners_->setText(QString::number(safeInt(s.value("connected_miners"))));
+    // Older pools (< 0.1.3) do not report this. Say so rather than showing an
+    // empty field that reads as "no fee address configured".
+    const QString payout = s.value("payout_address").toString();
+    live_payout_address_ = payout;
+    lbl_payout_current_->setText(
+        payout.isEmpty()
+            ? QString("<span style='color:#9fb3c8;'>not reported by this pool version</span>")
+            : payout.toHtmlEscaped());
     lbl_fee_->setText(QString("%1%").arg(fee_bps / 100.0, 0, 'f', 2));
     lbl_window_->setText(QString("%1 shares over %2s")
                              .arg(safeInt(s.value("window_entries")))
