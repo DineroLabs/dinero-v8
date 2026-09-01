@@ -38,6 +38,7 @@ class QLineEdit;
 class QPushButton;
 class QTextEdit;
 class QTableWidget;
+class QVBoxLayout;
 class QTableWidgetItem;
 class QProgressBar;
 class QTabWidget;
@@ -178,6 +179,7 @@ private:
   void displayExplorerTransaction(const QJsonObject& tx);
   void displayExplorerAddress();
   void updateExplorerRecentBlocks(int height);
+  void showExplorerWindow();
   void requestNextExplorerRecentBlock();
   void requestExplorerBlockTransactions(const QJsonObject& block);
   bool handleExplorerRpcError(const QString& method, int code, const QString& message);
@@ -402,6 +404,17 @@ private:
   QTableWidget* tblExplorerInputs_ = nullptr;
   QTableWidget* tblExplorerOutputs_ = nullptr;
   QVector<int> pendingExplorerRecentHeights_;
+  /// The Explorer no longer owns a tab — the top bar was full and its
+  /// most-looked-at content (latest blocks) now lives on Overview. The
+  /// widget is still built exactly as before and shown as its own window
+  /// on demand, so search / block / tx / address lookup are all intact.
+  QWidget* explorerWindow_ = nullptr;
+  /// Overview's "Latest Blocks" card. The Explorer's recent-blocks table
+  /// is re-parented into this rather than duplicated, so the existing
+  /// population path (updateExplorerRecentBlocks + the getblockhash /
+  /// getblock handlers) keeps working untouched.
+  QVBoxLayout* overviewBlocksLayout_ = nullptr;
+
   QMap<QString, int> explorerRecentBlockRows_;
   QMap<QString, int> explorerBlockTransactionRows_;
   int pendingExplorerRecentHeight_ = -1;
