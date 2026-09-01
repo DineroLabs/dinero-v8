@@ -29,6 +29,8 @@
 
 namespace dinero::vault {
 
+class LedgerStore;
+
 /// Errors produced by `append`. Mapped to the Swift `LedgerError`
 /// enum case-for-case so the gtest port matches the Swift
 /// LedgerReplayTests.
@@ -40,6 +42,11 @@ class LedgerError : public std::runtime_error {
         LIFECYCLE_INCONSISTENT,
         PER_USER_CAP_EXCEEDED,
         DEPOSIT_LIFECYCLE_CLOSED,
+        // Appended after the Swift-parity set above: internal transfers
+        // have no Swift counterpart, so these two kinds are C++-only.
+        // Existing enumerators keep their ordinals.
+        TRANSFER_INVALID,
+        INSUFFICIENT_TRANSFERABLE_BALANCE,
     };
 
     LedgerError(Kind kind, const std::string& message)
@@ -53,7 +60,15 @@ class LedgerError : public std::runtime_error {
 
 class Ledger {
    public:
-    explicit Ledger(LedgerCaps caps = LedgerCaps::unbounded()) : caps_{caps} {}
+    /// `store` (optional) receives every entry that passes validation,
+    /// write-ahead of the in-memory apply. Pass nullptr (the default)
+    /// for a memory-only ledger.
+    ///
+    /// NOTE: do NOT pass a store you are about to replay from — replay
+    /// goes through append() and would re-persist every entry, doubling
+    /// the log on each restart. Replay store-less, then `setStore`.
+    explicit Ledger(LedgerCaps caps = LedgerCaps::unbounded(), LedgerStore* store = nullptr)
+        : caps_{caps}, store_{store} {}
 
     /// Append one entry, validating invariants. On error, ledger
     /// state is unchanged (validation runs before any mutation).
@@ -72,6 +87,11 @@ class Ledger {
     [[nodiscard]] UnaAmount totalOperatorLoss() const noexcept { return totalOperatorLoss_; }
     [[nodiscard]] LedgerSeq nextSeq() const noexcept { return nextSeq_; }
     [[nodiscard]] const LedgerCaps& caps() const noexcept { return caps_; }
+
+    /// Attach (or detach, with nullptr) the write-ahead store. Intended
+    /// for the replay-then-attach startup sequence described above.
+    void setStore(LedgerStore* store) noexcept { store_ = store; }
+    [[nodiscard]] LedgerStore* store() const noexcept { return store_; }
 
     /// Convenience: lookup account state, returning a default-
     /// constructed `LedgerAccount{account}` if not present. Useful
@@ -95,6 +115,8 @@ class Ledger {
     UnaAmount totalOpenCredits_{0};
     UnaAmount totalOperatorLoss_{0};
     LedgerCaps caps_;
+    /// Optional write-ahead persistence sink. Not owned.
+    LedgerStore* store_{nullptr};
     /// Strict-monotonic sequence head. Next entry must have
     /// `seq >= nextSeq_`. When `nextSeq_ == 0`, no entries written.
     LedgerSeq nextSeq_{0};

@@ -12,6 +12,7 @@
 #include "vault/ledger.h"
 #include "vault/ledger_account.h"
 #include "vault/ledger_entry.h"
+#include "vault/ledger_store.h"
 #include "vault/vault_types.h"
 
 #include <array>
@@ -295,6 +296,245 @@ TEST(VaultLedger, compensatingDebitWithoutRevertRejected) {
             throw;
         }
     }, LedgerError);
+}
+
+// ----- internal transfer (account -> account, settled funds only) -----
+//
+// Transferable balance is min(spendable, confirmed): a user may move only
+// money that has already settled on-chain. `pending` credits are
+// operator-at-risk (a reorg lands a CompensatingDebit on the *original*
+// account), so they must not be movable out from under that debit.
+
+TEST(VaultLedger, internalTransferMovesConfirmedBetweenAccounts) {
+    Ledger l;
+    AccountId a = acct("alice");
+    AccountId b = acct("bob");
+    OutpointId dep = outpoint(60);
+    l.append(DepositObserved{1, T0, a, dep, 100});
+    l.append(CreditOpened{2, T0, a, dep, 100});
+    l.append(CreditSettled{3, T0, a, dep});
+    l.append(InternalTransfer{4, T0, a, b, 40});
+
+    EXPECT_EQ(l.accounts().at(a).confirmed(), 60U);
+    EXPECT_EQ(l.accounts().at(a).spendable(), 60U);
+    EXPECT_EQ(l.accounts().at(b).confirmed(), 40U);
+    EXPECT_EQ(l.accounts().at(b).spendable(), 40U);
+    // Conservation: nothing entered or left the vault, and no credit
+    // moved into or out of the operator-at-risk bucket.
+    EXPECT_EQ(l.accounts().at(a).pending(), 0U);
+    EXPECT_EQ(l.accounts().at(b).pending(), 0U);
+    EXPECT_EQ(l.totalOpenCredits(), 0U);
+    EXPECT_EQ(l.totalOperatorLoss(), 0U);
+}
+
+TEST(VaultLedger, internalTransferCannotMoveUnsettledCredits) {
+    Ledger l;
+    AccountId a = acct("alice");
+    OutpointId dep = outpoint(61);
+    l.append(DepositObserved{1, T0, a, dep, 100});
+    l.append(CreditOpened{2, T0, a, dep, 100});
+    // Spendable, but NOT transferable: the credit has not settled.
+    ASSERT_EQ(l.accounts().at(a).spendable(), 100U);
+    ASSERT_EQ(l.accounts().at(a).confirmed(), 0U);
+
+    EXPECT_THROW({
+        try {
+            l.append(InternalTransfer{3, T0, a, acct("bob"), 1});
+        } catch (const LedgerError& e) {
+            EXPECT_EQ(e.kind(), LedgerError::Kind::INSUFFICIENT_TRANSFERABLE_BALANCE);
+            throw;
+        }
+    }, LedgerError);
+}
+
+TEST(VaultLedger, internalTransferRespectsLockedBalance) {
+    Ledger l;
+    AccountId a = acct("alice");
+    AccountId b = acct("bob");
+    OutpointId dep = outpoint(62);
+    l.append(DepositObserved{1, T0, a, dep, 100});
+    l.append(CreditOpened{2, T0, a, dep, 100});
+    l.append(CreditSettled{3, T0, a, dep});
+    l.append(WithdrawalInitiated{4, T0, a, outpoint(63), 80, backendId("hot")});
+    ASSERT_EQ(l.accounts().at(a).locked(), 80U);
+    ASSERT_EQ(l.accounts().at(a).spendable(), 20U);
+
+    // One una over the un-locked remainder is refused...
+    EXPECT_THROW({
+        try {
+            l.append(InternalTransfer{5, T0, a, b, 21});
+        } catch (const LedgerError& e) {
+            EXPECT_EQ(e.kind(), LedgerError::Kind::INSUFFICIENT_TRANSFERABLE_BALANCE);
+            throw;
+        }
+    }, LedgerError);
+    // ...and the rejected append left the ledger untouched, seq included.
+    EXPECT_EQ(l.nextSeq(), 5U);
+    EXPECT_EQ(l.accounts().at(a).confirmed(), 100U);
+
+    l.append(InternalTransfer{5, T0, a, b, 20});
+    EXPECT_EQ(l.accounts().at(a).confirmed(), 80U);
+    EXPECT_EQ(l.accounts().at(a).locked(), 80U);
+    EXPECT_EQ(l.accounts().at(a).spendable(), 0U);
+    EXPECT_EQ(l.accounts().at(b).confirmed(), 20U);
+}
+
+TEST(VaultLedger, internalTransferToSelfRejected) {
+    Ledger l;
+    AccountId a = acct("alice");
+    OutpointId dep = outpoint(64);
+    l.append(DepositObserved{1, T0, a, dep, 100});
+    l.append(CreditOpened{2, T0, a, dep, 100});
+    l.append(CreditSettled{3, T0, a, dep});
+    EXPECT_THROW({
+        try {
+            l.append(InternalTransfer{4, T0, a, a, 10});
+        } catch (const LedgerError& e) {
+            EXPECT_EQ(e.kind(), LedgerError::Kind::TRANSFER_INVALID);
+            throw;
+        }
+    }, LedgerError);
+}
+
+TEST(VaultLedger, internalTransferZeroAmountRejected) {
+    Ledger l;
+    AccountId a = acct("alice");
+    OutpointId dep = outpoint(65);
+    l.append(DepositObserved{1, T0, a, dep, 100});
+    l.append(CreditOpened{2, T0, a, dep, 100});
+    l.append(CreditSettled{3, T0, a, dep});
+    EXPECT_THROW({
+        try {
+            l.append(InternalTransfer{4, T0, a, acct("bob"), 0});
+        } catch (const LedgerError& e) {
+            EXPECT_EQ(e.kind(), LedgerError::Kind::TRANSFER_INVALID);
+            throw;
+        }
+    }, LedgerError);
+}
+
+TEST(VaultLedger, internalTransferEmptyCounterpartyRejected) {
+    // An empty AccountId would mint a phantom account on replay.
+    Ledger l;
+    AccountId a = acct("alice");
+    OutpointId dep = outpoint(66);
+    l.append(DepositObserved{1, T0, a, dep, 100});
+    l.append(CreditOpened{2, T0, a, dep, 100});
+    l.append(CreditSettled{3, T0, a, dep});
+    EXPECT_THROW({
+        try {
+            l.append(InternalTransfer{4, T0, a, acct(""), 10});
+        } catch (const LedgerError& e) {
+            EXPECT_EQ(e.kind(), LedgerError::Kind::TRANSFER_INVALID);
+            throw;
+        }
+    }, LedgerError);
+    EXPECT_THROW(l.append(InternalTransfer{4, T0, acct(""), a, 10}), LedgerError);
+}
+
+TEST(VaultLedger, internalTransferReplayIsDeterministic) {
+    Ledger l;
+    AccountId a = acct("alice");
+    AccountId b = acct("bob");
+    OutpointId dep = outpoint(67);
+    l.append(DepositObserved{1, T0, a, dep, 500});
+    l.append(CreditOpened{2, T0, a, dep, 500});
+    l.append(CreditSettled{3, T0, a, dep});
+    l.append(InternalTransfer{4, T0, a, b, 125});
+    l.append(InternalTransfer{5, T0, b, a, 25});
+
+    Ledger replayed = Ledger::replay(l.entries());
+    EXPECT_EQ(replayed.accounts().at(a), l.accounts().at(a));
+    EXPECT_EQ(replayed.accounts().at(b), l.accounts().at(b));
+    EXPECT_EQ(replayed.accounts().at(a).confirmed(), 400U);
+    EXPECT_EQ(replayed.accounts().at(b).confirmed(), 100U);
+    EXPECT_EQ(replayed.nextSeq(), l.nextSeq());
+}
+
+TEST(VaultLedger, internalTransferDoesNotConsumePerUserCap) {
+    // Caps bound OUTSTANDING credits (credit_opened not yet settled).
+    // A transfer moves settled funds only, so it must be cap-neutral even
+    // when the receiver is already at the per-user cap.
+    LedgerCaps caps;
+    caps.per_user = 100;
+    Ledger l{caps};
+    AccountId a = acct("alice");
+    AccountId b = acct("bob");
+    OutpointId dep_a = outpoint(68);
+    OutpointId dep_b = outpoint(69);
+    l.append(DepositObserved{1, T0, a, dep_a, 100});
+    l.append(CreditOpened{2, T0, a, dep_a, 100});
+    l.append(CreditSettled{3, T0, a, dep_a});
+    l.append(DepositObserved{4, T0, b, dep_b, 100});
+    l.append(CreditOpened{5, T0, b, dep_b, 100});  // bob at per-user cap
+    l.append(CreditSettled{6, T0, b, dep_b});
+
+    l.append(InternalTransfer{7, T0, a, b, 100});
+    EXPECT_EQ(l.accounts().at(b).confirmed(), 200U);
+    EXPECT_EQ(l.accounts().at(a).confirmed(), 0U);
+}
+
+// ----- write-ahead persistence tee -----
+
+TEST(VaultLedger, appendWithoutStoreIsANoOp) {
+    // Default construction must stay store-less: every existing caller
+    // (and every other test in this file) relies on it.
+    Ledger l;
+    l.append(DepositObserved{0, T0, acct("alice"), outpoint(80), 10});
+    EXPECT_EQ(l.entries().size(), 1U);
+}
+
+TEST(VaultLedger, appendTeesEveryEntryToTheStore) {
+    InMemoryLedgerStore store;
+    Ledger l{LedgerCaps::unbounded(), &store};
+    AccountId a = acct("alice");
+    OutpointId dep = outpoint(81);
+    l.append(DepositObserved{0, T0, a, dep, 100});
+    l.append(CreditOpened{1, T0, a, dep, 100});
+    l.append(CreditSettled{2, T0, a, dep});
+    l.append(InternalTransfer{3, T0, a, acct("bob"), 40});
+
+    auto persisted = store.loadAll();
+    ASSERT_EQ(persisted.size(), 4U);
+    EXPECT_NE(std::get_if<InternalTransfer>(&persisted[3]), nullptr);
+    // Replaying what was persisted reproduces the live balances.
+    Ledger replayed = Ledger::replay(persisted);
+    EXPECT_EQ(replayed.accountOr(a).confirmed(), 60U);
+    EXPECT_EQ(replayed.accountOr(acct("bob")).confirmed(), 40U);
+}
+
+TEST(VaultLedger, rejectedAppendIsNeverPersisted) {
+    // Write-ahead only past validation: a refused entry must leave no
+    // trace on disk, or replay would resurrect it as valid.
+    InMemoryLedgerStore store;
+    Ledger l{LedgerCaps::unbounded(), &store};
+    AccountId a = acct("alice");
+    OutpointId dep = outpoint(82);
+    l.append(DepositObserved{0, T0, a, dep, 100});
+    l.append(CreditOpened{1, T0, a, dep, 100});
+    l.append(CreditSettled{2, T0, a, dep});
+    ASSERT_EQ(store.loadAll().size(), 3U);
+
+    EXPECT_THROW(l.append(InternalTransfer{3, T0, a, acct("bob"), 999}), LedgerError);
+    EXPECT_EQ(store.loadAll().size(), 3U);
+    EXPECT_THROW(l.append(CreditSettled{3, T0, acct("ghost"), outpoint(83)}), LedgerError);
+    EXPECT_EQ(store.loadAll().size(), 3U);
+}
+
+TEST(VaultLedger, replayDoesNotReAppendToTheStore) {
+    // The restart trap: if the store is attached before replay, every
+    // restart doubles the log.
+    InMemoryLedgerStore store;
+    Ledger l{LedgerCaps::unbounded(), &store};
+    l.append(DepositObserved{0, T0, acct("alice"), outpoint(84), 100});
+    ASSERT_EQ(store.loadAll().size(), 1U);
+
+    Ledger restored = Ledger::replay(store.loadAll());
+    restored.setStore(&store);
+    EXPECT_EQ(store.loadAll().size(), 1U);
+    // Post-attach writes still land.
+    restored.append(DepositObserved{1, T0, acct("bob"), outpoint(85), 5});
+    EXPECT_EQ(store.loadAll().size(), 2U);
 }
 
 }  // namespace

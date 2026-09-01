@@ -8,21 +8,68 @@
 #include "vault/deposit_flow.h"
 #include "vault/ledger_account.h"
 #include "vault/ledger_entry.h"
+#include "vault/ledger_store.h"
 #include "vault/reorg_watcher.h"
 #include "vault/signing_backend.h"
 #include "vault/withdrawal_queue.h"
 
+#include <chrono>
 #include <utility>
+#include <variant>
 
 namespace dinero::vault {
 
+namespace {
+
+LedgerTimestamp nowNanos() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+}  // namespace
+
 VaultService::VaultService(std::unique_ptr<SigningBackend> backend, VaultServiceConfig config,
-                           BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at)
+                           BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at,
+                           LedgerStore* store)
+    // The ledger is built store-LESS on purpose: replay below runs
+    // through append(), which would otherwise write every historical
+    // entry back out and double the log on each restart.
     : backend_{std::move(backend)},
       ledger_{config.ledger_caps},
       deposit_flow_{&ledger_, std::move(config.confirmation_policy), config.shadow_mode},
       reorg_watcher_{&deposit_flow_, std::move(block_hash_at_height), std::move(tx_included_at)},
-      withdrawals_{&ledger_, backend_.get(), config.withdrawal_caps, config.withdrawal_policy} {}
+      withdrawals_{&ledger_, backend_.get(), config.withdrawal_caps, config.withdrawal_policy} {
+    if (store == nullptr) {
+        return;
+    }
+    for (const auto& entry : store->loadAll()) {
+        // A LedgerError here means the persisted log is inconsistent.
+        // Let it escape: a vault that refuses to start beats one that
+        // silently comes up with half its history.
+        ledger_.append(entry);
+    }
+    countUnreconciled();
+    ledger_.setStore(store);
+}
+
+void VaultService::countUnreconciled() {
+    // Replay restores balances but not the three state machines, whose
+    // inputs (deposit height, enclosing block hash, destination script)
+    // are not ledgered. Anything mid-lifecycle is therefore frozen.
+    for (const auto& [account, state] : ledger_.accounts()) {
+        for (const auto& [outpoint, lifecycle] : state.deposits()) {
+            if (std::holds_alternative<DepositCreditedState>(lifecycle)) {
+                unreconciled_deposits_ += 1;
+            }
+        }
+        for (const auto& [outpoint, lifecycle] : state.withdrawals()) {
+            if (std::holds_alternative<WithdrawalInitiatedState>(lifecycle)) {
+                unreconciled_withdrawals_ += 1;
+            }
+        }
+    }
+}
 
 void VaultService::recordDeposit(const std::array<uint8_t, 32>& txid, uint32_t vout,
                                  const AccountId& account, UnaAmount amount, uint64_t height,
@@ -62,6 +109,15 @@ WithdrawalId VaultService::enqueueWithdrawal(const AccountId& account, UnaAmount
     return withdrawals_.enqueue(account, amount, destination_script_pub_key);
 }
 
+LedgerSeq VaultService::transfer(const AccountId& from, const AccountId& to, UnaAmount amount) {
+    std::lock_guard<std::mutex> lock(mu_);
+    LedgerSeq seq = ledger_.nextSeq();
+    // Ledger::append validates before it mutates, so a rejected transfer
+    // leaves both accounts — and the seq head — untouched.
+    ledger_.append(InternalTransfer{seq, nowNanos(), from, to, amount});
+    return seq;
+}
+
 std::optional<WithdrawalId> VaultService::processNextWithdrawal() {
     std::lock_guard<std::mutex> lock(mu_);
     return withdrawals_.processNext();
@@ -75,6 +131,11 @@ void VaultService::markWithdrawalIncluded(const WithdrawalId& id, uint64_t heigh
 UnaAmount VaultService::accountSpendable(const AccountId& account) {
     std::lock_guard<std::mutex> lock(mu_);
     return ledger_.accountOr(account).spendable();
+}
+
+UnaAmount VaultService::accountTransferable(const AccountId& account) {
+    std::lock_guard<std::mutex> lock(mu_);
+    return ledger_.accountOr(account).transferable();
 }
 
 UnaAmount VaultService::accountConfirmed(const AccountId& account) {

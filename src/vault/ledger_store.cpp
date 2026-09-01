@@ -30,6 +30,12 @@ namespace {
 // are tiny — sorted-keys integer/string emit + a hand-rolled
 // tokeniser on the read path.
 
+/// Dependent-false so the `else` branch of serializeEntry's if-constexpr
+/// chain is a compile error, not a silently-empty line. Adding a
+/// LedgerEntry alternative without a serializer now fails the build.
+template <typename>
+inline constexpr bool kDependentFalse = false;
+
 std::string escapeString(const std::string& s) {
     std::ostringstream oss;
     oss << '"';
@@ -143,6 +149,15 @@ std::string serializeEntry(const LedgerEntry& entry) {
                     << ",\"kind\":\"policyAdjustment\""
                     << ",\"note\":" << escapeString(concrete.note)
                     << ",\"seq\":" << concrete.seq << "}";
+            } else if constexpr (std::is_same_v<T, InternalTransfer>) {
+                oss << "{\"amount\":" << concrete.amount << ",\"at\":" << concrete.at
+                    << ",\"from\":" << escapeString(concrete.from.raw)
+                    << ",\"kind\":\"internalTransfer\""
+                    << ",\"seq\":" << concrete.seq
+                    << ",\"to\":" << escapeString(concrete.to.raw) << "}";
+            } else {
+                static_assert(kDependentFalse<T>,
+                              "serializeEntry: unhandled LedgerEntry alternative");
             }
         },
         entry);
@@ -231,6 +246,51 @@ struct Parser {
         }
         return std::stoull(s.substr(start, i - start));
     }
+    /// Consume and discard one JSON value of any shape. Lets the reader
+    /// tolerate fields written by a newer daemon (the forward-compat
+    /// promise in ledger_store.h) instead of failing the whole log.
+    void skipValue() {
+        skipWs();
+        if (i >= s.size()) {
+            throw LedgerStoreError("unexpected end of value");
+        }
+        const char c = s[i];
+        if (c == '"') {
+            (void)readString();
+            return;
+        }
+        if (c == '{' || c == '[') {
+            const char open = c;
+            const char close = (c == '{') ? '}' : ']';
+            int depth = 0;
+            while (i < s.size()) {
+                const char ch = s[i];
+                if (ch == '"') {
+                    (void)readString();  // strings may contain braces
+                    continue;
+                }
+                ++i;
+                if (ch == open) {
+                    ++depth;
+                } else if (ch == close) {
+                    --depth;
+                    if (depth == 0) {
+                        return;
+                    }
+                }
+            }
+            throw LedgerStoreError("unterminated container in unknown field");
+        }
+        // Number, true, false or null: run to the next structural char.
+        const size_t start = i;
+        while (i < s.size() && s[i] != ',' && s[i] != '}' && s[i] != ']') {
+            ++i;
+        }
+        if (i == start) {
+            throw LedgerStoreError("empty value");
+        }
+    }
+
     bool peekNull() {
         skipWs();
         if (s.compare(i, 4, "null") == 0) {
@@ -264,7 +324,7 @@ OutpointId parseOutpoint(const std::string& json) {
         } else if (key == "vout") {
             op.vout = static_cast<uint32_t>(p.readUnsignedInt());
         } else {
-            throw LedgerStoreError("unknown outpoint key: " + key);
+            p.skipValue();
         }
     }
     return op;
@@ -295,6 +355,8 @@ LedgerEntry parseEntry(const std::string& line) {
     UnaAmount amount = 0;
     BackendId backend;
     UnaAmount operator_loss = 0;
+    AccountId transfer_from;
+    AccountId transfer_to;
     std::string note;
     int64_t delta_user = 0;
     int64_t delta_op = 0;
@@ -343,6 +405,10 @@ LedgerEntry parseEntry(const std::string& line) {
             backend = BackendId{p.readString()};
         } else if (key == "operatorLoss") {
             operator_loss = p.readUnsignedInt();
+        } else if (key == "from") {
+            transfer_from = AccountId{p.readString()};
+        } else if (key == "to") {
+            transfer_to = AccountId{p.readString()};
         } else if (key == "note") {
             note = p.readString();
         } else if (key == "deltaUserBalance") {
@@ -350,7 +416,10 @@ LedgerEntry parseEntry(const std::string& line) {
         } else if (key == "deltaOperatorFloat") {
             delta_op = p.readSignedInt();
         } else {
-            throw LedgerStoreError("unknown field: " + key);
+            // Unknown field from a newer writer. Skipping keeps an older
+            // daemon able to read a newer log; an unknown "kind" below is
+            // still fatal, because that WOULD drop a balance-moving entry.
+            p.skipValue();
         }
     }
 
@@ -377,6 +446,9 @@ LedgerEntry parseEntry(const std::string& line) {
     }
     if (kind == "compensatingDebit") {
         return CompensatingDebit{seq, at, account, deposit_or_request, amount, operator_loss};
+    }
+    if (kind == "internalTransfer") {
+        return InternalTransfer{seq, at, transfer_from, transfer_to, amount};
     }
     if (kind == "policyAdjustment") {
         std::optional<AccountId> maybe_account;

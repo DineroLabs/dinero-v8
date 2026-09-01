@@ -5,6 +5,8 @@
 
 #include "vault/ledger.h"
 
+#include "vault/ledger_store.h"
+
 #include <sstream>
 #include <utility>
 #include <variant>
@@ -21,6 +23,13 @@ void Ledger::append(LedgerEntry entry) {
     }
 
     validate(entry);
+    // Write-ahead: persist only after validation (so a rejected entry
+    // leaves no trace to resurrect on replay) but before the in-memory
+    // apply (so a crash between the two replays the entry rather than
+    // losing it). A store failure throws with ledger state untouched.
+    if (store_ != nullptr) {
+        store_->append(entry);
+    }
     applyToAccounts(entry);
     entries_.push_back(std::move(entry));
     nextSeq_ = seq + 1;
@@ -165,6 +174,34 @@ void Ledger::validate(const LedgerEntry& entry) {
         return;
     }
 
+    if (auto* transfer = std::get_if<InternalTransfer>(&entry); transfer != nullptr) {
+        if (transfer->from.raw.empty() || transfer->to.raw.empty()) {
+            throw LedgerError(LedgerError::Kind::TRANSFER_INVALID,
+                              "internalTransfer with empty account id");
+        }
+        if (transfer->from == transfer->to) {
+            throw LedgerError(LedgerError::Kind::TRANSFER_INVALID,
+                              "internalTransfer from an account to itself");
+        }
+        if (transfer->amount == 0) {
+            throw LedgerError(LedgerError::Kind::TRANSFER_INVALID,
+                              "internalTransfer of zero una");
+        }
+        // Settled funds only. `transferable()` excludes `pending`, so a
+        // credit that a reorg may still revert cannot be moved out from
+        // under the CompensatingDebit that would land on `from`.
+        UnaAmount available = accountOr(transfer->from).transferable();
+        if (transfer->amount > available) {
+            std::ostringstream oss;
+            oss << "insufficient transferable balance: " << transfer->amount << " > " << available;
+            throw LedgerError(LedgerError::Kind::INSUFFICIENT_TRANSFERABLE_BALANCE, oss.str());
+        }
+        // Caps are deliberately NOT consulted: they bound outstanding
+        // (open) credits, and a transfer moves settled funds only, so
+        // totalOpenCredits_ / openCreditsByAccount_ are unchanged.
+        return;
+    }
+
     // depositObserved, withdrawalInitiated, policyAdjustment have no
     // pre-conditions beyond what the type already enforces.
 }
@@ -255,6 +292,14 @@ void Ledger::applyToAccounts(const LedgerEntry& entry) {
             .applyCompensatingDebit(compensating->deposit, compensating->amount, compensating->operatorLoss);
         UnaAmount loss_after = accounts_.at(compensating->account).operatorLoss();
         totalOperatorLoss_ += (loss_after - loss_before);
+        return;
+    }
+
+    if (auto* transfer = std::get_if<InternalTransfer>(&entry); transfer != nullptr) {
+        // Two ensureAccount() calls, used strictly one after the other:
+        // the second may rehash and invalidate the first reference.
+        ensureAccount(transfer->from).applyInternalTransferOut(transfer->amount);
+        ensureAccount(transfer->to).applyInternalTransferIn(transfer->amount);
         return;
     }
 

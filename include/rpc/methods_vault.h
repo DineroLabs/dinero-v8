@@ -7,6 +7,8 @@
 //   vault.account.metrics      — full per-account snapshot
 //   vault.observe              — explicit deposit registration (rare)
 //   vault.withdraw             — enqueue a withdrawal
+//   vault.transfer             — move settled balance between two
+//                                accounts of the same vault
 //   vault.withdrawal.status    — query withdrawal lifecycle
 //   vault.metrics              — global vault metrics
 
@@ -30,6 +32,7 @@ Json rpc_vault_account_spendable(const ExecutionContext& ctx, const Json& params
 Json rpc_vault_account_metrics(const ExecutionContext& ctx, const Json& params);
 Json rpc_vault_observe(const ExecutionContext& ctx, const Json& params);
 Json rpc_vault_withdraw(const ExecutionContext& ctx, const Json& params);
+Json rpc_vault_transfer(const ExecutionContext& ctx, const Json& params);
 Json rpc_vault_withdrawal_status(const ExecutionContext& ctx, const Json& params);
 Json rpc_vault_metrics(const ExecutionContext& ctx, const Json& params);
 

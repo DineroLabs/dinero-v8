@@ -115,7 +115,10 @@ void VaultPanel::clearWalletScopedFields(const QString& operatorText) {
     if (lbl_account_pending_)   lbl_account_pending_->setText("—");
     if (lbl_account_locked_)    lbl_account_locked_->setText("—");
     if (lbl_account_spendable_) lbl_account_spendable_->setText("—");
+    if (lbl_account_transferable_) lbl_account_transferable_->setText("—");
     if (lbl_account_loss_)      lbl_account_loss_->setText("—");
+    if (lbl_transfer_status_)   lbl_transfer_status_->setText("—");
+    if (transfer_to_input_)     transfer_to_input_->clear();
     if (lbl_last_request_id_)   lbl_last_request_id_->setText("Last request: —");
     if (lbl_status_value_)      lbl_status_value_->setText("—");
     if (status_request_id_input_) status_request_id_input_->clear();
@@ -157,6 +160,7 @@ void VaultPanel::setWalletScope(const QString& walletName) {
         clearWalletScopedFields("<span style='color:#d8a37b;'>no wallet loaded</span>");
         if (account_id_input_) account_id_input_->clear();
         if (withdraw_account_input_) withdraw_account_input_->clear();
+        if (transfer_from_input_) transfer_from_input_->clear();
         return;
     }
 
@@ -164,6 +168,7 @@ void VaultPanel::setWalletScope(const QString& walletName) {
     clearWalletScopedFields("<span style='color:#d8a37b;'>rebinding to active wallet…</span>");
     if (account_id_input_) account_id_input_->setText(account);
     if (withdraw_account_input_) withdraw_account_input_->setText(account);
+    if (transfer_from_input_) transfer_from_input_->setText(account);
     appendLog(QString("Wallet switched — vault scope is now %1").arg(wallet_scope_));
     refresh();
 }
@@ -217,6 +222,13 @@ void VaultPanel::setupUi() {
     svc_grid->addWidget(lbl_account_count_, 2, 3);
     svc_grid->addWidget(new QLabel("Vault Deposit Address:"), 3, 0);
     svc_grid->addWidget(lbl_operator_address_, 3, 1, 1, 3);
+    lbl_reconcile_warning_ = new QLabel();
+    lbl_reconcile_warning_->setTextFormat(Qt::RichText);
+    lbl_reconcile_warning_->setWordWrap(true);
+    lbl_reconcile_warning_->setStyleSheet(
+        "QLabel { background: #3a2a12; border: 1px solid #d8a37b; border-radius: 4px; padding: 6px; }");
+    lbl_reconcile_warning_->hide();
+    svc_grid->addWidget(lbl_reconcile_warning_, 4, 0, 1, 4);
     root->addWidget(service_group_);
 
     // Per-account inspector.
@@ -234,10 +246,11 @@ void VaultPanel::setupUi() {
     lbl_account_pending_ = new QLabel("\xE2\x80\x93");
     lbl_account_locked_ = new QLabel("\xE2\x80\x93");
     lbl_account_spendable_ = new QLabel("\xE2\x80\x93");
+    lbl_account_transferable_ = new QLabel("\xE2\x80\x93");
     lbl_account_loss_ = new QLabel("\xE2\x80\x93");
     for (QLabel* label : {lbl_total_credits_, lbl_total_loss_, lbl_account_confirmed_,
                           lbl_account_pending_, lbl_account_locked_, lbl_account_spendable_,
-                          lbl_account_loss_}) {
+                          lbl_account_transferable_, lbl_account_loss_}) {
         label->setTextFormat(Qt::RichText);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     }
@@ -254,10 +267,54 @@ void VaultPanel::setupUi() {
         "Available Now", "What this vault account can withdraw right now.")), 1, 2);
     acc_grid->addWidget(lbl_account_spendable_, 1, 3);
     acc_grid->addWidget(new QLabel(formatMetricTitle(
-        "Operator Loss", "Only used if a credited deposit later has to be reversed.")), 2, 0);
-    acc_grid->addWidget(lbl_account_loss_, 2, 1);
+        "Sendable In-Vault", "Settled funds this account can send to another vault account.")), 2, 0);
+    acc_grid->addWidget(lbl_account_transferable_, 2, 1);
+    acc_grid->addWidget(new QLabel(formatMetricTitle(
+        "Operator Loss", "Only used if a credited deposit later has to be reversed.")), 2, 2);
+    acc_grid->addWidget(lbl_account_loss_, 2, 3);
     acc_layout->addLayout(acc_grid);
     root->addWidget(account_group_);
+
+    // Internal transfer form. Off-chain move between two accounts of
+    // this same vault — no transaction, no fee, no confirmations.
+    transfer_group_ = new QGroupBox("Send Inside Vault");
+    auto* tf_layout = new QVBoxLayout(transfer_group_);
+    auto* tf_hint = new QLabel(
+        "Move settled balance to another account in this vault. Instant and "
+        "feeless — nothing touches the chain. Only “Sendable In-Vault” funds "
+        "can move; deposits still settling stay put until they finish.");
+    tf_hint->setWordWrap(true);
+    tf_hint->setStyleSheet("color: #9fb3c8; padding: 2px;");
+    tf_layout->addWidget(tf_hint);
+
+    auto* tf_form = new QFormLayout();
+    transfer_from_input_ = new QLineEdit();
+    transfer_from_input_->setPlaceholderText("Account ID");
+    tf_form->addRow("From:", transfer_from_input_);
+    transfer_to_input_ = new QLineEdit();
+    transfer_to_input_->setPlaceholderText("Destination vault account ID");
+    tf_form->addRow("To:", transfer_to_input_);
+    transfer_amount_input_ = new QSpinBox();
+    transfer_amount_input_->setRange(1, 1000000000);
+    transfer_amount_input_->setSuffix(" una");
+    transfer_amount_input_->setValue(100000);  // 0.001 DIN
+    tf_form->addRow("Amount:", transfer_amount_input_);
+    tf_layout->addLayout(tf_form);
+
+    auto* tf_action_row = new QHBoxLayout();
+    btn_transfer_ = new QPushButton("Send In-Vault");
+    btn_transfer_->setStyleSheet("font-weight: bold; padding: 6px 14px;");
+    tf_action_row->addStretch();
+    tf_action_row->addWidget(btn_transfer_);
+    tf_layout->addLayout(tf_action_row);
+
+    lbl_transfer_status_ = new QLabel("\xE2\x80\x93");
+    lbl_transfer_status_->setStyleSheet("color: #9fb3c8;");
+    lbl_transfer_status_->setTextFormat(Qt::RichText);
+    lbl_transfer_status_->setWordWrap(true);
+    lbl_transfer_status_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    tf_layout->addWidget(lbl_transfer_status_);
+    root->addWidget(transfer_group_);
 
     // Withdrawal form + status check.
     withdraw_group_ = new QGroupBox("Withdrawal");
@@ -321,6 +378,7 @@ void VaultPanel::setupConnections() {
     connect(account_id_input_, &QLineEdit::editingFinished,
             this, &VaultPanel::onAccountFieldChanged);
     connect(btn_withdraw_, &QPushButton::clicked, this, &VaultPanel::onWithdrawClicked);
+    connect(btn_transfer_, &QPushButton::clicked, this, &VaultPanel::onTransferClicked);
     connect(btn_check_status_, &QPushButton::clicked,
             this, &VaultPanel::onCheckStatusClicked);
     connect(rpc_, &RpcClient::rpcResult, this, &VaultPanel::onRpcResult);
@@ -380,6 +438,30 @@ void VaultPanel::onWithdrawClicked() {
                   .arg(account, formatAmountPlain(amount)));
 }
 
+void VaultPanel::onTransferClicked() {
+    const QString from = transfer_from_input_->text().trimmed();
+    const QString to = transfer_to_input_->text().trimmed();
+    const qint64 amount = transfer_amount_input_->value();
+    if (from.isEmpty() || to.isEmpty()) {
+        lbl_transfer_status_->setText(
+            "<span style='color:#d8a37b;'>Both accounts are required.</span>");
+        return;
+    }
+    if (from == to) {
+        lbl_transfer_status_->setText(
+            "<span style='color:#d8a37b;'>Source and destination are the same account.</span>");
+        return;
+    }
+    lbl_transfer_status_->setText("sending…");
+    callRpc("vault.transfer", QJsonArray{QJsonObject{
+        {"from_account_id", from},
+        {"to_account_id", to},
+        {"amount_una", static_cast<qint64>(amount)},
+    }});
+    appendLog(QString("→ vault.transfer %1 → %2 amount=%3")
+                  .arg(from, to, formatAmountPlain(amount)));
+}
+
 void VaultPanel::onCheckStatusClicked() {
     const QString req_id = status_request_id_input_->text().trimmed();
     if (req_id.isEmpty()) {
@@ -400,6 +482,24 @@ void VaultPanel::onRpcResult(const QString& method, const QJsonValue& result) {
         lbl_queue_depth_->setText(QString::number(safeInt(obj.value("withdrawal_queue_depth"))));
         lbl_ledger_seq_->setText(QString::number(safeInt(obj.value("ledger_next_seq"))));
         lbl_account_count_->setText(QString::number(safeInt(obj.value("account_count"))));
+        // Only the ledger survives a daemon restart; deposits and
+        // withdrawals that were mid-lifecycle come back with correct
+        // balances but no state machine to finish them.
+        const qint64 stuck_deposits = safeInt(obj.value("unreconciled_deposits"));
+        const qint64 stuck_withdrawals = safeInt(obj.value("unreconciled_withdrawals"));
+        if (stuck_deposits > 0 || stuck_withdrawals > 0) {
+            lbl_reconcile_warning_->setText(
+                QString("<b style='color:#d8a37b;'>Needs reconciliation after restart</b>"
+                        "<br/><span style='color:#c8b8a0; font-size:11px;'>%1 deposit(s) credited "
+                        "but not settled, %2 withdrawal(s) started but not finished. These will not "
+                        "complete on their own, and the withdrawals keep holding their reserved "
+                        "balance until an operator resolves them.</span>")
+                    .arg(stuck_deposits)
+                    .arg(stuck_withdrawals));
+            lbl_reconcile_warning_->show();
+        } else {
+            lbl_reconcile_warning_->hide();
+        }
         updateDeveloperSummary();
         return;
     }
@@ -496,6 +596,7 @@ void VaultPanel::onRpcResult(const QString& method, const QJsonValue& result) {
         lbl_account_pending_->setText(formatAmountRich(safeInt(obj.value("pending_una"))));
         lbl_account_locked_->setText(formatAmountRich(safeInt(obj.value("locked_una"))));
         lbl_account_spendable_->setText(formatAmountRich(safeInt(obj.value("spendable_una"))));
+        lbl_account_transferable_->setText(formatAmountRich(safeInt(obj.value("transferable_una"))));
         lbl_account_loss_->setText(formatAmountRich(safeInt(obj.value("operator_loss_una"))));
         return;
     }
@@ -508,6 +609,25 @@ void VaultPanel::onRpcResult(const QString& method, const QJsonValue& result) {
             status_request_id_input_->setText(id);
             appendLog("← vault.withdraw enqueued: " + id);
         }
+        return;
+    }
+    if (method == "vault.transfer") {
+        if (!result.isObject()) {
+            return;
+        }
+        const QJsonObject obj = result.toObject();
+        const QString to = safeString(obj.value("to_account_id"));
+        const qint64 amount = safeInt(obj.value("amount_una"));
+        const QString seq = QString::number(safeInt(obj.value("seq")));
+        lbl_transfer_status_->setText(
+            QString("<span style='color:#7bd88f;'>Sent %1 to %2</span>"
+                    "<br/><span style='color:#7f8c9b; font-size:11px;'>ledger entry #%3</span>")
+                .arg(formatAmountPlain(amount).toHtmlEscaped(), to.toHtmlEscaped(), seq));
+        appendLog(QString("← vault.transfer sent %1 to %2 (seq %3)")
+                      .arg(formatAmountPlain(amount), to, seq));
+        // Both sides moved; pull fresh per-account and service metrics.
+        onAccountFieldChanged();
+        callRpc("vault.metrics", QJsonObject{});
         return;
     }
     if (method == "vault.withdrawal.status") {
@@ -532,6 +652,10 @@ void VaultPanel::onRpcError(const QString& method, int code, const QString& mess
         developer_summary_ = QStringLiteral("Vault raw metrics: unavailable (vault service disabled)");
         Q_EMIT developerSummaryChanged(developer_summary_);
         return;
+    }
+    if (method == "vault.transfer") {
+        lbl_transfer_status_->setText(
+            QString("<span style='color:#e06c75;'>%1</span>").arg(message.toHtmlEscaped()));
     }
     appendLog(QString("✗ %1 [%2]: %3").arg(method).arg(code).arg(message));
 }

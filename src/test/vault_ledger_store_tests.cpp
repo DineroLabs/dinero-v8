@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -153,6 +154,83 @@ TEST(VaultLedgerStore, inMemoryStoreIsEphemeral) {
     InMemoryLedgerStore store;
     store.append(DepositObserved{1, T0, AccountId{"x"}, outpoint(0x99), 1});
     EXPECT_EQ(store.loadAll().size(), 1U);
+}
+
+TEST(VaultLedgerStore, internalTransferRoundTrips) {
+    std::string path = tempPath();
+    {
+        FileLedgerStore store{path};
+        store.append(InternalTransfer{7, T0, AccountId{"alice"}, AccountId{"bob"}, 4200});
+    }
+    FileLedgerStore reopened{path};
+    auto entries = reopened.loadAll();
+    ASSERT_EQ(entries.size(), 1U);
+    const auto* transfer = std::get_if<InternalTransfer>(&entries[0]);
+    ASSERT_NE(transfer, nullptr);
+    EXPECT_EQ(transfer->seq, 7U);
+    EXPECT_EQ(transfer->at, T0);
+    EXPECT_EQ(transfer->from.raw, "alice");
+    EXPECT_EQ(transfer->to.raw, "bob");
+    EXPECT_EQ(transfer->amount, 4200U);
+    std::filesystem::remove(path);
+}
+
+TEST(VaultLedgerStore, internalTransferSurvivesReplayThroughLedger) {
+    // The round-trip that actually matters: a persisted transfer must
+    // reproduce the same balances when replayed on daemon restart.
+    std::string path = tempPath();
+    OutpointId dep = outpoint(0x71);
+    {
+        FileLedgerStore store{path};
+        store.append(DepositObserved{0, T0, AccountId{"alice"}, dep, 900});
+        store.append(CreditOpened{1, T0, AccountId{"alice"}, dep, 900});
+        store.append(CreditSettled{2, T0, AccountId{"alice"}, dep});
+        store.append(InternalTransfer{3, T0, AccountId{"alice"}, AccountId{"bob"}, 350});
+    }
+    FileLedgerStore reopened{path};
+    Ledger replayed = Ledger::replay(reopened.loadAll());
+    EXPECT_EQ(replayed.accountOr(AccountId{"alice"}).confirmed(), 550U);
+    EXPECT_EQ(replayed.accountOr(AccountId{"bob"}).confirmed(), 350U);
+    EXPECT_EQ(replayed.nextSeq(), 4U);
+    std::filesystem::remove(path);
+}
+
+TEST(VaultLedgerStore, unknownFieldsAreSkippedNotFatal) {
+    // The header promises "unrecognised fields preserved verbatim" so the
+    // format can evolve. A reader that throws on an unknown key means an
+    // older daemon cannot read a newer log at all — no forward compat.
+    std::string path = tempPath();
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << R"({"account":"alice","amount":100,"at":7,"deposit":{"txid":")"
+            << std::string(64, '1')
+            << R"(","vout":2},"future_nested":{"a":[1,2,{"b":null}],"c":true},)"
+            << R"("future_scalar":-9,"kind":"depositObserved","seq":3})" << "\n";
+    }
+    FileLedgerStore store{path};
+    auto entries = store.loadAll();
+    ASSERT_EQ(entries.size(), 1U);
+    const auto* observed = std::get_if<DepositObserved>(&entries[0]);
+    ASSERT_NE(observed, nullptr);
+    EXPECT_EQ(observed->seq, 3U);
+    EXPECT_EQ(observed->at, 7);
+    EXPECT_EQ(observed->account.raw, "alice");
+    EXPECT_EQ(observed->amount, 100U);
+    EXPECT_EQ(observed->deposit.vout, 2U);
+    std::filesystem::remove(path);
+}
+
+TEST(VaultLedgerStore, unknownKindIsStillFatal) {
+    // Skipping unknown FIELDS must not degrade into skipping unknown
+    // ENTRY TYPES — that would silently drop balance-moving records.
+    std::string path = tempPath();
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << R"({"at":1,"kind":"somethingNewer","seq":0})" << "\n";
+    }
+    FileLedgerStore store{path};
+    EXPECT_THROW(store.loadAll(), LedgerStoreError);
+    std::filesystem::remove(path);
 }
 
 }  // namespace

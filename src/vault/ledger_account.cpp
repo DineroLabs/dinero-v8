@@ -134,4 +134,15 @@ void LedgerAccount::applyPolicyAdjustment(int64_t delta_user_balance) {
     operatorLoss_ += uncovered;
 }
 
+void LedgerAccount::applyInternalTransferOut(UnaAmount amount) {
+    // Ledger::validate has already proven amount <= transferable(), so the
+    // saturation below can only fire on a corrupt log; it keeps replay
+    // total rather than throwing mid-apply.
+    confirmed_ = confirmed_ >= amount ? confirmed_ - amount : 0;
+}
+
+void LedgerAccount::applyInternalTransferIn(UnaAmount amount) {
+    confirmed_ += amount;
+}
+
 }  // namespace dinero::vault

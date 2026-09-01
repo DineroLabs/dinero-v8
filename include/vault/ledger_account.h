@@ -90,6 +90,16 @@ class LedgerAccount {
         return K_CREDIT >= locked_ ? K_CREDIT - locked_ : 0;
     }
 
+    /// Balance that may move to another vault account: settled funds
+    /// that are not already committed to an in-flight withdrawal.
+    /// `min(spendable, confirmed)` — deliberately excludes `pending`,
+    /// which is operator-at-risk until the deposit settles (see
+    /// InternalTransfer in ledger_entry.h).
+    [[nodiscard]] UnaAmount transferable() const noexcept {
+        const UnaAmount free = spendable();
+        return free < confirmed_ ? free : confirmed_;
+    }
+
     [[nodiscard]] const std::unordered_map<OutpointId, DepositLifecycle>& deposits() const noexcept {
         return deposits_;
     }
@@ -111,6 +121,11 @@ class LedgerAccount {
     void applyCompensatingDebit(const OutpointId& deposit, UnaAmount amount, UnaAmount operator_loss);
 
     void applyPolicyAdjustment(int64_t delta_user_balance);
+
+    /// Debit / credit legs of an InternalTransfer. Both move `confirmed`
+    /// only; the Ledger validates sufficiency before either is called.
+    void applyInternalTransferOut(UnaAmount amount);
+    void applyInternalTransferIn(UnaAmount amount);
 
     bool operator==(const LedgerAccount& other) const = default;
 

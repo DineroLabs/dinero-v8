@@ -66,6 +66,7 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     // Must NOT be callable by read-only RPC clients (security fix 2026-05-29, F-CRIT-03).
     "vault.observe",
     "vault.withdraw",
+    "vault.transfer",
     "vault.processnext",
     "vault.setoperator",
     // Seeder process lifecycle — fork/execv a child process. Must NOT be callable

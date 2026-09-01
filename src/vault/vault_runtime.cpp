@@ -126,6 +126,18 @@ void InitializeVaultRuntime(VaultRuntimeConfig config) {
     // Optional persistence.
     if (!config.persistence_path.empty()) {
         try {
+            // The default path is <datadir>/vault/ledger.jsonl and nothing
+            // else creates that directory, so without this the ofstream
+            // open fails and persistence silently disables itself.
+            std::filesystem::path ledger_path(config.persistence_path);
+            if (ledger_path.has_parent_path()) {
+                std::error_code ec;
+                std::filesystem::create_directories(ledger_path.parent_path(), ec);
+                if (ec) {
+                    dinero::g_logger.warn(std::string("[Vault] could not create ") +
+                                          ledger_path.parent_path().string() + ": " + ec.message());
+                }
+            }
             g_store = std::make_unique<FileLedgerStore>(config.persistence_path);
         } catch (const LedgerStoreError& e) {
             dinero::g_logger.warn(std::string("[Vault] persistence open failed: ") + e.what());
@@ -232,27 +244,40 @@ void InitializeVaultRuntime(VaultRuntimeConfig config) {
             return tx_included_fn(op.txid_raw, op.vout, h, bh);
         };
 
-    g_service = std::make_unique<VaultService>(
-        std::move(backend), service_config,
-        std::move(block_hash_for_watcher), std::move(tx_included_for_watcher));
+    // The service replays the store into its ledger and then adopts it as
+    // the write-ahead sink. A bad log throws here rather than bringing the
+    // vault up with half its history.
+    try {
+        g_service = std::make_unique<VaultService>(
+            std::move(backend), service_config,
+            std::move(block_hash_for_watcher), std::move(tx_included_for_watcher),
+            g_store.get());
+    } catch (const std::exception& e) {
+        dinero::g_logger.error(std::string("[Vault] ledger replay failed, vault DISABLED: ") +
+                               e.what());
+        g_service.reset();
+        g_store.reset();
+        return;
+    }
 
-    // Replay persisted entries through the live ledger.
-    if (g_store) {
-        try {
-            auto persisted = g_store->loadAll();
-            dinero::g_logger.info(std::string("[Vault] replaying ") +
-                                  std::to_string(persisted.size()) + " persisted entries");
-            // We can't reach into VaultService.ledger directly through
-            // its public API; the replay path is owned by the service
-            // construction. For the initial wiring we surface this as
-            // a known limitation: persistence currently writes through
-            // the store but doesn't auto-replay into the service. The
-            // operator's restart path will wire a richer constructor
-            // when needed.
-            (void)persisted;
-        } catch (const LedgerStoreError& e) {
-            dinero::g_logger.warn(std::string("[Vault] replay failed: ") + e.what());
-        }
+    dinero::g_logger.info(std::string("[Vault] ledger restored: seq=") +
+                          std::to_string(g_service->ledgerNextSeq()) + ", accounts=" +
+                          std::to_string(g_service->accountCount()) +
+                          (g_store ? ", persistence=on" : ", persistence=OFF (memory only)"));
+
+    // Only the ledger replays; the deposit-flow / reorg-watcher /
+    // withdrawal-queue state is not ledgered, so anything mid-lifecycle
+    // at the last shutdown comes back with correct balances and a dead
+    // lifecycle. Say so loudly instead of leaving the funds silently stuck.
+    const size_t stuck_deposits = g_service->unreconciledDeposits();
+    const size_t stuck_withdrawals = g_service->unreconciledWithdrawals();
+    if (stuck_deposits > 0 || stuck_withdrawals > 0) {
+        dinero::g_logger.warn(
+            std::string("[Vault] NEEDS RECONCILIATION after restart: ") +
+            std::to_string(stuck_deposits) + " deposit(s) credited-but-not-settled, " +
+            std::to_string(stuck_withdrawals) +
+            " withdrawal(s) initiated-but-not-settled. These will NOT advance on their own; "
+            "the withdrawals hold `locked` balance until an operator resolves them.");
     }
 
     din::SetVaultService(g_service.get());

@@ -10,6 +10,8 @@
 //   vault.account.metrics      — per-account confirmed/pending/locked
 //   vault.observe              — operator/debug deposit recording
 //   vault.withdraw             — enqueue a withdrawal request
+//   vault.transfer             — move settled balance to another vault
+//                                account (off-chain, instant, no fee)
 //   vault.withdrawal.status    — poll a withdrawal's lifecycle state
 
 #pragma once
@@ -50,6 +52,7 @@ private Q_SLOTS:
     void onRefresh();
     void onAccountFieldChanged();
     void onWithdrawClicked();
+    void onTransferClicked();
     void onCheckStatusClicked();
     void onRpcResult(const QString& method, const QJsonValue& result);
     void onRpcError(const QString& method, int code, const QString& message);
@@ -89,6 +92,9 @@ private:
     QLabel* lbl_queue_depth_;
     QLabel* lbl_ledger_seq_;
     QLabel* lbl_account_count_;
+    /// Shown only when a restart replayed balances for deposits or
+    /// withdrawals whose state machine could not be restored.
+    QLabel* lbl_reconcile_warning_;
 
     // Account inspector.
     QGroupBox* account_group_;
@@ -97,7 +103,16 @@ private:
     QLabel* lbl_account_pending_;
     QLabel* lbl_account_locked_;
     QLabel* lbl_account_spendable_;
+    QLabel* lbl_account_transferable_;
     QLabel* lbl_account_loss_;
+
+    // Internal transfer form (account -> account, settled funds only).
+    QGroupBox* transfer_group_;
+    QLineEdit* transfer_from_input_;
+    QLineEdit* transfer_to_input_;
+    QSpinBox* transfer_amount_input_;
+    QPushButton* btn_transfer_;
+    QLabel* lbl_transfer_status_;
 
     // Withdrawal form.
     QGroupBox* withdraw_group_;

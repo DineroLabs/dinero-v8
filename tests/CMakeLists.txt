@@ -1504,6 +1504,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/vault_service_tests.cpp)
   add_executable(test_vault_service
     src/test/vault_service_tests.cpp
+    src/vault/ledger_store.cpp
     src/vault/ledger.cpp
     src/vault/ledger_account.cpp
     src/vault/deposit_flow.cpp

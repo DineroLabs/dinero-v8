@@ -7,13 +7,20 @@
 
 #include <gtest/gtest.h>
 
+#include "vault/ledger.h"
+#include "vault/ledger_store.h"
+#include "vault/ledger_entry.h"
 #include "vault/signing_backend.h"
 #include "vault/vault_service.h"
 #include "vault/vault_types.h"
 #include "vault/withdrawal_queue.h"
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <set>
 #include <string>
@@ -87,14 +94,39 @@ class MiniChain {
     std::unordered_map<std::string, std::set<std::string>> txids_per_block_;
 };
 
-std::unique_ptr<VaultService> makeService(MiniChain* chain, VaultServiceConfig cfg = {}) {
+std::unique_ptr<VaultService> makeService(MiniChain* chain, VaultServiceConfig cfg = {},
+                                         LedgerStore* store = nullptr) {
     auto backend = std::make_unique<InMemorySigningBackend>(BackendId{"test"}, 1'000'000'000);
     return std::make_unique<VaultService>(
         std::move(backend), cfg,
         [chain](uint64_t h) { return chain->headerHash(h); },
         [chain](const OutpointId& op, uint64_t /*h*/, const std::array<uint8_t, 32>& hh) {
             return chain->contains(op, hh);
-        });
+        },
+        store);
+}
+
+std::string tempLedgerPath() {
+    static std::atomic<uint64_t> counter{0};
+    std::filesystem::path tmp = std::filesystem::temp_directory_path();
+    auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "vault-service-%lld-%llu.jsonl",
+                  static_cast<long long>(now),
+                  static_cast<unsigned long long>(counter.fetch_add(1)));
+    return (tmp / buf).string();
+}
+
+size_t countLines(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    size_t n = 0;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty()) {
+            ++n;
+        }
+    }
+    return n;
 }
 
 TEST(VaultService, recordDepositFlowsThroughToCreditAndSettleAtKSettle) {
@@ -184,6 +216,212 @@ TEST(VaultService, shadowModeNeverOpensCredit) {
     EXPECT_EQ(svc->totalOpenCredits(), 0U);
     // depositObserved should still be in the ledger.
     EXPECT_GE(svc->ledgerNextSeq(), 1U);
+}
+
+TEST(VaultService, transferMovesSettledBalanceBetweenAccounts) {
+    MiniChain chain;
+    auto svc = makeService(&chain);
+    OutpointId op;
+    op.txid_raw = txid(0x60);
+    op.vout = 0;
+    chain.setBlock(600, bhash(0x11), {op});
+    svc->recordDeposit(txid(0x60), 0, acct("alice"), 1000, 600, bhash(0x11));
+    svc->tipChanged(605);
+    ASSERT_EQ(svc->accountConfirmed(acct("alice")), 1000U);
+    uint64_t seq_before = svc->ledgerNextSeq();
+
+    LedgerSeq seq = svc->transfer(acct("alice"), acct("bob"), 250);
+
+    EXPECT_EQ(seq, seq_before);
+    EXPECT_EQ(svc->ledgerNextSeq(), seq_before + 1);
+    EXPECT_EQ(svc->accountConfirmed(acct("alice")), 750U);
+    EXPECT_EQ(svc->accountSpendable(acct("alice")), 750U);
+    EXPECT_EQ(svc->accountConfirmed(acct("bob")), 250U);
+    EXPECT_EQ(svc->accountSpendable(acct("bob")), 250U);
+    EXPECT_EQ(svc->accountCount(), 2U);
+}
+
+TEST(VaultService, transferRejectsUnsettledBalance) {
+    MiniChain chain;
+    auto svc = makeService(&chain);
+    OutpointId op;
+    op.txid_raw = txid(0x61);
+    op.vout = 0;
+    chain.setBlock(700, bhash(0x12), {op});
+    svc->recordDeposit(txid(0x61), 0, acct("carol"), 500, 700, bhash(0x12));
+    svc->tipChanged(701);  // credit opened, not yet settled
+    ASSERT_EQ(svc->accountSpendable(acct("carol")), 500U);
+    ASSERT_EQ(svc->accountConfirmed(acct("carol")), 0U);
+
+    EXPECT_THROW(svc->transfer(acct("carol"), acct("dave"), 1), LedgerError);
+    // The rejected transfer must not have conjured the destination account.
+    EXPECT_EQ(svc->accountCount(), 1U);
+    EXPECT_EQ(svc->accountSpendable(acct("carol")), 500U);
+}
+
+TEST(VaultService, transferIsRecordedInTheLedgerLog) {
+    MiniChain chain;
+    auto svc = makeService(&chain);
+    OutpointId op;
+    op.txid_raw = txid(0x62);
+    op.vout = 0;
+    chain.setBlock(800, bhash(0x13), {op});
+    svc->recordDeposit(txid(0x62), 0, acct("erin"), 400, 800, bhash(0x13));
+    svc->tipChanged(805);
+    LedgerSeq seq = svc->transfer(acct("erin"), acct("frank"), 100);
+
+    auto entries = svc->entriesSince(seq);
+    ASSERT_FALSE(entries.empty());
+    const auto* transfer = std::get_if<InternalTransfer>(&entries.front());
+    ASSERT_NE(transfer, nullptr);
+    EXPECT_EQ(transfer->from.raw, "erin");
+    EXPECT_EQ(transfer->to.raw, "frank");
+    EXPECT_EQ(transfer->amount, 100U);
+    EXPECT_GT(transfer->at, 0);
+}
+
+// Characterisation test (written after the fact, documenting behaviour
+// rather than driving it): what happens when settled funds are moved out
+// and a DIFFERENT, still-pending deposit is then orphaned.
+TEST(VaultService, transferOutOfSettledFundsShiftsReorgLossAccounting) {
+    MiniChain chain;
+    auto svc = makeService(&chain);
+    OutpointId dep_a;
+    dep_a.txid_raw = txid(0x70);
+    dep_a.vout = 0;
+    chain.setBlock(900, bhash(0x20), {dep_a});
+    svc->recordDeposit(txid(0x70), 0, acct("gina"), 100, 900, bhash(0x20));
+    svc->tipChanged(906);  // deposit A settles
+    ASSERT_EQ(svc->accountConfirmed(acct("gina")), 100U);
+
+    OutpointId dep_b;
+    dep_b.txid_raw = txid(0x71);
+    dep_b.vout = 0;
+    chain.setBlock(910, bhash(0x21), {dep_b});
+    svc->recordDeposit(txid(0x71), 0, acct("gina"), 50, 910, bhash(0x21));
+    svc->tipChanged(912);  // deposit B credited, still pending
+    ASSERT_EQ(svc->accountPending(acct("gina")), 50U);
+    ASSERT_EQ(svc->accountTransferable(acct("gina")), 100U);  // A only, not B
+
+    svc->transfer(acct("gina"), acct("hank"), 100);
+    chain.reorg(910, bhash(0x22), {});  // deposit B orphaned
+    svc->tipChanged(913);
+
+    // The at-risk credit itself was never movable, so the revert unwinds
+    // exactly what it credited.
+    EXPECT_EQ(svc->accountPending(acct("gina")), 0U);
+    EXPECT_EQ(svc->accountConfirmed(acct("gina")), 0U);
+    // hank keeps the transferred funds, which are backed by deposit A —
+    // the vault as a whole is still fully backed.
+    EXPECT_EQ(svc->accountConfirmed(acct("hank")), 100U);
+    // But ReorgWatcher::unrecoverableLoss measures what the ORIGINATING
+    // ACCOUNT can absorb, so moving settled funds out first books the
+    // reverted amount as operator loss. This is the same over-reporting a
+    // withdrawal produces (any outflow shrinks the absorbing balance); it
+    // is a property of that heuristic, not of the transfer itself.
+    EXPECT_EQ(svc->accountOperatorLoss(acct("gina")), 50U);
+}
+
+// ----- restart durability -----
+
+TEST(VaultService, settledBalancesAndTransfersSurviveRestart) {
+    MiniChain chain;
+    const std::string path = tempLedgerPath();
+    {
+        FileLedgerStore store{path};
+        auto svc = makeService(&chain, {}, &store);
+        OutpointId op;
+        op.txid_raw = txid(0x80);
+        op.vout = 0;
+        chain.setBlock(1000, bhash(0x30), {op});
+        svc->recordDeposit(txid(0x80), 0, acct("ivy"), 800, 1000, bhash(0x30));
+        svc->tipChanged(1006);
+        ASSERT_EQ(svc->accountConfirmed(acct("ivy")), 800U);
+        svc->transfer(acct("ivy"), acct("jack"), 300);
+        ASSERT_EQ(svc->accountConfirmed(acct("jack")), 300U);
+    }
+    const size_t lines_after_first_run = countLines(path);
+    ASSERT_GT(lines_after_first_run, 0U);
+
+    {
+        FileLedgerStore store{path};
+        auto svc = makeService(&chain, {}, &store);
+        EXPECT_EQ(svc->accountConfirmed(acct("ivy")), 500U);
+        EXPECT_EQ(svc->accountConfirmed(acct("jack")), 300U);
+        EXPECT_EQ(svc->accountSpendable(acct("jack")), 300U);
+        EXPECT_EQ(svc->accountCount(), 2U);
+        // Replay must not re-persist: a restart that doubles the log
+        // corrupts every subsequent restart.
+        EXPECT_EQ(countLines(path), lines_after_first_run);
+        // A post-restart write still lands, and continues the sequence.
+        svc->transfer(acct("jack"), acct("ivy"), 100);
+        EXPECT_EQ(countLines(path), lines_after_first_run + 1);
+    }
+
+    {
+        FileLedgerStore store{path};
+        auto svc = makeService(&chain, {}, &store);
+        EXPECT_EQ(svc->accountConfirmed(acct("ivy")), 600U);
+        EXPECT_EQ(svc->accountConfirmed(acct("jack")), 200U);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(VaultService, replayCountsInFlightWorkThatLostItsStateMachine) {
+    // Balances replay from the ledger, but DepositFlowMachine /
+    // WithdrawalQueue / ReorgWatcher state does NOT — their inputs
+    // (block hash, deposit height, destination script) are not ledgered.
+    // So anything mid-lifecycle at shutdown comes back frozen. These
+    // counters are what makes that visible instead of silent.
+    MiniChain chain;
+    const std::string path = tempLedgerPath();
+    {
+        FileLedgerStore store{path};
+        auto svc = makeService(&chain, {}, &store);
+        OutpointId settled_op;
+        settled_op.txid_raw = txid(0x81);
+        settled_op.vout = 0;
+        chain.setBlock(1100, bhash(0x31), {settled_op});
+        svc->recordDeposit(txid(0x81), 0, acct("kim"), 1000, 1100, bhash(0x31));
+        svc->tipChanged(1106);  // settles
+
+        std::vector<uint8_t> dest{0x51, 0x20};
+        for (int i = 0; i < 32; ++i) {
+            dest.push_back(0xcd);
+        }
+        svc->enqueueWithdrawal(acct("kim"), 200, dest);
+        svc->processNextWithdrawal();  // initiated, not settled
+        ASSERT_EQ(svc->accountLocked(acct("kim")), 200U);
+
+        OutpointId pending_op;
+        pending_op.txid_raw = txid(0x82);
+        pending_op.vout = 0;
+        chain.setBlock(1110, bhash(0x32), {pending_op});
+        svc->recordDeposit(txid(0x82), 0, acct("kim"), 50, 1110, bhash(0x32));
+        svc->tipChanged(1112);  // credited, not settled
+        ASSERT_EQ(svc->accountPending(acct("kim")), 50U);
+    }
+
+    FileLedgerStore store{path};
+    auto svc = makeService(&chain, {}, &store);
+    // An initiated-but-unsettled withdrawal reserves via `locked`; it does
+    // not reduce `confirmed` until it settles. So the frozen withdrawal
+    // holds 200 out of reach indefinitely after the restart.
+    EXPECT_EQ(svc->accountConfirmed(acct("kim")), 1000U);
+    EXPECT_EQ(svc->accountPending(acct("kim")), 50U);
+    EXPECT_EQ(svc->accountLocked(acct("kim")), 200U);
+    EXPECT_EQ(svc->accountSpendable(acct("kim")), 850U);
+    // One deposit credited-not-settled, one withdrawal initiated-not-settled.
+    EXPECT_EQ(svc->unreconciledDeposits(), 1U);
+    EXPECT_EQ(svc->unreconciledWithdrawals(), 1U);
+    std::filesystem::remove(path);
+}
+
+TEST(VaultService, freshServiceReportsNothingUnreconciled) {
+    MiniChain chain;
+    auto svc = makeService(&chain);
+    EXPECT_EQ(svc->unreconciledDeposits(), 0U);
+    EXPECT_EQ(svc->unreconciledWithdrawals(), 0U);
 }
 
 }  // namespace

@@ -34,6 +34,8 @@
 
 namespace dinero::vault {
 
+class LedgerStore;
+
 /// Settings the service accepts at construction. All fields have
 /// safe defaults so a deployment can spin up an instance without
 /// pre-configuring anything except the signing backend.
@@ -57,8 +59,22 @@ class VaultService {
     using BlockHashAtHeightFn = ReorgWatcher::BlockHashAtHeightFn;
     using TxIncludedAtFn = ReorgWatcher::TxIncludedAtFn;
 
+    /// `store` (optional) makes the ledger durable across restarts: the
+    /// constructor replays whatever it holds into the in-memory ledger
+    /// and then attaches it as the write-ahead sink for new entries.
+    /// Replay happens with the store DETACHED, so a restart does not
+    /// re-persist history. Throws LedgerError if the persisted log fails
+    /// validation — better a dead vault than a half-loaded one.
+    ///
+    /// NOTE: only the LEDGER is restored. DepositFlowMachine,
+    /// ReorgWatcher and WithdrawalQueue keep state that is not ledgered
+    /// (deposit height, enclosing block hash, destination script), so
+    /// anything mid-lifecycle at shutdown comes back with correct
+    /// balances but a frozen lifecycle. See unreconciledDeposits() /
+    /// unreconciledWithdrawals().
     VaultService(std::unique_ptr<SigningBackend> backend, VaultServiceConfig config,
-                 BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at);
+                 BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at,
+                 LedgerStore* store = nullptr);
 
     /// Chainstate-side: a confirmed UTXO with `txid:vout` belongs to
     /// `account`. Idempotent. The caller (typically a wallet hook
@@ -79,6 +95,23 @@ class VaultService {
     /// failure (insufficient spendable, cap exceeded, bad destination).
     WithdrawalId enqueueWithdrawal(const AccountId& account, UnaAmount amount,
                                    const std::vector<uint8_t>& destination_script_pub_key);
+
+    /// RPC-side: move `amount` una of SETTLED balance from `from` to
+    /// `to` inside the vault. Atomic — one InternalTransfer ledger
+    /// entry carries both legs, so no replay can observe a half-applied
+    /// transfer. Nothing touches the chain and no fee is charged.
+    ///
+    /// Only `confirmed` funds move (`LedgerAccount::transferable()`);
+    /// un-settled credits stay put so a reorg's CompensatingDebit lands
+    /// on an account that still holds the money. Throws LedgerError
+    /// (TRANSFER_INVALID / INSUFFICIENT_TRANSFERABLE_BALANCE) on
+    /// validation failure, leaving ledger state unchanged.
+    ///
+    /// Returns the seq of the appended entry.
+    LedgerSeq transfer(const AccountId& from, const AccountId& to, UnaAmount amount);
+
+    /// Settled balance `account` may move to another vault account.
+    [[nodiscard]] UnaAmount accountTransferable(const AccountId& account);
 
     /// Driver for the withdrawal queue's signing path. Caller (a
     /// vault main loop or per-tip task) calls this on a cadence; one
@@ -104,6 +137,17 @@ class VaultService {
     [[nodiscard]] size_t accountCount();
     [[nodiscard]] int withdrawalQueueDepth();
 
+    /// Deposits that replay found credited-but-not-settled, and
+    /// withdrawals found initiated-but-not-settled, at construction.
+    /// These have no live state machine behind them: the deposit will
+    /// never advance to settled on its own, and the withdrawal will
+    /// hold `locked` until an operator resolves it (PolicyAdjustment).
+    /// Both are 0 for a service with no store. Fixed at construction.
+    [[nodiscard]] size_t unreconciledDeposits() const noexcept { return unreconciled_deposits_; }
+    [[nodiscard]] size_t unreconciledWithdrawals() const noexcept {
+        return unreconciled_withdrawals_;
+    }
+
     /// Return ledger entries with seq >= since (capped at limit).
     [[nodiscard]] std::vector<LedgerEntry> entriesSince(LedgerSeq since, size_t limit = 1000);
 
@@ -113,12 +157,18 @@ class VaultService {
     [[nodiscard]] HealthReport backendHealth();
 
    private:
+    /// Tallies mid-lifecycle deposits/withdrawals found by replay.
+    /// Called once, from the constructor, before the store is attached.
+    void countUnreconciled();
+
     std::mutex mu_;
     std::unique_ptr<SigningBackend> backend_;
     Ledger ledger_;
     DepositFlowMachine deposit_flow_;
     ReorgWatcher reorg_watcher_;
     WithdrawalQueue withdrawals_;
+    size_t unreconciled_deposits_{0};
+    size_t unreconciled_withdrawals_{0};
 };
 
 }  // namespace dinero::vault

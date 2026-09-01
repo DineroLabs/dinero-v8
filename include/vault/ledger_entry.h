@@ -13,6 +13,7 @@
 
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <variant>
 
 namespace dinero::vault {
@@ -105,6 +106,25 @@ struct CompensatingDebit {
     bool operator==(const CompensatingDebit&) const = default;
 };
 
+/// Account-to-account move of already-settled funds inside the vault.
+/// Atomic by construction: one entry carries both legs, so a replay can
+/// never observe a half-applied transfer.
+///
+/// Only `confirmed` balance moves (see `LedgerAccount::transferable()`).
+/// `pending` credits are operator-at-risk — a reorg lands a
+/// CompensatingDebit on the account that received the deposit — so they
+/// must not be movable out from under that debit. Because open credits
+/// are untouched, a transfer is cap-neutral by design.
+struct InternalTransfer {
+    LedgerSeq seq{0};
+    LedgerTimestamp at{0};
+    AccountId from;
+    AccountId to;
+    UnaAmount amount{0};
+
+    bool operator==(const InternalTransfer&) const = default;
+};
+
 struct PolicyAdjustment {
     LedgerSeq seq{0};
     LedgerTimestamp at{0};
@@ -129,7 +149,8 @@ using LedgerEntry = std::variant<
     WithdrawalSettled,
     WithdrawalReverted,
     CompensatingDebit,
-    PolicyAdjustment
+    PolicyAdjustment,
+    InternalTransfer
 >;
 
 /// Pull the sequence number out of any entry shape.
@@ -146,9 +167,18 @@ inline LedgerTimestamp entryTimestamp(const LedgerEntry& e) {
 /// adjustments that don't target a specific user (PolicyAdjustment's
 /// `account` is itself optional; every other variant has a
 /// concrete AccountId).
+///
+/// InternalTransfer touches TWO accounts and reports the debited side
+/// (`from`). Callers that need both legs must match the variant
+/// directly rather than going through this helper.
 inline std::optional<AccountId> entryAccount(const LedgerEntry& e) {
     return std::visit([](const auto& concrete) -> std::optional<AccountId> {
-        return concrete.account;
+        using T = std::decay_t<decltype(concrete)>;
+        if constexpr (std::is_same_v<T, InternalTransfer>) {
+            return concrete.from;
+        } else {
+            return concrete.account;
+        }
     }, e);
 }
 

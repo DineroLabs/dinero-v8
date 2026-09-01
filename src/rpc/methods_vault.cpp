@@ -8,6 +8,7 @@
 #include "common/logger.h"
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "vault/ledger.h"
 #include "vault/ledger_entry.h"
 #include "vault/vault_runtime.h"
 #include "vault/vault_service.h"
@@ -144,6 +145,7 @@ Json rpc_vault_account_metrics(const ExecutionContext& /*ctx*/, const Json& para
     result["confirmed_una"] = static_cast<Json::UInt64>(svc->accountConfirmed(account));
     result["pending_una"] = static_cast<Json::UInt64>(svc->accountPending(account));
     result["locked_una"] = static_cast<Json::UInt64>(svc->accountLocked(account));
+    result["transferable_una"] = static_cast<Json::UInt64>(svc->accountTransferable(account));
     result["operator_loss_una"] = static_cast<Json::UInt64>(svc->accountOperatorLoss(account));
     return result;
 }
@@ -229,6 +231,49 @@ Json rpc_vault_withdraw(const ExecutionContext& /*ctx*/, const Json& params) {
         result["status"] = "pending";
     } catch (const dinero::vault::WithdrawalQueueError& e) {
         return errorObj(std::string("withdrawal_queue: ") + e.what());
+    }
+    return result;
+}
+
+Json rpc_vault_transfer(const ExecutionContext& /*ctx*/, const Json& params) {
+    Json result;
+    auto* svc = requireService();
+    if (svc == nullptr) {
+        return errorObj("vault service not initialized");
+    }
+    if (params.size() < 1 || !params[0].isObject()) {
+        return errorObj("missing parameter object");
+    }
+    const Json& obj = params[0];
+    if (!obj.isMember("from_account_id") || !obj["from_account_id"].isString()) {
+        return errorObj("missing required parameter: from_account_id");
+    }
+    if (!obj.isMember("to_account_id") || !obj["to_account_id"].isString()) {
+        return errorObj("missing required parameter: to_account_id");
+    }
+    if (!obj.isMember("amount_una") || !obj["amount_una"].isUInt64()) {
+        return errorObj("missing required parameter: amount_una");
+    }
+    dinero::vault::AccountId from{obj["from_account_id"].asString()};
+    dinero::vault::AccountId to{obj["to_account_id"].asString()};
+    auto amount = static_cast<dinero::vault::UnaAmount>(obj["amount_una"].asUInt64());
+
+    // No chain interaction and no signing backend: this is a pure
+    // ledger move between two accounts of the SAME vault. It is admin-
+    // gated (ADMIN_METHODS) for the same reason vault.withdraw is —
+    // the daemon has no per-account authentication, so any caller who
+    // can reach this method can debit any account.
+    try {
+        dinero::vault::LedgerSeq seq = svc->transfer(from, to, amount);
+        result["seq"] = static_cast<Json::UInt64>(seq);
+        result["from_account_id"] = from.raw;
+        result["to_account_id"] = to.raw;
+        result["amount_una"] = static_cast<Json::UInt64>(amount);
+        result["from_transferable_una"] =
+            static_cast<Json::UInt64>(svc->accountTransferable(from));
+        result["status"] = "transferred";
+    } catch (const dinero::vault::LedgerError& e) {
+        return errorObj(std::string("vault_transfer: ") + e.what());
     }
     return result;
 }
@@ -333,6 +378,11 @@ Json rpc_vault_metrics(const ExecutionContext& /*ctx*/, const Json& /*params*/) 
     result["account_count"] = static_cast<Json::UInt64>(svc->accountCount());
     result["ledger_next_seq"] = static_cast<Json::UInt64>(svc->ledgerNextSeq());
     result["withdrawal_queue_depth"] = svc->withdrawalQueueDepth();
+    // Non-zero means a restart replayed balances for work whose state
+    // machine could not be restored; see VaultService::unreconciledDeposits.
+    result["unreconciled_deposits"] = static_cast<Json::UInt64>(svc->unreconciledDeposits());
+    result["unreconciled_withdrawals"] =
+        static_cast<Json::UInt64>(svc->unreconciledWithdrawals());
     return result;
 }
 
@@ -344,6 +394,7 @@ void RegisterVaultRPC() {
     g_rpcRegistry.registerHandler("vault.account.metrics", din::rpc_vault_account_metrics);
     g_rpcRegistry.registerHandler("vault.observe", din::rpc_vault_observe);
     g_rpcRegistry.registerHandler("vault.withdraw", din::rpc_vault_withdraw);
+    g_rpcRegistry.registerHandler("vault.transfer", din::rpc_vault_transfer);
     g_rpcRegistry.registerHandler("vault.processnext", din::rpc_vault_processnext);
     g_rpcRegistry.registerHandler("vault.withdrawal.status", din::rpc_vault_withdrawal_status);
     g_rpcRegistry.registerHandler("vault.metrics", din::rpc_vault_metrics);
