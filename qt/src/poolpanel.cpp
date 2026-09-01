@@ -56,7 +56,9 @@ void PoolPanel::setupUi() {
     root->setSpacing(10);
     root->setContentsMargins(12, 12, 12, 12);
 
-    auto* title = new QLabel("<h2>\xE2\x9B\x8F\xEF\xB8\x8F Pool</h2>");
+    // 👥 rather than a pickaxe: the Mining tab owns that, and this panel
+    // is about a group of miners sharing a block, not about hashing.
+    auto* title = new QLabel("<h2>\xF0\x9F\x91\xA5 Pool</h2>");
     root->addWidget(title);
 
     // ---- Why host one -----------------------------------------------

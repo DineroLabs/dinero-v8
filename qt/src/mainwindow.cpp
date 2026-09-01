@@ -3393,7 +3393,9 @@ void MainWindow::setupUI() {
   // silently report the wrong pool's numbers.
   {
     poolPanel_ = new PoolPanel(rpc_, this);
-    tabs->addTab(poolPanel_, "⛏️ Pool");
+    // 👥 not ⛏️ — the Mining tab owns the pickaxe, and a pool is about
+    // a group of miners sharing a block, not about hashing itself.
+    tabs->addTab(poolPanel_, "👥 Pool");
   }
 
   // === Shielded Tab (Phase 5 — daemon shielded pool, gated by
