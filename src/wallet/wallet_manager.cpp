@@ -1508,6 +1508,35 @@ void WalletManager::migrate(sqlite3* db) {
         setUserVersion(db, 26);
         WLOG_INFO("Database migrated to schema version 26 with covenant recovery descriptors");
     }
+
+    if (version < 27) {
+        // Expand the closed profile discriminator without weakening any of
+        // the descriptor/script uniqueness guarantees introduced in v26.
+        exec(db, R"(
+            CREATE TABLE covenant_descriptors_v27 (
+                descriptor_id TEXT PRIMARY KEY,
+                profile TEXT NOT NULL CHECK(profile IN ('ctv', 'ccv', 'vault')),
+                descriptor TEXT NOT NULL UNIQUE,
+                script_pubkey BLOB NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                parent_descriptor_id TEXT,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            )
+        )");
+        exec(db, R"(
+            INSERT INTO covenant_descriptors_v27
+            SELECT descriptor_id, profile, descriptor, script_pubkey, label,
+                   parent_descriptor_id, created_at
+            FROM covenant_descriptors
+        )");
+        exec(db, "DROP TABLE covenant_descriptors");
+        exec(db, "ALTER TABLE covenant_descriptors_v27 RENAME TO covenant_descriptors");
+        exec(db, "CREATE UNIQUE INDEX idx_covenant_descriptors_script ON covenant_descriptors(script_pubkey)");
+        exec(db, "CREATE INDEX idx_covenant_descriptors_profile ON covenant_descriptors(profile)");
+        exec(db, "CREATE INDEX idx_covenant_descriptors_parent ON covenant_descriptors(parent_descriptor_id)");
+        setUserVersion(db, 27);
+        WLOG_INFO("Database migrated to schema version 27 with personal vault descriptors");
+    }
 }
 
 std::vector<std::string> WalletManager::listWallets() const {
@@ -8147,7 +8176,8 @@ bool WalletManager::storeCovenantDescriptor(
     const CovenantDescriptorRecord& record) {
     if (!db_ ||
         record.descriptor_id.size() != 64 ||
-        (record.profile != "ctv" && record.profile != "ccv") ||
+        (record.profile != "ctv" && record.profile != "ccv" &&
+         record.profile != "vault") ||
         record.descriptor.empty() ||
         record.script_pubkey.size() != 34 ||
         record.script_pubkey[0] != 0x51 ||

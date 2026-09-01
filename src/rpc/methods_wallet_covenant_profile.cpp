@@ -30,6 +30,7 @@ using dinero::wallet::covenant::CTVPlan;
 using dinero::wallet::covenant::Output;
 using dinero::wallet::covenant::ProfileType;
 using dinero::wallet::covenant::TaprootArtifact;
+using dinero::wallet::covenant::VaultPlan;
 
 std::string Hex(const uint8_t* data, size_t size) {
     static constexpr char table[] = "0123456789abcdef";
@@ -81,6 +82,21 @@ std::vector<uint8_t> ParseHex(
         result.push_back(static_cast<uint8_t>(
             (Nibble(value[index]) << 4) | Nibble(value[index + 1])));
     }
+    return result;
+}
+
+std::array<uint8_t, 32> ParseXOnlyKey(
+    const din::Json& object,
+    const char* field) {
+    if (!object.isMember(field) || !object[field].isString()) {
+        throw std::invalid_argument(std::string(field) + " is required");
+    }
+    const auto bytes = ParseHex(object[field].asString(), field);
+    if (bytes.size() != 32) {
+        throw std::invalid_argument(std::string(field) + " must be 32 bytes");
+    }
+    std::array<uint8_t, 32> result{};
+    std::copy(bytes.begin(), bytes.end(), result.begin());
     return result;
 }
 
@@ -202,6 +218,9 @@ din::Json CtvJson(const CTVPlan& plan) {
     result["template_hash"] = Hex(plan.templateHash);
     result["covenant_input_index"] =
         static_cast<Json::UInt>(plan.covenantInputIndex);
+    result["unsigned_template_hex"] = plan.templateTx.SerializeHex(
+        dinero::TxSerializationMode::WithoutWitness);
+    result["broadcastable"] = false;
     result["taproot"] = TaprootJson(plan.taproot);
     return result;
 }
@@ -225,6 +244,23 @@ din::Json CcvJson(const CCVPlan& plan) {
         result["owner_key_origin"] = plan.ownerKeyOrigin;
     }
     result["taproot"] = TaprootJson(plan.taproot);
+    return result;
+}
+
+din::Json VaultJson(const VaultPlan& plan) {
+    din::Json result(Json::objectValue);
+    result["profile"] = "vault";
+    result["descriptor_id"] = plan.descriptorId;
+    result["recovery_descriptor"] = plan.recoveryDescriptor;
+    result["unvault_delay_blocks"] =
+        static_cast<Json::UInt>(plan.unvaultDelayBlocks);
+    result["unvault_public_key"] = Hex(plan.unvaultPublicKey);
+    result["recovery_public_key"] = Hex(plan.recoveryPublicKey);
+    result["unvault_key_origin"] = plan.unvaultKeyOrigin;
+    result["recovery_key_origin"] = plan.recoveryKeyOrigin;
+    result["delayed_unvault"] = TaprootJson(plan.delayedUnvault);
+    result["emergency_recovery"] = TaprootJson(plan.emergencyRecovery);
+    result["address"] = result["delayed_unvault"]["address"];
     return result;
 }
 
@@ -306,6 +342,19 @@ bool Track(
     record.profile = "ctv";
     record.descriptor = plan.recoveryDescriptor;
     record.script_pubkey = plan.taproot.scriptPubKey;
+    record.label = label;
+    return wallet.storeCovenantDescriptor(record);
+}
+
+bool Track(
+    dinero::WalletManager& wallet,
+    const VaultPlan& plan,
+    const std::string& label) {
+    dinero::CovenantDescriptorRecord record;
+    record.descriptor_id = plan.descriptorId;
+    record.profile = "vault";
+    record.descriptor = plan.recoveryDescriptor;
+    record.script_pubkey = plan.delayedUnvault.scriptPubKey;
     record.label = label;
     return wallet.storeCovenantDescriptor(record);
 }
@@ -733,6 +782,15 @@ din::Json RpcImport(
                 result = CcvJson(plan);
                 break;
             }
+            case ProfileType::VAULT: {
+                const auto plan =
+                    dinero::wallet::covenant::RecoverVaultPlan(descriptor);
+                if (!Track(wallet, plan, params.get("label", "").asString())) {
+                    throw std::runtime_error("failed to import vault descriptor");
+                }
+                result = VaultJson(plan);
+                break;
+            }
         }
         result["tracked"] = true;
         return result;
@@ -751,13 +809,45 @@ din::Json RpcInspect(
         }
         const std::string descriptor =
             params["descriptor"].asString();
-        if (dinero::wallet::covenant::DescriptorType(descriptor) ==
-            ProfileType::CTV) {
+        const auto type = dinero::wallet::covenant::DescriptorType(descriptor);
+        if (type == ProfileType::CTV) {
             return CtvJson(
                 dinero::wallet::covenant::RecoverCTVPlan(descriptor));
         }
+        if (type == ProfileType::VAULT) {
+            return VaultJson(
+                dinero::wallet::covenant::RecoverVaultPlan(descriptor));
+        }
         return CcvJson(
             dinero::wallet::covenant::RecoverCCVPlan(descriptor));
+    });
+}
+
+din::Json RpcVaultCreate(
+    const ExecutionContext& context,
+    const din::Json& params) {
+    return RpcResult([&] {
+        if (!params.isObject()) {
+            throw std::invalid_argument("wallet.covenant.vaultcreate requires an object");
+        }
+        const auto plan = dinero::wallet::covenant::BuildVaultPlan(
+            UInt32(params, "unvault_delay_blocks", 144),
+            ParseXOnlyKey(params, "unvault_public_key"),
+            ParseXOnlyKey(params, "recovery_public_key"),
+            params.get("unvault_key_origin", "").asString(),
+            params.get("recovery_key_origin", "").asString());
+        const bool track = params.get("track", true).asBool();
+        if (track && !Track(
+                ActiveWallet(context), plan,
+                params.get("label", "").asString())) {
+            throw std::runtime_error("failed to persist vault recovery descriptor");
+        }
+        auto result = VaultJson(plan);
+        result["tracked"] = track;
+        result["funding_enabled"] = false;
+        result["spending_enabled"] = false;
+        result["review_required"] = true;
+        return result;
     });
 }
 
@@ -784,6 +874,15 @@ din::Json RpcList(
                     item["owner_public_key"] = Hex(plan.ownerPublicKey);
                     item["owner_key_origin"] = plan.ownerKeyOrigin;
                 }
+            } else if (record.profile == "vault") {
+                const auto plan = dinero::wallet::covenant::RecoverVaultPlan(
+                    record.descriptor);
+                item["profile"] = "vault";
+                item["authorization"] = "delayed-unvault-or-recovery";
+                item["unvault_delay_blocks"] =
+                    static_cast<Json::UInt>(plan.unvaultDelayBlocks);
+                item["unvault_public_key"] = Hex(plan.unvaultPublicKey);
+                item["recovery_public_key"] = Hex(plan.recoveryPublicKey);
             } else {
                 item["profile"] = record.profile;
             }
@@ -828,6 +927,11 @@ void register_context_wallet_covenant_profile_methods() {
     g_rpcRegistry.registerHandler(
         "wallet.covenant.ccvadvance",
         RpcCcvAdvance,
+        RegisterMode::Overwrite,
+        "covenant-profile-v1");
+    g_rpcRegistry.registerHandler(
+        "wallet.covenant.vaultcreate",
+        RpcVaultCreate,
         RegisterMode::Overwrite,
         "covenant-profile-v1");
     g_rpcRegistry.registerHandler(

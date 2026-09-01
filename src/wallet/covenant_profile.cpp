@@ -183,7 +183,8 @@ DecodedDescriptor DecodeDescriptor(const std::string& descriptor) {
     const uint8_t rawType = payload[DESCRIPTOR_MAGIC.size() + 1];
     if (rawType != static_cast<uint8_t>(ProfileType::CTV) &&
         rawType != static_cast<uint8_t>(ProfileType::CCV) &&
-        rawType != static_cast<uint8_t>(ProfileType::CCV_OWNER)) {
+        rawType != static_cast<uint8_t>(ProfileType::CCV_OWNER) &&
+        rawType != static_cast<uint8_t>(ProfileType::VAULT)) {
         throw std::invalid_argument("unknown covenant descriptor type");
     }
 
@@ -204,6 +205,135 @@ DecodedDescriptor DecodeDescriptor(const std::string& descriptor) {
         reinterpret_cast<const uint8_t*>(descriptor.data()),
         descriptor.size());
     result.id = Hex(idHash.data(), idHash.size());
+    return result;
+}
+
+std::string DescriptorId(const std::string& descriptor);
+std::array<uint8_t, 32> ToArray(
+    const std::vector<uint8_t>& value,
+    const char* field);
+
+std::vector<uint8_t> EncodeScriptNumber(uint32_t value) {
+    if (value == 0) return {};
+    std::vector<uint8_t> result;
+    while (value != 0) {
+        result.push_back(static_cast<uint8_t>(value & 0xff));
+        value >>= 8;
+    }
+    if ((result.back() & 0x80) != 0) result.push_back(0);
+    return result;
+}
+
+std::array<uint8_t, 32> TapBranch(
+    const std::array<uint8_t, 32>& left,
+    const std::array<uint8_t, 32>& right) {
+    std::array<uint8_t, 64> preimage{};
+    const auto& first = left < right ? left : right;
+    const auto& second = left < right ? right : left;
+    std::copy(first.begin(), first.end(), preimage.begin());
+    std::copy(second.begin(), second.end(), preimage.begin() + 32);
+    return crypto::TaggedHashArray("TapBranch", preimage.data(), preimage.size());
+}
+
+std::vector<uint8_t> KeyCheckScript(const std::array<uint8_t, 32>& key) {
+    std::vector<uint8_t> script{32};
+    script.insert(script.end(), key.begin(), key.end());
+    script.push_back(static_cast<uint8_t>(consensus::OP_CHECKSIG));
+    return script;
+}
+
+std::vector<uint8_t> DelayedKeyCheckScript(
+    uint32_t delay,
+    const std::array<uint8_t, 32>& key) {
+    auto encoded = EncodeScriptNumber(delay);
+    std::vector<uint8_t> script;
+    script.push_back(static_cast<uint8_t>(encoded.size()));
+    script.insert(script.end(), encoded.begin(), encoded.end());
+    script.push_back(static_cast<uint8_t>(consensus::OP_CHECKSEQUENCEVERIFY));
+    script.push_back(static_cast<uint8_t>(consensus::OP_DROP));
+    const auto keyCheck = KeyCheckScript(key);
+    script.insert(script.end(), keyCheck.begin(), keyCheck.end());
+    return script;
+}
+
+VaultPlan CompleteVaultPlan(
+    uint32_t delay,
+    const std::array<uint8_t, 32>& unvaultKey,
+    const std::array<uint8_t, 32>& recoveryKey,
+    const std::string& unvaultOrigin,
+    const std::string& recoveryOrigin,
+    const std::string* recoveredDescriptor) {
+    if (delay == 0 || (delay & (1U << 31)) != 0) {
+        throw std::invalid_argument("vault unvault delay must be a positive block CSV value");
+    }
+    // Validate both x-only keys before constructing an address.
+    secp256k1_xonly_pubkey parsed;
+    auto* ctx = crypto::GetSecp256k1ContextSignVerify();
+    if (!secp256k1_xonly_pubkey_parse(ctx, &parsed, unvaultKey.data()) ||
+        !secp256k1_xonly_pubkey_parse(ctx, &parsed, recoveryKey.data()) ||
+        unvaultKey == recoveryKey) {
+        throw std::invalid_argument("vault requires two distinct valid x-only public keys");
+    }
+
+    VaultPlan result;
+    result.unvaultDelayBlocks = delay;
+    result.unvaultPublicKey = unvaultKey;
+    result.recoveryPublicKey = recoveryKey;
+    result.unvaultKeyOrigin = unvaultOrigin;
+    result.recoveryKeyOrigin = recoveryOrigin;
+    result.delayedUnvault.tapscript = DelayedKeyCheckScript(delay, unvaultKey);
+    result.emergencyRecovery.tapscript = KeyCheckScript(recoveryKey);
+    const auto delayedHash = ToArray(consensus::TapLeafHash(
+        TAPSCRIPT_LEAF_VERSION, result.delayedUnvault.tapscript), "delayed vault leaf");
+    const auto recoveryHash = ToArray(consensus::TapLeafHash(
+        TAPSCRIPT_LEAF_VERSION, result.emergencyRecovery.tapscript), "recovery vault leaf");
+    const auto root = TapBranch(delayedHash, recoveryHash);
+
+    auto buildLeaf = [&](TaprootArtifact& artifact, const auto& sibling) {
+        artifact.internalKey = CTV_NUMS_INTERNAL_KEY;
+        artifact.merkleRoot = root;
+        std::array<uint8_t, 64> tweakPreimage{};
+        std::copy(artifact.internalKey.begin(), artifact.internalKey.end(), tweakPreimage.begin());
+        std::copy(root.begin(), root.end(), tweakPreimage.begin() + 32);
+        const auto tweak = crypto::TaggedHashArray("TapTweak", tweakPreimage.data(), tweakPreimage.size());
+        secp256k1_xonly_pubkey internal;
+        secp256k1_pubkey tweaked;
+        secp256k1_xonly_pubkey output;
+        int parity = 0;
+        if (!secp256k1_xonly_pubkey_parse(ctx, &internal, artifact.internalKey.data()) ||
+            !secp256k1_xonly_pubkey_tweak_add(ctx, &tweaked, &internal, tweak.data()) ||
+            !secp256k1_xonly_pubkey_from_pubkey(ctx, &output, &parity, &tweaked)) {
+            throw std::runtime_error("failed to derive vault Taproot output key");
+        }
+        std::array<uint8_t, 32> outputKey{};
+        if (!secp256k1_xonly_pubkey_serialize(ctx, outputKey.data(), &output)) {
+            throw std::runtime_error("failed to serialize vault output key");
+        }
+        artifact.outputKeyParity = static_cast<uint8_t>(parity);
+        artifact.scriptPubKey = {0x51, 0x20};
+        artifact.scriptPubKey.insert(artifact.scriptPubKey.end(), outputKey.begin(), outputKey.end());
+        artifact.controlBlock = {static_cast<uint8_t>(TAPSCRIPT_LEAF_VERSION | parity)};
+        artifact.controlBlock.insert(artifact.controlBlock.end(), artifact.internalKey.begin(), artifact.internalKey.end());
+        artifact.controlBlock.insert(artifact.controlBlock.end(), sibling.begin(), sibling.end());
+    };
+    buildLeaf(result.delayedUnvault, recoveryHash);
+    buildLeaf(result.emergencyRecovery, delayedHash);
+    if (result.delayedUnvault.scriptPubKey != result.emergencyRecovery.scriptPubKey) {
+        throw std::runtime_error("vault leaves derived inconsistent outputs");
+    }
+
+    if (recoveredDescriptor) {
+        result.recoveryDescriptor = *recoveredDescriptor;
+    } else {
+        std::vector<uint8_t> body;
+        WriteLE32(body, delay);
+        body.insert(body.end(), unvaultKey.begin(), unvaultKey.end());
+        body.insert(body.end(), recoveryKey.begin(), recoveryKey.end());
+        WriteBytes(body, std::vector<uint8_t>(unvaultOrigin.begin(), unvaultOrigin.end()));
+        WriteBytes(body, std::vector<uint8_t>(recoveryOrigin.begin(), recoveryOrigin.end()));
+        result.recoveryDescriptor = EncodeDescriptor(ProfileType::VAULT, body);
+    }
+    result.descriptorId = DescriptorId(result.recoveryDescriptor);
     return result;
 }
 
@@ -519,6 +649,54 @@ CCVPlan CompleteCCVPlan(
 }
 
 } // namespace
+
+VaultPlan BuildVaultPlan(
+    uint32_t unvaultDelayBlocks,
+    const std::array<uint8_t, 32>& unvaultPublicKey,
+    const std::array<uint8_t, 32>& recoveryPublicKey,
+    const std::string& unvaultKeyOrigin,
+    const std::string& recoveryKeyOrigin) {
+    return CompleteVaultPlan(
+        unvaultDelayBlocks,
+        unvaultPublicKey,
+        recoveryPublicKey,
+        unvaultKeyOrigin,
+        recoveryKeyOrigin,
+        nullptr);
+}
+
+VaultPlan RecoverVaultPlan(const std::string& descriptor) {
+    const auto decoded = DecodeDescriptor(descriptor);
+    if (decoded.type != ProfileType::VAULT) {
+        throw std::invalid_argument("descriptor is not a vault profile");
+    }
+    size_t offset = 0;
+    uint32_t delay = 0;
+    if (!ReadLE32(decoded.body, offset, delay) ||
+        offset > decoded.body.size() || decoded.body.size() - offset < 64) {
+        throw std::invalid_argument("malformed vault descriptor body");
+    }
+    std::array<uint8_t, 32> unvaultKey{};
+    std::array<uint8_t, 32> recoveryKey{};
+    std::copy_n(decoded.body.begin() + offset, 32, unvaultKey.begin());
+    offset += 32;
+    std::copy_n(decoded.body.begin() + offset, 32, recoveryKey.begin());
+    offset += 32;
+    std::vector<uint8_t> unvaultOrigin;
+    std::vector<uint8_t> recoveryOrigin;
+    if (!ReadBytes(decoded.body, offset, unvaultOrigin) ||
+        !ReadBytes(decoded.body, offset, recoveryOrigin) ||
+        offset != decoded.body.size()) {
+        throw std::invalid_argument("malformed vault descriptor metadata");
+    }
+    return CompleteVaultPlan(
+        delay,
+        unvaultKey,
+        recoveryKey,
+        std::string(unvaultOrigin.begin(), unvaultOrigin.end()),
+        std::string(recoveryOrigin.begin(), recoveryOrigin.end()),
+        &descriptor);
+}
 
 CTVPlan BuildCTVPlan(
     const std::vector<uint32_t>& inputSequences,
