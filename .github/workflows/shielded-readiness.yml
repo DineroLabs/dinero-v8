@@ -29,6 +29,8 @@ jobs:
           submodules: recursive
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build clang cmake
+      - name: Build pinned vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
       - name: Run the canonical local readiness command
         run: SHIELDED_EVIDENCE_DIR="$RUNNER_TEMP/shielded-readiness" ./scripts/shielded-readiness.sh
       - name: Upload evidence
@@ -48,5 +50,7 @@ jobs:
           submodules: recursive
       - name: Install security toolchain
         run: sudo apt-get update && sudo apt-get install -y ninja-build clang cmake
+      - name: Build pinned vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
       - name: ASan, UBSan, TSan, and fuzz smoke
         run: SHIELDED_FUZZ_SECONDS=600 ./scripts/shielded-security-matrix.sh
