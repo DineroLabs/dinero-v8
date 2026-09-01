@@ -30,6 +30,7 @@
 #endif
 
 // Track C — production, included unconditionally.
+#include "poolpanel.h"
 #include "vaultpanel.h"
 #include "shieldedwidget.h"
 
@@ -3465,6 +3466,10 @@ void MainWindow::setupUI() {
   {
     vaultPanel_ = new VaultPanel(rpc_, this);
     tabs->addTab(vaultPanel_, "🏦 Liquidity Vault");
+    // Pool operator dashboard. Scrollable: the explainer + live status +
+    // contributor table together exceed a laptop viewport.
+    poolPanel_ = new PoolPanel(rpc_, this);
+    tabs->addTab(makeScrollableTab(poolPanel_), "👥 Pool");
   }
 #endif
 
