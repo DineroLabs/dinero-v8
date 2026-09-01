@@ -178,6 +178,53 @@ const std::vector<AssumeUTXOSnapshot> AssumeUTXORegistry::snapshots_ = {
         252129,
         "Mainnet height 84131 v4 trust anchor (UXTO+UTRX+SHLD) - signed EU1 artifact"
     ),
+
+    // Mainnet height 99677 v4 trust anchor. This is the preferred snapshot for
+    // fresh installations; 84131 and older remain registered so an interrupted
+    // AssumeUTXO lifecycle can restart against its exact original base.
+    //
+    // WHY: the fleet snapshot publisher is automated and daily, but this anchor
+    // list is hand-curated, so the two drift. 84131 was anchored 2026-08-08;
+    // by 2026-09-01 the publisher had produced ~24 newer artifacts, none of
+    // which any released binary would accept. A fresh node following the
+    // published install path therefore replayed ~15,500 blocks (~18h observed
+    // on a 2-core VPS) that a current snapshot would have skipped. Anchoring
+    // the publisher's latest signed artifact should be part of the release
+    // checklist, not something remembered.
+    //
+    // Provenance (2026-09-01), every field verified independently:
+    //   * manifest.json + manifest.sig fetched from seed3.dinerolabs.org and
+    //     the Ed25519 signature verified over the manifest bytes against the
+    //     dedicated fleet snapshot-signing key
+    //     (lFOdW71hOC7Q5Y0bYRLDvyFtv8ddU9Tf4a8dbr1Y4Yw=, the key DineroDPI's
+    //     SnapshotDownloadService embeds). Verified with an independent
+    //     RFC 8032 implementation, not the app's own code path.
+    //   * The artifact was downloaded to a clean host and re-hashed: its
+    //     SHA-256 and byte length match the signed manifest exactly.
+    //   * The file header was decoded and agrees with the manifest on height
+    //     and block hash, and reports magic 0x4f545855, version 4.
+    //   * The block hash was cross-checked against a fully synced fleet node
+    //     (SJ) at height 99677 — it is on the canonical chain, not merely
+    //     self-consistent with the manifest.
+    //   * chainwork below is that block's header chainwork as reported by the
+    //     same synced node.
+    //
+    // Reproduce the artifact fields with:
+    //   shasum -a 256 snapshot.dat
+    //   python3 -c 'import struct,binascii;d=open("snapshot.dat","rb").read(52);\
+    //     print(hex(struct.unpack_from("<I",d,0)[0]), struct.unpack_from("<I",d,4)[0],\
+    //       struct.unpack_from("<I",d,40)[0], struct.unpack_from("<Q",d,44)[0],\
+    //       binascii.hexlify(d[8:40][::-1]).decode())'
+    // Expected: magic 0x4f545855, version 4, height 99677, 309354 UTXOs,
+    // block 0000003863308eb6...7999268b; file size 38,165,744 bytes.
+    AssumeUTXOSnapshot(
+        "d4b8d88c2fe765aa627ed0bc12205b2cfba6e4fa50aeb72fd9924990e83c29fd",
+        "0000003863308eb65aff8a1915ef50febc74d834e444e56b26d89d987999268b",
+        99677,
+        "0x00000000000000000000000000000000000000000000000000003eead5aa12b0",
+        309354,
+        "Mainnet height 99677 v4 trust anchor (UXTO+UTRX+SHLD) - signed fleet artifact"
+    ),
 };
 
 std::optional<AssumeUTXOSnapshot> AssumeUTXORegistry::GetSnapshot(uint32_t height) {
