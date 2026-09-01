@@ -222,6 +222,10 @@ public:
     std::optional<uint64_t> getTransactionFee(const uint256& txid) const;
     std::optional<double> getTransactionFeeRate(const uint256& txid) const;
 
+    // Read-only fee calculation against the current mempool/chainstate overlay.
+    // Returns 0 when an input cannot be resolved or outputs consume all inputs.
+    uint64_t calculateFee(const Transaction& tx) const;
+
     /**
      * Read-only iteration over all mempool entries
      *
@@ -494,7 +498,6 @@ private:
         std::optional<uint32_t> target_height = std::nullopt) const;
     bool checkDoubleSpend(const Transaction& tx) const;
     bool checkDependencies(const Transaction& tx) const;
-    uint64_t calculateFee(const Transaction& tx) const;
     std::optional<consensus::UTXOEntry> recoverConflictedInputUTXO(const OutPoint& outpoint) const;
     PreBaseCoinResolver prebase_coin_resolver_;
     PreBaseCoinPredicate prebase_coin_predicate_;

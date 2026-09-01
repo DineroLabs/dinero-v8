@@ -168,9 +168,8 @@ static void test_prebase_input_fee_resolution() {
     });
 
     Transaction spend = makeTx({{prev_txid, 0}}, {output_script}, 9'000);
-    const auto result = pool.submitTransactionTestOnly(spend, "prebase-fee-test");
-    TEST_ASSERT(result.accepted(),
-                "live frozen pre-base input must produce a non-zero accepted fee");
+    TEST_ASSERT(pool.calculateFee(spend) == 1'000,
+                "live frozen pre-base input must contribute its value to the fee");
 
     std::cout << "  PASSED" << std::endl;
 }
