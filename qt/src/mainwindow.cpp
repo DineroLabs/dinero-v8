@@ -28,6 +28,7 @@
 
 // Track C — production, included unconditionally.
 #include "vaultpanel.h"
+#include "poolpanel.h"
 #include "shieldedwidget.h"
 
 // NOTE: Lightning Network moved to separate lightning-main branch (L2)
@@ -3378,6 +3379,21 @@ void MainWindow::setupUI() {
   {
     vaultPanel_ = new VaultPanel(rpc_, this);
     tabs->addTab(vaultPanel_, "🏦 Liquidity Vault");
+  }
+
+  // === Pool Tab ===
+  // Two audiences: users who don't run a pool (the panel explains that
+  // hosting one is an option, and why it's unusually safe on Dinero),
+  // and operators who do (live status from their pool's read-only ops
+  // endpoint + fee earnings read from the chain).
+  //
+  // NOTE: this panel deliberately does NOT read dinerod's `pool.*` RPCs.
+  // Those belong to a separate, off-by-default C++ pool-accounting
+  // subsystem unrelated to a running SV2 pool — reading them here would
+  // silently report the wrong pool's numbers.
+  {
+    poolPanel_ = new PoolPanel(rpc_, this);
+    tabs->addTab(poolPanel_, "⛏️ Pool");
   }
 
   // === Shielded Tab (Phase 5 — daemon shielded pool, gated by

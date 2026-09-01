@@ -512,6 +512,7 @@ private:
 
   // Track C Liquidity Vault — production, not experimental.
   class VaultPanel* vaultPanel_ = nullptr;
+  class PoolPanel* poolPanel_ = nullptr;
 
   // Phase 5 Shielded pool surface. Held as a member so the wallet-switch
   // path can poke it for an immediate refresh; otherwise it would only
