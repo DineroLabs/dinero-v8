@@ -156,6 +156,11 @@ if(WIN32)
   enable_language(RC)
 endif()
 
+if(ANDROID)
+  # Bionic provides pthread APIs in libc; there is no separate libpthread.
+  add_library(pthread INTERFACE)
+endif()
+
 # Release tag for Windows file-properties / About dialog metadata.
 # PROJECT_VERSION carries semver only ("8.0.0"); rc/preview suffixes live
 # in this variable. Override per cut at configure time:
@@ -258,13 +263,23 @@ set(BP_FFI_DIR "${CMAKE_SOURCE_DIR}/third_party/bulletproofs_ffi")
 # target-triple subdir (target/<triple>/release) and must be invoked with
 # --target, otherwise it builds for the host arch and the link fails.
 set(BP_FFI_CARGO_TARGET "")
-if(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64"
+if(ANDROID)
+    if(ANDROID_ABI STREQUAL "arm64-v8a")
+        set(BP_FFI_CARGO_TARGET "aarch64-linux-android")
+    elseif(ANDROID_ABI STREQUAL "x86_64")
+        set(BP_FFI_CARGO_TARGET "x86_64-linux-android")
+    else()
+        message(FATAL_ERROR "Unsupported Android ABI for Bulletproofs FFI: ${ANDROID_ABI}")
+    endif()
+elseif(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64"
         AND NOT CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
     set(BP_FFI_CARGO_TARGET "x86_64-apple-darwin")
 endif()
 
 # Determine library extension based on platform
-if(APPLE)
+if(ANDROID)
+    set(BP_FFI_LIB "${BP_FFI_DIR}/target/${BP_FFI_CARGO_TARGET}/release/libbulletproofs_ffi.a")
+elseif(APPLE)
     if(BP_FFI_CARGO_TARGET)
         set(BP_FFI_LIB "${BP_FFI_DIR}/target/${BP_FFI_CARGO_TARGET}/release/libbulletproofs_ffi.a")
     else()
@@ -283,7 +298,12 @@ find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{HOME}/.cargo/bin")
 if(CARGO_EXECUTABLE)
     set(BP_FFI_BUILD_COMMAND "${CARGO_EXECUTABLE}" build --release)
 
-    if(APPLE)
+    if(ANDROID)
+        set(BP_FFI_BUILD_COMMAND
+            "${CARGO_EXECUTABLE}" build --release --target "${BP_FFI_CARGO_TARGET}"
+        )
+        message(STATUS "   Bulletproofs FFI Android cargo target: ${BP_FFI_CARGO_TARGET}")
+    elseif(APPLE)
         set(BP_RUSTFLAGS "$ENV{RUSTFLAGS}")
         if(BP_RUSTFLAGS)
             set(BP_RUSTFLAGS "${BP_RUSTFLAGS} -C link-arg=-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")

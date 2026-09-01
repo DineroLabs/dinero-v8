@@ -1,5 +1,5 @@
 // zk_stubs_ios.cpp
-// Stub implementations for iOS builds.
+// Stub implementations for mobile NodeCore builds.
 //
 // Provides no-op stubs for subsystems not available on iOS:
 // - dinero::zk (confidential tx, stealth addresses) — needs secp256k1-zkp
@@ -8,7 +8,7 @@
 //
 // All undefined symbols found via: nm -u libnodecore-*.a | grep -E '(dinero::(zk|gpu)|_bp_)'
 
-#ifdef IOS_BUILD
+#if defined(IOS_BUILD) || defined(ANDROID_NODECORE_BUILD)
 
 #include <cstdint>
 #include <cstddef>
@@ -39,7 +39,7 @@ int bp_generate_with_nonce(uint64_t, const uint8_t*, const uint8_t*, uint8_t*, s
 int bp_rewind(const uint8_t*, const uint8_t*, size_t, const uint8_t*, uint64_t*, uint8_t*) { return -1; }
 
 size_t bp_max_proof_size(size_t) { return 0; }
-const char* bp_version(void) { return "stub-ios"; }
+const char* bp_version(void) { return "stub-mobile"; }
 
 int commitment_add(const uint8_t*, const uint8_t*, uint8_t*) { return -1; }
 int commitment_sub(const uint8_t*, const uint8_t*, uint8_t*) { return -1; }
@@ -426,4 +426,4 @@ void SocketWalletServer::Stop() {}
 
 } // namespace dinero
 
-#endif // IOS_BUILD
+#endif // IOS_BUILD || ANDROID_NODECORE_BUILD
