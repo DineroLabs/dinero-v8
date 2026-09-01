@@ -55,11 +55,33 @@ committed spend output was present with the exact reviewed value and script.
 
 ## Mobile status
 
-- Android and iOS covenant navigation and empty/read-only states were exercised
-  on their available device/simulator targets.
-- Mobile fund movement remains intentionally disabled until the descriptor-
-  funded CTV workflow and signing journal are exposed through the embedded
-  NodeCore ABI and receive equivalent authorization/reconciliation coverage.
+- The full NodeCore covenant RPC bridge was built from `3f7b3744d`; the iOS
+  device archive was inspected and contains `wallet.covenant.ctvfund`.
+- Android commit `8b024f6` and iOS commit `e34e634` expose reviewed CTV funding
+  with a wallet-scoped persistent journal, device authorization, single-flight
+  execution, exact descriptor/template re-verification immediately before
+  funding, and an uncertain-broadcast reconciliation state.
+- Android unit/build verification and the iOS simulator covenant journal test
+  passed. Exact debug builds were installed and relaunched on the connected
+  Pixel 7 and iPhone; both application processes remained alive.
+- Mobile mutation is no longer compile-time locked. It remains review-gated and
+  never automatically retries after crossing the broadcast boundary.
+
+## Exact-client restart and recovery revalidation
+
+- Qt was rebuilt from `13ac79a5a`, installed as version 8.1.10 after preserving
+  the previous application bundle, and opened the existing mainnet datadir.
+- Charlie reopened locked, fully synchronized, with exactly one covenant
+  descriptor and the expected descriptor ID and template hash above.
+- Exact descriptor import was idempotent (`count` remained one). Inspection of
+  a descriptor with a damaged checksum failed and did not mutate wallet state.
+- The funding and spend transactions were independently found in their
+  recorded blocks on SJ, NA, and EU1.
+- A same-height competing tip was observed at 100,072: SJ/NA/local shared one
+  candidate while EU1 held another. No transaction was created during the
+  disagreement. All three production nodes converged at height 100,073 on
+  `000000720dbafd1dcd9843170fee9e589882b4d064b829463b487c5650f1ec41`
+  with identical chainwork and `initialblockdownload=false`.
 
 ## Local assurance
 
