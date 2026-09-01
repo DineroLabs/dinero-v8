@@ -78,7 +78,11 @@ jobs:
           # workflow branch that supplied this updated workflow definition.
           ref: ${{ inputs.release_tag || github.ref }}
           submodules: recursive
-          fetch-depth: 1
+          # Release-lineage validation needs the ancestry of the immutable tag.
+          fetch-depth: 0
+
+      - name: Require current persisted-state readers
+        run: ./scripts/check_release_lineage.sh HEAD
 
       # Native Rust toolchain for the runner's arch (bulletproofs-ffi is Rust).
       # No --target needed: macos-13 builds x86_64, macos-14 builds arm64.
