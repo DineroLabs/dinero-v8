@@ -2053,6 +2053,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
   add_executable(test_shielded_cv_binding
     tests/consensus/test_shielded_cv_binding.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_cv_binding gtest dinero_shielded)
   target_link_libraries(test_shielded_cv_binding PRIVATE
@@ -2060,6 +2061,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
     GTest::gtest_main
     dinero_shielded
     dinero_wallet
+    wallet_test_deps
     dinero_zk
     sqlite3
   )
@@ -2284,12 +2286,14 @@ endif()
 if(TARGET dinero_wallet AND TARGET gtest)
   add_executable(test_shielded_note_store_rollback
     tests/wallet/test_shielded_note_store_rollback.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_note_store_rollback gtest dinero_wallet)
   target_link_libraries(test_shielded_note_store_rollback PRIVATE
     GTest::gtest
     GTest::gtest_main
     dinero_wallet
+    wallet_test_deps
     dinero_shielded
     sqlite3
   )
@@ -2310,12 +2314,14 @@ if(TARGET dinero_wallet AND TARGET gtest)
 
   add_executable(test_shielded_derivation
     src/test/shielded_derivation_tests.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_derivation gtest dinero_wallet)
   target_link_libraries(test_shielded_derivation PRIVATE
     GTest::gtest
     GTest::gtest_main
     dinero_wallet
+    wallet_test_deps
     dinero_shielded
     sqlite3
   )
