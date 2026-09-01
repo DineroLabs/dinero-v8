@@ -2022,6 +2022,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   add_executable(test_shielded_validation
     src/test/shielded_validation_tests.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_validation gtest dinero_shielded)
   target_link_libraries(test_shielded_validation PRIVATE
@@ -2029,6 +2030,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
     GTest::gtest_main
     dinero_shielded
     dinero_wallet  # shielded_derivation.cpp: EncryptNoteForRecipient + DeriveNoteSpendKey
+    wallet_test_deps
     sqlite3
   )
   target_include_directories(test_shielded_validation BEFORE PRIVATE
@@ -2163,6 +2165,7 @@ endif()
 if(TARGET dinero_shielded_prover_kit AND TARGET gtest)
   add_executable(test_shielded_prover_kit
     src/test/shielded_prover_kit_tests.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_prover_kit gtest dinero_shielded_prover_kit)
   target_link_libraries(test_shielded_prover_kit PRIVATE
@@ -2171,6 +2174,7 @@ if(TARGET dinero_shielded_prover_kit AND TARGET gtest)
     dinero_shielded_prover_kit
     dinero_shielded
     dinero_wallet
+    wallet_test_deps
     dinero_zk
     dinero_tx_primitives
     dinero_crypto
