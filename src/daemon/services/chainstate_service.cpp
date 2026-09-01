@@ -8,6 +8,7 @@
 #include "daemon/services/logger_service.h"
 #include "daemon/services/assumeutxo_state.h"
 #include "daemon/services/assumeutxo_replay.h"  // genesis->base replay engine (background validation)
+#include "nodecore/sync_profile_policy.h"
 #include "daemon/snapshot_bootstrap_policy.h"
 #include "daemon/services/replay_failure_policy.h"  // confirm-before-fatal for replay validation failures
 #include "consensus/merkle_root.h"  // torn-body guard on replay reads
@@ -122,6 +123,17 @@ constexpr const char* kStartupCatchupSource = "startup-catchup";
 constexpr uint32_t kInvMsgBlock = 2u;
 constexpr uint32_t kInvMsgUtreexoBlock = 0x50000002u;
 constexpr char kCsnReplayDataMagic[] = {'C', 'S', 'N', '2'};
+
+bool RuntimeRetainsHistoricalBodies() {
+    const auto& config = GetConfig();
+    if (!config.sync_profile.empty()) {
+        return dinero::nodecore::ProfileRetainsHistoricalBodies(config.sync_profile);
+    }
+    // Direct service tests and legacy callers may not have resolved a named
+    // profile yet. Preserve their established behavior via the authoritative
+    // compatibility flag.
+    return !config.utreexo_stateless;
+}
 
 // Startup undo audit window: the number of active-chain blocks (tail) that
 // VerifyActiveChainUndoCoverage checks at startup. PromoteValidatedHistory uses
@@ -2151,8 +2163,12 @@ bool ChainstateService::Init(DaemonContext& ctx) {
         return false;
     }
 
-    strict_archival_reads_ = true;
-    logger_->warning("[ChainstateService] Strict archival reads enabled: flatfile bodies/undo are required");
+    strict_archival_reads_ = RuntimeRetainsHistoricalBodies();
+    if (strict_archival_reads_) {
+        logger_->warning("[ChainstateService] Strict archival reads enabled: flatfile bodies/undo are required");
+    } else {
+        logger_->info("[ChainstateService] Compact stateless profile: skipping archival flatfile requirements");
+    }
 
     // Get datadir from config
     datadir_ = config_->DataDir();
@@ -5028,7 +5044,7 @@ uint64_t ChainstateService::getLegacyUndoFallbackReadCount() const {
 }
 
 bool ChainstateService::strictArchivalReadsEnabled() const {
-    return true;
+    return strict_archival_reads_;
 }
 
 bool ChainstateService::VerifyStrictArchivalStartup(uint32_t tip_height) const {
@@ -15350,6 +15366,16 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
 
 void ChainstateService::StartBackgroundValidation() {
     std::lock_guard<std::mutex> lock(bg_validation_mutex_);
+
+    // ios_utreexo intentionally does not retain genesis-to-base block bodies.
+    // Starting the archival replay worker in that profile can only settle in
+    // validation_stalled/missing-pre-base-bodies and falsely makes a healthy
+    // compact node look broken. The signed snapshot is the trust anchor; this
+    // node fully validates every post-snapshot Utreexo transition instead.
+    if (!RuntimeRetainsHistoricalBodies()) {
+        logger_->info("[BackgroundValidation] Skipped for compact stateless sync profile");
+        return;
+    }
 
     if (!assumeutxo_active_) {
         logger_->warning("[BackgroundValidation] Not in AssumeUTXO mode, validation not needed");

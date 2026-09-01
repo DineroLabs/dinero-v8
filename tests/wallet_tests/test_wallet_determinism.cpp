@@ -24,6 +24,7 @@
 #include "wallet/bip39.h"
 #include "wallet/bip32_deriver.h"
 #include "wallet/taproot_keys.h"
+#include "wallet/taproot_address.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "primitives/uint256.h"
@@ -39,6 +40,8 @@
 #include <vector>
 #include <set>
 #include <cstdlib>
+#include <fstream>
+#include <json/json.h>
 
 using namespace dinero;
 
@@ -527,7 +530,7 @@ bool test_utxo_listing_order() {
 // any future crypto change that alters the output is caught immediately.
 //
 // Test vector: BIP39 standard 12-word mnemonic "abandon abandon ... about"
-// Path: m/86'/1447'/0'/0/0 (BIP86 Taproot, coin_type=1447)
+// Path: m/86'/1448'/0'/0/0 (canonical BIP86 Taproot)
 // Expected: deterministic P2TR scriptPubKey (OP_1 PUSH32 <tweaked_xonly>)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -536,79 +539,47 @@ bool test_bip86_derivation_regression() {
     std::cout << "TEST 7: BIP86 derivation regression (HMAC fix gate)" << std::endl;
     std::cout << "═══════════════════════════════════════════════════════════\n" << std::endl;
 
-    // Pinned test vector — DO NOT CHANGE unless you intentionally break all wallets.
-    static constexpr const char* TEST_MNEMONIC =
-        "abandon abandon abandon abandon abandon abandon "
-        "abandon abandon abandon abandon abandon about";
-    static constexpr const char* EXPECTED_SPK =
-        "512079c76a17420fbc4a15a729accea4b50052664f635fb8de847a66edda2808498c";
-
     try {
-        // Step 1: Mnemonic → 64-byte seed via PBKDF2-HMAC-SHA512
-        std::vector<uint8_t> seed;
-        bool ok = dinero::bip39::MnemonicToSeed(TEST_MNEMONIC, "", seed);
-        ASSERT_TRUE(ok, "BIP39 MnemonicToSeed must succeed");
-        ASSERT_EQ(seed.size(), size_t(64), "Seed must be 64 bytes");
-
-        std::cout << "  Seed: ";
-        for (size_t i = 0; i < 8; i++) std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)seed[i];
-        std::cout << "..." << std::dec << std::endl;
-
-        // Step 2: BIP32 derivation m/86'/1447'/0'/0/0
-        dinero::BIP32Deriver deriver(seed.data(), seed.size());
-        deriver.deriveHardened(86);    // 86'
-        deriver.deriveHardened(1447);  // 1447' (Dinero coin type)
-        deriver.deriveHardened(0);     // 0' (account)
-        deriver.deriveNormal(0);       // 0 (external chain)
-        deriver.deriveNormal(0);       // 0 (first address)
-
-        auto privkey = deriver.getPrivateKey();
-        ASSERT_EQ(privkey.size(), size_t(32), "Private key must be 32 bytes");
-
-        // Step 3: Private key → x-only pubkey → BIP86 tweaked pubkey
-        secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-        ASSERT_TRUE(ctx != nullptr, "secp256k1 context creation");
-
-        secp256k1_pubkey pub;
-        ASSERT_TRUE(secp256k1_ec_pubkey_create(ctx, &pub, privkey.data()) == 1,
-                    "secp256k1 pubkey creation");
-
-        secp256k1_xonly_pubkey xonly;
-        int parity = 0;
-        ASSERT_TRUE(secp256k1_xonly_pubkey_from_pubkey(ctx, &xonly, &parity, &pub) == 1,
-                    "x-only pubkey extraction");
-
-        std::array<uint8_t, 32> internal_xonly;
-        secp256k1_xonly_pubkey_serialize(ctx, internal_xonly.data(), &xonly);
-
-        std::array<uint8_t, 32> tweaked_pubkey;
-        bool tweak_ok = dinero::TaprootKeys::ComputeTweakedPubkey(internal_xonly, tweaked_pubkey);
-        ASSERT_TRUE(tweak_ok, "BIP86 TapTweak computation");
-
-        secp256k1_context_destroy(ctx);
-
-        // Step 4: Build scriptPubKey = OP_1 (0x51) + PUSH32 (0x20) + tweaked_xonly
-        std::ostringstream spk;
-        spk << "5120";
-        for (uint8_t b : tweaked_pubkey) {
-            spk << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
-        }
-        std::string actual_spk = spk.str();
-
-        std::cout << "  Path:      m/86'/1447'/0'/0/0" << std::endl;
-        std::cout << "  ScriptPubKey: " << actual_spk << std::endl;
-
-        // Step 5: Assert determinism
-        if (std::string(EXPECTED_SPK) == "COMPUTE_ON_FIRST_RUN") {
-            std::cout << "\n  *** FIRST RUN: Replace EXPECTED_SPK with this value ***" << std::endl;
-            std::cout << "  \"" << actual_spk << "\"" << std::endl;
-            ASSERT_TRUE(false, "EXPECTED_SPK must be pinned (see output above)");
+        std::ifstream fixture(DINERO_WALLET_RECOVERY_VECTOR_PATH);
+        ASSERT_TRUE(fixture.good(), "shared wallet recovery fixture must be readable");
+        Json::Value root;
+        fixture >> root;
+        const std::string mnemonic = root["mnemonic"].asString();
+        for (const auto& vector : root["lanes"]["p2tr"]["vectors"]) {
+            std::vector<uint8_t> seed;
+            ASSERT_TRUE(dinero::bip39::MnemonicToSeed(mnemonic, vector["passphrase"].asString(), seed),
+                        "BIP39 MnemonicToSeed must succeed");
+            for (unsigned branch = 0; branch < 2; ++branch) {
+                const auto& expected = vector[branch == 0 ? "receive" : "change"];
+                for (Json::ArrayIndex index = 0; index < expected.size(); ++index) {
+                    dinero::BIP32Deriver deriver(seed.data(), seed.size());
+                    deriver.deriveHardened(86);
+                    deriver.deriveHardened(1448);
+                    deriver.deriveHardened(0);
+                    deriver.deriveNormal(branch);
+                    deriver.deriveNormal(index);
+                    auto privkey = deriver.getPrivateKey();
+                    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
+                    secp256k1_pubkey pub;
+                    ASSERT_TRUE(ctx != nullptr && secp256k1_ec_pubkey_create(ctx, &pub, privkey.data()) == 1,
+                                "secp256k1 pubkey creation");
+                    secp256k1_xonly_pubkey xonly;
+                    int parity = 0;
+                    ASSERT_TRUE(secp256k1_xonly_pubkey_from_pubkey(ctx, &xonly, &parity, &pub) == 1,
+                                "x-only pubkey extraction");
+                    std::array<uint8_t, 32> internal{};
+                    secp256k1_xonly_pubkey_serialize(ctx, internal.data(), &xonly);
+                    secp256k1_context_destroy(ctx);
+                    std::array<uint8_t, 32> output{};
+                    ASSERT_TRUE(dinero::TaprootKeys::ComputeTweakedPubkey(internal, output), "BIP86 TapTweak computation");
+                    const std::string address = din::TaprootAddress::fromPubkey(
+                        std::vector<uint8_t>(output.begin(), output.end()), root["network"].asString());
+                    ASSERT_EQ(address, expected[index].asString(), "shared BIP86 recovery vector mismatch");
+                }
+            }
         }
 
-        ASSERT_EQ(actual_spk, std::string(EXPECTED_SPK),
-                  "BIP86 scriptPubKey regression: mnemonic→seed→key→P2TR must be stable");
-
-        std::cout << "\n  ✅ BIP86 derivation is stable (HMAC fix gate passed)\n" << std::endl;
+        std::cout << "\n  ✅ Shared BIP86 recovery vectors pass\n" << std::endl;
 
     } catch (const std::exception& e) {
         std::cerr << "  ❌ Exception: " << e.what() << std::endl;

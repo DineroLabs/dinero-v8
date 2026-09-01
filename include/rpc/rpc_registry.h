@@ -109,6 +109,12 @@ public:
   const RpcAliasInfo* getAliasInfo(const std::string& alias) const;
   std::vector<std::string> getAliases(const std::string& canonical_method) const;
 
+  // Restore the process-global registry to its static-registration baseline
+  // before wiring handlers that capture a new DaemonContext. The first call
+  // records that baseline; later calls discard handlers from the prior daemon
+  // lifetime so embedded stop/start cycles cannot retain dangling contexts.
+  void beginRuntimeRegistrationCycle();
+
 private:
   mutable std::mutex mtx_;
   std::unordered_map<std::string, RpcHandler>    handlers_;
@@ -117,6 +123,13 @@ private:
   std::unordered_map<std::string, std::string>   aliases_;      // alias -> target
   std::unordered_map<std::string, RpcAliasInfo>  alias_info_;   // alias -> metadata
   std::string last_error_;
+
+  bool runtime_baseline_captured_ = false;
+  std::unordered_map<std::string, RpcHandler> runtime_baseline_handlers_;
+  std::unordered_map<std::string, RpcMethodMeta> runtime_baseline_meta_;
+  std::unordered_map<std::string, std::string> runtime_baseline_owners_;
+  std::unordered_map<std::string, std::string> runtime_baseline_aliases_;
+  std::unordered_map<std::string, RpcAliasInfo> runtime_baseline_alias_info_;
 };
 
 // Global RPC registry instance (defined in rpc_registry.cpp)

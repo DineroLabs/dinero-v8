@@ -25,7 +25,6 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
 
   add_library(nodecore_ffi STATIC
     src/nodecore/nodecore_ffi.cpp
-    src/nodecore/sync_profile_policy.cpp
     src/nodecore/zk_stubs_ios.cpp
 
     # DaemonApp lifecycle (same as dinerod, minus main.cpp)

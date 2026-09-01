@@ -9,6 +9,7 @@
 using dinero::nodecore::CapabilitiesForProfile;
 using dinero::nodecore::DefaultSyncProfile;
 using dinero::nodecore::DefaultUtreexoStateless;
+using dinero::nodecore::ProfileRetainsHistoricalBodies;
 using dinero::nodecore::ResolveSyncProfile;
 
 namespace {
@@ -63,6 +64,12 @@ TEST(SyncProfilePolicy, CapabilitiesMatchProfileContract) {
 
     const uint64_t mac_expected = NODECORE_CAP_SYNC_FULLBLOCK | NODECORE_CAP_MINING_LOCAL | NODECORE_CAP_MINING_POOL;
     EXPECT_EQ(CapabilitiesForProfile("mac_fullblock"), mac_expected);
+}
+
+TEST(SyncProfilePolicy, HistoricalBodyWorkIsArchivalOnly) {
+    EXPECT_FALSE(ProfileRetainsHistoricalBodies("ios_utreexo"));
+    EXPECT_TRUE(ProfileRetainsHistoricalBodies("mac_fullblock"));
+    EXPECT_FALSE(ProfileRetainsHistoricalBodies("unknown"));
 }
 
 }  // namespace

@@ -256,6 +256,17 @@ CONFIRMED_BALANCE="$(rpc_result "getaddressbalance" "[\"$RECIPIENT_ADDR\"]")"
 [ "$(echo "$CONFIRMED_BALANCE" | jq -r '.spendable')" = "125000000" ] || fail "spendable should equal confirmed after mining"
 [ "$(echo "$CONFIRMED_BALANCE" | jq -r '.balance_din')" = "1.25000000" ] || fail "expected confirmed DIN string after mining"
 
+# The batch history cap is wallet-global. An unused gap address must not force
+# a scan toward genesis, and older activity on a busy address must not crowd
+# the newly funded address out of the newest wallet window.
+UNUSED_ADDR="$(rpc_scalar "wallet.getnewaddress" "[]" '.address // empty')"
+[ -n "$UNUSED_ADDR" ] || fail "wallet.getnewaddress returned empty unused gap address"
+GLOBAL_HISTORY="$(rpc_result "getaddressbatch" "{\"addresses\":[\"$MINER_ADDR\",\"$RECIPIENT_ADDR\",\"$UNUSED_ADDR\"],\"history_count\":2}")"
+[ "$(echo "$GLOBAL_HISTORY" | jq -r '.history_scope')" = "wallet_global" ] || fail "batch history must declare wallet-global scope"
+[ "$(echo "$GLOBAL_HISTORY" | jq -r '[.addresses[].transactions[]?.txid] | unique | length <= 2')" = "true" ] || fail "batch history_count must cap newest wallet transactions globally"
+[ "$(echo "$GLOBAL_HISTORY" | jq -r --arg address "$RECIPIENT_ADDR" --arg txid "$TXID" '.addresses[$address].transactions | any(.txid == $txid)')" = "true" ] || fail "newly funded address was crowded out of global history"
+pass "batch history is globally bounded and retains the newest funded address"
+
 POST_MEMPOOL="$(rpc_result "getaddressmempool" "[\"$RECIPIENT_ADDR\"]")"
 [ "$(echo "$POST_MEMPOOL" | jq -r '.transactions | length')" = "0" ] || fail "recipient mempool overlay should clear after confirmation"
 pass "confirmed address balance converges cleanly after mining"

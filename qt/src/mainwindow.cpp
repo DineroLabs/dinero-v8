@@ -2499,17 +2499,31 @@ void MainWindow::setupUI() {
     // Row 2: Mempool + Peers Summary
     auto *row2 = new QHBoxLayout;
     
-    // Mempool Size (enhanced with sparkline simulation)
+    // Live mempool summary. The transaction rows make short-lived pending
+    // activity observable instead of reducing it to a periodically sampled
+    // counter that can remain visually indistinguishable from "unavailable".
     auto *mempoolBox = new QGroupBox("📦 Mempool");
     auto *mempoolLayout = new QVBoxLayout(mempoolBox);
-    mempoolBox->setMaximumHeight(125);
-    lblMempoolSize_ = new QLabel("0 txs");
+    mempoolBox->setMinimumHeight(210);
+    lblMempoolSize_ = new QLabel("Loading…");
     lblMempoolSize_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
-    lblMempoolBytes_ = new QLabel("0 bytes");
+    lblMempoolBytes_ = new QLabel("Waiting for local node");
     lblMempoolBytes_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
     mempoolLayout->addWidget(lblMempoolSize_);
     mempoolLayout->addWidget(lblMempoolBytes_);
-    mempoolLayout->addStretch();
+    tblMempoolOverview_ = new QTableWidget(0, 4);
+    tblMempoolOverview_->setHorizontalHeaderLabels({"Transaction", "Fee", "Size", "Age"});
+    tblMempoolOverview_->horizontalHeader()->setStretchLastSection(false);
+    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    tblMempoolOverview_->verticalHeader()->setVisible(false);
+    tblMempoolOverview_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    tblMempoolOverview_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tblMempoolOverview_->setMinimumHeight(120);
+    tblMempoolOverview_->setToolTip("Transactions currently held by this local node");
+    mempoolLayout->addWidget(tblMempoolOverview_);
     row2->addWidget(mempoolBox, 1, Qt::AlignTop);
     
     // Peers Summary + compact connected peers table
@@ -5104,6 +5118,7 @@ void MainWindow::refresh() {
   rpc_->call("economics.getinfo", QJsonArray());       // Get phase & reward
   rpc_->call("economics.getsupply", QJsonArray());          // Get total supply
   rpc_->call("mempool.getinfo", QJsonArray());     // Get mempool stats
+  rpc_->call("mempool.getrawmempool", QJsonArray{true}); // Visible pending rows + change detection
   rpc_->call("blockchain.getinfo", QJsonArray());  // Get headers vs blocks (headers-first sync)
   rpc_->call("blockchain.getmininginfo", QJsonArray());  // Get current difficulty & network mining stats
 
@@ -5673,6 +5688,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       updateStatus(obj);
       cachedHeight_ = obj["blocks"].toInt();
       cachedHeaders_ = obj["headers"].toInt();
+      overviewNodeSynced_ = cachedHeaders_ > 0 && cachedHeight_ >= cachedHeaders_;
       refreshAiStatusStrip();
 
       // v7 Overview: Utreexo health from blockchain info
@@ -6625,6 +6641,80 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         lblMempool_->setText("Mempool: N/A");
       }
     }
+  } else if (method == "mempool.getrawmempool") {
+    if (!result.isObject() || !tblMempoolOverview_) {
+      if (lblMempoolSize_) lblMempoolSize_->setText("Mempool unavailable");
+      if (lblMempoolBytes_) lblMempoolBytes_->setText("Local node returned an invalid response");
+      return;
+    }
+
+    const QJsonObject entries = result.toObject();
+    if (entries.contains("error")) {
+      if (lblMempoolSize_) lblMempoolSize_->setText("Mempool unavailable");
+      if (lblMempoolBytes_) lblMempoolBytes_->setText(entries.value("error").toString());
+      overviewMempoolInitialized_ = false;
+      return;
+    }
+    const QStringList entryKeys = entries.keys();
+    const QSet<QString> newTxids(entryKeys.cbegin(), entryKeys.cend());
+    const bool changed = overviewMempoolInitialized_ && newTxids != overviewMempoolTxids_;
+    overviewMempoolTxids_ = newTxids;
+    overviewMempoolInitialized_ = true;
+
+    struct MempoolRow {
+      QString txid;
+      QJsonObject details;
+    };
+    QVector<MempoolRow> rows;
+    rows.reserve(entries.size());
+    for (auto it = entries.begin(); it != entries.end(); ++it) {
+      if (it.value().isObject()) rows.push_back({it.key(), it.value().toObject()});
+    }
+    std::sort(rows.begin(), rows.end(), [](const MempoolRow& a, const MempoolRow& b) {
+      return a.details.value("time").toDouble() > b.details.value("time").toDouble();
+    });
+
+    tblMempoolOverview_->setSortingEnabled(false);
+    tblMempoolOverview_->setRowCount(0);
+    const int visibleRows = std::min<int>(static_cast<int>(rows.size()), 25);
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    for (int row = 0; row < visibleRows; ++row) {
+      const auto& entry = rows.at(row);
+      const qint64 timestamp = static_cast<qint64>(entry.details.value("time").toDouble());
+      const qint64 ageSeconds = timestamp > 0 ? std::max<qint64>(0, now - timestamp) : 0;
+      const QString age = timestamp <= 0 ? QStringLiteral("—")
+                         : ageSeconds < 60 ? QStringLiteral("%1s").arg(ageSeconds)
+                         : ageSeconds < 3600 ? QStringLiteral("%1m").arg(ageSeconds / 60)
+                         : QStringLiteral("%1h").arg(ageSeconds / 3600);
+      const QString shortTxid = entry.txid.size() > 18
+          ? entry.txid.left(10) + QStringLiteral("…") + entry.txid.right(6)
+          : entry.txid;
+      tblMempoolOverview_->insertRow(row);
+      auto* txidItem = new QTableWidgetItem(shortTxid);
+      txidItem->setToolTip(entry.txid);
+      tblMempoolOverview_->setItem(row, 0, txidItem);
+      tblMempoolOverview_->setItem(row, 1, new QTableWidgetItem(
+          QString::number(entry.details.value("fee").toDouble(), 'f', 8) + " DIN"));
+      tblMempoolOverview_->setItem(row, 2, new QTableWidgetItem(
+          QStringLiteral("%1 B").arg(static_cast<qint64>(entry.details.value("size").toDouble()))));
+      tblMempoolOverview_->setItem(row, 3, new QTableWidgetItem(age));
+    }
+    if (rows.isEmpty()) {
+      tblMempoolOverview_->insertRow(0);
+      auto* empty = new QTableWidgetItem(overviewNodeSynced_
+          ? "No pending transactions in this local node"
+          : "No pending transactions shown while the local node is syncing");
+      empty->setForeground(QBrush(QColor("#868e96")));
+      empty->setTextAlignment(Qt::AlignCenter);
+      tblMempoolOverview_->setItem(0, 0, empty);
+      tblMempoolOverview_->setSpan(0, 0, 1, 4);
+    }
+    tblMempoolOverview_->setSortingEnabled(true);
+
+    // Refresh wallet history immediately on arrivals, removals, replacements,
+    // or confirmations. The ordinary five-second poll remains the fallback
+    // when production builds do not include WebSocket support.
+    if (changed) loadTransactionHistory();
   } else if (method == "getnetworkinfo" || method == "network.info") {
     if (result.isObject()) {
       const auto info = result.toObject();
@@ -7432,6 +7522,23 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
   // ALWAYS log errors to console so user can see them
   qDebug() << "🔴 RPC Error:" << method << "Code:" << code << "Message:" << message;
+
+  if (method == "mempool.getinfo" || method == "mempool.getrawmempool") {
+    if (lblMempool_) lblMempool_->setText("Mempool: unavailable");
+    if (lblMempoolSize_) lblMempoolSize_->setText("Unavailable");
+    if (lblMempoolBytes_) lblMempoolBytes_->setText("Local node did not answer");
+    if (tblMempoolOverview_) {
+      tblMempoolOverview_->setRowCount(1);
+      auto* item = new QTableWidgetItem(message.isEmpty() ? "Mempool data unavailable" : message);
+      item->setForeground(QBrush(QColor("#c0392b")));
+      item->setTextAlignment(Qt::AlignCenter);
+      tblMempoolOverview_->setItem(0, 0, item);
+      tblMempoolOverview_->setSpan(0, 0, 1, 4);
+    }
+    overviewMempoolInitialized_ = false;
+    overviewMempoolTxids_.clear();
+    return;
+  }
 
   // Compatibility: some deployed daemons may not expose wallet.getreorginfo yet.
   // Disable this optional poll after first "method not found" to avoid refresh spam.

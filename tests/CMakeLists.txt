@@ -92,6 +92,20 @@ set_tests_properties(QtContractProductionWiring PROPERTIES
   LABELS "qt;covenant;regression;mandatory"
   TIMEOUT 5
 )
+
+# Production Qt builds keep WebSocket-only features disabled, so the Overview
+# mempool must retain its canonical verbose polling feed, visible rows, and
+# wallet-history refresh behavior in the ordinary build.
+add_test(
+  NAME QtMempoolOverview
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_FILE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_mempool_overview.cmake
+)
+set_tests_properties(QtMempoolOverview PROPERTIES
+  LABELS "qt;mempool;regression"
+  TIMEOUT 5
+)
 add_executable(test_ripemd160_src_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/crypto/ripemd160.cpp
@@ -5500,6 +5514,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet_tests/test_wallet_determinism.cpp)
   target_include_directories(test_wallet_determinism PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
+  )
+  target_compile_definitions(test_wallet_determinism PRIVATE
+    DINERO_WALLET_RECOVERY_VECTOR_PATH="${CMAKE_SOURCE_DIR}/test-cross-language-vectors/wallet_recovery_v1.json"
   )
   add_test(NAME WalletDeterminism COMMAND test_wallet_determinism)
   message(STATUS "  ✓ Phase A3 test registered: test_wallet_determinism")
@@ -12087,3 +12104,22 @@ target_link_libraries(test_contract_signing_package PRIVATE dinero_core)
 target_include_directories(test_contract_signing_package PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME ContractSigningPackageSecurity COMMAND test_contract_signing_package)
 set_tests_properties(ContractSigningPackageSecurity PROPERTIES LABELS "contract;security;mandatory")
+
+# Embedded daemon lifetimes reuse the process-global RPC registry. Verify that
+# a new runtime wiring cycle drops handlers capturing the prior DaemonContext
+# while retaining static registrations.
+add_executable(test_rpc_registry_restart_cycle
+  tests/rpc/test_rpc_registry_restart_cycle.cpp
+  src/rpc/rpc_registry.cpp
+  src/common/logger.cpp
+)
+target_include_directories(test_rpc_registry_restart_cycle PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(test_rpc_registry_restart_cycle PRIVATE gtest_main jsoncpp_static)
+add_test(NAME RpcRegistryRestartCycle COMMAND test_rpc_registry_restart_cycle)
+set_tests_properties(RpcRegistryRestartCycle PROPERTIES
+  LABELS "rpc;nodecore;restart;regression"
+  TIMEOUT 30
+)
