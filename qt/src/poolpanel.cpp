@@ -101,22 +101,29 @@ void PoolPanel::setupUi() {
     conn_hint->setStyleSheet("color: #9fb3c8;");
     conn_layout->addWidget(conn_hint);
 
+    // Left-aligned with expanding fields: QFormLayout otherwise centres the
+    // rows and leaves the endpoint field too narrow to show its own default.
     auto* form = new QFormLayout();
+    form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+    form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    form->setHorizontalSpacing(10);
     ops_url_input_ = new QLineEdit("http://127.0.0.1:4445");
     ops_url_input_->setPlaceholderText("http://127.0.0.1:4445");
+    ops_url_input_->setMinimumWidth(320);
     form->addRow("Status endpoint:", ops_url_input_);
+
+    auto* tokenRow = new QHBoxLayout();
     ops_token_input_ = new QLineEdit();
     ops_token_input_->setEchoMode(QLineEdit::Password);
     ops_token_input_->setPlaceholderText("contents of /etc/dinero-sv2/ops-token");
-    form->addRow("Ops token:", ops_token_input_);
-    conn_layout->addLayout(form);
-
-    auto* row = new QHBoxLayout();
+    ops_token_input_->setMinimumWidth(320);
+    tokenRow->addWidget(ops_token_input_, 1);
     btn_fetch_status_ = new QPushButton("Connect");
     btn_fetch_status_->setStyleSheet("font-weight: bold; padding: 6px 14px;");
-    row->addStretch();
-    row->addWidget(btn_fetch_status_);
-    conn_layout->addLayout(row);
+    tokenRow->addWidget(btn_fetch_status_, 0);
+    form->addRow("Ops token:", tokenRow);
+    conn_layout->addLayout(form);
 
     lbl_status_message_ = new QLabel("\xE2\x80\x93");
     lbl_status_message_->setTextFormat(Qt::RichText);
@@ -128,6 +135,14 @@ void PoolPanel::setupUi() {
     // ---- Live status -------------------------------------------------
     status_group_ = new QGroupBox("Live status");
     auto* grid = new QGridLayout(status_group_);
+    // Bare QLabels inherit a filled background from the page style, which
+    // makes captions read as disabled text inputs.
+    status_group_->setStyleSheet("QGroupBox > QLabel { background: transparent; }");
+    // Default spacing leaves ~85px between rows of one-line values, which
+    // spreads six readings over an unreadable amount of screen.
+    grid->setVerticalSpacing(8);
+    grid->setColumnStretch(1, 1);
+    grid->setColumnStretch(3, 1);
     lbl_connected_miners_ = new QLabel("\xE2\x80\x93");
     lbl_fee_ = new QLabel("\xE2\x80\x93");
     lbl_window_ = new QLabel("\xE2\x80\x93");
@@ -149,11 +164,21 @@ void PoolPanel::setupUi() {
 
     miners_table_ = new QTableWidget(0, 3);
     miners_table_->setHorizontalHeaderLabels({"Contributor payout script", "Next-block share", "Window weight"});
-    miners_table_->horizontalHeader()->setStretchLastSection(true);
     miners_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    miners_table_->setMaximumHeight(160);
+    miners_table_->verticalHeader()->setVisible(false);
+    // The script is the long column; the two numeric ones get fixed widths
+    // so the header stops truncating to "tributor payout sc".
+    miners_table_->horizontalHeader()->setStretchLastSection(false);
+    miners_table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    miners_table_->setColumnWidth(1, 150);
+    miners_table_->setColumnWidth(2, 150);
+    miners_table_->verticalHeader()->setDefaultSectionSize(24);
+    miners_table_->setMaximumHeight(24 * 5 + 28);
     grid->addWidget(miners_table_, 3, 0, 1, 4);
-    status_group_->setEnabled(false);
+    // Hidden, not merely disabled. Most people looking at this tab do not
+    // run a pool; showing them an empty status grid and an empty table is
+    // noise that buries the one thing meant for them (the explainer above).
+    status_group_->setVisible(false);
     root->addWidget(status_group_);
 
     // ---- Earnings, from the chain ------------------------------------
@@ -180,6 +205,10 @@ void PoolPanel::setupUi() {
     lbl_earnings_->setWordWrap(true);
     lbl_earnings_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     earn_layout->addWidget(lbl_earnings_);
+    // Same reasoning as Live status: revealed once the user identifies as
+    // an operator by hitting Connect.
+    earn_group->setVisible(false);
+    earnings_group_ = earn_group;
     root->addWidget(earn_group);
 
     root->addStretch();
@@ -214,6 +243,11 @@ void PoolPanel::onFetchStatusClicked() {
         return;
     }
     ops_attempted_ = true;
+    // They run a pool. Reveal the operator surfaces even if this particular
+    // fetch fails, so they can see the error in context and retry.
+    if (earnings_group_) {
+        earnings_group_->setVisible(true);
+    }
     QUrl url(base + (base.endsWith('/') ? "status" : "/status"));
     if (!url.isValid() || url.scheme().isEmpty()) {
         setStatusMessage("<span style='color:#e06c75;'>That endpoint is not a valid URL.</span>");
@@ -229,7 +263,7 @@ void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
     reply->deleteLater();
     const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if (reply->error() != QNetworkReply::NoError && http == 0) {
-        status_group_->setEnabled(false);
+        status_group_->setVisible(false);
         setStatusMessage(QString("<span style='color:#e06c75;'>Could not reach the pool: %1</span>"
                                  "<br/><span style='color:#9fb3c8; font-size:11px;'>If the pool is on "
                                  "another machine, remember the endpoint is loopback-only \xE2\x80\x94 open an "
@@ -238,12 +272,12 @@ void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
         return;
     }
     if (http == 401) {
-        status_group_->setEnabled(false);
+        status_group_->setVisible(false);
         setStatusMessage("<span style='color:#e06c75;'>Rejected: wrong ops token.</span>");
         return;
     }
     if (http != 200) {
-        status_group_->setEnabled(false);
+        status_group_->setVisible(false);
         setStatusMessage(QString("<span style='color:#e06c75;'>Pool returned HTTP %1.</span>").arg(http));
         return;
     }
@@ -256,7 +290,7 @@ void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
 }
 
 void PoolPanel::applyStatus(const QJsonObject& s) {
-    status_group_->setEnabled(true);
+    status_group_->setVisible(true);
     const qint64 fee_bps = safeInt(s.value("fee_bps"));
     const qint64 age = safeInt(s.value("template_heartbeat_age_secs"));
     const QString phase = s.value("template_phase").toString();

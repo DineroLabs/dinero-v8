@@ -76,6 +76,7 @@ private:
 
     // Live status.
     QGroupBox* status_group_;
+    QGroupBox* earnings_group_ = nullptr;
     QLabel* lbl_connected_miners_;
     QLabel* lbl_fee_;
     QLabel* lbl_window_;
