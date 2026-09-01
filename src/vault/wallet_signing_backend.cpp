@@ -54,6 +54,17 @@ bool fromHex(const std::string& hex, uint8_t* out, size_t out_len) {
     return true;
 }
 
+/// An all-zero txid is never a real one (it is a hash), so it is used as
+/// the "attempt journalled, outcome unknown" marker.
+bool isUnresolved(const std::array<uint8_t, 32>& txid) {
+    for (uint8_t byte : txid) {
+        if (byte != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 LedgerTimestamp nowNanos() {
     using namespace std::chrono;
     return duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
@@ -92,6 +103,18 @@ std::array<uint8_t, 32> WalletSigningBackend::signAndBroadcast(const UnsignedTx&
     std::string req_hex = toHex(tx.request_id.data(), tx.request_id.size());
     auto it = cache_.find(req_hex);
     if (it != cache_.end()) {
+        if (isUnresolved(it->second)) {
+            // We journalled an attempt for this request and never recorded
+            // an outcome — the process died, or the wallet call threw, in
+            // the window where the broadcast may or may not have happened.
+            // Re-sending would double-spend. Refuse and let an operator
+            // reconcile against the chain.
+            throw SigningBackendError(
+                SigningBackendError::Kind::DUPLICATE_REQUEST,
+                "WalletSigningBackend: request " + req_hex +
+                    " was attempted but its outcome was never confirmed; "
+                    "reconcile against the chain before retrying");
+        }
         return it->second;
     }
 
@@ -111,17 +134,28 @@ std::array<uint8_t, 32> WalletSigningBackend::signAndBroadcast(const UnsignedTx&
 
     const SignOutput& out = tx.outputs.front();
 
+    // WRITE-AHEAD. The broadcast below is irreversible, so the journal has
+    // to name this request before it can happen. Recording only the
+    // outcome means a crash in the window leaves no trace at all, and the
+    // retry double-spends.
+    const std::array<uint8_t, 32> unresolved{};
+    persistIdempotency(tx.request_id, unresolved);
+
     std::array<uint8_t, 32> txid{};
     try {
         txid = send_(out.script_pub_key, out.value, tx.fee_rate_hint, tx.audit_context);
     } catch (const SigningBackendError&) {
+        cache_[req_hex] = unresolved;  // ambiguous: may or may not be on the wire
         throw;
     } catch (const std::exception& e) {
+        cache_[req_hex] = unresolved;
         throw SigningBackendError(SigningBackendError::Kind::BROADCAST_FAILED,
                                   std::string("wallet send failed: ") + e.what());
     }
 
-    cache_.emplace(req_hex, txid);
+    // Assignment, not emplace: a poisoned in-memory marker must be
+    // upgraded once the outcome is known.
+    cache_[req_hex] = txid;
     persistIdempotency(tx.request_id, txid);
     return txid;
 }
@@ -158,12 +192,28 @@ void WalletSigningBackend::loadIdempotency() {
         if (!fromHex(txid_hex, txid.data(), txid.size())) {
             continue;
         }
+        // Append-only journal, last line wins: an attempt (all-zero txid)
+        // followed by an outcome resolves; an attempt with no outcome stays
+        // unresolved and poisons that request against retry.
         cache_[req_hex] = txid;
         ++loaded;
+    }
+    size_t unresolved_count = 0;
+    for (const auto& [req, txid] : cache_) {
+        if (isUnresolved(txid)) {
+            ++unresolved_count;
+        }
     }
     if (loaded > 0) {
         dinero::g_logger.info(std::string("[Vault] idempotency cache loaded: ") +
                               std::to_string(loaded) + " entries");
+    }
+    if (unresolved_count > 0) {
+        dinero::g_logger.warn(
+            std::string("[Vault] ") + std::to_string(unresolved_count) +
+            " withdrawal request(s) were broadcast-attempted with NO recorded outcome. "
+            "Those coins may or may not be on-chain. Retries are refused until an "
+            "operator reconciles them against the chain.");
     }
 }
 

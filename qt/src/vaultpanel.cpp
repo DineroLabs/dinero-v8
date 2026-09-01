@@ -13,6 +13,7 @@
 #include <QLocale>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QStringList>
 #include <QVBoxLayout>
 
 namespace {
@@ -486,16 +487,30 @@ void VaultPanel::onRpcResult(const QString& method, const QJsonValue& result) {
         // withdrawals that were mid-lifecycle come back with correct
         // balances but no state machine to finish them.
         const qint64 stuck_deposits = safeInt(obj.value("unreconciled_deposits"));
-        const qint64 stuck_withdrawals = safeInt(obj.value("unreconciled_withdrawals"));
-        if (stuck_deposits > 0 || stuck_withdrawals > 0) {
+        const qint64 reserved_wd = safeInt(obj.value("withdrawals_reserved_not_broadcast"));
+        const qint64 broadcast_wd = safeInt(obj.value("withdrawals_broadcast_not_settled"));
+        if (stuck_deposits > 0 || reserved_wd > 0 || broadcast_wd > 0) {
+            QStringList lines;
+            if (stuck_deposits > 0) {
+                lines << QString("%1 deposit(s) credited but not settled \u2014 the funds stay "
+                                 "spendable, but they will not finish settling on their own.")
+                             .arg(stuck_deposits);
+            }
+            if (reserved_wd > 0) {
+                lines << QString("%1 withdrawal(s) reserved but never sent \u2014 <b>no coins "
+                                 "moved</b>. Their reserved balance can safely be released.")
+                             .arg(reserved_wd);
+            }
+            if (broadcast_wd > 0) {
+                lines << QString("%1 withdrawal(s) already sent but not confirmed \u2014 <b>the "
+                                 "coins are on-chain</b>. Do not release the reserved balance; "
+                                 "check the recorded transaction first.")
+                             .arg(broadcast_wd);
+            }
             lbl_reconcile_warning_->setText(
                 QString("<b style='color:#d8a37b;'>Needs reconciliation after restart</b>"
-                        "<br/><span style='color:#c8b8a0; font-size:11px;'>%1 deposit(s) credited "
-                        "but not settled, %2 withdrawal(s) started but not finished. These will not "
-                        "complete on their own, and the withdrawals keep holding their reserved "
-                        "balance until an operator resolves them.</span>")
-                    .arg(stuck_deposits)
-                    .arg(stuck_withdrawals));
+                        "<br/><span style='color:#c8b8a0; font-size:11px;'>%1</span>")
+                    .arg(lines.join(QStringLiteral("<br/>"))));
             lbl_reconcile_warning_->show();
         } else {
             lbl_reconcile_warning_->hide();

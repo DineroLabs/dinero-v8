@@ -233,5 +233,27 @@ TEST(VaultLedgerStore, unknownKindIsStillFatal) {
     std::filesystem::remove(path);
 }
 
+TEST(VaultLedgerStore, withdrawalBroadcastRecordRoundTrips) {
+    std::string path = tempPath();
+    std::array<uint8_t, 32> txid{};
+    for (size_t i = 0; i < txid.size(); ++i) {
+        txid[i] = static_cast<uint8_t>(i);
+    }
+    {
+        FileLedgerStore store{path};
+        store.append(WithdrawalBroadcastRecorded{11, T0, AccountId{"alice"}, outpoint(0x97, 1), txid});
+    }
+    FileLedgerStore reopened{path};
+    auto entries = reopened.loadAll();
+    ASSERT_EQ(entries.size(), 1U);
+    const auto* rec = std::get_if<WithdrawalBroadcastRecorded>(&entries[0]);
+    ASSERT_NE(rec, nullptr);
+    EXPECT_EQ(rec->seq, 11U);
+    EXPECT_EQ(rec->account.raw, "alice");
+    EXPECT_EQ(rec->request.vout, 1U);
+    EXPECT_EQ(rec->txid, txid);
+    std::filesystem::remove(path);
+}
+
 }  // namespace
 }  // namespace dinero::vault::testing

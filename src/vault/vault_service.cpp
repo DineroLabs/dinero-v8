@@ -15,6 +15,7 @@
 
 #include <chrono>
 #include <utility>
+#include <unordered_set>
 #include <variant>
 
 namespace dinero::vault {
@@ -57,6 +58,16 @@ void VaultService::countUnreconciled() {
     // Replay restores balances but not the three state machines, whose
     // inputs (deposit height, enclosing block hash, destination script)
     // are not ledgered. Anything mid-lifecycle is therefore frozen.
+    // A WithdrawalBroadcastRecorded is the only evidence that a reserved
+    // withdrawal actually reached the wire. Collect those request keys
+    // first so each stuck withdrawal can be classified.
+    std::unordered_set<OutpointId> broadcast_requests;
+    for (const auto& entry : ledger_.entries()) {
+        if (const auto* rec = std::get_if<WithdrawalBroadcastRecorded>(&entry)) {
+            broadcast_requests.insert(rec->request);
+        }
+    }
+
     for (const auto& [account, state] : ledger_.accounts()) {
         for (const auto& [outpoint, lifecycle] : state.deposits()) {
             if (std::holds_alternative<DepositCreditedState>(lifecycle)) {
@@ -64,8 +75,13 @@ void VaultService::countUnreconciled() {
             }
         }
         for (const auto& [outpoint, lifecycle] : state.withdrawals()) {
-            if (std::holds_alternative<WithdrawalInitiatedState>(lifecycle)) {
-                unreconciled_withdrawals_ += 1;
+            if (!std::holds_alternative<WithdrawalInitiatedState>(lifecycle)) {
+                continue;
+            }
+            if (broadcast_requests.count(outpoint) != 0U) {
+                withdrawals_broadcast_not_settled_ += 1;  // coins are gone
+            } else {
+                withdrawals_reserved_not_broadcast_ += 1;  // nothing moved
             }
         }
     }

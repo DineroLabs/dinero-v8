@@ -381,8 +381,12 @@ Json rpc_vault_metrics(const ExecutionContext& /*ctx*/, const Json& /*params*/) 
     // Non-zero means a restart replayed balances for work whose state
     // machine could not be restored; see VaultService::unreconciledDeposits.
     result["unreconciled_deposits"] = static_cast<Json::UInt64>(svc->unreconciledDeposits());
-    result["unreconciled_withdrawals"] =
-        static_cast<Json::UInt64>(svc->unreconciledWithdrawals());
+    // Split matters: "reserved" is safe to release (no coins moved),
+    // "broadcast" is NOT (the payout is on the wire).
+    result["withdrawals_reserved_not_broadcast"] =
+        static_cast<Json::UInt64>(svc->withdrawalsReservedNotBroadcast());
+    result["withdrawals_broadcast_not_settled"] =
+        static_cast<Json::UInt64>(svc->withdrawalsBroadcastNotSettled());
     return result;
 }
 

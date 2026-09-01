@@ -11,6 +11,8 @@
 
 #include "vault/vault_types.h"
 
+#include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -72,6 +74,28 @@ struct WithdrawalInitiated {
     BackendId backend;
 
     bool operator==(const WithdrawalInitiated&) const = default;
+};
+
+/// Binds the broadcast txid to a withdrawal that was already reserved by
+/// WithdrawalInitiated. Written AFTER the irreversible send.
+///
+/// The split exists for crash safety: WithdrawalInitiated is written
+/// before the broadcast so `locked` is reserved even if the process dies
+/// mid-send. That means it cannot carry the txid (it does not exist yet),
+/// so this entry carries it. The presence or absence of this entry is
+/// what tells a restart whether coins actually went on the wire.
+///
+/// Balance-neutral: the reservation already happened.
+struct WithdrawalBroadcastRecorded {
+    LedgerSeq seq{0};
+    LedgerTimestamp at{0};
+    AccountId account;
+    /// Same request-derived key as the WithdrawalInitiated it follows.
+    OutpointId request;
+    /// Raw (consensus-order) broadcast txid.
+    std::array<uint8_t, 32> txid{};
+
+    bool operator==(const WithdrawalBroadcastRecorded&) const = default;
 };
 
 struct WithdrawalSettled {
@@ -146,6 +170,7 @@ using LedgerEntry = std::variant<
     CreditSettled,
     CreditReverted,
     WithdrawalInitiated,
+    WithdrawalBroadcastRecorded,
     WithdrawalSettled,
     WithdrawalReverted,
     CompensatingDebit,

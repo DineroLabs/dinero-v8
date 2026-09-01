@@ -537,5 +537,81 @@ TEST(VaultLedger, replayDoesNotReAppendToTheStore) {
     EXPECT_EQ(store.loadAll().size(), 2U);
 }
 
+// ----- withdrawal broadcast record -----
+//
+// WithdrawalInitiated is now written BEFORE the broadcast (it reserves
+// `locked`), so it can no longer carry the txid. This entry binds the
+// txid afterwards, and its presence is what distinguishes "reserved but
+// never broadcast" from "coins are on the wire".
+
+TEST(VaultLedger, withdrawalBroadcastRecordedDoesNotMoveBalance) {
+    Ledger l;
+    AccountId a = acct("alice");
+    OutpointId dep = outpoint(90);
+    OutpointId req = outpoint(91);
+    l.append(DepositObserved{0, T0, a, dep, 500});
+    l.append(CreditOpened{1, T0, a, dep, 500});
+    l.append(CreditSettled{2, T0, a, dep});
+    l.append(WithdrawalInitiated{3, T0, a, req, 200, backendId("hot")});
+    ASSERT_EQ(l.accounts().at(a).locked(), 200U);
+
+    std::array<uint8_t, 32> txid{};
+    txid.fill(0xbe);
+    l.append(WithdrawalBroadcastRecorded{4, T0, a, req, txid});
+
+    EXPECT_EQ(l.accounts().at(a).locked(), 200U);
+    EXPECT_EQ(l.accounts().at(a).confirmed(), 500U);
+    EXPECT_EQ(l.accounts().at(a).spendable(), 300U);
+}
+
+TEST(VaultLedger, withdrawalBroadcastRecordedRequiresInitiated) {
+    Ledger l;
+    std::array<uint8_t, 32> txid{};
+    txid.fill(0xbe);
+    EXPECT_THROW({
+        try {
+            l.append(WithdrawalBroadcastRecorded{0, T0, acct("ghost"), outpoint(92), txid});
+        } catch (const LedgerError& e) {
+            EXPECT_EQ(e.kind(), LedgerError::Kind::LIFECYCLE_INCONSISTENT);
+            throw;
+        }
+    }, LedgerError);
+}
+
+TEST(VaultLedger, withdrawalSettlesAfterBroadcastRecord) {
+    // Full re-keyed lifecycle: initiated (reserve) -> broadcast -> settled.
+    Ledger l;
+    AccountId a = acct("alice");
+    OutpointId dep = outpoint(93);
+    OutpointId req = outpoint(94);
+    l.append(DepositObserved{0, T0, a, dep, 500});
+    l.append(CreditOpened{1, T0, a, dep, 500});
+    l.append(CreditSettled{2, T0, a, dep});
+    l.append(WithdrawalInitiated{3, T0, a, req, 200, backendId("hot")});
+    std::array<uint8_t, 32> txid{};
+    txid.fill(0xbe);
+    l.append(WithdrawalBroadcastRecorded{4, T0, a, req, txid});
+    l.append(WithdrawalSettled{5, T0, a, req});
+
+    EXPECT_EQ(l.accounts().at(a).locked(), 0U);
+    EXPECT_EQ(l.accounts().at(a).confirmed(), 300U);
+}
+
+TEST(VaultLedger, reservationRevertedWithoutBroadcastReturnsTheBalance) {
+    // The new failure path: reserve, broadcast fails, release.
+    Ledger l;
+    AccountId a = acct("alice");
+    OutpointId dep = outpoint(95);
+    OutpointId req = outpoint(96);
+    l.append(DepositObserved{0, T0, a, dep, 500});
+    l.append(CreditOpened{1, T0, a, dep, 500});
+    l.append(CreditSettled{2, T0, a, dep});
+    l.append(WithdrawalInitiated{3, T0, a, req, 200, backendId("hot")});
+    ASSERT_EQ(l.accounts().at(a).spendable(), 300U);
+    l.append(WithdrawalReverted{4, T0, a, req});
+    EXPECT_EQ(l.accounts().at(a).locked(), 0U);
+    EXPECT_EQ(l.accounts().at(a).spendable(), 500U);
+}
+
 }  // namespace
 }  // namespace dinero::vault::testing

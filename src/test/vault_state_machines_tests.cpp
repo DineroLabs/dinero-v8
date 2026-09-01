@@ -17,6 +17,8 @@
 #include "vault/vault_types.h"
 #include "vault/withdrawal_queue.h"
 
+#include <functional>
+
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -604,8 +606,33 @@ TEST(VaultWithdrawal, backendErrorMarksFailedAndPreservesLedger) {
         }
     }, WithdrawalQueueError);
     EXPECT_TRUE(std::holds_alternative<WithdrawalFailed>(fx.queue.state(id)));
-    EXPECT_EQ(fx.ledger.entries().size(), 3U);
     EXPECT_EQ(fx.ledger.accounts().at(acct("a")).locked(), 0U);
+    EXPECT_EQ(fx.ledger.accounts().at(acct("a")).spendable(), 1000U);
+
+    // The ledger no longer pretends nothing happened. Write-ahead means the
+    // reservation is durable BEFORE the send, so a rejected send leaves an
+    // initiated/reverted pair for that request — and, crucially, no
+    // broadcast record, which is how a restart knows no coins moved.
+    // (Was: entries().size() == 3, i.e. no footprint at all.)
+    const OutpointId req = outpointForWithdrawalRequest(id);
+    int initiated = 0;
+    int reverted = 0;
+    int broadcast = 0;
+    for (const auto& entry : fx.ledger.entries()) {
+        if (const auto* e = std::get_if<WithdrawalInitiated>(&entry); e && e->request == req) {
+            ++initiated;
+        }
+        if (const auto* e = std::get_if<WithdrawalReverted>(&entry); e && e->request == req) {
+            ++reverted;
+        }
+        if (const auto* e = std::get_if<WithdrawalBroadcastRecorded>(&entry); e && e->request == req) {
+            ++broadcast;
+        }
+    }
+    EXPECT_EQ(initiated, 1);
+    EXPECT_EQ(reverted, 1);
+    EXPECT_EQ(broadcast, 0);
+    EXPECT_EQ(fx.ledger.entries().size(), 5U);
 }
 
 TEST(VaultWithdrawal, revertOfBroadcastReleasesLock) {
@@ -651,6 +678,116 @@ TEST(VaultWithdrawal, outstandingDepthAndOutstandingPerAccount) {
     fx.queue.enqueue(acct("a"), 30, taprootDest());
     EXPECT_EQ(fx.queue.outstandingDepth(), 2);
     EXPECT_EQ(fx.queue.currentOutstanding(acct("a")), 80U);
+}
+
+// ───── withdrawal crash-safety: reserve before broadcasting ─────
+
+namespace {
+
+/// Backend that runs a caller-supplied probe at the exact moment the
+/// coins would leave. Lets a test assert what the ledger looked like
+/// when the irreversible step happened.
+class ObservingBackend : public SigningBackend {
+   public:
+    ObservingBackend(BackendId id, std::function<void()> on_send)
+        : id_{std::move(id)}, on_send_{std::move(on_send)} {}
+
+    [[nodiscard]] const BackendId& backendId() const noexcept override { return id_; }
+    UnaAmount availableFloat() override { return 1'000'000; }
+    std::array<uint8_t, 32> signAndBroadcast(const UnsignedTx& /*tx*/) override {
+        on_send_();
+        std::array<uint8_t, 32> txid{};
+        txid.fill(0xbe);
+        return txid;
+    }
+    HealthReport healthcheck() override {
+        return HealthReport{id_, BackendHealth{BackendHealthy{}}, 1'000'000, 0};
+    }
+
+   private:
+    BackendId id_;
+    std::function<void()> on_send_;
+};
+
+}  // namespace
+
+TEST(VaultWithdrawal, balanceIsReservedBeforeTheBroadcast) {
+    // The whole point: if the process dies mid-send, the ledger must
+    // already show the funds committed. Probing from inside the send is
+    // the only way to prove the ordering.
+    Ledger ledger;
+    UnaAmount locked_at_send = 0;
+    ObservingBackend backend{BackendId{"probe"}, [&]() {
+        locked_at_send = ledger.accountOr(acct("a")).locked();
+    }};
+    WithdrawalQueue queue{&ledger, &backend, WithdrawalCaps::unbounded(),
+                          WithdrawalConfirmationPolicy::defaults()};
+    ledger.append(DepositObserved{1, T0, acct("a"), outpoint(0xE0), 1000});
+    ledger.append(CreditOpened{2, T0, acct("a"), outpoint(0xE0), 1000});
+    ledger.append(CreditSettled{3, T0, acct("a"), outpoint(0xE0)});
+    queue.setRequestIdGenerator([]() { return makeRid(0x41); });
+
+    queue.enqueue(acct("a"), 100, taprootDest());
+    queue.processNext();
+
+    EXPECT_EQ(locked_at_send, 100U)
+        << "coins could move while the ledger still showed the balance free";
+}
+
+TEST(VaultWithdrawal, broadcastBindsTheTxidToTheReservation) {
+    WithdrawalFixture fx;
+    WithdrawalId id = fx.queue.enqueue(acct("a"), 100, taprootDest());
+    fx.queue.processNext();
+
+    const OutpointId req = outpointForWithdrawalRequest(id);
+    bool found_initiated = false;
+    bool found_broadcast = false;
+    for (const auto& entry : fx.ledger.entries()) {
+        if (const auto* init = std::get_if<WithdrawalInitiated>(&entry)) {
+            if (init->request == req) {
+                found_initiated = true;
+            }
+        }
+        if (const auto* bc = std::get_if<WithdrawalBroadcastRecorded>(&entry)) {
+            if (bc->request == req) {
+                found_broadcast = true;
+            }
+        }
+    }
+    // Both legs are keyed by the request id, not the txid — the txid does
+    // not exist when the reservation is written.
+    EXPECT_TRUE(found_initiated);
+    EXPECT_TRUE(found_broadcast);
+    EXPECT_EQ(fx.ledger.accounts().at(acct("a")).locked(), 100U);
+}
+
+TEST(VaultWithdrawal, failedBroadcastReleasesTheReservation) {
+    // New path created by write-ahead: the reservation now exists before
+    // the send, so a send that fails has to give it back.
+    WithdrawalFixture fx;
+    WithdrawalId id = fx.queue.enqueue(acct("a"), 100, taprootDest());
+    fx.backend.setNextErrorTrap(SigningBackendError::Kind::BROADCAST_FAILED);
+
+    EXPECT_THROW(fx.queue.processNext(), WithdrawalQueueError);
+
+    EXPECT_EQ(fx.ledger.accounts().at(acct("a")).locked(), 0U);
+    EXPECT_EQ(fx.ledger.accounts().at(acct("a")).spendable(), 1000U);
+    EXPECT_TRUE(std::holds_alternative<WithdrawalFailed>(fx.queue.state(id)));
+    // No broadcast record was written, so a restart can tell this apart
+    // from a withdrawal whose coins really did go out.
+    for (const auto& entry : fx.ledger.entries()) {
+        EXPECT_EQ(std::get_if<WithdrawalBroadcastRecorded>(&entry), nullptr);
+    }
+}
+
+TEST(VaultWithdrawal, settlementStillClearsLockedAfterRekeying) {
+    WithdrawalFixture fx;
+    WithdrawalId id = fx.queue.enqueue(acct("a"), 100, taprootDest());
+    fx.queue.processNext();
+    fx.queue.markBroadcastIncluded(id, 50);
+    fx.queue.tipChanged(60);
+    EXPECT_EQ(fx.ledger.accounts().at(acct("a")).locked(), 0U);
+    EXPECT_EQ(fx.ledger.accounts().at(acct("a")).confirmed(), 900U);
 }
 
 }  // namespace

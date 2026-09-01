@@ -106,6 +106,12 @@ std::unique_ptr<VaultService> makeService(MiniChain* chain, VaultServiceConfig c
         store);
 }
 
+WithdrawalId makeWid(uint8_t seed) {
+    WithdrawalId w{};
+    w.fill(seed);
+    return w;
+}
+
 std::string tempLedgerPath() {
     static std::atomic<uint64_t> counter{0};
     std::filesystem::path tmp = std::filesystem::temp_directory_path();
@@ -411,9 +417,11 @@ TEST(VaultService, replayCountsInFlightWorkThatLostItsStateMachine) {
     EXPECT_EQ(svc->accountPending(acct("kim")), 50U);
     EXPECT_EQ(svc->accountLocked(acct("kim")), 200U);
     EXPECT_EQ(svc->accountSpendable(acct("kim")), 850U);
-    // One deposit credited-not-settled, one withdrawal initiated-not-settled.
+    // One deposit credited-not-settled, and one withdrawal that really was
+    // broadcast (processNextWithdrawal ran) so its coins are on the wire.
     EXPECT_EQ(svc->unreconciledDeposits(), 1U);
-    EXPECT_EQ(svc->unreconciledWithdrawals(), 1U);
+    EXPECT_EQ(svc->withdrawalsBroadcastNotSettled(), 1U);
+    EXPECT_EQ(svc->withdrawalsReservedNotBroadcast(), 0U);
     std::filesystem::remove(path);
 }
 
@@ -421,7 +429,40 @@ TEST(VaultService, freshServiceReportsNothingUnreconciled) {
     MiniChain chain;
     auto svc = makeService(&chain);
     EXPECT_EQ(svc->unreconciledDeposits(), 0U);
-    EXPECT_EQ(svc->unreconciledWithdrawals(), 0U);
+    EXPECT_EQ(svc->withdrawalsReservedNotBroadcast(), 0U);
+    EXPECT_EQ(svc->withdrawalsBroadcastNotSettled(), 0U);
+}
+
+TEST(VaultService, replaySeparatesReservedFromActuallyBroadcastWithdrawals) {
+    // The distinction that makes a frozen withdrawal actionable: one was
+    // reserved and never sent (safe to release), the other's coins are on
+    // the wire (must NOT be released). Only the broadcast record tells
+    // them apart, so this drives the log straight into a fresh service.
+    MiniChain chain;
+    const std::string path = tempLedgerPath();
+    OutpointId dep;
+    dep.txid_raw = txid(0x90);
+    OutpointId req_reserved = outpointForWithdrawalRequest(makeWid(0xA1));
+    OutpointId req_broadcast = outpointForWithdrawalRequest(makeWid(0xA2));
+    std::array<uint8_t, 32> sent_txid{};
+    sent_txid.fill(0xbe);
+    {
+        FileLedgerStore store{path};
+        store.append(DepositObserved{0, 1, acct("nina"), dep, 1000});
+        store.append(CreditOpened{1, 1, acct("nina"), dep, 1000});
+        store.append(CreditSettled{2, 1, acct("nina"), dep});
+        store.append(WithdrawalInitiated{3, 1, acct("nina"), req_reserved, 200, BackendId{"hot"}});
+        store.append(WithdrawalInitiated{4, 1, acct("nina"), req_broadcast, 300, BackendId{"hot"}});
+        store.append(
+            WithdrawalBroadcastRecorded{5, 1, acct("nina"), req_broadcast, sent_txid});
+    }
+
+    FileLedgerStore store{path};
+    auto svc = makeService(&chain, {}, &store);
+    EXPECT_EQ(svc->accountLocked(acct("nina")), 500U);
+    EXPECT_EQ(svc->withdrawalsReservedNotBroadcast(), 1U);
+    EXPECT_EQ(svc->withdrawalsBroadcastNotSettled(), 1U);
+    std::filesystem::remove(path);
 }
 
 }  // namespace

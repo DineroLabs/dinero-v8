@@ -270,14 +270,18 @@ void InitializeVaultRuntime(VaultRuntimeConfig config) {
     // at the last shutdown comes back with correct balances and a dead
     // lifecycle. Say so loudly instead of leaving the funds silently stuck.
     const size_t stuck_deposits = g_service->unreconciledDeposits();
-    const size_t stuck_withdrawals = g_service->unreconciledWithdrawals();
-    if (stuck_deposits > 0 || stuck_withdrawals > 0) {
+    const size_t reserved_withdrawals = g_service->withdrawalsReservedNotBroadcast();
+    const size_t broadcast_withdrawals = g_service->withdrawalsBroadcastNotSettled();
+    if (stuck_deposits > 0 || reserved_withdrawals > 0 || broadcast_withdrawals > 0) {
         dinero::g_logger.warn(
             std::string("[Vault] NEEDS RECONCILIATION after restart: ") +
-            std::to_string(stuck_deposits) + " deposit(s) credited-but-not-settled, " +
-            std::to_string(stuck_withdrawals) +
-            " withdrawal(s) initiated-but-not-settled. These will NOT advance on their own; "
-            "the withdrawals hold `locked` balance until an operator resolves them.");
+            std::to_string(stuck_deposits) + " deposit(s) credited-but-not-settled; " +
+            std::to_string(reserved_withdrawals) +
+            " withdrawal(s) RESERVED but never broadcast (no coins moved - safe to release); " +
+            std::to_string(broadcast_withdrawals) +
+            " withdrawal(s) BROADCAST but not settled (coins ARE on-chain - do NOT release the "
+            "locked balance; reconcile the recorded txid against the chain). None of these "
+            "advance on their own.");
     }
 
     din::SetVaultService(g_service.get());

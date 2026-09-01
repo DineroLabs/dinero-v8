@@ -159,6 +159,22 @@ void Ledger::validate(const LedgerEntry& entry) {
         return;
     }
 
+    if (auto* w_broadcast = std::get_if<WithdrawalBroadcastRecorded>(&entry);
+        w_broadcast != nullptr) {
+        auto acct_it = accounts_.find(w_broadcast->account);
+        if (acct_it == accounts_.end()) {
+            throw LedgerError(LedgerError::Kind::LIFECYCLE_INCONSISTENT,
+                              "withdrawalBroadcast without initiated state");
+        }
+        auto withdrawals_it = acct_it->second.withdrawals().find(w_broadcast->request);
+        if (withdrawals_it == acct_it->second.withdrawals().end() ||
+            !std::holds_alternative<WithdrawalInitiatedState>(withdrawals_it->second)) {
+            throw LedgerError(LedgerError::Kind::LIFECYCLE_INCONSISTENT,
+                              "withdrawalBroadcast without initiated state");
+        }
+        return;
+    }
+
     if (auto* w_reverted = std::get_if<WithdrawalReverted>(&entry); w_reverted != nullptr) {
         auto acct_it = accounts_.find(w_reverted->account);
         if (acct_it == accounts_.end()) {
@@ -274,6 +290,12 @@ void Ledger::applyToAccounts(const LedgerEntry& entry) {
 
     if (auto* w_settled = std::get_if<WithdrawalSettled>(&entry); w_settled != nullptr) {
         ensureAccount(w_settled->account).applyWithdrawalSettled(w_settled->request);
+        return;
+    }
+
+    if (std::holds_alternative<WithdrawalBroadcastRecorded>(entry)) {
+        // Audit-only: the reservation was taken by WithdrawalInitiated, so
+        // binding the txid moves no balance.
         return;
     }
 

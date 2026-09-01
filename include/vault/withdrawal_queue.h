@@ -29,6 +29,17 @@ namespace dinero::vault {
 /// signing call.
 using WithdrawalId = std::array<uint8_t, 16>;
 
+/// Ledger key for a withdrawal's lifecycle. Keyed by the STABLE REQUEST
+/// ID, not by the broadcast txid: the reservation entry
+/// (WithdrawalInitiated) is written before the broadcast for crash
+/// safety, so no txid exists yet. The 16-byte id is left-aligned into
+/// the 32-byte outpoint field; the txid is bound afterwards by
+/// WithdrawalBroadcastRecorded.
+///
+/// Bonus: the ledger and `vault.withdrawal.status` now agree on one
+/// identifier — the request id the RPC already hands back.
+OutpointId outpointForWithdrawalRequest(const WithdrawalId& id);
+
 struct WithdrawalRequest {
     WithdrawalId request_id{};
     AccountId account;

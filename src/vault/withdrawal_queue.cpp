@@ -17,6 +17,16 @@
 
 namespace dinero::vault {
 
+OutpointId outpointForWithdrawalRequest(const WithdrawalId& id) {
+    OutpointId op;
+    op.txid_raw.fill(0);
+    for (size_t i = 0; i < id.size(); ++i) {
+        op.txid_raw[i] = id[i];
+    }
+    op.vout = 0;
+    return op;
+}
+
 LedgerTimestamp WithdrawalQueue::now() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::system_clock::now().time_since_epoch())
@@ -97,24 +107,62 @@ std::optional<WithdrawalId> WithdrawalQueue::processNext() {
     out.script_pub_key = oldest->destination_script_pub_key;
     unsigned_tx.outputs.push_back(out);
 
-    std::array<uint8_t, 32> txid{};
-    try {
-        txid = backend_->signAndBroadcast(unsigned_tx);
-    } catch (const SigningBackendError& e) {
-        states_[id] = WithdrawalFailed{e.what()};
-        throw WithdrawalQueueError(WithdrawalQueueError::Kind::BACKEND_ERROR, e.what());
-    }
+    const OutpointId outpoint = outpointForWithdrawalRequest(id);
+    const AccountId account = oldest->account;
+    const UnaAmount amount = oldest->amount;
 
-    OutpointId outpoint;
-    outpoint.txid_raw = txid;
-    outpoint.vout = 0;
+    // WRITE-AHEAD. The broadcast below is irreversible, so the reservation
+    // has to be durable first. Writing it afterwards means a crash in the
+    // window leaves coins spent on-chain with no ledger record at all, and
+    // the balance becomes spendable again on restart.
+    //
+    // `oldest` points into requests_; ledger_->append can reenter nothing
+    // here, but account/amount are copied above so the rest of this
+    // function does not depend on that pointer staying valid.
     try {
-        ledger_->append(WithdrawalInitiated{ledger_->nextSeq(), now(), oldest->account, outpoint,
-                                            oldest->amount, backend_->backendId()});
+        ledger_->append(WithdrawalInitiated{ledger_->nextSeq(), now(), account, outpoint,
+                                            amount, backend_->backendId()});
     } catch (const LedgerError& e) {
         states_[id] = WithdrawalFailed{std::string("ledger: ") + e.what()};
         throw WithdrawalQueueError(WithdrawalQueueError::Kind::LEDGER_ERROR, e.what());
     }
+
+    std::array<uint8_t, 32> txid{};
+    try {
+        txid = backend_->signAndBroadcast(unsigned_tx);
+    } catch (const SigningBackendError& e) {
+        // The reservation is already live, so it must be handed back. A
+        // backend that threw did not (as far as we can tell) broadcast;
+        // the backend's own journal is what guards the ambiguous case,
+        // and it refuses to retry a request whose outcome is unknown.
+        try {
+            ledger_->append(WithdrawalReverted{ledger_->nextSeq(), now(), account, outpoint});
+        } catch (const LedgerError& release_error) {
+            // Releasing failed: leave the balance locked rather than
+            // guess. Conservative — funds stay reserved, not spendable.
+            states_[id] = WithdrawalFailed{std::string("broadcast failed (") + e.what() +
+                                           ") AND reservation release failed: " +
+                                           release_error.what()};
+            throw WithdrawalQueueError(WithdrawalQueueError::Kind::LEDGER_ERROR,
+                                       release_error.what());
+        }
+        states_[id] = WithdrawalFailed{e.what()};
+        throw WithdrawalQueueError(WithdrawalQueueError::Kind::BACKEND_ERROR, e.what());
+    }
+
+    // Coins are on the wire. Bind the txid; the presence of this entry is
+    // what a restart uses to tell "reserved but never sent" from "sent".
+    try {
+        ledger_->append(
+            WithdrawalBroadcastRecorded{ledger_->nextSeq(), now(), account, outpoint, txid});
+    } catch (const LedgerError& e) {
+        // The money HAS moved. Do not revert the reservation — that would
+        // hand the balance back on top of a real payout. Surface loudly.
+        states_[id] = WithdrawalFailed{std::string("broadcast succeeded but txid not ledgered: ") +
+                                       e.what()};
+        throw WithdrawalQueueError(WithdrawalQueueError::Kind::LEDGER_ERROR, e.what());
+    }
+
     WithdrawalBroadcast bc;
     bc.txid = txid;
     bc.included_at_height = 0;
@@ -162,9 +210,7 @@ int WithdrawalQueue::tipChanged(uint64_t tip_height) {
         if (req_it == requests_.end()) {
             continue;
         }
-        OutpointId outpoint;
-        outpoint.txid_raw = bc->txid;
-        outpoint.vout = 0;
+        const OutpointId outpoint = outpointForWithdrawalRequest(id);
         try {
             ledger_->append(WithdrawalSettled{ledger_->nextSeq(), now(), req_it->second.account, outpoint});
             std::array<uint8_t, 32> txid_copy = bc->txid;
@@ -196,9 +242,7 @@ void WithdrawalQueue::revert(const WithdrawalId& id) {
         has_onchain = true;
     }
     if (has_onchain) {
-        OutpointId outpoint;
-        outpoint.txid_raw = txid;
-        outpoint.vout = 0;
+        const OutpointId outpoint = outpointForWithdrawalRequest(id);
         try {
             ledger_->append(WithdrawalReverted{ledger_->nextSeq(), now(), req_it->second.account, outpoint});
             states_[id] = WithdrawalRevertedOnChain{txid};

@@ -1476,6 +1476,31 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/vault_state_machines_tests.cpp)
   message(STATUS "Vault state-machine tests enabled")
 endif()
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/vault_signing_backend_tests.cpp)
+  add_executable(test_vault_signing_backend
+    src/test/vault_signing_backend_tests.cpp
+    src/vault/wallet_signing_backend.cpp
+    src/vault/signing_backend.cpp
+    src/common/logger.cpp
+  )
+  add_dependencies(test_vault_signing_backend gtest gtest_main)
+  target_link_libraries(test_vault_signing_backend PRIVATE
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+  )
+  target_include_directories(test_vault_signing_backend BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME VaultSigningBackend COMMAND test_vault_signing_backend)
+  set_tests_properties(VaultSigningBackend PROPERTIES
+    LABELS "vault;persistence;mandatory"
+    TIMEOUT 30
+  )
+  message(STATUS "Vault signing-backend tests enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/vault_ledger_store_tests.cpp)
   add_executable(test_vault_ledger_store
     src/test/vault_ledger_store_tests.cpp

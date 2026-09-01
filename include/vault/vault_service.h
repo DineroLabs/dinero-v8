@@ -137,15 +137,24 @@ class VaultService {
     [[nodiscard]] size_t accountCount();
     [[nodiscard]] int withdrawalQueueDepth();
 
-    /// Deposits that replay found credited-but-not-settled, and
-    /// withdrawals found initiated-but-not-settled, at construction.
-    /// These have no live state machine behind them: the deposit will
-    /// never advance to settled on its own, and the withdrawal will
-    /// hold `locked` until an operator resolves it (PolicyAdjustment).
-    /// Both are 0 for a service with no store. Fixed at construction.
+    /// Deposits that replay found credited-but-not-settled. No live state
+    /// machine will advance them; the funds stay spendable meanwhile.
     [[nodiscard]] size_t unreconciledDeposits() const noexcept { return unreconciled_deposits_; }
-    [[nodiscard]] size_t unreconciledWithdrawals() const noexcept {
-        return unreconciled_withdrawals_;
+
+    /// Withdrawals replay found reserved (WithdrawalInitiated) with NO
+    /// WithdrawalBroadcastRecorded: the write-ahead reservation is durable
+    /// but the coins never went on the wire. `locked` is held for nothing
+    /// and is safe for an operator to release.
+    [[nodiscard]] size_t withdrawalsReservedNotBroadcast() const noexcept {
+        return withdrawals_reserved_not_broadcast_;
+    }
+
+    /// Withdrawals replay found broadcast but not settled. The coins ARE
+    /// on the wire. `locked` must NOT be released — doing so would hand
+    /// the balance back on top of a real payout. Reconcile the recorded
+    /// txid against the chain instead.
+    [[nodiscard]] size_t withdrawalsBroadcastNotSettled() const noexcept {
+        return withdrawals_broadcast_not_settled_;
     }
 
     /// Return ledger entries with seq >= since (capped at limit).
@@ -168,7 +177,8 @@ class VaultService {
     ReorgWatcher reorg_watcher_;
     WithdrawalQueue withdrawals_;
     size_t unreconciled_deposits_{0};
-    size_t unreconciled_withdrawals_{0};
+    size_t withdrawals_reserved_not_broadcast_{0};
+    size_t withdrawals_broadcast_not_settled_{0};
 };
 
 }  // namespace dinero::vault

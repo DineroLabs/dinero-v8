@@ -8,6 +8,7 @@
 
 #include "vault/ledger_store.h"
 
+#include <array>
 #include <fstream>
 #include <iomanip>
 #include <ios>
@@ -118,6 +119,12 @@ std::string serializeEntry(const LedgerEntry& entry) {
                     << ",\"kind\":\"withdrawalInitiated\""
                     << ",\"request\":" << outpointJson(concrete.request)
                     << ",\"seq\":" << concrete.seq << "}";
+            } else if constexpr (std::is_same_v<T, WithdrawalBroadcastRecorded>) {
+                oss << "{\"account\":" << escapeString(concrete.account.raw)
+                    << ",\"at\":" << concrete.at << ",\"kind\":\"withdrawalBroadcast\""
+                    << ",\"request\":" << outpointJson(concrete.request)
+                    << ",\"seq\":" << concrete.seq
+                    << ",\"txid\":" << escapeString(hexEncode(concrete.txid)) << "}";
             } else if constexpr (std::is_same_v<T, WithdrawalSettled>) {
                 oss << "{\"account\":" << escapeString(concrete.account.raw)
                     << ",\"at\":" << concrete.at << ",\"kind\":\"withdrawalSettled\""
@@ -355,6 +362,7 @@ LedgerEntry parseEntry(const std::string& line) {
     UnaAmount amount = 0;
     BackendId backend;
     UnaAmount operator_loss = 0;
+    std::array<uint8_t, 32> broadcast_txid{};
     AccountId transfer_from;
     AccountId transfer_to;
     std::string note;
@@ -403,6 +411,10 @@ LedgerEntry parseEntry(const std::string& line) {
             amount = p.readUnsignedInt();
         } else if (key == "backend") {
             backend = BackendId{p.readString()};
+        } else if (key == "txid") {
+            if (!hexDecode(p.readString(), broadcast_txid)) {
+                throw LedgerStoreError("bad broadcast txid hex");
+            }
         } else if (key == "operatorLoss") {
             operator_loss = p.readUnsignedInt();
         } else if (key == "from") {
@@ -437,6 +449,9 @@ LedgerEntry parseEntry(const std::string& line) {
     }
     if (kind == "withdrawalInitiated") {
         return WithdrawalInitiated{seq, at, account, deposit_or_request, amount, backend};
+    }
+    if (kind == "withdrawalBroadcast") {
+        return WithdrawalBroadcastRecorded{seq, at, account, deposit_or_request, broadcast_txid};
     }
     if (kind == "withdrawalSettled") {
         return WithdrawalSettled{seq, at, account, deposit_or_request};
