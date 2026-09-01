@@ -16,6 +16,8 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QUrl>
+
+#include <algorithm>
 #include <QVBoxLayout>
 
 namespace {
@@ -88,6 +90,7 @@ void PoolPanel::setupUi() {
     why->setWordWrap(true);
     why->setTextFormat(Qt::RichText);
     why_layout->addWidget(why);
+    why_group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     root->addWidget(why_group);
 
     // ---- Connect to your pool ---------------------------------------
@@ -130,6 +133,7 @@ void PoolPanel::setupUi() {
     lbl_status_message_->setWordWrap(true);
     lbl_status_message_->setStyleSheet("color: #9fb3c8;");
     conn_layout->addWidget(lbl_status_message_);
+    conn_group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     root->addWidget(conn_group);
 
     // ---- Live status -------------------------------------------------
@@ -140,8 +144,18 @@ void PoolPanel::setupUi() {
     status_group_->setStyleSheet("QGroupBox > QLabel { background: transparent; }");
     // Default spacing leaves ~85px between rows of one-line values, which
     // spreads six readings over an unreadable amount of screen.
-    grid->setVerticalSpacing(8);
+    // Hug the content. Left expanding, the group takes all the slack the
+    // page has and the grid shares it out between rows, which pushes six
+    // one-line readings ~87px apart.
+    status_group_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    grid->setContentsMargins(12, 8, 12, 10);
+    grid->setVerticalSpacing(4);
+    grid->setHorizontalSpacing(8);
+    // Value sits next to its caption; the slack goes to the gutter between
+    // the two label/value pairs, not between a label and its own number.
+    grid->setColumnStretch(0, 0);
     grid->setColumnStretch(1, 1);
+    grid->setColumnStretch(2, 0);
     grid->setColumnStretch(3, 1);
     lbl_connected_miners_ = new QLabel("\xE2\x80\x93");
     lbl_fee_ = new QLabel("\xE2\x80\x93");
@@ -207,6 +221,7 @@ void PoolPanel::setupUi() {
     earn_layout->addWidget(lbl_earnings_);
     // Same reasoning as Live status: revealed once the user identifies as
     // an operator by hitting Connect.
+    earn_group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     earn_group->setVisible(false);
     earnings_group_ = earn_group;
     root->addWidget(earn_group);
@@ -320,6 +335,10 @@ void PoolPanel::applyStatus(const QJsonObject& s) {
         miners_table_->setItem(i, 1, new QTableWidgetItem(QString("%1%").arg(bps / 100.0, 0, 'f', 2)));
         miners_table_->setItem(i, 2, new QTableWidgetItem(m.value("window_weight").toString()));
     }
+    // Size to the contributors actually present (capped), so the card does
+    // not reserve a block of empty rows for miners that are not there.
+    const int shown = std::max(1, std::min(static_cast<int>(miners.size()), 6));
+    miners_table_->setFixedHeight(24 * shown + 28);
 
     setStatusMessage(QString("<span style='color:#7bd88f;'>Connected.</span>"
                              "<span style='color:#9fb3c8; font-size:11px;'> pool %1, up %2s</span>")

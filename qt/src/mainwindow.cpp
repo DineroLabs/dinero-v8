@@ -3430,7 +3430,10 @@ void MainWindow::setupUI() {
     poolPanel_ = new PoolPanel(rpc_, this);
     // 👥 not ⛏️ — the Mining tab owns the pickaxe, and a pool is about
     // a group of miners sharing a block, not about hashing itself.
-    tabs->addTab(poolPanel_, "👥 Pool");
+    // Wrapped like the other long tabs: the panel is taller than the window
+    // on smaller screens, and without this the Fee earnings section at the
+    // bottom is simply unreachable.
+    tabs->addTab(makeScrollableTab(poolPanel_), "👥 Pool");
   }
 
   // === Shielded Tab (Phase 5 — daemon shielded pool, gated by
