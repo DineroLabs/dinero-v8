@@ -25,6 +25,9 @@ if(NOT DEFINED DINERO_MONOREPO_VERSION)
 endif()
 project(dinero-qt VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 
+option(DIN_ENABLE_LIQUIDITY_VAULT_UI
+  "Expose the custodial Liquidity Vault panel in dinero-qt" OFF)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Qt firewall — directory-scope include reset (Phase 2 Step 7 finding, 2026-05-12)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -728,6 +731,10 @@ endif()
 
 if(DIN_EXPERIMENTAL_FEATURES)
   target_compile_definitions(dinero-qt PRIVATE DIN_EXPERIMENTAL_FEATURES)
+endif()
+
+if(DIN_ENABLE_LIQUIDITY_VAULT_UI)
+  target_compile_definitions(dinero-qt PRIVATE DIN_ENABLE_LIQUIDITY_VAULT_UI=1)
 endif()
 
 target_compile_definitions(dinero-qt PRIVATE QT_NO_KEYWORDS)

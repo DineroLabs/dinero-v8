@@ -3458,15 +3458,15 @@ void MainWindow::setupUI() {
   // ═══════════════════════════════════════════════════════════════════
 #endif // DIN_EXPERIMENTAL_FEATURES
 
-  // === Liquidity Vault Tab (Track C — daemon-side custodial vault) ===
-  // Production feature, not gated behind DIN_EXPERIMENTAL_FEATURES.
-  // Talks to vault.* RPC family on the embedded dinerod (boots in
-  // shadow mode by default; flip vault.shadow=0 once you're past
-  // Stage 0).
+#if defined(DIN_ENABLE_LIQUIDITY_VAULT_UI) && DIN_ENABLE_LIQUIDITY_VAULT_UI
+  // === Liquidity Vault Tab (daemon-side custodial vault) ===
+  // Disabled in normal builds until its consumer product model is finalized.
+  // Explicit operator/developer builds may opt in at configure time.
   {
     vaultPanel_ = new VaultPanel(rpc_, this);
     tabs->addTab(vaultPanel_, "🏦 Liquidity Vault");
   }
+#endif
 
   // === Shielded Tab (Phase 5 — daemon shielded pool, gated by
   // chainparams.shielded_activation_height). On mainnet/testnet the
