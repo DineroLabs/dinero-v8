@@ -643,6 +643,41 @@ void test11_FailedStagePersistsNothing() {
     pass("retry after clearing the failure persists the validated status");
 }
 
+// A canonical header-only row must not be mistaken for corrupt legacy
+// metadata when its first byte happens to equal metadata schema version 1/2.
+void test12_HeaderFirstRowAcceptsMetadata() {
+    cleanTestDatadir();
+    ChainDB db;
+    if (db.init(TEST_DATADIR) != Status::Ok) {
+        fail("ChainDB::init failed");
+    }
+
+    ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    BlockHeader header;
+    header.version = 2;
+    const uint256 hash = header.GetHash();
+    if (db.putHeader(token, hash, header, 77, arith_uint256()) != Status::Ok) {
+        fail("putHeader failed");
+    }
+    if (db.getHeaderMetadata(hash).status() != Status::NotFound) {
+        fail("canonical header-only row was misclassified as legacy metadata");
+    }
+
+    auto metadata = makeHealthyHeader(BLOCK_HAVE_DATA);
+    metadata.height = 77;
+    if (db.putHeaderMetadataPreservingExistingUndo(token, hash, metadata) != Status::Ok) {
+        fail("metadata write rejected a legitimate header-first row");
+    }
+    auto read = db.getHeaderMetadata(hash);
+    if (!read.ok() || read.value().height != 77) {
+        fail("metadata was not readable after header-first update");
+    }
+    if (!db.getHeader(hash).ok()) {
+        fail("metadata update clobbered the canonical header");
+    }
+    pass("header-first row accepts independent metadata without collision");
+}
+
 }  // namespace
 
 int main() {
@@ -661,8 +696,9 @@ int main() {
     test09_UpdateUndoLocatorMergesExtraStatusBits();
     test10_UpdateUndoLocatorDefaultAddsNoExtraBits();
     test11_FailedStagePersistsNothing();
+    test12_HeaderFirstRowAcceptsMetadata();
 
-    std::cout << "\n✅ Header status bits: 11/11 properties hold" << std::endl;
+    std::cout << "\n✅ Header status bits: 12/12 properties hold" << std::endl;
     cleanTestDatadir();
     return 0;
 }
