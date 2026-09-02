@@ -20,7 +20,7 @@ def main() -> int:
     parser.add_argument(
         "--manifest",
         type=Path,
-        default=Path("packaging/release-assets-v8.1.10.json"),
+        default=Path("packaging/release-assets-v8.1.11.json"),
     )
     parser.add_argument("--companion-repo")
     args = parser.parse_args()
