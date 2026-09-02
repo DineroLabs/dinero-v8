@@ -1582,7 +1582,7 @@ uint256 ChainstateService::ComputeShieldedReorgStateHash() const {
     return out;
 }
 
-uint256 ChainstateService::ComputeShieldedRoot() const {
+std::optional<uint256> ChainstateService::ComputeShieldedRoot() const {
     // Thin wrapper: the layout lives in consensus/shielded/shielded_root.cpp so
     // it is a pure function testable with vectors, not something that can drift
     // with daemon state. See that header for why it is not DSR2.

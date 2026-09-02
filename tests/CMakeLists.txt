@@ -1864,6 +1864,29 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_root.cpp)
   message(STATUS "Shielded-state root tests enabled")
 endif()
 
+# Canonical nullifier accumulator — ordering rule + fail-closed contract.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_nullifier_accumulator.cpp)
+  add_executable(test_nullifier_accumulator
+    tests/consensus/test_nullifier_accumulator.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_nullifier_accumulator gtest dinero_shielded)
+  target_link_libraries(test_nullifier_accumulator PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> dinero_shielded
+  )
+  target_include_directories(test_nullifier_accumulator BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME NullifierAccumulator COMMAND test_nullifier_accumulator)
+  set_tests_properties(NullifierAccumulator PROPERTIES
+    LABELS "shielded;consensus;cv-binding;mandatory;state-commitment"
+    TIMEOUT 30
+  )
+  message(STATUS "Canonical nullifier accumulator tests enabled")
+endif()
+
 # #356: pure marker-guard decision for ApplyStatelessReplayShielded. Header-only
 # free function — no dinero library link needed, just gtest. Named so the
 # ShieldedBlockSection ctest gate regex also runs it.

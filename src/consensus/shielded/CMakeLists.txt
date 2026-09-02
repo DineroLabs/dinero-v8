@@ -14,6 +14,8 @@ add_library(dinero_shielded STATIC
     shielded_epoch.cpp
     # Shielded-state root: the fingerprint a future header commitment carries.
     shielded_root.cpp
+    # Canonical nullifier accumulator: ordering + fail-closed contract.
+    nullifier_accumulator.cpp
     binding_sig.cpp
     bundle_builder.cpp
     pedersen_commit.cpp

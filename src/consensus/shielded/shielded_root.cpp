@@ -34,10 +34,10 @@ void AppendLengthPrefixed(std::vector<uint8_t>& out, const std::vector<uint8_t>&
 
 std::vector<uint8_t> BuildShieldedRootPreimage(const std::vector<uint8_t>& tree_root,
                                                uint64_t tree_size,
-                                               const std::vector<uint8_t>& nullifier_content,
+                                               const uint256& nullifier_accumulator,
                                                const std::vector<uint8_t>& anchor_bytes) {
     std::vector<uint8_t> pre;
-    pre.reserve(64 + nullifier_content.size() + anchor_bytes.size());
+    pre.reserve(96 + anchor_bytes.size());
 
     pre.insert(pre.end(), std::begin(SHIELDED_ROOT_TAG), std::end(SHIELDED_ROOT_TAG));
     pre.push_back(SHIELDED_ROOT_VERSION);
@@ -52,7 +52,11 @@ std::vector<uint8_t> BuildShieldedRootPreimage(const std::vector<uint8_t>& tree_
     }
     AppendLE64(pre, tree_size);
 
-    AppendLengthPrefixed(pre, nullifier_content);
+    // Fixed 32 bytes: the nullifier set enters through its own canonical
+    // accumulator (tag 'NUL1'), which owns the ordering rule and cannot report
+    // an unreadable set as an empty one. See nullifier_accumulator.h.
+    pre.insert(pre.end(), nullifier_accumulator.data, nullifier_accumulator.data + 32);
+
     AppendLengthPrefixed(pre, anchor_bytes);
 
     // No forest. header.utreexo_root already commits it; committing it twice
@@ -62,10 +66,10 @@ std::vector<uint8_t> BuildShieldedRootPreimage(const std::vector<uint8_t>& tree_
 
 uint256 ComputeShieldedRootFromParts(const std::vector<uint8_t>& tree_root,
                                      uint64_t tree_size,
-                                     const std::vector<uint8_t>& nullifier_content,
+                                     const uint256& nullifier_accumulator,
                                      const std::vector<uint8_t>& anchor_bytes) {
     const auto pre =
-        BuildShieldedRootPreimage(tree_root, tree_size, nullifier_content, anchor_bytes);
+        BuildShieldedRootPreimage(tree_root, tree_size, nullifier_accumulator, anchor_bytes);
     dinero::crypto::CSHA256 hasher;
     hasher.Write(pre.data(), pre.size());
     uint8_t digest[32];
@@ -75,14 +79,18 @@ uint256 ComputeShieldedRootFromParts(const std::vector<uint8_t>& tree_root,
     return out;
 }
 
-uint256 ComputeShieldedRoot(const CommitmentTree& tree,
-                            const NullifierSet& nullifiers,
-                            const AnchorHistory& anchors) {
+std::optional<uint256> ComputeShieldedRoot(const CommitmentTree& tree,
+                                           const NullifierSet& nullifiers,
+                                           const AnchorHistory& anchors) {
+    // Fail closed: no accumulator, no root. Substituting any digest here would
+    // reintroduce exactly the confusion the accumulator removes.
+    const auto acc = AccumulateNullifierSet(nullifiers);
+    if (!acc.has_value()) {
+        return std::nullopt;
+    }
     const auto root = tree.Root();
     return ComputeShieldedRootFromParts(std::vector<uint8_t>(root.begin(), root.end()),
-                                        tree.Size(),
-                                        nullifiers.SerializeContent(),
-                                        anchors.SerializeBytes());
+                                        tree.Size(), *acc, anchors.SerializeBytes());
 }
 
 }  // namespace shielded

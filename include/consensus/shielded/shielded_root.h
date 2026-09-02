@@ -30,15 +30,26 @@
 //      produce the same preimage from different state. This layout prefixes
 //      every variable-length section with its length.
 //
+// VERSION 2 — why the nullifier section is an accumulator digest
+// ──────────────────────────────────────────────────────────────
+// v1 hashed `NullifierSet::SerializeContent()` bytes directly, which inherited
+// two properties from the storage layer that a header commitment must not
+// depend on: the canonical ordering came from a SQLite `ORDER BY` (so it hung
+// on BLOB collation and on that query never being reworked), and the function
+// returns EMPTY BYTES to signal a read error — hashing to exactly the
+// empty-set digest, making a local database fault indistinguishable from an
+// attacker who deleted every nullifier. v2 commits to
+// `ComputeNullifierAccumulator` (tag 'NUL1'), which sorts and de-duplicates
+// itself and cannot express that confusion. Never activated at v1, so there
+// is no compatibility obligation.
+//
 // LAYOUT (concatenated, then SHA-256'd)
 // ─────────────────────────────────────
 //   [tag 'SHR1']                    4 B
 //   [version = 1]                   1 B
 //   [shielded tree root]           32 B   (zeros if the root is not 32 B)
 //   [shielded tree size LE]         8 B
-//   [nullifier content length LE]   8 B
-//   [nullifier content]        variable   (NullifierSet::SerializeContent,
-//                                          sorted by (height ASC, nullifier ASC))
+//   [nullifier accumulator]        32 B   (ComputeNullifierAccumulator, tag 'NUL1')
 //   [anchor history length LE]      8 B
 //   [anchor history bytes]     variable   (AnchorHistory::SerializeBytes)
 //
@@ -47,10 +58,12 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "consensus/shielded/anchor_history.h"
 #include "consensus/shielded/commitment_tree.h"
+#include "consensus/shielded/nullifier_accumulator.h"
 #include "consensus/shielded/nullifier_set.h"
 #include "primitives/uint256.h"
 
@@ -61,26 +74,31 @@ namespace shielded {
 /// Tag distinguishing this digest from DSR2's. A digest computed under one
 /// tag can never be mistaken for the other.
 inline constexpr char SHIELDED_ROOT_TAG[4] = {'S', 'H', 'R', '1'};
-inline constexpr uint8_t SHIELDED_ROOT_VERSION = 1;
+inline constexpr uint8_t SHIELDED_ROOT_VERSION = 2;
 
 /// Build the preimage. Exposed so tests can assert on the exact bytes rather
 /// than only on the digest — a layout change must be visible, not just felt.
 std::vector<uint8_t> BuildShieldedRootPreimage(const std::vector<uint8_t>& tree_root,
                                                uint64_t tree_size,
-                                               const std::vector<uint8_t>& nullifier_content,
+                                               const uint256& nullifier_accumulator,
                                                const std::vector<uint8_t>& anchor_bytes);
 
 /// Hash of the preimage above. Pure: no chainstate, no I/O, no globals — so
 /// it is testable with vectors and cannot drift with daemon state.
 uint256 ComputeShieldedRootFromParts(const std::vector<uint8_t>& tree_root,
                                      uint64_t tree_size,
-                                     const std::vector<uint8_t>& nullifier_content,
+                                     const uint256& nullifier_accumulator,
                                      const std::vector<uint8_t>& anchor_bytes);
 
 /// Convenience overload over the live containers.
-uint256 ComputeShieldedRoot(const CommitmentTree& tree,
-                            const NullifierSet& nullifiers,
-                            const AnchorHistory& anchors);
+///
+/// Returns `std::nullopt` when the nullifier set cannot be enumerated. A
+/// caller must propagate that rather than substituting any digest: see
+/// nullifier_accumulator.h for why an unreadable set and an empty set must
+/// never collapse to the same value.
+std::optional<uint256> ComputeShieldedRoot(const CommitmentTree& tree,
+                                           const NullifierSet& nullifiers,
+                                           const AnchorHistory& anchors);
 
 }  // namespace shielded
 }  // namespace consensus

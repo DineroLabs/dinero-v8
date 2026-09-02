@@ -45,19 +45,56 @@ snapshot exists to skip.
 
 ## The value
 
-Tag `SHR1`, version 1. SHA-256 over:
+Tag `SHR1`, **version 2**. SHA-256 over:
 
 ```
 [tag 'SHR1']                    4 B
-[version = 1]                   1 B
+[version = 2]                   1 B
 [shielded tree root]           32 B   (zero-filled if not exactly 32 B)
 [shielded tree size]            8 B   little-endian
-[nullifier content length]      8 B   little-endian
-[nullifier content]        variable   NullifierSet::SerializeContent(),
-                                      sorted (block_height ASC, nullifier ASC)
+[nullifier accumulator]        32 B   ComputeNullifierAccumulator, tag 'NUL1'
 [anchor history length]         8 B   little-endian
 [anchor history bytes]     variable   AnchorHistory::SerializeBytes()
 ```
+
+### The canonical nullifier accumulator (tag `NUL1`, version 1)
+
+```
+[tag 'NUL1']        4 B
+[version = 1]       1 B
+[entry count]       8 B   little-endian
+  per entry, in canonical order:
+[block height]      4 B   little-endian
+[nullifier]        32 B
+```
+
+Canonical order is **height ascending, then nullifier bytes ascending as
+unsigned octets**, applied inside the accumulator. Duplicates collapse; the
+count is committed, so an entry cannot be dropped and the remainder re-padded.
+
+**Why v1's approach was replaced.** v1 hashed `NullifierSet::SerializeContent()`
+bytes directly, inheriting two properties from the storage layer that a header
+commitment must not depend on:
+
+1. **Canonicality was delegated to SQLite.** Ordering came from
+   `ORDER BY block_height ASC, nullifier ASC` inside the query, so a consensus
+   value depended on BLOB collation semantics and on that query never being
+   reworked for performance. The ordering a commitment depends on has to be
+   stated by the commitment.
+
+2. **It failed open.** `SerializeContent()` returns an empty vector to signal a
+   read error — *"signal error via empty"*. Hashed directly, that is bit-for-bit
+   the digest of an empty nullifier set, so a local database fault produces the
+   same commitment as an attacker who deleted every nullifier. That is the
+   omitted-nullifier forgery, reachable without an attacker.
+
+`AccumulateNullifierSet()` returns `std::optional` and yields `nullopt` on any
+enumeration failure. `ComputeShieldedRoot()` propagates it, and the
+`daemon.shieldedroot` RPC reports `nullifier_set_unreadable` rather than a
+digest. An unreadable set and an empty set are different facts and the API
+cannot express them as the same value.
+
+v1 was never activated on any network, so there is no compatibility obligation.
 
 Implementation: `src/consensus/shielded/shielded_root.cpp`. Pure function, no
 chainstate, no I/O.
@@ -132,14 +169,16 @@ chain split.
 
 | tree root | size | nullifier content | anchor bytes | digest |
 |---|---|---|---|---|
-| 32 × `00` | 0 | *(empty)* | *(empty)* | `d4c4c8cab0145d981b138bd960fbb9437a537f2630a840c5916c24139ffbbbd2` |
+| 32 × `00` | 0 | empty accumulator | *(empty)* | `6d08ae4f5424b20f752690ef55dee04ef8c97cedc3989284c1b283cf56f79b93` |
+
+Empty nullifier accumulator (`NUL1`, zero entries):
+`4f760a0ef5ff321a3eaa0feca778ff19c9126aefd506b91732d747495df62696`
 
 Observed values, for orientation (not fixtures):
 
-| context | shielded_root |
-|---|---|
-| empty shielded state, live node | `a950379977bd7cf7900bb1742bd88a6d9ede59827c8ff1e349a7230781442b3c` |
-| mainnet @ 99,677 (frontier 1032 B, anchors 3608 B, nullifiers 0/0) | `2439253378763e7606dc7a720bbd09875e83a5ba04458941c441cf76ad5de56e` |
+Observed under **v1** (superseded; retained so the version change is auditable):
+empty live state `a950379977bd7cf7…`, mainnet @ 99,677
+`2439253378763e7606dc7a720bbd09875e83a5ba04458941c441cf76ad5de56e`.
 
 ## Evidence gathered
 
@@ -151,12 +190,11 @@ Observed values, for orientation (not fixtures):
 | restart determinism | real mainnet state @ 99,677, bootstrap → restart | PASS |
 | live vs reindex | regtest, tree + anchors + a real nullifier | PASS |
 | connect/disconnect/reorg invertibility | `test_shielded_reorg_invertibility.sh` | PASS |
-| cross-node agreement + deep reorg through a shielded spend | `test_shielded_root_multinode_deep_reorg.sh` | see run log |
+| cross-node agreement + deep reorg through a shielded spend | `test_shielded_root_multinode_deep_reorg.sh` | PASS |
+| canonical ordering + fail-closed enumeration | `test_nullifier_accumulator.cpp`, 10 tests | PASS |
 
 ## Still owed before any activation
 
-* canonical nullifier accumulator (this layout depends on `SerializeContent()`
-  ordering being canonical — that guarantee should be structural, not incidental)
 * end-to-end corrupt-snapshot rejection at the loader (requires the commitment
   to exist; unit vectors prove detection, not enforcement)
 * scheduled activation height + compatibility period, clear of any future

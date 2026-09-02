@@ -198,7 +198,7 @@ public:
     /// ComputeShieldedReorgStateHash — it excludes the utreexo forest, which
     /// `header.utreexo_root` already commits, and length-prefixes each
     /// variable-length section. Committed nowhere yet; read-only.
-    uint256 ComputeShieldedRoot() const;
+    std::optional<uint256> ComputeShieldedRoot() const;
 
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row §1.4 names. After ActivateBestChain settles on the

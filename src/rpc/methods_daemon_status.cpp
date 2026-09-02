@@ -293,7 +293,14 @@ static din::Json rpc_shielded_root(const ExecutionContext& ctx, const din::Json&
         result["error"] = "chainstate_not_initialized";
         return result;
     }
-    result["shielded_root"] = daemon_ctx->chainstate->ComputeShieldedRoot().GetHex();
+    const auto root = daemon_ctx->chainstate->ComputeShieldedRoot();
+    if (!root.has_value()) {
+        // The nullifier set could not be enumerated. Report that, never a
+        // digest — an unreadable set and an empty set are different facts.
+        result["error"] = "nullifier_set_unreadable";
+        return result;
+    }
+    result["shielded_root"] = root->GetHex();
     return result;
 }
 
