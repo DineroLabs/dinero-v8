@@ -259,25 +259,41 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                         LOG_ERROR("⚠️  ComputeUtreexoRootPure failed on submitblock path: " +
                                   utreexo_error);
                     }
-                } else if (chain_db_for_utreexo) {
+                } else if (chain_db_for_utreexo &&
+                           !(cs->IsAssumeUTXOActive() &&
+                             parentHeight < cs->GetAssumeUTXOBaseHeight())) {
                     // Side-chain. Confirm parent is on main chain.
+                    //
+                    // While AssumeUTXO background validation is replaying
+                    // genesis..base, those historical bodies also traverse
+                    // BlockAcceptor as non-tip blocks. Pre-base checkpoints
+                    // and delta sidecars are deliberately not promoted into
+                    // ChainDB until that replay proves the snapshot. Do not
+                    // misroute them through this live side-chain precheck:
+                    // AssumeUtxoReplayEngine verifies every historical root,
+                    // and the below-base fork guard prevents activation.
                     const dinero::uint256 parent_hash =
                         dinero::uint256::FromHexUnsafe(block.prevBlockHash);
-                    auto mainchain_parent = chain_db_for_utreexo->getBlockHashByHeight(
-                        static_cast<int>(parentHeight));
+                    dinero::uint256 canonical_parent;
                     const bool parent_in_main_chain =
-                        mainchain_parent.status() == dinero::Status::Ok &&
-                        mainchain_parent.value() == parent_hash;
+                        cs->ResolveCanonicalBlockHash(
+                            static_cast<uint32_t>(parentHeight), canonical_parent) &&
+                        canonical_parent == parent_hash;
 
                     if (parent_in_main_chain) {
                         consensus::UtreexoForest parent_forest;
                         std::string restore_error;
+                        const dinero::storage::BlockHashAtHeightResolver resolve_canonical =
+                            [cs](uint32_t height, dinero::uint256& out_hash) -> bool {
+                                return cs->ResolveCanonicalBlockHash(height, out_hash);
+                            };
                         const auto restore_status =
                             dinero::storage::RestoreHistoricalForest(
                                 *chain_db_for_utreexo,
                                 static_cast<uint32_t>(parentHeight),
                                 parent_forest,
-                                restore_error);
+                                restore_error,
+                                resolve_canonical);
                         if (restore_status == dinero::Status::Ok) {
                             try {
                                 // Build a fork-aware UTXO overlay by
@@ -297,9 +313,8 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                                 for (uint32_t h = tip_h;
                                      h > static_cast<uint32_t>(parentHeight);
                                      --h) {
-                                    auto bh = chain_db_for_utreexo->getBlockHashByHeight(
-                                        static_cast<int>(h));
-                                    if (bh.status() != dinero::Status::Ok) {
+                                    dinero::uint256 mainchain_hash;
+                                    if (!cs->ResolveCanonicalBlockHash(h, mainchain_hash)) {
                                         LOG_ERROR(
                                             "⚠️  fork-aware overlay: missing main-chain "
                                             "hash at height " +
@@ -310,7 +325,7 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                                     // Archival mode skips the ChainDB undo shadow
                                     // write, so ReadStoredUndoPublic (flatfile)
                                     // is the reliable path in both modes.
-                                    auto undo_res = cs->ReadStoredUndoPublic(bh.value());
+                                    auto undo_res = cs->ReadStoredUndoPublic(mainchain_hash);
                                     if (undo_res.status() != dinero::Status::Ok) {
                                         LOG_ERROR(
                                             "⚠️  fork-aware overlay: missing undo at "

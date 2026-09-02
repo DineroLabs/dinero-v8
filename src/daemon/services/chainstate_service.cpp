@@ -950,6 +950,30 @@ bool BackfillFailedChildFromParent(ChainDB* chain_db,
 ChainstateService::ChainstateService() = default;
 ChainstateService::~ChainstateService() = default;
 
+bool ChainstateService::ResolveCanonicalBlockHash(uint32_t height,
+                                                  uint256& out_hash) const {
+    if (consensus::GetActiveChainHashAtHeight(GetActiveTip(), height, out_hash)) {
+        return true;
+    }
+
+    if (header_chain_selector_) {
+        consensus::HeaderIndexEntry header;
+        if (header_chain_selector_->GetHeaderAtHeightCopy(height, header)) {
+            out_hash = header.hash;
+            return true;
+        }
+    }
+
+    if (chain_db_) {
+        const auto indexed = chain_db_->getBlockHashByHeight(static_cast<int>(height));
+        if (indexed.ok()) {
+            out_hash = indexed.value();
+            return true;
+        }
+    }
+    return false;
+}
+
 bool ChainstateService::LoadShieldedState() {
     const std::string nullifier_path =
         (std::filesystem::path(datadir_) / "blockchain" / "shielded_nullifiers.db").string();
@@ -3680,11 +3704,10 @@ bool ChainstateService::Start() {
                     // The set may legitimately sit past the base (chain advanced) or
                     // be pending the file rehydrate below; the marker is still honest
                     // if the persisted base block is on our recorded chain.
-                    auto base_hash_result = chain_db_->getBlockHashByHeight(restored_base_height);
-                    if (base_hash_result.ok()) {
+                    uint256 canonical_hash;
+                    if (ResolveCanonicalBlockHash(restored_base_height, canonical_hash)) {
                         // Successful lookup: hash mismatch IS evidence of tampering.
-                        chainstate_matches =
-                            (base_hash_result.value() == restored_base_block);
+                        chainstate_matches = (canonical_hash == restored_base_block);
                     } else {
                         // Index unavailable (pruned/cold) is NOT evidence of tampering.
                         // Retain the marker; let IsCanonicalStateAligned catch real
@@ -4183,11 +4206,11 @@ bool ChainstateService::Start() {
                     // same key). No crash.
                     chainstate_matches = false;
                 } else if (chain_db_ && h > 0) {
-                    auto hash_result = chain_db_->getBlockHashByHeight(h);
-                    if (hash_result.ok()) {
+                    uint256 canonical_hash;
+                    if (ResolveCanonicalBlockHash(h, canonical_hash)) {
                         // Successful lookup: hash mismatch IS evidence of tampering.
                         chainstate_matches =
-                            (hash_result.value() == uint256::FromHexUnsafe(bb.value()));
+                            (canonical_hash == uint256::FromHexUnsafe(bb.value()));
                     } else {
                         // Index unavailable (pruned/cold) is NOT evidence of tampering.
                         // Retain the marker; let IsCanonicalStateAligned catch real
