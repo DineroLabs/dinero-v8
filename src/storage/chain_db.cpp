@@ -84,6 +84,19 @@ bool LooksLikePersistedHeaderMetadataValue(const std::string& value) {
     return version == 1 || version == ChainDB::PersistedHeaderMetadata::SCHEMA_VERSION;
 }
 
+bool IsCanonicalHeaderValue(const std::string& value) {
+    try {
+        Reader r(value);
+        BlockHeader header;
+        Deserialize(r, header);
+        (void)r.read<uint32_t>();
+        (void)r.read<arith_uint256>();
+        return r.eof();
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 StatusOr<ChainDB::PersistedHeaderMetadata> DeserializePersistedHeaderMetadataValue(
     const std::string& value
 ) {
@@ -695,6 +708,16 @@ StatusOr<ChainDB::PersistedHeaderMetadata> ChainDB::getHeaderMetadata(const uint
         }
         if (!legacy_status.ok()) {
             return convertRocksDBStatus(legacy_status);
+        }
+
+        // The legacy metadata row shared the canonical header prefix. A
+        // header-first node can therefore legitimately have only a serialized
+        // header at this key. Some header versions begin with 0x01/0x02, which
+        // also look like metadata schema versions; classify the exact canonical
+        // header encoding first so it is treated as "metadata not found" rather
+        // than as corrupt metadata.
+        if (IsCanonicalHeaderValue(legacy_value)) {
+            return Status::NotFound;
         }
 
         auto legacy_result = DeserializePersistedHeaderMetadataValue(legacy_value);

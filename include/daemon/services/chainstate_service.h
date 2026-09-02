@@ -386,6 +386,11 @@ public:
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }
     uint256 GetAssumeUTXOBaseBlock() const { return assumeutxo_base_block_; }
     uint32_t GetAssumeUTXOBaseHeight() const { return assumeutxo_base_height_; }
+    // Resolve canonical identity without assuming the durable height index is
+    // complete. During AssumeUTXO, pre-base height entries are deliberately
+    // withheld until background validation promotes the history; active-tip
+    // ancestry and the PoW-validated header chain remain authoritative.
+    bool ResolveCanonicalBlockHash(uint32_t height, uint256& out_hash) const;
     // Wallet recovery must remain available after background validation
     // promotes the snapshot and clears assumeutxo_active_. Snapshot-bootstrapped
     // nodes still lack pre-base block bodies after promotion, so a wallet opened
