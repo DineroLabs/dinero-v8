@@ -23,6 +23,7 @@ def main() -> int:
         default=Path("packaging/release-assets-v8.1.11.json"),
     )
     parser.add_argument("--companion-repo")
+    parser.add_argument("--companion-component")
     args = parser.parse_args()
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
@@ -32,11 +33,29 @@ def main() -> int:
             for item in manifest["companion_releases"]
             if item["repo"] == args.companion_repo
         ]
-        if len(matches) != 1 or "required_assets" not in matches[0]:
+        if len(matches) != 1:
             raise SystemExit(
                 f"manifest has no unique asset matrix for {args.companion_repo}"
             )
-        required = set(matches[0]["required_assets"])
+        selected = matches[0]
+        if args.companion_component:
+            components = [
+                item
+                for item in selected.get("releases", [])
+                if item.get("component") == args.companion_component
+            ]
+            if len(components) != 1 or "required_assets" not in components[0]:
+                raise SystemExit(
+                    "manifest has no unique asset matrix for "
+                    f"{args.companion_repo}/{args.companion_component}"
+                )
+            selected = components[0]
+        elif "required_assets" not in selected:
+            raise SystemExit(
+                f"{args.companion_repo} has multiple components; "
+                "pass --companion-component"
+            )
+        required = set(selected["required_assets"])
     else:
         required = set(manifest["required_assets"])
 
