@@ -1837,6 +1837,33 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_epoch_reset.cpp)
   message(STATUS "Shielded epoch-reset tests enabled")
 endif()
 
+# Shielded-state root — the fingerprint a future block-header commitment would
+# carry. Consensus-shaped: asserts the exact preimage layout, because after
+# activation a layout change is a chain split.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_root.cpp)
+  add_executable(test_shielded_root
+    tests/consensus/test_shielded_root.cpp
+    src/primitives/uint256.cpp   # uint256::operator== / ToString are out-of-line
+  )
+  add_dependencies(test_shielded_root gtest dinero_shielded)
+  target_link_libraries(test_shielded_root PRIVATE
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+    dinero_shielded
+  )
+  target_include_directories(test_shielded_root BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ShieldedRoot COMMAND test_shielded_root)
+  set_tests_properties(ShieldedRoot PROPERTIES
+    LABELS "shielded;consensus;cv-binding;mandatory"
+    TIMEOUT 30
+  )
+  message(STATUS "Shielded-state root tests enabled")
+endif()
+
 # #356: pure marker-guard decision for ApplyStatelessReplayShielded. Header-only
 # free function — no dinero library link needed, just gtest. Named so the
 # ShieldedBlockSection ctest gate regex also runs it.
