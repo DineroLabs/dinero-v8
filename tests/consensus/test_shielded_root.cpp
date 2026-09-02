@@ -93,6 +93,69 @@ TEST(ShieldedRoot, DigestDependsOnlyOnTheFourShieldedInputs) {
     EXPECT_EQ(x, y);
 }
 
+// ── forgery detection: the attacks this commitment must stop ──────────────
+//
+// These are the reasons the shielded half needs a chain binding at all. A
+// snapshot's UTXO half is already bound by header.utreexo_root; forging the
+// shielded half is what remains possible today.
+
+// THE attack. Drop a nullifier from a snapshot and a previously-spent shielded
+// note looks unspent — a shielded double-spend. The commitment must not be
+// blind to it, at any position in the set.
+TEST(ShieldedRoot, OmittingAnyNullifierChangesTheRoot) {
+    const std::vector<uint8_t> full = {10, 11, 12, 13, 14, 15, 16, 17};
+    const auto honest = ComputeShieldedRootFromParts(Root32(1), 4, full, {9, 9});
+    for (size_t drop = 0; drop < full.size(); ++drop) {
+        std::vector<uint8_t> tampered = full;
+        tampered.erase(tampered.begin() + static_cast<long>(drop));
+        EXPECT_NE(honest, ComputeShieldedRootFromParts(Root32(1), 4, tampered, {9, 9}))
+            << "dropping nullifier byte " << drop << " went undetected";
+    }
+}
+
+// Truncating the set (dropping the tail — the cheapest omission) must be caught
+// by the length prefix even before the content differs.
+TEST(ShieldedRoot, TruncatedNullifierSetIsDetected) {
+    const std::vector<uint8_t> full = {1, 2, 3, 4, 5, 6};
+    const auto honest = ComputeShieldedRootFromParts(Root32(1), 4, full, {7});
+    for (size_t keep = 0; keep < full.size(); ++keep) {
+        const std::vector<uint8_t> shorter(full.begin(), full.begin() + static_cast<long>(keep));
+        EXPECT_NE(honest, ComputeShieldedRootFromParts(Root32(1), 4, shorter, {7}))
+            << "truncating to " << keep << " bytes went undetected";
+    }
+}
+
+// Anchor-history forgery: inserting a fake anchor lets a spend prove against a
+// tree state that never existed on the real chain — minting from nothing.
+TEST(ShieldedRoot, InjectedAnchorChangesTheRoot) {
+    const std::vector<uint8_t> anchors = {1, 2, 3, 4};
+    const auto honest = ComputeShieldedRootFromParts(Root32(1), 4, {5}, anchors);
+    std::vector<uint8_t> injected = anchors;
+    injected.push_back(0xFF);  // one extra anchor entry
+    EXPECT_NE(honest, ComputeShieldedRootFromParts(Root32(1), 4, {5}, injected));
+}
+
+// Canonical ordering is load-bearing. NullifierSet::SerializeContent() emits
+// entries sorted by (height ASC, nullifier ASC); if a tampered snapshot could
+// reorder them and still hash the same, the ordering guarantee would be doing
+// no work. This is the property a canonical nullifier accumulator must keep.
+TEST(ShieldedRoot, ReorderedNullifierContentChangesTheRoot) {
+    const auto ordered = ComputeShieldedRootFromParts(Root32(1), 4, {1, 2, 3, 4}, {9});
+    const auto swapped = ComputeShieldedRootFromParts(Root32(1), 4, {3, 4, 1, 2}, {9});
+    EXPECT_NE(ordered, swapped);
+}
+
+// Content moved between the two sections must not cancel out — the same total
+// bytes split differently is different state.
+TEST(ShieldedRoot, ContentCannotBeShuffledBetweenSections) {
+    const auto a = ComputeShieldedRootFromParts(Root32(1), 4, {1, 2, 3, 4}, {5, 6});
+    const auto b = ComputeShieldedRootFromParts(Root32(1), 4, {1, 2, 3}, {4, 5, 6});
+    const auto c = ComputeShieldedRootFromParts(Root32(1), 4, {1, 2, 3, 4, 5}, {6});
+    EXPECT_NE(a, b);
+    EXPECT_NE(a, c);
+    EXPECT_NE(b, c);
+}
+
 // ── regression lock ───────────────────────────────────────────────────────
 //
 // Pins the digest of the all-empty state. If this value ever changes, the
