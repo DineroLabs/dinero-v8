@@ -100,8 +100,8 @@ jobs:
         run: |
           mkdir -p packaging/windows/dist
           gh release download "${{ steps.ver.outputs.release_tag }}" \
-            --pattern 'dinero-assumeutxo-84131-v4.dat' \
-            --pattern 'dinero-assumeutxo-84131-v4.manifest.json' \
+            --pattern 'dinero-assumeutxo-99677-v4.dat' \
+            --pattern 'dinero-assumeutxo-99677-v4.manifest.json' \
             --dir packaging/windows/dist \
             --clobber
 
@@ -228,8 +228,8 @@ jobs:
             -QtBuildDir 'build-msvc-native\bin\Release' `
             -QtBin "$env:QT_ROOT_DIR\bin" `
             -Sv2BuildDir 'dinero-sv2\target\release' `
-            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-84131-v4.dat' `
-            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-84131-v4.manifest.json'
+            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-99677-v4.dat' `
+            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-99677-v4.manifest.json'
 
       # Policy pin. A release that silently linked a different OpenSSL than the
       # one the Linux/macOS lanes assert would be a supply-chain divergence.
@@ -310,7 +310,7 @@ jobs:
           try {
             & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" dinero-installer.nsi
             if ($LASTEXITCODE -ne 0) { throw 'GUI NSIS rebuild failed' }
-            & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" "/DSNAPSHOT_FILE=dinero-assumeutxo-84131-v4.dat" dinero-server-installer.nsi
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" "/DSNAPSHOT_FILE=dinero-assumeutxo-99677-v4.dat" dinero-server-installer.nsi
             if ($LASTEXITCODE -ne 0) { throw 'server NSIS rebuild failed' }
           } finally { Pop-Location }
 
